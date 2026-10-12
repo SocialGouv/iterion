@@ -10,6 +10,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 )
 
 // colPlatformSettings is the shared one-doc-per-family collection —
@@ -33,6 +35,13 @@ const (
 	// FamilyPlatformCredentials gates who may draw on the deployment's own
 	// LLM credentials.
 	FamilyPlatformCredentials = "platform_credentials"
+	// FamilyBudgetFloor reserves capacity for named workloads and caps
+	// individual repositories (pkg/budgetfloor). The only family whose type
+	// lives OUTSIDE this package: its rules — how two reservations compose,
+	// what a repository share resolves to — are a domain the launch gate and
+	// the credential walk both consult, so they belong beside the type
+	// rather than in a settings package. Only the storage is generic here.
+	FamilyBudgetFloor = "budget_floor"
 )
 
 // MongoStore is the cloud Store for one family: the single document every
@@ -69,6 +78,11 @@ func NewMongoPlatformCredentials(db *mongo.Database) *MongoStore[PlatformCredent
 // fields, so per-request instances are free.
 func NewMongoScoped[T any](db *mongo.Database, collection, docID string) *MongoStore[T] {
 	return &MongoStore[T]{col: db.Collection(collection), docID: docID}
+}
+
+// NewMongoBudgetFloor binds the capacity reservations to a database.
+func NewMongoBudgetFloor(db *mongo.Database) *MongoStore[budgetfloor.Policy] {
+	return &MongoStore[budgetfloor.Policy]{col: db.Collection(colPlatformSettings), docID: FamilyBudgetFloor}
 }
 
 func (s *MongoStore[T]) Get(ctx context.Context) (*T, error) {
@@ -115,6 +129,8 @@ func updatedAtOf[T any](rec *T) time.Time {
 	case *RunnerPools:
 		return v.UpdatedAt
 	case *RoutingPolicyRecord:
+		return v.UpdatedAt
+	case *budgetfloor.Policy:
 		return v.UpdatedAt
 	}
 	return time.Time{}
@@ -301,6 +317,8 @@ func stampUpdatedAt[T any](rec *T) {
 	case *RunnerPools:
 		v.UpdatedAt = time.Now().UTC()
 	case *RoutingPolicyRecord:
+		v.UpdatedAt = time.Now().UTC()
+	case *budgetfloor.Policy:
 		v.UpdatedAt = time.Now().UTC()
 	}
 }

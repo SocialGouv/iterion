@@ -1,0 +1,489 @@
+// Package budgetfloor holds capacity back from unreserved work so a named
+// workload keeps a shared credential longer — a PREFERENCE at admission, and
+// deliberately not called a guarantee.
+//
+// # The bound, stated first
+//
+// Nothing is ALLOCATED. Admission compares a total against a lowered ceiling
+// and acquires nothing, so work admitted below that ceiling can still consume
+// the band a reservation names; the bound on the overshoot is the combined
+// outstanding spend of every admitted attempt, and two replicas can both admit
+// into the last slot. The reserve acts at admission ONLY: a run in flight is
+// never re-judged, and the runner's own guard reads the deployment-wide policy
+// rather than the lowered one (pkg/runner/usage_cap.go). A real guarantee
+// needs durable allocation — reserve at admission, settle after completion,
+// reconcile on crash — which is tracked on #950 and not built here.
+//
+// What it does buy is real and was measured missing: unreserved work meets its
+// ceiling first, so it is sent to another credential while the named workload
+// keeps the shared one further into its window.
+//
+// Every existing mechanism is a CEILING. `max_cost_usd`, the org monthly caps
+// (pkg/orgusage), the per-credential meters (pkg/credusage), the window caps
+// (pkg/usagecap), the team concurrency and launch-rate caps, a pool pledge's
+// spend/day and runs/day — all of them answer *"how much may this stop at?"*.
+// None answers *"which of them should stop FIRST?"*.
+//
+// The difference is not academic. Measured 2026-09-08: campaign bots and the
+// PR reviewer shared one Anthropic subscription; when its five-hour window
+// closed at 06:14Z every claude_code run was refused, eight runs parked in six
+// minutes and fourteen within the hour. No cap had been exceeded and no quota
+// breached — each individual run stayed under its own ceiling all the way
+// down. Review simply had nothing held for it.
+//
+// # Why the reserve lives on the provider's window by default
+//
+// On a subscription the provider bills nothing per call: pkg/credusage types
+// those dollar figures `estimate` precisely because they are not an invoice.
+// Reserving "$X for the reviewer" on a forfait reserves a fiction — the run
+// that dies does so because the five-hour window is spent, not because a
+// dollar figure was reached. The scarce thing is the window, so that is the
+// axis the default reservation holds.
+//
+// The other two axes are offered because they are the honest answer in cases
+// the window is not: MonthlyUSD is real money on a metered key, and
+// ConcurrentRuns protects responsiveness rather than quota. An operator may
+// set any subset; each is enforced independently, at the gate that already
+// enforces its ceiling.
+//
+// # Composition
+//
+// A workload's ceiling is the cap MINUS the reserves of every OTHER workload.
+// With reserves A=20 and B=10 under a cap of 80: ordinary work stops at 50, A
+// may reach 70, B may reach 60. Each workload is protected from all the others
+// and from none of itself — which is what makes two reservations compose
+// instead of one silently voiding the other.
+//
+// # Which cap, and what that means on N tenants
+//
+// The cap subtracted from is always the one that ALREADY enforces that axis,
+// and only one of the three is deployment-wide. The window is the
+// deployment's own (pkg/usagecap), so a window reserve is held once for the
+// whole fleet — which is why it is the default, and why it is the axis that
+// matches the shared-credential starvation above. MonthlyUSD comes off the
+// LAUNCHING ORG's cost cap (pkg/orgusage) and ConcurrentRuns off the
+// LAUNCHING TEAM's, so those two are applied to each tenant's cap
+// INDEPENDENTLY: reserve $50 across twenty orgs and every one of them holds
+// $50 back from its own cap, not $50 between them.
+//
+// That is the only implementable reading — there is no fleet-wide dollar or
+// slot cap to subtract from — and on the single-shared-credential deployment
+// this was measured on it is the intended one. But it makes a dollar or slot
+// reserve a decision about EVERY tenant, with one corollary to size against: a
+// tenant whose own cap is at or below the reserve has nothing left for
+// unreserved work and is denied for the rest of the month, including a tenant
+// that never runs the reserved bot. That refusal is the coherent answer for
+// the axis (the alternative hands the holder's whole band to the work it is
+// held from — see "when the reserves swallow the cap" on each gate), so set
+// these two against the SMALLEST cap on the deployment, not the largest.
+//
+// The package is a LEAF (stdlib only) so the gates that consult it —
+// cloudpublisher's credential walk, the launch gate — can import it without
+// inverting the graph, the same rule pkg/credusage and pkg/modelspecs follow.
+package budgetfloor
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+)
+
+// Window names a provider usage window a reserve can be expressed against.
+// The strings match pkg/usagecap's own, so an operator reads one vocabulary.
+type Window string
+
+const (
+	WindowFiveHour Window = "five_hour"
+	WindowWeek     Window = "week"
+)
+
+// Reserve is the capacity held back for one workload, on any subset of three
+// axes. Every axis zero means "no reservation" — the zero value reserves
+// NOTHING, so a policy an operator has not filled in cannot start refusing
+// work by accident.
+type Reserve struct {
+	// FiveHourPercent / WeekPercent are points of the provider's own window
+	// held back from every other workload. This is the DEFAULT axis: on a
+	// subscription it is the only one that measures the thing that actually
+	// runs out.
+	FiveHourPercent int `bson:"five_hour_percent,omitempty" json:"five_hour_percent,omitempty"`
+	WeekPercent     int `bson:"week_percent,omitempty" json:"week_percent,omitempty"`
+	// MonthlyUSD holds a slice of the tenant's monthly cost cap. Real money
+	// on a metered key; an estimate on a forfait — where the window axis
+	// above is the one that bites.
+	MonthlyUSD float64 `bson:"monthly_usd,omitempty" json:"monthly_usd,omitempty"`
+	// ConcurrentRuns holds simultaneous-run slots. Protects responsiveness
+	// (the reviewer answers a PR while a campaign runs), not quota: slots on
+	// an exhausted window buy nothing.
+	ConcurrentRuns int `bson:"concurrent_runs,omitempty" json:"concurrent_runs,omitempty"`
+}
+
+// Empty reports a reserve that holds nothing on any axis.
+func (r Reserve) Empty() bool {
+	return r.FiveHourPercent == 0 && r.WeekPercent == 0 && r.MonthlyUSD == 0 && r.ConcurrentRuns == 0
+}
+
+// WindowPercent returns the points held on one window.
+func (r Reserve) WindowPercent(w Window) int {
+	switch w {
+	case WindowFiveHour:
+		return r.FiveHourPercent
+	case WindowWeek:
+		return r.WeekPercent
+	}
+	return 0
+}
+
+// Countable reports whether the reserve holds anything a per-repo share can
+// actually be resolved against — which means MonthlyUSD alone, because
+// MonthlyUSD is the only axis RepoCap can express a repository ceiling on.
+//
+// The other two are not "smaller" answers, they are undefined ones. Slicing a
+// live five-hour window between repositories would need real-time arbitration
+// across replicas, and a share computed locally is a number two pods disagree
+// about. A share of a concurrency reserve is not a monthly ceiling at all —
+// counting it as countable would let Validate accept the pair and RepoCap
+// then resolve it to (0, 0), which reads as UNLIMITED downstream: the silent
+// zero Validate's own message says it refuses, arriving in the more dangerous
+// shape.
+func (r Reserve) Countable() bool { return r.MonthlyUSD > 0 }
+
+func (r Reserve) Validate() error {
+	for _, f := range []struct {
+		name string
+		pct  int
+	}{{"five_hour_percent", r.FiveHourPercent}, {"week_percent", r.WeekPercent}} {
+		if f.pct < 0 || f.pct > 100 {
+			return fmt.Errorf("budgetfloor: %s must be in [0,100], got %d", f.name, f.pct)
+		}
+	}
+	if r.MonthlyUSD < 0 {
+		return fmt.Errorf("budgetfloor: monthly_usd cannot be negative")
+	}
+	if r.ConcurrentRuns < 0 {
+		return fmt.Errorf("budgetfloor: concurrent_runs cannot be negative")
+	}
+	return nil
+}
+
+// Reservation binds a reserve to the workload it protects.
+//
+// The workload is a BOT ID — the thing that actually spends, already carried
+// on every run (RunMessage.BotID) and already the vocabulary a credential-pool
+// pledge uses for its allow-list. No indirection to resolve at admission, and
+// no new concept to document.
+//
+// The cost of that choice, stated because it is silent: renaming or replacing
+// the bot leaves the reservation pointing at an id nothing launches, and it
+// then protects nothing. Re-point it by hand.
+type Reservation struct {
+	BotID   string  `bson:"bot_id" json:"bot_id"`
+	Reserve Reserve `bson:"reserve" json:"reserve"`
+	// Note is the operator's own words for why this exists, surfaced wherever
+	// a refusal cites the reservation.
+	Note string `bson:"note,omitempty" json:"note,omitempty"`
+}
+
+func (r Reservation) Validate() error {
+	if strings.TrimSpace(r.BotID) == "" {
+		return fmt.Errorf("budgetfloor: a reservation names no bot")
+	}
+	return r.Reserve.Validate()
+}
+
+// RepoQuota caps ONE repository inside the global budget — the other half of
+// the ask, and a ceiling rather than a floor: a floor answers "what is held
+// for this", a quota answers "how far may this one go".
+//
+// MonthlyUSD is the default axis: it reads directly off the repository
+// dimension in pkg/credusage and answers "this repo is eating the
+// subscription" with a number.
+type RepoQuota struct {
+	// Repo is the forge slug (store.Run.ProjectPath) — the same identity the
+	// meter keys on, never a second one derived from a clone URL.
+	Repo string `bson:"repo" json:"repo"`
+	// MonthlyUSD caps the repository's metered + estimated spend for the
+	// month. Default axis.
+	MonthlyUSD float64 `bson:"monthly_usd,omitempty" json:"monthly_usd,omitempty"`
+	// RouteSpendsPerMonth caps ACTIVITY instead of amount — insensitive to a
+	// forfait billing nothing, at the price of counting a trivial charge like
+	// an expensive one.
+	//
+	// It counts what the meter actually records: one unit per (credential,
+	// backend, model) ROUTE an attempt charged (pkg/credusage's per-AddSpend
+	// counter). A run whose agent is on opus and whose judge is on haiku
+	// spends TWO, and a resumed run spends again — so it is not a run count,
+	// and it is deliberately not named like one. Naming it `runs_per_month`
+	// promised the operator a number the ledger cannot produce, and refused a
+	// repository configured for 100 after ~30 real runs.
+	RouteSpendsPerMonth int `bson:"route_spends_per_month,omitempty" json:"route_spends_per_month,omitempty"`
+	// ReserveSharePercent expresses the cap as a share of a workload's
+	// reservation instead of an absolute. Resolved against that reservation's
+	// MonthlyUSD, the only axis a repository ceiling can be expressed on (see
+	// Reserve.Countable); a reserve holding none of it cannot serve a share,
+	// and Validate refuses the pair rather than silently resolving to zero —
+	// which RepoCap's caller would read as "unlimited", not as "nothing".
+	ReserveSharePercent int `bson:"reserve_share_percent,omitempty" json:"reserve_share_percent,omitempty"`
+	// ShareOfBot names which reservation ReserveSharePercent slices.
+	ShareOfBot string `bson:"share_of_bot,omitempty" json:"share_of_bot,omitempty"`
+}
+
+func (q RepoQuota) Validate() error {
+	if strings.TrimSpace(q.Repo) == "" {
+		return fmt.Errorf("budgetfloor: a repo quota names no repository")
+	}
+	if q.MonthlyUSD < 0 || q.RouteSpendsPerMonth < 0 {
+		return fmt.Errorf("budgetfloor: repo quota ceilings cannot be negative")
+	}
+	if q.ReserveSharePercent < 0 || q.ReserveSharePercent > 100 {
+		return fmt.Errorf("budgetfloor: reserve_share_percent must be in [0,100], got %d", q.ReserveSharePercent)
+	}
+	if q.ReserveSharePercent > 0 && strings.TrimSpace(q.ShareOfBot) == "" {
+		return fmt.Errorf("budgetfloor: repo %q takes a share of a reservation but names no bot (share_of_bot)", q.Repo)
+	}
+	return nil
+}
+
+// Empty reports a quota that caps nothing.
+func (q RepoQuota) Empty() bool {
+	return q.MonthlyUSD == 0 && q.RouteSpendsPerMonth == 0 && q.ReserveSharePercent == 0
+}
+
+// Policy is the deployment's whole set of reservations and repo quotas. Its
+// zero value reserves and caps nothing, so a deployment that never configured
+// one behaves exactly as before.
+type Policy struct {
+	Reservations []Reservation `bson:"reservations,omitempty" json:"reservations,omitempty"`
+	RepoQuotas   []RepoQuota   `bson:"repo_quotas,omitempty" json:"repo_quotas,omitempty"`
+	// UpdatedAt is the compare-and-set token the platform-settings store
+	// writes on every save. Present because the whole policy is replaced as
+	// a unit: without it two admins editing at once would silently drop one
+	// another's reservations under ReplaceOne semantics.
+	UpdatedAt time.Time `bson:"updated_at,omitempty" json:"updated_at,omitempty"`
+}
+
+// Validate checks the whole policy, including the cross-references a single
+// record cannot see.
+func (p Policy) Validate() error {
+	seen := map[string]bool{}
+	byBot := map[string]Reservation{}
+	for _, r := range p.Reservations {
+		if err := r.Validate(); err != nil {
+			return err
+		}
+		bot := strings.TrimSpace(r.BotID)
+		if seen[bot] {
+			// Two reservations for one bot would compose against each other
+			// through OtherReserved below — the workload would be refused on
+			// its own band.
+			return fmt.Errorf("budgetfloor: bot %q has more than one reservation", bot)
+		}
+		seen[bot] = true
+		byBot[bot] = r
+	}
+	// A reserve cannot hold more of a window than the deployment could ever
+	// use. Checked across ALL reservations, because it is their SUM that
+	// ordinary work is refused against.
+	for _, w := range []Window{WindowFiveHour, WindowWeek} {
+		total := 0
+		for _, r := range p.Reservations {
+			total += r.Reserve.WindowPercent(w)
+		}
+		if total > 100 {
+			return fmt.Errorf("budgetfloor: reservations hold %d%% of the %s window between them, which leaves ordinary work a negative ceiling", total, w)
+		}
+	}
+	repos := map[string]bool{}
+	for _, q := range p.RepoQuotas {
+		if err := q.Validate(); err != nil {
+			return err
+		}
+		repo := strings.TrimSpace(q.Repo)
+		if repos[repo] {
+			return fmt.Errorf("budgetfloor: repository %q has more than one quota", repo)
+		}
+		repos[repo] = true
+		if q.ReserveSharePercent > 0 {
+			res, ok := byBot[strings.TrimSpace(q.ShareOfBot)]
+			if !ok {
+				return fmt.Errorf("budgetfloor: repository %q takes a share of bot %q, which has no reservation", repo, q.ShareOfBot)
+			}
+			if !res.Reserve.Countable() {
+				// Refused rather than resolved to zero: a share of a window
+				// (or of a slot count) is not a small number, it is an
+				// undefined one — and a zero here would read as UNLIMITED at
+				// the gate, not as "nothing".
+				return fmt.Errorf("budgetfloor: repository %q takes %d%% of %q's reservation, but that reservation holds no monthly_usd — "+
+					"only a dollar reserve can be sliced into a repository ceiling (a share of a live provider window, or of a concurrency slot, "+
+					"is not a monthly amount any replica could compute on its own). "+
+					"Give %q a monthly_usd reserve, or cap the repository with monthly_usd / route_spends_per_month directly",
+					repo, q.ReserveSharePercent, q.ShareOfBot, q.ShareOfBot)
+			}
+		}
+	}
+	return nil
+}
+
+// sameID compares two identifiers the way every lookup below must: on the
+// TRIMMED value of BOTH sides.
+//
+// Trimming only the query is the trap, and it fails in the dangerous
+// direction: a reservation stored as " review-pr " (an id typed into the raw
+// admin API — the CLI trims) would never match its holder, so Reserved says
+// "unreserved" while OtherReserved counts that band as somebody ELSE's, and
+// the reservation refuses the exact workload it protects.
+func sameID(stored, query string) bool { return strings.TrimSpace(stored) == query }
+
+// Reserved returns the reservation protecting a bot, if any.
+func (p Policy) Reserved(botID string) (Reservation, bool) {
+	bot := strings.TrimSpace(botID)
+	if bot == "" {
+		return Reservation{}, false
+	}
+	for _, r := range p.Reservations {
+		if sameID(r.BotID, bot) {
+			return r, true
+		}
+	}
+	return Reservation{}, false
+}
+
+// OtherReserved sums what every workload OTHER than botID holds on a window.
+//
+// This is the whole composition rule: a workload is protected from all the
+// others and from none of itself. Summing every reservation instead would
+// refuse a workload on its own band — the reservation would make its holder
+// stop earlier, which is precisely backwards.
+//
+// An empty botID (a run with no bot: a plain .bot launch) is nobody's
+// workload, so it faces the full sum.
+func (p Policy) OtherReserved(botID string, w Window) int {
+	bot := strings.TrimSpace(botID)
+	total := 0
+	for _, r := range p.Reservations {
+		if sameID(r.BotID, bot) {
+			continue
+		}
+		total += r.Reserve.WindowPercent(w)
+	}
+	return total
+}
+
+// OtherReservedSlots sums the concurrency slots every workload OTHER than
+// botID holds. Same composition rule as OtherReserved, on the axis that
+// protects responsiveness rather than quota.
+func (p Policy) OtherReservedSlots(botID string) int {
+	bot := strings.TrimSpace(botID)
+	total := 0
+	for _, r := range p.Reservations {
+		if sameID(r.BotID, bot) {
+			continue
+		}
+		total += r.Reserve.ConcurrentRuns
+	}
+	return total
+}
+
+// OtherReservedUSD sums the monthly spend every workload OTHER than botID
+// holds — the axis that is real money on a metered key and an estimate on a
+// forfait (see the package doc).
+func (p Policy) OtherReservedUSD(botID string) float64 {
+	bot := strings.TrimSpace(botID)
+	total := 0.0
+	for _, r := range p.Reservations {
+		if sameID(r.BotID, bot) {
+			continue
+		}
+		total += r.Reserve.MonthlyUSD
+	}
+	return total
+}
+
+// WindowCeiling is the utilisation percentage at which THIS bot must stop
+// drawing on a credential, given the deployment's own cap for that window.
+// It is the ONE place the reserve arithmetic lives — the credential walk
+// calls it rather than re-deriving it, so the two cannot drift on the
+// question below.
+//
+// capPct is pkg/usagecap's MaxPercent — 0 meaning the family is not enforced,
+// in which case there is nothing to subtract a reserve from and the answer is
+// that same 0 (unenforced) rather than a negative ceiling that would refuse
+// everything. A deployment that never set a usage cap must not acquire one by
+// configuring a reservation.
+//
+// `held` is the case a ceiling CANNOT express: the other workloads' reserves
+// swallow the whole cap (an operator lowering the cap under the reserves it
+// already wrote, or reserving the deployment's entire allowance — Validate
+// only knows the 100% ceiling, never the deployment's own cap). Returning 0
+// there would be read by usagecap as "not enforced" and would UNCAP every
+// unreserved workload on that window — the exact starvation the reserve
+// exists to prevent, amplified. So the caller is told to refuse the
+// credential for this bot outright instead of lowering its ceiling.
+func (p Policy) WindowCeiling(botID string, w Window, capPct float64) (ceiling float64, held bool) {
+	if capPct <= 0 {
+		return capPct, false
+	}
+	reserved := float64(p.OtherReserved(botID, w))
+	if reserved >= capPct {
+		return 0, true
+	}
+	return capPct - reserved, false
+}
+
+// RepoCap resolves a repository's effective ceilings for the month. The
+// returned amounts are zero when unlimited on that axis.
+//
+// A share-based quota is resolved HERE rather than stored pre-multiplied, so
+// raising a reservation raises every repository that takes a share of it —
+// the property that makes shares worth having.
+func (p Policy) RepoCap(repo string) (monthlyUSD float64, routeSpendsPerMonth int) {
+	name := strings.TrimSpace(repo)
+	if name == "" {
+		// Spend that named no repository is not "every repository": a run
+		// with no repo cannot be capped by one, and folding it into some
+		// default bucket would charge it to a repository that never ran it.
+		return 0, 0
+	}
+	for _, q := range p.RepoQuotas {
+		if !sameID(q.Repo, name) {
+			continue
+		}
+		monthlyUSD, routeSpendsPerMonth = q.MonthlyUSD, q.RouteSpendsPerMonth
+		if q.ReserveSharePercent > 0 {
+			if res, ok := p.Reserved(q.ShareOfBot); ok {
+				if share := res.Reserve.MonthlyUSD * float64(q.ReserveSharePercent) / 100; share > 0 {
+					// The tighter of the two wins when both are set: an
+					// explicit absolute is an operator's deliberate floor
+					// under a share, not a second opinion to average.
+					if monthlyUSD == 0 || share < monthlyUSD {
+						monthlyUSD = share
+					}
+				}
+			}
+		}
+		return monthlyUSD, routeSpendsPerMonth
+	}
+	return 0, 0
+}
+
+// Static is a Policy that never changes — the shape a deployment configured
+// from the environment has, and the one a test can state outright. The
+// runtime-mutable form is a platformcfg resolver over the same type.
+type Static Policy
+
+// Get matches the platformcfg.Resolver shape every consumer reads, so a
+// static policy and a runtime-mutable one are interchangeable at the seam.
+func (s Static) Get(context.Context) *Policy { p := Policy(s); return &p }
+
+// Bots lists every reserved bot id, sorted — for the operator views, which
+// must not reorder between two reads.
+func (p Policy) Bots() []string {
+	out := make([]string, 0, len(p.Reservations))
+	for _, r := range p.Reservations {
+		out = append(out, r.BotID)
+	}
+	sort.Strings(out)
+	return out
+}

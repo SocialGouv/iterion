@@ -27,7 +27,7 @@ func TestApiKeyUsable(t *testing.T) {
 	scope := usagecap.TenantScope("team")
 	key := secrets.ApiKey{Provider: secrets.ProviderZAI, Name: "primary", Fingerprint: "fp-zai-1"}
 
-	usable := p.apiKeyUsable(context.Background(), scope, "run-x", nil)
+	usable := p.apiKeyUsable(context.Background(), scope, "run-x", "", nil)
 	if !usable(key) {
 		t.Fatal("no evidence must mean usable")
 	}
@@ -54,7 +54,7 @@ func TestApiKeyUsable(t *testing.T) {
 			ObservedAt: time.Now()}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if !p2.apiKeyUsable(context.Background(), scope, "run-x", nil)(key) {
+	if !p2.apiKeyUsable(context.Background(), scope, "run-x", "", nil)(key) {
 		t.Fatal("a rejected overage reading is no quota evidence — the key must stay usable")
 	}
 	other := secrets.ApiKey{Provider: secrets.ProviderOpenAI, Name: "m", Fingerprint: "fp-zai-1"}
@@ -208,7 +208,7 @@ func TestApiKeyUsable_authRefusalSkips(t *testing.T) {
 			ObservedAt: time.Now()}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if p.apiKeyUsable(context.Background(), scope, "run-x", nil)(key) {
+	if p.apiKeyUsable(context.Background(), scope, "run-x", "", nil)(key) {
 		t.Fatal("a fresh auth refusal under the key's fingerprint must skip it")
 	}
 }
@@ -271,7 +271,7 @@ func TestApiKeyUsable_concurrencyCeiling(t *testing.T) {
 	mkRun("alive-2", store.RunStatusQueued, "fp-capped")
 
 	p := &Publisher{usageCaps: usagecap.NewMemStore(), store: rs, logger: testLogger()}
-	usable := p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "run-new", nil)
+	usable := p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "run-new", "", nil)
 
 	capped := secrets.ApiKey{Provider: secrets.ProviderZAI, Name: "capped", Fingerprint: "fp-capped", MaxConcurrentRuns: 2}
 	if usable(capped) {
@@ -288,7 +288,7 @@ func TestApiKeyUsable_concurrencyCeiling(t *testing.T) {
 
 	// The run being resolved is already persisted and stamped (a resume):
 	// it must not consume its own slot.
-	if !p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "alive-1", nil)(capped) {
+	if !p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "alive-1", "", nil)(capped) {
 		t.Fatal("a resume must not count itself toward the key's ceiling")
 	}
 }
