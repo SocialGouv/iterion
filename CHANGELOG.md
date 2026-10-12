@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.257.3](https://github.com/SocialGouv/iterion/compare/v3.257.2...v3.257.3) (2026-10-12)
+
+### Bug Fixes
+
+* **sandbox:** the runner's workspace .env can no longer pick a forwarded credential's endpoint ([#2321](https://github.com/SocialGouv/iterion/issues/2321)) ([b4fbc70](https://github.com/SocialGouv/iterion/commit/b4fbc70a8e8e6b7481cabc2daf20a40bed9bca3c)), references [#2315](https://github.com/SocialGouv/iterion/issues/2315)
+
+    <details><summary>why</summary>
+
+    Endpoint names in providerEndpointEnvVars the host leaves unset cross as explicit empties; the runner's applyDotEnv honours LookupEnv, so the empty blocks the workspace .env line — the repository under review no longer decides which infrastructure a forwarded credential dials (#2315). Keys keep the skip (an empty key reads as an invalid auth attempt), and the endpoint list is pinned to the forwarding list by a pairing test.
+
+    </details>
+* **test:** suites that spawn login shells run under a HOME of their own ([#2231](https://github.com/SocialGouv/iterion/issues/2231)) ([#2322](https://github.com/SocialGouv/iterion/issues/2322)) ([41b8f32](https://github.com/SocialGouv/iterion/commit/41b8f32c6a8c35c65ab62ef9bb20773e1ec95f2c)), references [#882](https://github.com/SocialGouv/iterion/issues/882) [#2291](https://github.com/SocialGouv/iterion/issues/2291)
+
+    <details><summary>why</summary>
+
+    The five-line `##` comment over extend_result's `notice` sat twice in a row since #882, a paste debris of the class #2291 cleared on main. A sweep of the tracked tree for that class — conflict markers, commit- subject fragments, rebase debris, doubled lines and blocks — found no other instance. Comment only: the compiled program, `iterion validate` and the canonical form are unchanged; no version bump.
+
+    </details>
+* **webhooks:** a cleared AuthorAllowlist survives the Mongo document replace ([#2323](https://github.com/SocialGouv/iterion/issues/2323)) ([0df479b](https://github.com/SocialGouv/iterion/commit/0df479b1ebcad9a76fc671a7d19f1911b88d4b1e)), closes [#2175](https://github.com/SocialGouv/iterion/issues/2175), references [#2175](https://github.com/SocialGouv/iterion/issues/2175) [#1588](https://github.com/SocialGouv/iterion/issues/1588) [#1588](https://github.com/SocialGouv/iterion/issues/1588) [#2175](https://github.com/SocialGouv/iterion/issues/2175) [#1588](https://github.com/SocialGouv/iterion/issues/1588) [pre-#2175](https://github.com/pre-/issues/2175) [#2175](https://github.com/SocialGouv/iterion/issues/2175) [#2175](https://github.com/SocialGouv/iterion/issues/2175) [#2175](https://github.com/SocialGouv/iterion/issues/2175)
+
+    <details><summary>why</summary>
+
+    webhooks.Config.AuthorAllowlist carried bson:",omitempty" while MongoConfigStore.Update is a full-document replace, so the operator's deliberate clear — a non-nil empty slice through the webhook PATCH — was dropped on write and read back nil, indistinguishable from never-set. The bson tag drops omitempty (the json tag keeps it: the API shape is unchanged); HoldLabels/LabelAllowlist set this exact precedent in #1588. Every reader of the field treats nil and [] alike (len==0 / range → allow-all),…
+
+    </details>
+
 ## [3.257.2](https://github.com/SocialGouv/iterion/compare/v3.257.1...v3.257.2) (2026-10-09)
 
 ### Bug Fixes
