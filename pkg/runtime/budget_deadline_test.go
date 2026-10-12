@@ -111,8 +111,9 @@ func TestNodeDeadlineFromDurationBudget(t *testing.T) {
 // Anchored to the deadline, the gap is `before` by construction, whatever the
 // scheduler does to everything upstream.
 //
-// firedAtNS and sawDeadline let the test tell a real regression from a fixture
-// that never set up its own premise.
+// started and sawDeadline let the test tell a real regression from a fixture
+// that never set up its own premise — and, among the fixtures that did not, the
+// node that never ran from the node that ran with no deadline.
 type internalTimeoutExecutor struct {
 	blockNode string
 	before    time.Duration
@@ -121,25 +122,43 @@ type internalTimeoutExecutor struct {
 	// judges when the node RETURNS, so this moves the verdict's instant
 	// without moving the firing one.
 	delayAfterFire time.Duration
-	runStart       time.Time
-	firedAtNS      atomic.Int64
-	sawDeadline    atomic.Bool
+	// upstreamHold is held by every node BUT blockNode, which is how the
+	// run's cap gets spent before blockNode is ever reached — what a loaded
+	// runner does for free, on demand.
+	upstreamHold time.Duration
+	runStart     time.Time
+	// deadlineAtNS and firedAtNS are ABSOLUTE instants (UnixNano): the
+	// per-node budget deadline the engine installed, and when the node's own
+	// timeout went off. The budget's clock starts at deadlineAtNS minus the
+	// cap, which is how the test reads its quantities against the RUN's clock
+	// rather than against its own first line.
+	deadlineAtNS atomic.Int64
+	firedAtNS    atomic.Int64
+	started      atomic.Bool
+	sawDeadline  atomic.Bool
 }
 
 func (e *internalTimeoutExecutor) Execute(ctx context.Context, node ir.Node, _ map[string]any) (map[string]any, error) {
 	if node.NodeID() == e.blockNode {
+		// Recorded BEFORE the deadline is read: a node that reached the
+		// executor and found no deadline is a different fact from a node the
+		// engine never dispatched, and armInternalTimeout answers them
+		// differently.
+		e.started.Store(true)
 		deadline, ok := ctx.Deadline()
 		if !ok {
 			return nil, fmt.Errorf("fixture: node %q got no budget deadline to aim at", e.blockNode)
 		}
 		e.sawDeadline.Store(true)
+		e.deadlineAtNS.Store(deadline.UnixNano())
 		inner, cancel := context.WithDeadline(ctx, deadline.Add(-e.before))
 		defer cancel()
 		<-inner.Done()
-		e.firedAtNS.Store(int64(time.Since(e.runStart)))
+		e.firedAtNS.Store(time.Now().UnixNano())
 		time.Sleep(e.delayAfterFire)
 		return nil, fmt.Errorf("scanner timed out %s before the run's own deadline: %w", e.before, inner.Err())
 	}
+	time.Sleep(e.upstreamHold)
 	return map[string]any{"ok": true}, nil
 }
 
@@ -166,6 +185,142 @@ func internalTimeoutWorkflow(cap time.Duration) *ir.Workflow {
 	}
 }
 
+// internalTimeoutWorkflowWalledCap is internalTimeoutWorkflow whose cap is an
+// absolute wall — ir.Budget.CapImposed, what a platform ceiling or a pool
+// donor's allowance puts on a run: no overspend is afforded at all.
+//
+// A fixture that spends the cap UPSTREAM needs that. The 90% line
+// checkBudgetBeforeExec refuses a new node from is not a wall on its own: from
+// 100% up to the graced ceiling (cap × the exit grace ratio, 10% by default)
+// the budget exit grace ADMITS the node and bounds it by
+// GracedRemainingDuration — a real deadline, so the node both starts and arms.
+// A hold set just under the cap to close the gate therefore REOPENS it as soon
+// as a loaded scheduler adds a few tens of milliseconds. Against a walled cap
+// the refusal is monotonic: every overspend is refused.
+func internalTimeoutWorkflowWalledCap(cap time.Duration) *ir.Workflow {
+	wf := internalTimeoutWorkflow(cap)
+	wf.Budget.CapImposed = true
+	return wf
+}
+
+// internalTimeoutAttempt is one run of internalTimeoutWorkflow, with the facts
+// its test judges it by.
+type internalTimeoutAttempt struct {
+	attempt int
+	runID   string
+	store   store.RunStore
+	err     error
+	// judgedAt and firedAt are offsets into the CAP by the BUDGET's clock:
+	// when the verdict was computed (an upper bound — read once Run returned)
+	// and when the node's own timeout went off. Neither stands in for the
+	// other: the engine judges when the node returns, and scheduling between
+	// the two is enough to make a budget stop the correct answer while firedAt
+	// is still under the cap. See TestAVerdictJudgedPastTheCapIsABudgetStop.
+	judgedAt time.Duration
+	firedAt  time.Duration
+	started  bool
+	armed    bool
+}
+
+// internalTimeoutAttempts bounds how many times the scenario below is set up
+// before the test gives up on this machine.
+const internalTimeoutAttempts = 4
+
+// capOf reports the duration cap a fixture workflow declares. It is the length
+// of the budget's clock, and every quantity these tests compare to it is read
+// against that clock.
+func capOf(t *testing.T, wf *ir.Workflow) time.Duration {
+	t.Helper()
+	d, err := time.ParseDuration(wf.Budget.MaxDuration)
+	if err != nil {
+		t.Fatalf("the fixture's cap %q does not parse: %v", wf.Budget.MaxDuration, err)
+	}
+	return d
+}
+
+// armInternalTimeout runs the internal-timeout scenario until an attempt is
+// ARMED and `usable` accepts it, and returns that attempt. needAttempts is how
+// many attempts the caller's premise needs to have been GIVEN: a caller whose
+// first attempt is refused on purpose needs 2, and getting fewer than that is
+// the re-attempt being gone, not this machine being unable.
+//
+// Armed is a fact about the NODE, not about the clock: `slow` reached the
+// executor AND carried the engine's per-node budget deadline on its context.
+// The two ways that premise can be missing are not the same thing, and
+// reading them both off one flag is what reddened this file on loaded
+// runners (#2160):
+//
+//   - the node never ran — everything upstream of it, the entry node and the
+//     engine's own work, spent past the 90% line checkBudgetBeforeExec
+//     refuses a new node from, so the run ended before `slow`. That attempt
+//     measured nothing about telling one deadline from another, and the
+//     setup is attempted again.
+//   - the node ran with NO deadline on its context — the per-node budget
+//     deadline is gone, which is the regression TestNodeDeadlineFromDuration
+//     Budget exists for. It fails here and now, rather than being
+//     re-attempted into a skip that would hide it.
+//
+// Every quantity the caller compares to the cap is read against the BUDGET's
+// clock: the per-node deadline the engine installs is the budget's start plus
+// the cap (RemainingDuration is cap minus elapsed), so the deadline the node
+// reports dates the instant the run's clock started. Read against this
+// function's own start instead, those quantities also carry engine and store
+// construction the budget never counted — 120-220ms under `-race`, enough on
+// its own to put both attribution tests past a 1s cap they were inside, ten
+// runs out of ten under load (#2160).
+//
+// Attempts exhausted is a Skip: the scenario is the only thing these tests
+// can speak about, and a machine that cannot set it up gives no verdict
+// rather than a flaky one. Exhausted having made FEWER attempts than the
+// caller needs is a failure instead: a skip and a pass leave the same exit
+// code, so the test that witnesses the re-attempt would report nothing at all
+// on the day the re-attempt is deleted.
+func armInternalTimeout(t *testing.T, wf *ir.Workflow, needAttempts int, newExec func(attempt int) *internalTimeoutExecutor, usable func(internalTimeoutAttempt) bool) internalTimeoutAttempt {
+	t.Helper()
+	budgetCap := capOf(t, wf)
+	var last internalTimeoutAttempt
+	for attempt := 1; attempt <= internalTimeoutAttempts; attempt++ {
+		exec := newExec(attempt)
+		a := internalTimeoutAttempt{
+			attempt: attempt,
+			runID:   fmt.Sprintf("run-internal-timeout-%d", attempt),
+			store:   tmpStore(t),
+		}
+		exec.runStart = time.Now()
+		a.err = New(wf, a.store, exec).Run(context.Background(), a.runID, nil)
+		judged := time.Now()
+		a.started, a.armed = exec.started.Load(), exec.sawDeadline.Load()
+		// The budget's clock where the node reported its deadline; this
+		// function's where no node ever armed, and the two figures only
+		// carry the diagnosis below.
+		origin := exec.runStart
+		if dl := exec.deadlineAtNS.Load(); dl != 0 {
+			origin = time.Unix(0, dl).Add(-budgetCap)
+		}
+		a.judgedAt = judged.Sub(origin)
+		if fired := exec.firedAtNS.Load(); fired != 0 {
+			a.firedAt = time.Unix(0, fired).Sub(origin)
+		}
+		last = a
+		if a.started && !a.armed {
+			t.Fatalf("node %q ran with no budget deadline on its context (attempt %d, run: %v): "+
+				"the per-node duration deadline is gone", exec.blockNode, attempt, a.err)
+		}
+		if a.started && usable(a) {
+			return a
+		}
+	}
+	if last.attempt < needAttempts {
+		t.Fatalf("the fixture gave up after %d attempt(s) where its premise needs %d: the re-attempt a cap "+
+			"spent upstream is answered with is gone (last: started=%v armed=%v, fired %v, judged %v, run: %v)",
+			last.attempt, needAttempts, last.started, last.armed, last.firedAt, last.judgedAt, last.err)
+	}
+	t.Skipf("could not set the scenario up in %d attempts (last: started=%v armed=%v, fired %v, judged %v, run: %v): "+
+		"this machine neither reached the node under its cap nor held two deadlines apart",
+		last.attempt, last.started, last.armed, last.firedAt, last.judgedAt, last.err)
+	return internalTimeoutAttempt{}
+}
+
 // TestAVerdictJudgedPastTheCapIsABudgetStop.
 //
 // The engine judges when the node RETURNS, not when its own timeout fired.
@@ -181,26 +336,20 @@ func internalTimeoutWorkflow(cap time.Duration) *ir.Workflow {
 // past the cap.
 func TestAVerdictJudgedPastTheCapIsABudgetStop(t *testing.T) {
 	const cap1s = time.Second
-	wf := internalTimeoutWorkflow(cap1s)
-	exec := &internalTimeoutExecutor{blockNode: "slow", before: 80 * time.Millisecond, delayAfterFire: 400 * time.Millisecond}
-	s := tmpStore(t)
+	a := armInternalTimeout(t, internalTimeoutWorkflow(cap1s), 1,
+		func(int) *internalTimeoutExecutor {
+			return &internalTimeoutExecutor{blockNode: "slow", before: 80 * time.Millisecond, delayAfterFire: 400 * time.Millisecond}
+		},
+		// The node's own timeout has to land UNDER the cap: past it the run
+		// genuinely was out of time, and the two instants this test holds
+		// apart are the same one.
+		func(a internalTimeoutAttempt) bool { return a.firedAt < cap1s })
 
-	exec.runStart = time.Now()
-	err := New(wf, s, exec).Run(context.Background(), "run-judged-late", nil)
-	judgedAt := time.Since(exec.runStart)
-	firedAt := time.Duration(exec.firedAtNS.Load())
-
-	if !exec.sawDeadline.Load() {
-		t.Fatal("fixture never armed: the node got no budget deadline")
+	if a.judgedAt < cap1s {
+		t.Fatalf("the verdict was judged at %v, still inside the %v cap: the delay did not open the gap this test exists to describe", a.judgedAt, cap1s)
 	}
-	if firedAt >= cap1s {
-		t.Skipf("the node's own timeout landed past the %v cap (%v): this machine cannot hold the two instants apart", cap1s, firedAt)
-	}
-	if judgedAt < cap1s {
-		t.Fatalf("the verdict was judged at %v, still inside the %v cap: the delay did not open the gap this test exists to describe", judgedAt, cap1s)
-	}
-	if err == nil || !strings.Contains(err.Error(), "budget exceeded") {
-		t.Fatalf("a run judged %v into a %v cap reported %v, want a budget stop — the sibling test's retry rule rests on this being the correct verdict", judgedAt, cap1s, err)
+	if a.err == nil || !strings.Contains(a.err.Error(), "budget exceeded") {
+		t.Fatalf("a run judged %v into a %v cap reported %v, want a budget stop — the sibling test's retry rule rests on this being the correct verdict", a.judgedAt, cap1s, a.err)
 	}
 }
 
@@ -224,80 +373,127 @@ func TestAVerdictJudgedPastTheCapIsABudgetStop(t *testing.T) {
 //
 // That 80ms is a real margin, and it is why the fixture ARMS in a loop. The
 // scenario is two deadlines 80ms apart, so a scheduler that wakes the node's
-// timer goroutine late enough pushes the firing past the budget deadline — where
-// the run genuinely IS out of time and a budget stop is the correct verdict, so
-// there is nothing to assert. Measured: 3 runs in 15 miss that way under `-race`
-// on 8 cores oversubscribed 2x (and a node-relative timeout, before this was
-// anchored to ctx's own deadline, missed 4 in 12). Widening the gap is not
-// available — it has to stay inside the cap's last 10% or the run is no longer
-// near enough to its cap to pin the proximity guard at all, and scaling the cap
-// buys the margin at seconds of wall clock in a required check.
+// timer goroutine late enough pushes the firing past the budget deadline —
+// where the run genuinely IS out of time and a budget stop is the correct
+// verdict, so there is nothing to assert. Measured: 3 runs in 15 miss that way
+// under `-race` on 8 cores oversubscribed 2x (and a node-relative timeout,
+// before this was anchored to ctx's own deadline, missed 4 in 12).
+//
+// What the margin may NOT be spent on is measuring it: armInternalTimeout
+// reads the budget's own clock, so the 80ms covers the engine's work between
+// the node's return and the verdict and nothing else. Widening the gap is
+// bounded on the other side — it has to stay inside the cap's last 10%, or the
+// run is no longer near enough to its cap to pin the proximity guard at all,
+// which is why the premise is asserted below rather than argued here.
 //
 // So a miss re-attempts the SETUP; it never softens the verdict. A run that arms
 // and then reports a budget stop fails immediately, on the first attempt.
+//
+// The same load has a second way to miss, and armInternalTimeout owns both: the
+// entry node plus the engine's own work can spend the cap before `slow` is
+// dispatched at all, which is a setup that never happened — not the per-node
+// deadline going missing, which still fails on the spot.
 func TestNodeDeadlineDoesNotClaimAnInternalTimeout(t *testing.T) {
 	const cap1s = time.Second
-	wf := internalTimeoutWorkflow(cap1s)
+	a := armInternalTimeout(t, internalTimeoutWorkflow(cap1s), 1,
+		func(int) *internalTimeoutExecutor {
+			return &internalTimeoutExecutor{blockNode: "slow", before: 80 * time.Millisecond}
+		},
+		// The verdict has to be read while the run still had time on its
+		// clock: judged past the cap the budget deadline won, a budget stop
+		// is RIGHT, and the attempt proves nothing.
+		func(a internalTimeoutAttempt) bool { return a.judgedAt < cap1s })
 
-	const attempts = 4
-	for attempt := 1; ; attempt++ {
-		runID := fmt.Sprintf("run-internal-timeout-%d", attempt)
-		exec := &internalTimeoutExecutor{blockNode: "slow", before: 80 * time.Millisecond}
-		s := tmpStore(t)
-		eng := New(wf, s, exec)
+	// And the other side of the same premise: the verdict landed INSIDE the
+	// cap's last 10%, where `used >= limit*0.9` holds and a guard reading it
+	// would claim the budget. Short of that line the run is not near its cap,
+	// and this test would pass with the proximity guard still wrong.
+	if a.judgedAt < cap1s*9/10 {
+		t.Fatalf("the verdict landed %v into a %v cap, short of the last 10%% where `used >= limit*0.9` holds: "+
+			"the proximity guard was never engaged, so this run says nothing about attribution", a.judgedAt, cap1s)
+	}
+	if a.err == nil {
+		t.Fatal("expected the node's own timeout to fail the run")
+	}
+	if strings.Contains(a.err.Error(), "budget exceeded") {
+		t.Fatalf("a timeout that fired %v into a %v cap — with the run's own clock still "+
+			"running — was sentenced as a budget stop: %v", a.firedAt, cap1s, a.err)
+	}
 
-		exec.runStart = time.Now()
-		err := eng.Run(context.Background(), runID, nil)
-		// The clock the VERDICT was computed against, read after it was
-		// computed — so an upper bound on it. The firing instant below is a
-		// different quantity and cannot stand in for it: the engine judges
-		// when the node returns, and scheduling between the two is enough to
-		// make a budget stop the correct answer while `firedAt` is still
-		// under the cap. See TestAVerdictJudgedPastTheCapIsABudgetStop.
-		judgedAt := time.Since(exec.runStart)
-		firedAt := time.Duration(exec.firedAtNS.Load())
+	events, lerr := a.store.LoadEvents(context.Background(), a.runID)
+	if lerr != nil {
+		t.Fatalf("load events: %v", lerr)
+	}
+	if hasEventType(events, store.EventBudgetExceeded) {
+		t.Error("budget_exceeded emitted for a node that died on its own timeout with time still on the run's clock")
+	}
 
-		if err == nil {
-			t.Fatal("expected the node's own timeout to fail the run")
-		}
-		if !exec.sawDeadline.Load() {
-			t.Fatal("fixture never armed: the node got no budget deadline, so nothing here " +
-				"is about telling one deadline from another")
-		}
-		if judgedAt >= cap1s {
-			// The budget deadline won: the run really had run out of time by
-			// the instant it was judged, so a budget stop would be RIGHT and
-			// this attempt proves nothing.
-			if attempt == attempts {
-				t.Skipf("could not set the scenario up in %d attempts: the run kept being "+
-					"judged past the %v cap (last: fired %v, judged %v), so the machine is "+
-					"too loaded to hold two deadlines 80ms apart", attempts, cap1s, firedAt, judgedAt)
+	r, lerr := a.store.LoadRun(context.Background(), a.runID)
+	if lerr != nil {
+		t.Fatalf("load run: %v", lerr)
+	}
+	// Resumable, and NOT finalized as a spent budget: the run still has
+	// time, so resuming it is a live option rather than a re-death.
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("status = %s, want failed_resumable", r.Status)
+	}
+}
+
+// TestTheInternalTimeoutFixtureReAttemptsACapSpentUpstream: a run whose cap was
+// spent before `slow` ever started measured nothing about attribution, and the
+// setup is attempted again rather than failed. That is the loaded runner of
+// #2160, made deterministic by holding the entry node past the 90% line
+// checkBudgetBeforeExec refuses a new node from — against a cap that is a WALL,
+// since that line alone is only the near edge of a band the exit grace reopens
+// (internalTimeoutWorkflowWalledCap, pinned by the test below it).
+func TestTheInternalTimeoutFixtureReAttemptsACapSpentUpstream(t *testing.T) {
+	const cap1s = time.Second
+	a := armInternalTimeout(t, internalTimeoutWorkflowWalledCap(cap1s), 2,
+		func(attempt int) *internalTimeoutExecutor {
+			exec := &internalTimeoutExecutor{blockNode: "slow", before: 80 * time.Millisecond}
+			if attempt == 1 {
+				// 95% of the cap on the entry node alone, so the gate refuses
+				// `slow` whatever else the machine is doing: against a walled
+				// cap the hold only ever pushes `used` further past the line.
+				exec.upstreamHold = cap1s * 95 / 100
 			}
-			continue
-		}
+			return exec
+		},
+		// Any armed attempt proves the point: where the verdict's clock fell
+		// is the attribution tests' business, not this one's.
+		func(internalTimeoutAttempt) bool { return true })
 
-		if strings.Contains(err.Error(), "budget exceeded") {
-			t.Fatalf("a timeout that fired %v into a %v cap — with the run's own clock still "+
-				"running — was sentenced as a budget stop: %v", firedAt, cap1s, err)
-		}
+	if a.attempt < 2 {
+		t.Fatalf("the attempt that armed is #%d: the run that never reached %q was read as an armed one", a.attempt, "slow")
+	}
+}
 
-		events, lerr := s.LoadEvents(context.Background(), runID)
-		if lerr != nil {
-			t.Fatalf("load events: %v", lerr)
+// TestAWalledCapRefusesEveryOverspend pins the premise the re-attempt witness
+// above rests on: the gate it closes by spending the cap upstream refuses the
+// next node at EVERY overspend, not only between 90% and 100% of the cap.
+//
+// Read off the policy predicate rather than off engine runs, because the
+// quantities are a budget's elapsed time and the grace's answer to it: a
+// restored elapsed says in microseconds what a sweep of real runs would spend
+// seconds saying, and it says it at the band's edges rather than wherever the
+// scheduler happened to land. Both environment layers the grace reads are
+// pinned to their defaults, so what refuses below is the imposed cap and
+// nothing else.
+func TestAWalledCapRefusesEveryOverspend(t *testing.T) {
+	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "")
+	t.Setenv("ITERION_LOOP_BUDGET_GUARD", "on")
+	const cap1s = time.Second
+	wf := internalTimeoutWorkflowWalledCap(cap1s)
+	eng := New(wf, tmpStore(t), &internalTimeoutExecutor{blockNode: "slow"})
+	for _, spent := range []time.Duration{cap1s * 95 / 100, cap1s, cap1s * 105 / 100, cap1s * 2} {
+		b := newSharedBudget(wf.Budget, nil)
+		b.Restore(0, 0, 0, spent, 0, 0, 0)
+		checks := b.Check()
+		if findExceeded(checks) == nil && findHardLimited(checks) == nil {
+			t.Fatalf("%v of a %v cap is neither exceeded nor hard-limited: the gate has nothing to refuse a new node on", spent, cap1s)
 		}
-		if hasEventType(events, store.EventBudgetExceeded) {
-			t.Error("budget_exceeded emitted for a node that died on its own timeout with time still on the run's clock")
+		if dim, ok := eng.withinSharedBudgetGrace(b); ok {
+			t.Fatalf("%v of a %v cap: the %s exit grace admits a node anyway, so a hold spending the cap upstream does not keep %q from starting", spent, cap1s, dim, "slow")
 		}
-
-		r, lerr := s.LoadRun(context.Background(), runID)
-		if lerr != nil {
-			t.Fatalf("load run: %v", lerr)
-		}
-		// Resumable, and NOT finalized as a spent budget: the run still has
-		// time, so resuming it is a live option rather than a re-death.
-		if r.Status != store.RunStatusFailedResumable {
-			t.Errorf("status = %s, want failed_resumable", r.Status)
-		}
-		return
 	}
 }
