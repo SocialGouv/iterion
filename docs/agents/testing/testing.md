@@ -143,6 +143,13 @@ Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/i
   shell stalls up to 60s (#2231). Wrap `TestMain` in
   `hometest.IsolateUserHome` (`pkg/dispatcher`, `pkg/server`) or `t.Setenv`
   `HOME` per test; `hometest.RequireNoOperatorProfile` pins it.
+- **A host-touching test injects its seam — the same rule one layer out.** A
+  test opening a `.botz` points its runner at
+  `dispatcher.WithBundleCacheRoot(t.TempDir())` (else the extraction lands
+  in the operator's `os.UserCacheDir()/iterion/bundles`), and a test
+  vetting a hostname through the SSRF guard injects its lookup
+  (`notify.WithResolver` / `httpdial.ResolvePublicHostWith`); each seam
+  asserts it was the one consulted, so a host default turns it red (#2080).
 - Table-driven subtests with standard `testing` package
 - **Mongo conformance locally** — one `mongo:8.0` replica-set container on port 27018, launched exactly as the CI job does; recipe and the two traps in [docs/development.md](../../development.md#running-the-mongo-conformance-harness-locally). A store-twin or conformance-row change is unverified until it ran there.
 - **Studio UI e2e** (`task test:e2e:ui`) — Playwright against the REAL server, seeded with genuine engine output (no LLM credential, no network); bootstrapped by the e2e-coverage bot's dogfood ([docs/bot-runs/e2e-coverage.md](../../bot-runs/e2e-coverage.md)). `ITERION_HOME`/`HOME`/`ITERION_SECRETS_KEY` are redirected into the throwaway workspace — a rule any new spec keeps. Specs assert rendered content and interactions, the store being the oracle for what the UI writes. The browser download is opt-in (`task test:e2e:ui:install`); workers: 1, so a spec that mutates state leaves it in a shape the others tolerate.
