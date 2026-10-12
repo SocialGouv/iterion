@@ -101,27 +101,24 @@ func (p *Policy) Allow(host string) bool {
 	if host == "" {
 		return p.mode == ModeOpen
 	}
-	matched := false
-	allowed := p.mode != ModeAllowlist
+	if matched, allowed := p.lastMatch(host); matched {
+		return allowed
+	}
+	// No rule matches: an allowlist refuses (IP literals included — no
+	// implicit DNS match), a denylist and open accept.
+	return p.mode != ModeAllowlist
+}
+
+// lastMatch walks the rules over a canonical host, the last match winning:
+// matched reports whether any rule matches it, allowed whether that last
+// rule is a plain pattern rather than a `!` exclusion.
+func (p *Policy) lastMatch(host string) (matched, allowed bool) {
 	for _, r := range p.rules {
 		if r.matches(host) {
-			matched = true
-			allowed = !r.negate
+			matched, allowed = true, !r.negate
 		}
 	}
-	if !matched {
-		switch p.mode {
-		case ModeAllowlist:
-			// IP literals are refused by default in allowlist mode
-			// (no implicit DNS match). Already false; keep it.
-			return false
-		case ModeDenylist:
-			return true
-		case ModeOpen:
-			return true
-		}
-	}
-	return allowed
+	return matched, allowed
 }
 
 // canonicalHost lowercases, trims whitespace, strips a trailing :port
