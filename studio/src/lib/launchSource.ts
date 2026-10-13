@@ -92,3 +92,32 @@ export function sourceForLaunch({
   if (canLaunchFromConfirmedDisk(input)) return undefined;
   return source || undefined;
 }
+
+/**
+ * A launch names its program: the text itself inline, or — where the server
+ * can read the operator's filesystem — a workflow path. With neither, the
+ * request carries an empty file_path and no source, and the server refuses it
+ * by name ("file_path, source or bot_id is required") naming fields the form
+ * never showed.
+ *
+ * A cloud file_path is not a program: the server pod has no operator
+ * filesystem, so it infers a catalog bot id FROM the path and runs that
+ * tier's own bytes — not the ones this form rendered its fields from — or
+ * refuses by name when no bot answers ("cloud mode: source or a catalog
+ * bot_id is required", pkg/server/runs_launch.go). Mode-aware like
+ * canLaunchFromConfirmedDisk above, and permissive when the mode is still
+ * unknown: the server stays authoritative.
+ *
+ * The launch form can be up before it has a program: the inline branch's text
+ * is the RENDER of the editor's document (useLaunchDoc), one round trip
+ * behind it. Lives next to sourceForLaunch so the gate and the payload read
+ * the same rule.
+ */
+export function launchCarriesProgram({
+  filePath,
+  source,
+  serverInfo,
+}: Pick<LaunchSourceInput, "filePath" | "source" | "serverInfo">): boolean {
+  if (source) return true;
+  return !!filePath && serverInfo?.mode !== "cloud";
+}
