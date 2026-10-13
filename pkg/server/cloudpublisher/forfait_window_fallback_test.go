@@ -206,7 +206,7 @@ func (failingUsageStore) Latest(context.Context, string) ([]usagecap.Reading, er
 // trade a self-healing park (one refused call, durable usage-window
 // retry) for a possibly-stuck run with no credential at all.
 func TestForfaitWindowClosed_platformTierHandsOverRegardless(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestForfaitWindowClosed_platformTierHandsOverRegardless(t *testing.T) {
 // provider refusal with a durable usage-window retry, instead of failing
 // on a no-credential auth error nothing retries.
 func TestForfaitWindowClosed_restoredWhenNoTierCanServe(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

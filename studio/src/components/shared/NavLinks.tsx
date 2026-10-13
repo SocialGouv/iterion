@@ -36,26 +36,9 @@ import {
 } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
+import { adminPath } from "@/views/admin/adminRoutes";
 
-export type Section =
-  | "home"
-  | "whatsNext"
-  | "editor"
-  | "runs"
-  | "bots"
-  | "board"
-  | "pipelines"
-  | "dispatcher"
-  | "triggers"
-  | "marketplace"
-  | "plugins"
-  | "secrets"
-  | "skills"
-  | "configEditor"
-  | "org"
-  | "team"
-  | "integrations"
-  | "admin";
+import { deriveSection, type Section } from "./navSection";
 
 interface Props {
   collapsed: boolean;
@@ -87,37 +70,6 @@ const BASE_LINKS_CLOUD: LinkDef[] = [
 ];
 
 const EDITOR_LINK: LinkDef = { section: "editor", href: "/editor", label: "Editor", icon: Pencil2Icon };
-
-// deriveSection maps the current path to the highlighted nav entry by
-// looking at the first path segment only — so `/runs/:id` highlights
-// "runs" without `/boardroom` accidentally highlighting "board".
-const SEGMENT_TO_SECTION: Record<string, Section> = {
-  "whats-next": "whatsNext",
-  editor: "editor",
-  runs: "runs",
-  // /insights is reached from the Runs list toolbar; highlight Runs
-  // in the side nav so the operator's place stays legible even
-  // though it's no longer a top-level entry.
-  insights: "runs",
-  bots: "bots",
-  board: "board",
-  pipelines: "pipelines",
-  dispatcher: "dispatcher",
-  triggers: "triggers",
-  marketplace: "marketplace",
-  plugins: "plugins",
-  "config-editor": "configEditor",
-  orgs: "org",
-  teams: "team",
-  integrations: "integrations",
-  admin: "admin",
-};
-
-function deriveSection(pathname: string): Section | undefined {
-  if (pathname === "/" || pathname === "") return "home";
-  const segment = pathname.split("/")[1] ?? "";
-  return SEGMENT_TO_SECTION[segment];
-}
 
 // NavLinks renders the primary navigation as a vertical column inside
 // the Sidebar. When `collapsed` is true the labels are hidden and each
@@ -204,7 +156,7 @@ export default function NavLinks({ collapsed }: Props) {
   // Admin: super-admins only, cloud mode only (/admin/orgs is a cloud-only
   // console whose API isn't registered in local/desktop mode).
   if (user?.is_super_admin && info?.mode === "cloud") {
-    manage.push({ section: "admin", href: "/admin/orgs", label: "Admin", icon: GearIcon });
+    manage.push({ section: "admin", href: adminPath("/orgs"), label: "Admin", icon: GearIcon });
   }
 
   // Cloud shows the Editor once the bot store is wired (bot_editing_enabled) —

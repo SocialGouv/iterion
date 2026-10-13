@@ -43,7 +43,14 @@ push / `--squash` without `--auto`). Required checks: `test`, `race`,
 `vendor-check`, `mongo-conformance`, `golangci`, `brand`, `revi/review`.
 `nats-conformance` remains advisory until an admin adds it to ruleset
 18857412; `fmt-check` reports on the PR and in the queue but is not required
-yet (staged — `internal/ciguard`'s `requiredChecks`). Full details + revert command:
+yet (staged — `internal/ciguard`'s `requiredChecks`). A pull request titled
+`chore(brew): update tap to …` skips the heavy ones (in the queue: an entry
+whose squash message starts so — the commit subject of a single-commit pull
+request, its title otherwise) and `brand` verifies it moves nothing but the
+Homebrew tap's `version` and `sha256` values — any other diff under that
+title is refused
+([the one verified skip](../../merge-policy.md#the-one-verified-skip-the-homebrew-tap-update)).
+Full details + revert command:
 [../merge-policy.md](../../merge-policy.md). How long merges take, what they cost
 and what fails the queue: `task ci:queue-stats`
 ([measuring the queue](../../merge-policy.md#measuring-the-queue)).

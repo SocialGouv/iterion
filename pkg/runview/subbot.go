@@ -134,10 +134,30 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			return nil, cerr
 		}
 
+		// The directory the child's ENGINE is rooted at, resolved once for
+		// both the engine and the screen below:
+		//
+		//   - the parent's EFFECTIVE workdir when it passed one (its worktree
+		//     when it swapped to one), not the service's repo root: that is
+		//     the tree the parent's sandbox mounts and the parent's gate
+		//     judges;
+		//   - else the child's own bot directory, so its mirrors, skills and
+		//     plugin files land beside the .bot they belong to — never in the
+		//     server's process cwd, where every child shared one mirror and a
+		//     test binary wrote into the checkout (#1803).
+		childWorkDir := filepath.Dir(childPath)
+		if req.WorkDir != "" {
+			childWorkDir = req.WorkDir
+		}
+
 		childExec, err := BuildExecutor(ExecutorSpec{
 			Ctx:      managedCtx,
 			Workflow: childWf,
 			Store:    s.store,
+			// The child's fallback screen probes the repository of the tree
+			// its engine runs in. WorkDir stays unset: Claw's file tools keep
+			// resolving against the server's workspace, as they did before.
+			SandboxProbeWorkDir: childWorkDir,
 			// Deliberately NOT claiming to know the tiers: a subbot child
 			// under a sandboxed parent executes in the PARENT's sandbox
 			// (WithSharedSandbox below), which no tier of the child's own
@@ -196,17 +216,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		}, childWf, hash, s.executionContextPolicy, s.workDir)
 		childContext.LaunchSurface = "runview-subbot"
 		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{}, childBundle)
-		// A child executes in its own bot's directory: its mirrors, skills
-		// and plugin files land beside the .bot they belong to — never in
-		// the server's process cwd, where every child shared one mirror
-		// and a test binary wrote into the checkout (#1803).
-		opts = append(opts, runtime.WithWorkDir(filepath.Dir(childPath)))
-		// The child works in the parent's EFFECTIVE workdir (its worktree when
-		// it swapped to one), not the service's repo root: that is the tree
-		// the parent's sandbox mounts and the parent's gate judges.
-		if req.WorkDir != "" {
-			opts = append(opts, runtime.WithWorkDir(req.WorkDir))
-		}
+		opts = append(opts, runtime.WithWorkDir(childWorkDir))
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),

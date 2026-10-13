@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"bytes"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/botscaffold"
@@ -41,7 +42,12 @@ func TestEngineRunnerPromotesBareMainBot(t *testing.T) {
 	}
 
 	logger := iterlog.New(iterlog.LevelError, &bytes.Buffer{})
-	r, err := NewEngineRunner(filepath.Join(dir, "main.bot"), logger)
+	// A test-owned extraction root (#2080): a `.botz` config must unpack
+	// under the dir the runner is given, never the operator's
+	// os.UserCacheDir/iterion/bundles. Every runner here carries it so a
+	// fallback to the default cache fails the under-root assertion below.
+	cacheRoot := filepath.Join(t.TempDir(), "bundles")
+	r, err := NewEngineRunner(filepath.Join(dir, "main.bot"), logger, WithBundleCacheRoot(cacheRoot))
 	if err != nil {
 		t.Fatalf("NewEngineRunner on the bare main.bot: %v", err)
 	}
@@ -60,7 +66,7 @@ func TestEngineRunnerPromotesBareMainBot(t *testing.T) {
 	if r.bundleConfigured {
 		t.Fatalf("a promoted main.bot config reads as bundle-configured; the service path would be bypassed")
 	}
-	dirRunner, err := NewEngineRunner(dir, logger)
+	dirRunner, err := NewEngineRunner(dir, logger, WithBundleCacheRoot(cacheRoot))
 	if err != nil {
 		t.Fatalf("NewEngineRunner on the bundle dir: %v", err)
 	}
@@ -74,12 +80,21 @@ func TestEngineRunnerPromotesBareMainBot(t *testing.T) {
 	if _, err := bundle.PackDir(dir, archive); err != nil {
 		t.Fatalf("PackDir: %v", err)
 	}
-	archiveRunner, err := NewEngineRunner(archive, logger)
+	archiveRunner, err := NewEngineRunner(archive, logger, WithBundleCacheRoot(cacheRoot))
 	if err != nil {
 		t.Fatalf("NewEngineRunner on the archive: %v", err)
 	}
 	defer archiveRunner.Close()
 	if !archiveRunner.bundleConfigured {
 		t.Fatalf("a bundle archive config does not read as bundle-configured")
+	}
+	// The bite (#2080): the extracted handle lives under the injected root.
+	// With the option ignored, bundle.Open falls back to the operator's
+	// os.UserCacheDir/iterion/bundles and this relative path escapes it.
+	rel, err := filepath.Rel(cacheRoot, archiveRunner.bundle.IterPath)
+	if err != nil || rel == ".." || filepath.IsAbs(rel) ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("the extracted handle %s does not live under the injected cache root %s (rel %q, err %v)",
+			archiveRunner.bundle.IterPath, cacheRoot, rel, err)
 	}
 }

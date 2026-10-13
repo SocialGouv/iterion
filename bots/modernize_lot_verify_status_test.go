@@ -26,6 +26,8 @@ type modernizeLotVerifyOut struct {
 	OracleInvalid   []any          `json:"oracle_invalid"`
 	OracleReport    map[string]any `json:"oracle_report"`
 	ExtensionForged bool           `json:"extension_forged"`
+	ContractHead    string         `json:"contract_head"`
+	ContractTree    string         `json:"contract_tree"`
 }
 
 // modernizeNet drops the smallest net lot_verify accepts into ws: a runner
@@ -79,6 +81,15 @@ func modernizeLotVerify(t *testing.T, script, ws, lotID, base, exitGate string) 
 // be exported as if it were a path.
 func modernizeLotVerifyEnv(t *testing.T, script, ws, lotID, base, exitGate string, env []string, credPath ...string) (modernizeLotVerifyOut, int) {
 	t.Helper()
+	res, _, exit := modernizeLotVerifyRaw(t, script, ws, lotID, base, exitGate, env, credPath...)
+	return res, exit
+}
+
+// modernizeLotVerifyRaw is modernizeLotVerifyEnv returning the report twice:
+// typed, and as the graph reads it — every field, decoded as JSON — for a
+// test that evaluates lot_gate's own expressions over it.
+func modernizeLotVerifyRaw(t *testing.T, script, ws, lotID, base, exitGate string, env []string, credPath ...string) (modernizeLotVerifyOut, map[string]any, int) {
+	t.Helper()
 	cred := "iterion-secret-placeholder-deploy_credential"
 	if len(credPath) > 0 {
 		cred = credPath[0]
@@ -105,20 +116,31 @@ func modernizeLotVerifyEnv(t *testing.T, script, ws, lotID, base, exitGate strin
 	if env != nil {
 		cmd.Env = env
 	}
+	// stderr rides along, never into the parsed stream: the script reports
+	// its verdict as JSON on stdout and diagnoses on stderr, and a harness
+	// that hears only stdout leaves the next red occurrence as opaque as
+	// "output is not JSON (out \"\")" was (#2232 — a host shim's bash dying
+	// on the restricted PATH read as an empty report).
+	var sbuf strings.Builder
+	cmd.Stderr = &sbuf
 	out, err := cmd.Output()
 	exit := 0
 	if err != nil {
 		ee, ok := err.(*exec.ExitError)
 		if !ok {
-			t.Fatalf("lot_verify failed to execute: %v (out %q)", err, out)
+			t.Fatalf("lot_verify failed to execute: %v (out %q, stderr %q)", err, out, sbuf.String())
 		}
 		exit = ee.ExitCode()
 	}
 	var res modernizeLotVerifyOut
 	if uerr := json.Unmarshal(out, &res); uerr != nil {
-		t.Fatalf("lot_verify output is not JSON: %v (out %q)", uerr, out)
+		t.Fatalf("lot_verify output is not JSON: %v (out %q, stderr %q)", uerr, out, sbuf.String())
 	}
-	return res, exit
+	var raw map[string]any
+	if uerr := json.Unmarshal(out, &raw); uerr != nil {
+		t.Fatalf("lot_verify output is not a JSON object: %v (out %q)", uerr, out)
+	}
+	return res, raw, exit
 }
 
 // TestModernizeLotVerifyRefusesWorkerWrittenDone pins the asymmetry in how

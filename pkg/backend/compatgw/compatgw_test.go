@@ -32,6 +32,25 @@ func TestFromEnv(t *testing.T) {
 	}
 }
 
+// Host is the host the client dials — what the run's proxy pins — and ""
+// for a base URL no request reaches.
+func TestConfigHost(t *testing.T) {
+	for base, want := range map[string]string{
+		"https://gw.example.com":           "gw.example.com",
+		"https://GW.Example.com:8443/v1":   "GW.Example.com",
+		"http://[2001:db8::1]:4000":        "2001:db8::1",
+		"http://host.docker.internal:4000": "host.docker.internal",
+		"https://gw.example.com/v1?x=1":    "",
+		"ftp://gw.example.com":             "",
+		"https://user:pw@gw.example.com":   "",
+		"gw.example.com":                   "",
+	} {
+		if got := (Config{BaseURL: base}).Host(); got != want {
+			t.Errorf("Config{BaseURL: %q}.Host() = %q, want %q", base, got, want)
+		}
+	}
+}
+
 func TestValidate(t *testing.T) {
 	// The accept side needs no DNS here: the strict refusals below all sit
 	// on numeric addresses or reserved aliases (fail-closed, resolvable
@@ -96,7 +115,10 @@ func TestNewClient_RefusesARedirect(t *testing.T) {
 
 // The transport trusts no ambient proxy and keeps the header floor.
 func TestGuardedTransport(t *testing.T) {
-	tr := guardedTransport(true)
+	tr, err := guardedTransport(true)
+	if err != nil {
+		t.Fatalf("guardedTransport with no engine proxy set: %v", err)
+	}
 	if tr.Proxy != nil {
 		t.Error("an ambient proxy reached the gateway transport")
 	}

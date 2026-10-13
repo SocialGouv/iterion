@@ -1828,7 +1828,10 @@ def is_scaffold(line):
     if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
         path = path[1:-1]
     return path.startswith('.claude/')
-st = git('status', '--porcelain')
+# The canonical noise list rides the read (the porcelain guard's
+# contract): a drifted devbox.lock or a hard-killed script's scratch is
+# the engine's own write, not a leftover this pass left behind.
+st = git('status', '--porcelain', '--', ':/', *os.environ.get('ITERION_TREE_NOISE', '').split())
 dirty = [l for l in (st.stdout or '').splitlines() if l.strip() and not is_scaffold(l)]
 if st.returncode != 0:
     print(json.dumps({'honoured': False, 'reason': 'declined but the working tree could not be read: ' + (st.stderr or '').strip()[-200:]}))
@@ -1987,7 +1990,10 @@ def is_scaffold(line):
     return path.startswith('.claude/')
 def tree_state():
     try:
-        p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
+        # The canonical noise list rides the read (the porcelain guard's
+        # contract): a drifted devbox.lock or a hard-killed script's
+        # scratch is the engine's own write, not a leftover.
+        p = subprocess.run(['git', '-C', ws, 'status', '--porcelain', '--', ':/'] + os.environ.get('ITERION_TREE_NOISE', '').split(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
         if p.returncode != 0:
             return None
         return set(l for l in p.stdout.splitlines() if l.strip() and not is_scaffold(l))

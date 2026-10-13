@@ -40,7 +40,7 @@ into a 🟢, live in [state-of-the-art.md](state-of-the-art.md#backends--only-tw
 | `pi` | 🟠 | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
 | `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs an unsandboxed run — `sandbox: none` on the workflow, or `--sandbox none` (C136 warns) — and session resume/fork is not wired. | Explicit only. |
 | `grok` | 🟠 | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
-| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork and MCP forwarding are not wired; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
+| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork is wired (`--session <id>` / `--fork=true`) but `session: persist` and MCP forwarding are not; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
 | `codex` | 🟠 | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ### Parity doctrine: `claw` ↔ `claude_code`
@@ -111,7 +111,7 @@ from a plausible one (#1417). The cells:
 | `pi` | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unwired (gap) |
 | `kimi` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
 | `grok` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unknown | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
-| `opencode` | unknown | refused (C176) | unwired (gap) | unknown | unknown | unwired (no image) | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
+| `opencode` | unknown | refused (C176) | proven (resume · fork) · unwired (persist) | unknown | unknown | unwired (no image) | unwired (gap) | refused (C267, async) · warned (C271, sync) | unwired (gap) |
 
 The citations, per cell that is not self-evident from the table:
 
@@ -280,10 +280,17 @@ The citations, per cell that is not self-evident from the table:
   never pauses — the interaction protocol is prompt text only). Sandbox is `unwired (no image)`:
   the stock image ships no opencode binary, so a sandboxed node dies at
   `exec: not found` with nothing refusing it earlier — see
-  [sandbox.md](sandbox.md#backend-compatibility). Session resume/fork:
-  the CLI has `-s/--session` and reports a session id, but
-  `SessionResumeCapability` does not list opencode, so `session: persist`
-  logs `cannot resume; running fresh`.
+  [sandbox.md](sandbox.md#backend-compatibility). Session resume/fork is
+  proven by `TestCLILiveOpenCodeSessionResume` (`task test:clilive`): the
+  real opencode 1.19.0 CLI, driven through iterion's own `Execute`, against
+  a scripted model on `127.0.0.1` — the resumed turn's request carries the
+  earlier turn, a fork answers under a new id with the whole history, and an
+  unknown id fails with `Session not found`. No credential and no model
+  spend: what is proven is the CLI's rehydration, not a model's use of it.
+  `session: persist` stays unwired: opencode keeps its sessions in one
+  SQLite database, with no per-session file for the packer, so
+  `SessionResumeCapability` does not list it and a persist node logs
+  `cannot resume; running fresh`.
 - **kimi / grok.** The gate is **deny-only** — an external `PreToolUse`
   hook can hard-block but cannot pause the run — so `ask` is refused at
   compile time (C176). The deny half *is* proven live with a filesystem
@@ -320,7 +327,8 @@ The citations, per cell that is not self-evident from the table:
   codex/kimi/grok/opencode (C267).
 
 The open parity gaps, in one list: codex/kimi/grok/opencode MCP
-servers; kimi/grok/opencode session resume/fork (silent, unguarded); pi's print-mode
+servers; kimi/grok session resume/fork (silent, unguarded); opencode's
+`session: persist` (no packer for its SQLite session store); pi's print-mode
 runtime refusals without diagnostic codes; and every `unknown` cell,
 which is one live e2e away from proven.
 
@@ -347,7 +355,9 @@ or the workflow, with a run override (`--ambient-context`, launch
 | `claw` | no project-instructions block | claw-code-go's loader: walk stopped at the root, user scope off, `.claude/rules` on | the walk above the root + the user scope | everything |
 | `pi` | `--no-context-files` | `--no-context-files` + iterion supplies the allowed files, rendered in pi's own shape | the same, operator files | pi's native loading |
 | `codex` | `project_doc_max_bytes=0` + a per-run `CODEX_HOME` without its `AGENTS.md` | the same home | `project_doc_max_bytes=0` | unchanged |
-| `opencode`, `kimi`, `grok` | not enforced (C185 on an explicit value) | | | |
+| `kimi` | refused (C187) | a home without its `AGENTS.md` (`KIMI_CODE_HOME` overlay) — refused when declared, warned when defaulted, if `~/.agents/AGENTS.md` exists | refused (C187) | kimi's native loading |
+| `opencode` | refused (C187) | refused when declared (C187); the default is not applied | refused (C187) | opencode's native loading, Claude-Code compatibility layer off |
+| `grok` | refused (C187) | not measured (C185 on a declared value) | refused (C187) | not measured (C185 on a declared value) |
 
 Measured on Claude Code CLI 2.1.282 and codex-cli 0.156.1, each cell checked
 against the real tool with planted markers and an invalid key (no cost):
@@ -376,6 +386,56 @@ against the real tool with planted markers and an invalid key (no cost):
 The structured-output pass of a `claude_code` node follows its policy too;
 before ADR-119 it passed no `--setting-sources` at all, and so loaded every
 scope, `local` included.
+
+**Declared or defaulted.** A value somebody chose — the node's, the
+workflow's, a run override or `ITERION_AMBIENT_CONTEXT` — is applied or
+refused, never ignored: a backend that loads, whatever iterion passes it,
+instruction files the value excludes refuses the node before it runs
+(`delegate.ErrCapabilityUnsupported`, classified
+`CAPABILITY_UNSUPPORTED`, so it is not retried), and the compiler refuses
+the same where it can see the backend (C187, the node's own value, a
+workflow value it inherits, and every fallback route). The default is never
+refused: each backend applies it as far as it can, as the table says. A
+policy nothing has measured on a backend is warned instead (C185).
+
+**kimi, measured on kimi-code 2.1.1** (`TestCLILiveKimiAmbientPolicies`,
+`-tags clilive`: kimi's env-model variables point it at an in-process
+server that records the request — no network, no cost). kimi reads the
+operator's `$KIMI_CODE_HOME/AGENTS.md` (`~/.kimi-code` by default) and the
+first of `~/.agents/AGENTS.md` and `agents.md`, then, from the git root down
+to the working directory, each directory's `.kimi-code/AGENTS.md` and first
+of `AGENTS.md` and `agents.md` — never a file above the root, never a
+`CLAUDE.md`, and nothing of a nested worktree's main checkout. `workspace`
+serves kimi an overlay of its home without its `AGENTS.md` (the mechanism
+`codex` uses for `CODEX_HOME`; a file kimi replaces there by rename is
+carried back), and a permission shadow home is built from that overlay. kimi
+resolves `~/.agents` from `HOME`, so no overlay withholds it: when it exists a
+declared `workspace` is refused and the default is warned once per process.
+No switch skips the repository walk, so `none` and `operator` are refused.
+On a containerised run kimi reads the image's home, and iterion leaves it
+alone.
+
+**opencode, read from source** (1.19.0, the `opencode-ai` package, and
+2.0.26, `@opencode/cli`; no live measurement). opencode reads its global
+`AGENTS.md` from its config directory, every file its global configuration
+lists under `instructions`, and — 2.x — every `AGENTS.md` from the working
+directory up to the home directory, past the repository root: nothing keeps
+the operator out, so a declared `workspace` is refused and the default stays
+opencode's own loading. Its read tool adds the `AGENTS.md` of every directory
+it reads a file in, whatever `OPENCODE_DISABLE_PROJECT_CONFIG` says, so
+`none` and `operator` are refused too. `all` is its native loading, minus the
+Claude-Code compatibility layer iterion always pins off
+(`OPENCODE_DISABLE_CLAUDE_CODE`).
+
+**grok, read from source** (`xai-org/grok-build@2bdd1d6`; no live
+measurement). Grok Build reads `AGENTS.md`, `CLAUDE.md` and the `.grok`,
+`.claude` and `.cursor` rules from the git root down to the working
+directory whenever it trusts the folder, and it trusts any repository that
+carries no hook or MCP configuration without asking — iterion cannot make it
+skip them, so `none` and `operator` are refused. What it reads from
+`GROK_HOME`, the vendor homes and `[paths] extra_rule_dirs` has not been
+measured (and a permission-gated grok runs with a private `HOME`), so
+`workspace` and `all` stay warned (C185).
 
 ## TL;DR
 
@@ -1112,7 +1172,21 @@ like `OPENAI_BASE_URL`:
 
 The endpoint is the operator's choice, but the dial is guarded: a public
 address by default, and `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` for a
-self-hosted gateway on private infrastructure. A gateway route runs on the
+self-hosted gateway on private infrastructure. When the sandbox's egress
+runs through the run's [network proxy](sandbox.md#network-policy), the call
+crosses it too, and the guard holds there: the runner checks the gateway's
+address as it resolves the name, then the proxy — which makes the
+connection — resolves the name again through the same guard and connects
+only to the address it validated. An answer the guard refuses is refused
+there whatever the runner's own lookup saw (DNS rebinding), for every client
+of the run that reaches the gateway's name; the run's network rules still
+name the gateway by its host, and the proxy keeps no pooled connection to
+it. The proxy reads the gateway's settings from the environment when the run
+starts and at every connection, as each dispatch does, and a gateway once
+pinned stays pinned: one an environment reloaded mid-run names is pinned
+from the next connection on — unless the environment changes again before
+any connection is made. It never resolves `host.docker.internal` — it dials
+that alias on its own host's loopback. A gateway route runs on the
 **`claw` backend only**: an explicit `backend:` naming a CLI backend, or a
 vendor `provider:` hint beside a gateway model, is refused when the node is
 dispatched, and warning **C186** says the same at `iterion validate` time
@@ -1612,7 +1686,13 @@ work runs — is answered by the turn the
 CLI's replay shows took it — not by turns the CLI had queued before it —
 only a report written after that is kept, and its bound
 (`ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT`; past it, a retryable
-error) runs from then. A subagent streaming meanwhile does not count as the main
+error) runs from then. The take itself is bounded too, by
+`ITERION_CLAUDE_CODE_BACKGROUND_ANSWER_WAIT` from the moment the request
+went out: the bound slides with the CLI's turn activity — each message of a
+turn it had queued, and each turn's close — so it only ever bounds idle
+opportunity, and a CLI that never takes the request ends the call on a
+named retryable error ("the CLI never took the wrap-up") instead of parking
+the session to the silence watchdog. A subagent streaming meanwhile does not count as the main
 agent moving on, and the consecutive tool-error breaker keeps one streak per
 agent. The session's results merge into one: per-query usage, turns and
 wall-clock durations add up; the figures the CLI keeps per process (cost, API
@@ -1649,11 +1729,16 @@ ends at its first result. `ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE=off`
 restores the previous behaviour — first result, the orchestration-stall
 guard's historical rule, no state events nor replays asked of the CLI — and
 keeps the reporting and the session ledger; the
-per-agent tool-error breaker applies either way. claw: iterion's claw
-`agent` tool is, in production, a metadata-only stub that reports a subagent
-"running" and launches nothing — tracked as
-[#1940](https://github.com/SocialGouv/iterion/issues/1940), not a parity
-this lifecycle gives.
+per-agent tool-error breaker applies either way. claw has no equivalent:
+its `agent` tool is registered and **typed-refused** — claw spawns a child
+conversation only where the host wires a subagent runner into its registry,
+and iterion wires none, so the call returns
+`backend "claw" cannot serve the agent tool (subagents)` naming this
+backend's native `Agent` tool (legacy name `Task`) as the way out
+(compile-time warning where a `.bot` names the tool: C159). The real
+wiring is tracked as
+[#1940](https://github.com/SocialGouv/iterion/issues/1940); the refusal is
+the typed-refused half of the parity rule, not the capability.
 
 ### `codex`
 
@@ -1863,7 +1948,10 @@ OpenAI-compatible client always appends `/v1/chat/completions`.
 In cloud mode the same key can be stored as a per-org BYOK record with
 `provider: xai` (see [byok.md](byok.md)). Sandboxed runs with
 `network: allowlist` already include `api.x.ai` in the `iterion-default`
-preset.
+preset. A custom `XAI_BASE_URL` crosses into the sandbox with the key and
+is dialled from inside the container, so under `network: allowlist` its
+host must be allowed too, and a loopback URL does not reach the host
+([what crosses](sandbox.md#claw-backend-in-sandbox)).
 
 For web search & fetch on claw (the `web_search`/`web_fetch` tools, the
 SearXNG → Brave → DuckDuckGo backend ladder, `ITERION_WEB_SEARCH`, and the
@@ -1912,6 +2000,43 @@ export ITERION_OPENAI_USE_OAUTH=0
 # disables OAuth so masquerading codex_cli_rs headers don't reach an
 # unintended backend.
 ```
+
+A sandboxed claw node honours the refusal (`0`) whatever the run holds,
+and a host-wide `1` too. When the run holds no OpenAI credential of its
+own (no key, none pinned for the route, no connected forfait that
+serves), each dispatch of an `openai/…` node writes the host's ChatGPT
+login (`$CODEX_HOME/auth.json`, else `~/.codex/auth.json`) into a
+directory of its own in the container, points that node's runner at it
+with the forfait forced over `OPENAI_API_KEY`, and removes it when the
+node is done: the sandboxed node spends the forfait an in-process one
+spends (a long-lived process — studio, desktop — keeps the client it
+resolved first, so a codex login or logout since reaches its in-process
+nodes only after a restart, where each dispatch reads the codex home
+anew). Under a network allowlist the node dials `chatgpt.com`: an
+allowlist of your own must name it, as `iterion-default` does. The copy
+holds the access token and the account alone — no
+refresh token, id token or API key — so it renews nothing and expires,
+but anything running in the sandbox while the node does can read it:
+leave the switch unset where sandboxed code is not trusted with that
+token. A switch, a `CODEX_HOME` or a home directory set by a project
+`.env` sends nothing (a warning says so), and with the switch unset claw
+sends nothing at all. Neither is what keeps the login out of a sandbox:
+under the default `host_state: auto` the whole `~/.codex` is bound into
+the container read-write whatever the switch says, `host_state: none` is
+what keeps it out, and a `pi` node on `openai-codex/…` carries its own
+copy across through pi's bridge (below).
+
+**Stream usage through a gateway.** On the OpenAI chat wire, token usage
+travels only when the request asks for it
+(`stream_options.include_usage`). api.openai.com is asked whatever the
+setup; an endpoint set through `OPENAI_BASE_URL` is not — providers that
+reject the `stream_options` parameter must not see it unasked. When your
+gateway accepts it, opt in with `ITERION_OPENAI_STREAM_USAGE=1`: streaming
+calls then report their usage instead of counting against the run's
+`usage_unreported` floor. The ChatGPT forfait never carries the
+parameter, and the `openai_compatible/` gateway factory asks
+unconditionally — a gateway that rejects `stream_options` breaks that
+path regardless of this knob.
 
 The studio status pill renders both detected sources, with the
 inactive one struck-through and labelled `(overridden by …)`.
@@ -2224,7 +2349,7 @@ backend. That is **distinct** from calling the xAI HTTP API via
 mode is a **subcommand**, and iterion drives it as:
 
 ```
-opencode --format json [-m <provider/model>] [--variant <effort>] run
+opencode --format json [-m <provider/model>] [--variant <effort>] [--session <id> [--fork=true]] run
 ```
 
 with the composed prompt on **stdin**.
@@ -2254,6 +2379,20 @@ agent implement:
   options — so iterion passes its level through verbatim and lets opencode
   refuse an unknown one explicitly. `xhigh` and `ultracode` collapse onto
   `high` before argv.
+- **Session resume and fork** for `session: inherit`, `inherit_if_available`
+  and `fork`. Every event of the stream carries the session id; iterion hands
+  it back as `--session <id>` (plus `--fork=true` for a fork, which opencode
+  branches into a new id — spelled with its value because a bare boolean
+  right before `run` makes the parser take `run` as that value and print its
+  help), and a schema re-ask continues the session it failed in rather than
+  restarting the turn. Proven against the real opencode 1.19.0 CLI by
+  `TestCLILiveOpenCodeSessionResume` (`task test:clilive`): the model is a
+  scripted server on `127.0.0.1`, and the authority is what the CLI sends it
+  — a resumed turn's request carries the earlier turn. An id opencode no
+  longer holds is version-dependent: 1.19 exits 1 with `Session not found`
+  (measured), so the call fails (and `inherit_if_available` degrades to a
+  fresh session, loudly); 2.x creates a session under that id instead (read
+  from its source), so there it resumes as an empty conversation.
 
 #### What it does NOT bring
 
@@ -2274,10 +2413,12 @@ moves fast, so re-measure before trusting a claim against another build.
 - **No async questions.** `interaction: async` is refused by **C267**;
   `interaction:` in its synchronous form is inert, as on every CLI-agent
   backend, and **C271** now says so at compile time.
-- **No session resume or fork.** The CLI has `-s/--session` and every event
-  carries a `sessionID`, so the pieces exist, but nothing is wired: a
-  `session: persist` node logs `backend "opencode" cannot resume; running
-  fresh` and runs fresh.
+- **No `session: persist`.** Persist carries a conversation across visits
+  by packing the CLI's session files after each one, and opencode keeps
+  every session in one SQLite database (`<XDG data>/opencode/opencode.db`,
+  1.19 and 2.x alike) with no file per session to pack. A `session: persist`
+  node therefore logs `backend "opencode" cannot resume; running fresh` and
+  runs fresh; packing would take opencode's own `export` / `import`.
 - **No MCP forwarding, and `tools:` does not constrain it.** opencode runs
   its own tool set: the list never reaches the CLI
   (`toolcatalog.ReceivesToolList`), so a `tools:` line on such a node is

@@ -62,22 +62,26 @@ const workspaceCheckpointTimeout = 4 * time.Minute
 // stripping at preservation would drop a deliverable that happens to live
 // under a noise path, and the price of the noise in the ref is one ref an
 // operator deletes after recovery (#1464 review: full capture, said).
+// Every git command runs with the repository's hooks off: the checkpoint is
+// the net that preserves the run's work AGAINST the run, and a hook in the
+// run's own tree must not be able to stage into it, refuse it, or ride it.
 const checkpointScript = `set -e
-git rev-parse --git-dir >/dev/null 2>&1 || { echo "not-a-git-repo" >&2; exit 3; }
-head=$(git rev-parse HEAD 2>/dev/null) || { echo "no-commit-yet" >&2; exit 3; }
+NG="-c core.hooksPath=/dev/null -c core.fsmonitor=false"
+git $NG rev-parse --git-dir >/dev/null 2>&1 || { echo "not-a-git-repo" >&2; exit 3; }
+head=$(git $NG rev-parse HEAD 2>/dev/null) || { echo "no-commit-yet" >&2; exit 3; }
 idx="${TMPDIR:-/tmp}/iterion-checkpoint-index.$$"
 rm -f "$idx"
-GIT_INDEX_FILE="$idx" git read-tree "$head"
-GIT_INDEX_FILE="$idx" git add -A
-tree=$(GIT_INDEX_FILE="$idx" git write-tree)
+GIT_INDEX_FILE="$idx" git $NG read-tree "$head"
+GIT_INDEX_FILE="$idx" git $NG add -A
+tree=$(GIT_INDEX_FILE="$idx" git $NG write-tree)
 rm -f "$idx"
-if [ "$tree" = "$(git rev-parse "$head^{tree}")" ]; then
+if [ "$tree" = "$(git $NG rev-parse "$head^{tree}")" ]; then
   echo "$head $tree $head"
   exit 0
 fi
 sha=$(GIT_AUTHOR_NAME=iterion GIT_AUTHOR_EMAIL=checkpoint@iterion.invalid \
 GIT_COMMITTER_NAME=iterion GIT_COMMITTER_EMAIL=checkpoint@iterion.invalid \
-  git commit-tree "$tree" -p "$head" \
+  git $NG commit-tree "$tree" -p "$head" \
     -m "iterion: workspace checkpoint — the run's uncommitted tree, preserved by the runner (not the run's own commit)")
 echo "$head $tree $sha"
 `
@@ -156,8 +160,11 @@ func (r *Runner) checkpointWorkspaceOnce(ctx context.Context, o sandboxObserverO
 		r.preserveSupersededCheckpoint(cctx, o, run, ref, sha)
 	}
 
-	push := "git push --force origin " + sha + ":refs/heads/" + ref
-	pres, perr := run.Exec(cctx, []string{"sh", "-c", push}, sandbox.ExecOpts{})
+	// No hook runs: the checkpoint ref is the runner's net, not the run's to
+	// refuse through a pre-push hook planted in its own tree.
+	pres, perr := run.Exec(cctx, []string{"git", "-c", "core.hooksPath=/dev/null",
+		"-c", "core.fsmonitor=false", "push", "--force", "origin",
+		sha + ":refs/heads/" + ref}, sandbox.ExecOpts{})
 	if perr != nil || pres.ExitCode != 0 {
 		r.cfg.Logger.Warn("runner: run %s: workspace checkpoint: push of %s to %s FAILED (%v; exit %d): %s — the work is still only inside the pod",
 			o.runID, sha[:min(12, len(sha))], ref, perr, pres.ExitCode, strings.TrimSpace(string(pres.Stderr)))
@@ -201,8 +208,8 @@ func (r *Runner) preserveSupersededCheckpoint(ctx context.Context, o sandboxObse
 	// and the force-push would destroy the very checkpoint it is here to save,
 	// in exactly the flaky conditions where a resume happens. The field is cut
 	// in Go instead, where the exit status is the one that matters.
-	res, err := run.Exec(ctx, []string{"sh", "-c",
-		"git ls-remote origin refs/heads/" + ref}, sandbox.ExecOpts{})
+	res, err := run.Exec(ctx, []string{"git", "-c", "core.hooksPath=/dev/null",
+		"-c", "core.fsmonitor=false", "ls-remote", "origin", "refs/heads/" + ref}, sandbox.ExecOpts{})
 	if err != nil || res.ExitCode != 0 {
 		r.cfg.Logger.Warn("runner: run %s: cannot read %s before overwriting it (%v; exit %d): %s — pushing anyway, but a previous generation's checkpoint may be lost",
 			o.runID, ref, err, res.ExitCode, strings.TrimSpace(string(res.Stderr)))
@@ -220,8 +227,10 @@ func (r *Runner) preserveSupersededCheckpoint(ctx context.Context, o sandboxObse
 		return
 	}
 	keep := ref + "-superseded-" + shortSHA(prev)
-	cmd := "git fetch --no-tags origin " + prev + " && git push origin " + prev + ":refs/heads/" + keep
-	pres, perr := run.Exec(ctx, []string{"sh", "-c", cmd}, sandbox.ExecOpts{})
+	pres, perr := run.Exec(ctx, []string{"sh", "-c",
+		`git -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch --no-tags origin ` + prev +
+			` && git -c core.hooksPath=/dev/null -c core.fsmonitor=false push origin ` + prev + ":refs/heads/" + keep,
+		"checkpoint-preserve"}, sandbox.ExecOpts{})
 	if perr != nil || pres.ExitCode != 0 {
 		r.cfg.Logger.Warn("runner: run %s: could NOT preserve %s @ %.12s as %s (%v; exit %d): %s — it is about to be overwritten and will survive only as an unreferenced object",
 			o.runID, ref, prev, keep, perr, pres.ExitCode, strings.TrimSpace(string(pres.Stderr)))

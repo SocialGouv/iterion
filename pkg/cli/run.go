@@ -347,7 +347,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if superviseHub != nil {
 		hookObservers = []func(store.Event){superviseHub.Publish}
 	}
-	executor, err := buildRunExecutor(opts, tiersMatchTheEngine, wf, s, lineage{runID: runID}, storeDir, logger, exporterHooks,
+	executor, err := buildRunExecutor(opts, tiersMatchTheEngine, wf, s, lineage{runID: runID}, storeDir, logger,
+		// This run's engine is built below with no WithWorkDir: it fills its
+		// own workDir with the process cwd and roots the run at that
+		// directory's repository, which is what the screen's probe then
+		// resolves from the same cwd.
+		"", exporterHooks,
 		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile), hookObservers)
 	if err != nil {
 		return err
@@ -425,7 +430,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// declares the matching var; then detect host provider credentials and
 	// inject the resolution (the --review-mode flag / a --var override wins
 	// over auto-detection). See pkg/reviewtopology.
-	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), opts.ReviewMode); inj.Summary() != "" {
+	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), opts.ReviewMode); err != nil {
+		return fmt.Errorf("refusing to launch: %w", err)
+	} else if inj.Summary() != "" {
 		logger.Info("%s", inj.Summary())
 	}
 
@@ -492,7 +499,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 
 	if superviseHub != nil {
-		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, logger)
+		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, eng.ResolveVars(inputs), logger)
 		defer stop()
 	}
 
@@ -514,9 +521,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // store handle as the engine, so the inbox doorbell stays in lockstep).
 // Returns a stop func to drain them when the run ends. The kill switch
 // was already resolved where the hub was created.
-func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, logger *iterlog.Logger) func() {
+func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, vars map[string]any, logger *iterlog.Logger) func() {
 	inj := &supervise.StoreInjector{Store: s}
-	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, logger), logger)
+	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, vars, logger), logger)
 }
 
 // teeRunLog defers to store.TeeRunLog so the dispatcher and any
@@ -567,6 +574,15 @@ func buildRunExecutor(
 	ln lineage,
 	storeDir string,
 	logger *iterlog.Logger,
+	// engineWorkDir is the directory this run's ENGINE is rooted at — the
+	// value passed to runtime.WithWorkDir, "" when the engine is given none
+	// and roots itself at the process cwd. It reaches the fallback screen's
+	// sandbox probe so the screen resolves the repository the engine will,
+	// never the cwd of a process whose child run executes in the parent's
+	// worktree. Kept away from storeDir: two adjacent strings of the same
+	// shape swap silently, and this one decides which repository the screen
+	// judges while that one decides where run state is written.
+	engineWorkDir string,
 	exporter exporterEventHooks,
 	botID string,
 	hookObservers []func(store.Event),
@@ -586,6 +602,10 @@ func buildRunExecutor(
 		Workflow: wf,
 		Vars:     opts.Vars,
 		Store:    s,
+		// The engine's root, for the fallback screen's sandbox probe only.
+		// WorkDir stays unset: Claw's file tools keep resolving against the
+		// process workspace, which is where `iterion run` executes.
+		SandboxProbeWorkDir: engineWorkDir,
 		// Named explicitly rather than left to the Store type-assertion: a
 		// store wrapper that does not forward LoadRun would otherwise
 		// disable the lineage read in silence (pkg/runner's metrics wrapper
@@ -708,7 +728,11 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		childRunOpts := opts
 		childRunOpts.Vars = nil
 		childExec, err := buildRunExecutor(childRunOpts, tiersUnknownToAChild, childWf, s,
-			lineage{runID: childRunID, parentRunID: req.ParentRunID}, storeDir, logger, nil,
+			lineage{runID: childRunID, parentRunID: req.ParentRunID}, storeDir, logger,
+			// The child's engine below is rooted at the parent's effective
+			// workdir when the parent passed one, else at the process cwd —
+			// the same two cases its screen must probe.
+			req.WorkDir, nil,
 			runview.ResolveBotID("", bundleName, childPath), nil)
 		if err != nil {
 			return nil, err

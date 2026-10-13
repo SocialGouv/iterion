@@ -1055,6 +1055,15 @@
           "considered": {
             "type": "boolean"
           },
+          "door_reason": {
+            "type": "string"
+          },
+          "door_wants": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "reason": {
             "type": "string"
           },
@@ -2546,11 +2555,23 @@
       },
       "Policy": {
         "properties": {
+          "cross_harness": {
+            "type": "string"
+          },
           "locks": {
             "items": {
               "type": "string"
             },
             "type": "array"
+          },
+          "model_classes": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "object"
           },
           "pair_order": {
             "items": {
@@ -3005,6 +3026,18 @@
       },
       "RunLLMRoutePolicy": {
         "properties": {
+          "cross_harness": {
+            "type": "string"
+          },
+          "model_classes": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
           "pair_order": {
             "items": {
               "type": "string"
@@ -5079,6 +5112,9 @@
           "routing_effective": {
             "$ref": "#/components/schemas/RunLLMRoutePolicy"
           },
+          "routing_effective_scope": {
+            "type": "string"
+          },
           "stored": {
             "$ref": "#/components/schemas/PlatformCredentials"
           }
@@ -5087,7 +5123,8 @@
           "enforced",
           "origin",
           "keys_first_effective",
-          "facade_default_effective"
+          "facade_default_effective",
+          "routing_effective_scope"
         ],
         "type": "object"
       },
@@ -5255,6 +5292,31 @@
         ],
         "type": "object"
       },
+      "routingPolicyView": {
+        "properties": {
+          "origin": {
+            "type": "string"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/Policy"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "origin"
+        ],
+        "type": "object"
+      },
       "sandboxSettingsView": {
         "properties": {
           "effective_default_image": {
@@ -5297,6 +5359,9 @@
           },
           "launch_rate_per_min": {
             "type": "integer"
+          },
+          "llm_fallback": {
+            "type": "string"
           },
           "max_concurrent_runs": {
             "type": "integer"
@@ -6366,6 +6431,32 @@
         ]
       }
     },
+    "/api/admin/settings/budget-floor": {
+      "get": {
+        "operationId": "getAdminSettingsBudgetFloor",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/budget-floor",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsBudgetFloor",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/budget-floor",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/settings/platform-credentials": {
       "get": {
         "operationId": "getAdminSettingsPlatformCredentials",
@@ -6486,6 +6577,30 @@
         ]
       }
     },
+    "/api/admin/teams/{id}/llm-fallback": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putAdminTeamsByIdLlmFallback",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/teams/{id}/llm-fallback",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/teams/{id}/runner-pool": {
       "parameters": [
         {
@@ -6509,6 +6624,38 @@
           "admin"
         ]
       }
+    },
+    "/api/admin/tenants/{tenant}/bot-sources/{slug}/history": {
+      "delete": {
+        "operationId": "deleteAdminTenantsByTenantBotSourcesBySlugHistory",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/admin/tenants/{tenant}/bot-sources/{slug}/history",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "tenant",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/admin/usage-readings/{fingerprint}": {
       "delete": {
@@ -8640,6 +8787,56 @@
           }
         },
         "summary": "POST /api/orgs/{id}/provision-approvals/{approval_id}/reject",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/routing-policy": {
+      "get": {
+        "operationId": "getOrgsByIdRoutingPolicy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routingPolicyView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/routing-policy",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putOrgsByIdRoutingPolicy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routingPolicyView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/orgs/{id}/routing-policy",
         "tags": [
           "orgs"
         ]
@@ -13091,6 +13288,56 @@
           }
         }
       ]
+    },
+    "/api/teams/{id}/routing-policy": {
+      "get": {
+        "operationId": "getTeamsByIdRoutingPolicy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routingPolicyView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/routing-policy",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdRoutingPolicy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routingPolicyView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/routing-policy",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/secrets": {
       "get": {

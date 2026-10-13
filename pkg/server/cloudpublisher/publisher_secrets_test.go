@@ -3,6 +3,7 @@ package cloudpublisher
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +17,24 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// mustDEKSealer rebuilds the per-run bundle opener from the DEK the
+// resolution produced (ADR-123): the fixtures open exactly what the
+// runner would — no ring in the path.
+func mustDEKSealer(t *testing.T, dek []byte) secrets.Sealer {
+	t.Helper()
+	s, err := secrets.NewAESGCMSealer(dek)
+	if err != nil {
+		t.Fatalf("dek sealer: %v", err)
+	}
+	return s
+}
+
 func TestResolveAndSealCredentials_GenericWorkflowSecrets(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -47,7 +64,7 @@ func TestResolveAndSealCredentials_GenericWorkflowSecrets(t *testing.T) {
 		"kubeconfig": {As: "file"},
 	}}
 	ctx := store.WithTenant(context.Background(), "team")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -58,7 +75,13 @@ func TestResolveAndSealCredentials_GenericWorkflowSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, "run-1", rec.SealedBundle)
+	// The stamp witness: the record names the ring key that sealed it —
+	// without it, rotation cannot target the bundle and every open falls
+	// back to the legacy cohort path.
+	if rec.KeyID != secrets.DEKKeyID {
+		t.Fatalf("record key id %q, want the dek scheme", rec.KeyID)
+	}
+	bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, "", "run-1", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -112,7 +135,11 @@ func TestSubmitResumeReusesWebhookRepoAndBotSecretBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -199,7 +226,7 @@ func TestSubmitResumeReusesWebhookRepoAndBotSecretBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}
-	bundle, err := secrets.OpenRunBundle(sealer, "run-resume", rec.SealedBundle)
+	bundle, err := secrets.OpenRunBundle(mustDEKSealer(t, resume.BundleDEK), rec.TenantID, "", "run-resume", rec.KeyID, rec.SealedBundle)
 	if err != nil {
 		t.Fatalf("OpenRunBundle: %v", err)
 	}
@@ -209,7 +236,11 @@ func TestSubmitResumeReusesWebhookRepoAndBotSecretBinding(t *testing.T) {
 }
 
 func TestResolveAndSealCredentials_RequiredSecretUnresolvedFails(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -223,7 +254,7 @@ func TestResolveAndSealCredentials_RequiredSecretUnresolvedFails(t *testing.T) {
 		"test_e2e_canary": {As: "file"}, // non-optional, no inline value
 	}}
 	ctx := store.WithTenant(context.Background(), "team")
-	_, err = p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	_, err = p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err == nil {
 		t.Fatal("expected launch to fail for an unresolved required secret")
 	}
@@ -236,7 +267,11 @@ func TestResolveAndSealCredentials_RequiredSecretUnresolvedFails(t *testing.T) {
 }
 
 func TestResolveAndSealCredentials_OptionalSecretUnresolvedSkips(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -249,7 +284,7 @@ func TestResolveAndSealCredentials_OptionalSecretUnresolvedSkips(t *testing.T) {
 		"test_e2e_canary": {As: "file", Optional: true},
 	}}
 	ctx := store.WithTenant(context.Background(), "team")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team", "alice", "", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("optional unresolved secret must not fail launch: %v", err)
 	}
@@ -264,7 +299,11 @@ func TestSubmitLaunch_RequiredSecretUnresolved_NoRunRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -312,7 +351,11 @@ func TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus(t *testing.T
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": key}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -371,7 +414,7 @@ func TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus(t *testing.T
 // to correlate it to a run without ad-hoc grep pipelines.
 func TestResolveAndSealCredentials_LogsGrantedCredentialSet(t *testing.T) {
 	var buf bytes.Buffer
-	sealer, err := secrets.NewAESGCMSealer(bytes.Repeat([]byte{9}, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": bytes.Repeat([]byte{9}, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -396,7 +439,7 @@ func TestResolveAndSealCredentials_LogsGrantedCredentialSet(t *testing.T) {
 		runSecrets: secrets.NewMemoryRunSecretsStore(),
 		logger:     iterlog.New(iterlog.LevelInfo, &buf),
 	}
-	if _, err := p.resolveAndSealCredentials(tenantCtx, "run-log-1", "", "team-1", "u1", "bot",
+	if _, err := p.resolveAndSealCredentials(tenantCtx, "run-log-1", "", "team-1", "u1", "bot", "",
 		&ir.Workflow{}, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil); err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

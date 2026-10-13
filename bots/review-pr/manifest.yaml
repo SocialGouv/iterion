@@ -1,7 +1,15 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.12
+version: 0.9.13
+## 0.9.13 — the claude slots' backend is tunable like every other slot's
+## (`ITERION_VIBE_BACKEND_CLAUDE` / `_CLAUDE_GLANCE`, default claude_code
+## byte-compat). The sovereign pools need it: a pool pod carries ONLY its
+## regional gateway credential, so the claude slots route to `claw` (the
+## backend that serves `openai_compatible/*` routes) with the model pins
+## the pool's env resolves — measured on the first pool review, where the
+## hard-wired claude_code sent the slot to a z.ai/Anthropic wire the pool
+## cannot serve and parked the run on an auth recovery.
 ## 0.9.12 — the z.ai pin (0.9.6) is LIFTED. The pin existed because a
 ## capped forfait parked the whole review. That holds only when nothing else
 ## can take the wire: with a second anthropic-wire credential admitted to the

@@ -23,6 +23,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -111,6 +112,16 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 	for _, t := range teams {
 		deleted += p.deleteMany(ctx, secrets.OAuthCollectionName,
 			bson.M{"user_id": secrets.OrgOwnerKey(t.ID)})
+	}
+	// The tenant routing policies (ADR-121 delivery 2) are keyed by
+	// COMPOSITE _id ("team:<id>" / "org:<id>"), not by a tenant_id field —
+	// the org_usage id-prefix shape, reached the same way. The team records
+	// are enumerated while the team rows are still listed.
+	deleted += p.deleteMany(ctx, platformcfg.ColRoutingPolicies,
+		bson.M{"_id": platformcfg.OrgRoutingPolicyID(orgID)})
+	for _, tm := range teams {
+		deleted += p.deleteMany(ctx, platformcfg.ColRoutingPolicies,
+			bson.M{"_id": platformcfg.TeamRoutingPolicyID(tm.ID)})
 	}
 	orgTier := secrets.OrgTierTenantID(orgID)
 	deleted += p.deleteMany(ctx, "api_keys",

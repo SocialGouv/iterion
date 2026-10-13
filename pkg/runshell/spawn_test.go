@@ -18,8 +18,19 @@ func requirePTY(t *testing.T) {
 	}
 }
 
+// scrubHome points HOME at an empty dir so the spawned `$SHELL -l`
+// login shell reads no user rc files: a dev machine's ~/.profile and
+// ~/.bashrc (pyenv init, direnv hooks, …) otherwise write to the PTY —
+// polluting what the test reads, and contending on host tool locks under
+// full-suite parallelism. Production keeps the operator's env.
+func scrubHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+}
+
 func TestSpawnEchoesInWorkdir(t *testing.T) {
 	requirePTY(t)
+	scrubHome(t)
 	dir := t.TempDir()
 	sess, err := Spawn(SpawnOptions{WorkDir: dir, Cols: 80, Rows: 24})
 	if err != nil {
@@ -57,6 +68,7 @@ func TestSpawnRequiresWorkdir(t *testing.T) {
 
 func TestTerminateKillsProcessGroup(t *testing.T) {
 	requirePTY(t)
+	scrubHome(t)
 	sess, err := Spawn(SpawnOptions{WorkDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)

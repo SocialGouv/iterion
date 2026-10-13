@@ -519,6 +519,71 @@ func TestWebhookHoldLabelsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWebhookAuthorAllowlistPatchRoundTrip pins the config INGRESS for
+// author_allowlist — the sibling of TestWebhookHoldLabelsRoundTrip for the
+// field #2175 made durably-clearable on Mongo. The store half (explicit []
+// round-trips, never-set and cleared read alike) lives in
+// pkg/webhooks/config_slice_durability_test.go; THIS half pins the only
+// producer of the gesture: without it a cleanup of the PATCH applier's
+// nil-check would kill the clear at the API while every store test stays
+// green. The composed chain (this applier → the Mongo store) is covered
+// half-and-half: each layer's test is mutation-guarded in its own file, and
+// the conformance job runs the store half against a real server.
+func TestWebhookAuthorAllowlistPatchRoundTrip(t *testing.T) {
+	s := newWebhookTestServer(t)
+	ctx := superAdminCtx()
+
+	w := httptest.NewRecorder()
+	body := `{"name":"gh","bot_ids":["review-pr"],"author_allowlist":["dependabot[bot]","renovate[bot]"]}`
+	s.handleCreateWebhook(w, whReq(ctx, "POST", "/api/teams/t1/webhooks", body, "t1", ""))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Config webhooks.Config `json:"config"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if !slices.Equal(created.Config.AuthorAllowlist, []string{"dependabot[bot]", "renovate[bot]"}) {
+		t.Fatalf("author_allowlist dropped on create: %v", created.Config.AuthorAllowlist)
+	}
+
+	// PATCH with an explicit empty list is the clear → allow-all gesture...
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"author_allowlist":[]}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch clear: code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, err := s.webhookConfigs.Get(context.Background(), created.Config.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if stored.AuthorAllowlist == nil || len(stored.AuthorAllowlist) != 0 {
+		t.Fatalf("PATCH author_allowlist:[] stored %#v — the clear died at the API, before the store", stored.AuthorAllowlist)
+	}
+	if !webhooks.MatchAuthor(stored.AuthorAllowlist, "a-human-login") {
+		t.Fatal("a cleared author_allowlist must read as allow-all")
+	}
+
+	// ...and an unrelated PATCH must leave it cleared, not resurrect the
+	// narrowing (the read-back nil is indistinguishable from never-set only
+	// because BOTH spellings are allow-all).
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"name":"renamed"}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch name: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if stored, err = s.webhookConfigs.Get(context.Background(), created.Config.ID); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if stored.AuthorAllowlist == nil || len(stored.AuthorAllowlist) != 0 {
+		t.Fatalf("an unrelated patch resurrected the author_allowlist narrowing: %v", stored.AuthorAllowlist)
+	}
+}
+
 // TestWebhookReviewRequestLoginsPatch pins the PATCH ingress for
 // review_request_logins. A managed webhook is created by the orchestrator
 // (Provision), never by POST — so PATCH is the ONLY writer that can arm the

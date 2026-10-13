@@ -79,7 +79,7 @@ func TestSpecsFromWorkflowDeriveProviderHint(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			specs := SpecsFromWorkflow(wf(tc.node), iterlog.Nop())
+			specs := SpecsFromWorkflow(wf(tc.node), nil, iterlog.Nop())
 			if len(specs) != 1 {
 				t.Fatalf("specs = %d, want 1", len(specs))
 			}
@@ -100,7 +100,7 @@ func TestSpecsFromWorkflowPinnedModelSkipsHint(t *testing.T) {
 			Watches: []string{"campaign"},
 		}},
 	}
-	specs := SpecsFromWorkflow(wf, iterlog.Nop())
+	specs := SpecsFromWorkflow(wf, nil, iterlog.Nop())
 	if len(specs) != 1 || specs[0].ProviderHint != "" {
 		t.Fatalf("pinned model must not derive a hint, got %+v", specs)
 	}
@@ -241,7 +241,7 @@ func TestProviderHintWholeRunDerivesFromAllNodes(t *testing.T) {
 		},
 		Supervisors: []*ir.Supervisor{{Name: "persy"}},
 	}
-	specs := SpecsFromWorkflow(wf, iterlog.Nop())
+	specs := SpecsFromWorkflow(wf, nil, iterlog.Nop())
 	if len(specs) != 1 || specs[0].ProviderHint != "anthropic" {
 		t.Fatalf("whole-run supervisor must derive its hint from the workflow's LLM nodes, got %+v", specs)
 	}
@@ -256,7 +256,7 @@ func TestProviderHintWalksProviderChain(t *testing.T) {
 		},
 		Supervisors: []*ir.Supervisor{{Name: "persy", Watches: []string{"campaign"}}},
 	}
-	specs := SpecsFromWorkflow(wf, iterlog.Nop())
+	specs := SpecsFromWorkflow(wf, nil, iterlog.Nop())
 	if len(specs) != 1 || specs[0].ProviderHint != "anthropic" {
 		t.Fatalf("provider chain must be walked to the first claw-routable entry, got %+v", specs)
 	}
@@ -272,7 +272,7 @@ func TestProviderHintSkipsBogusPrefixAndContinues(t *testing.T) {
 		},
 		Supervisors: []*ir.Supervisor{{Name: "persy", Watches: []string{"scout", "campaign"}}},
 	}
-	specs := SpecsFromWorkflow(wf, iterlog.Nop())
+	specs := SpecsFromWorkflow(wf, nil, iterlog.Nop())
 	if len(specs) != 1 || specs[0].ProviderHint != "anthropic" {
 		t.Fatalf("bogus alias prefix must be skipped and the next watched node consulted, got %+v", specs)
 	}

@@ -157,6 +157,29 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					noteDecline(d)
 					continue
 				}
+				// The simulation's own crossing bound (Simulation.LoopCrossings,
+				// a dry run's #1307): past that many crossings of one bounded
+				// loop the back-edge is declined — the SIMULATION's doing, said
+				// by the budget_warning the decline emits (the cap above says
+				// nothing: the program's design), and a ceiling
+				// (SimulationLoopCrossingsDecline), so a death with no edge left
+				// reads as the bound's, never as the program's LOOP_EXHAUSTED.
+				// A cap tighter than the bound is the program's word and was
+				// already declined above; C145's static reading of the exit is
+				// unchanged.
+				if cut := e.simulation.LoopCrossings; cut > 0 && !loop.Unbounded && rs.loopCounters[edge.LoopName] >= cut {
+					e.logger.Warn("%s: node %q: edge to %q skipped — the simulation crossed loop %q %d times (its bound: %d) and declines the rest",
+						logPrefix, fromNodeID, edge.To, edge.LoopName, rs.loopCounters[edge.LoopName], cut)
+					d := e.declineLoopEdge(rs, fromNodeID, edge.LoopName, SimulationLoopCrossingsDecline, loopDeclineData(edge.LoopName, SimulationLoopCrossingsDecline,
+						fmt.Sprintf("the simulation crossed loop %q %d times (its bound: %d): its edge is declined — the run goes on by its other edges, or dies with no edge left when none matches", edge.LoopName, rs.loopCounters[edge.LoopName], cut),
+						map[string]any{"crossings": rs.loopCounters[edge.LoopName], "bound": cut}))
+					if exhausted == "" {
+						exhausted = fmt.Sprintf("loop %q crossed %d times, the simulation's bound (%d)", edge.LoopName, rs.loopCounters[edge.LoopName], cut)
+						capDecline = d
+					}
+					noteDecline(d)
+					continue
+				}
 				// Liveness monitor: an unbounded loop making no progress (its
 				// source output unchanged across maxLoopStall crossings) is at a
 				// fixpoint — skip the back-edge so the run falls through to the

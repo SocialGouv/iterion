@@ -171,8 +171,13 @@ export default function LaunchView() {
             {error}
           </InlineBanner>
         )}
-        {!doc && !error ? (
-          <div className="text-xs text-fg-subtle">Loading workflow…</div>
+        {/* Every section below describes the loaded document, so the gate is
+            the document alone: with no document the form would speak for a
+            workflow nobody read — no input vars declared, a sandbox badge
+            reading "auto (default)" for a `sandbox: none` file whose reload
+            failed. The banner above carries the cause. */}
+        {!doc ? (
+          !error && <div className="text-xs text-fg-subtle">Loading workflow…</div>
         ) : (
           <>
             {/* Persona header: who runs, in the bot's own identity. The

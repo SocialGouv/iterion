@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -493,6 +494,7 @@ func providerFallbackEligible(backendName string) bool {
 //	claude_code — claudesdk.WithResume(task.SessionID)
 //	codex       — codexsdk.WithResume(task.SessionID)
 //	pi          — `--session-id` / `--fork <id>`
+//	opencode    — `--session <id>` [`--fork=true`]
 //
 // Everyone else only ever REPORTS a session id and never resumes one:
 // claw never mentions Task.SessionID at all (its conversation lives in
@@ -507,6 +509,7 @@ var sessionResumeBackends = map[string]bool{
 	delegate.BackendClaudeCode: true,
 	delegate.BackendCodex:      true,
 	delegate.BackendPi:         true,
+	delegate.BackendOpenCode:   true,
 }
 
 // sessionResumeEligible reports whether dropping Task.SessionID can
@@ -765,7 +768,7 @@ func (e *ClawExecutor) dispatchWithProviderFallback(
 	chain = collapseHintOnlyChain(chain, backendName)
 	baseModel := task.Model
 	out, err := e.dispatchChain(ctx, nodeID, chain, baseModel,
-		func(_ context.Context, _ int, el chainElement) (string, delegate.Backend, *delegate.Task, error) {
+		func(_ context.Context, _ int, el chainElement, _ string) (string, delegate.Backend, *delegate.Task, error) {
 			task.ProviderHint = el.Provider
 			// An element without its own model restores the node
 			// baseline, so a model-less element after a model-bearing one
@@ -792,7 +795,7 @@ func (e *ClawExecutor) dispatchWithProviderFallback(
 // re-issuing a claude_code-shaped task on claw produces a TOOL-LESS
 // agent that still carries an output schema — a schema-valid verdict it
 // never verified.
-type elementBuilder func(ctx context.Context, index int, el chainElement) (string, delegate.Backend, *delegate.Task, error)
+type elementBuilder func(ctx context.Context, index int, el chainElement, marker string) (string, delegate.Backend, *delegate.Task, error)
 
 // newElementBuilder wires the per-element plumbing both dispatch sites
 // share: resolve-and-cache the backend, build-and-cache one task per
@@ -819,7 +822,7 @@ func (e *ClawExecutor) newElementBuilder(
 	tasks := map[string]*delegate.Task{}
 	baseModels := map[string]string{}
 
-	return func(ctx context.Context, index int, el chainElement) (string, delegate.Backend, *delegate.Task, error) {
+	return func(ctx context.Context, index int, el chainElement, marker string) (string, delegate.Backend, *delegate.Task, error) {
 		bn := baseBackendName
 		if el.Backend != "" {
 			bn = el.Backend
@@ -906,6 +909,19 @@ func (e *ClawExecutor) newElementBuilder(
 			// an entry left behind here is reachable from a direction it
 			// was not when only the declared modes set it.
 			task.SessionOptional = false
+			// The routing handoff (ADR-121 § Delivery 2). The marker is
+			// the FULL crossing condition — a same-backend later rung
+			// still carries the posture but changed no harness, so it
+			// must neither re-attach a stale sealed path nor keep one a
+			// previous rung set on this CACHED task: clear
+			// unconditionally, attach only under the marker. The carry
+			// paths above never run this branch and never see a handoff.
+			task.Handoff, task.HandoffMode = "", ""
+			if marker != "" && e.handoff != nil {
+				if p := e.handoff.SealedPath(nodeID); p != "" {
+					task.Handoff, task.HandoffMode = p, marker
+				}
+			}
 		}
 		return bn, backend, task, nil
 	}
@@ -1000,6 +1016,11 @@ func (e *ClawExecutor) dispatchChain(
 		// fall back to the node's REQUESTED backend at the event layer.
 		lastBackend string
 		lastModel   string
+		// pendingMarker is the cross-harness marker of the fall-through
+		// that routed here — computed beside the note that emitted the
+		// event, consumed by this element's build, which attaches the
+		// sealed handoff under it (ADR-121 § Delivery 2).
+		pendingMarker string
 		// spender is the last element whose attempt carried tokens or
 		// cost. A skip — the one outcome without a serving element whose
 		// spend the runner books — is labelled with it, never with a later
@@ -1057,7 +1078,13 @@ func (e *ClawExecutor) dispatchChain(
 			}, nil
 		}
 
-		backendName, backend, task, buildErr := build(ctx, i, el)
+		// No reset of pendingMarker is needed: its writers always pair
+		// with the nextAllowed jump they route to, the skipped
+		// iterations continue before reaching this read, and a walk that
+		// ends anywhere else exits the loop — a stale marker has no path
+		// to a reader.
+		marker := pendingMarker
+		backendName, backend, task, buildErr := build(ctx, i, el, marker)
 		if buildErr != nil {
 			// A build failure is this element's failure, not the node's:
 			// an unresolvable backend or an uncredentialed element must
@@ -1091,7 +1118,9 @@ func (e *ClawExecutor) dispatchChain(
 			if next.Skip {
 				toModel = ""
 			}
-			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), toModel, buildErr)
+			fromB, toB := fallbackRouteEnds(el, next, backendName)
+			pendingMarker = crossHarnessMarker(el, next, fromB, toB)
+			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), toModel, buildErr, pendingMarker)
 			nextAllowed = j
 			continue
 		}
@@ -1109,8 +1138,10 @@ func (e *ClawExecutor) dispatchChain(
 					if next.Skip {
 						toModel = ""
 					}
+					fromB, toB := fallbackRouteEnds(el, next, backendName)
+					pendingMarker = crossHarnessMarker(el, next, fromB, toB)
 					e.noteCooldownFallback(ctx, nodeID, el, next, backendName,
-						effModel(el), toModel, cd)
+						effModel(el), toModel, cd, pendingMarker)
 					// The call was skipped, but the condition that caused the
 					// skip is still active. Preserve its typed cause so a later
 					// fallback failure cannot hide a usage-window wall from the
@@ -1340,7 +1371,9 @@ func (e *ClawExecutor) dispatchChain(
 			// would report a model that will never execute.
 			toModel = ""
 		}
-		e.noteFallback(ctx, nodeID, el, next, backendName, fromModel, toModel, err)
+		fromB, toB := fallbackRouteEnds(el, next, backendName)
+		pendingMarker = crossHarnessMarker(el, next, fromB, toB)
+		e.noteFallback(ctx, nodeID, el, next, backendName, fromModel, toModel, err, pendingMarker)
 		nextAllowed = j
 	}
 
@@ -1388,6 +1421,7 @@ func (e *ClawExecutor) noteCooldownFallback(
 	backendName string,
 	fromModel, toModel string,
 	cd routeCooldown,
+	marker string,
 ) {
 	fromBackend, toBackend := fallbackRouteEnds(from, to, backendName)
 	if e.logger != nil {
@@ -1412,6 +1446,7 @@ func (e *ClawExecutor) noteCooldownFallback(
 		Cooldown:      true,
 		CooldownUntil: cd.Until,
 		ToSkip:        to.Skip,
+		CrossHarness:  marker,
 	})
 }
 
@@ -1424,6 +1459,7 @@ func (e *ClawExecutor) noteFallback(
 	backendName string,
 	fromModel, toModel string,
 	err error,
+	marker string,
 ) {
 	fromBackend, toBackend := fallbackRouteEnds(from, to, backendName)
 	if e.logger != nil {
@@ -1447,7 +1483,26 @@ func (e *ClawExecutor) noteFallback(
 		FallbackIndex: to.FallbackIndex,
 		Err:           err,
 		ToSkip:        to.Skip,
+		CrossHarness:  marker,
 	})
+}
+
+// crossHarnessMarker answers the model_fallback marker value for a
+// fall-through: the run's resolved posture when the crossing CHANGED
+// backend under an ACTIVE mode — the session contract's third state, the
+// switch said on the event, never silent. Empty for same-backend carries
+// (the session rides the first same-backend rung), for every delivery-1
+// route, and under "off". Both fall-through emitters share it on
+// purpose (the cooldown skip clears the jumped-to element's session
+// exactly like a fresh failure does).
+func crossHarnessMarker(from, to chainElement, fromBackend, toBackend string) string {
+	// A skip element runs no model — no harness takes over, so no switch
+	// is said and nothing is handed over (fallbackRouteEnds renders its
+	// toBackend empty, which would otherwise read as a crossing).
+	if to.Skip || fromBackend == toBackend || !llmroute.CrossHarnessActive(to.CrossHarness) {
+		return ""
+	}
+	return to.CrossHarness
 }
 
 // noteSessionDegrade emits the one log line and the one hook that make a

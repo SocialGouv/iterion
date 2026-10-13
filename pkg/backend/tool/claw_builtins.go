@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
 )
 
@@ -325,19 +326,61 @@ func RegisterAskUser(reg *Registry, handler AskUserHandler) error {
 type SubagentRunner func(ctx context.Context, input map[string]any) (string, error)
 
 // RegisterClawSubagents registers the `agent` tool. When `runner` is
-// nil, the registration falls back to claw's metadata-only stub —
-// useful for stand-alone tests where actually launching a child
-// conversation is out of scope. When `runner` is non-nil, it is
-// invoked directly: the LLM's tool_use lands in the runner, which is
-// expected to coordinate the child loop.
+// non-nil it is invoked directly: the LLM's tool_use lands in the
+// runner, which is expected to coordinate the child loop.
+//
+// When `runner` is nil the tool still registers — the catalog must stay
+// honest about what claw offers, and the name resolves — but every call
+// earns the typed capability refusal AND the advertised description says
+// so, since that is the first surface the model reads. claw's own
+// executor (clawtools.ExecuteAgent) answers `"status": "running"` and
+// starts nothing: its spawning lives in claw's ConversationLoop, which
+// iterion does not drive. A node that delegated would wait on work
+// nobody began, or report on work nobody did, with no error anywhere.
+//
+// One toolcatalog lookup feeds both the description and the error, so the
+// two surfaces cannot tell the model different things. A catalog that
+// stopped refusing `agent` while nothing wires a runner is reported on
+// the CALL, explicitly: failing the registration instead would take every
+// other claw tool down with it, since RegisterClawAll is all-or-nothing.
 func RegisterClawSubagents(reg *Registry, runner SubagentRunner) error {
-	exec := clawtools.ExecuteAgent
+	t := clawtools.AgentTool()
 	if runner != nil {
-		exec = func(ctx context.Context, input map[string]any) (string, error) {
+		return RegisterClawTool(reg, t, func(ctx context.Context, input map[string]any) (string, error) {
 			return runner(ctx, input)
-		}
+		})
 	}
-	return RegisterClawTool(reg, clawtools.AgentTool(), exec)
+	refusal, refused := toolcatalog.ClawRefusesBuiltin("agent")
+	if !refused {
+		return RegisterClawTool(reg, t, func(context.Context, map[string]any) (string, error) {
+			return "", fmt.Errorf("agent: no subagent runner is wired and the catalog no longer refuses " +
+				"`agent` — wire the runner through ClawDefaults.Subagent, or restore the catalog entry")
+		})
+	}
+	// The description and the error open on this one sentence. The ultracode
+	// grant conditions "that refusal is final, do not retry" on what the tool
+	// ANSWERS (delegate.ultracodeOrchestrationInstruction), and at retry-
+	// decision time the answer is the tool error, not the description read a
+	// turn earlier: a condition absent from the error matches nothing the
+	// model received, and the retry loop comes back.
+	unavailable := "Spawning a sub-agent is " + toolcatalog.ClawRefusedToolHeadline
+	// claw's own description promises a background spawn that returns a
+	// task_id and notifies the parent at a later turn. The replacement keeps
+	// the words a delegation-shaped `tool_search` query matches, so a model
+	// looking for subagents lands on the explanation rather than on nothing.
+	t.Description = unavailable +
+		" and every call to this tool returns an error: " + refusal.Reason + ". " + refusal.Remedy + "."
+	return RegisterClawTool(reg, t, func(context.Context, map[string]any) (string, error) {
+		// The input is not validated first: the capability is missing whatever
+		// the model wrote, and a schema complaint would send it rewriting
+		// arguments for a tool that cannot run. The error reaches the model as
+		// its tool result and the run log through the tool-call hook.
+		return "", &delegate.ErrCapabilityUnsupported{
+			Backend:    toolcatalog.ClawBackend,
+			Capability: "the agent tool (subagents)",
+			Remedy:     unavailable + ". " + refusal.String(),
+		}
+	})
 }
 
 // RegisterClawWebSearch registers the `web_search` tool. Reads
@@ -587,10 +630,11 @@ type ClawDefaults struct {
 	// tests, not for hosts that have their own MCP infrastructure.
 	MCPProvider clawmcp.Provider
 
-	// Subagent, when non-nil, replaces claw's default metadata-only
-	// agent executor with a real child-conversation runner. Hosts
-	// build this via model.NewSubagentRunner. When nil, the agent
-	// tool stays a stub (smoke-test parity).
+	// Subagent is the real child-conversation runner behind the `agent`
+	// tool. Hosts build it via model.NewSubagentRunner. When nil the
+	// tool still registers, and every call earns the typed capability
+	// refusal (RegisterClawSubagents) — claw's own executor would report
+	// a started subagent it never launched.
 	Subagent SubagentRunner
 
 	// AskUser, when non-nil, replaces the default ask_user handler

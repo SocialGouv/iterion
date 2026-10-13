@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Route, Router } from "wouter";
+import { memoryLocation } from "wouter/memory-location";
 
 import type { AdminUserDetail } from "@/api/admin";
 
@@ -21,18 +23,6 @@ vi.mock("@/api/orgs", async (importOriginal) => {
     listAdminOrgTeams: () => listAdminOrgTeams(),
   };
 });
-vi.mock("wouter", () => ({
-  Link: ({
-    href,
-    children,
-    ...rest
-  }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
-    <a href={href} {...rest}>
-      {children}
-    </a>
-  ),
-}));
-
 import UserDrawer from "./UserDrawer";
 
 function detail(over: Partial<AdminUserDetail> = {}): AdminUserDetail {
@@ -52,13 +42,22 @@ function detail(over: Partial<AdminUserDetail> = {}): AdminUserDetail {
   };
 }
 
+// The real wouter, in the drawer's real place: the /admin console is mounted
+// inside <Router base="/studio"> as a nested route, so a plain "/orgs/<id>"
+// href would resolve against /studio/admin, not /studio. A stubbed <Link>
+// renders the href it is handed and would never show that.
 function renderDrawer() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
+  const loc = memoryLocation({ path: "/studio/admin/users" });
   return render(
     <QueryClientProvider client={qc}>
-      <UserDrawer userID="u1" onClose={() => {}} />
+      <Router hook={loc.hook} base="/studio">
+        <Route path="/admin" nest>
+          <UserDrawer userID="u1" onClose={() => {}} />
+        </Route>
+      </Router>
     </QueryClientProvider>,
   );
 }
@@ -116,12 +115,14 @@ describe("UserDrawer", () => {
     renderDrawer();
 
     // Both rows link to the tenant they name, which is the drawer's other
-    // job: an account's memberships are a way IN to those pages.
+    // job: an account's memberships are a way IN to those pages. The target
+    // is the studio's own /orgs|/teams page — the console's /admin base must
+    // not leak into it.
     expect(
       (await screen.findByRole("link", { name: "SDPC" })).getAttribute("href"),
-    ).toBe("/orgs/o1");
+    ).toBe("/studio/orgs/o1");
     expect(screen.getByRole("link", { name: "PIC" }).getAttribute("href")).toBe(
-      "/teams/t1",
+      "/studio/teams/t1",
     );
     expect(screen.queryByText(/belongs to nothing/i)).toBeNull();
   });

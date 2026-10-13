@@ -17,7 +17,8 @@ import (
 // (`backend: "opencode"` in the DSL). It drives the `opencode` agent CLI,
 // whose headless protocol is disjoint from claude-code's Session mode:
 //
-//	opencode --format json [-m provider/model] [--variant <effort>] run
+//	opencode --format json [-m provider/model] [--variant <effort>] \
+//	         [--session <id> [--fork=true]] run
 //
 // with the prompt on stdin. See ADR-065 for the CLI-agent seam.
 const BackendOpenCode = "opencode"
@@ -53,10 +54,11 @@ const openCodeMaxProjectLevels = 64
 // makes that behaviour benign. (A stdin left OPEN hangs opencode forever;
 // runOnce passes a nil Stdin here, which os/exec wires to the null device.)
 //
-// `run` is emitted through ExtraArgs rather than a dedicated protocol field:
-// opencode's parser accepts the subcommand token after its options, so
-// `opencode --format json -m … run` and `opencode run --format json -m …`
-// parse identically.
+// `run` is emitted by ExtraArgsFor rather than a dedicated protocol field,
+// after the session flags: opencode's parser accepts the subcommand token
+// after options that carry a value, so `opencode --format json -m … run` and
+// `opencode run --format json -m …` parse identically. A bare boolean is the
+// exception (see opencodeExtraArgsFor).
 //
 // There is no system-prompt flag, so the node's `system:` is folded into the
 // user prompt as a preamble by the shared CLIAgentBackend path.
@@ -86,7 +88,7 @@ var opencodeProtocol = CLIAgentProtocol{
 	HostBinaryEnv: "ITERION_OPENCODE_BIN",
 
 	// The subcommand closes argv: every generated flag precedes it.
-	ExtraArgs: []string{"run"},
+	ExtraArgsFor: opencodeExtraArgsFor,
 
 	// PermissionHook nil: opencode exposes no PreToolUse hook. Its own
 	// policy (OPENCODE_PERMISSION) is declarative and in-process, but
@@ -300,6 +302,33 @@ func openCodeResourceAt(dir string) (string, error) {
 // --no-themes posture.
 func opencodeResolveEnv(context.Context) map[string]string {
 	return map[string]string{"OPENCODE_DISABLE_CLAUDE_CODE": "1"}
+}
+
+// opencodeExtraArgsFor emits the session flags, then the `run` subcommand
+// that closes argv.
+//
+// A fresh session names none: opencode mints its own id and reports it on
+// every event of the JSON stream, which parseOpenCodeOutput reads. A resume
+// passes that id back with --session; a fork adds --fork, which opencode
+// rejects without a session to fork from, so it never travels alone.
+//
+// --fork carries its value: opencode's parser finds the subcommand before it
+// knows `run`'s own flags, so a bare boolean right before `run` takes `run`
+// as its value and the CLI prints its help instead (measured on 1.19.0).
+//
+// An id opencode does not hold is version-dependent: 1.19 exits 1 with
+// "Session not found" (measured), so a lost transcript fails the call; 2.x
+// creates a session under that id (read from its source), so there it
+// resumes as an empty conversation.
+func opencodeExtraArgsFor(task Task) []string {
+	var args []string
+	if task.SessionID != "" {
+		args = append(args, "--session", task.SessionID)
+		if task.ForkSession {
+			args = append(args, "--fork=true")
+		}
+	}
+	return append(args, "run")
 }
 
 // opencodeMapModel passes an iterion model spec through unchanged: opencode's

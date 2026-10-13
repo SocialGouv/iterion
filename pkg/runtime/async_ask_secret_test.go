@@ -75,7 +75,7 @@ func TestAnAsyncQuestionIsScrubbedInTheEventLog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			hooks := model.NewStoreEventHooks(context.Background(), s, "async-run", nil, guard)
+			hooks := model.NewStoreEventHooks(context.Background(), s, "async-run", nil, guard, nil)
 			br := delegate.NewRegistry()
 			br.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{MaxAttempts: 1}))
 			exec := model.NewClawExecutor(reg, wf, model.WithWorkDir(ws), model.WithSecretGuard(guard), model.WithToolRegistry(tr),

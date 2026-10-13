@@ -180,6 +180,42 @@ type Policy struct {
 	// levels above, under a "<level>_lock" provenance. Locks never bind
 	// the level that declares them.
 	Locks []string `yaml:"locks,omitempty" json:"locks,omitempty" bson:"locks,omitempty"`
+	// ModelClasses carries a level's OVERRIDES of the model class table
+	// (ADR-121 § Delivery 2): class → family → bare model id. The
+	// vocabulary (top/standard/fast), the shipped table and the
+	// out-of-routing consumers live with the table itself (classes.go) —
+	// the policy carries only what a level may tune. The fold merges
+	// ENTRY-WISE per class×family (a map of keyed cells merges like
+	// settings, where pair_order replaces); a cell naming an unknown
+	// family is accepted (families grow) and one naming an unknown model
+	// id too (consumed verbatim; dispatch refuses a bogus one, named).
+	// Nil = unset (inherit / the shipped table).
+	ModelClasses map[string]map[string]string `yaml:"model_classes,omitempty" json:"model_classes,omitempty" bson:"model_classes,omitempty"`
+	// CrossHarness says whether a computed route may move a node onto a
+	// DIFFERENT HARNESS than it started on (ADR-121 § Delivery 2, the
+	// session contract's third state): "off" (the default) keeps the
+	// delivery-1 refusal — a cross-backend stage on a session-bearing
+	// node never lands; "restart" lets it land and the node relaunches
+	// from its original prompt, the failed attempt's transcript riding
+	// as reference; "reuse" lets it land and the fresh harness CONTINUES
+	// the node mid-work from the sealed transcript. A cross-harness
+	// switch REPLACES the session — said on the model_fallback line with
+	// the handoff state, neither kept (one provider's turns are never
+	// replayed into a harness that never issued them) nor silently
+	// evicted. First-setter-wins like refused_pinned_key; lockable; NOT
+	// ceilinged — the operator's veto here is a lock, not a prune.
+	// Empty = unset (Normalize answers "off").
+	CrossHarness string `yaml:"cross_harness,omitempty" json:"cross_harness,omitempty" bson:"cross_harness,omitempty"`
+}
+
+// CrossHarnessActive is the ONE gate for "may this stage cross harnesses
+// on a session-bearing node": the ACTIVE modes only. NEVER test
+// emptiness — Normalize promotes "" to "off", so every resolved policy
+// and every stamped wire entry carries a non-empty "off", and an
+// emptiness gate would lift the session refusal for every cloud run
+// under the default (the plan-review critique, probe-proven).
+func CrossHarnessActive(mode string) bool {
+	return mode == CrossHarnessReuse || mode == CrossHarnessRestart
 }
 
 // The fold's field names, as the provenance map keys them (the wire field
@@ -189,11 +225,20 @@ const (
 	FieldTriggers         = "triggers"
 	FieldRefusedPinnedKey = "refused_pinned_key"
 	FieldStrict           = "strict"
+	FieldModelClasses     = "model_classes"
+	FieldCrossHarness     = "cross_harness"
+)
+
+// The cross_harness vocabulary (ADR-121 § Delivery 2).
+const (
+	CrossHarnessOff     = "off"
+	CrossHarnessReuse   = "reuse"
+	CrossHarnessRestart = "restart"
 )
 
 // Fields lists the fold's fields — the vocabulary Locks validates against
 // and the provenance map completes.
-var Fields = []string{FieldPairOrder, FieldTriggers, FieldRefusedPinnedKey, FieldStrict}
+var Fields = []string{FieldPairOrder, FieldTriggers, FieldRefusedPinnedKey, FieldStrict, FieldModelClasses, FieldCrossHarness}
 
 // Normalize returns p with defaults applied. Idempotent; never returns a
 // Policy with a nil PairOrder, Triggers or empty RefusedPinnedKey. Only NIL
@@ -211,6 +256,9 @@ func Normalize(p Policy) Policy {
 	}
 	if p.RefusedPinnedKey == "" {
 		p.RefusedPinnedKey = RefusedPinnedForfait
+	}
+	if p.CrossHarness == "" {
+		p.CrossHarness = CrossHarnessOff
 	}
 	return p
 }
@@ -307,12 +355,45 @@ func Validate(p Policy) error {
 	default:
 		return fmt.Errorf("llmroute: refused_pinned_key %q — want %q or %q", p.RefusedPinnedKey, RefusedPinnedForfait, RefusedPinnedPark)
 	}
+	for class, fams := range p.ModelClasses {
+		if !validClass(class) {
+			return fmt.Errorf("llmroute: model_classes %q is not a class (want one of %s)", class, strings.Join(classVocabulary, ", "))
+		}
+		if len(fams) == 0 {
+			return fmt.Errorf("llmroute: model_classes %q is empty — omit it to inherit the class", class)
+		}
+		for fam, spec := range fams {
+			if fam == "" {
+				return fmt.Errorf("llmroute: model_classes %s names an empty family", class)
+			}
+			if spec == "" {
+				return fmt.Errorf("llmroute: model_classes %s.%s is empty — omit the cell to inherit the shipped rendering", class, fam)
+			}
+			if strings.Contains(spec, "/") {
+				return fmt.Errorf("llmroute: model_classes %s.%s = %q — cells are BARE ids (the per-credential spellings re-prefix; a %s/ prefix here would double it)", class, fam, spec, fam)
+			}
+		}
+	}
+	switch p.CrossHarness {
+	case "", CrossHarnessOff, CrossHarnessReuse, CrossHarnessRestart:
+	default:
+		return fmt.Errorf("llmroute: cross_harness %q — want %q, %q or %q", p.CrossHarness, CrossHarnessOff, CrossHarnessReuse, CrossHarnessRestart)
+	}
 	for _, f := range p.Locks {
 		if !validField(f) {
 			return fmt.Errorf("llmroute: locks %q is not a policy field (want a subset of %s)", f, strings.Join(Fields, ", "))
 		}
 	}
 	return nil
+}
+
+func validClass(c string) bool {
+	for _, v := range classVocabulary {
+		if v == c {
+			return true
+		}
+	}
+	return false
 }
 
 func validField(f string) bool {
@@ -352,6 +433,8 @@ const (
 	SourceSchedule = "schedule"
 	SourceTrigger  = "trigger"
 	SourceWebhook  = "webhook"
+	SourceTeam     = "team"
+	SourceOrg      = "org"
 	SourcePlatform = "platform"
 	SourceEnv      = "env"
 	SourceDefault  = "default"
@@ -418,6 +501,10 @@ func Resolve(layers ...Layer) (Policy, map[string]string) {
 			out.Strict = l.Policy.Strict
 			src[FieldStrict] = l.Source
 		}
+		if mayAnswer(i, FieldCrossHarness) && out.CrossHarness == "" && l.Policy.CrossHarness != "" {
+			out.CrossHarness = l.Policy.CrossHarness
+			src[FieldCrossHarness] = l.Source
+		}
 	}
 	// Strict is monotone unless the LAUNCHER layer locked it (ADR-121:
 	// "no level unsets it — only the launcher, for their own run, through
@@ -465,8 +552,50 @@ func Resolve(layers ...Layer) (Policy, map[string]string) {
 			src[f] = lockSource[f] + "_lock"
 		}
 	}
+	// model_classes folds ENTRY-WISE (the merge rule is the field's own,
+	// stated in the ADR: a map of keyed cells merges like settings, where
+	// pair_order replaces). First setter wins PER CELL within the range
+	// the locks leave; each cell's provenance names its level as
+	// model_classes.<class>.<family>. The BLOCK key answers only when no
+	// cell spoke — "default", or "<level>_lock" for a lock that pinned
+	// the block without setting cells; when cells spoke the block key is
+	// OMITTED, because a "default" beside named cells would lie about who
+	// decided.
+	var mcCells int
+	for i, l := range layers {
+		if !mayAnswer(i, FieldModelClasses) || len(l.Policy.ModelClasses) == 0 {
+			continue
+		}
+		for class, fams := range l.Policy.ModelClasses {
+			if len(fams) == 0 {
+				continue
+			}
+			if out.ModelClasses == nil {
+				out.ModelClasses = map[string]map[string]string{}
+			}
+			if out.ModelClasses[class] == nil {
+				out.ModelClasses[class] = map[string]string{}
+			}
+			for fam, spec := range fams {
+				if _, spoken := out.ModelClasses[class][fam]; spoken {
+					continue
+				}
+				out.ModelClasses[class][fam] = spec
+				src[FieldModelClasses+"."+class+"."+fam] = l.Source
+				mcCells++
+			}
+		}
+	}
+	if _, locked := lockedFrom[FieldModelClasses]; locked && mcCells == 0 {
+		src[FieldModelClasses] = lockSource[FieldModelClasses] + "_lock"
+	} else if mcCells == 0 {
+		src[FieldModelClasses] = SourceDefault
+	}
 	out = Normalize(out)
 	for _, f := range Fields {
+		if f == FieldModelClasses {
+			continue // answered above: per-cell keys, or the block key
+		}
 		if _, ok := src[f]; !ok {
 			src[f] = SourceDefault
 		}
@@ -493,10 +622,11 @@ func (c Ceiling) IsZero() bool { return len(c.Triggers) == 0 }
 // never restores one the policy already dropped. Pruning to an EMPTY list
 // is a legitimate answer ("never switch"), not an absence — the caller
 // stores it as-is (the snapshot's triggers field is not omitempty) and
-// must not re-Normalize the resolved policy. In delivery 1's slice 1 the
-// platform level is the only level, so the ceiling is a proven no-op — it
-// is wired now so slices 2–3 (bot, binding, run levels) inherit the
-// ordering instead of retrofitting it.
+// must not re-Normalize the resolved policy. The platform level sits
+// BELOW org and team (ADR-121's chain runs platform < org < team < bot <
+// binding < run), so its triggers are the ceiling those levels may only
+// narrow — a live semantic since the tenant levels landed, wired from
+// delivery 1's slice 1 so no level retrofitted the ordering.
 func Clamp(p Policy, c Ceiling, src map[string]string) Policy {
 	if c.IsZero() || len(p.Triggers) == 0 {
 		return p

@@ -17,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -70,6 +71,15 @@ const asyncInteractionSystemInstruction = "\n\n[ASYNC QUESTIONS]\n" +
 // The section is backend-neutral: HOW a subagent returns its report is the
 // backend's to state (claude_code appends headlessSubagentRule to every spawn
 // that keeps the tool, ultracode or not).
+//
+// A system prompt outranks a tool description, so the grant also has to say
+// what a REFUSED `agent` tool means: on claw the tool registers and every call
+// earns the typed capability refusal (toolcatalog.ClawRefusesBuiltin), and a
+// grant that orders the dispatch anyway buys one hard error per subagent per
+// stage. The clause is conditional on what the TOOL answers, never a claim
+// about the serving backend — this one constant also reaches claude_code,
+// where the delegation works — and it quotes the refusal's own headline so
+// neither side can be reworded alone.
 // See platform.claude.com/docs/en/build-with-claude/mid-conversation-effort-example.
 const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"Ultracode mode is on: optimize for the most exhaustive, correct result, " +
@@ -80,6 +90,12 @@ const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"before acting on them. Work solo only on trivial or inherently sequential " +
 	"steps. This consent stands for the whole task; you need not ask before " +
 	"spawning a subagent.\n\n" +
+	"Where the `agent` tool answers that spawning a sub-agent is " +
+	toolcatalog.ClawRefusedToolHeadline + ", that refusal is final: every call " +
+	"returns it, so do not retry it and never wait on a sub-agent that was " +
+	"never started. Keep the decomposition and run the parts yourself in this " +
+	"thread, in the order you would have dispatched them, and say in your " +
+	"result which parts you ran solo.\n\n" +
 	"Orchestration mechanics:\n" +
 	"- Batch by stage: subagents launched together in ONE message run " +
 	"concurrently. Put every " +
@@ -634,6 +650,13 @@ type Task struct {
 	// built outside the executor still gets the default.
 	AmbientContext ambient.Policy
 
+	// AmbientContextSource is the precedence level AmbientContext came from
+	// (ambient.ResolveSourced): "run_override", "node", "workflow" or "env"
+	// for a declared value, "default" or "" for the default. A backend that
+	// finds, on this host, a file it cannot keep out refuses a declared
+	// policy and applies the default as far as it can (ambient.Declared).
+	AmbientContextSource string
+
 	// Rewriters is the active rewriter-plugin chain (rtk by default) carried
 	// alongside CompressMode so both the in-process claude_code hook and the
 	// (possibly sandboxed, IPC) claw runner can rebuild the rewrite.Chain. Each
@@ -821,6 +844,21 @@ type Task struct {
 	// sandbox — and an in-container runner that predates the field would
 	// otherwise run the user turn without the conversation it refers to).
 	ContinueConversation json.RawMessage
+
+	// Handoff is the absolute path of the sealed routing-handoff transcript
+	// the crossing hands this element (ADR-121 § Delivery 2): the previous
+	// harness's work on this node, recorded up to the failed attempt. Empty
+	// when there is none — no active cross_harness posture, an empty
+	// transcript, or a same-backend rung (the carry paths never attach).
+	// Rendered by the backend's own prompt surface via HandoffMode; the
+	// composer never writes back into UserPrompt/UserContent.
+	Handoff string
+
+	// HandoffMode is how the handoff transcript renders ("reuse": the node
+	// continues mid-work, preamble + transcript + the original prompt;
+	// "restart": the original prompt byte-preserved + a reference
+	// section). Set only alongside Handoff; empty otherwise.
+	HandoffMode string
 
 	// SharedStateDir is a directory reachable at the SAME absolute path from
 	// the host and from inside the sandbox, and which is NOT part of the target

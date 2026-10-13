@@ -48,7 +48,7 @@ lives in [backends.md](backends.md); this is the maturity read.
 | `pi` | 🟠 | rpc mode, permission gate + `ask_user` + board caps via an embedded extension | the extension loads on the **rpc transport only**; `print` mode refuses gated nodes. No matrix proof |
 | `kimi` | 🟠 | generic CLI-agent protocol | permission gate is **`deny` only** (C176 refuses `ask`); needs `sandbox: none`; session resume/fork **not wired**. No matrix proof |
 | `grok` | 🟠 | same generic protocol | same `deny`-only gate, same unwired resume/fork. No matrix proof |
-| `opencode` | 🟠 | generic CLI-agent protocol, multi-provider, provider-computed cost, reasoning-effort dial | **no permission gate at all** — neither `ask` nor `deny`, so C176 refuses a gated node; C267 refuses `interaction: async`; resume/fork and MCP forwarding **not wired**; a workspace carrying `.opencode/plugin[s]/` is refused without `ITERION_OPENCODE_TRUST_PROJECT=1`. No matrix proof |
+| `opencode` | 🟠 | generic CLI-agent protocol, multi-provider, provider-computed cost, reasoning-effort dial | **no permission gate at all** — neither `ask` nor `deny`, so C176 refuses a gated node; C267 refuses `interaction: async`; resume/fork wired and proven against the real CLI (scripted local model) but `session: persist` and MCP forwarding **not wired**; a workspace carrying `.opencode/plugin[s]/` is refused without `ITERION_OPENCODE_TRUST_PROJECT=1`. No matrix proof |
 
 **The honest statement: `claude_code` and `claw` are battle-tested; the other
 five are *supported*.** They compile, they run, they have detection rules and

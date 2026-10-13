@@ -303,12 +303,12 @@ func TestClawResumedNodeTransientRetryDoesNotReplayTheHistoryTwice(t *testing.T)
 	}
 }
 
-// A backend that resumes by session id (claude_code, codex, pi) gets the
-// validation error as the next prompt of the SESSION the answer ran in —
-// resumed, never forked, never optional — with nothing of the original
+// A backend that resumes by session id (claude_code, codex, pi, opencode)
+// gets the validation error as the next prompt of the SESSION the answer ran
+// in — resumed, never forked, never optional — with nothing of the original
 // prompt repeated.
 func TestSchemaReask_ResumesTheSessionOnBackendsThatResumeById(t *testing.T) {
-	for _, backendName := range []string{delegate.BackendClaudeCode, delegate.BackendCodex} {
+	for _, backendName := range []string{delegate.BackendClaudeCode, delegate.BackendCodex, delegate.BackendOpenCode} {
 		t.Run(backendName, func(t *testing.T) {
 			backend := &capturingBackend{results: []delegate.Result{
 				{Output: map[string]any{"verdict": true}, SessionID: "sess-1", SessionFingerprint: "anthropic-oauth", BackendName: backendName},

@@ -1,0 +1,28 @@
+{
+  "_note": "Hand-authored seed fixture — recording the claude_code classify judge live pays for one verdict of exactly the shape the fold tests already drive. Shape frozen against classify_output (closed verdict vocabulary, per-file classes). Regenerate by hand ONLY if the schema changes.",
+  "bot": "gitops-warden",
+  "scenario": "classify_clean",
+  "node": "classify",
+  "backend": "claude_code",
+  "model": "claude-opus-5-5",
+  "recorded_at": "2026-10-06T00:00:00Z",
+  "vars": {"workspace_dir": "/ws"},
+  "input": {
+    "files": "[{\"path\":\"apps/x/values.yaml\",\"status\":\"M\",\"ext\":\"yaml\",\"added\":2,\"removed\":2,\"key_paths\":[\"image\"],\"candidate\":true}]",
+    "changed_files": "1",
+    "policy_body": "",
+    "policy_source": "default",
+    "scope_notes": "bump the API image",
+    "source_branch": "chore/bump-image",
+    "pr_author": "dev-produit"
+  },
+  "output": {
+    "verdict": "auto_approvable",
+    "files": [
+      {"path": "apps/x/values.yaml", "cls": "auto_approvable", "rule": "image-bump", "reason": "same repository, tag moved from 1.4.2 to 1.4.3; no other hunk in the file"}
+    ],
+    "platform_findings": [],
+    "doubts": "",
+    "summary": "One modified values file whose only change is the image tag on an existing component. The tag is a plain semver bump on the same image path, resources and config untouched — in the simple class, inside every platform guardrail. Nothing doubtful."
+  }
+}

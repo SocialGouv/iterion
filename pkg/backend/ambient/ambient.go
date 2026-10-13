@@ -10,17 +10,20 @@
 //
 // The DSL field `ambient_context: none | workspace | operator | all` picks
 // which origins a node receives; every backend translates the Policy into its
-// own native mechanism. The repository's settings, skills, commands and hooks
-// are not governed here: they carry the engine's own mirrored skills and
-// plugin contributions, and keep loading under every policy.
+// own native mechanism, or refuses a policy it has none for (SupportOf). The
+// repository's settings, skills, commands and hooks are not governed here:
+// they carry the engine's own mirrored skills and plugin contributions, and
+// keep loading under every policy.
 //
-// The package is a leaf so the DSL compiler can import Enforces for C185.
+// The package is a leaf so the DSL compiler can import SupportOf for C185 and
+// C187.
 package ambient
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -137,19 +140,143 @@ func InvalidEnv(envDefault string) bool {
 	return !ok
 }
 
-// enforcingBackends lists the backends that translate every Policy into a
-// native mechanism. A backend absent from it keeps its own conventions, so an
-// explicit policy there is worth a compile-time warning (C185). The names are
-// the delegate.Backend* values, spelled literally to keep this package a leaf.
-var enforcingBackends = map[string]bool{
-	"claude_code": true,
-	"claw":        true,
-	"codex":       true,
-	"pi":          true,
+// Support is how one backend handles one policy.
+type Support uint8
+
+const (
+	// Unmeasured: nothing has measured what the backend loads natively
+	// against this policy. It keeps its own conventions; the compiler warns
+	// on a declared value (C185) and the engine logs one at dispatch.
+	Unmeasured Support = iota
+	// Honoured: the backend translates the policy into its own mechanism.
+	Honoured
+	// Refused: the backend is known to load, whatever iterion passes it,
+	// instruction files the policy excludes. A declared value is refused, at
+	// compile time (C187) and at dispatch, rather than ignored; the default
+	// is applied as far as the backend can.
+	Refused
+)
+
+// verdict is one backend's answer to one policy.
+type verdict struct {
+	support Support
+	// reason says, for a refusal, what the backend loads regardless.
+	reason string
 }
 
-// Enforces reports whether a backend applies the declared policy.
-func Enforces(backend string) bool { return enforcingBackends[backend] }
+var allHonoured = [4]verdict{Workspace: {support: Honoured}, None: {support: Honoured}, Operator: {support: Honoured}, All: {support: Honoured}}
+
+const (
+	kimiWalk = "kimi reads every AGENTS.md from the repository root down to the working directory, and has no switch that skips them"
+
+	opencodeOperatorFiles = "opencode reads its global AGENTS.md and the files its global configuration lists under `instructions`, and opencode 2 walks for AGENTS.md past the repository root up to the home directory; none of it can be switched off"
+	opencodeNestedFiles   = "opencode adds the AGENTS.md of every directory it reads a file in, whatever its configuration says"
+
+	grokProjectFiles = "grok reads AGENTS.md, CLAUDE.md and the .grok, .claude and .cursor rules from the repository root down to the working directory whenever it trusts the folder, and it trusts a repository that carries no hook or MCP configuration without asking"
+)
+
+// backendVerdicts records how each backend handles each policy, indexed by
+// Policy. A backend absent from it is Unmeasured for every policy. The names
+// are the delegate.Backend* values, spelled literally to keep this package a
+// leaf.
+//
+// Honoured is earned by a measurement against the real CLI (the clilive tests
+// in pkg/backend/delegate). A refusal needs less: a policy is refused as soon
+// as the backend's own loader is seen to have no switch for it, since refusing
+// can never hand a node a file its policy excludes.
+var backendVerdicts = map[string][4]verdict{
+	"claude_code": allHonoured,
+	"claw":        allHonoured,
+	"codex":       allHonoured,
+	"pi":          allHonoured,
+	// kimi-code 2.1.1: $KIMI_CODE_HOME/AGENTS.md and ~/.agents/AGENTS.md
+	// are the operator's, the walk from the git root down to the working
+	// directory is the workspace's (TestCLILiveKimiAmbientPolicies).
+	// Workspace serves kimi a home without its AGENTS.md (kimi.go).
+	"kimi": {
+		Workspace: {support: Honoured},
+		None:      {support: Refused, reason: kimiWalk},
+		Operator:  {support: Refused, reason: kimiWalk},
+		All:       {support: Honoured},
+	},
+	// opencode 1.19.0 and 2.0.26, read from source: All is its native
+	// loading, minus the Claude-Code compatibility layer iterion pins off
+	// (OPENCODE_DISABLE_CLAUDE_CODE).
+	"opencode": {
+		Workspace: {support: Refused, reason: opencodeOperatorFiles},
+		None:      {support: Refused, reason: opencodeNestedFiles},
+		Operator:  {support: Refused, reason: opencodeNestedFiles},
+		All:       {support: Honoured},
+	},
+	// Grok Build, read from source (xai-org/grok-build@2bdd1d6). What it
+	// reads from GROK_HOME and the vendor homes has not been measured, and
+	// under permission: deny it runs with a private HOME.
+	"grok": {
+		None:     {support: Refused, reason: grokProjectFiles},
+		Operator: {support: Refused, reason: grokProjectFiles},
+	},
+}
+
+// SupportOf reports how a backend handles a policy and, for a refusal, why.
+func SupportOf(backend string, p Policy) (Support, string) {
+	verdicts, ok := backendVerdicts[backend]
+	if !ok || int(p) >= len(verdicts) {
+		return Unmeasured, ""
+	}
+	v := verdicts[p]
+	return v.support, v.reason
+}
+
+// Enforces reports whether a backend applies a policy.
+func Enforces(backend string, p Policy) bool {
+	s, _ := SupportOf(backend, p)
+	return s == Honoured
+}
+
+// EnforcingBackends lists, sorted, the backends that apply a policy.
+func EnforcingBackends(p Policy) []string {
+	var out []string
+	for b := range backendVerdicts {
+		if Enforces(b, p) {
+			out = append(out, b)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// HonouredBy lists, in Values order, the policies a backend applies.
+func HonouredBy(backend string) []string {
+	var out []string
+	for _, v := range Values {
+		if p, _ := Parse(v); Enforces(backend, p) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// Declared reports whether a policy resolved from source (ResolveSourced) was
+// chosen by someone rather than defaulted. "" counts as the default, so a task
+// built outside the executor reads as undeclared.
+func Declared(source string) bool { return source != "" && source != "default" }
+
+// Capability names a declared policy the way a refusal shows it:
+// "ambient_context: none (from node)".
+func Capability(p Policy, source string) string {
+	return fmt.Sprintf("ambient_context: %s (from %s)", p, source)
+}
+
+// Remedy is what a refusal of p on backend tells the operator: what the
+// backend loads regardless (reason), and the ways out.
+func Remedy(backend string, p Policy, reason string) string {
+	out := "drop the declared value"
+	if honoured := HonouredBy(backend); len(honoured) > 0 {
+		out = "declare a policy it applies (" + strings.Join(honoured, ", ") + ")"
+	}
+	return fmt.Sprintf("%s; %s, or run the node on a backend that applies %s (%s) — ADR-119",
+		reason, out, p, strings.Join(EnforcingBackends(p), ", "))
+}
 
 // RepoRoot returns the root of the repository holding workDir: the nearest
 // directory, workDir included, that carries a `.git` entry. That entry is a

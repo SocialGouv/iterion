@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/treenoise"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -338,8 +339,32 @@ func liveFiles(run *store.Run, mode fileMode) ([]gitlib.FileStatus, error) {
 	case modeCombined:
 		return combinedFiles(run)
 	default:
-		return gitlib.Status(run.WorkDir)
+		return noiseFree(gitlib.Status(run.WorkDir))
 	}
+}
+
+// noiseFree drops the canonical tree-noise entries from a listing: they
+// are the engine's own UNTRACKED writes (the skills mirror, a drifted
+// devbox.lock, a hard-killed tool script's scratch), not changes the
+// workflow produced — showing them as "changes not yet committed by the
+// workflow" contradicted the canonical list (#1556). The committed range
+// is not filtered: what the workflow COMMITTED is its product, noise
+// entry or not. The one case this path-only filter cannot see: a TRACKED
+// path under a noise entry that a pass genuinely worked — finalize
+// disambiguates that (runOutputPaths' tracked-mirror rule, #1571), the
+// listing does not; recoverable through the committed range, and no
+// catalog bot delivers under a tracked noise path today (#1556).
+func noiseFree(files []gitlib.FileStatus, err error) ([]gitlib.FileStatus, error) {
+	if err != nil {
+		return nil, err
+	}
+	out := make([]gitlib.FileStatus, 0, len(files))
+	for _, f := range files {
+		if !treenoise.IsNoise(f.Path) {
+			out = append(out, f)
+		}
+	}
+	return out, nil
 }
 
 // combinedFiles produces the union of the uncommitted working-tree changes
@@ -377,7 +402,7 @@ func combinedFiles(run *store.Run) ([]gitlib.FileStatus, error) {
 		}()
 	}
 
-	uncommitted, err := gitlib.Status(run.WorkDir)
+	uncommitted, err := noiseFree(gitlib.Status(run.WorkDir))
 	if err != nil {
 		if rangeCh != nil {
 			<-rangeCh

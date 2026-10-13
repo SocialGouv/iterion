@@ -278,7 +278,7 @@ func assertEveryOptionalFamilyIsOn(t *testing.T, defaults ClawDefaults) {
 	allowedUnset := map[string]string{
 		"Workspace":    "registration does not touch the disk; where tools would run is not what these tests are about",
 		"BashExtraEnv": "extra env for bash, not a family switch",
-		"Subagent":     "nil keeps claw's metadata-only agent tool, which IS the registered form",
+		"Subagent":     "nil registers the agent tool as a typed refusal, which IS the registered form",
 		"AskUser":      "nil keeps the pause/resume handler, which IS the registered form",
 		"Config":       "an empty config map still registers the `config` tool",
 		// RegisterClawAll allocates a fresh empty registry for each of

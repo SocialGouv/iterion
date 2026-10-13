@@ -112,6 +112,12 @@ type chainElement struct {
 	// FallbackIndex is set only for a launch-time run fallback stage. It
 	// preserves the launch array index even when an earlier stage was refused.
 	FallbackIndex *int
+	// CrossHarness is the run's resolved cross-harness posture riding
+	// THIS policy stage (ADR-121 § Delivery 2): active ("reuse" |
+	// "restart") makes the dispatch mark the model_fallback when this
+	// element's crossing changes backend. Runtime-only, like
+	// FallbackIndex — copied in resolveChain, never authored.
+	CrossHarness string
 }
 
 // defaultFallbackTriggers is the `on:` set a `fallbacks:` route gets
@@ -164,6 +170,7 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 			stage := fb.RunStage
 			el.FallbackIndex = &stage
 		}
+		el.CrossHarness = fb.CrossHarness
 		if el.Provider == "auto" {
 			el.Provider = "" // explicit auto → process-env precedence
 		}

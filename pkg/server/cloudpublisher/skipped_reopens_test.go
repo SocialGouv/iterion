@@ -64,7 +64,7 @@ func TestApiKeyUsable_ReportsTheEarliestReopening(t *testing.T) {
 		}
 	}
 	skips := &skipTracker{}
-	usable := p.apiKeyUsable(context.Background(), scope, "run-x", skips)
+	usable := p.apiKeyUsable(context.Background(), scope, "run-x", "", skips)
 	if usable(secrets.ApiKey{Provider: secrets.ProviderAnthropic, Name: "late", Fingerprint: "fp-late"}) {
 		t.Fatal("a refused key was handed over")
 	}

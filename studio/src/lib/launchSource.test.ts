@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   canLaunchFromConfirmedDisk,
   isPathWithinWorkDir,
+  launchCarriesProgram,
   sourceForLaunch,
 } from "./launchSource";
 
@@ -57,6 +58,42 @@ describe("launch source authority", () => {
     expect(sourceForLaunch({ ...input, serverInfo: null })).toBe(input.source);
     expect(sourceForLaunch({ ...input, confirmedDiskPath: null, serverInfo: local })).toBe(input.source);
     expect(sourceForLaunch({ ...input, filePath: "", serverInfo: local })).toBe(input.source);
+  });
+});
+
+describe("a launch that names its program", () => {
+  const cloud = { mode: "cloud", work_dir: "" } as const;
+
+  it("reads a path as a program only where the server can read one", () => {
+    const path = "bots/animals/main.bot";
+    // Local, and unknown-yet mode: the server reads the file itself, so the
+    // path alone names the program — refusing it would refuse the legitimate
+    // confirmed-disk launch, which sends no source at all.
+    expect(launchCarriesProgram({ filePath: path, source: null, serverInfo: local })).toBe(true);
+    expect(launchCarriesProgram({ filePath: path, source: null })).toBe(true);
+    expect(launchCarriesProgram({ filePath: path, source: null, serverInfo: null })).toBe(true);
+    // Cloud: the pod has no operator filesystem. A bare path there is either
+    // refused by name or resolved to a catalog bot's OWN bytes — neither is
+    // the program whose fields this form showed.
+    expect(launchCarriesProgram({ filePath: path, source: null, serverInfo: cloud })).toBe(false);
+    expect(launchCarriesProgram({ filePath: path, source: "", serverInfo: cloud })).toBe(false);
+  });
+
+  it("reads the inline render as a program in every mode", () => {
+    const source = "workflow inline:\n  entry: done\n";
+    expect(launchCarriesProgram({ filePath: "", source, serverInfo: cloud })).toBe(true);
+    expect(launchCarriesProgram({ filePath: "", source, serverInfo: local })).toBe(true);
+    // A cloud ?file= launch always carries its source (sourceForLaunch omits
+    // it only for a confirmed LOCAL disk file), so the path never costs it
+    // the gate.
+    expect(
+      launchCarriesProgram({ filePath: "bots/animals/main.bot", source, serverInfo: cloud }),
+    ).toBe(true);
+  });
+
+  it("refuses a launch that names nothing at all", () => {
+    expect(launchCarriesProgram({ filePath: "", source: null, serverInfo: local })).toBe(false);
+    expect(launchCarriesProgram({ filePath: "", source: "", serverInfo: null })).toBe(false);
   });
 });
 

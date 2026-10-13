@@ -407,3 +407,43 @@ func TestAContractCarriesTheVarEnumAndPositionsTheWorkflowRefusal(t *testing.T) 
 		t.Fatalf("the workflow refusal is not at the workflow's line (12): %+v", d)
 	}
 }
+
+// A producer inside a fan-out branch body executes once PER branch (per
+// item under fan_out_each) under the same node id, and the port capture
+// keeps one entry per node id — the declared port projects whichever
+// branch execution finished last. A warning names the nondeterminism and
+// the contract still compiles; a producer at the convergence node — where
+// the branches join and execution is single again — draws nothing.
+// Mutation: drop the fanBody check in bindOutput and the fan-out case
+// reddens.
+func TestAnOutputBoundInsideAFanOutBodyIsAWarning(t *testing.T) {
+	src := "vars:\n  goal: string\n\nschema report:\n  summary: string\n  ok: bool\n\nprompt build_user:\n  Work toward {{vars.goal}} on {{outputs.pick.item}}.\n\nprompt lane_user:\n  Lane work toward {{vars.goal}}.\n\nprompt merge_user:\n  Lane summaries: {{outputs.left.summary}} and {{outputs.right.summary}}.\n\nagent build:\n  model: \"m\"\n  user: build_user\n  output: report\n\nagent left:\n  model: \"m\"\n  user: lane_user\n  output: report\n\nagent right:\n  model: \"m\"\n  user: lane_user\n  output: report\n\nagent merge:\n  model: \"m\"\n  user: merge_user\n  output: report\n\nrouter pick:\n  mode: fan_out_each\n  over: \"[\\\"a\\\", \\\"b\\\"]\"\n  as: item\n\ncontract c:\n  inputs:\n    goal: string\n  outputs:\n    summary: string\n      from: %s.summary\n\nworkflow w:\n  contract: c\n  entry: pick\n  pick -> build\n  build -> left when ok\n  build -> right else\n  left -> merge\n  right -> merge\n  merge -> done\n"
+	cr := Compile(parser.Parse("x.bot", fmt.Sprintf(src, "build")).File)
+	if len(errorCodes(cr)) != 0 {
+		t.Fatalf("errors: %v", cr.Diagnostics)
+	}
+	d := diagWith(cr, DiagContractOutputOffFanOut, `node "build" executes more than once across parallel branches or loop/foreach iterations`)
+	if d == nil || d.Severity != SeverityWarning || d.Line == 0 {
+		t.Fatalf("no positioned C310 warning: %v", cr.Diagnostics)
+	}
+	// The convergence node is where the branches join and execution is
+	// single again: the deterministic answer, no warning.
+	if cr := Compile(parser.Parse("x.bot", fmt.Sprintf(src, "merge")).File); diagWith(cr, DiagContractOutputOffFanOut, "") != nil {
+		t.Fatalf("a producer at the convergence drew C310: %v", cr.Diagnostics)
+	}
+}
+
+// The same capture under an iteration body: a port bound to a node inside
+// a foreach (or a bounded loop cycle) projects whichever iteration finished
+// last. Mutation: revert the Loop.Body union in compilePublicContracts and
+// the foreach case reddens.
+func TestAnOutputBoundInsideAForeachBodyIsAWarning(t *testing.T) {
+	src := "vars:\n  goal: string\n\nschema report:\n  summary: string\n  ok: bool\n\nprompt build_user:\n  Work toward {{vars.goal}}.\n\nprompt merge_user:\n  Summaries: {{outputs.build.summary}}.\n\nagent build:\n  model: \"m\"\n  user: build_user\n  output: report\n\nagent merge:\n  model: \"m\"\n  user: merge_user\n  output: report\n\ncontract c:\n  inputs:\n    goal: string\n  outputs:\n    summary: string\n      from: build.summary\n\nworkflow w:\n  contract: c\n  entry: build\n  build -> merge when ok as foreach scan(item in \"[\\\"a\\\", \\\"b\\\"]\")\n  build -> merge\n  merge -> done\n"
+	cr := Compile(parser.Parse("x.bot", src).File)
+	if len(errorCodes(cr)) != 0 {
+		t.Fatalf("errors: %v", cr.Diagnostics)
+	}
+	if diagWith(cr, DiagContractOutputOffFanOut, `node "build" executes more than once`) == nil {
+		t.Fatalf("no C310 for a producer inside a foreach body: %v", cr.Diagnostics)
+	}
+}

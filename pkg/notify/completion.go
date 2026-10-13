@@ -61,6 +61,10 @@ type Notifier struct {
 	logger        *iterlog.Logger
 	allowPrivate  bool
 	signingSecret string
+	// resolver, when set, answers the SSRF guard's host lookup instead of
+	// net.DefaultResolver — the seam a test injects so vetting a callback
+	// URL never resolves a real name (#2080). nil keeps the system resolver.
+	resolver httpdial.HostResolver
 }
 
 // Option configures a Notifier.
@@ -83,6 +87,14 @@ func WithAllowPrivate(allow bool) Option {
 // added, and a receiver expecting one should reject the request.
 func WithSigningSecret(secret string) Option {
 	return func(n *Notifier) { n.signingSecret = secret }
+}
+
+// WithResolver pins the DNS lookup the SSRF guard performs — and so the
+// address the pinned delivery dials — to res. A test injects a stub so a
+// hostname callback URL is vetted without live DNS (#2080); nil (the
+// default) resolves through net.DefaultResolver as production always has.
+func WithResolver(res httpdial.HostResolver) Option {
+	return func(n *Notifier) { n.resolver = res }
 }
 
 // New builds a Notifier. timeout bounds each delivery attempt; zero
@@ -319,9 +331,16 @@ func (n *Notifier) vetURL(rawURL string) error {
 // resolveCallbackIP resolves host to a single validated IP, returned so the
 // caller can PIN it into the dialer — closing the DNS-rebinding window that
 // exists when validation and the actual request each resolve the host
-// independently. Delegates to the shared SSRF guard (pkg/secure/httpdial);
+// independently. Delegates to the shared SSRF guard (pkg/secure/httpdial)
+// through the notifier's resolver (WithResolver), net.DefaultResolver when
+// none was injected; both vetting and the pinned delivery read the same
+// field, so the address that is validated stays the address that is dialed.
 // allowPrivate inverts strict mode (set in local/dev so a callback to a
 // loopback receiver is permitted). Resolution fails closed.
 func (n *Notifier) resolveCallbackIP(ctx context.Context, host string) (net.IP, error) {
-	return httpdial.ResolvePublicHost(ctx, host, !n.allowPrivate)
+	res := n.resolver
+	if res == nil {
+		res = net.DefaultResolver
+	}
+	return httpdial.ResolvePublicHostWith(ctx, res, host, !n.allowPrivate)
 }

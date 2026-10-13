@@ -315,6 +315,42 @@ workflow w:
 		expectNoDiag(t, r, DiagPermissionRulesNoGate)
 	})
 
+	t.Run("a_recovery_bound_without_policy_recover_is_silent_and_C106_speaks", func(t *testing.T) {
+		// The reader test is WIDER than the gate: NodeUsesLLM counts a tool
+		// node on max_agent_attempts > 0 alone, while the ladder runs rungs
+		// 3-4 only under policy: recover (pkg/backend/model,
+		// TestOnlyPolicyRecoverHandsTheGoalToTheRungAgent). So C111 stays
+		// silent on this graph although nothing can read the list — stated
+		// as measured in docs/permissions.md, and tolerable only because
+		// C106 names the dead recovery config, which is the author's real
+		// next step. Red when C111 narrows (then the doc paragraph is stale,
+		// not the code) or when C106 stops reaching this shape (then the
+		// author is left with silence on both).
+		src := `
+schema empty:
+  ok: bool
+
+tool deploy:
+  command: "./deploy.sh"
+  output: empty
+  goal: "the service is deployed"
+  postcondition: "./check.sh"
+  policy: required
+  recovery:
+    max_agent_attempts: 1
+    agent_tools: [read_file, bash]
+
+workflow w:
+  entry: deploy
+  permission: deny
+  deny: ["Bash(rm -rf:*)"]
+  deploy -> done
+`
+		r := compileFile(t, src)
+		expectNoDiag(t, r, DiagPermissionRulesNoGate)
+		expectDiagMessage(t, r, DiagRecoveryWithoutRecov, "recovery rungs only run under policy: recover")
+	})
+
 	t.Run("a_recovery_agent_rung_is_a_reader_even_under_an_off_gate", func(t *testing.T) {
 		// With no agent/judge node and the gate off, the absolute arm
 		// ("nothing can ever read them") would fire — and be false: an

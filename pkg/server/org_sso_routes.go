@@ -313,7 +313,12 @@ func (s *Server) teamControlsGitHubOrg(ctx context.Context, teamID, org string) 
 		if err != nil {
 			continue
 		}
-		role, active, err := forgegithub.New(s.forgeHTTPClient(), conn.BaseURL(), token).OrgMembershipRole(ctx, org)
+		httpClient := s.forgeHTTPClient()
+		if conn.Kind == forge.KindGitHubApp {
+			// A github_app connection's sealed token is its installation's.
+			httpClient = forge.InstallationClient(httpClient, conn.InstallationID)
+		}
+		role, active, err := forgegithub.New(httpClient, conn.BaseURL(), token).OrgMembershipRole(ctx, org)
 		if err == nil && active && role == "admin" {
 			return true
 		}

@@ -3,6 +3,8 @@ package cloudpublisher
 import (
 	"context"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"testing"
 	"time"
 
@@ -40,7 +42,7 @@ func TestNewAccountMeterConvergesWhenTheProviderReportsNoWindow(t *testing.T) {
 	}
 
 	for pass := range 3 {
-		until, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload"))
+		until, _, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, "", rec, []byte("payload"))
 		if !until.IsZero() {
 			t.Fatalf("pass %d: an empty answer says nothing is closed", pass)
 		}
@@ -54,7 +56,7 @@ func TestNewAccountMeterConvergesWhenTheProviderReportsNoWindow(t *testing.T) {
 	// again rather than assumed answered forever.
 	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope(poolTeam), rec.Fingerprint)
 	f.pub.rememberProbeWithoutReading(key, time.Now().Add(-2*time.Hour))
-	if _, _ = f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload")); probes != 2 {
+	if _, _, _ = f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, "", rec, []byte("payload")); probes != 2 {
 		t.Fatalf("provider probes=%d, want the account re-asked once the memo aged out", probes)
 	}
 }
@@ -86,7 +88,7 @@ func TestNewAccountMeterConvergesWhenTheProviderCannotBeReached(t *testing.T) {
 	}
 
 	for pass := range 3 {
-		until, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload"))
+		until, _, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, "", rec, []byte("payload"))
 		// The documented posture on an unavailable provider: fail OPEN. The
 		// fix must stop the re-probing without turning an outage into a wall.
 		if !until.IsZero() {
@@ -101,7 +103,7 @@ func TestNewAccountMeterConvergesWhenTheProviderCannotBeReached(t *testing.T) {
 	// the account is asked again rather than assumed unreachable forever.
 	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope(poolTeam), rec.Fingerprint)
 	f.pub.rememberProbeWithoutReading(key, time.Now().Add(-2*time.Hour))
-	if _, _ = f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload")); probes != 2 {
+	if _, _, _ = f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, "", rec, []byte("payload")); probes != 2 {
 		t.Fatalf("provider probes=%d, want the account re-asked once the memo aged out", probes)
 	}
 }
@@ -129,7 +131,7 @@ func TestNewAccountMeterChecksProviderBeforeFirstAdmission(t *testing.T) {
 	}
 	// The first run holds the donor's capacity lease. Check the same account
 	// independently of pool availability: its learned refusal must be reused.
-	if until, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("unused because a fresh reading exists")); until.IsZero() {
+	if until, _, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, "", rec, []byte("unused because a fresh reading exists")); until.IsZero() {
 		t.Fatal("second admission forgot the account's provider refusal")
 	}
 	if probes != 1 {
@@ -138,7 +140,7 @@ func TestNewAccountMeterChecksProviderBeforeFirstAdmission(t *testing.T) {
 }
 
 func TestPlatformForfaitTriesNextRankThenRestoresWhenAllClosed(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,5 +191,50 @@ func TestPlatformForfaitTriesNextRankThenRestoresWhenAllClosed(t *testing.T) {
 	}
 	if got := b.OAuthRecordConnectedAt["claude_code"]; !got.Equal(first.CreatedAt) {
 		t.Fatalf("the restored slot carries connect time %s, want the primary record's %s", got, first.CreatedAt)
+	}
+}
+
+// D13: a pool-stamped launch consults no shared tier. The SAME fixture
+// serves the platform forfait unstamped and must leave the pool
+// bundle without it — the pod would hold the platform's key. Red when
+// the shared-tier skip is dropped.
+func TestPoolLaunchSkipsSharedTiers(t *testing.T) {
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oauth := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform-primary")
+	rs := secrets.NewMemoryRunSecretsStore()
+	p := &Publisher{oauthForfait: oauth, runSecrets: rs, sealer: sealer, logger: testLogger()}
+
+	// Control: unstamped, the platform tier serves.
+	b := resolveBundle(t, p, rs, sealer, "pool-skip-unstamped", "team1", "webhook:config")
+	if b.OAuthFingerprints["claude_code"] == "" {
+		t.Fatal("fixture drifted: the unstamped resolve served no platform credential")
+	}
+
+	// Pool-stamped: the shared tier is out of the walk.
+	ctx := store.WithTenant(t.Context(), "team1")
+	creds, err := p.resolveAndSealCredentials(ctx, "pool-skip", "", "team1", "webhook:config", "", "honorabilite", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	if creds.secretsRef == "" {
+		// Nothing of the team's own funds a route and the shared tiers
+		// are out of the walk: no bundle is stored at all — the strongest
+		// form of "no platform credential inside".
+		return
+	}
+	rec, err := rs.Get(ctx, creds.secretsRef)
+	if err != nil {
+		t.Fatalf("RunSecrets.Get: %v", err)
+	}
+	got, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, "honorabilite", "pool-skip", rec.KeyID, rec.SealedBundle)
+	if err != nil {
+		t.Fatalf("OpenRunBundle: %v", err)
+	}
+	if got.OAuthFingerprints["claude_code"] != "" || got.PlatformSourced["claude_code"] {
+		t.Fatalf("the pool bundle carries a platform credential: fingerprints=%v platform=%v", got.OAuthFingerprints, got.PlatformSourced)
 	}
 }

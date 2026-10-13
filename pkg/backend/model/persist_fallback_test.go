@@ -300,7 +300,7 @@ func TestChainSameBackendClawCarriesTheResume(t *testing.T) {
 		return &delegate.Task{NodeID: "author", Model: "openai/gpt-5.6-terra", SessionID: "session", SessionFingerprint: "claw:openai",
 			ResumeConversation: json.RawMessage(`[{"role":"assistant"}]`), ResumePendingToolUseID: "pending", ResumeAnswer: "yes"}, nil
 	})
-	_, _, task, err := build(context.Background(), 1, chainElement{Backend: "claw", Model: "anthropic/claude-opus-5"})
+	_, _, task, err := build(context.Background(), 1, chainElement{Backend: "claw", Model: "anthropic/claude-opus-5"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

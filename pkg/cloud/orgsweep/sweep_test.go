@@ -153,6 +153,14 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	ins("audit_events", bson.M{"_id": "au-b", "tenant_id": orgB})
 	ins("org_usage", bson.M{"_id": "org|" + orgA + "|2026-06", "org_id": orgA})
 	ins("org_usage", bson.M{"_id": "org|" + orgB + "|2026-06", "org_id": orgB})
+	// The tenant routing policies: composite _id ("org:<id>" /
+	// "team:<id>"), a shape neither the tenant_id nor the team_id filter
+	// arm can reach. Left behind, a purged org's governance artifact
+	// survives the purge.
+	ins("llm_routing_policies", bson.M{"_id": "org:" + orgA, "policy": bson.M{"pair_order": bson.A{"claw+zai_key"}}})
+	ins("llm_routing_policies", bson.M{"_id": "org:" + orgB, "policy": bson.M{"pair_order": bson.A{"claw+zai_key"}}})
+	ins("llm_routing_policies", bson.M{"_id": "team:" + teamA, "policy": bson.M{"pair_order": bson.A{"claw+zai_key"}}})
+	ins("llm_routing_policies", bson.M{"_id": "team:" + teamB, "policy": bson.M{"pair_order": bson.A{"claw+zai_key"}}})
 
 	cascade := func(ctx context.Context, orgID string) error {
 		teams, err := st.ListTeamsByOrg(ctx, orgID)
@@ -184,6 +192,12 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	}
 
 	// A's data is gone…
+	if n := count("llm_routing_policies", bson.M{"_id": "org:" + orgA}); n != 0 {
+		t.Errorf("routing policy of org A: got %d, want 0", n)
+	}
+	if n := count("llm_routing_policies", bson.M{"_id": "team:" + teamA}); n != 0 {
+		t.Errorf("routing policy of team A: got %d, want 0", n)
+	}
 	if n := count("runs", teamFilter(teamA)); n != 0 {
 		t.Errorf("runs for team A: got %d, want 0", n)
 	}
@@ -215,7 +229,15 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 		t.Errorf("GetTeam(A) err = %v, want ErrNotFound", err)
 	}
 
-	// …and B's data is fully intact (no over-deletion).
+	// …and B's data is fully intact (no over-deletion). The routing
+	// policies are the collection this purge gained — a mutant purging
+	// every (org|team):* id stays green without these.
+	if n := count("llm_routing_policies", bson.M{"_id": "org:" + orgB}); n != 1 {
+		t.Errorf("routing policy of org B: got %d, want 1 (no over-deletion)", n)
+	}
+	if n := count("llm_routing_policies", bson.M{"_id": "team:" + teamB}); n != 1 {
+		t.Errorf("routing policy of team B: got %d, want 1 (no over-deletion)", n)
+	}
 	if n := count("runs", teamFilter(teamB)); n != 1 {
 		t.Errorf("runs for team B: got %d, want 1", n)
 	}

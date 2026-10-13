@@ -171,6 +171,43 @@ func TestValidateCarriesTheEditOnTheDiagnostic(t *testing.T) {
 	}
 }
 
+// A group member's edit rides EVERY instantiation's diagnostic: one edit at
+// the group's literal, and each C137 the uses raise carries it — not only
+// the first match.
+func TestValidateCarriesTheGroupEditOnEveryUse(t *testing.T) {
+	inTempWorkspace(t)
+	group := "dsl: 2\n\nvars:\n  base: string = \"main\"\n\ngroup g:\n  tool assess:\n    command: \"git checkout '{{vars.base}}'\"\n\nuse g as u1\nuse g as u2\n\nworkflow w:\n  worktree: none\n  sandbox: none\n  entry: u1.assess\n  u1.assess -> u2.assess\n  u2.assess -> done\n"
+	path := writeBot(t, "group.bot", group)
+	jp, out := jsonPrinter()
+	if err := RunValidateWith(path, jp, ValidateOptions{}); err != nil {
+		t.Fatalf("validate: %v\n%s", err, out.String())
+	}
+	var res struct {
+		Diagnostics []struct {
+			Code string `json:"code"`
+			Edit *struct {
+				Nodes []string `json:"nodes"`
+			} `json:"edit"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	var carried, withBoth int
+	for _, d := range res.Diagnostics {
+		if d.Code != "C137" {
+			continue
+		}
+		carried++
+		if d.Edit != nil && len(d.Edit.Nodes) == 2 {
+			withBoth++
+		}
+	}
+	if carried != 2 || withBoth != 2 {
+		t.Fatalf("%d C137 diagnostics, %d carry the group edit; want 2 and 2:\n%s", carried, withBoth, out.String())
+	}
+}
+
 // A C137 in a fragment is fixed whether the main, the fragment or the
 // bundle directory is named: the unit is read from the bot's main, and
 // fixing a bot fixes its unit.

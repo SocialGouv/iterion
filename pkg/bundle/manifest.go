@@ -309,6 +309,12 @@ type RoutingSpec struct {
 	RefusedPinnedKey string   `yaml:"refused_pinned_key,omitempty" json:"refused_pinned_key,omitempty"`
 	Strict           *bool    `yaml:"strict,omitempty" json:"strict,omitempty"`
 	Locks            []string `yaml:"locks,omitempty" json:"locks,omitempty"`
+	// ModelClasses is here BY NAME (delivery 2, #2210 S2): a field added
+	// to the shared struct does not silently become author-writable
+	// manifest YAML — this projection is the author's explicit door to
+	// the class table, for a bot tuned to a model. Same rules as the
+	// shared field: entry-wise per class×family, bare ids.
+	ModelClasses map[string]map[string]string `yaml:"model_classes,omitempty" json:"model_classes,omitempty"`
 }
 
 // policy projects the block onto the shared record. nil-safe.
@@ -322,6 +328,7 @@ func (r *RoutingSpec) policy() llmroute.Policy {
 		RefusedPinnedKey: r.RefusedPinnedKey,
 		Strict:           r.Strict,
 		Locks:            r.Locks,
+		ModelClasses:     r.ModelClasses,
 	}
 }
 
@@ -622,13 +629,28 @@ func knownForgeEventNames() []string {
 // not follow the head SHA blocks the PR it guards.
 const ForgeScopeStatuses = "statuses"
 
+// The merge-gate gesture scopes. Declaring one does not itself perform
+// anything: it is what mints the matching capability into the run's publish
+// grant (pkg/server forge publish), so an operator reads — and can revoke —
+// exactly which bots may cast approvals, arm merges or request reviewers on
+// a repo. All three are write-or-nothing: a gesture either crosses the
+// deterministic publish surface or the bot does not have it.
+const (
+	ForgeScopeApprovals = "approvals" // cast an MR approval (MergeApprover)
+	ForgeScopeMerge     = "merge"     // arm merge-when-pipeline-succeeds (AutoMergeArmer)
+	ForgeScopeReviewers = "reviewers" // add reviewers (PullReviewerSetter)
+)
+
 var (
 	knownForgeScopeKeys = map[string]bool{
-		"pull_requests":    true,
-		"repository":       true,
-		"issues":           true,
-		"webhooks":         true,
-		ForgeScopeStatuses: true, // commit statuses (the merge gate)
+		"pull_requests":     true,
+		"repository":        true,
+		"issues":            true,
+		"webhooks":          true,
+		ForgeScopeStatuses:  true, // commit statuses (the merge gate)
+		ForgeScopeApprovals: true, // MR approvals (the merge gate's approve)
+		ForgeScopeMerge:     true, // auto-merge arming (the merge gate's arm)
+		ForgeScopeReviewers: true, // reviewer requests (escalation)
 	}
 	knownForgeScopeLevels = map[string]bool{
 		"read":  true,
@@ -646,9 +668,12 @@ type ForgeRequirements struct {
 
 	// TokenScopes is a normalized permission map (key -> "read" |
 	// "write" | "admin"); keys ∈ {pull_requests, repository, issues,
-	// webhooks}. The provisioner always needs webhook-admin regardless
-	// of this map — declaring it is informational. Unioned across
-	// co-enabled bots to size the requested OAuth scope.
+	// webhooks, statuses, approvals, merge, reviewers}. The provisioner
+	// always needs webhook-admin regardless of this map — declaring it is
+	// informational, except the merge-gate scopes (statuses, approvals,
+	// merge, reviewers), which mint the matching capabilities into the
+	// bots' publish grants. Unioned across co-enabled bots to size the
+	// requested OAuth scope.
 	TokenScopes map[string]string `yaml:"token_scopes,omitempty"`
 
 	// Secret is the workflow-secret name the bundle's main.bot

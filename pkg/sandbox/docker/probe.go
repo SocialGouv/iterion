@@ -171,8 +171,9 @@ func ValidateSpecMounts(spec sandbox.Spec) error {
 	}
 	// Env vars are injected via `docker run --env K=V`; the same
 	// newline/NUL/`=`-in-key checks Driver.Start applies must hold here,
-	// else a malformed value (e.g. from a devcontainer containerEnv)
-	// passes the doctor green but fails at container start. Sorted so the
+	// else a malformed value — from the workflow's `sandbox.env:`, or a
+	// `${localEnv:…}` expansion of it — passes the doctor green but
+	// fails at container start. Sorted so the
 	// reported offender is deterministic across map iterations.
 	envKeys := make([]string, 0, len(spec.Env))
 	for k := range spec.Env {

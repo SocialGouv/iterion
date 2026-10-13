@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,8 +51,29 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("botsource: ensure %s indexes: %w", CollectionName, err)
 	}
+	// The history's retention: a Mongo TTL index on created_at expires each
+	// snapshot 30 days after it was written — Mongo's sweeper runs about
+	// hourly, so the effective floor is 30 days minus that cadence. The
+	// FLOOR is the invariant: a mission receipt pins a version for the
+	// minutes its rewind takes, and 30 days ≫ any mission lifetime, so a
+	// pin the TTL removed names a receipt nobody is mid-flight on. The
+	// same sweep retires the failed-create orphan snapshots for free —
+	// they carry created_at like every snapshot (#1517).
+	_, err = s.versions.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "created_at", Value: 1}},
+		Options: options.Index().SetName("created_at_ttl").SetExpireAfterSeconds(int32((BotSourceVersionTTLDays * 24 * time.Hour).Seconds())),
+	})
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("botsource: ensure %s indexes: %w", VersionsCollectionName, err)
+	}
 	return nil
 }
+
+// BotSourceVersionTTLDays is the snapshot retention the TTL index enforces.
+// Any pin a reader holds lives minutes; thirty days is three orders of
+// magnitude above it, and the purge API exists for the deletions that
+// cannot wait out the clock.
+const BotSourceVersionTTLDays = 30
 
 // snapshotVersion appends one version snapshot to the history collection.
 // The snapshot document's _id is "<row id>:<version>" — injective (the
@@ -62,6 +85,11 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 func (s *MongoStore) snapshotVersion(ctx context.Context, bs BotSource) error {
 	snap := bs
 	snap.ID = fmt.Sprintf("%s:%d", bs.ID, bs.Version)
+	// The snapshot's created_at is the WRITE time, not the row's: Update
+	// never rewrites the row's created_at, and the TTL index expires on
+	// THIS field — copying the row's would measure the row's age and sweep
+	// every version published past 30 days of it, pin and all (#1517).
+	snap.CreatedAt = time.Now().UTC()
 	if _, err := s.versions.InsertOne(ctx, snap); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			return nil
@@ -69,6 +97,100 @@ func (s *MongoStore) snapshotVersion(ctx context.Context, bs BotSource) error {
 		return fmt.Errorf("botsource: snapshot version %d of %s/%s: %w", bs.Version, bs.TenantID, bs.Slug, err)
 	}
 	return nil
+}
+
+// GetVersionAtOrBefore is the mongo twin of the memory one: the newest
+// snapshot of (tenant, id) at or below maxVersion. The snapshot _id composes
+// "<row id>:<version>", so the row identity is matched by prefix and
+// CONFIRMED by parsing — a prefix alone would read a different row whose id
+// extends this one's ("a" would read "a:b"'s snapshots). Few versions live
+// per row; the scan is bounded.
+func (s *MongoStore) GetVersionAtOrBefore(ctx context.Context, tenantID, id string, maxVersion int) (BotSource, error) {
+	if tenantID == "" {
+		return BotSource{}, ErrTenantMissing
+	}
+	if ctxTenant, ok := store.TenantFromContext(ctx); ok && ctxTenant != "" && ctxTenant != tenantID {
+		return BotSource{}, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q: %w", ctxTenant, tenantID, ErrNotFound)
+	}
+	prefix := id + ":"
+	cur, err := s.versions.Find(ctx, bson.M{
+		"tenant_id": tenantID,
+		"version":   bson.M{"$lte": maxVersion},
+	})
+	if err != nil {
+		return BotSource{}, fmt.Errorf("botsource: versions at or before %d of %s/%s: %w", maxVersion, tenantID, id, err)
+	}
+	defer cur.Close(ctx)
+	best, bestV := BotSource{}, 0
+	for cur.Next(ctx) {
+		var snap BotSource
+		if err := cur.Decode(&snap); err != nil {
+			return BotSource{}, fmt.Errorf("botsource: decode version snapshot: %w", err)
+		}
+		rest, ok := strings.CutPrefix(snap.ID, prefix)
+		if !ok || rest == "" || strings.Contains(rest, ":") {
+			continue // a different row whose id extends this one's
+		}
+		v, err := strconv.Atoi(rest)
+		if err != nil || v > maxVersion || v <= bestV {
+			continue
+		}
+		best, bestV = snap, v
+	}
+	if err := cur.Err(); err != nil {
+		return BotSource{}, fmt.Errorf("botsource: versions at or before %d of %s/%s: %w", maxVersion, tenantID, id, err)
+	}
+	if bestV == 0 {
+		return BotSource{}, ErrNotFound
+	}
+	// The composite _id stays in the document: the caller keys rows by
+	// their identity, and a composite leaking out aliases nothing today
+	// and everything tomorrow (GetByVersion's own comment).
+	best.ID = id
+	return best, nil
+}
+
+// PurgeHistory removes every snapshot of (tenant, id) — identified by the
+// same prefix-and-parse the read uses — the live row untouched, and returns
+// how many snapshots went.
+func (s *MongoStore) PurgeHistory(ctx context.Context, tenantID, id string) (int64, error) {
+	if tenantID == "" {
+		return 0, ErrTenantMissing
+	}
+	if ctxTenant, ok := store.TenantFromContext(ctx); ok && ctxTenant != "" && ctxTenant != tenantID {
+		return 0, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q: %w", ctxTenant, tenantID, ErrNotFound)
+	}
+	prefix := id + ":"
+	cur, err := s.versions.Find(ctx, bson.M{"tenant_id": tenantID})
+	if err != nil {
+		return 0, fmt.Errorf("botsource: purge history of %s/%s: %w", tenantID, id, err)
+	}
+	defer cur.Close(ctx)
+	var ids []string
+	for cur.Next(ctx) {
+		var snap BotSource
+		if err := cur.Decode(&snap); err != nil {
+			return 0, fmt.Errorf("botsource: purge history: decode snapshot: %w", err)
+		}
+		rest, ok := strings.CutPrefix(snap.ID, prefix)
+		if !ok || rest == "" || strings.Contains(rest, ":") {
+			continue
+		}
+		if _, err := strconv.Atoi(rest); err == nil {
+			ids = append(ids, snap.ID)
+		}
+	}
+	if err := cur.Err(); err != nil {
+		return 0, fmt.Errorf("botsource: purge history of %s/%s: %w", tenantID, id, err)
+	}
+	if len(ids) == 0 {
+		return 0, ErrNotFound
+	}
+	res, err := s.versions.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return 0, fmt.Errorf("botsource: purge history of %s/%s: %w", tenantID, id, err)
+	}
+	return res.DeletedCount, nil
 }
 
 // withTenantFilter pins every query to the caller's tenant, so a source can

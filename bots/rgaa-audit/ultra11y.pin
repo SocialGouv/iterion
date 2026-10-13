@@ -1,0 +1,11 @@
+# The one authored pin of the ultra11y engine for the rgaa-audit bot (Acci).
+# Read by scripts/ultra11y-pin.sh (CI, Taskfile, the runner image) and asserted
+# by bots/rgaa_audit_engine_contract_test.go, which also holds
+# scripts/ultra11y-engine/{package.json,package-lock.json} equal to it.
+# size and sha256 = scripts/ultra11y.mjs inside the npm tarball of that version
+# (identical to the file at the upstream git tag); integrity = the tarball's.
+# Values are exact: no surrounding whitespace, no CRLF.
+version=5.42.1
+sha256=2f9d766cd0c143fbd720e0cf7e9463562942d1df5d0dae35510e58b1bb4e72a1
+size=3665301
+integrity=sha512-2ZQfJIOjlFDfldBlerWi106RuWW3EvkhHZOz8gIOGTZrmro2ozJh7zjHZRuPv+VQzzgOAnu102ShbSSfoonuBA==

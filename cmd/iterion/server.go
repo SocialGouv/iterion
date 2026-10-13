@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
@@ -301,7 +302,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	// AES-GCM master key for sealing BYOK + OAuth credentials at
 	// rest. Built early so the publisher can pick up the BYOK store.
-	sealer, err := secrets.NewAESGCMSealerFromBase64(cfg.Auth.SecretsKey)
+	if cfg.Auth.SecretsKeys != "" && cfg.Auth.SecretsKey != "" {
+		logger.Warn("both ITERION_SECRETS_KEYS and ITERION_SECRETS_KEY are set; the ring wins and the bare key is ignored")
+	}
+	if cfg.Auth.SecretsKeyID != "" && cfg.Auth.SecretsKeys == "" {
+		logger.Warn("ITERION_SECRETS_KEY_ID is set without ITERION_SECRETS_KEYS; the id is ignored")
+	}
+	sealer, err := secrets.NewKeyRingFromConfig(cfg.Auth.SecretsKey, cfg.Auth.SecretsKeys, cfg.Auth.SecretsKeyID)
 	if err != nil {
 		return fmt.Errorf("server: build sealer: %w", err)
 	}
@@ -343,6 +350,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// instance, like CapPolicy: the admin write invalidates the server's,
 	// this one converges within the resolver's TTL bound.
 	platformCredAudience := platformcfg.NewResolver[platformcfg.PlatformCredentials](stores.platformCreds, logger.Warn)
+	// Capacity reservations. ONE resolver shared by the server's launch gate
+	// and the publisher's credential walk, so an admin write reaches both at
+	// once — a floor honoured by one and not the other would hold a band the
+	// other hands out.
+	budgetFloorResolver := platformcfg.NewResolver[budgetfloor.Policy](stores.budgetFloor, logger.Warn)
 	// The shared-tier ordering knobs' env defaults are read on every launch;
 	// a value neither parses is refused here, at boot, rather than read as
 	// the built-in default.
@@ -408,6 +420,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// refused one or the tiers stop being a fallback chain. Own
 		// resolver instance — the admin PUT invalidates the server's, this
 		// one converges within the resolver's TTL bound.
+		// The reservations that LOWER the cap above for every bot they do not
+		// name; the band between the two ceilings is what stays available to
+		// the reserved workload after the others have been passed over.
+		BudgetFloor: budgetFloorResolver,
 		CapPolicy: func() usagecap.PolicySource {
 			envPol, envErr := usagecap.FromEnv()
 			if envErr != nil {
@@ -653,6 +669,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		BotVarsResolver:             botVarsResolver,
 		SandboxSettings:             stores.sandboxCfg,
 		SandboxResolver:             sandboxResolver,
+		BudgetFloorSettings:         stores.budgetFloor,
+		BudgetFloorResolver:         budgetFloorResolver,
 		PlatformCredentialsSettings: stores.platformCreds,
 		PlatformCredentialsResolver: platformCredAudience,
 		WebhookConfigs:              stores.webhooks.Configs,
@@ -780,6 +798,7 @@ type cloudStores struct {
 	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
 	botVars          *platformcfg.MongoStore[platformcfg.BotVars]
 	platformCreds    *platformcfg.MongoStore[platformcfg.PlatformCredentials]
+	budgetFloor      *platformcfg.MongoStore[budgetfloor.Policy]
 	marketplace      marketplace.Store
 	pat              *pat.MongoStore
 	memory           *mongostore.MongoMemoryStore
@@ -814,6 +833,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
 		botVars:          platformcfg.NewMongoBotVars(st.DB()),
 		platformCreds:    platformcfg.NewMongoPlatformCredentials(st.DB()),
+		budgetFloor:      platformcfg.NewMongoBudgetFloor(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),
 		orgDomain:        orgsso.NewMongoDomainStore(st.DB()),
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas

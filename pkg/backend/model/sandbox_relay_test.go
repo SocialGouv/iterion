@@ -43,7 +43,7 @@ func relayHostStore(t *testing.T, runID string, observers ...func(store.Event)) 
 	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.Nop(), nil, observers...)
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.Nop(), nil, nil, observers...)
 	return NewClawBackend(NewRegistry(), hooks, RetryPolicy{}), st
 }
 

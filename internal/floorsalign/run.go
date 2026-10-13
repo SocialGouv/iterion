@@ -241,7 +241,7 @@ func versionOf(src []byte, where string) (string, error) {
 // --apply would then move a pending pin onto a release already cut without
 // the syntax.
 func committedVersion(root string) (string, error) {
-	cmd := exec.Command("git", "-C", root, "show", "HEAD:package.json")
+	cmd := exec.Command("git", gitlib.NoRunHooks("-C", root, "show", "HEAD:package.json")...)
 	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout

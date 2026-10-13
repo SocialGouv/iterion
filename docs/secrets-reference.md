@@ -205,12 +205,19 @@ intended record so a sealed bundle cannot be silently transplanted:
 | `generic_secrets.sealed_secret` | `generic_secret:<id>` |
 | `oauth_credentials.sealed_blob` | `oauth:<user>:<kind>` |
 | `webhook_configs.hmac_secret_sealed` | `webhook_hmac_secret:<webhook_id>` |
-| `run_secrets.sealed_bundle` | `run_secrets:<run_id>` |
+| `run_secrets.sealed_bundle` | `run_secrets:<tenant_id>/<runner_pool>/<run_id>` (records with a `key_id`; the pool segment is empty for shared-fleet runs) — legacy id-less records keep `run_secrets:<run_id>` |
 
-`ITERION_SECRETS_KEY` is required at boot in cloud mode (`openssl rand
--base64 32` → exactly 32 raw bytes). Server pods AND runner pods must
-agree on it, because the runner is the only thing that decrypts the
-per-run bundle the publisher sealed.
+`ITERION_SECRETS_KEY` — or the `ITERION_SECRETS_KEYS` ring — is required
+at boot in cloud mode (`openssl rand -base64 32` → exactly 32 raw
+bytes). Server pods AND runner pods must agree on it, because the
+runner is the only thing that decrypts the per-run bundle the
+publisher sealed.
+
+Upgrade ordering for THIS change: roll the RUNNERS (they learn the
+ring-aware opener) before or atomically with the servers — a
+server-first skew publishes ring-stamped bundles that pre-ring
+runners cannot open, and those runs fail at credential injection
+until the runners catch up.
 
 ### Rotating `ITERION_SECRETS_KEY` — current state
 
@@ -229,3 +236,34 @@ in KMS, per-tenant DEKs) so rotation becomes a single update; until
 then, the step-by-step above is the operator path. **Be deliberate**:
 this is a destructive change, every sealed blob becomes unreadable the
 moment the new key takes over.
+
+### Run bundles: no key to rotate
+
+Since ADR-123 a run bundle seals under a fresh 32-byte per-run DEK
+that travels in the queue message (`BundleDEK`) — the only places it
+exists are the publishing server and the run's own pool stream, and a
+runner pod holds no platform key material at all. There is nothing to
+rotate: every bundle already has its own key, and the ring is out of
+the run path. Runner pods need no auth secret; a deployment may keep
+one during the transition window (it opens bundles published before
+the DEK rollout, until the 24 h TTL clears them).
+
+### Rotating the at-rest key — the ring
+
+The ring (`ITERION_SECRETS_KEYS` + `ITERION_SECRETS_KEY_ID`) covers
+`api_keys`, `oauth_credentials` and `generic_secrets` — the records
+that carry no key id and seal under the ring's current key:
+
+1. Set `ITERION_SECRETS_KEYS="<old_id>=<b64>,<new_id>=<b64>"` and
+   `ITERION_SECRETS_KEY_ID="<new_id>"` on the server (the runner does
+   not need it any more). Restart. Opens fall back across the whole
+   ring, so records sealed under `<old_id>` keep working while it
+   stays; they re-seal under `<new_id>` only when rewritten (a
+   re-paste, a refresh-worker rewrite, a publisher grant).
+2. Retire `<old_id>` from the ring once every at-rest record has been
+   rewritten or re-pasted. A record whose key is gone refuses with
+   authentication failure.
+
+The per-run AAD (`tenant/pool/run`) also makes a bundle
+undecryptable outside its own identity context — a record ref served
+across tenants yields authentication failure, not credentials.

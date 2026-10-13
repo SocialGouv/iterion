@@ -47,7 +47,21 @@ type Options struct {
 	// caller's context bounds the whole run. A pass that runs out of time is
 	// said so (Pass.TimedOut), apart from a death of the program.
 	Timeout time.Duration
+	// LoopCrossings bounds how often a pass crosses one bounded loop: past
+	// it the simulation declines the loop's back-edge — the dry run's own
+	// doing (Pass.LoopsCutShort names the loops), never the program's, and
+	// a death that follows reads as the bound's, not LOOP_EXHAUSTED's.
+	// Shapes do not change from one crossing to the next, so the loop cap
+	// times its body is pure loss (#1307). Zero is DefaultLoopCrossings
+	// (`validate --exec-loop-crossings` sets it); a negative value removes
+	// the bound — loops run to their cap, as the engine does.
+	LoopCrossings int
 }
+
+// DefaultLoopCrossings is the crossing bound a dry run applies when
+// Options.LoopCrossings is unset: enough to see a loop's shape settle and
+// its exit read, never the cap times its body.
+const DefaultLoopCrossings = 3
 
 // Edge names one traversal.
 type Edge struct {
@@ -78,6 +92,12 @@ type Pass struct {
 	// met under this bias. Not a death the dry run can hold against the
 	// bot, not a proof either: said as such.
 	Ceiling bool `json:"ceiling,omitempty"`
+	// LoopsCutShort names the bounded loops whose back-edge the dry run
+	// declined past Options.LoopCrossings — the dry run's doing, never the
+	// program's (a death that follows is a ceiling, Ceiling), and C145's
+	// static reading of the exit is unchanged. Raise the bound with
+	// `--exec-loop-crossings`.
+	LoopsCutShort []string `json:"loops_cut_short,omitempty"`
 	// Nodes are the nodes started, sorted by id; Edges the edges
 	// selected, sorted by (from, to). The report is a document, not a
 	// trace: a fan-out's arrival order lives in events.jsonl.
@@ -423,6 +443,16 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 			// would credit a router no pass reached.
 			from, _ := evt.Data["from"].(string)
 			pass.Edges = append(pass.Edges, Edge{From: from, To: evt.NodeID})
+		case store.EventBudgetWarning:
+			// A loop edge the SIMULATION declined past its crossing bound
+			// (#1307): the report says the loop was cut short. Every other
+			// warning — the budget guard, the liveness stall — is the run's
+			// own reading of its shapes and needs no dry-run word.
+			if reason, _ := evt.Data["reason"].(string); reason == runtime.SimulationLoopCrossingsDecline {
+				if loop, _ := evt.Data["loop"].(string); loop != "" {
+					x.recordLoopCutShort(loop)
+				}
+			}
 		case store.EventBranchFinished:
 			// A branch that ended at a declared `fail` node (`deliberate`) or
 			// at a run's-circumstances ceiling (a budget the run spent, a
@@ -466,7 +496,7 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 		}
 	}
 	eng := runtime.New(&sim, st, x,
-		runtime.WithSimulation(runtime.Simulation{AnswerHumans: true, EventsArrive: true, AnswersArrive: true, BranchesRunToTheirEnd: true, Invented: x}),
+		runtime.WithSimulation(runtime.Simulation{AnswerHumans: true, EventsArrive: true, AnswersArrive: true, BranchesRunToTheirEnd: true, Invented: x, LoopCrossings: loopCrossings(opts)}),
 		runtime.WithEventObserver(observe),
 		runtime.WithSandboxOverride("none"),
 		runtime.WithWorkDir(workDir),
@@ -505,6 +535,7 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 	// the order of its events: the trunk's and the branches' interleave, and
 	// the last one seen is no fact about the death.
 	pass.Deliberate = errors.Is(runErr, runtime.ErrDeliberateFailure)
+	pass.LoopsCutShort = x.loopsCutShort()
 	pass.Nodes = append([]string(nil), pass.Nodes...)
 	pass.Edges = append([]Edge(nil), pass.Edges...)
 	// DeadBranches is nil-ed only where the trunk's own program death is
@@ -593,6 +624,15 @@ func launchInputs(wf *ir.Workflow, given map[string]any, bias bool) map[string]a
 		}
 	}
 	return inputs
+}
+
+// loopCrossings resolves the operator's crossing bound: unset is
+// DefaultLoopCrossings, negative removes the bound, as given to the engine.
+func loopCrossings(opts Options) int {
+	if opts.LoopCrossings == 0 {
+		return DefaultLoopCrossings
+	}
+	return opts.LoopCrossings
 }
 
 // declineOf is the reason of the loop decline a run's death carries — the

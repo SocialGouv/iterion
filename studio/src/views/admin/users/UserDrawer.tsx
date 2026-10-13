@@ -39,6 +39,7 @@ import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm, type Confirmer } from "@/hooks/useConfirm";
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
+import { studioRoute } from "@/lib/scope";
 import { ORG_ROLES, TEAM_ROLES, confirmOwnerGrant } from "@/lib/roles";
 
 export default function UserDrawer({
@@ -294,7 +295,13 @@ function OrgsSection({
             {detail.orgs.map((o) => (
               <Tr key={o.org_id}>
                 <Td>
-                  <Link href={`/orgs/${o.org_id}`} className="text-accent-text hover:underline">
+                  {/* studioRoute, not a plain path: the drawer renders inside
+                      the /admin nest, whose router base would turn "/orgs/x"
+                      into /admin/orgs/x. */}
+                  <Link
+                    href={studioRoute(`/orgs/${o.org_id}`)}
+                    className="text-accent-text hover:underline"
+                  >
                     {o.org_name ?? o.org_id}
                   </Link>
                   <div className="text-caption text-fg-subtle font-mono">
@@ -496,7 +503,10 @@ function TeamsSection({
             {detail.teams.map((t) => (
               <Tr key={t.team_id}>
                 <Td>
-                  <Link href={`/teams/${t.team_id}`} className="text-accent-text hover:underline">
+                  <Link
+                    href={studioRoute(`/teams/${t.team_id}`)}
+                    className="text-accent-text hover:underline"
+                  >
                     {t.team_name ?? t.team_id}
                   </Link>
                   <div className="text-caption text-fg-subtle font-mono">

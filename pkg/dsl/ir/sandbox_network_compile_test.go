@@ -44,3 +44,45 @@ func TestSandboxNetworkModeAndInheritAreCheckedAtCompile(t *testing.T) {
 		}
 	}
 }
+
+// A network: block with content but no mode resolves to open — inert as
+// written (C312). Reddens on the mutation that drops the mode-less
+// warning in compileWorkflowSandboxSpec.
+func TestSandboxNetworkBlockWithoutModeWarns(t *testing.T) {
+	compile := func(network string) *CompileResult {
+		src := "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  sandbox:\n    image: \"img\"\n    network:\n" + network + "  a -> done\n"
+		pr := parser.Parse("net.bot", src)
+		if len(pr.Diagnostics) != 0 {
+			t.Fatalf("parse: %v", pr.Diagnostics)
+		}
+		return Compile(pr.File)
+	}
+	for _, body := range []string{
+		"      preset: \"iterion-default\"\n",
+		"      rules: [\"team.example\"]\n",
+	} {
+		cr := compile(body)
+		found := false
+		for _, d := range cr.Diagnostics {
+			if d.Code == DiagNetworkModeMissing && d.Severity == SeverityWarning {
+				found = true
+			}
+			if d.Code == DiagNetworkModeMissing && d.Severity != SeverityWarning {
+				t.Errorf("mode-less network block drew C312 at severity %v, want a warning", d.Severity)
+			}
+		}
+		if !found {
+			t.Errorf("network block %q without mode drew no C312: %+v", body, cr.Diagnostics)
+		}
+	}
+	if cr := compile("      mode: allowlist\n      preset: \"iterion-default\"\n"); func() bool {
+		for _, d := range cr.Diagnostics {
+			if d.Code == DiagNetworkModeMissing {
+				return true
+			}
+		}
+		return false
+	}() {
+		t.Error("a network block WITH a mode drew C312")
+	}
+}

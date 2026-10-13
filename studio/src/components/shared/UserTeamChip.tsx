@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 
 import { isLocalIdentity, useAuth } from "@/auth/AuthContext";
 import { Popover, PopoverClose } from "@/components/ui/Popover";
+import { adminPath } from "@/views/admin/adminRoutes";
 
 // Account chip (the avatar menu) — strictly the user: team settings jump,
 // account settings, platform admin, sign out. Org AND team switching live
@@ -110,7 +111,7 @@ export default function UserTeamChip({
         <>
           <PopoverClose asChild>
             <button
-              onClick={closeAfter(() => navigate("/admin/orgs"))}
+              onClick={closeAfter(() => navigate(adminPath("/orgs")))}
               className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 text-warning-fg"
             >
               Platform admin · Organizations
@@ -118,7 +119,7 @@ export default function UserTeamChip({
           </PopoverClose>
           <PopoverClose asChild>
             <button
-              onClick={closeAfter(() => navigate("/admin/users"))}
+              onClick={closeAfter(() => navigate(adminPath("/users")))}
               className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 text-warning-fg"
             >
               Platform admin · Users

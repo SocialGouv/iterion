@@ -165,7 +165,7 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `user` | prompt name, or its text as a string | The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
 | `session_slot` | ident | Named durable session slot; requires session: persist |
-| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
+| `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
 | `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081) |
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
@@ -182,7 +182,7 @@ They share the exact property surface (a tool-ref list accepts dotted refs and a
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
-| `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185) |
+| `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
 | `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
 | `allow` | string list | Permission rules always allowed on this node, Tool(pattern) syntax; a non-empty list REPLACES the workflow's allow: (C154 refuses an unreadable rule, C111 warns when nothing gated reads the list) |
 | `ask` | string list | Permission rules that pause for approval on this node; a non-empty list REPLACES the workflow's ask: (C154/C111; C136 and C176 screen the node's routes against it) |
@@ -352,7 +352,7 @@ Workflow members — the properties below and the edges (`src -> dst …`) — m
 | `default_backend` | string | Backend for nodes that name none; a {{vars.x}} reference resolves (vars only), then ${VAR:-default} |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
 | `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
-| `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185) |
+| `ambient_context` | ident — `none`, `workspace`, `operator`, `all` | What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187) |
 | `loop_budget_guard` | ident — `on`, `off` | Decline a loop's back-edge the budget cannot fund: on (default) or off (C133) |
 | `repo_devbox` | ident — `on`, `off` | Load the target repo's devbox.json toolchain: on (default) or off (C134) |
 | `workspace_checkpoint` | ident — `on`, `off` | Mid-run preservation of a copy-based sandbox's workspace as a checkpoint branch pushed to the run's own remote: on (default) or off (C139) |

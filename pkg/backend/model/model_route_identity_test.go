@@ -215,7 +215,7 @@ func TestModelDriftComparesGatewayRoutesExactly(t *testing.T) {
 			if _, err := st.CreateRun(ctx, "run-drift", "wf", nil); err != nil {
 				t.Fatalf("CreateRun: %v", err)
 			}
-			hooks := NewStoreEventHooks(ctx, st, "run-drift", iterlog.New(iterlog.LevelError, nil), nil)
+			hooks := NewStoreEventHooks(ctx, st, "run-drift", iterlog.New(iterlog.LevelError, nil), nil, nil)
 			hooks.OnDelegateFinished("n", DelegateInfo{BackendName: "pi", DeclaredModel: tc.declared, EffectiveModel: tc.effective})
 			evts, err := st.LoadEvents(ctx, "run-drift")
 			if err != nil {
@@ -269,7 +269,7 @@ func TestLLMRequest_PersistedEventCarriesTheWireID(t *testing.T) {
 	if _, err := st.CreateRun(ctx, "run-wire", "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	hooks := NewStoreEventHooks(ctx, st, "run-wire", iterlog.New(iterlog.LevelError, nil), nil)
+	hooks := NewStoreEventHooks(ctx, st, "run-wire", iterlog.New(iterlog.LevelError, nil), nil, nil)
 	hooks.OnLLMRequest("nested", LLMRequestInfo{Model: "openai/meta-llama/Llama-3.3-70B", WireModel: "meta-llama/Llama-3.3-70B", Timestamp: time.Now()})
 	hooks.OnLLMRequest("bare", LLMRequestInfo{Model: "gpt-5.5", Timestamp: time.Now()})
 	evts, err := st.LoadEvents(ctx, "run-wire")

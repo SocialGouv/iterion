@@ -17,6 +17,7 @@ func TestTheExecutorSpecSweepSeesWhatItClaimsTo(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		src     string
+		fields  []string // empty = the single-answer question, BotID
 		missing bool
 		unread  bool // the predicate gave up on this shape
 	}{
@@ -178,6 +179,67 @@ func f() {
 			missing: true,
 		},
 		{
+			// A question with TWO interchangeable answers is judged at the
+			// SITE: each literal answers it, so neither is missing — and the
+			// file that holds both is not an offender. Composing two
+			// per-file verdicts accused exactly this shape.
+			name:   "two sites, one answering each field of the same question",
+			fields: []string{"WorkDir", "SandboxProbeWorkDir"},
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func engineSite(d string) runview.ExecutorSpec { return runview.ExecutorSpec{WorkDir: d} }
+func probeSite(d string) runview.ExecutorSpec { return runview.ExecutorSpec{SandboxProbeWorkDir: d} }`,
+		},
+		{
+			name:   "a site answering NEITHER field of a two-answer question",
+			fields: []string{"WorkDir", "SandboxProbeWorkDir"},
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func f() { _ = runview.ExecutorSpec{BotID: "b"} }`,
+			missing: true,
+		},
+		{
+			// The assign-one-at-a-time shape answers the question in plain
+			// sight, and the verdict must not depend on WHICH answer it
+			// chose. Keyed on one field alone, the same factory was reported
+			// unjudgeable for one answer and passed in silence for the
+			// other — a gate that was right about neither.
+			name:   "a fill-and-return factory answering with the probe field",
+			fields: []string{"WorkDir", "SandboxProbeWorkDir"},
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func f(d string) runview.ExecutorSpec {
+	var s runview.ExecutorSpec
+	s.SandboxProbeWorkDir = d
+	return s
+}`,
+		},
+		{
+			name:   "the same factory answering with the workspace field",
+			fields: []string{"WorkDir", "SandboxProbeWorkDir"},
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func f(d string) runview.ExecutorSpec {
+	var s runview.ExecutorSpec
+	s.WorkDir = d
+	return s
+}`,
+		},
+		{
+			// And a factory that answers NEITHER is still given up rather
+			// than accused: the caller may be where the field is set.
+			name:   "a fill-and-return factory answering neither",
+			fields: []string{"WorkDir", "SandboxProbeWorkDir"},
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/runview"
+func f(d string) runview.ExecutorSpec {
+	var s runview.ExecutorSpec
+	s.RunID = d
+	return s
+}`,
+			unread: true,
+		},
+		{
 			// The give-up the predicate's own comment promises: the callee
 			// may be exactly where the field is set, so this correct code
 			// must not be accused — but it IS reported as unjudged.
@@ -198,7 +260,11 @@ func f() {
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			got, unread := executorSpecMissesField(file, "BotID")
+			fields := tc.fields
+			if len(fields) == 0 {
+				fields = []string{"BotID"}
+			}
+			got, unread := executorSpecMissesFields(file, fields)
 			if unread != tc.unread {
 				t.Errorf("unread = %v, want %v — the shapes this predicate gives up on must be REPORTED, "+
 					"or a site drifting into one leaves the sweep covering nothing and saying nothing",
@@ -209,7 +275,7 @@ func f() {
 				if tc.missing {
 					verb = "did not see a site that omits the field"
 				}
-				t.Errorf("executorSpecMissesField = %v, want %v — the sweep %s", got, tc.missing, verb)
+				t.Errorf("executorSpecMissesFields = %v, want %v — the sweep %s", got, tc.missing, verb)
 			}
 		})
 	}
@@ -292,7 +358,7 @@ func f() map[string][]runview.ExecutorSpec {
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			got, _ := executorSpecMissesField(file, "BotID")
+			got, _ := executorSpecMissesFields(file, []string{"BotID"})
 			if got != tc.missing {
 				verb := "accused correct code"
 				if tc.missing {

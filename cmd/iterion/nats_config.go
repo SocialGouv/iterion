@@ -30,6 +30,7 @@ func natsConfig(cfg iterconfig.Config, logger *iterlog.Logger) natsq.Config {
 		DLQMaxAge:           cfg.NATS.DLQMaxAge,
 		MaxPayload:          cfg.NATS.MaxPayload,
 		LockTTL:             cfg.Runner.LockTTL,
+		Pool:                cfg.Runner.Pool,
 		LeaseUnwindCeiling:  runner.LeaseUnwindCeiling,
 		Logger:              logger,
 	}

@@ -10,8 +10,12 @@ import (
 
 // The servers these tests start resolve their run stores, installed plugins
 // and the global runs view from the iterion home; hometest keeps them off
-// the operator's.
-func TestMain(m *testing.M) { os.Exit(hometest.Isolate(m.Run)) }
+// the operator's. HOME is the binary's own too: a schedule guard runs
+// `sh -lc` and a run shell `$SHELL -l`, login shells that read their profile
+// from $HOME (#2231).
+func TestMain(m *testing.M) {
+	os.Exit(hometest.IsolateUserHome(func() int { return hometest.Isolate(m.Run) }))
+}
 
 // shutdownOnCleanup stops every background loop srv started — the assistant
 // watch and mission sweep included — before the test's temporary directories

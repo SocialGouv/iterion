@@ -1,0 +1,90 @@
+## ─────────────────────────────────────────────────────────────────
+## gitops_warden schemas — every node's structured contract.
+## The DSL has no object-array type: arrays of objects ride `json`
+## fields whose shape the prompts pin (see prompts.bot). Multi-line
+## channels are single newline-joined strings, never string[] — a tool
+## node's substitution space-joins an all-string array into command
+## position (the executor_tool contract).
+## ─────────────────────────────────────────────────────────────────
+
+dsl: 2
+
+schema inventory_output:
+  ## Nothing changed against the base: a green note, no LLM, no verdict.
+  is_empty: bool
+  ## The ignorance sentinel: -1 = the diff could not be read at all
+  ## (fail-closed, the fold escalates on it). Never skip silently.
+  changed_files: int
+  ## The revision the verdict certifies, and the ONE resolved base
+  ## (merge-base against the refreshed target) every consumer diffs
+  ## against.
+  reviewed_sha: string
+  base_sha: string
+  ## The policy body, read from the BASE (target-branch) commit — never
+  ## from the MR head. Empty when the repo carries no override file.
+  policy_body: string
+  policy_source: string [enum: "default", "override", "target-modified"]
+  policy_sha: string
+  ## [{path, status, ext, added, removed, key_paths, candidate}] — the
+  ## deterministic per-file inventory. candidate = a value-only-change
+  ## candidate the key scan thinks might be simple.
+  files: json
+  ## Sentinels (fail-closed): the diff exceeds the classification caps,
+  ## git refused to cooperate, or the workspace is not the tree under
+  ## review.
+  diff_too_large: bool
+  unparseable: bool
+  workspace_anomaly: string
+  ## The launch named a head SHA and the workspace holds another: the run
+  ## woke on a moved head. The fold escalates on it — a run that certifies
+  ## whatever arrived last is the unaudited-revision shape.
+  stale_launch: bool
+
+schema policy_gate_output:
+  ## "empty" | "sentinel" | "classify" — the deterministic route.
+  route: string
+  ## The sentinel reason when route == "sentinel" (operator-readable).
+  sentinel_reason: string
+
+schema classify_output:
+  ## The closed verdict vocabulary. Anything else (or a parse failure)
+  ## is escalate at the fold — unknown is the most severe class.
+  verdict: string [enum: "auto_approvable", "escalate"]
+  ## [{path, cls, rule, reason}] — one entry per changed file. cls is
+  ## auto_approvable | escalate | unknown; unknown escalates.
+  files: json
+  ## [{path, rule, detail, severity}] — platform conformance findings
+  ## (limitrange, managed-datastore, domain, secret, policy-overreach).
+  ## severity: blocking | advisory.
+  platform_findings: json
+  ## One doubt per line, newline-joined. ANY non-empty line escalates.
+  doubts: string
+  ## The human paragraph of the verdict comment.
+  summary: string
+
+schema verdict_output:
+  requested: bool
+  ## "posted" | "refused" — refused carries verdict_refused_reason.
+  outcome: string
+  verdict_refused_reason: string
+  review_url: string
+  ## The gate, structured for publish_health: a check that was owed and
+  ## never landed is a loud degradation, never a quiet run.
+  gate_requested: bool
+  gate_posted: bool
+  gate_state: string
+  gate_skipped_reason: string
+  ## The verdict verbs, as the server executed (or refused) them.
+  approve_posted: bool
+  reviewers_added: string
+  merge_armed: bool
+  merge_state: string
+  ## The fold's own blocking reason list, newline-joined (empty = clean).
+  escalate_reasons: string
+  ## The blocking count the fold computed (0 = green).
+  blocking: int
+
+schema health_output:
+  healthy: bool
+  banner: string
+  degraded: bool

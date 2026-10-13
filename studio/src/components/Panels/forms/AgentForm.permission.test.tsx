@@ -101,16 +101,47 @@ function mount(kind: Kind, over: Partial<AgentDecl> = {}) {
   return { store, current };
 }
 
-/** The control a field row labels. A tag list drops its placeholder once it
- *  holds a tag, so the row's label is the only stable handle. */
-function fieldInput(label: string): HTMLInputElement {
+/** The LABEL of a field row, by its own text. A tag list drops its
+ *  placeholder once it holds a tag, so the row's label is the only stable
+ *  handle for both the control and the help it carries. */
+function fieldRow(label: string): HTMLLabelElement {
   const row = Array.from(globalThis.document.querySelectorAll("label")).find(
     (l) => l.firstChild?.textContent?.trim() === label,
   );
   if (!row) throw new Error(`no field labelled ${label}`);
-  const input = row.parentElement?.querySelector("input");
+  return row;
+}
+
+function fieldInput(label: string): HTMLInputElement {
+  const input = fieldRow(label).parentElement?.querySelector("input");
   if (!input) throw new Error(`field ${label} has no input`);
   return input as HTMLInputElement;
+}
+
+/** The help text a field row announces, reached the way a screen reader
+ *  reaches it: the control is found by its LABEL, and its
+ *  `aria-describedby` names the hint. Fetching the hint by a phrase of the
+ *  text instead would put part of what the assertions check into the
+ *  locator, and a wording regression would then fail as "unable to find a
+ *  label" — on the locator, never on the claim. */
+function fieldHelp(label: RegExp): string {
+  const control = screen.getByLabelText(label);
+  const id = control.getAttribute("aria-describedby");
+  if (!id) throw new Error(`the control ${label} announces no help`);
+  const hint = globalThis.document.getElementById(id);
+  if (!hint) throw new Error(`the control ${label} describes a missing element ${id}`);
+  return hint.getAttribute("aria-label") ?? "";
+}
+
+/** The help a RULE-LIST row announces. A tag list gets no
+ *  `aria-describedby` — FormField's TagListField renders plain children, so
+ *  only SelectField pipes the id through — which is why fieldHelp() cannot
+ *  serve here: the hint is reached through the row's label instead, never by
+ *  a phrase of its own text. */
+function ruleHelp(label: string): string {
+  const hint = fieldRow(label).querySelector("[aria-label]");
+  if (!hint) throw new Error(`the ${label} list announces no help`);
+  return hint.getAttribute("aria-label") ?? "";
 }
 
 const RULE_LABELS = { allow: "Allow", ask: "Ask", deny: "Deny" } as const;
@@ -191,8 +222,33 @@ describe.each(["agent", "judge"] as const)("AgentForm permission controls (%s)",
     "keeps a comma inside a %s rule instead of committing there",
     (rules) => {
       const { current } = mount(kind);
-      addRule(rules, 'Bash(git commit -m "a,b":*)');
+      const input = fieldInput(RULE_LABELS[rules]);
+      // The comma is TYPED, because that is the keystroke the widget reads
+      // as a separator: a rule committed there enters the list truncated
+      // (`Bash(git commit -m "a`) and the author loses the rest of it.
+      fireEvent.change(input, { target: { value: 'Bash(git commit -m "a' } });
+      fireEvent.keyDown(input, { key: "," });
+      fireEvent.change(input, { target: { value: 'Bash(git commit -m "a,b":*)' } });
+      fireEvent.keyDown(input, { key: "Enter" });
       expect(current()[rules]).toEqual(['Bash(git commit -m "a,b":*)']);
+    },
+  );
+
+  it.each(["allow", "ask", "deny"] as const)(
+    "records a %s rule longer than the widget's label cap, whole",
+    (rules) => {
+      const { current } = mount(kind);
+      // TagListField's 512 is sized for the LABEL-shaped lists it also
+      // serves; a rule is a literal, and a cut one is a different, narrower
+      // rule entered with no message.
+      const rule = `Bash(git commit -m "${"x".repeat(520)}":*)`;
+      expect(rule.length).toBeGreaterThan(512);
+      addRule(rules, rule);
+      const stored = current()[rules] ?? [];
+      // Asserted as a length first: a 500-character diff of two near-equal
+      // strings says nothing, "expected 512 to be 544" names the cut.
+      expect(stored[0]?.length ?? 0).toBe(rule.length);
+      expect(stored).toEqual([rule]);
     },
   );
 
@@ -218,8 +274,9 @@ describe.each(["agent", "judge"] as const)("AgentForm permission controls (%s)",
 
   it("says what each gate mode actually does to an unmatched call", () => {
     mount(kind);
-    const hint = screen.getByLabelText(/Tool-permission gate for this node/);
-    const text = hint.getAttribute("aria-label") ?? "";
+    const text = fieldHelp(/^Permission/);
+    // The gate's own subject, stated first: the node's LLM tool calls.
+    expect(text).toMatch(/Tool-permission gate for this node/);
     // The mode decides the default for what NOTHING matched — described as
     // rule-triggered, `ask` reads as permissive and a headless node stalls on
     // the first unlisted call, `deny` reads as a blocklist and the node can
@@ -229,18 +286,37 @@ describe.each(["agent", "judge"] as const)("AgentForm permission controls (%s)",
     // …and an `ask:` rule pauses under `deny` too: Evaluate matches the ask
     // list before it ever reaches the mode default, so "deny = the headless
     // boundary" on its own sends a cron run into a pause nobody will answer.
-    expect(text).toMatch(/ask: always pauses \(yes, under deny too\)/);
+    expect(text).toMatch(/ask: pauses \(yes, under deny too\)/);
+    // …and the one hole in that, stated because a security control's help
+    // must not read stronger than the gate: an ask naming just the tool
+    // (`Bash`) loses to an allow naming one exact call (`Bash(git diff)`),
+    // in both armed modes — pkg/backend/permission,
+    // TestEvaluate_TheBareAskAllowHoleIsTheSameInBothArmedModes.
+    expect(text).toMatch(
+      /An ask that names just the tool is the one rule an allow can beat, and only by naming that exact call/,
+    );
     // …and `off` is not the neutral choice: it outranks ITERION_PERMISSION.
     expect(text).toMatch(/OVERRIDES ITERION_PERMISSION/);
+    // …and the level this one inherits from is reachable: the workflow's
+    // mode and lists live in a panel this form can never share the screen
+    // with (Inspector dispatches a selected node to InspectorNode, and only
+    // InspectorEmpty renders the Workflow tab), so the hint names it.
+    expect(text).toMatch(/edited in the inspector's Workflow tab/);
   });
 
   it("says a node list replaces the workflow's, on each of the three", () => {
     mount(kind);
-    const hints = screen.getAllByLabelText(/REPLACES the workflow's list of this kind/);
-    expect(hints).toHaveLength(3);
-    for (const hint of hints) {
-      expect(hint.getAttribute("aria-label")).toMatch(/never a union/);
-      expect(hint.getAttribute("aria-label")).toMatch(/independently per kind/);
+    // One help per kind, each reached through its own labelled row — so a
+    // kind rendered without help names itself, and every claim below
+    // reddens as an assertion instead of dying on the locator.
+    for (const label of Object.values(RULE_LABELS)) {
+      const text = ruleHelp(label);
+      expect(text).toMatch(/REPLACES the workflow's list of this kind/);
+      expect(text).toMatch(/never a union/);
+      expect(text).toMatch(/independently per kind/);
+      // "Restate anything from the workflow's list you still want" is only
+      // actionable if the author can find that list: name the panel.
+      expect(text).toMatch(/edited in the inspector's Workflow tab/);
     }
   });
 });

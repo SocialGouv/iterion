@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -32,6 +34,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -254,8 +257,17 @@ type Server struct {
 	// credentials; nil (or an unenforced record) admits every tenant.
 	platformCreds      *platformcfg.Resolver[platformcfg.PlatformCredentials]
 	platformCredsStore platformcfg.Store[platformcfg.PlatformCredentials]
-	botVars            *platformcfg.Resolver[platformcfg.BotVars]
-	botVarsStore       platformcfg.Store[platformcfg.BotVars]
+	// routingPolicyStoreFor builds the store for one tenant's routing-
+	// policy document (ADR-121 delivery 2: "org:<id>" / "team:<id>") —
+	// nil in local mode, where no tenant level exists to fold.
+	routingPolicyStoreFor func(docID string) platformcfg.Store[platformcfg.RoutingPolicyRecord]
+	botVars               *platformcfg.Resolver[platformcfg.BotVars]
+	botVarsStore          platformcfg.Store[platformcfg.BotVars]
+	// budgetFloor reserves capacity for named workloads and caps individual
+	// repositories; nil (or an unwritten record) reserves and caps nothing,
+	// so every gate behaves as it did before the family existed.
+	budgetFloor      *platformcfg.Resolver[budgetfloor.Policy]
+	budgetFloorStore platformcfg.Store[budgetfloor.Policy]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
 	platformBots *platformcfg.Resolver[platformBotSet]
@@ -549,6 +561,12 @@ type Server struct {
 	// commit-status write). Nil → real admin client via forgeAdminFor.
 	forgeGateClientFor func(ctx context.Context, conn forge.Connection) (forgeGateClient, error)
 
+	// forgeMergeOpsFor is a test seam overriding how the publish-review
+	// handler resolves a connection's merge-gate GESTURE capabilities
+	// (approve / arm auto-merge / add reviewers). Nil → real admin client
+	// via forgeAdminFor, capability-asserted.
+	forgeMergeOpsFor func(ctx context.Context, conn forge.Connection) (forgeMergeOps, error)
+
 	// forgeIssueCommenterFor is a test seam overriding how a connection's
 	// PR-comment client is resolved (the parked-review pause notice).
 	// Nil → real admin client via forgeAdminFor.
@@ -763,6 +781,17 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		usageCapTrust:       usagecap.DefaultTrust(),
 		credUsage:           cfg.CredUsage,
 	}
+	// The tenant routing-policy levels (ADR-121 delivery 2): per-org and
+	// per-team policy documents in their own collection. No resolver, no
+	// TTL — one bounded point read per launch, and an outage refuses the
+	// launch instead of serving stale (serve-stale would lift cost
+	// governance on a blip).
+	if dbs, ok := cfg.Store.(interface{ DB() *mongo.Database }); ok && dbs.DB() != nil {
+		db := dbs.DB()
+		s.routingPolicyStoreFor = func(docID string) platformcfg.Store[platformcfg.RoutingPolicyRecord] {
+			return platformcfg.NewMongoScoped[platformcfg.RoutingPolicyRecord](db, platformcfg.ColRoutingPolicies, docID)
+		}
+	}
 	// Platform settings families (bot_roles + sandbox): TTL resolvers over
 	// the stores. A nil store keeps them nil-safe — Get returns nil and
 	// every consumer falls back to its hardcoded/env default.
@@ -774,6 +803,15 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		s.botVars = cfg.BotVarsResolver
 	} else {
 		s.botVars = platformcfg.NewResolver(cfg.BotVarsSettings, logger.Warn)
+	}
+	s.budgetFloorStore = cfg.BudgetFloorSettings
+	if cfg.BudgetFloorResolver != nil {
+		// Shared with the cloud publisher (cmd wiring): ONE resolver, so an
+		// admin PUT reaches the credential walk's window ceilings at once
+		// instead of after the TTL.
+		s.budgetFloor = cfg.BudgetFloorResolver
+	} else if cfg.BudgetFloorSettings != nil {
+		s.budgetFloor = platformcfg.NewResolver(cfg.BudgetFloorSettings, logger.Warn)
 	}
 	if cfg.SandboxResolver != nil {
 		// Shared with the cloud publisher (cmd wiring): ONE resolver
@@ -948,6 +986,20 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		// Repo-targeted runs merge in a server-side clone; the service
 		// needs the forge credential lookup to clone and push.
 		opts = append(opts, runview.WithForgeTokenResolver(s.forgeTokenForRun))
+		// D12 pre-stamp cohort: the conflict resolver refuses an
+		// unstamped run whose tenant is NOW pool-mapped — the current
+		// mapping is the only signal left for runs that predate the
+		// stamp. Same seam the publisher's launch resolver reads.
+		opts = append(opts, runview.WithCurrentPoolForTenant(func(ctx context.Context, tenantID string) (string, error) {
+			t, err := s.authStore().GetTeam(ctx, tenantID)
+			if errors.Is(err, identity.ErrNotFound) {
+				return "", nil
+			}
+			if err != nil {
+				return "", err
+			}
+			return t.RunnerPool, nil
+		}))
 		if cfg.StreamSource != nil {
 			opts = append(opts, runview.WithStreamSource(cfg.StreamSource))
 		}

@@ -76,15 +76,52 @@ func TestStageModelPairKeyed(t *testing.T) {
 		{"pi", CredClaudeForfait, "claude-opus-5-5", "", false},
 	}
 	for _, tt := range tests {
-		got, ok := StageModel(tt.harness, tt.credential, tt.nodeModel)
+		got, ok, _ := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil))
 		if ok != tt.ok || (ok && got != tt.want) {
 			t.Errorf("StageModel(%s, %s, %s) = %q, %v — want %q, %v", tt.harness, tt.credential, tt.nodeModel, got, ok, tt.want, tt.ok)
 		}
 	}
 	// A node with no model maps nothing: a modelless stage is never born.
-	if _, ok := StageModel(HarnessClaw, "anthropic_key", ""); ok {
+	if _, ok, _ := StageModel(HarnessClaw, "anthropic_key", "", ResolveClasses(nil)); ok {
 		t.Error("StageModel with an empty node model = ok — a modelless stage would be refused downstream")
 	}
+
+	// The class feature's FIRST payoff, named: the table's fast rung
+	// serves a wholesale crossing for the model it names — delivery 1
+	// crossed everything to gpt-6-sol. Exactly these rows differ from
+	// delivery 1 (review-probed: gpt-6-luna as a NODE model never
+	// crosses — openai-family models ride — so it is not a delta row).
+	fast := []struct {
+		harness, credential, nodeModel, want string
+	}{
+		{HarnessCodex, CredChatGPTForfait, "claude-haiku-4-5", "gpt-6-luna"},
+		{HarnessCodex, "openai_key", "anthropic/claude-haiku-4-5", "gpt-6-luna"},
+		{HarnessClaw, "openai_key", "claude-haiku-4-5", "openai/gpt-6-luna"},
+		{HarnessClaw, "openai_key", "anthropic/claude-haiku-4-5", "openai/gpt-6-luna"},
+	}
+	for _, tt := range fast {
+		got, ok, _ := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil))
+		if !ok || got != tt.want {
+			t.Errorf("fast crossing StageModel(%s, %s, %s) = %q, %v — want %q (the table's fast rung)", tt.harness, tt.credential, tt.nodeModel, got, ok, tt.want)
+		}
+	}
+
+	// The two skip reasons are distinct: a pair that cannot serve the
+	// family at all says so, and a class cell resolving nowhere (only a
+	// custom table reaches it — the shipped one is full) names the class
+	// and family, the fixable refusal.
+	empty := ClassTable{}
+	_, _, reason := StageModel("pi", CredClaudeForfait, "claude-opus-5-5", ResolveClasses(nil))
+	if reason != ReasonNoMapping {
+		t.Fatalf("structural skip reason = %q, want %q", reason, ReasonNoMapping)
+	}
+	custom := ResolveClasses(nil)
+	custom.forward = map[string]map[string]string{ClassStandard: {familyOpenAI: "gpt-6-sol"}}
+	_, ok, reason := StageModel(HarnessCodex, CredChatGPTForfait, "claude-opus-5-5", custom)
+	if ok || reason != "class top resolves nowhere on family openai" {
+		t.Fatalf("class-unresolved = %q, %v — want the named class+family reason", reason, ok)
+	}
+	_ = empty
 }
 
 // SlotSealable is the whitelist's granularity: a slot is sealable when ANY

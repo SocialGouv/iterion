@@ -91,6 +91,19 @@ func TestSafeClient_RejectsPrivateDial(t *testing.T) {
 	}
 }
 
+// PlainDialer is SafeTransport's dialer without the guard: its promise to a
+// caller dialing a proxy is SafeTransport's bounds — a connect timeout and
+// a TCP keep-alive.
+func TestPlainDialer_KeepsSafeTransportsBounds(t *testing.T) {
+	d := PlainDialer()
+	if d.Timeout <= 0 {
+		t.Errorf("PlainDialer().Timeout = %v, want a connect bound", d.Timeout)
+	}
+	if d.KeepAlive <= 0 {
+		t.Errorf("PlainDialer().KeepAlive = %v, want SafeTransport's keep-alive period", d.KeepAlive)
+	}
+}
+
 func TestSafeClient_NoRedirectFollow(t *testing.T) {
 	c := SafeClient(true, 0)
 	if c.CheckRedirect == nil {

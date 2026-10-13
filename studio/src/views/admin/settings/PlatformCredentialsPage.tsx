@@ -107,12 +107,12 @@ export default function PlatformCredentialsPage() {
 
       <div>
         <FieldLabel htmlFor="pc-teams">Allowed teams</FieldLabel>
-        <TagInput value={teams} onChange={setTeams} placeholder="Add a team id…" />
+        <TagInput id="pc-teams" value={teams} onChange={setTeams} placeholder="Add a team id…" />
       </div>
 
       <div>
         <FieldLabel htmlFor="pc-orgs">Allowed orgs</FieldLabel>
-        <TagInput value={orgs} onChange={setOrgs} placeholder="Add an org id…" />
+        <TagInput id="pc-orgs" value={orgs} onChange={setOrgs} placeholder="Add an org id…" />
         <p className="mt-1 text-caption text-fg-subtle">
           An org admits every one of its teams — the grain an operator usually
           governs at.

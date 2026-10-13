@@ -442,8 +442,20 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// declares the matching var). Mirrors the CLI so studio/API/dispatcher
 	// launches auto-detect providers too. The spec override (studio toggle)
 	// wins over a --var review_mode; both win over auto.
-	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent)), spec.ReviewMode); inj.Summary() != "" {
+	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent)), spec.ReviewMode); err != nil {
+		s.dropRunLog(runID)
+		return nil, fmt.Errorf("refusing to launch: %w", err)
+	} else if inj.Summary() != "" {
 		runLogger.Info("%s", inj.Summary())
+	}
+
+	// The var constraints, on the values the engine will start with, before
+	// the run is spawned: refused on the request, as the cloud publisher
+	// refuses them, rather than by the engine a moment after the launch was
+	// accepted. The engine judges them again.
+	if err := GateLaunchVars(wf, inputs); err != nil {
+		s.dropRunLog(runID)
+		return nil, err
 	}
 
 	runName := store.GenerateRunName(spec.FilePath + ":" + runID)
@@ -1002,6 +1014,28 @@ func runSandboxOverride(r *store.Run) string {
 	return r.SandboxOverride
 }
 
+// ResumeProbeWorkDir is the directory a RESUMED run's fallback screen resolves
+// its repository from: the root the launch recorded, else the run's workspace,
+// else none — and the probe then falls back to the engine's own directory.
+// Exported because both resume surfaces answer with it (the studio's
+// in-process resume and `iterion resume`), and a second copy of a precedence
+// is a second answer.
+//
+// It is the precedence the engine applies on a resume: run.RepoRoot wins
+// (runtime.seedRepoRootForResume, and the sandbox re-bootstrap beside it),
+// which is why the recorded root must not be re-derived from a workspace that
+// may no longer resolve back to it — a pruned or finalized worktree, or a run
+// document read on a replica that never held one.
+func ResumeProbeWorkDir(r *store.Run) string {
+	if r == nil {
+		return ""
+	}
+	if r.RepoRoot != "" {
+		return r.RepoRoot
+	}
+	return r.WorkDir
+}
+
 func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *iterlog.Logger, autoMemory string) ExecutorSpec {
 	runWorkDir := ""
 	if r != nil {
@@ -1020,8 +1054,12 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		SandboxDefault:    s.sandboxDefault,
 		SandboxTiersKnown: true,
 		WorkDir:           s.effectiveWorkDir(runWorkDir),
-		Inbox:             s.inboxBinder(),
-		AsyncAsk:          s.asyncAskBinder(),
+		// The repository the resumed engine roots this run at, which is the
+		// RECORDED root before the workspace below: WorkDir is Claw's
+		// file-tool root and stays what it was.
+		SandboxProbeWorkDir: ResumeProbeWorkDir(r),
+		Inbox:               s.inboxBinder(),
+		AsyncAsk:            s.asyncAskBinder(),
 		// Same hook-seam wiring as a launch: a resume-spawned supervisor
 		// (or any live subscriber) is otherwise blind to assistant_text /
 		// tool_* events, which never fire the engine's observer.
@@ -1334,7 +1372,17 @@ func (s *Service) spawnRun(
 		// Spawn any DSL-declared supervisors for the lifetime of the run.
 		// They observe via the broker (in-process) and steer via
 		// QueueMessage; Close drains them before the goroutine exits.
-		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, runLogger, ex.supervisors)
+		// The spawn map is the run's stored inputs — the same map the
+		// engine re-resolves for its nodes — never the precreateInputs
+		// nil-out, which is a doc-creation knob: a resume (or a
+		// pipeline-launched run) would otherwise resolve a supervisor
+		// model pin against the defaults alone, diverging from the nodes
+		// it watches.
+		spawnVars := precreateInputs
+		if run, err := s.store.LoadRun(context.Background(), runID); err == nil && run.Inputs != nil {
+			spawnVars = run.Inputs
+		}
+		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, eng.ResolveVars(spawnVars), runLogger, ex.supervisors)
 		defer stopSupervisors()
 
 		// Spawn the Session-board curation coordinator (opt-in via

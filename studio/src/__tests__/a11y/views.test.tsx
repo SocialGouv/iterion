@@ -2,6 +2,8 @@
 import type { ReactNode } from "react";
 import { afterEach, describe, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
+import { Route, Router } from "wouter";
+import { memoryLocation } from "wouter/memory-location";
 
 // Composed-surface a11y layer — extends the primitives axe smoke
 // (primitives.test.tsx) up to whole panels/dialogs, where landmark
@@ -14,6 +16,8 @@ import AppearanceTab from "@/views/SettingsDialog/AppearanceTab";
 import AboutTab from "@/views/SettingsDialog/AboutTab";
 import AuditTab from "@/views/teams/tabs/AuditTab";
 import { RunViewSkeleton, RunViewLoadError } from "@/components/Runs/runView/RunViewLoadStates";
+import AdminNav from "@/views/admin/AdminNav";
+import { ADMIN_BASE } from "@/views/admin/adminRoutes";
 import { setupMatchMedia, expectNoViolations } from "./axeHelpers";
 
 // jsdom lacks matchMedia; the theme store + a few hooks read it on mount.
@@ -44,6 +48,26 @@ describe("a11y / composed surfaces", () => {
     await expectNoViolations(
       mount(<AuditTab teamID="team-1" canManage={false} />),
       "AuditTab",
+    );
+  });
+
+  it("Admin · AdminNav — sectioned console nav, axe smoke", async () => {
+    // Mounted the way the console mounts it: inside the studio base and the
+    // nested /admin route, which is what decides its hrefs.
+    //
+    // axe only: it reports a dangling aria-labelledby as *incomplete* and
+    // expectNoViolations reads violations only, so the section naming and the
+    // current entry are pinned by AdminNav.test.tsx, not here.
+    const loc = memoryLocation({ path: `/studio${ADMIN_BASE}/users` });
+    await expectNoViolations(
+      mount(
+        <Router hook={loc.hook} base="/studio">
+          <Route path={ADMIN_BASE} nest>
+            <AdminNav />
+          </Route>
+        </Router>,
+      ),
+      "AdminNav",
     );
   });
 

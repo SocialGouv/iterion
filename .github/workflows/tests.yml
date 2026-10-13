@@ -49,6 +49,24 @@ concurrency:
 # The list lives in a ruleset, outside this repo, so nothing here can assert
 # it — docs/merge-policy.md carries the same warning beside the required list.
 
+# ONE condition is sanctioned on a required job, and that is exactly why it is
+# verified rather than trusted. A Homebrew tap update — the
+# `chore(brew): update tap to …` pull request brew-update.yml opens — moves
+# the version and sha256 values of Formula/iterion.rb and
+# Cask/iterion-desktop.rb, and no heavy job's verdict depends on those values
+# (internal/ciguard's tap tests rewrite them); running them would spend ~57
+# minutes of compute on each pass, on the pull request and again in the queue
+# (measured on #2314). So `test`, `race`, `mongo-conformance`, `golangci`,
+# `vendor-check` and `fmt-check` skip it. A title is only a claim, and a
+# skipped job reports SUCCESS: `brand` — required, never skipped, and a
+# reader of both tap files — receives the same predicate, evaluated, and
+# scripts/ci/tap-entry-check.sh fails the pull request or the queue entry
+# unless its diff moves those values and nothing else, and the queue groups
+# ALLGREEN. Entries stack, so a skipped entry vouches for nothing ahead of it;
+# ALLGREEN is what makes every entry pass on its own checks. internal/ciguard
+# holds the expression, its copies and the verifier step together. `push` to
+# main evaluates the predicate false: main still runs everything.
+
 # WHERE these jobs run. The organisation shares 20 concurrent GitHub-hosted
 # jobs across every repository, which is what makes a cycle here take 40
 # minutes of wall clock for 30 minutes of compute. The self-hosted scale set
@@ -114,6 +132,8 @@ concurrency:
 
 jobs:
   test:
+    # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
+    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 45
     env:
@@ -210,6 +230,17 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
+
+      - name: Install the pinned ultra11y engine
+        # The rgaa-audit engine contract tests (bots/rgaa_audit_engine_contract_test.go)
+        # run the REAL pinned ultra11y offline. The version and the sha256 of its
+        # entry file come from bots/rgaa-audit/ultra11y.pin; the install is
+        # --ignore-scripts and the resolver refuses any file whose hash differs.
+        # Without ULTRA11Y_BIN those tests skip locally and FAIL in CI on purpose.
+        run: |
+          ULTRA11Y_BIN="$(scripts/ultra11y-engine.sh)"
+          echo "ULTRA11Y_BIN=$ULTRA11Y_BIN" >> "$GITHUB_ENV"
+          node "$ULTRA11Y_BIN" --version
 
       - name: Build studio frontend
         working-directory: studio
@@ -351,6 +382,8 @@ jobs:
     # Runs in parallel with `test`; a compile error surfaces here too, so no
     # `needs:` ordering. ~2-3x slower than the plain test job, hence the wider
     # -timeout and job budget.
+    # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
+    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 45
     env:
@@ -376,6 +409,14 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
+
+      - name: Install the pinned ultra11y engine
+        # `./...` includes ./bots, whose engine contract tests FAIL under CI
+        # without ULTRA11Y_BIN (see the same step in the test job).
+        run: |
+          ULTRA11Y_BIN="$(scripts/ultra11y-engine.sh)"
+          echo "ULTRA11Y_BIN=$ULTRA11Y_BIN" >> "$GITHUB_ENV"
+          node "$ULTRA11Y_BIN" --version
 
       # The modernize bot-level tests execute the bot's real plan_read /
       # lot_verify / mark_done scripts, which read the programme contract
@@ -412,6 +453,8 @@ jobs:
     # checkout + go build) and a compile error here surfaces the same
     # failure the `test` job would. Sequential `needs: test` cost 3-4
     # min of wall-clock without catching anything earlier.
+    # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
+    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 15
     steps:
@@ -492,7 +535,7 @@ jobs:
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
             ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/runwatch/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
-            ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/...
+            ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/... ./pkg/platformcfg/...
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the
@@ -775,6 +818,8 @@ jobs:
     # CI runner compiles vs what a fresh clone compiles — the kind of
     # drift that caused Sprint-8 to find 14h-old modules.txt against a
     # fresher go.mod. Fail the PR before the drift lands.
+    # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
+    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 15
     steps:
@@ -851,6 +896,8 @@ jobs:
     # OFF — it flags French comments as misspelled English (1097 false
     # positives). Runs in parallel with `test`; ~1-2 min. Add to the
     # branch-protection required checks to gate merges on a clean lint.
+    # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
+    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 20
     env:
@@ -882,11 +929,38 @@ jobs:
     # It is the cheapest thing in the queue to hold a slot for: shell, grep and
     # sha256, no toolchain, no service, ~40 s.
     #
+    # It is also the one required job a Homebrew tap update runs, so the
+    # check that keeps the tap skip honest (the header) lives here, where
+    # nothing skips it: the job carries no `if:` and no `needs:`, and the
+    # step no `if:`.
+    #
     # Deliberately NOT `task brand:check` (the asset-drift guard): that one
     # needs magick/pngquant/oxipng from devbox and is a different cost.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The tap verifier diffs a pull request's test merge against its
+          # first parent, so it needs the merge's parents, not the merge alone.
+          fetch-depth: 2
+      - name: A Homebrew tap update changes only the tap
+        # The verifier of the tap skip. TAP_ONLY is the skip predicate itself,
+        # evaluated — never the title to match a second time: startsWith
+        # ignores case, and two matchers that disagree make a hole.
+        # internal/ciguard pins this step: no `if:`, no continue-on-error,
+        # and TAP_ONLY byte-equal to the predicate the heavy jobs skip on.
+        env:
+          TAP_ONLY: "${{ startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
+          EVENT_NAME: ${{ github.event_name }}
+          QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          QUEUE_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          # A workflow- or job-level BASH_ENV would be sourced before the
+          # check runs; the step's own value wins.
+          BASH_ENV: ""
+        run: ./scripts/ci/tap-entry-check.sh
       - name: Positioning
         run: ./scripts/brand/positioning-check.sh
       - name: OpenGraph card is not stale
@@ -1026,6 +1100,8 @@ jobs:
     # job needs nothing a self-hosted image lacks. The expression is copied
     # byte-for-byte from vendor-check — TestSelfHostedRoutingExpressionsAgree
     # asserts every copy is identical.
+    # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
+    if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 10
     permissions:

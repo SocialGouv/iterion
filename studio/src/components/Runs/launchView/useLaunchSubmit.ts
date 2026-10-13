@@ -11,7 +11,7 @@ import { createForgeRepo } from "@/api/forgeConnections";
 import { createRun } from "@/api/runs";
 import type { AttachmentField, IterDocument, ServerInfo, VarField } from "@/api/types";
 import { errorMessage } from "@/lib/errorHints";
-import { sourceForLaunch } from "@/lib/launchSource";
+import { launchCarriesProgram, sourceForLaunch } from "@/lib/launchSource";
 import { isVarMissing } from "@/lib/varValidation";
 
 import { type AttachmentValue } from "../AttachmentFieldInput";
@@ -59,11 +59,40 @@ export function useLaunchSubmit({
 }: UseLaunchSubmitArgs) {
   const [, setLocation] = useLocation();
   const [submitting, setSubmitting] = useState(false);
-  // Set when the user clicks Launch on a workflow with no sandbox
-  // active. Surfaces the ConfirmDialog so they make a deliberate
-  // choice (host execution carries real risk: any tool the bot calls
-  // runs against the operator's machine).
-  const [showNoSandboxConfirm, setShowNoSandboxConfirm] = useState(false);
+  // The document the user is being asked to run WITHOUT a sandbox — set
+  // when they click Launch on a workflow with no sandbox active, so the
+  // ConfirmDialog makes it a deliberate choice (host execution carries real
+  // risk: any tool the bot calls runs against the operator's machine).
+  //
+  // The document itself, not a flag, because the authorisation is about ONE
+  // program and this form outlives it: a reload under the open dialog can
+  // end with no document at all (useLaunchDoc), and the ?file= path moves
+  // without leaving the route. A flag would keep the dialog up, and its
+  // Confirm reaches launchRun directly — launching whatever the view moved
+  // ON TO, under a payload built from the form that is gone: `fields`
+  // derives from the document, so an empty one sends no `vars` key and has
+  // no required-var gate. The document carries its own `filePath` tag
+  // (useLaunchDoc), so its identity covers a URL move as well as a reload.
+  const [noSandboxConfirmFor, setNoSandboxConfirmFor] = useState<IterDocument | null>(null);
+  // Null on both sides is the dismissed state, never a match.
+  const showNoSandboxConfirm = noSandboxConfirmFor !== null && noSandboxConfirmFor === doc;
+  // The dialog's own handlers only ever close it; `true` arms it for the
+  // document the form currently describes.
+  const setShowNoSandboxConfirm = (open: boolean) => {
+    setNoSandboxConfirmFor(open ? doc : null);
+  };
+  // Hiding the question is not withdrawing it. The per-tab document stores are
+  // cached by tab id (store/document), so a document this form moved OFF comes
+  // back by identity — a project switch repoints the active editor tab without
+  // leaving this route (store/tabs' setCurrentProjectKey, from the app-root
+  // scope sync) — and a tag kept past its subject re-opens the dialog with
+  // nobody having pressed Launch. Discarded during the render that sees the
+  // mismatch, React's adjust-state-when-a-prop-changes shape: an effect would
+  // commit the stale tag first, and it is conditional on a comparison its own
+  // write settles, so the re-render it schedules is the last one.
+  if (noSandboxConfirmFor !== null && noSandboxConfirmFor !== doc) {
+    setNoSandboxConfirmFor(null);
+  }
 
   const {
     activeRepo,
@@ -88,7 +117,6 @@ export function useLaunchSubmit({
   const missingVarField = fields.find(
     (f) => !isAutoManagedVar(f) && isVarMissing(f, values[f.name] ?? ""),
   );
-  const missingRequired = !!(missingAttachmentField || missingVarField || missingRepoTarget);
   const missingTitle = missingAttachmentField
     ? `Required attachment missing: ${missingAttachmentField.name}`
     : missingVarField
@@ -96,6 +124,7 @@ export function useLaunchSubmit({
       : missingRepoTarget
         ? "Target repository required"
         : undefined;
+  const missingRequired = missingTitle !== undefined;
   const firstMissingFieldId = missingAttachmentField
     ? `attach-${missingAttachmentField.name}`
     : missingVarField
@@ -118,6 +147,35 @@ export function useLaunchSubmit({
   // user-facing onSubmit so the no-sandbox ConfirmDialog can reach it
   // directly when the user accepts the warning.
   const launchRun = async () => {
+    // A launch names its program: the inline text of the editor document this
+    // form renders, or — outside cloud — the ?file= path the server reads
+    // itself (launchCarriesProgram). That text is one /api/unparse round trip
+    // behind the document, and the document is the ACTIVE editor tab's: this
+    // route reads whichever tab that is (LaunchDocStoreProvider), and the
+    // sidebar's tab list elects another one without leaving the route — its ×
+    // reroutes only the tab on screen, and under /runs/new that is never an
+    // editor tab (NavLinks' closeTabAndReroute).
+    // So the form outlives its own program — and its other entry points
+    // (Enter in a var field, the no-sandbox dialog's Confirm, which lands
+    // here directly) can all submit inside that window. Refused here, the one
+    // place every launch passes, rather than posted for the server to refuse
+    // by name over fields this form never showed.
+    if (!launchCarriesProgram({ filePath, source: currentSource, serverInfo })) {
+      setError(
+        "This workflow is still being prepared — there is nothing to launch yet. Try again in a moment.",
+      );
+      return;
+    }
+    // Only onSubmit walks the missing-required gate on the way here; the
+    // no-sandbox dialog's Confirm lands directly. The form that question was
+    // asked over can be gone by then — a reload re-initialises `values`
+    // (useLaunchDoc) without the document changing identity, so no tag on the
+    // authorisation can tell. Re-read here, the one place every launch
+    // passes: a Confirm never posts what the form refuses.
+    if (missingTitle) {
+      setError(missingTitle);
+      return;
+    }
     setSubmitting(true);
     setError(null);
     setRepoTargetCreateError(null);
