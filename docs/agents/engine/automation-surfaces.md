@@ -64,9 +64,8 @@ stream for cloud), and a `trigger.Subscription` registry binding
 (local) or Mongo (cloud) like `forge.RepoIntegrationStore`. The per-bot
 `bundle.Invocation` stays the *capability* ("what can fire me");
 `Subscription` is the *binding* (where/which repo), generated from
-invocations — repo/tenant/cron never enter a manifest. **Four sources
-ship on the spine** (each = a source adapter publishing a
-`trigger.Event` + an effect: promote-card vs direct launch):
+invocations — repo/tenant/cron never enter a manifest. **Five sources
+ship on the spine**:
 - **board events** — a `kind: board` invocation with a `board:` block
   (`on`/`to_states`/`all_labels`) fires a bot on a native-card
   transition. The board source tails the existing
@@ -90,10 +89,14 @@ ship on the spine** (each = a source adapter publishing a
   `AutoImplementOnOpen` zero-touch lane. **Cloud parity**: the mongo
   board has its own spine half
   ([pkg/server/trigger_cloud.go](../../../pkg/server/trigger_cloud.go)) — a
-  `board_events` poll-tail whose per-tenant CAS cursor elects one
-  publishing replica, feeding the same evaluator over the NATS bus with
-  an ATOMIC label consume (`boardmongo.ConsumeLabels`), so
-  consume_labels triggers cannot double-launch across replicas; the
+  `board_events` poll-tail every replica runs. Board events ride no bus
+  there: the per-tenant CAS cursor advances only AFTER the matched
+  (event, subscription) pairs — plus a projection row when a card move
+  owes the tenant's bound external board a push (ADR-097 §10) — are durable rows in the
+  `trigger_effects` outbox ([ADR-094](../../adr/094-trigger-effect-outbox.md)),
+  which `trigger.EffectWorker` drains under a leased claim through the same
+  evaluator, with an ATOMIC label consume (`boardmongo.ConsumeLabels`),
+  so consume_labels triggers cannot double-launch across replicas; the
   `/api/v1/triggers` CRUD is team-scoped in cloud (active-team JWT).
 - **run-completion** ("runned by iterion") — `runview.Service` emits
   `run.finished`/`failed`/`cancelled`/`paused` in-process, and cloud
@@ -105,20 +108,27 @@ ship on the spine** (each = a source adapter publishing a
   consumes `run.paused`+terminals for browser push notifications
   ([docs/notifications.md](../../notifications.md)).
 - **scheduled** — `trigger.Scheduler` ticks schedule-kind subscriptions
-  on their `Cron` (local tenant ""; cloud keeps cloudsched's CAS
-  ticker).
+  on their `Cron` and keepalive-kind ones on `interval_seconds`
+  (sub-minute; `Subscription.NextFire` owns both cadences) — local
+  tenant "" only. Cloud fires schedules from cloudsched's own
+  `scheduled_bots` rows (both cadences); a schedule- or keepalive-kind
+  subscription carrying a team id is fired by neither.
 - **git-forge** — the inbound-webhook launch tail emits a `SourceForge`
   event with a `launched_run_id` marker (observational; the evaluator
   never re-launches it, so the mature HMAC/idempotency/quota webhook path
   stays the sole authority).
+- **custom** — `POST /api/v1/triggers/emit` publishes a `SourceCustom`
+  event (source forced — it cannot spoof a board/forge/run one); 202,
+  the launch happens in the evaluator.
 
 Direct launches go through `serviceLauncher` over `runview.Service.Launch`.
 Wired in [pkg/server/trigger_coordinator.go](../../../pkg/server/trigger_coordinator.go)
 (both `iterion studio` and `iterion dispatch`); REST CRUD at
-`/api/v1/triggers` (gated by `server_info.triggers_enabled`). The forge
-*cutover* (spine becomes the forge launcher, inline retired), custom
-ingress, the studio Automations view, forge-derived provisioning, and
-dispatcher `EngineRunner` convergence are staged follow-ons. Reference:
+`/api/v1/triggers` (gated by `server_info.triggers_enabled`), driven by
+the studio's **Automations** view at `/triggers`. The forge *cutover*
+(spine becomes the forge launcher, inline retired), forge-derived
+provisioning, and dispatcher `EngineRunner` convergence are staged
+follow-ons. Reference:
 [docs/adr/046-event-driven-runs-trigger-spine.md](../../adr/046-event-driven-runs-trigger-spine.md).
 
 ### Bot board access (capabilities)

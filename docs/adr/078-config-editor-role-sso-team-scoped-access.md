@@ -109,3 +109,42 @@ so it does **not** weaken the ADR-076 token path.
   admitted by `canEditConfigShares` alone.
 
 Reference: [docs/config-share.md](../config-share.md).
+
+## Status note (2026-10-13)
+
+Three parts of this record read differently in the code today.
+
+- **Point 1's hazard is closed in the gate itself, not only by keeping the role
+  value off the ladder.** `canViewTeam` admits
+  `Role.AtLeast(identity.RoleViewer)` rather than `Role.Valid()`
+  ([pkg/server/auth_authz.go](../../pkg/server/auth_authz.go)) — equivalent to
+  `Valid()` for the four ladder roles, and excluding `config_editor`, which
+  ranks 0 ([pkg/identity/types.go](../../pkg/identity/types.go)). The launch
+  path draws the same line at its member rung, so a `config_editor` cannot
+  launch a run itself ([pkg/server/launch_gate.go](../../pkg/server/launch_gate.go)); it can
+  still re-time the oldest schedule tied to its share's (bot, category) through
+  `PATCH …/{sid}/schedule`, whose tick then launches it when it is enabled.
+- **The authenticated editor surface has its own path prefix.** Six routes live
+  under `/api/teams/{id}/config-editor/shares` — the share list, `GET|PATCH
+  …/{sid}/config`, `GET|PATCH …/{sid}/schedule` and `GET …/{sid}/runs`
+  ([pkg/server/config_editor_routes.go](../../pkg/server/config_editor_routes.go)).
+  There is no `/api/teams/{id}/config-shares/{sid}/config`, and the operator
+  list `GET /api/teams/{id}/config-shares` is `canViewTeam`-gated, so a
+  `config_editor` is refused there and reads its own list instead
+  ([pkg/server/config_shares_routes.go](../../pkg/server/config_shares_routes.go)).
+- **The capability grants two things.** `canEditBots` delegates to
+  `canEditConfigShares`, so a `config_editor` also creates, edits and deletes
+  the team's authored bot bundles
+  ([pkg/server/auth_authz.go](../../pkg/server/auth_authz.go)). And "nothing
+  else" bounds only the routes that consult a team gate: for example, the
+  tenant-scoped shared-knowledge memory routes
+  ([pkg/server/memory_routes.go](../../pkg/server/memory_routes.go)) carry
+  `requireAuth` and scope by tenant alone, so any authenticated principal of
+  the team reaches them (a global-space write stays super-admin-only, through
+  `requireMemoryWriteAuth`). So do the run list and its stats
+  (`GET /api/runs`, `GET /api/v1/runs/stats`), which scope by the active team
+  with no role read: a `config_editor` lists its team's runs though every
+  by-id read answers it 404. The trigger-subscription CRUD
+  ([pkg/server/triggers_routes.go](../../pkg/server/triggers_routes.go)) takes
+  the member rung at its mount, so a `config_editor` reads subscriptions and
+  cannot write one.
