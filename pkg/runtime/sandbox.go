@@ -34,6 +34,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/askusermcp"
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -854,6 +855,19 @@ func sandboxModelHosts() []string {
 	})
 }
 
+// gatewayPin is the run's proxy's PinSource: the host of the
+// OpenAI-compatible gateway the environment serves (OPENAI_COMPATIBLE_BASE_URL)
+// — "" when it serves none, or names one no request reaches — and whether
+// ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1 admits a private answer for it.
+func gatewayPin() (host string, allowPrivate bool) {
+	allowPrivate = secrets.LLMEndpointAllowPrivate()
+	gw, err := compatgw.FromEnv(os.Getenv)
+	if err != nil {
+		return "", allowPrivate
+	}
+	return gw.Host(), allowPrivate
+}
+
 // sandboxInspectMaxBody reads ITERION_SANDBOX_INSPECT_MAX_BODY: the bound of
 // the request body the egress proxy holds to inspect — a byte count, or one
 // with a KiB/MiB/GiB suffix (e.g. 256MiB). Unset is 0, the proxy's default
@@ -965,6 +979,17 @@ func startNetworkProxy(
 			}
 		},
 	}
+	// The gateway's name is pinned: the in-container runner checks the
+	// gateway's address as it resolves the name, and the proxy, which makes
+	// the connection, resolves it again through the same guard and dials
+	// only what it validated — whichever client of the run reaches that
+	// name. The environment is read when the proxy starts and at every
+	// connection it makes, as each dispatch reads it to hand the runner its
+	// gateway, and a gateway once pinned stays pinned: one an environment
+	// reloaded mid-run names (the desktop's refresh) is pinned from the next
+	// connection on. A gateway named and replaced again before any
+	// connection is made through the proxy is not.
+	opts.PinSource = gatewayPin
 
 	// TLS-inspection mode (Layer 2): mint a per-run CA so the proxy can
 	// terminate TLS and rewrite the plaintext request (secret egress

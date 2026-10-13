@@ -302,8 +302,9 @@ func TestGuardedTransport_AStalledTunnelIsBoundedByTheHandshakeTimeout(t *testin
 // The engine's proxy matches its policy on the gateway's NAME — an
 // allowlist refuses an IP literal no rule names — so the request hands the
 // proxy the hostname, and the proxy resolves it again itself: the address
-// the runner validated cannot ride the CONNECT (sandboxProxyFunc names what
-// that leaves). Through the real proxy, its allowlist naming the gateway.
+// the runner validated cannot ride the CONNECT, the proxy pins the name
+// instead (sandboxProxyFunc). Through the real proxy, its allowlist naming
+// the gateway.
 func TestGuardedTransport_TheEngineProxyIsHandedTheGatewayName(t *testing.T) {
 	gateway := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -374,7 +375,7 @@ func TestGuardedTransport_TheEngineProxyIsHandedTheGatewayName(t *testing.T) {
 	resp, err = client.Get("https://127.0.0.1:" + port + "/v1/models")
 	if err == nil {
 		resp.Body.Close()
-		t.Fatal("the allowlist admitted the gateway's address literal — a pinned CONNECT would cross: revisit sandboxProxyFunc's residual-risk note")
+		t.Fatal("the allowlist admitted the gateway's address literal — a CONNECT pinned by the runner would cross: revisit sandboxProxyFunc's note on who pins")
 	}
 	if !strings.Contains(err.Error(), "Forbidden") {
 		t.Fatalf("the address literal failed with %v, want the allowlist's 403", err)

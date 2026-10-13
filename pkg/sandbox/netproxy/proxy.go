@@ -19,6 +19,7 @@ import (
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 )
 
 // Proxy is the iterion HTTP / HTTPS CONNECT proxy. It enforces a
@@ -62,6 +63,15 @@ type Proxy struct {
 	// the bytes are opaque TLS.
 	forwardTransport *http.Transport
 
+	// pins is the pin (Options.PinnedHosts, Options.PinSource); nil pins
+	// nothing. A pinned host's forwards ride pinnedForward, and its
+	// inspected requests the inspection's pinnedUpstream: neither keeps a
+	// connection alive, so each request is dialed through the pin as it
+	// stands — never a connection pooled before its host was pinned, or
+	// under an escape hatch since withdrawn.
+	pins          *pinSet
+	pinnedForward *http.Transport
+
 	// inspect holds the TLS-inspection state (Layer 2 secret egress
 	// substitution). Nil keeps the proxy a transparent CONNECT tunnel.
 	inspect *inspectConfig
@@ -92,6 +102,7 @@ type Options struct {
 	// refusal of a loopback, link-local or unspecified destination: the
 	// caller's dialer owns its guard (the runner's clone guard dials through
 	// pkg/secure/httpdial, whose escape hatch admits an internal forge).
+	// PinnedHosts still apply: Dial is handed their validated address.
 	// Tests use this to redirect CONNECTs to a loopback echo server.
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 
@@ -129,7 +140,44 @@ type Options struct {
 	// RootCAs trusting a local httptest server). Nil uses the system
 	// trust store with proper verification.
 	InspectUpstreamTLS *tls.Config
+
+	// PinnedHosts names hosts the proxy pins: it resolves such a host itself,
+	// through the shared SSRF guard (pkg/secure/httpdial), and dials only the
+	// address the guard validated — so a DNS answer the guard refuses meets
+	// it where the connection is made, whatever a client's own check saw
+	// before (rebinding). Every way out pins alike — a CONNECT tunnel, a
+	// plain-HTTP forward, an inspected upstream — and a request to a pinned
+	// host never rides a pooled connection. A refusal answers 502 and is
+	// reported through OnBlocked. A host is pinned in the form the policy
+	// reads a request's host in, so every spelling of it is; the policy still
+	// matches it by name, and the host.docker.internal alias, never resolved,
+	// keeps its own road. An entry is matched as written, never as a
+	// pattern; one with a port, a path, userinfo or whitespace fails New.
+	PinnedHosts []string
+
+	// PinAllowPrivate lifts the guard's public-unicast rule for the pinned
+	// hosts: the first answer is dialed whatever it is, the proxy's own
+	// dialer still refusing a loopback, link-local or unspecified
+	// destination (a Dial set in Options owns that refusal). The zero value
+	// requires every answer to be public unicast.
+	PinAllowPrivate bool
+
+	// PinSource, when set, is read when New builds the proxy and again
+	// whenever the proxy reaches an upstream — every dial, every forwarded
+	// or inspected request — for a pin whose configuration can change while
+	// the proxy runs: the host it names joins the pinned hosts for the
+	// proxy's life, and its allowPrivate replaces PinAllowPrivate. An empty
+	// host adds none.
+	PinSource func() (host string, allowPrivate bool)
+
+	// PinResolver answers the pin's lookups; nil is net.DefaultResolver. A
+	// test injects one so a pinned name resolves without live DNS.
+	PinResolver httpdial.HostResolver
 }
+
+// dialTimeout bounds an upstream dial — the name's resolution and the
+// connect together.
+const dialTimeout = 10 * time.Second
 
 // errLocalDestination is the proxy's refusal to dial its own host: the
 // egress allowlist governs destinations, and the proxy host's local services
@@ -167,10 +215,23 @@ func New(opts Options) (*Proxy, error) {
 	if opts.Policy == nil {
 		return nil, errors.New("netproxy: New: Policy is required")
 	}
+	pinned, err := pinnedHostSet(opts.PinnedHosts)
+	if err != nil {
+		return nil, err
+	}
+	p := &Proxy{
+		policy:    opts.Policy,
+		token:     opts.Token,
+		onBlocked: opts.OnBlocked,
+	}
 	dial, hostDial := opts.Dial, opts.Dial
 	if dial == nil {
-		dial = (&net.Dialer{Timeout: 10 * time.Second, Control: refuseLocalDestination}).DialContext
-		hostDial = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
+		dial = (&net.Dialer{Timeout: dialTimeout, Control: refuseLocalDestination}).DialContext
+		hostDial = (&net.Dialer{Timeout: dialTimeout}).DialContext
+	}
+	if len(pinned) > 0 || opts.PinSource != nil {
+		p.pins = newPinSet(pinned, opts.PinAllowPrivate, opts.PinSource)
+		dial = p.pinDial(dial, p.pins, opts.PinResolver)
 	}
 	// host.docker.internal is the container-side alias for the host
 	// gateway. When a sandboxed client routes a call to an iterion host
@@ -183,19 +244,16 @@ func New(opts Options) (*Proxy, error) {
 	// (proxied). External egress is unaffected — it uses real hostnames.
 	// The alias is the one sanctioned way to the host's loopback, so it
 	// dials on a dialer of its own: the proxy's dialer refuses that address.
+	// It is matched as the policy reads it, every spelling alike, and never
+	// resolved, so no pin applies to it.
 	baseDial := dial
 	dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if host, port, err := net.SplitHostPort(addr); err == nil && host == "host.docker.internal" {
+		if host, port, err := net.SplitHostPort(addr); err == nil && canonicalHost(host) == "host.docker.internal" {
 			return hostDial(ctx, network, net.JoinHostPort("127.0.0.1", port))
 		}
 		return baseDial(ctx, network, addr)
 	}
-	p := &Proxy{
-		policy:    opts.Policy,
-		token:     opts.Token,
-		onBlocked: opts.OnBlocked,
-		dial:      dial,
-	}
+	p.dial = dial
 	p.forwardTransport = &http.Transport{
 		DialContext:           dial,
 		MaxIdleConns:          100,
@@ -206,6 +264,9 @@ func New(opts Options) (*Proxy, error) {
 		// Content-Encoding (if any) reaches the client unchanged —
 		// the proxy is byte-transparent for non-CONNECT traffic.
 		DisableCompression: true,
+	}
+	if p.pins != nil {
+		p.pinnedForward = unpooled(p.forwardTransport)
 	}
 	// The operator's model hosts are validated whether or not inspection
 	// runs: an invalid entry fails the run's start either way.
@@ -222,22 +283,59 @@ func New(opts Options) (*Proxy, error) {
 		if upstreamTLS == nil {
 			upstreamTLS = &tls.Config{MinVersion: tls.VersionTLS12}
 		}
+		upstream := &http.Transport{
+			DialContext:         dial,
+			TLSClientConfig:     upstreamTLS,
+			ForceAttemptHTTP2:   false, // stay HTTP/1.1 end-to-end
+			DisableCompression:  true,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 8,
+			IdleConnTimeout:     90 * time.Second,
+		}
 		p.inspect = &inspectConfig{
 			ca:         opts.InspectCA,
 			rewriter:   opts.Rewriter,
 			modelHosts: modelHosts,
-			upstream: &http.Transport{
-				DialContext:         dial,
-				TLSClientConfig:     upstreamTLS,
-				ForceAttemptHTTP2:   false, // stay HTTP/1.1 end-to-end
-				DisableCompression:  true,
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 8,
-				IdleConnTimeout:     90 * time.Second,
-			},
+			upstream:   upstream,
+		}
+		if p.pins != nil {
+			p.inspect.pinnedUpstream = unpooled(upstream)
 		}
 	}
 	return p, nil
+}
+
+// unpooled is a copy of t that keeps no connection alive.
+func unpooled(t *http.Transport) *http.Transport {
+	t = t.Clone()
+	t.DisableKeepAlives = true
+	return t
+}
+
+// isPinned reports whether host — the target of a forward or an inspected
+// tunnel, bare or with its port — is pinned, the pin source read anew.
+func (p *Proxy) isPinned(host string) bool {
+	if p.pins == nil {
+		return false
+	}
+	pinned, _ := p.pins.lookup(host)
+	return pinned
+}
+
+// dialAddr is the address a forwarded or inspected request is dialed on:
+// its host as the policy read it (canonicalHost), its port kept. Handed the
+// host as the client wrote it, net/http would fold a non-ASCII one with its
+// own copy of the IDN tables and dial a name the policy, the pin and the
+// secret substitution never read.
+func dialAddr(hostport string) string {
+	host := canonicalHost(hostport)
+	if _, port, err := net.SplitHostPort(hostport); err == nil {
+		return net.JoinHostPort(host, port)
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
 }
 
 // NewToken generates a random opaque token suitable for [Options.Token].
@@ -339,12 +437,17 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
 		return
 	}
+	// Every request reads the pin source, one to the host alias — which no
+	// pin dials — included.
+	if p.pins != nil {
+		p.pins.sync()
+	}
 	host := canonicalHost(r.Host)
 	if host == "" && r.Method != http.MethodConnect {
 		host = canonicalHost(r.URL.Host)
 	}
 	if host == "" {
-		http.Error(w, "no host", http.StatusBadRequest)
+		http.Error(w, "no valid host", http.StatusBadRequest)
 		return
 	}
 	if !p.policy.Allow(host) {
@@ -574,7 +677,7 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 
 	outReq := r.Clone(r.Context())
 	outReq.URL.Scheme = "http"
-	outReq.URL.Host = target.Host
+	outReq.URL.Host = dialAddr(target.Host)
 	outReq.Host = target.Host
 	outReq.RequestURI = ""
 	stripHopByHop(outReq.Header)
@@ -595,7 +698,11 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 		setBody(outReq, body)
 	}
 
-	resp, err := p.forwardTransport.RoundTrip(outReq)
+	transport := p.forwardTransport
+	if p.isPinned(target.Host) {
+		transport = p.pinnedForward
+	}
+	resp, err := transport.RoundTrip(outReq)
 	if err != nil {
 		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
 		return

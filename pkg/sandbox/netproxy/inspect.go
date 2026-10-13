@@ -35,6 +35,9 @@ type inspectConfig struct {
 	ca       *EphemeralCA
 	rewriter SecretRewriter
 	upstream http.RoundTripper
+	// pinnedUpstream carries the requests to a pinned host, keeping no
+	// connection alive (see Proxy.pins); nil when the proxy has no pin.
+	pinnedUpstream http.RoundTripper
 	// modelHosts matches the operator's own model hosts, beside the built-in
 	// ones (see modelRequest); nil when there are none.
 	modelHosts *Policy
@@ -114,15 +117,19 @@ func (p *Proxy) serveInspectedRequest(client net.Conn, req *http.Request, hostna
 	}
 
 	// Rebuild the request for the upstream RoundTrip, bound for the tunnel's
-	// target.
+	// target as the policy read it.
 	outURL := *req.URL
 	outURL.Scheme = "https"
-	outURL.Host = hostPort
+	outURL.Host = dialAddr(hostPort)
 	req.URL = &outURL
 	req.RequestURI = ""
 	setBody(req, body)
 
-	resp, err := p.inspect.upstream.RoundTrip(req)
+	upstream := p.inspect.upstream
+	if p.isPinned(hostPort) {
+		upstream = p.inspect.pinnedUpstream
+	}
+	resp, err := upstream.RoundTrip(req)
 	if err != nil {
 		writeSimpleResponse(client, http.StatusBadGateway, "upstream error: "+err.Error())
 		return false

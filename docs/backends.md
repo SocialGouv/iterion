@@ -1174,13 +1174,19 @@ The endpoint is the operator's choice, but the dial is guarded: a public
 address by default, and `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` for a
 self-hosted gateway on private infrastructure. When the sandbox's egress
 runs through the run's [network proxy](sandbox.md#network-policy), the call
-crosses it too: the runner checks the gateway's address as it resolves the
-name, then the proxy connects where its own answer for the name points —
-refusing loopback and link-local destinations itself (save the
-`host.docker.internal` alias), not private ones. The direct dial's pin
-against a DNS answer that changes in between does not hold there: serve the
-gateway over https, where a host such an answer points to cannot present the
-gateway's certificate. A gateway route runs on the
+crosses it too, and the guard holds there: the runner checks the gateway's
+address as it resolves the name, then the proxy — which makes the
+connection — resolves the name again through the same guard and connects
+only to the address it validated. An answer the guard refuses is refused
+there whatever the runner's own lookup saw (DNS rebinding), for every client
+of the run that reaches the gateway's name; the run's network rules still
+name the gateway by its host, and the proxy keeps no pooled connection to
+it. The proxy reads the gateway's settings from the environment when the run
+starts and at every connection, as each dispatch does, and a gateway once
+pinned stays pinned: one an environment reloaded mid-run names is pinned
+from the next connection on — unless the environment changes again before
+any connection is made. It never resolves `host.docker.internal` — it dials
+that alias on its own host's loopback. A gateway route runs on the
 **`claw` backend only**: an explicit `backend:` naming a CLI backend, or a
 vendor `provider:` hint beside a gateway model, is refused when the node is
 dispatched, and warning **C186** says the same at `iterion validate` time

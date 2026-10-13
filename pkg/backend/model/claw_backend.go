@@ -1522,14 +1522,14 @@ var providerEndpointEnvVars = []string{
 // the ONLY egress the sandbox's network policy allows, and the gateway
 // client never trusts an ambient HTTPS_PROXY — the endpoint crosses under
 // compatgw.SandboxProxyEndpointEnv, the name only the engine sets. Through
-// it the run's proxy, not the gateway client, picks the gateway's address:
-// the client's SSRF guard judges the runner's own resolution and its pin
-// does not cross (compatgw's sandboxProxyFunc names what remains). A run
-// that is NOT proxied UNSETS the name: an exec env rides the container's
-// own env, and a hostile image or spec env could otherwise forge the
-// engine's voice and route a gateway credential through an attacker proxy.
-// (The exec-env prefix wins over the container env; the empty value is
-// honoured as an unset.)
+// it the run's proxy, not the gateway client, makes the connection: the
+// client's SSRF guard judges the runner's own resolution, and the proxy
+// pins the gateway's name through the same guard (compatgw's
+// sandboxProxyFunc). A run that is NOT proxied UNSETS the name: an exec
+// env rides the container's own env, and a hostile image or spec env could
+// otherwise forge the engine's voice and route a gateway credential through
+// an attacker proxy. (The exec-env prefix wins over the container env; the
+// empty value is honoured as an unset.)
 func sandboxProxyEnv(handle sandbox.Run) map[string]string {
 	proxied, ok := handle.(sandbox.ProxiedRun)
 	if !ok {

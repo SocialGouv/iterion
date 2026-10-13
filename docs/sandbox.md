@@ -428,6 +428,22 @@ is answered `502` naming the refusal. The one sanctioned way to the
 host is the `host.docker.internal` alias (the per-run MCP listeners),
 which the proxy dials on the host's loopback.
 
+**The gateway's name is pinned.** When the deployment serves an
+[OpenAI-compatible gateway](backends.md#the-openai-compatible-gateway-openai_compatible)
+(`OPENAI_COMPATIBLE_BASE_URL`), the proxy resolves the gateway's host
+itself through iterion's SSRF guard and connects only to an address the
+guard validated — no loopback, private, link-local, multicast or
+cloud-metadata one, unless `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1`. Every
+client of the run that reaches that name is held to it, through a CONNECT
+tunnel, a plain-HTTP forward or an inspected tunnel alike, so an answer the
+guard refuses is refused where the connection is made, whatever the
+runner's own lookup saw: the request is answered `502` and a
+`network_blocked` event names the refusal. No request to the gateway rides
+a connection the proxy pooled. The rules still match the gateway by its
+name. The proxy reads the gateway from the environment when the run starts
+and at every connection, so a gateway an environment reloaded mid-run names
+is pinned from the next connection on ([details](backends.md#the-openai-compatible-gateway-openai_compatible)).
+
 Blocked requests surface to the run as a `network_blocked` event in
 `events.jsonl`:
 
@@ -1789,6 +1805,12 @@ restrictive for your workflow (extend `network.rules` or drop back
 to `mode: open`), or the agent is genuinely talking to a domain
 you didn't intend to allow. Check `events.jsonl` for the host
 pattern that fired.
+
+A reason starting `pinned host:` is the gateway's pin (see
+[Network policy](#network-policy)) refusing the address the gateway's
+name resolved to: a private answer for a gateway that should be public —
+a rebinding resolver, or a self-hosted gateway that needs
+`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` — or a name that did not resolve.
 
 A few claude-code endpoints (telemetry / MCP probes) are
 **silent-denied** by default — the connection is still refused, but
