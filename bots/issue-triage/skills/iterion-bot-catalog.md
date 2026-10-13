@@ -140,7 +140,6 @@ dispatcher routes on it), never the persona.
 | Shieldy | `supply-shield` | verify |
 | Vulny | `supply-shield-cve` | verify |
 | Testy | `test-coverage` | harden |
-| Ally | `ultra11y` | verify |
 | Senti | `vuln-watch` | operate |
 | Nexie | `whats-next` | steer |
 | Willy | `whole-improve-loop` | harden |
@@ -571,42 +570,6 @@ a CVE tomorrow as advisories land. Point `cache_path` at
 - **Tags**: security, supply-chain, read-only
 - **Vars**: `base_ref` (string), `bundle_skills_dir` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
 - **Path**: `bots/supply-shield-cve/main.bot`
-
-### `ultra11y` — Ally
-
-Engine-backed WCAG 2.2 AA / RGAA accessibility auditor (read-only), with a
-pull-request mode. The ultra11y static engine produces the findings — one
-per criterion, anchored file:line, with a stable id — and ONE adjudication
-agent rules on the criteria a static pass cannot decide (alt relevance,
-link purpose, reading order), each verdict justified or grounded. The
-engine's own gates then refuse the run: `verify --apply` fail-closes on an
-unjustified verdict or an ungroundable non-conformity, and `check` rejects
-a report citing a criterion that does not exist.
-
-Given a pull request (`pr_url` / `base_ref`, set by iterion for any bot
-launched on a PR) it audits exactly what the branch introduced; otherwise
-it audits the whole UI surface and writes a dated conformance report under
-`audits/`, optionally filing one board issue per criterion.
-
-Criteria that need a rendered page (contrast, visible focus, zoom, reflow)
-are reported as RESIDUAL RISKS, never as conforming. No browser is
-launched; nothing is fixed or committed.
-
-- **Use when**:
-  Use when accessibility findings must be DEFENSIBLE — a dated WCAG 2.2 AA or
-  RGAA conformance deliverable, or a per-PR accessibility check whose findings
-  carry file:line anchors and a criterion each. The detection is deterministic,
-  so a finding is reproducible without a model in the loop.
-  
-  Read-only: Ally reports. For FIXING accessibility issues, use Willy
-  (whole-improve-loop) with the rgaa preset. Acci (rgaa-audit) is the sibling
-  to prefer for RGAA theme-by-theme reasoning over a Système de Design de
-  l'État UI, where the DSFR MCP tools carry the reference markup.
-- **Triggers**: ultra11y, a11y, accessibility, wcag
-- **Tags**: a11y, read-only
-- **Vars**: `base_ref` (string), `engine_version` (string), `findings_cap` (int), `force_jsx` (bool), `post_to_board` (bool), `pr_url` (string), `prior_pushback` (string), `report_dir` (string), `report_lang` (string), `run_dir` (string), `scope_globs` (string), `scope_notes` (string), `standard` (string), `workspace_dir` (string)
-- **Capabilities**: board.create, board.label, board.read
-- **Path**: `bots/ultra11y/main.bot`
 
 ### Harden — strengthen what exists
 

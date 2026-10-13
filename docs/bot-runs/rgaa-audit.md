@@ -1,11 +1,44 @@
 # Acci — `rgaa-audit` run bilans
 
-Universal RGAA 4.1.2 accessibility auditor (read-only): classify the UI
-surface, audit theme-by-theme against the 106 criteria, write the dated
-conformance report and (optionally) file one board issue per
-non-conformity. See [bots/rgaa-audit/](../../bots/rgaa-audit/).
-Earlier runs (pre-dedicated-file) are recorded in the 2026-06 campaign
-bilans.
+Accessibility auditor (read-only) on the pinned ultra11y engine since v3
+(2026-10-13, PR #2387): the engine finds, gates and reports; read-only agents
+adjudicate the criteria a static pass cannot decide; a second reader puts the
+draft report on trial; the run writes the dated French report, a coverage
+annex and the issue plan. See [bots/rgaa-audit/](../../bots/rgaa-audit/).
+The bilans below v3 are the v1/v2 single-agent auditor, kept as the record
+of why v3 exists. Earlier runs (pre-dedicated-file) are recorded in the
+2026-06 campaign bilans.
+
+## 2026-10-13 — v3 on the ultra11y engine lands (PR #2387); Ally (`ultra11y`) retired into it
+
+- Status: **structural + engine-proven, dogfood pending** — the real node scripts run on
+  the real pinned engine against the planted fixture site in CI (`task test:contract:rgaa`:
+  the engine contract and the bot's node scripts, 45 subtests — hostile first round, tamper
+  table, re-entry), the dry run walks the graph
+  on recorded fixtures, `task check` green; no live run yet (that is #2346, the studio
+  dogfood, after the live test).
+- What the three Ally bilans taught (2026-08-12 → 2026-09-17), now built into v3:
+  - the empty-scope façade (`audit_args` joined into one token → 0 files → "100 %"):
+    `audit_args` is `string[]` and an empty scope is the typed refusal `EMPTY_SCOPE`,
+    never a clean audit;
+  - the fold refuses W3C technique codes as `normativeRef`: the briefs the engine writes
+    per criterion carry the test ids, and the adjudication protocol says "the criterion id
+    or one of its `testIds`, never a technique code";
+  - a report written inside the tree gets wip-banked by finalize: every intermediate
+    lives in the run directory — except the captures the engine's `scan` writes under
+    `.ultra11y/pages/` of the workspace (upstream SocialGouv/ultra11y#47) —, `report_dir`
+    is an explicit copy, `workspace_checkpoint: off`;
+  - one adjudicator on a whole SPA does not converge in 20 minutes: criteria are
+    adjudicated in parallel theme batches, each with its own agent;
+  - the "plausible C" hole (a C with a justification but no verified anchor): a C must
+    cite the item's own evidence (checked by the bot before the engine's gate), and a
+    second reader puts every landed conformity on trial;
+  - undecided criteria are never silently conforming: the fold is partial, the residue is
+    named in the annex, and the report's « Décidés » line is cross-checked against the
+    document (the engine double-counts "no subject" criteria left open — known upstream
+    defect, pinned by a test that goes red when fixed).
+- Not carried over from Ally: the pull-request diff mode (`--since`) and `produces:
+  review` (the hand-off would mask Revi on the same PR, #2355) — back when #2355 lands.
 
 ## 2026-09-17 — profile 2: the 106 criteria ruled on a 13-line page, three attempts of wall to get there (run 01a0af95-64fa)
 

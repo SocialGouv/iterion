@@ -83,15 +83,13 @@ var catalogHostAllowlist = map[string]string{
 	"api.first.org":       "the public CVSS/EPSS API",
 	"krebsonsecurity.com": "a public security news source in a feed list",
 	// Public accessibility and design references.
-	"accessibilite.numerique.gouv.fr": "the public accessibility reference the a11y bots cite",
-	"www.cert.ssi.gouv.fr":            "a public advisory source",
-	"www.systeme-de-design.gouv.fr":   "a public design-system reference",
+	"www.cert.ssi.gouv.fr":          "a public advisory source",
+	"www.systeme-de-design.gouv.fr": "a public design-system reference",
 	// Public documentation of tools a skill names.
 	"docs.fallow.tools": "the public documentation of a static analyser named in a skill",
 	// Placeholders that are not reserved names but name nobody: they appear in
 	// prose as "replace this with yours".
 	"myorg.atlassian.net": "a placeholder tenant in a ticket-tracker skill's example",
-	"domaine.fr":          "a placeholder domain inside a French UI error-message example",
 	"x.fr":                "a placeholder URL in a truncation test fixture",
 	// Identities the engine writes into throwaway git commits. They are not
 	// hosts: nothing resolves them, and they exist so a commit has an author.

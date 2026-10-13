@@ -132,6 +132,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/adr/123-run-bundle-dek-in-envelope.md`](../adr/123-run-bundle-dek-in-envelope.md) | ADR-123: Run bundles seal under a per-run DEK carried in the queue envelope | Date: 2026-10-06. | — |
 | [`docs/adr/124-gating-bot-merge-gestures.md`](../adr/124-gating-bot-merge-gestures.md) | ADR-124 — A gating bot: merge-gate gestures as a declared capability, executed by the… | extends the verdict-order authority from commit statuses to the gestures that follow them. | — |
 | [`docs/adr/125-a-lots-contract-is-a-directory-judged-on-what-lands.md`](../adr/125-a-lots-contract-is-a-directory-judged-on-what-lands.md) | ADR-125 — A lot's contract is a directory, judged on what lands | The modernize bot carries one lot of a programme to its exit gate, and writes | Accepted |
+| [`docs/adr/126-accessibility-audits-delegate-the-judgement-to-the-ultra11y-engine.md`](../adr/126-accessibility-audits-delegate-the-judgement-to-the-ultra11y-engine.md) | ADR-126 — Accessibility audits delegate every judgement to the ultra11y engine; iterion… | Two accessibility bots shipped in the catalogue, and neither could stand | Accepted |
 | [`docs/adr/README.md`](../adr/README.md) | Architecture decision records | One decision per file, named `NNN-kebab-title.md`, where `NNN` is the next | — |
 | [`docs/agents/README.md`](../agents/README.md) | Agent instructions — the tree | Doctrine specific to this repository: what to know before touching iterion, | — |
 | [`docs/agents/backends/README.md`](../agents/backends/README.md) | Backends and execution — the domain | Who runs the prompt, with which tools, and what the node keeps of its | — |
@@ -216,14 +217,13 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/bot-runs/revi-converse.md`](../bot-runs/revi-converse.md) | revi-converse — run bilans | Newest first. | — |
 | [`docs/bot-runs/review-env.md`](../bot-runs/review-env.md) | Envy — `review-env` run bilans | Deploys the current commit's already-published image to the attached platform | — |
 | [`docs/bot-runs/review-pr.md`](../bot-runs/review-pr.md) | Revi — `review-pr` run bilans | Read-only code reviewer. | — |
-| [`docs/bot-runs/rgaa-audit.md`](../bot-runs/rgaa-audit.md) | Acci — `rgaa-audit` run bilans | Universal RGAA 4.1.2 accessibility auditor (read-only): classify the UI | — |
+| [`docs/bot-runs/rgaa-audit.md`](../bot-runs/rgaa-audit.md) | Acci — `rgaa-audit` run bilans | Accessibility auditor (read-only) on the pinned ultra11y engine since v3 | — |
 | [`docs/bot-runs/sec-audit-deps.md`](../bot-runs/sec-audit-deps.md) | Depsy — `sec-audit-deps` run bilans | Universal supply-chain / SCA auditor: enumerates installed deps per ecosystem, | — |
 | [`docs/bot-runs/sec-audit-source.md`](../bot-runs/sec-audit-source.md) | Seki + deepsec — validation | repository: three candidates triaged, a full pool of three voters, a clean | — |
 | [`docs/bot-runs/secured-renovacy.md`](../bot-runs/secured-renovacy.md) | secured-renovacy (Renovacy) — dogfood bilan | Index + template: [README.md](../bot-runs/README.md). | — |
 | [`docs/bot-runs/supply-shield-cve.md`](../bot-runs/supply-shield-cve.md) | supply-shield-cve (Vulny) — run bilans | Newest first. | — |
 | [`docs/bot-runs/supply-shield.md`](../bot-runs/supply-shield.md) | supply-shield (Shieldy) — run bilans | Newest first. | — |
 | [`docs/bot-runs/test-coverage.md`](../bot-runs/test-coverage.md) | test-coverage (Testy) — run bilans | Universal test-coverage augmentation bot (ADR-058 v2). | — |
-| [`docs/bot-runs/ultra11y.md`](../bot-runs/ultra11y.md) | Ally — `ultra11y` run bilans | Engine-backed WCAG 2.2 AA / RGAA accessibility auditor (read-only), with a | — |
 | [`docs/bot-runs/vuln-watch.md`](../bot-runs/vuln-watch.md) | vuln-watch (Senti) — run log | a model receives; the run on a bare scratch refused at `plan`. | — |
 | [`docs/bot-runs/whats-next.md`](../bot-runs/whats-next.md) | Nexie — `whats-next` run bilans | Conversational co-CTO (v3: ONE agent in a chat loop — board intelligence, | — |
 | [`docs/bot-runs/whole-improve-loop.md`](../bot-runs/whole-improve-loop.md) | Willy — `whole-improve-loop` run bilans | Whole-repository improvement loop (ADR-058 v2). | — |

@@ -78,8 +78,7 @@ first bilan for a bot lands.
 | Adry | `adr-cartograph` | ADR cartographer + completeness audit (idempotent) | [adr-cartograph.md](adr-cartograph.md) |
 | Vetty | `dep-update-guard` | Dependabot/Renovate PR guard (audit + align + deterministic verify) | [dep-update-guard.md](dep-update-guard.md) |
 | Copi | `copilot` | conversational iterion assistant (read-only; optional cross-review) | [copilot.md](copilot.md) |
-| Acci | `rgaa-audit` | RGAA 4.1.2 accessibility audit (read-only) | [rgaa-audit.md](rgaa-audit.md) |
-| Ally | `ultra11y` | engine-backed WCAG 2.2 AA / RGAA audit + PR diff mode (read-only) | [ultra11y.md](ultra11y.md) |
+| Acci | `rgaa-audit` | RGAA / WCAG audit on the pinned ultra11y engine (read-only: the engine finds and gates, agents only adjudicate) | [rgaa-audit.md](rgaa-audit.md) |
 | Vigie | `feed-watch` | feed watch + LLM digest to chat (Huginn-style veille) | [feed-watch.md](feed-watch.md) |
 | Senti | `vuln-watch` | inventory-scoped vulnerability sentinel (KEV/EPSS-driven, zero LLM) | [vuln-watch.md](vuln-watch.md) |
 | ReArchi | `adr-rechallenge` | human-gated ADR re-challenge | [adr-rechallenge.md](adr-rechallenge.md) |

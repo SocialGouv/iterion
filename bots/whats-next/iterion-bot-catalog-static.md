@@ -101,7 +101,7 @@ Walk top-to-bottom; first match wins.
 | "migrate the framework major", "modernise the legacy app", "the runtime moved and everything with it" — behaviour-preserving, gate to gate | `modernize` for ONE lot; `campaign` to supervise the whole programme |
 | "pin down what this app actually does before we touch it", "golden master", "non-regression net" — record behaviour and prove the net is not blind | `golden-master` |
 | "the modernisation is blocked on a judgement call" — a divergence the written doctrine must settle | `arbitrate` (needs the target repo's own arbitration doctrine) |
-| "accessibility audit", "WCAG / RGAA conformance" | `ultra11y` — but read the Ally vs Acci distinguisher below first |
+| "accessibility audit", "WCAG / RGAA conformance", "a11y non-regression", "RGAA report" | `rgaa-audit` (Acci) — read the note below for what it proves and what it does not |
 | "generate / refresh the project wiki", "a navigable knowledge base" | `wiki-gen` |
 | "map our ADRs", "which decisions were never written down?" | `adr-cartograph` |
 | "is ADR-NNN still right?", "re-challenge that decision" — human-gated, ends in keep/change/addendum | `adr-rechallenge` |
@@ -268,34 +268,30 @@ code**. Settle the audience first; the topology follows.
   `product_id`. If the operator cannot name a product catalog, the work
   is probably not Prody's — ask before routing.
 
-### `ultra11y` (Ally) vs `rgaa-audit` (Acci) — who FINDS the non-conformity
+### `rgaa-audit` (Acci) — the engine finds, agents only adjudicate
 
-Both are READ-ONLY accessibility auditors. Neither fixes anything (that
-is Willy, `whole-improve-loop`, with the `rgaa` preset). They differ in
-where the findings come from, which is what decides between them.
+Acci is the one READ-ONLY accessibility auditor of the catalogue (the former
+`ultra11y` / Ally bot was folded into it). It never fixes anything: fixing
+is Willy, `whole-improve-loop`, with the `rgaa` preset on the issues Acci
+files.
 
-- `ultra11y` / Ally: a static ENGINE finds the non-conformities — 78
-  machine-detectable checks tied to the WCAG 2.2 success criteria,
-  measured against the W3C ACT corpus. Each finding carries a stable id,
-  a criterion, a severity and a `file:line`. The one agent step rules
-  only on the criteria a static pass cannot decide, and the engine's own
-  fail-closed gate refuses an unjustified verdict or an ungroundable
-  non-conformity. It also has a PR mode: `pr_url` + `base_ref` audit
-  exactly what the branch introduced.
-- `rgaa-audit` / Acci: the AGENT finds the non-conformities, reading the
-  UI source theme by theme against the 106 RGAA criteria, with the DSFR
-  MCP tools as the reference markup when the target uses the Système de
-  Design de l'État. Deterministic gates check the audit happened; they
-  do not produce the findings.
-- Tie-break — **reproducibility**: "must a finding survive without a
-  model in the loop (a conformance deliverable, a per-PR gate, an
-  auditor who will re-run it)?" → Ally. "is the value in RGAA
-  theme-by-theme reasoning over a DSFR UI?" → Acci.
-- Tie-break — **scope shape**: a pull request or a branch → Ally (Acci
-  has no diff mode). A whole-repo RGAA campaign on a French public
-  service UI → Acci.
-- Neither supersedes the other, and running both on the same repo is
-  legitimate: they disagree usefully.
+- The non-conformities come from the pinned ultra11y ENGINE (version and
+  sha256 held by `bots/rgaa-audit/ultra11y.pin`), each anchored
+  `file:line` under a criterion, reproducible without a model in the loop.
+- Read-only agents rule only on the criteria a static pass cannot decide,
+  in theme batches of at most eight criteria, from the engine's harvested evidence and the
+  normative brief the engine writes per criterion at run time; the engine's
+  own fold refuses an unjustified verdict by name and the refusals are
+  re-asked once. A second reader puts every stated non-conformity and every
+  landed conformity on trial.
+- What it delivers: a dated French RGAA report whose « Décidés » line and
+  rate are cross-checked against the document, a coverage annex naming each
+  layer (static, rendered, ledger, adjudication, refutation, human review,
+  integrity) as ok / degraded / skipped, a replayable verdict ledger, and
+  one board issue per criterion.
+- What it does not do yet: a pull-request diff mode (audit the whole scope,
+  narrow it with `scope_globs`), and the rendered layer needs a Playwright
+  Chromium (`rendered: auto` skips it visibly when none is there).
 
 ## When no row matches confidently — three escape hatches
 

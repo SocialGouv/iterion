@@ -21,13 +21,14 @@ référence officielle** et signaler tout écart.
 - Import de la feuille `dsfr.min.css` / des composants react-dsfr.
 
 Si aucun de ces signaux n'est présent, cette skill ne s'applique pas : auditer
-avec les skills `rgaa-criteria-*` génériques.
+contre le référentiel RGAA lui-même (accessibilite.numerique.gouv.fr), sans
+grille recopiée.
 
 ## Outils MCP DSFR disponibles
 
 Ces outils ne sont disponibles que si le serveur MCP `dsfr` est câblé dans le run.
-S'ils sont absents, **dégrader proprement** vers la revue statique générique (les
-skills `rgaa-criteria-*`) — ne pas bloquer le run.
+S'ils sont absents, **dégrader proprement** vers la revue statique générique contre
+le référentiel RGAA — ne pas bloquer le run.
 
 - `mcp__dsfr__list_components` — liste tous les composants/fondamentaux/modèles
   (nom, titre FR, description, sections documentées). Point d'entrée.
@@ -62,8 +63,7 @@ skills `rgaa-criteria-*`) — ne pas bloquer le run.
 
 - Le DSFR est un **accélérateur**, pas un blanc-seing : un composant `fr-*` mal
   recâblé (ex. `fr-btn` sur un `<div>` non focusable) reste non conforme. Toujours
-  croiser avec les critères `rgaa-criteria-*`.
+  croiser avec les critères du référentiel RGAA.
 - Ne pas imposer le DSFR à un repo qui ne l'utilise pas : c'est une référence
   d'accessibilité, pas une migration de design system.
 
-<!-- TODO(skill-dup): this RGAA skill is also shipped in bots/rgaa-audit/skills/rgaa-dsfr.md and bots/whole-improve-loop/skills/rgaa-dsfr.md — iterion has no skill-sharing primitive yet, keep the copies in sync. -->
