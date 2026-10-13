@@ -177,9 +177,14 @@ def _render_section(files, mb, head):
         env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
         if env_extra:
             env.update(env_extra)
+        # every call is bounded by the section's remaining budget, so one
+        # chart's renders + logins + dependency build cannot overrun it
+        left = deadline - time.monotonic()
+        if left <= 1.0:
+            return None
         try:
             return subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
-                                  errors='replace', timeout=timeout, cwd=cwd, env=env,
+                                  errors='replace', timeout=min(timeout, left), cwd=cwd, env=env,
                                   input=stdin_data if stdin_data is not None else '')
         except (subprocess.TimeoutExpired, OSError):
             return None
@@ -220,19 +225,25 @@ def _render_section(files, mb, head):
                 if os.path.islink(os.path.join(root, name)):
                     return True
         return False
-    def oci_hosts(dirpath):
-        hosts = set()
+    def dep_hosts(dirpath):
+        # EVERY dependency repository host — oci:// and https?:// alike:
+        # helm dependency build pulls them all, so the allowlist must
+        # cover them all. A file:// or alias (@repo) dependency has no
+        # host and is not gated.
+        oci, web = set(), set()
         try:
             body = open(os.path.join(dirpath, 'Chart.yaml'), encoding='utf-8', errors='replace').read()
         except OSError:
-            return hosts
+            return oci, web
         for line in body.splitlines():
             st = line.strip()
             if st.startswith('repository:'):
                 repo = st.split(':', 1)[1].strip().strip(chr(34)).strip(chr(39))
                 if repo.startswith('oci://'):
-                    hosts.add(repo[len('oci://'):].split('/', 1)[0])
-        return hosts
+                    oci.add(repo[len('oci://'):].split('/', 1)[0])
+                elif repo.startswith('https://') or repo.startswith('http://'):
+                    web.add(repo.split('://', 1)[1].split('/', 1)[0])
+        return oci, web
     scratch = tempfile.mkdtemp(prefix='warden-render-')
     results = []
     unavail = ''
@@ -248,19 +259,21 @@ def _render_section(files, mb, head):
         def render(dirpath):
             return run([helm, 'template', 'warden-rel', dirpath], timeout=120, env_extra=helm_env)
         def prep_deps(dirpath):
-            hosts = oci_hosts(dirpath)
-            if not hosts:
-                return 'aucune dépendance OCI'
-            if not have_reg:
-                return 'dépendances dans un registre privé — les secrets registry_user/registry_token sont requis'
-            refused = sorted(h for h in hosts if h not in allowed_hosts)
+            hosts, web_hosts = dep_hosts(dirpath)
+            if not hosts and not web_hosts:
+                return 'aucune dépendance distante'
+            refused = sorted(h for h in (hosts | web_hosts) if h not in allowed_hosts)
             if refused:
-                return 'hôte de registre non épinglé par l' + chr(39) + 'opérateur (RENDER_REGISTRY_HOSTS) : ' + ', '.join(refused)
-            try:
-                usr = open(reg_usr, encoding='utf-8', errors='replace').read().strip()
-                pw = open(reg_tok, encoding='utf-8', errors='replace').read().strip()
-            except OSError:
-                return 'les secrets de registre n' + chr(39) + 'ont pas pu être lus'
+                return 'hôte de dépôt non épinglé par l' + chr(39) + 'opérateur (RENDER_REGISTRY_HOSTS) : ' + ', '.join(refused)
+            if hosts and not have_reg:
+                return 'dépendances dans un registre privé — les secrets registry_user/registry_token sont requis'
+            usr = pw = ''
+            if hosts:
+                try:
+                    usr = open(reg_usr, encoding='utf-8', errors='replace').read().strip()
+                    pw = open(reg_tok, encoding='utf-8', errors='replace').read().strip()
+                except OSError:
+                    return 'les secrets de registre n' + chr(39) + 'ont pas pu être lus'
             for host in sorted(hosts):
                 r = run([helm, 'registry', 'login', host, '-u', usr, '--password-stdin'], timeout=60, stdin_data=pw + chr(10), env_extra=helm_env)
                 if r is None or r.returncode != 0:
@@ -307,6 +320,10 @@ def _render_section(files, mb, head):
             d = chr(10).join(difflib.unified_diff(old_lines, new_lines, fromfile='base', tofile='head', lineterm=''))
             ka, kr = Counter(), Counter()
             for line in d.splitlines():
+                if line.startswith('+++') or line.startswith('---'):
+                    continue
+                if not (line.startswith('+') or line.startswith('-')):
+                    continue  # a context line is an unchanged resource
                 st = line[1:].strip()
                 if st.startswith('kind:'):
                     kind = st.split(':', 1)[1].strip()

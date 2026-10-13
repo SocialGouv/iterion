@@ -817,8 +817,11 @@ func TestGitopsWardenInventory_OCIWrapperWithoutSecretDegradesClean(t *testing.T
 	if r.Status != "unavailable" {
 		t.Fatalf("rendered.status = %q, want unavailable (no registry secrets, deps unpullable)", r.Status)
 	}
-	if !strings.Contains(r.Reason, "registre") && !strings.Contains(r.Reason, "helm") {
-		t.Errorf("rendered.reason = %q, want the french registry-or-helm reason", r.Reason)
+	// The host comes from the diff: an unpinned host is refused before the
+	// secrets are even considered — that refusal, or the secrets one, or a
+	// helm failure, must be named in french.
+	if !strings.Contains(r.Reason, "non épinglé") && !strings.Contains(r.Reason, "registre") && !strings.Contains(r.Reason, "helm") {
+		t.Errorf("rendered.reason = %q, want the french unpinned-host / registry / helm reason", r.Reason)
 	}
 }
 
@@ -1021,5 +1024,39 @@ func TestGitopsWardenPublish_CommentHardening(t *testing.T) {
 	}
 	if !strings.Contains(got.Summary, `/studio/runs/a%22%3E%3Cscript%3Ealert%281%29%3C%2Fscript%3E">`) {
 		t.Errorf("the href must carry the url-quoted run id: %q", got.Summary)
+	}
+}
+
+// R43f492 regression: a unified diff carries context lines (leading space)
+// around every hunk — an unchanged `kind:` line near an edit is NOT a
+// removed resource. Only +/- lines count, never the +++/--- headers.
+func TestGitopsWardenInventory_RenderStatsIgnoreContextLines(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH")
+	}
+	dir, write, run := wardenGitFixture(t)
+	write("chart/Chart.yaml", "apiVersion: v2\nname: c\nversion: 0.1.0\n")
+	write("chart/templates/cm.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\ndata:\n  key: v1\n")
+	run("add", ".")
+	run("commit", "-q", "-m", "base")
+	run("checkout", "-q", "-b", "bump")
+	// the edit sits right under `kind:` so the hunk's context carries it
+	write("chart/templates/cm.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm-renamed\ndata:\n  key: v1\n")
+	run("add", ".")
+	run("commit", "-q", "-m", "name only")
+	inv := runWardenInventory(t, dir)
+	raw, _ := json.Marshal(inv["rendered"])
+	var r struct {
+		Status string `json:"status"`
+		Stats  struct {
+			KindsAdded   map[string]int `json:"kinds_added"`
+			KindsRemoved map[string]int `json:"kinds_removed"`
+		} `json:"stats"`
+	}
+	if err := json.Unmarshal(raw, &r); err != nil || r.Status != "ok" {
+		t.Fatalf("rendered = %s (err %v), want status ok", raw, err)
+	}
+	if len(r.Stats.KindsAdded) != 0 || len(r.Stats.KindsRemoved) != 0 {
+		t.Fatalf("a value-only template edit must add/remove no kind, got added=%v removed=%v (context lines counted)", r.Stats.KindsAdded, r.Stats.KindsRemoved)
 	}
 }
