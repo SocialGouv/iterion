@@ -30,10 +30,17 @@ func TestClaudeAuxiliaryModelDefaults(t *testing.T) {
 	if !reflect.DeepEqual(input, want) {
 		t.Fatalf("mutated caller: %v", input)
 	}
+	// A cloud switch withholds the defaults at every value it carries, not
+	// only at the one that enters the mode (cloudSwitchOn): a CLI that reads
+	// its presence needs that mode's own deployment IDs, and an Anthropic
+	// model name there fails the request. Each of the three is exercised at a
+	// value that does NOT enter the mode — "0", a word, and the truthy spelling
+	// a presence reader and an exact reader disagree most about.
 	for _, route := range []map[string]string{
 		{FacadeSlotEnvKey: "moonshot"}, {ForfaitSuppressedEnvKey: "1"},
 		{"ANTHROPIC_BASE_URL": "https://gateway.example/api"},
 		{"CLAUDE_CODE_USE_BEDROCK": "1"}, {"CLAUDE_CODE_USE_VERTEX": "1"}, {"CLAUDE_CODE_USE_FOUNDRY": "1"},
+		{"CLAUDE_CODE_USE_BEDROCK": "0"}, {"CLAUDE_CODE_USE_VERTEX": "false"}, {"CLAUDE_CODE_USE_FOUNDRY": "true"},
 	} {
 		if v := claudeModelDefaultEnv(route); !reflect.DeepEqual(v, route) {
 			t.Errorf("changed non-Anthropic route: %v", v)
