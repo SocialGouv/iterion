@@ -64,16 +64,12 @@ func (d docsPages) Extract(root string) (string, error) {
 		"ones stay listed because the reasoning is still the reason.\n\n")
 	b.WriteString("| Page | Title | Opens with | Status |\n|---|---|---|---|\n")
 	for _, r := range rows {
-		status := r.Status
-		if status == "" {
-			status = "—"
-		}
 		href, err := linkTarget(r.Path)
 		if err != nil {
 			return "", err
 		}
 		fmt.Fprintf(&b, "| [`%s`](%s) | %s | %s | %s |\n",
-			r.Path, href, orDash(r.Title), orDash(r.Summary), status)
+			r.Path, href, orDash(r.Title), orDash(r.Summary), orDash(r.Status))
 	}
 	return b.String(), nil
 }
@@ -143,16 +139,7 @@ func reanchor(summary, page string) (string, error) {
 		return "](" + rel + frag + ")"
 	}
 
-	masked := mdcode.Mask(summary)
-	var out strings.Builder
-	end := 0
-	for _, loc := range linkTargetRe.FindAllStringIndex(masked, -1) {
-		out.WriteString(summary[end:loc[0]])
-		out.WriteString(rewrite(summary[loc[0]:loc[1]]))
-		end = loc[1]
-	}
-	out.WriteString(summary[end:])
-	return out.String(), failed
+	return mdcode.ReplaceOutsideCode(summary, linkTargetRe, rewrite), failed
 }
 
 // readDocRow pulls a page's H1, its first prose sentence, and — for an
@@ -218,9 +205,19 @@ func isProse(line string) bool {
 	return true
 }
 
+// orDash renders one table cell of a map: the text, or an em dash when
+// there is none.
+//
+// The text is a bundle's or a page's own — a persona, a description, a
+// version — so it goes through internal/mdcode.Cell: a newline in it would
+// end the row early and put the rest of the value at column 0, where a
+// delimiter run opens a fenced block over the whole map below it, and a pipe
+// would end the cell and shift every column after it. It is the one cell
+// renderer of these maps: a value spliced into a row without it is a value
+// nothing escapes.
 func orDash(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return "—"
 	}
-	return s
+	return mdcode.Cell(s)
 }

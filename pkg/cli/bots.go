@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/mdcode"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 )
@@ -188,6 +189,13 @@ func BotsRegenCatalog(workdir string) (string, error) {
 // Rendering
 // ---------------------------------------------------------------------------
 
+// renderBotsMarkdown writes the listing as markdown.
+//
+// Every manifest value spliced INSIDE a line goes through
+// internal/mdcode.Inline and the description — its own block — through
+// EscapeDanglingFence: a bundle's free text carrying a line break would
+// otherwise put a ```fence at column 0 and read every card after it as
+// code.
 func renderBotsMarkdown(w io.Writer, entries []BotEntry) error {
 	fmt.Fprintln(w, "# Bots")
 	fmt.Fprintln(w)
@@ -198,22 +206,22 @@ func renderBotsMarkdown(w io.Writer, entries []BotEntry) error {
 		fmt.Fprintf(w, "## %s — %s\n\n", group.Category.Title, group.Category.Tagline)
 		for _, e := range group.Bots {
 			if e.DisplayName != "" {
-				fmt.Fprintf(w, "### %s · `%s`\n\n", e.DisplayName, e.Name)
+				fmt.Fprintf(w, "### %s · `%s`\n\n", mdcode.Inline(e.DisplayName), mdcode.Inline(e.Name))
 			} else {
-				fmt.Fprintf(w, "### `%s`\n\n", e.Name)
+				fmt.Fprintf(w, "### `%s`\n\n", mdcode.Inline(e.Name))
 			}
 			if e.Description != "" {
-				fmt.Fprintf(w, "%s\n\n", e.Description)
+				fmt.Fprintf(w, "%s\n\n", mdcode.EscapeDanglingFence(e.Description))
 			}
-			fmt.Fprintf(w, "- Path: `%s`\n", e.Path)
+			fmt.Fprintf(w, "- Path: `%s`\n", mdcode.Inline(e.Path))
 			if len(e.Tags) > 0 {
-				fmt.Fprintf(w, "- Tags: %s\n", strings.Join(e.Tags, ", "))
+				fmt.Fprintf(w, "- Tags: %s\n", mdcode.Inline(strings.Join(e.Tags, ", ")))
 			}
 			if len(e.Triggers) > 0 {
-				fmt.Fprintf(w, "- Triggers: %s\n", strings.Join(e.Triggers, ", "))
+				fmt.Fprintf(w, "- Triggers: %s\n", mdcode.Inline(strings.Join(e.Triggers, ", ")))
 			}
 			if len(e.Capabilities) > 0 {
-				fmt.Fprintf(w, "- Capabilities: %s\n", strings.Join(e.Capabilities, ", "))
+				fmt.Fprintf(w, "- Capabilities: %s\n", mdcode.Inline(strings.Join(e.Capabilities, ", ")))
 			}
 			fmt.Fprintln(w)
 		}

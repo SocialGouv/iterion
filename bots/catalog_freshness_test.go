@@ -60,8 +60,12 @@ func TestCommittedCatalogIsFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(templates) == 0 {
-		t.Skip("no catalog template discovered in this workspace")
+	// Both router bundles ship a template, and this package always runs
+	// from <repo>/bots: a walk that finds fewer is a walk that stopped
+	// reaching them, and skipping would leave the committed catalogs
+	// unchecked without saying so.
+	if len(templates) < 2 {
+		t.Fatalf("only %d catalog template(s) discovered — the walk is not reaching the router bundles", len(templates))
 	}
 	committed := map[string][]byte{}
 	for _, tmpl := range templates {

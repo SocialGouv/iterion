@@ -310,10 +310,15 @@ func (d *Document) addHeading(line int, raw, text string, slugger *Slugger) {
 
 // Parse extracts the anchors and links of one markdown file. Fenced code,
 // inline code, HTML comments and a leading YAML front matter are skipped.
+//
+// The lines are internal/mdcode's, the same rule as the scanners below read:
+// a line ends at a line feed, a carriage return, or the two together. A split
+// spelled here instead is where the two drift, and a fence opener sitting
+// after an ending this file does not know is a block the scanners never see.
 func Parse(name string, content []byte) *Document {
 	doc := &Document{Path: name, Anchors: map[string]bool{}}
 	var slugger Slugger
-	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
+	lines := mdcode.Lines(string(content))
 
 	var (
 		fence      mdcode.FenceScanner

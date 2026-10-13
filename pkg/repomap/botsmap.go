@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/mdcode"
 	"github.com/SocialGouv/iterion/internal/treeskip"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
@@ -81,15 +82,18 @@ func (b botBundles) Extract(root string) (string, error) {
 	sb.WriteString("| Bot | Persona | What it does | Version |\n|---|---|---|---|\n")
 	for _, r := range bots {
 		persona := strings.TrimSpace(r.Icon + " " + r.Display)
+		// The name is a manifest's too, and a backticked cell is cut on its
+		// pipes like any other: the span is read after the row is split.
 		fmt.Fprintf(&sb, "| `%s` | %s | %s | %s |\n",
-			r.Name, orDash(persona), orDash(r.Description), orDash(r.Version))
+			mdcode.Cell(r.Name), orDash(persona), orDash(r.Description), orDash(r.Version))
 	}
 
 	sb.WriteString("\n## Skills\n\n")
 	sb.WriteString("The pair a model sees before it decides to open the file.\n\n")
 	sb.WriteString("| Bot | Skill | Description |\n|---|---|---|\n")
 	for _, s := range skills {
-		fmt.Fprintf(&sb, "| `%s` | `%s` | %s |\n", s.Bot, orDash(s.Name), orDash(s.Description))
+		fmt.Fprintf(&sb, "| `%s` | `%s` | %s |\n",
+			mdcode.Cell(s.Bot), orDash(s.Name), orDash(s.Description))
 	}
 	return sb.String(), nil
 }

@@ -499,3 +499,32 @@ func TestAParagraphThatLooksLikeAFenceDoesNotSwallowThePage(t *testing.T) {
 		t.Error("a genuine fenced block swallowed the heading after it")
 	}
 }
+
+// The line rule is internal/mdcode's too, and the ending that separates the
+// two readings is the lone carriage return: GitHub breaks the line on it, so
+// the page below has headings and a fenced block, while a scanner splitting
+// on line feeds alone reads the whole file as ONE line. Measured with the
+// hand-rolled split put back: the page keeps a single heading, slugged from
+// the entire document (`fgox-kept`), so every anchor another page links to is
+// gone — which `task docs:links` reports on the OTHER page, as a broken link.
+//
+// Three endings, one document: the fenced link must be hidden and the heading
+// after the block must keep its anchor, whichever ending the page carries.
+func TestTheLineRuleIsMdcodesForEveryCommonMarkEnding(t *testing.T) {
+	for _, ending := range []struct{ name, eol string }{
+		{"line feed", "\n"},
+		{"carriage return and line feed", "\r\n"},
+		{"lone carriage return", "\r"},
+	} {
+		t.Run(ending.name, func(t *testing.T) {
+			lines := []string{"# F", "", "```go", "[x](nope.md)", "```", "", "## Kept", ""}
+			doc := Parse("eol.md", []byte(strings.Join(lines, ending.eol)))
+			if len(doc.Links) != 0 {
+				t.Errorf("the fenced block stopped hiding its link: %v", doc.Links)
+			}
+			if !doc.Anchors["kept"] {
+				t.Errorf("the heading after the block lost its anchor; anchors = %v", doc.Anchors)
+			}
+		})
+	}
+}

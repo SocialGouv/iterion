@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/mdcode"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -52,19 +53,24 @@ func RenderCatalogBlock(entries []EntryWithSchema, selfName, workdir string) str
 	b.WriteString("dispatcher routes on it), never the persona.\n\n")
 	b.WriteString("| Persona | `assignee` (technical name) | Category |\n")
 	b.WriteString("|---|---|---|\n")
+	// The three cells are a bundle's own text, and a table cell ends at the
+	// first pipe it carries: internal/mdcode.Cell escapes it, so a persona
+	// writing one keeps its pipe instead of pushing its own tail into the
+	// `assignee` column the dispatcher routes on.
 	for _, e := range enabled {
-		persona := strings.TrimSpace(e.DisplayName)
+		persona := mdcode.Cell(strings.TrimSpace(e.DisplayName))
 		if persona == "" {
 			persona = "—"
 		}
-		category := e.Category
+		category := mdcode.Cell(e.Category)
 		if category == "" {
 			category = "—"
 		}
+		name := mdcode.Cell(e.Name)
 		if selfName != "" && NormalizeName(e.Name) == NormalizeName(selfName) {
-			fmt.Fprintf(&b, "| %s | `%s` (this bot) | %s |\n", persona, e.Name, category)
+			fmt.Fprintf(&b, "| %s | `%s` (this bot) | %s |\n", persona, name, category)
 		} else {
-			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", persona, e.Name, category)
+			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", persona, name, category)
 		}
 	}
 	b.WriteString("\n## Bot reference\n")
@@ -78,43 +84,76 @@ func RenderCatalogBlock(entries []EntryWithSchema, selfName, workdir string) str
 			renderCatalogCard(&b, e, workdir)
 		}
 	}
-	return strings.TrimRight(b.String(), "\n")
+	// The block is spliced into a hand-authored document whose tail — the
+	// owning bot's own routing ritual — reads as code under any fence the
+	// block leaves open. renderCatalogCard keeps every field on the lines it
+	// is given, so no value reaches this call today; it is the chokepoint
+	// that answers for a field added later, and what it costs a forgotten
+	// field is its own broken line instead of the whole page below it.
+	return mdcode.EscapeDanglingFence(strings.TrimRight(b.String(), "\n"))
 }
 
 // renderCatalogCard writes one bot's reference card.
+//
+// Description and when_to_use are the two manifest fields spliced as BLOCKS
+// of their own, so they go through internal/mdcode.EscapeDanglingFence as
+// the lines they will occupy: a field word-wrapped onto a ```suggestion
+// line must not swallow the cards below it, and the two spaces of list
+// indentation under "Use when" do not stop a fence (CommonMark opens one up
+// to three columns in).
+//
+// Every OTHER manifest value the card embeds goes through
+// internal/mdcode.Inline, which is what makes "inside a line a fence
+// delimiter cannot start" true of them: a value is free text, and a newline
+// in it would end the line it was spliced into and put the rest of itself at
+// column 0.
 func renderCatalogCard(b *strings.Builder, e EntryWithSchema, workdir string) {
-	heading := "### `" + e.Name + "`"
-	if persona := strings.TrimSpace(e.DisplayName); persona != "" {
+	heading := "### `" + mdcode.Inline(e.Name) + "`"
+	if persona := mdcode.Inline(strings.TrimSpace(e.DisplayName)); persona != "" {
 		heading += " — " + persona
 	}
 	b.WriteString(heading + "\n\n")
 
 	if desc := strings.TrimSpace(e.Description); desc != "" {
-		b.WriteString(desc + "\n\n")
+		b.WriteString(mdcode.EscapeDanglingFence(desc) + "\n\n")
 	}
 	if wu := strings.TrimSpace(e.WhenToUse); wu != "" {
-		if strings.Contains(wu, "\n") {
+		// A field carrying ANY of CommonMark's line endings is the multi-line
+		// field — internal/mdcode.Lines is what a renderer breaks on, and a
+		// value split on line feeds alone would take the single-line road
+		// with a line break still in it and land its tail at column 0. The
+		// value with no line break at all cannot start a line, which is why
+		// the road below splices it as it is.
+		if strings.ContainsAny(wu, "\r\n") {
 			b.WriteString("- **Use when**:\n")
-			for _, ln := range strings.Split(wu, "\n") {
-				b.WriteString("  " + strings.TrimRight(ln, " ") + "\n")
+			var indented strings.Builder
+			for _, ln := range mdcode.Lines(wu) {
+				// The line is INDENTED, never trimmed: two trailing spaces
+				// are a hard line break and trailing spaces inside a fenced
+				// example are the example's own bytes, and the fence rule
+				// needs neither gone (a closer's trailing spaces are trimmed
+				// where it is read, and an info string is read off what
+				// follows the marker).
+				indented.WriteString("  " + ln + "\n")
 			}
+			b.WriteString(mdcode.EscapeDanglingFence(indented.String()))
 		} else {
 			b.WriteString("- **Use when**: " + wu + "\n")
 		}
 	}
 	if len(e.Triggers) > 0 {
-		b.WriteString("- **Triggers**: " + strings.Join(e.Triggers, ", ") + "\n")
+		b.WriteString("- **Triggers**: " + mdcode.Inline(strings.Join(e.Triggers, ", ")) + "\n")
 	}
 	if len(e.Tags) > 0 {
-		b.WriteString("- **Tags**: " + strings.Join(e.Tags, ", ") + "\n")
+		b.WriteString("- **Tags**: " + mdcode.Inline(strings.Join(e.Tags, ", ")) + "\n")
 	}
 	if v := renderCatalogVars(e.Vars); v != "" {
-		b.WriteString("- **Vars**: " + v + "\n")
+		b.WriteString("- **Vars**: " + mdcode.Inline(v) + "\n")
 	}
 	if len(e.Capabilities) > 0 {
-		b.WriteString("- **Capabilities**: " + strings.Join(e.Capabilities, ", ") + "\n")
+		b.WriteString("- **Capabilities**: " + mdcode.Inline(strings.Join(e.Capabilities, ", ")) + "\n")
 	}
-	b.WriteString("- **Path**: `" + catalogRelPath(e.MainFile(), workdir) + "`\n")
+	b.WriteString("- **Path**: `" + mdcode.Inline(catalogRelPath(e.MainFile(), workdir)) + "`\n")
 }
 
 // renderCatalogVars formats a bot's declared vars as a one-line summary,
@@ -266,8 +305,11 @@ func spliceGeneratedBlock(static, block string) (string, error) {
 }
 
 // relTargetRe matches the destination of an inline markdown link:
-// `](target)`.
-var relTargetRe = regexp.MustCompile(`\]\(([^)]*)\)`)
+// `](target)`. A destination holds no newline, and bounding the match to one
+// line is what keeps a stray `](` — a form the catalogue documents — from
+// reaching down the page for the next parenthesis and replacing every line
+// between with a path.
+var relTargetRe = regexp.MustCompile(`\]\(([^)\n]*)\)`)
 
 // externalTargetRe matches a target that leaves the repository: a URL with
 // a scheme, or a protocol-relative one.
@@ -282,11 +324,18 @@ var externalTargetRe = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9+.-]*:|//)`)
 // fragment keeps naming the copy's own headings, which the copy carries
 // whole (unlike the docs map, which quotes ANOTHER page's anchors and
 // must gain that page's path).
+//
+// Which bytes are code is internal/mdcode's rule: a `](target)` the
+// catalogue QUOTES — inside a fenced block or an inline span — is a form
+// the document shows, not a link it makes, and re-anchoring it corrupts the
+// example the page is teaching. The grammar runs over the mask, whose
+// offsets are the content's own, and the bytes are read back out of the
+// content.
 func reanchorForDepth(content, fromDir, toDir string) string {
 	if fromDir == toDir {
 		return content
 	}
-	return relTargetRe.ReplaceAllStringFunc(content, func(m string) string {
+	rewrite := func(m string) string {
 		target := m[2 : len(m)-1]
 		if target == "" || strings.HasPrefix(target, "#") ||
 			externalTargetRe.MatchString(target) || strings.HasPrefix(target, "/") {
@@ -301,5 +350,6 @@ func reanchorForDepth(content, fromDir, toDir string) string {
 			return m
 		}
 		return "](" + filepath.ToSlash(rel) + frag + ")"
-	})
+	}
+	return mdcode.ReplaceOutsideCode(content, relTargetRe, rewrite)
 }
