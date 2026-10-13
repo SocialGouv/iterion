@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.259.2](https://github.com/SocialGouv/iterion/compare/v3.259.1...v3.259.2) (2026-10-13)
+
+### Bug Fixes
+
+* **claw:** the `agent` tool is typed-refused instead of faking a start ([#2376](https://github.com/SocialGouv/iterion/issues/2376)) ([2969788](https://github.com/SocialGouv/iterion/commit/29697881f4d109c69d043e9da6e9f64c6b333639)), references [#1](https://github.com/SocialGouv/iterion/issues/1) [#1940](https://github.com/SocialGouv/iterion/issues/1940)
+
+    <details><summary>why</summary>
+
+    claw's `agent` executor validates its input and answers `{"agent_id": ..., "status": "running"}` while launching nothing — its spawning lives in claw's ConversationLoop, which iterion does not drive — and no iterion run wires a subagent runner: `pkg/runview/executor.go` and `cmd/iterion/claw_runner_proxy.go` both leave `ClawDefaults.Subagent` nil. A node that delegated waited on work nobody began, or reported on work nobody did, with no error and no event. Under `reasoning_effort: ultracode`…
+
+    </details>
+* **runview:** the fallback screen's sandbox probe reads the engine's repository, not the process cwd ([#2378](https://github.com/SocialGouv/iterion/issues/2378)) ([a418288](https://github.com/SocialGouv/iterion/commit/a4182884e993ce65d18949aee99c4c4a1b3cfd7f)), closes [#2165](https://github.com/SocialGouv/iterion/issues/2165), references [#1405](https://github.com/SocialGouv/iterion/issues/1405)
+
+    <details><summary>why</summary>
+
+    BuildExecutor screens an operator's `--fallback codex:…` on whether the run will be sandboxed, and probed runtime.RunWillBeSandboxed with EngineRepoRoot(spec.WorkDir) — a field five production surfaces leave unset while handing the ENGINE a different directory: the cloud runner's per-run clone, the runner and studio subbot children's inherited worktree, `iterion run`'s child run, and the CLI resume, whose engine roots at the run document's recorded RepoRoot and which no runtime.WithWorkDir grep…
+
+    </details>
+
 ## [3.259.1](https://github.com/SocialGouv/iterion/compare/v3.259.0...v3.259.1) (2026-10-13)
 
 ### Bug Fixes
