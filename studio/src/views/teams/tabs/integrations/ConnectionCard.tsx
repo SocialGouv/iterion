@@ -365,24 +365,38 @@ function RepoRow({
     // Optimistic: flip immediately, revert on error so the checkbox never
     // strands in a state the server didn't accept.
     setSyncEnabled(next);
-    const updated = await toggleAction.run(() =>
-      updateForgeIntegration(teamID, integration.id, { sync_issues_enabled: next }),
+    const updated = await toggleAction.run(
+      () => updateForgeIntegration(teamID, integration.id, { sync_issues_enabled: next }),
+      onError,
     );
     if (updated) {
       setSyncEnabled(!!updated.sync_issues_enabled);
       onChanged();
     } else {
       setSyncEnabled(!next);
-      onError(toggleAction.error ?? "Failed to update sync setting");
     }
   };
 
+  // A read the page budget or the forge cut short is refused whole (502) and
+  // holds the integration's high-water mark, so this refusal is the only
+  // statement anything makes about a window the board is missing: it goes to
+  // the operator, and the counts of an earlier pass leave the screen with it.
+  //
+  // A sync changes no integration row, so this handler feeds the tab's banner
+  // and never reaches onChanged — the only thing that clears it. So do
+  // EnableRepoPanel.loadRepos and OAuthAppsSection.install: clearing the
+  // channel where the attempt STARTS is what keeps the banner about the
+  // current state, at all three sites. Without it the refusal of a pass a
+  // later one replaced stays on screen, over that pass's green counts.
   const onSyncNow = async () => {
-    const res = await syncAction.run(() => syncForgeIntegration(teamID, integration.id));
+    onError("");
+    setLastSync(null);
+    const res = await syncAction.run(
+      () => syncForgeIntegration(teamID, integration.id),
+      onError,
+    );
     if (res) {
       setLastSync(res);
-    } else if (syncAction.error) {
-      onError(syncAction.error);
     }
   };
 

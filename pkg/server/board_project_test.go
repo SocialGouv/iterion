@@ -51,6 +51,11 @@ type fakeBoardClient struct {
 	writes  []boardWrite
 	err     error
 	setErr  error
+	// failListFromPage, when > 0, refuses the ListProjectItems call serving
+	// that 1-based page and every later one: a pass refused MID-board, with
+	// the earlier pages already applied. `err` cannot stand in for it — it
+	// also fails GetProject, so the pass dies before it writes anything.
+	failListFromPage int
 }
 
 type boardWrite struct{ ProjectID, ItemID, FieldID, OptionID string }
@@ -73,6 +78,9 @@ func (f *fakeBoardClient) ListProjectItems(_ context.Context, _ forge.ProjectRef
 			return forge.ProjectItemPage{}, err
 		}
 		idx = n
+	}
+	if f.failListFromPage > 0 && idx+1 >= f.failListFromPage {
+		return forge.ProjectItemPage{}, errors.New("the project API dropped the page")
 	}
 	if idx >= len(f.pages) {
 		return forge.ProjectItemPage{}, nil
@@ -508,6 +516,56 @@ func TestImportProjectBoardPaginates(t *testing.T) {
 	}
 	if got := mustGet(t, board, b).State; got != native.StateDone {
 		t.Errorf("page 2 card state = %q", got)
+	}
+}
+
+// A project pass refused mid-board has already APPLIED every page that
+// arrived, on both boards — it writes as it reads. Every caller of it reports
+// the error alone: `iterion issue import` wraps it beside the ISSUE pass's
+// counters (a different pass), and the cloud worker logs the result only on
+// success. So the writes this pass made have to travel with its refusal, or a
+// refusal that moved 300 cards reads exactly like one that moved none.
+func TestImportProjectBoard_ARefusalCarriesTheWritesItAlreadyMade(t *testing.T) {
+	board := newTestBoard(t)
+	moved := seedCard(t, board, 1, native.StateInbox)
+	at := time.Now().UTC()
+	bc := &fakeBoardClient{
+		project: testProject(),
+		pages: [][]forge.ProjectItem{
+			{item("PVTI_1", 1, statusValue("In progress", at))},
+			{item("PVTI_2", 2, statusValue("Done", at))},
+		},
+		failListFromPage: 2,
+	}
+
+	res, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, board, nil)
+	t.Logf("OBSERVED res.Moved=%d res.Items=%d err=%v", res.Moved, res.Items, err)
+	if err == nil {
+		t.Fatal("a pass whose second page was refused was reported as complete")
+	}
+	// The premise: page 1's write really landed, and stays landed.
+	if got := mustGet(t, board, moved).State; got != native.StateInProgress {
+		t.Fatalf("card state = %q, want %q — the premise is a refusal AFTER a real write", got, native.StateInProgress)
+	}
+	if res.Moved != 1 {
+		t.Fatalf("Moved = %d, want 1", res.Moved)
+	}
+	if !strings.Contains(err.Error(), "already applied 1 column move(s)") {
+		t.Errorf("error = %v, want the moves this pass already made named — its caller reports this error and the ISSUE pass's counters, never these", err)
+	}
+}
+
+// And a pass that could not even read reports no numbers: a count of zero
+// writes on screen is noise an operator has to price every time.
+func TestImportProjectBoard_ARefusalThatWroteNothingCountsNothing(t *testing.T) {
+	bc := &fakeBoardClient{project: testProject(), failListFromPage: 1}
+	_, err := ImportProjectBoard(context.Background(), bc, testProjectRef, forge.ProviderGitHub, newTestBoard(t), nil)
+	t.Logf("OBSERVED err=%v", err)
+	if err == nil {
+		t.Fatal("a refused first page was reported as complete")
+	}
+	if strings.Contains(err.Error(), "already applied") {
+		t.Errorf("error = %v, want no counters: this pass wrote nothing", err)
 	}
 }
 

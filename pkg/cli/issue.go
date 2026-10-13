@@ -445,6 +445,23 @@ type IssueImportOptions struct {
 	ProjectOwnerKind string
 }
 
+// importedSoFar prices a refused import in what it already WROTE. The issue
+// pass streams each page onto the board as it arrives, so the cards of the
+// pages that came stay there — and the three counters below are printed only
+// on the success path. Without this, an operator cannot tell a refusal that
+// wrote 20 000 cards from one that wrote none, and this command is the entry
+// point that keeps no high-water mark and has no next pass to reconcile
+// behind it: re-running is their only move, and its cost is what landed.
+//
+// ISSUES, not entries: the number is the sync core's `mirrored`, which counts
+// what reached the board — the pull requests the issues endpoint serves
+// alongside them are discarded before the upsert, and the core's own refusals
+// price the READ in entries. Two counts of one window under one word is two
+// numbers an operator cannot reconcile.
+func importedSoFar(synced, created, updated int) string {
+	return fmt.Sprintf(" (mirrored %d issues before the refusal: %d cards created, %d updated)", synced, created, updated)
+}
+
 // RunIssueImport imports a forge repo's issues into the native board, reusing
 // the store-agnostic sync core via server.ImportForgeIssues. The token is read
 // only from the NAMED env var (secrets discipline — never a flag value). The
@@ -483,11 +500,11 @@ func RunIssueImport(p *Printer, opts IssueImportOptions) error {
 	if err != nil {
 		return err
 	}
-	created, updated, err := server.ImportForgeIssues(
+	synced, created, updated, err := server.ImportForgeIssues(
 		context.Background(), provider, strings.TrimSpace(opts.BaseURL), token, opts.Repo, board, since,
 		strings.TrimSpace(opts.MinAuthorRole))
 	if err != nil {
-		return fmt.Errorf("issue import: %w", err)
+		return fmt.Errorf("issue import: %w%s", err, importedSoFar(synced, created, updated))
 	}
 	var projectRes server.ProjectImportResult
 	if wantProject {
@@ -497,18 +514,23 @@ func RunIssueImport(p *Printer, opts IssueImportOptions) error {
 		}
 		projectRes, err = server.ImportProjectBoard(context.Background(), bc, projectRef, provider, board, nil)
 		if err != nil {
-			return fmt.Errorf("issue import: %w", err)
+			return fmt.Errorf("issue import: %w%s", err, importedSoFar(synced, created, updated))
 		}
 	}
 	if p.Format == OutputJSON {
 		p.JSON(struct {
+			Synced  int                         `json:"synced"`
 			Created int                         `json:"created"`
 			Updated int                         `json:"updated"`
 			Project *server.ProjectImportResult `json:"project,omitempty"`
-		}{Created: created, Updated: updated, Project: projectResultPtr(wantProject, projectRes)})
+		}{Synced: synced, Created: created, Updated: updated, Project: projectResultPtr(wantProject, projectRes)})
 		return nil
 	}
 	p.Line("Imported %s from %s", opts.Repo, provider)
+	// Synced is the window mirrored, Created/Updated the cards it had to
+	// write: a re-import of an unchanged repo writes nothing, and reporting
+	// only the writes would read as an import that found nothing.
+	p.KV("Synced", strconv.Itoa(synced))
 	p.KV("Created", strconv.Itoa(created))
 	p.KV("Updated", strconv.Itoa(updated))
 	if wantProject {

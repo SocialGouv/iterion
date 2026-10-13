@@ -52,15 +52,20 @@ export function ApproveTriageBanner({
   const approve = async (e: React.MouseEvent) => {
     e.stopPropagation();
     const next = approveTriageLabels(iss);
-    const res = await approveAction.run(() => patchIssue(iss.id, { labels: next }));
+    // A refused swap leaves the card parked and nothing retries it, so the
+    // toast is its only word: it comes from run()'s onError channel, which
+    // carries the message of THIS failure (the `error` field belongs to the
+    // next render).
+    const res = await approveAction.run(
+      () => patchIssue(iss.id, { labels: next }),
+      (msg) => addToast(msg, "error"),
+    );
     if (res) {
       addToast(
         "Approved — the triage bot will stamp the handler bot on this card shortly.",
         "success",
       );
       onApproved?.(res.labels ?? next);
-    } else if (approveAction.error) {
-      addToast(approveAction.error, "error");
     }
   };
 

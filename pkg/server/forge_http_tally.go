@@ -17,6 +17,25 @@ import (
 // its reconcile and autofix offers, and whatever those spend on the way.
 const forgeLaneGateSweeper = "merge-gate-sweeper"
 
+// forgeLaneBoardIssueSync labels the forge requests the periodic forge→board
+// issue sweep sends: one paged issue read per sync-enabled repo per pass. It
+// runs on the ONE replica holding its lease.
+const forgeLaneBoardIssueSync = "board-issue-sync"
+
+// forgeLaneBoardWebhookProjection labels the forge requests the webhook
+// fast-path board projection sends. It reads the same issue windows as the
+// sweep but on whichever replica took the delivery, under no lease — a
+// separate lane because that is the spend an operator cannot bound by
+// counting replicas of a leased net.
+const forgeLaneBoardWebhookProjection = "board-webhook-projection"
+
+// forgeLaneBoardManualSync labels the forge requests an operator's "Sync now"
+// sends (handleSyncForgeIntegration). Third spender of the same issue
+// windows, with the sweep's full page budget, on whichever replica served the
+// request and under no lease — its own lane because an operator's click is
+// the one spend no schedule explains.
+const forgeLaneBoardManualSync = "board-manual-sync"
+
 type forgeLaneKey struct{}
 
 // withForgeLane labels every forge request sent under ctx with lane, for the

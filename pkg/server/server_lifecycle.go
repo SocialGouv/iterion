@@ -332,10 +332,12 @@ func (s *Server) ListenAndServe() error {
 	s.startOAuthForfaitRefresh()
 	// Forge → board issue sync (cloud only): periodically mirror every
 	// sync-enabled repo's forge issues onto its team board. Off unless a
-	// cloud board + the integration store are wired. See board_forge.go.
-	if s.cfg.CloudBoardFor != nil && s.forgeIntegrations != nil {
+	// cloud board + the integration store are wired. The sweep runs on ONE
+	// elected replica — its reads spend the forge's request budget, which
+	// every replica listing every repo's window multiplies. See board_forge.go.
+	if s.boardIssueSyncStarts() {
 		s.goUntilShutdown("server.forgeBoardIssueSync", func(ctx context.Context) {
-			s.runBoardSyncWorker(ctx, 5*time.Minute)
+			s.runBoardSyncWorker(ctx, forgeBoardSyncInterval)
 		})
 	}
 	// Orphan-run sweeper (cloud only): flips queued/running rows whose
@@ -377,7 +379,7 @@ func (s *Server) ListenAndServe() error {
 	// blocks a pull request indefinitely, and a dropped event leaves no trace
 	// saying so. Unlike it, the sweep runs on ONE elected replica: its offers
 	// spend the forge's request budget, not a store claim.
-	if lister, ok := s.cfg.Store.(gateSweepLister); ok && s.forgePublishTokens != nil && s.forgeConnections != nil {
+	if lister, ok := s.gateSweepStart(); ok {
 		s.goUntilShutdown("server.gateSweeper", func(ctx context.Context) {
 			s.runElectedGateSweeper(ctx, lister)
 		})

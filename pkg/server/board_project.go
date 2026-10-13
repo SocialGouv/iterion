@@ -198,8 +198,18 @@ func ImportProjectBoard(
 	provider forge.Provider,
 	board native.BoardStore,
 	opts *ProjectImportOptions,
-) (ProjectImportResult, error) {
-	var res ProjectImportResult
+) (res ProjectImportResult, err error) {
+	// A pass refused mid-board has already applied every page that arrived, on
+	// BOTH boards, and every caller reports the ERROR alone — `iterion issue
+	// import` wraps it, the cloud sync worker warns it and logs the result
+	// only on success. So what this pass already wrote travels with the
+	// refusal, from the one place every error path leaves through: otherwise a
+	// refusal that moved 300 cards reads exactly like one that moved none.
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%w%s", err, projectAppliedSoFar(res))
+		}
+	}()
 	if bc == nil {
 		return res, fmt.Errorf("project import: no board client")
 	}
@@ -233,6 +243,22 @@ func ImportProjectBoard(
 	res.MissingRepos = rankMissingRepos(missing)
 	recordSinkHealth(ctx, opts, res)
 	return res, nil
+}
+
+// projectAppliedSoFar prices a refused project pass in what IT already wrote:
+// a column move and a label set on the native card, a reopen out of the
+// terminal sink, a Status written back onto the forge board. The pass applies
+// each page as it arrives, so those writes stay applied — and the issue pass's
+// counters beside them in `iterion issue import` describe a DIFFERENT pass.
+//
+// Empty when nothing was applied, which keeps a project the pass could not
+// even read reporting no numbers at all.
+func projectAppliedSoFar(res ProjectImportResult) string {
+	if res.Moved == 0 && res.Labelled == 0 && res.ReopenedTerminal == 0 && res.Reflected == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (the project pass had already applied %d column move(s), %d label change(s), %d reopen(s) and %d board reflection(s))",
+		res.Moved, res.Labelled, res.ReopenedTerminal, res.Reflected)
 }
 
 // maxNamedRefusals bounds how many refused cards the pass names. One drag is

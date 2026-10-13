@@ -73,8 +73,11 @@ export default function IntegrationsTab({
     connectionsQuery.error instanceof FeatureUnavailableError ||
     integrationsQuery.error instanceof FeatureUnavailableError ||
     oauthAppsQuery.error instanceof FeatureUnavailableError;
+  // `||`, not `??`: a child clearing the channel at the start of a new
+  // attempt reports the empty string, which has to HIDE the banner and let a
+  // load failure through again — `??` would render it as a message.
   const err =
-    actionErr ??
+    actionErr ||
     (fetchError && !unavailable && !fetching ? errorMessage(fetchError) : null);
   // Bots come from the shared catalog cache so a metadata edit (e.g. in
   // the Bot panel) re-renders the connection cards immediately. We surface

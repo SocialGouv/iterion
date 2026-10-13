@@ -21,6 +21,7 @@ import (
 	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	forgegitlab "github.com/SocialGouv/iterion/pkg/forge/gitlab"
+	"github.com/SocialGouv/iterion/pkg/lease"
 )
 
 // ImportForgeIssues mirrors one forge repo's issues into a native board from a
@@ -34,7 +35,12 @@ import (
 // high-water mark is the caller's concern and stays out of this function.
 // minAuthorRole is the trust threshold for the triage:auto stamp ("" →
 // developer ≡ write); authors below it get needs:approval cards.
-func ImportForgeIssues(ctx context.Context, provider forge.Provider, baseURL, token, repo string, board native.BoardStore, since time.Time, minAuthorRole string) (created, updated int, err error) {
+//
+// It reports the window it MIRRORED and, of it, the cards created and
+// rewritten — a re-import of an unchanged repo mirrors everything and writes
+// nothing, which the counters have to say apart from an import that found
+// nothing at all.
+func ImportForgeIssues(ctx context.Context, provider forge.Provider, baseURL, token, repo string, board native.BoardStore, since time.Time, minAuthorRole string) (mirrored, created, updated int, err error) {
 	if baseURL == "" {
 		baseURL = forge.DefaultBaseURL(provider)
 	}
@@ -47,16 +53,25 @@ func ImportForgeIssues(ctx context.Context, provider forge.Provider, baseURL, to
 	case forge.ProviderForgejo:
 		admin = forgeforgejo.New(http.DefaultClient, baseURL, token)
 	default:
-		return 0, 0, fmt.Errorf("forge: provider %q is not yet supported", provider)
+		return 0, 0, 0, fmt.Errorf("forge: provider %q is not yet supported", provider)
 	}
 	ic, ok := admin.(forge.IssueClient)
 	if !ok {
-		return 0, 0, fmt.Errorf("forge: provider %q client (%T) does not implement forge.IssueClient", provider, admin)
+		return 0, 0, 0, fmt.Errorf("forge: provider %q client (%T) does not implement forge.IssueClient", provider, admin)
 	}
 	// connID is empty for a self-hosted import: there is no persisted forge
 	// connection, and the deterministic card ID keys on provider+repo+number.
-	return syncForgeIssuesToBoard(ctx, ic, provider, "", repo, board, since,
+	mirrored, created, updated, err = syncForgeIssuesToBoard(ctx, ic, provider, "", repo, board, since,
 		authorTrustFunc(admin, string(provider), repo, minAuthorRole, newAuthorTrust()))
+	var truncated *forgeIssueWindowTruncated
+	if errors.As(err, &truncated) {
+		// The remedy this entry point HAS, and the only caller that has it:
+		// the window is an argument here (`--since`), where the three cloud
+		// readers take theirs from a high-water mark no operator surface
+		// writes. The page budget the core names is a rebuild for all four.
+		err = fmt.Errorf("%w, or narrow the window with --since", err)
+	}
+	return mirrored, created, updated, err
 }
 
 // authorTrustFunc builds the per-login trust classifier the sync core takes,
@@ -141,6 +156,12 @@ func (s *Server) handlePatchForgeIntegration(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, ri)
 }
 
+// syncResult is what one manual pass reports to the operator who asked for
+// it — the studio's banner and `iterion remote forge integrations sync`.
+// Synced is the window it MIRRORED (every issue whose card now matches the
+// forge), of which Created and Updated are the cards it had to write: a repo
+// already in sync answers "250 synced, 0 created, 0 updated", where counting
+// only the writes would answer "0 synced" and read as a sync that did nothing.
 type syncResult struct {
 	Synced  int `json:"synced"`
 	Created int `json:"created"`
@@ -158,12 +179,17 @@ func (s *Server) handleSyncForgeIntegration(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	created, updated, err := s.syncOneIntegration(r.Context(), teamID, ri)
+	// An operator click reads the same issue windows as the leased sweep and
+	// the webhook projection, on whichever replica served the request: its
+	// requests are charged to their own lane, or the hourly forge tally files
+	// them under "other" and an operator cannot tell this spend from any
+	// other interactive forge call.
+	mirrored, created, updated, err := s.syncOneIntegration(withForgeLane(r.Context(), forgeLaneBoardManualSync), teamID, ri)
 	if err != nil {
 		httpError(w, http.StatusBadGateway, "sync failed: %v", err)
 		return
 	}
-	writeJSON(w, syncResult{Synced: created + updated, Created: created, Updated: updated})
+	writeJSON(w, syncResult{Synced: mirrored, Created: created, Updated: updated})
 }
 
 // forgeIntegrationForTenant loads an integration and asserts it belongs to the
@@ -187,27 +213,33 @@ func (s *Server) forgeIntegrationForTenant(w http.ResponseWriter, r *http.Reques
 // import can share ONE implementation. Forge is the source of truth (one-way);
 // pull requests are skipped (they surface via the card PR panel). Cards land in
 // the first non-terminal column on create and refresh in place on update; see
-// upsertForgeCard for the column policy. Returns per-issue create/update counts.
+// upsertForgeCard for the column policy.
+//
+// It returns what the window MIRRORED — every issue in it whose card now says
+// what the forge says, written or already matching — and, of those, how many
+// cards were created and how many rewritten. A repo already in sync mirrors
+// its whole window and writes nothing, which is what the operator-facing
+// counters report (syncResult).
 //
 // trust classifies an issue author's repo rights: a trusted author's fresh
 // open card is stamped triage:auto (fires the auto-triage), an untrusted one
 // needs:approval (parked until an operator approves). nil trust fails CLOSED —
 // every new card parks — because this is the budget security boundary, not an
-// operator preference. Classification is memoized per sweep.
+// operator preference. It is called LAZILY, once per distinct author of a card
+// this pass actually creates open: that one arm reads the verdict, and
+// resolving it eagerly buys a collaborator-permission request per ENTRY of a
+// window the page budget lets reach 20 000 — on a pass that may write nothing.
 //
 // The high-water mark (LastSyncedAt) is the caller's concern — it is the only
 // piece that differs between the cloud integration store and a self-hosted
-// entry point, so it stays out of this pure core.
-func syncForgeIssuesToBoard(ctx context.Context, ic forge.IssueClient, provider forge.Provider, connID, repo string, board native.BoardStore, since time.Time, trust func(ctx context.Context, login string) bool) (created, updated int, err error) {
-	issues, err := ic.ListIssues(ctx, repo, forge.IssueListOptions{
-		State: "all", Since: since, PerPage: 100,
-	})
-	if err != nil {
-		return 0, 0, fmt.Errorf("list issues: %w", err)
-	}
-	b, err := board.Board()
-	if err != nil {
-		return 0, 0, fmt.Errorf("read board: %w", err)
+// entry point, so it stays out of this pure core. What the core owes that
+// caller is the VERDICT on the window: a nil error means every page arrived
+// AND every issue in them landed on the board, and nothing weaker may move a
+// mark.
+func syncForgeIssuesToBoard(ctx context.Context, ic forge.IssueClient, provider forge.Provider, connID, repo string, board native.BoardStore, since time.Time, trust func(ctx context.Context, login string) bool) (mirrored, created, updated int, err error) {
+	b, berr := board.Board()
+	if berr != nil {
+		return 0, 0, 0, fmt.Errorf("read board: %w", berr)
 	}
 	openCol := defaultOpenColumn(b)
 	doneCol := terminalColumn(b)
@@ -223,21 +255,184 @@ func syncForgeIssuesToBoard(ctx context.Context, ic forge.IssueClient, provider 
 		trustMemo[login] = v
 		return v
 	}
-	for _, is := range issues {
-		if is.IsPullRequest {
-			continue // the board syncs ISSUES; PRs surface via the card PR panel
-		}
-		c, u, e := upsertForgeCard(board, b, openCol, doneCol, provider, connID, repo, is, trusted(is.Author))
-		if e != nil {
-			if err == nil {
-				err = e
+	refused := 0
+	readErr := forEachForgeIssuePage(ctx, ic, repo, since, func(page []forge.IssueRef) {
+		for _, is := range page {
+			if is.IsPullRequest {
+				continue // the board syncs ISSUES; PRs surface via the card PR panel
 			}
-			continue
+			c, u, e := upsertForgeCard(board, b, openCol, doneCol, provider, connID, repo, is, func() bool { return trusted(is.Author) })
+			if e != nil {
+				refused++
+				if err == nil {
+					err = e
+				}
+				continue
+			}
+			mirrored++
+			created += c
+			updated += u
 		}
-		created += c
-		updated += u
+	})
+	if err != nil {
+		// One refusal is kept as the cause — the others are the same outage
+		// said again — but the COUNT has to travel with it: `mirrored` is the
+		// operator-facing number and it drops by the refused entries with
+		// nothing else saying how many the board is missing.
+		// ISSUES, not entries: the loop skips every pull request the issues
+		// endpoint serves before it reaches the upsert, so this denominator
+		// is a strictly smaller set than the ENTRIES the read counts — and
+		// the two numbers reach one operator on one line.
+		err = fmt.Errorf("board sync: %d of %d issues refused, first: %w", refused, refused+mirrored, err)
 	}
-	return created, updated, err
+	// Both halves hold the caller's mark, and both have to reach its log: a
+	// refused card names the board's failure, and an incomplete read is the
+	// only message naming the budget that cut this repo's window.
+	return mirrored, created, updated, errors.Join(err, readErr)
+}
+
+const (
+	// forgeIssueSyncPerPage is one page of the incremental read: a window of N
+	// entries costs about N/100 round-trips, plus N board reads — the upsert
+	// reads the existing card of EVERY entry, which is an uncached FindOne per
+	// card on the cloud board store — plus one collaborator-permission read
+	// per distinct author of a card the pass CREATES open (the trust stamp,
+	// resolved lazily — an entry already mirrored, or closed, buys
+	// none). 100 is what the GitHub and GitLab clients forward verbatim
+	// (pkg/forge/github/issues.go, pkg/forge/gitlab/issues.go); a
+	// Gitea/Forgejo instance clamps it SERVER-SIDE to its own
+	// `[api] MAX_RESPONSE_ITEMS` (50 by default), which is why the walk ends
+	// on an EMPTY page and never on a short one — and why a page count is not
+	// an entry count.
+	forgeIssueSyncPerPage = 100
+
+	// forgeIssueSyncMaxPages bounds one SWEEP read, so a pass cannot outlive
+	// its own ticker or spend an installation's whole request budget on a
+	// single repo. It is sized on the FIRST sweep of a repo, which has no mark
+	// and therefore reads the repo's entire history: 200 pages is 20 000
+	// ENTRIES — issues AND pull requests, which the issues endpoint conflates
+	// on GitHub and Forgejo — past the largest repo this syncs, where the
+	// steady-state window is a handful.
+	forgeIssueSyncMaxPages = 200
+
+	// forgeIssueSyncFastPathMaxPages bounds the WEBHOOK projection's read. The
+	// projection runs on whichever replica took the delivery — every replica,
+	// under no lease — inside a 30 s ceiling sized for a single call
+	// (scheduleForgeBoardProjection), so an unbounded read makes every
+	// delivery pay whatever requests fit that ceiling and mark nothing. Ten
+	// pages is a thousand entries, past any window a few minutes of activity
+	// produces; a wider one is the leased sweep's, which reads it under no
+	// ceiling, and the card the delivery named waits for that sweep rather
+	// than every delivery re-reading the repo's history. The bound counts
+	// PAGES: a first delivery for a repo with no mark also pays the trust
+	// read of every card it creates open (see forgeIssueSyncPerPage), once
+	// for that repo's history; a steady delivery creates almost nothing.
+	forgeIssueSyncFastPathMaxPages = 10
+
+	// forgeIssueSyncMarkOverlap is how far BEHIND the read's start the mark is
+	// stamped. The mark is stamped from this process's clock but it is only
+	// ever spent as the forge's `since`, which the forge evaluates against
+	// `updated_at` — its own clock, served from its own list index. A mark
+	// equal to the read's start therefore declares synced the part of that
+	// interval the forge dated earlier than this pod (clock skew) or had not
+	// yet served (an index that lags its writes), and `since` is the only way
+	// back to those entries: they are lost for good, in silence. The overlap
+	// re-reads that much of the interval on every pass, which buys back any
+	// disagreement smaller than it; it is free in neither axis but cheap in
+	// both — a card the forge did not change is not rewritten, and a mirrored
+	// entry buys no collaborator-permission read, so the overlap costs the
+	// pages its extra entries fill plus one board read each. A disagreement
+	// WIDER than the overlap still loses entries; nothing short of a mark
+	// stamped in the forge's own clock domain closes that.
+	forgeIssueSyncMarkOverlap = time.Minute
+)
+
+type forgeIssuePageBudgetKey struct{}
+
+// withForgeIssuePageBudget bounds the issue read of every sync run under ctx
+// to pages. Unset — the sweep, the manual Sync-now endpoint, the self-hosted
+// import — means forgeIssueSyncMaxPages.
+func withForgeIssuePageBudget(ctx context.Context, pages int) context.Context {
+	return context.WithValue(ctx, forgeIssuePageBudgetKey{}, pages)
+}
+
+// forgeIssuePageBudgetOf reads the budget withForgeIssuePageBudget put on ctx,
+// defaulting to forgeIssueSyncMaxPages.
+func forgeIssuePageBudgetOf(ctx context.Context) int {
+	if pages, _ := ctx.Value(forgeIssuePageBudgetKey{}).(int); pages > 0 {
+		return pages
+	}
+	return forgeIssueSyncMaxPages
+}
+
+// forgeIssueWindowTruncated is a read the caller's page budget cut short: the
+// pages that arrived were handed on, the rest of the window was never read.
+//
+// A TYPE and not a sentence to match, because the remedy differs per entry
+// point and only the entry point knows it: `iterion issue import` can narrow
+// the window it asked for (--since), the three cloud readers take theirs from
+// the integration's high-water mark, which no operator surface writes. The
+// message therefore states only what holds everywhere — how much was read,
+// under which budget — and each entry point adds its own (ImportForgeIssues).
+type forgeIssueWindowTruncated struct {
+	// Entries is what the read actually saw: issues AND, on GitHub and
+	// Forgejo, the pull requests that endpoint serves alongside them. Not
+	// pages × per-page: an instance that clamps the page size serves fewer.
+	Entries int
+	// Pages is the budget this read ran under (forgeIssuePageBudgetOf).
+	Pages int
+}
+
+func (e *forgeIssueWindowTruncated) Error() string {
+	return fmt.Sprintf("list issues: %d entries read in %d pages and the forge has not reported the window exhausted — "+
+		"the rest of it is NOT synced; raise the page budget this read ran under "+
+		"(forgeIssueSyncMaxPages, forgeIssueSyncFastPathMaxPages)", e.Entries, e.Pages)
+}
+
+// forEachForgeIssuePage reads one repo's issue window page by page until the
+// provider answers an EMPTY page, and hands each page to fn as it arrives, so
+// the first sweep of a repo with no mark costs one page of memory rather than
+// its entire history.
+//
+// An empty page is the only statement a provider makes about the end of a
+// window. A SHORT one states nothing: the asked-for size is a request, not a
+// contract — a Gitea/Forgejo instance clamps it to its own
+// `[api] MAX_RESPONSE_ITEMS` (50 against the 100 asked here) — so ending on a
+// short page would read a clamped FIRST page as the whole window. The cost of
+// the honest rule is one extra request per repo per pass.
+//
+// It reports why the read is INCOMPLETE: a page the provider refused, or a
+// window the caller's page budget (forgeIssuePageBudgetOf) could not exhaust.
+// The pages that DID arrive have been handed to fn either way — those issues
+// are valid and worth mirroring — and the error is what holds the caller's
+// high-water mark: the window is only ever reachable through `since`, so a
+// mark advanced over an incomplete read writes off whatever it did not read,
+// for good.
+func forEachForgeIssuePage(ctx context.Context, ic forge.IssueClient, repo string, since time.Time, fn func([]forge.IssueRef)) error {
+	budget := forgeIssuePageBudgetOf(ctx)
+	read := 0
+	for page := 1; ; page++ {
+		batch, err := ic.ListIssues(ctx, repo, forge.IssueListOptions{
+			State: "all", Since: since, PerPage: forgeIssueSyncPerPage, Page: page,
+		})
+		if err != nil {
+			return fmt.Errorf("list issues (page %d): %w", page, err)
+		}
+		fn(batch)
+		read += len(batch)
+		if len(batch) == 0 {
+			return nil
+		}
+		if page >= budget {
+			// The entries READ are the fact; the per-page size asked for is
+			// not one — an instance that clamps it serves half of what
+			// multiplying the pages by it would suggest. What a HIGH-WATER
+			// MARK does about it is not stated here: this core also serves
+			// `iterion issue import`, which keeps none (syncOneIntegration,
+			// the one caller that stamps, names that consequence itself).
+			return &forgeIssueWindowTruncated{Entries: read, Pages: budget}
+		}
+	}
 }
 
 // syncOneIntegration mirrors one repo's forge issues into the team board and
@@ -245,45 +440,79 @@ func syncForgeIssuesToBoard(ctx context.Context, ic forge.IssueClient, provider 
 // wrapper around syncForgeIssuesToBoard: it resolves the connection → issue
 // client → team board, then persists the high-water mark. It is the unit both
 // the manual "Sync now" endpoint and the periodic worker call.
-func (s *Server) syncOneIntegration(ctx context.Context, teamID string, ri forge.RepoIntegration) (created, updated int, err error) {
+//
+// The mark is one forgeIssueSyncMarkOverlap BEFORE the instant the read
+// started, written only after a sweep that read the whole window and mirrored
+// all of it. Anything short of that keeps the mark where it was and retries
+// next sweep: the forge is only ever asked for what changed since the mark, so
+// a mark that outruns the sweep writes off every issue updated in the window
+// it jumped, and nothing offers them again. Re-reading is cheap by comparison
+// — an unchanged card is not rewritten.
+//
+// The overlap is what makes the mark honest about a window THE FORGE dates:
+// stamping the read's own start declares synced the entries the forge dated
+// before this pod's clock, or served only after the read (see the constant).
+// A constant shift keeps each pass's mark ordered with its own start, so a
+// serial sequence of passes only moves it forward.
+//
+// The mark is stamped through StampSynced, a single-field write that arbitrates
+// nothing (see its contract in pkg/forge): a paged pass is minutes long, and
+// writing back the integration this call was HANDED would revert whatever an
+// operator changed while it ran. Three entry points stamp — this sweep, the
+// manual "Sync now" and the webhook projection, which runs on every replica —
+// so two passes in flight can stamp out of order and the mark can step back by
+// as much as their start instants differ. That only ever widens the next
+// window, which is a re-read.
+func (s *Server) syncOneIntegration(ctx context.Context, teamID string, ri forge.RepoIntegration) (mirrored, created, updated int, err error) {
 	conn, err := s.forgeConnections.Get(ctx, ri.ConnectionID)
 	if err != nil {
-		return 0, 0, fmt.Errorf("connection: %w", err)
+		return 0, 0, 0, fmt.Errorf("connection: %w", err)
 	}
 	admin, err := s.forgeAdminFor(ctx, conn)
 	if err != nil {
-		return 0, 0, fmt.Errorf("admin client: %w", err)
+		return 0, 0, 0, fmt.Errorf("admin client: %w", err)
 	}
 	ic, ok := admin.(forge.IssueClient)
 	if !ok {
-		return 0, 0, forgeCapabilityErr(conn, admin, "IssueClient")
+		return 0, 0, 0, forgeCapabilityErr(conn, admin, "IssueClient")
 	}
 	board := s.cfg.CloudBoardFor(teamID)
 	if board == nil {
-		return 0, 0, errors.New("no board for team")
+		return 0, 0, 0, errors.New("no board for team")
 	}
-	created, updated, err = syncForgeIssuesToBoard(ctx, ic, conn.Provider, ri.ConnectionID, ri.RepoFullName, board, ri.LastSyncedAt,
+	startedAt := time.Now().UTC().Add(-forgeIssueSyncMarkOverlap)
+	mirrored, created, updated, err = syncForgeIssuesToBoard(ctx, ic, conn.Provider, ri.ConnectionID, ri.RepoFullName, board, ri.LastSyncedAt,
 		authorTrustFunc(admin, string(conn.Provider), ri.RepoFullName, ri.MinAuthorRole, s.authorTrustGate()))
-	// Advance the high-water mark unconditionally: a partial-failure sync
-	// still records progress on the issues it did upsert.
-	ri.LastSyncedAt = time.Now().UTC()
-	if uerr := s.forgeIntegrations.Update(ctx, ri); uerr != nil && err == nil {
-		err = uerr
+	if err != nil {
+		// The mark belongs to this wrapper, so its consequence is this
+		// wrapper's to name: the core serves a self-hosted import that keeps
+		// no mark and has no next pass.
+		return mirrored, created, updated, fmt.Errorf("%w — the high-water mark stays put, so the next pass retries from the same mark", err)
 	}
-	return created, updated, err
+	if uerr := s.forgeIntegrations.StampSynced(ctx, ri.ID, startedAt); uerr != nil {
+		return mirrored, created, updated, uerr
+	}
+	return mirrored, created, updated, nil
 }
 
 // upsertForgeCard creates or updates the board card mirroring one forge issue.
 // On create the card lands in openCol (or doneCol when already closed); a
 // fresh OPEN card is additionally stamped with the trust label (triage:auto
 // for a trusted author, needs:approval otherwise — never on closed issues,
-// never re-stamped on update). On update the card's content/labels refresh
-// but its COLUMN is left to the operator — except a forge-close pulls a
-// still-open card to the terminal column — and board-local label namespaces
-// are preserved (forge labels are mirrored verbatim; triage:/needs:/cmd:/
-// source: labels belong to the board and must survive the sweep). Returns
-// (created, updated) as 0/1 flags.
-func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol string, provider forge.Provider, connID, repo string, is forge.IssueRef, trusted bool) (int, int, error) {
+// never re-stamped on update).
+//
+// trusted is that one arm's classifier and is called only there, at most once:
+// resolving it costs the caller a forge round-trip per distinct author
+// (authorTrust), so an entry whose card already exists, or whose issue is
+// closed, must not buy one. A nil classifier trusts nobody, the same
+// fail-closed rule as the sync core's nil trust.
+//
+// On update the card's content/labels refresh but its COLUMN is left to the
+// operator — except a forge-close pulls a still-open card to the terminal
+// column — and board-local label namespaces are preserved (forge labels are
+// mirrored verbatim; triage:/needs:/cmd:/source: labels belong to the board
+// and must survive the sweep). Returns (created, updated) as 0/1 flags.
+func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol string, provider forge.Provider, connID, repo string, is forge.IssueRef, trusted func() bool) (int, int, error) {
 	cardID := forgeCardID(provider, repo, is.Number)
 	ext := &native.ExternalRef{
 		Provider:     string(provider),
@@ -308,7 +537,7 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 			col = doneCol
 		} else {
 			trustLabel := native.LabelNeedsApproval
-			if trusted {
+			if trusted != nil && trusted() {
 				trustLabel = native.LabelTriageAuto
 			}
 			labels = append(append([]string(nil), is.Labels...), trustLabel)
@@ -336,13 +565,24 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		p := *existing.External.Project
 		ext.Project = &p
 	}
-	if _, err := board.Update(cardID, native.Patch{
-		Title:    &is.Title,
-		Body:     &is.Body,
-		Labels:   &labels,
-		External: ext,
-	}); err != nil {
-		return 0, 0, err
+	updated := 0
+	// Write only a card the forge actually changed. Patch.Labels and
+	// Patch.External replace wholesale, so the store marks them changed
+	// whatever they hold (native.Store.Update) — an unconditional Update
+	// rewrites the card and emits issue_updated on EVERY pass, for every card
+	// in the window, and a mark held by a refused card or a truncated window
+	// re-reads that window every sweep.
+	if existing.Title != is.Title || existing.Body != is.Body ||
+		!slices.Equal(labels, existing.Labels) || !sameForgeRef(ext, existing.External) {
+		if _, err := board.Update(cardID, native.Patch{
+			Title:    &is.Title,
+			Body:     &is.Body,
+			Labels:   &labels,
+			External: ext,
+		}); err != nil {
+			return 0, 0, err
+		}
+		updated = 1
 	}
 	if is.State == "closed" && doneCol != "" && !isTerminalState(b, existing.State) {
 		// CAS on the snapshot: an operator who moved the card between our
@@ -351,8 +591,32 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		if _, _, err := board.SetStateFrom(cardID, existing.State, doneCol); err != nil {
 			return 0, 0, err
 		}
+		updated = 1
 	}
-	return 0, 1, nil
+	return 0, updated, nil
+}
+
+// sameForgeRef reports whether a card's stored forge linkage already says what
+// this sync would write, which is what lets an unchanged card go unwritten.
+//
+// Every field participates: the project sync state through its OWN Equal — its
+// timestamps denote instants, and == on a time.Time compares representations
+// (a monotonic reading, a location) — and every other field by value, which a
+// field added to the ref joins for free. A non-comparable field added there
+// stops the build rather than slipping through uncompared.
+func sameForgeRef(a, b *native.ExternalRef) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if (a.Project == nil) != (b.Project == nil) {
+		return false
+	}
+	if a.Project != nil && !a.Project.Equal(*b.Project) {
+		return false
+	}
+	x, y := *a, *b
+	x.Project, y.Project = nil, nil
+	return x == y
 }
 
 // boardLocalLabelPrefixes are the label namespaces owned by the BOARD, not
@@ -948,6 +1212,16 @@ func (s *Server) projectForgeWebhookToBoard(ctx context.Context, repo string) {
 	if s.cfg.CloudBoardFor == nil || s.forgeIntegrations == nil || strings.TrimSpace(repo) == "" {
 		return
 	}
+	// The read is bounded tighter than the sweep's: this runs on whichever
+	// replica took the delivery, under a 30 s ceiling sized for a single call
+	// (scheduleForgeBoardProjection), so a wide window would otherwise cost
+	// every delivery whatever requests fit that ceiling — and mark nothing,
+	// since an incomplete read holds the mark. Past the bound the window is
+	// reported and left to the leased sweep, which reads it whole.
+	ctx = withForgeIssuePageBudget(ctx, forgeIssueSyncFastPathMaxPages)
+	// On its own tally lane: this spend is per DELIVERY and per replica, which
+	// is not what the leased sweep's line measures.
+	ctx = withForgeLane(ctx, forgeLaneBoardWebhookProjection)
 	ris, err := s.forgeIntegrations.ListSyncEnabledForRepo(ctx, repo)
 	if err != nil {
 		if s.logger != nil {
@@ -963,7 +1237,7 @@ func (s *Server) projectForgeWebhookToBoard(ctx context.Context, repo string) {
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		c, u, serr := s.syncOneIntegration(ctx, ri.TenantID, ri)
+		_, c, u, serr := s.syncOneIntegration(ctx, ri.TenantID, ri)
 		if serr != nil && s.logger != nil {
 			s.logger.Warn("board projection: %s/%s: %v", ri.TenantID, ri.RepoFullName, serr)
 		} else if (c > 0 || u > 0) && s.logger != nil {
@@ -976,13 +1250,68 @@ func (s *Server) projectForgeWebhookToBoard(ctx context.Context, repo string) {
 // periodic forge → board sync worker
 // ---------------------------------------------------------------------------
 
-// runBoardSyncWorker periodically sweeps every sync-enabled integration and
-// mirrors its forge issues onto the team board. Cloud-only; started from
-// server start alongside the forge/OAuth refresh workers. Best-effort: one
-// integration's failure is logged and the sweep continues.
+const (
+	// forgeBoardSyncInterval is how often the sweep mirrors every sync-enabled
+	// repo. It is the reconciliation net's cadence, not the board's latency:
+	// an inbound webhook projects its own repo immediately
+	// (projectForgeWebhookToBoard).
+	forgeBoardSyncInterval = 5 * time.Minute
+
+	// forgeBoardSyncLeaseTTLFactor sizes the sweep's lease in sweep intervals.
+	// The holder renews every interval and steps down before the expiry of the
+	// last renewal it can prove; a holder that dies without releasing is
+	// replaced at most TTL + one retry after its last renewal. The webhook
+	// projection is unleased and keeps running on every replica, so that gap
+	// delays the net, never the board's reaction to a live event — the
+	// projection reads the same windows, which is why its own read is bounded
+	// (forgeIssueSyncFastPathMaxPages).
+	forgeBoardSyncLeaseTTLFactor = 3
+)
+
+// runBoardSyncWorker mirrors every sync-enabled repo's forge issues onto its
+// team board, periodically, on the ONE replica holding the board-issue-sync
+// lease — and campaigns for it on every other. Cloud-only; started from server
+// start alongside the forge/OAuth refresh workers.
+//
+// The election is inside, not around, so there is no unelected entry point to
+// start by mistake. What every replica sweeping cost is the forge's request
+// budget: a pass lists EVERY sync-enabled repo's issue window, and the
+// installation pays that once per replica. The sweep is idempotent — it
+// re-reads before it writes — so the lease only has to make the cost one
+// replica's while keeping the net's reach: a holder that stops releases on its
+// way out, one that dies is outlived by the TTL, and each term opens with a
+// pass.
 func (s *Server) runBoardSyncWorker(ctx context.Context, interval time.Duration) {
+	err := lease.Run(ctx, s.leases, lease.Spec{
+		Name:  leaseBoardIssueSync,
+		Owner: s.replicaID,
+		TTL:   forgeBoardSyncLeaseTTLFactor * interval,
+		Retry: interval,
+		Info:  s.infof,
+		Warn:  s.warnf,
+	}, func(ctx context.Context) { s.boardSyncPasses(ctx, interval) })
+	if err != nil {
+		s.warnf("forge→board issue sync NOT started: %v — a forge issue whose webhook was dropped never reaches its team board", err)
+	}
+}
+
+// boardSyncPasses sweeps every sync-enabled integration on interval until the
+// term ends. Best-effort: one integration's failure is logged and the sweep
+// continues.
+//
+// A term opens with a pass rather than with a wait. The loop only ever runs
+// inside an elected term, and a term that ended before its first tick — a
+// lease-store blip, a rollout — would otherwise leave the net never actually
+// sweeping. Terms are paced by the campaign's retry (one interval), so this
+// cannot sweep faster than the interval either.
+func (s *Server) boardSyncPasses(ctx context.Context, interval time.Duration) {
+	// Every forge request of every pass is charged to the sweep's own lane:
+	// the hourly tally is where an operator reads what this net spends, and
+	// that request budget is what the lease exists to protect.
+	ctx = withForgeLane(ctx, forgeLaneBoardIssueSync)
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	s.syncAllEnabledIntegrations(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1002,7 +1331,13 @@ func (s *Server) syncAllEnabledIntegrations(ctx context.Context) {
 		return
 	}
 	for _, ri := range ris {
-		c, u, err := s.syncOneIntegration(ctx, ri.TenantID, ri)
+		// Short-circuit on a term that ended — a step-down, a rollout, a
+		// SIGTERM — so a pass that matched N repos does not run N connection
+		// reads each failing on ctx.Done, one warn line apiece.
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		_, c, u, err := s.syncOneIntegration(ctx, ri.TenantID, ri)
 		if err != nil && s.logger != nil {
 			s.logger.Warn("board sync: %s/%s: %v", ri.TenantID, ri.RepoFullName, err)
 		} else if (c > 0 || u > 0) && s.logger != nil {

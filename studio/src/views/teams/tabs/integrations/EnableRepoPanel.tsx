@@ -45,6 +45,9 @@ export function EnableRepoPanel({
    *  ignore it (backward-compatible with the old no-arg signature). */
   onDone: (enabled?: { repo: string; connectionID: string; pending?: boolean }) => void;
   onCancel: () => void;
+  /** Reports into the parent's error slot. The EMPTY STRING is a message of
+   *  this channel too — "an attempt started, take the banner down" — so a
+   *  parent must read it with `||`, never `??`. Both parents do. */
   onError: (m: string) => void;
 }) {
   const [search, setSearch] = useState("");
@@ -59,7 +62,12 @@ export function EnableRepoPanel({
   const [scheduleCrons, setScheduleCrons] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
 
+  // Loading the repo list reports into the tab's shared banner and, like the
+  // row's "Sync now", never reaches onChanged — so nothing else takes that
+  // banner down. The attempt clears it: otherwise a list that failed once
+  // keeps claiming it while the repos a later search loaded are on screen.
   const loadRepos = async () => {
+    onError("");
     setLoadingRepos(true);
     try {
       setRepos(await listForgeRepos(teamID, conn.id, search));

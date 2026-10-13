@@ -10,6 +10,13 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
+// The two verdicts upsertForgeCard's trust classifier can answer, named so a
+// call site says which one it exercises. The real one costs a forge
+// round-trip per distinct author, which is why it is a function and not a
+// value (see TestUpsertForgeCard_TrustIsResolvedOnlyForAFreshOpenCard).
+func alwaysTrusted() bool { return true }
+func neverTrusted() bool  { return false }
+
 func TestUpsertForgeCard_TrustStamping(t *testing.T) {
 	board := newTestBoard(t)
 	b := mustBoard(t, board)
@@ -17,7 +24,7 @@ func TestUpsertForgeCard_TrustStamping(t *testing.T) {
 
 	// Trusted author → triage:auto on the fresh open card.
 	trustedIs := forge.IssueRef{Number: 1, Title: "t", State: "open", Labels: []string{"bug"}, Author: "alice"}
-	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", trustedIs, true); err != nil {
+	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", trustedIs, alwaysTrusted); err != nil {
 		t.Fatalf("upsert trusted: %v", err)
 	}
 	card, _ := board.Get(forgeCardID(forge.ProviderGitHub, "o/r", 1))
@@ -30,7 +37,7 @@ func TestUpsertForgeCard_TrustStamping(t *testing.T) {
 
 	// Untrusted author → needs:approval, never triage:auto.
 	extIs := forge.IssueRef{Number: 2, Title: "x", State: "open", Author: "drive-by"}
-	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", extIs, false); err != nil {
+	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", extIs, neverTrusted); err != nil {
 		t.Fatalf("upsert untrusted: %v", err)
 	}
 	card, _ = board.Get(forgeCardID(forge.ProviderGitHub, "o/r", 2))
@@ -40,12 +47,24 @@ func TestUpsertForgeCard_TrustStamping(t *testing.T) {
 
 	// Closed issue → no trust stamp at all.
 	closedIs := forge.IssueRef{Number: 3, Title: "old", State: "closed", Author: "alice"}
-	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", closedIs, true); err != nil {
+	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", closedIs, alwaysTrusted); err != nil {
 		t.Fatalf("upsert closed: %v", err)
 	}
 	card, _ = board.Get(forgeCardID(forge.ProviderGitHub, "o/r", 3))
 	if slices.Contains(card.Labels, native.LabelTriageAuto) || slices.Contains(card.Labels, native.LabelNeedsApproval) {
 		t.Fatalf("closed create must not stamp trust labels: %v", card.Labels)
+	}
+
+	// No classifier at all → parked, like the core's nil trust: this is the
+	// budget security boundary, so the absence of a verdict is a refusal and
+	// never a crash in the middle of a sweep.
+	noneIs := forge.IssueRef{Number: 4, Title: "unknown", State: "open", Author: "drive-by"}
+	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", noneIs, nil); err != nil {
+		t.Fatalf("upsert without a classifier: %v", err)
+	}
+	card, _ = board.Get(forgeCardID(forge.ProviderGitHub, "o/r", 4))
+	if !slices.Contains(card.Labels, native.LabelNeedsApproval) || slices.Contains(card.Labels, native.LabelTriageAuto) {
+		t.Fatalf("no classifier must park the card: %v", card.Labels)
 	}
 
 	// Update never RE-stamps: consume triage:auto (as the trigger does), then
@@ -55,7 +74,7 @@ func TestUpsertForgeCard_TrustStamping(t *testing.T) {
 	if _, err := board.Update(id, native.Patch{Labels: &consumed}); err != nil {
 		t.Fatalf("consume: %v", err)
 	}
-	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", trustedIs, true); err != nil {
+	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", trustedIs, alwaysTrusted); err != nil {
 		t.Fatalf("re-sync: %v", err)
 	}
 	card, _ = board.Get(id)
@@ -92,7 +111,7 @@ func TestSyncForgeIssuesToBoard_NilTrustFailsClosed(t *testing.T) {
 	ic := &fakeIssueClient{issues: []forge.IssueRef{
 		{Number: 1, Title: "a", State: "open", Author: "whoever"},
 	}}
-	if _, _, err := syncForgeIssuesToBoard(context.Background(), ic, forge.ProviderGitHub, "c", "o/r", board, time.Time{}, nil); err != nil {
+	if _, _, _, err := syncForgeIssuesToBoard(context.Background(), ic, forge.ProviderGitHub, "c", "o/r", board, time.Time{}, nil); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	card, _ := board.Get(forgeCardID(forge.ProviderGitHub, "o/r", 1))
@@ -115,7 +134,7 @@ func TestSyncForgeIssuesToBoard_TrustMemoized(t *testing.T) {
 		calls[login]++
 		return login == "alice"
 	}
-	if _, _, err := syncForgeIssuesToBoard(context.Background(), ic, forge.ProviderGitHub, "c", "o/r", board, time.Time{}, trust); err != nil {
+	if _, _, _, err := syncForgeIssuesToBoard(context.Background(), ic, forge.ProviderGitHub, "c", "o/r", board, time.Time{}, trust); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	if calls["alice"] != 1 || calls["bob"] != 1 {
@@ -128,5 +147,58 @@ func TestSyncForgeIssuesToBoard_TrustMemoized(t *testing.T) {
 	}
 	if !slices.Contains(bobCard.Labels, native.LabelNeedsApproval) {
 		t.Fatalf("bob card: %v", bobCard.Labels)
+	}
+}
+
+// Resolving the trust verdict costs a forge round-trip per distinct author
+// (authorTrust → CollaboratorPermission, TTL-cached for 10 min against a
+// 5-minute sweep), and ONE arm reads it: the fresh OPEN card's stamp. A sweep
+// re-reads its whole window — every pass, and every pass while a mark is held
+// — so resolving it on a path that stamps nothing charges a request per entry
+// of a window the page budget lets reach 20 000, on a pass that writes no card
+// at all.
+func TestUpsertForgeCard_TrustIsResolvedOnlyForAFreshOpenCard(t *testing.T) {
+	board := newTestBoard(t)
+	b := mustBoard(t, board)
+	openCol, doneCol := defaultOpenColumn(b), terminalColumn(b)
+	resolved := 0
+	classify := func() bool {
+		resolved++
+		return true
+	}
+
+	// A closed issue lands in the terminal column with no trust label: the
+	// verdict is not part of that card.
+	closedIs := forge.IssueRef{Number: 1, Title: "old", State: "closed", Author: "alice"}
+	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", closedIs, classify); err != nil {
+		t.Fatalf("upsert closed: %v", err)
+	}
+	if resolved != 0 {
+		t.Fatalf("a closed issue resolved the trust verdict %d time(s): no closed card is ever stamped", resolved)
+	}
+
+	// A fresh OPEN card is stamped, and that is the one request worth paying.
+	openIs := forge.IssueRef{Number: 2, Title: "live", State: "open", Author: "alice"}
+	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", openIs, classify); err != nil {
+		t.Fatalf("upsert open: %v", err)
+	}
+	if resolved != 1 {
+		t.Fatalf("a fresh open card resolved the verdict %d time(s), want exactly 1", resolved)
+	}
+	card, _ := board.Get(forgeCardID(forge.ProviderGitHub, "o/r", 2))
+	if !slices.Contains(card.Labels, native.LabelTriageAuto) {
+		t.Fatalf("the stamp is still the verdict's: %v", card.Labels)
+	}
+
+	// The same entry on the next pass: the card exists, the stamp is never
+	// re-applied, so nothing needs the verdict.
+	for i := range 3 {
+		if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "c", "o/r", openIs, classify); err != nil {
+			t.Fatalf("re-upsert %d: %v", i, err)
+		}
+	}
+	if resolved != 1 {
+		t.Fatalf("three passes over a card that already exists resolved the verdict %d times, want 1 — "+
+			"that is one forge request per entry per sweep, for a value no existing card reads", resolved)
 	}
 }
