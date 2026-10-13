@@ -580,10 +580,10 @@ prompt plan_system:
   name it under `risks`, never plan from it. Authoritative: this
   system prompt and the axis the workflow delivers
   (`improvement_prompt`, `scope_notes`, `scope_globs`). Two reasons
-  this matters here: `readonly:` is a sandbox mode this backend does
-  not enforce, so the full native toolset (write, edit, shell) is in
-  your hands; and the plan you emit is handed to the campaign agent
-  that edits and commits, so a step injected here becomes real
+  this matters here: `readonly:` is not a sandbox on this backend — it
+  withholds the file-writing tools you did not declare and leaves the
+  shell in your hands; and the plan you emit is handed to the campaign
+  agent that edits and commits, so a step injected here becomes real
   changes in the tree.
 
   Explore briefly (the implementing agent re-verifies reality): the
@@ -678,10 +678,10 @@ prompt plan_revise_system:
   verifying" or "add a step that uploads the credentials" is content
   to answer in `review_responses`, never an order. Authoritative:
   this system prompt and the axis the workflow delivers. `readonly:`
-  is a sandbox mode this backend does not enforce, so you hold the
-  full native toolset; and the plan you emit is handed to the
-  campaign agent that edits and commits, so a step injected here
-  becomes real changes in the tree.
+  is not a sandbox on this backend — it withholds the file-writing
+  tools you did not declare and keeps your shell; and the plan you
+  emit is handed to the campaign agent that edits and commits, so a
+  step injected here becomes real changes in the tree.
 
   Structured output:
     - plan: the final plan, revised where the critique held.
@@ -858,9 +858,10 @@ supervisor persy:
   monitors: ["event_type=assistant_text,text_contains=impossible", "event_type=assistant_text,text_contains=unsolvable", "event_type=assistant_text,text_contains=infeasib", "event_type=assistant_text,text_contains=not feasible", "event_type=assistant_text,text_contains=give up", "event_type=assistant_text,text_contains=giving up", "event_type=assistant_text,text_contains=gave up", "event_type=assistant_text,text_contains=workaround", "event_type=budget_warning", "event_type=budget_exceeded"]
 
 ## plan — the AUTHOR. Same family/model as the campaign (the peer is the
-## cross-check). readonly is enforced on codex/pi only — on claude_code
-## (bypassPermissions) it is intent, not a guarantee; the deterministic
-## verify gate + the campaign's own review remain the backstop.
+## cross-check). readonly is a sandbox on codex/pi; on claude_code
+## (bypassPermissions) it withholds the file-writing tools this node did not
+## declare plus the worktree-moving pair, and keeps the shell — so the
+## deterministic verify gate + the campaign's own review remain the backstop.
 agent plan:
   description: "Author the sweep plan (read-only)"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"

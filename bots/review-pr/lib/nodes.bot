@@ -91,12 +91,15 @@ judge reviewer_claude:
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   ## `readonly:` is a SCHEDULING declaration — the node mutates no
   ## workspace file, which is what lets dual fan both reviewers onto one
-  ## worktree. It is honoured as a tool boundary by pi and codex only:
-  ## on claude_code nothing reads it, so what bounds this reviewer is its
-  ## prompt and its output schema, not the flag. Declaring `tools:` here
-  ## WOULD bound it, and is not free — a non-empty list installs
-  ## --disallowedTools and takes Task/WebFetch/Skill off this node on
-  ## every run.
+  ## worktree — and a tool boundary, with the lever each backend has:
+  ## codex an OS sandbox, pi a readers-only tool list, claude_code the
+  ## withholding of the file-writing tools the node did not declare,
+  ## which here is every one of them (no `tools:` list), plus the pair
+  ## that moves the worktree. It is not a sandbox there: the native shell
+  ## stays, so the prompt and the output schema still carry the rest.
+  ## Declaring `tools:` here would bound that shell too, and is not free
+  ## — a non-empty list installs --disallowedTools and takes
+  ## Task/WebFetch/Skill off this node on every run.
   readonly: true
   fallbacks:
     ## GLM, the claude family's other server, when the Anthropic route

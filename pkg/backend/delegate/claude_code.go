@@ -137,6 +137,64 @@ var claudeNativeForCanonical = map[string][]string{
 	"skill":        {"Skill"},
 }
 
+// claudeWritingCanonicals are the canonical tool concepts that write a file.
+// The shared spelling table (toolcatalog.CanonicalToolName) maps every
+// accepted synonym onto one of them, so `write_file`, `apply_patch` and
+// `str_replace` are the same three concepts as `write` and `edit`.
+var claudeWritingCanonicals = []string{"write", "edit", "notebookedit"}
+
+// claudeWorktreeMovingTools are the two tools that MOVE the worktree the
+// session acts in. They are read from the live CLI's own `system/init` roster
+// (2.1.220), the one source gatedFormattingWithheld enumerates too, so the
+// two lists cannot name a different pair.
+//
+// They sit outside claudeNativeForCanonical, so no `tools:` list grants or
+// withholds them, and `readonly:` removes them whatever the declaration says
+// — the one place this backend overrides a declaration rather than keeping
+// it. The reason is specific: `readonly:` is also what admits the node into a
+// SHARED workspace as non-mutating (pkg/runtime.isMutatingNodeIn), and moving
+// that worktree is the write a node admitted beside another branch can least
+// afford. A node that must move its worktree drops `readonly:` — that flag is
+// the escape hatch, and there is no second one.
+var claudeWorktreeMovingTools = []string{"EnterWorktree", "ExitWorktree"}
+
+// claudeReadonlyWithheld is what `readonly: true` removes from EVERY spawn of
+// a claude_code task: this backend's roster for the concepts above, minus
+// whatever the node's own `tools:` list names, plus the worktree-moving pair
+// no declaration can name. The first half is a projection of
+// claudeNativeForCanonical rather than a list of its own, so a native
+// spelling added there is withheld here in the same edit.
+//
+// The bite is the UNDECLARED surface, where omitting `tools:` means the full
+// native roster and `readonly:` used to mean nothing at all. A DECLARED list
+// already removes every native it does not name, so the subtraction below
+// changes nothing for it — and a writing tool it DOES name survives the flag:
+// two explicit author statements conflict there, and deleting the specific
+// one silently is what philosophy rule 1 forbids. codex and pi resolve that
+// conflict the other way, by locking the node down; claudeReadonlyNotices
+// states the difference on the node's own log.
+//
+// What the flag does not buy here at all: a sandbox. codex runs a readonly
+// task in a read-only OS sandbox and pi narrows its tool list to readers;
+// this backend has neither lever, so a shell the node keeps is still a write
+// path. The roster is also one this project does not own (#1651): a writing
+// tool outside these lists survives the withholding.
+func claudeReadonlyWithheld(task Task) []string {
+	var granted map[string]bool
+	if toolBoundaryApplies(task) {
+		granted = claudeNativeToolsForAllowed(task.AllowedTools, task.DiagnosticShell)
+	}
+	var withheld []string
+	for _, canonical := range claudeWritingCanonicals {
+		for _, name := range claudeNativeForCanonical[canonical] {
+			if !granted[name] {
+				withheld = append(withheld, name)
+			}
+		}
+	}
+	return append(withheld, claudeWorktreeMovingTools...)
+}
+
 // claudeSpawnBounds are the bounds that hold for a task whatever the spawn
 // is — the ones that do NOT come from the node's `tools:` declaration.
 //
@@ -192,15 +250,155 @@ func claudeSpawnBounds(task Task) []claudesdk.Option {
 }
 
 // claudeSpawnBoundWithheld is the half of a spawn's --disallowedTools that
-// claudeSpawnBounds owns: the tools no headless session can use, plus the
+// claudeSpawnBounds owns: the tools no headless session can use, the
 // single-subagent surface when the opt-in knob removes it from a node that is
-// not ultracode.
+// not ultracode, and the file-writing tools a `readonly:` node did not
+// declare.
+//
+// `readonly:` belongs here and not beside the declaration: it is the node's
+// access intent, not its tool list, so it holds on the structured-output
+// spawn too — a node whose first pass is cut off mid-work resumes the same
+// session under the same always-on bypassPermissions, and a bound carried on
+// one spawn is no bound at all.
 func claudeSpawnBoundWithheld(task Task) []string {
 	withheld := append([]string(nil), headlessWithheldTools...)
 	if !task.Ultracode && disallowOrchestrationToolsFromEnv() {
 		withheld = append(withheld, orchestrationTools...)
 	}
+	if task.Readonly {
+		withheld = append(withheld, claudeReadonlyWithheld(task)...)
+	}
 	return withheld
+}
+
+// claudeSpawnKeeps reports whether one native tool survives BOTH halves of a
+// spawn's --disallowedTools. Every question about what a spawn still offers
+// the model goes through here rather than through a list of its own, so an
+// answer cannot drift from the argv the same two lists build.
+func claudeSpawnKeeps(task Task, native string) bool {
+	withheld := append(claudeSpawnBoundWithheld(task), claudeDeclarationWithheld(task)...)
+	return !slices.Contains(withheld, native)
+}
+
+// claudeKeepsShell reports whether the spawn still offers the model a shell:
+// an undeclared surface keeps the native `Bash`, a declaration keeps it when
+// it names one (`diagnostic_shell` included).
+func claudeKeepsShell(task Task) bool { return claudeSpawnKeeps(task, "Bash") }
+
+// claudeWritersTheDeclarationKeeps names the file-writing tools the node's
+// own `tools:` list grants, which `readonly:` therefore leaves in place. It
+// reads the projection the argv is built from (claudeNativeToolsForAllowed),
+// so it names what the spawn really keeps, not what a name suggests.
+func claudeWritersTheDeclarationKeeps(task Task) []string {
+	if !toolBoundaryApplies(task) {
+		return nil
+	}
+	granted := claudeNativeToolsForAllowed(task.AllowedTools, task.DiagnosticShell)
+	var kept []string
+	for _, canonical := range claudeWritingCanonicals {
+		for _, name := range claudeNativeForCanonical[canonical] {
+			if granted[name] {
+				kept = append(kept, name)
+			}
+		}
+	}
+	return kept
+}
+
+// claudeWorktreeMoversTheDeclarationNames names the worktree-moving tools the
+// node's own `tools:` list asks for and `readonly:` removes anyway — the one
+// declaration this backend deletes instead of keeping.
+//
+// Names are compared through claudeFoldedToolName, the same key the approval
+// subtraction uses: `EnterWorktree`, `enterworktree` and `enter_worktree` are
+// one tool, and a notice that only fired for one spelling would be a spelling
+// check — the shared table has no row for the pair, so the underscore step of
+// that fold is what covers the spelling the DSL uses everywhere else.
+//
+// Nil for an undeclared surface: omitting `tools:` states nothing for the
+// flag to contradict.
+func claudeWorktreeMoversTheDeclarationNames(task Task) []string {
+	if !toolBoundaryApplies(task) {
+		return nil
+	}
+	var named []string
+	for _, mover := range claudeWorktreeMovingTools {
+		for _, declared := range task.AllowedTools {
+			if claudeFoldedToolName(declared) == claudeFoldedToolName(mover) {
+				named = append(named, mover)
+				break
+			}
+		}
+	}
+	return named
+}
+
+// claudeReadonlyNotices are what the backend owes a node that declared
+// `readonly: true`, a flag it honours in part: the writing tools the node's
+// own declaration keeps despite the flag, the worktree-moving tools it
+// declared and the flag deletes anyway, and the shell the flag cannot sandbox
+// here. Each names the way out — philosophy rule 1: a limit this backend
+// cannot deliver is said out loud, never downgraded in silence, and the one
+// declaration it does delete is named rather than dropped behind the author's
+// back. Each notice therefore says which declaration it speaks for: a node
+// that declares a writer AND the worktree pair draws both, and a claim that
+// declarations are never deleted here would contradict its neighbour on that
+// node's own log.
+//
+// Empty for a task that did not declare the flag, and for one whose
+// declaration leaves nothing to say: a readonly node that declares readers
+// only gets what the flag promises on the roster this backend owns.
+func claudeReadonlyNotices(task Task) []string {
+	if !task.Readonly {
+		return nil
+	}
+	var notices []string
+	if kept := claudeWritersTheDeclarationKeeps(task); len(kept) > 0 {
+		notices = append(notices, fmt.Sprintf(
+			"readonly: true is NOT enforced for %s: this node's own tools: list declares them, and a declared writing tool is not deleted here — codex and pi resolve the same conflict the other way, by locking the node down. The flag is also what admits this node into a fan-out branch as non-mutating, so a writer it keeps may run beside another branch's files in a shared workspace. Drop one of the two statements",
+			strings.Join(kept, ", ")))
+	}
+	if deleted := claudeWorktreeMoversTheDeclarationNames(task); len(deleted) > 0 {
+		notices = append(notices, fmt.Sprintf(
+			"readonly: true removes %s whatever this node's tools: list says, and the name is not auto-approved either: no tools: list can withhold the pair that MOVES the worktree, and readonly: is also what admits this node into a shared workspace as non-mutating. Drop readonly: — it is the only way out",
+			strings.Join(deleted, ", ")))
+	}
+	if residual := claudeReadonlyResidualWritePaths(task); len(residual) > 0 {
+		notices = append(notices, fmt.Sprintf(
+			"readonly: true withholds the file-writing tools this node did not declare, but this backend has no read-only sandbox: %s. Declare a tools: list with neither, or run the node on codex or pi, whose readonly is a sandbox",
+			strings.Join(residual, "; and ")))
+	}
+	return notices
+}
+
+// claudeReadonlyResidualWritePaths names the write paths a readonly spawn
+// still carries once the file-writing tools are withheld. Each is read from
+// the two lists the argv is built from (claudeSpawnKeeps), so the notice
+// cannot promise a bound the spawn does not have:
+//
+//   - a shell writes any file the process can reach, and this backend has no
+//     read-only sandbox to put one in;
+//   - a subagent is a session of its own. This backend bounds the two argv IT
+//     builds; what the CLI hands a subagent is not one of them, and the CLI
+//     finalises a subagent's worktree (docs/backends.md), so a readonly node
+//     that keeps the subagent tool keeps a write path this backend cannot
+//     speak about. Whether the CLI propagates a deny list to a subagent is
+//     not measured here, and a notice that assumed either answer would be a
+//     claim about another project's roster.
+//
+// The roster itself is one this project does not own (#1651): a write path
+// spelled outside every list here survives both the withholding and this
+// notice, which is why the notice names the backends whose readonly is a
+// sandbox rather than claiming one.
+func claudeReadonlyResidualWritePaths(task Task) []string {
+	var paths []string
+	if claudeKeepsShell(task) {
+		paths = append(paths, "it keeps a shell, so writes through Bash are not prevented")
+	}
+	if claudeKeepsSubagents(task) {
+		paths = append(paths, "it keeps the subagent tool, and this backend does not build the argv the CLI gives a subagent")
+	}
+	return paths
 }
 
 // claudeDeclarationWithheld is the half of a spawn's --disallowedTools that the
@@ -219,8 +417,7 @@ func claudeDeclarationWithheld(task Task) []string {
 // the legacy name onto `Agent` (its alias table) before it applies a deny
 // rule.
 func claudeKeepsSubagents(task Task) bool {
-	withheld := append(claudeSpawnBoundWithheld(task), claudeDeclarationWithheld(task)...)
-	return !slices.Contains(withheld, "Agent") && !slices.Contains(withheld, "Task")
+	return claudeSpawnKeeps(task, "Agent") && claudeSpawnKeeps(task, "Task")
 }
 
 // headlessSubagentRule describes, in one place, how subagents behave in a
@@ -316,12 +513,28 @@ func claudeCodeSystemPrompt(task Task) string {
 // restriction" and registers nothing. A declared-empty list still registers:
 // WithAllowedTools with no name is a no-op (the CLI flag is emitted only for
 // a non-empty list), and the disallow list is the boundary.
+//
+// What this spawn withholds is SUBTRACTED from the approval list: a name on
+// --allowedTools and on --disallowedTools at once would make the withholding
+// rest on the CLI resolving deny over allow — a precedence this repo has
+// never executed. The declaration keeps its own tools; it loses only the
+// names a rule that never consulted it removes anyway: headlessWithheldTools,
+// the orchestration knob, and `readonly:`'s worktree-moving pair, which no
+// declaration can grant. `readonly:`'s writing half cannot reach this
+// subtraction — it is by construction the writers the declaration does NOT
+// grant, and the approval list is that declaration plus MCP FQN extras — so
+// composing it here is defence against a future term that does, not a case
+// this one has. The declaration's own half of the disallow list is
+// subtracted too, where it is redundant as long as every native name grants
+// itself through claudeNativeForCanonical — included so the invariant does
+// not rest on that.
 func claudeToolOptions(task Task, extraAllowedTools []string) []claudesdk.Option {
 	if !toolBoundaryApplies(task) {
 		return nil
 	}
 	combined := append([]string(nil), task.AllowedTools...)
 	combined = append(combined, extraAllowedTools...)
+	combined = claudeApprovableNames(combined, append(claudeSpawnBoundWithheld(task), claudeDeclarationWithheld(task)...))
 	return []claudesdk.Option{
 		claudesdk.WithAllowedTools(combined...),
 		// WithAllowedTools is an approval list, not an availability boundary.
@@ -329,6 +542,53 @@ func claudeToolOptions(task Task, extraAllowedTools []string) []claudesdk.Option
 		// with Read/Glob cannot silently fall back to Bash or a write surface.
 		claudesdk.WithDisallowedTools(claudeDeclarationWithheld(task)...),
 	}
+}
+
+// claudeFoldedToolName is the key this backend compares two tool names on:
+// the shared spelling table (toolcatalog.CanonicalToolName), then the `_` a
+// `.bot` puts between words.
+//
+// The second step is this backend's own, and it is load-bearing for exactly
+// one pair: the shared table has no row for `EnterWorktree`/`ExitWorktree`
+// (nothing grants them, so nothing had to fold them), while the DSL spells
+// every other multi-word tool with an underscore — `read_file`,
+// `write_file`, `notebook_edit`, `task_output`. Without the fold,
+// `enter_worktree` is a different name from the `EnterWorktree` the deny
+// list carries, so the declaration lands on BOTH flags and draws no notice.
+//
+// Measured over every name this repo can put on either flag (the shared
+// table's rows and values, the native roster, headlessWithheldTools,
+// orchestrationTools, the movers, an MCP FQN): the fold merges no canonicals
+// apart from the two worktree movers' spellings and the two MCP prefixes of
+// one FQN, which no list here withholds.
+func claudeFoldedToolName(name string) string {
+	return strings.ReplaceAll(toolcatalog.CanonicalToolName(name), "_", "")
+}
+
+// claudeApprovableNames is the approval list minus every name the same
+// spawn's --disallowedTools removes. Auto-approving a tool that spawn
+// withholds asks the CLI which flag wins; keeping the two lists disjoint
+// holds whatever the answer is.
+//
+// Names are compared through claudeFoldedToolName: the shared spelling table
+// claudeNativeToolsForAllowed already reads the declaration with, plus the
+// underscore the worktree movers need. `agent`, `Agent` and `spawn_subagent`
+// are one tool, `enter_worktree` and `EnterWorktree` are one tool, and an
+// invariant that held for a single spelling would be a spelling check, not a
+// boundary.
+func claudeApprovableNames(allowed, withheld []string) []string {
+	removed := make(map[string]bool, len(withheld))
+	for _, name := range withheld {
+		removed[claudeFoldedToolName(name)] = true
+	}
+	keep := make([]string, 0, len(allowed))
+	for _, name := range allowed {
+		if removed[claudeFoldedToolName(name)] {
+			continue
+		}
+		keep = append(keep, name)
+	}
+	return keep
 }
 
 // toolBoundaryApplies reports whether this task's tool list is a visibility
@@ -416,13 +676,15 @@ func gatedFormattingWithheld() []string {
 	// configurations of the same CLI, and withholding a name this pass has no
 	// use for costs nothing.
 	//
-	// Listed here, in the gated arm alone, so neither `orchestrationTools` nor
-	// the env knob that reads it changes meaning. And the list remains an
-	// enumeration of a roster this project does not own (#1651) — it is read
-	// from one CLI version and will go stale; the pass's own instruction is
-	// what covers whatever the next version adds.
+	// The worktree-moving pair is what `readonly:` withholds too, so it lives
+	// in claudeWorktreeMovingTools and the two arms cannot enumerate a
+	// different pair; the rest is listed in this arm alone, so neither
+	// `orchestrationTools` nor the env knob that reads it changes meaning. And
+	// the list remains an enumeration of a roster this project does not own
+	// (#1651) — it is read from one CLI version and will go stale; the pass's
+	// own instruction is what covers whatever the next version adds.
+	withheld = append(withheld, claudeWorktreeMovingTools...)
 	withheld = append(withheld,
-		"EnterWorktree", "ExitWorktree",
 		"SendMessage", "ReportFindings",
 		"BashOutput", "KillShell", "TaskStop")
 	// `Task` is on the native roster AND in orchestrationTools, so the union
@@ -875,6 +1137,13 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// there mid-loop.
 	if HasWatchCapability(task.Capabilities) {
 		b.Logger.Warn("[%s#%d/claude-code] watch.* capabilities are not yet supported on the claude_code backend (claw only); ignoring for this node", task.NodeID, task.Iteration)
+	}
+
+	// What `readonly:` does and does not buy on this backend, on the node's
+	// own log: the flag is enforced as far as the argv carries it, and the
+	// part it cannot carry is named rather than left to read as a sandbox.
+	for _, notice := range claudeReadonlyNotices(task) {
+		b.Logger.Warn("[%s#%d/claude-code] %s", task.NodeID, task.Iteration, notice)
 	}
 
 	opts = append(opts, claudeToolOptions(task, extraAllowedTools)...)

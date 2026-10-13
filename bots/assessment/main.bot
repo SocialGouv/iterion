@@ -422,13 +422,13 @@ schema floor_state:
 
 ## What the survey agent RETURNS. It writes nothing, and what makes that true
 ## is the TOOL SET it is given — four readers and no shell. `readonly: true` is
-## declared beside them and is honoured by the codex and pi backends; the
-## claude_code backend does not read it (`Task.Readonly` reaches
-## `codex.go`/`pi.go` only, while `claude_code.go` sets `bypassPermissions`
-## unconditionally), so a node that held a shell under that flag would hold an
-## unlocked shell on a checkout of an untrusted repository. The flag stays —
-## it is real on two of three backends — but it is not what carries this
-## property. A step that both measures and materialises would also have no
+## declared beside them and each backend honours it with the lever it has:
+## codex and pi make it a sandbox, claude_code withholds the file-writing
+## tools a node did not declare and the worktree-moving pair but has no
+## sandbox for a shell, and claw does not read it. So a node that held a shell
+## under that flag would hold an unlocked shell on a checkout of an untrusted
+## repository. The flag stays — it is also the parallel-workspace statement —
+## but it is not what carries this property. A step that both measures and materialises would also have no
 ## moment at which its output could be checked, which is why survey_write
 ## exists.
 schema survey_output:
@@ -702,9 +702,10 @@ agent survey:
   user: survey_user
   ## NO SHELL. The four readers are what this step needs — it names stacks and
   ## a perimeter, it does not run extractors, and `run_extractors` is the node
-  ## that executes anything. `readonly: true` below is honoured by codex and pi
-  ## and ignored by claude_code, so the shell is removed rather than locked:
-  ## a property carried by a flag one backend drops is not carried.
+  ## that executes anything. `readonly: true` below is a sandbox on codex and
+  ## pi; on claude_code it withholds writing tools this list does not name and
+  ## leaves a shell, so the shell is removed rather than locked: a property
+  ## carried by a flag that stops at the tool names is not carried.
   tools: [read_file, glob, grep, skill]
   skills: ["assessment-survey", "assessment-brief"]
   tool_max_steps: 120

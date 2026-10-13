@@ -467,7 +467,7 @@ candidate MUST NOT be promoted.
 
 | Marker | Guarantees | Does not guarantee |
 |---|---|---|
-| `readonly: true` | no checkout mutation | no MCP / API / external-system effect |
+| `readonly: true` | a sandbox on codex/pi; the file-writing tools withheld on claude_code | no shell bound, no MCP / API / external-system effect |
 | `isolated: true` | contract promises a private store/namespace | an OS sandbox |
 | `parallel_safe: true` | `fan_out_each` with disjoint item-keyed outputs | safety if keys overlap |
 | `await: wait_all` | convergence barrier | a unique writer |

@@ -270,12 +270,15 @@ read tools (`bash`, `read_file`, `glob`, `grep` — no
 no structured path to edit it.
 The claude reviewers declare `readonly: true`, which
 is a **scheduling** declaration — "this node mutates no workspace file", the
-promise that lets dual fan both reviewers onto one worktree. Only `pi` and
-`codex` read it as a tool boundary; on `claude_code` nothing does, so what
-bounds those nodes is their prompt and their output schema. Declaring `tools:`
-on them would bound them for real and is not free: a non-empty list installs
-`--disallowedTools`, taking `Task`/`WebFetch`/`Skill` off the node on every
-run. The single downstream `converge` step writes only the report file and
+promise that lets dual fan both reviewers onto one worktree — and a tool
+boundary, with the lever each backend has: `codex` an OS sandbox, `pi` a
+readers-only tool list, `claude_code` the withholding of the file-writing
+tools the node did not declare (here all of them: these nodes declare no
+`tools:` list) plus the worktree-moving pair. It is not a sandbox there — the
+native shell stays — so their prompt and their output schema still carry the
+rest. Declaring `tools:` on them would bound that shell too and is not free: a
+non-empty list installs `--disallowedTools`, taking
+`Task`/`WebFetch`/`Skill` off the node on every run. The single downstream `converge` step writes only the report file and
 creates board issues over MCP.
 
 ## The Anthropic pin, and the z.ai route below it
