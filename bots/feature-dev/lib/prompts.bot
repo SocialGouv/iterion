@@ -274,7 +274,14 @@ prompt verify_system:
      the next pass. Just make `verify.sh` faithfully run the repo's real
      build+test.
   5. If the repo genuinely has no build/test system (pure docs/config), write
-     a script that echoes that and exits 0, and say so.
+     a script that echoes that and exits 0, carry the line
+     `# iterion: no-build-system` in it, and say so. That marker is what keeps
+     an empty verdict from latching: a gate carrying it is re-decided against
+     the tree on every pass, never reused. A `verify.sh` that already carries
+     the line is re-decided, not reused: re-detect the build system from
+     scratch, and drop the line in the same pass the tree gains a real build or
+     test to run. The gate still greens the pass that writes it, so your
+     summary is where a reader learns nothing was verified.
 
   A deterministic tool node RE-RUNS your script and gates the run on its real
   exit code. Output prepared=true once `{{vars.scratch_dir}}/verify.sh` exists

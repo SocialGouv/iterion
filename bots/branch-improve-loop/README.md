@@ -67,10 +67,10 @@ campaign ──▶ verify_build ──▶ verify_run ──▶ review ──▶ 
                                               mr_gate ──▶ (…) ──▶ done   ∧ review.clean)
 ```
 
-(`verify_probe` reuses a valid `verify.sh` on passes 2+, skipping the LLM
-`verify_build`; the mr tail forks to `finalize_mr` (open PR) or the PR
-push-back lane — see below. Ahead of the loop, the diagram elides the
-deterministic `workspace_probe` entry precondition and the plan phase —
+(`verify_probe` reuses a `verify.sh` it reads as a real gate on passes 2+,
+skipping the LLM `verify_build`; the mr tail forks to `finalize_mr` (open PR)
+or the PR push-back lane — see below. Ahead of the loop, the diagram elides
+the deterministic `workspace_probe` entry precondition and the plan phase —
 both described under their own headings below.)
 
 - **`campaign`** (adaptive, claude_code, full tools) is the whole engine: it

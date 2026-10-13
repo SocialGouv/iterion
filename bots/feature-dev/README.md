@@ -58,9 +58,9 @@ mr_gate → forge_auth_probe → finalize_mr  when open_mr   → done
 mr_gate → done         when not open_mr
 ```
 
-(`verify_probe` reuses a valid `verify.sh` on passes 2+, skipping the LLM
-`verify_build`; `forge_auth_probe` is a ~100ms credential pre-flight before the
-`finalize_mr` agent.)
+(`verify_probe` reuses a `verify.sh` it reads as a real gate on passes 2+,
+skipping the LLM `verify_build`; `forge_auth_probe` is a ~100ms credential
+pre-flight before the `finalize_mr` agent.)
 
 **Precondition.** `workspace_probe` (a tool node, ~100ms, no LLM) is the
 entry: a launch whose `workspace_dir` is absent or not a git repository
@@ -93,8 +93,9 @@ run.
   findings→board handoff in the contract.
 - `verify_probe` + `verify_build` + `verify_run` — the stack-agnostic
   deterministic gate: `verify_probe` (tool) decides whether the existing
-  `<scratch>/verify.sh` can be reused (passes 2+) or must be regenerated; on a
-  miss `verify_build` (agent) writes it from the repo's own toolchain (see
+  `<scratch>/verify.sh` can be reused (passes 2+, and never a marked or
+  recognisably empty one) or must be regenerated; on a miss `verify_build`
+  (agent) writes it from the repo's own toolchain (see
   `skills/verify-build.md`); `verify_run` (tool) re-runs it and gates on the
   real exit code.
 - `review` — an **in-loop adversarial self-review** (adaptive claude_code,
