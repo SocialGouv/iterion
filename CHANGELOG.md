@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.262.0](https://github.com/SocialGouv/iterion/compare/v3.261.1...v3.262.0) (2026-10-13)
+
+### Features
+
+* **bots:** gitops-warden 0.2.0 — french verdicts, helm render, run link ([#2389](https://github.com/SocialGouv/iterion/issues/2389)) ([7b3c7bf](https://github.com/SocialGouv/iterion/commit/7b3c7bffbed7344783aeb36e4ab77f86d357f984))
+
+    <details><summary>why</summary>
+
+    The devops team's first two field feedbacks on the gate:
+
+    </details>
+
 ## [3.261.1](https://github.com/SocialGouv/iterion/compare/v3.261.0...v3.261.1) (2026-10-13)
 
 ### Bug Fixes
