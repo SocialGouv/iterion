@@ -1,116 +1,140 @@
-# rgaa-audit (Acci) — universal RGAA 4.1.2 accessibility auditor, read-only
+# rgaa-audit (Acci ♿) — RGAA / WCAG accessibility audit on the ultra11y engine, read-only
 
-Acci statically reviews a project's UI source (HTML, JSX/TSX, Vue, Twig, CSS)
-against the **106 RGAA 4.1.2 criteria across 13 themes** (WCAG 2.1 AA basis),
-guided by the bundled `rgaa-criteria-*` skills and — when the target uses the
-Système de Design de l'État — the DSFR MCP tools as the reference markup. Each
-applicable criterion is scored **C** (conforme) / **NC** (non conforme) / **NA**
-(non applicable), every NC is classified 🔴 blocking / 🟠 major / 🟡 minor, and
-the run produces a dated Markdown conformance report under `report_dir` plus
-(optionally) one board issue per non-conformity, labelled by severity, theme and
-criterion.
+Acci audits a project's UI source against the **RGAA 4.1.2** (or the WCAG
+2.2 AA core) with the [ultra11y](https://github.com/SocialGouv/ultra11y)
+engine and reports what the engine can stand behind: a dated French
+conformance report, a per-page grid when pages were captured, a coverage
+annex that names every layer that ran, a replayable verdict ledger and one
+board issue per non-conforming criterion. It reports and files; it never
+edits the audited code.
 
-Static analysis only: it reads source code, it never launches a browser or a DOM
-scanner. Criteria that need a rendered page are marked NA with the reason
-"requires runtime verification" rather than guessed conformant. It reports; it
-does not fix.
+The split is **who finds, who judges, who refuses**:
+
+- the **engine** finds — its static rules decide every criterion they can,
+  anchored `file:line`, reproducible without a model — and refuses: its own
+  fold rejects an unjustified verdict, an uncited conformity or an
+  ungroundable non-conformity by name, and its integrity check rejects a
+  report that cites what does not resolve;
+- **read-only agents** judge the criteria a static pass cannot decide, one
+  batch per theme, in parallel, from the evidence the engine harvested and
+  the normative brief it writes per criterion at run time — no RGAA text
+  lives in this bundle;
+- a **second reader** puts every stated non-conformity and every landed
+  conformity on trial; an optional **human gate** approves or declares
+  criteria undecidable; a **transcription judge** with no tool but the board
+  files the plan verbatim, and a deterministic node checks it did.
+
+The engine is pinned by version **and** by the sha256 of its entry file
+(`ultra11y.pin`), fingerprinted before anything of it runs and before every
+call. Credits: [CREDITS.md](CREDITS.md).
 
 ## When to use it
 
-A read-only RGAA conformance pass on a web UI codebase — pre-release review or
-recurring conformance tracking. For **fixing** accessibility issues, use Willy
-(`whole-improve-loop`) with the `rgaa` preset.
-
-Against its sibling Ally (`bots/ultra11y`), the split is **who finds the
-non-conformity**: Ally's findings come from a static engine (78
-machine-detectable checks tied to the WCAG 2.2 success criteria), reproducible
-without a model in the loop, and it has a PR diff mode. Acci's findings come from
-the **agent**, reading the UI source theme by theme against the RGAA criteria;
-its deterministic gates check that the audit happened, they do not produce the
-findings. Reach for Acci when the value is RGAA theme-by-theme reasoning over a
-DSFR UI, or for a whole-repo campaign (Acci has no diff mode); reach for Ally
-when a finding must survive without a model, or per-PR. Neither supersedes the
-other.
+A read-only conformance pass whose findings must be defensible — pre-release
+review, recurring conformance tracking, a non-regression run after fixes.
+For **fixing**, use Willy (`whole-improve-loop`) with the `rgaa` preset on
+the issues Acci files.
 
 ## How it runs
 
-Single pass — the deterministic gates are the report's integrity, so there is no
-continuation loop.
-
 ```
-inventory     TOOL, deterministic  bounded repo listing (top-level entries +
-                                   manifest/config files; vendor/build/cache
-                                   pruned, depth ≤ 4, capped at 400)
-campaign      AGENT (claude_code)  phase 0 classifies the surface (has_ui /
-                                   frameworks / uses_dsfr / ui_paths), then
-                                   audits theme by theme → candidates[],
-                                   examined_files, conformity_pct
-scan_health   TOOL, GATE           hard-fails when the rgaa-criteria-* skills
-                                   are absent, or when a UI surface exists and
-                                   the campaign examined zero files
-cap_findings  TOOL, deterministic  severity-sorted top-N overflow guard
-report_card   AGENT (claude_code)  writes <report_dir>/rgaa-<YYYY-MM-DD>.md
-                                   (incremental suffix on collision) and, when
-                                   post_to_board, one board issue per NC
-done
+prepare ─► static_audit ─► bank_static ─► render_gate ─► [render] ─► ledger_replay
+  ─► worklist ─► plan_batches ─► dispatch ⇒ adjudicate ─► write_fragment
+  ─► merge_verdicts ─► fold_probe ⟲ (re-ask of the named refusals, once)
+  ─► fold_final ─► draft_report ─► budget_gate ─► [refute ⇒ … ─► refute_apply]
+  ─► review_gate ─► [human_review] ─► final_report ─► deliver ─► [publish ─► publish_verify] ─► done
 ```
 
-`scan_health` is the anti-façade guard: a broken setup exits non-zero instead of
-reading as a clean bill of health. Both it and `cap_findings` count NC by the
-candidate's `status` field and fail safe — a finding-shaped entry (severity or
-problem present) with a missing status counts as NC, because surfacing beats
-dropping.
+- `prepare` resolves the pinned engine (`$ULTRA11Y_BIN`, the global npm
+  install, `$ULTRA11Y_HOME/<version>`, else `npm install` into the run
+  directory), refuses anything that does not carry the pinned fingerprint
+  (`ENGINE_HASH_MISMATCH` / `ENGINE_UNRESOLVED`), probes the browser and
+  writes the run's helper library.
+- `static_audit` is THE finding set; an empty scope is `EMPTY_SCOPE`, never
+  a clean audit. `bank_static` publishes it before any model runs.
+- `render` scans the page sample (`.ultra11yrc.json`) in a Playwright
+  Chromium when `rendered=auto` finds one, serving the site with
+  `serve_command` if given; `rendered=required` makes its absence a
+  resumable `RENDER_UNAVAILABLE`.
+- `ledger_replay` replays the committed ledger through the engine, which
+  re-grounds every entry; the stale ones go back to the agents.
+- `worklist` → `plan_batches` → `dispatch` (fan-out per batch) →
+  `adjudicate` (read-only agent) → `write_fragment` (item-keyed) →
+  `merge_verdicts` (one writer, later rounds win per criterion, citations
+  checked against the shown evidence) → `fold_probe` (the fold on a copy,
+  refusals named and re-asked once) → `fold_final` (the real audit folded
+  exactly once, ledger merged).
+- `draft_report` renders the draft and the trial worklist; `budget_gate`
+  skips the second reader, visibly, past `refuter_budget_share` of the cost
+  cap; `refute_apply` applies a complete trial with `--prune` (the engine's
+  own findings are never pruned) or reports it as degraded.
+- `final_report` renders the report, cross-checks its « Décidés » line and
+  RGAA rate against the document, runs the engine's integrity and
+  completeness checks, writes the coverage annex, and copies everything to
+  `report_dir` when set.
+- `deliver` builds the issue plan from the engine's own tickets (one per
+  criterion, severity-sorted, capped); `publish` files it when
+  `post_to_board` is true; `publish_verify` holds the judge's own report to
+  the plan and fails typed when a planned title is neither created nor found
+  (a self-report: a tool node has no board action to read the board with).
 
-## Configuration
+Every node that rewrites `audit-latest.json` records its hash in the run's
+`state/` directory and its own output; every later node refuses a document
+that no longer matches (`AUDIT_INTEGRITY`), and a node re-entered on a
+resume re-emits its recorded output instead of folding twice.
 
-| Var | Type | Default | Meaning |
-|---|---|---|---|
-| `workspace_dir` | string | `${PROJECT_DIR}` | the repo to audit |
-| `scope_notes` | string | `""` | free-text scope hint from the operator or dispatched issue; empty = audit the whole UI |
-| `scope_globs` | string | `""` | optional focusing globs, comma-separated and relative; empty = the whole workspace |
-| `report_dir` | string | `${PROJECT_DIR}/audits` | where the dated conformance report lands |
-| `post_to_board` | bool | `true` | `false` = write the report only, create no board issues |
-| `findings_cap` | int | `80` | keep at most this many NC as board issues (severity-sorted); the rest stay summarised in the report |
+Every refusal the bot makes is a typed `fail` node (`ENGINE_UNRESOLVED`,
+`ENGINE_HASH_MISMATCH`, `EMPTY_SCOPE`, `RENDER_UNAVAILABLE`,
+`LEDGER_INVALID`, `AUDIT_INTEGRITY`, `ADJUDICATION_INCOMPLETE`,
+`REFUTE_INCOMPLETE`, `HUMAN_REJECTED`, `REPORT_INTEGRITY_FAILED`,
+`GRID_INCOMPLETE`, `BOARD_PUBLISH_INCOMPLETE`); an engine crash stays an
+untyped, resumable error.
 
-Models and effort are env-tunable, set inline on the node `model:` fields:
-`ITERION_RGAA_MODEL_REVIEW` / `ITERION_RGAA_EFFORT_REVIEW` (default
-`claude-opus-5-5` / `high`) on `campaign`, and the `_REPORT` pair (`claude-opus-5-5`
-/ `medium`) on `report_card`. `ITERION_RGAA_MAX_DURATION` (default `2h`) tunes
-the budget, alongside `max_cost_usd: 20` and `max_tokens: 2000000`.
+## Variables that matter
 
-## Invocation
+| var | default | meaning |
+|---|---|---|
+| `standard` | `rgaa` | the RGAA 4.1.2 pack (the WCAG core report has no « Décidés » line and a different rate semantics: a follow-up) |
+| `scope_globs` / `exclude_globs` / `max_files` | whole workspace | what the engine audits |
+| `rendered` | `auto` | `off` / `auto` / `required` — the browser layer; the engine writes its captures under `.ultra11y/pages/` of the workspace (gitignore it) |
+| `serve_command` / `serve_ready_url` | — | how to serve the site for the scan |
+| `ledger_path` | `.ultra11y/verdicts/<standard>.json` | the committed ledger to replay |
+| `batch_size` / `max_reask` | 8 / 1 | adjudication batches and re-asks |
+| `refute_enabled` / `refuter_budget_share` | true / 0.6 | the second reader and its budget guard |
+| `human_review` | false | pause on a human gate before the final report |
+| `require_complete` | false | degraded layers become typed failures |
+| `post_to_board` / `board_state` / `board_epic_label` / `findings_cap` | false / inbox / — / 80 | the board transcription (the command, schedule and board invocations set `post_to_board=true`); `findings_cap` 0 files nothing |
+| `report_dir` | — | where the deliverables are copied; empty = run artefacts only |
 
-```bash
-# Whole-repo audit, report + board issues:
-iterion run bots/rgaa-audit/main.bot --var workspace_dir=$(pwd)
+Models and efforts are env dials: `ITERION_RGAA_MODEL_ADJUDICATE`,
+`ITERION_RGAA_MODEL_REFUTE`, `ITERION_RGAA_MODEL_PUBLISH`,
+`ITERION_RGAA_BACKEND_ADJUDICATE`, `ITERION_RGAA_BACKEND_REFUTE`,
+`ITERION_RGAA_EFFORT_*`, `ITERION_RGAA_MAX_DURATION`.
 
-# Focused, report only (contains side-effects — useful for a dogfood run):
-iterion run bots/rgaa-audit/main.bot \
-  --var scope_globs='src/**' \
-  --var scope_notes='audit the checkout form components' \
-  --var post_to_board=false --var report_dir=/tmp/rgaa
+## Running it
 
-# On-demand from the board / chat:  /acci <scope notes>   (alias /rgaa-audit)
+```sh
+iterion run bots/rgaa-audit --var scope_globs='src/**' --var rendered=off \
+  --var report_dir="$PWD/audits" --max-cost-usd 30
 ```
 
-Declared `invocations:` — the `acci` command (alias `rgaa-audit`, any scope,
-minimum replier role `developer`, args into `scope_notes`), a board-mode schedule
-suggesting `0 4 * * 1`, and plain board dispatch.
+`iterion validate --exec --strict --fixtures bots/testdata/rgaa-audit-dryrun-fixtures.json bots/rgaa-audit/main.bot`
+walks the whole graph without a model, a shell or a workspace.
 
-## Notable
+## Tests
 
-- **Board** — `capabilities: [board.create, board.label, board.read]`, granted on
-  `report_card`. Issues are created in state `ready` with labels
-  `severity:<blocking|major|minor>`, `theme:<n>`, `criterion:<n.n>` and
-  `source:rgaa-audit`.
-- **No `sandbox:` and no `worktree:` block** — it takes the platform default
-  sandbox and audits the workspace in place. `campaign` is `readonly: true`; the
-  only file the bot writes into the target is the report under `report_dir` (a
-  neutral repo-root directory the operator can gitignore).
-- **Backend** — `default_backend: claude_code` on both agent nodes, required so
-  the bundled skills are mirrored into `.claude/skills/` and the board MCP tools
-  are reachable.
-- **Skills** — `rgaa-audit` (workflow, C/NC/NA scoring, priority grid, report
-  format), the five `rgaa-criteria-*` splitting the 13 themes, `rgaa-dsfr` (DSFR
-  as the accessible-markup baseline) and `iterion-board`.
-- Run history and validation status: [`docs/bot-runs/rgaa-audit.md`](../../docs/bot-runs/rgaa-audit.md).
+- `task test:contract:rgaa` — the engine contract on the real pinned engine
+  (`bots/rgaa_audit_engine_contract_test.go`, read
+  [engine contracts](../../docs/agents/testing/engine-contracts.md)) and
+  the bot's own tool nodes, run as the real scripts against a planted
+  fixture site, agents replaced by fixture verdicts, with mutations.
+- `bots/rgaa_audit_engine_pin_test.go` — the pin, the bot's defaults, the
+  runner image's ARG and the lockfile held equal.
+- `task test:live:bot:rgaa-audit` — a real run on the fixture site (real
+  LLM cost).
+
+## Skills
+
+`rgaa-audit` (the playbook), `ultra11y-engine` (the engine from inside the
+bot), `adjudication-protocol`, `refutation-protocol`, `iterion-board` (the
+shared board skill).

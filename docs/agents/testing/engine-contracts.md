@@ -32,6 +32,13 @@ locally and **fail** in CI — every job that runs `./bots` installs the pin
 first — so a green CI always ran the engine. The subtests share one run
 directory and are sequential: run the whole test, not one subtest.
 
+The same target runs the bot's own tool nodes on that engine
+(`bots/rgaa_audit_bot_nodes_test.go`): every `script:` body is taken from
+the compiled IR, rendered the way the runtime renders it (each `{{ref}}` a
+JSON literal) and executed with `node` in the workflow's order, fixture
+verdicts standing in for the agents, one mutation per typed refusal. A
+node body asserted on its source text would pin a spelling.
+
 ## What the hash does and does not cover
 
 The entry-file hash covers the verdict path: `audit`, `verify`, `report`,

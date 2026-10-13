@@ -100,6 +100,28 @@ func Scenarios() []Scenario {
 			},
 		},
 	}
+	// rgaa-audit: the three LLM nodes of the v3 pipeline, hand-authored seeds
+	// frozen against their output schemas. The adjudicator and the second
+	// reader are fan-out branches whose verdicts a deterministic merge
+	// filters to their own batch (bots/rgaa_audit_bot_nodes_test.go exercises
+	// that on the real engine); the board judge transcribes a plan it
+	// cannot change. Recording them live means a whole claude_code session
+	// each over a real workspace.
+	rgaa := []Scenario{
+		{
+			Bot: "rgaa-audit", Name: "adjudicate_batch", Node: "adjudicate",
+			RequiredNonEmpty: []string{"batch_id", "verdicts"},
+		},
+		{
+			Bot: "rgaa-audit", Name: "refute_batch", Node: "refute",
+			RequiredNonEmpty: []string{"batch_id", "verdicts"},
+		},
+		{
+			Bot: "rgaa-audit", Name: "publish_plan", Node: "publish",
+			RequiredNonEmpty: []string{"created", "summary"},
+		},
+	}
+	campaigns = append(campaigns, rgaa...)
 	campaigns = append(campaigns, warden...)
 	return append(campaigns,
 		Scenario{

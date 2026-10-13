@@ -71,6 +71,25 @@ ARG CODEINDEX_VERSION=2.17.1
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g "@maxgfr/codeindex@${CODEINDEX_VERSION}"
 
+# Pre-install the ultra11y engine the rgaa-audit bot (Acci) delegates every
+# accessibility judgement to, from the COMMITTED lockfile — the same `npm ci`
+# input scripts/ultra11y-engine.sh and CI use, so the whole dependency closure
+# is the one recorded there. The bot's `prepare` node finds it under
+# ULTRA11Y_HOME/<version>, fingerprints the entry file against
+# bots/rgaa-audit/ultra11y.pin before running it, and would otherwise npm
+# install into the run directory on every pod (slow, and racing the registry).
+# The version MUST equal the pin file's: bots/rgaa_audit_engine_pin_test.go
+# holds this ARG, the pin, the lockfile and the bot's default together. A bump
+# goes through the pin file (docs/agents/testing/engine-contracts.md), never
+# here alone — so no renovate annotation on this line.
+ARG ULTRA11Y_VERSION=5.42.1
+COPY scripts/ultra11y-engine/package.json scripts/ultra11y-engine/package-lock.json /opt/iterion/ultra11y/${ULTRA11Y_VERSION}/
+RUN --mount=type=cache,target=/root/.npm \
+    cd "/opt/iterion/ultra11y/${ULTRA11Y_VERSION}" \
+ && npm ci --ignore-scripts --no-audit --no-fund \
+ && got="$(node node_modules/ultra11y/scripts/ultra11y.mjs --version | tail -1)" \
+ && test "$got" = "${ULTRA11Y_VERSION}"
+
 # gh + glab (Revi posts reviews from the runner pod) + kubectl (parity with the
 # base runner image; also used by the k8s sandbox driver if ever enabled).
 ARG GLAB_VERSION=1.102.0
@@ -116,6 +135,7 @@ RUN git config --system user.email "iterion-runner@bot.iterion.invalid" \
  && git config --system user.name "iterion-runner[bot]"
 
 ENV ITERION_BOTS_PATH=/opt/iterion/bots \
+    ULTRA11Y_HOME=/opt/iterion/ultra11y \
     PATH="/opt/iterion/llm-clis/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
 
 # Run as the devbox user (uid 1000) so Nix + devbox work (the base's Nix store is

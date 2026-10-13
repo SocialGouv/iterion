@@ -1,131 +1,65 @@
 ---
 name: rgaa-audit
-description: Méthodologie d'audit d'accessibilité RGAA 4.1.2 (106 critères, 13 thèmes, base WCAG 2.1 AA) — workflow d'audit, scoring C/NC/NA, grille de priorités 🔴/🟠/🟡 et format du rapport de conformité. Lire cette skill avant toute revue ou correction d'accessibilité, et avant de rédiger un rapport d'audit RGAA.
+description: |
+  The playbook of the rgaa-audit bot (Acci): who finds the non-conformities
+  (the ultra11y engine), who judges the criteria a static pass cannot decide
+  (you, one batch at a time), who refuses (the engine's own fold, and the
+  bot's citation check), and what a run leaves behind. Read it first; the
+  normative text of the standard is NOT here — the engine writes it per
+  criterion into the briefs you are pointed at.
 ---
 
-> Source : méthodologie réécrite depuis etalab-ia/skills (licence MIT) — référentiel officiel https://accessibilite.numerique.gouv.fr/.
+# Acci, from the inside
 
-# RGAA 4.1.2 — méthode d'audit de conformité
+## Who does what
 
-Le RGAA (Référentiel Général d'Amélioration de l'Accessibilité) est le
-référentiel d'accessibilité numérique français : **106 critères** répartis en
-**13 thématiques**, basé sur **WCAG 2.1 niveau AA**. Cette skill est la grille de
-référence ; le détail des critères vit dans les skills `rgaa-criteria-*` :
+| who | what | how it is checked |
+|---|---|---|
+| **the engine** (ultra11y, pinned by version and sha256) | runs the static rules on the whole scope, decides every criterion it can, harvests the evidence for the others, writes one normative brief per open criterion, folds the verdicts, renders the French report and the issue set | its own integrity checks (`check`), the engine contract test in iterion, the fingerprint re-verified before every call |
+| **the rendered layer** (optional) | scans the page sample in a real browser and merges what only a rendered page can show | reported as ok / degraded / skipped in the coverage annex |
+| **you**, one batch of criteria | rule on the criteria the engine left « à évaluer », from the evidence it harvested and the source you open | the engine's fold refuses an unjustified verdict, an uncited conformity, an ungroundable non-conformity or an unknown word, BY NAME; the bot also refuses a citation outside the evidence you were shown |
+| **the second reader** | puts every stated non-conformity and every landed conformity on trial | an incomplete trial is never applied; the engine's own findings are never pruned on a reader's say-so |
+| **the operator** (optional gate) | approves, or declares criteria undecidable | recorded with their identity in the engine's `--allow-undecided` contract |
+| **the board judge** | transcribes the issue plan, verbatim, de-duplicated by title | a deterministic node holds the judge's own report to the plan (every planned title created or found, nothing failed) — a self-report, not a board read |
 
-- `rgaa-criteria-images-couleurs` — thèmes 1-3 (Images, Cadres, Couleurs)
-- `rgaa-criteria-multimedia-tableaux-liens-scripts` — thèmes 4-7 (Multimédia, Tableaux, Liens, Scripts)
-- `rgaa-criteria-structure-presentation` — thèmes 8-10 (Éléments obligatoires, Structuration, Présentation)
-- `rgaa-criteria-formulaires` — thème 11 (Formulaires)
-- `rgaa-criteria-navigation-consultation` — thèmes 12-13 (Navigation, Consultation)
+Nothing in this bundle restates a criterion. When you need the text of a
+test, read the brief the engine wrote for that criterion.
 
-Quand le code cible utilise le Système de Design de l'État (DSFR), lire aussi
-`rgaa-dsfr` pour exploiter le baseline d'accessibilité des composants officiels.
+## What a batch is
 
-## Périmètre de cette analyse
+The open criteria are grouped by theme (the number before the dot) into
+batches of a few criteria each, and every batch is ruled on by its own agent,
+in parallel. You see only your batch: the ids, where the evidence and the
+briefs are, the engine's `contract`, and — on a re-ask — the reason the
+engine refused the previous verdict on each id. Verdicts for ids outside your
+batch are dropped.
 
-Audit **statique** : on évalue le **code source** (HTML, JSX/TSX, Vue, Twig,
-CSS). On ne lance pas de navigateur ni de scan DOM runtime. Les critères qui
-exigent un rendu (contraste sur image, audiodescription, sous-titres réellement
-synchronisés) sont audités sur la base du code (présence des attributs, des
-`<track>`, des valeurs de couleur en CSS) et signalés « à vérifier visuellement »
-quand le code seul ne tranche pas — ne jamais conclure « conforme » sur un point
-non vérifiable statiquement : statuer **NA** justifié ou laisser une note.
+## What happens to your verdicts
 
-## Workflow d'audit
+1. They are written to a fragment file keyed by your batch (never merged by
+   arrival order).
+2. The merge keeps, per criterion, the latest round's verdict, and sends back
+   any C or NA whose citations are not among the evidence anchors of that
+   criterion.
+3. The fold is PROBED on a copy of the audit: every refusal the engine names
+   becomes a re-ask, once. Criteria the engine marks "no subject" and that
+   are still open after the probe are re-asked too, because a `manual` there
+   leaves the report inconsistent.
+4. The real audit is folded exactly once. What is still refused stays
+   « à évaluer » and is named in the annex.
 
-1. **Analyser le code fourni** (HTML, JSX/TSX, Vue, CSS, templates).
-2. **Parcourir les 13 thèmes RGAA** en consultant les skills `rgaa-criteria-*`.
-3. **Pour chaque critère applicable, attribuer un statut :**
-   - **C** — Conforme : critère respecté.
-   - **NC** — Non conforme : critère violé. Identifier l'élément précis
-     (`file:line` + extrait de code) et le problème.
-   - **NA** — Non applicable : critère sans objet pour ce contenu (justifier en
-     une ligne).
-4. **Classer chaque non-conformité** par priorité (grille ci-dessous).
-5. **Produire le rapport** au format ci-dessous (pour un run d'audit) OU appliquer
-   la correction la plus petite qui rend conforme (pour un run d'amélioration).
+## What a run leaves behind
 
-## Grille de priorités
+Everything intermediate lives in the run directory, outside the audited
+repository. The deliverables are the dated French report, the per-page grid
+when pages were captured, the coverage annex (`<standard>-<date>-couverture.md`),
+the verdict ledger (replayable on the next run) and the issue plan. The
+audited tree is never modified.
 
-| Priorité | Définition | Exemples |
-|----------|------------|----------|
-| 🔴 **Bloquant** | Bloque l'accès au contenu ou à la fonctionnalité pour un utilisateur de technologie d'assistance | Image informative sans `alt`, champ sans label, lien vide, piège au clavier, `<div onClick>` non focusable |
-| 🟠 **Majeur** | Impact fort mais contournable par certaines AT | Contraste insuffisant, focus non visible, hiérarchie de titres cassée, lien non explicite, message de statut sans `aria-live` |
-| 🟡 **Mineur** | Gêne légère sans blocage | `autocomplete` manquant, `<caption>` de tableau absent, nouvelle fenêtre non signalée, image-texte au lieu de texte stylé |
+## The rates, so you do not quote the wrong one
 
-En contexte d'**amélioration** (boucle de fix), une non-conformité 🔴 ou 🟠
-concrète et localisée EST un blocker : il faut appliquer la correction, pas la
-différer. Réserver le pushback aux points hors-périmètre UI, factuellement faux,
-de pur goût, ou déjà traités.
-
-## Format du rapport de conformité (run d'audit)
-
-```markdown
-## Audit RGAA 4.1.2 — Rapport de conformité
-
-**Date :** AAAA-MM-JJ
-**Périmètre audité :** [description du code / pages / composants]
-**Résultat global :** X% conforme
-(N critères applicables — C conformes, NC non conformes, NA non applicables)
-
----
-
-### Tableau de synthèse
-
-| Thème | C | NC | NA |
-|-------|---|----|----|
-| 1. Images | | | |
-| 2. Cadres | | | |
-| 3. Couleurs | | | |
-| 4. Multimédia | | | |
-| 5. Tableaux | | | |
-| 6. Liens | | | |
-| 7. Scripts | | | |
-| 8. Éléments obligatoires | | | |
-| 9. Structuration | | | |
-| 10. Présentation | | | |
-| 11. Formulaires | | | |
-| 12. Navigation | | | |
-| 13. Consultation | | | |
-| **Total** | | | |
-
----
-
-### Non-conformités détectées
-
-**[NC] {ID} — {Intitulé du critère}**
-- **Élément concerné :** `file:line` + extrait `<code>`
-- **Problème :** description précise de la violation
-- **Correction :** action concrète à mener (le plus petit changement conforme)
-- **Priorité :** 🔴 Bloquant / 🟠 Majeur / 🟡 Mineur
-
----
-
-### Critères conformes
-
-{ID1}, {ID2}, {ID3}... (liste compacte)
-
-### Critères non applicables
-
-- **{ID}** — {justification courte}
-```
-
-## Calcul du taux de conformité
-
-`% conforme = C / (C + NC) × 100`, calculé sur les **critères applicables**
-seulement (les NA sont exclus du dénominateur). Arrondir à l'entier.
-
-## Export du rapport (run d'audit)
-
-Après avoir produit le rapport :
-
-1. Créer le dossier `audits/` à la racine du périmètre s'il n'existe pas.
-2. Écrire le rapport complet dans `audits/rgaa-AAAA-MM-JJ.md` (date du jour, ISO).
-3. Si un fichier de même nom existe déjà, suffixer : `rgaa-AAAA-MM-JJ-2.md`.
-
-Ne jamais gonfler le score ni masquer des non-conformités pour « passer » : un
-rapport honnête avec des NC documentées vaut mieux qu'une façade conforme. Si le
-périmètre est trop large pour un audit exhaustif, le dire explicitement (bannière
-de couverture partielle) plutôt que d'échantillonner en silence.
-
-<!-- TODO(skill-dup): this RGAA skill is also shipped in bots/whole-improve-loop/skills/rgaa-audit.md — iterion has no skill-sharing primitive yet, keep the copies in sync. -->
+- the **RGAA conformance rate** printed by the report: validated criteria
+  over validated + non-conforming + still to assess, NA excluded — the
+  number an auditor quotes, provisional while anything is still to assess;
+- the **automatic pass rate**: what the engine decided alone, no agent;
+- the **core (WCAG) rate** echoed by the engine's JSON outputs.

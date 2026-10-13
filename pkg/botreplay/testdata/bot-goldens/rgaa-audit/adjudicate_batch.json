@@ -1,0 +1,31 @@
+{
+  "_note": "Hand-authored seed fixture — the adjudicator is one fan-out branch of a claude_code session over a real workspace; recording it live costs a whole run. Shape frozen against adjudicate_output and the engine contract (C with citations drawn from the item's own evidence, manual with one of the two reasons). Regenerate by hand ONLY if adjudicate_output changes.",
+  "bot": "rgaa-audit",
+  "scenario": "adjudicate_batch",
+  "node": "adjudicate",
+  "backend": "claude_code",
+  "model": "claude-opus-5-5",
+  "recorded_at": "2026-10-13T00:00:00Z",
+  "vars": {},
+  "input": {
+    "batch_id": "r0-b01",
+    "round": 0,
+    "theme": "1",
+    "ids": ["1.1", "1.2"],
+    "items_dir": "/scratch/rgaa-audit/run/items",
+    "briefs_dir": "/scratch/rgaa-audit/run/adjudicate",
+    "contract": {"verdicts": ["C", "NC", "NA", "manual"], "manualReasons": ["needs-rendered-dom", "undecidable"]},
+    "prior_issues": {},
+    "workspace_dir": "/ws",
+    "standard": "rgaa",
+    "scope_notes": ""
+  },
+  "output": {
+    "batch_id": "r0-b01",
+    "verdicts": [
+      {"criteriaId": "1.1", "verdict": "NC", "justification": "Le logo de l'en-tête n'a aucune alternative textuelle alors qu'il porte l'identité du site.", "findings": [{"file": "index.html", "line": 9, "message": "Image porteuse d'information sans alternative textuelle.", "normativeRef": "1.1"}]},
+      {"criteriaId": "1.2", "verdict": "manual", "reason": "needs-rendered-dom", "justification": "Le caractère décoratif du pictogramme SVG dépend de son rendu dans la page."}
+    ],
+    "notes": "Deux critères du thème Images ; le second attend la couche rendue."
+  }
+}

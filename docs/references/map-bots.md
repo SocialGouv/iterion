@@ -36,7 +36,7 @@ The bundles under `bots/`, then the skills they carry.
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.1.5 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.9.13 |
-| `rgaa-audit` | ♿ Acci | Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit agent over deterministic gates. | 2.0.3 |
+| `rgaa-audit` | ♿ Acci | RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y engine. | 3.0.0 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 0.1.5 |
 | `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 0.1.9 |
 | `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 0.3.3 |
@@ -165,14 +165,11 @@ The pair a model sees before it decides to open the file.
 | `product-docs` | `ton-et-style` | Default tone and style rules for published functional pages — person, tense, sentence shape, the sourced-or-[à confirmer]… |
 | `revi-converse` | `forge-reply` | How to POST a reply note in an EXISTING pull-request (merge-request on GitLab) discussion thread on GitHub, GitLab, or… |
 | `review-pr` | `ticket-context` | How to obtain the ticket(s) a PR claims to deliver — from an external tracker (Jira Cloud/DC) or, with no configuration, from… |
+| `rgaa-audit` | `adjudication-protocol` | How to rule on one batch of criteria the engine could not decide: reading a brief and an evidence file, the four verdicts and… |
 | `rgaa-audit` | `iterion-board` | How to write to the iterion native kanban board from inside a `.bot` workflow. |
-| `rgaa-audit` | `rgaa-audit` | Méthodologie d'audit d'accessibilité RGAA 4.1.2 (106 critères, 13 thèmes, base WCAG 2.1 AA) — workflow d'audit, scoring… |
-| `rgaa-audit` | `rgaa-criteria-formulaires` | Critères RGAA thème 11 (Formulaires) : étiquettes de champs, regroupements fieldset/legend, intitulés de boutons, gestion des… |
-| `rgaa-audit` | `rgaa-criteria-images-couleurs` | Critères RGAA thèmes 1-3 (Images, Cadres, Couleurs) : alternatives textuelles d'images, titres d'iframe, information par la… |
-| `rgaa-audit` | `rgaa-criteria-multimedia-tableaux-liens-scripts` | Critères RGAA thèmes 4-7 (Multimédia, Tableaux, Liens, Scripts) : sous-titres/transcriptions vidéo, en-têtes de tableaux,… |
-| `rgaa-audit` | `rgaa-criteria-navigation-consultation` | Critères RGAA thèmes 12-13 (Navigation, Consultation) : liens d'évitement, plan du site, ordre de tabulation, focus,… |
-| `rgaa-audit` | `rgaa-criteria-structure-presentation` | Critères RGAA thèmes 8-10 (Éléments obligatoires, Structuration, Présentation) : doctype/lang, titre de page, hiérarchie de… |
-| `rgaa-audit` | `rgaa-dsfr` | Exploiter le Système de Design de l'État (DSFR) comme baseline d'accessibilité RGAA via les outils MCP DSFR. |
+| `rgaa-audit` | `refutation-protocol` | The second reader's protocol: a draft report's claims — every stated non-conformity and every conformity an agent landed —… |
+| `rgaa-audit` | `rgaa-audit` | The playbook of the rgaa-audit bot (Acci): who finds the non-conformities (the ultra11y engine), who judges the criteria a static… |
+| `rgaa-audit` | `ultra11y-engine` | The ultra11y engine as this bot uses it: what it decided before you were started, what it hands you (evidence files, normative… |
 | `sec-audit-deps` | `iterion-board` | How to write to the iterion native kanban board from inside a `.bot` workflow. |
 | `sec-audit-deps` | `lang-generic` | Language-agnostic supply-chain heuristics for sec-audit-deps. |
 | `sec-audit-deps` | `lang-go` | Go modules heuristic reference for sec-audit-deps. |

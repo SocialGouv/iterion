@@ -1,0 +1,25 @@
+{
+  "_note": "Hand-authored seed fixture — the board judge holds no tool but the capability-gated board MCP tools and transcribes the plan verbatim, de-duplicated by title. Shape frozen against publish_output; publish_verify then holds created ∪ existing to the plan. Regenerate by hand ONLY if publish_output changes.",
+  "bot": "rgaa-audit",
+  "scenario": "publish_plan",
+  "node": "publish",
+  "backend": "claude_code",
+  "model": "claude-opus-5-5",
+  "recorded_at": "2026-10-13T00:00:00Z",
+  "vars": {},
+  "input": {
+    "issues": [
+      {"title": "[a11y] RGAA 2.1 — Chaque cadre a-t-il un titre de cadre ?", "body": "**Critère** : 2.1 …", "labels": ["accessibility", "rgaa", "bloquant", "source:rgaa-audit", "criterion:2.1"], "state": "inbox", "severity": "bloquant", "advisory": false, "criteriaId": "2.1", "occurrences": 1},
+      {"title": "[a11y] RGAA 6.2 — Dans chaque page web, chaque lien a-t-il un intitulé ?", "body": "**Critère** : 6.2 …", "labels": ["accessibility", "rgaa", "bloquant", "source:rgaa-audit", "criterion:6.2"], "state": "inbox", "severity": "bloquant", "advisory": false, "criteriaId": "6.2", "occurrences": 1}
+    ],
+    "total": 2,
+    "capped": 0,
+    "state": "inbox"
+  },
+  "output": {
+    "created": ["[a11y] RGAA 2.1 — Chaque cadre a-t-il un titre de cadre ?"],
+    "existing": ["[a11y] RGAA 6.2 — Dans chaque page web, chaque lien a-t-il un intitulé ?"],
+    "failed": [],
+    "summary": "1 issue créée, 1 déjà présente sur le board (même titre), 0 échec."
+  }
+}

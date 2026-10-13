@@ -26,6 +26,12 @@ e2e/
 examples/
 charts/
 scripts/
+# The pinned ultra11y engine lockfile: Dockerfile.runner-devbox installs the
+# rgaa-audit bot's engine from it (npm ci), so it is the one scripts/ entry
+# the runner image needs.
+!scripts/ultra11y-engine/
+!scripts/ultra11y-engine/package.json
+!scripts/ultra11y-engine/package-lock.json
 tooling/
 docs/
 .devcontainer/
