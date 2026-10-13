@@ -1,0 +1,30 @@
+{
+  "_note": "Hand-authored seed fixture — the second reader is one fan-out branch over the draft report's claims. Shape frozen against refute_output and the engine's trial vocabulary (supported | partial | refuted | unsupported). Regenerate by hand ONLY if refute_output changes.",
+  "bot": "rgaa-audit",
+  "scenario": "refute_batch",
+  "node": "refute",
+  "backend": "claude_code",
+  "model": "claude-opus-5-5",
+  "recorded_at": "2026-10-13T00:00:00Z",
+  "vars": {},
+  "input": {
+    "batch_id": "r0-c01",
+    "round": 0,
+    "items": [
+      {"n": 1, "criteriaId": "2.1", "file": "index.html", "line": 23, "selector": "iframe", "claim": "`<iframe>` sans attribut title — le cadre n'a pas de titre.", "kind": "nc", "citations": []},
+      {"n": 7, "criteriaId": "6.1", "file": "index.html", "line": 12, "selector": "", "claim": "Conforme sur l'évidence citée.", "kind": "c", "citations": [{"file": "index.html", "line": 12, "snippet": "<a href=\"/contact\">Nous contacter</a>"}]}
+    ],
+    "draft_path": "/scratch/rgaa-audit/run/draft/rgaa-2026-10-13.md",
+    "briefs_dir": "/scratch/rgaa-audit/run/adjudicate",
+    "workspace_dir": "/ws",
+    "standard": "rgaa",
+    "scope_notes": ""
+  },
+  "output": {
+    "batch_id": "r0-c01",
+    "verdicts": [
+      {"n": 1, "verdict": "supported", "note": "L'iframe de la ligne 23 n'a ni title ni aria-label."},
+      {"n": 7, "verdict": "supported", "note": "Le lien porte un intitulé explicite entre les balises."}
+    ]
+  }
+}

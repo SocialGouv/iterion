@@ -515,13 +515,15 @@ func rgaaCountDoc(doc packAuditDoc) rgaaDocCounts {
 }
 
 // rgaaRate is the RGAA conformance rate the French report prints: validated
-// ÷ (validated + NC + à évaluer), NA excluded from both sides, rounded.
+// ÷ (validated + NC + à évaluer), NA excluded from both sides, rounded — in
+// the engine's own order of operations, (v / a) * 100: `100 * v / a` rounds
+// the other way on splits such as 23/40 (57.49999… against 57.5).
 func rgaaRate(c rgaaDocCounts) int {
 	den := c.Conformes + c.NC + c.AEvaluer
 	if den == 0 {
-		return 0
+		return -1
 	}
-	return int(math.Round(100 * float64(c.Conformes) / float64(den)))
+	return int(math.Round((float64(c.Conformes) / float64(den)) * 100))
 }
 
 var (

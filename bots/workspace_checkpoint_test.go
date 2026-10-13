@@ -12,6 +12,7 @@ import (
 // covers it too.
 var readOnlyBots = []string{
 	"review-pr",
+	"rgaa-audit",
 	"revi-converse",
 	"sec-audit-source",
 	"sec-audit-deps",

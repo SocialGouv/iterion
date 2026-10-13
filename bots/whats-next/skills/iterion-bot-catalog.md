@@ -653,33 +653,37 @@ the demand — per-ticket verdicts in the review, gaps as
 
 ### `rgaa-audit` — Acci
 
-Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit
-agent over deterministic gates. Statically reviews a project's UI
-source (HTML, JSX/TSX, Vue, Twig, CSS) against the 106 RGAA criteria
-across 13 themes (WCAG 2.1 AA basis), guided by the bundled
-rgaa-criteria-* skills and — when the target uses the Système de
-Design de l'État — the DSFR MCP tools. Scores each applicable
-criterion C / NC / NA, classifies non-conformities by priority
-(🔴 Bloquant / 🟠 Majeur / 🟡 Mineur), exports a dated Markdown
-conformance report under `audits/` and (optionally) posts one board
-issue per non-conformity, labelled by severity + theme + criterion.
+RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y
+engine. The engine's static rules produce the findings — anchored
+file:line, one per criterion, reproducible without a model — and hand the
+criteria a static pass cannot decide to read-only agents, one batch per
+theme, in parallel. The engine's own fold refuses an unjustified verdict,
+an uncited conformity or an ungroundable non-conformity by name; the
+refusals are re-asked once, then the real audit is folded exactly once. A
+second reader puts every stated non-conformity and every landed conformity
+on trial; a human gate is one var away. The run writes the dated French
+report, the per-page grid when pages were captured, a coverage annex that
+names every layer (static, rendered, ledger, adjudication, refutation,
+human review, report integrity) as ok, degraded or skipped, and the issue
+plan — one board issue per criterion, severity-sorted and capped, filed
+verbatim by a transcription judge with no other tool.
 
-Static analysis only: it reads source code, it does not launch a
-browser or run a DOM scanner. A deterministic scan_health gate
-hard-fails the run if the RGAA criteria skills are not available or the
-review examined no files while a UI surface exists — so a broken setup
-cannot masquerade as a clean bill of health.
+The engine is pinned by version AND by the sha256 of its entry file,
+fingerprinted before anything of it runs and before every call. A
+committed verdict ledger is replayed, never believed: the engine
+re-grounds every entry and the stale ones go back to the agents.
 
 - **Use when**:
-  Use for a READ-ONLY accessibility audit of a web UI codebase: produce
-  an RGAA conformance report and surface non-conformities (missing alt
-  text, unlabelled fields, low contrast, keyboard traps, broken heading
-  hierarchy, missing ARIA status messages). Emits a report + board
-  findings; does not fix. Pre-release accessibility review or recurring
-  conformance tracking. For FIXING accessibility issues, use Willy
-  (whole-improve-loop) with the rgaa preset.
+  Use for a READ-ONLY accessibility conformance pass whose findings must be
+  defensible: a dated RGAA (or WCAG) report with a conformance rate the
+  engine can stand behind, board issues per criterion, and a ledger that
+  makes the next run cheaper. Pre-release review, recurring conformance
+  tracking, or a non-regression run after fixes. It reports and files; it
+  does not fix — for FIXING, use Willy (whole-improve-loop) with the rgaa
+  preset on the issues this bot files.
+- **Triggers**: rgaa, wcag, accessibilité, accessibility, a11y, ultra11y
 - **Tags**: a11y, read-only
-- **Vars**: `findings_cap` (int), `post_to_board` (bool), `report_dir` (string), `scope_globs` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Vars**: `batch_size` (int), `board_epic_label` (string), `board_state` (string), `engine_sha256` (string), `engine_size` (int), `engine_version` (string), `exclude_globs` (string), `findings_cap` (int), `force_jsx` (bool), `html_report` (bool), `human_review` (bool), `ledger_path` (string), `max_files` (int), `max_reask` (int), `post_to_board` (bool), `refute_batch_size` (int), `refute_enabled` (bool), `refuter_budget_share` (float), `rendered` (string), `report_dir` (string), `require_complete` (bool), `run_dir` (string), `scope_globs` (string), `scope_notes` (string), `serve_command` (string), `serve_ready_url` (string), `serve_timeout_seconds` (int), `standard` (string), `undecidable_path` (string), `workspace_dir` (string)
 - **Capabilities**: board.create, board.label, board.read
 - **Path**: `bots/rgaa-audit/main.bot`
 
