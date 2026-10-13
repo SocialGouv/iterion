@@ -381,9 +381,17 @@ func frontmatterNotices(path string, f *ast.File, carries bool) []string {
 		why := "the writer wrote none"
 		switch {
 		case !block.Closed:
-			why = "the frontmatter block is not closed (no second `## ---`)"
+			// Both spellings of the fence, since the block carries only the
+			// comment text the two share (`---`): a notice naming `## ---`
+			// alone sends the author of a `# ---` head looking for a line
+			// their file does not hold.
+			why = "the frontmatter block is not closed (no second `# ---`/`## ---` line)"
 		case err != nil:
-			why = "the frontmatter is not YAML the catalog reader reads (" + strings.Join(strings.Fields(err.Error()), " ") + ")"
+			// The reading's own words, and the spelling that avoids them
+			// where the author document's table answers that message:
+			// a frontmatter is YAML the same author writes.
+			read := strings.Join(strings.Fields(err.Error()), " ")
+			why = "the frontmatter is not YAML the catalog reader reads" + author.YAMLBlockLineNote(read, block.Lines) + " (" + read + author.YAMLRemedy(read) + ")"
 		case ident.Empty():
 			why = "the frontmatter carries none of the four keys of `catalog:` (" + strings.Join(workflowfile.FrontmatterKeys, ", ") + ")"
 		}
