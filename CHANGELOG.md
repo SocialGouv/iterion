@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.262.1](https://github.com/SocialGouv/iterion/compare/v3.262.0...v3.262.1) (2026-10-13)
+
+### Bug Fixes
+
+* **board:** the forge issue sync pages its window, holds its mark on an incomplete read, and sweeps on one replica ([#2402](https://github.com/SocialGouv/iterion/issues/2402)) ([e171c1f](https://github.com/SocialGouv/iterion/commit/e171c1f1d9c125543e5f56b80f79631183267f9c)), closes [#2004](https://github.com/SocialGouv/iterion/issues/2004)
+
+    <details><summary>why</summary>
+
+    The forge→board issue sync read ONE page of 100 and advanced its high-water mark whatever happened. `since` is the only way back to an issue the sync did not see, so an issue whose update fell inside a window the mark jumped over — a rate-limit window, any list failure, or simply more than 100 updates in one five-minute window — was never offered again by anything, while the endpoint answered `{"synced":100}`. Nothing in the logs or on the board said an issue was missing: the loss was silent,…
+
+    </details>
+* **bots:** verify_probe refuses to reuse the empty gate its author declared ([#2403](https://github.com/SocialGouv/iterion/issues/2403)) ([116120b](https://github.com/SocialGouv/iterion/commit/116120b35e911c7f58677d6b7dff27a5b581889b)), closes [#1707](https://github.com/SocialGouv/iterion/issues/1707), references [#1585](https://github.com/SocialGouv/iterion/issues/1585) [#1598](https://github.com/SocialGouv/iterion/issues/1598)
+
+    <details><summary>why</summary>
+
+    The reuse pre-check decided on shape alone (iteration > 0, non-empty file, `sh -n`), so the escape hatch a repo with genuinely nothing to build is told to write — a verify.sh that echoes that fact and exits 0 — became the run's standing verdict for every later pass: verify_run reported passed: true, skipped: false against a tree that may not compile, and skipped: false left no downstream reader, including the unattended-merge decision, able to tell it from a real pass.
+
+    </details>
+
 ## [3.262.0](https://github.com/SocialGouv/iterion/compare/v3.261.1...v3.262.0) (2026-10-13)
 
 ### Features
