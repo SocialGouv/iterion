@@ -20,13 +20,13 @@ var goTestCommand = regexp.MustCompile(`\bgo test\b`)
 // -count=1 turns the test cache off for the run, whatever GOCACHE the job
 // restored.
 func TestEveryGoTestInTheWorkflowSkipsTheTestCache(t *testing.T) {
-	src, err := os.ReadFile(workflowPath)
+	src, err := os.ReadFile(workflowPaths[0])
 	if err != nil {
-		t.Fatalf("read %s: %v", workflowPath, err)
+		t.Fatalf("read %s: %v", workflowPaths[0], err)
 	}
 	var wf workflowSteps
 	if err := yaml.Unmarshal(src, &wf); err != nil {
-		t.Fatalf("parse %s: %v", workflowPath, err)
+		t.Fatalf("parse %s: %v", workflowPaths[0], err)
 	}
 	found := 0
 	for job, j := range wf.Jobs {
@@ -43,7 +43,7 @@ func TestEveryGoTestInTheWorkflowSkipsTheTestCache(t *testing.T) {
 		}
 	}
 	if found < 5 {
-		t.Fatalf("found %d `go test` commands in %s — the workflow no longer has the shape this guard reads", found, workflowPath)
+		t.Fatalf("found %d `go test` commands in %s — the workflow no longer has the shape this guard reads", found, workflowPaths[0])
 	}
 }
 
