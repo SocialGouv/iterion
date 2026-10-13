@@ -44,6 +44,14 @@ type Corpus struct {
 	// It belongs to neither side of the boundary and is stated rather
 	// than dropped.
 	IdleTokens int `json:"idle_tokens"`
+	// The within-node split (#1481), over the MUTATING nodes: the spend
+	// their turns recorded before the node's first mutating call
+	// (orientation) and from it on (work). MutatingSplitKnownNodes counts
+	// the mutating nodes whose turns carried usage at all — the split's
+	// coverage.
+	SplitBeforeTokens       int `json:"split_before_tokens"`
+	SplitAfterTokens        int `json:"split_after_tokens"`
+	MutatingSplitKnownNodes int `json:"mutating_split_known_nodes"`
 	// StartedNotFinished counts calls that opened and never completed,
 	// across the corpus. Excluded from every other count.
 	StartedNotFinished int `json:"started_not_finished"`
@@ -130,6 +138,11 @@ func Aggregate(profiles []*RunProfile) Corpus {
 					c.MutatingTokens += n.Tokens
 					c.MutatingNodesWithTokens++
 				}
+				if n.TokensSplitKnown {
+					c.SplitBeforeTokens += n.TokensBeforeMutation
+					c.SplitAfterTokens += n.TokensAfterMutation
+					c.MutatingSplitKnownNodes++
+				}
 			case n.Calls > 0:
 				c.PureDiscoveryNodes++
 				if n.TokensKnown {
@@ -206,10 +219,21 @@ func RenderMarkdown(c Corpus, profiles []*RunProfile, opts RenderOptions) string
 	fmt.Fprintf(&b, "| Nodes with no recorded token spend | %d of %d |\n", c.NodesWithoutTokens, c.Nodes)
 	fmt.Fprintf(&b, "| Calls that opened and never completed | %d (excluded from every count below) |\n", c.StartedNotFinished)
 	b.WriteString("\n")
-	b.WriteString("The intra-node split between orientation and work is **not** " +
-		"reported by either backend path: usage is recorded once per node, at node " +
-		"end. So tokens are attributed only where a node never mutated anything — " +
-		"there the whole spend is orientation, with nothing imputed.\n\n")
+	// The within-node split (#1481): turn-granular, mutating nodes only.
+	fmt.Fprintf(&b, "## Within-node split (mutating nodes, turn-granular)\n\n")
+	if c.MutatingSplitKnownNodes > 0 {
+		fmt.Fprintf(&b, "| Phase | Tokens |\n|---|---:|\n")
+		fmt.Fprintf(&b, "| Orientation (before the node's first write) | %d |\n", c.SplitBeforeTokens)
+		fmt.Fprintf(&b, "| Work (the first write's turn and after) | %d |\n", c.SplitAfterTokens)
+		share := 0.0
+		if total := c.SplitBeforeTokens + c.SplitAfterTokens; total > 0 {
+			share = 100 * float64(c.SplitBeforeTokens) / float64(total)
+		}
+		fmt.Fprintf(&b, "\nOrientation is %.0f%% of the split spend across %d mutating nodes with recorded turns. A turn mixing reads and a write counts whole to work — turn granularity is the finest the checkpoints support.\n", share, c.MutatingSplitKnownNodes)
+	} else {
+		b.WriteString("No mutating node recorded turn usage: the split has nothing to attribute.\n")
+	}
+	b.WriteString("\n")
 
 	b.WriteString("## Tool calls\n\n")
 	b.WriteString("| Class | All calls | Before the node's first write |\n|---|---:|---:|\n")

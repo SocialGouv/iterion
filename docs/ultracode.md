@@ -33,7 +33,20 @@ When a node declares `reasoning_effort: ultracode`, iterion:
    backend's to state.
 3. **Makes the subagent tool available.** On the `claw` backend, the `agent`
    subagent tool is added to the node's allowlist when the node restricts its
-   tools (an unrestricted set already exposes the claw builtins). The
+   tools (an unrestricted set already exposes the claw builtins) — but claw
+   **cannot serve it**: a child conversation needs a host-wired subagent
+   runner, iterion wires none, and the call returns the typed refusal
+   `backend "claw" cannot serve the agent tool (subagents)` naming
+   `claude_code`, whose native `Agent` tool serves it, as the way out
+   (compile-time warning on a declared `agent`:
+   C159; real wiring tracked in
+   [#1940](https://github.com/SocialGouv/iterion/issues/1940)). So an
+   ultracode claw node orchestrates **within itself** — the prerogative to
+   decompose the work stands, the delegation does not, and the `## Workflow
+   Orchestration` grant says so where it grants it: a refused `agent` call
+   is final, so the model
+   keeps the decomposition and runs the parts in its own thread instead of
+   retrying. The
    `claude_code` backend orchestrates through its native `Agent` tool, and
    every subagent runs in the **foreground**: each spawn sets
    `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (unless the operator asks for

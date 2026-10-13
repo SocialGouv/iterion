@@ -88,7 +88,10 @@ Three facts bound any cache design:
   test binaries on 8 local CPUs, ~140 s vs ~20 s scaled to a pod), but `race`
   — cold, and sharing no action ID with `test` — is the queue's floor at
   13-17 minutes: until `race` is sharded, no lever on `test` alone shortens
-  the cycle by more than that gap. Done right it needs, each of them
+  the cycle by more than that gap. (RESOLVED 2026-10-05: `race` is sharded —
+  the full suite still runs under the detector, on three pods via
+  scripts/ci/testshards — and the mega `test` job is split into
+  test-unit/test-e2e/studio legs behind a required `test` aggregator.) Done right it needs, each of them
   load-bearing:
   - every entry's mtime set in the future when the layer is sealed —
     otherwise Go trims the baked entries after ~5 days and copies up those it

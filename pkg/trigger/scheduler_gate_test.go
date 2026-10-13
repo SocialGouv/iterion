@@ -44,6 +44,16 @@ func minuteSub(id string) Subscription {
 	}
 }
 
+// scrubHome points HOME at an empty dir so the guard's `sh -lc` login
+// shell (pkg/schedgate) reads no user rc files: a dev machine's
+// ~/.profile (pyenv init, direnv hooks, …) otherwise pollutes the
+// guard's stderr and contends on host tool locks under full-suite
+// parallelism. Production keeps the operator's env.
+func scrubHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+}
+
 func TestScheduler_OverlapGateSkipsAndAudits(t *testing.T) {
 	st := NewMemorySubscriptionStore()
 	_ = st.Create(context.Background(), minuteSub("sub1"))
@@ -109,6 +119,7 @@ func TestScheduler_SourceRefStampedWithoutGate(t *testing.T) {
 }
 
 func TestScheduler_GuardMergesStdoutIntoVars(t *testing.T) {
+	scrubHome(t)
 	st := NewMemorySubscriptionStore()
 	sub := minuteSub("sub4")
 	sub.Guard = "echo hi"
@@ -128,6 +139,7 @@ func TestScheduler_GuardMergesStdoutIntoVars(t *testing.T) {
 }
 
 func TestScheduler_GuardBlockedSkipsLaunch(t *testing.T) {
+	scrubHome(t)
 	st := NewMemorySubscriptionStore()
 	sub := minuteSub("sub5")
 	sub.Guard = "exit 4"

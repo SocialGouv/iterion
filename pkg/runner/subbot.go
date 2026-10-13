@@ -270,16 +270,21 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			childLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 		}
 
-		childExec, childUsage, err := r.buildExecutor(ctx, &child, childWf, childLogger, nil)
+		// The child works in the parent's effective workdir when the parent
+		// passed one, else the parent's own. Resolved before the executor so
+		// the child's fallback screen probes the directory its engine gets
+		// (runtime.WithWorkDir below), not the pod's cwd.
+		childWorkDir := req.WorkDir
+		if childWorkDir == "" {
+			childWorkDir = workDir
+		}
+
+		childExec, childUsage, err := r.buildExecutor(ctx, &child, childWf, childWorkDir, childLogger, nil)
 		if err != nil {
 			return nil, err
 		}
 		defer r.recordOrgSpend(ctx, &child, childUsage)
 
-		childWorkDir := req.WorkDir
-		if childWorkDir == "" {
-			childWorkDir = workDir
-		}
 		// Capture what the child emits — the terminal-node output a
 		// contractless subbot returns, plus the per-node outputs a contract's
 		// projection reads (#1280). The callback fires concurrently when the

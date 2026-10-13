@@ -14,13 +14,16 @@ import { useConfirm } from "@/hooks/useConfirm";
 import {
   type ProvisionApproval,
   approveProvision,
+  getOrgRoutingPolicy,
   getOrgSettings,
   listOrgProvisionApprovals,
   listOrgTeamSummaries,
+  putOrgRoutingPolicy,
   rejectProvision,
   updateOrgSettings,
   updateOrgTeamCaps,
 } from "@/api/orgGovernance";
+import RoutingPolicySection from "./RoutingPolicySection";
 
 // GovernanceTab groups the org-admin-run controls: the ex-ante
 // provisioning approval flag + its pending queue, and the per-team
@@ -117,6 +120,14 @@ export default function GovernanceTab({
           {banner}
         </InlineBanner>
       )}
+
+      <RoutingPolicySection
+        scope="org"
+        id={orgID}
+        canManage={canManage}
+        getPolicy={getOrgRoutingPolicy}
+        putPolicy={putOrgRoutingPolicy}
+      />
 
       <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] p-4 space-y-2">
         <h3 className="font-medium">Provisioning approval</h3>

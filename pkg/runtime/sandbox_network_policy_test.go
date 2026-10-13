@@ -28,7 +28,9 @@ import (
 // spec to startNetworkProxy with the noop driver, and speak HTTP CONNECT to
 // the proxy it returns. An allowed host tunnels to a loopback echo server; a
 // denied one is refused AND surfaces the `network_blocked` event, which is
-// the only thing an operator ever sees about a blocked call.
+// the only thing an operator ever sees about a blocked call. The allowed host
+// is host.docker.internal: the proxy refuses any other way to its own
+// loopback, and that alias is the sanctioned one (the per-run MCP listeners).
 
 // compileSandboxSpec turns .bot source into the runtime-level sandbox spec,
 // through the real parser + IR compiler.
@@ -134,7 +136,7 @@ func TestSandboxNetworkAllowlist_DeclarationStartsAnEnforcingProxy(t *testing.T)
 
 	spec := compileSandboxSpec(t, netPolicySource(`    network:
       mode: allowlist
-      rules: ["localhost"]`))
+      rules: ["host.docker.internal"]`))
 
 	drv, err := noop.New()
 	if err != nil {
@@ -166,7 +168,7 @@ func TestSandboxNetworkAllowlist_DeclarationStartsAnEnforcingProxy(t *testing.T)
 	token := tokenFromEndpoint(t, endpoint)
 
 	t.Run("an allowed host tunnels through", func(t *testing.T) {
-		line, conn := connect(t, prx.Addr().String(), "localhost:"+echoPort, token)
+		line, conn := connect(t, prx.Addr().String(), "host.docker.internal:"+echoPort, token)
 		if !strings.Contains(line, "200") {
 			t.Fatalf("allowed CONNECT = %q, want 200", line)
 		}
@@ -206,7 +208,7 @@ func TestSandboxNetworkAllowlist_DeclarationStartsAnEnforcingProxy(t *testing.T)
 	})
 
 	t.Run("the proxy is not an open relay for other local processes", func(t *testing.T) {
-		line, _ := connect(t, prx.Addr().String(), "localhost:"+echoPort, "")
+		line, _ := connect(t, prx.Addr().String(), "host.docker.internal:"+echoPort, "")
 		if strings.Contains(line, "200") {
 			t.Fatalf("un-tokened CONNECT was established: %q", line)
 		}
@@ -253,7 +255,8 @@ func TestSandboxNetworkOpen_StartsNoProxy(t *testing.T) {
 // NEGATED rule excludes (`!**.evil.site` — in denylist mode a bare pattern
 // allows, the `!` prefix is what denies; the shipped iterion-default preset
 // is written the same way). Nothing external is dialled here: the denied host
-// is refused before the proxy resolves it, and the reachable leg is loopback.
+// is refused before the proxy resolves it, and the reachable leg is the host
+// alias to a loopback echo server.
 func TestSandboxNetworkDenylist_BlocksOnlyTheListedHosts(t *testing.T) {
 	echoAddr := echoServer(t)
 	_, echoPort, err := net.SplitHostPort(echoAddr)
@@ -297,7 +300,7 @@ func TestSandboxNetworkDenylist_BlocksOnlyTheListedHosts(t *testing.T) {
 	if len(blocked) == 0 {
 		t.Fatal("denied host produced no network_blocked event")
 	}
-	if line, _ := connect(t, prx.Addr().String(), "localhost:"+echoPort, token); !strings.Contains(line, "200") {
+	if line, _ := connect(t, prx.Addr().String(), "host.docker.internal:"+echoPort, token); !strings.Contains(line, "200") {
 		t.Fatalf("un-listed host refused under denylist: %q", line)
 	}
 }

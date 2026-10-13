@@ -600,23 +600,29 @@ func TestFmtCanonicalisesADocumentInAWalk(t *testing.T) {
 	}
 }
 
-// A document that carries YAML comments is refused in a walk and left as it
-// is — the writer keeps none — and named among the refusals; --to bot still
-// reads it, since the .bot it writes carries the program, not the document.
-func TestFmtRefusesToRewriteACommentedDocument(t *testing.T) {
+// A document that carries YAML comments is rewritten in a walk in its
+// canonical form with its head, line and foot comments where they were, and
+// --check is green on it afterwards; --to bot still reads it, since the .bot
+// it writes carries the program, not the document.
+func TestFmtRewritesACommentedDocumentKeepingItsComments(t *testing.T) {
 	inTempWorkspace(t)
-	commented := "# keep me\n" + strings.Replace(authorHelloDoc, "  ask: Say hello.\n", "  ask: Say hello. # and me\n", 1)
+	loose := strings.Replace(authorHelloDoc, "  - agent: hello\n    model: m\n    system: ask\n", "- agent: hello\n  model: m\n  system: ask\n", 1)
+	if loose == authorHelloDoc {
+		t.Fatal("the fixture no longer holds the sequence this test moves to the margin")
+	}
+	commented := "# keep me\n" + strings.Replace(loose, "  ask: Say hello.\n", "  ask: Say hello. # and me\n", 1) + "# the foot\n"
 	doc := writeBot(t, "k/hello.bot.yaml", commented)
 	jp, _ := jsonPrinter()
 	res, err := RunFmt(FmtOptions{Paths: []string{"k"}, Printer: jp})
-	if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "2 YAML comment line(s)") {
-		t.Fatalf("a commented document was not refused by name: %v %v", err, res.Refused)
+	if err != nil || len(res.Refused) != 0 {
+		t.Fatalf("a commented document was refused: %v %v", err, res.Refused)
 	}
-	if len(res.RefusedPaths) != 1 {
-		t.Fatalf("the refusal is not listed for a baseline: %v", res.RefusedPaths)
+	want := "# keep me\n" + strings.Replace(authorHelloDoc, "  ask: Say hello.\n", "  ask: Say hello. # and me\n", 1) + "# the foot\n"
+	if got, _ := os.ReadFile(doc); string(got) != want {
+		t.Fatalf("the commented document was not rewritten with its comments in place:\n%s\nwant\n%s", got, want)
 	}
-	if got, _ := os.ReadFile(doc); string(got) != commented {
-		t.Fatalf("the commented document was rewritten:\n%s", got)
+	if _, err := RunFmt(FmtOptions{Paths: []string{"k"}, Check: true, Printer: jp}); err != nil {
+		t.Fatalf("--check after fmt on a commented document: %v", err)
 	}
 	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp}); err != nil {
 		t.Fatalf("--to bot on a commented document: %v", err)

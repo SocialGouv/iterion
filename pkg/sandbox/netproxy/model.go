@@ -55,16 +55,24 @@ var modelPathSuffixes = []string{
 var bedrockPathSuffixes = []string{"/invoke", "/invoke-with-response-stream", "/converse", "/converse-stream", "/count-tokens"}
 
 // modelRequest reports whether a request to host (a bare hostname) at path
-// goes to a model API. extra matches the operator's own model hosts
+// goes to a model API. extra holds the operator's own model hosts
 // (Options.ModelHosts); nil when there are none.
+//
+// A built-in provider host is always one — no operator entry lifts it.
+// Otherwise the operator's last matching entry decides: a pattern makes the
+// host a model host, a `!` exclusion lifts the model detection for it, its
+// path included (a TOOL API whose path ends like a model API's is then
+// inspected and substituted like any other request). A host no entry
+// matches is a model host when its path is a model API's.
 func modelRequest(host, path string, extra *Policy) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	if modelHosts[host] || (extra != nil && extra.Allow(host)) {
+	if builtInProviderHost(host) {
 		return true
 	}
-	if strings.HasSuffix(host, "-aiplatform.googleapis.com") || strings.HasSuffix(host, ".openai.azure.com") ||
-		(strings.HasPrefix(host, "bedrock-runtime.") && strings.HasSuffix(host, ".amazonaws.com")) {
-		return true
+	if extra != nil {
+		if matched, model := extra.lastMatch(canonicalHost(host)); matched {
+			return model
+		}
 	}
 	path = strings.TrimSuffix(path, "/")
 	for _, s := range modelPathSuffixes {
@@ -83,15 +91,16 @@ func modelRequest(host, path string, extra *Policy) bool {
 }
 
 // modelHostPolicy compiles Options.ModelHosts with the network rules' syntax
-// (a host, `*.corp`, `**.corp`, an IP, a CIDR, `!` to exclude); a base URL or
-// host:port names its host. An entry that is none of these — or that would
-// match every host — is refused, never ignored: an ignored gateway would have
-// its conversation substituted, and one matching every host would leave every
-// body unsubstituted. The error names an entry by its position (a URL's
-// userinfo may hold a credential).
+// (a host, `*.corp`, `**.corp`, an IP, a CIDR, `!` to exclude — the last
+// matching entry winning); a base URL or host:port names its host. An entry
+// that is none of these — or that would match every host — is refused, never
+// ignored: an ignored gateway would have its conversation substituted, and one
+// matching every host would leave every body unsubstituted. So is an exclusion
+// lying within the built-in provider hosts, which no entry lifts (see
+// modelRequest). The error names an entry by its position (a URL's userinfo
+// may hold a credential).
 func modelHostPolicy(hosts []string) (*Policy, error) {
 	var rules []string
-	positive := false
 	for i, raw := range hosts {
 		h := strings.TrimSpace(raw)
 		if h == "" {
@@ -100,6 +109,8 @@ func modelHostPolicy(hosts []string) (*Policy, error) {
 		bad := func(why string) error {
 			return fmt.Errorf("netproxy: model host #%d: %s", i+1, why)
 		}
+		neg := strings.HasPrefix(h, "!")
+		h = strings.TrimPrefix(h, "!")
 		if strings.Contains(h, "://") {
 			u, err := url.Parse(h)
 			if err != nil || u.Hostname() == "" {
@@ -109,10 +120,8 @@ func modelHostPolicy(hosts []string) (*Policy, error) {
 		} else if host, port, err := net.SplitHostPort(h); err == nil && numericPort(port) {
 			h = host
 		}
-		h = strings.TrimSuffix(strings.Trim(h, "[]"), ".")
-		neg := strings.HasPrefix(h, "!")
-		pattern := strings.TrimPrefix(h, "!")
-		if net.ParseIP(pattern) == nil && !strings.Contains(pattern, "/") && strings.ContainsAny(pattern, ":@ \t") {
+		pattern := strings.TrimSuffix(strings.Trim(h, "[]"), ".")
+		if net.ParseIP(pattern) == nil && !strings.Contains(pattern, "/") && strings.ContainsAny(pattern, ":@! \t\n\r\v\f") {
 			return nil, bad("not a host pattern or a URL")
 		}
 		if pattern == "*" || pattern == "**" {
@@ -131,24 +140,36 @@ func modelHostPolicy(hosts []string) (*Policy, error) {
 				return nil, bad("not a host pattern or a URL")
 			}
 			pattern = wild + name
-			h = pattern
-			if neg {
-				h = "!" + pattern
-			}
 		}
-		if _, err := Compile(ModeAllowlist, []string{h}); err != nil {
+		if neg {
+			if builtInProviderHost(pattern) {
+				return nil, bad("names a built-in model provider — a model provider host cannot be excluded from the model detection")
+			}
+			pattern = "!" + pattern
+		}
+		if _, err := Compile(ModeAllowlist, []string{pattern}); err != nil {
 			return nil, bad("not a host pattern or a URL")
 		}
-		positive = positive || !strings.HasPrefix(h, "!")
-		rules = append(rules, h)
+		rules = append(rules, pattern)
 	}
 	if len(rules) == 0 {
 		return nil, nil
 	}
-	if !positive {
-		return nil, fmt.Errorf("netproxy: model hosts: only exclusions, no host")
-	}
 	return Compile(ModeAllowlist, rules)
+}
+
+// builtInProviderHost reports whether name is one of the built-in model
+// provider hosts or lies within one of their families. Such a host is always
+// a model request: its bodies keep their placeholders, the guarantee the
+// model detection exists for, and no operator exclusion lifts it.
+func builtInProviderHost(name string) bool {
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	if modelHosts[name] {
+		return true
+	}
+	return strings.HasSuffix(name, "-aiplatform.googleapis.com") ||
+		strings.HasSuffix(name, ".openai.azure.com") ||
+		(strings.HasPrefix(name, "bedrock-runtime.") && strings.HasSuffix(name, ".amazonaws.com"))
 }
 
 // numericPort reports whether p is a decimal port: a colon that is not a port

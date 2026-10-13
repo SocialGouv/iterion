@@ -333,10 +333,10 @@ describe("the Source view of a bot in several files", () => {
     expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe("MY TYPED REPAIR");
   });
 
-  // currentSource is what a cloud launch and every resume send inline AS
-  // the program (store/document.ts). A fragment declares no workflow, so
-  // writing one there would make them run something that is not this bot.
-  it("never lets a fragment's text become the program the launch sends", async () => {
+  // currentSource is what every resume sends inline AS the program
+  // (store/document.ts). A fragment declares no workflow, so writing one
+  // there would resume a run on something that is not this bot.
+  it("never lets a fragment's text become the program a resume sends", async () => {
     const store = unitStore();
     api.parseUnitFile.mockResolvedValue({
       document: createEmptyDocument(),
@@ -575,7 +575,7 @@ describe("the Source view of a bot in several files", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: "Apply" })).toBeNull());
     expect(screen.getByLabelText("source")).toHaveProperty("dataset.readonly", "true");
     // The forbidden alternative, named: bot A's text committed as bot B's
-    // program — which is also what a cloud launch would send inline.
+    // program — which is also what a resume would send inline.
     expect(api.parseSource).not.toHaveBeenCalled();
     expect(store.getState().currentSource).not.toBe("TYPED INTO BOT A");
   });

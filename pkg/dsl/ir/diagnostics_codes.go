@@ -81,7 +81,8 @@ const (
 	// Review-gate diagnostics (interaction: review).
 	DiagReviewNeedsWorktree DiagCode = "C100" // interaction: review without worktree: auto — nothing to merge (error)
 	DiagReviewURLUnknownRef DiagCode = "C101" // review_url references an output node that does not exist (warning)
-	// C156 is allocated from the free C156-C159 band: C100/C101 above and the
+	// C156 is allocated from the free C156-C158 band (C159 is taken, by
+	// DiagToolRefusedOnClaw in validate_tools.go): C100/C101 above and the
 	// enum-value errors around them leave no contiguous room. Same shape as
 	// C142 (worktree:): an unknown value used to read as the DEFAULT
 	// (human_required / squash), silently replacing the author's explicit
@@ -91,16 +92,17 @@ const (
 	// Compress output-compression mode diagnostics.
 	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)
 	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning; an error for artifacts, attachments and loop, which reach the shell from another node)
-	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's, or the workflow's default_backend) holds a template that will not resolve — only vars.* does, a dotted path drilling a json var's document included, the route being decided before the node runs — or resolves to a list-typed var's JSON spelling, a name no backend registered (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model, which renders no template, the supervisor degrades)
+	DiagRoutingFieldRef  DiagCode = "C148" // a routing field (model/backend/provider/interaction_model, a node's or a fallback route's, or the workflow's default_backend) holds a template that will not resolve — only vars.* does, a dotted path drilling a json var's document included, the route being decided before the node runs — or resolves to a list-typed var's JSON spelling, a name no backend registered (warning, like C147: the node fails loud at its first delegation, a fielded bot keeps compiling; on a supervisor's model only a whole {{vars.name}} resolves at spawn, every other span leaves the supervisor on its provider hint)
 
 	// Backend auto-memory (MEMORY.md) switch diagnostics.
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
 	DiagAutoMemoryNotSupported DiagCode = "C132" // auto_memory: on for a backend that does not consume it (warning)
 
-	// Ambient-context policy diagnostics (ADR-119). C184/C185 come from the
-	// free C184-C189 band, after the C180-C183 var and compute family.
+	// Ambient-context policy diagnostics (ADR-119). C184/C185/C187 come from
+	// the free C184-C189 band, after the C180-C183 var and compute family.
 	DiagInvalidAmbientContext     DiagCode = "C184" // ambient_context: value not one of none|workspace|operator|all (error)
-	DiagAmbientContextNotEnforced DiagCode = "C185" // an explicit ambient_context on a backend that does not translate it — opencode, kimi, grok (warning)
+	DiagAmbientContextNotEnforced DiagCode = "C185" // an explicit ambient_context a backend has not been measured against — grok's workspace and all (warning)
+	DiagAmbientContextRefused     DiagCode = "C187" // a declared ambient_context a backend loads past, whatever iterion passes it — refused at dispatch too (error)
 
 	// Loop back-edge affordability guard diagnostics.
 	DiagInvalidLoopBudgetGuard DiagCode = "C133" // loop_budget_guard: value not one of on|off (error)
@@ -268,6 +270,15 @@ const (
 	DiagCollectionCompare            DiagCode = "C306" // `==`/`!=` with a collection (a list/object literal, or two statically-known string[] values): equals() never walks into a slice or map, so the comparison is constant — == false, != true (warning)
 	DiagCollectionLiteralConformance DiagCode = "C307" // a compute field fed by a collection literal its declared type cannot hold (a non-string element under string[], a collection under a scalar): fails SCHEMA_VALIDATION at run time (warning)
 
+	// #1455: the compiler can speak about an `{{input.X}}` a node body reads
+	// that no incoming edge of the node maps. A node's input is built only
+	// from the `with` mappings of its incoming edges (plus the run-level
+	// payload on the entry node), so the field is empty on every path — the
+	// certain defect the dry run met twice in the catalogue (adr-cartograph's
+	// surveyor read an empty ADR inventory in production). Fully static, no
+	// --exec.
+	DiagInputFieldNeverMapped DiagCode = "C308" // an `{{input.X}}` a node body reads (prompt, command, script, action param, expr, fail message) that no incoming edge maps, entry node aside (warning)
+
 	// `with:` mapping references and literals. C149–C152 catch shapes the
 	// runtime cannot honour in a data mapping, so a typo or a namespace
 	// mismatch fires at compile time instead of resolving to nil (or a
@@ -289,4 +300,29 @@ const (
 	// refuse at the node. C180–C182 are claimed by an in-flight branch, so
 	// the band starts at C183.
 	DiagComputeEnumLiteral DiagCode = "C183" // compute field with an enum constraint fed by a static string literal outside the enum (warning — the value fails SCHEMA_VALIDATION at run time)
+
+	// A loop cap — or its foreach sibling, the same evaluator being the
+	// only reader of both — on a router edge the runtime does not read.
+	// `round_robin` alternates over its unconditional edges; `llm` takes
+	// the route the model named — neither goes through
+	// `evaluateEdgesWithLoopsRS`, so the iteration silently does nothing
+	// and the author's `as name(N)` promise is not kept. Same argument as
+	// C244 (a loop on a fan-out is refused).
+	DiagLoopOnRouterEdge DiagCode = "C309" // a `round_robin` / non-multi `llm` router's outgoing edge carries `as name(N)` or `as foreach name(...)` — the iteration is accepted at compile time and silently ignored at run time (error; put the loop on the edge that re-enters the router)
+
+	// Public contracts: a declared output port whose producer runs more
+	// than once — a parallel branch body, a foreach, or a bounded loop
+	// cycle. The port capture keeps one entry per node id, so the declared
+	// value is whichever execution finished last.
+	DiagContractOutputOffFanOut DiagCode = "C310" // a contract output port's `from:` names a node that executes more than once (fan-out branch body, foreach, bounded loop cycle) — the port projects whichever execution finished last, one execution's output (warning)
+
+	DiagBudgetOnExceededInvalid DiagCode = "C311" // budget.on_exceeded: unknown policy, only fail and pause exist — treated as fail (error)
+
+	// A network: block with no mode resolves to open at the policy layer
+	// (ResolveNetworkPolicy keeps its default when the mode names no case),
+	// so the preset and rules the author wrote are never enforced — the
+	// proxy does not even start. The runtime completes the block to
+	// allowlist when it can (see pkg/runtime fuseDevcontainerSpec); the
+	// warning is what tells the author to name the mode.
+	DiagNetworkModeMissing DiagCode = "C312" // a sandbox network: block with content but no mode: resolves to open — the preset/rules are inert (warning)
 )

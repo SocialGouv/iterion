@@ -36,6 +36,18 @@ describe("getHint", () => {
     expect(h.hint).not.toMatch(/delegate/);
   });
 
+  it("tells a C011 author the order that works, not only to drop an edge", () => {
+    // The guarded loop-exhaustion exit shares the back-edge's condition and
+    // compiles when the back-edge is declared first AND the exit leaves the
+    // loop; a hint that only says "use distinct conditions" sends that author
+    // the wrong way, and one naming half the permission sends him into the
+    // refusal the other half names.
+    const h = getHint("C011");
+    expect(h.hint).toMatch(/back-edge/);
+    expect(h.hint).toMatch(/declare the back-edge first/);
+    expect(h.hint).toMatch(/route the exit out of the iteration/);
+  });
+
   it("does not surface the obsolete C029 hint anymore", () => {
     // C029 (interaction-on-non-delegate) was removed when the parser
     // dropped the `delegate:` keyword. Should fall through to the

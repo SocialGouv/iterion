@@ -133,6 +133,37 @@ func LimitResetAt(hdr http.Header, now time.Time) time.Time {
 	return at
 }
 
+// RateLimitBudget is the budget a forge answer reports: what is left, out of
+// how much, and when the window resets. Limit and ResetAt are zero when the
+// answer does not say. Resource names a budget of the answer's API beyond its
+// default one — GitHub's search budget behind a REST path — and is empty when
+// the answer names the default (core, graphql) or nothing at all.
+type RateLimitBudget struct {
+	Remaining, Limit int64
+	ResetAt          time.Time
+	Resource         string
+}
+
+// RateLimitBudgetOf reads the budget GitHub reports on every answer, 2xx
+// included — X-RateLimit-Remaining, -Limit and -Reset — read at now. ok is
+// false when the answer reports no remaining count.
+func RateLimitBudgetOf(hdr http.Header, now time.Time) (RateLimitBudget, bool) {
+	remaining, err := strconv.ParseInt(strings.TrimSpace(hdr.Get("X-RateLimit-Remaining")), 10, 64)
+	if err != nil || remaining < 0 {
+		return RateLimitBudget{}, false
+	}
+	b := RateLimitBudget{Remaining: remaining, ResetAt: parseRateLimitReset(hdr.Get("X-RateLimit-Reset"), now)}
+	if limit, err := strconv.ParseInt(strings.TrimSpace(hdr.Get("X-RateLimit-Limit")), 10, 64); err == nil && limit > 0 {
+		b.Limit = limit
+	}
+	switch strings.TrimSpace(hdr.Get("X-RateLimit-Resource")) {
+	case "", "core", "graphql": // the API's own budget: rest's is core, graphql's says graphql
+	default:
+		b.Resource = strings.TrimSpace(hdr.Get("X-RateLimit-Resource"))
+	}
+	return b, true
+}
+
 // parseRateLimitReset reads a reset header as an instant: a Unix epoch
 // (GitHub, GitLab) or, for a small value, a delta in seconds from now (the
 // IETF RateLimit-Reset form). Anything unparsable or not after now yields the

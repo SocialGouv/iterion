@@ -1,0 +1,5 @@
+# Weights for scripts/ci/testshards -weights: import-path<TAB>seconds.
+# Seeded from the plain (non-race) CI durations measured 2026-10-04/05; update
+# rows from measured leg durations as the race shards land. Unlisted packages
+# weigh 1, so a stale row only degrades the balance — it never errors.
+github.com/SocialGouv/iterion/bots	555

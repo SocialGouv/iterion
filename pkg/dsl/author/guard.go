@@ -273,7 +273,20 @@ func (g *guard) plainValueComment(v *yaml.Node) {
 	if v == nil || v.Kind != yaml.ScalarNode || v.Style != 0 || v.LineComment == "" || v.ShortTag() != "!!str" {
 		return
 	}
-	g.warn(v, "a ` #` starts a comment: the value reads as "+strconv.Quote(v.Value)+", the rest of the line is dropped — quote the whole value if the `#` is part of it")
+	g.warn(v, commentReading+strconv.Quote(v.Value)+", the rest of the line is dropped — quote the whole value if the `#` is part of it")
+}
+
+// commentReading opens the warning plainValueComment gives: IsCommentReading
+// tells it from the other E053 readings by it.
+const commentReading = "a ` #` starts a comment: the value reads as "
+
+// IsCommentReading reports whether d is the warning on a ` #` that ends a
+// plain text value in a comment. Unlike the other readings E053 names, a
+// rewrite that keeps the comment on the same plain value keeps the author's
+// text, and the warning with it: the reading is still the author's to
+// settle, by quoting.
+func IsCommentReading(d parser.Diagnostic) bool {
+	return d.Code == parser.DiagAuthorPromptBody && d.Severity == parser.SeverityWarning && strings.HasPrefix(d.Message, commentReading)
 }
 
 func (g *guard) walk(n *yaml.Node, depth int) {

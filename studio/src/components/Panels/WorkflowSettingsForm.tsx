@@ -13,6 +13,9 @@ import {
 import {
   BACKEND_OPTIONS,
   INTERACTION_OPTIONS,
+  PERMISSION_OPTIONS,
+  WORKFLOW_PERMISSION_HELP,
+  WORKFLOW_PERMISSION_RULES_HELP,
   WORKTREE_OPTIONS,
   WORKTREE_HELP,
 } from "@/lib/dslOptions";
@@ -132,6 +135,53 @@ export default function WorkflowSettingsForm() {
         values={workflow.tool_policy ?? []}
         onChange={(v) => updateWorkflow(workflow.name, { tool_policy: v.length > 0 ? v : undefined })}
         placeholder="Add tool reference..."
+      />
+      {/* Tool-permission gate (docs/permissions.md): the mode and the three
+          rule lists this workflow's agent and judge nodes inherit — and so
+          does the recovery agent a tool node's Verified Action dispatches at
+          its agent rung, which declares nothing of its own. A plain tool
+          node's `command:` is not gated, and its own `permission:` is not
+          enforced (C112). An emptied list is written back as `undefined`,
+          never `[]`: `[]` reaches the save as a non-nil empty slice, which
+          `ir.SameProgram` reads as a different program, so the file cannot
+          be saved at all — 422, with a message that names no field. */}
+      <SelectField
+        label="Permission"
+        // C110 accepts the mode case-insensitively and whitespace-trimmed,
+        // and the writer puts it back verbatim, so `permission: Deny` is a
+        // legal, diagnostic-free spelling. Matched raw it falls through to
+        // the empty option and the inspector would report a hard-denying
+        // workflow as declaring no gate.
+        value={(workflow.permission ?? "").trim().toLowerCase()}
+        onChange={(v) => updateWorkflow(workflow.name, { permission: v || undefined })}
+        options={PERMISSION_OPTIONS}
+        allowEmpty
+        emptyLabel="-- unset · ITERION_PERMISSION, else off --"
+        help={WORKFLOW_PERMISSION_HELP}
+      />
+      <TagListField
+        label="Allow"
+        values={workflow.allow ?? []}
+        onChange={(v) => updateWorkflow(workflow.name, { allow: v.length > 0 ? v : undefined })}
+        literalValues
+        placeholder="Add allow rule, e.g. Read(**)..."
+        help={WORKFLOW_PERMISSION_RULES_HELP}
+      />
+      <TagListField
+        label="Ask"
+        values={workflow.ask ?? []}
+        onChange={(v) => updateWorkflow(workflow.name, { ask: v.length > 0 ? v : undefined })}
+        literalValues
+        placeholder="Add ask rule, e.g. Bash(git push:*)..."
+        help={WORKFLOW_PERMISSION_RULES_HELP}
+      />
+      <TagListField
+        label="Deny"
+        values={workflow.deny ?? []}
+        onChange={(v) => updateWorkflow(workflow.name, { deny: v.length > 0 ? v : undefined })}
+        literalValues
+        placeholder="Add deny rule, e.g. Read(.env*)..."
+        help={WORKFLOW_PERMISSION_RULES_HELP}
       />
 
       <CompactionFields

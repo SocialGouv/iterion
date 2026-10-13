@@ -2,9 +2,11 @@ package secrets
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,9 +131,14 @@ type RunBundle struct {
 // runner uses that ref to fetch + decrypt right before executing the
 // run.
 type RunSecretsRecord struct {
-	ID           string    `bson:"_id" json:"id"`
-	TenantID     string    `bson:"tenant_id" json:"tenant_id"`
-	RunID        string    `bson:"run_id" json:"run_id"`
+	ID       string `bson:"_id" json:"id"`
+	TenantID string `bson:"tenant_id" json:"tenant_id"`
+	RunID    string `bson:"run_id" json:"run_id"`
+	// KeyID names the ring key that sealed SealedBundle. Empty means
+	// the record predates key ids: it sealed under the deployment's
+	// single shared key with the legacy run-only AAD, and the opener
+	// falls back to exactly that.
+	KeyID        string    `bson:"key_id,omitempty" json:"key_id,omitempty"`
 	SealedBundle []byte    `bson:"sealed_bundle" json:"-"`
 	CreatedAt    time.Time `bson:"created_at" json:"created_at"`
 	// ExpiresAt drives the Mongo TTL — the runner deletes the
@@ -152,26 +159,85 @@ type RunSecretsStore interface {
 // (already consumed or never published).
 var ErrRunSecretsNotFound = errors.New("secrets: run secrets not found")
 
-// SealRunBundle marshals + seals a RunBundle for a given run. Returns
-// the sealed blob; the caller stores it as RunSecretsRecord.SealedBundle.
-func SealRunBundle(sealer Sealer, runID string, b RunBundle) ([]byte, error) {
+// ErrBundleDEKMissing is the typed refusal for a "dek"-stamped record
+// whose message carries no per-run key: corrupt publish or a message
+// stripped in transit — never executed.
+var ErrBundleDEKMissing = errors.New("dek-stamped bundle but the message carries no BundleDEK")
+
+// DEKKeyID is the key-id scheme of ADR-123: the bundle sealed under
+// the message's per-run DEK — the sealer is built at claim time from
+// RunMessage.BundleDEK, and no platform key material ever reaches the
+// pod. The two older schemes remain readable: an empty id (pre-ring,
+// run-only AAD) and a ring id (P4a, extended AAD).
+const DEKKeyID = "dek"
+
+// NewRunBundleDEK generates the per-run key ADR-123 seals a bundle
+// under.
+func NewRunBundleDEK() ([]byte, error) {
+	dek := make([]byte, 32)
+	if _, err := rand.Read(dek); err != nil {
+		return nil, fmt.Errorf("secrets: dek: %w", err)
+	}
+	return dek, nil
+}
+
+// SealRunBundle marshals + seals a RunBundle for a run, bound to its
+// full identity — tenant, pool and run. The AAD makes a bundle from
+// one identity undecryptable under another's context, even if a
+// confused record store served the ref: the binding is cryptographic,
+// not a field comparison. The sealer is the run's per-run DEK sealer
+// (ADR-123); the returned key id is the constant DEK scheme. The pool
+// grammar and identity tenant ids carry no "/", so the three
+// components are unambiguous.
+func SealRunBundle(sealer Sealer, tenantID, pool, runID string, b RunBundle) ([]byte, string, error) {
 	if sealer == nil {
-		return nil, errors.New("secrets: nil sealer for SealRunBundle")
+		return nil, "", errors.New("secrets: nil sealer for SealRunBundle")
+	}
+	// The AAD's unambiguity rests on neither component carrying "/":
+	// enforce it here, at the chokepoint both seal callers traverse, not
+	// only at the launch site that validates its inputs.
+	if strings.Contains(tenantID, "/") {
+		return nil, "", fmt.Errorf("secrets: tenant id %q carries the AAD separator", tenantID)
+	}
+	if pool != "" && !validPoolName(pool) {
+		return nil, "", fmt.Errorf("secrets: pool %q is not a valid runner pool name", pool)
 	}
 	body, err := json.Marshal(b)
 	if err != nil {
-		return nil, fmt.Errorf("secrets: marshal bundle: %w", err)
+		return nil, "", fmt.Errorf("secrets: marshal bundle: %w", err)
 	}
-	return sealer.Seal(body, runBundleAAD(runID))
+	sealed, err := sealer.Seal(body, RunBundleAAD(tenantID, pool, runID))
+	if err != nil {
+		return nil, "", err
+	}
+	return sealed, DEKKeyID, nil
 }
 
-// OpenRunBundle is the inverse: decrypt + unmarshal.
-func OpenRunBundle(sealer Sealer, runID string, sealed []byte) (RunBundle, error) {
+// OpenRunBundle is the inverse: decrypt + unmarshal, under the same
+// identity binding the sealer used. A record with a key id opens under
+// THAT key; a record without one predates the ring and opens under
+// whichever ring key authenticates, with the legacy run-only AAD.
+func OpenRunBundle(sealer Sealer, tenantID, pool, runID, keyID string, sealed []byte) (RunBundle, error) {
 	var b RunBundle
 	if sealer == nil {
 		return b, errors.New("secrets: nil sealer for OpenRunBundle")
 	}
-	pt, err := sealer.Open(sealed, runBundleAAD(runID))
+	var (
+		pt  []byte
+		err error
+	)
+	switch keyID {
+	case DEKKeyID:
+		pt, err = sealer.Open(sealed, RunBundleAAD(tenantID, pool, runID))
+	case "":
+		pt, err = openLegacyBundle(sealer, runID, sealed)
+	default:
+		keyed, ok := sealer.(KeyedSealer)
+		if !ok {
+			return b, errors.New("secrets: opening a keyed run bundle needs a keyed sealer (a key ring)")
+		}
+		pt, err = keyed.OpenWith(keyID, sealed, RunBundleAAD(tenantID, pool, runID))
+	}
 	if err != nil {
 		return b, err
 	}
@@ -181,8 +247,52 @@ func OpenRunBundle(sealer Sealer, runID string, sealed []byte) (RunBundle, error
 	return b, nil
 }
 
-func runBundleAAD(runID string) []byte {
+// openLegacyBundle opens a pre-ring record: run-only AAD, under
+// whichever ring key authenticates (the record's sealing key left the
+// designated-current slot at most one rotation ago; the 24h TTL
+// retires the cohort).
+func openLegacyBundle(sealer Sealer, runID string, sealed []byte) ([]byte, error) {
+	if keyed, ok := sealer.(KeyedSealer); ok {
+		if ring, ok := keyed.(*KeyRingSealer); ok {
+			return ring.OpenAny(sealed, legacyRunBundleAAD(runID))
+		}
+		return keyed.Open(sealed, legacyRunBundleAAD(runID))
+	}
+	return sealer.Open(sealed, legacyRunBundleAAD(runID))
+}
+
+// RunBundleAAD binds a sealed bundle to its run identity: tenant, pool
+// and run. The pool segment is empty for shared-fleet runs — the
+// grammar still disambiguates, since neither pool names (1–31 chars
+// [a-z0-9-]) nor tenant ids contain "/".
+func RunBundleAAD(tenantID, pool, runID string) []byte {
+	return []byte("run_secrets:" + tenantID + "/" + pool + "/" + runID)
+}
+
+func legacyRunBundleAAD(runID string) []byte {
 	return []byte("run_secrets:" + runID)
+}
+
+// validPoolName mirrors queue.ValidPoolName (1–31 chars [a-z0-9-],
+// starting alphanumeric). A local copy keeps the NATS client out of
+// every secrets importer; run_secrets_test.go pins the two to agree.
+func validPoolName(s string) bool {
+	if len(s) == 0 || len(s) > 31 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '-':
+			if i == 0 || i == len(s)-1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // NewSecretsRef returns a fresh opaque ref for a RunSecretsRecord.

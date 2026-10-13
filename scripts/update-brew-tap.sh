@@ -15,6 +15,9 @@
 #
 # Missing artefacts are tolerated: e.g. running with only CLI binaries
 # present updates Formula/ and leaves Cask/ untouched, and vice-versa.
+# Neither file is ever moved to a version below the one it carries: a cask
+# ahead of the formula (a desktop-only release dispatched into it) stays
+# where it is when the formula catches up with an older tag.
 # The final `git diff` line lets the CI step know whether anything moved.
 set -euo pipefail
 
@@ -35,6 +38,15 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FORMULA="$REPO_ROOT/Formula/iterion.rb"
 CASK="$REPO_ROOT/Cask/iterion-desktop.rb"
 
+# older_than FILE: the version FILE carries sorts strictly after $VERSION
+# (sort -V), so writing $VERSION would walk it back.
+older_than() {
+  local current
+  current="$(sed -n 's/^[[:space:]]*version[[:space:]]*"\(.*\)".*/\1/p' "$1" | head -n1)"
+  [ -n "$current" ] && [ "$current" != "$VERSION" ] &&
+    [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -n1)" = "$current" ]
+}
+
 # Read sha from <file>.sha256 if present, otherwise compute from <file>.
 # Echoes the 64-char hex digest, or empty string if neither is available.
 resolve_sha() {
@@ -50,13 +62,22 @@ resolve_sha() {
 
 # --- CLI formula ---------------------------------------------------------
 
-if [ -f "$FORMULA" ]; then
+if [ -f "$FORMULA" ] && older_than "$FORMULA"; then
+  echo "skipped Formula/iterion.rb (it carries a version above ${VERSION}; the tap never walks back)"
+elif [ -f "$FORMULA" ]; then
   SHA_DARWIN_ARM64="$(resolve_sha "$ARTIFACTS/iterion-darwin-arm64")"
   SHA_DARWIN_AMD64="$(resolve_sha "$ARTIFACTS/iterion-darwin-amd64")"
   SHA_LINUX_ARM64="$(resolve_sha "$ARTIFACTS/iterion-linux-arm64")"
   SHA_LINUX_AMD64="$(resolve_sha "$ARTIFACTS/iterion-linux-amd64")"
 
-  if [ -n "$SHA_DARWIN_ARM64$SHA_DARWIN_AMD64$SHA_LINUX_ARM64$SHA_LINUX_AMD64" ]; then
+  # ALL OR NOTHING: the formula advances only when the four platform
+  # hashes resolved. A partial set (a download failure mid-way — the
+  # workflow's artifact download is best-effort) must not advance the
+  # version with the PREVIOUS release's hashes filling the gaps: brew
+  # would download the new binaries and verify them against stale
+  # checksums, on every platform but the one that landed. The next
+  # complete run updates the formula then.
+  if [ -n "$SHA_DARWIN_ARM64" ] && [ -n "$SHA_DARWIN_AMD64" ] && [ -n "$SHA_LINUX_ARM64" ] && [ -n "$SHA_LINUX_AMD64" ]; then
     tmp="$(mktemp)"
     awk -v ver="$VERSION" \
         -v s_darm="$SHA_DARWIN_ARM64" \
@@ -95,13 +116,15 @@ if [ -f "$FORMULA" ]; then
     mv "$tmp" "$FORMULA"
     echo "updated Formula/iterion.rb to v${VERSION}"
   else
-    echo "skipped Formula/iterion.rb (no CLI artefacts found in $ARTIFACTS)"
+    echo "skipped Formula/iterion.rb (missing or incomplete CLI artefacts in $ARTIFACTS — all four platform hashes are required, all or nothing)"
   fi
 fi
 
 # --- Desktop cask --------------------------------------------------------
 
-if [ -f "$CASK" ]; then
+if [ -f "$CASK" ] && older_than "$CASK"; then
+  echo "skipped Cask/iterion-desktop.rb (it carries a version above ${VERSION}; the tap never walks back)"
+elif [ -f "$CASK" ]; then
   SHA_DESKTOP="$(resolve_sha "$ARTIFACTS/iterion-desktop-darwin-universal.zip")"
 
   if [ -n "$SHA_DESKTOP" ]; then

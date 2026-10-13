@@ -56,16 +56,25 @@ func (f *checkpointRun) ExportWorkspace(context.Context) error { return nil }
 func (f *checkpointRun) Exec(_ context.Context, cmd []string, _ sandbox.ExecOpts) (sandbox.ExecResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	script := cmd[len(cmd)-1]
+	// The sandbox runs shell strings (`sh -c <script> <arg0>`) AND plain
+	// argv (the checkpoint's git now runs hookless, as argv): reconstruct
+	// the invocation either way, so the subcommand dispatch below reads
+	// both.
+	var script string
+	if len(cmd) > 1 && cmd[0] == "sh" {
+		script = cmd[2]
+	} else {
+		script = strings.Join(cmd, " ")
+	}
 	f.execs = append(f.execs, script)
-	if strings.HasPrefix(script, "git push") {
+	if isGitSubcommand(script, "push") {
 		return sandbox.ExecResult{ExitCode: f.pushRC, Stderr: []byte(f.pushEr)}, nil
 	}
 	// Dispatched BEFORE the scripted-sha fallback: answering ls-remote out of
 	// the `shas` queue would silently shift every later tick's answer, which
 	// is how adding one exec to the product broke two tests that had nothing
 	// to do with it.
-	if strings.HasPrefix(script, "git ls-remote") {
+	if isGitSubcommand(script, "ls-remote") {
 		// The real command answers `<sha>\t<ref>`; lsRC makes the READ fail.
 		out, rc, errOut := f.remote+"\trefs/heads/x\n", f.lsRC, "fatal: unable to access origin"
 		if f.remote == "" {
@@ -87,7 +96,7 @@ func (f *checkpointRun) Exec(_ context.Context, cmd []string, _ sandbox.ExecOpts
 		}
 		return sandbox.ExecResult{ExitCode: rc, Stdout: []byte(out), Stderr: []byte(errOut)}, nil
 	}
-	if strings.HasPrefix(script, "git fetch") {
+	if isGitSubcommand(script, "fetch") {
 		return sandbox.ExecResult{ExitCode: f.keepRC, Stderr: []byte(f.keepEr)}, nil
 	}
 	answer := "h0 t0 aaaaaaaa"
@@ -103,11 +112,27 @@ func (f *checkpointRun) pushes() []string {
 	defer f.mu.Unlock()
 	var out []string
 	for _, e := range f.execs {
-		if strings.HasPrefix(e, "git push") {
+		if isGitSubcommand(e, "push") {
 			out = append(out, e)
 		}
 	}
 	return out
+}
+
+// isGitSubcommand matches the subcommand of a logged git invocation the way
+// git reads it: after `git` and any number of `-c <name>=<value>` global
+// options. The checkpoint's git runs hookless, so its argv opens with the
+// two options.
+func isGitSubcommand(script, sub string) bool {
+	fields := strings.Fields(script)
+	if len(fields) == 0 || fields[0] != "git" {
+		return false
+	}
+	i := 1
+	for i+1 < len(fields) && fields[i] == "-c" {
+		i += 2
+	}
+	return i < len(fields) && fields[i] == sub
 }
 
 // TestCheckpointOncePushesOnlyWhatMoved pins the cadence's cost: a tick
@@ -121,6 +146,14 @@ func TestCheckpointOncePushesOnlyWhatMoved(t *testing.T) {
 	last := r.checkpointWorkspaceOnce(context.Background(), o, run, "")
 	if last != "h1 t1" || len(run.pushes()) != 1 {
 		t.Fatalf("first checkpoint must push: last=%q pushes=%v", last, run.pushes())
+	}
+	// The checkpoint is the net that preserves the run's work against the
+	// run: its push runs no hook the run's tree could plant.
+	if !strings.Contains(run.pushes()[0], "-c core.hooksPath=/dev/null -c core.fsmonitor=false") {
+		t.Fatalf("the checkpoint push runs the repository's hooks: %q", run.pushes()[0])
+	}
+	if !strings.Contains(checkpointScript, "-c core.hooksPath=/dev/null -c core.fsmonitor=false") {
+		t.Fatal("the checkpoint's staging runs the repository's hooks")
 	}
 	if !strings.Contains(run.pushes()[0], "c0ffee:refs/heads/iterion/run-R1-checkpoint") {
 		t.Fatalf("the checkpoint must land on the run's own ref: %q", run.pushes()[0])
@@ -224,7 +257,13 @@ type nothingToHoldRun struct {
 func (f *nothingToHoldRun) Driver() string                        { return "fake-k8s" }
 func (f *nothingToHoldRun) ExportWorkspace(context.Context) error { return nil }
 func (f *nothingToHoldRun) Exec(_ context.Context, cmd []string, _ sandbox.ExecOpts) (sandbox.ExecResult, error) {
-	if strings.HasPrefix(cmd[len(cmd)-1], "git push") {
+	var joined string
+	if len(cmd) > 1 && cmd[0] == "sh" {
+		joined = cmd[2]
+	} else {
+		joined = strings.Join(cmd, " ")
+	}
+	if isGitSubcommand(joined, "push") {
 		f.pushed = true
 	}
 	if f.exitCode != 0 {
@@ -397,12 +436,12 @@ func TestCheckpointPreservesWhatANewGenerationWouldErase(t *testing.T) {
 		var keepBeforeForce bool
 		for _, e := range run.execs {
 			switch {
-			case strings.HasPrefix(e, "git fetch"):
+			case isGitSubcommand(e, "fetch"):
 				keep++
 				if force == 0 {
 					keepBeforeForce = true
 				}
-			case strings.HasPrefix(e, "git push --force"):
+			case isGitSubcommand(e, "push") && strings.Contains(e, "--force"):
 				force++
 			}
 		}
@@ -417,11 +456,11 @@ func TestCheckpointPreservesWhatANewGenerationWouldErase(t *testing.T) {
 		// the previous generation's checkpoint.
 		var kept string
 		for _, e := range run.execs {
-			if strings.HasPrefix(e, "git fetch") {
+			if isGitSubcommand(e, "fetch") {
 				kept = e
 			}
 		}
-		if !strings.Contains(kept, "git fetch --no-tags origin 0123456789abcdef0123") {
+		if !strings.Contains(kept, "fetch --no-tags origin 0123456789abcdef0123") {
 			t.Fatalf("the previous commit must be fetched before it can be pushed: %q", kept)
 		}
 		if !strings.Contains(kept, ":refs/heads/iterion/run-R1-checkpoint-superseded-0123456789ab") {
@@ -438,7 +477,7 @@ func TestCheckpointPreservesWhatANewGenerationWouldErase(t *testing.T) {
 			o := sandboxObserverOpts{runID: "R2", tenantID: "team-a", checkpoint: true}
 			r.checkpointWorkspaceOnce(context.Background(), o, run, "")
 			for _, e := range run.execs {
-				if strings.HasPrefix(e, "git fetch") {
+				if isGitSubcommand(e, "fetch") {
 					t.Fatalf("%s: preserved a ref that was not at risk: %v", name, run.execs)
 				}
 			}
@@ -456,7 +495,7 @@ func TestCheckpointPreservesWhatANewGenerationWouldErase(t *testing.T) {
 
 		keeps := 0
 		for _, e := range run.execs {
-			if strings.HasPrefix(e, "git fetch") {
+			if isGitSubcommand(e, "fetch") {
 				keeps++
 			}
 		}

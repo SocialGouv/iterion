@@ -328,12 +328,13 @@ func TestOptionalSessionDegradeSkipsBackendsThatIgnoreTheID(t *testing.T) {
 	}
 }
 
-// The eligible backends are exactly the three that call resume with it.
+// The eligible backends are exactly the four that call resume with it.
 func TestSessionResumeEligible(t *testing.T) {
 	want := map[string]bool{
 		delegate.BackendClaudeCode: true, // claudesdk.WithResume(task.SessionID)
 		delegate.BackendCodex:      true, // codexsdk.WithResume(task.SessionID)
 		delegate.BackendPi:         true, // --session-id / --fork <id>
+		delegate.BackendOpenCode:   true, // --session <id> [--fork]
 		delegate.BackendClaw:       false,
 		delegate.BackendKimi:       false,
 		delegate.BackendGrok:       false,

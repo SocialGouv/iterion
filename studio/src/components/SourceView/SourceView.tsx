@@ -441,10 +441,10 @@ export default function SourceView() {
         setRendered({ key: bufferKey, doc: applied });
         if (result.unit) setUnit({ ...unit, files: result.unit.files });
         setDiagnostics(result.diagnostics);
-        // Only the main's. currentSource is what a cloud launch and every
-        // resume send inline AS the program (store/document.ts): a
-        // fragment declares no workflow, and putting one there would make
-        // them run something that is not this bot.
+        // Only the main's. currentSource is what every resume sends inline
+        // AS the program (store/document.ts): a fragment declares no
+        // workflow, and putting one there would resume a run on something
+        // that is not this bot.
         if (selected === unit.main) setCurrentSource(source);
         setParseError(null);
         settle(applied);

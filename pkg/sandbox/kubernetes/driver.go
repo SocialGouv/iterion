@@ -848,6 +848,10 @@ type Run struct {
 // Driver returns "kubernetes".
 func (r *Run) Driver() string { return "kubernetes" }
 
+// ProxyEndpoint returns the network-proxy URL injected into this sandbox's
+// container (RunInfo.ProxyEndpoint), empty when the run is policy-less.
+func (r *Run) ProxyEndpoint() string { return r.info.ProxyEndpoint }
+
 // RefreshSecretFile re-applies the per-run file-secrets Secret with the
 // named key's value updated, so a rotated short-lived token reaches the
 // mounted projected volume. Implements [sandbox.SecretFileRefresher].
@@ -1582,8 +1586,8 @@ func workspaceFileTarget(workspace, relPath string) (string, error) {
 // runner made. For a plain clone or a non-git dir it returns hostSrc
 // unchanged. Best-effort: any git failure falls back to hostSrc.
 func resolveCloneRoot(ctx context.Context, hostSrc string) string {
-	cloneCmd := exec.CommandContext(ctx, "git", "-C", hostSrc,
-		"rev-parse", "--path-format=absolute", "--git-common-dir")
+	cloneCmd := exec.CommandContext(ctx, "git", gitlib.NoRunHooks("-C", hostSrc,
+		"rev-parse", "--path-format=absolute", "--git-common-dir")...)
 	// -C names the workspace; an inherited GIT_DIR or GIT_COMMON_DIR would
 	// answer about another repository and resolve the clone root to it.
 	cloneCmd.Env = gitlib.SanitizeEnv(os.Environ())

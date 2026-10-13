@@ -131,7 +131,7 @@ func TestModelFallbackEventReachesStore(t *testing.T) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	var logBuf bytes.Buffer
-	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil)
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil, nil)
 
 	if hooks.OnProviderFallback == nil {
 		t.Fatal("OnProviderFallback is not wired into the store hooks")

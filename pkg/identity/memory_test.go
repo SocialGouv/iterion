@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -123,5 +124,62 @@ func TestSlugifyTeamName(t *testing.T) {
 		if got := SlugifyTeamName(in); got != want {
 			t.Errorf("SlugifyTeamName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The one-team-per-pool invariant at the store level: the mapping write
+// itself refuses when another team holds the pool — the backstop that
+// closes the route's check-then-act window (D13, R81a941).
+func TestPatchTeam_RunnerPoolHeldByAnotherTeam(t *testing.T) {
+	m := NewMemoryStore()
+	ctx := context.Background()
+	if _, err := m.CreateTeam(ctx, Team{ID: "t1", Name: "t1", Slug: "t1", OrgID: "o1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CreateTeam(ctx, Team{ID: "t2", Name: "t2", Slug: "t2", OrgID: "o1"}); err != nil {
+		t.Fatal(err)
+	}
+	pool := "honorabilite"
+	if _, err := m.PatchTeam(ctx, "t1", TeamPatch{RunnerPool: &pool}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.PatchTeam(ctx, "t2", TeamPatch{RunnerPool: &pool}); !errors.Is(err, ErrRunnerPoolHeld) {
+		t.Fatalf("second team onto a held pool: err = %v, want ErrRunnerPoolHeld", err)
+	}
+	// Re-stamping the holder itself passes (idempotent re-map).
+	if _, err := m.PatchTeam(ctx, "t1", TeamPatch{RunnerPool: &pool}); err != nil {
+		t.Fatalf("holder re-map refused: %v", err)
+	}
+}
+
+// CreateTeam enforces the same invariant — a team cannot be BORN
+// holding a pool another team already holds.
+func TestCreateTeam_RunnerPoolHeldByAnotherTeam(t *testing.T) {
+	m := NewMemoryStore()
+	ctx := context.Background()
+	if _, err := m.CreateTeam(ctx, Team{ID: "t1", Name: "t1", Slug: "t1", OrgID: "o1", RunnerPool: "honorabilite"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CreateTeam(ctx, Team{ID: "t2", Name: "t2", Slug: "t2", OrgID: "o1", RunnerPool: "honorabilite"}); !errors.Is(err, ErrRunnerPoolHeld) {
+		t.Fatalf("err = %v, want ErrRunnerPoolHeld", err)
+	}
+}
+
+// The index pre-flight's grouping (Rce7ebd): duplicates are named, a
+// clean fleet passes.
+func TestDuplicatePoolHolders(t *testing.T) {
+	err := duplicatePoolHolders([]Team{
+		{ID: "a", Slug: "alpha", RunnerPool: "p"},
+		{ID: "b", Slug: "beta", RunnerPool: "p"},
+		{ID: "c", Slug: "gamma", RunnerPool: "q"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `"p"`) || !strings.Contains(err.Error(), "a/alpha") {
+		t.Fatalf("duplicate holders undiagnosed: %v", err)
+	}
+	if err := duplicatePoolHolders([]Team{
+		{ID: "a", Slug: "alpha", RunnerPool: "p"},
+		{ID: "c", Slug: "gamma", RunnerPool: "q"},
+	}); err != nil {
+		t.Fatalf("clean fleet refused: %v", err)
 	}
 }

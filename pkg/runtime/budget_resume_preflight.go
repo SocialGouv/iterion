@@ -43,6 +43,13 @@ func (e *Engine) failSpentBudgetBeforeResume(ctx context.Context, r *store.Run) 
 		if _, ok := e.withinSharedBudgetGrace(b); ok {
 			return nil
 		}
+		// The pause policy parks the run again instead of ending it: a
+		// resume without the raise is the operator's first reflex, and
+		// converting the park into a failure there would make the policy
+		// worse than the fail it replaced.
+		if e.budgetPausePolicy() {
+			return e.pauseSpentBudgetBeforeResume(ctx, r, exc, false)
+		}
 		return e.finalizeSpentBudgetBeforeResume(ctx, r, exc, false)
 	}
 	// The in-run pre-exec gate refuses a new node at 90% to reserve room for
@@ -50,9 +57,46 @@ func (e *Engine) failSpentBudgetBeforeResume(ctx context.Context, r *store.Run) 
 	// sandbox cannot change the accounting and would immediately hit the same
 	// hard-limit branch.
 	if hard := findHardLimited(checks); hard != nil {
+		if e.budgetPausePolicy() {
+			return e.pauseSpentBudgetBeforeResume(ctx, r, hard, true)
+		}
 		return e.finalizeSpentBudgetBeforeResume(ctx, r, hard, true)
 	}
 	return nil
+}
+
+// pauseSpentBudgetBeforeResume re-parks a policy-pause run whose budget is
+// still over its cap at resume time: the same persisted accounting and cap
+// raises as finalizeSpentBudgetBeforeResume, the pause disposition instead
+// of the failure — status back to paused_operator, checkpoint kept, and
+// the run_paused event re-emitted so the banner stays truthful.
+func (e *Engine) pauseSpentBudgetBeforeResume(ctx context.Context, r *store.Run, check *budgetCheckResult, hardLimit bool) error {
+	nodeID := r.Checkpoint.NodeID
+	if err := e.emit(ctx, r.ID, store.EventBudgetExceeded, nodeID, budgetExceededData(check)); err != nil && e.logger != nil {
+		e.logger.Warn("failed to emit budget_exceeded event: %v", err)
+	}
+	if err := e.store.UpdateRunStatus(ctx, r.ID, store.RunStatusPausedOperator, ""); err != nil {
+		if e.logger != nil {
+			e.logger.Error("failed to persist the re-park status: %v", err)
+		}
+		return e.finalizeSpentBudgetBeforeResume(ctx, r, check, hardLimit)
+	}
+	if err := e.emit(ctx, r.ID, store.EventRunPaused, nodeID, map[string]any{
+		"reason":     "budget_cap_run",
+		"dimension":  check.dimension,
+		"used":       check.used,
+		"limit":      check.limit,
+		"hard_limit": hardLimit,
+	}); err != nil && e.logger != nil {
+		e.logger.Warn("failed to emit run_paused event: %v", err)
+	}
+	e.logger.Warn("run %s stays paused: budget %s cap still reached (%.0f/%.0f) at resume, policy pause",
+		r.ID, check.dimension, check.used, check.limit)
+	// The sentinel aborts the resume with the pause, not a failure: the
+	// status is already back to paused_operator, the checkpoint is the
+	// rich one the park kept.
+	return fmt.Errorf("%w: budget %s cap still reached (%.0f/%.0f) — raise the budget and resume again",
+		ErrRunPausedOperator, check.dimension, check.used, check.limit)
 }
 
 func (e *Engine) finalizeSpentBudgetBeforeResume(ctx context.Context, r *store.Run, check *budgetCheckResult, hardLimit bool) error {

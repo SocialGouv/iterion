@@ -13,12 +13,13 @@ import (
 // a dotted var path, the raw `{{!…}}` form, an unterminated one — is C148,
 // a warning (the runtime failure at the first delegation stays loud, and a
 // bot in the field keeps compiling); C087 no longer calls a templated
-// provider "ignored"; a supervisor's model, which renders no template, gets
-// C148 too. examples/clarify shipped `model: "{{vars.model}}"` and died at
+// provider "ignored". A supervisor's model holds the same line at its own
+// resolution — whole {{vars.name}} only, resolved at spawn from the run's
+// resolved vars. examples/clarify shipped `model: "{{vars.model}}"` and died at
 // the first delegation with an "invalid spec" from claw, after a clean
 // validate.
 func TestRoutingFieldRefs(t *testing.T) {
-	const head = "vars:\n  m: string = \"anthropic/claude-sonnet-4-6\"\n  b: string = \"claw\"\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
+	const head = "vars:\n  m: string = \"anthropic/claude-sonnet-4-6\"\n  b: string = \"claw\"\n  tags: string[] = \"a,b\"\n\nprompt p:\n  Hi.\n\nschema s:\n  ok: bool\n\n"
 	agent := func(props string) string { return "agent a:\n  system: p\n" + props }
 	type tc struct {
 		name string
@@ -58,8 +59,16 @@ func TestRoutingFieldRefs(t *testing.T) {
 			body: "human a:\n  instructions: p\n  output: s\n  interaction: llm\n  system: p\n  model: \"{{outputs.a.m}}\"\n", want: DiagRoutingFieldRef},
 		{name: "human interaction_model from an output",
 			body: "human a:\n  instructions: p\n  output: s\n  interaction: llm\n  system: p\n  interaction_model: \"{{outputs.a.m}}\"\n", want: DiagRoutingFieldRef},
-		{name: "supervisor model is not rendered at all",
-			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{vars.m}}\"\n", want: DiagRoutingFieldRef},
+		{name: "supervisor model from a declared var",
+			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{vars.m}}\"\n"},
+		{name: "supervisor model from an undeclared var",
+			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{vars.nope}}\"\n", want: DiagUndeclaredVar},
+		{name: "supervisor model from an output",
+			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{outputs.a.m}}\"\n", want: DiagRoutingFieldRef},
+		{name: "supervisor model from a dotted vars path",
+			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{vars.m.id}}\"\n", want: DiagRoutingFieldRef},
+		{name: "supervisor model from a list var",
+			body: agent("  model: \"anthropic/claude-sonnet-4-6\"\n") + "\nsupervisor sup:\n  watches: [a]\n  model: \"{{vars.tags}}\"\n", want: DiagRoutingFieldRef},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

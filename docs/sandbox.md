@@ -352,9 +352,14 @@ ephemeral port). The container receives the proxy URL via standard
 `HTTPS_PROXY` / `HTTP_PROXY` env vars and reaches it via the
 `host.docker.internal` alias.
 
-**Default mode is `open`** — no proxy, full egress. Workflows that
-need the stricter security-first posture opt in by declaring an
-explicit `network:` block:
+**Default mode is `open`** — no proxy, full egress — except on a
+repo-defined sandbox (mode `auto` with a found `devcontainer.json`)
+where the workflow declares no `network:` block: there the default is
+the `iterion-default` allowlist preset, because open egress on such a
+run is the repository's choice, not the operator's (see [the
+devcontainer trust rules](#the-devcontainer-is-the-repositorys-file-not-the-operators)).
+Workflows that need the stricter security-first posture elsewhere opt
+in by declaring an explicit `network:` block:
 
 ```iter fragment:workflow
 sandbox:
@@ -367,12 +372,16 @@ sandbox:
 
 The shipped **`iterion-default`** preset is the recommended
 starting point for allowlist mode: it covers the LLM endpoints
-(anthropic, openai, xAI/Grok, openrouter, bedrock, googleapis,
-azure, mistral, z.ai) plus package registries (npm, PyPI, golang
-proxy) plus code hosts (github, gitlab, bitbucket) plus apt
-mirrors. It is **not** applied implicitly — operators name it
-explicitly so the default-open posture and the curated-allowlist
-posture are unambiguous from the YAML.
+(anthropic, openai and the ChatGPT forfait's chatgpt.com, xAI/Grok,
+openrouter, bedrock, googleapis, azure, mistral, z.ai, moonshot)
+plus package registries (npm, PyPI, golang proxy) plus code hosts
+(github, gitlab, bitbucket) plus apt mirrors. It is **not**
+applied implicitly to a workflow that
+declares `network:` — operators name it explicitly so the
+default-open posture and the curated-allowlist posture are
+unambiguous from the YAML. Its one implicit application is the
+repo-defined sandbox above, which announces itself with the
+`sandbox_network_defaulted` event.
 
 By default the proxy does NOT terminate TLS — only the CONNECT
 host:port is inspected, and the encrypted bytes pass through
@@ -408,6 +417,32 @@ Modes:
 **IP literals are refused by default in allowlist mode** even when
 their hostname is allowed, which closes the cloud-metadata exfiltration
 vector (169.254.169.254 etc.). Add explicit IP rules to relax.
+
+**The proxy never dials its own host.** A destination on the proxy
+host's loopback, the unspecified address (`0.0.0.0`, `::` — a connect
+there lands on the loopback) or a link-local address (169.254.169.254
+among them) is refused whatever the policy and however it is spelt — an
+IP literal, `localhost.`, a hosts-file alias, a DNS answer: the check
+runs on the address the proxy is about to connect to, and the request
+is answered `502` naming the refusal. The one sanctioned way to the
+host is the `host.docker.internal` alias (the per-run MCP listeners),
+which the proxy dials on the host's loopback.
+
+**The gateway's name is pinned.** When the deployment serves an
+[OpenAI-compatible gateway](backends.md#the-openai-compatible-gateway-openai_compatible)
+(`OPENAI_COMPATIBLE_BASE_URL`), the proxy resolves the gateway's host
+itself through iterion's SSRF guard and connects only to an address the
+guard validated — no loopback, private, link-local, multicast or
+cloud-metadata one, unless `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1`. Every
+client of the run that reaches that name is held to it, through a CONNECT
+tunnel, a plain-HTTP forward or an inspected tunnel alike, so an answer the
+guard refuses is refused where the connection is made, whatever the
+runner's own lookup saw: the request is answered `502` and a
+`network_blocked` event names the refusal. No request to the gateway rides
+a connection the proxy pooled. The rules still match the gateway by its
+name. The proxy reads the gateway from the environment when the run starts
+and at every connection, so a gateway an environment reloaded mid-run names
+is pinned from the next connection on ([details](backends.md#the-openai-compatible-gateway-openai_compatible)).
 
 Blocked requests surface to the run as a `network_blocked` event in
 `events.jsonl`:
@@ -460,6 +495,129 @@ workspace if present; otherwise it falls back to the published
 That fallback ships with `git`, Node 24, devbox, and Nix preinstalled,
 so the typical "agent installs deps, edits code, opens a PR" workflow
 runs out of the box. See [Default image](#default-image) below.
+
+#### The devcontainer is the repository's file, not the operator's
+
+A found `devcontainer.json` defines the run's sandbox — and the
+repository under review authored it. iterion therefore trusts the
+workflow over the devcontainer on env and network — the two channels
+where the repository could otherwise speak for the operator — and
+never lets the repository speak for the operator:
+
+- **Env.** The workflow's `sandbox.env:` keys win per key; the
+  devcontainer's `containerEnv`/`remoteEnv` fill what the workflow
+  did not author. Keys the repository contributed never shadow the
+  values the launch environment carried: an env var the operator
+  changed for the run (the overlay carries ONLY the keys the launch
+  environment changed or added relative to iterion's own
+  environment) overwrites a repo-contributed one (the same authority
+  rule a project `.env` lives under). The devcontainer's own keys are
+  additionally screened against a deny class, and denied keys are
+  removed outright with a `sandbox_env_denied` event naming each key
+  whose repository value the screen refused (`containerEnv` wins a
+  collision with `remoteEnv`, so a refused `containerEnv` value
+  removes the name). The class, matched case-insensitively except for
+  the exact names:
+  - the suffixes `*_BASE_URL`, `*_API_KEY`, `*_TOKEN`, `*_SECRET`,
+    `*_PROXY` (covering `NO_PROXY`);
+  - the configuration namespaces of the agents iterion runs, of the
+    cloud SDKs their providers authenticate through, of git and of the
+    code loaders: `ITERION_*`, `CLAW_*`, `CLAWD_*` and `HOOK_*` (the
+    in-container runner, the payload its settings hooks — the
+    permission gate among them — are told about, and claw's own
+    namespace: a plugin tool's payload and its telemetry knobs),
+    `CLAUDE_*` (the claude CLI, whose cloud-provider switches
+    `CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY`, … it reads before
+    any token), `CCR_*`, `ANT_OTEL_*`, `ANT_CLAUDE_CODE_*`,
+    `ANTHROPIC_*`, `OPENCODE_*`, `AWS_*`, `AZURE_*`, `GOOGLE_*`,
+    `GCE_METADATA_*`, `CLOUDSDK_*`, `VERTEX_REGION_*`, `OTEL_*`,
+    `SENTRY_*` (the iterion binary is its own in-container runner and
+    wires error tracking at startup: unset the package is off, so a
+    planted DSN switches an outbound channel on), `GIT_*`, the forge
+    CLIs' `GH_*` and `GLAB_*`, the dynamic loader's `LD_*`,
+    `OPENSSL_*`, nix's `NIX_*` (a `plugin-files` in `NIX_CONFIG` is
+    dlopened by the `devbox install` iterion itself runs), bash's
+    exported functions `BASH_FUNC_*`, the bun
+    runtime's `BUN_*` (`BUN_OPTIONS=--preload` runs a script inside
+    the claude CLI's own process) and `NPM_CONFIG_*` (npm turns
+    `NPM_CONFIG_NODE_OPTIONS` / `_SCRIPT_SHELL` into the options and
+    the shell of every node child it spawns, `npx`-launched MCP
+    servers included);
+  - the exact names `NODE_OPTIONS`, `NODE_PATH`,
+    `GCONV_PATH`, `SHELL`, `BASH_ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`,
+    `ENV`, `ZDOTDIR`, `PATH`, `GOFLAGS`, `SSH_ASKPASS`,
+    `SSH_ASKPASS_REQUIRE`, `EDITOR`, `VISUAL`, `TAR_OPTIONS` (GNU tar
+    prepends it to its own arguments, and `--checkpoint-action=exec=`
+    is an option), `GOENV` / `GOTOOLCHAIN` / `GOROOT` / `GOAUTH` (the
+    first names a file that sets `GOFLAGS` itself), `KUBECONFIG` /
+    `DOCKER_HOST` / `DOCKER_CONFIG` (a kubeconfig's `exec` plugin and a
+    docker `credsStore` are programs); the agents' config homes `CODEX_HOME`,
+    `KIMI_CODE_HOME`, `PI_CODING_AGENT_DIR`; `OPENAI_API_BASE`,
+    `BEDROCK_REGION`, `CLOUD_ML_REGION`, `GCLOUD_PROJECT` (and the
+    lower-case `gcloud_project` the CLI also reads),
+    `AGENT_PROXY_URL`, `SESSION_INGRESS_URL` (the claude CLI's API base
+    when no `ANTHROPIC_BASE_URL` is set — the usual case),
+    `BETA_TRACING_ENDPOINT`,
+    `ENABLE_BETA_TRACING_DETAILED`, `ENABLE_ENHANCED_TELEMETRY_BETA`;
+    the binaries a path variable alone names — `VITALS_EMITTER_BIN`,
+    `SDK_NATIVE_BIN`, `DS_CHROMIUM_PATH`; Azure's managed-identity chain off the
+    `AZURE_*` prefix — `IDENTITY_ENDPOINT`, `IDENTITY_HEADER`,
+    `IDENTITY_SERVER_THUMBPRINT`, `IMDS_ENDPOINT`, `MSI_ENDPOINT`,
+    `DEFAULT_IDENTITY_CLIENT_ID`, `MSAL_FORCE_REGION`; and the TLS
+    trust `NODE_EXTRA_CA_CERTS`,
+    `NODE_TLS_REJECT_UNAUTHORIZED`, `SSL_CERT_FILE`, `SSL_CERT_DIR`,
+    `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
+    `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`, `GRPC_SSL_CIPHER_SUITES`.
+
+  **Where the class stops.** It takes the names that steer a process
+  *iterion* starts for the operator, swept against the claude CLI's own
+  192-name list of code-executing environment. Deliberately outside:
+  the toolchain variables no process iterion starts reads (compilers
+  and their flags, build systems, language runtimes, version managers —
+  they configure builds of the repository's code, which already runs in
+  that container; that question, not the family, is the membership
+  test: `GOFLAGS`, `PATH` and `NIX_*` are toolchain variables too, and
+  they are denied because iterion's own nodes and provisioning run
+  under them), what
+  needs a terminal nobody has there (`PAGER`, `LESSOPEN`, `BROWSER`),
+  and `HOME` / the `XDG_*` dirs, whose own road is tracked separately.
+
+  A planted `ANTHROPIC_BASE_URL` would re-route every LLM call the
+  container makes to the planter's collector; a planted
+  `CLAUDE_CODE_USE_BEDROCK` with the planter's `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` would send every prompt of the run's
+  `claude_code` nodes to the planter's AWS account — an allowlist that
+  lets the run reach the provider lets the redirect through — and the
+  planted credentials alone do it under a switch, or a Bedrock model,
+  the operator chose; a planted `BASH_FUNC_git%%` would run the
+  planter's function in place of `git` in every `bash -c`, and
+  `LD_PRELOAD`, `PATH`, `BASH_ENV` and `GOFLAGS` would execute the
+  planter's code before any prompt is read. The same names in the
+  workflow's `sandbox.env:` or the launch environment are the
+  operator's and pass untouched: a repository whose own tooling needs,
+  say, `AWS_REGION` gets it from the workflow. Malformed entries (a
+  name carrying `=`, a newline or a NUL; a value carrying a newline)
+  are dropped the same way — the docker driver would refuse the run
+  outright and the kubernetes driver would drop them silently.
+- **Network.** The workflow's `network:` block is carried into a
+  found-devcontainer run exactly as into a default-image run. When
+  the workflow declares none, the run does not inherit the
+  repository's implicit "open" posture: the `iterion-default`
+  allowlist preset applies and a `sandbox_network_defaulted` event
+  says so. A block written without a `mode:` (C312 warns at compile)
+  is completed to the allowlist its content is shaped like — and
+  rules without a preset also gain the `iterion-default` base, since
+  a rules-only allowlist would leave out every LLM endpoint and kill
+  the run on its first model call; the event says when the runtime
+  chose that base. Declare `network: {mode: open}` (or any other
+  policy) to choose explicitly.
+
+The devcontainer's image/build, mounts, user, `workspaceFolder` and
+`postCreateCommand` still define the container it describes — that is
+auto mode's contract. The default-image fallback branches (no
+devcontainer, or one the sandbox cannot use) keep the historical
+open-network default: nothing repo-authored survives into those
+specs.
 
 Block form without `mode:` is treated as `mode: inline`. You may also
 write `mode: inline` explicitly. Inline mode must declare exactly one of
@@ -661,13 +819,17 @@ each project's profile bin dir
 container `PATH` at container creation, so every exec inherits it with
 nothing to source.
 
-The prepend never clobbers. A `sandbox.env.PATH:` you declare (or a
-devcontainer `containerEnv.PATH`) is kept as the suffix; when you
-declare none, the base is the FHS default
+The prepend never clobbers. A `sandbox.env.PATH:` you declare is kept
+as the suffix; when you declare none, the base is the FHS default
 (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`) that
-the iterion sandbox images ship. An image with a non-standard `PATH`
-should declare `sandbox.env.PATH:` explicitly so its own entries are
-preserved.
+the iterion sandbox images ship. A devcontainer `containerEnv.PATH` is
+not honored — `PATH` is in the env deny class (a repository must not
+choose what binaries its review runs against) — so with devbox
+provisioning the base is the FHS default unless the workflow declares
+one; without devbox provisioning there is no prepend and the image's
+own `PATH` stands. An image with a non-standard
+`PATH` should declare `sandbox.env.PATH:` explicitly so its own entries
+are preserved.
 
 ### Best-effort, never silent
 
@@ -827,6 +989,32 @@ binary in (subject to architecture matching) via `runArgs`:
 }
 ```
 
+**What crosses into the runner.** The runner rebuilds its model
+registry from the environment the launcher forwards, and from nothing
+else of the host's: the provider keys, the endpoints they are spent on
+(`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `MOONSHOT_BASE_URL`,
+`XAI_BASE_URL`, …), the spend and client-identity settings, and the
+knobs its own loop reads (`ITERION_CLAW_STREAM_COLD_TIMEOUT` /
+`_IDLE_TIMEOUT`) — each when the host sets it. The endpoints on that
+list (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `MOONSHOT_BASE_URL`,
+`XAI_BASE_URL`, `AZURE_OPENAI_ENDPOINT`) cross as explicit EMPTIES when
+the host leaves them unset, and the exec env outranks the container's,
+so nothing inside — the image's `ENV`, the workflow's `sandbox.env:`,
+the workspace's `.env` — re-points a forwarded credential: the host env
+is the supported channel for them. Any OTHER name the host leaves unset
+is whatever the container's own environment says — its image, a
+`containerEnv` key the deny class above lets through, and the
+workspace's `.env`, which the runner loads at start as the CLI does —
+so set what you rely on, and keep the run on an allowlist. The retry budget the launcher
+resolves from `ITERION_NODE_MAX_RETRIES` / `_TRANSIENT_RETRIES` rides the
+task envelope instead: it bounds billed attempts, so the container's own
+environment never sets it — a runner image older than that field keeps its built-in
+budget (3 attempts, 6 for a transient failure) until the image carries
+this release. A forwarded endpoint is dialled from inside the container:
+a URL on the host's loopback (`127.0.0.1`, `localhost`) names the
+container itself there, and under `network: allowlist` its host must be
+allowed.
+
 **V2-1+ wire format**: bidirectional NDJSON envelopes between
 launcher and runner (see `pkg/backend/delegate/envelope.go`). Each
 line is one envelope of typed payload (`task`, `tool_call`,
@@ -854,10 +1042,10 @@ across the channel.
 >   `file_edit`, `notebook_edit`, `glob`, `grep`, `workspace_grep`,
 >   `skill`, `read_image`, `web_fetch`, `remote_trigger`,
 >   `send_user_message`, `sleep`, `structured_output`, and `agent` (the
->   runner registers claw's agent tool in the container — the same
->   metadata-only form as an unsandboxed node gets, which starts no child
->   conversation). A missing local registration is a fatal runner error,
->   never a proxy.
+>   runner registers claw's agent tool in the container — and, with no
+>   subagent runner wired, it refuses every call with the same typed
+>   capability refusal an unsandboxed node gets, C159). A missing local
+>   registration is a fatal runner error, never a proxy.
 > - **launcher** — launcher-owned state, run with the launcher's process:
 >   `ask_user` and the async pair, every `mcp.*` / `mcp_*` / `mcp__*`
 >   tool, `list_mcp_resources`, `read_mcp_resource`, `mcp_auth`, the
@@ -1168,7 +1356,7 @@ Running claw's own MCP servers inside the container — parity with
 | `docker`     | host has `docker` on PATH                  | Phase 1 ✅ |
 | `podman`     | host has `podman` on PATH (no `docker`)    | Phase 1 ✅ (shares the docker code path) |
 | `kubernetes` | running in-cluster (`ITERION_MODE=cloud`)  | Phase 5 V1 ✅ + V2-5 NetworkPolicy |
-| `noop`       | always constructible, isolates nothing. Never selected FOR an active mode — `DriverForSpec` refuses instead, and the runtime then degrades `auto` / parks `inline`. Its role is to be the always-available last entry of the preference walk, which is how "this host cannot isolate" is detected; a run reaches it only from a caller that pins it (`FactoryOptions.PreferredDriver`) | ✅ |
+| `noop`       | always constructible, isolates nothing. Never selected FOR an active mode — `DriverForSpec` refuses instead, and the runtime then degrades `auto` / parks `inline`. Its role is to be the always-available last entry of the preference walk, which is how "this host cannot isolate" is detected; a run reaches it only from a caller that pins it (`FactoryOptions.PreferredDriver`). The spec's seeded env (`ITERION_TREE_NOISE` pathspecs, the default locale) is folded into its commands like a real driver's, so an engine-compiled script pinned to `noop` still reads what the compiler seeded — key by key, the host passthrough keeps a non-empty value the operator's own environment already carries (an empty ambient export is not a claim — the seed fills the gaps) | ✅ |
 
 `iterion sandbox doctor` reports which driver is selected on the
 current host and what capabilities it advertises.
@@ -1617,6 +1805,12 @@ restrictive for your workflow (extend `network.rules` or drop back
 to `mode: open`), or the agent is genuinely talking to a domain
 you didn't intend to allow. Check `events.jsonl` for the host
 pattern that fired.
+
+A reason starting `pinned host:` is the gateway's pin (see
+[Network policy](#network-policy)) refusing the address the gateway's
+name resolved to: a private answer for a gateway that should be public —
+a rebinding resolver, or a self-hosted gateway that needs
+`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` — or a name that did not resolve.
 
 A few claude-code endpoints (telemetry / MCP probes) are
 **silent-denied** by default — the connection is still refused, but

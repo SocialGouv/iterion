@@ -1251,18 +1251,41 @@ func rawTemplateValue(val any, _ ValueShape) string {
 // `bash -c '...' _ "$1" "$2"`. The braced form is also the only form
 // SKILL.md documents, so tightening to it is BC for documented usage.
 func expandBracedEnv(s string) string {
+	out, _ := expandBracedEnvSteps(s)
+	return out
+}
+
+// expandBracedEnvSteps is expandBracedEnv with the number of source positions
+// the scan read — the loop's own and the closing-brace searches' — which is
+// what a test asserts linearity on: a duration ratio would say the same thing
+// and flake on a shared runner (#1393).
+func expandBracedEnvSteps(s string) (string, int) {
 	var out strings.Builder
 	out.Grow(len(s))
+	steps := 0
 	i := 0
 	for i < len(s) {
+		steps++
 		if s[i] == '$' && i+1 < len(s) && s[i+1] == '{' {
 			// Find matching '}'.
 			end := strings.IndexByte(s[i+2:], '}')
+			// The suffix scan is accounted before branching, so a revert of
+			// the early-stop below cannot take the counter with it: the
+			// linearity witness must still see a rescan-per-`${` as the
+			// quadratic work it is.
+			scanned := end + 1
 			if end == -1 {
-				// Unterminated — pass through verbatim.
-				out.WriteByte(s[i])
-				i++
-				continue
+				scanned = len(s) - (i + 2)
+			}
+			steps += scanned
+			if end == -1 {
+				// Unterminated — and so is every later `${`, since no `}`
+				// follows this one anywhere: the rest of s passes through
+				// verbatim, in one write. Stepping one byte and searching
+				// again from the next `${` re-reads the same suffix from
+				// every unmatched open, which is quadratic in the template.
+				out.WriteString(s[i:])
+				break
 			}
 			body := s[i+2 : i+2+end]
 			// Only treat the body as an env var reference when it
@@ -1300,7 +1323,7 @@ func expandBracedEnv(s string) string {
 		out.WriteByte(s[i])
 		i++
 	}
-	return out.String()
+	return out.String(), steps
 }
 
 // bracedEnvWouldExpand reports whether expandBracedEnv would produce a

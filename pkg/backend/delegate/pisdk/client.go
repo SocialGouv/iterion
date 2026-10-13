@@ -64,6 +64,15 @@ type ClientOptions struct {
 	// model, extension load failure) appear ONLY here, and pi exits non-zero
 	// on an error diagnostic — before any handshake completes.
 	OnStderr func(line string)
+	// OnSubtreeWaitExpired, when set, reports Close's orphan sweep burning
+	// its whole wait budget with the process group still resolvable. That is
+	// the pinned case: a member SIGKILL cannot finish — a zombie whose
+	// parent never reaps it (iterion itself as PID-1 container, say) keeps
+	// the group alive forever, so ESRCH never comes. It may also fire when
+	// the group probe failed with a non-ESRCH error (EPERM), which indistinguishably
+	// means "cannot confirm the group is gone". It runs inline on the Close
+	// path and must return quickly. The zero value keeps the expiry silent.
+	OnSubtreeWaitExpired func(pid int, budget time.Duration)
 	// RequestTimeout caps a single request. Zero uses defaultRequestTimeout.
 	RequestTimeout time.Duration
 }
@@ -493,7 +502,7 @@ func (c *Client) Close() error {
 	// been recycled, or the kill lands on an unrelated group.
 	if c.cmd.Process != nil && !c.leaderPidRecycled(c.cmd.Process.Pid) {
 		_ = killSubtree(c.cmd.Process.Pid)
-		awaitSubtreeGone(c.cmd.Process.Pid, 2*time.Second)
+		awaitSubtreeGone(c.cmd.Process.Pid, 2*time.Second, c.opts.OnSubtreeWaitExpired)
 	}
 
 	// Let the dispatcher finish delivering what was already read, so a caller

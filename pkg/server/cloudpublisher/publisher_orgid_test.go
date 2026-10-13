@@ -19,9 +19,12 @@ import (
 type fakeTeamResolver struct {
 	orgs    map[string]string
 	orgDocs map[string]identity.Org
-	err     error
-	orgErr  error
-	calls   int
+	// llmFallback answers Team.LLMFallback per team id; a team absent from
+	// the map carries the empty (platform default) policy.
+	llmFallback map[string]string
+	err         error
+	orgErr      error
+	calls       int
 }
 
 func (f *fakeTeamResolver) GetTeam(_ context.Context, id string) (identity.Team, error) {
@@ -33,7 +36,7 @@ func (f *fakeTeamResolver) GetTeam(_ context.Context, id string) (identity.Team,
 	if !ok {
 		return identity.Team{}, identity.ErrNotFound
 	}
-	return identity.Team{ID: id, OrgID: orgID}, nil
+	return identity.Team{ID: id, OrgID: orgID, LLMFallback: f.llmFallback[id]}, nil
 }
 
 func (f *fakeTeamResolver) GetOrg(_ context.Context, id string) (identity.Org, error) {

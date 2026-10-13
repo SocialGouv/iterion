@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -30,7 +31,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			Candidates: []runview.CredentialPreviewCandidate{}, Wires: []runview.CredentialPreviewWire{},
 			Pool:     runview.CredentialPreviewPool{Reason: "credentials_present", Wants: []string{}},
 			Warnings: []string{"Observation only: no secret was opened, no provider was probed, and no capacity was reserved. Selected slots assume successful materialization and admission; model routing decides which slot is spent. Alternatives show current metadata, not a guaranteed future grant.", "Runner environment credentials and required workflow secrets are outside this preview."}},
-		api: map[secrets.Provider]int{}, pinnedAPI: map[secrets.Provider]int{}, oauth: map[string]int{}, skippedAPI: map[secrets.Provider]int{}, skippedOAuth: map[string]int{}, accountGroups: map[string]string{},
+		api: map[secrets.Provider]int{}, pinnedAPI: map[secrets.Provider]int{}, oauth: map[string]int{}, skippedAPI: map[secrets.Provider]int{}, skippedOAuth: map[string]int{}, accountGroups: map[string]string{}, floorHeld: map[int]bool{},
 	}
 	x.orgID = p.orgIDForTeam(ctx, spec.Context.TeamID)
 	// The same canonicalisation the live walk applies, or the preview would
@@ -52,6 +53,23 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	x.policy = p.sharedTierPolicyFor(ctx)
 	if spec.LLMRoutePolicy != nil {
 		x.policy = x.policy.withSlotWhitelist(spec.LLMRoutePolicy.PairOrder)
+	}
+	// The team's credential-fallback policy, the same fresh read the launch
+	// applies — UNCONDITIONALLY, like the launch: a failed or invalid read
+	// refuses even an env-funded run there, so the preview warns on it
+	// everywhere. The preview never refuses (it observes), so a failed read
+	// walks the shared tiers with a warning saying the live launch is the
+	// one that decides; "none" only shapes the shared tiers below.
+	sovereignPreview := false
+	policy, ferr := p.llmFallbackForTeam(ctx, spec.Context.TeamID)
+	switch {
+	case ferr != nil:
+		x.warn("The team's llm_fallback policy could not be read; the live launch refuses on this error and this preview is conditional.")
+	case policy == identity.LLMFallbackNone:
+		sovereignPreview = true
+		if !envFunded {
+			x.warn("The team runs with llm_fallback=none: the shared tiers (org, pool, platform) are not consulted, and a route nothing of the team's own funds refuses the launch.")
+		}
 	}
 	if envFunded {
 		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: no credential is acquired for it.")
@@ -93,6 +111,10 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			x.oauthStage("user", spec.OwnerID, usagecap.TenantScope(spec.Context.TeamID), false, true)
 			x.oauthStage("team", secrets.OrgOwnerKey(spec.Context.TeamID), usagecap.TenantScope(spec.Context.TeamID), false, true)
 		case credentialTierOrg:
+			if sovereignPreview {
+				x.warn("Org tier not consulted: the team runs with llm_fallback=none.")
+				return nil
+			}
 			if p.orgCredentialAudience(ctx, x.orgID, spec.Context.TeamID) {
 				// The live tier's own order (the policy snapshot): a preview
 				// filling in another order names a credential the launch
@@ -108,6 +130,10 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 				x.warn("Org tier not available to this team under the current audience or its metadata could not be read.")
 			}
 		case credentialTierPool:
+			if sovereignPreview {
+				x.warn("Pool not consulted: the team runs with llm_fallback=none.")
+				return nil
+			}
 			// The live walk's own filter: a provider a key sealed for its
 			// routes already funds is not asked of the pool.
 			poolWants := withoutFundedProviders(wants, func(prov string) bool {
@@ -148,6 +174,10 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 				}
 			}
 		case credentialTierPlatform:
+			if sovereignPreview {
+				x.warn("Platform tier not consulted: the team runs with llm_fallback=none.")
+				return nil
+			}
 			if p.platformAudienceAllows(ctx, "", x.orgID, spec.Context.TeamID) {
 				x.policy.inOrder(func() {
 					x.oauthStage("platform", secrets.PlatformOwnerKey, usagecap.ScopePlatform, true, active)
@@ -174,6 +204,10 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 				for _, provider := range allKnownProviders {
 					i, ok := x.skippedAPI[provider]
 					if !ok || tierOf(i) != tier {
+						continue
+					}
+					if x.floorHeld[i] {
+						x.out.Candidates[i].Reason += " Not restored: the reserve holds it for another workload — the credential is usable, it is spoken for."
 						continue
 					}
 					outcome := sealDefault
@@ -212,6 +246,10 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 				sort.Strings(kinds)
 				for _, kind := range kinds {
 					if i := x.skippedOAuth[kind]; tierOf(i) == tier && !x.taken(kind) {
+						if x.floorHeld[i] {
+							x.out.Candidates[i].Reason += " Not restored: the reserve holds it for another workload — the credential is usable, it is spoken for."
+							continue
+						}
 						x.oauth[kind] = i
 						x.out.Candidates[i].State = "restored"
 					}
@@ -282,7 +320,65 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	if len(wires) == 0 {
 		x.warn("No database credential is predicted; runner environment availability is unknown.")
 	}
+	// The routing fallback door's state (ADR-121 § Delivery 2): computed
+	// OUTSIDE the tier walk by the same derivation the live consult runs
+	// (doorWantsFor — the difference is only the serves argument, the
+	// preview's metadata assuming materialization). The pool block above
+	// stays bypassed for exactly these runs by the plan, so the door
+	// answers in its own fields; when armed, a second read-only Preview
+	// with FallbackOnly names what the donor-consented candidates look
+	// like. Same arm conditions as the live door: a run that holds its
+	// own credential, no whole-bundle grant predicted, not env-funded,
+	// and a policy whose ladder can dispatch a missing kind.
+	if !envFunded && len(x.api)+len(x.oauth) > 0 && !x.poolGranted &&
+		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil && !sovereignPreview {
+		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, wf, buildModelOverrides(spec.Launch.ModelOverrides), doorServesMetadata(x))
+		if !ok {
+			x.out.Pool.DoorReason = "no_dispatchable_wants"
+		} else {
+			doorWants := make([]string, 0, len(wants))
+			for _, w := range wants {
+				doorWants = append(doorWants, string(w.Source)+":"+w.Ref)
+			}
+			x.out.Pool.DoorWants = doorWants
+			door, derr := p.credPool.Preview(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: wants, FallbackOnly: true})
+			if derr != nil {
+				x.out.Pool.DoorReason = "unknown"
+				x.warn("Fallback-door pool metadata unavailable; selection is conditional.")
+			} else if string(door.Reason) == "" {
+				// A healthy pool that would serve: the broker leaves its
+				// reason empty on success — the preview cannot grant, say
+				// what it WOULD serve, in the door_wants spelling.
+				x.out.Pool.DoorReason = "would_serve:" + string(wants[0].Source) + ":" + wants[0].Ref
+			} else {
+				x.out.Pool.DoorReason = "consulted:" + string(door.Reason)
+			}
+		}
+	}
 	return x.out, nil
+}
+
+// doorServesMetadata is the preview's answer to doorServes: the same
+// held-slot predicate over the metadata that assumes materialization.
+func doorServesMetadata(x *credentialPreview) func(_, credential string) bool {
+	return func(_, credential string) bool {
+		for prov := range x.api {
+			if slotOfProvider(prov) == credential {
+				return true
+			}
+		}
+		for prov := range x.pinnedAPI {
+			if slotOfProvider(prov) == credential {
+				return true
+			}
+		}
+		for kind := range x.oauth {
+			if slotOfKind(kind) == credential {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 type credentialPreview struct {
@@ -310,6 +406,10 @@ type credentialPreview struct {
 	// and its per-tier "holds an Anthropic-native credential" probe.
 	policy  sharedTierPolicy
 	natives map[string]*tierNative
+	// floorHeld are the candidates a budget-floor reservation passed over:
+	// usable, but spoken for by another workload. The live restore never
+	// hands one back (skipTracker.floorHeld), so the preview's must not either.
+	floorHeld map[int]bool
 }
 
 func (x *credentialPreview) warn(s string) { x.out.Warnings = append(x.out.Warnings, s) }
@@ -393,7 +493,7 @@ func (x *credentialPreview) apiStage(tier, tenant, owner, meter, botID string, p
 		if c.Tier == "org" || c.Tier == "platform" {
 			c.Label = "Shared " + c.Tier + " API key"
 		}
-		closed := x.windows(ctx, &c, usageBackendForProvider(k.Provider), meter, k.Fingerprint, false)
+		closed, floorHeld := x.windows(ctx, &c, usageBackendForProvider(k.Provider), meter, k.Fingerprint, false)
 		if k.MaxConcurrentRuns > 0 {
 			c.Capacity = &runview.CredentialPreviewCapacity{MaxConcurrentRuns: k.MaxConcurrentRuns}
 			if x.p.store != nil && k.Fingerprint != "" {
@@ -446,6 +546,9 @@ func (x *credentialPreview) apiStage(tier, tenant, owner, meter, botID string, p
 			}
 		}
 		i := x.add(c)
+		if floorHeld {
+			x.floorHeld[i] = true
+		}
 		// `first` feeds the restore stage, which hands a skipped candidate the
 		// slot when nothing else filled the wire. A key excluded by its
 		// audience must stay out of that too, or the preview would predict
@@ -509,12 +612,15 @@ func (x *credentialPreview) oauthStage(tier, owner, meter string, byWire, active
 			}
 			c.AccountGroup = group
 		}
-		closed := x.windows(x.ctx, &c, usageBackendForKind(rec.Kind), meter, rec.Fingerprint, true)
+		closed, floorHeld := x.windows(x.ctx, &c, usageBackendForKind(rec.Kind), meter, rec.Fingerprint, true)
 		if !active || byWire && x.taken(kind) {
 			c.Selection = "not_consulted"
 			c.Reason += " This tier is bypassed for this wire in the current launch."
 		}
 		i := x.add(c)
+		if floorHeld {
+			x.floorHeld[i] = true
+		}
 		if !active {
 			continue
 		}
@@ -536,18 +642,35 @@ func (x *credentialPreview) oauthStage(tier, owner, meter string, byWire, active
 
 // windows uses the same cached refusal/cap evaluation and probe predicates as
 // launch. A needed probe is reported, never executed by an observation.
-func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPreviewCandidate, backend, meter, fp string, oauth bool) bool {
+// floorHeld reports a credential a budget-floor reservation passes over for
+// this bot — refused, yet not one the restore may hand back.
+func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPreviewCandidate, backend, meter, fp string, oauth bool) (closed, floorHeld bool) {
 	if x.p.usageCaps == nil || backend == "" || fp == "" {
 		c.Reason = "No usage-window observation is available; the launch assumes availability."
-		return false
+		return false, false
+	}
+	// The RAW bot id, the budget floor's key (previewBotID is the audience's
+	// folded spelling): the launch judges these readings against the cap the
+	// OTHER workloads' reservations leave this bot.
+	botID := x.out.Context.BotID
+	block := func(until time.Time, why string) {
+		c.State = "blocked"
+		c.Reason = why
+		c.ReopensAt = &until
 	}
 	lctx, cancel := context.WithTimeout(ctx, usageCapLookupTimeout)
 	defer cancel()
 	key := usagecap.Key(backend, meter, fp)
 	readings, err := x.p.usageCaps.Latest(lctx, key)
 	if err != nil {
+		// The launch asks the reservation even after a failed read: a bot
+		// held out of the whole window needs no reading to be refused.
+		if until, why := x.p.heldOutUntil(ctx, botID, x.out.ObservedAt); !until.IsZero() {
+			block(until, why)
+			return true, true
+		}
 		c.Reason = "Usage-window observation unavailable; the launch fails open."
-		return false
+		return false, false
 	}
 	fresh := false
 	for _, r := range readings {
@@ -564,20 +687,24 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 		}
 		c.Windows = append(c.Windows, w)
 	}
-	until, why := x.p.evaluateCredentialWindows(ctx, readings, x.out.ObservedAt)
+	// refusedUntil's order: the credential's own evidence first, then the
+	// reservation that holds the whole window back from this bot.
+	until, why, held := x.p.evaluateCredentialWindows(ctx, readings, x.out.ObservedAt, botID)
+	if until.IsZero() {
+		until, why = x.p.heldOutUntil(ctx, botID, x.out.ObservedAt)
+		held = !until.IsZero()
+	}
 	if !until.IsZero() {
-		c.State = "blocked"
-		c.Reason = why
-		c.ReopensAt = &until
-		return true
+		block(until, why)
+		return true, held
 	}
 	// The same decision the launch makes, read through one predicate: a
 	// preview that announced a probe the launch then skipped would be
 	// telling the operator about work that never happens.
-	if oauth && x.p.usageProbe != nil && (x.p.initialProbeWanted(key, fp, readings, x.out.ObservedAt) || x.p.staleReadingsSuggestClosed(ctx, readings, x.out.ObservedAt)) {
+	if oauth && x.p.usageProbe != nil && (x.p.initialProbeWanted(key, fp, readings, x.out.ObservedAt) || x.p.staleReadingsSuggestClosed(ctx, readings, x.out.ObservedAt, botID)) {
 		c.State = "probe_required"
 		c.Reason = "Launch will probe this new or stale account; its availability is unknown until then."
-		return false
+		return false, false
 	}
 	if fresh {
 		c.State = "available"
@@ -586,5 +713,5 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 		c.State = "unknown"
 		c.Reason = "No fresh usage-window observation; the launch assumes availability."
 	}
-	return false
+	return false, false
 }

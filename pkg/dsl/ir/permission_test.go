@@ -1,6 +1,9 @@
 package ir
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestCompilePermission exercises the permission gate field end-to-end:
 // parser → AST → IR on a workflow that sets the scalar mode + allow/ask/deny
@@ -297,5 +300,56 @@ workflow w:
 `
 		r := compileFile(t, src)
 		expectNoDiag(t, r, DiagToolNodePermissionInert)
+	})
+
+	t.Run("the_remedy_names_the_workflow", func(t *testing.T) {
+		// This graph has NO agent node, so a remedy that says "gate the
+		// agent nodes instead" has no addressee — while the gate the node's
+		// Verified-Action recovery agent does obey is the workflow's
+		// (pkg/backend/model,
+		// TestWorkflowGateGovernsAToolNodesRecoveryAgent). A remedy must
+		// point at a gate that exists in the graph in front of the author.
+		src := `
+schema empty:
+  ok: bool
+
+tool ship:
+  command: "rm -rf ./dist"
+  output: empty
+  permission: deny
+  goal: "the artefacts are rebuilt"
+  postcondition: "./check.sh"
+  policy: recover
+  recovery:
+    max_agent_attempts: 1
+
+workflow w:
+  entry: ship
+  ship -> done
+`
+		r := compileFile(t, src)
+		var inert *Diagnostic
+		for i := range r.Diagnostics {
+			if r.Diagnostics[i].Code == DiagToolNodePermissionInert {
+				inert = &r.Diagnostics[i]
+			}
+		}
+		if inert == nil {
+			t.Fatalf("no C112 on a tool node's permission: deny: %+v", r.Diagnostics)
+		}
+		if !strings.Contains(inert.Hint, "workflow") {
+			t.Errorf("C112 hint = %q; want the workflow named — it is the gate this node's recovery agent obeys, and the only one this graph has", inert.Hint)
+		}
+		// The remedy's condition is conditional on purpose (C112 also fires
+		// on a tool node with no recovery at all), so it must name the WHOLE
+		// condition: the bound alone runs no rung, the ladder reaches rungs
+		// 3-4 only under policy: recover (pkg/backend/model,
+		// TestOnlyPolicyRecoverHandsTheGoalToTheRungAgent). Half the
+		// condition sends the author to gate a rung that never runs.
+		for _, want := range []string{"policy: recover", "max_agent_attempts > 0"} {
+			if !strings.Contains(inert.Hint, want) {
+				t.Errorf("C112 hint = %q; want it to name %q — reaching the agent rung needs BOTH halves", inert.Hint, want)
+			}
+		}
 	})
 }

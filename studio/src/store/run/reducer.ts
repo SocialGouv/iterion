@@ -698,14 +698,16 @@ export function reduceEvents(
       }
       case "run_paused": {
         // The engine emits the same event type for every pause flavour.
-        // Operator pause (POST /api/runs/:id/pause) tags reason=operator
-        // and the daily spend cap tags reason=cost_cap_daily — both
-        // persist as paused_operator on the backend. Human-input pause
-        // leaves reason empty (or "human"). Branch so the live status
-        // matches the persisted status without a second event round-trip.
+        // Operator pause (POST /api/runs/:id/pause) tags reason=operator,
+        // the daily spend cap tags reason=cost_cap_daily, and a run whose
+        // budget policy is on_exceeded: pause tags reason=budget_cap_run —
+        // all three persist as paused_operator on the backend. Human-input
+        // pause leaves reason empty (or "human"). Branch so the live
+        // status matches the persisted status without a second event
+        // round-trip.
         const reason = evt.data?.reason ?? "";
         runStatusOverride =
-          reason === "operator" || reason === "cost_cap_daily"
+          reason === "operator" || reason === "cost_cap_daily" || reason === "budget_cap_run"
             ? "paused_operator"
             : "paused_waiting_human";
         break;

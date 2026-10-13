@@ -106,6 +106,15 @@ func (c Config) ValidateSyntax() error {
 	return nil
 }
 
+// Host is the host the gateway client dials — the base URL's — or "" for a
+// base URL ValidateSyntax refuses, which no request reaches.
+func (c Config) Host() string {
+	if c.ValidateSyntax() != nil {
+		return ""
+	}
+	return c.url().Hostname()
+}
+
 // url re-parses the base URL for the strict half; ValidateSyntax has just
 // proven it parses.
 func (c Config) url() *url.URL {

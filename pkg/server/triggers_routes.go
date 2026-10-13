@@ -223,7 +223,11 @@ func (s *Server) handleEmitTrigger(w http.ResponseWriter, r *http.Request) {
 	// subscriptions match it (zero, one, ten), each of which the spine
 	// launcher meters as its own launch. Fail-open (nil) in local single-host
 	// scope, so this is a no-op there.
-	adm, d := s.gateLaunch(r.Context())
+	// No subject: an emit is ONE event that fans out to however many
+	// subscriptions match it, each launching its own bot into its own repo.
+	// This pre-check bounds the event, not any of them — the spine launcher
+	// gates each resulting launch with its own subject.
+	adm, d := s.gateLaunch(r.Context(), launchSubject{})
 	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return

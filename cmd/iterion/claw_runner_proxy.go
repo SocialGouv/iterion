@@ -255,8 +255,10 @@ func registerSandboxLocalTools(reg *tool.Registry, workspace string) error {
 	if err := tool.RegisterClawSkill(reg, workspace); err != nil {
 		return err
 	}
-	// No subagent runner: claw's metadata-only agent tool. One wired here
-	// would run its child conversation against this container's tools.
+	// No subagent runner: the `agent` tool registers and refuses every call
+	// with the typed capability refusal, in-container as on the host. One
+	// wired here would run its child conversation against this container's
+	// tools.
 	if err := tool.RegisterClawSubagents(reg, nil); err != nil {
 		return err
 	}

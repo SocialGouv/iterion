@@ -203,7 +203,7 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	// defaulting newDefaultExecutor does in the CLI run path).
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
-	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil)
+	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 

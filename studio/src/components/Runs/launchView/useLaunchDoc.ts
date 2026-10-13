@@ -21,9 +21,21 @@ export function useLaunchDoc(
   filePath: string,
   onError: (msg: string) => void,
 ) {
-  const [doc, setDoc] = useState<IterDocument | null>(null);
-  const currentSource = useDocumentStore((s) => s.currentSource);
-  const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
+  // The document THIS launch is about, tagged with the `filePath` it was
+  // loaded for — like the source below, and for the same reason: the form's
+  // fields, their values and the required-var gate all derive from it, so an
+  // untagged answer describes the workflow the view has moved on FROM while
+  // the submit names the new one. Unlike the source it is not dropped at the
+  // START of a load: the inline branch reloads whenever the active editor tab
+  // changes (its tag is always "", so it cannot tell two buffers apart), and
+  // blanking the form for that round trip would be worse than holding the
+  // last render.
+  //
+  // A load that ends with NO answer does drop it — a pristine buffer, a
+  // refusal, a failed read or a failed render — because nothing retries it:
+  // the effect re-runs only when its deps move. Left in place, the form stays
+  // armed (`docReady` is `!!doc`) over a program the submit cannot carry.
+  const [loadedDoc, setLoadedDoc] = useState<{ path: string; doc: IterDocument } | null>(null);
   // The in-memory editor buffer, used to launch an UNSAVED workflow (no
   // ?file= path). This is the cloud path: the server pod's rootfs is
   // read-only, so /files/save 500s and there is never an on-disk path to
@@ -45,18 +57,27 @@ export function useLaunchDoc(
   // toolbar's Run button, so this view refuses exactly what that disables.
   const refusal = useDocumentStore(launchRefusal);
   const [confirmedDiskPath, setConfirmedDiskPath] = useState<string | null>(null);
-  // A ?file= launch is about THAT file: its source is kept here, not in the
-  // active editor tab's store — which this route reads, and which may hold
-  // another file. Written there, it would become that tab's text: what its
-  // salvage view shows as the file, and what a draft tab compares to know
-  // the canvas is still the assistant's.
-  const [fileSource, setFileSource] = useState<string | null>(null);
+  // The text THIS launch sends, kept here and never written into the active
+  // editor tab's store — which this route reads. Neither branch's text is
+  // that tab's: a ?file= launch is about a file the tab may not hold, and an
+  // inline launch's text is the RENDER of the tab's document, which is not
+  // what the tab holds either. Written there, it becomes the tab's own
+  // text: what its salvage view shows as the file, and what a draft tab
+  // compares to know the canvas is still the assistant's.
+  //
+  // `path` is the `filePath` the answer was asked for ("" for the inline
+  // buffer), so the text of a launch this view has moved on from is never
+  // read as the current one's program: this hook outlives one launch —
+  // `/runs/new` keeps it while the URL moves from one workflow to another,
+  // and `?bot=<slug>` resolves to a path only once the catalog answers
+  // (LaunchView).
+  const [launchSource, setLaunchSource] = useState<{ path: string; source: string } | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
 
-  // The effect writes the store (currentSource), so every dep that changes
-  // identity per render re-runs it — an inline onError would turn the load
-  // into an unparse-per-render loop. The callback is invoked, never
-  // captured: the latest one reaches the effect through a ref.
+  // Every dep that changes identity per render re-runs the load, so an
+  // inline onError would turn it into an unparse-per-render loop. The
+  // callback is invoked, never captured: the latest one reaches the effect
+  // through a ref.
   const onErrorRef = useRef(onError);
   useEffect(() => {
     onErrorRef.current = onError;
@@ -67,7 +88,7 @@ export function useLaunchDoc(
     // to an inline editor buffer or to a different path while async reads
     // are in flight.
     setConfirmedDiskPath(null);
-    setFileSource(null);
+    setLaunchSource(null);
     if (!filePath) {
       // No ?file= path — launch the unsaved editor buffer via inline
       // source. The launch API (resolveWorkflowPath) runs off Source when
@@ -83,7 +104,7 @@ export function useLaunchDoc(
       // launchable workflow — the render below shows a picker empty
       // state instead, so don't unparse the scaffold here.
       if (noSource) {
-        setDoc(null);
+        setLoadedDoc(null);
         return;
       }
       // A salvaged buffer is the program MINUS the region the parser could
@@ -98,7 +119,7 @@ export function useLaunchDoc(
         // active tab's store): a refusal that arrives after the form
         // mounted clears it, instead of leaving a refused document
         // launchable under the error banner.
-        setDoc(null);
+        setLoadedDoc(null);
         onErrorRef.current(refusal);
         return;
       }
@@ -109,15 +130,20 @@ export function useLaunchDoc(
         .unparse(storeDocument)
         .then(({ source: src }) => {
           if (cancelled) return;
-          setCurrentSource(src);
-          setDoc(storeDocument);
+          setLaunchSource({ path: filePath, source: src });
+          setLoadedDoc({ path: filePath, doc: storeDocument });
           const fields = pickVars(storeDocument);
           const initial: Record<string, string> = {};
           for (const f of fields) initial[f.name] = defaultStringFor(f);
           setValues(initial);
         })
         .catch((e) => {
-          if (!cancelled) onErrorRef.current(errorMessage(e));
+          if (cancelled) return;
+          // No render, no program: the form goes back to loading and the
+          // banner carries the cause, instead of the submit gate speaking
+          // for a failure it did not cause.
+          setLoadedDoc(null);
+          onErrorRef.current(errorMessage(e));
         });
       return () => {
         cancelled = true;
@@ -128,8 +154,8 @@ export function useLaunchDoc(
       .openFile(filePath)
       .then((res) => {
         if (cancelled) return;
-        setDoc(res.document);
-        setFileSource(res.source);
+        setLoadedDoc({ path: filePath, doc: res.document });
+        setLaunchSource({ path: filePath, source: res.source });
         setConfirmedDiskPath(res.confirmed_disk_path ?? null);
         const fields = pickVars(res.document);
         const initial: Record<string, string> = {};
@@ -137,12 +163,19 @@ export function useLaunchDoc(
         setValues(initial);
       })
       .catch((e) => {
-        if (!cancelled) onErrorRef.current(errorMessage(e));
+        if (cancelled) return;
+        // Same rule as the inline branch: a read that failed answers for
+        // this path too, and its answer is nothing. The tag alone would not
+        // catch it — a reload of the SAME path still matches.
+        setLoadedDoc(null);
+        onErrorRef.current(errorMessage(e));
       });
     return () => {
       cancelled = true;
     };
-  }, [filePath, noSource, refusal, setCurrentSource, storeDocument]);
+  }, [filePath, noSource, refusal, storeDocument]);
+
+  const doc = loadedDoc?.path === filePath ? loadedDoc.doc : null;
 
   // The full declared field list. Progressive-disclosure bucketing
   // (primary / bot options / auto) happens in LaunchView via
@@ -181,7 +214,7 @@ export function useLaunchDoc(
   return {
     doc,
     noSource,
-    currentSource: filePath ? fileSource : currentSource,
+    currentSource: launchSource?.path === filePath ? launchSource.source : null,
     confirmedDiskPath,
     values,
     setValues,

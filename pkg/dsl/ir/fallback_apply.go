@@ -364,9 +364,10 @@ func providerHintFor(credential string) string {
 // materialization — each node's own model is what the crossing maps — so
 // a stage carries the pair, never a run-level model.
 type PolicyLadderStage struct {
-	Harness    string
-	Credential string
-	On         []string // the resolved policy's trigger set (nil = the chain default)
+	Harness      string
+	Credential   string
+	On           []string // the resolved policy's trigger set (nil = the chain default)
+	CrossHarness string   // the run's resolved posture: active ("reuse"|"restart") lifts THIS stage's session refusal; empty/"off" = the delivery-1 refusal
 }
 
 // ApplyPolicyLadder materializes the policy's computed ladder onto the
@@ -394,7 +395,7 @@ type PolicyLadderStage struct {
 // field at DISPATCH — the screen MUST read the same backend or a
 // cross-backend stage crosses a session-bearing node unscreened. nil = the
 // DSL reading.
-func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeModel func(LLMNode) string, nodeBackend func(LLMNode) string) []string {
+func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeModel func(LLMNode) string, nodeBackend func(LLMNode) string, classes llmroute.ClassTable) []string {
 	if w == nil || len(stages) == 0 {
 		return nil
 	}
@@ -446,18 +447,22 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 					"agent %q: policy ladder stage %d (%s) %s", nn.NodeID(), stage+1, st.Harness, reason))
 			}
 			// The crossing's model, mapped per node from the pair. A pair
-			// with no delivery-1 mapping is skipped for THIS node — named,
-			// never emitted modelless (ApplyRunFallback's portability
-			// refusal would drop it anyway, later and less precisely).
-			mdl, ok := llmroute.StageModel(st.Harness, st.Credential, nodeMdl)
+			// with no mapping is skipped for THIS node — named, never
+			// emitted modelless (ApplyRunFallback's portability refusal
+			// would drop it anyway, later and less precisely). The reason
+			// distinguishes the structural no-mapping (the pair cannot
+			// serve the family) from the class table's cell resolving
+			// nowhere (a model_classes cell fixes that one).
+			mdl, ok, mapReason := llmroute.StageModel(st.Harness, st.Credential, nodeMdl, classes)
 			if !ok {
-				refuse("has no delivery-1 model mapping — stage skipped")
+				refuse(mapReason + " — stage skipped")
 				continue
 			}
 			route := Fallback{
-				Name:    RunFallbackName,
-				Backend: st.Harness,
-				Model:   mdl,
+				Name:         RunFallbackName,
+				Backend:      st.Harness,
+				Model:        mdl,
+				CrossHarness: st.CrossHarness,
 				// The stage's PROVIDER HINT, not its policy slot: the hint
 				// steers the credential at dispatch ("anthropic", "zai") —
 				// the slot spelling ("anthropic_key") would be read as a
@@ -477,9 +482,22 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 				refuse(reason)
 				continue
 			}
-			if reason := sessionContinuityCrossingReason(nn.GetSession(), screenBackend, routeBackend); reason != "" {
-				refuse(reason)
-				continue
+			// The session contract's THIRD state (ADR-121 § Delivery 2):
+			// an ACTIVE cross-harness posture lifts THIS policy stage's
+			// session-continuity refusal — the crossing lands and is SAID
+			// (the dispatch marks model_fallback), neither kept nor
+			// silently evicted. The gate is the ACTIVE modes, never
+			// emptiness: Normalize answers "off" on every resolved
+			// policy, and an emptiness gate would lift the refusal for
+			// every run under the default (the plan-review critique).
+			// Operator chains (ApplyRunFallback, above) and authored
+			// routes keep the full refusal — relaxation is
+			// policy-stages-only.
+			if !llmroute.CrossHarnessActive(st.CrossHarness) {
+				if reason := sessionContinuityCrossingReason(nn.GetSession(), screenBackend, routeBackend); reason != "" {
+					refuse(reason)
+					continue
+				}
 			}
 			if reason := unresolvableToolsReason(routeBackend, nn.GetTools(), mcpWiringVisible(w, n)); reason != "" {
 				refuse(reason)

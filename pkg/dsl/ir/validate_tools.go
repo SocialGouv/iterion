@@ -9,7 +9,8 @@ import (
 
 // Tool-list diagnostics.
 const (
-	DiagUnknownTool DiagCode = "C135" // a `tools:` entry cannot resolve on a backend the list actually constrains (error)
+	DiagUnknownTool       DiagCode = "C135" // a `tools:` entry cannot resolve on a backend the list actually constrains (error)
+	DiagToolRefusedOnClaw DiagCode = "C159" // a `tools:` entry claw registers but iterion cannot serve, so every call is refused (warning)
 )
 
 // validateNodeTools checks that every declared tool name can actually resolve
@@ -89,6 +90,132 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 	}
 }
 
+// validateRefusedClawTools reports a declared tool claw REGISTERS and iterion
+// cannot serve — today `agent`, whose subagent spawning needs a host runner no
+// iterion run wires (toolcatalog.ClawRefusesBuiltin holds the list and the
+// reason, and pkg/backend/tool refuses the call from the same entry).
+//
+// It is disjoint from C135 by construction: that code decides names the
+// registry does NOT hold, this one a name it does. The two never fire together
+// on the same entry.
+//
+// A warning, not an error: the node still runs — the refusal arrives as a tool
+// error the model can act on, not as a dead node — and a host MAY wire the
+// capability (e2e does). Philosophy #1: warn rather than reject, and never
+// silently replace an author's explicit choice.
+//
+// Scope is every list the AUTHOR writes that reaches claw's registry — an
+// agent/judge node's `tools:`, its claw `fallbacks:` routes, and a Verified
+// Action's rung-4 `recovery: agent_tools:` (the two lists C135 covers, same
+// reach). The tools the ENGINE appends are out of it: ultracode grants `agent`
+// to every claw node that restricts its list
+// (executor_build_task.withClawOrchestrationTools), and a warning on a line
+// the author never wrote would report an engine choice as an authoring
+// mistake — the rewritten tool description and the ultracode grant's own
+// refusal clause are what speak there.
+func (c *compiler) validateRefusedClawTools(w *Workflow) {
+	for _, n := range w.Nodes {
+		if tn, ok := n.(*ToolNode); ok {
+			c.validateRefusedRecoveryAgentTools(w, tn)
+			continue
+		}
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		refused := refusedToolNames(nn.GetTools())
+		if len(refused) == 0 {
+			continue
+		}
+		kind, id := nn.NodeKind().String(), nn.NodeID()
+
+		// The node's own backend first: the route it takes on every run.
+		if toolcatalog.ConstrainsTools(effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)) {
+			for _, name := range refused {
+				r, _ := toolcatalog.ClawRefusesBuiltin(name)
+				c.warnfAt(DiagToolRefusedOnClaw, id, "",
+					"%s %q: tools: names %q, which backend %q registers but cannot serve — %s, so the call is refused at run time unless this deployment's host wires one. %s",
+					kind, id, name, clawBackendName, r.Reason, r.Remedy)
+			}
+			continue
+		}
+
+		// The node does not run on claw, but a `fallbacks:` route might — and
+		// the list is the SAME list there. Reported once, against the first
+		// claw route: every route shares the list, so repeating it per route
+		// would say nothing new.
+		for _, fb := range nn.GetFallbacks() {
+			if !toolcatalog.ConstrainsTools(sourceBackend.routeName(fb.Backend)) {
+				continue
+			}
+			for _, name := range refused {
+				r, _ := toolcatalog.ClawRefusesBuiltin(name)
+				c.warnfAt(DiagToolRefusedOnClaw, id, "",
+					"%s %q: tools: names %q, which fallback %s cannot serve on backend %q — %s, so the call is refused at the moment the run is already falling back, unless this deployment's host wires one. %s",
+					kind, id, name, fallbackLabel(fb), clawBackendName, r.Reason, r.Remedy)
+			}
+			break
+		}
+	}
+}
+
+// validateRefusedRecoveryAgentTools covers the third author-written list that
+// reaches claw's registry: a Verified Action's rung-4 recovery agent
+// (ADR-044). executor_verified_action hand-builds an ir.AgentNode carrying
+// `agent_tools:` verbatim and dispatches it through the same registry, so a
+// refused name is refused there too — after the deterministic rungs have
+// already failed, the worst moment to learn it.
+//
+// The synthetic node declares no backend of its own, so only the workflow
+// default can make it claw; anything else stays unresolved and silent, exactly
+// as for a node's own `tools:` (validateRecoveryAgentTools reads the same
+// backend for C135).
+func (c *compiler) validateRefusedRecoveryAgentTools(w *Workflow, tn *ToolNode) {
+	if tn == nil || tn.Recovery == nil {
+		return
+	}
+	if !toolcatalog.ConstrainsTools(effectiveNodeBackend("", w.DefaultBackend)) {
+		return
+	}
+	for _, name := range refusedToolNames(tn.Recovery.AgentTools) {
+		r, _ := toolcatalog.ClawRefusesBuiltin(name)
+		c.warnfAt(DiagToolRefusedOnClaw, tn.ID, "",
+			"tool %q: recovery agent_tools: names %q, which backend %q registers but cannot serve on the rung-4 recovery agent — %s, so the call is refused after the deterministic rungs already have, unless this deployment's host wires one. %s",
+			tn.ID, name, clawBackendName, r.Reason, r.Remedy)
+	}
+}
+
+// refusedToolNames keeps the declared entries claw registers and refuses, in
+// the author's own order, deduplicated and trimmed. A name the catalog does
+// not hold belongs to C135.
+//
+// The same reduction C135 applies to the same field (unresolvableToolNames):
+// one row per refused NAME, not one per occurrence of it on the line, and the
+// name a message quotes is the tool's, which is what a reader greps.
+//
+// Trimming is the CATALOG's convention, not the registry's: Registry.Resolve
+// matches an entry as written, so a padded one — which only a quoted DSL
+// scalar preserves — resolves to nothing and fails the node at dispatch,
+// before any call can be refused. A padded ` read_file ` dies the same way,
+// and no diagnostic predicts either death: that prediction is C135's job, and
+// its reduction trims here too. pkg/backend/model's
+// TestAPaddedToolEntryNeverReachesTheRefusal pins what the registry does.
+func refusedToolNames(tools []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, t := range tools {
+		name := strings.TrimSpace(t)
+		if seen[name] {
+			continue
+		}
+		if _, refused := toolcatalog.ClawRefusesBuiltin(name); refused && toolcatalog.IsBuiltin(name) {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // validateEmptyToolsEnforced reports a `tools: []` that does not hold.
 //
 // A declared-empty list is the author saying "this node has no tools"
@@ -125,7 +252,7 @@ func (c *compiler) validateEmptyToolsEnforced(w *Workflow) {
 		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		if backend == clawBackendName && NodeInteraction(n) != InteractionNone {
 			c.warnfAt(DiagEmptyToolsNotEnforced, id, "",
-				"%s %q declares `tools: []` (no tools) and `interaction:` on claw — claw carries `ask_user` through its tool loop, so the list is re-populated with it, and that one entry unlocks every other runtime append the node qualifies for: `todo_write`, the `agent` spawner under ultracode, the board tools its `capabilities:` grant (`transition_issue` included), and `read_file`/`write_file`/`glob` under `auto_memory:`; drop one of the two declarations, or move the node to claude_code, where an empty list removes the whole native roster (MCP tools and Agent/TaskOutput/Monitor still reach it)",
+				"%s %q declares `tools: []` (no tools) and `interaction:` on claw — claw carries `ask_user` through its tool loop, so the list is re-populated with it, and that one entry unlocks every other runtime append the node qualifies for: `todo_write`, the `agent` spawner under ultracode (granted, and typed-refused on every call unless this deployment's host wires a subagent runner — C159), the board tools its `capabilities:` grant (`transition_issue` included), and `read_file`/`write_file`/`glob` under `auto_memory:`; drop one of the two declarations, or move the node to claude_code, where an empty list removes the whole native roster (MCP tools and Agent/TaskOutput/Monitor still reach it)",
 				kind, id)
 			continue
 		}

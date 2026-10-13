@@ -168,6 +168,11 @@ func buildResumeExecutor(
 		RunID:    opts.RunID,
 		Logger:   logger,
 		StoreDir: storeDir,
+		// The resumed engine's repository, for the fallback screen's sandbox
+		// probe — the same helper the studio's resume answers with, so one
+		// precedence serves both. WorkDir stays unset: Claw's file tools keep
+		// resolving against the process workspace.
+		SandboxProbeWorkDir: runview.ResumeProbeWorkDir(r),
 		// Backend-hook events (assistant_text, tool_*, llm_*) fire only
 		// this seam — the declared-supervisor hub rides it (run.go's
 		// executor does the same).

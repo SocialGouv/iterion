@@ -25,9 +25,10 @@ import (
 // success; (nil, false, finalStatus) when the caller must abandon the
 // delivery (finalStatus is the metric label).
 func (r *Runner) acquireRunLock(runCtx context.Context, msg *queue.RunMessage, delivery jsDelivery, logger *iterlog.Logger) (store.RunLock, bool, string) {
-	// Acquire the distributed lock. Two competing runners on the
-	// same run is the contention this guards against.
-	lock, err := r.cfg.Store.LockRun(runCtx, msg.RunID)
+	// The lease carries the run's admitted identity (plan v2 §P5-c): the
+	// distributed lease is stamped with what this delivery actually
+	// admitted, and refuses to serve a holder whose identity disagrees.
+	lock, err := r.cfg.Store.LockRun(store.WithLeaseIdentity(runCtx, msg.TenantID, msg.RunnerPool), msg.RunID)
 	if err != nil {
 		// AcquireLock maps ONLY jetstream.ErrKeyExists to ErrLockHeld, so
 		// held is CONFIRMED contention; every other lock error (KV bucket
@@ -89,6 +90,10 @@ type progressReporter interface {
 // would invite split-brain when JetStream redelivers to a sibling pod). The
 // cause makes the redelivery auto-resume without manual intervention.
 func (r *Runner) executeHoldingLease(runCtx context.Context, runCancel context.CancelCauseFunc, msg *queue.RunMessage, preRun *store.Run, lock store.RunLock, delivery progressReporter, usageOut **metricsEmitter) error {
+	// The engine path carries the admitted identity too: a subbot child
+	// locking its own run under this one takes a lease stamped with the
+	// same admitted identity, which the distributed lock then verifies.
+	runCtx = store.WithLeaseIdentity(runCtx, msg.TenantID, msg.RunnerPool)
 	hold := r.startLeaseHeartbeat(runCtx, runCancel, msg.RunID, lock, delivery)
 	// nil cause: the run has already returned here, so this is teardown — the
 	// engine never reads the cause. Also the panic net.

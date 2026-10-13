@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -195,32 +196,85 @@ func TestFireForRun_SSRFGuardBlocksLoopback(t *testing.T) {
 	}
 }
 
+// stubResolver answers the guard's lookup without touching DNS (#2080): it
+// records the hosts it was asked for and answers each with one fixed IP.
+// The default is TEST-NET-3 (203.0.113.10) — never routable, yet public
+// unicast per httpdial.IsPublicUnicast, which blocks the conventional SSRF
+// categories (loopback, private, link-local, multicast, unspecified) plus
+// the cloud metadata endpoints.
+type stubResolver struct {
+	mu      sync.Mutex
+	lookups []string
+	ip      net.IP
+}
+
+func newStubResolver(ip string) *stubResolver {
+	return &stubResolver{ip: net.ParseIP(ip)}
+}
+
+// LookupIPAddr implements httpdial.HostResolver.
+func (s *stubResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lookups = append(s.lookups, host)
+	return []net.IPAddr{{IP: s.ip}}, nil
+}
+
+func (s *stubResolver) asked() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.lookups...)
+}
+
 func TestVetURL(t *testing.T) {
 	tests := []struct {
 		name         string
 		url          string
 		allowPrivate bool
 		wantErr      bool
+		wantLookup   bool // a hostname the guard must resolve through the injected stub
 	}{
-		{"https public", "https://example.com/hook", false, false},
-		{"http public", "http://example.com/hook", false, false},
-		{"ftp scheme", "ftp://example.com", false, true},
-		{"no host", "https://", false, true},
-		{"loopback blocked", "http://127.0.0.1:9000/cb", false, true},
-		{"loopback allowed", "http://127.0.0.1:9000/cb", true, false},
-		{"private blocked", "http://10.0.0.5/cb", false, true},
-		{"cluster alias blocked", "http://foo.svc.cluster.local/cb", false, true},
-		{"metadata alias blocked", "http://metadata.google.internal/cb", false, true},
+		{"https public", "https://example.com/hook", false, false, true},
+		{"http public", "http://example.com/hook", false, false, true},
+		{"ftp scheme", "ftp://example.com", false, true, false},
+		{"no host", "https://", false, true, false},
+		{"loopback blocked", "http://127.0.0.1:9000/cb", false, true, false},
+		{"loopback allowed", "http://127.0.0.1:9000/cb", true, false, false},
+		{"private blocked", "http://10.0.0.5/cb", false, true, false},
+		{"cluster alias blocked", "http://foo.svc.cluster.local/cb", false, true, false},
+		{"metadata alias blocked", "http://metadata.google.internal/cb", false, true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			n := New(nil, time.Second, WithAllowPrivate(tc.allowPrivate))
+			// Every row vets through the stub, so the table is hermetic: the
+			// public rows prove the seam is what resolves, the literal and
+			// alias rows prove the guard refuses BEFORE any lookup.
+			stub := newStubResolver("203.0.113.10")
+			n := New(nil, time.Second, WithAllowPrivate(tc.allowPrivate), WithResolver(stub))
 			err := n.vetURL(tc.url)
 			if tc.wantErr && err == nil {
 				t.Errorf("vetURL(%q) = nil, want error", tc.url)
 			}
 			if !tc.wantErr && err != nil {
 				t.Errorf("vetURL(%q) = %v, want nil", tc.url, err)
+			}
+			if tc.wantLookup {
+				if asked := stub.asked(); len(asked) == 0 {
+					t.Errorf("vetURL(%q) answered without the injected resolver — the test was reading live DNS", tc.url)
+				}
+				// The pinned delivery resolves through the same seam, so the
+				// address it dials is the one the stub answered with.
+				ip, rerr := n.resolveCallbackIP(context.Background(), "example.com")
+				if rerr != nil {
+					t.Errorf("resolveCallbackIP(example.com): %v", rerr)
+				} else if !ip.Equal(stub.ip) {
+					t.Errorf("resolveCallbackIP(example.com) = %v, want the stub's %v", ip, stub.ip)
+				}
+			}
+			if !tc.wantLookup {
+				if asked := stub.asked(); len(asked) != 0 {
+					t.Errorf("vetURL(%q) looked up %v: the guard must refuse literals and reserved aliases before any DNS", tc.url, asked)
+				}
 			}
 		})
 	}

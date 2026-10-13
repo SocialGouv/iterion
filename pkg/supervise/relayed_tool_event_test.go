@@ -35,7 +35,7 @@ func TestRelayedToolEventArmsAToolMonitor(t *testing.T) {
 		t.Fatalf("ObserveRun: %v", err)
 	}
 	defer release()
-	hostHooks := model.NewStoreEventHooks(ctx, st, runID, iterlog.Nop(), nil, hub.Publish)
+	hostHooks := model.NewStoreEventHooks(ctx, st, runID, iterlog.Nop(), nil, nil, hub.Publish)
 
 	// The runner half, inside the container: the failing tool call fires
 	// on the relay hooks, which encode it as an `event` envelope.

@@ -170,10 +170,46 @@ func TestCanonicalHostStripsPort(t *testing.T) {
 		// covers a CONNECT line for "bücher.example".
 		"xn--bcher-kva.example": "xn--bcher-kva.example",
 		"bücher.example":        "xn--bcher-kva.example",
+		// The fold can produce a root dot (U+3002 '。'); it goes too, as do
+		// repeated ones.
+		"github.com。":  "github.com",
+		"github.com..": "github.com",
+		// A plain-ASCII host the fold refuses is read as written, lowercased.
+		"GW_X.Example.COM": "gw_x.example.com",
+		// A non-ASCII host the fold refuses is malformed: net/http folds it
+		// with its own tables, into a name no reading here gives.
+		"XN--GW-\u00ad.example.com": "",
+		"apİ_x.gw.test":             "",
+		"a\u200db.example":          "",
+		// Brackets hold an IP literal, nothing else.
+		"[fe80::1%eth0]:443": "fe80::1%eth0",
+		"[gw.example.com:x]": "",
+		"[gw.corp]:443":      "",
 	}
 	for in, want := range cases {
 		if got := canonicalHost(in); got != want {
 			t.Errorf("canonicalHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// canonicalHost's result is its own canonical form: the proxy dials a
+// forwarded or inspected request on it, and the pin, the alias and the policy
+// read that name again.
+func TestCanonicalHostIsItsOwnCanonicalForm(t *testing.T) {
+	hosts := []string{
+		"example.com", "EXAMPLE.COM.", "x..", "x...", ".x", "github.com。", "github.com。。",
+		"bücher.example.", "ｇｉｔｈｕｂ.com", "Gẞ.example", "XN--BCHER-KVA.example", "xn--gw-.example.com",
+		"GW_X.Example.COM..", "[::1]:443", "fd00::5", "10.1.2.3:80", "host.docker.internal。", "apİ.gw.test",
+		"[gw.example.com:x]", "[a:b]", "[gw.corp]", "[fe80::1%eth0]", "example.com.xn--",
+	}
+	for r := rune(0x80); r < 0x3100; r++ {
+		hosts = append(hosts, "a"+string(r)+"b.example.com", string(r)+".example.com.", "x.example"+string(r))
+	}
+	for _, in := range hosts {
+		c := canonicalHost(in)
+		if again := canonicalHost(c); again != c {
+			t.Errorf("canonicalHost(%q) = %q, but canonicalHost(%q) = %q", in, c, c, again)
 		}
 	}
 }
@@ -265,6 +301,23 @@ func TestDefaultRulesAllowEveryAnthropicWireFacade(t *testing.T) {
 	} {
 		if !has(host) {
 			t.Errorf("iterionDefaultRules() does not allow %q — a sandboxed node routed there dies on an empty payload, not on a credential error", host)
+		}
+	}
+}
+
+// claw's OpenAI provider dials one of two hosts: api.openai.com with a key,
+// chatgpt.com (its chatgptCodexBaseURL) with a ChatGPT forfait — the run's
+// own, or the host's that ITERION_OPENAI_USE_OAUTH=1 sends into the sandbox.
+// A default allowlist holding only the first refuses every call of a node the
+// forfait serves, where the key alone would have gone through.
+func TestDefaultRulesAllowEveryOpenAIWireHost(t *testing.T) {
+	p, err := Compile(ModeAllowlist, iterionDefaultRules())
+	if err != nil {
+		t.Fatalf("compile the iterion-default preset: %v", err)
+	}
+	for _, host := range []string{"api.openai.com", "chatgpt.com"} {
+		if !p.Allow(host) {
+			t.Errorf("the iterion-default preset refuses %q — a sandboxed claw node spending its credential there fails on egress", host)
 		}
 	}
 }

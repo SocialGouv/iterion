@@ -51,7 +51,7 @@ func launchTopologyRun(t *testing.T, p *Publisher, wf *ir.Workflow, runID string
 }
 
 func TestSubmitLaunchInjectsTopologyFromSealedBundle(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

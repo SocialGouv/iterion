@@ -15,10 +15,12 @@ package runtime
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -317,16 +319,127 @@ func StageResolvedFile(repoRoot, path, content string) error {
 	return nil
 }
 
+// LandingVerdict is what a landing must still answer to: the HEAD the bot's
+// verdict judged, the landing state it recorded (the verdict's own JSON),
+// and the commit the gate's word landed on — the run's own `done` carries the
+// plan flipped, so the staged resolution is compared with THAT commit's
+// bytes, never with the pre-flip head. Nil means the run's bot recorded no
+// landing verdict — a workflow whose bot keeps no contract — and there is
+// nothing to re-judge: the landing commits as before.
+type LandingVerdict struct {
+	JudgedHead    string
+	JudgedTree    string
+	LandingCommit string
+}
+
+// checkStagedAgainstVerdict re-judges the staged resolution before it is
+// committed: every contract file the verdict names must be staged with
+// exactly the bytes that verdict judged. A conflict on a contract file is
+// otherwise resolved by whoever fills the resolver, and the landing would
+// carry a contract nobody's verdict answers for — the owner changes the
+// contract between runs, by hand, never inside a run's landing.
+func checkStagedAgainstVerdict(repoRoot string, verdict *LandingVerdict) error {
+	var parsed struct {
+		Table map[string]map[string]any `json:"table"`
+	}
+	if err := json.Unmarshal([]byte(verdict.JudgedTree), &parsed); err != nil || len(parsed.Table) == 0 {
+		return fmt.Errorf("the stored verdict carries no contract files to re-judge the resolution against — land by hand")
+	}
+	base := verdict.LandingCommit
+	if strings.TrimSpace(base) == "" {
+		base = verdict.JudgedHead
+	}
+	// The verdict must describe what the landing carries: the head it judged
+	// has to resolve, and to be carried by the landing commit. A stale pair —
+	// an earlier attempt's landing with a later attempt's verdict, its bank
+	// push failed — would otherwise be judged against bytes nobody's verdict
+	// named, in both directions.
+	live, liveCancel := gitCmd("-C", repoRoot, "cat-file", "-e", verdict.JudgedHead+"^{commit}")
+	if err := live.Run(); err != nil {
+		liveCancel()
+		return fmt.Errorf("the stored verdict names %s, which does not resolve in this repository — "+
+			"the verdict is stale for this landing: re-run the lot, or land by hand",
+			verdict.JudgedHead[:min(12, len(verdict.JudgedHead))])
+	}
+	liveCancel()
+	anc, ancCancel := gitCmd("-C", repoRoot, "merge-base", "--is-ancestor", verdict.JudgedHead, base)
+	if err := anc.Run(); err != nil {
+		ancCancel()
+		return fmt.Errorf("the stored verdict describes %s, which the landing commit %s does not carry — "+
+			"the verdict is stale for this landing: re-run the lot, or land by hand",
+			verdict.JudgedHead[:min(12, len(verdict.JudgedHead))], base[:min(12, len(base))])
+	}
+	ancCancel()
+	paths := make([]string, 0, len(parsed.Table))
+	for p := range parsed.Table {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		ls, cancel := gitCmd("-C", repoRoot, "ls-files", "-s", "-z", "--", p)
+		out, err := ls.CombinedOutput()
+		cancel()
+		if err != nil {
+			return fmt.Errorf("cannot read the staged entry of %s: %v\noutput: %s", p, err, out)
+		}
+		entries := []string{}
+		for _, e := range strings.Split(string(out), "\x00") {
+			if e != "" {
+				entries = append(entries, e)
+			}
+		}
+		if len(entries) != 1 {
+			return fmt.Errorf("the resolution leaves %s with %d index entries, want one resolved entry — resolve it once, with the run's version", p, len(entries))
+		}
+		fields := strings.Fields(entries[0])
+		if len(fields) < 2 {
+			return fmt.Errorf("cannot read the staged entry of %s: %q", p, entries[0])
+		}
+		staged := fields[1]
+		at, cancelAt := gitCmd("-C", repoRoot, "ls-tree", "--no-abbrev", base, "--", p)
+		out, err = at.CombinedOutput()
+		cancelAt()
+		if err != nil {
+			return fmt.Errorf("cannot read %s at the landed commit %s: %v\noutput: %s", p, base[:min(12, len(base))], err, out)
+		}
+		judged := ""
+		for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if f := strings.Fields(l); len(f) >= 3 {
+				judged = f[2]
+			}
+		}
+		if judged == "" {
+			return fmt.Errorf("the landed commit %s carries no %s to compare the resolution with — land by hand",
+				base[:min(12, len(base))], p)
+		}
+		if staged != judged {
+			return fmt.Errorf("the resolution of %s is not the contract the verdict judged (judged blob %s, staged %s): "+
+				"take the run's version, or land by hand", p, judged, staged)
+		}
+	}
+	return nil
+}
+
 // FinalizeConflictMerge commits the squash merge with the given
 // message. Caller must ensure every conflicted file has been resolved
 // + staged first — otherwise git's own check fails the commit and the
-// error is returned verbatim. Returns the new HEAD SHA on success.
-func FinalizeConflictMerge(repoRoot, message string) (string, error) {
+// error is returned verbatim. The staged resolution is re-judged
+// against the run's stored verdict first: the landing may carry the
+// contract files exactly as that verdict judged them. Returns the new
+// HEAD SHA on success.
+func FinalizeConflictMerge(repoRoot, message string, verdict *LandingVerdict) (string, error) {
 	if repoRoot == "" {
 		return "", fmt.Errorf("repo root required")
 	}
 	if strings.TrimSpace(message) == "" {
 		return "", fmt.Errorf("commit message required")
+	}
+	// A run whose bot recorded no landing verdict has no contract to
+	// re-judge: the landing commits as before.
+	if verdict != nil && strings.TrimSpace(verdict.JudgedHead) != "" && strings.TrimSpace(verdict.JudgedTree) != "" {
+		if err := checkStagedAgainstVerdict(repoRoot, verdict); err != nil {
+			return "", err
+		}
 	}
 	// Re-check the unmerged set. If anything is still conflicted git
 	// refuses the commit, but we surface a friendlier error than

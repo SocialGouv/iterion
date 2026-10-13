@@ -10,6 +10,8 @@ import (
 )
 
 func TestApply(t *testing.T) {
+	// Guard subtests spawn `sh -lc` — scrub HOME so host rc files stay out.
+	scrubHome(t)
 	base := NewTickRecord(SurfaceHostCron, "sched-1", time.Unix(1, 0).UTC(), "")
 
 	t.Run("no lister, no guard → proceed", func(t *testing.T) {

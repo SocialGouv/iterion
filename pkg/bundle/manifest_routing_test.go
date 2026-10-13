@@ -44,3 +44,29 @@ func TestManifest_RoutingBlock(t *testing.T) {
 		t.Fatalf("decode(bad slot) = %v, want the credential refusal", err)
 	}
 }
+
+// model_classes is author-writable BY NAME (delivery 2): a field added to
+// the shared struct does not silently become manifest YAML — this golden
+// pins the explicit door (the projection), and UnknownFields keeps
+// refusing everything else.
+func TestManifestRoutingModelClasses(t *testing.T) {
+	m, err := DecodeManifest([]byte("name: x\nrouting:\n  model_classes:\n    top:\n      openai: gpt-6-astra\n    fast:\n      anthropic-wire: claude-haiku-4-5\n"), "test")
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	pol := m.RoutingPolicy()
+	if pol.ModelClasses["top"]["openai"] != "gpt-6-astra" {
+		t.Fatalf("top/openai = %+v, want the author's override", pol.ModelClasses)
+	}
+	if pol.ModelClasses["fast"]["anthropic-wire"] != "claude-haiku-4-5" {
+		t.Fatalf("fast/anthropic-wire = %+v, want the author's override", pol.ModelClasses)
+	}
+	// An unknown routing field still refuses (the door is named, not ajar).
+	if _, err := DecodeManifest([]byte("name: z\nrouting:\n  nonsense: 1\n"), "test"); err == nil {
+		t.Fatal("an unknown routing field must refuse")
+	}
+	// A class outside the vocabulary refuses through the shared Validate.
+	if _, err := DecodeManifest([]byte("name: z\nrouting:\n  model_classes:\n    ultra:\n      openai: gpt-6-astra\n"), "test"); err == nil || !strings.Contains(err.Error(), "not a class") {
+		t.Fatalf("unknown class: %v", err)
+	}
+}

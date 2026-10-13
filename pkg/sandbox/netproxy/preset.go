@@ -36,6 +36,12 @@ func iterionDefaultRules() []string {
 		// --- LLM providers ----------------------------------------
 		"api.anthropic.com",
 		"api.openai.com",
+		// The ChatGPT forfait's backend (chatgpt.com/backend-api/codex),
+		// where claw's OpenAI provider spends a ChatGPT login: the run's
+		// own, or the host's that ITERION_OPENAI_USE_OAUTH=1 orders into
+		// the sandbox. Missing, the CONNECT proxy refuses the node's every
+		// call where api.openai.com alone would have taken the key.
+		"chatgpt.com",
 		"openrouter.ai",
 		// xAI Grok (OpenAI-compatible chat completions). Required for
 		// `model: "xai/grok-…"` under sandbox.network allowlist —

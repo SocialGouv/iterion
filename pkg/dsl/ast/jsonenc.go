@@ -910,6 +910,7 @@ type jsonBudgetBlock struct {
 	MaxTokens           int     `json:"max_tokens,omitempty"`
 	WarnTokens          int     `json:"warn_tokens,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty"`
+	OnExceeded          string  `json:"on_exceeded,omitempty"`
 }
 
 type jsonEdge struct {
@@ -1668,6 +1669,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 			MaxTokens:           w.Budget.MaxTokens,
 			WarnTokens:          w.Budget.WarnTokens,
 			MaxIterations:       w.Budget.MaxIterations,
+			OnExceeded:          w.Budget.OnExceeded,
 		}
 	}
 	if w.Resources != nil {
@@ -2506,6 +2508,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 			MaxTokens:           jw.Budget.MaxTokens,
 			WarnTokens:          jw.Budget.WarnTokens,
 			MaxIterations:       jw.Budget.MaxIterations,
+			OnExceeded:          jw.Budget.OnExceeded,
 		}
 	}
 	if jw.Resources != nil {

@@ -420,7 +420,16 @@ func rememberPersistedBundleResources(owner *runResourceScope, bundlePath string
 		b, err = bundle.OpenDir(bundlePath)
 	} else {
 		var closeBundle func() error
-		b, closeBundle, err = bundle.Open(bundlePath, filepath.Join(os.TempDir(), "iterion-parent-resources"))
+		// The cache root is a per-call MkdirTemp — 0700, unpredictable,
+		// never a pre-existing path — and removed with the bundle: the
+		// fixed shared name this had let concurrent runs extract into one
+		// directory and a local attacker pre-plant it.
+		cacheRoot, mkErr := os.MkdirTemp("", "iterion-parent-resources-")
+		if mkErr != nil {
+			return
+		}
+		defer func() { _ = os.RemoveAll(cacheRoot) }()
+		b, closeBundle, err = bundle.Open(bundlePath, cacheRoot)
 		if err == nil {
 			defer func() { _ = closeBundle() }()
 		}

@@ -641,7 +641,7 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 			if ov.Model != "" {
 				nodeModel = ov.Model
 			}
-			if _, mappable := llmroute.StageModel(st.Backend, st.Provider, nodeModel); !mappable {
+			if _, mappable, _ := llmroute.StageModel(st.Backend, st.Provider, nodeModel, llmroute.ResolveClasses(msg.FallbackModelClasses)); !mappable {
 				continue
 			}
 			escapes[nn.NodeID()] = true
@@ -669,7 +669,7 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 		return nil
 	}
 	var out []supervisorRoute
-	for i, spec := range supervise.SpecsFromWorkflow(wf, nil) {
+	for i, spec := range supervise.SpecsFromWorkflow(wf, msg.Vars, nil) {
 		// A gateway-watched supervisor with no pin and no env default
 		// resolves the VENDOR family here while its evaluator refuses every
 		// evaluation (supervise.ErrGatewayWatchNeedsPin): metering it under a

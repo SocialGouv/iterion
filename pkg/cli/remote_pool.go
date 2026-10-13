@@ -22,6 +22,11 @@ type PoolPledgeInput struct {
 	Limits  credpool.Limits  `json:"limits"`
 	Window  *credpool.Window `json:"window,omitempty"`
 	Bots    []string         `json:"bots,omitempty"`
+	// FallbackUse consents the pledge to the routing fallback door. The
+	// pause/enable path re-sends the donor's current value so a toggle
+	// never silently erases the consent (the same replace-semantics trap
+	// Bots carries).
+	FallbackUse bool `json:"fallback_use,omitempty"`
 	// KeyID names WHICH of the donor's keys is lent (api_key only).
 	KeyID string `json:"key_id,omitempty"`
 }
@@ -30,13 +35,14 @@ type PoolPledgeInput struct {
 // needs the CURRENT terms (pause must not silently reset the ceilings a
 // donor set).
 type poolPledgeView struct {
-	Source  string           `json:"source"`
-	Ref     string           `json:"ref"`
-	KeyID   string           `json:"key_id,omitempty"`
-	Enabled bool             `json:"enabled"`
-	Limits  credpool.Limits  `json:"limits"`
-	Window  *credpool.Window `json:"window,omitempty"`
-	Bots    []string         `json:"bots,omitempty"`
+	Source      string           `json:"source"`
+	Ref         string           `json:"ref"`
+	KeyID       string           `json:"key_id,omitempty"`
+	Enabled     bool             `json:"enabled"`
+	Limits      credpool.Limits  `json:"limits"`
+	Window      *credpool.Window `json:"window,omitempty"`
+	Bots        []string         `json:"bots,omitempty"`
+	FallbackUse bool             `json:"fallback_use,omitempty"`
 }
 
 // RemotePoolStatus prints the caller's own contributions and what they
@@ -91,11 +97,12 @@ func RemotePoolPause(ctx context.Context, c *RemoteClient, p *Printer, src, ref 
 		return fmt.Errorf("you have no %s/%s contribution to change", src, ref)
 	}
 	return RemotePoolShare(ctx, c, p, src, ref, PoolPledgeInput{
-		Enabled: enabled,
-		Limits:  current.Limits,
-		Window:  current.Window,
-		Bots:    current.Bots,
-		KeyID:   current.KeyID,
+		Enabled:     enabled,
+		Limits:      current.Limits,
+		Window:      current.Window,
+		Bots:        current.Bots,
+		FallbackUse: current.FallbackUse,
+		KeyID:       current.KeyID,
 	})
 }
 

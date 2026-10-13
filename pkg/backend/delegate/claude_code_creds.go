@@ -558,36 +558,324 @@ func readForfaitAccessToken(dir string) string {
 	return secrets.AnthropicForfaitAccessToken(dir)
 }
 
-// forfaitSpawn records the forfait access token one CLI spawn was handed and
-// the host dir it was read from. A CLI holds that token for its whole life,
-// while the store's refresh worker rotates the record under it — revoking the
-// token — and the runner rewrites the file with the rotation. The pair tells
-// that stale token apart from a dead credential. Zero when the spawn carried
-// no forfait token.
-type forfaitSpawn struct {
-	dir   string
-	token string
+// credSpawn names the credential channel one CLI spawn was handed, read from
+// the env that spawn receives:
+//
+//   - the forfait access token and the host dir it was read from. A CLI holds
+//     that token for its whole life, while the store's refresh worker rotates
+//     the record under it — revoking the token — and the runner rewrites the
+//     file with the rotation. The pair tells that stale token apart from a
+//     dead credential.
+//   - the anthropic-wire facade slot (FacadeSlotEnvKey), which is what the
+//     auth-failure remediation names: a rejected facade key must send the
+//     operator to the channel that funded THAT route, not to the forfait and
+//     the Anthropic key the route took out of the path. Beside it,
+//     facadeKeyFromEnv says which of the two channels that can fund such a
+//     route paid for this one (facadeKeyFromProcessEnv), since the other is
+//     inert on it.
+//   - the operator's own ambient credential variables (ambientCredChannels),
+//     the remediation's answer where the engine bound no channel of its own:
+//     such a route carries no slot — a base URL names no vendor,
+//     FacadeSlotEnvKey says why — and the variables the credential lives in
+//     are the only thing there is to name.
+//   - the cloud-provider switches live in that env
+//     (spawnCloudProviderSwitches), which outrank every token the three
+//     readings above describe: there the credential is a cloud account's, and
+//     saying so is the only honest remediation. A switch set to another value
+//     than the one that enters the mode is the ambiguous half — named beside
+//     the channels the spawn carried, claiming no mode.
+//   - an Authorization line in the ANTHROPIC_CUSTOM_HEADERS the spawn carries
+//     (spawnAuthorizationHeader): a credential of the operator's that the CLI
+//     applies OVER whatever the route's own auth set, so it is what answered
+//     even on a route the engine bound. The ambient reading names it among its
+//     channels; the field is what the other routes have to name.
+//   - that same variable being in the spawn's path at all (spawnCustomHeaders),
+//     whatever header names it holds: the override is name-agnostic, so a
+//     gateway whose credential is an x-api-key or a token header of its own
+//     leaves NO credential variable in the path, and the sentence would name
+//     only channels that are empty. The weaker fact gets the weaker claim —
+//     the variable is named, its contents are not described.
+//
+// The forfait token and the facade slot are mutually exclusive in practice — a
+// facade route clears the forfait token (clearedAnthropicChannels) — and read
+// independently all the same, so no fact depends on another being present:
+// each is about the env, not about the others. Zero when the spawn carried
+// none of them.
+type credSpawn struct {
+	dir                    string
+	token                  string
+	facadeSlot             string
+	facadeKeyFromEnv       bool
+	ambientChannels        []string
+	cloudSwitches          []string
+	ambiguousCloudSwitches []string
+	authorizationHeader    bool
+	customHeaders          bool
 }
 
-// forfaitSpawnOf reads the forfait token out of the credential env a spawn is
-// about to be handed. Only claudeForfaitEnv sets a non-empty
-// CLAUDE_CODE_OAUTH_TOKEN there, from the run's claude_code dir.
-func forfaitSpawnOf(ctx context.Context, credEnv map[string]string) forfaitSpawn {
+// credSpawnOf reads the credential channel out of the env a spawn is about to
+// be handed. Only claudeForfaitEnv sets a non-empty CLAUDE_CODE_OAUTH_TOKEN
+// there, from the run's claude_code dir; only facadeRouteEnv stamps the slot.
+// Reading the ENV rather than re-deriving the route from the hint is the point:
+// the default precedence and the ZAI_API_KEY shortcut both reach a facade with
+// no hint at all.
+//
+// selected is the resolver's own selection beside the composed env
+// (anthropicCredRouteForTask): it alone tells a credential the ENGINE bound
+// from one the operator left in the environment, which is the same fact the
+// session's source label reads (anthropicFingerprintEnvForTask). sandboxed
+// says which env the spawn inherits where the map is silent.
+func credSpawnOf(ctx context.Context, credEnv, selected map[string]string, sandboxed bool) credSpawn {
+	on, ambiguous := spawnCloudProviderSwitches(credEnv, sandboxed)
+	spawn := credSpawn{
+		facadeSlot:             credEnv[FacadeSlotEnvKey],
+		cloudSwitches:          on,
+		ambiguousCloudSwitches: ambiguous,
+		ambientChannels:        ambientCredChannels(credEnv, selected, sandboxed),
+		authorizationHeader:    spawnAuthorizationHeader(credEnv, sandboxed),
+		customHeaders:          spawnCustomHeaders(credEnv, sandboxed),
+	}
+	if spawn.facadeSlot != "" {
+		spawn.facadeKeyFromEnv = facadeKeyFromProcessEnv(ctx, spawn.facadeSlot, credEnv["ANTHROPIC_AUTH_TOKEN"])
+	}
 	token := credEnv["CLAUDE_CODE_OAUTH_TOKEN"]
 	if token == "" {
-		return forfaitSpawn{}
+		return spawn
 	}
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
-		return forfaitSpawn{}
+		return spawn
 	}
-	return forfaitSpawn{dir: creds.OAuthDir(string(secrets.OAuthKindClaudeCode)), token: token}
+	spawn.dir = creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
+	spawn.token = token
+	return spawn
+}
+
+// spawnEnvValue returns the value of key the CLI handed credEnv will read: the
+// engine's own map wherever it speaks — the "" of a cleared channel included,
+// which mergeCmdEnv and the sandbox exec both apply as "unset the inherited
+// value" — and, on a HOST spawn, this process's env where the map is silent,
+// which such a spawn inherits verbatim (hostSpawnEnv seeds os.Environ() before
+// the per-task entries, like the SDK's own host spawn).
+//
+// The map is silent on a credential variable only where the resolver bound
+// nothing at all (selectedAnthropicCredEnvForCLI returning no selection): a
+// bound route writes the variable or clears it.
+//
+// A SANDBOXED spawn inherits the CONTAINER's env, so this process's env is not
+// its fallback: of the ambient layer it gets only the names
+// ambientAnthropicEnvForSandbox forwards, and the caller writes those into the
+// same map. Reading the host past them would answer about an env the CLI never
+// sees — the sandbox/host split anthropicFingerprintEnvForTask makes for the
+// same reason. A variable only the container holds is in neither reading and
+// stays invisible here.
+func spawnEnvValue(credEnv map[string]string, key string, sandboxed bool) string {
+	if v, ok := credEnv[key]; ok {
+		return v
+	}
+	if sandboxed {
+		return ""
+	}
+	return os.Getenv(key)
+}
+
+// ambientCredentialChannels are the variables an operator's own Anthropic auth
+// lives in, in the CLI's documented precedence order. ANTHROPIC_CUSTOM_HEADERS
+// is read beside them (spawnAuthorizationHeader): only an Authorization line
+// in it is a credential.
+var ambientCredentialChannels = []string{
+	"ANTHROPIC_AUTH_TOKEN",
+	"ANTHROPIC_API_KEY",
+	"CLAUDE_CODE_OAUTH_TOKEN",
+}
+
+// ambientCredChannels names the credential variables the CLI handed credEnv
+// carries that the engine did NOT bind itself — the operator's own ambient
+// auth, forwarded into a sandboxed spawn or inherited by a host one. It is
+// what the auth-failure remediation has to name on such a route, since no
+// slot describes it.
+//
+// Several of them are live at once in a reachable state — a host, or the layer
+// forwarded into a container, carries whatever the operator exported — and the
+// request is not limited to the first: claw's ResolveStartupAuth sends
+// x-api-key AND Authorization when a key and a bearer are both set, and the
+// provider's verdict then names the one it refused ("invalid x-api-key",
+// "oauth token has expired"). So every channel the spawn carried is named;
+// naming only the highest-precedence one suppresses the channel the verdict
+// indicts.
+//
+// Empty in two cases, each for its own reason:
+//   - a cloud-provider switch is ON (spawnCloudProviderSwitches): it outranks
+//     every token in the CLI's precedence, so the credential is that cloud
+//     account's and no variable read here carries it. A switch at any other
+//     value vetoes nothing — it names no mode either (that reading says why).
+//   - the engine bound a credential of the RUN (selected): a run key, a
+//     forfait or a facade key is not a variable the operator can check, and
+//     the remediation names that route instead. The forfait route is bound by
+//     its config dir, which claudeForfaitEnv writes even where the token read
+//     off the file is empty.
+func ambientCredChannels(credEnv, selected map[string]string, sandboxed bool) []string {
+	if on, _ := spawnCloudProviderSwitches(credEnv, sandboxed); len(on) > 0 {
+		return nil
+	}
+	if selected["CLAUDE_CONFIG_DIR"] != "" {
+		return nil
+	}
+	for _, k := range ambientCredentialChannels {
+		if selected[k] != "" {
+			return nil
+		}
+	}
+	var out []string
+	for _, k := range ambientCredentialChannels {
+		if spawnEnvValue(credEnv, k, sandboxed) != "" {
+			out = append(out, k)
+		}
+	}
+	if spawnAuthorizationHeader(credEnv, sandboxed) {
+		out = append(out, "ANTHROPIC_CUSTOM_HEADERS")
+	}
+	return out
+}
+
+// cloudSwitchOn is the value a cloud-provider switch carries to enter its mode:
+// claw's detectProvider compares each of them to it exactly
+// (vendor/github.com/SocialGouv/claw-code-go/internal/runtime/config.go), and
+// every site in this tree that sets one sets it to this.
+const cloudSwitchOn = "1"
+
+// spawnCloudProviderSwitches splits the cloud-provider switches set in the env
+// the CLI handed credEnv reads — the variables that boot it into Bedrock/
+// Vertex/Foundry mode, ABOVE every token in its auth precedence (facadeRouteEnv
+// says why that order is load-bearing) — by the VALUE each carries.
+//
+// `on` is a fact: that spawn authenticates with the cloud account's own
+// credentials and no Anthropic variable is in the request, which is both why
+// the ambient reading stands down and what the remediation says instead of
+// sending the operator to a forfait that had no part in it.
+//
+// `ambiguous` — set, to anything else — is not. The readers disagree there:
+// claw enters the mode on cloudSwitchOn alone, so CLAUDE_CODE_USE_BEDROCK=0
+// leaves it on the token path, while a reader testing the variable's presence
+// rather than its value spends the cloud account. Which binary ran is not a
+// fact this record holds (a tool node's `command:` chooses it), so such a
+// switch claims no mode and vetoes no channel: the remediation names it BESIDE
+// the channels the spawn carried, and the operator sees both.
+//
+// EVERY switch set is named rather than the first: two at once is a
+// misconfiguration, and which of them the CLI picks is its business, not a fact
+// this record can reconstruct from a list's order.
+func spawnCloudProviderSwitches(credEnv map[string]string, sandboxed bool) (on, ambiguous []string) {
+	for _, k := range cloudProviderSwitches {
+		switch spawnEnvValue(credEnv, k, sandboxed) {
+		case "":
+		case cloudSwitchOn:
+			on = append(on, k)
+		default:
+			ambiguous = append(ambiguous, k)
+		}
+	}
+	return on, ambiguous
+}
+
+// spawnAuthorizationHeader reports that the ANTHROPIC_CUSTOM_HEADERS value the
+// spawn carries holds an Authorization line. One reading for both consumers —
+// the ambient channel list and the record's own field — so a route that names
+// the header and a route that does not cannot disagree about it being there.
+func spawnAuthorizationHeader(credEnv map[string]string, sandboxed bool) bool {
+	return carriesAuthorizationHeader(spawnEnvValue(credEnv, "ANTHROPIC_CUSTOM_HEADERS", sandboxed))
+}
+
+// spawnCustomHeaders reports that the spawn carries a non-empty
+// ANTHROPIC_CUSTOM_HEADERS, whatever header NAMES it holds — the same reading
+// as spawnAuthorizationHeader, one predicate weaker.
+//
+// The override the CLI performs is name-agnostic (claw's identity.Apply calls
+// h.Set per header, last), so a gateway's own credential can live under any
+// name in this variable: x-api-key, a token header of the operator's choosing,
+// Proxy-Authorization. On such a route NO credential variable is set, and the
+// remediation's other readings are all silent — the legacy disjunction then
+// names the forfait and the Anthropic key, both empty in that spawn, which is
+// #1527's own failure mode.
+//
+// Which name carries a credential is the operator's choice and not a fact this
+// record can read, so the claim made on this one is the weak one: the variable
+// is in the path and, wherever a CLI reads it, its lines go out over the headers
+// that CLI's own auth set.
+// The strong claim — that it carries a credential, over the route's own — stays
+// with the one name the CLI's auth uses (carriesAuthorizationHeader).
+//
+// Blank is empty, as it is for the CLI's own parser (claw's
+// ParseCustomHeaders returns no header for a whitespace-only value): a variable
+// set to spaces puts nothing in the request, so naming it would send the
+// operator to a channel that carries nothing.
+func spawnCustomHeaders(credEnv map[string]string, sandboxed bool) bool {
+	return strings.TrimSpace(spawnEnvValue(credEnv, "ANTHROPIC_CUSTOM_HEADERS", sandboxed)) != ""
+}
+
+// carriesAuthorizationHeader reports that an ANTHROPIC_CUSTOM_HEADERS value
+// carries an Authorization header: a credential of its own, which the CLI
+// applies LAST — over the header its own auth set — so an ambient one
+// authenticates a route the engine never funded (facadeRouteEnv clears the
+// variable for that reason).
+//
+// The format is the CLI's: newline-separated "Name: Value" lines, blank ones
+// skipped. claw's ParseCustomHeaders is the same reader, and a test pins this
+// predicate against it rather than against a second description of the format.
+// Only the header NAME decides, so a VALUE mentioning the word carries no
+// credential; the value itself is named nowhere — redactAuthRender does not
+// cover this variable.
+//
+// The reading is per LINE, which is deliberately more lenient than that parser
+// on a block it refuses outright — a comment line, a line with no name. Where
+// the provider resolves its identity from the environment — claw's api.Client
+// path (anthropic, zai, moonshot) and its vertex and foundry providers — the
+// parse error travels up INSTEAD of the request, so that CLI renders no auth
+// failure on such a block and the lenient answer costs nothing. Where a reader
+// drops the bad line instead, the Authorization line is what authenticated;
+// where it never reads the variable at all (claw's bedrock provider ignores
+// the headers and signs with the AWS chain), an auth render still follows. The
+// variable is in the spawn's path in every one of those cases, the engine did
+// not clear it, and a malformed block is itself what the operator has to go and
+// fix: sending them to it is the answer each time.
+func carriesAuthorizationHeader(headers string) bool {
+	for _, line := range strings.Split(headers, "\n") {
+		name, _, found := strings.Cut(strings.TrimSpace(strings.TrimSuffix(line, "\r")), ":")
+		if found && strings.EqualFold(strings.TrimSpace(name), "authorization") {
+			return true
+		}
+	}
+	return false
+}
+
+// facadeKeyFromProcessEnv reports that the key a facade route spends is the one
+// the provider's own variable holds (facadeEnvKey), rather than one the run
+// carries. It decides which of the two channels that can fund such a route the
+// remediation names, because the other one is inert on it: the resolver reads a
+// run key BEFORE the variable (facadeCredEnvForHint), the default precedence
+// reads no variable at all, and MOONSHOT_API_KEY in particular is honoured only
+// under an explicit `provider: moonshot` pin (facadeEnvKey says why).
+//
+// The answer travels with the KEY — the value the spawn carries, compared
+// against each channel — instead of being re-derived from the resolver's order,
+// and a value the run carries wins the tie, as that order does where both
+// channels hold the same key. The variable is read from THIS process's env on a
+// sandboxed spawn too: that is where the resolver read it.
+func facadeKeyFromProcessEnv(ctx context.Context, slot, key string) bool {
+	envKey := facadeEnvKey(slot)
+	if key == "" || envKey == "" || os.Getenv(envKey) != key {
+		return false
+	}
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok && creds.APIKeyForRoute(secrets.Provider(slot)) == key {
+		return false
+	}
+	return true
 }
 
 // renewed reports that the forfait file now carries another access token than
 // the one this spawn was handed: the credential was rotated under the running
 // CLI, not rejected.
-func (s forfaitSpawn) renewed() bool {
+func (s credSpawn) renewed() bool {
 	if s.dir == "" || s.token == "" {
 		return false
 	}
@@ -603,7 +891,7 @@ const defaultForfaitRenewalWait = 75 * time.Second
 
 // renewedWithin is renewed, watched for up to wait: a spawn that carried no
 // forfait token answers at once, and so does a cancelled ctx.
-func (s forfaitSpawn) renewedWithin(ctx context.Context, wait time.Duration) bool {
+func (s credSpawn) renewedWithin(ctx context.Context, wait time.Duration) bool {
 	if s.dir == "" || s.token == "" {
 		return false
 	}
@@ -686,6 +974,15 @@ func facadeRouteEnv(slot secrets.Provider, baseURL, key string) map[string]strin
 	env := clearedAnthropicChannels()
 	env["ANTHROPIC_BASE_URL"] = baseURL
 	env["ANTHROPIC_AUTH_TOKEN"] = key
+	// An ambient ANTHROPIC_CUSTOM_HEADERS — applied LAST by the CLI (claw
+	// identity.go) — would ride the funded route: an ambient
+	// "Authorization: Bearer …" hands the facade's gateway a foreign
+	// credential on a route the engine owns. The routing pin copies the
+	// var into the CLI's settings, it does not remove it, so the route
+	// clears it itself. Deliberately NOT in clearedAnthropicChannels: on a
+	// bound-direct route the header is the operator's gateway config and
+	// stays theirs (claude_code_routing.go:172).
+	env["ANTHROPIC_CUSTOM_HEADERS"] = ""
 	env[FacadeSlotEnvKey] = string(slot)
 	return env
 }
@@ -781,6 +1078,7 @@ func suppressAnthropicWireEnv() map[string]string {
 	env := clearedAnthropicChannels()
 	env["ANTHROPIC_BASE_URL"] = ""
 	env["ANTHROPIC_AUTH_TOKEN"] = ""
+	env["ANTHROPIC_CUSTOM_HEADERS"] = ""
 	env["CLAUDE_CONFIG_DIR"] = suppressedForfaitDir
 	// Marker every iterion-internal reader of CLAUDE_CONFIG_DIR tests
 	// before treating it as a real OAuth forfait — providerFingerprint
@@ -977,7 +1275,7 @@ func UsageMeterBackendForProvider(prov secrets.Provider) string {
 }
 
 // anthropicCredEnvForCLI resolves the credential environment for a CLI.
-// Task-aware spawns use anthropicCredEnvForTask to compose provisioning too.
+// Task-aware spawns use anthropicCredRouteForTask to compose provisioning too.
 //
 // providerHint, when non-empty, overrides the default precedence with
 // a per-node routing decision (from the DSL `provider:` field):
@@ -1036,18 +1334,14 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 	return selected
 }
 
-// anthropicCredEnvForTask composes both CLI passes with the same precedence:
+// anthropicCredRouteForTask composes both CLI passes with the same precedence:
 // ambient forwarding < task additions (including empty values) < the resolved
 // credential route. The last layer includes suppression entries: an extra
 // variable must not redirect a selected facade's bearer or revive its forfait.
-func anthropicCredEnvForTask(ctx context.Context, task Task) map[string]string {
-	env, _ := anthropicCredRouteForTask(ctx, task)
-	return env
-}
-
-// anthropicCredRouteForTask is anthropicCredEnvForTask with the resolver's
-// selection beside the composed env: the credentials bound for the route,
-// which alone may name it (anthropicFingerprintEnvForTask).
+//
+// It returns the resolver's selection beside the composed env: the credentials
+// bound for the route, which alone may name it (anthropicFingerprintEnvForTask)
+// and alone tell them from the operator's ambient env (credSpawnOf).
 func anthropicCredRouteForTask(ctx context.Context, task Task) (env, selected map[string]string) {
 	selected, inheritAmbient := selectedAnthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
 	env = map[string]string{}

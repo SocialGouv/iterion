@@ -329,29 +329,6 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
 	}
-	// Launch admission: suspend → concurrency → rate → cost cap →
-	// monthly run quota (which also meters). Super-admin bypasses.
-	adm, d := s.gateLaunch(r.Context())
-	if d != nil {
-		s.writeLaunchDenial(w, r, d)
-		return
-	}
-	// The quota increment IS the metering, so every return between here and
-	// the call into the run service abandons an admitted launch and has to
-	// hand the MONTHLY unit back — a malformed body or an unresolvable bot
-	// would otherwise spend the org's month one request at a time. rollback is
-	// nil-safe and a no-op when nothing was metered (local mode, super-admin,
-	// the fail-open arms), so this is inert on those paths.
-	//
-	// It hands back the monthly unit AND the per-minute launch-rate token the
-	// gate spent (launchAdmission carries the bucket; #1726): a client looping
-	// a bad request no longer empties that bucket.
-	runMayExist := false
-	defer func() {
-		if !runMayExist {
-			adm.rollback(s.logger)
-		}
-	}()
 	// Root span for the launch path. Keeping it on the request ctx
 	// means the OTel HTTP middleware (when wired) sees it as a child
 	// of the inbound HTTP server span. The detached ctx below
@@ -383,6 +360,44 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
 		return
 	}
+	// Launch admission: suspend → concurrency → rate → cost cap →
+	// monthly run quota (which also meters). Super-admin bypasses.
+	//
+	// AFTER the decode, because the body is where this surface learns which
+	// bot it is launching, and an empty subject is not neutral: a RESERVED
+	// bot judged as ordinary work faces the ceiling its own reservation
+	// lowered, so the studio's Launch button would be refused on the very
+	// band held for that bot. The body is size-bounded and touches no store,
+	// so nothing but the caller's own payload is parsed before admission —
+	// and a request too malformed to name a bot now costs no metered run
+	// slot either.
+	//
+	// No repository YET: this surface learns which one it targets only after a
+	// connection read and a forge probe, and neither may run in front of the
+	// suspend check. The repo half of the admission is re-run below, on the
+	// line that resolves `repoProjectPath`.
+	adm, d := s.gateLaunch(r.Context(), launchSubject{BotID: strings.TrimSpace(req.BotID)})
+	if d != nil {
+		s.writeLaunchDenial(w, r, d)
+		span.SetStatus(codes.Error, "launch denied")
+		return
+	}
+	// The quota increment IS the metering, so every return between here and
+	// the call into the run service abandons an admitted launch and has to
+	// hand the MONTHLY unit back — an unresolvable bot would otherwise spend
+	// the org's month one request at a time. rollback is nil-safe and a no-op
+	// when nothing was metered (local mode, super-admin, the fail-open arms),
+	// so this is inert on those paths.
+	//
+	// It hands back the monthly unit AND the per-minute launch-rate token the
+	// gate spent (launchAdmission carries the bucket; #1726): a client looping
+	// a bad request no longer empties that bucket.
+	runMayExist := false
+	defer func() {
+		if !runMayExist {
+			adm.rollback(s.logger)
+		}
+	}()
 	// The identity the caller asked for is checked BEFORE bot resolution
 	// rewrites it and before any source is materialised: an author
 	// document is a draft, refused with a stable code, nothing written.
@@ -559,9 +574,42 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "repo host mismatch")
 			return
 		}
+		repoProjectPath = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")
+		// The repository half of the admission, taken at the FIRST line where
+		// this surface knows which repository it targets. `repoProjectPath` is
+		// the identity the run is stamped with below (spec.ProjectPath), which
+		// is the one pkg/credusage meters and the one the quota queries — never
+		// a second one derived here. Resolving it before the gate above was not
+		// an option: it costs a connection read, which a suspended tenant must
+		// not be able to drive.
+		//
+		// Without this the quota bound every automated lane and the resume of
+		// a run, but not the surface an operator or a CI loop drives
+		// directly: the one place a repository could spend past its ceiling
+		// all month. It sits AHEAD of the reachability probe and the
+		// managed-secret mint, so an over-quota repository costs neither a
+		// forge round trip nor a minted credential.
+		//
+		// A super-admin bypasses it, as they bypass the gate above — the
+		// exemption is inside gateRepoQuota so both callsites read it off the
+		// same identity rather than one of them forgetting.
+		//
+		// Only the repo half of the gate is re-run: its monthly arm METERS,
+		// and this launch already charged its run slot up there — so the
+		// denial hands that slot back, through the deferred rollback every
+		// refusal before the run service call takes. Without it a CI loop
+		// against a repository at its ceiling would spend the ORG's monthly
+		// run quota on launches that never happened, turning a repo-scoped
+		// refusal into a tenant-wide one.
+		if d := s.gateRepoQuota(r.Context(), s.budgetFloorPolicy(r.Context()),
+			launchSubject{Repo: repoProjectPath}, time.Now().UTC()); d != nil {
+			s.writeLaunchDenial(w, r, d)
+			span.SetStatus(codes.Error, "launch denied")
+			return
+		}
 		// Fail at launch, not three hours in: a repo outside a "selected
 		// repositories" App installation can only fail at push time.
-		if err := s.forgeRepoReachable(r.Context(), conn, strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")); err != nil {
+		if err := s.forgeRepoReachable(r.Context(), conn, repoProjectPath); err != nil {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 			span.SetStatus(codes.Error, "repo unreachable by connection")
 			return
@@ -573,7 +621,6 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		repoSecretOverrides = map[string]string{"forge_token": secID}
-		repoProjectPath = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")
 		// Canonicalize to the .git clone URL: the runner clones with
 		// http.followRedirects=false (SSRF hardening), and GitLab 301s a
 		// bare repo path to its .git twin — which that git config turns
@@ -796,7 +843,38 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	adm, d := s.gateLaunch(r.Context())
+	// The subject comes from the RUN, so the run is read first; its error is
+	// answered after the gate, so a run this read cannot answer for is still
+	// gated. That order hides nothing: run existence is not a secret on this
+	// route (ADR-103) — on every authenticated request the run-by-id choke
+	// point (run_scope.go) has already answered 404 for a run that is missing
+	// or that the caller has no standing in, before this handler runs; under
+	// DisableAuth the synthesized super-admin bypasses the gate, so the order
+	// is moot there. Passing the subject matters in the direction nobody
+	// expects: judged as ordinary work, a RESERVED bot faces the ceiling its
+	// own reservation lowered, so resuming it by hand could be refused on the
+	// band held for it — and where the reserves take a whole cap, no run could
+	// be resumed at all. The automated twin (the retry sweeper) reads the same
+	// doc and passes the same subject.
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	var (
+		gateMeta    *store.Run
+		gateMetaErr = errors.New("run service unavailable")
+		subj        launchSubject
+	)
+	// Nil in a degraded/local wiring — and the gate must still answer there,
+	// so an unreadable run costs the subject, never the admission.
+	if s.runs != nil {
+		gateMeta, gateMetaErr = s.runs.LoadRunCtx(r.Context(), id)
+		if gateMetaErr == nil && gateMeta != nil {
+			subj = launchSubject{BotID: gateMeta.BotID, Repo: gateMeta.ProjectPath}
+		}
+	}
+	adm, d := s.gateLaunch(r.Context(), subj)
 	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
@@ -809,11 +887,6 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			adm.rollback(s.logger)
 		}
 	}()
-	id := r.PathValue("id")
-	if id == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
-		return
-	}
 	spanCtx, span := otel.Tracer(tracerName).Start(r.Context(), "iterion.api.resume_run",
 		trace.WithAttributes(attribute.String("iterion.run_id", id)))
 	defer span.End()
@@ -836,11 +909,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Load the run once: its persisted FilePath is the fallback when the body
-	// omits one, and its TenantID is required to scope the resume's Mongo
-	// queries (see below). LoadRunCtx looks a run up by id without a tenant
-	// filter, so it is safe to call before the tenant is on the context.
-	runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
+	// The run read for the gate's subject above, answered HERE: one load
+	// serves both. Its persisted FilePath is the fallback when the body omits
+	// one, and its TenantID scopes the resume's Mongo queries (see below).
+	runMeta, err := gateMeta, gateMetaErr
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		span.SetStatus(codes.Error, "run not found")

@@ -33,10 +33,15 @@ import (
 // C148 is a WARNING, like C147 and C144: a bot in the field that carries
 // the shape compiled yesterday and runs today until that node is reached,
 // and its failure there stays loud — the warning makes the defect visible
-// before a run without breaking an upgrade. A supervisor's `model:` is not
-// a routing field of a node: it is decided at spawn, without the run's
-// vars, and nothing renders a template in it — any `{{…}}` there is C148
-// too, said as such (the supervisor degrades, the run is not refused).
+// before a run without breaking an upgrade. A supervisor's `model:` holds
+// to the same line, at its own resolution: the spawn resolves WHOLE
+// {{vars.name}} references against the run's resolved vars, so a dotted
+// path there is C148 like every other non-whole span (a supervisor's pin
+// is a scalar name, and the drill the executor runs for a node has no
+// meaning at spawn). One asymmetry: an UNDECLARED var on a supervisor is
+// C033 — an error, as on a node — so a bot that compiled on the old
+// refused-everything line may refuse to compile after the upgrade; that
+// is the consistency chosen, and the error names the reference.
 func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 	for _, node := range w.Nodes {
 		for _, rf := range routingFields(node) {
@@ -64,7 +69,7 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 					} else {
 						// A whole ref: the name resolves, but the
 						// declared TYPE can still be unroutable (#1605).
-						c.checkRoutingVarListType(w, node.NodeID(), loc, rf.name, refs[0].Path[0])
+						c.checkRoutingVarListType(w, node.NodeID(), loc, rf.name, refs[0].Path[0], "the node fails at its first delegation")
 					}
 					continue
 				}
@@ -92,7 +97,7 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 						span, refs[0].Path[0], v.Type)
 				}
 			} else {
-				c.checkRoutingVarListType(w, "", "workflow default_backend", "default_backend", refs[0].Path[0])
+				c.checkRoutingVarListType(w, "", "workflow default_backend", "default_backend", refs[0].Path[0], "every node that names no backend fails at its first delegation")
 			}
 			continue
 		}
@@ -104,14 +109,31 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 		c.warnf(DiagRoutingFieldRef, "workflow default_backend: an opening {{ has no closing }} — the text becomes the backend name at dispatch")
 	}
 
-	// A supervisor is an enhancement that degrades rather than blocking the
-	// run (its monitors are dropped at spawn with a warning, C191), so this
-	// is a warning: the run starts, the supervisor is inert and said to be.
+	// A supervisor's model is a routing field like a node's now: the spawn
+	// resolves whole {{vars.name}} references against the run's resolved
+	// vars (SpecsFromWorkflow), so the same refs are accepted — an
+	// undeclared var is C033 like everywhere, and every other span is
+	// C148. A supervisor is an enhancement that degrades rather than
+	// blocking the run (its monitors are dropped at spawn with a warning,
+	// C191), so this stays a warning: the run starts, the supervisor is
+	// inert and said to be.
 	for _, sup := range w.Supervisors {
-		if spans, unterminated := templateSpans(sup.Model); len(spans) > 0 || unterminated {
+		loc := fmt.Sprintf("supervisor %q model", sup.Name)
+		spans, unterminated := templateSpans(sup.Model)
+		for _, span := range spans {
+			refs, err := ParseRefs(span)
+			if err == nil && len(refs) == 1 && refs[0].Kind == RefVars && !refs[0].Unquoted && len(refs[0].Path) == 1 {
+				c.validateVarsRef(w, refContext{Ref: refs[0], Location: loc})
+				c.checkRoutingVarListType(w, "", loc, "model", refs[0].Path[0], "the supervisor degrades to its provider hint")
+				continue
+			}
 			c.warnf(DiagRoutingFieldRef,
-				"supervisor %q model: %q holds a template, and a supervisor's model is not rendered — it is decided at spawn, without the run's vars, so this supervisor will evaluate nothing; write the model id or a ${VAR:-default} (#1450)",
-				sup.Name, sup.Model)
+				"%s: %s is not a whole {{vars.<name>}} reference — a supervisor's model resolves declared vars at spawn, the same values the run's nodes see, and nothing else (no drilling, no other namespace); the text reaches the provider as written and the supervisor degrades to its provider hint (write the model id, a ${VAR:-default}, or a whole declared var)",
+				loc, span)
+		}
+		if unterminated {
+			c.warnf(DiagRoutingFieldRef,
+				"%s: an opening {{ has no closing }} — the text reaches the provider as written and the supervisor degrades to its provider hint", loc)
 		}
 	}
 }
@@ -139,7 +161,7 @@ func (c *compiler) validateRoutingFieldRefs(w *Workflow) {
 // its default. A `${...}` in the default moves nothing: the run parses
 // the document before it expands a leaf, so `"${BACKEND}"` is the
 // routable string it expands to.
-func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varName string) {
+func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varName, failureTail string) {
 	v := w.Vars[varName]
 	if v == nil {
 		return // C033 owns the undeclared name
@@ -165,8 +187,8 @@ func (c *compiler) checkRoutingVarListType(w *Workflow, nodeID, loc, field, varN
 		return
 	}
 	c.warnfAt(DiagRoutingFieldRef, nodeID, "",
-		"%s: {{vars.%s}} resolves, but the var's declared type is `%s` — %s is a NAME at dispatch, and a list or object value resolves to its JSON spelling ([\"a\",\"b\"]), a name no backend, model or provider answers to; the node fails at its first delegation (declare the var `string`, or override it at launch with a scalar)",
-		loc, varName, v.Type, field)
+		"%s: {{vars.%s}} resolves, but the var's declared type is `%s` — %s is a NAME at dispatch, and a list or object value resolves to its JSON spelling ([\"a\",\"b\"]), a name no backend, model or provider answers to; %s (declare the var `string`, or override it at launch with a scalar)",
+		loc, varName, v.Type, field, failureTail)
 }
 
 // jsonDefaultDocument is the document a `json` var's static default

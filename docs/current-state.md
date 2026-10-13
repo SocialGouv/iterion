@@ -111,7 +111,7 @@ diagnostic ranges are under [references/](references/dsl-grammar.md).
 | `pi` | Explicit opt-in | Multi-provider pi coding agent. RPC mode provides tool events, steering, provider-computed cost, the shared permission gate, async questions, and Iterion MCP tools through the embedded extension; print mode is the reduced fallback. |
 | `kimi` | Explicit opt-in | Moonshot Kimi Code CLI through the generic CLI-agent protocol. Sessions are observable but resume/fork is not wired. |
 | `grok` | Explicit opt-in | xAI Grok Build CLI through the same seam. This is distinct from `claw` calling the xAI HTTP API. Sessions are observable but resume/fork is not wired. |
-| `opencode` | Explicit opt-in | opencode agent CLI through the same seam, multi-provider with a provider-computed cost. It cannot enforce the permission gate in any mode (C176 refuses a gated node), async is refused (C267), resume/fork is not wired, and the target repo's `.opencode/` plugins are refused unless `ITERION_OPENCODE_TRUST_PROJECT=1`. |
+| `opencode` | Explicit opt-in | opencode agent CLI through the same seam, multi-provider with a provider-computed cost. It cannot enforce the permission gate in any mode (C176 refuses a gated node), async is refused (C267), resume/fork is wired but `session: persist` is not, and the target repo's `.opencode/` plugins are refused unless `ITERION_OPENCODE_TRUST_PROJECT=1`. |
 | `codex` | Supported, explicit opt-in | Codex CLI through the pinned Agent SDK, with native tools, sandbox, ChatGPT OAuth, images, sessions and structured output. |
 
 Automatic selection considers `claude_code` and `claw` in that order when the
@@ -145,9 +145,13 @@ The security posture is explicit rather than implied:
   host can't sandbox. Opt out per-workflow with `sandbox: none`, or machine-wide
   with `ITERION_SANDBOX_DEFAULT=none`. Embedded `Engine` instances stay neutral
   unless the caller sets a default.
-- When a sandbox is active, its network mode defaults to **`open`**. An
-  `allowlist` or `denylist` starts the CONNECT proxy; the `iterion-default`
-  preset is a curated starting point, not the default policy.
+- When a sandbox is active, its network mode defaults to **`open`** — except
+  on a repo-defined sandbox (auto + a found `devcontainer.json`) whose workflow
+  names no network base of its own (no `network:` block, an empty one, or
+  rules without a preset), where the `iterion-default` allowlist preset
+  applies (a `sandbox_network_defaulted` event says so). An explicit `allowlist`
+  or `denylist` starts the CONNECT proxy; outside that case the preset is a
+  curated starting point, not the default policy.
 - Local containers normally bind the worktree at the same absolute path as the
   host so Claude Code project/session keys stay stable. An explicit
   `workspace_folder` can use a path such as `/workspace`. Kubernetes sandboxes

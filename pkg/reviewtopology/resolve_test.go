@@ -122,7 +122,7 @@ func wfWithVars(names ...string) *ir.Workflow {
 func TestInjectIfDeclared_optIn(t *testing.T) {
 	// Bot that does NOT declare review_mode is untouched.
 	inputs := map[string]any{}
-	_, _, injected := InjectIfDeclared(wfWithVars("workspace_dir"), inputs,
+	_, _, injected, _ := InjectIfDeclared(wfWithVars("workspace_dir"), inputs,
 		rep(prov("anthropic", true), prov("openai", true)), "")
 	if injected {
 		t.Fatal("expected no injection for a bot without review_mode var")
@@ -138,7 +138,7 @@ func TestInjectIfDeclared_optIn(t *testing.T) {
 func TestInjectIfDeclared_autoDetectMono(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	inputs := map[string]any{VarReviewMode: ModeAuto}
-	mode, family, injected := InjectIfDeclared(wf, inputs,
+	mode, family, injected, _ := InjectIfDeclared(wf, inputs,
 		rep(prov("anthropic", true), prov("openai", true)), "")
 	if !injected || mode != ModeMono || family != FamilyClaude {
 		t.Fatalf("got (%q,%q,injected=%v), want mono/claude/true", mode, family, injected)
@@ -152,7 +152,7 @@ func TestInjectIfDeclared_autoDetectMono(t *testing.T) {
 func TestInjectIfDeclared_explicitDual(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	inputs := map[string]any{VarReviewMode: ModeDual}
-	mode, family, injected := InjectIfDeclared(wf, inputs,
+	mode, family, injected, _ := InjectIfDeclared(wf, inputs,
 		rep(prov("anthropic", true), prov("openai", true)), "")
 	if !injected || mode != ModeDual || family != "" {
 		t.Fatalf("got (%q,%q,injected=%v), want dual/empty/true", mode, family, injected)
@@ -162,7 +162,7 @@ func TestInjectIfDeclared_explicitDual(t *testing.T) {
 func TestInjectIfDeclared_autoDetectMonoSingleFamily(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	inputs := map[string]any{VarReviewMode: ModeAuto}
-	mode, family, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")
+	mode, family, _, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")
 	if mode != ModeMono || family != FamilyGPT {
 		t.Fatalf("got (%q,%q), want mono/gpt", mode, family)
 	}
@@ -175,7 +175,7 @@ func TestInjectIfDeclared_flagOverrideWins(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	// Two families available (auto would pick dual) but the flag forces mono.
 	inputs := map[string]any{VarReviewMode: ModeAuto}
-	mode, family, _ := InjectIfDeclared(wf, inputs,
+	mode, family, _, _ := InjectIfDeclared(wf, inputs,
 		rep(prov("anthropic", true), prov("openai", true)), "mono")
 	if mode != ModeMono || family != FamilyClaude {
 		t.Fatalf("got (%q,%q), want mono/claude (flag override)", mode, family)
@@ -186,7 +186,7 @@ func TestInjectIfDeclared_varOverrideUsedWhenNoFlag(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	// Operator set --var review_mode=dual; no flag → var wins over auto.
 	inputs := map[string]any{VarReviewMode: ModeDual}
-	mode, _, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")
+	mode, _, _, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")
 	if mode != ModeDual {
 		t.Fatalf("got %q, want dual (var override)", mode)
 	}

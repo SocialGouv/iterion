@@ -453,6 +453,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/settings/budget-floor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/budget-floor */
+        get: operations["getAdminSettingsBudgetFloor"];
+        /** PUT /api/admin/settings/budget-floor */
+        put: operations["putAdminSettingsBudgetFloor"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/settings/platform-credentials": {
         parameters: {
             query?: never;
@@ -507,6 +525,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/teams/{id}/llm-fallback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/admin/teams/{id}/llm-fallback */
+        put: operations["putAdminTeamsByIdLlmFallback"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/teams/{id}/runner-pool": {
         parameters: {
             query?: never;
@@ -521,6 +558,26 @@ export interface paths {
         put: operations["putAdminTeamsByIdRunnerPool"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/tenants/{tenant}/bot-sources/{slug}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/admin/tenants/{tenant}/bot-sources/{slug}/history */
+        delete: operations["deleteAdminTenantsByTenantBotSourcesBySlugHistory"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2097,6 +2154,26 @@ export interface paths {
         put?: never;
         /** POST /api/orgs/{id}/provision-approvals/{approval_id}/reject */
         post: operations["postOrgsByIdProvisionApprovalsByApprovalIdReject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/routing-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/routing-policy */
+        get: operations["getOrgsByIdRoutingPolicy"];
+        /** PUT /api/orgs/{id}/routing-policy */
+        put: operations["putOrgsByIdRoutingPolicy"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4775,6 +4852,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/routing-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/routing-policy */
+        get: operations["getTeamsByIdRoutingPolicy"];
+        /** PUT /api/teams/{id}/routing-policy */
+        put: operations["putTeamsByIdRoutingPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/secrets": {
         parameters: {
             query?: never;
@@ -6438,6 +6535,8 @@ export interface components {
         };
         CredentialPreviewPool: {
             considered: boolean;
+            door_reason?: string;
+            door_wants?: string[];
             reason?: string;
             wants: string[];
         };
@@ -6884,7 +6983,13 @@ export interface components {
             updated_by?: string;
         };
         Policy: {
+            cross_harness?: string;
             locks?: string[];
+            model_classes?: {
+                [key: string]: {
+                    [key: string]: string;
+                };
+            };
             pair_order?: string[];
             refused_pinned_key?: string;
             strict?: boolean;
@@ -7023,6 +7128,12 @@ export interface components {
             worktree_available: boolean;
         };
         RunLLMRoutePolicy: {
+            cross_harness?: string;
+            model_classes?: {
+                [key: string]: {
+                    [key: string]: string;
+                };
+            };
             pair_order?: string[];
             refused_pinned_key?: string;
             sources?: {
@@ -7633,6 +7744,7 @@ export interface components {
             origin: string;
             routing?: components["schemas"]["Policy"];
             routing_effective?: components["schemas"]["RunLLMRoutePolicy"];
+            routing_effective_scope: string;
             stored?: components["schemas"]["PlatformCredentials"];
         };
         previewBackendOption: {
@@ -7682,6 +7794,14 @@ export interface components {
             compress: components["schemas"]["previewEffectiveKnob"];
             permission: components["schemas"]["previewEffectiveKnob"];
         };
+        routingPolicyView: {
+            origin: string;
+            policy?: components["schemas"]["Policy"];
+            scope: string;
+            /** Format: date-time */
+            updated_at?: string;
+            updated_by?: string;
+        };
         sandboxSettingsView: {
             effective_default_image: string;
             origin: string;
@@ -7695,6 +7815,7 @@ export interface components {
             created_at?: string;
             id: string;
             launch_rate_per_min?: number;
+            llm_fallback?: string;
             max_concurrent_runs?: number;
             name: string;
             org_id?: string;
@@ -8524,6 +8645,42 @@ export interface operations {
             };
         };
     };
+    getAdminSettingsBudgetFloor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminSettingsBudgetFloor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getAdminSettingsPlatformCredentials: {
         parameters: {
             query?: never;
@@ -8644,12 +8801,53 @@ export interface operations {
             };
         };
     };
+    putAdminTeamsByIdLlmFallback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     putAdminTeamsByIdRunnerPool: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteAdminTenantsByTenantBotSourcesBySlugHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant: string;
+                slug: string;
             };
             cookie?: never;
         };
@@ -10766,6 +10964,50 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getOrgsByIdRoutingPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["routingPolicyView"];
+                };
+            };
+        };
+    };
+    putOrgsByIdRoutingPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["routingPolicyView"];
+                };
             };
         };
     };
@@ -14491,6 +14733,50 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getTeamsByIdRoutingPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["routingPolicyView"];
+                };
+            };
+        };
+    };
+    putTeamsByIdRoutingPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["routingPolicyView"];
+                };
             };
         };
     };

@@ -69,7 +69,7 @@ func TestSpecsFromWorkflow(t *testing.T) {
 			},
 		}},
 	}
-	specs := SpecsFromWorkflow(wf, nil)
+	specs := SpecsFromWorkflow(wf, nil, nil)
 	if len(specs) != 1 {
 		t.Fatalf("SpecsFromWorkflow returned %d specs; want 1", len(specs))
 	}
@@ -85,5 +85,76 @@ func TestSpecsFromWorkflow(t *testing.T) {
 	}
 	if sp.Monitors[0].TextContains != "impossible" || sp.Monitors[1].EventType != "budget_warning" {
 		t.Errorf("monitors mis-parsed: %+v", sp.Monitors)
+	}
+}
+
+// A supervisor model pin resolves its {{vars.name}} references against the
+// run's RESOLVED vars — the same values the nodes beside which the
+// supervisor spawns see — and a reference the map does not hold stays as
+// written, the keep-literal the executor's resolver honors on a node's
+// routing field. The hint derivation reads the RESOLVED pin: a var
+// resolving empty is an unset pin, and derives the watched family.
+func TestSpecsFromWorkflowResolvesModelVars(t *testing.T) {
+	wf := &ir.Workflow{
+		Supervisors: []*ir.Supervisor{{
+			Name:    "persy",
+			Watches: []string{"campaign"},
+			Model:   "{{vars.m}}",
+		}},
+	}
+	specs := SpecsFromWorkflow(wf, map[string]any{"m": "anthropic/claude-haiku-4-5"}, nil)
+	if len(specs) != 1 || specs[0].Model != "anthropic/claude-haiku-4-5" {
+		t.Fatalf("the pin did not resolve: %+v", specs)
+	}
+	// No map (the estimate paths hold no run): the pin stays as written.
+	if specs = SpecsFromWorkflow(wf, nil, nil); specs[0].Model != "{{vars.m}}" {
+		t.Fatalf("a nil map must leave the pin: %q", specs[0].Model)
+	}
+	// A var the map does not hold stays literal.
+	if specs = SpecsFromWorkflow(wf, map[string]any{}, nil); specs[0].Model != "{{vars.m}}" {
+		t.Fatalf("an unheld var must stay literal: %q", specs[0].Model)
+	}
+	// A var resolving empty is an unset pin: the provider hint derives.
+	wf2 := &ir.Workflow{
+		Nodes: map[string]ir.Node{
+			"campaign": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "campaign"}, LLMFields: ir.LLMFields{Provider: "anthropic"}},
+		},
+		Supervisors: []*ir.Supervisor{{
+			Name:    "persy",
+			Watches: []string{"campaign"},
+			Model:   "{{vars.m}}",
+		}},
+	}
+	specs = SpecsFromWorkflow(wf2, map[string]any{"m": ""}, nil)
+	if len(specs) != 1 || specs[0].Model != "" || specs[0].ProviderHint != "anthropic" {
+		t.Fatalf("an empty resolution must derive the hint: %+v", specs)
+	}
+}
+
+// The rendering matches the executor's formatValue: nil renders empty (an
+// unset value, not the word "<nil>"), a non-string renders its JSON
+// spelling. A routing field is a NAME at dispatch, and the two resolvers
+// must not disagree on the spelling.
+func TestSpecsFromWorkflowRendersScalarsLikeTheExecutor(t *testing.T) {
+	wf := &ir.Workflow{
+		Supervisors: []*ir.Supervisor{{
+			Name:    "persy",
+			Watches: []string{"campaign"},
+			Model:   "{{vars.m}}",
+		}},
+	}
+	for name, vars := range map[string]struct {
+		vars map[string]any
+		want string
+	}{
+		"nil":          {map[string]any{"m": nil}, ""},
+		"string list":  {map[string]any{"m": []string{"claw", "claude_code"}}, `["claw","claude_code"]`},
+		"plain string": {map[string]any{"m": "anthropic/claude-haiku-4-5"}, "anthropic/claude-haiku-4-5"},
+		"json object":  {map[string]any{"m": map[string]any{"a": 1}}, `{"a":1}`},
+	} {
+		specs := SpecsFromWorkflow(wf, vars.vars, nil)
+		if len(specs) != 1 || specs[0].Model != vars.want {
+			t.Errorf("%s: rendered %q, want %q", name, specs[0].Model, vars.want)
+		}
 	}
 }
