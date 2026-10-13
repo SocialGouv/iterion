@@ -41,12 +41,34 @@ export interface IterDocument {
  *  present the revision the document was opened at — the digest of every
  *  file's path and content — or it is refused as a conflict. */
 export interface UnitInfo {
-  /** The unit's directory, as the file was named. Empty for a cloud bundle. */
+  /** The directory the paths below are named from, as the file that was
+   *  opened was named: `root` and `main` compose back into it. Empty for a
+   *  cloud bundle, whose files are keyed from the bundle's root. */
   root: string;
   /** The main file's path from the root. */
   main: string;
   revision: string;
   files: UnitFileInfo[];
+  /** The fragments an `import` asks for that the load tried to read and
+   *  could not, named from the root. Each is a file of NO `files` entry —
+   *  the unit holds what the load reached — while `load_errors` below
+   *  refuses on it: writing one is the repair the refusal asks for, so
+   *  this is what tells a file event about this bot from any other write.
+   *  A path the loader refuses WITHOUT reading it — one outside the bot's
+   *  `lib/` — is none of them: no write there changes the load. Absent
+   *  reads as "awaits nothing". */
+  unread?: string[];
+  /** How many errors the LOAD of these files left, and the first of them
+   *  as the Diagnostics panel spells it. Every file can parse and the bot
+   *  still not load as one — an `import` naming no fragment, a cycle, a
+   *  declaration made in two files. It is the load's whole diagnostics
+   *  list: every file's own parse errors as the loader read them, plus the
+   *  loader's, hence a SUPERSET of each `parse_errors` below. The launch
+   *  refuses on this very list, so the gate does too — and the merged
+   *  document, built from what loaded, validates clean, so no later answer
+   *  about the document carries it. Absent reads as "loads". */
+  load_errors?: number;
+  load_error?: string;
 }
 
 export interface UnitFileInfo {
@@ -59,6 +81,15 @@ export interface UnitFileInfo {
    *  save compares — a colleague's edit since the apply is a conflict,
    *  never a silent overwrite. */
   digest?: string;
+  /** How many errors the parse of THIS file's own text left, and the
+   *  first of them as the Diagnostics panel spells it. A unit whose main
+   *  parses opens `bindable: true`, and the diagnostics that name a
+   *  broken fragment are rewritten as soon as auto-validation answers on
+   *  the merged document — built from what parsed, and clean — so the
+   *  launch gate refuses on this instead. Absent reads as "parses": an
+   *  older server answers no verdict, as it answers no `bindable`. */
+  parse_errors?: number;
+  parse_error?: string;
 }
 
 /** A declared terminal failure: `fail <name>:` with a typed code the run's

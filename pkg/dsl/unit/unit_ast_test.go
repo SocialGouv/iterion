@@ -9,6 +9,16 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
+// fileOf is the unit's entry for one relative path.
+func fileOf(u *Unit, rel string) (File, bool) {
+	for _, f := range u.Files {
+		if f.Rel == rel {
+			return f, true
+		}
+	}
+	return File{}, false
+}
+
 // A unit whose main is handed over parsed (an author document's AST) is
 // held to the loader's rules as a text main is: its fragments are read
 // beside mainPath under lib/, a fragment loaded alone below a lib/ is read
@@ -70,6 +80,30 @@ func TestLoadDirWithMainASTHoldsTheLoadersRules(t *testing.T) {
 		u := LoadDirWithMainAST(filepath.Join(lib, "odd.bot"), "odd.bot.yaml", pr.File, []byte("y"))
 		if u.Root != lib || u.Main != "odd.bot" {
 			t.Fatalf("root %q, main %q — want lib itself and odd.bot", u.Root, u.Main)
+		}
+	})
+
+	t.Run("each file's parse diagnostics are its own, and the handed-over main has none", func(t *testing.T) {
+		write("lib/bad.bot", "agent \n  model\n")
+		pr := parse("main.bot.yaml", "import \"lib/bad.bot\"\n\nworkflow w:\n  entry: done\n")
+		u := LoadDirWithMainAST(filepath.Join(root, "main.bot"), "main.bot.yaml", pr.File, []byte("the yaml"))
+		// The caller parsed the main — from YAML, which the parser never
+		// read — so there is no parse of its own text to report, whatever
+		// the fragment it imports does.
+		if len(u.Files[0].ParseDiagnostics) != 0 {
+			t.Errorf("the handed-over main carries %v", u.Files[0].ParseDiagnostics)
+		}
+		bad, ok := fileOf(u, "lib/bad.bot")
+		if !ok {
+			t.Fatalf("the fragment was not loaded: %v", u.Files)
+		}
+		if len(bad.ParseDiagnostics) == 0 {
+			t.Error("the fragment that does not parse carries no parse diagnostics")
+		}
+		for _, d := range bad.ParseDiagnostics {
+			if d.File != bad.Name {
+				t.Errorf("the fragment's diagnostic is positioned at %q, want %q", d.File, bad.Name)
+			}
 		}
 	})
 

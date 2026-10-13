@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -399,10 +400,20 @@ func TestLoadExampleRefusesToWriteAFileThatDoesNotParse(t *testing.T) {
 		if got.ConfirmedDiskPath == "" {
 			t.Errorf("%s: a file that does not parse lost its confirmed disk path", name)
 		}
-		// No unit: there is no revision to present for a unit that does not
-		// load, and a save is refused before it needs one.
-		if got.Unit != nil {
-			t.Errorf("%s: a unit that does not load was served with unit info", name)
+		// A bot in ONE file has no unit to present. A bot in several that
+		// does not load has: its files, and their parse and load verdict —
+		// what the launch gate refuses on, and what /api/files/open answers
+		// for this same file (#1532). The save is refused all the same,
+		// naming the fragment at fault.
+		if name == "one/main.bot" && got.Unit != nil {
+			t.Errorf("%s: a bot in one file was served with unit info", name)
+		}
+		if name == "x/main.bot" {
+			if got.Unit == nil {
+				t.Errorf("%s: a bot in several files was served with no unit, so the launch gate has no fact about its files", name)
+			} else if n := len(got.Unit.Files); n != 2 {
+				t.Errorf("%s: the unit lists %d files, want main + fragment", name, n)
+			}
 		}
 		if got.Source == "" || !strings.Contains(got.Source, "!!!") {
 			t.Errorf("%s: the served text is not the file's: %q", name, got.Source)
@@ -446,6 +457,82 @@ func TestLoadExampleSeparatesAUnitThatDoesNotLoadFromAMainThatDoesNotParse(t *te
 	// to do — the file itself is fine.
 	if !strings.Contains(strings.Join(got.Diagnostics, " "), "missing.bot") {
 		t.Errorf("the diagnostics do not name the missing fragment: %v", got.Diagnostics)
+	}
+	// And the unit says the files do not load as one, which is the fact the
+	// launch gate holds: the diagnostics above are rewritten the moment
+	// auto-validation answers on the merged document.
+	if got.Unit == nil {
+		t.Fatal("a bot in several files was served with no unit")
+	}
+	if got.Unit.LoadErrors == 0 || !strings.Contains(got.Unit.LoadError, "missing.bot") {
+		t.Errorf("the unit's load verdict does not name the missing fragment: %d %q", got.Unit.LoadErrors, got.Unit.LoadError)
+	}
+}
+
+// TestLoadExampleAnswersTheSameUnitAsOpeningTheFile: the bot picker, the
+// Home panel's bot list, the recent files and the empty canvas all open a
+// workspace bot through /api/examples, and the studio binds the path that
+// answer names — so the Run button launches it from its files. For a bot
+// whose FRAGMENT does not parse that door must answer the unit the launch
+// gate refuses on, exactly as /api/files/open does for the same path:
+// answering no unit re-opened the gate onto the launch the server refuses
+// (#1532).
+func TestLoadExampleAnswersTheSameUnitAsOpeningTheFile(t *testing.T) {
+	workDir := t.TempDir()
+	examples := filepath.Join(workDir, "bots")
+	writeExampleUnitFixture(t, examples)
+	// The ticket's shape: the main parses, the fragment does not.
+	if err := os.WriteFile(filepath.Join(examples, "x", unit.FragmentDir, "nodes.bot"), []byte(twoErrorFragmentFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{
+		WorkDir:                 workDir,
+		StoreDir:                filepath.Join(workDir, ".iterion"),
+		ExamplesDir:             examples,
+		SkipProjectRegistration: true,
+	}, iterlog.New(iterlog.LevelError, os.Stderr))
+	hs := httptest.NewServer(srv.mux)
+	t.Cleanup(hs.Close)
+
+	var got oneProgram
+	if code, body := getExampleJSON(t, hs.URL+"/api/examples/x/main.bot", &got); code != http.StatusOK {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	if !got.Bindable {
+		t.Fatalf("the fixture is not the case under test: the main did not parse (%v)", got.Diagnostics)
+	}
+	if got.Path != "bots/x/main.bot" {
+		t.Fatalf("path = %q: the studio binds that path and launches the bot by it", got.Path)
+	}
+	if got.Unit == nil {
+		t.Fatal("the bot picker's answer carries no unit, so nothing refuses the launch of files that do not parse")
+	}
+
+	// The other door onto the same file, which the watcher and the launch
+	// view already use: the two answer the same facts about the files.
+	_, opened := openPath(t, srv, "bots/x/main.bot")
+	if opened.Unit == nil {
+		t.Fatal("/api/files/open answered no unit")
+	}
+	if !reflect.DeepEqual(got.Unit, opened.Unit) {
+		t.Fatalf("the two doors onto the same bot answer different units:\n picker: %+v\n open:   %+v", got.Unit, opened.Unit)
+	}
+	fragment := unit.FragmentDir + "/nodes.bot"
+	found := false
+	for _, f := range got.Unit.Files {
+		if f.Rel != fragment {
+			continue
+		}
+		found = true
+		if f.ParseErrors == 0 || !strings.Contains(f.ParseError, fragment+":") {
+			t.Errorf("the fragment's verdict does not name its errors: %d %q", f.ParseErrors, f.ParseError)
+		}
+		if strings.Contains(f.ParseError, workDir) {
+			t.Errorf("the verdict discloses the server's directory layout: %s", f.ParseError)
+		}
+	}
+	if !found {
+		t.Fatalf("the unit's file list holds no %s: %+v", fragment, got.Unit.Files)
 	}
 }
 

@@ -439,7 +439,26 @@ export default function SourceView() {
         // debounce, and a second apply to the same file would be refused
         // as stale although nothing had moved under it.
         setRendered({ key: bufferKey, doc: applied });
-        if (result.unit) setUnit({ ...unit, files: result.unit.files });
+        // The verdict on the files as they are STORED, whole: the per-file
+        // one, the load, and the fragments that load could not read, all
+        // read from this answer. Keeping the one the store already held
+        // would let the launch gate stand on a reading the server has just
+        // contradicted — a fragment deleted or made cyclic on disk since
+        // the open reports no load error here while the launch refuses
+        // those very files. `unread` travels with the verdict it is about:
+        // the staged file list no longer names the fragment an apply has
+        // just dropped the `import` of, so without it the watcher could not
+        // see the author write it. The root and the revision are NOT taken:
+        // an overlay wrote nothing, so it presents neither.
+        if (result.unit) {
+          setUnit({
+            ...unit,
+            files: result.unit.files,
+            unread: result.unit.unread,
+            load_errors: result.unit.load_errors,
+            load_error: result.unit.load_error,
+          });
+        }
         setDiagnostics(result.diagnostics);
         // Only the main's. currentSource is what every resume sends inline
         // AS the program (store/document.ts): a fragment declares no

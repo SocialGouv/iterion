@@ -48,6 +48,7 @@ vi.mock("@/lib/iterLanguage", () => ({
 vi.mock("@/lib/iterMonacoCompletion", () => ({ registerIterCompletionProvider: vi.fn() }));
 
 import { createEmptyDocument } from "@/lib/defaults";
+import { launchRefusal } from "@/lib/launch";
 import { DocumentStoreProvider, createDocumentStore } from "@/store/document";
 import type { UnitInfo } from "@/api/types";
 
@@ -174,6 +175,113 @@ describe("the Source view of a bot in several files", () => {
     // Never the whole-document parse: that is the path that folds every
     // file into the main.
     expect(api.parseSource).not.toHaveBeenCalled();
+  });
+
+  // The launch gate refuses a bot one of whose files does not parse, on the
+  // per-file verdict the unit carries, and the apply installs the verdict the
+  // ANSWER carries — the server's reading of the files as they are stored.
+  // An apply writes nothing, so the answer still reports the broken file and
+  // the refusal holds: lifting it here would re-open Run onto a launch that
+  // reads those very files and 400s.
+  const brokenFragmentUnit = (): UnitInfo => ({
+    ...unit,
+    files: [
+      { rel: "main.bot", imports: ["lib/nodes.bot"] },
+      {
+        rel: "lib/nodes.bot",
+        parse_errors: 2,
+        parse_error: "lib/nodes.bot:2:9: error [E002]: expected :, got String",
+      },
+    ],
+  });
+
+  async function applyTheFragment(store: ReturnType<typeof unitStore>) {
+    renderView(store);
+    await screen.findByTestId("source-view-file-picker");
+    fireEvent.change(screen.getByTestId("source-view-file-picker"), {
+      target: { value: "lib/nodes.bot" },
+    });
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(FRAGMENT_TEXT),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("source"), { target: { value: FRAGMENT_TEXT } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(api.parseUnitFile).toHaveBeenCalledTimes(1));
+  }
+
+  it("keeps the launch refusal when the apply answers the stored file's verdict", async () => {
+    const store = unitStore();
+    const broken = brokenFragmentUnit();
+    store.getState().setUnit(broken);
+    expect(launchRefusal(store.getState())).toMatch(/lib\/nodes\.bot/);
+    // What the server answers for an overlay: the files as they are stored,
+    // which this apply did not change.
+    api.parseUnitFile.mockResolvedValue({
+      document: createEmptyDocument(),
+      diagnostics: [],
+      bindable: true,
+      unit: { root: "", main: "main.bot", revision: "", files: broken.files },
+    });
+
+    await applyTheFragment(store);
+
+    expect(store.getState().unit?.files).toEqual(broken.files);
+    expect(launchRefusal(store.getState())).toMatch(/lib\/nodes\.bot/);
+  });
+
+  // The load verdict rides the same answer and the same install: every file
+  // of a bot can parse and the bot still not load as ONE — a fragment
+  // deleted, an import made cyclic since the tab was opened. Keeping the
+  // reading the store held would leave Run enabled on files the launch
+  // refuses, which is the whole failure this gate is about.
+  it("takes the load verdict from the answer, so it refuses files that stopped loading as one bot", async () => {
+    const store = unitStore();
+    expect(launchRefusal(store.getState())).toBeNull();
+    api.parseUnitFile.mockResolvedValue({
+      document: createEmptyDocument(),
+      diagnostics: [],
+      bindable: true,
+      unit: {
+        root: "",
+        main: "main.bot",
+        revision: "",
+        files: unit.files,
+        unread: ["lib/missing.bot"],
+        load_errors: 1,
+        load_error: 'main.bot:1:1: error [E046]: import "lib/nodes.bot": no such fragment',
+      },
+    });
+
+    await applyTheFragment(store);
+
+    await waitFor(() => expect(store.getState().unit?.load_errors).toBe(1));
+    expect(launchRefusal(store.getState())).toMatch(/do not load as one bot/);
+    // The fragments that load could not read travel with the verdict, and
+    // are installed with it: the staged file list no longer names a fragment
+    // whose `import` line the apply dropped, so without them the watcher
+    // could not see the author write it — and the root the store keeps is
+    // what names it, the apply presenting none.
+    expect(store.getState().unit?.unread).toEqual(["lib/missing.bot"]);
+    expect(store.getState().unit?.root).toBe("bots/demo");
+  });
+
+  it("takes the verdict from the answer, so it lifts when the server reports the files repaired", async () => {
+    const store = unitStore();
+    store.getState().setUnit({ ...brokenFragmentUnit(), unread: ["lib/missing.bot"] });
+    api.parseUnitFile.mockResolvedValue({
+      document: createEmptyDocument(),
+      diagnostics: [],
+      bindable: true,
+      unit: { root: "", main: "main.bot", revision: "", files: unit.files },
+    });
+
+    await applyTheFragment(store);
+
+    await waitFor(() => expect(launchRefusal(store.getState())).toBeNull());
+    // An answer that awaits nothing says so: kept from the reading before
+    // it, the watcher would read the unit again on a file nothing asks for.
+    expect(store.getState().unit?.unread).toBeUndefined();
   });
 
   it("shows a file the writer cannot reproduce as it is on disk, and refuses to edit it", async () => {
