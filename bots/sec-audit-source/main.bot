@@ -457,9 +457,10 @@ prompt triage_system:
     custom_scan is always present but may have `subscanners: []`
     when no programmatic matchers are dropped at
     `.sec-audit/matchers/`.
-  - deepsec_scan: present when vars.enable_deepsec=true. When non-empty,
-    read deepsec_scan.json_paths.deepsec via read_file and map each
-    finding to a candidate per the table in skills/scanner-deepsec.md.
+  - deepsec_scan: present when the operator enabled the deepsec scan.
+    When non-empty, read deepsec_scan.json_paths.deepsec via read_file
+    and map each finding to a candidate per the table in
+    skills/scanner-deepsec.md.
     Empty ("") when deepsec was disabled or degraded — skip silently.
   - file_filter: when non-empty, a comma-separated list of
     relative file paths. Skip every candidate whose `file` is NOT

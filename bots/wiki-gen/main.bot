@@ -190,7 +190,6 @@ schema scan_output:
   git_head: string
 
 schema author_input:
-  workspace_dir: string
   wiki_dir: string
   okf_version: string
   wiki_exists: bool
@@ -701,7 +700,6 @@ workflow wiki_gen:
   scan_repo -> done when noop_skip
 
   scan_repo -> author else with {
-    workspace_dir: "{{vars.workspace_dir}}",
     wiki_dir: "{{vars.wiki_dir}}",
     okf_version: "{{vars.okf_version}}",
     wiki_exists: "{{outputs.scan_repo.wiki_exists}}",
@@ -734,7 +732,6 @@ workflow wiki_gen:
 
   ## Not converged → another author pass with the validator's feedback.
   gate -> author as continuation_loop("{{vars.max_passes}}") with {
-    workspace_dir: "{{vars.workspace_dir}}",
     wiki_dir: "{{vars.wiki_dir}}",
     okf_version: "{{vars.okf_version}}",
     wiki_exists: "{{outputs.scan_repo.wiki_exists}}",

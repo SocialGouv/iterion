@@ -35,11 +35,23 @@ type refContext struct {
 	// edge `-> dst with { ... }`, a subbot node's own `with:`, an emit
 	// node's `with:`, or a `fail message:`. The runtime resolves those
 	// through `resolveMapping` / `resolveRef`, which has no arm for
-	// `secrets` / `attachments` and reads `input.*` against the
-	// parent's run inputs on a kind (subbot / emit) that has no
-	// `input:` surface. Namespaces the site cannot honour are refused
-	// (C149–C151) instead of resolving to nil at run time.
+	// `secrets` / `attachments` and reads `input.*` against the RUN's
+	// inputs — the launch payload — on kinds (subbot, emit, fail) that
+	// have no `input:` surface. Namespaces the site cannot honour are
+	// refused (C149–C151) instead of resolving to nil at run time, and
+	// the `input` namespace is C149's business there, never C308's: no
+	// incoming edge's `with` can feed a text the node's input never
+	// reaches.
 	InWith bool
+	// OnQuestions is true for a reference in a node's INTERACTION prompt
+	// (`interaction_prompt:`). The stand-in model that answers the node's
+	// questions is handed THE QUESTIONS as its input — keys the asking node
+	// invents at run time, assembled into a synthetic input map
+	// (pkg/backend/model/executor_human.go, ExecuteHumanLLMForInteraction).
+	// So `{{input.X}}` there names a question key: neither a field of the
+	// node's input schema (C034) nor a key an incoming edge maps (C308),
+	// and nothing static can know it — the silence the entry floor keeps.
+	OnQuestions bool
 	// InComputeExpr is true for a reference that lives inside a compute
 	// node's `expr:` block. Compute expressions run through
 	// `pkg/dsl/expr`, whose `evalNamespaces` (snapshot.go) excludes the
@@ -77,16 +89,19 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 
 	// Prompt template refs. The reference sits in the prompt's text, so the
 	// prompt declaration is where the diagnostic points; the consuming node
-	// stays the attribution (what the reference resolves against).
+	// stays the attribution (what the reference resolves against) — and for
+	// the node's INTERACTION prompt that is the question map, not the input
+	// (OnQuestions).
 	for _, p := range w.Prompts {
 		consumers := promptUsers[p.Name]
 		for _, ref := range p.TemplateRefs {
 			for _, nodeID := range consumers {
 				out = append(out, refContext{
-					Ref:      ref,
-					NodeID:   nodeID,
-					Location: fmt.Sprintf("prompt %q (node %q)", p.Name, nodeID),
-					Span:     promptSpans[p.Name],
+					Ref:         ref,
+					NodeID:      nodeID,
+					Location:    fmt.Sprintf("prompt %q (node %q)", p.Name, nodeID),
+					Span:        promptSpans[p.Name],
+					OnQuestions: interactionPromptOnly(w.Nodes[nodeID], p.Name),
 				})
 			}
 		}
@@ -775,6 +790,13 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
+	if rc.OnQuestions {
+		// An interaction prompt's input IS the question map, whose keys the
+		// asking node invents at run time: the schema check would refuse the
+		// only spelling a question key has, and the mapping check would
+		// prescribe a `with` the text never reads.
+		return
+	}
 	fieldName := rc.Ref.Path[0]
 
 	node, ok := w.Nodes[rc.NodeID]
@@ -790,16 +812,54 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 	c.validateNodeBodyInputMapped(w, rc, node, fieldName)
 }
 
+// interactionPromptOf is the prompt a node's `interaction_prompt:` names, ""
+// when it declares none — the one prompt of a node whose `{{input.*}}` the
+// runtime resolves against the questions instead of the node's input.
+func interactionPromptOf(n Node) string {
+	switch x := n.(type) {
+	case *HumanNode:
+		return x.InteractionPrompt
+	case LLMNode:
+		if f := x.GetInteractionFields(); f != nil {
+			return f.InteractionPrompt
+		}
+	}
+	return ""
+}
+
+// interactionPromptOnly reports whether name is the node's interaction
+// prompt and nothing else. A prompt the node ALSO reads as its system or
+// user text is resolved against the node's own input there, so the strict
+// reading stands: NodePromptRefs lists one entry per surface, so a single
+// occurrence means the interaction prompt is the only reader.
+func interactionPromptOnly(n Node, name string) bool {
+	if name == "" || n == nil || interactionPromptOf(n) != name {
+		return false
+	}
+	uses := 0
+	for _, p := range NodePromptRefs(n) {
+		if p == name {
+			uses++
+		}
+	}
+	return uses == 1
+}
+
 // validateNodeBodyInputMapped is C308 (#1455): an `{{input.X}}` a node body
-// reads (a prompt, a tool command/script/param, a compute `expr:`, a fail
-// `message:`) that NO incoming edge of the node maps. A node's input is
-// built only from the `with` mappings of its incoming edges
-// (buildNodeInputRS, applyEdge returns on len(edge.With)==0) plus the
-// run-level payload on the entry node — so a field no edge maps is empty on
-// every path, the certain defect the dry run could only name after a full
-// pass. A warning, not an error: the fix is one `with` mapping (or
-// `{{outputs.<producer>.X}}`), and the diagnostic names every incoming edge
-// so the mapping has a place to land.
+// reads (a prompt, a tool command/script/param, a compute `expr:`) that NO
+// incoming edge of the node maps. A node's input is built only from the
+// `with` mappings of its incoming edges (buildNodeInputRS, applyEdge returns
+// on len(edge.With)==0) plus the run-level payload on the entry node — so a
+// field no edge maps is empty on every path, the certain defect the dry run
+// could only name after a full pass. A warning, not an error: the fix is one
+// `with` mapping (or `{{outputs.<producer>.X}}`), and the diagnostic names
+// every incoming edge so the mapping has a place to land.
+//
+// The claim holds only where the text IS resolved against that input, so the
+// surfaces the runtime resolves elsewhere are out: a mapping value (a
+// subbot's or emit's `with:`, a fail `message:`) reads the run's inputs —
+// C149 — and an interaction prompt reads the question map (rc.OnQuestions).
+// Prescribing a `with` there would silence the warning and change nothing.
 //
 // The path-only case — mapped by another incoming edge (a loop's back-edge,
 // a sibling `when` path), legitimately empty on some paths — is NOT a
@@ -809,11 +869,13 @@ func (c *compiler) validateNodeBodyInputMapped(w *Workflow, rc refContext, node 
 	if fieldName == "" || isRuntimeInjectedField(fieldName) {
 		return
 	}
-	switch node.(type) {
-	case *SubbotNode, *EmitNode:
-		// No `input:` surface: their `with:` reads resolve against the
-		// parent's run inputs at run time — C149's business, not an
-		// incoming-edge mapping's.
+	if rc.InWith {
+		// A mapping value — a subbot's or an emit's `with:`, a fail node's
+		// `message:` — goes through `resolveMapping`, whose `input` arm
+		// reads the RUN's inputs (pkg/runtime/engine_resolve.go, resolveRef)
+		// on kinds that have no `input:` surface. The `with` this check
+		// prescribes would change nothing there, so the read is C149's
+		// business, not an incoming-edge mapping's.
 		return
 	}
 	if rc.NodeID == w.Entry {
@@ -896,11 +958,24 @@ func incomingEdgeName(e *Edge) string {
 // reject when absence isn't provable); a typo still surfaces to the
 // author, without shipping a permission that would refuse a
 // legitimate forwarding.
+//
+// A fail node's `message:` is the same reading on a third kind: it goes
+// through `resolveMapping` too, a fail node accepts no `input:`, and the
+// message is resolved at fail time against the run's namespaces
+// (pkg/runtime/run_failure.go, failOutcome). So `{{input.x}}` there is the
+// launch payload's key — measured: a run launched with `inv=…` renders it,
+// a run without renders the empty string, and a `with { inv: … }` on the
+// incoming edge changes neither.
 func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, fieldName string) {
 	inSchema := NodeInputSchema(node)
 	if inSchema == "" {
 		if rc.InWith {
 			switch node.(type) {
+			case *FailNode:
+				c.refWarnf(rc, DiagWithInputRefNoSchema,
+					"%s: reference %s resolves against the RUN's inputs — the launch payload — not against this node's input: a fail `message:` is rendered at fail time through the same resolver as a `with:` mapping, and a `fail` node has no `input:` surface, so no incoming edge can carry %q into it. If the value is declared in this workflow's `vars:`, use `{{vars.%s}}` (checked at compile time, and it carries the var's default); otherwise keep it and be aware that a launch that omits the key renders the empty string.",
+					rc.Location, rc.Ref.Raw, fieldName, fieldName)
+				return
 			case *SubbotNode, *EmitNode:
 				c.refWarnf(rc, DiagWithInputRefNoSchema,
 					"%s: reference %s cannot be verified — a `%s` node has no `input:` surface, so `{{input.*}}` in its `with:` resolves against the parent's run inputs at run time. If the key is a launch-time value declared in `vars:` here, use `{{vars.%s}}` (checked at compile time); if it is forwarded from an undeclared parent payload key, keep it and be aware that a typo lands nil silently at run time (suppressing the child's declared default for the mapped key).",

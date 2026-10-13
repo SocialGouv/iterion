@@ -1,7 +1,20 @@
 name: secured-renovacy
 display_name: Renovacy
 icon: ⬆️
-version: 0.3.3
+version: 0.3.4
+## 0.3.4 — the operator's `update_scope` reaches the agents the scope
+## filter delegates to: detect_stack and discover_outdated render
+## `{{vars.update_scope}}`, which no prompt showed while three texts and
+## select_candidate's free-form branch all assumed they read it verbatim.
+## discover_outdated is also handed detect_stack's `ecosystems`, the list
+## its multi-ecosystem procedure iterates over, instead of relying on the
+## forked session alone. The nine upgrade agents no longer declare or receive
+## `workspace_dir` on their input: each one's user prompt renders
+## `{{vars.workspace_dir}}`, and the three system prompts name that
+## reference instead of an input field no prompt ever rendered. The audit
+## agent is handed the CURRENT pin it judges (`current_version`): its
+## procedure refuses a bump out of a pin flagged as malware, and that rule
+## named an input field the node never carried.
 ## 0.3.2 — `${BUNDLE_SKILLS_DIR}` is constrained absolute at launch and
 ## re-checked by each reader that joins a skill name onto it, so it can be
 ## neither empty nor relative.

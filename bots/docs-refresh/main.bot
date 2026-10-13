@@ -780,7 +780,6 @@ schema coverage_audit_output:
 
 schema campaign_input:
   hints: json
-  hint_count: int
   hints_note: string
   mode: string
   incremental_base: string
@@ -1685,7 +1684,6 @@ workflow docs_refresh:
   ## native session handed "align the docs" would.
   scan_hints -> campaign with {
     hints: "{{outputs.scan_hints.hints}}",
-    hint_count: "{{outputs.scan_hints.hint_count}}",
     hints_note: "{{outputs.scan_hints.hints_note}}",
     mode: "{{outputs.scan_hints.mode}}",
     incremental_base: "{{outputs.scan_hints.incremental_base}}",

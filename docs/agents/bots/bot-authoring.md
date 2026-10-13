@@ -14,6 +14,7 @@ before writing or amending any `.bot` that can commit code.
 
 [Skills live with their bundle](skills.md) · [loops converge](convergence.md) ·
 [the UNTRUSTED INPUT BOUNDARY](untrusted-input.md) ·
+[a value on an input reaches the model only if a channel renders it](input-reaches-the-model.md) ·
 [repo- and stack-agnostic](universality.md) ·
 [the ENGINE stays bot-agnostic](engine-bot-agnostic.md) ·
 [a bot's toolchain is its `devbox.json`](toolchain-devbox.md).

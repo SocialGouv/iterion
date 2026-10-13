@@ -1,7 +1,10 @@
 name: adr-cartograph
 display_name: Adry
 icon: 🗺️
-version: 2.1.1
+version: 2.1.2
+## 2.1.2 — the survey's scope discipline names the inventory its own prompt
+## renders (`input.recently_changed_code_files`) instead of the var that
+## produced it, which no channel of the node shows.
 ## 2.1.0 — a missing verify.sh is a refusal, not a pass (#1598)
 ## 2.0.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside six prompts (survey_code_system 7,

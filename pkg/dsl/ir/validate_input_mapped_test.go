@@ -93,8 +93,10 @@ workflow p:
 	expectNoDiag(t, r, DiagInputFieldNeverMapped)
 }
 
-// Every node-body site the check owns: a tool command, a compute `expr:`,
-// a fail `message:`.
+// Every node-body site the check owns: a tool command and a compute
+// `expr:`. The fail `message:` in the same fixture is NOT one of them — it
+// is resolved against the run's inputs, so it belongs to C149
+// (TestAFailMessageInputReadIsC149NotC308).
 func TestTheInputCheckCoversEveryNodeBodySite(t *testing.T) {
 	src := `
 schema s:
@@ -126,18 +128,116 @@ workflow test:
 `
 	r := compileFile(t, src)
 	expectDiag(t, r, DiagInputFieldNeverMapped)
-	sites := 0
+	nodes := map[string]int{}
 	for _, d := range r.Diagnostics {
 		if d.Code == DiagInputFieldNeverMapped {
-			sites++
+			nodes[d.NodeID]++
 		}
 	}
-	// One per reading site: the command, the compute field, the fail
-	// message. (compute `expr:` refs arrive through the expression AST, the
-	// fail message through its own walk.)
-	if sites < 3 {
-		t.Errorf("the check met %d of the node-body sites, want one per site: %v", sites, r.Diagnostics)
+	// One per reading site the node's own input serves: the tool command and
+	// the compute field (whose refs arrive through the expression AST).
+	for _, id := range []string{"probe", "tally"} {
+		if nodes[id] == 0 {
+			t.Errorf("the check missed the node-body site on %q: %v", id, r.Diagnostics)
+		}
 	}
+	if nodes["stopped"] != 0 {
+		t.Errorf("the fail node's message was held to the incoming-edge rule: %v", r.Diagnostics)
+	}
+}
+
+// A fail node's `message:` is rendered at fail time by resolveMapping,
+// whose `input` arm reads the RUN's inputs — measured end to end: a run
+// launched with `inv=…` renders the payload, a run without renders the
+// empty string, and a `with { inv: … }` on the incoming edge changes
+// neither (pkg/runtime, TestAFailMessageReadsTheRunsInputsNotTheEdges). So
+// C308's claim ("empty on every path", remedy: map it on an incoming edge)
+// is false there and its remedy inert: the read is C149's class, the one
+// that states the run-inputs reading and offers `{{vars.x}}`.
+func TestAFailMessageInputReadIsC149NotC308(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+agent worker:
+  model: "m"
+  output: s
+
+fail stopped:
+  code: STOPPED
+  message: "inventory: {{input.inv}}"
+
+workflow test:
+  worktree: none
+  entry: worker
+  worker -> stopped
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNeverMapped)
+	expectDiag(t, r, DiagWithInputRefNoSchema)
+	for _, d := range r.Diagnostics {
+		if d.Code != DiagWithInputRefNoSchema {
+			continue
+		}
+		if d.Severity != SeverityWarning {
+			t.Errorf("C149 fired as %v on a fail message, want a warning", d.Severity)
+		}
+		for _, want := range []string{"RUN's inputs", "launch payload", "{{vars.inv}}", "no incoming edge can carry"} {
+			if !strings.Contains(d.Message, want) {
+				t.Errorf("the C149 message does not say %q: %s", want, d.Message)
+			}
+		}
+	}
+	// The mapping C308 used to prescribe does not silence the reading: the
+	// surface does not read the node's input at all.
+	mapped := strings.Replace(src, "  worker -> stopped\n", "  worker -> stopped with { inv: \"{{outputs.worker.ok}}\" }\n", 1)
+	expectDiag(t, compileFile(t, mapped), DiagWithInputRefNoSchema)
+}
+
+// An `interaction_prompt:` is the stand-in model's system prompt when the
+// node's own delegate asks questions, and ITS input is the question map the
+// asking node built (pkg/backend/model, ExecuteHumanLLMForInteraction —
+// measured: `{{input.q1}}` renders the question text, a key that is not a
+// question stays the literal placeholder). So neither the input schema
+// (C034) nor the incoming edges (C308) describe that surface: the compiler
+// keeps the silence it keeps for the entry floor, rather than refusing the
+// only spelling a question key has.
+func TestAnInteractionPromptInputReadIsNotCheckedAgainstTheNodesInput(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+schema in:
+  seed: string
+
+prompt ask:
+  Answer about {{input.q1}} given {{input.seed}}.
+
+agent lead:
+  model: "m"
+  output: s
+
+agent worker:
+  model: "m"
+  input: in
+  output: s
+  interaction: llm
+  interaction_prompt: ask
+  interaction_model: "m"
+
+workflow test:
+  worktree: none
+  entry: lead
+  lead -> worker with { seed: "{{outputs.lead.ok}}" }
+  worker -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNeverMapped)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	// The node's OTHER prompts keep the full reading: only the interaction
+	// prompt reads the questions.
+	withUser := strings.Replace(src, "  interaction_prompt: ask\n", "  interaction_prompt: ask\n  user: ask\n", 1)
+	expectDiag(t, compileFile(t, withUser), DiagInputFieldNotInSchema)
 }
 
 // Runtime-injected fields (a leading underscore) are the engine's, never an

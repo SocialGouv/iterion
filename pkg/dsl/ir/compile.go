@@ -1361,7 +1361,58 @@ func (c *compiler) compileHumans() {
 			}
 		}
 
+		c.warnIgnoredHumanClauses(h, interaction)
+
 		c.nodes[h.Name] = node
+	}
+}
+
+// warnIgnoredHumanClauses is C313: a clause the two branches above keep only
+// in their own interaction modes, written in a mode that drops it. The
+// compiler deleted the value and said nothing — flipping a gate from
+// `llm_or_human` to `human` silently discarded its `system:` prompt, and a
+// `system:` naming no declared prompt was never even checked, since
+// validatePromptRef lives in the branch too. One warning per group, naming
+// the clause and the modes that read it, so the author chooses between
+// removing the clause and asking for the mode.
+func (c *compiler) warnIgnoredHumanClauses(h *ast.HumanDecl, interaction InteractionMode) {
+	runsModel := interaction == InteractionLLM || interaction == InteractionLLMOrHuman || interaction == InteractionReview
+	if !runsModel {
+		var declared []string
+		if h.System != "" {
+			declared = append(declared, fmt.Sprintf("system: %s", h.System))
+		}
+		if h.Model != "" {
+			declared = append(declared, fmt.Sprintf("model: %q", h.Model))
+		}
+		if len(declared) > 0 {
+			c.warnfAt(DiagHumanClauseIgnoredInMode, h.Name, "",
+				"human %q declares %s, but interaction %s runs no companion model — the clause is dropped at compile time and nothing reads it: remove it, or set interaction: llm, llm_or_human or review",
+				h.Name, strings.Join(declared, " and "), interaction)
+		}
+	}
+	if interaction != InteractionReview {
+		var declared []string
+		if h.Posture != "" {
+			declared = append(declared, fmt.Sprintf("posture: %s", h.Posture))
+		}
+		if h.MergeStrategy != "" {
+			declared = append(declared, fmt.Sprintf("merge_strategy: %s", h.MergeStrategy))
+		}
+		if h.MergeInto != "" {
+			declared = append(declared, fmt.Sprintf("merge_into: %s", h.MergeInto))
+		}
+		if h.MaxTurns > 0 {
+			declared = append(declared, fmt.Sprintf("max_turns: %d", h.MaxTurns))
+		}
+		if h.ReviewURL != "" {
+			declared = append(declared, "review_url:")
+		}
+		if len(declared) > 0 {
+			c.warnfAt(DiagHumanClauseIgnoredInMode, h.Name, "",
+				"human %q declares %s, but interaction %s reads no review-gate configuration — only interaction: review does, so the clause is dropped at compile time: remove it, or set interaction: review",
+				h.Name, strings.Join(declared, " and "), interaction)
+		}
 	}
 }
 

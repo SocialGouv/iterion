@@ -81,46 +81,45 @@ import (
 // — so whoever fixes a site also shrinks the list. Growing it is an edit a
 // reviewer sees; for a review gate's input, one this guard refuses.
 
-// unrenderedBaseline is the debt measured on 2026-09-23 (#1740): per
-// "<bot>/<node>" (or "<bot>/<workflow>/<node>" outside main.bot), the input
-// fields no channel of that node consumes.
+// unrenderedBaseline is the debt #1740 measured, shrunk by every site
+// triaged since: per "<bot>/<node>" (or "<bot>/<workflow>/<node>" outside
+// main.bot), the input fields no channel of that node consumes.
 //
 // Triage is per site, and a field is not necessarily a missing render. Three
-// shapes are in this list: a mapping REDUNDANT with what the prompt already
-// renders by another reference (`{{vars.…}}`, `{{outputs.…}}`) — drop the
-// mapping; a value the node would have seen in an INHERITED session, on a
-// backend that keeps one — make it explicit; and a field genuinely invisible —
-// render it. A schema shared with another node's output cannot simply lose a
-// field: give this node its own input schema.
+// shapes are left here.
+//
+// A value the node would have seen in an INHERITED session, on a backend that
+// keeps one (`plan_revise`, six of the seven bots): make it explicit, because
+// `inherit_if_available` is by its own name the admission that the session may
+// not survive.
+//
+// A value on no screen and in no session: feature-dev's `plan_revise` declares
+// no `session:` at all — deliberately fresh, its Kimi fallback having no
+// cross-backend handoff — so `risks` was on no route, while the node's own
+// comment reads "its structured input contains all plan/review context needed
+// by either route". The #1598 shape verbatim, and the one remedy here is to
+// render it.
+//
+// And graph state a node is mapped and told not to echo (copilot). On `copi`
+// the field cannot simply be removed: `turn_input` is also `seed`'s output and
+// `turn_state`'s input AND output, so a drop raises C034 on the node that
+// reads it and C031 on every edge that maps it — `turn_state` needs its own
+// input schema first. `reflect` carries no such prerequisite: `reflect_in` is
+// its own input schema and no node outputs it, so `clarification_count` waits
+// on the copilot decision alone.
+//
+// The remedy per shape, and the preconditions each one carries, are in
+// docs/agents/bots/input-reaches-the-model.md.
 var unrenderedBaseline = map[string][]string{
-	"app-dev/plan_revise":                    {"assumptions", "risks"},
-	"branch-improve-loop/plan_revise":        {"assumptions", "risks"},
-	"copilot/copi":                           {"mode", "session_id", "session_fingerprint", "manager_scope_exclusions", "scope_guard_attempt", "actionless_clarification_count", "actionless_clarification_key"},
-	"copilot/reflect":                        {"clarification_count"},
-	"docs-refresh/campaign":                  {"hint_count"},
-	"e2e-coverage/plan_revise":               {"assumptions", "risks"},
-	"evolve/emit_backlog":                    {"workspace_dir"},
-	"evolve/investigate":                     {"survey", "workspace_dir", "scope_notes"},
-	"evolve/load_nexie_handoff":              {"workspace_dir"},
-	"evolve/propose_evolutions":              {"workspace_dir"},
-	"evolve/revise_vision":                   {"workspace_dir"},
-	"evolve/survey":                          {"workspace_dir", "scope_notes"},
-	"evolve/synthesize_vision":               {"survey", "investigation", "workspace_dir"},
-	"feature-dev/plan_revise":                {"risks"},
-	"feature-gap-fill/plan_revise":           {"assumptions", "risks"},
-	"product-docs/campaign":                  {"hint_count"},
-	"secured-renovacy/align_code":            {"workspace_dir"},
-	"secured-renovacy/batch_upgrade_patches": {"workspace_dir"},
-	"secured-renovacy/changelog_review":      {"workspace_dir"},
-	"secured-renovacy/discover_outdated":     {"workspace_dir"},
-	"secured-renovacy/fix_after_upgrade":     {"workspace_dir"},
-	"secured-renovacy/install":               {"workspace_dir"},
-	"secured-renovacy/security_audit":        {"workspace_dir"},
-	"secured-renovacy/upgrade":               {"workspace_dir"},
-	"secured-renovacy/validate_upgrade":      {"workspace_dir"},
-	"test-coverage/plan_revise":              {"assumptions", "risks"},
-	"whole-improve-loop/plan_revise":         {"assumptions", "risks"},
-	"wiki-gen/author":                        {"workspace_dir"},
+	"app-dev/plan_revise":             {"assumptions", "risks"},
+	"branch-improve-loop/plan_revise": {"assumptions", "risks"},
+	"copilot/copi":                    {"mode", "session_id", "session_fingerprint", "manager_scope_exclusions", "scope_guard_attempt", "actionless_clarification_count", "actionless_clarification_key"},
+	"copilot/reflect":                 {"clarification_count"},
+	"e2e-coverage/plan_revise":        {"assumptions", "risks"},
+	"feature-dev/plan_revise":         {"risks"},
+	"feature-gap-fill/plan_revise":    {"assumptions", "risks"},
+	"test-coverage/plan_revise":       {"assumptions", "risks"},
+	"whole-improve-loop/plan_revise":  {"assumptions", "risks"},
 }
 
 // imagesReachModel reports whether a node's `images:` entries are delivered to
@@ -398,17 +397,10 @@ func missingInputFields(t *testing.T, w *ir.Workflow, node string) (r nodeReadin
 		}
 	}
 
-	input := markerInput(fields, refs)
-	resolver := &model.TemplateResolver{}
-	var rendered strings.Builder
-	for _, b := range bodies {
-		rendered.WriteString(resolver.Resolve(b, input, nil))
-		rendered.WriteString("\n")
-	}
-	out := rendered.String()
+	delivered := renderedInputNames(fields, bodies, refs)
 
 	for _, f := range fields {
-		if strings.HasPrefix(f.name, "_") || strings.Contains(out, marker(f.name)) {
+		if strings.HasPrefix(f.name, "_") || delivered[f.name] {
 			continue
 		}
 		r.missing = append(r.missing, f.name)
@@ -420,6 +412,30 @@ func missingInputFields(t *testing.T, w *ir.Workflow, node string) (r nodeReadin
 		}
 	}
 	return r, true
+}
+
+// renderedInputNames is THE reading of "a channel of this node renders it",
+// shared by the ratchet above and by the prose guard
+// (prompt_prose_input_refs_test.go): render the given bodies through the real
+// resolver with a distinct marker as each field's value, and report the
+// fields whose marker comes out. Two guards asking the same question ask it
+// of the same renderer, so they cannot disagree about one field.
+func renderedInputNames(fields []inputField, bodies []string, refs []*ir.Ref) map[string]bool {
+	input := markerInput(fields, refs)
+	resolver := &model.TemplateResolver{}
+	var rendered strings.Builder
+	for _, b := range bodies {
+		rendered.WriteString(resolver.Resolve(b, input, nil))
+		rendered.WriteString("\n")
+	}
+	out := rendered.String()
+	delivered := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		if strings.Contains(out, marker(f.name)) {
+			delivered[f.name] = true
+		}
+	}
+	return delivered
 }
 
 // siteKey names a node the way the baseline does: "<bot>/<node>" for a bot's

@@ -171,8 +171,8 @@ prompt survey_code_system:
      "whole workspace"; respect `vars.excluded_dirs` always.
      `vars.bundle_self_path` (when non-empty) is the bot's own
      bundle directory — do NOT survey it.
-   - When `vars.diff_since` is set, prioritise files surfaced by
-     `recently_changed_code_files` (a hint, not a scope reduction).
+   - When `input.recently_changed_code_files` is non-empty,
+     prioritise the files it lists (a hint, not a scope reduction).
    - Survey is read-only. Do NOT write any file. Do NOT run any
      command that mutates the workspace. Your output is the
      evidence base; the fixer phase will translate it into

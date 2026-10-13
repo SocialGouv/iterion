@@ -277,14 +277,14 @@ const (
 	// certain defect the dry run met twice in the catalogue (adr-cartograph's
 	// surveyor read an empty ADR inventory in production). Fully static, no
 	// --exec.
-	DiagInputFieldNeverMapped DiagCode = "C308" // an `{{input.X}}` a node body reads (prompt, command, script, action param, expr, fail message) that no incoming edge maps, entry node aside (warning)
+	DiagInputFieldNeverMapped DiagCode = "C308" // an `{{input.X}}` a node body reads (prompt, command, script, action param, expr) that no incoming edge maps, entry node aside — never on a surface resolved elsewhere (a mapping value is C149's, an interaction prompt reads the question map) (warning)
 
 	// `with:` mapping references and literals. C149–C152 catch shapes the
 	// runtime cannot honour in a data mapping, so a typo or a namespace
 	// mismatch fires at compile time instead of resolving to nil (or a
 	// text traveling verbatim into a typed field, then SCHEMA_VALIDATION
 	// at run time).
-	DiagWithInputRefNoSchema    DiagCode = "C149" // `{{input.x}}` in a subbot/emit `with:` — the kind has no `input:` surface, so the reference resolves against the parent's run inputs at run time; warning, because the parent may legitimately be forwarding an undeclared payload key
+	DiagWithInputRefNoSchema    DiagCode = "C149" // `{{input.x}}` in a subbot/emit `with:` or a fail `message:` — the kind has no `input:` surface, so the reference resolves against the RUN's inputs at run time; warning, because the launch payload may legitimately carry an undeclared key
 	DiagWithSecretRef           DiagCode = "C150" // `{{secrets.x}}` in a data mapping or a compute `expr:` — the runtime materialises secrets only at execution sinks (tool command/script/postcondition, action params, prompt body); the mapping and the expr evaluator both resolve to nil
 	DiagWithAttachmentRef       DiagCode = "C151" // `{{attachments.x}}` in a data mapping or a compute `expr:` — same rule as secrets
 	DiagWithLiteralTypeMismatch DiagCode = "C152" // a `with:` value arrives as a string unless it is exactly one reference: fires on every ref-less literal or interpolated template reaching a `bool`/`int`/`float`/`string[]` field (a string is never one), and on a `json` field for a literal that visibly attempts an encoding (warning at every consumer)
@@ -325,4 +325,15 @@ const (
 	// allowlist when it can (see pkg/runtime fuseDevcontainerSpec); the
 	// warning is what tells the author to name the mode.
 	DiagNetworkModeMissing DiagCode = "C312" // a sandbox network: block with content but no mode: resolves to open — the preset/rules are inert (warning)
+
+	// A human node's `system:` / `model:` are kept only in the interaction
+	// modes that run a companion model (llm, llm_or_human, review), and its
+	// review-gate configuration (posture, merge_strategy, merge_into,
+	// max_turns, review_url) only in `review`. Outside them the compiler
+	// DROPPED the value and said nothing: a gate flipped from llm_or_human to
+	// human lost its system prompt in silence, plumbing that reads as done
+	// and delivers nothing. The warning names the clause and the modes that
+	// read it, so the author chooses — philosophy #1: never silently replace
+	// an operator's explicit choice.
+	DiagHumanClauseIgnoredInMode DiagCode = "C313" // a human node declares a clause its interaction mode ignores (system/model with no companion model, review-gate config outside `review`) — the value is dropped at compile time (warning)
 )

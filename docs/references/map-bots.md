@@ -9,7 +9,7 @@ The bundles under `bots/`, then the skills they carry.
 
 | Bot | Persona | What it does | Version |
 |---|---|---|---|
-| `adr-cartograph` | 🗺️ Adry | Observes the code-as-implemented and produces committable ADR markdown (Nygard format) in docs/adr/ — one capable agent over a… | 2.1.1 |
+| `adr-cartograph` | 🗺️ Adry | Observes the code-as-implemented and produces committable ADR markdown (Nygard format) in docs/adr/ — one capable agent over a… | 2.1.2 |
 | `adr-rechallenge` | ⚖️ ReArchi | Human-in-the-loop ADR re-challenge. | 0.1.3 |
 | `app-dev` | 🏗️ Appy | Autonomous end-to-end APPLICATION development from a prompt — greenfield. | 0.4.1 |
 | `arbitrate` | ⚖️ Themis | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 0.1.4 |
@@ -17,12 +17,12 @@ The bundles under `bots/`, then the skills they carry.
 | `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 0.1.4 |
 | `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1.9.2 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 0.1.2 |
-| `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.10 |
+| `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.11 |
 | `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.9.4 |
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 0.1.4 |
-| `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.7.0 |
+| `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.7.1 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 0.5.1 |
-| `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 0.1.4 |
+| `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 0.1.5 |
 | `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 2.7.2 |
 | `feature-gap-fill` | 🧩 Fini | Gap-driven feature completer — one capable agent, its natural flow, minimal framing. | 2.4.1 |
 | `feed-watch` | 🔭 Vigie | Universal feed-watch + digest bot (Huginn-style veille pipeline as a single bot). | 1.6.3 |
@@ -32,14 +32,14 @@ The bundles under `bots/`, then the skills they carry.
 | `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 0.2.3 |
 | `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.6.0 |
 | `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (a scheduled tick, zero LLM in this slice — the compiled workflow contains no agent or… | 0.3.0 |
-| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.5.0 |
+| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.5.1 |
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.1.5 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.9.14 |
 | `rgaa-audit` | ♿ Acci | RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y engine. | 3.0.0 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 0.1.5 |
-| `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 0.1.9 |
-| `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 0.3.3 |
+| `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 0.1.10 |
+| `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 0.3.4 |
 | `supply-shield` | ⛓️ Shieldy | Global supply-chain MALWARE shield. | 0.1.5 |
 | `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 0.1.5 |
 | `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 2.4.1 |
@@ -47,7 +47,7 @@ The bundles under `bots/`, then the skills they carry.
 | `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 0.1.1 |
 | `whats-next` | 🧭 Nexie | Conversational co-CTO. | 0.3.6 |
 | `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 2.5.1 |
-| `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1.0.6 |
+| `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1.0.7 |
 
 ## Skills
 

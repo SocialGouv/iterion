@@ -1,7 +1,10 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.7.0
+version: 3.7.1
+## 3.7.1 — campaign no longer declares or receives `hint_count`: the
+## advisory scan report it renders (`hints_note`) states the counts, and
+## `hints` carries the list itself.
 ## 3.7.0 — COVERAGE AUDIT (the /goal pattern, bot-level): when the run
 ## carries reference context, a deterministic inventory of the reference
 ## PDFs' sections (coverage_inventory) feeds a cheap read-only auditor
