@@ -34,7 +34,9 @@ package netproxy
 
 import (
 	"net"
+	"net/netip"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 )
@@ -122,12 +124,14 @@ func (p *Policy) lastMatch(host string) (matched, allowed bool) {
 }
 
 // canonicalHost lowercases, trims whitespace, strips a trailing :port
-// and a trailing root-zone dot, and folds IDN labels to their ASCII
-// (Punycode) form so a rule of `*.example.com` matches both `example.com.`
+// and trailing root-zone dots, and folds IDN labels to their ASCII
+// (Punycode) form so a rule of `*.example.com` matches both `x.example.com.`
 // and the IDN equivalent `пример.example.com`. Returns "" for
-// malformed inputs.
+// malformed inputs: brackets holding anything but an IP literal, a
+// non-ASCII host the IDN fold refuses. Its result is its own canonical
+// form.
 func canonicalHost(s string) string {
-	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""
 	}
@@ -138,6 +142,9 @@ func canonicalHost(s string) string {
 			return ""
 		}
 		s = s[1:end]
+		if _, err := netip.ParseAddr(s); err != nil {
+			return ""
+		}
 	} else if i := strings.LastIndex(s, ":"); i >= 0 {
 		// Distinguish "host:port" from "v6literal" — the v6 case is
 		// handled above; bare v6 without brackets isn't supported.
@@ -145,22 +152,40 @@ func canonicalHost(s string) string {
 			s = s[:i]
 		}
 	}
-	// Trailing-dot ("example.com.") is the absolute-FQDN form. A
-	// resolver treats it identically to "example.com" but our pattern
-	// matcher uses literal string suffix comparison, so without the
-	// trim a `*.example.com` rule would silently miss this variant.
-	s = strings.TrimSuffix(s, ".")
 	// IDN fold: an attacker can otherwise bypass an ASCII allowlist by
 	// supplying the Unicode form of an allowed host. idna.Lookup
 	// follows the strict "lookup" profile (no mapping of disallowed
 	// codepoints), which is the right side of the conservative/liberal
-	// trade-off for a security filter. On error we fall back to the
-	// pre-fold value so plain-ASCII hosts (the common case) keep
-	// working even if idna's internal tables disagree at the margins.
+	// trade-off for a security filter. It folds the host as written, as
+	// net/http does before dialing it: lowercased first, U+0130 'İ'
+	// would become an ASCII 'i' while its IDN mapping is 'i' + U+0307 —
+	// the policy would read one name and the transport dial another. A
+	// non-ASCII host the fold refuses is malformed: net/http folds with
+	// its own copy of the IDN tables, which can dial a name no reading
+	// here gives (an ACE label this copy refuses, behind an ignored code
+	// point). A plain-ASCII host the fold refuses — an underscore, an IP
+	// literal — is read as written, lowercased: that is what is dialed.
 	if a, err := idna.Lookup.ToASCII(s); err == nil && a != "" {
 		s = a
+	} else if !isASCII(s) {
+		return ""
 	}
-	return s
+	// Trailing dots ("example.com." is the absolute-FQDN form) are trimmed
+	// once folded — the fold itself can produce one, from U+3002 '。'. A
+	// resolver treats the name identically, but the pattern matcher
+	// compares literal suffixes: without the trim a `*.example.com` rule
+	// would silently miss this variant.
+	return strings.TrimRight(strings.ToLower(s), ".")
+}
+
+// isASCII reports whether s is plain ASCII.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // compileRule turns a raw rule string into a [rule] struct.

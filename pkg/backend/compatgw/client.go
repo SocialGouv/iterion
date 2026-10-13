@@ -71,8 +71,8 @@ func NewClient(cfg Config, modelID string, strict bool) (api.APIClient, error) {
 // in-container runner under SandboxProxyEndpointEnv (a name only the engine
 // sets; the container image and the operator's shell never speak for it).
 // With it, every request crosses that proxy once its gateway host has
-// passed the guard (sandboxProxyFunc, which names what the guard still
-// guarantees there), so the proxy is a path, never an authority that
+// passed the guard, and the proxy pins the gateway's name in turn
+// (sandboxProxyFunc), so the proxy is a path, never an authority that
 // bypasses the guard. The proxy road is SafeTransport too, every bound
 // included (connect timeout, TLS handshake, idle reap), save the guard on
 // its dial: the proxy's own address is private by nature — the runner pod
@@ -119,22 +119,19 @@ const SandboxProxyEndpointEnv = "ITERION_SANDBOX_PROXY_ENDPOINT"
 // crosses the engine-provided proxy once its gateway host has passed the
 // guard as the runner resolves it — a refused host never reaches the proxy.
 //
-// The direct road's pin does not cross the proxy. The proxy matches its
-// policy on the gateway's NAME — an allowlist refuses an IP literal no rule
-// names, so a CONNECT pinned to the validated address would be refused —
-// and connects where its own answer for that name points: a fresh
-// resolution, or a connection it already holds for any client of the run.
-// It refuses a loopback, link-local (169.254.169.254) or unspecified
-// destination itself, whatever the answer — save the host.docker.internal
-// alias, which it dials on its own loopback — but not a private one
-// (RFC 1918, ULA, CGNAT — the 100.100.100.200 and fd00:ec2::254 metadata
-// endpoints among them). So a gateway name whose resolver answers the
-// proxy differently (DNS rebinding) can land the connection on the proxy
-// host's private network: over https the gateway's certificate check fails
-// there and no request is sent; over plain http the request, its
-// credential included, is. Only the proxy, which owns the connection, can
-// pin: the runner's clone-guard proxy dials through this same guard
-// (pkg/runner/gitproxy.go); the run's network proxy does not.
+// The request hands the proxy the gateway's NAME: the proxy matches its
+// policy on names, and an allowlist refuses an IP literal no rule names, so
+// the address the runner validated cannot ride the CONNECT. The proxy, which
+// makes the connection, pins the name instead (netproxy.Options.PinSource,
+// which the engine reads from the environment that serves the gateway): it
+// resolves the name again through this same guard, at the strictness the
+// engine's ITERION_LLM_ENDPOINT_ALLOW_PRIVATE sets, and dials only the
+// address it validated, for every request — the proxy pools no connection to
+// a pinned host. An answer the guard refuses is refused where the connection
+// is made, whatever the runner's own lookup saw (DNS rebinding), on a CONNECT
+// tunnel, a plain-HTTP forward and an inspected tunnel alike. The one name
+// the proxy never resolves is the host.docker.internal alias, which it dials
+// on its own host's loopback.
 func sandboxProxyFunc(strict bool, proxyURL *url.URL) func(*http.Request) (*url.URL, error) {
 	return func(req *http.Request) (*url.URL, error) {
 		if _, err := httpdial.ResolvePublicHost(req.Context(), req.URL.Hostname(), strict); err != nil {
