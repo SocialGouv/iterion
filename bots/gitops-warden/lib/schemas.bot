@@ -39,6 +39,12 @@ schema inventory_output:
   ## woke on a moved head. The fold escalates on it — a run that certifies
   ## whatever arrived last is the unaudited-revision shape.
   stale_launch: bool
+  ## The helm render of the changed chart (old vs new), computed only
+  ## when a Chart.yaml is in the diff:
+  ## {status: "ok"|"unavailable", reason, charts: [...], stats: {...},
+  ##  diff: "..."}. Empty object otherwise — an enrichment for the judge
+  ## and the comment, never a class the verdict depends on.
+  rendered: json
 
 schema policy_gate_output:
   ## "empty" | "sentinel" | "classify" — the deterministic route.

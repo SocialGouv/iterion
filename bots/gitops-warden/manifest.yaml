@@ -1,7 +1,17 @@
 name: gitops-warden
 display_name: Warden
 icon: 🛡
-version: 0.1.0
+version: 0.2.0
+## 0.2.0 — operator feedback round: verdict comments, gate notes and
+## health banners are FRENCH (the team's language; rule ids stay
+## english), and diff_inventory renders the changed chart with
+## `helm template` at base and head — the rendered diff rides the
+## verdict comment (an enrichment for the human reviewer; the judge
+## classifies the source diff). Both revisions render from scratch
+## worktrees, a chart holding a symlink is refused, and OCI dependencies
+## pull only with the optional registry_user/registry_token secrets AND
+## an operator-pinned host allowlist (render_registry_hosts); otherwise
+## the render degrades, the verdict does not.
 ## 0.1.0 — first ship. A gitops merge gate: classifies every merge request
 ## against a hybrid policy (baked default + optional per-repo
 ## review-policy.md (the policy_path var pins the real path) read from the TARGET branch), posts a verdict

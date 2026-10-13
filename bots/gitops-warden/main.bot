@@ -108,6 +108,12 @@ vars:
   merge_method: string [enum: "merge", "squash"] = "squash"
   ## Remove the source branch when the merge completes.
   remove_source_branch: bool = false
+  ## OCI registry hosts the helm render may authenticate to when pulling a
+  ## chart dependency (comma-separated, exact hostnames). Empty = the
+  ## render never presents the registry credential to any host — the
+  ## diff names the host, so an unpinned host is an exfiltration channel.
+  ## Pin per repo via the integration's launch_vars.
+  render_registry_hosts: string = ""
   ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER at
   ## launch (the same grant review-pr uses). forge_pr_state_url is the
   ## read half (the peer-gate read). Empty (a bare CLI run with no server)
@@ -123,6 +129,18 @@ secrets:
   ## server's deterministic publish endpoint, which holds the live
   ## connection client. Never read into a prompt.
   forge_token:
+    as: file
+    optional: true
+  ## Optional registry credentials (a GitLab token with read_registry on
+  ## the charts' registry). Needed ONLY to render gitops wrappers whose
+  ## Chart.yaml bumps an OCI dependency: helm pulls the old and new
+  ## versions before diffing the renders. Consumed by the deterministic
+  ## tool node through the mounted secret files, never read into a
+  ## prompt.
+  registry_user:
+    as: file
+    optional: true
+  registry_token:
     as: file
     optional: true
 
@@ -172,6 +190,7 @@ workflow gitops_warden:
     stale_launch: "{{outputs.diff_inventory.stale_launch}}",
     policy_source: "{{outputs.diff_inventory.policy_source}}",
     policy_sha: "{{outputs.diff_inventory.policy_sha}}",
+    rendered: "{{outputs.diff_inventory.rendered}}",
     route: "{{outputs.policy_gate.route}}",
     sentinel_reason: "{{outputs.policy_gate.sentinel_reason}}",
     verdict: "{{outputs.classify.verdict}}",
@@ -208,6 +227,7 @@ workflow gitops_warden:
     stale_launch: "{{outputs.diff_inventory.stale_launch}}",
     policy_source: "{{outputs.diff_inventory.policy_source}}",
     policy_sha: "{{outputs.diff_inventory.policy_sha}}",
+    rendered: "",
     route: "{{outputs.policy_gate.route}}",
     sentinel_reason: "{{outputs.policy_gate.sentinel_reason}}",
     ## The skipped-branch fields ride as the fold's defaults — declared so
