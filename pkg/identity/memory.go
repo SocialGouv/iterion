@@ -108,6 +108,65 @@ func (m *MemoryStore) UpdateUser(_ context.Context, u User) error {
 	return nil
 }
 
+// PatchUser mirrors the Mongo $set and its filter: only the named fields
+// move, and the precondition is read under the same write lock the race
+// would want, so a deactivation committed between a caller's read and its
+// write refuses the write instead of being reverted by it.
+func (m *MemoryStore) PatchUser(_ context.Context, id string, p UserPatch) (User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.users[id]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	if p.statusRefused(cur.Status) {
+		return User{}, ErrUserStatusChanged
+	}
+	if p.Empty() {
+		return cur, nil
+	}
+	if p.Name != nil {
+		cur.Name = *p.Name
+	}
+	if p.PasswordHash != nil {
+		cur.PasswordHash = *p.PasswordHash
+	}
+	if p.Status != nil {
+		cur.Status = *p.Status
+	}
+	if p.IsSuperAdmin != nil {
+		cur.IsSuperAdmin = *p.IsSuperAdmin
+	}
+	if p.DefaultTeamID != nil {
+		cur.DefaultTeamID = *p.DefaultTeamID
+	}
+	if p.DefaultOrgID != nil {
+		cur.DefaultOrgID = *p.DefaultOrgID
+	}
+	if p.GitHubOrgs != nil {
+		// Copied, not aliased: Mongo stores a marshalled snapshot, and a
+		// caller that kept the slice must not be able to edit the store. The
+		// copy starts non-nil so an explicit clear reads back as an empty
+		// list here too, the way a decoded `$set` of `[]` does.
+		cur.GitHubOrgs = append(make([]string, 0, len(*p.GitHubOrgs)), (*p.GitHubOrgs)...)
+	}
+	if p.LastLoginAt != nil {
+		at := *p.LastLoginAt
+		cur.LastLoginAt = &at
+	}
+	if p.Lockout != nil {
+		cur.FailedLogins = p.Lockout.FailedLogins
+		cur.LockedUntil = nil
+		if p.Lockout.LockedUntil != nil {
+			until := *p.Lockout.LockedUntil
+			cur.LockedUntil = &until
+		}
+	}
+	cur.UpdatedAt = time.Now().UTC()
+	m.users[id] = cur
+	return cur, nil
+}
+
 // getByIDs collects the entries of m matching ids into a fresh map.
 // Missing ids are simply absent — the bulk analogue of a per-id
 // ErrNotFound. Callers must hold the store's read lock. Shared by the

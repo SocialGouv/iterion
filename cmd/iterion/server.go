@@ -1116,6 +1116,33 @@ func runServerLoop(rootCtx context.Context, srv *server.Server, mreg *metrics.Re
 	}
 }
 
+// bootstrapAdminDrift is the declarative reconcile's arithmetic: the fields
+// of `existing` that disagree with the declared secret, and nothing else — a
+// restart that finds the admin aligned writes nothing. The patch carries NO
+// precondition, deliberately: the declared secret is the authority, which
+// makes this the explicit re-enable path a disabled bootstrap admin recovers
+// through. The declared password is hashed only when the stored credential
+// does not already match it.
+func bootstrapAdminDrift(existing identity.User, declaredPW string) (identity.UserPatch, error) {
+	var patch identity.UserPatch
+	if !existing.IsSuperAdmin {
+		super := true
+		patch.IsSuperAdmin = &super
+	}
+	if existing.Status != identity.UserStatusActive {
+		active := identity.UserStatusActive
+		patch.Status = &active
+	}
+	if ok, _ := iterauth.VerifyPassword(declaredPW, existing.PasswordHash); !ok {
+		hash, err := iterauth.HashPassword(declaredPW)
+		if err != nil {
+			return identity.UserPatch{}, fmt.Errorf("server: hash bootstrap password: %w", err)
+		}
+		patch.PasswordHash = &hash
+	}
+	return patch, nil
+}
+
 // bootstrapAdmin reconciles the configured super-admin per the
 // ITERION_BOOTSTRAP_ADMIN_* policy. No-op when no email is configured or auth
 // is disabled. A declared password (ITERION_BOOTSTRAP_ADMIN_PASSWORD, a k8s
@@ -1136,26 +1163,15 @@ func bootstrapAdmin(ctx context.Context, cfg iterconfig.Config, identityStore *i
 			// Declarative admin: the secret is AUTHORITATIVE — ensure an active
 			// super-admin whose password matches it, resetting only on drift so
 			// idempotent restarts are no-ops. The password is never logged.
-			changed := false
-			if !existing.IsSuperAdmin {
-				existing.IsSuperAdmin = true
-				changed = true
+			patch, err := bootstrapAdminDrift(existing, declaredPW)
+			if err != nil {
+				return err
 			}
-			if existing.Status != identity.UserStatusActive {
-				existing.Status = identity.UserStatusActive
-				changed = true
-			}
-			if ok, _ := iterauth.VerifyPassword(declaredPW, existing.PasswordHash); !ok {
-				hash, err := iterauth.HashPassword(declaredPW)
-				if err != nil {
-					return fmt.Errorf("server: hash bootstrap password: %w", err)
-				}
-				existing.PasswordHash = hash
-				changed = true
+			if patch.PasswordHash != nil {
 				logger.Info("server: BOOTSTRAP super-admin %s password reconciled to ITERION_BOOTSTRAP_ADMIN_PASSWORD", email)
 			}
-			if changed {
-				if err := identityStore.UpdateUser(ctx, existing); err != nil {
+			if !patch.Empty() {
+				if _, err := identityStore.PatchUser(ctx, existing.ID, patch); err != nil {
 					return fmt.Errorf("server: reconcile bootstrap admin: %w", err)
 				}
 			}
@@ -1172,8 +1188,9 @@ func bootstrapAdmin(ctx context.Context, cfg iterconfig.Config, identityStore *i
 			if err != nil {
 				return fmt.Errorf("server: hash bootstrap password: %w", err)
 			}
-			existing.PasswordHash = hash
-			if err := identityStore.UpdateUser(ctx, existing); err != nil {
+			// The credential alone: the account stays pending_password_change
+			// and keeps every other field this read predates.
+			if _, err := identityStore.PatchUser(ctx, existing.ID, identity.UserPatch{PasswordHash: &hash}); err != nil {
 				return fmt.Errorf("server: re-issue bootstrap admin: %w", err)
 			}
 			logger.Warn("server: BOOTSTRAP super-admin %s still pending — re-issued temp_password=%s (rotate via POST /api/auth/password/change, or set ITERION_BOOTSTRAP_ADMIN_PASSWORD)", email, pw)

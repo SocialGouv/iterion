@@ -83,6 +83,11 @@ func TestLoginGitHub_NewUserNoMatchSubmitterTeamless(t *testing.T) {
 	if u.DefaultTeamID != "" {
 		t.Errorf("submitter must have no personal team, got %q", u.DefaultTeamID)
 	}
+	// The signup is a sign-in: provisionSubmitter's own patch carries the
+	// stamp, with no login path behind it to make up for a loss.
+	if u.LastLoginAt == nil {
+		t.Error("last_login_at is unset on a submitter signup: the account reads as never signed in")
+	}
 	// The OIDC link is persisted, so a returning login finds the same user.
 	res2, err := svc.LoginWithExternal(ctx, githubExt("submitter", "other/*"), "ua", "ip")
 	if err != nil {

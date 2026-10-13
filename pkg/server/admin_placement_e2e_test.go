@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,11 @@ type placementE2E struct {
 	s      *Server
 	hs     *httptest.Server
 	signer *auth.JWTSigner
+	// sessions is the refresh-session store the service writes to, kept so a
+	// test can read a session's revoked_at — the only observable of an
+	// admin-disable's revocation, which /api/auth/refresh cannot show (it
+	// refuses a disabled user whether or not the session was revoked).
+	sessions auth.SessionStore
 }
 
 func newPlacementE2E(t *testing.T) *placementE2E {
@@ -43,9 +49,10 @@ func newPlacementE2E(t *testing.T) *placementE2E {
 	if err != nil {
 		t.Fatalf("signer: %v", err)
 	}
+	sessions := auth.NewMemorySessionStore()
 	svc, err := auth.NewService(auth.Config{
 		Store:      identity.NewMemoryStore(),
-		Sessions:   auth.NewMemorySessionStore(),
+		Sessions:   sessions,
 		Signer:     signer,
 		SignupMode: auth.SignupInviteOnly,
 		RefreshTTL: time.Hour,
@@ -103,7 +110,7 @@ func newPlacementE2E(t *testing.T) *placementE2E {
 
 	hs := httptest.NewServer(s.handler)
 	t.Cleanup(hs.Close)
-	return &placementE2E{s: s, hs: hs, signer: signer}
+	return &placementE2E{s: s, hs: hs, signer: signer, sessions: sessions}
 }
 
 func (p *placementE2E) jwt(t *testing.T, id auth.Identity) string {
@@ -115,15 +122,21 @@ func (p *placementE2E) jwt(t *testing.T, id auth.Identity) string {
 	return tok
 }
 
-func (p *placementE2E) call(t *testing.T, method, path, bearer, body string) (int, []byte) {
-	t.Helper()
+// callErr sends the request and reports a transport failure instead of
+// ending the test. It is what a SPAWNED goroutine must use: t.Fatalf outside
+// the test goroutine only runs runtime.Goexit on that goroutine, so the test
+// goroutine would wait forever on the channel it expects a reply through, and
+// the package would die on its timeout with no named assertion.
+//
+// The response cookies come back too: the refresh token travels only there.
+func (p *placementE2E) callErr(method, path, bearer, body string) (int, []byte, []*http.Cookie, error) {
 	var rdr io.Reader
 	if body != "" {
 		rdr = bytes.NewReader([]byte(body))
 	}
 	req, err := http.NewRequest(method, p.hs.URL+path, rdr)
 	if err != nil {
-		t.Fatalf("request: %v", err)
+		return 0, nil, nil, fmt.Errorf("%s %s: build request: %w", method, path, err)
 	}
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
@@ -133,11 +146,23 @@ func (p *placementE2E) call(t *testing.T, method, path, bearer, body string) (in
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
+		return 0, nil, nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
-	out, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, out
+	out, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return resp.StatusCode, nil, resp.Cookies(), fmt.Errorf("%s %s: read body: %w", method, path, readErr)
+	}
+	return resp.StatusCode, out, resp.Cookies(), nil
+}
+
+func (p *placementE2E) call(t *testing.T, method, path, bearer, body string) (int, []byte) {
+	t.Helper()
+	status, out, _, err := p.callErr(method, path, bearer, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return status, out
 }
 
 func (p *placementE2E) detail(t *testing.T, bearer, userID string) adminUserDetailView {

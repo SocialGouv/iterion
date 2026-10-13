@@ -22,7 +22,18 @@ type Store interface {
 	// reference list (member rosters, org trees) issue one query instead
 	// of a Get per row.
 	GetUsersByIDs(ctx context.Context, ids []string) (map[string]User, error)
+	// UpdateUser replaces the WHOLE user document. Every production writer
+	// is a PatchUser (TestUpdateUserHasNoProductionCallers keeps it that
+	// way): a whole-row write from a stale read reverts a status, a
+	// privilege flag or a password hash its snapshot predates.
 	UpdateUser(ctx context.Context, u User) error
+	// PatchUser writes ONLY the fields a patch names, under the precondition
+	// it names, and returns the row as it stands after the write. It is
+	// PatchTeam's user twin, with one addition: UserPatch.IfNotStatus is
+	// applied atomically with the write, so a recovery or login path can
+	// refuse to act on an account a deactivation reached first
+	// (ErrUserStatusChanged) instead of silently reviving it.
+	PatchUser(ctx context.Context, id string, p UserPatch) (User, error)
 	// ListUsers returns a page of users, oldest first. A zero UserFilter
 	// lists everyone; see UserFilter for what a non-empty Query selects.
 	ListUsers(ctx context.Context, f UserFilter) ([]User, error)

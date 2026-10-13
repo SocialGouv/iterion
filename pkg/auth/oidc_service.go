@@ -61,10 +61,14 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 				return LoginResult{}, err
 			}
 		}
-		u.LastLoginAt = &now
-		// Best-effort: LastLoginAt is cosmetic; a store outage surfaces at
-		// the session write on the next line.
-		_ = s.store.UpdateUser(ctx, u)
+		// The stamp is also this path's commit to the status checked above: a
+		// deactivation committed since refuses the write, and the login with
+		// it. Any other store error leaves LastLoginAt — cosmetic — unwritten
+		// and surfaces at the session write on the next line.
+		u, err = s.stampLogin(ctx, u, now, identity.UserPatch{})
+		if errors.Is(err, ErrAccountDisabled) {
+			return LoginResult{}, err
+		}
 		return s.issueLogin(ctx, u, userAgent, ip)
 	}
 	if !errors.Is(err, identity.ErrNotFound) {
@@ -102,10 +106,12 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 		if _, err := s.applyGitHubGrants(ctx, u.ID, gh, ext, now); err != nil {
 			return LoginResult{}, err
 		}
-		u.LastLoginAt = &now
-		// Best-effort: LastLoginAt is cosmetic; a store outage surfaces at
-		// the session write on the next line.
-		_ = s.store.UpdateUser(ctx, u)
+		// The stamp commits to the status checked above — see the returning
+		// -user path.
+		u, err = s.stampLogin(ctx, u, now, identity.UserPatch{})
+		if errors.Is(err, ErrAccountDisabled) {
+			return LoginResult{}, err
+		}
 		return s.issueLogin(ctx, u, userAgent, ip)
 	}
 	if !errors.Is(err, identity.ErrNotFound) {
@@ -154,23 +160,26 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 	if err != nil {
 		return LoginResult{}, err
 	}
+	// The landing defaults this signup resolved, plus the stamp. No
+	// precondition: the account was created by this very call, so there is
+	// no earlier status for a deactivation to have replaced.
+	patch := identity.UserPatch{LastLoginAt: &now}
 	preferredTeam := ""
 	if len(granted) > 0 {
 		preferredTeam = granted[0]
-		u.DefaultTeamID = granted[0]
+		patch.DefaultTeamID = &granted[0]
 		if orgID, derr := s.resolveOrgIDForTeam(ctx, granted[0]); derr == nil && orgID != "" {
-			u.DefaultOrgID = orgID
+			patch.DefaultOrgID = &orgID
 		}
 	} else {
 		orgID, teamID, terr := s.createPersonalTeam(ctx, u)
 		if terr != nil {
 			return LoginResult{}, terr
 		}
-		u.DefaultOrgID = orgID
-		u.DefaultTeamID = teamID
+		patch.DefaultOrgID = &orgID
+		patch.DefaultTeamID = &teamID
 	}
-	u.LastLoginAt = &now
-	if err := s.store.UpdateUser(ctx, u); err != nil {
+	if u, err = s.store.PatchUser(ctx, u.ID, patch); err != nil {
 		return LoginResult{}, err
 	}
 	return s.issueLoginInTeam(ctx, u, preferredTeam, userAgent, ip)
@@ -204,8 +213,8 @@ func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser,
 	}); err != nil {
 		return LoginResult{}, err
 	}
-	u.LastLoginAt = &now
-	if err := s.store.UpdateUser(ctx, u); err != nil {
+	// The stamp alone, on the account this call just created.
+	if u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{LastLoginAt: &now}); err != nil {
 		return LoginResult{}, err
 	}
 	// No team: issueLogin issues a session with an empty active team.
@@ -260,10 +269,12 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		if err := s.grantMembership(ctx, u.ID, tenantID, role, identity.MembershipSourceOIDCSSO, now); err != nil {
 			return LoginResult{}, err
 		}
-		u.LastLoginAt = &now
-		// Best-effort: LastLoginAt is cosmetic; a store outage surfaces at
-		// the session write on the next line.
-		_ = s.store.UpdateUser(ctx, u)
+		// The stamp commits to the status checked above — see
+		// LoginWithExternal's returning-user path.
+		u, err = s.stampLogin(ctx, u, now, identity.UserPatch{})
+		if errors.Is(err, ErrAccountDisabled) {
+			return LoginResult{}, err
+		}
 		return s.issueLoginInTeam(ctx, u, tenantID, userAgent, ip)
 	}
 	if !errors.Is(err, identity.ErrNotFound) {
@@ -295,10 +306,12 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		if err := s.grantMembership(ctx, existing.ID, tenantID, role, identity.MembershipSourceOIDCSSO, now); err != nil {
 			return LoginResult{}, err
 		}
-		existing.LastLoginAt = &now
-		// Best-effort: LastLoginAt is cosmetic; a store outage surfaces at
-		// the session write on the next line.
-		_ = s.store.UpdateUser(ctx, existing)
+		// The stamp commits to the status checked above — see
+		// LoginWithExternal's returning-user path.
+		existing, err = s.stampLogin(ctx, existing, now, identity.UserPatch{})
+		if errors.Is(err, ErrAccountDisabled) {
+			return LoginResult{}, err
+		}
 		return s.issueLoginInTeam(ctx, existing, tenantID, userAgent, ip)
 	} else if !errors.Is(err, identity.ErrNotFound) {
 		return LoginResult{}, err
@@ -331,10 +344,12 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 	if err := s.grantMembership(ctx, u.ID, tenantID, role, identity.MembershipSourceOIDCSSO, now); err != nil {
 		return LoginResult{}, err
 	}
-	u.LastLoginAt = &now
-	// Best-effort: LastLoginAt is cosmetic; a store outage surfaces at
-	// the session write on the next line.
-	_ = s.store.UpdateUser(ctx, u)
+	// The stamp alone, on the account this call just created. Best-effort:
+	// LastLoginAt is cosmetic; a store outage surfaces at the session write
+	// on the next line.
+	if patched, uerr := s.store.PatchUser(ctx, u.ID, identity.UserPatch{LastLoginAt: &now}); uerr == nil {
+		u = patched
+	}
 	return s.issueLoginInTeam(ctx, u, tenantID, userAgent, ip)
 }
 

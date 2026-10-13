@@ -287,12 +287,15 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		// surface to the caller, since the response shape must remain
 		// indistinguishable from a non-locked invalid-credentials
 		// case (per the comment on dummyHash above).
-		u.FailedLogins++
-		if u.FailedLogins >= LockoutThreshold {
+		// The counter and the deadline it produced are one fact, and the only
+		// fact this path owns: a whole-row write would also restore the
+		// status, the privilege flag and the password hash it read.
+		lockout := identity.UserLockout{FailedLogins: u.FailedLogins + 1}
+		if lockout.FailedLogins >= LockoutThreshold {
 			lockUntil := s.now().UTC().Add(LockoutDuration)
-			u.LockedUntil = &lockUntil
+			lockout.LockedUntil = &lockUntil
 		}
-		if persistErr := s.store.UpdateUser(ctx, u); persistErr != nil && s.logger != nil {
+		if _, persistErr := s.store.PatchUser(ctx, u.ID, identity.UserPatch{Lockout: &lockout}); persistErr != nil && s.logger != nil {
 			s.logger.Error("auth: persist failed-login counter for %s: %v", u.ID, persistErr)
 		}
 		return LoginResult{}, ErrInvalidCredentials
@@ -306,15 +309,68 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		return LoginResult{}, ErrPasswordChangeRequired
 	}
 
-	now := s.now().UTC()
-	u.LastLoginAt = &now
-	u.FailedLogins = 0
-	u.LockedUntil = nil
-	if err := s.store.UpdateUser(ctx, u); err != nil {
+	// A verified password clears the brute-force lockout; the stamp carries
+	// it, so the counter and the login time land in one write. The
+	// precondition names BOTH statuses the gates above refused: an admin
+	// password reset commits pending_password_change together with a hash of
+	// its own, so a session minted after it would be a session on a
+	// credential the admin had already replaced.
+	u, err = s.stampLogin(ctx, u, s.now().UTC(), identity.UserPatch{
+		Lockout: &identity.UserLockout{},
+		IfNotStatus: []identity.UserStatus{
+			identity.UserStatusDisabled,
+			identity.UserStatusPendingPasswordChange,
+		},
+	})
+	if err != nil {
 		return LoginResult{}, err
 	}
 
 	return s.issueLogin(ctx, u, userAgent, ip)
+}
+
+// stampLogin records a successful login on u — the last-login time, plus
+// whatever else the calling path owns in `owned` — and returns the stored
+// row. LastLoginAt is stampLogin's own and is overwritten; the precondition
+// is the CALLER's, and stampLogin only adds `disabled` to it — the one status
+// no login path may ever stamp over — keeping every status the caller named.
+// A path that refused more at read time (Login also refuses
+// pending_password_change) therefore keeps that refusal at write time.
+//
+// The precondition is where a login path commits to the status it checked:
+// the patch refuses a row whose status moved into what the caller would not
+// act on, and stampLogin answers ErrAccountDisabled, so no session is minted
+// on a snapshot that stopped being true while the credential was being
+// verified. That single sentinel answers whichever arm refused: a login that
+// loses this race says no more than that it will not proceed. Other store
+// errors are returned as they are, with u unchanged: each caller decides
+// whether a cosmetic stamp failing fails the login.
+func (s *Service) stampLogin(ctx context.Context, u identity.User, at time.Time, owned identity.UserPatch) (identity.User, error) {
+	owned.LastLoginAt = &at
+	owned.IfNotStatus = alsoRefusing(owned.IfNotStatus, identity.UserStatusDisabled)
+	patched, err := s.store.PatchUser(ctx, u.ID, owned)
+	if errors.Is(err, identity.ErrUserStatusChanged) {
+		return identity.User{}, ErrAccountDisabled
+	}
+	if err != nil {
+		return u, err
+	}
+	return patched, nil
+}
+
+// alsoRefusing returns refused with want added unless it is already there, so
+// adding a mandatory arm to a precondition cannot silently drop the arms its
+// caller put in. The result is a fresh slice: the caller's array is never
+// appended into.
+func alsoRefusing(refused []identity.UserStatus, want identity.UserStatus) []identity.UserStatus {
+	for _, st := range refused {
+		if st == want {
+			return refused
+		}
+	}
+	out := make([]identity.UserStatus, 0, len(refused)+1)
+	out = append(out, refused...)
+	return append(out, want)
 }
 
 // ChangePasswordPending completes the forced-rotation flow for a user in
@@ -351,12 +407,29 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 		return LoginResult{}, err
 	}
 	now := s.now().UTC()
-	u.PasswordHash = hash
-	u.Status = identity.UserStatusActive
-	u.FailedLogins = 0
-	u.LockedUntil = nil
-	u.LastLoginAt = &now
-	if err := s.store.UpdateUser(ctx, u); err != nil {
+	active := identity.UserStatusActive
+	// The rotation owns the credential, the status it unblocks and the
+	// lockout — under the precondition that REPRODUCES the status check
+	// above: the row must still be pending. An account an admin closed must
+	// not be reactivated by its own holder's rotation, and an account an
+	// admin activated must not have the credential it was given replaced by
+	// the holder of a superseded temporary password. The refusal stays
+	// opaque, like the wrong-status branch above, and leaves the credential
+	// that landed under it in place.
+	u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
+		PasswordHash: &hash,
+		Status:       &active,
+		Lockout:      &identity.UserLockout{},
+		LastLoginAt:  &now,
+		IfNotStatus: []identity.UserStatus{
+			identity.UserStatusDisabled,
+			identity.UserStatusActive,
+		},
+	})
+	if errors.Is(err, identity.ErrUserStatusChanged) {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	if err != nil {
 		return LoginResult{}, err
 	}
 	return s.issueLogin(ctx, u, userAgent, ip)
@@ -614,15 +687,17 @@ func (s *Service) SwitchTeam(ctx context.Context, userID, teamID string) (Identi
 	if err != nil {
 		return Identity{}, "", time.Time{}, err
 	}
-	// Persist the choice as the user's new default (team + org). The JWT
-	// is already issued and carries the chosen context — a persistence
-	// failure here means the next session won't auto-resume, but the
-	// current login is still good. Log so an operator can investigate.
-	u.DefaultTeamID = teamID
+	// Persist the choice as the user's new default (team + org) — and only
+	// that: a whole-row write would carry the IsSuperAdmin and PasswordHash
+	// this read predates, re-granting a privilege an admin revoked in
+	// between. The JWT is already issued and carries the chosen context — a
+	// persistence failure here means the next session won't auto-resume, but
+	// the current login is still good. Log so an operator can investigate.
+	patch := identity.UserPatch{DefaultTeamID: &teamID}
 	if orgID != "" {
-		u.DefaultOrgID = orgID
+		patch.DefaultOrgID = &orgID
 	}
-	if uerr := s.store.UpdateUser(ctx, u); uerr != nil && s.logger != nil {
+	if _, uerr := s.store.PatchUser(ctx, u.ID, patch); uerr != nil && s.logger != nil {
 		s.logger.Warn("auth: persist default team for user %s failed: %v", u.ID, uerr)
 	}
 	return id, tok, exp, nil
@@ -671,11 +746,12 @@ func (s *Service) SwitchOrg(ctx context.Context, userID, orgID string) (Identity
 	if err != nil {
 		return Identity{}, "", time.Time{}, err
 	}
-	u.DefaultOrgID = orgID
+	// The chosen defaults, and nothing else — see SwitchTeam.
+	patch := identity.UserPatch{DefaultOrgID: &orgID}
 	if teamID != "" {
-		u.DefaultTeamID = teamID
+		patch.DefaultTeamID = &teamID
 	}
-	if uerr := s.store.UpdateUser(ctx, u); uerr != nil && s.logger != nil {
+	if _, uerr := s.store.PatchUser(ctx, u.ID, patch); uerr != nil && s.logger != nil {
 		s.logger.Warn("auth: persist default org for user %s failed: %v", u.ID, uerr)
 	}
 	return id, tok, exp, nil
@@ -771,9 +847,9 @@ func (s *Service) registerOpen(ctx context.Context, email, password, name, userA
 	if err != nil {
 		return LoginResult{}, err
 	}
-	u.DefaultOrgID = orgID
-	u.DefaultTeamID = teamID
-	if err := s.store.UpdateUser(ctx, u); err != nil {
+	if u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
+		DefaultOrgID: &orgID, DefaultTeamID: &teamID,
+	}); err != nil {
 		return LoginResult{}, err
 	}
 	return s.issueLogin(ctx, u, userAgent, ip)
@@ -828,11 +904,11 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 	if err != nil {
 		return LoginResult{}, err
 	}
-	u.DefaultTeamID = inv.TeamID
+	patch := identity.UserPatch{DefaultTeamID: &inv.TeamID}
 	if orgID != "" {
-		u.DefaultOrgID = orgID
+		patch.DefaultOrgID = &orgID
 	}
-	if err := s.store.UpdateUser(ctx, u); err != nil {
+	if u, err = s.store.PatchUser(ctx, u.ID, patch); err != nil {
 		return LoginResult{}, err
 	}
 	acceptedAt := now
@@ -1241,9 +1317,9 @@ func (s *Service) CreateUserAndPersonalTeam(ctx context.Context, email, name, pa
 	if err != nil {
 		return identity.User{}, identity.Team{}, err
 	}
-	u.DefaultOrgID = orgID
-	u.DefaultTeamID = teamID
-	if err := s.store.UpdateUser(ctx, u); err != nil {
+	if u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
+		DefaultOrgID: &orgID, DefaultTeamID: &teamID,
+	}); err != nil {
 		return identity.User{}, identity.Team{}, err
 	}
 	t, _ := s.store.GetTeam(ctx, teamID)
