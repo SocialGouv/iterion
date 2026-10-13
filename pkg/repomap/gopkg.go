@@ -63,11 +63,7 @@ func (g goPackages) Extract(root string) (string, error) {
 		if len(r.Interfaces) > 0 {
 			ifaces = "`" + strings.Join(r.Interfaces, "`, `") + "`"
 		}
-		doc := r.Doc
-		if doc == "" {
-			doc = "—"
-		}
-		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", r.Dir, doc, ifaces)
+		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", r.Dir, orDash(r.Doc), ifaces)
 	}
 	return b.String(), nil
 }

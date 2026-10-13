@@ -541,6 +541,39 @@ func TestATruncatedDocCommentDoesNotEndInsideACodeSpan(t *testing.T) {
 	}
 }
 
+// A doc node's Doc is its heading reduced to ONE line, which is what the
+// readers of a built graph splice into a row and what mdcode.CloseDanglingSpan
+// is owed before it appends the run closing a span. One line means every
+// ending a renderer breaks on: a lone carriage return is a line break on the
+// page, and a heading collapsed on line feeds alone keeps it — so the node
+// of a page carries a break into every view built over it.
+//
+// The mutation that reddens this: collapse with strings.ReplaceAll(text,
+// "\n", " ") in this package's firstSentence.
+func TestADocNodesDocIsOneLineByTheRenderersRule(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":    "module example.test/m\n\ngo 1.26\n",
+		"docs/a.md": "# The page title\rand the text under it\n\nA real paragraph.\n",
+	})
+	g := build(t, root)
+
+	var doc string
+	for _, n := range g.Nodes {
+		if n.Kind == repograph.KindDoc && n.Path == "docs/a.md" {
+			doc = n.Doc
+		}
+	}
+	if doc == "" {
+		t.Fatal("the page's node carries no Doc — this test would prove nothing")
+	}
+	if strings.ContainsAny(doc, "\r\n") {
+		t.Errorf("Node.Doc keeps a line ending: %q", doc)
+	}
+	if want := "The page title and the text under it"; doc != want {
+		t.Errorf("Node.Doc\n  got  %q\n  want %q", doc, want)
+	}
+}
+
 // A `](target)` in a page's YAML front matter is configuration — a theme's
 // hero link — not a link the page makes. An edge minted from one makes
 // `map path` answer that a route exists because a config key named a file.

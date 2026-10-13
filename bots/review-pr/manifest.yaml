@@ -1,7 +1,13 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.13
+version: 0.9.14
+## 0.9.14 — the description's word wrap no longer starts a line with a
+## ```suggestion fence marker. In a generated bot catalogue that opener
+## had no closer, so hundreds of lines a router model reads — the cards
+## below it, and the owning bot's own ritual — were inside a code block
+## nobody wrote. Same words, one wrap moved: metadata only, no runtime
+## path reads this field.
 ## 0.9.13 — the claude slots' backend is tunable like every other slot's
 ## (`ITERION_VIBE_BACKEND_CLAUDE` / `_CLAUDE_GLANCE`, default claude_code
 ## byte-compat). The sovereign pools need it: a pool pod carries ONLY its
@@ -280,9 +286,10 @@ description: |
   the iterion native kanban board (labelled severity + type +
   source:revi) and writes a markdown report. Given a pull-request URL
   (PR; merge request on GitLab; --var pr_url), it ALSO posts the findings onto that PR as a real
-  forge review — inline comments anchored to file:line with one-click
-  ```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
-  or commits code — that is the improve-loops' job (Billy / Willy).
+  forge review — inline comments anchored to file:line with
+  one-click ```suggestion blocks (GitHub / GitLab / Forgejo). Never
+  edits, fixes, or commits code — that is the improve-loops' job
+  (Billy / Willy).
   Optional TICKET CONFORMANCE: with a tracker API base + a bound
   read-only tracker token, it also fetches the ticket(s) the PR
   references (Jira, GitHub/GitLab issues) and verifies the diff answers

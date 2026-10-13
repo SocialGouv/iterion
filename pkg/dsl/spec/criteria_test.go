@@ -40,6 +40,49 @@ func TestPublicCriterionRegistryValidatesParametersAndValues(t *testing.T) {
 	}
 }
 
+// A criterion's description is prose spliced into a CELL of the committed
+// reference, so it owes that cell the same escape as the eight other prose
+// cells of this renderer: a row is cut on its unescaped pipes before any of
+// its text is read, so one pipe in a description moves every column after it
+// and drops the row's last cell — the Meaning that documents the evaluator.
+// A criterion describing an alternation ("a|b") is exactly the one that would
+// write it — and a description that escapes the pipe ITSELF must come back
+// with that escape intact: `\|` escaped again is `\\|`, an escaped backslash
+// followed by a live separator, which is the same broken row by the opposite
+// mistake.
+func TestACriterionDescriptionKeepsItsCell(t *testing.T) {
+	for _, tc := range []struct{ name, description string }{
+		{"zz_alternation", "String matches a | b"},
+		{"zz_escaped", `String matches a \| b`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := PublicCriteria
+			t.Cleanup(func() { PublicCriteria = restore })
+			PublicCriteria = append(append([]PublicCriterionSpec(nil), restore...), PublicCriterionSpec{
+				Name:        tc.name,
+				Description: tc.description,
+				Types:       []string{"string"},
+			})
+
+			row := ""
+			for _, line := range strings.Split(Reference(), "\n") {
+				if strings.Contains(line, tc.name) {
+					row = line
+				}
+			}
+			if row == "" {
+				t.Fatal("the criterion never reached the reference table")
+			}
+			if want := `String matches a \| b`; !strings.Contains(row, want) {
+				t.Errorf("the description cell is not escaped (%q missing): %s", want, row)
+			}
+			if strings.Contains(row, `\\|`) {
+				t.Errorf("the description cell is escaped twice — pandoc then cuts the row on the pipe after the backslash: %s", row)
+			}
+		})
+	}
+}
+
 // The evaluator a lookup hands out refuses a missing or mistyped parameter
 // instead of panicking: CompilePublicCriterion validates first, a caller
 // of Compile alone gets an error too.

@@ -83,6 +83,22 @@ agent later following stale guidance. Concrete examples:
   manifests. Only the hand-authored `iterion-bot-catalog-static.md`
   preamble (decision tree / distinguishers) is edited by hand; run
   `iterion bots regen-catalog` to refresh the committed generated file.
+  Every manifest field the card embeds owes that document one rule: no
+  line of it may begin with a fence marker (```` ``` ````, `~~~`), because
+  such a line opens a code block that swallows every card below it and the
+  owning bot's own ritual with them. `description` and `when_to_use` are
+  spliced as markdown BLOCKS, so a word wrap is enough; `name`,
+  `display_name`, `category`, `triggers`, `tags` and `capabilities` are
+  spliced INSIDE a line, so only a line break in the value puts text at
+  column 0. The
+  generator answers for both — it escapes an opener a field never closes
+  (`internal/mdcode.EscapeDanglingFence`) and collapses a value spliced
+  inside a line (`internal/mdcode.Inline`) — and
+  `bots.TestBotManifestProseLeavesNoFenceOpen` reddens on a field this
+  tree's own reader sees leaving a block open, so a manifest here does not
+  lean on either repair. That reader's limits are stated and measured on
+  `EscapeDanglingFence`, and the gate shares them: a field of one of those
+  shapes passes it.
 - Added a new DSL primitive or changed edge syntax → update
   `iterion-dsl-quickref`.
 - Discovered a better survey heuristic → fold it into `repo-survey`.

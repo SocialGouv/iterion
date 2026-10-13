@@ -205,10 +205,17 @@ func walkDirs(root string, fn func(rel string, entries []os.DirEntry) error) err
 }
 
 // firstSentence reduces a doc comment or a paragraph to its opening
-// sentence, collapsed onto one line and bounded, so a table row stays a
-// row. Markdown pipes are escaped: an unescaped one would split a cell.
+// sentence, collapsed onto one line and bounded, so a table row stays a row.
+// The cell's own escaping is orDash's — every sentence this returns is
+// rendered through it, and escaping a pipe twice writes the backslash into
+// the page.
+//
+// ONE line means every line ending the renderer breaks on
+// (internal/mdcode.Lines), not the line feed alone: what is left is handed
+// to mdcode.CloseDanglingSpan, whose repair is a single line's, and a
+// carriage return kept here would reach it as two.
 func firstSentence(text string, max int) string {
-	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
+	text = strings.TrimSpace(strings.Join(mdcode.Lines(text), " "))
 	for strings.Contains(text, "  ") {
 		text = strings.ReplaceAll(text, "  ", " ")
 	}
@@ -233,5 +240,5 @@ func firstSentence(text string, max int) string {
 		// only QUOTED is rewritten or refused as a link.
 		text = strings.TrimSpace(mdcode.CloseDanglingSpan(text[:cut])) + "…"
 	}
-	return strings.ReplaceAll(text, "|", `\|`)
+	return text
 }

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/mdcode"
 )
 
 // The generated regions. A committed document carries
@@ -268,7 +270,8 @@ func Reference() string {
 			}
 			params = append(params, label)
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", codes([]string{criterion.Name}), codes(criterion.Types), codes(params), criterion.Description)
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n",
+			codes([]string{criterion.Name}), codes(criterion.Types), codes(params), escapePipes(criterion.Description))
 	}
 	b.WriteString("\n")
 	return b.String()
@@ -449,7 +452,13 @@ func codes(values []string) string {
 	return strings.Join(q, ", ")
 }
 
-func escapePipes(s string) string { return strings.ReplaceAll(s, "|", "\\|") }
+// escapePipes is internal/mdcode.Cell under this package's own name: every
+// call site is a table cell, and the rule a row is cut on — a pipe is a
+// separator when the run of backslashes before it is even — gets one
+// spelling for the tree. Spelt a second time, the rule drifts: a single
+// replacement turns a `\|` the text already escaped into `\\|`, an escaped
+// backslash followed by a LIVE separator, and the row gains a column.
+func escapePipes(s string) string { return mdcode.Cell(s) }
 
 // anchor is the GitHub-style heading anchor of a kind name.
 func anchor(name string) string { return strings.ReplaceAll(name, ".", "") }

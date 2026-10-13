@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/mdcode"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -194,5 +196,47 @@ func TestBotsList_MalformedBundleWarnsAndKeepsSiblings(t *testing.T) {
 	warn := errBuf.String()
 	if !strings.Contains(warn, "broken") || !strings.Contains(warn, "schema_version") {
 		t.Fatalf("warnings = %q, want the broken bundle's diagnostic", warn)
+	}
+}
+
+// A bundle's manifest text is a third party's, and the markdown listing
+// splices it into a document a model reads: a description word-wrapped onto
+// a fence line, or a persona carrying a line break, must not open a block
+// that reads every card after it as code.
+func TestBotsList_FormatMarkdownIsFenceSafe(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "alpha", "manifest.yaml"),
+		"name: alpha\ndisplay_name: \"Revi\\n```suggestion\"\ndescription: |\n  one-click\n  ```suggestion blocks (GitHub).\ntags:\n  - \"a\\n```tag\"\n")
+	writeFile(t, filepath.Join(dir, "alpha", "main.bot"), "agent x:\n  model: \"test\"\n")
+	writeFile(t, filepath.Join(dir, "omega", "manifest.yaml"),
+		"name: omega\ndescription: The card that follows.\n")
+	writeFile(t, filepath.Join(dir, "omega", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	var buf bytes.Buffer
+	if err := BotsList(BotsListOptions{Paths: []string{dir}, Format: "markdown"}, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{"### Revi ```suggestion · `alpha`", "The card that follows."} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("the listing does not carry %q — the fixture never reached the renderer:\n%s", want, out)
+		}
+	}
+	lines := mdcode.Lines(out)
+	var fence mdcode.FenceScanner
+	for _, line := range lines {
+		fence.Code(line)
+	}
+	if fence.Open() {
+		t.Errorf("the markdown listing leaves a fenced block open — everything after it reads as code:\n%s", out)
+	}
+	masked := mdcode.Lines(mdcode.Mask(out))
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "The card that follows." {
+			continue
+		}
+		if strings.TrimSpace(masked[i]) == "" {
+			t.Errorf("line %d %q reads as CODE in the listing:\n%s", i+1, line, out)
+		}
 	}
 }

@@ -608,8 +608,15 @@ func firstHeading(body string) string {
 	return ""
 }
 
+// firstSentence reduces a doc comment or a heading to its opening sentence,
+// on ONE line and bounded.
+//
+// One line means every line ending the renderer breaks on
+// (internal/mdcode.Lines), not the line feed alone: what is left is handed
+// to mdcode.CloseDanglingSpan, whose repair is a single line's, and a
+// carriage return kept here would reach it as two.
 func firstSentence(text string, max int) string {
-	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
+	text = strings.TrimSpace(strings.Join(mdcode.Lines(text), " "))
 	for strings.Contains(text, "  ") {
 		text = strings.ReplaceAll(text, "  ", " ")
 	}

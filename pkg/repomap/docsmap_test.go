@@ -207,6 +207,34 @@ func TestReanchorReadsACodeSpanAsCodeAndNotAsALink(t *testing.T) {
 	}
 }
 
+// firstSentence owes mdcode.CloseDanglingSpan ONE line: that repair appends
+// the run closing a span, and a text carrying a line ending satisfies
+// mdcode.Spans across it while the page breaks the line and shows the
+// backticks. "One line" is every ending a renderer breaks on, and a lone
+// carriage return is one of them (internal/mdcode.Lines, measured against
+// both renderers there) — collapsing line feeds alone leaves it in place.
+//
+// The mutation that reddens this: collapse with strings.ReplaceAll(text,
+// "\n", " ") in firstSentence.
+func TestTheSummaryIsOneLineByTheRenderersRule(t *testing.T) {
+	for _, tc := range []struct{ name, text, want string }{
+		{"a lone carriage return", "A page about links.\rAnd the line after it.", "A page about links."},
+		{"a carriage return and line feed", "A page about links.\r\nAnd the line after it.", "A page about links."},
+		{"a line feed", "A page about links.\nAnd the line after it.", "A page about links."},
+		{"a carriage return mid-sentence", "A page\rabout links and more", "A page about links and more"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := firstSentence(tc.text, 140)
+			if strings.ContainsAny(got, "\r\n") {
+				t.Errorf("firstSentence(%q) kept a line ending: %q — CloseDanglingSpan and the row it is spliced into both owe one line", tc.text, got)
+			}
+			if got != tc.want {
+				t.Errorf("firstSentence(%q)\n  got  %q\n  want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
 // The summary is TRUNCATED before it is masked, and the cut lands where a
 // byte bound falls. A cut between a code span's two runs leaves half a span,
 // the mask correctly reads the surviving run as literal text, and the link
@@ -414,19 +442,28 @@ func TestFrontMatterIsNotThePagesOpeningSentence(t *testing.T) {
 // pattern anchored near column 0 cannot see the opener at all, so everything
 // below it reads as prose.
 //
+// The block's content line is indented INTO its container, which is what
+// keeps the container — and the fence it holds — open over it: fenced content
+// is not paragraph continuation text, so a line at column 0 ends the item and
+// the delimiter below it opens a block of its own. Measured on pandoc 3.1.3
+// (gfm and commonmark alike): with the content line at column 0 the quoted
+// link form is live PROSE in all four shapes and the page's real sentence is
+// swallowed; indented, the form is code and the sentence is prose. A fixture
+// no renderer agrees with certifies the scanner against itself.
+//
 // The mutation that reddens this: drop the list-marker alternative from
 // mdcode's fence pattern.
 func TestAFenceAContainerIndentsIsStillAFence(t *testing.T) {
-	for _, tc := range []struct{ name, opener, closer string }{
-		{"a bullet carrying a fence", "- ```", "  ```"},
-		{"a numbered item carrying a fence", "1. ```", "   ```"},
-		{"a note carrying a bullet carrying a fence", ">   ```md", ">   ```"},
-		{"a blockquote carrying a fence", "> ```sh", "> ```"},
+	for _, tc := range []struct{ name, opener, content, closer string }{
+		{"a bullet carrying a fence", "- ```", "  ", "  ```"},
+		{"a numbered item carrying a fence", "1. ```", "   ", "   ```"},
+		{"a note carrying a bullet carrying a fence", ">   ```md", ">   ", ">   ```"},
+		{"a blockquote carrying a fence", "> ```sh", "> ", "> ```"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			body := "# Contained\n\n" + tc.opener +
-				"\nNever write the form ](../../elsewhere/foo.md) — it is an example.\n" +
+				"\n" + tc.content + "Never write the form ](../../elsewhere/foo.md) — it is an example.\n" +
 				tc.closer + "\n\nThe real opening sentence, which links to [the guide](guide.md).\n"
 			for rel, text := range map[string]string{
 				"docs/contained.md": body,
@@ -496,5 +533,33 @@ func TestOnlyAColumnZeroDelimiterClosesFrontMatter(t *testing.T) {
 	}
 	if !strings.Contains(out, "Real prose here.") {
 		t.Errorf("a well-formed page lost its summary:\n%s", out)
+	}
+}
+
+// The summary column quotes a page's own sentence, and a sentence may carry
+// a `)` inside a code span. The mask blanks it, so the link grammar runs
+// past the parenthesis that ends the destination — and rewriting that window
+// would re-emit a resolved path in place of the bytes the page wrote. The
+// quoted form keeps its bytes; the ordinary target on the same line moves.
+func TestReanchorKeepsTheBytesOfADestinationTheMaskWidened(t *testing.T) {
+	for _, src := range []string{
+		"a link [x](a`)`/../b) quoted in a sentence",
+		"a link [x](a`)`//b) quoted in a sentence",
+	} {
+		got, err := reanchor(src, "docs/adr/0001-x.md")
+		if err != nil {
+			t.Fatalf("reanchor(%q): %v", src, err)
+		}
+		if got != src {
+			t.Errorf("reanchor rewrote a destination the mask reads as part code\n  got  %q\n  want %q", got, src)
+		}
+	}
+	const plain = "a link [x](sibling.md) in a sentence"
+	got, err := reanchor(plain, "docs/adr/0001-x.md")
+	if err != nil {
+		t.Fatalf("reanchor(%q): %v", plain, err)
+	}
+	if got == plain {
+		t.Errorf("an ordinary relative destination was not re-anchored: %q", got)
 	}
 }

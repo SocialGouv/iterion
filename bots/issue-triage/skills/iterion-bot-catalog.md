@@ -376,9 +376,10 @@ agreement raises confidence), then publishes one issue per finding to
 the iterion native kanban board (labelled severity + type +
 source:revi) and writes a markdown report. Given a pull-request URL
 (PR; merge request on GitLab; --var pr_url), it ALSO posts the findings onto that PR as a real
-forge review — inline comments anchored to file:line with one-click
-```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
-or commits code — that is the improve-loops' job (Billy / Willy).
+forge review — inline comments anchored to file:line with
+one-click ```suggestion blocks (GitHub / GitLab / Forgejo). Never
+edits, fixes, or commits code — that is the improve-loops' job
+(Billy / Willy).
 Optional TICKET CONFORMANCE: with a tracker API base + a bound
 read-only tracker token, it also fetches the ticket(s) the PR
 references (Jira, GitHub/GitLab issues) and verifies the diff answers
