@@ -2439,22 +2439,22 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 // Live E2E test — claw subagents tool registration
 // ---------------------------------------------------------------------------
 
-// TestLive_Lite_ClawSubagents exercises tool.RegisterClawSubagents:
-// the parent agent receives the `agent` tool and must call it twice
-// (one per topic). Each call runs ExecuteAgent which returns a JSON
-// spec ({agent_id, name, subagent_type, status: "running", ...}); the
-// parent is asked to surface what it observed in the output schema.
+// TestLive_Lite_ClawSubagents is the live witness of the claw subagent
+// refusal (#1940): the parent agent receives the `agent` tool, calls it, and
+// must read a tool ERROR naming claw and the way out — never claw's own
+// {agent_id, status: "running"} metadata for a subagent nobody launched.
 //
-// This validates the registration + tool dispatch contract end-to-end:
+// It validates the registration + dispatch contract end-to-end:
 //
-//	tool.RegisterClawSubagents → claw tool registry → claw_backend
-//	  tool loop → ExecuteAgent → tool_result back to LLM
+//	tool.RegisterClawSubagents(reg, nil) → claw tool registry → claw_backend
+//	  tool loop → the typed capability refusal → tool_result (is_error) → LLM
 //
-// Note: ExecuteAgent does NOT spawn a real child loop in iterion's
-// stateless StreamResponse path — that would require a per-node
-// ConversationLoop (Track 5 follow-up). The test asserts only what is
-// honest given the current contract: the tool fires and returns valid
-// metadata.
+// and the two consequences that only a real run shows: the run log carries a
+// tool_error event for the call, and the node still FINISHES — a refused tool
+// is not a dead node, so the model answers the topic itself.
+//
+// Wiring a real runner is the other half of #1940 and lives in
+// TestLive_ClawToolCoverage, which sets ClawDefaults.Subagent.
 //
 // Requires ANTHROPIC_API_KEY (parent runs claude-haiku-4-5).
 func TestLive_Lite_ClawSubagents(t *testing.T) {
@@ -2515,8 +2515,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 	t.Log("Starting live claw subagents run...")
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, map[string]any{
-		"topic_a": "Summarize Go interfaces in two lines",
-		"topic_b": "List three concurrency primitives in Go",
+		"topic": "Summarize Go interfaces in two lines",
 	})
 	t.Logf("Run completed in %s", time.Since(start).Round(time.Second))
 
@@ -2536,22 +2535,47 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 		t.Fatalf("Failed to load events: %v", evtErr)
 	}
 
-	// Count `agent` tool calls dispatched by the coordinator.
-	agentCalls := 0
+	// The call must land in the run log as a tool ERROR: pkg/backend/model's
+	// store hooks emit tool_called on success and tool_error with the message
+	// when the executor returns one, so the event type IS the verdict.
+	refusals, successes := 0, 0
 	for _, evt := range events {
-		if evt.Type != store.EventToolCalled || evt.NodeID != "coordinator" || evt.Data == nil {
+		if evt.NodeID != "coordinator" || evt.Data == nil {
 			continue
 		}
-		if name, _ := evt.Data["tool"].(string); name == "agent" {
-			agentCalls++
+		if name, _ := evt.Data["tool"].(string); name != "agent" {
+			continue
+		}
+		switch evt.Type {
+		case store.EventToolError:
+			refusals++
+			msg, _ := evt.Data["error"].(string)
+			t.Logf("agent refusal: %s", msg)
+			for _, want := range []string{"claw", "claude_code"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("the refusal event does not name %q: %s", want, msg)
+				}
+			}
+			if strings.Contains(msg, "agent_id") {
+				t.Errorf("the refusal event carries the stub's start metadata: %s", msg)
+			}
+		case store.EventToolCalled:
+			successes++
+			out, _ := evt.Data["output"].(string)
+			t.Errorf("CLAW SUBAGENTS: an `agent` call succeeded with %q — no runner is wired, so nothing was launched", out)
 		}
 	}
-	t.Logf("agent tool calls observed: %d", agentCalls)
-	if agentCalls < 2 {
-		t.Errorf("CLAW SUBAGENTS: expected >= 2 agent tool calls, got %d", agentCalls)
+	t.Logf("agent calls: %d refused, %d succeeded", refusals, successes)
+	if refusals < 1 {
+		t.Errorf("CLAW SUBAGENTS: expected >= 1 refused agent tool call, got %d", refusals)
 	}
 
-	// Validate output schema: spawn_count and distinct agent_ids.
+	// A refused tool is not a dead node: the model is expected to report the
+	// refusal and answer the topic itself. sawOutput records that the block
+	// RAN — without it, a coordinator whose node_finished carries no output
+	// map skips every assertion below and the half this run pays for passes
+	// having checked nothing.
+	sawOutput := false
 	for _, evt := range events {
 		if evt.Type != store.EventNodeFinished || evt.NodeID != "coordinator" || evt.Data == nil {
 			continue
@@ -2560,44 +2584,23 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 		if !ok {
 			continue
 		}
-		spawnCountAny, _ := out["spawn_count"]
-		var spawnCount int
-		switch v := spawnCountAny.(type) {
-		case int:
-			spawnCount = v
-		case float64:
-			spawnCount = int(v)
+		sawOutput = true
+		refused, _ := out["delegation_refused"].(bool)
+		reason, _ := out["refusal_reason"].(string)
+		answer, _ := out["answer"].(string)
+		t.Logf("coordinator.delegation_refused = %v", refused)
+		t.Logf("coordinator.refusal_reason     = %q", reason)
+		t.Logf("coordinator.answer             = %q", answer)
+		if !refused {
+			t.Error("the coordinator did not report the refusal — the model believed it delegated")
 		}
-		ids, _ := out["agent_ids"].([]any)
-		statuses, _ := out["statuses"].([]any)
-		t.Logf("coordinator.spawn_count = %d", spawnCount)
-		t.Logf("coordinator.agent_ids   = %v", ids)
-		t.Logf("coordinator.statuses    = %v", statuses)
-
-		if spawnCount < 2 {
-			t.Errorf("expected spawn_count >= 2, got %d", spawnCount)
-		}
-		if len(ids) < 2 {
-			t.Errorf("expected >= 2 agent_ids, got %d", len(ids))
-		} else {
-			seen := map[string]bool{}
-			for _, raw := range ids {
-				if s, _ := raw.(string); s != "" {
-					seen[s] = true
-				}
-			}
-			if len(seen) < 2 {
-				t.Errorf("expected >= 2 distinct agent_ids, got %v", seen)
-			}
-		}
-		// Every reported status should be "running" (the literal returned by
-		// ExecuteAgent). If the LLM hallucinated, this catches it.
-		for _, raw := range statuses {
-			if s, _ := raw.(string); s != "" && s != "running" {
-				t.Errorf("unexpected status %q (expected \"running\")", s)
-			}
+		if strings.TrimSpace(answer) == "" {
+			t.Error("the coordinator produced no answer of its own after the refusal")
 		}
 		break
+	}
+	if !sawOutput {
+		t.Error("no coordinator node_finished event carried an output map: the refusal-reporting half of this witness was never checked")
 	}
 
 	metrics, mErr := benchmark.CollectMetrics(context.Background(), s, runID, "live-claw-subagents", "")

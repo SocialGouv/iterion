@@ -886,14 +886,15 @@ agent campaign:
   system: campaign_system
   user: campaign_user
   capabilities: [board.read, board.create]
-  ## ultracode (on opus-4-8) hands the campaign the `agent` subagent
-  ## tool + the orchestration prerogative — so it can fan out its own
-  ## sub-auditors across the corpus, EXACTLY as a native Claude Code
-  ## session does. A single agent (any prompt) self-scopes to the
-  ## obvious docs and misses the long tail; a 3-way live benchmark
-  ## (2026-07-23) showed the only run that reached the full corpus —
-  ## bot READMEs + cloud + studio — was the one that DECOMPOSED. This
-  ## is coverage via the agent's own judgment, not engine fan-out.
+  ## ultracode hands the campaign the orchestration prerogative: a single
+  ## agent (any prompt) self-scopes to the obvious docs and misses the long
+  ## tail; a 3-way live benchmark (2026-07-23) showed the only run that
+  ## reached the full corpus — bot READMEs + cloud + studio — was the one
+  ## that DECOMPOSED. Coverage via the agent's own judgment, not engine
+  ## fan-out. The `agent` subagent tool carries the fan-out on the default
+  ## claude_code route only: on `--var llm_backend=claw` every call is
+  ## typed-refused (C159, #1940) and the campaign decomposes within itself,
+  ## which the ultracode grant tells it to do.
   reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
   interaction: human
 

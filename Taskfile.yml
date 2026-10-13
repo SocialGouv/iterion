@@ -246,6 +246,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_ClawBuiltinTools -timeout 15m ./e2e/...
 
+  test:live:claw-subagents:
+    desc: Run the claw subagent-refusal live e2e test — an `agent` call with no subagent runner wired comes back as a typed tool error and the node still finishes (requires ANTHROPIC_API_KEY; ~$0.02/run on haiku)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_Lite_ClawSubagents -timeout 10m ./e2e/...
+
   test:live:claw-reasoning:
     desc: Run the reasoning_effort propagation live e2e test (requires OPENAI_API_KEY)
     cmds:

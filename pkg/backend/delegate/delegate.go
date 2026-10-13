@@ -17,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -70,6 +71,15 @@ const asyncInteractionSystemInstruction = "\n\n[ASYNC QUESTIONS]\n" +
 // The section is backend-neutral: HOW a subagent returns its report is the
 // backend's to state (claude_code appends headlessSubagentRule to every spawn
 // that keeps the tool, ultracode or not).
+//
+// A system prompt outranks a tool description, so the grant also has to say
+// what a REFUSED `agent` tool means: on claw the tool registers and every call
+// earns the typed capability refusal (toolcatalog.ClawRefusesBuiltin), and a
+// grant that orders the dispatch anyway buys one hard error per subagent per
+// stage. The clause is conditional on what the TOOL answers, never a claim
+// about the serving backend — this one constant also reaches claude_code,
+// where the delegation works — and it quotes the refusal's own headline so
+// neither side can be reworded alone.
 // See platform.claude.com/docs/en/build-with-claude/mid-conversation-effort-example.
 const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"Ultracode mode is on: optimize for the most exhaustive, correct result, " +
@@ -80,6 +90,12 @@ const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"before acting on them. Work solo only on trivial or inherently sequential " +
 	"steps. This consent stands for the whole task; you need not ask before " +
 	"spawning a subagent.\n\n" +
+	"Where the `agent` tool answers that spawning a sub-agent is " +
+	toolcatalog.ClawRefusedToolHeadline + ", that refusal is final: every call " +
+	"returns it, so do not retry it and never wait on a sub-agent that was " +
+	"never started. Keep the decomposition and run the parts yourself in this " +
+	"thread, in the order you would have dispatched them, and say in your " +
+	"result which parts you ran solo.\n\n" +
 	"Orchestration mechanics:\n" +
 	"- Batch by stage: subagents launched together in ONE message run " +
 	"concurrently. Put every " +

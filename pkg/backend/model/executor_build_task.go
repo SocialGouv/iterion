@@ -1924,9 +1924,12 @@ func applyResumeContinuity(task *delegate.Task, input map[string]any) {
 // Every name added here must be one iterion registers — the node's list is
 // resolved against the registry and an unknown name is an error, not a skip,
 // so a name granted without a registration kills the node at dispatch.
-// claw-code-go's own `workflow` tool is not among them: iterion builds its
-// own registry and registers `agent` alone — today in claw's metadata-only
-// form, since no host wires a subagent runner into it.
+// claw-code-go's own `workflow` tool is not among them: iterion builds its own
+// registry and registers `agent` alone. Until a host wires a subagent runner,
+// calling it earns the typed capability refusal naming claude_code's native
+// Agent tool (legacy name Task) as the way out
+// (pkg/backend/tool.RegisterClawSubagents) — the grant stands so the model is
+// told why the delegation it was invited to make cannot happen.
 func withClawOrchestrationTools(tools []string) []string {
 	return ensureToolPresent(tools, "agent")
 }

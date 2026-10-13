@@ -1042,10 +1042,10 @@ across the channel.
 >   `file_edit`, `notebook_edit`, `glob`, `grep`, `workspace_grep`,
 >   `skill`, `read_image`, `web_fetch`, `remote_trigger`,
 >   `send_user_message`, `sleep`, `structured_output`, and `agent` (the
->   runner registers claw's agent tool in the container — the same
->   metadata-only form as an unsandboxed node gets, which starts no child
->   conversation). A missing local registration is a fatal runner error,
->   never a proxy.
+>   runner registers claw's agent tool in the container — and, with no
+>   subagent runner wired, it refuses every call with the same typed
+>   capability refusal an unsandboxed node gets, C159). A missing local
+>   registration is a fatal runner error, never a proxy.
 > - **launcher** — launcher-owned state, run with the launcher's process:
 >   `ask_user` and the async pair, every `mcp.*` / `mcp_*` / `mcp__*`
 >   tool, `list_mcp_resources`, `read_mcp_resource`, `mcp_auth`, the

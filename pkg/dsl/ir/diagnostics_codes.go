@@ -81,7 +81,8 @@ const (
 	// Review-gate diagnostics (interaction: review).
 	DiagReviewNeedsWorktree DiagCode = "C100" // interaction: review without worktree: auto — nothing to merge (error)
 	DiagReviewURLUnknownRef DiagCode = "C101" // review_url references an output node that does not exist (warning)
-	// C156 is allocated from the free C156-C159 band: C100/C101 above and the
+	// C156 is allocated from the free C156-C158 band (C159 is taken, by
+	// DiagToolRefusedOnClaw in validate_tools.go): C100/C101 above and the
 	// enum-value errors around them leave no contiguous room. Same shape as
 	// C142 (worktree:): an unknown value used to read as the DEFAULT
 	// (human_required / squash), silently replacing the author's explicit

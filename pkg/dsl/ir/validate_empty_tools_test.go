@@ -148,3 +148,28 @@ func TestTheLaunchPickerDisclosesTheRouteThatNeverReceivesTheToolList(t *testing
 		}
 	}
 }
+
+// TestC270DoesNotAdvertiseARefusedSpawnerAsACapability: the claw arm lists what
+// the re-populated list unlocks, the `agent` spawner among them — and every
+// call to `agent` on claw earns a typed capability refusal (C159, #1940). An
+// author reading that their node "unlocks" a spawner would drop one of the two
+// declarations to avoid a capability the engine never serves, so the message
+// says which of the appends it names is refused.
+func TestC270DoesNotAdvertiseARefusedSpawnerAsACapability(t *testing.T) {
+	r := compileSrc(t, emptyToolsBotWith("claw", "", "  interaction: human\n"))
+	var msg string
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagEmptyToolsNotEnforced {
+			msg = d.Message
+		}
+	}
+	const spawner = "`agent`"
+	i := strings.Index(msg, spawner)
+	if i < 0 {
+		t.Fatalf("the message no longer names the spawner; this test is about HOW it names it: %q", msg)
+	}
+	if !strings.Contains(msg[i:], string(DiagToolRefusedOnClaw)) {
+		t.Errorf("C270 names the `agent` spawner as unlocked without saying every call to it is refused on claw (%s): %q",
+			DiagToolRefusedOnClaw, msg)
+	}
+}
