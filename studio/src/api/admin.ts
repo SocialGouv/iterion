@@ -51,9 +51,15 @@ export interface AdminUserTeamView {
   status?: string;
   personal?: boolean;
   joined_at?: string;
-  // A team grant with no matching org membership. The invariant says it
-  // cannot happen; when it does, this is the row to act on.
+  // A team grant with no matching org membership — the fact, whatever the
+  // role. For a role that is mirrored up to one the invariant says it cannot
+  // happen, and this is the row to act on; `off_ladder` says when the
+  // missing boundary is the sanctioned state instead.
   orphan_grant?: boolean;
+  // The grant's role is mirrored up to no org membership at all
+  // (config_editor): on its own an ordinary grant, next to `orphan_grant`
+  // the reason the boundary is missing.
+  off_ladder?: boolean;
   // A grant whose team row is gone — a different drift, kept apart so the
   // console names the one it actually found.
   missing_team?: boolean;

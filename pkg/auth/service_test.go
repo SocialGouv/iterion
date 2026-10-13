@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -348,4 +349,291 @@ func TestEveryUserWriteMovesUpdatedAt(t *testing.T) {
 	if afterFailed.LastLoginAt == nil || !afterFailed.LastLoginAt.Equal(*afterLogin.LastLoginAt) {
 		t.Errorf("last_login_at after a FAILED sign-in = %v, want %v unchanged", afterFailed.LastLoginAt, afterLogin.LastLoginAt)
 	}
+}
+
+// orgMirrorFailStore fails the org-membership half of an accept, which is
+// the half the accept writes SECOND.
+type orgMirrorFailStore struct {
+	identity.Store
+}
+
+func (s *orgMirrorFailStore) UpsertOrgMembership(ctx context.Context, om identity.OrgMembership) error {
+	return errors.New("identity: upsert org membership: connection reset by peer")
+}
+
+// teamGrantFailStore fails the team-grant half instead.
+type teamGrantFailStore struct {
+	identity.Store
+	userID, teamID string
+}
+
+func (s *teamGrantFailStore) UpsertMembership(ctx context.Context, mb identity.Membership) error {
+	if mb.UserID == s.userID && mb.TeamID == s.teamID {
+		return errors.New("identity: upsert membership: connection reset by peer")
+	}
+	return s.Store.UpsertMembership(ctx, mb)
+}
+
+// An accept writes two rows with no transaction behind them, so their ORDER
+// decides what a failure between them leaves standing. A team grant written
+// first and left behind is live access to a team of an org the holder is not
+// a member of — the state the server compensates for in
+// handlePutTeamMember/handleRemoveOrgMember, and the one
+// GET /api/admin/users/{id} reports as orphan_grant. An org membership left
+// behind instead is a member of an org with no team: org-scoped READ (the
+// roster, the settings, the usage and the team and SSO-provider lists) and
+// no team access — the lesser of the two states, witnessed in pkg/server by
+// TestOrgMembership_withNoTeamGrantConfersOrgScopedReadOnly. The SSO path
+// (grantMembership) already writes the mirror first.
+func TestAcceptInvitation_anOrgMirrorThatFailsLeavesNoTeamGrant(t *testing.T) {
+	ctx := context.Background()
+
+	seed := func(t *testing.T, inviteeEmail string) (*Service, identity.Store, string) {
+		t.Helper()
+		svc := newTestService(t, SignupInviteOnly)
+		real := svc.store
+		admin, _, err := svc.CreateUserAndPersonalTeam(ctx, "admin@example.com", "Admin", "correcthorse", true, identity.UserStatusActive)
+		if err != nil {
+			t.Fatalf("bootstrap admin: %v", err)
+		}
+		org, err := real.CreateOrg(ctx, identity.Org{ID: "o1", Name: "o1", Slug: "o1", CreatedAt: time.Now()})
+		if err != nil {
+			t.Fatalf("create org: %v", err)
+		}
+		team, err := real.CreateTeam(ctx, identity.Team{ID: "t1", Name: "t1", Slug: "t1", OrgID: org.ID, CreatedAt: time.Now()})
+		if err != nil {
+			t.Fatalf("create team: %v", err)
+		}
+		tok, _, err := svc.CreateInvitation(ctx, team.ID, inviteeEmail, identity.RoleMember, admin.ID)
+		if err != nil {
+			t.Fatalf("CreateInvitation: %v", err)
+		}
+		return svc, real, tok
+	}
+
+	t.Run("an account that already exists", func(t *testing.T) {
+		svc, real, tok := seed(t, "invitee@example.com")
+		invitee, _, err := svc.CreateUserAndPersonalTeam(ctx, "invitee@example.com", "Invitee", "correcthorse", false, identity.UserStatusActive)
+		if err != nil {
+			t.Fatalf("create invitee: %v", err)
+		}
+		svc.SetStoreForTest(&orgMirrorFailStore{Store: real})
+
+		if _, err := svc.AcceptInvitationForExistingUser(ctx, invitee.ID, tok); err == nil {
+			t.Fatal("the accept reported success although the org mirror failed")
+		}
+		if om, err := real.GetOrgMembership(ctx, invitee.ID, "o1"); err == nil {
+			t.Fatalf("org membership %+v landed — then this is not the scenario the test describes", om)
+		}
+		if mb, err := real.GetMembership(ctx, invitee.ID, "t1"); err == nil {
+			t.Errorf("team grant %+v stands with no org membership behind it — the accept wrote the grant before its boundary: %+v", mb, mb.Role)
+		}
+		// And what the claim-first order costs, on the path that pays it:
+		// the token is spent, so this accept cannot be retried. That is the
+		// fail-closed half of making the invitation row the one write an
+		// off-boarding can refuse — the invitee asks for another invitation.
+		if _, err := svc.AcceptInvitationForExistingUser(ctx, invitee.ID, tok); !errors.Is(err, identity.ErrInvitationUsed) {
+			t.Errorf("a retry of the accept whose mirror failed: %v, want ErrInvitationUsed — the claim is its first write", err)
+		}
+	})
+
+	// The other order's own failure, which is what makes this one the right
+	// way round: the grant write fails and the boundary it sits inside is
+	// already there, so the state left behind is an org member with no team —
+	// nothing the org roster does not already show.
+	t.Run("the grant write is the half that fails", func(t *testing.T) {
+		svc, real, tok := seed(t, "invitee@example.com")
+		invitee, _, err := svc.CreateUserAndPersonalTeam(ctx, "invitee@example.com", "Invitee", "correcthorse", false, identity.UserStatusActive)
+		if err != nil {
+			t.Fatalf("create invitee: %v", err)
+		}
+		svc.SetStoreForTest(&teamGrantFailStore{Store: real, userID: invitee.ID, teamID: "t1"})
+
+		if _, err := svc.AcceptInvitationForExistingUser(ctx, invitee.ID, tok); err == nil {
+			t.Fatal("the accept reported success although the team grant failed")
+		}
+		if mb, err := real.GetMembership(ctx, invitee.ID, "t1"); err == nil {
+			t.Fatalf("team grant %+v landed — then this is not the scenario the test describes", mb)
+		}
+		if _, err := real.GetOrgMembership(ctx, invitee.ID, "o1"); err != nil {
+			t.Errorf("the boundary was not written before the grant, so the failure left neither: %v", err)
+		}
+	})
+
+	t.Run("an account the invitation creates", func(t *testing.T) {
+		svc, real, tok := seed(t, "newbie@example.com")
+		svc.SetStoreForTest(&orgMirrorFailStore{Store: real})
+
+		if _, err := svc.Register(ctx, "newbie@example.com", "correcthorse", "Newbie", tok, "ua", "ip"); err == nil {
+			t.Fatal("the registration reported success although the org mirror failed")
+		}
+		u, err := real.GetUserByEmail(ctx, "newbie@example.com")
+		if err != nil {
+			// The account itself is created before either row; a store that
+			// did not create it leaves no grant to assert on.
+			t.Skipf("the account was not created, so this path writes no grant: %v", err)
+		}
+		if om, err := real.GetOrgMembership(ctx, u.ID, "o1"); err == nil {
+			t.Fatalf("org membership %+v landed — then this is not the scenario the test describes", om)
+		}
+		if mb, err := real.GetMembership(ctx, u.ID, "t1"); err == nil {
+			t.Errorf("team grant %+v stands with no org membership behind it — the accept wrote the grant before its boundary", mb)
+		}
+	})
+}
+
+// callOrderStore records, in order, the writes an accept makes that decide
+// what a failure or a concurrent off-boarding between them leaves standing:
+// the ACCOUNT row a registration creates (not access, and nothing an
+// off-boarding can refuse), the CLAIM of the invitation, the org membership
+// the grant is mirrored up to, and the grant itself.
+type callOrderStore struct {
+	identity.Store
+	calls []string
+}
+
+func (s *callOrderStore) CreateUser(ctx context.Context, u identity.User) (identity.User, error) {
+	s.calls = append(s.calls, "account")
+	return s.Store.CreateUser(ctx, u)
+}
+
+func (s *callOrderStore) UpdateInvitation(ctx context.Context, inv identity.Invitation) error {
+	s.calls = append(s.calls, "claim")
+	return s.Store.UpdateInvitation(ctx, inv)
+}
+
+func (s *callOrderStore) UpsertOrgMembership(ctx context.Context, m identity.OrgMembership) error {
+	s.calls = append(s.calls, "boundary")
+	return s.Store.UpsertOrgMembership(ctx, m)
+}
+
+func (s *callOrderStore) UpsertMembership(ctx context.Context, m identity.Membership) error {
+	s.calls = append(s.calls, "grant")
+	return s.Store.UpsertMembership(ctx, m)
+}
+
+// Both accept paths CLAIM the invitation before they write any access, and
+// the claim is a conditional write in both stores: a token whose invitation
+// an org off-boarding already revoked writes no access at all, where
+// claiming last let an accept that had merely READ the row walk the removed
+// account back into the org and the team (pkg/server
+// TestOrgOffboarding_anAcceptHoldingTheRevokedRowWritesNothing). The order
+// of the two access rows stays boundary-before-grant.
+//
+// On the REGISTRATION path the account row comes before the claim — it is
+// not access, and moving the claim ahead of it would burn the token on a
+// CreateUser failure with no account to show for it — so the order there is
+// account, claim, boundary, grant, and a registration that loses the claim
+// race leaves that account row behind (the subtest below).
+func TestAcceptInvitation_claimsTheInvitationBeforeAnyAccess(t *testing.T) {
+	ctx := context.Background()
+
+	seed := func(t *testing.T, inviteeEmail string) (*Service, *callOrderStore, string) {
+		t.Helper()
+		svc := newTestService(t, SignupInviteOnly)
+		real := svc.store
+		admin, _, err := svc.CreateUserAndPersonalTeam(ctx, "admin@example.com", "Admin", "correcthorse", true, identity.UserStatusActive)
+		if err != nil {
+			t.Fatalf("bootstrap admin: %v", err)
+		}
+		org, err := real.CreateOrg(ctx, identity.Org{ID: "o1", Name: "o1", Slug: "o1", CreatedAt: time.Now()})
+		if err != nil {
+			t.Fatalf("create org: %v", err)
+		}
+		team, err := real.CreateTeam(ctx, identity.Team{ID: "t1", Name: "t1", Slug: "t1", OrgID: org.ID, CreatedAt: time.Now()})
+		if err != nil {
+			t.Fatalf("create team: %v", err)
+		}
+		tok, _, err := svc.CreateInvitation(ctx, team.ID, inviteeEmail, identity.RoleMember, admin.ID)
+		if err != nil {
+			t.Fatalf("CreateInvitation: %v", err)
+		}
+		return svc, &callOrderStore{Store: real}, tok
+	}
+
+	t.Run("an account that already exists", func(t *testing.T) {
+		svc, rec, tok := seed(t, "invitee@example.com")
+		invitee, _, err := svc.CreateUserAndPersonalTeam(ctx, "invitee@example.com", "Invitee", "correcthorse", false, identity.UserStatusActive)
+		if err != nil {
+			t.Fatalf("create invitee: %v", err)
+		}
+		svc.SetStoreForTest(rec)
+		if _, err := svc.AcceptInvitationForExistingUser(ctx, invitee.ID, tok); err != nil {
+			t.Fatalf("accept: %v", err)
+		}
+		const want = "claim,boundary,grant"
+		if got := strings.Join(rec.calls, ","); got != want {
+			t.Errorf("the accept wrote %s, want %s — the claim is the write a revoked invitation refuses", got, want)
+		}
+	})
+
+	t.Run("an account the invitation creates", func(t *testing.T) {
+		svc, rec, tok := seed(t, "newbie@example.com")
+		svc.SetStoreForTest(rec)
+		if _, err := svc.Register(ctx, "newbie@example.com", "correcthorse", "Newbie", tok, "ua", "ip"); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		// The account row is written FIRST here, and it is the one write of
+		// this path the claim does not guard.
+		const want = "account,claim,boundary,grant"
+		if got := strings.Join(rec.calls, ","); got != want {
+			t.Errorf("the registration wrote %s, want %s — the claim is the first ACCESS write, not the first write", got, want)
+		}
+	})
+
+	t.Run("a registration that loses the claim race keeps its account row", func(t *testing.T) {
+		svc, _, tok := seed(t, "newbie@example.com")
+		real := svc.store
+		svc.SetStoreForTest(&revokedClaimStore{Store: real})
+		if _, err := svc.Register(ctx, "newbie@example.com", "correcthorse", "Newbie", tok, "ua", "ip"); !errors.Is(err, ErrInvitationNotFound) {
+			t.Fatalf("a registration whose invitation was revoked under it: %v, want ErrInvitationNotFound", err)
+		}
+		u, err := real.GetUserByEmail(ctx, "newbie@example.com")
+		if err != nil {
+			t.Fatalf("the account row the claim could not guard is gone: %v", err)
+		}
+		if _, err := real.GetMembership(ctx, u.ID, "t1"); err == nil {
+			t.Error("the refused claim still let a team grant land")
+		}
+		if _, err := real.GetOrgMembership(ctx, u.ID, "o1"); err == nil {
+			t.Error("the refused claim still let an org membership land")
+		}
+		// What that row costs the invitee, and why the recovery is a login
+		// rather than a second registration: the address is taken.
+		if _, err := svc.Register(ctx, "newbie@example.com", "correcthorse", "Newbie", tok, "ua", "ip"); !errors.Is(err, identity.ErrEmailAlreadyTaken) {
+			t.Errorf("a second registration on the same address: %v, want ErrEmailAlreadyTaken", err)
+		}
+		// And the recovery itself, executed rather than asserted: the
+		// password the invitee set is on that row, so a login works, and a
+		// fresh invitation to the same address lands both access rows
+		// through the existing-user path.
+		svc.SetStoreForTest(real)
+		if _, err := svc.Login(ctx, "newbie@example.com", "correcthorse", "ua", "ip"); err != nil {
+			t.Fatalf("logging in with the password the lost registration set: %v", err)
+		}
+		next, _, err := svc.CreateInvitation(ctx, "t1", "newbie@example.com", identity.RoleMember, "admin")
+		if err != nil {
+			t.Fatalf("a fresh invitation to the same address: %v", err)
+		}
+		if _, err := svc.AcceptInvitationForExistingUser(ctx, u.ID, next); err != nil {
+			t.Fatalf("accepting it as the existing user: %v", err)
+		}
+		if _, err := real.GetMembership(ctx, u.ID, "t1"); err != nil {
+			t.Errorf("the recovery left no team grant: %v", err)
+		}
+		if _, err := real.GetOrgMembership(ctx, u.ID, "o1"); err != nil {
+			t.Errorf("the recovery left no org membership: %v", err)
+		}
+	})
+}
+
+// revokedClaimStore is the concurrent off-boarding seen from the accept's
+// side: the invitation row is gone by the time the claim reaches it, which
+// both stores answer with ErrNotFound.
+type revokedClaimStore struct {
+	identity.Store
+}
+
+func (s *revokedClaimStore) UpdateInvitation(ctx context.Context, inv identity.Invitation) error {
+	return identity.ErrNotFound
 }

@@ -7369,6 +7369,7 @@ export interface components {
         adminUserTeamView: {
             joined_at?: string;
             missing_team?: boolean;
+            off_ladder?: boolean;
             org_id?: string;
             org_name?: string;
             org_status?: string;

@@ -391,24 +391,229 @@ func (s *Server) handlePutTeamMember(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnprocessableEntity, "user %s is disabled — re-enable the account before granting it a team", u.Email)
 		return
 	}
-	if t.OrgID != "" {
-		if _, err := s.authStore().GetOrgMembership(r.Context(), memberID, t.OrgID); err != nil {
-			if errors.Is(err, identity.ErrNotFound) {
-				httpError(w, http.StatusUnprocessableEntity,
-					"user %s is not a member of this team's organization — add them to the org first (an org membership is the identity boundary a team grant sits inside)", u.Email)
-				return
-			}
-			httpError(w, http.StatusInternalServerError, "resolve org membership: %v", err)
-			return
-		}
+	if !s.requireOrgMembershipForGrant(w, r, t.OrgID, memberID) {
+		return
 	}
 	now := time.Now().UTC()
 	if err := s.authStore().UpsertMembership(r.Context(), identity.Membership{
 		UserID: memberID, TeamID: teamID, Role: role, InvitedBy: id.UserID, JoinedAt: now,
 	}); err != nil {
+		// A write that reports an error may have LANDED: the compensation
+		// owes this path too, and answers before the write error does.
+		if !s.confirmOrgMembershipForGrant(w, r, t.OrgID, teamID, memberID, "placement", grantWriteFailed) {
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	if !s.confirmOrgMembershipForGrant(w, r, t.OrgID, teamID, memberID, "placement", grantWriteAcked) {
 		return
 	}
 	s.auditTenant(r, teamID, "member.added", "member", memberID, map[string]any{"role": string(role), "email": u.Email})
 	writeJSON(w, map[string]any{"user_id": memberID, "team_id": teamID, "role": string(role)})
+}
+
+// grantCompensationTimeout bounds a compensation's store work on a context
+// detached from the request, which has no deadline of its own. The grant
+// guard takes one budget per REPAIR store call — the diagnosis, then the
+// revoke — since a call that spends a shared one is exactly the case where
+// what follows it still has to happen, while the off-boarding's second
+// sweep takes one for its reads and its k writes, since those reads are the
+// repair's input rather than a diagnosis. The delete of the membership row
+// that FOLLOWS that sweep takes its own, for the reason the revoke does: a
+// slow-but-working store would otherwise spend the sweep's budget and turn
+// a complete off-boarding into a 500 naming a state that does not exist.
+const grantCompensationTimeout = 5 * time.Second
+
+// grantSubjectTimeout bounds the LABEL of a refusal — the address its
+// subject answers at — which is not a repair and is not priced like one: it
+// is read once the repair is over, and a store too sick to serve the
+// diagnosis cannot serve the label either, so a repair-sized budget buys the
+// account id grantSubject would have answered with anyway while holding the
+// request for a third budget in series. A store slower than this names the
+// id.
+const grantSubjectTimeout = grantCompensationTimeout / 5
+
+// grantWriteOutcome is what the store ANSWERED to a grant write, which the
+// compensation cannot read back from the row: the two named values make the
+// four call sites of the two writers say which path they are on.
+type grantWriteOutcome bool
+
+const (
+	grantWriteAcked  grantWriteOutcome = true
+	grantWriteFailed grantWriteOutcome = false
+)
+
+// grantNeedsOrgBoundary reports whether writing role as a team grant depends
+// on the target's org membership. A capability OUTSIDE the ladder
+// (config_editor, rank 0) is never mirrored up to one — ADR-078 decision 4,
+// which identity.OrgRoleForTeamRole implements by answering "" and pkg/auth's
+// grantOrgMembershipForTeam by writing nothing, since an org-member row would
+// pass canViewOrg — so the invitation path creates exactly that grant with no
+// boundary behind it, and a write that keeps a grant off the ladder has no
+// boundary to confirm.
+func grantNeedsOrgBoundary(role identity.Role) bool {
+	return identity.OrgRoleForTeamRole(role) != ""
+}
+
+// grantSubject names the account a grant refusal is about: the address its
+// owner answers at, or the account id when the user row cannot be read. The
+// two writers reach the guards with different material in hand — the
+// placement loads the user, a role change has no reason to — and one
+// sentence naming an address on one writer and an opaque id on the other has
+// two meanings. It is a LABEL, never a gate: no write is refused because the
+// row carrying its subject's address could not be read.
+func (s *Server) grantSubject(ctx context.Context, memberID string) string {
+	if u, err := s.authStore().GetUser(ctx, memberID); err == nil && u.Email != "" {
+		return u.Email
+	}
+	return memberID
+}
+
+// requireOrgMembershipForGrant refuses to write a team grant for a user who
+// is not a member of the team's org: that membership is the identity
+// boundary a grant sits inside, and creating it silently here would let a
+// team admin pull a stranger into their org. A grant that already exists
+// without one is the drift `GET /api/admin/users/{id}` reports as
+// `orphan_grant` — named here too, never repaired behind the caller's back.
+// orgID "" is a team with no parent org, which has no boundary to read.
+//
+// It answers the request and returns false when the grant must not be
+// written. Both grant writers call it: the placement
+// (PUT /api/teams/{id}/members/{user_id}) unconditionally, and the role
+// change (PATCH /api/teams/{id}/members/{user_id}) for the roles that have a
+// boundary at all (grantNeedsOrgBoundary).
+func (s *Server) requireOrgMembershipForGrant(w http.ResponseWriter, r *http.Request, orgID, memberID string) bool {
+	if orgID == "" {
+		return true
+	}
+	if _, err := s.authStore().GetOrgMembership(r.Context(), memberID, orgID); err != nil {
+		if errors.Is(err, identity.ErrNotFound) {
+			httpError(w, http.StatusUnprocessableEntity,
+				"user %s is not a member of this team's organization — add them to the org first (an org membership is the identity boundary a team grant sits inside)",
+				s.grantSubject(r.Context(), memberID))
+			return false
+		}
+		httpError(w, http.StatusInternalServerError, "resolve org membership: %v", err)
+		return false
+	}
+	return true
+}
+
+// confirmOrgMembershipForGrant re-reads the org membership AFTER the grant
+// was written and takes the grant back unless that membership is still
+// there. The read that authorized the write is a check taken BEFORE the
+// act, and the two share no transaction: a
+// DELETE /api/orgs/{id}/members/{user_id} landing in between revokes the
+// user's grants and then the membership, leaving the grant written here
+// alive with nothing behind it. A boundary that cannot be re-confirmed is
+// not one, so an unreadable store takes the grant back too and the caller
+// gets an error naming it rather than a success that did not hold. The
+// off-boarding's own second sweep covers the opposite order.
+//
+// Both writers call it on BOTH outcomes of their write. A store that reports
+// an error may have applied it anyway — UpsertMembership is a single
+// UpdateOne, so an ack lost to an expiring deadline or a primary stepdown
+// leaves the grant written and the call failed — and a grant that landed
+// unacknowledged outlives the boundary exactly as a clean one does. There the
+// compensation answers first: the membership being gone is why the write must
+// not stand, where the write error would only send the caller back for the
+// 422 the pre-check now owes them. The price is a revoke that may have had
+// nothing to delete: DeleteMembership cannot tell a grant it removed from one
+// that never landed, and a trail that stayed silent would hide the landed
+// case.
+//
+// wrote is what the store answered, and it decides the UNREADABLE boundary
+// alone. A membership definitively GONE takes the grant back on either
+// outcome: no grant may outlive its boundary, whoever wrote it. A boundary
+// that merely cannot be read takes back an ACKNOWLEDGED write, since nothing
+// certifies the grant this request put there — but not a FAILED one: the
+// store that could not serve the write is the store that cannot serve the
+// read after it (one saturated pool, one stepdown), and revoking on that pair
+// takes back the grant the member already held, which nothing the caller
+// asked for authorizes. The caller then answers its own write error, and the
+// grant that may have landed outside a boundary nobody could read is logged.
+//
+// The re-read and the revoke run on contexts DETACHED from the request: a
+// client that goes away (an abort, a CLI ^C, a proxy read timeout) is the
+// most ordinary reason a membership cannot be re-confirmed, and a revoke
+// that dies with it leaves exactly the grant this guard exists to remove.
+// Each gets a deadline of its own rather than a shared one: a store that
+// answers the re-read only at the deadline (a Mongo stepdown, a saturated
+// pool) is a store the revoke must still be attempted against, and a budget
+// the diagnosis has already spent revokes nothing. The refusal's subject is
+// read last, on a budget sized for a LABEL (grantSubjectTimeout), so it
+// neither delays the repair it describes nor costs what the repair costs. A revoke that fails anyway is logged where it survives the
+// caller, since the response it also names may reach nobody.
+//
+// act names what was in flight ("placement", "role change") for the error.
+// It answers the request and returns false when the grant did not survive.
+func (s *Server) confirmOrgMembershipForGrant(w http.ResponseWriter, r *http.Request, orgID, teamID, memberID, act string, wrote grantWriteOutcome) bool {
+	if orgID == "" {
+		return true
+	}
+	cctx, ccancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
+	defer ccancel()
+	_, err := s.authStore().GetOrgMembership(cctx, memberID, orgID)
+	if err == nil {
+		return true
+	}
+	gone := errors.Is(err, identity.ErrNotFound)
+	if !gone && wrote == grantWriteFailed {
+		if s.logger != nil {
+			s.logger.Error("team grant %s/%s in org %s: the %s failed and the org membership could not be re-confirmed (%v) — a grant that landed unacknowledged would stand with no boundary read to check it",
+				memberID, teamID, orgID, act, err)
+		}
+		return true
+	}
+	status := http.StatusInternalServerError
+	// grant_unwound_ is what separates this revoke from the off-boarding's
+	// own cascade (reason org_member_removed, orgs_routes.go): both delete a
+	// team grant because the org membership went away, but this one also
+	// means a write the caller issued was REFUSED and taken back, which is a
+	// different event to the operator reading GET /api/teams/{id}/audit. The
+	// suffix keeps the two store answers apart: definitively gone, or
+	// unreadable.
+	reasonCode := "grant_unwound_org_membership_unconfirmed"
+	next := "place them in the team again once the organization membership can be read"
+	if gone {
+		status = http.StatusConflict
+		reasonCode = "grant_unwound_org_member_removed"
+		next = "add them to the organization again before placing them in the team"
+	}
+	rctx, rcancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
+	defer rcancel()
+	derr := s.authStore().DeleteMembership(rctx, memberID, teamID)
+	// The subject is resolved AFTER the repair, on a budget of its own: the
+	// diagnosis above may have spent cctx to its deadline — that incident is
+	// why this guard exists — and a label read on a spent budget names an
+	// opaque id, where one on the REQUEST's context has no deadline at all
+	// and would hold the revoke behind a store that cannot answer who the
+	// subject is. That budget is grantSubjectTimeout, not the repair's: the
+	// store that answered neither the re-read nor the revoke would otherwise
+	// hold the request for a third full budget to buy the id the fallback
+	// already has.
+	sctx, scancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantSubjectTimeout)
+	defer scancel()
+	subject := s.grantSubject(sctx, memberID)
+	reason := fmt.Sprintf("could not re-confirm the organization membership of %s: %v", subject, err)
+	if gone {
+		reason = fmt.Sprintf("user %s was removed from this team's organization while the %s was in flight", subject, act)
+	}
+	if derr != nil {
+		if s.logger != nil {
+			// "may stand", as the body says: a delete that answers an error
+			// may have applied it, and DeleteMembership cannot tell that
+			// from one that reached nothing.
+			s.logger.Error("team grant %s/%s may stand with no org membership in %s: %s, and revoking it failed: %v",
+				memberID, teamID, orgID, reason, derr)
+		}
+		httpError(w, http.StatusInternalServerError,
+			"%s — and revoking the team grant just written failed: %v; %s may hold a team grant with no org membership behind it",
+			reason, derr, subject)
+		return false
+	}
+	s.auditTenant(r, teamID, "member.removed", "member", memberID, map[string]any{"reason": reasonCode})
+	httpError(w, status, "%s — the team grant was revoked; %s", reason, next)
+	return false
 }

@@ -3817,6 +3817,9 @@
           "missing_team": {
             "type": "boolean"
           },
+          "off_ladder": {
+            "type": "boolean"
+          },
           "org_id": {
             "type": "string"
           },

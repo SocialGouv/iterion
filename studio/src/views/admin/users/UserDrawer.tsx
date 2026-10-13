@@ -525,10 +525,17 @@ function TeamsSection({
                 <Td className="text-fg-muted">
                   {t.org_name ?? t.org_id ?? "—"}
                   {/* Two drifts, two sentences: naming the wrong one is
-                      worse than naming none. */}
-                  {t.orphan_grant && (
+                      worse than naming none — and a missing org membership
+                      reads differently under a role that is mirrored up to
+                      none at all. */}
+                  {t.orphan_grant && !t.off_ladder && (
                     <div className="text-caption text-danger">
                       no org membership — this grant should not exist
+                    </div>
+                  )}
+                  {t.orphan_grant && t.off_ladder && (
+                    <div className="text-caption text-fg-muted">
+                      no org membership — expected for this team-only role
                     </div>
                   )}
                   {t.missing_team && (

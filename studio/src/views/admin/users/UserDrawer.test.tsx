@@ -152,6 +152,36 @@ describe("UserDrawer", () => {
     expect(await screen.findByText(/this grant should not exist/i)).toBeTruthy();
   });
 
+  // The same missing boundary under a role that is mirrored up to no org
+  // membership at all (config_editor, ADR-078): the row still shows — an
+  // operator looking for the access an account holds needs it — but it is
+  // not the drift to repair.
+  it("reads an off-ladder grant's missing org membership as expected", async () => {
+    getAdminUser.mockResolvedValue(
+      detail({
+        orgs: [],
+        teams: [
+          {
+            team_id: "t9",
+            team_name: "Configs",
+            team_slug: "configs",
+            org_id: "o9",
+            org_name: "Nine",
+            role: "config_editor",
+            orphan_grant: true,
+            off_ladder: true,
+          },
+        ],
+      }),
+    );
+    renderDrawer();
+
+    expect(
+      await screen.findByText(/expected for this team-only role/i),
+    ).toBeTruthy();
+    expect(screen.queryByText(/this grant should not exist/i)).toBeNull();
+  });
+
   // The server refuses a team grant for a user outside the team's org
   // (422). Rather than surface that refusal, the picker cannot express it:
   // with no org membership there is no team to pick, and the drawer says

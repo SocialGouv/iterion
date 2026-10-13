@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -273,26 +275,243 @@ func (s *Server) handleRemoveOrgMember(w http.ResponseWriter, r *http.Request) {
 	}
 	// Cascade: removing a user from the org also revokes their access to
 	// every team within it (you cannot hold a team grant without an org
-	// membership). Any failure aborts BEFORE the org membership is touched,
-	// so the member stays intact and the admin retries — never a half-removed
-	// member still holding team grants.
-	teams, err := s.authStore().ListTeamsByOrg(r.Context(), orgID)
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "list org teams: %v", err)
+	// membership) — the grants they hold and the pending invitations that
+	// would re-create them. A failure of the FIRST pass aborts before the
+	// org membership is touched, so the member keeps it — but the pass
+	// revokes row by row with no transaction behind it, so what it got
+	// through stays revoked and the member is PARTIALLY off-boarded, which
+	// is what its error has to say. A failure of the SECOND leaves the
+	// member removed — the last delete below runs on that path too, so the
+	// membership row is taken either way — and possibly still holding
+	// access written inside the window. A failure of the LAST delete of the
+	// membership row leaves them an org member again if an accept or a
+	// placement wrote it back, and an answer that meets both failures names
+	// both. Both passes and both deletes are idempotent, and the cascade
+	// acts on the id the path names whether or not an account answers to
+	// it, so re-issuing the removal finishes whichever one stopped.
+	if err := s.revokeOrgTeamAccess(r.Context(), r, orgID, memberID); err != nil {
+		// Said where it survives the caller, as the detached tail's two
+		// failures are: this exit and the next run on the REQUEST's context,
+		// so a client that went away is the ordinary way they are reached —
+		// and the body is then the only account of a half-off-boarded
+		// member. No audit row covers them either: org_member.removed is
+		// written once the membership row is gone.
+		if s.logger != nil {
+			s.logger.Error("org %s: revoking the team access of %s failed: %v — their org membership stands and the grants and invitations revoked before the failure stay revoked, so they are partially off-boarded; re-issue the removal",
+				orgID, memberID, err)
+		}
+		httpError(w, http.StatusInternalServerError,
+			"revoking the team access of %s in org %s failed: %s — their org membership stands, and the team grants and pending invitations revoked before the failure stay revoked (each one named in its team's audit trail); re-issue the removal to finish it",
+			memberID, orgID, err.Error())
 		return
 	}
-	for _, t := range teams {
-		if err := s.authStore().DeleteMembership(r.Context(), memberID, t.ID); err != nil {
-			httpError(w, http.StatusInternalServerError, "revoke team %s membership: %v", t.ID, err)
-			return
-		}
-	}
 	if err := s.authStore().DeleteOrgMembership(r.Context(), memberID, orgID); err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		// The exit between the two passes, and the one that reads as "nothing
+		// happened" unless it says otherwise: the first pass went through, so
+		// the grants it found are revoked, and DeleteOne answers nil when
+		// nothing matched — an error here can also be a delete whose ack was
+		// lost. Re-issuing settles both halves.
+		//
+		// The invitation half carries the condition the pass itself has: an
+		// invitation names an ADDRESS, so a target whose account row cannot
+		// be read has none to select by and that half is skipped
+		// (revokeOrgTeamAccess). A body that promised it outright would send
+		// the operator who re-issues away from a live invitation.
+		if s.logger != nil {
+			s.logger.Error("org %s: removing the org membership of %s failed: %v — their team grants are revoked and the membership row may or may not be gone; re-issue the removal",
+				orgID, memberID, err)
+		}
+		httpError(w, mapAuthErrorStatus(err),
+			"removing the org membership of %s in org %s failed: %s — their team grants in this org are revoked (and the pending invitations addressed to them, where their account row named an address), and the membership row may or may not be gone; re-issue the removal to finish it",
+			memberID, orgID, err.Error())
 		return
 	}
 	s.auditOrg(r, orgID, "org_member.removed", "member", memberID, nil)
-	w.WriteHeader(http.StatusNoContent)
+	// Second pass, now that the membership is gone: a placement
+	// (PUT /api/teams/{id}/members/{user_id}) or a role change
+	// (PATCH …/members/{user_id}) that read the membership while it was
+	// still live can write its grant after the sweep above, and a team admin
+	// can mint an invitation in the same window; none of those handlers
+	// shares a transaction with this one. Sweeping again is what such a row
+	// meets; the grant writers' own re-read covers the opposite order.
+	//
+	// It runs on a context detached from the request: the member row is
+	// already gone, so a client that goes away here would otherwise leave
+	// exactly the access this pass exists to revoke.
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
+	defer cancel()
+	sweepErr := s.revokeOrgTeamAccess(cctx, r, orgID, memberID)
+	if sweepErr != nil && s.logger != nil {
+		s.logger.Error("org %s: %s was removed but re-sweeping their team access failed: %v — they may still hold a grant or a pending invitation in this org",
+			orgID, memberID, sweepErr)
+	}
+	// The boundary row itself, once more and last: an accept whose
+	// invitation this removal revoked may have CLAIMED it first (pkg/auth
+	// claimInvitation) and written the org membership back afterwards, and
+	// nothing orders that write against the sweep above. Deleting it again
+	// takes such a row — and, being blind to who wrote it, any membership a
+	// placement (PUT /api/orgs/{id}/members/{user_id}) landed inside the
+	// window too, which answers 200 and leaves nothing behind.
+	//
+	// It runs whether or not the sweep above succeeded: the boundary row is
+	// the one residual a failed sweep can still have its caller take, it is
+	// what makes that failure's own "was removed" true, and the state it
+	// would otherwise leave is the most invisible of them all — an org
+	// member again, reading the org, with no drift flag on the grant since
+	// the boundary is back.
+	//
+	// What it bounds is the WINDOW, not the race: an accept that claimed
+	// before the first sweep and lands BOTH its access writes after this
+	// delete keeps the grant and the boundary, and orphan_grant stays quiet
+	// because the boundary is there — re-issuing the removal is the repair,
+	// and closing it takes a conditional boundary write (a pkg/identity
+	// seam) rather than one more sweep.
+	//
+	// It gets its OWN budget: the sweep above may have spent the one it
+	// would otherwise share, and a repair that still has to happen is
+	// exactly the call a spent budget must not kill
+	// (grantCompensationTimeout). No audit line: DeleteOne answers nil
+	// whether it took a resurrected row or found nothing, so a line here
+	// would name an event this call cannot see.
+	lctx, lcancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
+	defer lcancel()
+	lastErr := s.authStore().DeleteOrgMembership(lctx, memberID, orgID)
+	if lastErr != nil && s.logger != nil {
+		s.logger.Error("org %s: %s was removed but re-deleting their org membership failed: %v — an org membership written inside the window may stand",
+			orgID, memberID, lastErr)
+	}
+	switch {
+	case sweepErr != nil && lastErr != nil:
+		httpError(w, http.StatusInternalServerError,
+			"the org membership of %s was removed but re-sweeping their team access failed: %s, and re-deleting their org membership failed too: %s — they may still hold a team grant or a pending invitation in this org, and an org membership written while the removal was in flight may stand, so they would be an org member again; re-issue the removal",
+			memberID, sweepErr.Error(), lastErr.Error())
+	case sweepErr != nil:
+		httpError(w, http.StatusInternalServerError,
+			"the org membership of %s was removed but re-sweeping their team access failed: %s — they may still hold a team grant or a pending invitation in this org; re-issue the removal",
+			memberID, sweepErr.Error())
+	case lastErr != nil:
+		httpError(w, http.StatusInternalServerError,
+			"the team grants of %s in org %s are revoked (with the pending invitations addressed to them, where their account row named an address) but re-deleting their org membership failed: %s — an org membership written while the removal was in flight may stand, and they would be an org member again; re-issue the removal",
+			memberID, orgID, lastErr.Error())
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// revokeOrgTeamAccess deletes everything that gives userID access to a team
+// of orgID — the grants they hold and, where the account's own address can be
+// read, the invitations addressed to them that nobody has accepted yet — and
+// records one audit line per row actually revoked. It re-reads the org's
+// teams, the user's grants and each team's invitations on each call, so a
+// team, a grant or an invitation created since a previous call is covered. Re-running it revokes nothing twice:
+// DeleteMembership answers nil when no row matched, and an invitation some
+// other caller revoked in between is skipped on its ErrNotFound.
+//
+// A pending invitation is access the same way a grant is: accepting one
+// writes the team grant AND, for any role on the org ladder, the org
+// membership that was just deleted (pkg/auth grantOrgMembershipForTeam), so
+// an off-boarding that swept only the grants is undone by one request, with
+// no race to win.
+//
+// The invitations go FIRST in each pass because an accept does the same two
+// things in the same order: it CLAIMS the invitation before it writes any
+// access (pkg/auth claimInvitation). With both sides ordered alike, an
+// accept survives a pass only by claiming before that pass's first delete
+// AND writing its grant after its last — it has to straddle the whole pass,
+// where the opposite order leaves it a single step to slip through. What a
+// straddling accept then meets is the removal's last delete of the
+// membership row: an accept whose boundary write lands BEFORE that delete
+// keeps a grant with no boundary, which the console reports, and one that
+// lands both its writes after it keeps the boundary too — a row the console
+// carries no drift flag on at all (handleRemoveOrgMember).
+//
+// Not-yet-accepted is deliberately wider than the accept paths' "still
+// acceptable": matching their clock here would be a second predicate to keep
+// in step with theirs, and taking a row that was already dead costs nothing.
+// An ACCEPTED invitation stays — it is the trail of how the member joined.
+//
+// The store work runs on ctx, which the caller chooses: a sweep that must
+// outlive the request passes one detached from it. r names the audit actor.
+func (s *Server) revokeOrgTeamAccess(ctx context.Context, r *http.Request, orgID, userID string) error {
+	teams, err := s.authStore().ListTeamsByOrg(ctx, orgID)
+	if err != nil {
+		return fmt.Errorf("list org teams: %w", err)
+	}
+	// An invitation names an ADDRESS, not an account, so the sweep needs the
+	// one this account answers at — and it must read it exactly as the accept
+	// paths do (identity.Invitation.AddressedTo), or it leaves behind rows
+	// they would honour. A user row that cannot be read stops the cascade:
+	// an off-boarding that skipped the invitations on a row that may exist
+	// would report a cascade it did not finish.
+	//
+	// An account that definitively has NO row (ErrNotFound) is the other
+	// case, and it is not an error here: there is no address an invitation
+	// could be addressed to, and no accept could turn one into access for
+	// THIS id — a registration mints a new account id (pkg/auth
+	// registerWithInvitation) and the existing-user accept logs in as this
+	// account. The caller names an id the request path gave it, which this
+	// endpoint neither requires to be a member nor refuses when unknown, so
+	// a fatal read there would leave the grants AND the membership row it
+	// exists to take. The invitation half is skipped, logged, and the rest
+	// of the cascade runs.
+	//
+	// The line reports what this read found, never what the removal will
+	// do: it is emitted before the grant sweep and before any delete of the
+	// membership row, so this pass can still fail with everything standing
+	// — and the caller's own answer is what says which state it left.
+	u, err := s.authStore().GetUser(ctx, userID)
+	addressKnown := err == nil
+	if err != nil && !errors.Is(err, identity.ErrNotFound) {
+		return fmt.Errorf("resolve the address invitations of %s are addressed to: %w", userID, err)
+	}
+	if !addressKnown && s.logger != nil {
+		s.logger.Warn("org %s: %s has no account row, so no address their pending invitations could be addressed to — this sweep skips that half, and any invitation addressed to them stands, listed by GET /api/orgs/%s/invitations",
+			orgID, userID, orgID)
+	}
+	if addressKnown {
+		for _, t := range teams {
+			invs, err := s.authStore().ListInvitationsByTeam(ctx, t.ID)
+			if err != nil {
+				return fmt.Errorf("list team %s invitations: %w", t.ID, err)
+			}
+			for _, inv := range invs {
+				if inv.AcceptedAt != nil || !inv.AddressedTo(u.Email) {
+					continue
+				}
+				if err := s.authStore().DeleteInvitation(ctx, inv.ID); err != nil {
+					// A row another caller revoked between the listing and
+					// here is already in the state this sweep wants, and both
+					// stores say so definitively — where DeleteMembership
+					// cannot tell a grant it removed from one that was never
+					// there. So: no error, and no audit line for a row this
+					// pass did not take.
+					if errors.Is(err, identity.ErrNotFound) {
+						continue
+					}
+					return fmt.Errorf("revoke team %s invitation: %w", t.ID, err)
+				}
+				s.auditTenant(r, t.ID, "invitation.deleted", "invitation", inv.ID, map[string]any{"email": inv.Email, "reason": "org_member_removed"})
+			}
+		}
+	}
+	inOrg := make(map[string]struct{}, len(teams))
+	for _, t := range teams {
+		inOrg[t.ID] = struct{}{}
+	}
+	held, err := s.authStore().ListMembershipsByUser(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("list team grants of %s: %w", userID, err)
+	}
+	for _, mb := range held {
+		if _, ok := inOrg[mb.TeamID]; !ok {
+			continue
+		}
+		if err := s.authStore().DeleteMembership(ctx, userID, mb.TeamID); err != nil {
+			return fmt.Errorf("revoke team %s membership: %w", mb.TeamID, err)
+		}
+		s.auditTenant(r, mb.TeamID, "member.removed", "member", userID, map[string]any{"reason": "org_member_removed"})
+	}
+	return nil
 }
 
 func (s *Server) handleListOrgInvitations(w http.ResponseWriter, r *http.Request) {
