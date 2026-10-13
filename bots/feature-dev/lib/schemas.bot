@@ -47,7 +47,8 @@ schema verify_result:
 
 ## verify_probe output — deterministic "is a usable verify.sh already prepared?"
 ## so verify_build (an LLM agent, ~$0.69/13k tok EVERY pass) is only paid when
-## the script is missing/invalid or on the first pass. fresh=true reuses it.
+## the script is missing/invalid, an empty gate, or on the first pass.
+## fresh=true reuses it.
 ## verify_probe input — the continuation-loop iteration, mapped on the
 ## campaign→verify_probe edge. Loop refs ({{loop.*}}) do NOT resolve inside a
 ## tool command (only input/vars/run do), so the iteration is passed in as node

@@ -709,7 +709,14 @@ prompt verify_system:
      the next pass. Just make `verify.sh` faithfully run the repo's real
      build+test.
   5. If the repo genuinely has no build/test system (pure docs/config), write
-     a script that echoes that and exits 0, and say so.
+     a script that echoes that and exits 0, carry the line
+     `# iterion: no-build-system` in it, and say so. That marker is what keeps
+     an empty verdict from latching: a gate carrying it is re-decided against
+     the tree on every pass, never reused. A `verify.sh` that already carries
+     the line is re-decided, not reused: re-detect the build system from
+     scratch, and drop the line in the same pass the tree gains a real build or
+     test to run. The gate still greens the pass that writes it, so your
+     summary is where a reader learns nothing was verified.
 
   A deterministic tool node RE-RUNS your script and gates the run on its real
   exit code. Output prepared=true once `{{vars.scratch_dir}}/verify.sh` exists
@@ -1147,7 +1154,8 @@ schema verify_result:
 
 ## verify_probe output — deterministic "is a usable verify.sh already prepared?"
 ## so verify_build (an LLM agent, ~$0.69/13k tok EVERY pass) is only paid when
-## the script is missing/invalid or on the first pass. fresh=true reuses it.
+## the script is missing/invalid, an empty gate, or on the first pass.
+## fresh=true reuses it.
 ## verify_probe input — the continuation-loop iteration, mapped on the
 ## campaign→verify_probe edge. Loop refs ({{loop.*}}) do NOT resolve inside a
 ## tool command (only input/vars/run do), so the iteration is passed in as node
@@ -1851,8 +1859,26 @@ print(json.dumps({'honoured': True, 'reason': reason + ' [verified: HEAD unmoved
 ## subprocess: fresh=true when verify.sh exists, is non-empty, and passes
 ## `sh -n` — AND this is not the first pass (iteration>0), so pass 1 of every run
 ## always (re)generates verify.sh for the CURRENT tree, defeating a stale script
-## a prior run may have left in a persistent (non-sandbox) scratch dir. python3
-## for safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
+## a prior run may have left in a persistent (non-sandbox) scratch dir. A
+## RECOGNISED EMPTY GATE is never REUSED: a script carrying the deliberate
+## `# iterion: no-build-system` marker -- recognised on any line carrying both
+## `iterion` and `no build`, case folded and punctuation dropped, each key
+## matched where a word begins so the English word `criterion` does not name
+## the product, because an LLM writes that line from prose and prose deviates;
+## a different product name (`iteration:`) is not it -- or one whose every
+## non-comment line is,
+## WHOLE, a set of shell options, a plain echo or printf, a bare truth or a
+## zero exit, answers fresh=false, so verify_build re-decides against the
+## CURRENT tree every pass and a stale empty verdict cannot latch. The pass
+## that writes one still greens (passed=true, skipped=false): the reuse is what
+## is refused, and the allowlist reads whole lines -- no in-line comment cut,
+## no statement split, quotes read only inside the one closed form it knows,
+## `echo <message>; exit 0` -- so a message carrying another gate character, a
+## message spanning two lines, an exit 0 with a comment after it, and any line
+## that is not, WHOLE, one of the listed forms are real gates, and an UNMARKED
+## hatch written that way is still reused -- even one that runs nothing at all.
+## python3 for safe JSON + no quote clashes (mirrors verify_run); read-only,
+## idempotent.
 tool verify_probe:
   command: `SCRATCH={{vars.scratch_dir}} ITER={{input.iteration}} python3 -I -c "
 import os, subprocess, json
@@ -1862,6 +1888,90 @@ try:
     iteration = int(os.environ.get('ITER', '0') or '0')
 except ValueError:
     iteration = 0
+hatch_marker = 'iterion: no-build-system'
+marker_keys = ('iterion', 'nobuild')
+def marked(src):
+    # Which line of the script DECLARES the empty gate? A line declares it when
+    # a copy of it with the case folded and every non-alphanumeric character
+    # dropped carries both marker_keys, in either order, each one BEGINNING
+    # where a word begins: the prompt and the verify-build skill show the
+    # marker verbatim, but an LLM writes that line from prose, and prose
+    # deviates -- a capital, a missing space, an underscore, a misspelt tail
+    # (no-build-sytem), the halves swapped, and the skill's own paraphrase
+    # (no build/test system) all declare the same thing. Monotone toward
+    # refusal within the words it knows: a wider recogniser can only refuse a
+    # reuse, never green one. THE LIMIT, measured: a key is matched where a
+    # word starts, so the English word criterion does not name the product;
+    # the keys are letters, so a different product name (iteration:) is NOT
+    # the marker and such a script is reused unless the allowlist below
+    # recognises its body; and a line is the unit, so two echoes that spell
+    # the keys apart are not a marker. Returns the line that declared it, so
+    # the refusal states what matched instead of the spelling it prescribes.
+    for raw in src.split(chr(10)):
+        flat = ''
+        starts = []
+        inword = False
+        for ch in raw.lower():
+            if ch.isalnum():
+                if not inword:
+                    starts.append(len(flat))
+                flat = flat + ch
+                inword = True
+            else:
+                inword = False
+        if all([any([flat.startswith(key, at) for at in starts]) for key in marker_keys]):
+            return raw.strip()[:120]
+    return ''
+def is_empty_gate(src):
+    # Is the script's body nothing but no-ops -- the empty gate, whose green
+    # says nothing about the tree? A WHOLE-LINE allowlist, with no shell lexing
+    # at all: blank lines and lines whose first non-blank character is a # are
+    # dropped, and every line left must be, WHOLE, a set of shell options, a
+    # plain echo or printf, a bare truth or a zero exit carrying none of
+    # ; | & > < a substitution or a backtick, or the one closed form the
+    # ticket reports -- echo <message>; exit 0 and nothing else on the line,
+    # the message a quoted run with no substitution in it or a bare run with
+    # no gate character in it. Anything else -- a chained command, a pipeline,
+    # a redirect, a heredoc, anything run through an expansion -- makes the
+    # line a real gate and the reuse stays. Monotone toward reuse by
+    # construction: nothing but a body of lines that cannot RUN a command can
+    # be refused, so this can never green a tree, and its one cost is a
+    # verify_build pass on a script of pure echoes -- which is the hatch. THE
+    # LIMIT: the line is taken whole, so a message carrying another gate
+    # character, a message spanning two lines, an exit 0 with a comment after
+    # it, and any line that is not, WHOLE, one of these forms are real gates,
+    # and an UNMARKED hatch written that way is still reused -- even one that
+    # runs nothing at all; the marker above is what decides the hatch the
+    # prompt and the verify-build skill prescribe. re is imported here so the
+    # whole decision ships inside the region the five carriers hold identical.
+    import re
+    nl = chr(10)
+    dq = chr(34)
+    sq = chr(39)
+    sub = chr(36)
+    tick = chr(96)
+    gate_chars = (';', '|', '&', '>', '<', sub + '(', tick)
+    blank = '[ ' + chr(9) + ']'
+    message = ('(?:' + dq + '[^' + dq + sub + tick + ']*' + dq +
+               '|' + sq + '[^' + sq + ']*' + sq +
+               '|[^;|&<>' + sub + tick + sq + dq + ']+)')
+    echo_then_exit = re.compile('echo' + blank + '+' + message +
+                                blank + '*;' + blank + '*exit(?:' + blank + '+0+)?')
+    for raw in src.split(nl):
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        if echo_then_exit.fullmatch(line):
+            continue
+        if [bad for bad in gate_chars if bad in line]:
+            return False
+        words = line.split()
+        if words[0] in ('set', 'echo', 'printf'):
+            continue
+        if words in ([':'], ['true'], ['exit'], ['exit', '0']):
+            continue
+        return False
+    return True
 fresh = False
 if iteration <= 0:
     reason = 'first pass of this run: (re)generate verify.sh for the current tree'
@@ -1871,8 +1981,21 @@ elif os.path.getsize(script) == 0:
     reason = 'verify.sh is empty'
 else:
     chk = subprocess.run(['sh', '-n', script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    src = ''
+    read_error = ''
+    try:
+        src = open(script, encoding='utf-8-sig', errors='replace', newline='').read()
+    except OSError as exc:
+        read_error = str(exc)
+    declared = marked(src)
     if chk.returncode != 0:
         reason = 'verify.sh failed the sh -n syntax check: ' + (chk.stdout or '')[-300:]
+    elif read_error:
+        reason = 'verify.sh cannot be read, so reuse cannot be decided: ' + read_error
+    elif declared:
+        reason = 'verify.sh declares an empty gate on a line of its own (' + declared + '): its author declared this tree had nothing to build, and an empty gate is re-decided against the current tree every pass, never reused -- drop that line once there is something to build'
+    elif is_empty_gate(src):
+        reason = 'verify.sh runs only no-ops, line by line (an empty gate, marked or not): re-decide the build gate against the current tree'
     else:
         fresh = True
         reason = 'verify.sh present and valid; reuse it (skip verify_build)'
@@ -1897,7 +2020,7 @@ except OSError:
     pass
 script = os.path.join(scratch, 'verify.sh')
 if not os.path.exists(script):
-    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 6, 'log_tail': 'NO VERIFY SCRIPT: verify_build produced no verify.sh in the scratch dir, so the build/test gate never ran. REFUSED, not counted as a pass: a gate that did not run cannot certify, and an unattended merge must not rest on one. Write the script -- that is the job of verify_build. If this repo genuinely has nothing to build or test, say so by writing a verify.sh that exits 0: an explicit empty gate leaves a reviewable artefact where a missing script leaves nothing. Write it DELIBERATELY -- verify_probe reuses an existing script for the rest of the run, so an empty gate written just to get past this refusal keeps reporting green after a build system appears.'}))
+    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 6, 'log_tail': 'NO VERIFY SCRIPT: verify_build produced no verify.sh in the scratch dir, so the build/test gate never ran. REFUSED, not counted as a pass: a gate that did not run cannot certify, and an unattended merge must not rest on one. Write the script -- that is the job of verify_build. If this repo genuinely has nothing to build or test, say so by writing a verify.sh that exits 0: an explicit empty gate leaves a reviewable artefact where a missing script leaves nothing. Write it DELIBERATELY, and carry the line # iterion: no-build-system in it: verify_probe refuses to reuse a MARKED gate, so the build gate is re-decided against the current tree on every pass and that empty verdict cannot latch. An empty gate written WITHOUT that line may be reused for the rest of the run and keep reporting green after a build system appears, so write the line.'}))
     raise SystemExit(0)
 def sh_uncommented(text):
     # The script and the CI config, read with comments removed -- shared by
@@ -2909,9 +3032,10 @@ workflow branch_improve_loop:
     iteration: "{{loop.continuation_loop.iteration}}"
   }
 
-  ## verify_probe reuses an already-valid verify.sh (skipping the LLM
+  ## verify_probe reuses a verify.sh it reads as a real gate (skipping the LLM
   ## verify_build) on passes 2+; the first pass of every run regenerates it for
-  ## the current tree. Both outgoing edges test the bool `fresh` (C012-exhaustive).
+  ## the current tree, and a marked or recognisably empty gate is re-decided on
+  ## every pass. Both outgoing edges test the bool `fresh` (C012-exhaustive).
   verify_probe -> verify_run when fresh
 
   verify_probe -> verify_build when not fresh

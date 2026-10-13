@@ -67,9 +67,13 @@ route ─ interview ─▶ interviewer ⇄ interview_chat   (Nexie loop, session
   workspace root; the campaign (every pass, every resume) re-reads it
   as the authoritative spec. `app_prompt` is then just the tagline.
 - **First pass verify on a bare tree**: verify_build writes an
-  echo-and-exit-0 script (its skill §5) until the scaffold lands;
-  verify_probe decides regeneration from a build-manifest fingerprint
-  (a sha256 over the workspace's root manifests/lockfiles/build files),
+  echo-and-exit-0 script carrying `# iterion: no-build-system` (its
+  skill §5) until the scaffold lands. That script is an EMPTY GATE: it
+  greens the pass that writes it, and verify_probe refuses to reuse it, so
+  it can never gate a LATER pass of a tree it does not test. For a gate
+  verify_probe reads as real, it decides regeneration from a build-manifest
+  fingerprint (a sha256 over the workspace's root manifests/lockfiles/build
+  files),
   so the gate re-authors the script exactly when the toolchain changes —
   the bare-tree pass 1 (no manifests) and the scaffold landing both
   trigger it, while a reframe that only edits app code reuses the script.

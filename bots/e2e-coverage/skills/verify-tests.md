@@ -85,8 +85,10 @@ POSIX-sh (the gate runs it via `sh`, which may be dash): no `[[ ]]`, no
 `<<<`, no brace expansion, no `((i++))`.
 
 If the repository genuinely has no test system you can plug into, write a
-script that echoes that fact and exits 0, and say so plainly — but for a
-**coverage** bot this is a near-certain sign you should bootstrap the
+script that echoes that fact and exits 0 and say so plainly — carry the line
+`# iterion: no-build-system` in it only when there is nothing to BUILD either,
+which is what that line declares — but for a **coverage** bot this is a
+near-certain sign you should bootstrap the
 repo's first harness using its idiomatic runner (see §2).
 
 ## 4. Run it; fix what fails

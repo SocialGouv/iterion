@@ -328,8 +328,17 @@ Do **not** refactor or change behaviour beyond what is needed to compile and
 pass. Re-run until green.
 
 If the repository genuinely has no build/test system (pure docs/config), write
-a script that echoes that fact and exits 0, and say so plainly in your summary —
-do not invent a build.
+a script that echoes that fact and exits 0, carry the line
+`# iterion: no-build-system` in it, and say so plainly in your summary — do not
+invent a build. The marker is how an empty gate stays honest: where a bot reuses
+an already-authored `verify.sh` to save an LLM pass, the marker refuses that
+reuse, so the gate is re-decided against the current tree every pass and a stale
+empty verdict cannot latch. A `verify.sh` that already carries that line is
+re-decided, not reused: re-detect the build system from scratch, and drop the
+line in the same pass the repo gains a real build or test to run — a gate that
+keeps it pays an LLM pass on every later one. The pass that writes one still
+reports `passed: true` — that green certifies nothing about the tree, so your
+summary is where a reader learns it.
 
 ## Safety — never destroy or recreate version-control state
 

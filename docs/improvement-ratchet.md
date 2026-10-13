@@ -84,7 +84,7 @@ conjunction only ever tightens: none of them can green what the exit code reds.
 | Image | What it names | Where it already lives |
 |---|---|---|
 | **The click** | the deterministic check that locks the turn | `verify_build` writes the repo's real build+test into `verify.sh`; `verify_run` re-runs it and gates on the process exit code |
-| **The keyed connector** | a defect class made structurally impossible to repeat — the notch that only lets the plug in one way | the DSL [diagnostics](references/diagnostics.md) (`C001`–`C199` and `C240`–`C242`, plus the bundle's `C200`–`C234`), [`bots/catalog_universality_test.go`](../bots/catalog_universality_test.go) (greps every catalog bot's var defaults for iterion paths, and its whole source for stack-specific logic), `bots/verify_probe_wiring_test.go` |
+| **The keyed connector** | a defect class made structurally impossible to repeat — the notch that only lets the plug in one way | the DSL [diagnostics](references/diagnostics.md) (`C001`–`C199` and `C240`–`C242`, plus the bundle's `C200`–`C234`), [`bots/catalog_universality_test.go`](../bots/catalog_universality_test.go) (greps every catalog bot's var defaults for iterion paths, and its whole source for stack-specific logic), `bots/verify_probe_wiring_test.go`, [`bots/verify_probe_hatch_test.go`](../bots/verify_probe_hatch_test.go) (the empty gate a reuse pre-check must never adopt as a standing verdict) |
 | **The fuse** | a gate that cuts rather than let damage through | a RED verify gate routes the campaign back with the failure log; the [merge gate](merge-gate.md) posts a status that is a **count**, so a finding cannot be talked past |
 | **Placing protection** | commit each unit as it is verified, so a fall costs one metre and not the wall | the campaign contracts' repeated unit (locate → smallest change → build → test → `git add -A -- ':/' {{run.tree_noise}}` → commit); git *is* the run's durable state, and an interrupted run keeps every committed unit in its preserved worktree |
 | **The logbook** | what a run learned, surviving the run that learned it | the `docs/bot-runs/` bilans (e.g. [whole-improve-loop](bot-runs/whole-improve-loop.md)) — committed and PR-reviewable, unlike the gitignored run artifacts — plus skills maintained inline with the code they describe |
@@ -105,26 +105,51 @@ your head, because each is a place the ratchet slips silently:
   payload to distinguish "no script was written" from "the build went red"; the
   continuation decision needs only `passed`. A repo with genuinely nothing to
   build writes a `verify.sh` that exits 0 — an explicit empty gate leaves a
-  reviewable artefact where a missing script leaves nothing. **That hatch is the
-  gap below, not a way around it.**
-- **The reuse pre-check validates shape, not content**, in four of the five
-  bundles that have one. Read off the compiled IR: a `verify_probe` node exists
-  in **five** of the eleven gate carriers (app-dev, branch-improve-loop,
-  feature-dev, instrument, whole-improve-loop) and in none of the other six. In
-  four of those five it reuses the existing `verify.sh` on size plus `sh -n`, so
-  a script containing `echo ok` passes both and becomes the run's deterministic
-  truth — caught only in a repo whose CI already has a drift gate for
-  `verify_run` to mirror. Measured on exactly those four: an empty hatch written
-  on pass 1 still reports `passed: true, skipped: false` on pass 2 against a tree
-  that does not compile, and `skipped: false` means no reader downstream can tell.
-  **app-dev is the exception**: its probe fingerprints the **26** root-level
-  entries it lists (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml` and
-  their locks, plus `Makefile`, `Taskfile.yml`, `justfile`, `devbox.json`,
-  `flake.nix`, `Dockerfile` …) and forces a re-author when one changes — so a
-  build system that ships any of them, a plain `Makefile` included, does dislodge
-  the hatch there. Only a build system outside that list (CMake, Gradle, Maven,
-  Bazel) does not. The refusal message warns the author, which is not the same as
-  preventing it (#1707).
+  reviewable artefact where a missing script leaves nothing. **The hatch the
+  prescription asks for can no longer LATCH**: the reuse pre-check refuses to
+  reuse a marked or recognisably empty gate, so it cannot gate a LATER pass of a
+  tree it never tested. It is still the verdict of the pass that writes it —
+  measured `passed: true, skipped: false`, the hatch's own echo as the whole
+  log, over a committed CMake application the gate never builds, and
+  `skipped: false` means no reader downstream can tell that green from a real
+  one. The rest of that gap is the bullet below.
+- **The reuse pre-check validates the script, not the tree it was written for.**
+  Read off the compiled IR: a `verify_probe` node exists in **five** of the
+  eleven gate carriers (app-dev, branch-improve-loop, feature-dev, instrument,
+  whole-improve-loop) and in none of the other six, which re-author `verify.sh`
+  on every pass. The PRESCRIBED empty gate is out at all five: a script carrying
+  the deliberate `# iterion: no-build-system` marker — the line the
+  `verify_build` prompt and the `verify-build` skill prescribe, recognised on
+  any line that carries both `iterion` and `no build` with its case folded and
+  its punctuation dropped, each key matched where a word begins, so the
+  deviations prose produces (a capital, an underscore, the misspelling
+  `no-build-sytem`, the halves swapped, the skill's own paraphrase
+  `no build/test system`) are the marker too, while the English word `criterion`
+  does not name the product and a different product name (`iteration:`) is not
+  it either, which leaves that script to the line allowlist, measured
+  `fresh: true` — answers `fresh: false`, and so does one whose every
+  non-comment line is, whole, a set of shell options, a plain echo or printf, a
+  bare truth or a zero exit, or the one closed form the ticket reports,
+  `echo <message>; exit 0` alone on its line;
+  [`bots/verify_probe_hatch_test.go`](../bots/verify_probe_hatch_test.go) runs
+  each of the five real pre-checks against both shapes to hold that. The line
+  allowlist stops there and fails safe toward reuse: it reads whole lines — no
+  in-line comment cut, no statement split, quotes read only inside that closed
+  form — so a message carrying another gate character, a message spanning two
+  lines, an exit 0 with a comment after it, and any line that is not, whole, one
+  of the listed forms are real gates, and an UNMARKED empty gate written that
+  way still latches, even one that runs nothing at all (measured `fresh: true`
+  at all five). What remains beyond it is narrower and
+  real: a `verify.sh` the allowlist takes for a gate is reused on size plus `sh -n`
+  in four of the five, so the toolchain pass 1 captured keeps gating pass 7, and
+  a sub-project landing in a second language is built by neither; that half is
+  caught only in a repo whose CI already has a drift gate for `verify_run` to
+  mirror. **app-dev narrows even that**: its probe
+  fingerprints the **26** root-level entries it lists (`package.json`, `go.mod`,
+  `Cargo.toml`, `pyproject.toml` and their locks, plus `Makefile`,
+  `Taskfile.yml`, `justfile`, `devbox.json`, `flake.nix`, `Dockerfile` …) and
+  forces a re-author when one changes, so only a build system outside that list
+  (CMake, Gradle, Maven, Bazel) can land under a script it reuses.
 - **The merge gate blocks only when six things hold**: the run's
   forge-publish grant (without it the bot posts no status at all), the bot's
   `gate_enabled`, its pinned `gate_context`, the forge's statuses-write

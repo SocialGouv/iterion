@@ -63,8 +63,9 @@ campaign ──▶ verify_build ──▶ verify_run ──▶ gate
 (The diagram elides three deterministic pre-flight probes and the plan
 phase: `workspace_probe` is the entry — see "Precondition" below;
 `verify_probe` sits between `campaign` and `verify_build` — it reuses a
-valid `verify.sh` on passes 2+, skipping the LLM `verify_build`; and
-`forge_auth_probe` sits between `mr_gate` and `finalize_mr` — a ~100ms
+`verify.sh` it reads as a real gate on passes 2+, skipping the LLM
+`verify_build`; and `forge_auth_probe` sits between `mr_gate` and
+`finalize_mr` — a ~100ms
 credential check so the graph only pays the `finalize_mr` agent when a
 push can actually happen.)
 

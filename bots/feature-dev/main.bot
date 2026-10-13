@@ -452,9 +452,10 @@ workflow feature_dev:
     iteration: "{{loop.continuation_loop.iteration}}"
   }
 
-  ## verify_probe reuses an already-valid verify.sh (skipping the LLM
+  ## verify_probe reuses a verify.sh it reads as a real gate (skipping the LLM
   ## verify_build) on passes 2+; the first pass of every run regenerates it for
-  ## the current tree. Both outgoing edges test the bool `fresh` (C012-exhaustive).
+  ## the current tree, and a marked or recognisably empty gate is re-decided on
+  ## every pass. Both outgoing edges test the bool `fresh` (C012-exhaustive).
   verify_probe -> verify_run when fresh
 
   verify_probe -> verify_build when not fresh
