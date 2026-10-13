@@ -125,8 +125,9 @@ The tenancy model (ADR-048) already carries the governance:
   pending queue — nothing is created on the forge — until an org admin
   approves or rejects it. Org admins provision directly. All three
   events (requested / approved / rejected) land in the audit log.
-  Endpoints: `GET/POST /api/orgs/{id}/provision-approvals[…/approve|
-  /reject]`, `GET /api/teams/{id}/provision-approvals`,
+  Endpoints: `GET /api/orgs/{id}/provision-approvals` plus `POST
+  …/{approval_id}/approve` and `…/reject`,
+  `GET /api/teams/{id}/provision-approvals`,
   `GET/PATCH /api/orgs/{id}/settings`. From the terminal:
   `iterion remote orgs settings` and `iterion remote orgs approvals
   [approve|reject <id>]`.
@@ -251,10 +252,12 @@ it: password signup (`registerOpen`) **always** creates a personal org. No
 personal org ⇒ it was not that path. The direct evidence (`password_hash`,
 `oidc_links`) is in Mongo, which is not readable on prod.
 
-One row worth acting on if you ever see it: a team grant marked **"no org
-membership — this grant should not exist"**. The invariant says every team
-grant mirrors up to an org membership; the drawer flags the exception rather
-than smoothing it over.
+One row worth reading closely if you ever see it: a team grant marked **"no
+org membership — this grant should not exist"**. The invariant covers the four
+ladder roles — viewer through owner each mirror up to an org membership — and
+the drawer flags a break rather than smoothing it over. `config_editor` sits
+outside it by design: it mirrors to nothing (ADR-078 — an org-member row would
+hand it the org roster).
 
 ### Moving a repo to another team — what does NOT follow it
 

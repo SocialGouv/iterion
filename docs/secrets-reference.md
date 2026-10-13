@@ -9,6 +9,8 @@ engine-side protection layers (placeholders, sink redaction,
 TLS-MITM egress) live in [secrets.md](secrets.md); this page is about
 **which record stores which value and which run picks it up**.
 
+Diagram: [diagrams/data-model-credentials.md](diagrams/data-model-credentials.md) — the credentials data model (secrets at rest, the sealed bundle, the meters).
+
 ## The six kinds at a glance
 
 | Kind | What it carries | Scope | Resolved at | Source of truth |
@@ -17,7 +19,7 @@ TLS-MITM egress) live in [secrets.md](secrets.md); this page is about
 | **Generic secret** | arbitrary string (forge PAT, deploy key) | team or user | run launch | [pkg/secrets/generic.go](../pkg/secrets/generic.go) |
 | **Bot-secret binding** | policy that names a generic secret for a bot | team only | run launch | [pkg/secrets/bindings.go](../pkg/secrets/bindings.go) + ADR [018](adr/018-bot-secret-binding-egress-enforcement.md) |
 | **File secret** (`as: file`) | secret materialised on disk in the sandbox | engine | per-node exec | [pkg/secrets/files.go](../pkg/secrets/files.go) ([engine layers](secrets.md)) |
-| **OAuth-forfait** | Claude Pro / ChatGPT subscription blob | user only | run launch | [pkg/secrets/oauth.go](../pkg/secrets/oauth.go) |
+| **OAuth-forfait** | Claude Pro / ChatGPT subscription blob | user, team, org tier or platform | run launch | [pkg/secrets/oauth.go](../pkg/secrets/oauth.go) |
 | **Tokens** | bearer credentials (`iwh_` / `iap_` / `iar_`) | varies | every request | [pkg/webhooks/token.go](../pkg/webhooks/token.go) · [pkg/pat/pat.go](../pkg/pat/pat.go) · [pkg/auth/password_reset.go](../pkg/auth/password_reset.go) |
 
 ## BYOK LLM keys
@@ -50,8 +52,13 @@ For each LLM provider the run needs, iterion picks the first match:
 3. `(team, userID, provider)` — first match (creation order).
 4. `(team, "", provider, is_default=true)` — the team's flagged default.
 5. `(team, "", provider)` — first team-scoped match.
-6. (no hit) — the operator's env-var fallback (deployment-wide), or a
-   400 if neither side has a key.
+6. (no hit) — the publisher's walk goes on to its later tiers
+   ([data-model-credentials.md](diagrams/data-model-credentials.md) draws all
+   seven) and its fallback door (`acquireDoorGrant`); past them, the runner pod's ambient env: the run is
+   queued, not refused. A publish-time refusal is opt-in —
+   `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`, or a tenant running under
+   `llm_fallback: none` — and refuses the launch with `NO_LLM_CREDENTIAL`
+   ([cloud-llm-credentials.md](cloud-llm-credentials.md)).
 
 Webhook `key_overrides` is validated up front so a misconfiguration
 fails at create time, not at the first inbound delivery (see
@@ -148,13 +155,26 @@ binding seamlessly.
 
 ## OAuth-forfait
 
-Per-user, per-kind (`claude_code` / `codex`) — the verbatim
-`credentials.json` / `auth.json` the official CLI wrote on a local
-machine
+Per-owner, per-kind (`claude_code` / `codex`), ranked when an owner holds
+several — a `credentials.json` / `auth.json` payload
 ([pkg/secrets/oauth.go](../pkg/secrets/oauth.go)). The publisher
 materialises it just-in-time in a per-run `tmpfs` mount on the runner;
 the user-facing flow is documented in
 [cloud-user.md → OAuth subscriptions](cloud-user.md#4-oauth-subscriptions-claude-promax--chatgpt).
+
+The owner is a user id or one of three reserved keys in the same
+namespace: `org:<team id>` — a team-shared forfait, mutated through
+`/api/teams/{id}/oauth/…` by a team admin
+([pkg/server/oauth_team_routes.go](../pkg/server/oauth_team_routes.go)) —
+`orgtier:<org id>` for the org tier (`/api/orgs/{id}/oauth/…`) and
+`platform:` for the deployment's own (super-admin,
+`/api/admin/llm/oauth/…`). Each is an ordinary record reusing the whole
+store / seal / refresh machinery, and the publisher falls back through
+them in that order after the run owner's personal one, the mutualised pool
+among them
+([pkg/server/cloudpublisher/credential_plan.go](../pkg/server/cloudpublisher/credential_plan.go)). A team mapped to a
+runner pool, or holding `llm_fallback: none`, walks neither the org tier,
+the pool nor the platform.
 
 ToS guard: iterion's in-process `claw` backend refuses to consume the
 Claude Code OAuth-forfait blob ([cloud-admin.md
@@ -203,7 +223,7 @@ intended record so a sealed bundle cannot be silently transplanted:
 |---|---|
 | `api_keys.sealed_secret` | `api_key:<id>` |
 | `generic_secrets.sealed_secret` | `generic_secret:<id>` |
-| `oauth_credentials.sealed_blob` | `oauth:<user>:<kind>` |
+| `oauth_credentials.sealed_payload` | `oauth:<user_id>:<kind>` |
 | `webhook_configs.hmac_secret_sealed` | `webhook_hmac_secret:<webhook_id>` |
 | `run_secrets.sealed_bundle` | `run_secrets:<tenant_id>/<runner_pool>/<run_id>` (records with a `key_id`; the pool segment is empty for shared-fleet runs) — legacy id-less records keep `run_secrets:<run_id>` |
 

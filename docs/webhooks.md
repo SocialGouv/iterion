@@ -25,6 +25,8 @@ Four providers are wired: GitLab (incl. `/revi` re-review command),
 GitHub, Forgejo/Gitea, and a bot-agnostic Generic JSON endpoint
 ([pkg/server/webhooks_routes.go:supportedProviders](../pkg/server/webhooks_routes.go)).
 
+Diagram: [diagrams/data-model-forge-bots.md](diagrams/data-model-forge-bots.md) — the forge and bot data model (connections, repository bindings, the delivery lifecycle).
+
 ## Lifecycle
 
 1. An org admin creates a webhook through the studio (the `Webhooks` tab
@@ -443,7 +445,8 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   trusted — on the static `author_allowlist`, OR
   `author_association` ∈ OWNER/MEMBER/COLLABORATOR (decoded from the
   payload, no API call), OR live `CollaboratorPermission` ≥
-  **`min_author_role`** (gitlab vocabulary, `""` → developer ≡ write;
+  **`min_author_role`** (gitlab vocabulary; no webhook route accepts this
+  field, so the threshold is always its `""` default — developer ≡ write;
   read through the team connection covering the repo when its client
   can serve, else the webhook's `forge_token` binding — the same client
   the command gate resolves). Unknown = untrusted (**fail-closed** —
@@ -919,10 +922,17 @@ Every webhook carries four selection filters plus a bot-agnostic hold gate
   and the audit row carries `wildcard_bots: true`
   ([pkg/server/webhooks_routes.go:normalizeBotScope](../pkg/server/webhooks_routes.go)).
 
-For zero-config forge webhooks (no explicit `default_bot_id`, no single
-bot in scope) iterion auto-selects the **`review-pr`** bot — the same
-default that ships with the Revi catalog
-([pkg/server/webhooks_common.go:defaultWebhookBotReviewPR](../pkg/server/webhooks_common.go)).
+For a forge webhook with no explicit `default_bot_id` and no single bot in
+scope, iterion falls back to a platform **role binding**: the **`reviewer`**
+one — `review-pr`, the default that ships with the Revi catalog — on a
+review-shaped delivery when the webhook carries no bot rules
+(`resolveForgeEventBots`, which logs a WARN naming the bot it picked), and on
+an issue it launches, bot rules or not, the **`implementer`** one first
+when its scope admits it (`selectIssueLabeledBot`). A super-admin re-points a role through
+`PUT /api/admin/settings/bot-roles`, which such a webhook then follows when
+its bot scope admits that bot
+([pkg/server/webhooks_common.go:resolveForgeEventBots](../pkg/server/webhooks_common.go),
+[pkg/server/platform_settings.go:roleBots](../pkg/server/platform_settings.go)).
 The generic webhook deliberately does **not** apply this default — a
 bot-agnostic endpoint must pick deterministically, so missing-bot is a
 400.
@@ -975,9 +985,12 @@ a forge hook is what makes GitHub disable it.
 ## Idempotency
 
 Iterion durably dedupes deliveries via a unique index on
-`(tenant_id, idempotency_key)` — a duplicate insert returns
-`ErrDuplicate` and the handler replies 200 with `{status:"duplicate",
-run_id, delivery_id}` ([pkg/server/webhooks_common.go:insertAndLaunchWebhook](../pkg/server/webhooks_common.go)).
+`idempotency_key` alone — every key it derives hashes the tenant id into its
+own material (a terminal row's random UUID needs none), so the index carries
+no tenant column. A duplicate insert returns
+`ErrDuplicate`, and the single-bot tail replies 200 with `{status:"duplicate",
+run_id, delivery_id}` ([pkg/webhooks/mongo.go:EnsureSchema](../pkg/webhooks/mongo.go),
+[pkg/server/webhooks_common.go:insertAndLaunchWebhook](../pkg/server/webhooks_common.go)).
 The key space is **path-disjoint** so the same event id can't collide
 across paths — most paths carry a literal prefix (`mr|`, `gh|`, `fj|`,
 `generic|`), while the GitLab note path stays disjoint via its
@@ -991,12 +1004,15 @@ across paths — most paths carry a literal prefix (`mr|`, `gh|`, `fj|`,
 | `fj\|` | `(tenant, webhook, project_path, pr_number, head_sha)` | a new push → fresh launch |
 | `generic\|` | `(tenant, webhook, request.idempotency_key OR sha256(body))` | any change in dedup token or body → fresh launch |
 
-Terminal (non-launched) rows — `invalid`, `filtered`, `quota_exceeded`,
-`rate_limited`, `launch_error` — get a **random UUID** as their
-idempotency key so they never collide with the real dedup key
+Rows recorded as terminal without ever being claimed — `invalid`, `filtered`,
+and the `launch_error` rows written as their own audit row rather than a
+claimed delivery — get a **random UUID** as their idempotency key, so they never
+collide with the real dedup key
 ([pkg/server/webhooks_common.go:recordTerminalWebhookDelivery](../pkg/server/webhooks_common.go)).
-A retry of the same upstream event after a transient failure can
-therefore launch successfully.
+A launch whose failure is recorded keeps the real key and turns the row
+`launch_error`: the next
+delivery of the same event re-enters on that row rather than reading as a
+duplicate.
 
 ## Limits + admission
 
@@ -1036,12 +1052,9 @@ statuses ([pkg/webhooks/types.go status constants](../pkg/webhooks/types.go)):
 |---|---|
 | `accepted` | Auth/quota passed, awaiting launch result (intermediate state) |
 | `launched` | Run published to the queue; `run_id` set, `launched_at` stamped |
-| `duplicate` | Same idempotency key replayed — `run_id` of the original launch is returned |
-| `filtered` | The event didn't match `event_allowlist` / `project_allowlist` / `author_allowlist` / `IsReviewable` |
-| `invalid` | Bad payload, missing token, bot not permitted by scope |
-| `rate_limited` | Per-webhook bucket empty |
-| `quota_exceeded` | Per-org or per-webhook monthly call quota exhausted |
-| `launch_error` | The launch-admission gate refused (cost cap / run quota / concurrency / org suspended) OR the launch failed after admission (bot resolution, contribution payload, queue publish). A run row the failed launch had already persisted is flipped to `failed` with `failure_code: LAUNCH_FAILED` by the publisher itself — never left `queued` with no queue message behind it |
+| `filtered` | Refused before any launch — by a selection filter, the hold-label gate, the fork guard or another pre-launch check |
+| `invalid` | Refused as unprocessable — for example a pull-request, issue or generic payload that does not decode, on the generic lane an unnamed bot, on the issue and generic lanes an out-of-scope one, or an event kind the GitLab handler does not take |
+| `launch_error` | The launch-admission gate refused (cost cap / run quota / repo quota / launch rate / concurrency / org suspended, for example) OR the launch failed before or after admission (a PR head that does not resolve, an authorization check, bot resolution, contribution payload, queue publish, the LLM-route resolution, for example). A run row the failed launch had already persisted is flipped to `failed` with `failure_code: LAUNCH_FAILED` by the publisher itself — never left `queued` with no queue message behind it |
 
 Delivery rows never carry the raw payload — only a SHA-256 hash, the
 selected fields (`event_kind`, `event_action`, `project_path`,
@@ -1109,17 +1122,21 @@ enum is `inline|summary`, default `inline`).
 
 ### Other `Config` keys settable through the CRUD API
 
-All live on [pkg/webhooks/types.go:Config](../pkg/webhooks/types.go) and
-are accepted by `POST` / `PATCH`:
+All live on [pkg/webhooks/types.go:Config](../pkg/webhooks/types.go). The
+request struct both routes decode into accepts every key below except
+`operator_launch_vars` and the four `retry_*` keys, which it does not
+declare — and the decode is non-strict, so sending one of those five is
+accepted with the key dropped, never refused
+([pkg/server/webhooks_routes.go:webhookConfigReq](../pkg/server/webhooks_routes.go)):
 
 | Key | Default | Meaning |
 |---|---|---|
 | `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer. It is also the set the publish tail **withdraws from `requested_reviewers` after posting a review** — GitHub never lifts the request itself (the review is posted by `<app_slug>[bot]`, not by the requested account), so without the withdrawal the pastille stays pending and the gesture is not repeatable; read-then-intersect, so a login that is not pending costs no write, and `pull_requests: write` is what it degrades without. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. Also the knob for the [mixed-identity setup](#two-identities) where a webhook rides an App connection for reads and a `forge_token` PAT for writes — list the PAT's login here so both guards recognise the bot's own posts. |
 | `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). The lane is debounced (`ITERION_WEBHOOK_SYNC_DEBOUNCE`, default `3m`): a push volley costs one review of the final head — see the GitHub section above. |
 | `overlap` | *(empty = allow)* | Concurrency policy for runs this webhook launches, keyed on (webhook, subject, bot) — one PR's reviews, not the whole repo's. `allow` / `skip` / `supersede`. **Empty means allow**, not `pkg/schedgate`'s `skip` default: a webhook is event-driven and every delivery has always launched, so the gate applies only when explicitly set. An explicit clear via PATCH (`"overlap": ""`) is normalized to `allow` — enforcement-identical, but readable as a decision, so the gesture survives re-provisioning (stored `""` would read as never-set and the integration's stale value would win). `supersede` is the one worth setting alongside `review_on_sync` — three pushes in two minutes otherwise launch three runs, two of which review dead commits. |
-| `operator_launch_vars` | — | Vars layered **between** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. |
+| `operator_launch_vars` | — | Vars layered **over** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. Written by the integration rather than this API: `launch_vars` on `POST /api/teams/{id}/forge/repo-bots` or `PATCH …/repo-bots/{integration_id}` lands here (the per-repo `gate_enabled` / `gate_context` pins, for example), and a re-provision carries it. |
 | `secret_overrides` | — | Pins a stored secret per workflow-secret name, so several webhooks for the same bot can post under different forge tokens / bot identities. The secret twin of `key_overrides`. |
-| `retry_usage_window`, `retry_max_attempts`, `retry_max_wait`, `retry_jitter` | *(bot manifest, then machine default)* | The launch-surface layer of the [retry policy](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) for a run that dies on an exhausted provider usage window. Only what is set here overrides the layers below. A webhook-launched run is often one an author is waiting on, so a shorter `max_wait` than a nightly's is usually right. |
+| `retry_usage_window`, `retry_max_attempts`, `retry_max_wait`, `retry_jitter` | *(bot manifest, then machine default)* | The launch-surface layer of the [retry policy](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) for a run that dies on an exhausted provider usage window. A stored value overrides the layers below and survives a re-provision, but no webhook route sets one — the webhook request struct declares none of the four — so a webhook-launched run takes its bot manifest's policy and the machine default, clamped by the platform ceiling (`ITERION_CLOUD_RETRY_MAX_ATTEMPTS`, `ITERION_CLOUD_RETRY_MAX_WAIT`). |
 | `forge_base_url` | *(derived)* | Explicit forge base URL for a self-hosted instance. |
 
 `authorized_repliers` / `min_replier_role` gate who may talk back to a

@@ -93,3 +93,28 @@ forge-specific changes tracked separately.
 - Code: `pkg/runner/loop.go` (`injectGitToken`, `prepareRepoWorkspace`),
   `pkg/secrets/files.go` (file-secret MountPath), the SSRF sibling hardening in
   the same clone path (ADR/commit `28a8690e8`).
+
+## Status note (2026-10-13)
+
+No kill-switch exists. `ITERION_RUNNER_FORGE_LEGACY_URL_TOKEN` is read nowhere
+in the module, and nothing else gates the path either: the runner installs the
+credential store on every clone that carries a token, so an operator who
+exports that variable changes nothing.
+
+The mechanism differs from the decision above. The clone authenticates with the
+token in its URL rather than through a transient `GIT_ASKPASS`
+([`injectGitToken`](../../pkg/runner/loop_gitws.go)); then
+[`installGitCredentialStore`](../../pkg/runner/loop_gitws.go) rewrites
+`remote.origin.url` to the clean URL, writes the raw token into
+`<clone>/.git/iterion-credentials` in git's credential-store format (mode 0600,
+under `.git/` so a bot's `git add -A` cannot stage it), and sets
+`credential.helper` to `store --file=<that path>`. `.git/config` therefore
+holds a file path and no credential, but the file it names holds the token
+itself inside the clone — the helper never reads the per-binding `MountPath`.
+That file is also what keeps the credential live:
+[`refreshGitCredentialsLoop`](../../pkg/runner/loop_secrets.go) rewrites it as
+the forge token rotates, and
+[`writeThroughSandboxGitCredential`](../../pkg/runner/sandbox_registry.go)
+carries the rotation into a copy-based sandbox, whose kubernetes driver
+re-points the helper at the pod-local file ([sandbox](../sandbox.md),
+[ADR-082](082-sandbox-by-default.md)).

@@ -4,6 +4,8 @@ This is the model people most often get wrong: **the iterion user who launches
 a bot is NOT who the bot acts as on the forge.** Two completely separate planes
 are at play. This page documents both and how they meet (they barely do).
 
+Diagram: [diagrams/access-control.md](diagrams/access-control.md) — the access-control matrix.
+
 ## TL;DR
 
 - **iterion identity** (your role `viewer | member | admin | owner` in an
@@ -32,8 +34,9 @@ launch runs (member+, enforced by `gateLaunch` in
 the orthogonal `config_editor` capability are refused `member_role_required`;
 the webhook and daemon launchers are exempt by identity kind, having no human
 role to judge; the board and trigger mounts take the same rung on every
-state-changing route), manage integrations / keys / members / SSO
-(`canManageTeam` = admin+, [pkg/server/auth_routes.go](../pkg/server/auth_routes.go)).
+state-changing route), manage integrations / keys / members
+(`canManageTeam`, [pkg/server/auth_authz.go](../pkg/server/auth_authz.go) — admin+
+in the team, an admin/owner of its parent org, or a super-admin).
 It does **not** choose or change any forge credential.
 
 GitHub SSO team-gating populates this plane only: a verified+enabled grant
@@ -48,12 +51,17 @@ reused** for forge writes ([pkg/auth/oidc/github.go](../pkg/auth/oidc/github.go)
 A `forge.Connection` ([pkg/forge/types.go](../pkg/forge/types.go)) is a
 **team-scoped service credential**. Its sealed token is opened
 (`AdminTokenFor`, [pkg/forge/connection_sealer.go](../pkg/forge/connection_sealer.go))
-and re-packaged once as a managed `forge_token` generic secret
-(`ensureManagedSecret`, [pkg/forge/orchestrator.go](../pkg/forge/orchestrator.go)),
-injected into every bot run at `/run/iterion/secrets/forge_token`. The bot's
+and re-packaged as a managed generic secret, created once per
+connection (`ensureManagedSecret`, [pkg/forge/orchestrator.go](../pkg/forge/orchestrator.go)),
+injected into trusted runs — through a bound bot's binding or a launch that pins the connection, for example — at the bot's `forge.secret` name, `forge_token` when it sets none. The bot's
 `gh`/`glab`/git calls authenticate with **that token** — i.e. the **connection's
-identity**. (The managed secret holds the *same token value* as the connection;
-the re-seal only changes the encryption envelope, not the identity.)
+identity**. (For `oauth_app` and `pat` the managed secret holds the *same token
+value* as the connection, the re-seal only changing the encryption envelope. For
+`github_app`, `narrowGitHubAppSecret` tries to mint a **fresh installation
+token** with minimal permissions, scoped to the repos iterion knows for the
+connection — the whole installation while it knows none — and rewrites the
+secret in place, keeping the acting identity; a failed mint leaves the
+stored token.)
 
 ## Who the connection acts as — by kind
 
