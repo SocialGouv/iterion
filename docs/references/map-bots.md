@@ -43,7 +43,6 @@ The bundles under `bots/`, then the skills they carry.
 | `supply-shield` | ⛓️ Shieldy | Global supply-chain MALWARE shield. | 0.1.5 |
 | `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 0.1.5 |
 | `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 2.4.1 |
-| `ultra11y` | 🦮 Ally | Engine-backed WCAG 2.2 AA / RGAA accessibility auditor (read-only), with a pull-request mode. | 0.1.4 |
 | `vuln-watch` | 🛡️ Senti | Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). | 0.1.1 |
 | `whats-next` | 🧭 Nexie | Conversational co-CTO. | 0.3.6 |
 | `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 2.5.1 |
@@ -231,9 +230,6 @@ The pair a model sees before it decides to open the file.
 | `test-coverage` | `test-types` | What each test type means (unit / integration / e2e / property / contract / snapshot / smoke / performance) and how to write +… |
 | `test-coverage` | `verify-build` | Detect and run a repository's OWN build + test so a deterministic gate can confirm the tree actually compiles and passes before… |
 | `test-coverage` | `verify-tests` | Detect and run a repository's OWN test suite (and coverage tool, if any) so a deterministic gate can confirm the new tests… |
-| `ultra11y` | `iterion-board` | How to write to the iterion native kanban board from inside a `.bot` workflow. |
-| `ultra11y` | `ultra11y-adjudication` | The decision protocol for the accessibility criteria a static pass cannot decide: the four verdicts and what each one must carry,… |
-| `ultra11y` | `ultra11y-engine` | How to drive the ultra11y accessibility engine from inside this bot: the division of labour between the static engine and your… |
 | `vuln-watch` | `senti-config` | vuln-watch (Senti) workspace configuration — the config file format (sources, alert policy, sinks, labels), the technology… |
 | `whats-next` | `dogfood-cycle` | The operator's proven ritual for validating a bot by running it for real — launch on a real task, monitor actively, fix BOTH… |
 | `whats-next` | `factory-ops` | Iterion factory operating rules for Nexie — what breaks around a live dispatcher (store-locking, serialization, cost caps,… |
@@ -248,13 +244,6 @@ The pair a model sees before it decides to open the file.
 | `whats-next` | `whats-next` | Operating playbook for Nexie, the conversational co-CTO — recommendation-first board intelligence, ticket curation against code… |
 | `whole-improve-loop` | `forge-mr-create` | How to push the current run's branch and open ONE pull request (merge request on GitLab) on GitHub (gh), GitLab (glab) or… |
 | `whole-improve-loop` | `lang-js-fallow` | Static analysis for JavaScript/TypeScript repos using fallow (dead code, duplication, complexity). |
-| `whole-improve-loop` | `rgaa-audit` | Méthodologie d'audit d'accessibilité RGAA 4.1.2 (106 critères, 13 thèmes, base WCAG 2.1 AA) — workflow d'audit, scoring… |
-| `whole-improve-loop` | `rgaa-criteria-formulaires` | Critères RGAA thème 11 (Formulaires) : étiquettes de champs, regroupements fieldset/legend, intitulés de boutons, gestion des… |
-| `whole-improve-loop` | `rgaa-criteria-images-couleurs` | Critères RGAA thèmes 1-3 (Images, Cadres, Couleurs) : alternatives textuelles d'images, titres d'iframe, information par la… |
-| `whole-improve-loop` | `rgaa-criteria-multimedia-tableaux-liens-scripts` | Critères RGAA thèmes 4-7 (Multimédia, Tableaux, Liens, Scripts) : sous-titres/transcriptions vidéo, en-têtes de tableaux,… |
-| `whole-improve-loop` | `rgaa-criteria-navigation-consultation` | Critères RGAA thèmes 12-13 (Navigation, Consultation) : liens d'évitement, plan du site, ordre de tabulation, focus,… |
-| `whole-improve-loop` | `rgaa-criteria-structure-presentation` | Critères RGAA thèmes 8-10 (Éléments obligatoires, Structuration, Présentation) : doctype/lang, titre de page, hiérarchie de… |
-| `whole-improve-loop` | `rgaa-dsfr` | Exploiter le Système de Design de l'État (DSFR) comme baseline d'accessibilité RGAA via les outils MCP DSFR. |
 | `whole-improve-loop` | `verify-build` | Detect and run a repository's OWN build + test so a deterministic gate can confirm the tree actually compiles and passes before… |
 | `wiki-gen` | `okf-format` | The Open Knowledge Format (OKF v0.1) contract for wiki pages — required YAML frontmatter, Markdown-links-as-concept-edges,… |
 | `wiki-gen` | `wiki-authoring` | Operating playbook for building and incrementally maintaining a navigable, grounded, Open-Knowledge-Format wiki for any… |

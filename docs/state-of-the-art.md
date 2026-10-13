@@ -193,7 +193,7 @@ All 26 epics, their mark, and where the detail lives. Counts are board items
 | 🎨 [Studio](https://github.com/SocialGouv/iterion/issues/1412) | 🟠 | 13 | editor, board, run console, desktop |
 | 📡 [Vigie](https://github.com/SocialGouv/iterion/issues/1397) | 🟠 | 1 | the watch feed in production |
 | 🔄 [Automation](https://github.com/SocialGouv/iterion/issues/1413) | 🟡 | 14 | board, dispatcher, triggers, schedules |
-| 🤖 [Bot catalogue](https://github.com/SocialGouv/iterion/issues/1399) | 🟡 | 13 | 37 bundles, shapes, `dsl: 2`, dogfood |
+| 🤖 [Bot catalogue](https://github.com/SocialGouv/iterion/issues/1399) | 🟡 | 13 | 38 bundles, shapes, `dsl: 2`, dogfood |
 | 🏷️ [Brand & product home](https://github.com/SocialGouv/iterion/issues/1429) | 🟡 | 1 | what iterion says it is, and how it talks to users |
 | ☁️ [Cloud plane](https://github.com/SocialGouv/iterion/issues/1407) | 🟡 | 13 | tenancy, replicas, persistence |
 | 🔑 [Credentials](https://github.com/SocialGouv/iterion/issues/1408) | 🟡 | 31 | BYOK, quotas, metering, cost |

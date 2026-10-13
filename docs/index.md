@@ -148,7 +148,7 @@ examples of what an operated agent workflow looks like. A few of the jobs they d
 | 🛡️ | **Automated security & supply chain** — SAST, dependency/SCA, diff-scoped CVE & malware shields on every PR | Seki · Depsy · Vulny · Shieldy |
 | ⬆️ | **Upgrade dependencies safely** — multi-stack agentic upgrades with a review gate | Renovacy · Vetty |
 | 📚 | **Keep docs & knowledge aligned** — docs alignment, wiki generation, ADR cartography and ADR re-challenge | Doki · Wikky · Adry · ReArchi |
-| ♿ | **Accessibility audits** — WCAG 2.2 AA / RGAA over deterministic gates | Acci · Ally |
+| ♿ | **Accessibility audits** — RGAA / WCAG on the pinned ultra11y engine; the engine finds and gates, agents only adjudicate | Acci |
 | 🧪 | **Close the end-to-end coverage gap** — inventory an app's features from the outside, keep a committed feature×coverage matrix, write the missing specs | Endy |
 | 📈 | **Make a codebase observable** — error tracking, standardized structured logs, opt-in tracing | Obsy |
 | 🌐 | **Stand up a live review environment** — deploy the current commit and hand back a real https URL for e2e tests and human review | Envy |

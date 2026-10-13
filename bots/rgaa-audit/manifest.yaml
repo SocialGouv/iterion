@@ -58,9 +58,7 @@ invocations:
   - kind: command
     mode: board
     args_var: scope_notes
-    ## `a11y`, `ally` and `ultra11y` join the aliases when bots/ultra11y is
-    ## retired (they are its command and aliases until then).
-    command: { name: acci, aliases: [rgaa-audit], scope: any, min_replier_role: developer }
+    command: { name: acci, aliases: [rgaa-audit, a11y, ally, ultra11y], scope: any, min_replier_role: developer }
     context_vars: { post_to_board: "true" }
   - kind: schedule
     mode: board
