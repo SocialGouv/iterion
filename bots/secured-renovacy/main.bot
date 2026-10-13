@@ -5367,8 +5367,7 @@ workflow secured_renovacy:
   ## either path: after a solo it goes to Phase 2 on the solo's own ledger;
   ## on the batch path select_candidate never ran, solo_banked's `null + 1`
   ## fails EXPRESSION_FAILED and the run parks failed_resumable naming the
-  ## node — measured, never a silent success (C011 refuses a `when` on this
-  ## exit, so the bare edge is the shape available).
+  ## node — measured, never a silent success.
   write_audit_md -> solo_banked with {
     attempted_count: "{{outputs.select_candidate.attempted_count}}",
     only_patches_attempted: "{{outputs.select_candidate.only_patches_attempted}}",

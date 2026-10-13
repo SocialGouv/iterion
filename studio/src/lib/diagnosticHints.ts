@@ -60,7 +60,7 @@ const HINTS: Record<string, DiagnosticHint> = {
   },
   C011: {
     title: "Ambiguous conditions",
-    hint: "Two edges share the same field and polarity. Use distinct conditions or a router.",
+    hint: "Two edges share the same field and polarity. Use distinct conditions or a router — for an iteration back-edge and the exit it guards, declare the back-edge first and route the exit out of the iteration.",
     docsAnchor: "c011",
   },
   C012: {

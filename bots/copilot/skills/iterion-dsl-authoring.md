@@ -60,12 +60,16 @@ the run dies of `LOOP_EXHAUSTED` (`iterion validate` names the node: C145).
 The exit is a SECOND, BARE edge from the same node, written beside the loop
 edge in either order: the engine takes the loop edge while it has budget
 and the bare edge once it is spent. A lone `else` is refused (C015 needs a
-`when` sibling); a `when` on the exit is fine only with an `else` sibling,
-so the node's edges stay exhaustive — that is how app-dev's interview tells
-a spent cap (`when "loop.x.iteration >= loop.x.max"`, terminal) from a
-budget-declined turn (`else`, resumable). Read the cap from `loop.x.max`,
-the one in force, never from the var it was declared with: a matching
-`when` is taken before the loop edge is considered.
+`when` sibling); a `when` on the exit needs the node's edges to stay
+exhaustive — an `else`, or the opposite polarity — and that is how app-dev's
+interview tells a spent cap (`when "loop.x.iteration >= loop.x.max"`,
+terminal) from a budget-declined turn (`else`, resumable). Read the cap from
+`loop.x.max`, the one in force, never from the var it was declared with: a
+matching `when` is taken before an UNCONDITIONAL loop edge. A loop edge
+carrying its own `when` is read in declaration order instead and wins when
+declared first, so the exit sharing its condition is legal DECLARED AFTER
+it — and must leave the loop (C011 refuses the reverse order, and an exit
+that re-enters the body).
 
 ```
 fix -> review as fix_loop("{{vars.max_fix_passes}}")

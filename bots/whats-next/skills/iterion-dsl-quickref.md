@@ -575,7 +575,11 @@ shipped bots, so they are written here:
   engine still takes it, whatever order they are written in); without the
   bare edge a spent loop leaves the node with
   no edge to take and the run fails `LOOP_EXHAUSTED` (the log names the
-  exhausted loop; `validate` warns C145 beforehand). `as name(N)` allows N back-edge CROSSINGS — N+1 executions
+  exhausted loop; `validate` warns C145 beforehand). A back-edge carrying its
+  own `when` is read in declaration order among the node's conditional edges
+  instead: the exit sharing that condition is legal DECLARED AFTER it, and has
+  to leave the loop (C011 refuses the reverse order, and an exit that re-enters
+  the body). `as name(N)` allows N back-edge CROSSINGS — N+1 executions
   of the body — so a var that counts passes feeds the cap as `passes - 1`
   (the `campaign-loop` template derives it in its gate, re-evaluated on every pass).
 - **`outputs.*` needs no threading.** `{{outputs.<node>.<field>}}` is
