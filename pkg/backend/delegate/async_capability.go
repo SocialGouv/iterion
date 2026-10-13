@@ -16,6 +16,10 @@ type AsyncQuestionBackend interface {
 // ErrCapabilityUnsupported refuses a declared capability before dispatch.
 // It is deterministic: retrying the same backend cannot add the missing tools.
 type ErrCapabilityUnsupported struct {
+	// NodeID names the node whose dispatch is refused. It is empty when the
+	// refusal comes from a per-RUN seam that has no node to name — a tool
+	// executor registered once for every node of the run — and the message
+	// drops the clause rather than naming a node called "".
 	NodeID, Backend, Capability string
 	// Remedy, when set, replaces the generic closing advice with what to do
 	// about THIS capability. A node with no fallback shows this text and
@@ -29,6 +33,9 @@ func (e *ErrCapabilityUnsupported) Error() string {
 	remedy := "choose a backend and transport that support this capability"
 	if e.Remedy != "" {
 		remedy = e.Remedy
+	}
+	if e.NodeID == "" {
+		return fmt.Sprintf("backend %q cannot serve %s — %s", e.Backend, e.Capability, remedy)
 	}
 	return fmt.Sprintf("node %q: backend %q cannot serve %s — %s", e.NodeID, e.Backend, e.Capability, remedy)
 }

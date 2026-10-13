@@ -1729,11 +1729,16 @@ ends at its first result. `ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE=off`
 restores the previous behaviour — first result, the orchestration-stall
 guard's historical rule, no state events nor replays asked of the CLI — and
 keeps the reporting and the session ledger; the
-per-agent tool-error breaker applies either way. claw: iterion's claw
-`agent` tool is, in production, a metadata-only stub that reports a subagent
-"running" and launches nothing — tracked as
-[#1940](https://github.com/SocialGouv/iterion/issues/1940), not a parity
-this lifecycle gives.
+per-agent tool-error breaker applies either way. claw has no equivalent:
+its `agent` tool is registered and **typed-refused** — claw spawns a child
+conversation only where the host wires a subagent runner into its registry,
+and iterion wires none, so the call returns
+`backend "claw" cannot serve the agent tool (subagents)` naming this
+backend's native `Agent` tool (legacy name `Task`) as the way out
+(compile-time warning where a `.bot` names the tool: C159). The real
+wiring is tracked as
+[#1940](https://github.com/SocialGouv/iterion/issues/1940); the refusal is
+the typed-refused half of the parity rule, not the capability.
 
 ### `codex`
 

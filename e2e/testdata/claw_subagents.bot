@@ -1,57 +1,57 @@
-## Fixture : claw_subagents
+## Fixture: claw_subagents
 ##
-## But : prouver que RegisterClawSubagents (-> claw `agent` tool) est
-## correctement câblée dans le tool registry d'iterion et que la boucle
-## tool_use -> tool_result du claw backend traite bien l'appel.
+## What it proves: a claw node that declares `agent` with no subagent runner
+## wired LEARNS it cannot delegate, instead of reading a started subagent it
+## never got.
 ##
-## Contrat actuel : ExecuteAgent côté claw-code-go ne spawn pas
-## réellement un sous-agent — il valide les params et renvoie un spec
-## (agent_id, name, subagent_type, status: running). Le vrai spawning
-## requiert ConversationLoop, qui est attaché au follow-up Track 5
-## (compaction session-per-node). Cette fixture valide donc :
-##   1. Le tool `agent` est exposé via RegisterClawSubagents.
-##   2. Le LLM parent peut le découvrir et l'appeler.
-##   3. Le tool_result remonte avec un agent_id non vide.
-##
-## Le parent fait deux appels successifs (un par "topic") pour valider
-## que la registration tient sur des appels répétés et que chaque
-## invocation produit son propre agent_id.
+## claw's own `agent` executor validates the parameters and answers with start
+## metadata ({agent_id, status: "running", ...}) while launching nothing — its
+## spawning lives in claw's ConversationLoop, which iterion does not drive. So
+## iterion registers the tool and refuses the call with the typed capability
+## refusal. The fixture exercises:
+##   1. `agent` is exposed through RegisterClawSubagents;
+##   2. the LLM can discover and call it, and the call comes back as a tool
+##      error naming claw and the way out;
+##   3. the node still FINISHES — a refused tool is not a dead node — and the
+##      model does the work itself.
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
 prompt coordinator_system:
-  You are a coordinator with access to a `agent` tool that lets you
-  spawn sub-agents. The tool input takes:
+  You have an `agent` tool that is supposed to spawn sub-agents. The tool
+  input takes:
    - description (3-5 word task summary)
    - prompt (the task itself)
    - subagent_type (optional, e.g. "explore" or "general-purpose")
    - name (optional)
 
-  When called, the tool returns metadata (agent_id, name,
-  subagent_type, status). Your job: spawn TWO sub-agents, one per
-  topic, and report the metadata you observed. Do NOT pretend; you
-  MUST issue exactly two `agent` tool calls.
+  Your job: attempt ONE delegation through the `agent` tool. You MUST issue
+  the tool call — do not skip it and do not guess its outcome.
+
+  The tool's own description says spawning a sub-agent is unavailable here,
+  and the ultracode orchestration rules tell you not to retry such a call.
+  Call it ONCE anyway: this run exists to observe the error, not to succeed.
+
+  If the call comes back as an error, that is a valid outcome: report it
+  honestly. Set delegation_refused to true, copy the error text into
+  refusal_reason, and then answer the topic YOURSELF in answer. Never claim a
+  sub-agent ran.
 
 prompt coordinator_user:
-  Spawn one sub-agent per topic in this list, each with subagent_type
+  Try to delegate this topic to one sub-agent with subagent_type
   "general-purpose":
-   - {{input.topic_a}}
-   - {{input.topic_b}}
+   - {{input.topic}}
 
-  After both calls return, fill the output schema with what you
-  observed. The two agent_ids must be distinct.
+  Then fill the output schema with what actually happened.
 
 schema coordinator_input:
-  topic_a: string
-  topic_b: string
+  topic: string
 
 schema coordinator_output:
-  spawn_count: int
-  agent_ids: string[]
-  names: string[]
-  subagent_types: string[]
-  statuses: string[]
+  delegation_refused: bool
+  refusal_reason: string
+  answer: string
 
 agent coordinator:
   ## Pure claw direct path — no `backend:` field.

@@ -46,6 +46,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validatePlaywrightMCP(w)
 	c.validateCapabilities(w)
 	c.validateNodeTools(w)
+	c.validateRefusedClawTools(w)
 	c.validateEmptyToolsEnforced(w)
 	c.validateSkillRefs(w)
 	c.validateProviders(w)
