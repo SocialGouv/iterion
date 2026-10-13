@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.260.2](https://github.com/SocialGouv/iterion/compare/v3.260.1...v3.260.2) (2026-10-13)
+
+### Bug Fixes
+
+* **runtime:** the in-sandbox child-resource scripts refuse a symlinked .claude root ([#2360](https://github.com/SocialGouv/iterion/issues/2360)) ([6dd302f](https://github.com/SocialGouv/iterion/commit/6dd302fd21eb7fd79d6aa92137ca9c68daca8d2c)), closes [#1824](https://github.com/SocialGouv/iterion/issues/1824), references [#2027](https://github.com/SocialGouv/iterion/issues/2027)
+
+    <details><summary>why</summary>
+
+    The three scripts the shared resource scope runs INSIDE a copy-based sandbox — snapshot, restore and reset in `child_sandbox_resources.go` — acted on `<workspace>/.claude` with nothing requiring it to be a directory. Through a symlink, `rm -rf "$1/<name>"` and `cp -a` reach the link's target: the reset deletes it, the restore rewrites it with the parent's bytes, the snapshot copies it into its backup. The host sites have refused this since #2027; this transport had no guard, and the agent…
+
+    </details>
+
 ## [3.260.1](https://github.com/SocialGouv/iterion/compare/v3.260.0...v3.260.1) (2026-10-13)
 
 ### Bug Fixes
