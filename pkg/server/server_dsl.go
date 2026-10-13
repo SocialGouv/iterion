@@ -685,11 +685,14 @@ func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 // opens as its unit, the way /api/files/open opens it — the merged document
 // with each declaration's file, the unit's files and revision, the path the
 // studio opens and saves it by — since the studio binds the path it is
-// handed and edits the files behind it. One that lives elsewhere (a catalog
-// root outside the working directory, as in cloud mode) is served as one
-// flat program, like an embedded bot: the text the studio launches inline
-// and may save as a new file. A unit that does not load is told through its
-// diagnostics, never served as its main alone.
+// handed and edits the files behind it. That holds whether or not the files
+// load as one bot: the unit's per-file parse and load verdict is how the
+// launch gate knows they do not, and this door opens the same bots the
+// editor's does. One that lives elsewhere (a catalog root outside the
+// working directory, as in cloud mode) is served as one flat program, like
+// an embedded bot: the text the studio launches inline and may save as a
+// new file. A unit that does not load is told through its diagnostics,
+// never served as its main alone.
 func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data []byte) {
 	u := unit.LoadDirWithMain(abs, abs, data)
 	if len(u.Files) == 0 || u.Files[0].AST == nil || len(u.Files[0].AST.Imports) == 0 {
@@ -712,17 +715,6 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 		return
 	}
 	if u.HasErrors() {
-		// A unit that does not load is served as the main's text and the
-		// program the loader merged of it, with the diagnostics and no unit —
-		// there is no revision to present. The main still names its path: the
-		// editor is about that file, and the watcher, the tab binding and the
-		// validation scope all read it.
-		docJSON, err := ast.MarshalFile(u.Merged)
-		if err != nil {
-			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
-			return
-		}
-		rel, confirmed, _ := s.workDirRelative(abs, name)
 		// Bindable is the MAIN's own parse, not u.HasErrors(): a unit also
 		// fails to load on a missing fragment, an import cycle or a duplicate
 		// declaration, and in those the main was read whole — calling it a
@@ -731,7 +723,34 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 		// same, by saveUnit, which names the fragment at fault. Same posture
 		// as /api/files/open and parseUnitFiles.
 		mainParse := parser.Parse(name, string(data))
-		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Bindable: !parseHasErrors(mainParse.Diagnostics)})
+		bindable := !parseHasErrors(mainParse.Diagnostics)
+		rel, confirmed, inWorkDir := s.workDirRelative(abs, name)
+		if inWorkDir {
+			// This is the bot /api/files/open answers for, under that same
+			// path, so the two doors onto it answer the same facts: the
+			// merged document with each declaration's file, and the unit —
+			// whose per-file parse and load verdict is what holds the launch
+			// gate closed on a bot the launch would refuse (#1532). Without
+			// it the studio binds the path, says the bot is launchable and
+			// has nothing left to refuse it with. It stays writable: the
+			// save is refused by saveUnit, naming the fragment at fault.
+			docJSON, err := ast.MarshalFileWithProvenance(u.Merged, u.Root)
+			if err != nil {
+				httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+				return
+			}
+			writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(u, rel), Bindable: bindable})
+			return
+		}
+		// Outside the working directory there is no path to open it by and
+		// no unit to present one for: the main's text and the program the
+		// loader merged of it, with the diagnostics.
+		docJSON, err := ast.MarshalFile(u.Merged)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+			return
+		}
+		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Bindable: bindable})
 		return
 	}
 	if rel, confirmed, ok := s.workDirRelative(abs, name); ok {

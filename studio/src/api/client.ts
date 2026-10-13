@@ -502,10 +502,12 @@ export async function loadExample(
    *  the sites that write a document refuse it. Absent (an older server, a
    *  unit response) reads as true. */
   bindable?: boolean;
-  /** Set when the example is a bot in several files inside the workspace
-   *  that loads clean: the document is the merged unit. An embedded bot, or
-   *  one outside the workspace, is served as one flat program; one that
-   *  does not load is served as what the loader salvaged, unbound. */
+  /** Set when the example is a bot in several files inside the workspace:
+   *  the document is the merged unit, and the unit carries the files' parse
+   *  and load verdict — what the launch gate refuses on, whether or not
+   *  they load as one bot, since this door opens the same bots
+   *  /api/files/open does. An embedded bot, or one outside the workspace,
+   *  is served as one flat program and has none. */
   unit?: UnitInfo;
 }> {
   // Encode each path segment but keep the slashes so subdirectory

@@ -30,12 +30,38 @@ import (
 // file's path and content — and a save presents it back, so a file edited
 // on disk in between is a conflict, never a silent overwrite.
 type unitInfo struct {
-	// Root is the unit's directory, as the request named its main.
+	// Root is the directory the unit's relative paths are named from, as
+	// the request named the file it was asked for: Root and Main compose
+	// back into that path (unitRootOf). Empty when no root can: a
+	// bundle's files map, an overlay answer that moved no file, and a
+	// unit the loader rooted above the workspace.
 	Root string `json:"root"`
 	// Main is the main file's path from Root.
 	Main     string         `json:"main"`
 	Revision string         `json:"revision"`
 	Files    []unitFileInfo `json:"files"`
+	// Unread names, from Root, the fragments an `import` asks for that the
+	// load tried to read and could not. Each is a file of NO list — Files
+	// holds what the load reached — while the load verdict below refuses
+	// on it: it is the one name the client has for the file whose arrival
+	// would change this verdict, and writing it is the repair the refusal
+	// asks for. A path the loader refuses WITHOUT reading it (one outside
+	// the bot's `lib/`) is none of them: no write there changes the load.
+	Unread []string `json:"unread,omitempty"`
+	// LoadErrors is how many errors the LOAD of these files left, and
+	// LoadError the first of them as the answered diagnostics spell it.
+	// Every file can parse and the bot still not load as one: an `import`
+	// naming no fragment, a cycle, a declaration made in two files. It is
+	// Unit.Diagnostics whole — every file's parse diagnostics as the loader
+	// read them, plus the loader's own — hence a SUPERSET of each file's
+	// parse verdict, and the very list the launch refuses on
+	// (compileLoadedUnit), which is why the gate refuses on it too (#1532).
+	// The merged document, built from what loaded, validates clean, so the
+	// diagnostics auto-validation writes carry none of this. The per-file
+	// verdict is kept to NAME the file to repair, not because this one
+	// misses it.
+	LoadErrors int    `json:"load_errors,omitempty"`
+	LoadError  string `json:"load_error,omitempty"`
 }
 
 type unitFileInfo struct {
@@ -49,6 +75,17 @@ type unitFileInfo struct {
 	// save compares, or a colleague's edit since the apply is overwritten
 	// in silence.
 	Digest string `json:"digest,omitempty"`
+	// ParseErrors is how many errors the parse of this file's own text
+	// left, ParseError the first of them as the answered diagnostics
+	// spell it. A unit whose MAIN parses opens bindable, and the
+	// diagnostics that name a broken fragment are rewritten as soon as
+	// the studio validates the merged document — built from what parsed,
+	// which validates clean — so the launch gate needs a per-file fact no
+	// answer about the DOCUMENT replaces (#1532). Answered only: the
+	// claim a save carries back names the file and its header, and this
+	// is the server's own reading of the file, never read from a request.
+	ParseErrors int    `json:"parse_errors,omitempty"`
+	ParseError  string `json:"parse_error,omitempty"`
 }
 
 // canonReason is a canon refusal without its sentinel prefix, for a message
@@ -57,13 +94,44 @@ func canonReason(err error) string {
 	return strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")
 }
 
+// unitRootOf is the directory a unit's relative paths are named from, read
+// off the path the request named and the main's own Rel: the two compose
+// back into that path, which is what the studio rebuilds every unit file's
+// path with (unitFilePath). The request's DIRECTORY is not it — a fragment
+// opened alone is loaded from the root its `lib/` belongs to, so its Rel
+// carries that `lib/` and the directory is one level too deep. "." for a
+// main at the workspace root, the name a relative path's own directory has.
+//
+// The Rel is not always a suffix of that path, and then NO root composes
+// the two: a workspace whose own directory is named `lib/` makes a
+// workflow-less file under it a fragment of the bot rooted at the
+// workspace's PARENT (unit.fragmentAlone), so every Rel carries a `lib/`
+// no path under the workspace has. Nothing is answered there — the empty
+// root, which names rels from the workspace root as a bundle's files map
+// does — rather than the request's directory, which would read as a root
+// and name a workspace file for every Rel under it. A client then
+// recognises none of that unit's files but the one it opened; editing and
+// SAVING them goes by Rel, which the loader resolves under its own
+// absolute root, so that road is unharmed.
+func unitRootOf(reqPath, main string) string {
+	p, m := filepath.ToSlash(reqPath), filepath.ToSlash(main)
+	if p == m {
+		return "."
+	}
+	if root := strings.TrimSuffix(p, "/"+m); root != p {
+		return root
+	}
+	return ""
+}
+
 func unitInfoOf(u *unit.Unit, reqPath string) *unitInfo {
 	// Files is never nil: the picker of the Source view iterates it, and a
 	// JSON `null` would reach a TS `UnitFileInfo[]` that declares itself
 	// non-nullable.
-	info := &unitInfo{Root: filepath.ToSlash(filepath.Dir(reqPath)), Main: u.Main, Revision: u.Digest, Files: []unitFileInfo{}}
+	info := &unitInfo{Root: unitRootOf(reqPath, u.Main), Main: u.Main, Revision: u.Digest, Files: []unitFileInfo{}, Unread: u.Unread}
 	for _, f := range u.Files {
 		fi := unitFileInfo{Rel: f.Rel, Digest: fileDigest(f.Source)}
+		fi.ParseErrors, fi.ParseError = errorVerdict(f.ParseDiagnostics)
 		if f.AST != nil {
 			fi.Profile = f.AST.Profile
 			for _, im := range f.AST.Imports {
@@ -72,7 +140,49 @@ func unitInfoOf(u *unit.Unit, reqPath string) *unitInfo {
 		}
 		info.Files = append(info.Files, fi)
 	}
+	info.LoadErrors, info.LoadError = errorVerdict(u.Diagnostics)
 	return info
+}
+
+// storedUnitVerdict replaces an overlay answer's parse and load verdict
+// with the STORED unit's. A verdict is a claim about the files at rest —
+// the ones a launch reads and a save is judged on — like the revision such
+// an answer withholds, and an overlay wrote neither: a fragment repaired
+// through the picker is no proof that the fragment on disk parses, and the
+// save that would store it is refused until it does (saveUnit). A file the
+// overlay's header newly imports is none of the stored unit's and keeps
+// what the overlay read of it, which stagedLoadFailure has already refused
+// if the parser could only salvage it.
+func storedUnitVerdict(info *unitInfo, stored *unit.Unit) {
+	info.LoadErrors, info.LoadError = errorVerdict(stored.Diagnostics)
+	// The fragments the answered verdict is about travel with it. The
+	// staged file list is no substitute: an apply that drops the broken
+	// `import` line leaves no file naming the fragment the stored load
+	// still refuses on, and the client could then not recognise the author
+	// writing it — the one repair this refusal asks for.
+	info.Unread = stored.Unread
+	for i, fi := range info.Files {
+		if f, ok := unitFile(stored, fi.Rel); ok {
+			info.Files[i].ParseErrors, info.Files[i].ParseError = errorVerdict(f.ParseDiagnostics)
+		}
+	}
+}
+
+// errorVerdict is what a unit answer carries of a diagnostics list: how
+// many errors it leaves, and the first of them as Diagnostic.Error spells
+// it — the string the studio's Diagnostics panel shows, so the launch
+// refusal quotes what the author can look up. One file's own parse
+// (File.ParseDiagnostics) and the whole load (Unit.Diagnostics) are read
+// through it, since both refuse the launch and both have to be told. The
+// unit's diagnostics are cut to the unit's relative names before the
+// answer is built, so neither name discloses the workspace root (#1934).
+func errorVerdict(diags []parser.Diagnostic) (count int, first string) {
+	for _, d := range diags {
+		if d.Severity == parser.SeverityError {
+			count++
+		}
+	}
+	return count, firstErrorDiagnostic(diags)
 }
 
 // fileDigest is the content identity one file's claim carries back to the
@@ -1356,6 +1466,11 @@ func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc 
 // answering the current one would adopt a colleague's edit made meanwhile
 // and destroy the conflict detection outright. The client keeps the
 // revision it opened at.
+//
+// For the same reason the parse and load verdict it answers is the STORED
+// unit's (storedUnitVerdict), not the overlay's: the launch gate refuses a
+// bot whose files do not parse or do not load as one, and an apply has
+// stored nothing for it to lift.
 func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
 	ur, err := s.resolveUnitRequest(req.Files, req.Main, req.Path)
 	if err != nil {
@@ -1426,6 +1541,7 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
 	info := unitInfoOf(staged, staged.Main)
 	info.Root = ""
 	info.Revision = ""
+	storedUnitVerdict(info, ur.unit)
 	mainSource := ""
 	if mf, ok := unitFile(staged, staged.Main); ok {
 		mainSource = string(mf.Source)

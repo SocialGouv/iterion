@@ -67,11 +67,13 @@ func (u *Unit) RootCutRefused() bool {
 
 // RelDiagnostics rewrites a disk-loaded unit's diagnostics to the unit's
 // relative names, the way the loader's own messages already cite a file
-// (relOf). A no-op for a files map, whose files are named by rel already.
-// A unit rooted at the filesystem root gets NO cut — the prefix it would
-// build matches no name — and the refusal is said, once, in a warning: the
-// client keeps absolute names and is told why, rather than trusting a cut
-// that did nothing (#2047).
+// (relOf) — the unit's own list and every file's ParseDiagnostics, which a
+// per-file parse verdict crosses to a client with. A no-op for a files
+// map, whose files are named by rel already. A unit rooted at the
+// filesystem root gets NO cut — the prefix it would build matches no name
+// — and the refusal is said, once, in a warning: the client keeps absolute
+// names and is told why, rather than trusting a cut that did nothing
+// (#2047).
 func (u *Unit) RelDiagnostics() {
 	if rootIsFilesystemRoot(u.Root) {
 		for _, d := range u.Diagnostics {
@@ -94,10 +96,18 @@ func (u *Unit) RelDiagnostics() {
 	if prefix == "" {
 		return
 	}
-	for i, d := range u.Diagnostics {
+	relOne := func(d parser.Diagnostic) parser.Diagnostic {
 		d.File = filepath.ToSlash(strings.TrimPrefix(d.File, prefix))
 		d.Message = strings.ReplaceAll(d.Message, prefix, "")
-		u.Diagnostics[i] = d
+		return d
+	}
+	for i, d := range u.Diagnostics {
+		u.Diagnostics[i] = relOne(d)
+	}
+	for i := range u.Files {
+		for j, d := range u.Files[i].ParseDiagnostics {
+			u.Files[i].ParseDiagnostics[j] = relOne(d)
+		}
 	}
 }
 

@@ -11,7 +11,7 @@ import { errorMessage } from "@/lib/errorHints";
 import type { IterDocument } from "@/api/types";
 
 import { defaultStringFor } from "@/components/shared/VarFieldInput";
-import { launchRefusal, pristineBuffer } from "@/lib/launch";
+import { launchRefusal, pristineBuffer, unitRefusal } from "@/lib/launch";
 import { useDocumentStore } from "@/store/document";
 
 import { type LLMNode } from "./ModelOverridesSection";
@@ -154,6 +154,19 @@ export function useLaunchDoc(
       .openFile(filePath)
       .then((res) => {
         if (cancelled) return;
+        // A bot in several files is launched from its files as they are
+        // stored, and this road reads them: files that do not parse, or do
+        // not load as one bot, are what the launch refuses once the form is
+        // filled in. The refusal is the toolbar's, on the unit this answer
+        // carries — the roads that land here (the command palette, a repo's
+        // bot list, the bind wizard, a bot's home) pass through no editor,
+        // so the gate the button holds closed would not be consulted at all.
+        const refusedUnit = unitRefusal(res.unit);
+        if (refusedUnit) {
+          setLoadedDoc(null);
+          onErrorRef.current(refusedUnit);
+          return;
+        }
         setLoadedDoc({ path: filePath, doc: res.document });
         setLaunchSource({ path: filePath, source: res.source });
         setConfirmedDiskPath(res.confirmed_disk_path ?? null);

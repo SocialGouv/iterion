@@ -113,46 +113,54 @@ func TestTheLoaderNamesWhatItRefuses(t *testing.T) {
 		msg   string
 		file  string
 		line  int
+		// unread is what the refusal leaves to WRITE: the fragments the
+		// load attempted to read and could not. A refusal about the
+		// import's path, a cycle or a declaration made twice leaves none —
+		// every file of those was read, and no file appearing repairs them.
+		unread []string
 	}{
 		{
 			"outside lib",
 			map[string]string{"main.bot": "import \"x.bot\"\n", "x.bot": "agent a:\n  description: \"d\"\n"},
-			parser.DiagBadImportPath, "outside the bot's `lib/` directory", "main.bot", 1,
+			parser.DiagBadImportPath, "outside the bot's `lib/` directory", "main.bot", 1, nil,
 		},
 		{
 			"missing",
 			map[string]string{"main.bot": "\n\nimport \"lib/x.bot\"\n"},
-			parser.DiagImportUnreadable, "no such fragment (lib/x.bot)", "main.bot", 3,
+			parser.DiagImportUnreadable, "no such fragment (lib/x.bot)", "main.bot", 3, []string{"lib/x.bot"},
 		},
 		{
 			"cycle",
 			map[string]string{"main.bot": "import \"lib/a.bot\"\n", "lib/a.bot": "import \"b.bot\"\n", "lib/b.bot": "import \"a.bot\"\n"},
-			parser.DiagImportCycle, "main.bot → lib/a.bot → lib/b.bot → lib/a.bot", "lib/b.bot", 1,
+			parser.DiagImportCycle, "main.bot → lib/a.bot → lib/b.bot → lib/a.bot", "lib/b.bot", 1, nil,
 		},
 		{
 			"a node in two files",
 			map[string]string{"main.bot": "import \"lib/a.bot\"\nagent x:\n  description: \"d\"\n", "lib/a.bot": "\ntool x:\n  command: \"true\"\n"},
-			parser.DiagDuplicateDecl, "declared in two files: here and at main.bot:2", "lib/a.bot", 2,
+			parser.DiagDuplicateDecl, "declared in two files: here and at main.bot:2", "lib/a.bot", 2, nil,
 		},
 		{
 			"a var twice across files",
 			map[string]string{"main.bot": "import \"lib/a.bot\"\nvars:\n  goal: string\n", "lib/a.bot": "vars:\n  goal: int\n"},
-			parser.DiagDuplicateDecl, "var \"goal\" is declared twice: here and at main.bot:3", "lib/a.bot", 2,
+			parser.DiagDuplicateDecl, "var \"goal\" is declared twice: here and at main.bot:3", "lib/a.bot", 2, nil,
 		},
 		{
 			"a var twice in one block",
 			map[string]string{"main.bot": "vars:\n  goal: string\n  goal: int\n"},
-			parser.DiagDuplicateDecl, "var \"goal\" is declared twice: here and at main.bot:2", "main.bot", 3,
+			parser.DiagDuplicateDecl, "var \"goal\" is declared twice: here and at main.bot:2", "main.bot", 3, nil,
 		},
 		{
 			"two workflows",
 			map[string]string{"main.bot": "import \"lib/a.bot\"\nworkflow w:\n  entry: done\n", "lib/a.bot": "workflow v:\n  entry: done\n"},
-			parser.DiagDuplicateDecl, "a unit has one workflow: \"v\" here and \"w\" at main.bot:2", "lib/a.bot", 1,
+			parser.DiagDuplicateDecl, "a unit has one workflow: \"v\" here and \"w\" at main.bot:2", "lib/a.bot", 1, nil,
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			u := LoadMap(c.files, "main.bot")
+			if !reflect.DeepEqual(u.Unread, c.unread) {
+				t.Fatalf("Unread = %q, want %q", u.Unread, c.unread)
+			}
 			var found *parser.Diagnostic
 			for i := range u.Diagnostics {
 				if u.Diagnostics[i].Code == c.code {
@@ -178,6 +186,88 @@ func TestTheLoaderNamesWhatItRefuses(t *testing.T) {
 		if d.Code == parser.DiagDuplicateDecl {
 			t.Fatalf("a same-file duplicate was reported by the loader: %v", d)
 		}
+	}
+}
+
+// Unread is the load's own answer to "which file, if it appeared, would
+// change this verdict": the fragments it tried to read and could not, by
+// the Rel the loader resolved — never a name a caller would have to
+// re-resolve from the import lines, which the file list of an overlay
+// answer no longer carries. A path refused BEFORE the read is none of
+// them.
+func TestTheLoadNamesTheFragmentsItCouldNotRead(t *testing.T) {
+	cases := []struct {
+		name   string
+		files  map[string]string
+		unread []string
+	}{
+		{
+			// Resolved against the file that wrote the line, as every
+			// import is: "deeper.bot" in lib/nodes.bot is lib/deeper.bot.
+			"a sibling imported by its bare name",
+			map[string]string{"main.bot": "import \"lib/nodes.bot\"\n", "lib/nodes.bot": "import \"deeper.bot\"\n"},
+			[]string{"lib/deeper.bot"},
+		},
+		{
+			// One file to write, however many files ask for it, and in a
+			// fixed order whatever order the imports reached them.
+			"the same fragment missing for two importers",
+			map[string]string{
+				"main.bot":      "import \"lib/z.bot\"\nimport \"lib/nodes.bot\"\nimport \"lib/a.bot\"\n",
+				"lib/nodes.bot": "import \"z.bot\"\n",
+			},
+			[]string{"lib/a.bot", "lib/z.bot"},
+		},
+		{
+			// The same two, declared the other way round. The answer is a
+			// function of the SET, so it does not move — while the order
+			// the loader REACHES them in does, and the case above reaches
+			// them in the order the answer is NOT in.
+			"the same two fragments missing, imported the other way round",
+			map[string]string{
+				"main.bot":      "import \"lib/a.bot\"\nimport \"lib/nodes.bot\"\nimport \"lib/z.bot\"\n",
+				"lib/nodes.bot": "import \"a.bot\"\n",
+			},
+			[]string{"lib/a.bot", "lib/z.bot"},
+		},
+		{
+			// Refused by its PATH, before any read: the file exists, and
+			// nothing written there makes the import legal.
+			"an import resolving inside the root but outside lib/",
+			map[string]string{"main.bot": "import \"other.bot\"\n", "other.bot": "agent a:\n  description: \"d\"\n"},
+			nil,
+		},
+		{
+			// An import climbing out of its directory is refused by the
+			// PARSER (E045 at the import's own column), so the loader never
+			// resolves it and the path it would have named is awaited by
+			// nothing either.
+			"an import climbing out of the unit",
+			map[string]string{"main.bot": "import \"lib/nodes.bot\"\n", "lib/nodes.bot": "import \"../../x.bot\"\n"},
+			nil,
+		},
+		{
+			"a unit that loads whole",
+			fixture,
+			nil,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			u := LoadMap(c.files, "main.bot")
+			if !reflect.DeepEqual(u.Unread, c.unread) {
+				t.Fatalf("Unread = %q, want %q (diagnostics %v)", u.Unread, c.unread, u.Diagnostics)
+			}
+			// A file of no list, always: the two sets never overlap, so a
+			// caller may read membership and this one as one question.
+			for _, rel := range u.Unread {
+				for _, f := range u.Files {
+					if f.Rel == rel {
+						t.Fatalf("%s is both unread and a file of the unit", rel)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -225,6 +315,11 @@ func TestLoadDirReadsUnderTheRootAndNoFurther(t *testing.T) {
 	}
 	if !refused || len(u.Files) != 1 {
 		t.Fatalf("a symlinked fragment was read: %v (files %d)", u.Diagnostics, len(u.Files))
+	}
+	// The read was ATTEMPTED and refused, so the path is awaited: a regular
+	// file written there is read, and the refusal lifts.
+	if !reflect.DeepEqual(u.Unread, []string{"lib/link.bot"}) {
+		t.Fatalf("Unread = %q, want the refused fragment", u.Unread)
 	}
 	// A symlinked directory leaving the root is refused too.
 	if err := os.Remove(filepath.Join(root, "lib", "link.bot")); err != nil {

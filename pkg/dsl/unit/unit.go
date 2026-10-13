@@ -51,6 +51,14 @@ type File struct {
 	// ProfileReads lists, for a file read as profile 1, the places
 	// profile 2 would read otherwise (C144 is each file's own).
 	ProfileReads []parser.ProfileRead
+	// ParseDiagnostics is what the parser answered for THIS file's own
+	// text. The unit's Diagnostics hold them mixed with the loader's — an
+	// import it cannot follow, a cycle, a declaration made twice — each
+	// positioned in the file that led to it, so attributing a parse
+	// verdict by position would call a file broken for its importer's
+	// mistake. Empty for a main the caller handed over parsed: its
+	// diagnostics are the caller's.
+	ParseDiagnostics []parser.Diagnostic
 }
 
 // Unit is the loaded and merged compilation unit.
@@ -71,6 +79,18 @@ type Unit struct {
 	// Digest identifies the unit's source: the files' relative paths and
 	// contents, in a fixed order. It changes when any file changes.
 	Digest string
+	// Unread holds the Rel of every fragment an `import` names that the
+	// load TRIED to read and could not — one that is not there, one that
+	// resolves out of the unit through a symlink, one the reader refused.
+	// Such a fragment is a file of NO list: Files holds what the load
+	// reached and nothing of what it did not, while Diagnostics refuse on
+	// it — so it is the only name a caller has for the file whose arrival
+	// would change this load, and the repair the refusal asks for. Sorted
+	// and without repeats: a function of the set, not of the order the
+	// imports reached it. A path the loader refuses WITHOUT reading (one
+	// outside the bot's lib/) is none of these: no write there changes
+	// what this load reads.
+	Unread []string
 	// Diagnostics holds every file's parse diagnostics plus the loader's
 	// own (an unreadable fragment, a cycle, a path outside lib/, a
 	// declaration made twice), each positioned in its file.
@@ -265,10 +285,12 @@ func Load(read Reader, main string, name func(rel string) string) *Unit {
 // load is Load with the main's AST supplied, when the caller parsed it
 // (LoadDirWithMainAST); the main's text is still read for the digest.
 func load(read Reader, main string, name func(rel string) string, mainAST *ast.File) *Unit {
-	l := &loader{read: read, name: name, u: &Unit{Main: path.Clean(main)}, state: map[string]int{}, mainAST: mainAST}
+	l := &loader{read: read, name: name, u: &Unit{Main: path.Clean(main)}, state: map[string]int{}, seenUnread: map[string]struct{}{}, mainAST: mainAST}
 	l.fragmentPrefix = fragmentPrefixOf(l.u.Main)
 	l.visit(l.u.Main, nil, "")
 	l.u.Files = l.files
+	l.u.Unread = l.unread
+	sort.Strings(l.u.Unread)
 	l.merge()
 	l.u.Digest = Digest(l.u.Files)
 	return l.u
@@ -304,12 +326,31 @@ type loader struct {
 	// while its imports are being followed (a cycle meets it there), and
 	// is absent for a file never reached.
 	state map[string]int
-	stack []string
+	// unread collects the rel of every fragment whose read was attempted
+	// and failed, in the ORDER the imports reached them, and seenUnread
+	// keeps it a set: the same missing fragment imported from two files is
+	// one file to write. A slice rather than a map drained at the end,
+	// because load sorts it: a value built from a map's iteration already
+	// arrives in a different order on every run, so a test for that sort
+	// could only fail by chance.
+	unread     []string
+	seenUnread map[string]struct{}
+	stack      []string
 	// fragmentPrefix is where this unit's fragments live, from the root.
 	fragmentPrefix string
 	// mainAST is the main's AST when the caller parsed the main itself;
 	// nil when the loader parses it like every other file.
 	mainAST *ast.File
+}
+
+// recordUnread notes a fragment whose read was attempted and failed, once
+// and in the order the imports reach it.
+func (l *loader) recordUnread(rel string) {
+	if _, seen := l.seenUnread[rel]; seen {
+		return
+	}
+	l.seenUnread[rel] = struct{}{}
+	l.unread = append(l.unread, rel)
 }
 
 // fragmentPrefixOf is the slash prefix under which the fragments of the
@@ -344,6 +385,13 @@ func (l *loader) visit(rel string, from *ast.ImportDecl, fromName string) {
 	}
 	src, err := l.read(rel)
 	if err != nil {
+		if !isMain {
+			// The read was attempted and failed: this fragment's arrival —
+			// or its repair — is what would change this load. Recorded
+			// here, where the loader KNOWS, since nothing downstream can
+			// tell it from a fragment the unit simply does not import.
+			l.recordUnread(rel)
+		}
 		switch {
 		case isMain:
 			l.u.Diagnostics = append(l.u.Diagnostics, parser.Diagnostic{Code: parser.DiagImportUnreadable, Severity: parser.SeverityError, File: l.name(rel), Line: 1, Column: 1, Message: fmt.Sprintf("cannot read %s: %v", rel, err), Hint: parser.HintFor(parser.DiagImportUnreadable)})
@@ -368,7 +416,7 @@ func (l *loader) visit(rel string, from *ast.ImportDecl, fromName string) {
 		pr = parser.Parse(name, string(src))
 	}
 	l.u.Diagnostics = append(l.u.Diagnostics, pr.Diagnostics...)
-	f := File{Rel: rel, Name: name, Source: src, AST: pr.File, ProfileReads: pr.ProfileReads}
+	f := File{Rel: rel, Name: name, Source: src, AST: pr.File, ProfileReads: pr.ProfileReads, ParseDiagnostics: pr.Diagnostics}
 	if pr.File != nil {
 		f.Profile = pr.File.EffectiveProfile()
 	}
