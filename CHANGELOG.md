@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.261.0](https://github.com/SocialGouv/iterion/compare/v3.260.2...v3.261.0) (2026-10-13)
+
+### Features
+
+* **rgaa-audit:** rebuild Acci v3 on the pinned ultra11y engine ([#2387](https://github.com/SocialGouv/iterion/issues/2387)) ([d13bc05](https://github.com/SocialGouv/iterion/commit/d13bc0586adc0190d280ef6bb56dba651b1fe6f7)), references [#2345](https://github.com/SocialGouv/iterion/issues/2345)
+
+    <details><summary>why</summary>
+
+    The accessibility bot no longer asks a model to find non-conformities. The ultra11y 5.42.1 engine — pinned by version and by the sha256 of its entry file, fingerprinted before anything of it runs and before every call — finds, gates and reports; iterion orchestrates: criteria the engine leaves open are adjudicated by read-only agents in parallel batches (one per theme), the engine's own fold is probed on a copy so its named refusals are re-asked once, the real audit is folded exactly once, a…
+
+    </details>
+
+### Bug Fixes
+
+* **launch:** the Run gate holds while a file of the unit does not parse or load ([#2392](https://github.com/SocialGouv/iterion/issues/2392)) ([d7cc76d](https://github.com/SocialGouv/iterion/commit/d7cc76d4f4df2153e8cf7971485b2bd53a442f13)), closes [#1532](https://github.com/SocialGouv/iterion/issues/1532), references [#1326](https://github.com/SocialGouv/iterion/issues/1326) [#1934](https://github.com/SocialGouv/iterion/issues/1934)
+
+    <details><summary>why</summary>
+
+    A bot in several files whose fragment does not parse re-opened the Run gate onto a launch the server refuses. The open answers `bindable: true` — the main parsed — and carries the fragment's parse errors as diagnostics; auto validation then validates the MERGED document, built from what parsed and so clean, and rewrites those diagnostics. The gate's only fact was gone, Run was re-enabled, and the launch re-parsed the raw source and refused after the form had been filled in.
+
+    </details>
+* **review-pr:** a question or ticket verdict naming a drifted file is workspace state; a published anchor stays repo-relative ([#2393](https://github.com/SocialGouv/iterion/issues/2393)) ([38b5956](https://github.com/SocialGouv/iterion/commit/38b59561faffd9a613df040a60ada3b4404bebc9)), closes [#1674](https://github.com/SocialGouv/iterion/issues/1674), references [#2117](https://github.com/SocialGouv/iterion/issues/2117) [#1674](https://github.com/SocialGouv/iterion/issues/1674) [#1671](https://github.com/SocialGouv/iterion/issues/1671) [#1670](https://github.com/SocialGouv/iterion/issues/1670) [#1665](https://github.com/SocialGouv/iterion/issues/1665) [#1660](https://github.com/SocialGouv/iterion/issues/1660) [#2117](https://github.com/SocialGouv/iterion/issues/2117) [#1666](https://github.com/SocialGouv/iterion/issues/1666)
+
+    <details><summary>why</summary>
+
+    #2117 stripped the FINDINGS a review anchored on an uncommitted entry of its own workspace, but the three reviewer-authored free texts still reached the pull request verbatim: a `questions` line under "À confirmer", a `ticket_conformance` verdict under "Écarts au ticket", a `scanned_areas` entry inside "Périmètre revu". That is how #1671's first verdict asked the author to answer for two uncommitted catalogue regenerations the pull request never touched — the half of #1674 left open.
+
+    </details>
+* **server:** launching a run takes the member role on every human surface ([#2391](https://github.com/SocialGouv/iterion/issues/2391)) ([f7ef017](https://github.com/SocialGouv/iterion/commit/f7ef017b7efcbd623b995b026603d73a54c809d2)), closes [#2363](https://github.com/SocialGouv/iterion/issues/2363), references [#2364](https://github.com/SocialGouv/iterion/issues/2364)
+
+    <details><summary>why</summary>
+
+    A team viewer, and the orthogonal config_editor capability, could launch a run: POST /api/runs passed only the quota gate, POST /api/v1/triggers/emit used that gate as a pre-check with no role, and the pipeline board's launch-now passed no gate at all — no role, no suspend check, no concurrency, rate or monthly cap. The documented contract (forge-permissions.md, cloud-rest-api.md) was member+. The queues a machine principal drains had the same hole one layer earlier: a viewer could write a card…
+
+    </details>
+
 ## [3.260.2](https://github.com/SocialGouv/iterion/compare/v3.260.1...v3.260.2) (2026-10-13)
 
 ### Bug Fixes
