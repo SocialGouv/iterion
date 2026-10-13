@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.261.1](https://github.com/SocialGouv/iterion/compare/v3.261.0...v3.261.1) (2026-10-13)
+
+### Bug Fixes
+
+* **bots,dsl:** a dead input mapping is not a channel — 19 sites dropped, 4 unseen values now render ([#2397](https://github.com/SocialGouv/iterion/issues/2397)) ([e2c0acc](https://github.com/SocialGouv/iterion/commit/e2c0acc15e147ec8498ad489dc930fe2033a41f3)), references [#1740](https://github.com/SocialGouv/iterion/issues/1740)
+
+    <details><summary>why</summary>
+
+    A key an edge's `with` maps onto an LLM node is written into that node's input whether the schema declares it or not, and reaches the model only if one of THAT node's own channels renders it. Nineteen sites — 24 fields — declared and received a value no channel of theirs rendered while the prompt already showed it under another reference, so each is dropped from the input schema AND from every `with` mapping: secured-renovacy x9 (`workspace_dir`), evolve x7, wiki-gen/author, and `hint_count` on…
+
+    </details>
+* **bots,mdcode:** a manifest's prose can no longer open a phantom fence in the generated catalogue ([#2396](https://github.com/SocialGouv/iterion/issues/2396)) ([56161db](https://github.com/SocialGouv/iterion/commit/56161db3397547fed5df68763d7ef044561d467b)), closes [#1723](https://github.com/SocialGouv/iterion/issues/1723), references [#1619](https://github.com/SocialGouv/iterion/issues/1619) [#2395](https://github.com/SocialGouv/iterion/issues/2395)
+
+    <details><summary>why</summary>
+
+    bots/review-pr's description was word-wrapped onto a line beginning with three backticks, and the bot catalogue splices that description as a block of its own: the wrap accident opened a fenced block nobody wrote. 1097 of the 1977 lines of bots/whats-next/skills/iterion-bot-catalog.md and 1059 of the 1601 lines of the issue-triage copy read as code — including issue-triage's own "NEVER invent a bot name" ritual. The catalogue is the routing table Nexie and Triagy read to pick an assignee, so…
+
+    </details>
+
 ## [3.261.0](https://github.com/SocialGouv/iterion/compare/v3.260.2...v3.261.0) (2026-10-13)
 
 ### Features
