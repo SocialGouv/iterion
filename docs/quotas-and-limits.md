@@ -6,18 +6,66 @@ the operator-set platform defaults and the per-org overrides documented
 here come from real fields on real records — not aspirational settings.
 
 Iterion enforces six distinct limits at run launch and one at the
-webhook intake, and can **bias** which workload meets them first (see
+webhook intake, plus one authorization rung in front of them, and can
+**bias** which workload meets them first (see
 [Budget floors](#budget-floors--holding-capacity-back-from-unreserved-work)). They live behind a single decision function
 ([pkg/server/launch_gate.go:gateLaunch](../pkg/server/launch_gate.go))
-called by every code path that creates a run on a cloud instance: the
-HTTP launch and resume, the inbound webhooks, the retry sweeper's
-automatic resumes and the board dispatcher's launches — the table in
-[Which surfaces are gated](#which-surfaces-are-gated) is the exhaustive
-list, with the two paths that still launch outside it.
+called by every surface that launches a NEW workflow from a request, and
+by the daemons that launch on their own schedule: the HTTP launch and
+resume, the WebSocket answer that resumes a run, the custom-event emit,
+the operator's launch-now on the pipeline board, the inbound webhooks,
+the retry sweeper's automatic resumes, the scheduled launches, the
+trigger spine and the board dispatcher. The table in
+[Which surfaces are gated](#which-surfaces-are-gated) names them all.
+
+Two families re-enter the engine **outside** it: `POST
+/api/runs/{id}/fork` and `POST /api/runs/{id}/rewind` create a run from
+an EXISTING one, and a resume driven by an existing run's own machinery
+(`/answer-human`, `/interactions/{iid}/answer`, `/host-event`, the
+assistant mission and watch coordinators) re-enters the engine on a run
+that already exists. Both are authorized by the run-by-id ladder
+(ADR-103) — a member of the run's team — and neither is metered; that is
+a known follow-up, not a property of the gate.
 
 ## The launch-admission order
 
-`gateLaunch` returns the **first** failing check, in this exact order:
+`gateLaunch` returns the **first** failing check. The authorization rung
+comes first, before any counter is read: launching a run spends the org's
+budget and executes code in its workspace, so it takes at least the
+`member` role of the team. A `viewer` is read-only and the orthogonal
+`config_editor` capability is not a ladder rung (ADR-078), so both are
+refused `member_role_required` (403). The principals that launch with no
+human role are exempt by their identity **kind** — an inbound webhook
+delivery, which authenticates itself with the config's bearer token or an
+HMAC body signature, and the daemons of this process (board dispatcher,
+schedule tick, trigger spine, retry sweeper). The rung is fail-closed: an
+identity carrying neither a `member` role nor one of those kinds is
+refused.
+
+The same rung guards the surfaces that FILL a queue a machine principal
+drains. The board's Ready column is one: the dispatcher drains it under a
+principal the gate exempts, so a card written ready is a launch its author
+asked the platform to perform. A trigger subscription is the other: the
+spine evaluates it against every matching event and launches under the
+same kind of exempt principal, so a stored subscription is a standing
+launch order. The rung is therefore taken at the mount, by every
+state-changing method of:
+
+- the three board registrars — `registerPipelineBoardRoutes`
+  (`/api/v1/pipeline-board/…`), `registerCloudBoardRoutes` (the
+  `native.BoardAPI` under `/api/v1/native/…`) and
+  `registerBoardForgeRoutes` (the per-card push / pull-request / merge
+  endpoints under the same `/api/v1/native/` prefix);
+- `registerTriggerRoutes` — `/api/v1/triggers` and
+  `/api/v1/bots/{name}/triggers/from-invocation`.
+
+Each answers the same `member_role_required` (403), with a detail naming
+what the caller was changing; `GET`/`HEAD` stay readable by a `viewer`.
+The self-hosted single-store mount of `/api/v1/native` is untouched: it
+runs with no identity store, so there is no role to read — the same arm
+`gateLaunch` itself opens with.
+
+Then the six limits, in this exact order:
 
 1. **Org status** — team `EffectiveStatus()` ∈ {`active`}. Suspended
    and read-only orgs short-circuit here.
@@ -66,8 +114,8 @@ denial path is only the deliberate "this would exceed the cap" case.
 
 ## Which surfaces are gated
 
-Every launch a cloud instance performs passes `gateLaunch` with the
-identity of whoever is launching and meters one monthly run at step 6.
+Every launch of a new workflow passes `gateLaunch` with the identity of
+whoever is launching and meters one monthly run at step 6.
 The slot goes back only when the refusal PROVES nothing started (a
 sealing failure, a bot that does not compile — no document, no queue
 message). When the error says a run may exist or a landed message may be
@@ -83,9 +131,11 @@ prevent (#1725, `runview.RunMayHaveStarted`):
 | Inbound webhooks, **board mode** (the command creates a card; the dispatcher launches it) | the token's | pre-check only, at card creation | **no** — a card is not a run; the pre-check's slot is handed back at once and the dispatcher meters the launch when it claims the card |
 | **Board dispatcher** (`processBoardCard`) | `board-dispatcher` on the card's team | yes | yes — refunded when the refusal proves nothing started; kept on a landed-but-failed publish |
 | Retry sweeper (automatic resume of a `failed_resumable` run) | the run's owner | yes | yes — refunded when the resume proves nothing started; kept on a landed-but-failed publish |
+| `POST /api/v1/pipeline-board/tasks/{id}/launch` (the operator's launch-now, bypassing the admission queue's ranking) | the caller's | yes | yes, rolled back on every refusal that leaves no run |
 | `POST /api/v1/triggers/emit` (custom event) | the caller's | pre-check only, per request | **no** — an emit is one EVENT and fans out to 0..N launches; the pre-check's slot is handed back at once and the spine meters each launch it performs |
 | Trigger spine direct launches (`serviceLauncher`: `mode: direct` board triggers, run-completion chains, the emit fan-out, the local schedule source) | `trigger-spine` on the subscription's team | yes | yes — refunded when the refusal proves nothing started; kept on a landed-but-failed publish |
 | `cloudsched` scheduled launches (`launchScheduledBot`) | `cloud-scheduler` on the schedule's team | yes | yes, rolled back on a refused launch |
+| `POST /api/runs/{id}/fork` and `/rewind` (a run created from an existing one), and the resumes an existing run's own machinery drives (`/answer-human`, `/interactions/{iid}/answer`, `/host-event`, the assistant mission and watch coordinators) | the caller's, or the run's own | **no** — authorized by the run-by-id ladder (ADR-103), which takes a member of the run's team | **no** — known follow-up |
 | Local mode (`iterion studio` / `iterion dispatch` with no identity store, the pipelines admission) | — | no gate exists | — |
 
 On the board dispatcher a denial is a **launch refusal** of the
@@ -119,10 +169,13 @@ Every limit has three knobs: an **override field** (on the Org or the
 Team document — see the table), a **platform env var** (the default
 applied when the override field is zero), and a public **denial reason
 token**. Zero means "no limit" everywhere — the safe default for
-existing deployments.
+existing deployments. The first row is the exception: the `member` rung is
+authorization, not a limit — it has no field and no env var, it is raised
+by changing the caller's role in the team.
 
 | Limit | Override field | Platform env var | Denial reason | HTTP |
 |---|---|---|---|---|
+| Below the `member` rung of the team | n/a — the caller's role | n/a — not configurable | `member_role_required` | 403 |
 | Org suspended / read-only | `Status` | n/a — admin action | `org_suspended` | 403 |
 | Concurrent active runs | `MaxConcurrentRuns` | `ITERION_ORG_DEFAULT_MAX_CONCURRENT_RUNS` | `concurrency_cap_exceeded` | 429 (`Retry-After: 30`) |
 | Launches per minute | `LaunchRatePerMin` | `ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN` | `launch_rate_limited` | 429 |
@@ -175,6 +228,12 @@ Plus a header on rate denials:
 ```
 Retry-After: 31
 ```
+
+The envelope also carries the authorization refusal: a caller below the
+`member` rung reads `"error": "member_role_required"` with a 403 and no
+`reset_at` — nothing resets, the role does. Clients that switch on the
+token therefore see one shape for "you may not launch here" and for "you
+may, but not right now".
 
 Forge webhooks see the **same** envelope when the launch-admission gate
 fires — the inbound handler writes a `launch_error` delivery row and
@@ -696,7 +755,7 @@ accounting lives in the Mongo counters above.
 
 | Metric | Labels | Meaning |
 |---|---|---|
-| `iterion_launch_denied_total` | `reason` (denial token) | Run launches denied by the admission gate |
+| `iterion_launch_denied_total` | `reason` (denial token, `member_role_required` included) | The refusals of the **admission gate** that it renders on an HTTP response (`writeLaunchDenial`) — the rung it takes as well as the six limits; a refusal the WebSocket answer envelope or a daemon records on the socket, the card, the subscription or the schedule is not in this series. The same rung taken at a board / trigger **mount** answers the same envelope and is deliberately **not** counted here: a refused board write is not a refused launch. The two launch routes that sit behind such a mount — `POST /api/v1/pipeline-board/tasks/{id}/launch` and `POST /api/v1/triggers/emit` — refuse a caller below the rung at the mount, before the gate runs, so those refusals are not counted either: the series moves only when the gate itself refuses on an HTTP response; the alert below excludes the authorization reason |
 | `iterion_webhook_throttled_total` | `provider`, `reason` (`rate_limited` / `quota_exceeded`) | Inbound deliveries throttled before processing |
 | `iterion_webhook_deliveries_total` | `provider`, `status` | Every inbound delivery's terminal status |
 | `iterion_auth_logins_total` | `result` (`success` / `invalid` / `locked` / `password_change_required` / `error`) | Login attempts |
@@ -713,7 +772,7 @@ The starter alert pack
 ([charts/iterion/templates/prometheus-rule.yaml](../charts/iterion/templates/prometheus-rule.yaml))
 fires:
 
-- **IterionLaunchDeniesSpiking** at `sum(rate(iterion_launch_denied_total[10m])) > 0.5`.
+- **IterionLaunchDeniesSpiking** at `sum(rate(iterion_launch_denied_total{reason!="member_role_required"}[10m])) > 0.5` — the authorization reason is excluded, so a viewer retrying a launch is not a quota page.
 - **IterionWebhookThrottling** at `increase(iterion_webhook_throttled_total[1h]) > 50`.
 - **IterionDLQNotEmpty** when `iterion_dlq_depth > 0` for 10 minutes.
 - **IterionRunnerHeartbeatErrors** on `increase(iterion_runner_heartbeat_errors_total[5m]) > 3`.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -59,7 +60,7 @@ func TestLaunchWebhookTarget_RefusesALaneKindMismatch(t *testing.T) {
 				launched++
 				return "run-1", nil
 			}
-			ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1"})
+			ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1", Role: identity.RoleMember, Kind: auth.KindWebhook})
 			cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: c.forkLane}
 			meta := webhookEventMeta{ProjectPath: "o/r", SubjectID: "pr:7", Kind: "pull_request"}
 			// The vars a REAL target carries. reviewPRVars always sets
@@ -123,7 +124,7 @@ func TestLaunchWebhookTarget_TrustPredicateAndPinCoupling(t *testing.T) {
 			launched++
 			return "run-1", nil
 		}
-		return s, auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1"}), counter, &launched
+		return s, auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1", Role: identity.RoleMember, Kind: auth.KindWebhook}), counter, &launched
 	}
 	meta := webhookEventMeta{ProjectPath: "o/r", SubjectID: "pr:9", Kind: "pull_request"}
 	vars := func() map[string]string {

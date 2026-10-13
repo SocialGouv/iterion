@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -38,7 +39,7 @@ func TestLaunchWebhookTarget_ReleasesTheMeteredSlotWhenTheLaunchFails(t *testing
 		}
 		// A real tenant identity: a super-admin bypasses the gate entirely,
 		// so metering only happens for the shape this test is about.
-		ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1"})
+		ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1", Role: identity.RoleMember, Kind: auth.KindWebhook})
 		return s, counter, ctx
 	}
 

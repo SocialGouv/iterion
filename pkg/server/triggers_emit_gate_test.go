@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
@@ -100,7 +101,9 @@ func TestEmitFanOut_MetersOneSlotPerLaunch(t *testing.T) {
 }
 
 // gatedTeamCtx is the request context of a signed-in member of the seeded
-// team — what the gate reads to find the org and its caps.
+// team — what the gate reads to find the org, its caps and the caller's rung.
 func gatedTeamCtx(id string) context.Context {
-	return auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: id, OrgID: id})
+	return auth.WithIdentity(context.Background(), auth.Identity{
+		UserID: "u1", TeamID: id, OrgID: id, Role: identity.RoleMember,
+	})
 }

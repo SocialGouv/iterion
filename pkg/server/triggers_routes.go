@@ -16,21 +16,51 @@ import (
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
+// triggerWriteRungDetail is what a refused automation write is told.
+const triggerWriteRungDetail = "changing this workspace's automation takes at least the member role — a trigger subscription launches runs the platform performs on its own; ask a workspace admin to raise your role"
+
+// triggerWriteAuth is the wrapper every trigger route mounts through — reads
+// included, where it is inert. It is the trigger family's instance of the
+// member rung (mutatingRungAuth, board_cloud_routes.go), owed here for the
+// same reason the board family owes it: a stored subscription is a standing
+// launch order, and the spine that executes it launches under a machine
+// principal (machineLaunchCtx, via serviceLauncher) the gate exempts — so the
+// authorization is owed where the subscription is WRITTEN. Disabling one is a
+// write too: a viewer must not be able to silence a team's automation.
+func (s *Server) triggerWriteAuth(next http.Handler) http.Handler {
+	return s.mutatingRungAuth(triggerWriteRungDetail)(next)
+}
+
+// triggerWriteDenial is the trigger family's instance of the rung decision.
+func (s *Server) triggerWriteDenial(r *http.Request) *launchDenial {
+	return s.mutatingRungDenial(r, triggerWriteRungDetail)
+}
+
 // registerTriggerRoutes wires the event-driven trigger subscription CRUD under
 // /api/v1/triggers. Tenant scope follows the request: the JWT's active team
 // in cloud mode, the local single-host scope ("") otherwise — mirroring
-// cloudBoardResolve. All routes go through requireAuth so a non-loopback
-// bind can't mutate automation wiring unauthenticated, mirroring the
-// native/dispatcher route gating.
+// cloudBoardResolve. All routes go through triggerWriteAuth: requireAuth, so a
+// non-loopback bind can't mutate automation wiring unauthenticated (mirroring
+// the native/dispatcher route gating), plus the member rung on every
+// state-changing method. The reads carry it too, where it is inert — so every
+// line of this registrar reads the same, and a route added with requireAuth
+// alone stands out.
+//
+// Every route mounts on s.mux, the RECORDING mux: its routing table is what
+// /api/openapi.json publishes, and the class witness
+// (trigger_write_rung_test.go) holds this file's own registration calls
+// against that table — a route handed s.mux.ServeMux is absent from the
+// table and reddens there, and a registration spelled in a form the witness
+// cannot parse reddens on its count.
 func (s *Server) registerTriggerRoutes() {
-	s.mux.Handle("GET /api/v1/triggers", s.requireAuth(http.HandlerFunc(s.handleListTriggers)))
-	s.mux.Handle("POST /api/v1/triggers", s.requireAuth(http.HandlerFunc(s.handleCreateTrigger)))
-	s.mux.Handle("GET /api/v1/triggers/{id}", s.requireAuth(http.HandlerFunc(s.handleGetTrigger)))
-	s.mux.Handle("PUT /api/v1/triggers/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateTrigger)))
-	s.mux.Handle("DELETE /api/v1/triggers/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteTrigger)))
-	s.mux.Handle("POST /api/v1/triggers/emit", s.requireAuth(http.HandlerFunc(s.handleEmitTrigger)))
-	s.mux.Handle("POST /api/v1/bots/{name}/triggers/from-invocation", s.requireAuth(http.HandlerFunc(s.handleTriggerFromInvocation)))
-	s.mux.Handle("GET /api/v1/triggers/health", s.requireAuth(http.HandlerFunc(s.handleTriggersHealth)))
+	s.mux.Handle("GET /api/v1/triggers", s.triggerWriteAuth(http.HandlerFunc(s.handleListTriggers)))
+	s.mux.Handle("POST /api/v1/triggers", s.triggerWriteAuth(http.HandlerFunc(s.handleCreateTrigger)))
+	s.mux.Handle("GET /api/v1/triggers/{id}", s.triggerWriteAuth(http.HandlerFunc(s.handleGetTrigger)))
+	s.mux.Handle("PUT /api/v1/triggers/{id}", s.triggerWriteAuth(http.HandlerFunc(s.handleUpdateTrigger)))
+	s.mux.Handle("DELETE /api/v1/triggers/{id}", s.triggerWriteAuth(http.HandlerFunc(s.handleDeleteTrigger)))
+	s.mux.Handle("POST /api/v1/triggers/emit", s.triggerWriteAuth(http.HandlerFunc(s.handleEmitTrigger)))
+	s.mux.Handle("POST /api/v1/bots/{name}/triggers/from-invocation", s.triggerWriteAuth(http.HandlerFunc(s.handleTriggerFromInvocation)))
+	s.mux.Handle("GET /api/v1/triggers/health", s.triggerWriteAuth(http.HandlerFunc(s.handleTriggersHealth)))
 }
 
 // handleTriggersHealth exposes the schedule-scheduler's liveness

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/identity"
 )
 
 // The resume endpoint validates the budget ask at admission — the third
@@ -19,7 +20,7 @@ import (
 func TestHandleResumeRun_RejectsMalformedBudgetBeforeStoreAccess(t *testing.T) {
 	s := newOrgTestServer(t)
 	seedTeam(t, s, "t1", "acme")
-	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1"})
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", Role: identity.RoleMember})
 	r := orgReq(ctx, "POST", "/api/runs/run-123/resume", `{"budget":{"max_duration":"4 hours"}}`, "run-123")
 	w := httptest.NewRecorder()
 	s.handleResumeRun(w, r)

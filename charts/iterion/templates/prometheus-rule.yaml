@@ -39,12 +39,12 @@ spec:
             summary: "The sweeper recovered orphaned runs"
             description: "Runner pods are dying without terminal status writes (crash/OOM/eviction). The runs are resumable; investigate the pod churn."
         - alert: IterionLaunchDeniesSpiking
-          expr: sum(rate(iterion_launch_denied_total[10m])) > 0.5
+          expr: sum(rate(iterion_launch_denied_total{reason!="member_role_required"}[10m])) > 0.5
           labels:
             severity: info
           annotations:
             summary: "Run launches are being denied at a sustained rate"
-            description: "Orgs are hitting quotas/caps (see reason label). Expected under abuse; worth a look if it's a paying tenant."
+            description: "Orgs are hitting quotas/caps (see reason label); the authorization refusal member_role_required is excluded, a viewer retrying a launch is not a quota page. Expected under abuse; worth a look if it's a paying tenant."
         - alert: IterionWebhookThrottling
           expr: increase(iterion_webhook_throttled_total[1h]) > 50
           labels:

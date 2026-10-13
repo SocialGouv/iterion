@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -1898,7 +1897,7 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// refusing the very run it exists to protect. No repository: the card
 	// carries a clone URL, and the quota keys on the forge slug the meter
 	// writes, never a second identity derived from a URL.
-	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: tenant, UserID: boardDispatcherActor}),
+	adm, deny := s.gateLaunch(machineLaunchCtx(ctx, tenant, boardDispatcherActor),
 		launchSubject{BotID: iss.Bot})
 	if deny != nil {
 		s.revokeUnlaunchedGrant(minted)

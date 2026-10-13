@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -434,7 +435,7 @@ func TestHandleLaunchRun_CarriesTheRequestsBotToTheGate(t *testing.T) {
 		}})
 		// newGatedBoardServer already seeded org+team "t1"; the handler needs
 		// the identity a signed-in operator would carry.
-		return s, auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1"})
+		return s, auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1", Role: identity.RoleMember})
 	}
 	launch := func(t *testing.T, s *Server, ctx context.Context, body string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -504,7 +505,7 @@ func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
 		}
 		s.forgeConnections = conns
 		s.forgeOrchestrator = &forge.Orchestrator{}
-		return s, auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1"})
+		return s, auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1", Role: identity.RoleMember})
 	}
 	launch := func(t *testing.T, s *Server, ctx context.Context, repo string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -608,7 +609,7 @@ func TestHandleLaunchRun_ARefusedLaunchConsumesNoMonthlySlot(t *testing.T) {
 	s, rs := newGatedBoardServer(t, gateSpec{id: "t1"}, pub)
 	s.cfg.Store = fakeActiveStore{RunStore: rs}
 	s.orgUsage = orgusage.NewMemoryCounter()
-	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1"})
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1", Role: identity.RoleMember})
 
 	src, err := json.Marshal(boardGateProbeBot)
 	if err != nil {
@@ -662,7 +663,7 @@ func TestHandleResumeRun_TakesItsSubjectFromTheRun(t *testing.T) {
 		if err := rs.SaveRun(ctx, run); err != nil {
 			t.Fatalf("SaveRun: %v", err)
 		}
-		return s, auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1"}), runID
+		return s, auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1", Role: identity.RoleMember}), runID
 	}
 
 	t.Run("the reserved bot is admitted on its own slot", func(t *testing.T) {

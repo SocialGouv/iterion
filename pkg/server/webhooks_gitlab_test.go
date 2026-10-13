@@ -36,9 +36,15 @@ func glConfig() webhooks.Config {
 	}
 }
 
-// gitlabCtx simulates what webhookAuth stamps before the handler runs.
+// gitlabCtx simulates what webhookAuth stamps before the handler runs —
+// Kind included: the middleware marks the actor synthetic
+// (middleware_webhook.go), and a fixture without it tests a principal the
+// inbound lane never produces.
 func gitlabCtx(cfg webhooks.Config) context.Context {
-	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "webhook:" + cfg.ID, TeamID: cfg.TenantID, Role: identity.RoleMember})
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{
+		UserID: "webhook:" + cfg.ID, TeamID: cfg.TenantID,
+		Role: identity.RoleMember, Kind: auth.KindWebhook,
+	})
 	ctx = store.WithIdentity(ctx, cfg.TenantID, "webhook:"+cfg.ID)
 	return context.WithValue(ctx, webhookCtxKey{}, cfg)
 }

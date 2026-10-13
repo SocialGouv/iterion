@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -137,7 +138,7 @@ func (e *pipelineTierEnv) req(method, path, body string) *http.Request {
 	} else {
 		r = httptest.NewRequest(method, path, strings.NewReader(body))
 	}
-	return r.WithContext(auth.WithIdentity(r.Context(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1"}))
+	return r.WithContext(auth.WithIdentity(r.Context(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1", Role: identity.RoleMember}))
 }
 
 // createCard posts a task and returns the created card.

@@ -90,7 +90,7 @@ func TestHandleResumeRun_SuspendGate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed suspended team: %v", err)
 	}
-	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1"})
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", Role: identity.RoleMember})
 	r := orgReq(ctx, "POST", "/api/runs/run-123/resume", `{}`, "run-123")
 	w := httptest.NewRecorder()
 	s.handleResumeRun(w, r)
@@ -163,14 +163,14 @@ func TestRunsWS_HandleAnswer_SuspendGate(t *testing.T) {
 	emptyAnswers := runWSEnvelope{Type: wsTypeAnswer, AckID: "a1", Payload: json.RawMessage(`{"answers":{}}`)}
 
 	t.Run("suspended org denied", func(t *testing.T) {
-		c := newConn(auth.Identity{UserID: "u1", TeamID: "susp"})
+		c := newConn(auth.Identity{UserID: "u1", TeamID: "susp", Role: identity.RoleMember})
 		c.handleAnswer(emptyAnswers)
 		if got := firstWSError(t, c).Code; got != "org_suspended" {
 			t.Fatalf("error code = %q, want org_suspended", got)
 		}
 	})
 	t.Run("active org passes gate", func(t *testing.T) {
-		c := newConn(auth.Identity{UserID: "u1", TeamID: "act"})
+		c := newConn(auth.Identity{UserID: "u1", TeamID: "act", Role: identity.RoleMember})
 		c.handleAnswer(emptyAnswers)
 		if got := firstWSError(t, c).Code; got == "org_suspended" {
 			t.Fatalf("active org must not be suspend-gated; got %q", got)

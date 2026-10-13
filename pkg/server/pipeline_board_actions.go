@@ -654,6 +654,34 @@ func (s *Server) handlePipelineBoardTaskLaunch(w http.ResponseWriter, r *http.Re
 		s.httpErrorFor(w, r, http.StatusConflict, "pipeline board launch: ticket %s has no bot — not a pipeline ticket", id)
 		return
 	}
+	// The SAME admission every other launch surface passes — the member
+	// rung, then suspend → per-repo quota → concurrency → launch rate →
+	// monthly caps — with the card's bot as the subject: judged as ordinary
+	// work, a RESERVED bot launched by hand would face the ceiling its own
+	// reservation lowered. That is why the card read sits in FRONT of the
+	// gate. It reveals nothing the mount has not already admitted: every
+	// method of this registrar takes the member rung (boardWriteAuth)
+	// before the handler runs, and the board's GET routes show the same
+	// card to a viewer. No repository: the card carries a clone URL, and
+	// the quota keys on the forge slug the meter writes, never a second
+	// identity derived from a URL.
+	adm, denial := s.gateLaunch(r.Context(), launchSubject{BotID: issue.Bot})
+	if denial != nil {
+		s.writeLaunchDenial(w, r, denial)
+		return
+	}
+	// The gate's run-quota increment IS the metering, so every return
+	// between here and a run existing abandons an admitted launch and has
+	// to hand the monthly unit (and the per-minute token) back — an
+	// operator retrying a conflicted card would otherwise spend the org's
+	// month one 409 at a time. Same rule, and same nil-safety, as
+	// handleLaunchRun.
+	runMayExist := false
+	defer func() {
+		if !runMayExist {
+			adm.rollback(s.logger)
+		}
+	}()
 	s.stateMu.RLock()
 	runs := s.runs
 	s.stateMu.RUnlock()
@@ -691,8 +719,16 @@ func (s *Server) handlePipelineBoardTaskLaunch(w http.ResponseWriter, r *http.Re
 	// (cloudBoardResolve), so a team's fork — or a bot only it authored —
 	// serves its own cards.
 	caller, _ := auth.FromContext(r.Context())
+	// Past this statement the metered slot is spent unless the run service
+	// proves nothing started: launchTicketNow wraps the launch error, and
+	// the fact travels on it (RunPersistedError / a publish that landed),
+	// never inferred from err != nil here.
+	runMayExist = true
 	runID, err := s.launchTicketNow(r.Context(), caller.TeamID, runs, boardStore, issue)
 	if err != nil {
+		if !runview.RunMayHaveStarted(err) {
+			runMayExist = false
+		}
 		status := http.StatusConflict
 		if errors.Is(err, errTicketPRLaunchContext) {
 			status = prLaunchContextStatus(err)
