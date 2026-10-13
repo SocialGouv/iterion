@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.259.1](https://github.com/SocialGouv/iterion/compare/v3.259.0...v3.259.1) (2026-10-13)
+
+### Bug Fixes
+
+* **sandbox:** the run's proxy pins the gateway's name against a rebinding answer ([#2372](https://github.com/SocialGouv/iterion/issues/2372)) ([4fa439c](https://github.com/SocialGouv/iterion/commit/4fa439c7cb634c29c577458ed4a652ebeb4342ec)), closes [#2336](https://github.com/SocialGouv/iterion/issues/2336), references [#2335](https://github.com/SocialGouv/iterion/issues/2335)
+
+    <details><summary>why</summary>
+
+    The in-container runner checks the OpenAI-compatible gateway's address as it resolves the name, then hands the run's network proxy the NAME (the proxy's policy matches names), and the proxy resolved it again on its own and connected wherever that second answer pointed. A resolver answering the proxy differently (DNS rebinding) landed the connection, the gateway credential with it, on the proxy host's private network: only loopback and link-local destinations were refused there.
+
+    </details>
+
 ## [3.259.0](https://github.com/SocialGouv/iterion/compare/v3.258.1...v3.259.0) (2026-10-12)
 
 ### Features
