@@ -116,9 +116,17 @@ export const HUMAN_INTERACTION_HELP =
 // No registry enum counterpart: `permission` is declared with checked()
 // (Ident form narrowed by the compiler, spec.go pPermission), so its words
 // never reach iterDslEnumValuesByProperty.
-// Node-level tool-permission gate (docs/permissions.md). The empty value is
-// "inherit the workflow's mode", which is why the forms pass allowEmpty
-// rather than listing a fourth option.
+// Tool-permission gate modes (docs/permissions.md), shared by the node form
+// and the workflow form. Both pass allowEmpty rather than listing a fourth
+// option, and each supplies its own emptyLabel, because the empty value does
+// not mean the same thing at the two levels: "inherit the workflow's mode" on
+// a node, "ITERION_PERMISSION, else off" on a workflow.
+// A THIRD surface offers these words to a human and does NOT read this list:
+// the launch dialog's run override (Runs/launchView/RunSettingsSection), where
+// empty means "inherit" rather than "unset" and `off` is the resolved default,
+// so its labels are its own. Its option VALUES are held to this list by
+// RunSettingsSection.test.tsx, which is what keeps a fourth mode from landing
+// in two surfaces out of three.
 export const PERMISSION_OPTIONS: SelectOption[] = [
   { value: "off", label: "off (no gate)" },
   { value: "ask", label: "ask (pause for approval)" },
@@ -126,20 +134,56 @@ export const PERMISSION_OPTIONS: SelectOption[] = [
 ];
 
 // Every clause maps to a line of pkg/backend/permission/permission.go.
-// Evaluate's order (:302-315) matches deny, then ask, then allow BEFORE it
-// reaches "otherwise the mode default" — so the rules behave identically in
-// both armed modes, and an `ask:` rule pauses even under `deny`. What the
-// mode decides is the default for what nothing matched. And an explicit
-// `off` is not the same as leaving the field empty: it wins over the
-// workflow AND over ITERION_PERMISSION (`cmp.Or(override, node, workflow,
-// env)`, executor_build_task.go:169).
+// Evaluate matches deny, then ask, then allow BEFORE it reaches "otherwise
+// the mode default" — so the rules behave identically in both armed modes,
+// and an `ask:` rule pauses even under `deny`. One shape is the exception and
+// is stated too, because a security control's help must not read stronger
+// than the gate: a bare exact-tool ask is beaten by a literal scoped allow
+// for that same call (Evaluate step 4,
+// TestEvaluate_TheBareAskAllowHoleIsTheSameInBothArmedModes). What the mode
+// decides is the default for what nothing matched. Not stated here, being
+// iterion's own plumbing rather than an authored tool: ask_user, the board /
+// control / watch MCP families and StructuredOutput are exempt before any
+// rule is read, so a deny naming one of those does not block it
+// (docs/permissions.md, "Infrastructure exemption"). And an explicit `off` is
+// not the same as leaving the field empty: it wins over the workflow AND over
+// ITERION_PERMISSION (`cmp.Or(override, node, workflow, env)`,
+// executor_build_task.go).
 export const PERMISSION_HELP =
-  "Tool-permission gate for this node. Empty inherits: workflow → ITERION_PERMISSION → off. off = no gate, and it OVERRIDES ITERION_PERMISSION, so it is not the same as empty. The rules are read the same way in both armed modes — deny: always blocks, ask: always pauses (yes, under deny too), allow: approves what neither matched. The mode decides only what nothing matched: ask PAUSES it for a human, deny BLOCKS it with no pause.";
+  "Tool-permission gate for this node. Empty inherits: workflow → ITERION_PERMISSION → off — the workflow's own mode and lists are edited in the inspector's Workflow tab, shown when nothing is selected. off = no gate, and it OVERRIDES ITERION_PERMISSION, so it is not the same as empty. The rules are read the same way in both armed modes — deny: always blocks, ask: pauses (yes, under deny too), allow: approves the rest. An ask that names just the tool is the one rule an allow can beat, and only by naming that exact call. The mode decides only what nothing matched: ask PAUSES it for a human, deny BLOCKS it with no pause.";
+
+// The workflow block's mode is the one its gated nodes inherit, so its help
+// states the precedence rather than "inherit": the level above it is the
+// node, the level below is the environment (docs/permissions.md,
+// "Precedence"). Scope is part of the statement, not decoration: the gate
+// evaluates LLM-issued tool calls, and the policy is built from the task of
+// an agent or a judge (extractBackendFields accepts those two node kinds and
+// refuses every other), so a plain tool node's `command:` runs ungated — and
+// C112 only says so when the tool node declares a `permission:` of its own.
+// The third gated subject goes through the SAME door and is the one no
+// diagnostic names: rung 4 of a tool node's Verified Action synthesises an
+// ir.AgentNode (executor_verified_action.go agentRecovery) that declares no
+// mode and no lists, so this block alone gates it — and the tool node's own
+// `permission:` is not copied onto it. A workflow of nothing but such a tool
+// node compiles with zero diagnostics BECAUSE the rung reads these lists
+// (C111's reader arm, pkg/dsl/ir/validate_permission_rules.go), so an author
+// told the gate stops at agent/judge nodes would delete a live bound on the
+// most dangerous agent in the graph.
+// The rest is PERMISSION_HELP's reading of the modes, which is the same
+// policy — one resolver, pkg/backend/permission.
+export const WORKFLOW_PERMISSION_HELP =
+  "Tool-permission gate for this workflow's agent and judge nodes — it governs the tool calls their models issue — and for the recovery agent a tool node's Verified Action dispatches at its agent rung: that agent declares nothing of its own, and a tool node's own permission: is not enforced (C112), so this block is its only gate. A plain tool node's own command: is NOT gated; it runs directly. A node's own permission: overrides it, and the CLI --permission overrides both. Empty falls through to ITERION_PERMISSION, then off; off = no gate, and it OVERRIDES ITERION_PERMISSION, so it is not the same as empty. The rules are read the same way in both armed modes — deny: always blocks, ask: pauses (yes, under deny too), allow: approves the rest. An ask that names just the tool is the one rule an allow can beat, and only by naming that exact call. The mode decides only what nothing matched: ask PAUSES it for a human, deny BLOCKS it with no pause.";
+
+// The workflow's half of the replacement rule the node controls state: this
+// is the list a node replaces, and an emptied one declares nothing at all.
+// The recovery rung inherits all three kinds, having declared none.
+export const WORKFLOW_PERMISSION_RULES_HELP =
+  "The workflow's list of this kind — every agent and judge node inherits it, and so does the recovery agent of a tool node's Verified Action. A node's non-empty list of this kind REPLACES it, never a union, and independently per kind. An empty list declares nothing. Tool(pattern) syntax, e.g. Bash(git diff:*).";
 
 // The one thing the feature is easy to get backwards, so every rule-list
 // control repeats it: a node list REPLACES, it never adds.
 export const PERMISSION_RULES_HELP =
-  "A non-empty list REPLACES the workflow's list of this kind — never a union, and independently per kind. Restate anything from the workflow's list of this kind you still want. Empty inherits it. Tool(pattern) syntax, e.g. Bash(git diff:*).";
+  "A non-empty list REPLACES the workflow's list of this kind — never a union, and independently per kind. Restate anything from the workflow's list of this kind you still want; it is edited in the inspector's Workflow tab, shown when nothing is selected. Empty inherits it. Tool(pattern) syntax, e.g. Bash(git diff:*).";
 
 // Curated order: no-reasoning first, then ascending effort, the orchestration tier last.
 const REASONING_EFFORT_ORDER = ["none", "low", "medium", "high", "xhigh", "max", "ultracode"] as const;

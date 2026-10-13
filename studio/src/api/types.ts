@@ -798,6 +798,27 @@ export interface WorkflowDecl {
   resources?: Record<string, number>;
   compaction?: CompactionBlock;
   interaction?: InteractionMode;
+  /** Tool-permission gate mode for this workflow's agent and judge nodes:
+   *  "off" | "ask" | "deny". It governs the tool calls their models issue,
+   *  and those of the recovery agent a `tool` node's Verified Action
+   *  dispatches at its agent rung — that agent declares nothing of its own,
+   *  so this block is its only gate. A plain tool node's own `command:` is
+   *  not gated, and its own `permission:` is not enforced (C112). A node's
+   *  own `permission:` overrides it; empty/absent falls through to
+   *  ITERION_PERMISSION, then off, while a declared "off" outranks that
+   *  environment default. See docs/permissions.md. */
+  permission?: string;
+  /** Workflow-level permission rules, `Tool(pattern)` syntax. Every agent
+   *  and judge node inherits the list of a kind it does not declare, as
+   *  does a tool node's Verified-Action recovery agent; a node's NON-EMPTY
+   *  list of the same kind replaces this one — never a union, and
+   *  independently per kind. An emptied control writes
+   *  `undefined`, never `[]`: `[]` reaches the save as a non-nil empty
+   *  slice, which `ir.SameProgram` reads as a different program, so the
+   *  save is refused with a 422 that names no field. */
+  allow?: string[];
+  ask?: string[];
+  deny?: string[];
   // Worktree isolation mode. Omit or set to "none" to run in place;
   // "auto" runs the workflow inside a per-run git worktree.
   worktree?: WorktreeMode;
