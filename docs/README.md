@@ -80,7 +80,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 |---|---|
 | [bot-invocations.md](bot-invocations.md) | Manifest-driven command, board, schedule, and forge invocation modes. |
 | [resume.md](resume.md) | Current resume states, checkpoint semantics, overrides, and stale-run safeguards. |
-| [merge-policy.md](merge-policy.md) | Worktree finalization, branch ownership, and merge authority. |
+| [merge-policy.md](merge-policy.md) | The merge queue guarding `main`: how it works, the admin bypass and the incident fast lane, releases, measuring the queue, reverting. |
 | [review-merge-gate.md](review-merge-gate.md) | Review-environment conversation and final merge gate. |
 | [merge-gate.md](merge-gate.md) | The deterministic merge-gate check: verdicts, gate contexts, refusal and interruption repair, and the gate-switch procedure. |
 | [sandbox.md](sandbox.md) | Docker, Podman, and Kubernetes isolation, bot/repository `devbox.json` tool provisioning, and egress proxy policy. |
@@ -161,6 +161,21 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 | [development.md](development.md) | Reproducible toolchain, task graph, tests, and repository structure. |
 | [e2e_coverage.md](e2e_coverage.md) | Stubbed end-to-end coverage map. |
 | [live-e2e-coverage.md](live-e2e-coverage.md) | Credentialed/live E2E coverage and compile guards. |
+
+## Diagrams
+
+Drawn from the code: the Mongo data model as entity-relationship diagrams and the access-control matrix.
+
+| Page | Topic |
+|---|---|
+| [diagrams/README.md](diagrams/README.md) | Index, conventions, legend and glossary — how the diagrams are kept true. |
+| [diagrams/data-model-identity.md](diagrams/data-model-identity.md) | Orgs, teams, users, memberships, invitations, personal credentials, SSO config, audit. |
+| [diagrams/data-model-forge-bots.md](diagrams/data-model-forge-bots.md) | Forge connections, repository bindings, webhooks, bot tiers — Revi bound to a repository inside a team. |
+| [diagrams/data-model-runs.md](diagrams/data-model-runs.md) | A run, its streams, the run tree, assistant supervision, the status machine. |
+| [diagrams/data-model-credentials.md](diagrams/data-model-credentials.md) | Credentials at rest and in flight, the meters, the routing policy, the tier walk. |
+| [diagrams/data-model-automation.md](diagrams/data-model-automation.md) | The trigger spine, the scheduled surfaces, the leases. |
+| [diagrams/data-model-knowledge.md](diagrams/data-model-knowledge.md) | Memory, config shares, notifications. |
+| [diagrams/access-control.md](diagrams/access-control.md) | Principal kinds, roles, the authorization decision points, the gate × principal matrix. |
 
 ## Point-in-time records
 
