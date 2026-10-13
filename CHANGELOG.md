@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.260.1](https://github.com/SocialGouv/iterion/compare/v3.260.0...v3.260.1) (2026-10-13)
+
+### Bug Fixes
+
+* **launch:** a launch keeps its render out of the editor tab's source; it carries the program the operator saw ([#2386](https://github.com/SocialGouv/iterion/issues/2386)) ([ca8ceed](https://github.com/SocialGouv/iterion/commit/ca8ceed4857b45a758ec93a9d4171541570c0bdf)), references [#1793](https://github.com/SocialGouv/iterion/issues/1793) [#1790](https://github.com/SocialGouv/iterion/issues/1790) [#1789](https://github.com/SocialGouv/iterion/issues/1789) [#1790](https://github.com/SocialGouv/iterion/issues/1790) [#1793](https://github.com/SocialGouv/iterion/issues/1793) [#1789](https://github.com/SocialGouv/iterion/issues/1789)
+
+    <details><summary>why</summary>
+
+    The launch form reads the ACTIVE editor tab's document store (LaunchDocStoreProvider). Its inline branch — the toolbar's Run on a tab with no path, and the only launch cloud has — rendered that tab's document through /api/unparse and wrote the result into the tab's `currentSource`. A draft tab follows its conversation only while that field still holds the draft the assistant installed, so a render that was not byte-identical made the tab the author's: the assistant's next drafts stopped…
+
+    </details>
+
 ## [3.260.0](https://github.com/SocialGouv/iterion/compare/v3.259.2...v3.260.0) (2026-10-13)
 
 ### Features
