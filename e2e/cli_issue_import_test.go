@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -36,7 +37,7 @@ import (
 //
 // Mutation guide:
 //   - "n'importer aucune issue": short-circuit `syncForgeIssuesToBoard` to
-//     `return 0, 0, nil` — the board stays empty, the "board must have 2
+//     `return 0, 0, 0, nil` — the board stays empty, the "board must have 2
 //     cards" assertion fails.
 //   - "ignorer l'idempotence": drop the `existing, gerr := board.Get(...)`
 //     branch in `upsertForgeCard` and always Create — the re-import
@@ -45,7 +46,9 @@ import (
 //   - Skip the PR filter (`if is.IsPullRequest { continue }`) — the
 //     "exactly 2 cards" assertion fails (the PR would land as a 3rd).
 //   - Skip the token env lookup or hard-code an empty base URL — the
-//     server call-count assertion fails (0 calls, not 1).
+//     server call-count assertion fails (0 calls, not 2).
+//   - End the paged walk on a SHORT page instead of an empty one
+//     (`forEachForgeIssuePage`) — the per-import call count drops to 1.
 
 // forgejoIssuesFixture is the JSON payload the fake Forgejo endpoint
 // returns for GET /api/v1/repos/{repo}/issues. Three items: two plain
@@ -62,6 +65,13 @@ const forgejoIssuesFixture = `[
 // GET /api/v1/repos/{repo}/issues with forgejoIssuesFixture; every
 // other path 404s. Returns the server (defer .Close()) and a pointer
 // to the call counter, so the test can assert exact request cardinality.
+//
+// It PAGES like the instance it stands for: `page` is honoured, so page 2
+// answers an empty array. A Forgejo instance serves the page asked for and
+// the import's walk ends on an empty one, so a fixture that re-served its
+// rows for every page would keep the walk going to the page budget — a fake
+// kinder-but-dumber than the real forge, failing the import it is meant to
+// exercise.
 func fakeForgejoServer(t *testing.T, repo string) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var listCalls atomic.Int32
@@ -81,8 +91,13 @@ func fakeForgejoServer(t *testing.T, repo string) (*httptest.Server, *atomic.Int
 			return
 		}
 		listCalls.Add(1)
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		if page > 1 {
+			_, _ = io.WriteString(w, `[]`) // the window ends here
+			return
+		}
 		_, _ = io.WriteString(w, forgejoIssuesFixture)
 	}))
 	t.Cleanup(srv.Close)
@@ -90,9 +105,14 @@ func fakeForgejoServer(t *testing.T, repo string) (*httptest.Server, *atomic.Int
 }
 
 // runIssueImportJSON runs RunIssueImport in JSON mode and returns the
-// decoded {created, updated} counters plus the raw stdout for
+// decoded {synced, created, updated} counters plus the raw stdout for
 // diagnostics on failure. Any error from the CLI is surfaced verbatim.
+//
+// Synced is the window the import MIRRORED; Created and Updated are the cards
+// it had to write. A re-import of an unchanged repo writes nothing, so the
+// three together are what tells it apart from an import that found nothing.
 type importReport struct {
+	Synced  int `json:"synced"`
 	Created int `json:"created"`
 	Updated int `json:"updated"`
 }
@@ -153,14 +173,16 @@ func TestRunIssueImport_CreatesCardsAndIsIdempotent(t *testing.T) {
 
 	// -----------------------------------------------------------------
 	// First import: 2 cards created (issue #101 open, #202 closed), PR
-	// #303 filtered out, 0 updated.
+	// #303 filtered out, 0 updated. The window costs two list calls: the
+	// page that carries it, then the empty one that ends it — the only
+	// statement a provider makes about the end of a window.
 	// -----------------------------------------------------------------
 	report1, stdout1 := runIssueImportJSON(t, opts)
-	if got := listCalls.Load(); got != 1 {
-		t.Fatalf("first import: fake forge ListIssues calls = %d, want 1 (mission: import must actually hit the forge, not stub-return)", got)
+	if got := listCalls.Load(); got != 2 {
+		t.Fatalf("first import: fake forge ListIssues calls = %d, want 2 (mission: import must actually hit the forge, not stub-return, and read to the end of the window)", got)
 	}
-	if report1.Created != 2 || report1.Updated != 0 {
-		t.Fatalf("first import report = %+v, want {Created:2, Updated:0} (stdout: %s)", report1, stdout1)
+	if report1.Synced != 2 || report1.Created != 2 || report1.Updated != 0 {
+		t.Fatalf("first import report = %+v, want {Synced:2, Created:2, Updated:0} (stdout: %s)", report1, stdout1)
 	}
 
 	// Re-open the board through a fresh store — persisted truth.
@@ -197,15 +219,16 @@ func TestRunIssueImport_CreatesCardsAndIsIdempotent(t *testing.T) {
 
 	// -----------------------------------------------------------------
 	// Second import: idempotence. The SAME fixture is served, so no card
-	// is new; every existing one is updated in place. The board count
-	// must stay at 2.
+	// is new and none has changed — the import mirrors the whole window
+	// and writes nothing. The board count must stay at 2.
 	// -----------------------------------------------------------------
 	report2, stdout2 := runIssueImportJSON(t, opts)
-	if got := listCalls.Load(); got != 2 {
-		t.Fatalf("second import: fake forge ListIssues calls = %d, want 2 (one per import)", got)
+	if got := listCalls.Load(); got != 4 {
+		t.Fatalf("second import: fake forge ListIssues calls = %d, want 4 (two per import)", got)
 	}
-	if report2.Created != 0 || report2.Updated != 2 {
-		t.Fatalf("re-import report = %+v, want {Created:0, Updated:2} (stdout: %s)", report2, stdout2)
+	if report2.Synced != 2 || report2.Created != 0 || report2.Updated != 0 {
+		t.Fatalf("re-import report = %+v, want {Synced:2, Created:0, Updated:0} — the window is mirrored, nothing had to be rewritten (stdout: %s)",
+			report2, stdout2)
 	}
 	all2, err := importReopenBoard(t, storeDir).List(native.ListFilter{})
 	if err != nil {

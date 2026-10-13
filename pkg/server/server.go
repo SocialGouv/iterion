@@ -896,12 +896,15 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			s.forgePublishTokens = NewForgePublishTokenRegistry()
 			s.gateSettles = newMemoryGateSettleStore(s.logger)
 			s.gateDecisions = newMemoryGateDecisionStore(s.logger)
-			// The same warning leaseStoreFor gives for the sweep's election: a
-			// cloud-shaped store without Valkey means the grant a run's publish
-			// POST authenticates with, and the authority that orders verdicts
-			// on one (sha, context), are per-replica. The POST landing on
-			// another replica is refused (401), and two replicas order the
-			// same check independently — said once at boot, not on every 401.
+			// The same warning leaseStoreFor gives for the leased nets'
+			// election: a cloud-shaped store without Valkey means the grant a
+			// run's publish POST authenticates with, and the authority that
+			// orders verdicts on one (sha, context), are per-replica. The POST
+			// landing on another replica is refused (401), and two replicas
+			// order the same check independently — said once at boot, not on
+			// every 401. The cloud-shaped STORE is the signal here because
+			// what is at stake is replicas existing at all, not one net's
+			// wiring: both subjects are wired by the enclosing branch.
 			if _, cloud := cfg.Store.(gateSweepLister); cloud {
 				logger.Warn("server: no Valkey wired — forge publish grants and the gate verdict-order authority are per-replica: " +
 					"a run's publish POST landing on another replica is refused, and verdicts decided on different replicas are not ordered against each other")
@@ -1083,7 +1086,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			s.assistantMissions = assistantmission.NewFSStore(rs.Root())
 		}
 	}
-	s.leases = leaseStoreFor(cfg, s.warnf)
+	s.leases = leaseStoreFor(s, s.warnf)
 	s.replicaID = newReplicaID()
 	s.gateSweep = gateSweepSettingsFromEnv(os.Getenv, s.warnf)
 	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket

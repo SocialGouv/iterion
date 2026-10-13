@@ -36,7 +36,9 @@ export function useConnectWizard(
 ) {
   // Step mutations (PAT connect, App install, …) report their failures
   // through setError; fetch failures surface from the queries. One error
-  // slot is exposed — a step error wins, and reload clears it.
+  // slot is exposed — a step error wins, and reload clears it. setError is
+  // also handed to shared children (EnableRepoPanel), which report the EMPTY
+  // STRING when an attempt starts: that form takes the slot down.
   const [actionError, setActionError] = useState<string | null>(null);
 
   // The connections key is shared with RepoTargetSection, so a connection
@@ -54,8 +56,11 @@ export function useConnectWizard(
   const loading = connectionsQuery.isLoading || oauthAppsQuery.isLoading;
   const fetching = connectionsQuery.isFetching || oauthAppsQuery.isFetching;
   const fetchError = connectionsQuery.error ?? oauthAppsQuery.error;
+  // `||`, not `??`: a child clearing the channel at the start of a new
+  // attempt reports the empty string, which has to HIDE the slot and let a
+  // load failure through again — `??` would keep it and pin the slot shut.
   const error =
-    actionError ?? (fetchError && !fetching ? errorMessage(fetchError) : null);
+    actionError || (fetchError && !fetching ? errorMessage(fetchError) : null);
 
   const { refetch: refetchConnections } = connectionsQuery;
   const { refetch: refetchOAuthApps } = oauthAppsQuery;

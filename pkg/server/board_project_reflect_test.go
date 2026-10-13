@@ -436,7 +436,7 @@ func TestIssueImportPreservesTheProjectSyncState(t *testing.T) {
 // repo/provider, so the class guard exercises the REAL writer.
 func upsertForgeCardForTest(board native.BoardStore, b *native.Board, is forge.IssueRef) (int, int, error) {
 	return upsertForgeCard(board, b, native.StateInbox, native.StateDone,
-		forge.ProviderGitHub, "", "SocialGouv/iterion", is, true)
+		forge.ProviderGitHub, "", "SocialGouv/iterion", is, alwaysTrusted)
 }
 
 // TestSyncProjectBoardNeverReflectsAnUnrecordedCard: a card the board has

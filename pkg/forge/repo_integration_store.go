@@ -111,6 +111,18 @@ type RepoIntegrationStore interface {
 	Create(ctx context.Context, ri RepoIntegration) error
 	Get(ctx context.Context, id string) (RepoIntegration, error)
 	Update(ctx context.Context, ri RepoIntegration) error
+	// StampSynced writes the issue sync's high-water mark and nothing else.
+	// Update writes the whole document from the caller's snapshot, which a sync
+	// pass reads minutes before it stamps: that write reverts whatever an
+	// operator changed in between. Returns ErrIntegrationNotFound for an
+	// integration deleted during the pass.
+	//
+	// It arbitrates nothing: the last stamp wins, even one carrying an EARLIER
+	// instant than the stored mark. Several passes stamp the same integration
+	// (the leased sweep, a manual sync, the webhook projection), so the mark is
+	// not a monotonic counter — every stamp is the start of a read that
+	// completed, and a mark that stepped back only widens the next window.
+	StampSynced(ctx context.Context, id string, at time.Time) error
 	Delete(ctx context.Context, id string) error
 	GetByConnRepo(ctx context.Context, tenantID, connID, repo string) (RepoIntegration, error)
 	ListByTenant(ctx context.Context, tenantID string) ([]RepoIntegration, error)
@@ -165,6 +177,18 @@ func (m *MemoryRepoIntegrationStore) Update(_ context.Context, ri RepoIntegratio
 		return ErrIntegrationNotFound
 	}
 	m.items[ri.ID] = ri
+	return nil
+}
+
+func (m *MemoryRepoIntegrationStore) StampSynced(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ri, ok := m.items[id]
+	if !ok {
+		return ErrIntegrationNotFound
+	}
+	ri.LastSyncedAt = at
+	m.items[id] = ri
 	return nil
 }
 
@@ -264,6 +288,11 @@ func (s *MongoRepoIntegrationStore) Get(ctx context.Context, id string) (RepoInt
 
 func (s *MongoRepoIntegrationStore) Update(ctx context.Context, ri RepoIntegration) error {
 	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": ri.ID}, ri, nil, ErrIntegrationNotFound, "forge: update repo integration")
+}
+
+func (s *MongoRepoIntegrationStore) StampSynced(ctx context.Context, id string, at time.Time) error {
+	return mongoutil.UpdateOneChecked(ctx, s.coll, bson.M{"_id": id},
+		bson.M{"$set": bson.M{"last_synced_at": at}}, ErrIntegrationNotFound, "forge: stamp repo integration sync")
 }
 
 func (s *MongoRepoIntegrationStore) Delete(ctx context.Context, id string) error {

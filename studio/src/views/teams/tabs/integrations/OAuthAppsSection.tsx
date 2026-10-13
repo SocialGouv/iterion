@@ -76,6 +76,10 @@ export function OAuthAppsSection({
   // pick the repos, then GitHub calls back and iterion creates a github_app
   // connection (the bot acts as the App, not as the authorizing user).
   const install = async () => {
+    // This hand-off succeeds into ANOTHER tab, so it never reaches onChanged
+    // and nothing else takes the tab's banner down: the attempt clears it, or
+    // an earlier refusal stays on screen over an install that then worked.
+    onError("");
     try {
       const res = await connectForge(teamID, {
         provider: "github",

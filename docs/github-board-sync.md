@@ -145,6 +145,69 @@ iterion remote forge integrations sync <integration-id>   # one pass, right now
 
 `iterion remote board unbind` stops it.
 
+### The issue sync's own pass — incremental, paged, one replica
+
+- **Incremental**: the forge is asked for the issues updated since the
+  integration's `last_synced_at`, nothing else.
+- **The mark moves only over a complete pass.** It is stamped one minute
+  BEFORE the instant the read started, and written only once every page arrived
+  *and* every issue in them landed on the board. A failed page, a window too
+  wide for the page budget, one refused board write — any of them keeps the
+  mark where it was, logs the failure and retries on the next pass. A board
+  outage that takes part of a window reports HOW MANY issues it refused
+  (`board sync: 3 of 5 issues refused, first: …`), because `synced` counts
+  only the issues that landed and drops by the rest. That denominator counts
+  ISSUES where the read's own count below counts ENTRIES: the pull requests the
+  issues endpoint serves are discarded before the board write, so the two
+  numbers of one refusal are deliberately over different sets. Re-reading
+  is cheap (a card the forge did not change is not rewritten); a mark that
+  outran the pass would write off every issue updated in the window it jumped,
+  because `since` is the only way back to them.
+- **The one-minute overlap is the forge's clock, not a safety blanket.** The
+  mark comes from the server's clock, but it is only ever spent as `since`,
+  which the forge evaluates against its own `updated_at`, served from its own
+  list index. A mark equal to the read's start therefore declares synced the
+  entries the forge dated earlier than this pod (clock skew) or had not yet
+  served (an index lagging its writes) — silently and for good. The overlap
+  (`forgeIssueSyncMarkOverlap`) re-reads that much of the interval on every
+  pass, which buys back any disagreement smaller than it; a clock skew WIDER
+  than the overlap still loses entries, and keeping the server's and the
+  forge's clocks in step is an operator's job either way.
+- **Paged**: 100 entries per request — issues *and*, on GitHub and Forgejo,
+  the pull requests that endpoint serves alongside them — until the forge
+  answers an EMPTY page. A SHORT page ends nothing: a Forgejo/Gitea instance
+  clamps the page size to its own `[api] MAX_RESPONSE_ITEMS` (50 by default),
+  and treating that as the end of the window would mirror its first 50 issues
+  and mark the rest as synced. A pass reads at most 200 pages per repo — 20 000
+  entries where the 100 asked for is served whole, fewer on an instance that
+  clamps it, which is why the refusal counts the ENTRIES it read; the webhook
+  fast path reads at most 10 pages. Either cap is reported as a failure,
+  never a silent cut: the pages that arrived are mirrored and the mark
+  stays put, so a repo whose window never fits keeps syncing its newest entries
+  and leaves the OLDEST end of that window unsynced until the build-time
+  constant (`forgeIssueSyncMaxPages`, `forgeIssueSyncFastPathMaxPages`) is
+  raised — a code change and a release.
+- **What a pass costs**: one forge request per page, one BOARD read per entry
+  — the pass reads each entry's existing card before deciding, an uncached
+  per-card read on the cloud board store — plus one collaborator-permission
+  read per distinct author of a card the pass CREATES open, the trust stamp
+  (`triage:auto` / `needs:approval`), resolved only for that card. An entry
+  already mirrored, or closed, buys no permission read, so a held mark
+  re-reading its window every pass buys its pages and one board read per
+  entry, and writes nothing.
+- **One replica**: the pass runs on the holder of the `board-issue-sync` lease
+  ([ADR-117](adr/117-server-side-leader-lease-for-idempotent-nets.md)), so N
+  replicas cost one repo listing per interval, not N, and its requests are
+  charged to the `board-issue-sync` lane of the hourly forge tally. Takeover
+  after a crash is at most the TTL (three intervals) plus one retry; a term
+  opens with a pass. The webhook projection stays unleased — it runs on
+  whichever replica took the delivery, which is what keeps a live issue's card
+  fresh within seconds — and reads the same window, bounded to 10 pages so a
+  wide one costs each delivery a bounded number of requests and is left to the
+  sweep; its requests carry the `board-webhook-projection` lane, and an
+  operator's **Sync now** (same window, same page budget, any replica, no
+  lease) the `board-manual-sync` one.
+
 ---
 
 ## Boards with different columns
@@ -428,6 +491,22 @@ reads:
 iterion remote forge repo-bots                            # integration ids
 iterion remote forge integrations sync <integration-id>   # → {"synced":N,…}
 ```
+
+`synced` is the window the pass MIRRORED, of which `created` and `updated` are
+the cards it had to write. A non-empty window answering
+`{"synced":250,"created":0,"updated":0}` — all mirrored, nothing to rewrite —
+is a RE-READ, and two states produce one, so the shape alone never says the
+sync is stuck: the mark did not move (the pass before it refused an incomplete
+read, answering 502 and naming what cut the window), or the ONE-MINUTE OVERLAP,
+which re-reads the tail of every interval — a repo touched inside that minute
+answers its window again on a second click, with a mark that did advance. An
+`iterion issue import` given no `--since` over a board that already holds the
+cards reads the same way. `{"synced":0,"created":0,"updated":0}` is what a
+sync-enabled repo answers on a second click when nothing moved inside that
+minute. `iterion issue import` reports the same three — and when a pass is
+refused it carries them in its ERROR instead, because the pages that arrived
+are already on the board: the import keeps no high-water mark and has no next
+pass behind it, so what landed is what a re-run has to account for.
 
 Enable `sync_issues_enabled` on the integration (see [Cloud — bind the team
 once](#cloud--bind-the-team-once)) and the 5-minute worker keeps it filled.

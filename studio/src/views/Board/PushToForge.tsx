@@ -45,9 +45,14 @@ export function PushToForgeButton({ iss }: { iss: NativeIssue }) {
   const onDirectPush = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (linkedURL) {
-      const res = await pushAction.run(() => pushIssueToForge(iss.id));
+      // The toast is this card's only word about a push the server refused —
+      // it comes from run()'s onError channel, which carries the message of
+      // THIS failure (the `error` field belongs to the next render).
+      const res = await pushAction.run(
+        () => pushIssueToForge(iss.id),
+        (msg) => addToast(msg, "error"),
+      );
       if (res) onSuccess(res.url);
-      else if (pushAction.error) addToast(pushAction.error, "error");
     } else {
       setDialogOpen(true);
     }
@@ -71,15 +76,13 @@ export function PushToForgeButton({ iss }: { iss: NativeIssue }) {
           teamID={activeTeamID}
           onClose={() => setDialogOpen(false)}
           onPush={async (connectionId, repo) => {
-            const res = await pushAction.run(() =>
-              pushIssueToForge(iss.id, { connection_id: connectionId, repo }),
-            );
-            if (res) {
-              setDialogOpen(false);
-              onSuccess(res.url);
-            } else if (pushAction.error) {
-              throw new Error(pushAction.error);
-            }
+            // The dialog awaits this under its own useAsyncAction and renders
+            // what it rejects with in its banner — the one place the operator
+            // is looking — so the refusal propagates instead of being caught
+            // and re-read from a state that belongs to the next render.
+            const res = await pushIssueToForge(iss.id, { connection_id: connectionId, repo });
+            setDialogOpen(false);
+            onSuccess(res.url);
           }}
         />
       )}

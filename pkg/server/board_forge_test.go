@@ -11,16 +11,26 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
-// fakeIssueClient is a minimal forge.IssueClient whose ListIssues returns a
-// canned set; the other methods are unused by SyncForgeIssuesToBoard.
+// fakeIssueClient is a minimal forge.IssueClient serving a canned set one
+// PAGE at a time, as the three real clients do — a fake that ignored Page
+// would never end a paged read; the other methods are unused by
+// SyncForgeIssuesToBoard.
 type fakeIssueClient struct {
 	issues []forge.IssueRef
 	calls  int
 }
 
-func (f *fakeIssueClient) ListIssues(context.Context, string, forge.IssueListOptions) ([]forge.IssueRef, error) {
+func (f *fakeIssueClient) ListIssues(_ context.Context, _ string, opts forge.IssueListOptions) ([]forge.IssueRef, error) {
 	f.calls++
-	return f.issues, nil
+	per := opts.PerPage
+	if per <= 0 {
+		per = 50
+	}
+	start := (max(opts.Page, 1) - 1) * per
+	if start >= len(f.issues) {
+		return nil, nil
+	}
+	return f.issues[start:min(start+per, len(f.issues))], nil
 }
 func (f *fakeIssueClient) GetIssue(context.Context, string, int) (forge.IssueRef, error) {
 	return forge.IssueRef{}, nil
@@ -84,7 +94,7 @@ func TestUpsertForgeCard_CreateUpdateIdempotent(t *testing.T) {
 	}
 
 	is := forge.IssueRef{Number: 7, Title: "fix login", Body: "boom", State: "open", URL: "http://f/7", Labels: []string{"bug"}}
-	c, u, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is, false)
+	c, u, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is, neverTrusted)
 	if err != nil || c != 1 || u != 0 {
 		t.Fatalf("create: c=%d u=%d err=%v", c, u, err)
 	}
@@ -108,7 +118,7 @@ func TestUpsertForgeCard_CreateUpdateIdempotent(t *testing.T) {
 		t.Fatalf("setstate: %v", err)
 	}
 	is.Title = "fix login (v2)"
-	c, u, err = upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is, false)
+	c, u, err = upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is, neverTrusted)
 	if err != nil || c != 0 || u != 1 {
 		t.Fatalf("update: c=%d u=%d err=%v", c, u, err)
 	}
@@ -122,7 +132,7 @@ func TestUpsertForgeCard_CreateUpdateIdempotent(t *testing.T) {
 
 	// Forge closes the issue → still-open card moves to the terminal column.
 	is.State = "closed"
-	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is, false); err != nil {
+	if _, _, err := upsertForgeCard(board, b, openCol, doneCol, forge.ProviderGitHub, "conn1", "org/api", is, neverTrusted); err != nil {
 		t.Fatalf("close-sync: %v", err)
 	}
 	card, _ = board.Get(id)
@@ -150,7 +160,7 @@ func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 		{Number: 3, Title: "old bug", State: "closed"},
 	}}
 
-	created, updated, err := syncForgeIssuesToBoard(
+	_, created, updated, err := syncForgeIssuesToBoard(
 		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{}, nil)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
@@ -170,20 +180,42 @@ func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 		t.Errorf("open issue landed in %q, want first column %q", openCard.State, openCol)
 	}
 
-	// Re-sync = idempotent upsert, not duplication.
-	created, updated, err = syncForgeIssuesToBoard(
+	// Re-sync = idempotent upsert, not duplication — and not a rewrite
+	// either: nothing on the forge changed, so no card is written.
+	_, created, updated, err = syncForgeIssuesToBoard(
 		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{}, nil)
 	if err != nil {
 		t.Fatalf("re-sync: %v", err)
 	}
-	if created != 0 || updated != 2 {
-		t.Fatalf("re-sync created=%d updated=%d, want 0/2", created, updated)
+	if created != 0 || updated != 0 {
+		t.Fatalf("re-sync created=%d updated=%d, want 0/0 — an unchanged window writes no card", created, updated)
 	}
 	if all, _ := board.List(native.ListFilter{}); len(all) != 2 {
 		t.Fatalf("re-sync duplicated cards: got %d, want 2", len(all))
 	}
-	if ic.calls != 2 {
-		t.Fatalf("ListIssues called %d times, want 2 (one per sync)", ic.calls)
+	// A forge change still lands: the skip is "nothing changed", not "never
+	// write again".
+	ic.issues[0].Title = "add metrics, with histograms"
+	_, created, updated, err = syncForgeIssuesToBoard(
+		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{}, nil)
+	if err != nil {
+		t.Fatalf("third sync: %v", err)
+	}
+	if created != 0 || updated != 1 {
+		t.Fatalf("a retitled issue synced as created=%d updated=%d, want 0/1", created, updated)
+	}
+	refreshed, err := board.Get(forgeCardID(forge.ProviderGitHub, "org/api", 1))
+	if err != nil {
+		t.Fatalf("get refreshed card: %v", err)
+	}
+	if refreshed.Title != "add metrics, with histograms" {
+		t.Fatalf("card title = %q, want the forge's new one", refreshed.Title)
+	}
+	// Two calls per sync: the page holding the window, then the EMPTY page the
+	// provider answers to end it (a short page proves nothing — see
+	// forEachForgeIssuePage).
+	if ic.calls != 6 {
+		t.Fatalf("ListIssues called %d times, want 6 (two per sync, three syncs)", ic.calls)
 	}
 }
 
@@ -193,7 +225,7 @@ func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 // (ImportForgeIssues is a thin construct-then-delegate shim over it).
 func TestImportForgeIssues_UnsupportedProvider(t *testing.T) {
 	board := newTestBoard(t)
-	_, _, err := ImportForgeIssues(context.Background(), forge.Provider("bitbucket"), "", "tok", "org/api", board, time.Time{}, "")
+	_, _, _, err := ImportForgeIssues(context.Background(), forge.Provider("bitbucket"), "", "tok", "org/api", board, time.Time{}, "")
 	if err == nil {
 		t.Fatal("expected an error for an unsupported provider, got nil")
 	}
@@ -203,7 +235,7 @@ func TestUpsertForgeCard_ClosedCreatesInTerminal(t *testing.T) {
 	board := newTestBoard(t)
 	b := mustBoard(t, board)
 	is := forge.IssueRef{Number: 9, Title: "old", State: "closed"}
-	if _, _, err := upsertForgeCard(board, b, defaultOpenColumn(b), terminalColumn(b), forge.ProviderForgejo, "c", "o/r", is, false); err != nil {
+	if _, _, err := upsertForgeCard(board, b, defaultOpenColumn(b), terminalColumn(b), forge.ProviderForgejo, "c", "o/r", is, neverTrusted); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	card, _ := board.Get(forgeCardID(forge.ProviderForgejo, "o/r", 9))
@@ -224,7 +256,7 @@ func TestUpsertForgeCard_PropagatesAStoreFailure(t *testing.T) {
 
 	is := forge.IssueRef{Number: 7, Title: "fix login", State: "open"}
 	_, _, err := upsertForgeCard(flaky, b, defaultOpenColumn(b), terminalColumn(b),
-		forge.ProviderGitHub, "conn1", "org/api", is, false)
+		forge.ProviderGitHub, "conn1", "org/api", is, neverTrusted)
 	if err == nil {
 		t.Fatal("a store failure must surface, got nil — the card was created blind")
 	}

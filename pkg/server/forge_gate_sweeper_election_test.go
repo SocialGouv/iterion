@@ -16,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -469,16 +470,16 @@ func TestLeaseStoreFor_EveryReplicaCampaignsOnTheSharedStore(t *testing.T) {
 	var warnings []string
 	warnf := func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
 
-	if st := leaseStoreFor(Config{Store: dbStore{RunStore: fs, db: client.Database("iterion")}}, warnf); st == nil {
+	if st := leaseStoreFor(&Server{cfg: Config{Store: dbStore{RunStore: fs, db: client.Database("iterion")}}}, warnf); st == nil {
 		t.Fatal("nil lease store")
 	} else if _, ok := st.(*lease.MongoStore); !ok {
 		t.Errorf("a cloud run store gave %T, want *lease.MongoStore — each replica would elect itself", st)
 	}
 	injected := lease.NewMemoryStore()
-	if st := leaseStoreFor(Config{Store: dbStore{RunStore: fs, db: client.Database("iterion")}, Leases: injected}, warnf); st != injected {
+	if st := leaseStoreFor(&Server{cfg: Config{Store: dbStore{RunStore: fs, db: client.Database("iterion")}, Leases: injected}}, warnf); st != injected {
 		t.Errorf("Config.Leases was not honoured: got %T", st)
 	}
-	if st := leaseStoreFor(Config{Store: fs}, warnf); st == nil {
+	if st := leaseStoreFor(&Server{cfg: Config{Store: fs}}, warnf); st == nil {
 		t.Fatal("nil lease store")
 	} else if _, ok := st.(*lease.MemoryStore); !ok {
 		t.Errorf("a local store gave %T, want the in-memory store", st)
@@ -486,11 +487,76 @@ func TestLeaseStoreFor_EveryReplicaCampaignsOnTheSharedStore(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("warned without cause: %q", warnings)
 	}
-	if st := leaseStoreFor(Config{Store: listerStore{RunStore: fs, scanCounter: &scanCounter{}}}, warnf); st == nil {
+	// A cloud-shaped run store that hides its database, with the sweep's own
+	// stores wired: the merge-gate sweep starts, so the fallback is announced.
+	gateOnly := &Server{
+		cfg:                Config{Store: listerStore{RunStore: fs, scanCounter: &scanCounter{}}},
+		forgeConnections:   forge.NewMemoryConnectionStore(),
+		forgePublishTokens: NewForgePublishTokenRegistry(),
+	}
+	if st := leaseStoreFor(gateOnly, warnf); st == nil {
 		t.Fatal("nil lease store")
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "every replica elects itself") {
-		t.Errorf("a cloud store hiding its database produced %q, want one warning naming the consequence", warnings)
+		t.Fatalf("a cloud store hiding its database produced %q, want one warning naming the consequence", warnings)
+	}
+	assertNamesWiredNetsOnly(t, gateOnly, warnings[0])
+
+	// And the fallback is announced to the net's OWN wiring: a configuration
+	// that starts the forge→board issue sync (a cloud board + the integration
+	// store) on a run store that is neither shared nor a gate-sweep lister
+	// took the memory lease store in silence while the message already spoke
+	// for it.
+	warnings = nil
+	boardOnly := &Server{
+		cfg:               Config{Store: fs, CloudBoardFor: func(string) native.BoardStore { return nil }},
+		forgeIntegrations: forge.NewMemoryRepoIntegrationStore(),
+	}
+	if st := leaseStoreFor(boardOnly, warnf); st == nil {
+		t.Fatal("nil lease store")
+	} else if _, ok := st.(*lease.MemoryStore); !ok {
+		t.Errorf("the board sweep's fallback gave %T, want the in-memory store", st)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "every replica elects itself") {
+		t.Fatalf("a board-sync configuration with no shared lease store produced %q, want one warning: every pass of that sweep then lists every sync-enabled repo's window once per replica", warnings)
+	}
+	assertNamesWiredNetsOnly(t, boardOnly, warnings[0])
+
+	// A cloud-SHAPED store that starts neither net — it lists runs, but the
+	// sweep's offers have no connection store to post through — campaigns for
+	// nothing, so there is nothing to announce. The trigger is each net's own
+	// start condition, never a store's shape.
+	warnings = nil
+	neither := &Server{cfg: Config{Store: listerStore{RunStore: fs, scanCounter: &scanCounter{}}}}
+	if st := leaseStoreFor(neither, warnf); st == nil {
+		t.Fatal("nil lease store")
+	}
+	if len(warnings) != 0 {
+		t.Errorf("a configuration that starts no leased net warned anyway: %q", warnings)
+	}
+}
+
+// assertNamesWiredNetsOnly holds the warning against the registry it is built
+// from — each net asked through its OWN start condition, never a list of names
+// copied here: the copy is what drifts, and the registry's own completeness is
+// held by TestLeasedNets_* next door. Both directions matter — a net missing
+// from the message runs on every replica in silence, and a net named there
+// that this configuration never starts sends the operator after work that is
+// not running.
+func assertNamesWiredNetsOnly(t *testing.T, s *Server, warning string) {
+	t.Helper()
+	for _, net := range leasedNets {
+		if net.wired == nil {
+			t.Errorf("the %q entry carries no start condition", net.name)
+			continue
+		}
+		named := strings.Contains(warning, net.name)
+		switch {
+		case net.wired(s) && !named:
+			t.Errorf("the warning does not name the %q lease, which this server STARTS: %q", net.name, warning)
+		case !net.wired(s) && named:
+			t.Errorf("the warning names the %q lease, which this server never starts: %q", net.name, warning)
+		}
 	}
 }
 
@@ -631,7 +697,16 @@ func TestNew_WiresTheSharedLeaseStore(t *testing.T) {
 		t.Errorf("New() on a cloud run store campaigns on %T, want *lease.MongoStore — every replica would elect itself", s.leases)
 	}
 	out := &lockedBuffer{}
-	New(Config{Store: listerStore{RunStore: fs, scanCounter: &scanCounter{}}}, iterlog.New(iterlog.LevelInfo, out))
+	// The sweep's own stores are part of the premise: the warning is about the
+	// nets this server STARTS, and the merge-gate sweep needs the connection
+	// store its offers post through (server_lifecycle.go). A cloud-shaped run
+	// store alone starts no leased net, so the fallback costs nothing and is
+	// announced to nobody — the case pinned in
+	// TestLeaseStoreFor_EveryReplicaCampaignsOnTheSharedStore.
+	New(Config{
+		Store:            listerStore{RunStore: fs, scanCounter: &scanCounter{}},
+		ForgeConnections: forge.NewMemoryConnectionStore(),
+	}, iterlog.New(iterlog.LevelInfo, out))
 	if !strings.Contains(out.String(), "every replica elects itself") {
 		t.Errorf("New() on a cloud store hiding its database did not warn; log:\n%s", out.String())
 	}
@@ -762,4 +837,40 @@ func TestGateSweeper_ALongIntervalKeepsAQuickFailover(t *testing.T) {
 	if want := gateSweepLeaseTTLFactor * gateSweepInterval; ttl != want {
 		t.Errorf("under a 1h interval the sweep's lease lasts %s, want %s — a dead holder would keep the net down for hours", ttl, want)
 	}
+}
+
+// The predicate above is only as good as the SERVER it is asked of: the
+// merge-gate sweep's start condition reads two stores derived during
+// construction, not Config fields, so one case goes through New — the very
+// call that picks the lease store — and reads the warning off the log an
+// operator would.
+func TestLeaseStoreFor_TheWarningFromTheServerThatBuildsIt(t *testing.T) {
+	fs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	out := &lockedBuffer{}
+	s := New(Config{
+		WorkDir:                 workDir,
+		StoreDir:                filepath.Join(workDir, ".iterion"),
+		SkipProjectRegistration: true,
+		Store:                   listerStore{RunStore: fs, scanCounter: &scanCounter{}},
+		ForgeConnections:        forge.NewMemoryConnectionStore(),
+	}, iterlog.New(iterlog.LevelInfo, out))
+	if _, ok := s.leases.(*lease.MemoryStore); !ok {
+		t.Fatalf("the lease store is %T, want the in-memory fallback — the premise is a run store with no shared database", s.leases)
+	}
+	logged := out.String()
+	t.Logf("OBSERVED gateSweepStarts=%v boardIssueSyncStarts=%v", s.gateSweepStarts(), s.boardIssueSyncStarts())
+	idx := strings.Index(logged, "leases: this configuration wires a leased net")
+	if idx < 0 {
+		t.Fatalf("New picked the memory lease store without warning; log:\n%s", logged)
+	}
+	line := logged[idx:]
+	if nl := strings.IndexByte(line, '\n'); nl >= 0 {
+		line = line[:nl]
+	}
+	t.Logf("OBSERVED warning: %s", line)
+	assertNamesWiredNetsOnly(t, s, line)
 }

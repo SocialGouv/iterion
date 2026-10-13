@@ -561,10 +561,12 @@ an operator clicking "add") uses the **same** contract:
   closed ones in the terminal column. The import is **idempotent** — re-running
   upserts existing cards (keyed by a deterministic `native:<uuid>` derived from
   `provider:repo#number`) instead of duplicating them, so it doubles as an
-  incremental `--since` sync. The command prints `created` / `updated` counts
-  (`--json` for machine output). The exported Go wrapper is
-  `server.ImportForgeIssues`, which keeps the forge-client provider switch in
-  one place.
+  incremental `--since` sync. The command prints `synced` / `created` /
+  `updated` counts (`--json` for machine output) — `synced` is the ISSUES of
+  the window it mirrored, the pull requests that endpoint also serves being
+  skipped, and the other two are the cards it had to write. The exported
+  Go wrapper is `server.ImportForgeIssues`, which keeps the forge-client
+  provider switch in one place.
 
 ## Programmatic access
 
