@@ -297,8 +297,7 @@ export interface UnparsedSource {
  *  `path` is the workspace file the document was opened from, and it is
  *  what lets the answer carry `refused`: a fold is a before/after property
  *  and the server reads that before itself. Passing the text instead would
- *  make the guard depend on a field the client overwrites — `currentSource`
- *  is the launch's inline text, not the file's. */
+ *  make the guard depend on `currentSource` — a cache the client writes. */
 export async function unparse(
   document: IterDocument,
   options?: { flatten?: boolean; path?: string | null },
