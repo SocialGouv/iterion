@@ -52,6 +52,14 @@ func TestFindingIDMatchesTheEngineDerivation(t *testing.T) {
 			"title": "Injection SQL dans la récupération de l'utilisateur authentifié — vérifier les paramètres échappés", "detail": "d"},
 		{"file": "pkg/db.go", "line": 8, "severity": "low", "category": "tests",
 			"title": "ユーザー認証のカバレッジが不足している、エラーパスの検証が行われていない", "detail": "d"},
+		// A ROOTED anchor — the only input where the two derivations can part.
+		// publish_review normalizes the anchor it PUBLISHES (the forge wants a
+		// repo-relative path) and keys the id on the path as WRITTEN, because
+		// the engine twin re-derives it from the raw converge artifact and holds
+		// no workspace path to strip. Normalize one side alone and every handle
+		// posted on the pull request stops matching the fixer's digest.
+		{"file": "/pkg/db.go", "line": 11, "severity": "medium", "category": "correctness",
+			"title": "the rooted anchor keys its id on the path as written", "detail": "d"},
 	}
 
 	ws := t.TempDir()
