@@ -512,15 +512,151 @@ if not workspace_check_failed:
 anomaly_paths = set()
 for l in anomaly_lines:
     anomaly_paths.add(l[3:].strip())
+# A finding is routed on its ANCHOR, compared whole with an uncommitted
+# entry: that equality is what lets the reclassification claim the PR's diff
+# does not hold the finding, and what keeps a NAMESAKE of a drifted file --
+# 5056 of this tree's 13993 tracked files share a basename -- from greening
+# the merge gate over a real defect of the pull request. The anchor's
+# RENDERING is normalized away first: the reviewer is handed the workspace as
+# an absolute path, so the anchor it writes may carry ./, / or that directory,
+# and a diff file header renders the same path as a/ or b/ -- the same file
+# under another rendering is the same file. rooted_prefixes holds the three
+# rooted ones for this reader and for the matcher below, so neither can
+# accept a rendering the other rejects. The name-shaped match the free-text
+# channels use is deliberately NOT accepted here: a name cannot tell the
+# drifted file from a namesake, and on this channel that ambiguity decides a
+# merge, so a bare-basename anchor stays the pull request's -- loud, beside
+# the anomaly section that names the drift.
+rooted_prefixes = [x for x in [ws.rstrip('/') + '/' if ws.startswith('/') else '', './', '/'] if x]
+def in_workspace(p):
+    # A path OF this workspace, asked of the workspace itself. Only a
+    # repo-relative rendering can be one: an absolute path, or one climbing
+    # out through .., names another tree and the forge anchors nothing on it.
+    if not ws.startswith('/') or not p or p.startswith('/') or '..' in p.split('/'):
+        return False
+    return os.path.exists(os.path.join(ws, p))
+def anchor_path(raw):
+    a = str(raw or '').strip()
+    rooted = True
+    while rooted:
+        rooted = False
+        for root in rooted_prefixes:
+            if a.startswith(root):
+                a = a[len(root):]
+                rooted = True
+                break
+    # git renders every file header of a diff as a/<path> and b/<path>, and
+    # rule 2 of REVIEW SCOPE orders the reviewer to read that diff, so an
+    # anchor copied out of one carries that prefix. It is dropped only where
+    # this workspace does NOT hold the prefixed path and DOES hold -- or
+    # reports uncommitted -- the stripped one: a repo owning a top-level a/
+    # or b/ keeps its own anchor on the channel that decides a merge, and an
+    # anchor the workspace resolves neither way stays as it was written.
+    if a[:2] in ('a/', 'b/') and not in_workspace(a) and (a[2:] in anomaly_paths or in_workspace(a[2:])):
+        return a[2:]
+    return a
 anomaly_findings = []
 if anomaly_paths:
     kept = []
     for f in findings:
-        if isinstance(f, dict) and str(f.get('file') or '').strip() in anomaly_paths:
+        if isinstance(f, dict) and anchor_path(f.get('file')) in anomaly_paths:
             anomaly_findings.append(f)
         else:
             kept.append(f)
     findings = kept
+# The two FREE-TEXT channels carry the same phantom as a finding (#1674): a
+# question, or a ticket verdict, that NAMES a drifted entry is about
+# workspace state, and published as the pull request's it makes the author
+# answer for an edit the pull request does not contain. Neither channel
+# carries a file anchor, so the match is on the NAME: an anomaly path, or
+# any of its segment suffixes carrying an extension or a directory, because
+# a reviewer writes the file the way prose does -- the basename, not its
+# three-directory path. Reclassified, never dropped: the text is reprinted
+# under the anomaly section below, as a reclassified finding already is, and
+# under what the match actually establishes -- that the line names one of
+# the uncommitted entries, not that the question is outside the PR's diff.
+# The third reviewer-authored free text, the audited perimeter printed in the
+# details fold, is filtered by this same matcher where it is printed.
+#
+# Both boundaries are load-bearing, and they are why this is not a substring
+# test. On the LEFT, a name preceded by a word character, a dot, a dash or a
+# slash is a DIFFERENT file -- a sibling path ending in the same basename,
+# or my-catalog.md when the drift is catalog.md -- whose question must stay
+# a question; 548 of this tree's tracked paths end with another tracked path
+# (bots/app-dev/README.md ends with README.md), so dropping the slash would
+# hand every one of them to a drifted root file. On the RIGHT, a trailing
+# word character, slash or dash is likewise another name (catalog.mdx,
+# catalog.md-old); a trailing dot is allowed, being how a sentence ends. A
+# suffix reduced to a bare extension-less segment is ordinary prose (changes,
+# readme) and is never matched.
+#
+# The whole path also travels ROOTED, and the left exclusion of the slash
+# would reject every such form: the reviewer is handed the workspace as an
+# absolute path and told to run git -C there, so an absolute rendering of the
+# file it just read is ordinary prose, as are ./path and /path. Those three
+# prefixes are matched EXPLICITLY -- this workspace's own directory, never an
+# arbitrary one -- which keeps the exclusion doing its job on every other
+# slash-prefixed rendering. A forge blob URL, whose path segment sits under
+# an arbitrary ref, is NOT matched: it is indistinguishable from the 548
+# sibling paths above, so it stays a question. A rooted rendering also has to
+# OPEN its word -- line start, or after a space, a bracket or a backtick:
+# the left exclusion admits every other character before the slash, and
+# ~/catalog.md or file:/catalog.md names a file outside this workspace. A
+# quote-delimited rooted rendering is the residual of that closed set.
+#
+# A whole path that is ONE extension-less segment (a root-level build, test
+# or run script) is both a path and an ordinary English word. Carrying no
+# capital, it is matched only in a rooted rendering, which prose does not
+# produce -- a bare one would hand every question using that word to the
+# anomaly, and the axis token of a scanned area with it. A capital names the
+# file in prose (LICENSE, Makefile, Dockerfile), so that form is matched
+# bare too; the test is on the ABSENCE of an uppercase letter, because a
+# caseless name (2024) reads as prose just as a lowercase one does.
+anomaly_name_res = []
+rooted_pre = r'(?:^|(?<=[\s(\[' + chr(96) + r']))(?:' + '|'.join(re.escape(x) for x in rooted_prefixes) + r')'
+for p in sorted(anomaly_paths):
+    segs = [s for s in p.split('/') if s]
+    for i in range(len(segs)):
+        cand = '/'.join(segs[i:])
+        bare_word = '/' not in cand and '.' not in cand
+        if i and bare_word:
+            continue
+        pre = '' if i else (rooted_pre if bare_word and cand == cand.lower() else r'(?:' + rooted_pre + r')?')
+        anomaly_name_res.append(re.compile(r'(?<![\w./-])' + pre + re.escape(cand) + r'(?![\w/-])'))
+def names_anomaly(text):
+    return any(r.search(text) for r in anomaly_name_res)
+anomaly_questions = []
+kept_questions = []
+for q in questions:
+    if names_anomaly(q):
+        anomaly_questions.append(q)
+    else:
+        kept_questions.append(q)
+questions = kept_questions
+# A ticket verdict is routed only where it would otherwise be CHARGED to the
+# pull request. A covered verdict is printed nowhere and an unverifiable one
+# keeps its own list in the details fold, so reclassifying either publishes a
+# declared ticket gap the reviewer never wrote -- over a verdict that says the
+# ticket is covered, on the common run where the catalogue a ticket is
+# verified against is the file that drifted.
+# The verdict is read off the line's FIRST field: the text up to its first
+# colon, or the whole URL when the ref is rendered as one -- a PR body writes
+# its Closes line as an issue URL and rule 3 of TICKET CONFORMANCE collects
+# refs from there, so a ref carrying :// and a port's second colon has to be
+# crossed whole, or its covered line reads as no verdict and publishes as a
+# declared ticket gap. The URL alternative is confined to the line's first
+# whitespace-free run, so a reason that mentions covered after a later colon
+# still reads as the gap it is.
+def ticket_verdict(t, verdict):
+    return re.match(r'^(?:[^\s:]+://\S+?|[^:]+):\s*' + verdict + r'(?:\s*[—–-]|\s*$)', t, re.I)
+anomaly_tickets = []
+kept_tickets = []
+for t in tickets:
+    if names_anomaly(t) and not ticket_verdict(t, 'covered') and not ticket_verdict(t, 'unverifiable'):
+        anomaly_tickets.append(t)
+    else:
+        kept_tickets.append(t)
+tickets = kept_tickets
 if not url or not tok:
     emit(False, gate_requested=gate_enabled, gate_skipped_reason='no forge publish endpoint bound to this run', skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
 
@@ -552,7 +688,15 @@ for f in findings:
     except (TypeError, ValueError):
         line_end = 0
     repl = str(f.get('replacement') or '')
-    comment = {'path': str(f.get('file') or ''), 'line': line, 'line_end': line_end,
+    # The forge anchors an inline comment on a REPO-RELATIVE path, so the
+    # anchor is published under the same normalization the drift test above
+    # reads it with: a create-review call is all-or-nothing, and one ./ or
+    # workspace-absolute rendering 422s the whole review into the fallback
+    # that folds every inline comment into the body. finding_id stays on the
+    # RAW anchor -- the engine twin that re-derives it for the fixer's digest
+    # hashes the path as written, and normalizing one side alone would break
+    # the handle the operator arbitrates by.
+    comment = {'path': anchor_path(f.get('file')), 'line': line, 'line_end': line_end,
                'body': body, 'suggestion': repl if repl.strip() else ''}
     if stale_anchors or not comment['path'].strip() or line <= 0:
         unanchored.append(comment)
@@ -582,8 +726,6 @@ if stale_anchors:
     summary.extend(['', chr(9888) + ' Le HEAD a changé depuis la revue (' + stale_anchors + '). Findings conservés ci-dessous sans ancrage ; relancer la revue sur la tête actuelle.'])
 # Explicit gaps stay visible. Unverifiable context stays available alongside
 # the audited scope; a missing ticket is not itself a defect to correct.
-def ticket_verdict(t, verdict):
-    return re.match(r'^[^:]+:\s*' + verdict + r'(?:\s*[—–-]|\s*$)', t, re.I)
 ticket_unverified = [t for t in tickets if ticket_verdict(t, 'unverifiable')]
 ticket_gaps = [t for t in tickets if not ticket_verdict(t, 'covered') and not ticket_verdict(t, 'unverifiable')]
 if ticket_gaps:
@@ -615,8 +757,21 @@ if anomaly_lines:
         if stat:
             summary.extend(['', 'Différence constatée :', chr(96) * 3, stat, chr(96) * 3])
     for f in anomaly_findings:
-        anchor = str(f.get('file') or '') + ':' + str(f.get('line') or '')
+        # Rendered like the porcelain entries listed just above, so the reader
+        # matches the reclassified finding against the drift that drew it.
+        anchor = anchor_path(f.get('file')) + ':' + str(f.get('line') or '')
         summary.extend(['', 'Finding reclassé ici (hors diff de la PR) — ' + anchor + ' — ' + str(f.get('title') or '')])
+    # A finding carries its anchor, so its reclassification can claim the
+    # PR's diff does not hold it. A free-text line carries only a name: what
+    # the match establishes is that the line names one of the entries above,
+    # and that is what the label says -- a question about the PR's OWN file
+    # whose basename a drifted entry shares lands here too (5056 of this
+    # tree's tracked files share a basename), and must not be published as
+    # a claim about the pull request's diff.
+    for q in dict.fromkeys(anomaly_questions):
+        summary.extend(['', 'Question reclassée ici (nomme un fichier non commité listé ci-dessus) — ' + q])
+    for t in dict.fromkeys(anomaly_tickets):
+        summary.extend(['', 'Écart au ticket reclassé ici (nomme un fichier non commité listé ci-dessus) — ' + t])
 if workspace_check_failed:
     # The strip was disarmed by the failed status read: say so rather than
     # letting the review read as if the workspace had been verified clean.
@@ -708,7 +863,22 @@ summary.extend(['', '<details>', '<summary><sub>Détails du run IA · Iterion</s
                 'Tokens du run au moment de publier : **' + ai_tokens(ai_value('AI_RUN_TOKENS')) + '**.', ''])
 scope = ai_value('REVIEW_SCOPE')
 if scope:
-    summary.extend(['Périmètre revu : ' + ai_cell(scope), ''])
+    # The third reviewer-authored free text publish prints, and a CLAIM: the
+    # perimeter audited. Rule 2d puts a drifted entry out of scope whole, so
+    # an area naming one claims a read of a file whose PR state this
+    # workspace cannot show -- a facade in the channel built to be
+    # falsifiable. Reclassified like a question, never dropped: the area
+    # stays printed, under what it is. And under what the match establishes
+    # -- the line NAMES one of the entries above, which is all an area
+    # carries: the area may well be the pull request's own namesake file,
+    # audited, so the published line never claims the file was not reviewed.
+    scope_areas = [s.strip() for s in scope.split(' ; ') if s.strip()]
+    scope_drifted = [s for s in scope_areas if names_anomaly(s)]
+    scope_reviewed = [s for s in scope_areas if not names_anomaly(s)]
+    if scope_reviewed:
+        summary.extend(['Périmètre revu : ' + ai_cell(' ; '.join(scope_reviewed)), ''])
+    if scope_drifted:
+        summary.extend(['Périmètre déclaré nommant un fichier non commité listé ci-dessus, donc non publié comme revu : ' + ai_cell(' ; '.join(scope_drifted)), ''])
 if ticket_unverified:
     summary.extend(['Vérifications de ticket indisponibles :'] + ['- ' + ai_cell(t) for t in ticket_unverified] + [''])
 dual = str(os.environ.get('REVIEW_MODE', '')).strip().lower() == 'dual'

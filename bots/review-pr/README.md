@@ -152,18 +152,90 @@ iterion run bots/review-pr/main.bot \
   still anchored on a drifted file from the PR findings and reports it
   under a "workspace anomaly" section naming the file and the difference
   — an edit the PR does not contain is workspace state, never a finding
-  against the change under review. Reclassified findings stay visible:
+  against the change under review. A finding is routed on its ANCHOR,
+  compared WHOLE with an entry (its rendering normalized first, to a
+  fixpoint: `./path`, `/path` and this workspace's own absolute path are the
+  same file), and a KEPT finding is published under that same normalization
+  — the forge anchors an inline comment on a repo-relative path, and one
+  rooted rendering 422s a create-review call into its
+  fold-everything-into-the-body fallback, costing the review every inline
+  comment. (`finding_id` stays on the raw anchor: the engine re-derives it
+  for the fixer's digest from the path as written, and has no workspace path
+  to strip.) A diff file header renders the same path as `a/path` / `b/path`
+  and the prompt orders the reviewer to read that diff, so those two are
+  normalized as well — but against the WORKSPACE, not blindly: the prefix is
+  dropped only where the workspace does not hold the prefixed path and does
+  hold (or reports uncommitted) the stripped one, so a repo owning a
+  top-level `a/` or `b/` keeps its own anchor on the channel that decides a
+  merge. An anchor the workspace resolves neither way stays as written and
+  422s as it did before: a path the change deletes, a rendering climbing out
+  through `..`, an absolute path outside the workspace (an uncommitted
+  deletion still resolves — its porcelain entry names it). The name-shaped
+  match of the free-text channels below is deliberately not
+  accepted on this channel: it cannot tell a drifted file from a namesake,
+  and here that ambiguity would decide a merge — so a finding anchored on
+  a bare basename stays the pull request's, loud, beside the anomaly
+  section naming the drift. Reclassified findings stay visible:
   the workspace-anomaly section and the gate note always carry their
   count (a green gate never reads as approval by omission), and when the
   strip empties the finding list the review headline itself names the
   reclassification instead of claiming a clean review. A failed status
   read publishes the "?" marker: nothing is stripped and the review says
   the workspace state could not be verified.
+  The three reviewer-authored free texts are routed the same way (#1674):
+  a `questions` line, or a `ticket_conformance` verdict that would be
+  charged to the PR as a gap, prints under the anomaly section as
+  reclassified instead of under "À confirmer" / "Écarts au ticket" — a
+  question about an edit the PR does not contain costs the author a
+  written answer for someone else's workspace; a `scanned_areas` entry
+  naming one prints under "Périmètre déclaré nommant un fichier non commité
+  listé ci-dessus, donc non publié comme revu" instead of inside "Périmètre
+  revu", which would claim an audit of a file rule 2d puts out of scope
+  whole — the line says what the name match establishes and never that the
+  file went unreviewed, which it cannot know (see the basename collisions
+  below). A verdict claiming no gap is left alone: `covered` prints
+  nowhere and `unverifiable` keeps its own list, so routing either would
+  publish a ticket gap the reviewer never wrote. The verdict is read off
+  the line's first field — the text up to its first colon, or the whole
+  URL when the ref is rendered as one, which is how a PR body writes its
+  `Closes` line; a reason mentioning `covered` after a later colon still
+  reads as the gap it is.
+  None of the three carries a file anchor, so the match is on the NAME:
+  the entry's path — bare, or rooted as `./path`, `/path` or this
+  workspace's own absolute path, the form the prompt hands the reviewer —
+  or any of its segment suffixes that carries an extension or a directory
+  (a reviewer names the file as prose does, by its basename; a bare
+  extension-less segment like `changes` is never matched as a suffix).
+  A rooted rendering has to OPEN its word — line start, or after a space,
+  a bracket or a backtick — because `~/catalog.md` and `file:/catalog.md`
+  name files outside this workspace (a quoted rendering is that set's
+  residual). A whole path that is ONE extension-less segment is both a path
+  and an English word (a root-level `build`, `test` or `run` script):
+  carrying no uppercase letter it is matched only in a rooted rendering,
+  since a bare one would hand every question using that word, and the axis
+  token of every `scanned_areas` entry, to the anomaly; carrying a capital
+  (`LICENSE`, `Makefile`, `Dockerfile`) it names the file in prose and is
+  matched bare too.
+  The boundaries are deliberately asymmetric: a longer or prefixed name
+  (`catalog.mdx`, `my-catalog.md`, `catalog.md-old`) and a path merely
+  ENDING with the entry's path (`vendor/<path>`, reachable 548 times in
+  this tree) stay ordinary questions, while a neighbour named by its BARE
+  basename is reclassified — 5056 of 13993 tracked files share a basename,
+  so the published line claims only what the match establishes (the line
+  names an uncommitted entry), never that the question is outside the PR's
+  diff. A forge blob URL, whose path sits under an arbitrary ref, is
+  indistinguishable from those sibling paths and stays a question. The match
+  is case-sensitive and literal, so a name capitalised to open a sentence
+  (`Iterion-bot-catalog.md`) and a file described without being named stay
+  questions as well: rule 2d is the guard, this routing only its backstop,
+  and both prompt sites say so rather than promising the routing is total.
   Scope: the sanitisation covers the FORGE publication (summary, inline
   comments, gate); the board/markdown report written upstream by
-  `emit`/`converge` may still carry a drift-drawn finding a reviewer
-  filed against rule 2d. Empty in `base_ref: HEAD` mode, where
-  uncommitted work IS the review's object.
+  `emit`/`converge` may still carry a drift-drawn finding or question a
+  reviewer filed against rule 2d — and so may the prior-review digest a
+  later fixer run starts from, which reads that same upstream `converge`
+  artifact. Empty in `base_ref: HEAD` mode, where uncommitted work IS the
+  review's object.
 - **Anti-façade.** The endpoint re-fetches the posted review to count the
   comments the forge actually stored (falling back to a summary-only
   review when inline anchors are rejected — findings are folded into the

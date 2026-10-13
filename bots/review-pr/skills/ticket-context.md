@@ -193,9 +193,15 @@ DIFF (not the whole repo): does the change deliver what is asked?
   medium/low). Anchor the finding to the most relevant changed file
   (or the file that SHOULD have changed and appears in the diff's
   vicinity); when nothing anchors, use the PR's main changed file at
-  line 1 and say so in the detail.
-- **unverifiable** — you could not obtain or read the ticket; give the
-  concrete reason.
+  line 1 and say so in the detail. **Exception — a gap resting only on
+  a file the review's workspace-anomaly rule names** (an uncommitted
+  edit the PR does not contain): that file's PR state cannot be read
+  from this workspace, so the verdict is `unverifiable`, not this one,
+  and NO finding is filed. Anchoring it on a PR file instead would
+  charge the pull request a blocking finding for someone else's edit.
+- **unverifiable** — you could not obtain or read the ticket, or the
+  only evidence for the verdict is a file the workspace drifted on;
+  give the concrete reason.
 
 A PR may legitimately implement PART of a ticket (split work): when
 the PR title/body says so, judge against the announced slice, not the
@@ -210,4 +216,8 @@ PROJ-456: covered — both acceptance criteria verified in the diff
 
 Scope discipline still applies: findings must be about THIS diff.
 Pre-existing gaps a ticket describes but this PR never claimed are
-questions or summary notes, not findings.
+questions or summary notes, not findings — and a gap resting on a file
+the workspace-anomaly rule names is neither a finding nor a question,
+only a `summary` note: publish routes most questions naming such a file
+into the workspace-anomaly section, so asking it buys the author nothing
+— and a capitalised or paraphrased name reaches them anyway.
