@@ -28,6 +28,13 @@ unmatched calls fall through to human approval. An engine-owned grant created
 by an explicit operator approval is evaluated after a deny rule and before an
 ask rule, so the approved retry proceeds without changing the workflow DSL.
 
+One shape inside that order is deliberately not a pause: an `ask:` rule
+naming just the tool (`Bash`) is beaten by an `allow:` rule naming one exact
+call (`Bash(git diff)`), so one audited invocation stays automatic under a
+tool-wide pause. A scoped or wildcard `ask:` is never beaten, and a prefix or
+bare `allow:` never beats one — `Policy.Evaluate` step 4, and the mode does
+not change it.
+
 ## Modes
 
 Set on the `workflow` block, per node, the CLI, or the environment.
@@ -37,7 +44,7 @@ Set on the `workflow` block, per node, the CLI, or the environment.
 | --- | --- | --- |
 | `off` (default) | `bypassPermissions` | No gate (today's behavior). |
 | `ask` | `default` | allow-rules auto-approve; **deny**-rules hard-block; everything else **pauses the run and surfaces the call to the human** (resumable). |
-| `deny` | `dontAsk` | allow-rules approve; everything else is **hard-denied with no pause** — the policy boundary for headless / cloud / cron runs with no human attached. |
+| `deny` | `dontAsk` | allow-rules approve; **ask**-rules still pause (the lists are read the same way in both armed modes); everything else is **hard-denied with no pause** — the policy boundary for headless / cloud / cron runs with no human attached. |
 
 ## Rule syntax
 
@@ -316,7 +323,13 @@ run-level flags are appended to whichever won.
 
 The studio Launch dialog captions the permission select with the
 resolved mode and the level it came from ("effective: ask · from
-workflow") — see [settings-precedence.md](settings-precedence.md).
+workflow") — see [settings-precedence.md](settings-precedence.md). The
+inspector edits both DSL levels: the workflow block's mode and its three
+rule lists under Workflow Settings, a node's on the agent/judge form —
+the two kinds that may declare their own. A `tool` node's inert
+`permission:` (C112) gets no control, so no form offers a gate that would
+never run; the workflow block is where its recovery rung is gated, and
+the Workflow Settings help says so.
 
 ## CLI
 
@@ -478,6 +491,22 @@ decode the native event and spell the native verdict.
   (`goal`/`postcondition`/`policy`/`recovery`), not this gate — so a
   `permission:` mode on a `tool` node is currently reserved (parsed,
   not yet enforced).
+  **Its rung 4 is the exception:** under `policy: recover`,
+  `recovery.max_agent_attempts > 0` hands the goal to a synthesised agent
+  with real tools, and that agent declares no mode and no rules, so the
+  **workflow** block gates it — the node's own reserved `permission:` is not
+  copied onto it. Both halves of that condition are load-bearing: the ladder
+  runs rungs 3-4 only under `policy: recover`, so the bound alone leaves the
+  run stopping at the recipe. A workflow whose only node is such a `tool`
+  node therefore gets no C111 on its rule lists: they are read, by the agent
+  that runs after a deterministic recipe already failed.
+  C111's reader test is **wider than the gate** — it counts a tool node on
+  `recovery.max_agent_attempts > 0` alone, policy included or not — so the
+  same silence covers a node that declares the bound under any other policy
+  (`required`, `best_effort`, or none), where no rung ever runs and the lists
+  really are inert. There, **C106**
+  names the dead recovery config, which is the finding the author needs:
+  the bound, not the rule lists, is what is unreachable.
 
 ## See also
 

@@ -8,9 +8,11 @@ interface Props {
   id?: string;
   placeholder?: string;
   disabled?: boolean;
-  /** Optional max length per tag (chars). Tags exceeding this length
-   *  are silently truncated on commit. Useful for `labels:` which we
-   *  want to keep readable. */
+  /** Optional max length per tag (chars). A longer tag is cut on commit
+   *  with nothing said, so a caller sets it for values whose readability is
+   *  the point (`labels:`, run tags). A `literalValues` list is exempt from
+   *  it: a shortened literal is a different value, the same silent
+   *  corruption as folding its case or splitting it on a comma. */
   maxTagLength?: number;
   /** Treat the values as LITERALS rather than labels: dedupe exactly
    *  (case included) and stop reading a comma as a separator.
@@ -44,7 +46,8 @@ export function TagInput({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const commit = (raw: string) => {
-    const trimmed = raw.trim().slice(0, maxTagLength);
+    // A literal crosses whole; only a label is cut to length (maxTagLength).
+    const trimmed = literalValues ? raw.trim() : raw.trim().slice(0, maxTagLength);
     if (!trimmed) return;
     const exists = value.some((t) =>
       literalValues ? t === trimmed : t.toLowerCase() === trimmed.toLowerCase(),

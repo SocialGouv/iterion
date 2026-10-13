@@ -158,7 +158,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagVarDefaultTypeMismatch:     {"Var default type mismatch", "Make the default literal match the declared type (`count: int = 3`)."},
 	DiagInvalidPermission:          {"Invalid permission", "Use `off`, `ask` or `deny`."},
 	DiagPermissionRulesNoGate:      {"Permission rules that reach no gated reader", "Set `permission: ask` or `deny` where the rules live (workflow or node) so `allow`/`ask`/`deny` apply; or, when the workflow list is shadowed, restate the rules in the node lists that need them — a node list REPLACES the workflow list of the same kind; or remove the lists."},
-	DiagToolNodePermissionInert:    {"Tool-node permission inert", "Remove `permission:` from the tool node; gate the agent nodes instead."},
+	DiagToolNodePermissionInert:    {"Tool-node permission inert", "Remove `permission:` from the tool node; gate the agent nodes instead. Where this node's Verified Action can reach its agent rung (`policy: recover` with `recovery.max_agent_attempts > 0` — the bound alone never runs a rung, C106), that recovery agent IS gated — by the workflow's `permission:`/`allow:`/`ask:`/`deny:`, which is where its rules belong."},
 	DiagInvalidPermissionRule:      {"Unreadable permission rule", "Write `Tool` or `Tool(pattern)` — e.g. `Bash(go test:*)`, `Read(**)`, `mcp__github__get_*`. The gate's own parser refuses this entry, so the node would fail at dispatch."},
 	DiagGatedCLIBackendSandbox:     {"Gated backend needs a host-side run", "Declare `sandbox: none` (workflow or node), launch with `--sandbox none`, or use a deny-shaped policy on claw."},
 	DiagIndexOnScalar:              {"Index on scalar", "Index an array or map; drop the subscript on a string/bool/number."},

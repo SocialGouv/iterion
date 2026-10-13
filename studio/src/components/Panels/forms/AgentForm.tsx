@@ -264,11 +264,11 @@ export default function AgentForm({ decl, kind }: Props) {
         onChange={(v) => update({ tool_policy: v.length > 0 ? v : undefined })}
         placeholder="Add allow/deny pattern..."
       />
-      {/* Tool-permission gate (#1222, docs/permissions.md). An emptied list
-          is written back as `undefined`, never `[]`: the JSON seam carries
-          these with `omitempty`, so `[]` and "absent" are the same value on
-          the wire — a control that wrote `[]` would look like it cleared the
-          workflow's list and inherit it instead. */}
+      {/* Tool-permission gate (docs/permissions.md). An emptied list is
+          written back as `undefined`, never `[]`: `[]` reaches the save as a
+          non-nil empty slice, which `ir.SameProgram` reads as a different
+          program, so the file cannot be saved at all — 422, with a message
+          that names only the node. */}
       <SelectField
         label="Permission"
         // C110 accepts the mode case-insensitively and whitespace-trimmed,

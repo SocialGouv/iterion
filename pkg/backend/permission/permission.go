@@ -311,7 +311,7 @@ func (p *Policy) isExempt(toolName string) bool {
 //     scoped allow for that same tool → Allow;
 //  5. another matching ask rule → Ask;
 //  6. a matching allow rule → Allow;
-//  5. otherwise the mode default — ModeAsk → Ask, ModeDeny → Deny,
+//  7. otherwise the mode default — ModeAsk → Ask, ModeDeny → Deny,
 //     ModeOff → Allow (the gate is disabled).
 //
 // The returned string is the matched rule (or "" for the mode default)
