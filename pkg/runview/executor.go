@@ -85,6 +85,30 @@ type ExecutorSpec struct {
 	// Claw's relative file tools. Empty preserves the historical os.Getwd()
 	// fallback for callers that execute in their intended workspace.
 	WorkDir string
+	// SandboxProbeWorkDir is the directory the ENGINE will root this run at
+	// — the value the surface passes to runtime.WithWorkDir. The fallback
+	// screen's sandbox probe derives its repository root from it
+	// (runtime.EngineRepoRoot), so the screen resolves the same repository
+	// the engine's own sandbox resolution will.
+	//
+	// Set it wherever the engine's directory is NOT the one above: the cloud
+	// runner hands the engine a per-run clone, a subbot child inherits its
+	// parent's worktree, a resumed run carries its recorded workspace —
+	// while the executor's tool workspace stays the process workspace.
+	// Empty means "the engine receives WorkDir" and the probe reads that
+	// instead, which is what every surface passing one directory to both
+	// does. Both empty means "the engine is given no directory": it then
+	// fills its own with the process cwd and roots the run at THAT
+	// directory's repository, which is what sandboxProbeRoot answers.
+	//
+	// It is a DIRECTORY, not a root: the probe resolves it through
+	// runtime.EngineRepoRoot, which is the identity on a repository root that
+	// exists and walks up from one that does not.
+	//
+	// NOTHING else reads this field: Claw's tool workspace remains WorkDir's
+	// (resolveExecutorWorkspace), so answering the probe never moves the
+	// agent's file root.
+	SandboxProbeWorkDir string
 	// SourceIssueID is the ticket that owns this run (dispatcher / pipeline
 	// launch). Empty for ad-hoc runs. Used to auto-stamp parent_id when the
 	// bot creates child tickets via board.create.
@@ -392,7 +416,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// (run_fallback_refused), because a refusal the decider cannot read is a
 	// silent fallback.
 	sandboxedHere := runtime.RunWillBeSandboxed(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault,
-		runtime.EngineRepoRoot(spec.WorkDir), spec.SandboxDrivers)
+		runtime.EngineRepoRoot(spec.sandboxProbeRoot()), spec.SandboxDrivers)
 	overrides := spec.ModelOverrides
 	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
@@ -766,6 +790,36 @@ func resolveExecutorWorkspace(workDir string) (string, error) {
 		return "", fmt.Errorf("runview: tool workspace %q is not a directory", abs)
 	}
 	return abs, nil
+}
+
+// sandboxProbeRoot is the directory the fallback screen's sandbox probe
+// resolves this run's repository from: the engine's own workDir when the
+// surface named it, else WorkDir — the same directory for every surface that
+// passes one value to both the engine and the executor — else the process
+// cwd, which is where an engine given no directory roots itself.
+//
+// That last branch is never "": runtime.EngineRepoRoot stops at the cwd
+// ITSELF for an empty directory, while an engine with no workDir fills it
+// with the cwd first (runtime's defaultWorkDir) and only then resolves that
+// directory's REPOSITORY — so an empty answer screens a subdirectory of the
+// repository the run executes in. A cwd the OS refuses to name is the one
+// case with no answer, and it is the same "" the engine's own chain ends on.
+//
+// It is deliberately NOT resolveExecutorWorkspace's input: that one is Claw's
+// file-tool root, which several surfaces leave at the process workspace while
+// the engine runs the bot in a per-run clone or an inherited worktree.
+func (s ExecutorSpec) sandboxProbeRoot() string {
+	if s.SandboxProbeWorkDir != "" {
+		return s.SandboxProbeWorkDir
+	}
+	if s.WorkDir != "" {
+		return s.WorkDir
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return cwd
 }
 
 func workflowUsesWorkspaceDiagnostics(wf *ir.Workflow) bool {

@@ -2666,7 +2666,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if superviseHub != nil {
 		hookObservers = []func(store.Event){superviseHub.Publish}
 	}
-	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger, hookObservers)
+	executor, usage, err := r.buildExecutor(ctx, msg, wf, workDir, runLogger, hookObservers)
 	if err != nil {
 		return err
 	}
@@ -3283,8 +3283,8 @@ func envPositiveFloat(key string) (float64, bool) {
 // through — executeRun reads its RunTotals at the end of the attempt
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
-func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
-	spec, usage, err := r.executorSpec(ctx, msg, wf, logger, hookObservers)
+func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
+	spec, usage, err := r.executorSpec(ctx, msg, wf, workDir, logger, hookObservers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3299,7 +3299,7 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 // buildExecutor so the wiring is assertable: a binder missing here is a
 // capability that silently dies on every cloud run (the supervisor-steer
 // and operator-chat inbox was exactly that).
-func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runview.ExecutorSpec, *metricsEmitter, error) {
+func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event)) (runview.ExecutorSpec, *metricsEmitter, error) {
 	operatorFallbacks, policyLadder := splitMsgFallback(msg.Fallback)
 	var zero runview.ExecutorSpec
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
@@ -3335,7 +3335,13 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// reach stdout but never the persisted run.log.
 		Logger:   logger,
 		StoreDir: r.cfg.WorkDir,
-		BotID:    msg.BotID,
+		// The directory the ENGINE is rooted at (its runtime.WithWorkDir):
+		// the per-run clone for a repo-bound run, the pod's base workspace
+		// otherwise — never r.cfg.WorkDir alone. The fallback screen's
+		// sandbox probe reads this run's repository from it; WorkDir stays
+		// unset, so Claw's file tools keep the pod's workspace.
+		SandboxProbeWorkDir: workDir,
+		BotID:               msg.BotID,
 		// The launch-time decision, carried on the wire. Without it the pod
 		// would resolve auto-memory from the workflow and its own (empty)
 		// environment, so an operator's `--auto-memory off` on a bot whose

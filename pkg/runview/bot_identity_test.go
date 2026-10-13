@@ -3,6 +3,7 @@ package runview
 import (
 	"go/ast"
 	"go/token"
+	"slices"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -115,9 +116,7 @@ func TestEveryExecutorConstructionDecidesTheBotIdentity(t *testing.T) {
 		"pkg/botreplay/record.go": "replay harness: single node, no memory space",
 	}
 
-	var gaveUp []string
-	offenders := executorSpecSitesMissing(t, "BotID", exempt, &gaveUp)
-	assertGiveUpsAreOnTheRecord(t, gaveUp)
+	offenders := executorSpecSitesMissing(t, botIdentityQuestion, exempt)
 	if len(offenders) > 0 {
 		t.Errorf("these build an executor without deciding its bot identity, so its bot-scoped memory "+
 			"falls back to the WORKFLOW name and silently diverges from every surface that sets it: %v\n"+
@@ -126,15 +125,19 @@ func TestEveryExecutorConstructionDecidesTheBotIdentity(t *testing.T) {
 	}
 }
 
-// executorSpecMissesField reports whether a file builds an ExecutorSpec
-// without setting `field`, by either construction shape: a composite literal,
+// executorSpecMissesFields reports whether a file builds an ExecutorSpec that
+// sets NONE of `fields`, by either construction shape: a composite literal,
 // or a variable whose fields are assigned one at a time.
 //
 // The walk is the field-independent part, and several fields of this spec are
 // load-bearing in the same way — decided at every construction site or
-// silently wrong at the one that forgot. Each such field gets its own test
-// over this one traversal.
-func executorSpecMissesField(file *ast.File, field string) (missing, unread bool) {
+// silently wrong at the one that forgot. A field set, not a single field,
+// because one question can have two answers: "which repository does this run
+// resolve its sandbox against" is answered by WorkDir OR by
+// SandboxProbeWorkDir, and the verdict belongs to the SITE. Composing two
+// per-file verdicts instead accuses a file whose two sites each answered —
+// and a false accusation in a gate costs more than a miss.
+func executorSpecMissesFields(file *ast.File, fields []string) (missing, unread bool) {
 	missing = false
 	// The identifier THIS file uses for the runview package. Hardcoding
 	// "runview" made the sweep blind to `rv "…/pkg/runview"` — an import
@@ -195,7 +198,7 @@ func executorSpecMissesField(file *ast.File, field string) (missing, unread bool
 		}
 		for _, el := range lit.Elts {
 			if kv, ok := el.(*ast.KeyValueExpr); ok {
-				if id, ok := kv.Key.(*ast.Ident); ok && id.Name == field {
+				if id, ok := kv.Key.(*ast.Ident); ok && slices.Contains(fields, id.Name) {
 					return true
 				}
 			}
@@ -215,33 +218,7 @@ func executorSpecMissesField(file *ast.File, field string) (missing, unread bool
 		if !ok || fn.Body == nil {
 			return true
 		}
-		declared := map[string]bool{}
-		ast.Inspect(fn.Body, func(m ast.Node) bool {
-			switch v := m.(type) {
-			case *ast.ValueSpec:
-				if isExecutorSpecType(v.Type, pkgNames, bare) {
-					for _, name := range v.Names {
-						declared[name.Name] = true
-					}
-				}
-			case *ast.AssignStmt:
-				for i, rhs := range v.Rhs {
-					call, ok := rhs.(*ast.CallExpr)
-					if !ok || len(call.Args) != 1 {
-						continue
-					}
-					if id, ok := call.Fun.(*ast.Ident); !ok || id.Name != "new" {
-						continue
-					}
-					if isExecutorSpecType(call.Args[0], pkgNames, bare) && i < len(v.Lhs) {
-						if id, ok := v.Lhs[i].(*ast.Ident); ok {
-							declared[id.Name] = true
-						}
-					}
-				}
-			}
-			return true
-		})
+		declared := executorSpecLocals(fn.Body, pkgNames, bare)
 		if len(declared) == 0 {
 			return true
 		}
@@ -311,7 +288,7 @@ func executorSpecMissesField(file *ast.File, field string) (missing, unread bool
 					continue
 				}
 				anyField[id.Name] = true
-				if sel.Sel.Name == field {
+				if slices.Contains(fields, sel.Sel.Name) {
 					assigned[id.Name] = true
 				}
 			}
@@ -372,6 +349,46 @@ func executorSpecMissesField(file *ast.File, field string) (missing, unread bool
 		return true
 	})
 	return missing, unread
+}
+
+// executorSpecLocals returns the identifiers body binds to an ExecutorSpec of
+// this package by a shape the source alone settles: `var s ExecutorSpec` and
+// `s := new(ExecutorSpec)`.
+//
+// Shared, because two guards need the same answer for opposite reasons — the
+// sweep's predicate to judge the fields a site assigns one at a time, and the
+// agreement guard to tell a SPEC's WorkDir from the WorkDir of anything else a
+// function assigns (pkg/runner's New sets cfg.WorkDir on the runner's own
+// config, and that is no run's screen root).
+func executorSpecLocals(body *ast.BlockStmt, pkgNames map[string]bool, bare bool) map[string]bool {
+	declared := map[string]bool{}
+	ast.Inspect(body, func(m ast.Node) bool {
+		switch v := m.(type) {
+		case *ast.ValueSpec:
+			if isExecutorSpecType(v.Type, pkgNames, bare) {
+				for _, name := range v.Names {
+					declared[name.Name] = true
+				}
+			}
+		case *ast.AssignStmt:
+			for i, rhs := range v.Rhs {
+				call, ok := rhs.(*ast.CallExpr)
+				if !ok || len(call.Args) != 1 {
+					continue
+				}
+				if id, ok := call.Fun.(*ast.Ident); !ok || id.Name != "new" {
+					continue
+				}
+				if isExecutorSpecType(call.Args[0], pkgNames, bare) && i < len(v.Lhs) {
+					if id, ok := v.Lhs[i].(*ast.Ident); ok {
+						declared[id.Name] = true
+					}
+				}
+			}
+		}
+		return true
+	})
+	return declared
 }
 
 // markElidedElements records the type-less inner literals of a container
