@@ -1,32 +1,49 @@
 name: 🍺 Brew Tap Update
 
-# The tap update runs ONCE PER DAY on a schedule, not once per release.
-# Measured on #2241 (2026-10): one tap PR per release meant one main commit
-# per release, and the release train's cadence kept evicting the head of
-# the merge queue — a PR sat CLEAN for three days without merging, each
-# tap commit re-running the group behind it.
+# The tap update runs ONCE A NIGHT, right after version.yml's nightly run
+# completes, not once per release. Measured on #2241 (2026-10): one tap PR
+# per release meant one main commit per release, and the release train's
+# cadence kept evicting the head of the merge queue — a PR sat CLEAN for
+# three days without merging, each tap commit re-running the group behind it.
 #
-# A scheduled run resolves the NEWEST v* tag newer than what the tap
-# formula already carries (intermediate releases never need tap entries —
-# the formula points at the latest), downloads that release's artefacts,
-# and opens ONE tap PR carrying the day's update. The skip only fires
-# when BOTH the formula and the cask already carry the tag: a release
-# whose desktop artefacts landed after the last run re-taps its formula
-# side the next day, and update-brew-tap.sh's all-or-nothing guard keeps
-# a partial download from advancing anything.
+# Chained to the nightly rather than on a cron of its own, because that is
+# what lands it at night. GitHub fires this repository's schedules 1.5 to 8
+# hours late: a 04:37 UTC cron here fired between 10:46 and 12:21 UTC, inside
+# the queue's working hours, while the nightly (22:27 UTC) fired between 00:03
+# and 02:21 UTC on each of its 27 runs since 2026-09-11. Over 2026-09-12..10-12
+# each hour from 00:00 to 05:59 UTC saw 2-7 merges in all — about one a week —
+# against 19-37 for each hour from 06:00 to 21:59, about one a day. A nightly
+# GitHub drops (four in a row, 2026-10-02..05) delays the tap just as long.
+#
+# A run resolves the NEWEST v* tag, at or above what the tap formula carries,
+# whose release holds the four CLI binaries (intermediate releases never need
+# tap entries — the formula points at the latest). The nightly's own tag is
+# usually still building when this runs: it is passed over and tapped the
+# next night, instead of stalling every night it builds. The skip only fires
+# when BOTH the formula and the cask already carry the tag: a cask left
+# behind catches up with that release's desktop ZIP once it exists, and
+# update-brew-tap.sh's all-or-nothing guard keeps a partial download from
+# advancing anything. Nothing ever walks the tap back, and a pre-release is
+# never tapped. A desktop-only release (its CLI build red) reaches the cask
+# only through a dispatch with its tag, while the formula is still below it.
+#
+# The PR it opens skips tests.yml's heavy jobs: its header says why, and how
+# `brand` verifies that the PR touches the tap alone.
 #
 # `workflow_dispatch` stays for backfill (replay an old tag with `tag`,
 # or force a run without one to process the latest pending).
 
 on:
-  schedule:
-    # 04:37 UTC — before the workday, away from the merge queue's busy
-    # hours. The minute is deliberately off the round marks.
-    - cron: "37 4 * * *"
+  workflow_run:
+    # version.yml's `name:`, byte for byte (the emoji carries a variation
+    # selector): a workflow_run naming a workflow that does not exist never
+    # fires, and says nothing. internal/ciguard compares the two.
+    workflows: ["🏷️ Version"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to tap (e.g. v0.5.0). Empty = the newest tag newer than the tap's version."
+        description: "Release tag to tap (e.g. v0.5.0). Empty = the newest tag, at or above the tap's version, whose release holds the CLI binaries."
         required: false
         type: string
 
@@ -44,6 +61,10 @@ permissions:
 
 jobs:
   update:
+    # version.yml also completes once per merged pull request; only its
+    # nightly run taps. Any conclusion: a nightly that failed to release
+    # leaves the earlier releases to tap all the same.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - name: Get GitHub App Token
@@ -61,54 +82,25 @@ jobs:
           fetch-depth: 0
 
       - name: Resolve tag
+        # The newest tag with complete CLI artefacts, at or above the tap's
+        # version — scripts/brew-tap-resolve.sh says why each rule is there.
         id: tag
         env:
           INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git fetch --tags origin >/dev/null
-          if [ -n "${INPUT_TAG:-}" ]; then
-            tag="$INPUT_TAG"
-          else
-            # The newest v* tag; skipped when the tap formula already
-            # carries it (nothing released since the last update).
-            tag="$(git tag --sort=-creatordate | grep '^v' | head -n1 || true)"
-          fi
-          if [ -z "$tag" ]; then
-            echo "no v* tag found; nothing to tap"
-            echo "skip=1" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "resolved tag=$tag"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          current_formula="$(sed -n 's/^[[:space:]]*version[[:space:]]*"\(.*\)".*/\1/p' Formula/iterion.rb | head -n1 || true)"
-          current_cask="$(sed -n 's/^[[:space:]]*version[[:space:]]*"\(.*\)".*/\1/p' Cask/iterion-desktop.rb | head -n1 || true)"
-          vtag="${tag#v}"
-          # Downgrade guard: a maintenance tag created AFTER a newer
-          # release (a hotfix cut from an older branch) must not walk the
-          # tap backwards. sort -V compares semver, not strings.
-          newest="$(printf '%s\n%s\n' "${current_formula:-0}" "$vtag" | sort -V | tail -n1)"
-          if [ "$newest" != "$vtag" ]; then
-            echo "tag $tag is not newer than the tap's $current_formula — nothing to update"
-            echo "skip=1" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Skip only when BOTH files carry the tag: skipping on the
-          # formula alone froze the desktop cask for a whole release
-          # cycle once (measured). A release without the desktop ZIP
-          # costs a no-op run, never a stale cask.
-          if [ "$vtag" = "$current_formula" ] && { [ -z "$current_cask" ] || [ "$vtag" = "$current_cask" ]; }; then
-            echo "the tap already carries $vtag (formula and cask); nothing to update"
-            echo "skip=1" >> "$GITHUB_OUTPUT"
-          fi
+          bash scripts/brew-tap-resolve.sh
 
       - name: Prepare the tap branch
         # The tap change lands as its OWN queued PR, not as a push to main:
         # a direct push invalidates the merge group at the head of the queue
         # and makes every PR behind it rebuild (~20-25 min, measured on
-        # #766).
+        # #766). The script reads whether the tag's PR is open, hence gh.
         if: steps.tag.outputs.skip != '1'
         env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: bash scripts/brew-tap-pr.sh branch "$TAG"
 
