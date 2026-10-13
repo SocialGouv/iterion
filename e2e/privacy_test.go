@@ -46,6 +46,11 @@ func TestE2E_PrivacyPipeline(t *testing.T) {
 		Store:    s,
 		RunID:    runID,
 		StoreDir: storeDir,
+		// The repository newEngine roots this run at unless the caller passes
+		// a runtime.WithWorkDir of its own (scratchRepo memoises one per
+		// test), so the fallback screen's sandbox probe reads the same tree
+		// the engine will — not the e2e package directory.
+		SandboxProbeWorkDir: scratchRepo(t),
 		// This harness runs the node in THIS process, unsandboxed, so the
 		// launcher may start the workflow's own MCP servers. Said
 		// explicitly: the zero value means "nobody looked", which starts

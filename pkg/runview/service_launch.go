@@ -1014,6 +1014,28 @@ func runSandboxOverride(r *store.Run) string {
 	return r.SandboxOverride
 }
 
+// ResumeProbeWorkDir is the directory a RESUMED run's fallback screen resolves
+// its repository from: the root the launch recorded, else the run's workspace,
+// else none — and the probe then falls back to the engine's own directory.
+// Exported because both resume surfaces answer with it (the studio's
+// in-process resume and `iterion resume`), and a second copy of a precedence
+// is a second answer.
+//
+// It is the precedence the engine applies on a resume: run.RepoRoot wins
+// (runtime.seedRepoRootForResume, and the sandbox re-bootstrap beside it),
+// which is why the recorded root must not be re-derived from a workspace that
+// may no longer resolve back to it — a pruned or finalized worktree, or a run
+// document read on a replica that never held one.
+func ResumeProbeWorkDir(r *store.Run) string {
+	if r == nil {
+		return ""
+	}
+	if r.RepoRoot != "" {
+		return r.RepoRoot
+	}
+	return r.WorkDir
+}
+
 func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *iterlog.Logger, autoMemory string) ExecutorSpec {
 	runWorkDir := ""
 	if r != nil {
@@ -1032,8 +1054,12 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		SandboxDefault:    s.sandboxDefault,
 		SandboxTiersKnown: true,
 		WorkDir:           s.effectiveWorkDir(runWorkDir),
-		Inbox:             s.inboxBinder(),
-		AsyncAsk:          s.asyncAskBinder(),
+		// The repository the resumed engine roots this run at, which is the
+		// RECORDED root before the workspace below: WorkDir is Claw's
+		// file-tool root and stays what it was.
+		SandboxProbeWorkDir: ResumeProbeWorkDir(r),
+		Inbox:               s.inboxBinder(),
+		AsyncAsk:            s.asyncAskBinder(),
 		// Same hook-seam wiring as a launch: a resume-spawned supervisor
 		// (or any live subscriber) is otherwise blind to assistant_text /
 		// tool_* events, which never fire the engine's observer.
