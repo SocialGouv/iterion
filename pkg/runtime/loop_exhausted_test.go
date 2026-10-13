@@ -165,6 +165,242 @@ func TestALoopEdgeWithBudgetWinsOverAnElseExitInEitherOrder(t *testing.T) {
 	}
 }
 
+const guardedLoopExitBot = `schema verdict:
+  ok: bool
+
+agent check:
+  model: "m"
+  output: verdict
+
+judge assess:
+  model: "m"
+  output: verdict
+
+agent publish:
+  model: "m"
+  output: verdict
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: check
+  budget:
+    max_iterations: 20
+  check -> assess
+  assess -> check when not ok as retry(2)
+  assess -> publish when ok
+  assess -> done when not ok
+  publish -> done
+`
+
+const guardedForeachExitBot = `schema verdict:
+  ok: bool
+  items: string[]
+
+agent check:
+  model: "m"
+  output: verdict
+
+judge assess:
+  model: "m"
+  output: verdict
+
+agent publish:
+  model: "m"
+  output: verdict
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: check
+  budget:
+    max_iterations: 20
+  check -> assess
+  assess -> check when not ok as foreach scan(item in "{{outputs.check.items}}")
+  assess -> publish when ok
+  assess -> done when not ok
+  publish -> done
+`
+
+// swapOutgoingEdges moves the outgoing edge `from -> b` above `from -> a`,
+// rewriting the declaration order the evaluator walks. It refuses a pair
+// already in that order: a swap that inverts nothing would leave the caller
+// asserting the order it meant to reverse.
+func swapOutgoingEdges(t *testing.T, wf *ir.Workflow, from, a, b string) {
+	t.Helper()
+	ia, ib := -1, -1
+	for i, e := range wf.Edges {
+		if e.From != from {
+			continue
+		}
+		if e.To == a && ia < 0 {
+			ia = i
+		}
+		if e.To == b && ib < 0 {
+			ib = i
+		}
+	}
+	if ia < 0 || ib < 0 {
+		t.Fatalf("the fixture has no %s->%s (%d) and %s->%s (%d) to swap", from, a, ia, from, b, ib)
+	}
+	if ia > ib {
+		t.Fatalf("%s->%s (index %d) is already declared before %s->%s (index %d): the swap would not invert the order", from, b, ib, from, a, ia)
+	}
+	wf.Edges[ia], wf.Edges[ib] = wf.Edges[ib], wf.Edges[ia]
+}
+
+// retarget points the outgoing edge `from -> to` at `at` instead, building a
+// program `iterion validate` refuses to compile from source.
+func retarget(t *testing.T, wf *ir.Workflow, from, to, at string) {
+	t.Helper()
+	for _, e := range wf.Edges {
+		if e.From == from && e.To == to {
+			e.To = at
+			return
+		}
+	}
+	t.Fatalf("the fixture has no %s->%s to retarget at %s", from, to, at)
+}
+
+// What C011 refuses an exit that leads back into the iteration for: the body
+// crosses again without the back-edge, so the cap stops bounding it and the
+// run goes on until its budget — no other mechanism ends it.
+func TestAnExitLeadingBackIntoTheIterationOutlivesTheCap(t *testing.T) {
+	var checks int
+	exec := newStubExecutor()
+	exec.on("check", func(map[string]any) (map[string]any, error) {
+		checks++
+		return map[string]any{"ok": false}, nil
+	})
+	exec.on("assess", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": false}, nil })
+	wf := compileBotText(t, guardedLoopExitBot)
+	retarget(t, wf, "assess", "done", "check")
+	s := tmpStore(t)
+	if err := New(wf, s, exec).Run(context.Background(), "run-guarded-reentry", nil); err == nil {
+		t.Fatal("the run ended on its own: something bounded the exit the cap no longer bounds")
+	}
+	run, err := s.LoadRun(context.Background(), "run-guarded-reentry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.FailureCode != store.FailureBudgetExceeded {
+		t.Fatalf("the run died of %q, want %q (%s)", run.FailureCode, store.FailureBudgetExceeded, run.Error)
+	}
+	// `as retry(2)` allows the entry pass plus two crossings; every pass
+	// beyond that one is the body running with the cap untouched.
+	if checks <= 3 {
+		t.Fatalf("check ran %d times, the 3 the cap allows or fewer: the exit did not re-enter the body", checks)
+	}
+	t.Logf("the body ran %d times for a cap of 2, until %s", checks, run.FailureCode)
+}
+
+// The GUARDED exhaustion exit — the exit carrying the back-edge's own `when`
+// — is selected by declaration order, unlike the bare and `else` exits
+// above: a conditional iteration edge never reaches the order-independent
+// fallback slot, so the evaluator returns the first matching conditional
+// edge. Declared below the back-edge the iteration runs out and the exit then
+// fires; declared above it the exit matches on the first pass and the
+// back-edge never crosses, which is the order C011 refuses. Both halves of
+// the permission are driven: a `loop` cap, and a `foreach` whose collection
+// resolves from a producer's output — a literal collection would be spent
+// before its first crossing and could witness no order at all.
+func TestAGuardedLoopExitIsSelectedByDeclarationOrder(t *testing.T) {
+	for _, bot := range []struct {
+		kind   string
+		src    string
+		output map[string]any
+	}{
+		// `ok` never holds, so only the iteration's own bound ends it: the
+		// cap of 2 for the loop, the three-element collection for the
+		// foreach (the body has run for element 0 when the back-edge is
+		// first read, so two crossings are left).
+		{"a loop cap", guardedLoopExitBot, map[string]any{"ok": false}},
+		{"a spent foreach", guardedForeachExitBot, map[string]any{"ok": false, "items": []any{"a", "b", "c"}}},
+	} {
+		for _, tc := range []struct {
+			name       string
+			exitFirst  bool
+			wantChecks int
+		}{
+			// The entry crossing plus the two the iteration allows, then the exit.
+			{"back-edge declared first", false, 3},
+			{"exit declared first", true, 1},
+		} {
+			t.Run(bot.kind+", "+tc.name, func(t *testing.T) {
+				var checks int
+				exec := newStubExecutor()
+				exec.on("check", func(map[string]any) (map[string]any, error) {
+					checks++
+					return bot.output, nil
+				})
+				exec.on("assess", func(map[string]any) (map[string]any, error) { return bot.output, nil })
+				wf := compileBotText(t, bot.src)
+				if tc.exitFirst {
+					// The order C011 refuses. It cannot be compiled from
+					// source, so the same program is reordered here.
+					swapOutgoingEdges(t, wf, "assess", "check", "done")
+				}
+				s := tmpStore(t)
+				if err := New(wf, s, exec).Run(context.Background(), "run-guarded-order", nil); err != nil {
+					t.Fatalf("the run did not reach done: %v", err)
+				}
+				run, err := s.LoadRun(context.Background(), "run-guarded-order")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if run.Status != store.RunStatusFinished {
+					t.Fatalf("the run ended %q", run.Status)
+				}
+				if checks != tc.wantChecks {
+					t.Fatalf("check ran %d times, want %d", checks, tc.wantChecks)
+				}
+			})
+		}
+	}
+}
+
+// What the guarded exit buys over the bare one, both halves run on the same
+// program: an output that carries no condition field at all matches neither
+// the back-edge nor the guarded exit, so the run dies of NO_OUTGOING_EDGE —
+// where the bare exit, matching whatever the producer answered, carries that
+// output onward to `done`.
+func TestAGuardedLoopExitRefusesAnOutputWithNoConditionField(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		exit        string
+		wantFailure store.FailureCode
+	}{
+		{"the guarded exit", "  assess -> done when not ok\n", store.FailureNoOutgoingEdge},
+		{"the bare exit", "  assess -> done\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := strings.Replace(guardedLoopExitBot, "  assess -> done when not ok\n", tc.exit, 1)
+			if !strings.Contains(src, tc.exit) {
+				t.Fatalf("the fixture carries no exit to replace with %q", tc.exit)
+			}
+			exec := newStubExecutor()
+			exec.on("check", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": false}, nil })
+			// assess answers without `ok` — the field its conditional edges read.
+			exec.on("assess", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+			s := tmpStore(t)
+			err := New(compileBotText(t, src), s, exec).Run(context.Background(), "run-guarded-malformed", nil)
+			if tc.wantFailure == "" && err != nil {
+				t.Fatalf("the bare exit did not carry the unchecked output onward: %v", err)
+			}
+			if tc.wantFailure != "" && err == nil {
+				t.Fatal("an output with no condition field was routed on")
+			}
+			run, lerr := s.LoadRun(context.Background(), "run-guarded-malformed")
+			if lerr != nil {
+				t.Fatal(lerr)
+			}
+			if run.FailureCode != tc.wantFailure {
+				t.Fatalf("the run died of %q, want %q (%s)", run.FailureCode, tc.wantFailure, run.Error)
+			}
+		})
+	}
+}
+
 // A loop edge whose cap cannot resolve at the crossing fails the run — in
 // either order. Before, the failure was deferred into the same first-wins
 // slot as the bare exit: written below the exit, the edge and its error

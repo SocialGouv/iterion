@@ -1,33 +1,38 @@
 package ir
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
-// C011 (DiagAmbiguousCondition) intentionally refuses the "loop
-// back-edge + non-loop edge on the same condition" shape too: the
-// runtime iterates edges in source order and returns the first
-// matching conditional edge (a loop's back-edge falls through the
-// loop-block into the same general conditional check as any other
-// edge), so the pair is write-order-dependent — the loop wins when
-// written first, the sibling wins when written first. #1386's ask is
-// legitimate but requires a runtime enhancement that preserves the
-// bots-in-the-field contract (modernize's `lot_gate` ships that
-// declaration-order dependency on purpose: `mark_done when converged`
-// before `upgrade_campaign when not stop as repair_loop(N)` picks
-// mark_done over the loop when both hold). Until that lands, the C011
-// refusal is honest; the workaround is a bare / `else` exit that the
-// wave-1 fallback-slot rule orders correctly regardless of source
-// order.
-func TestC011RefusesLoopPlusNonLoopOnSameCondition(t *testing.T) {
+// The guarded loop-exhaustion exit: a bounded-iteration back-edge
+// (`as name(N)`, `as foreach …`) and a non-iteration sibling may share one
+// condition when the back-edge is DECLARED FIRST. That is the order
+// `evaluateEdgesWithLoopsRS` walks, and it returns the first matching
+// conditional edge — so the back-edge wins while the iteration has work and
+// the sibling fires once the iteration is declined. Declared the other way
+// round the sibling matches first and the iteration edge is never taken,
+// which C011 refuses while naming the order that works. The permission is
+// that one pair: two non-iteration edges on one condition stay ambiguous,
+// two iteration edges stay ambiguous, a third edge on the condition is
+// shadowed by the sibling that precedes it, and the sibling has to LEAVE the
+// iteration — an exit the body leads back to this node from re-enters the
+// body without crossing the back-edge, so the cap stops bounding it, in
+// either declaration order.
+func TestC011AndTheGuardedLoopExit(t *testing.T) {
 	head := `dsl: 2
 
 schema out:
   ok: bool
   was_batch: bool
+  items: string[]
 
 tool select_candidate:
+  command: ` + "`echo hi`" + `
+  output: out
+
+tool stage_work:
   command: ` + "`echo hi`" + `
   output: out
 
@@ -43,44 +48,345 @@ tool phase2_decider:
   command: ` + "`echo hi`" + `
   output: out
 
+tool late_exit:
+  command: ` + "`echo hi`" + `
+  output: out
+
 workflow w:
   worktree: none
   sandbox: none
   entry: select_candidate
-  select_candidate -> write_audit_md
+  select_candidate -> stage_work
+  stage_work -> write_audit_md
 `
-	// The write-order-dependent pair from #1386 stays refused.
-	src := head + `  write_audit_md -> select_candidate when not was_batch as package_loop(3)
-  write_audit_md -> bucket_families when was_batch
-  write_audit_md -> phase2_decider when not was_batch
-  phase2_decider -> done
-  bucket_families -> done
+	const (
+		// Every node stays reachable whichever edges the case declares.
+		tail = "  bucket_families -> late_exit\n  late_exit -> phase2_decider\n  phase2_decider -> done\n"
+
+		backEdge = "  write_audit_md -> select_candidate when not was_batch as package_loop(3)\n"
+		// A real back-edge, over a collection that resolves: the shape the
+		// permission names for `as foreach …`, not a forward edge wearing a
+		// foreach it could never iterate.
+		foreachBackEdge = "  write_audit_md -> select_candidate when not was_batch as foreach scan(item in \"{{outputs.select_candidate.items}}\")\n"
+		otherIteration  = "  write_audit_md -> late_exit when not was_batch as other_loop(2)\n"
+		otherPolarity   = "  write_audit_md -> bucket_families when was_batch\n"
+		guardedExit     = "  write_audit_md -> phase2_decider when not was_batch\n"
+		bareExit        = "  write_audit_md -> phase2_decider\n"
+		secondExit      = "  write_audit_md -> late_exit when not was_batch\n"
+		// Not exits: both land where the body leads back here from — the
+		// back-edge's own target, and a node between it and this one.
+		reentryExit      = "  write_audit_md -> select_candidate when not was_batch\n"
+		bodyInteriorExit = "  write_audit_md -> stage_work when not was_batch\n"
+		// A way back that is itself capped: the walk looking for a route
+		// back here steps over bounded iteration edges, their own cap
+		// bounding whatever cycle crosses them.
+		cappedWayBack = "  phase2_decider -> write_audit_md as recheck(2)\n"
+	)
+	for _, tc := range []struct {
+		name    string
+		edges   string
+		want    int      // expected number of C011 diagnostics
+		must    []string // substrings the C011 message must carry
+		mustNot []string // substrings it must not carry
+	}{
+		{
+			name:  "a back-edge declared first permits the exit it guards",
+			edges: backEdge + otherPolarity + guardedExit,
+		},
+		{
+			name:  "a foreach back-edge declared first permits it too",
+			edges: foreachBackEdge + otherPolarity + guardedExit,
+		},
+		{
+			name:  "the bare exhaustion exit is on another condition entirely",
+			edges: backEdge + otherPolarity + bareExit,
+		},
+		{
+			// The only route from this exit back here crosses a second
+			// iteration edge, and that one's cap bounds it: an exit all the
+			// same.
+			name:  "an exit whose way back is itself capped is an exit",
+			edges: backEdge + otherPolarity + guardedExit + cappedWayBack,
+		},
+		{
+			name:  "the exit declared first shadows the back-edge",
+			edges: guardedExit + otherPolarity + backEdge,
+			want:  1,
+			must: []string{
+				"write_audit_md->phase2_decider",
+				"write_audit_md->select_candidate",
+				"not was_batch",
+				"is declared first",
+				"declare the iteration back-edge before the exit it guards",
+			},
+		},
+		{
+			name:  "two iteration edges on one condition stay ambiguous",
+			edges: backEdge + otherPolarity + otherIteration,
+			want:  1,
+			must:  []string{"write_audit_md->select_candidate", "write_audit_md->late_exit"},
+		},
+		{
+			name:  "an exit back to the node the back-edge re-enters is no exit",
+			edges: backEdge + otherPolarity + reentryExit,
+			want:  1,
+			must: []string{
+				"write_audit_md->select_candidate",
+				"not was_batch",
+				`leads back to "write_audit_md"`,
+				"must leave the iteration",
+			},
+		},
+		{
+			// One node further in: the exit crosses into the body, which
+			// carries it back here with the cap untouched.
+			name:  "an exit into the body is no exit either",
+			edges: backEdge + otherPolarity + bodyInteriorExit,
+			want:  1,
+			must: []string{
+				"write_audit_md->stage_work",
+				`leads back to "write_audit_md"`,
+				"must leave the iteration",
+			},
+		},
+		{
+			// Declaring it first does not repair it, so the refusal must not
+			// send the author to swap the order: the move is to route the
+			// exit out of the iteration.
+			name:  "a re-entering exit declared first is refused as a re-entry, not as an order",
+			edges: reentryExit + otherPolarity + backEdge,
+			want:  1,
+			must: []string{
+				`leads back to "write_audit_md"`,
+				"must leave the iteration",
+			},
+			mustNot: []string{"declare the iteration back-edge before"},
+		},
+		{
+			name:  "a foreach back-edge is re-entered no more than a loop's",
+			edges: foreachBackEdge + otherPolarity + reentryExit,
+			want:  1,
+			must:  []string{`leads back to "write_audit_md"`},
+		},
+		{
+			name:  "a second exit is shadowed by the first, not by the back-edge",
+			edges: backEdge + otherPolarity + guardedExit + secondExit,
+			want:  1,
+			must:  []string{"write_audit_md->phase2_decider", "write_audit_md->late_exit"},
+			// The back-edge is not a party to this ambiguity: the exit
+			// before it is what makes the second exit dead.
+			mustNot: []string{"write_audit_md->select_candidate"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := compileText(t, head+tc.edges+tail)
+			var got []Diagnostic
+			for _, d := range cr.Diagnostics {
+				if d.Code == DiagAmbiguousCondition {
+					got = append(got, d)
+				}
+			}
+			if len(got) != tc.want {
+				t.Fatalf("got %d C011 diagnostic(s), want %d:\n%v", len(got), tc.want, cr.Diagnostics)
+			}
+			if tc.want == 0 {
+				for _, d := range cr.Diagnostics {
+					if d.Severity == SeverityError {
+						t.Fatalf("the permitted shape does not compile clean: %s", d.Error())
+					}
+				}
+				return
+			}
+			for _, want := range tc.must {
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("the C011 message does not carry %q: %s", want, got[0].Message)
+				}
+			}
+			for _, unwanted := range tc.mustNot {
+				if strings.Contains(got[0].Message, unwanted) {
+					t.Errorf("the C011 message carries %q, which does not hold for this pair: %s", unwanted, got[0].Message)
+				}
+			}
+		})
+	}
+}
+
+// Declaration order is not the file's layout: a `use`d group's edges are
+// appended after the workflow's own, so a back-edge held by a group is
+// declared last however high in the file it sits — and the exit a workflow
+// declares for it can never precede it. The refusal is right (the evaluator
+// would take that exit first), which is why its message and docs/dsl.md
+// carry the move that is always available: the bare exit, which no order
+// decides.
+func TestAGroupHeldBackEdgeIsDeclaredAfterTheWorkflowsOwnEdges(t *testing.T) {
+	head := `dsl: 2
+
+schema out:
+  ok: bool
+
+group loopy():
+  tool src:
+    command: ` + "`echo hi`" + `
+    output: out
+  tool body:
+    command: ` + "`echo hi`" + `
+    output: out
+  body -> src
+  src -> body when not ok as spin(3)
+
+tool entry_node:
+  command: ` + "`echo hi`" + `
+  output: out
+
+tool give_up:
+  command: ` + "`echo hi`" + `
+  output: out
+
+tool go_on:
+  command: ` + "`echo hi`" + `
+  output: out
+
+use loopy as g with { }
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: entry_node
+  entry_node -> g.src
+  g.src -> go_on when ok
+  give_up -> done
+  go_on -> done
+`
+	t.Run("the group's back-edge comes after the workflow's own edges", func(t *testing.T) {
+		cr := compileText(t, head+"  g.src -> give_up when not ok\n")
+		exit, backEdge := -1, -1
+		for i, e := range cr.Workflow.Edges {
+			if e.From == "g.src" && e.To == "give_up" {
+				exit = i
+			}
+			if e.From == "g.src" && e.To == "g.body" {
+				backEdge = i
+			}
+		}
+		if exit < 0 || backEdge < 0 {
+			t.Fatalf("the fixture lost an edge: exit=%d back-edge=%d", exit, backEdge)
+		}
+		if backEdge < exit {
+			t.Fatalf("the group's back-edge is at %d, before the workflow's exit at %d — the corner this case documents is gone", backEdge, exit)
+		}
+		var got []Diagnostic
+		for _, d := range cr.Diagnostics {
+			if d.Code == DiagAmbiguousCondition {
+				got = append(got, d)
+			}
+		}
+		if len(got) != 1 {
+			t.Fatalf("got %d C011 diagnostic(s), want 1:\n%v", len(got), cr.Diagnostics)
+		}
+		if !strings.Contains(got[0].Message, "write the exit as a bare edge") {
+			t.Errorf("the refusal names no move the author of a group-held back-edge can make: %s", got[0].Message)
+		}
+	})
+	t.Run("the bare exit is that move", func(t *testing.T) {
+		cr := compileText(t, head+"  g.src -> give_up\n")
+		for _, d := range cr.Diagnostics {
+			if d.Severity == SeverityError {
+				t.Fatalf("the bare exit the refusal recommends does not compile: %s", d.Error())
+			}
+		}
+	})
+}
+
+// A guarded exit does not replace the node's coverage of the opposite
+// outcome: with no sibling on the other polarity and no fallback, nothing
+// matches when the condition is false and C012 still refuses the node.
+func TestAGuardedLoopExitDoesNotReplaceTheFallback(t *testing.T) {
+	src := `dsl: 2
+
+schema out:
+  ok: bool
+
+tool check:
+  command: ` + "`echo hi`" + `
+  output: out
+
+tool work:
+  command: ` + "`echo hi`" + `
+  output: out
+
+tool give_up:
+  command: ` + "`echo hi`" + `
+  output: out
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: check
+  check -> work
+  work -> check when not ok as retry(3)
+  work -> give_up when not ok
+  give_up -> done
 `
 	cr := compileText(t, src)
-	found := false
-	for _, d := range cr.Diagnostics {
-		if d.Code == DiagAmbiguousCondition && strings.Contains(d.Message, "not was_batch") {
-			found = true
+	if !hasCode(cr.Diagnostics, DiagMissingFallback) {
+		t.Fatalf("C012 does not fire on a node whose only outcomes are `not ok` twice:\n%v", cr.Diagnostics)
+	}
+}
+
+// This catalogue is what renders C011's remedy: the `fix:` line of `iterion
+// validate`, the MCP result, and the studio badge — which shows the
+// diagnostic's own hint, filled from here by the compiler's `emit` for every
+// site that passes none. The reference table carries the second copy, and the
+// studio's hint map (studio/src/lib/diagnosticHints.ts, held by its vitest)
+// the badge's title plus the hint a diagnostic arriving without one falls back
+// to. A remedy that only says "remove the duplicate" sends the author whose
+// exit sits above its back-edge to delete the exit instead of moving it.
+func TestTheC011RemedyNamesTheOrderThatWorks(t *testing.T) {
+	hint := HintFor(DiagAmbiguousCondition)
+	if hint == "" {
+		t.Fatal("C011 must carry a fix line")
+	}
+	// Both halves of the permission, or an author follows it into the
+	// refusal the other half names.
+	for _, want := range []string{"back-edge", "declared first", "leaves the iteration"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("the C011 catalogue remedy does not name %q: %s", want, hint)
+		}
+	}
+	data, err := os.ReadFile("../../../docs/references/diagnostics.md")
+	if err != nil {
+		t.Fatalf("read the diagnostic reference: %v", err)
+	}
+	var row string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "| **C011**") {
+			row = line
 			break
 		}
 	}
-	if !found {
-		t.Fatalf("C011 does not fire on the write-order-dependent loop+sibling pair — the ticket #1386 pair sneaks through:\n%v", cr.Diagnostics)
+	if row == "" {
+		t.Fatal("the diagnostic reference has no C011 row")
 	}
-	// The recommended workaround — a BARE exhaustion exit — has a
-	// different condKey from the loop back-edge, so C011 doesn't fire
-	// on it (the two edges are on distinct keys, not the "same
-	// condition" pair).
-	workaround := head + `  write_audit_md -> select_candidate when not was_batch as package_loop(3)
-  write_audit_md -> bucket_families when was_batch
-  write_audit_md -> phase2_decider
-  phase2_decider -> done
-  bucket_families -> done
-`
-	crOK := compileText(t, workaround)
-	for _, d := range crOK.Diagnostics {
-		if d.Code == DiagAmbiguousCondition {
-			t.Fatalf("C011 fires on the BARE-exit workaround — the check is over-broad:\n%s\n%v", d.Error(), crOK.Diagnostics)
+	if !strings.Contains(row, "declared first") {
+		t.Errorf("the C011 reference row does not name the order that works: %s", row)
+	}
+	if !strings.Contains(row, "leaves the iteration") {
+		t.Errorf("the C011 reference row carries half the permission, nothing on the exit having to leave the iteration: %s", row)
+	}
+	// The remedy lives in the row's LAST cell, the *Fix* column — the one an
+	// author blocked by C011 reads. A row-wide check passes on the phrase the
+	// *Cause* column supplies and leaves that column unheld.
+	cells := strings.Split(row, "|")
+	fix := ""
+	for i := len(cells) - 1; i >= 0; i-- {
+		if strings.TrimSpace(cells[i]) != "" {
+			fix = cells[i]
+			break
+		}
+	}
+	for _, want := range []string{"declare the back-edge first", "route the exit out of the iteration"} {
+		if !strings.Contains(fix, want) {
+			t.Errorf("the C011 row's Fix column does not name %q: %q", want, fix)
 		}
 	}
 }

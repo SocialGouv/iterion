@@ -44,7 +44,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagSessionSlotWithoutPersist: {"Session slot without persistence", "Set `session: persist` when using `session_slot:`, or remove the slot."},
 	DiagSessionAfterConvergence:   {"Session at convergence point", "A node with several incoming branches cannot `session: inherit` or `fork`; use `fresh`, `artifacts_only` or `persist`."},
 	DiagMultipleDefaultEdges:      {"Multiple unconditional edges", "Keep one default edge per node (a loop back-edge `as name(N)` plus one exhaustion fall-through is the allowed pair); fan out with a router."},
-	DiagAmbiguousCondition:        {"Ambiguous conditions", "Two edges from one node test the same field with the same polarity; remove the duplicate or change the condition."},
+	DiagAmbiguousCondition:        {"Ambiguous conditions", "Two edges from one node test the same field with the same polarity; remove the duplicate or change the condition. An iteration back-edge (`as name(N)`, `as foreach …`) may share its condition with the exit it guards, as long as the back-edge is declared first and the exit leaves the iteration."},
 	DiagMissingFallback:           {"Missing fallback", "Complete `when X` with `when not X`, an `else` edge, or an unconditional edge from the same node."},
 	DiagConditionNotBool:          {"Condition field not boolean", "A bare `when field` needs a `bool` field in the source's `output:` schema; use a quoted expression (`when \"count > 0\"`) for other types."},
 	DiagConditionFieldNotFound:    {"Condition field not found", "Add the field to the source node's `output:` schema, or fix the name."},
