@@ -166,6 +166,16 @@ tasks:
     cmds:
       - go test -tags goldens_record -count=1 -run 'TestRecordGoldens' -timeout 30m ./pkg/botreplay/...
 
+  test:contract:rgaa:
+    desc: Run the rgaa-audit engine contract tests against the REAL pinned ultra11y (offline; `npm ci` from scripts/ultra11y-engine/package-lock.json under ~/.cache/iterion/ultra11y on first use)
+    cmds:
+      ## The resolver's failure must fail the task: an empty ULTRA11Y_BIN would
+      ## make the tests skip and the task read green without running the engine.
+      - |
+        set -euo pipefail
+        bin="$(scripts/ultra11y-engine.sh)"
+        ULTRA11Y_BIN="$bin" CI=1 go test -count=1 -run '^TestRgaaAuditEngine' ./bots/
+
   test:live:quality:unit:
     desc: Run the live-e2e quality snapshot-engine unit tests (deterministic, no API keys, no cost). See docs/live-e2e-coverage.md.
     cmds:

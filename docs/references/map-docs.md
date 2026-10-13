@@ -167,6 +167,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/orientation/README.md`](../agents/orientation/README.md) | Orientation — the domain | Exact questions (where, impact, path) go to `iterion map` and the committed | — |
 | [`docs/agents/orientation/graphify.md`](../agents/orientation/graphify.md) | Knowledge graph — graphify | `graphify-out/` holds a queryable knowledge graph of this repository — Go/TS | — |
 | [`docs/agents/testing/README.md`](../agents/testing/README.md) | Testing — the domain | — | — |
+| [`docs/agents/testing/engine-contracts.md`](../agents/testing/engine-contracts.md) | Engine contracts — testing an external CLI against the real pinned binary | for rgaa-audit today; deepsec for sec-audit-source was the counter-example), | — |
 | [`docs/agents/testing/testing.md`](../agents/testing/testing.md) | Testing patterns — the helpers, and the traps that ejected PRs | How tests are written here, and the four failure modes that cost real merge-queue | — |
 | [`docs/agents/workflow/README.md`](../agents/workflow/README.md) | Workflow — how work reaches `main` | Board mechanics live in [../../board-epics.md](../board-epics.md); the | — |
 | [`docs/agents/workflow/adversarial-review-loop.md`](../agents/workflow/adversarial-review-loop.md) | The local adversarial round — what iterion requires, and who pays for it | scoping a round, the seven things the subagent prompt must carry, verifying the | — |

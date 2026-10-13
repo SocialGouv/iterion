@@ -100,6 +100,10 @@ docs/.vitepress/cache/
 # divergent dependency trees — never commit them.
 package-lock.json
 **/package-lock.json
+# One deliberate exception: the npm lockfile that pins the ultra11y engine's
+# dependency closure for the rgaa-audit bot (scripts/ultra11y-engine.sh runs
+# `npm ci` from it). It is not a pnpm workspace; see docs/agents/testing/testing.md.
+!scripts/ultra11y-engine/package-lock.json
 yarn.lock
 **/yarn.lock
 # …except inside e2e fixtures, where the lockfile IS the deliberately-pinned
