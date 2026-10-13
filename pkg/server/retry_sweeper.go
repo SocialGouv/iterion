@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -425,11 +424,13 @@ func retryCode(ref mongostore.RetryDueRef) string {
 	return ref.RetryState.Code
 }
 
-// retryLaunchCtx stamps the synthetic identity the admission gate reads.
-// The run's own tenant and owner are used so the retry is metered against
-// the same org as the original launch, not against the platform.
+// retryLaunchCtx stamps the machine identity the admission gate reads. The
+// run's own tenant and owner are used so the retry is metered against the
+// same org as the original launch, not against the platform; the kind is
+// what exempts it from the gate's member rung — an automatic resume carries
+// no human standing, and the owner it names may since have left the team.
 func retryLaunchCtx(ctx context.Context, ref mongostore.RetryDueRef) context.Context {
-	return auth.WithIdentity(ctx, auth.Identity{TeamID: ref.TenantID, UserID: ref.OwnerID})
+	return machineLaunchCtx(ctx, ref.TenantID, ref.OwnerID)
 }
 
 // auditRetry records a sweeper decision on the team's audit trail, keyed by

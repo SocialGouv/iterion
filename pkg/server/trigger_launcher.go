@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
@@ -109,7 +108,7 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 	// concurrency → launch rate → monthly caps. The denial travels up as the
 	// effect's error: the evaluator records it on the subscription (its
 	// last_error) and the outbox retries it on the backoff.
-	adm, deny := l.gate(auth.WithIdentity(ctx, auth.Identity{TeamID: plan.TenantID, UserID: triggerSpineActor}),
+	adm, deny := l.gate(machineLaunchCtx(ctx, plan.TenantID, triggerSpineActor),
 		launchSubject{BotID: plan.BotID, Repo: plan.Repo})
 	if deny != nil {
 		return "", deny.err()

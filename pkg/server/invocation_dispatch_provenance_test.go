@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -37,7 +38,7 @@ func TestDispatchInvocation_RefusesProvenanceTheBoardCardCannotCarry(t *testing.
 	cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub}
 	meta := webhookEventMeta{ProjectPath: "o/r", SubjectID: "c:1", Kind: "issue_comment"}
 	ctx := func() context.Context {
-		return auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1"})
+		return auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1", Role: identity.RoleMember, Kind: auth.KindWebhook})
 	}
 
 	dispatch := func(t *testing.T, s *Server, mode string, prov launchProvenance, idem string) (*httptest.ResponseRecorder, int) {

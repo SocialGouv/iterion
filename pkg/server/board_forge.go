@@ -86,17 +86,24 @@ func forgeCardID(provider forge.Provider, repo string, number int) string {
 // per-repo sync toggle + manual sync (team-scoped), and the per-card
 // push-to-forge + linked-PR + CI views (active-team board scoped). All are
 // no-ops in self-hosted mode (no CloudBoardFor / forge stores).
+// The guard names every store the handlers below dereference,
+// forgeConnections included (connAdminFor): a mount missing one of them
+// would panic on the first request instead of being absent.
 func (s *Server) registerBoardForgeRoutes() {
-	if s.cfg.CloudBoardFor == nil || s.forgeIntegrations == nil {
+	if s.cfg.CloudBoardFor == nil || s.forgeIntegrations == nil || s.forgeConnections == nil {
 		return
 	}
 	s.mux.Handle("PATCH /api/teams/{id}/forge/integrations/{iid}", s.requireAuth(http.HandlerFunc(s.handlePatchForgeIntegration)))
 	s.mux.Handle("POST /api/teams/{id}/forge/integrations/{iid}/sync", s.requireAuth(http.HandlerFunc(s.handleSyncForgeIntegration)))
-	s.mux.Handle("POST /api/v1/native/issues/{id}/push", s.requireAuth(http.HandlerFunc(s.handlePushIssueToForge)))
-	s.mux.Handle("GET /api/v1/native/issues/{id}/pulls", s.requireAuth(http.HandlerFunc(s.handleListIssuePulls)))
-	s.mux.Handle("POST /api/v1/native/issues/{id}/pulls", s.requireAuth(http.HandlerFunc(s.handleCreateIssuePull)))
-	s.mux.Handle("GET /api/v1/native/issues/{id}/pulls/{number}/ci", s.requireAuth(http.HandlerFunc(s.handleIssuePullCI)))
-	s.mux.Handle("POST /api/v1/native/issues/{id}/pulls/{number}/merge", s.requireAuth(http.HandlerFunc(s.handleMergeIssuePull)))
+	// The five per-card routes take the board family's write rung
+	// (boardWriteAuth, board_cloud_routes.go): they write the card and the
+	// forge — a push, a pull request, a MERGE — and the GETs are inert under
+	// it, which keeps the whole /api/v1/native family uniform.
+	s.mux.Handle("POST /api/v1/native/issues/{id}/push", s.boardWriteAuth(http.HandlerFunc(s.handlePushIssueToForge)))
+	s.mux.Handle("GET /api/v1/native/issues/{id}/pulls", s.boardWriteAuth(http.HandlerFunc(s.handleListIssuePulls)))
+	s.mux.Handle("POST /api/v1/native/issues/{id}/pulls", s.boardWriteAuth(http.HandlerFunc(s.handleCreateIssuePull)))
+	s.mux.Handle("GET /api/v1/native/issues/{id}/pulls/{number}/ci", s.boardWriteAuth(http.HandlerFunc(s.handleIssuePullCI)))
+	s.mux.Handle("POST /api/v1/native/issues/{id}/pulls/{number}/merge", s.boardWriteAuth(http.HandlerFunc(s.handleMergeIssuePull)))
 	s.mux.Handle("GET /api/teams/{id}/forge/integrations/{iid}/hooks", s.requireAuth(http.HandlerFunc(s.handleListIntegrationHooks)))
 }
 

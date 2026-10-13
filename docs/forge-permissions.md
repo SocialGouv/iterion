@@ -27,7 +27,12 @@ the iterion org. The PR is opened with the **connection's** token.
 
 Per-team role, ordered `viewer(1) < member(2) < admin(3) < owner(4)`
 ([pkg/identity/types.go](../pkg/identity/types.go)). Gates iterion operations:
-launch runs (member+), manage integrations / keys / members / SSO
+launch runs (member+, enforced by `gateLaunch` in
+[pkg/server/launch_gate.go](../pkg/server/launch_gate.go) — a `viewer` and
+the orthogonal `config_editor` capability are refused `member_role_required`;
+the webhook and daemon launchers are exempt by identity kind, having no human
+role to judge; the board and trigger mounts take the same rung on every
+state-changing route), manage integrations / keys / members / SSO
 (`canManageTeam` = admin+, [pkg/server/auth_routes.go](../pkg/server/auth_routes.go)).
 It does **not** choose or change any forge credential.
 

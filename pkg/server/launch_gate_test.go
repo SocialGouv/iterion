@@ -84,7 +84,12 @@ func seedGate(t *testing.T, s *Server, spec gateSpec) context.Context {
 	if _, err := s.authStore().CreateTeam(context.Background(), team); err != nil {
 		t.Fatalf("seed team: %v", err)
 	}
-	return auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: team.ID, OrgID: org.ID})
+	// Role: production's launch surfaces are reached by a credential whose
+	// Role the JWT/PAT pins, and the gate refuses anything below member. A
+	// role-less fixture tested a caller no surface can produce.
+	return auth.WithIdentity(context.Background(), auth.Identity{
+		UserID: "u1", TeamID: team.ID, OrgID: org.ID, Role: identity.RoleMember,
+	})
 }
 
 func TestGateLaunch_TeamlessDenied(t *testing.T) {
@@ -241,7 +246,7 @@ func TestGateLaunch_Bypasses(t *testing.T) {
 	// does not exist. A DEGRADED read still fails open — the two are told
 	// apart in TestGateLaunch_VanishedTeamIsDeniedNotFailedOpen and
 	// TestGateLaunch_DegradedTeamReadFailsOpenLoudly.
-	ghost := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "ghost"})
+	ghost := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "ghost", Role: identity.RoleMember})
 	_, d := s.gateLaunch(ghost, launchSubject{})
 	if d == nil || d.status != 403 || d.reason != denyNoWorkspace {
 		t.Fatalf("ghost team denial = %+v, want 403 %s", d, denyNoWorkspace)
@@ -273,8 +278,8 @@ func TestGateLaunch_OrgBudgetSumsAcrossTeams(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ctxA := auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "ta", OrgID: "o1"})
-	ctxB := auth.WithIdentity(ctx, auth.Identity{UserID: "u2", TeamID: "tb", OrgID: "o1"})
+	ctxA := auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "ta", OrgID: "o1", Role: identity.RoleMember})
+	ctxB := auth.WithIdentity(ctx, auth.Identity{UserID: "u2", TeamID: "tb", OrgID: "o1", Role: identity.RoleMember})
 
 	if _, d := s.gateLaunch(ctxA, launchSubject{}); d != nil {
 		t.Fatalf("team A first launch denied: %+v", d)
@@ -355,7 +360,7 @@ func TestGateLaunch_CostCapAcrossTeams(t *testing.T) {
 	if _, err := s.authStore().CreateTeam(ctx, identity.Team{ID: "ta", OrgID: "o1", Name: "ta", Slug: "ta"}); err != nil {
 		t.Fatal(err)
 	}
-	ctxA := auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "ta", OrgID: "o1"})
+	ctxA := auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "ta", OrgID: "o1", Role: identity.RoleMember})
 	if _, d := s.gateLaunch(ctxA, launchSubject{}); d != nil {
 		t.Fatalf("under-cap launch denied: %+v", d)
 	}

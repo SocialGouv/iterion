@@ -40,20 +40,28 @@ type Identity struct {
 }
 
 // IdentityKind distinguishes a real authenticated user (JWT or PAT — full
-// role in the active team) from a synthetic, purpose-scoped principal minted
-// by a self-authenticating surface: an inbound webhook, or a config-share
-// editor link. A synthetic identity carries a TeamID + Role so tenant-scoped
-// STORE reads still work, but it must NEVER pass the operator RBAC gates
-// (canViewTeam / canManageTeam / …) — those authorize humans acting on a
-// team's resources. The zero value ("") is a real user, so existing code
-// that builds an Identity without a Kind keeps full behaviour; only the two
-// synthetic authenticators set a non-empty Kind.
+// role in the active team) from a principal nobody signed in as. Two
+// families carry a non-empty Kind:
+//
+//   - SYNTHETIC — minted by a self-authenticating surface on an inbound
+//     request: a webhook delivery, or a config-share editor link. It carries
+//     a TeamID + Role so tenant-scoped STORE reads still work, but it must
+//     NEVER pass the operator RBAC gates (canViewTeam / canManageTeam / …) —
+//     those authorize humans acting on a team's resources.
+//   - MACHINE — minted by a daemon of this process for work no request asked
+//     for: the board dispatcher, the schedule tick, the trigger spine, the
+//     retry sweeper. It carries its team so the launch gate meters the right
+//     org, and no Role at all, because there is no human standing behind it.
+//
+// The zero value ("") is a real user, so existing code that builds an
+// Identity without a Kind keeps full behaviour.
 type IdentityKind string
 
 const (
-	KindUser    IdentityKind = ""        // JWT or PAT — a real user (zero value)
-	KindWebhook IdentityKind = "webhook" // inbound-webhook launch trigger
-	KindShare   IdentityKind = "share"   // config-share editor link
+	KindUser     IdentityKind = ""         // JWT or PAT — a real user (zero value)
+	KindWebhook  IdentityKind = "webhook"  // inbound-webhook launch trigger
+	KindShare    IdentityKind = "share"    // config-share editor link
+	KindInternal IdentityKind = "internal" // a daemon of this process launching its own work
 )
 
 // IsSynthetic reports whether this principal is a purpose-scoped,
@@ -62,6 +70,17 @@ const (
 // intentionally serves one opts in explicitly.
 func (i Identity) IsSynthetic() bool {
 	return i.Kind == KindWebhook || i.Kind == KindShare
+}
+
+// IsMachine reports whether this principal is a daemon of this process acting
+// on its own schedule (KindInternal). Kept SEPARATE from IsSynthetic because
+// the two classes answer different questions: a synthetic principal is a
+// stranger's request that authenticated itself and is therefore refused by
+// every operator RBAC gate, while a machine principal is this process and
+// carries no Role to judge. A gate that admits one does not thereby admit the
+// other — the launch gate names both explicitly.
+func (i Identity) IsMachine() bool {
+	return i.Kind == KindInternal
 }
 
 // HasRole reports whether the principal has at least the requested

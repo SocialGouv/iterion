@@ -82,7 +82,56 @@ const (
 	// denyNoWorkspace refuses a signed-in user who belongs to no team (the
 	// GitHub "submitter" tier): they have no workspace to launch into.
 	denyNoWorkspace = "no_workspace"
+	// denyMemberRoleRequired refuses a principal who HAS a workspace but not
+	// the rung a launch takes: a viewer (read-only) or the orthogonal
+	// config_editor capability (rank 0, ADR-078).
+	denyMemberRoleRequired = "member_role_required"
 )
+
+// launchExemptPrincipal reports whether a principal launches with no human
+// role for the member rung to judge, and is therefore exempt from it: an
+// inbound webhook delivery — which authenticates itself with the config's
+// bearer token or an HMAC body signature (middleware_webhook.go), and that
+// IS its authorization — and the daemons of this process (board dispatcher,
+// cloud schedule tick, trigger spine, retry sweeper), which launch work no
+// request asked for.
+//
+// Deliberately NOT every synthetic kind: a config-share editor link
+// (KindShare) authorizes editing one team's config and nothing else
+// (ADR-078). No launch path carries one, and the rung is what keeps it that
+// way — an exemption written as IsSynthetic() would hand that public token
+// class a launch it was never granted.
+func launchExemptPrincipal(id auth.Identity) bool {
+	return id.Kind == auth.KindWebhook || id.IsMachine()
+}
+
+// launchRungCleared reports whether a principal clears the member rung a
+// launch takes: exempt by kind, or at least the member role of the team. The
+// ONE definition of the rung, read by gateLaunch below and by the board
+// write guard (board_cloud_routes.go) — the board's Ready column queues
+// launches the dispatcher performs under an exempt principal, so the two
+// surfaces owe the same answer and must not drift.
+//
+// Fail-CLOSED: an empty Role is refused unless the principal is marked
+// exempt, so a future construction site that forgets its kind loses its
+// launches visibly instead of gaining an unjudged one.
+func launchRungCleared(id auth.Identity) bool {
+	return launchExemptPrincipal(id) || id.Role.AtLeast(identity.RoleMember)
+}
+
+// machineLaunchCtx stamps the machine principal a daemon of this process
+// launches under: the tenant whose caps and counters the launch is metered
+// against, the actor it is audited as, and KindInternal — the mark the
+// member rung below exempts, because a daemon launch has no human standing
+// behind it. The four daemon launchers (board dispatcher, cloud schedule
+// tick, trigger spine, retry sweeper) all mint here. The other hand-built
+// launch identities of this package — the merge-gate auto-fix and relaunch
+// lanes, the debounced webhook replay — re-stamp the inbound delivery they
+// continue as KindWebhook and clear the rung by that kind, not by the Role
+// they also carry.
+func machineLaunchCtx(ctx context.Context, tenantID, actor string) context.Context {
+	return auth.WithIdentity(ctx, auth.Identity{TeamID: tenantID, UserID: actor, Kind: auth.KindInternal})
+}
 
 // activeRunCounter is the optional store capability the concurrency
 // cap needs: how many of the org's runs are currently active
@@ -155,12 +204,22 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 	}
 }
 
-// gateLaunch is the shared run-launch admission gate: suspend → per-repo
-// quota → concurrency → launch rate → monthly cost cap → monthly run quota
-// (the last one is also the metering increment). Called by
-// handleLaunchRun, handleResumeRun, the inbound webhook handlers, the retry
-// sweeper and the board dispatcher (processBoardCard) — every cloud launch
-// surface (the table in docs/quotas-and-limits.md).
+// gateLaunch is the shared run-launch admission gate: the member rung →
+// suspend → per-repo quota → concurrency → launch rate → monthly cost
+// cap → monthly run quota (the last one is also the metering
+// increment). Called by
+// handleLaunchRun, handleResumeRun, the WebSocket answer envelope,
+// handleEmitTrigger, handlePipelineBoardTaskLaunch, the inbound webhook
+// handlers, the retry sweeper, the cloud schedule tick, the trigger spine
+// and the board dispatcher (processBoardCard) — every surface that launches
+// a NEW workflow from a request, plus the daemons that launch on their own
+// schedule (the table in docs/quotas-and-limits.md).
+//
+// NOT every path that reaches the engine: fork and rewind create a run from
+// an EXISTING one (runs_control.go), and a resume driven by an existing
+// run's own machinery (answer-human, the interaction answer, host-event, the
+// assistant mission and watch coordinators) re-enters it. Those are
+// authorized by the run-by-id ladder (ADR-103) and are not metered.
 // On allow it returns the admission handle for the metered increment
 // (nil when nothing was metered).
 //
@@ -195,6 +254,31 @@ func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdm
 			status: http.StatusForbidden,
 			reason: denyNoWorkspace,
 			detail: "you are not a member of any workspace — ask an admin to add you to a team",
+		}
+	}
+	// The rung. A launch spends the org's money and executes code in its
+	// workspace, so it takes at least a MEMBER of the team: a viewer is
+	// read-only and the orthogonal config_editor capability ranks 0
+	// (ADR-078), so neither clears it. Enforced HERE rather than per
+	// handler because this gate is the one thing every launch surface
+	// crosses — the run-by-id choke point (run_scope.go) covers only the
+	// routes that address an EXISTING run, and the surfaces that CREATE one
+	// are outside its class. The board WRITE surfaces take the same rung one
+	// layer earlier (boardWriteAuth, board_cloud_routes.go): their Ready
+	// column QUEUES launches this gate then sees under a machine principal
+	// it exempts, so a card refused there is the only moment a human role
+	// can be read.
+	//
+	// Placed after the teamless arm, whose own refusal is more specific and
+	// whose population is therefore never admitted past it, and BEFORE the
+	// team read, whose degraded arm fails OPEN — behind it, a store blip
+	// would have admitted the viewer this refuses. That ORDER has its own
+	// witness (launch_role_gate_test.go), which a reordering reddens.
+	if !launchRungCleared(id) {
+		return nil, &launchDenial{
+			status: http.StatusForbidden,
+			reason: denyMemberRoleRequired,
+			detail: "launching a run takes at least the member role in this workspace — ask a workspace admin to raise your role",
 		}
 	}
 	// Reuse a Team the webhook middleware already loaded for its
@@ -581,13 +665,35 @@ func nextMonthStart(now time.Time) time.Time {
 	return time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
 }
 
-// writeLaunchDenial renders a denial: `error` carries the stable
-// reason token (machine contract), `detail` the human message, plus
-// Retry-After / reset_at when applicable.
+// writeLaunchDenial renders a denial AND counts it. This is the renderer of
+// the ADMISSION gate: every production caller of it answers a refusal
+// gateLaunch returned, so its refusals are run launches denied — the series
+// iterion_launch_denied_total publishes and the starter alert sums with no
+// reason filter (charts/iterion/templates/prometheus-rule.yaml). A refusal
+// that is NOT a refused launch renders through writeRungDenial, which counts
+// nothing.
 func (s *Server) writeLaunchDenial(w http.ResponseWriter, r *http.Request, d *launchDenial) {
 	if s.cfg.Metrics != nil {
 		s.cfg.Metrics.LaunchDeniedTotal.WithLabelValues(d.reason).Inc()
 	}
+	s.renderLaunchDenial(w, r, d)
+}
+
+// writeRungDenial renders the same envelope for the member rung taken at a
+// MOUNT (mutatingRungAuth, board_cloud_routes.go): the caller was changing a
+// board or a team's automation, not launching a run. Same token, status,
+// Retry-After, origin reflection and zero-status floor — the renderer below
+// holds all of it — and deliberately no counter: a refused board write is
+// not a refused launch, and four of them must not read as four refused
+// launches on the gate's own series.
+func (s *Server) writeRungDenial(w http.ResponseWriter, r *http.Request, d *launchDenial) {
+	s.renderLaunchDenial(w, r, d)
+}
+
+// renderLaunchDenial is the envelope both renderers above share: `error`
+// carries the stable reason token (machine contract), `detail` the human
+// message, plus Retry-After / reset_at when applicable.
+func (s *Server) renderLaunchDenial(w http.ResponseWriter, r *http.Request, d *launchDenial) {
 	if d.retryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(d.retryAfter.Seconds())+1))
 	}

@@ -61,30 +61,35 @@ const (
 	pipelineArtifactProbeCap = 24
 )
 
+// registerPipelineBoardRoutes mounts the studio's board surface. Every route
+// goes through boardWriteAuth (board_cloud_routes.go) — requireAuth, plus the
+// member rung on the state-changing ones, because this board's Ready column
+// queues the launches the dispatcher performs. A read keeps a viewer; the
+// class witness (board_write_rung_test.go) walks this table.
 func (s *Server) registerPipelineBoardRoutes() {
-	s.mux.Handle("GET /api/v1/pipeline-board", s.requireAuth(http.HandlerFunc(s.handlePipelineBoard)))
-	s.mux.Handle("POST /api/v1/pipeline-board/tasks", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskCreate)))
-	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/ready", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskReady)))
-	s.mux.Handle("PATCH /api/v1/pipeline-board/tasks/{id}", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskUpdate)))
+	s.mux.Handle("GET /api/v1/pipeline-board", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoard)))
+	s.mux.Handle("POST /api/v1/pipeline-board/tasks", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardTaskCreate)))
+	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/ready", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardTaskReady)))
+	s.mux.Handle("PATCH /api/v1/pipeline-board/tasks/{id}", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardTaskUpdate)))
 	// Ticket lifecycle beyond the ready toggle.
-	s.mux.Handle("DELETE /api/v1/pipeline-board/tasks/{id}", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskDelete)))
-	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/reset", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskReset)))
+	s.mux.Handle("DELETE /api/v1/pipeline-board/tasks/{id}", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardTaskDelete)))
+	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/reset", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardTaskReset)))
 	// Close: end a pipeline for good (cancel the tree, file the ticket).
 	// Ticket-scoped only — a standalone run has no state to file, reserves
 	// nothing, and is already filed in Closed by the projection.
-	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/close", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskClose)))
-	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/launch", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskLaunch)))
+	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/close", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardTaskClose)))
+	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/launch", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardTaskLaunch)))
 	// Bulk + graph (multi-pipeline production ops).
-	s.mux.Handle("POST /api/v1/pipeline-board/bulk/ready", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardBulkReady)))
-	s.mux.Handle("POST /api/v1/pipeline-board/bulk/delete", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardBulkDelete)))
-	s.mux.Handle("POST /api/v1/pipeline-board/bulk/recompute-deps", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardRecomputeDeps)))
-	s.mux.Handle("GET /api/v1/pipeline-board/tasks/{id}/dependency-graph", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardDependencyGraph)))
+	s.mux.Handle("POST /api/v1/pipeline-board/bulk/ready", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardBulkReady)))
+	s.mux.Handle("POST /api/v1/pipeline-board/bulk/delete", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardBulkDelete)))
+	s.mux.Handle("POST /api/v1/pipeline-board/bulk/recompute-deps", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardRecomputeDeps)))
+	s.mux.Handle("GET /api/v1/pipeline-board/tasks/{id}/dependency-graph", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardDependencyGraph)))
 	// Also under /api/v1/native for CLI/MCP consumers that already use that prefix.
-	s.mux.Handle("GET /api/v1/native/issues/{id}/dependency-graph", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardDependencyGraph)))
+	s.mux.Handle("GET /api/v1/native/issues/{id}/dependency-graph", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardDependencyGraph)))
 	// Input thumbnails: a ticket's bot_args may reference images living in the
 	// studio workdir (e.g. a character-reference list) — this endpoint lets the
 	// card sidebar actually SHOW them instead of printing bare paths.
-	s.mux.Handle("GET /api/v1/pipeline-board/workspace-images/{path...}", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardWorkspaceImage)))
+	s.mux.Handle("GET /api/v1/pipeline-board/workspace-images/{path...}", s.boardWriteAuth(http.HandlerFunc(s.handlePipelineBoardWorkspaceImage)))
 }
 
 func (s *Server) resolvePipelineBoardStore(r *http.Request) (native.BoardStore, error) {

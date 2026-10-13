@@ -51,7 +51,17 @@ Where a route says "team member", "team admin" or "super-admin", the
 guard maps to `canViewTeam` / `canManageTeam` / `requireSuperAdmin`.
 **"team admin" therefore means admin/owner of that team OR an admin/owner
 of its ORG** — `canManageTeam` carries that third arm everywhere, reads
-included.
+included. On the routes that LAUNCH a run — `POST /api/runs`,
+`POST /api/runs/{id}/resume`, `POST /api/v1/triggers/emit`,
+`POST /api/v1/pipeline-board/tasks/{id}/launch` — "member" is enforced by
+the launch gate's own rung
+([pkg/server/launch_gate.go](../pkg/server/launch_gate.go), `gateLaunch`),
+which refuses a `viewer` and the orthogonal `config_editor` capability with
+`member_role_required` (403); the run-addressed mutations additionally pass
+the ADR-103 ladder. The same rung guards every state-changing board and
+trigger route at its mount (`boardWriteAuth`, `triggerWriteAuth`), because
+a card written ready or a subscription installed enabled is a launch the
+platform performs later.
 Webhook delivery URLs (`POST /api/webhooks/<provider>/<id>`) use their
 own auth (token bearer or HMAC body signature) and are public to the
 JWT layer.
@@ -547,8 +557,9 @@ same shape comes back from the rotate endpoint.
 
 ### Launch-denial envelope
 
-Every gate refusal — REST launch, resume, webhook publication — uses
-the same shape ([pkg/server/launch_gate.go](../pkg/server/launch_gate.go)):
+Every gate refusal — REST launch, resume, the custom-event emit, the
+pipeline board's launch-now, webhook publication — uses the same shape
+([pkg/server/launch_gate.go](../pkg/server/launch_gate.go)):
 
 ```jsonc
 {
@@ -559,8 +570,11 @@ the same shape ([pkg/server/launch_gate.go](../pkg/server/launch_gate.go)):
 ```
 
 Plus the header `Retry-After: <seconds>` on `concurrency_cap_exceeded`
-and `launch_rate_limited`. Token list and HTTP semantics in
-[quotas-and-limits.md](quotas-and-limits.md).
+and `launch_rate_limited`. The authorization refusal uses the same
+envelope with `"error": "member_role_required"` and no `reset_at` —
+nothing resets, the caller's role does; a refused board or trigger write
+answers the same envelope without counting as a denied launch. Token list
+and HTTP semantics in [quotas-and-limits.md](quotas-and-limits.md).
 
 ### `GET /api/orgs/{id}/usage` (also `/api/admin/orgs/{id}/usage`)
 
