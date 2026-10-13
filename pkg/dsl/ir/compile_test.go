@@ -3,6 +3,7 @@ package ir
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -806,6 +807,37 @@ func TestCompileBudget(t *testing.T) {
 	}
 	if w.Budget.MaxTokens != 800000 {
 		t.Errorf("max_tokens: expected 800000, got %d", w.Budget.MaxTokens)
+	}
+	if w.Budget.OnExceeded != "" {
+		t.Errorf("on_exceeded: expected unset, got %q", w.Budget.OnExceeded)
+	}
+}
+
+// on_exceeded: pause reaches the IR bare and quoted; an unknown word is
+// refused by the .bot parser itself (the registry gate holds the parser's
+// list to the enum) — C311 stays live for the transport path, where a
+// document's JSON sets the field past the parser, and reads as fail: a run
+// the author expected to park must not keep spending under a park nobody
+// asked for.
+func TestCompileBudgetOnExceeded(t *testing.T) {
+	src := strings.Replace(budgetSrc, "max_tokens: 800000", "max_tokens: 800000\n    on_exceeded: pause", 1)
+	w := mustCompile(t, src)
+	if w.Budget == nil || w.Budget.OnExceeded != "pause" {
+		t.Fatalf("on_exceeded: pause did not reach the IR: %+v", w.Budget)
+	}
+	src = strings.Replace(budgetSrc, "max_tokens: 800000", `max_tokens: 800000`+"\n    on_exceeded: \"fail\"", 1)
+	w = mustCompile(t, src)
+	if w.Budget.OnExceeded != "fail" {
+		t.Fatalf(`the quoted word form: got %q, want "fail"`, w.Budget.OnExceeded)
+	}
+	f := parseFile(t, budgetSrc)
+	f.Workflows[0].Budget.OnExceeded = "park"
+	r := Compile(f)
+	if !r.HasErrors() || !hasDiag(r.Diagnostics, DiagBudgetOnExceededInvalid) {
+		t.Fatalf("expected C311 on a transport-borne unknown policy, got %+v", r.Diagnostics)
+	}
+	if w2 := mustCompile(t, budgetSrc); w2.Budget == nil || w2.Budget.OnExceeded != "" {
+		t.Fatalf("the fail default: %+v", w2.Budget)
 	}
 }
 

@@ -101,6 +101,7 @@ type admissionMismatchKind string
 const (
 	admissionMismatchSchema      admissionMismatchKind = "schema"
 	admissionMismatchFutureEpoch admissionMismatchKind = "future_epoch"
+	admissionMismatchPool        admissionMismatchKind = "pool"
 )
 
 type admissionMismatchPlan struct {
@@ -111,6 +112,20 @@ type admissionMismatchPlan struct {
 }
 
 func planAdmissionMismatch(kind admissionMismatchKind, mismatchErr error, delay time.Duration, env queue.Envelope, delivered, maxDeliver int) admissionMismatchPlan {
+	if kind == admissionMismatchPool {
+		// A pool mismatch is ALWAYS final: the stamps cannot agree on
+		// redelivery (the subject split and the frozen document stamp do
+		// not change between deliveries) — the payload parks on the run's
+		// pool's DLQ and the run is relaunched on the right pool.
+		return admissionMismatchPlan{
+			reason: string(kind),
+			final:  true,
+			parkedRunError: fmt.Sprintf(
+				"runner pool mismatch: %v (queue message parked on its pool's DLQ — the run must be relaunched on the pool its team is mapped to; a replay of the parked copy is refused)",
+				mismatchErr,
+			),
+		}
+	}
 	if delay <= 0 {
 		if kind == admissionMismatchFutureEpoch {
 			delay = natsq.EpochMismatchNakDelay
@@ -137,6 +152,9 @@ func planAdmissionMismatch(kind admissionMismatchKind, mismatchErr error, delay 
 }
 
 func (p admissionMismatchPlan) lostRunError(mismatchErr, parkErr error) string {
+	if p.reason == string(admissionMismatchPool) {
+		return fmt.Sprintf("runner pool mismatch: %v (DLQ park failed: %v — no queue copy remains; relaunch this run on the pool its team is mapped to)", mismatchErr, parkErr)
+	}
 	if p.reason == string(admissionMismatchFutureEpoch) {
 		return fmt.Sprintf("runner epoch mismatch: %v (delivery budget exhausted and DLQ park failed: %v — no queue copy remains; relaunch this run)", mismatchErr, parkErr)
 	}

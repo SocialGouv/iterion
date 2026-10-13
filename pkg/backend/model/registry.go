@@ -205,6 +205,7 @@ func (r *Registry) registerDefaults() {
 			BaseURL:             os.Getenv("OPENAI_BASE_URL"),
 			OpenAIModelVerbatim: true,
 		}
+		cfg.OpenAIStreamUsage = openAIStreamUsage(cfg.BaseURL)
 		// Resolution: an explicit OPENAI_API_KEY wins by default — it's
 		// the standard surface for both CI and BYOK setups, and treating
 		// a user-set env var as deliberate avoids silently spending
@@ -242,12 +243,14 @@ func (r *Registry) registerDefaults() {
 	}
 	r.providersWithKey["openai"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := openaiprovider.New()
-		return p.NewClient(withClientIdentity(api.ProviderConfig{
+		cfg := api.ProviderConfig{
 			APIKey:              apiKey,
 			Model:               modelID,
 			BaseURL:             os.Getenv("OPENAI_BASE_URL"),
 			OpenAIModelVerbatim: true,
-		}))
+		}
+		cfg.OpenAIStreamUsage = openAIStreamUsage(cfg.BaseURL)
+		return p.NewClient(withClientIdentity(cfg))
 	}
 	// AWS Bedrock — auth via aws-sdk-go-v2 standard credential chain
 	// (AWS_REGION, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, profile,
@@ -782,6 +785,15 @@ func applyCodexOAuth(cfg *api.ProviderConfig, view secrets.CodexCredentialsView)
 // factory, the per-run forfait and the sandbox crossing all read it.
 func openAIOAuthAllowed() bool {
 	return os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" && os.Getenv("OPENAI_BASE_URL") == ""
+}
+
+// openAIStreamUsage decides whether a factory-built client asks its endpoint
+// for stream_options.include_usage. api.openai.com is asked whatever the knob
+// and the ChatGPT forfait never is; only a gateway endpoint (OPENAI_BASE_URL)
+// opts in, and only when the operator set ITERION_OPENAI_STREAM_USAGE=1 —
+// providers that reject stream_options must not see it unasked.
+func openAIStreamUsage(baseURL string) bool {
+	return baseURL != "" && os.Getenv("ITERION_OPENAI_STREAM_USAGE") == "1"
 }
 
 // codexForfaitView loads the ChatGPT-mode forfait materialised in dir, when

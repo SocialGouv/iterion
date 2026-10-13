@@ -27,7 +27,7 @@ func TestApiKeyUsable(t *testing.T) {
 	scope := usagecap.TenantScope("team")
 	key := secrets.ApiKey{Provider: secrets.ProviderZAI, Name: "primary", Fingerprint: "fp-zai-1"}
 
-	usable := p.apiKeyUsable(context.Background(), scope, "run-x", nil)
+	usable := p.apiKeyUsable(context.Background(), scope, "run-x", "", nil)
 	if !usable(key) {
 		t.Fatal("no evidence must mean usable")
 	}
@@ -54,7 +54,7 @@ func TestApiKeyUsable(t *testing.T) {
 			ObservedAt: time.Now()}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if !p2.apiKeyUsable(context.Background(), scope, "run-x", nil)(key) {
+	if !p2.apiKeyUsable(context.Background(), scope, "run-x", "", nil)(key) {
 		t.Fatal("a rejected overage reading is no quota evidence — the key must stay usable")
 	}
 	other := secrets.ApiKey{Provider: secrets.ProviderOpenAI, Name: "m", Fingerprint: "fp-zai-1"}
@@ -95,7 +95,7 @@ func recordRefusal(t *testing.T, st usagecap.Store, scope, fp string) {
 // parks on a durable usage-window retry, instead of being published with
 // an empty wire that fails on a no-credential auth error nothing retries.
 func TestApiKeySkip_refusedOnlyKeyIsRestored(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestApiKeySkip_refusedOnlyKeyIsRestored(t *testing.T) {
 // With a second key of the same provider, the walk serves it and the
 // refused one stays out — restore is strictly the no-other-option path.
 func TestApiKeySkip_secondKeyServesNoRestore(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestApiKeySkip_secondKeyServesNoRestore(t *testing.T) {
 // platform key on the same wire serves the run — the manual key-removal
 // this PR retires. The tenant key is NOT restored over it.
 func TestApiKeySkip_refusedTenantKeyFallsThroughToPlatform(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestApiKeySkip_refusedTenantKeyFallsThroughToPlatform(t *testing.T) {
 // platform metering scope — the last DB-backed tier is never left empty,
 // the rule its OAuth sibling states.
 func TestApiKeySkip_refusedPlatformKeyIsRestoredPlatformSourced(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestApiKeyUsable_authRefusalSkips(t *testing.T) {
 			ObservedAt: time.Now()}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if p.apiKeyUsable(context.Background(), scope, "run-x", nil)(key) {
+	if p.apiKeyUsable(context.Background(), scope, "run-x", "", nil)(key) {
 		t.Fatal("a fresh auth refusal under the key's fingerprint must skip it")
 	}
 }
@@ -219,7 +219,7 @@ func TestApiKeyUsable_authRefusalSkips(t *testing.T) {
 // the platform forfait serves instead. This is the dead-on-arrival-fleet
 // scenario: before, the dead record filled the slot on every re-resolution.
 func TestOAuthForfait_authRefusalFallsThroughToPlatform(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestApiKeyUsable_concurrencyCeiling(t *testing.T) {
 	mkRun("alive-2", store.RunStatusQueued, "fp-capped")
 
 	p := &Publisher{usageCaps: usagecap.NewMemStore(), store: rs, logger: testLogger()}
-	usable := p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "run-new", nil)
+	usable := p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "run-new", "", nil)
 
 	capped := secrets.ApiKey{Provider: secrets.ProviderZAI, Name: "capped", Fingerprint: "fp-capped", MaxConcurrentRuns: 2}
 	if usable(capped) {
@@ -288,7 +288,7 @@ func TestApiKeyUsable_concurrencyCeiling(t *testing.T) {
 
 	// The run being resolved is already persisted and stamped (a resume):
 	// it must not consume its own slot.
-	if !p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "alive-1", nil)(capped) {
+	if !p.apiKeyUsable(ctx, usagecap.TenantScope("team"), "alive-1", "", nil)(capped) {
 		t.Fatal("a resume must not count itself toward the key's ceiling")
 	}
 }
@@ -297,7 +297,7 @@ func TestApiKeyUsable_concurrencyCeiling(t *testing.T) {
 // the SECOND key of the same provider, and the run-doc stamp records the
 // credentials the bundle actually sealed.
 func TestResolve_ceilingWalksToNextKeyAndStampsFingerprints(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestResolve_ceilingWalksToNextKeyAndStampsFingerprints(t *testing.T) {
 	}
 	// The harvest names the credential the bundle ACTUALLY sealed — the
 	// meter would count the wrong key otherwise.
-	creds, err := p.resolveAndSealCredentials(ctx, "run-c2", "", "team1", "owner1", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-c2", "", "team1", "owner1", "", "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestResolve_ceilingWalksToNextKeyAndStampsFingerprints(t *testing.T) {
 // must CLEAR the stamp, not keep metering a credential the run no longer
 // holds.
 func TestSubmitLaunchAndResume_credFingerprintsRideTheRunDocument(t *testing.T) {
-	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}

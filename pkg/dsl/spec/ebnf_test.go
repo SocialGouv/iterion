@@ -218,6 +218,7 @@ var ebnfValueProductions = map[[2]string]string{
 	{"judge", "await"}:             "await_mode",
 	{"judge", "interaction"}:       "interaction_mode",
 	{"judge", "reasoning_effort"}:  "reasoning_effort",
+	{"budget", "on_exceeded"}:      "budget_on_exceeded",
 }
 
 var quotedWordRe = regexp.MustCompile(`"([a-z_]+)"`)

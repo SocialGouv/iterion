@@ -1012,7 +1012,12 @@ type BudgetBlock struct {
 	MaxTokens           int     // 0 = not set
 	WarnTokens          int     // advisory-only token threshold (0 = not set): warns, never blocks
 	MaxIterations       int     // 0 = not set
-	Span                Span
+	// OnExceeded is what a reached cap does: "" / "fail" ends the run
+	// (checkpoint kept, resume after a raise), "pause" parks it
+	// paused_operator at the cap for an operator raise. Validated at
+	// compile (C311).
+	OnExceeded string
+	Span       Span
 }
 
 // ResourcesBlock declares named counting semaphores at the workflow level.

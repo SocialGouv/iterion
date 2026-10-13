@@ -155,7 +155,7 @@ func TestSubmitResume_aResumeOutrunByANewerOneDoesNotReopenTheLease(t *testing.T
 		}
 		return nil
 	})
-	f.pub.cancelRun = func(string) error { return nil }
+	f.pub.cancelRun = func(string, store.LeaseIdentity) error { return nil }
 	ctx := store.WithIdentity(context.Background(), poolTeam, "requester")
 	before, err := f.leases.GetOpenByRun(ctx, runID)
 	if err != nil {

@@ -16,6 +16,8 @@ import (
 // are not among them: a run spends those.
 var PlatformSecretEnv = []string{
 	"ITERION_SECRETS_KEY",
+	"ITERION_SECRETS_KEYS",
+	"ITERION_SECRETS_KEY_ID",
 	"ITERION_JWT_SECRET",
 	"ITERION_MONGO_URI",
 	"ITERION_NATS_URL",

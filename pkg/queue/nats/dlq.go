@@ -105,11 +105,47 @@ func dlqView(seq uint64, m *jetstream.RawStreamMsg) DLQMessage {
 // returning up to limit messages and the cursor to continue from
 // (0 = exhausted). Deleted sequences are skipped — DiscardDLQ leaves
 // holes by design.
+// dlqStreamFor names the DLQ stream holding a pool's parked messages:
+// empty pool = the shared default DLQ. The pool DLQ streams are created by
+// the server's reconciler (EnsurePoolSchema) and written by PublishDLQ's
+// pool-aware subject — without the pool-aware reads here, a pool-parked
+// payload would be invisible to the admin API and the depth gauge.
+func (c *Conn) dlqStreamFor(pool string) string {
+	if pool != "" {
+		return PoolDLQStreamName(pool)
+	}
+	return c.cfg.DLQStream
+}
+
+// ListPoolDLQ lists a pool's parked messages (the pool's own DLQ stream).
+func (c *Conn) ListPoolDLQ(ctx context.Context, pool string, cursorSeq uint64, limit int) ([]DLQMessage, uint64, error) {
+	return c.listDLQStream(ctx, c.dlqStreamFor(pool), cursorSeq, limit)
+}
+
+// PeekPoolDLQ returns one of a pool's parked messages with its payload.
+func (c *Conn) PeekPoolDLQ(ctx context.Context, pool string, seq uint64) (DLQMessage, json.RawMessage, error) {
+	return c.peekDLQStream(ctx, c.dlqStreamFor(pool), seq)
+}
+
+// DiscardPoolDLQ permanently deletes one of a pool's parked messages.
+func (c *Conn) DiscardPoolDLQ(ctx context.Context, pool string, seq uint64) error {
+	return c.discardDLQStream(ctx, c.dlqStreamFor(pool), seq)
+}
+
+// PoolDLQDepth reports how many messages are parked on a pool's DLQ.
+func (c *Conn) PoolDLQDepth(ctx context.Context, pool string) (uint64, error) {
+	return c.dlqDepthOn(ctx, c.dlqStreamFor(pool))
+}
+
 func (c *Conn) ListDLQ(ctx context.Context, cursorSeq uint64, limit int) ([]DLQMessage, uint64, error) {
+	return c.listDLQStream(ctx, c.cfg.DLQStream, cursorSeq, limit)
+}
+
+func (c *Conn) listDLQStream(ctx context.Context, streamName string, cursorSeq uint64, limit int) ([]DLQMessage, uint64, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	stream, err := c.js.Stream(ctx, c.cfg.DLQStream)
+	stream, err := c.js.Stream(ctx, streamName)
 	if err != nil {
 		return nil, 0, fmt.Errorf("queue/nats: dlq stream: %w", err)
 	}
@@ -143,7 +179,11 @@ func (c *Conn) ListDLQ(ctx context.Context, cursorSeq uint64, limit int) ([]DLQM
 // PeekDLQ returns one parked message including its raw payload (the
 // serialized RunMessage) for inspection.
 func (c *Conn) PeekDLQ(ctx context.Context, seq uint64) (DLQMessage, json.RawMessage, error) {
-	stream, err := c.js.Stream(ctx, c.cfg.DLQStream)
+	return c.peekDLQStream(ctx, c.cfg.DLQStream, seq)
+}
+
+func (c *Conn) peekDLQStream(ctx context.Context, streamName string, seq uint64) (DLQMessage, json.RawMessage, error) {
+	stream, err := c.js.Stream(ctx, streamName)
 	if err != nil {
 		return DLQMessage{}, nil, fmt.Errorf("queue/nats: dlq stream: %w", err)
 	}
@@ -189,25 +229,33 @@ func (c *Conn) RepublishDLQ(ctx context.Context, seq uint64) (string, error) {
 // DLQDepth reports how many messages are currently parked. Feeds the
 // iterion_dlq_depth gauge (polled by the server's sweeper loop).
 func (c *Conn) DLQDepth(ctx context.Context) (uint64, error) {
-	stream, err := c.js.Stream(ctx, c.cfg.DLQStream)
+	return c.dlqDepthOn(ctx, c.cfg.DLQStream)
+}
+
+func (c *Conn) dlqDepthOn(ctx context.Context, streamName string) (uint64, error) {
+	stream, err := c.js.Stream(ctx, streamName)
 	if err != nil {
-		return 0, fmt.Errorf("queue/nats: dlq stream: %w", err)
+		return 0, fmt.Errorf("queue/nats: dlq stream %s: %w", streamName, err)
 	}
 	info, err := stream.Info(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("queue/nats: dlq info: %w", err)
+		return 0, fmt.Errorf("queue/nats: dlq info %s: %w", streamName, err)
 	}
 	return info.State.Msgs, nil
 }
 
 // DiscardDLQ permanently deletes one parked message.
 func (c *Conn) DiscardDLQ(ctx context.Context, seq uint64) error {
-	stream, err := c.js.Stream(ctx, c.cfg.DLQStream)
+	return c.discardDLQStream(ctx, c.cfg.DLQStream, seq)
+}
+
+func (c *Conn) discardDLQStream(ctx context.Context, streamName string, seq uint64) error {
+	stream, err := c.js.Stream(ctx, streamName)
 	if err != nil {
-		return fmt.Errorf("queue/nats: dlq stream: %w", err)
+		return fmt.Errorf("queue/nats: dlq stream %s: %w", streamName, err)
 	}
 	if err := stream.DeleteMsg(ctx, seq); err != nil {
-		return fmt.Errorf("queue/nats: dlq delete %d: %w", seq, err)
+		return fmt.Errorf("queue/nats: dlq delete %d on %s: %w", seq, streamName, err)
 	}
 	return nil
 }
@@ -249,4 +297,34 @@ func dlqReplaySubject(payload []byte) string {
 		return SubjectRuns
 	}
 	return PoolSubject(env.RunnerPool)
+}
+
+// RepublishPoolDLQ replays a message parked on a POOL's DLQ: peek from the
+// pool's stream, publish onto the payload's derived subject (the frozen
+// stamp decides — a sovereign run replays onto ITS pool), discard from the
+// pool's stream. The salt keeps the dedup semantics of the shared replay.
+func (c *Conn) RepublishPoolDLQ(ctx context.Context, pool string, seq uint64) (string, error) {
+	if err := c.requireRunnerEpochClaim(); err != nil {
+		return "", err
+	}
+	if c.js == nil {
+		return "", fmt.Errorf("queue/nats: connection not initialised")
+	}
+	view, payload, err := c.PeekPoolDLQ(ctx, pool, seq)
+	if err != nil {
+		return "", err
+	}
+	h := nats.Header{}
+	h.Set("Nats-Msg-Id", fmt.Sprintf("%s|dlq-replay-%d", view.RunID, seq))
+	if _, err := c.js.PublishMsg(ctx, &nats.Msg{
+		Subject: dlqReplaySubject(payload),
+		Header:  h,
+		Data:    payload,
+	}); err != nil {
+		return "", fmt.Errorf("queue/nats: dlq replay publish: %w", err)
+	}
+	if err := c.DiscardPoolDLQ(ctx, pool, seq); err != nil {
+		return view.RunID, fmt.Errorf("queue/nats: dlq replay cleanup: %w", err)
+	}
+	return view.RunID, nil
 }

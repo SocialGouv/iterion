@@ -236,7 +236,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		}
 
 		// C011: ambiguous conditions — same field appears twice with same polarity.
-		c.checkAmbiguousConditions(nodeID, g.conditional)
+		c.checkAmbiguousConditions(w, nodeID, g.conditional)
 	}
 }
 
@@ -261,6 +261,7 @@ func (c *compiler) validateRoundRobinEdges(w *Workflow) {
 				"round_robin router %q has %d unconditional outgoing edge(s); at least 2 are needed for alternation",
 				r.ID, count)
 		}
+		c.checkLoopOnRouterEdge(w, r, "round_robin")
 	}
 }
 
@@ -290,6 +291,45 @@ func (c *compiler) validateLLMRouterEdges(w *Workflow) {
 				"llm router %q has %d outgoing edge(s); at least 2 are needed",
 				r.ID, count)
 		}
+		// `llm multi: true` spawns one branch per selected route (each is a
+		// fan-out body), and a loop-bearing edge crossing that boundary is
+		// C244's rejection, not C309's. Skip C309 there to avoid two errors
+		// on the same edge — C244 already refuses the shape.
+		if !r.RouterMulti {
+			c.checkLoopOnRouterEdge(w, r, "llm")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C309 — a loop cap or foreach on a `round_robin` / `llm` router edge is
+// never read
+// ---------------------------------------------------------------------------
+//
+// `execRoundRobin` collects the router's unconditional edges and alternates
+// over them; `execLLMRouter` takes the target the model named. Neither goes
+// through `evaluateEdgesWithLoopsRS`, so `as name(N)` — and its foreach
+// sibling, `as foreach name(item in …)`, which the same evaluator is the
+// only reader of — on such an edge is already accepted at compile time and
+// silently ignored at run time: the author's bound iterates nothing, the
+// node runs once. Symmetric to C244 (a loop or foreach on a
+// fan_out_all / fan_out_each / llm-multi boundary is refused): a bounded
+// promise on an edge the runtime cannot bound is a program-time defect,
+// not something the runtime should have to catch.
+func (c *compiler) checkLoopOnRouterEdge(w *Workflow, r *RouterNode, mode string) {
+	for _, e := range w.Edges {
+		if e.From != r.ID || (e.LoopName == "" && e.ForeachName == "") {
+			continue
+		}
+		if e.LoopName != "" {
+			c.errorfAtEdge(DiagLoopOnRouterEdge, e,
+				"%s router %q edge to %q carries loop %q — the runtime does not read a loop cap or a foreach on this router's edges (%s selects its target on its own, without going through the loop-aware evaluator), so the iteration would silently do nothing; put the loop on the edge that re-enters the router, and give that node the loop-exhaustion exit C145 asks for",
+				mode, r.ID, e.To, e.LoopName, mode)
+			continue
+		}
+		c.errorfAtEdge(DiagLoopOnRouterEdge, e,
+			"%s router %q edge to %q carries foreach %q — the runtime does not read a loop cap or a foreach on this router's edges (%s selects its target on its own, without going through the loop-aware evaluator), so the iteration would silently do nothing; put the iteration on the edge that re-enters the router",
+			mode, r.ID, e.To, e.ForeachName, mode)
 	}
 }
 
@@ -837,7 +877,25 @@ func isExhaustive(edges []*Edge) bool {
 // conditions; the validator can't statically prove disjointness or overlap of
 // arbitrary boolean expressions, so we trust the author and only flag exact
 // duplicates of the same expression source.
-func (c *compiler) checkAmbiguousConditions(nodeID string, edges []*Edge) {
+//
+// One pair on a shared condition is not ambiguous: a bounded-iteration
+// back-edge (`as name(N)`, `as foreach …`) DECLARED FIRST, then the exit it
+// guards. `edges` is in workflow declaration order, the order
+// `evaluateEdgesWithLoopsRS` walks, and that evaluator returns the first
+// matching conditional edge — so the back-edge wins while the iteration has
+// work and the exit fires once the iteration is declined, its cap and its
+// other declines (fuel, the budget guard, the liveness monitor) skipping the
+// back-edge alike. Only an UNCONDITIONAL iteration edge gets the evaluator's
+// order-independent fallback slot, which is why the guarded form is the one
+// that needs the order. Declared the other way round the exit matches first
+// and the iteration edge is never taken: refused, naming the order that
+// works. The permission is that one pair — two iteration edges on one
+// condition, and a third edge the sibling before it shadows, stay ambiguous.
+// The exit also has to LEAVE the iteration (leadsBackTo): an exit the body
+// carries back to this node without crossing the back-edge re-enters the
+// body with the cap untouched, so only the run's budget ends the iteration.
+// That pair is refused in either order, no declaration order repairing it.
+func (c *compiler) checkAmbiguousConditions(w *Workflow, nodeID string, edges []*Edge) {
 	type condKey struct {
 		field      string
 		negated    bool
@@ -846,23 +904,76 @@ func (c *compiler) checkAmbiguousConditions(nodeID string, edges []*Edge) {
 	seen := make(map[condKey]*Edge)
 	for _, e := range edges {
 		key := condKey{field: e.Condition, negated: e.Negated, expression: e.ExpressionSrc}
-		if prev, ok := seen[key]; ok {
-			var label string
-			switch {
-			case e.ExpressionSrc != "":
-				label = `"` + e.ExpressionSrc + `"`
-			case e.Negated:
-				label = "not " + e.Condition
-			default:
-				label = e.Condition
-			}
-			c.errorfAt(DiagAmbiguousCondition, nodeID, "",
-				"node %q has ambiguous edges: both %s->%s and %s->%s trigger on %s",
-				nodeID, prev.From, prev.To, e.From, e.To, label)
-		} else {
+		prev, ok := seen[key]
+		if !ok {
 			seen[key] = e
+			continue
+		}
+		var label string
+		switch {
+		case e.ExpressionSrc != "":
+			label = `"` + e.ExpressionSrc + `"`
+		case e.Negated:
+			label = "not " + e.Condition
+		default:
+			label = e.Condition
+		}
+		// Exactly one of the pair bears a bounded iteration: the guarded
+		// exhaustion exit, in one declaration order or the other.
+		iteration, exit := prev, e
+		if !prev.IsBoundedIteration() && e.IsBoundedIteration() {
+			iteration, exit = e, prev
+		}
+		if iteration.IsBoundedIteration() && !exit.IsBoundedIteration() {
+			switch {
+			case leadsBackTo(w, exit.To, nodeID):
+				c.errorfAt(DiagAmbiguousCondition, nodeID, "",
+					"node %q has ambiguous edges: both %s->%s and %s->%s trigger on %s, and the exit %s->%s leads back to %q without crossing the iteration edge — the exit an iteration edge guards must leave the iteration, else the body runs again with the cap untouched and only the run's budget ends it; route the exit where it cannot reach %q again",
+					nodeID, prev.From, prev.To, e.From, e.To, label, exit.From, exit.To, nodeID, nodeID)
+			case iteration == prev:
+				// The guarded exhaustion exit. It becomes the incumbent: a
+				// further edge on this condition would be the one it shadows.
+				seen[key] = e
+			default:
+				c.errorfAt(DiagAmbiguousCondition, nodeID, "",
+					"node %q has ambiguous edges: both %s->%s and %s->%s trigger on %s, and %s->%s is declared first, so the iteration edge %s->%s is never taken — declare the iteration back-edge before the exit it guards, or write the exit as a bare edge, the form no order decides (a `use`d group's edges are declared after the workflow's own, so a back-edge a group holds cannot be moved above them)",
+					nodeID, prev.From, prev.To, e.From, e.To, label, prev.From, prev.To, e.From, e.To)
+			}
+			continue
+		}
+		c.errorfAt(DiagAmbiguousCondition, nodeID, "",
+			"node %q has ambiguous edges: both %s->%s and %s->%s trigger on %s",
+			nodeID, prev.From, prev.To, e.From, e.To, label)
+	}
+}
+
+// leadsBackTo reports whether `start` has a route back to `node` along edges
+// that bear no bounded iteration — the test an exhaustion exit has to pass to
+// be an exit at all. Iteration edges are left out of the walk because their
+// own cap bounds whatever cycle crosses them; every other declared edge
+// counts, conditional ones included, so a route the engine may never take
+// still answers yes: the shapes this refuses are refused without it too, by
+// C011's plain duplicate rule.
+func leadsBackTo(w *Workflow, start, node string) bool {
+	seen := make(map[string]bool, len(w.Nodes))
+	stack := []string{start}
+	for len(stack) > 0 {
+		at := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if at == node {
+			return true
+		}
+		if seen[at] {
+			continue
+		}
+		seen[at] = true
+		for _, e := range w.Edges {
+			if e.From == at && !e.IsBoundedIteration() {
+				stack = append(stack, e.To)
+			}
 		}
 	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

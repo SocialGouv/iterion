@@ -85,8 +85,10 @@ section, and is **reliable only on Opus 4.8 and the Claude 5 family**
 (`claude-opus-5`, Fable 5.1 — the orchestration half rides Anthropic
 mid-conversation system messages). The runtime remaps `ultracode` to
 `xhigh` on the wire
-([model.wireEffort](../../../pkg/backend/model/effort.go)), makes the `agent`
-subagent tool available, and emits diagnostic **C089** (warning) when
+([model.wireEffort](../../../pkg/backend/model/effort.go)), grants the `agent`
+subagent tool (on claw it is granted and **typed-refused** — iterion wires no
+subagent runner, so the node orchestrates within itself; C159), and emits
+diagnostic **C089** (warning) when
 the node's model is neither — degrading to plain `xhigh`. Adaptive
 thinking rides the claw backend. The studio effort picker offers
 `ultracode` accordingly. Full contract:

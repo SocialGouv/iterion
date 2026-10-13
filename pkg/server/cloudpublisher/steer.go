@@ -49,7 +49,7 @@ func (p *Publisher) SteerRun(ctx context.Context, runID string, cmd runview.Stee
 		return runview.SteerReply{}, fmt.Errorf("cloudpublisher: marshal steer command: %w", err)
 	}
 
-	replyBody, err := p.nats.SteerRun(ctx, runID, body, cmd.CommandID)
+	replyBody, err := p.nats.SteerRun(ctx, runID, body, cmd.CommandID, store.LeaseIdentity{TenantID: r.TenantID, Pool: r.RunnerPool})
 	if err != nil {
 		switch {
 		case errors.Is(err, natsq.ErrSteerNoRunner):
@@ -57,7 +57,7 @@ func (p *Publisher) SteerRun(ctx context.Context, runID string, cmd runview.Stee
 		case errors.Is(err, natsq.ErrSteerTimeout):
 			return runview.SteerReply{}, &runview.SteerError{
 				Code:    "engine_stalled",
-				Message: "runner did not reply in time — the command may still apply at the run's next boundary",
+				Message: "holding pod did not acknowledge the command — it either stalled or refused the command's identity (an unstamped or mismatching stamp is refused; a fleet mid-rollout answers this way)",
 			}
 		default:
 			return runview.SteerReply{}, fmt.Errorf("cloudpublisher: steer %s: %w", runID, err)

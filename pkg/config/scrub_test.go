@@ -89,6 +89,8 @@ func TestPlatformSecretEnvCarriesTheNamesProdSets(t *testing.T) {
 	}
 	for name, what := range map[string]string{
 		"ITERION_SECRETS_KEY":                  "the key every stored secret is sealed with",
+		"ITERION_SECRETS_KEYS":                 "the whole rotation ring of that key, every past key included",
+		"ITERION_SECRETS_KEY_ID":               "the id of the current sealing key",
 		"ITERION_JWT_SECRET":                   "the signing secret of every session",
 		"ITERION_MONGO_URI":                    "a connection string carrying its own credentials",
 		"ITERION_NATS_URL":                     "a connection string carrying its own credentials",

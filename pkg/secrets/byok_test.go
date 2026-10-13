@@ -227,27 +227,34 @@ func TestResolve_UserNonDefaultBeatsTeamDefault(t *testing.T) {
 }
 
 func TestSealRunBundleRoundTrip(t *testing.T) {
-	sealer := newSealer(t)
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	sealer, err := NewKeyRingSealer(map[string][]byte{"k": key}, "k")
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
 	bundle := RunBundle{
 		APIKeys: map[Provider]string{
 			ProviderOpenAI:    "sk-test",
 			ProviderAnthropic: "sk-ant-test",
 		},
 	}
-	sealed, err := SealRunBundle(sealer, "run-123", bundle)
+	sealed, keyID, err := SealRunBundle(sealer, "t", "p", "run-123", bundle)
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
-	got, err := OpenRunBundle(sealer, "run-123", sealed)
+	got, err := OpenRunBundle(sealer, "t", "p", "run-123", keyID, sealed)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	if got.APIKeys[ProviderOpenAI] != "sk-test" || got.APIKeys[ProviderAnthropic] != "sk-ant-test" {
 		t.Fatalf("roundtrip lost data: %+v", got)
 	}
-	// AAD pinning: opening with a different run id must fail.
-	if _, err := OpenRunBundle(sealer, "run-999", sealed); err == nil {
-		t.Fatal("expected AAD mismatch failure when run id changes")
+	// AAD pinning: opening under a different identity must fail.
+	for _, tc := range [][3]string{{"t2", "p", "run-123"}, {"t", "p2", "run-123"}, {"t", "p", "run-999"}} {
+		if _, err := OpenRunBundle(sealer, tc[0], tc[1], tc[2], keyID, sealed); err == nil {
+			t.Fatalf("expected AAD mismatch failure under %v", tc)
+		}
 	}
 }
 

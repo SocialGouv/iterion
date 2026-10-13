@@ -129,6 +129,9 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/adr/120-agent-instruction-tree.md`](../adr/120-agent-instruction-tree.md) | ADR-120 — One canonical instruction root, with its size gated | (the work-tracking contract the root carries); issue #2071 under epic #1480; | — |
 | [`docs/adr/121-adaptive-routing-policy.md`](../adr/121-adaptive-routing-policy.md) | ADR-121: adaptive routing — a multi-level policy that picks the (harness, credential)… | Today a run finds its credential through pieces that do not compose. | Arbitrated (2026-10-02 — the operator's four decisions… |
 | [`docs/adr/122-gateway-models-resolved-exactly.md`](../adr/122-gateway-models-resolved-exactly.md) | ADR-122 — A gateway's models are resolved exactly: the operator's table, then a… | amended for gateway ids only, in two places: its third rejected alternative (an embedded table), and the | — |
+| [`docs/adr/123-run-bundle-dek-in-envelope.md`](../adr/123-run-bundle-dek-in-envelope.md) | ADR-123: Run bundles seal under a per-run DEK carried in the queue envelope | Date: 2026-10-06. | — |
+| [`docs/adr/124-gating-bot-merge-gestures.md`](../adr/124-gating-bot-merge-gestures.md) | ADR-124 — A gating bot: merge-gate gestures as a declared capability, executed by the… | extends the verdict-order authority from commit statuses to the gestures that follow them. | — |
+| [`docs/adr/125-a-lots-contract-is-a-directory-judged-on-what-lands.md`](../adr/125-a-lots-contract-is-a-directory-judged-on-what-lands.md) | ADR-125 — A lot's contract is a directory, judged on what lands | The modernize bot carries one lot of a programme to its exit gate, and writes | Accepted |
 | [`docs/adr/README.md`](../adr/README.md) | Architecture decision records | One decision per file, named `NNN-kebab-title.md`, where `NNN` is the next | — |
 | [`docs/agents/README.md`](../agents/README.md) | Agent instructions — the tree | Doctrine specific to this repository: what to know before touching iterion, | — |
 | [`docs/agents/backends/README.md`](../agents/backends/README.md) | Backends and execution — the domain | Who runs the prompt, with which tools, and what the node keeps of its | — |
@@ -164,6 +167,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/orientation/README.md`](../agents/orientation/README.md) | Orientation — the domain | Exact questions (where, impact, path) go to `iterion map` and the committed | — |
 | [`docs/agents/orientation/graphify.md`](../agents/orientation/graphify.md) | Knowledge graph — graphify | `graphify-out/` holds a queryable knowledge graph of this repository — Go/TS | — |
 | [`docs/agents/testing/README.md`](../agents/testing/README.md) | Testing — the domain | — | — |
+| [`docs/agents/testing/engine-contracts.md`](../agents/testing/engine-contracts.md) | Engine contracts — testing an external CLI against the real pinned binary | for rgaa-audit today; deepsec for sec-audit-source was the counter-example), | — |
 | [`docs/agents/testing/testing.md`](../agents/testing/testing.md) | Testing patterns — the helpers, and the traps that ejected PRs | How tests are written here, and the four failure modes that cost real merge-queue | — |
 | [`docs/agents/workflow/README.md`](../agents/workflow/README.md) | Workflow — how work reaches `main` | Board mechanics live in [../../board-epics.md](../board-epics.md); the | — |
 | [`docs/agents/workflow/adversarial-review-loop.md`](../agents/workflow/adversarial-review-loop.md) | The local adversarial round — what iterion requires, and who pays for it | scoping a round, the seven things the subagent prompt must carry, verifying the | — |
@@ -285,6 +289,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/forge-permissions.md`](../forge-permissions.md) | Forge permissions & identity — who a bot acts as | This is the model people most often get wrong: **the iterion user who launches | — |
 | [`docs/forge-security-read.md`](../forge-security-read.md) | Forge security-read — org-wide Dependabot alerts for bots | The security-read flow gives a bot read access to a GitHub org's | — |
 | [`docs/github-board-sync.md`](../github-board-sync.md) | GitHub project board ↔ native board sync | Making a GitHub **Projects v2** board (the roadmap humans read) and iterion's | — |
+| [`docs/gitops-warden-rollout.md`](../gitops-warden-rollout.md) | gitops-warden — binding, calibrating, and flipping a repo to enforce | The runbook for [gitops-warden](https://github.com/SocialGouv/iterion/tree/main/bots/gitops-warden) | — |
 | [`docs/grammar/V1_SCOPE.md`](../grammar/V1_SCOPE.md) | Current scope of the V1 grammar and AST | The filename and grammar version remain `V1` for compatibility: Iterion has | — |
 | [`docs/groups-iteration-subbots.md`](../groups-iteration-subbots.md) | Reuse & iteration: groups, foreach, subbots | This page documents the composition + iteration constructs added on top of the | — |
 | [`docs/human-in-the-loop.md`](../human-in-the-loop.md) | Human in the loop | Most iterion nodes run unattended. | — |
@@ -352,6 +357,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/settings-precedence.md`](../settings-precedence.md) | Settings precedence & provenance | Five launch-relevant knobs share the same five-level precedence chain, | — |
 | [`docs/skill.md`](../skill.md) | AI Agent Skills | Iterion ships **two Agent Skills**, compatible with Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding… | — |
 | [`docs/skills-library.md`](../skills-library.md) | Skill library | The **skill library** is a curated, standalone collection of Claude-Code-style | — |
+| [`docs/sovereign-pools.md`](../sovereign-pools.md) | Sovereign runner pools | A team whose code must never reach a public LLM vendor runs on a **sovereign | — |
 | [`docs/stall-human-waits.md`](../stall-human-waits.md) | Human waits and stall detection | The dispatcher and runview alert manager both consult | — |
 | [`docs/state-of-the-art.md`](../state-of-the-art.md) | State of the art — how proven is each surface | backends.md and board-epics.md, and a leading emoji slugs differently on | — |
 | [`docs/studio-ux-audit-2026-07.md`](../studio-ux-audit-2026-07.md) | Studio UX coherence audit — 2026-07 | Snapshot of the systematic UX audit run against the studio (cloud-first | — |

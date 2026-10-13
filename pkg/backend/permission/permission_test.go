@@ -178,6 +178,42 @@ func TestEvaluate_LiteralScopedAllowOverridesOnlyBareExactAsk(t *testing.T) {
 	}
 }
 
+// The table above pins the hole under the deny boundary. The studio's
+// permission help offers it to an author as mode-independent ("the rules are
+// read the same way in both armed modes — … An ask that names just the tool
+// is the one rule an allow can beat, and only by naming that exact call",
+// studio/src/lib/dslOptions.ts), so each half of that sentence is checked
+// here under BOTH armed modes: the mode is the default for what nothing
+// matched, and it must not change which rule wins.
+func TestEvaluate_TheBareAskAllowHoleIsTheSameInBothArmedModes(t *testing.T) {
+	const tool = "diagnostic_shell"
+	call := map[string]any{"command": "iterion --help"}
+
+	cases := []struct {
+		name  string
+		allow []string
+		ask   []string
+		want  Decision
+	}{
+		{"an allow naming that exact call beats an ask naming just the tool", []string{tool + "(iterion --help)"}, []string{tool}, Allow},
+		{"a scoped ask keeps the pause against that same allow", []string{tool + "(iterion --help)"}, []string{tool, tool + "(iterion --help)"}, Ask},
+		{"a prefix allow does not beat the bare-tool ask", []string{tool + "(iterion:*)"}, []string{tool}, Ask},
+		{"an exact call under a tool glob does not beat it either", []string{"diagnostic_*(iterion --help)"}, []string{tool}, Ask},
+		{"a tool-glob ask is not beaten either", []string{tool + "(iterion --help)"}, []string{"diagnostic_*"}, Ask},
+	}
+	for _, mode := range []Mode{ModeAsk, ModeDeny} {
+		for _, tc := range cases {
+			t.Run(mode.String()+"/"+tc.name, func(t *testing.T) {
+				p := mustPolicy(t, mode, tc.allow, tc.ask, nil)
+				got, rule := p.Evaluate(tool, call)
+				if got != tc.want {
+					t.Errorf("mode %s: Evaluate = %v (rule %q), want %v", mode, got, rule, tc.want)
+				}
+			})
+		}
+	}
+}
+
 func TestEvaluate_OffModeIsAllowAll(t *testing.T) {
 	p := mustPolicy(t, ModeOff, nil, nil, []string{"Bash(rm:*)"})
 	if p.Enabled() {

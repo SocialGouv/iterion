@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -327,6 +328,10 @@ func (s *Server) handleResolveConflictWithAgent(w http.ResponseWriter, r *http.R
 	_ = readJSON(r, &req) // body is optional
 	res, err := s.runs.ResolveAllConflictsWithAgent(r.Context(), id, req.Model)
 	if err != nil {
+		if errors.Is(err, runview.ErrPoolContentRefused) {
+			s.httpErrorFor(w, r, http.StatusForbidden, "agent resolve: %v", err)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "agent resolve: %v", err)
 		return
 	}

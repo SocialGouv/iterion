@@ -157,6 +157,17 @@ func TestDeclineProbeLeavesTheScaffoldOut(t *testing.T) {
 	if !res.Honoured {
 		t.Fatalf("the engine's rewrite of a tracked settings.json must not void the decline, got %+v", res)
 	}
+	// A drifted devbox.lock is the canonical list's, not the pass's: the
+	// read carries the pathspecs ($ITERION_TREE_NOISE), so it honours the
+	// decline where the .claude-only rule of the first cut voided it.
+	if err := os.WriteFile(filepath.Join(ws, "devbox.lock"), []byte("plugin_version: drifted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(treenoise.TreeNoiseEnvVar, treenoise.EnvValue())
+	runScaffoldJSON(t, expand(), &res)
+	if !res.Honoured {
+		t.Fatalf("a drifted devbox.lock is engine noise, not a leftover: got %+v", res)
+	}
 }
 
 // sec-audit-source's prepare_branch stashes the operator's work in flight

@@ -9,6 +9,7 @@ package nats
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -152,6 +153,63 @@ func (t *PoolTopology) EnsurePoolSchema(ctx context.Context, pool string) error 
 // PreparePoolConsumer mirrors the connection's method, narrowed.
 func (t *PoolTopology) PreparePoolConsumer(ctx context.Context, pool string) (any, error) {
 	return t.conn.PreparePoolConsumer(ctx, pool)
+}
+
+// AttachPoolConsumer attaches the pool's EXISTING durable consumer — the
+// server's reconciler owns the topology; a pool runner never creates it.
+// Fail closed: a missing or mis-pointed consumer is a refusal (the runner
+// does not start), never a silent fall-back onto the shared consumer.
+func (c *Conn) AttachPoolConsumer(ctx context.Context, pool string) (*Consumer, error) {
+	if c == nil || c.js == nil {
+		return nil, fmt.Errorf("queue/nats: connection not initialised")
+	}
+	if !queue.ValidPoolName(pool) {
+		return nil, fmt.Errorf("queue/nats: pool %q invalid (want 1–31 chars [a-z0-9-], starting alphanumeric)", pool)
+	}
+	cons, err := c.js.Consumer(ctx, PoolStreamName(pool), PoolConsumerName(pool))
+	if err != nil {
+		if errors.Is(err, jetstream.ErrConsumerNotFound) {
+			return nil, fmt.Errorf("queue/nats: pool consumer %s does not exist — the server's reconciler creates it; a pool runner refuses to create topology", PoolConsumerName(pool))
+		}
+		return nil, fmt.Errorf("queue/nats: pool consumer %s unreadable (%w) — a transient broker error; retry the boot", PoolConsumerName(pool), err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("queue/nats: pool consumer %s info: %w", PoolConsumerName(pool), err)
+	}
+	if err := verifyPoolConsumerAttachment(info.Config, pool, c.cfg.MaxDeliver); err != nil {
+		return nil, err
+	}
+	return &Consumer{cons: cons, owner: c, cfg: c.cfg, logger: c.logger}, nil
+}
+
+// verifyPoolConsumerAttachment is the pure half: the attached consumer must
+// be durable-named and filter-pointed for THIS pool — anything else is a
+// mis-pointed topology the runner refuses to serve. The ack SEMANTICS are
+// part of the attachment: an AckPolicy=None consumer auto-acks deliveries —
+// runs vanish without execution, the document stays queued and is
+// orphan-flipped, indistinguishable from a drop; MaxDeliver<=0 silently
+// rewrites redelivery. The pool path never self-heals drift (attach never
+// updates), so it refuses it.
+func verifyPoolConsumerAttachment(cfg jetstream.ConsumerConfig, pool string, wantMaxDeliver int) error {
+	if cfg.Durable != PoolConsumerName(pool) {
+		return fmt.Errorf("queue/nats: consumer durable %q is not the pool %q consumer (%q)", cfg.Durable, pool, PoolConsumerName(pool))
+	}
+	if cfg.FilterSubject != PoolSubject(pool) {
+		return fmt.Errorf("queue/nats: consumer filter %q is not the pool %q subject (%q)", cfg.FilterSubject, pool, PoolSubject(pool))
+	}
+	if cfg.AckPolicy != jetstream.AckExplicitPolicy {
+		return fmt.Errorf("queue/nats: consumer ack policy %v is not explicit — a pool consumer that auto-acks loses runs silently", cfg.AckPolicy)
+	}
+	// MaxDeliver must EQUAL the pod's configured value: the runner's
+	// delivery-budget decisions read the POD's config while the broker
+	// enforces the CONSUMER's — a skew means messages are lost silently
+	// (the pool attach never rewrites the consumer, so a skew cannot
+	// self-heal).
+	if cfg.MaxDeliver != wantMaxDeliver {
+		return fmt.Errorf("queue/nats: consumer MaxDeliver %d does not match this pod's configured %d — the delivery budgets would disagree; align the pool runner deployment with the server", cfg.MaxDeliver, wantMaxDeliver)
+	}
+	return nil
 }
 
 // PoolBacklog reports how many messages wait on the pool's durable

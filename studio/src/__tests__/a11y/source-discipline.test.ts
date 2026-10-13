@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { absoluteTargetHits } from "./_adminNestLinks";
 import { files, scan, scanWhole } from "./_scanner";
 
 // Source-discipline regression traps. Each scans every source module as raw
@@ -86,6 +87,28 @@ describe("source discipline", () => {
     if (hits.length) {
       throw new Error(
         `legacy color + "NN" hex-alpha concat is banned — use softColor(token, pct):\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("writes no absolute path literal under views/admin — the console is a nested router", () => {
+    // App.tsx mounts the console with `<Route path="/admin" nest>`, so wouter
+    // resolves every href/navigate inside it against /admin: a literal
+    // "/admin/users" becomes /admin/admin/users and a literal "/orgs/<id>"
+    // becomes /admin/orgs/<id>. Inside the console a target comes from the
+    // route table (adminRoutes.ts, paths relative to /admin); a target
+    // OUTSIDE the console goes through studioRoute() (lib/scope.ts), which
+    // drops the nested base and re-applies the studio's.
+    //
+    // The detector is _adminNestLinks.absoluteTargetHits, run here over the
+    // real tree and over hand-written bypass spellings in
+    // adminNestLinks.test.ts — the same function in both, so what that file
+    // proves is what this gate enforces.
+    const hits = absoluteTargetHits(files);
+    if (hits.length) {
+      throw new Error(
+        `an absolute path literal inside the /admin nest resolves under /admin — use the adminRoutes table (relative) or studioRoute() to leave the console:\n${hits.join("\n")}`,
       );
     }
     expect(hits).toHaveLength(0);

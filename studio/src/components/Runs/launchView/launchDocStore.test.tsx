@@ -29,10 +29,9 @@ import LaunchDocStoreProvider from "./LaunchDocStoreProvider";
 import { useLaunchDoc } from "./useLaunchDoc";
 
 function Probe() {
-  // Inline on purpose: the load effect writes the store, so an onError
-  // whose identity changes per render would re-run it per render — an
-  // unparse-per-render loop. The hook must be immune to the caller's
-  // callback identity.
+  // Inline on purpose: an onError whose identity changes per render would
+  // re-run the load per render — an unparse-per-render loop. The hook must
+  // be immune to the caller's callback identity.
   const { noSource, doc } = useLaunchDoc("", () => {});
   return <div>{noSource ? "NOSOURCE" : doc ? "DOC" : "LOADING"}</div>;
 }

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -310,21 +311,35 @@ func runCommandHook(ctx context.Context, event string, hctx hooks.Context, h set
 	// so c.Run would block past the timeout on a tool call the gate has
 	// already decided about.
 	proc.TerminateGroupOnCancel(c)
-	env := append(os.Environ(),
+	// The payload of the event, under the names claw's own hook runner uses
+	// (hooks.Context's fields: the tool's result and error for the
+	// PostToolUse pair, the submitted prompt for UserPromptSubmit, the
+	// history size for the compaction pair). Every one is set on EVERY
+	// event, empty — "0" for the error flag, as claw does — where the event
+	// carries nothing: a name left unset keeps whatever the environment
+	// holds, and in a sandboxed run that environment is the container's,
+	// which a reviewed repository's devcontainer, its image's ENV or the
+	// workspace .env contribute to. A permission gate deciding a tool call
+	// on a repository-authored HOOK_USER_PROMPT, or a PostToolUse hook
+	// reading a planted HOOK_TOOL_IS_ERROR, is the failure this closes —
+	// here, where every source meets, rather than per source.
+	messageCount := ""
+	if hctx.MessageCount > 0 {
+		messageCount = strconv.Itoa(hctx.MessageCount)
+	}
+	isError := "0"
+	if hctx.ToolError != nil {
+		isError = "1"
+	}
+	c.Env = append(os.Environ(),
 		"HOOK_EVENT="+event,
 		"HOOK_TOOL_NAME="+hctx.ToolName,
 		"HOOK_TOOL_INPUT="+truncateHookEnvValue(string(inputJSON)),
+		"HOOK_TOOL_OUTPUT="+truncateHookEnvValue(hctx.ToolResult),
+		"HOOK_TOOL_IS_ERROR="+isError,
+		"HOOK_USER_PROMPT="+truncateHookEnvValue(hctx.UserPrompt),
+		"HOOK_MESSAGE_COUNT="+messageCount,
 	)
-	// Non-tool events carry their payload under their own variables: the
-	// submitted prompt for UserPromptSubmit, the history size for the
-	// compaction pair.
-	if hctx.UserPrompt != "" {
-		env = append(env, "HOOK_USER_PROMPT="+truncateHookEnvValue(hctx.UserPrompt))
-	}
-	if hctx.MessageCount > 0 {
-		env = append(env, fmt.Sprintf("HOOK_MESSAGE_COUNT=%d", hctx.MessageCount))
-	}
-	c.Env = env
 	var stdout, stderr bytes.Buffer
 	c.Stdout = &stdout
 	c.Stderr = &stderr

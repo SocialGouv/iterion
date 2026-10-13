@@ -131,7 +131,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v1.supervisor"
           },
-          "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+          "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -277,6 +277,13 @@
           "description": "Total token cap",
           "minimum": 0,
           "type": "integer"
+        },
+        "on_exceeded": {
+          "description": "What a reached cap does on the run's own flow: fail (default) ends the run resumably; pause parks it paused_operator until an operator raises the budget (C311 names an unknown word)",
+          "enum": [
+            "fail",
+            "pause"
+          ]
         },
         "warn_tokens": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
@@ -899,7 +906,7 @@
           "type": "array"
         },
         "ambient_context": {
-          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)",
+          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -1142,7 +1149,7 @@
           "type": "array"
         },
         "tools": {
-          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
+          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
           "items": {
             "type": "string"
           },
@@ -1437,7 +1444,7 @@
           "type": "array"
         },
         "ambient_context": {
-          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)",
+          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -1685,7 +1692,7 @@
           "type": "array"
         },
         "tools": {
-          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
+          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
           "items": {
             "type": "string"
           },
@@ -2393,7 +2400,7 @@
     },
     "v1.supervisor": {
       "additionalProperties": false,
-      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
       "properties": {
         "cooldown": {
           "description": "Minimum delay between two evaluations, e.g. \"2m\"",
@@ -2407,7 +2414,7 @@
           "type": "integer"
         },
         "model": {
-          "description": "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars",
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
           "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
@@ -2514,7 +2521,7 @@
           "type": "array"
         },
         "ambient_context": {
-          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)",
+          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -2801,7 +2808,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/v2.supervisor"
           },
-          "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+          "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
           "propertyNames": {
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           },
@@ -2947,6 +2954,13 @@
           "description": "Total token cap",
           "minimum": 0,
           "type": "integer"
+        },
+        "on_exceeded": {
+          "description": "What a reached cap does on the run's own flow: fail (default) ends the run resumably; pause parks it paused_operator until an operator raises the budget (C311 names an unknown word)",
+          "enum": [
+            "fail",
+            "pause"
+          ]
         },
         "warn_tokens": {
           "$comment": "an integer literal (`3`, never `3.0`): the .bot refuses a float, JSON Schema cannot tell the two apart — the converter checks the YAML tag",
@@ -3565,7 +3579,7 @@
           "type": "array"
         },
         "ambient_context": {
-          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)",
+          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -3808,7 +3822,7 @@
           "type": "array"
         },
         "tools": {
-          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
+          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
           "items": {
             "type": "string"
           },
@@ -4103,7 +4117,7 @@
           "type": "array"
         },
         "ambient_context": {
-          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)",
+          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -4351,7 +4365,7 @@
           "type": "array"
         },
         "tools": {
-          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
+          "description": "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)",
           "items": {
             "type": "string"
           },
@@ -5059,7 +5073,7 @@
     },
     "v2.supervisor": {
       "additionalProperties": false,
-      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node.",
+      "description": "A concurrent LLM watcher of agent nodes that enqueues steering messages the watched node reads at its next turn (docs/supervisors.md); run metadata, not a graph node. An empty model follows the watched nodes' provider family.",
       "properties": {
         "cooldown": {
           "description": "Minimum delay between two evaluations, e.g. \"2m\"",
@@ -5073,7 +5087,7 @@
           "type": "integer"
         },
         "model": {
-          "description": "Model id the supervisor evaluates with, e.g. \"anthropic/claude-opus-5\"; empty follows the watched nodes' provider family; an environment form ${VAR:-default} expands, a {{…}} template is not rendered and warned (C148): a supervisor is spawned without the run's vars",
+          "description": "Model id the backend serves, e.g. \"anthropic/claude-opus-5\"; empty takes the backend's default; a {{vars.x}} reference resolves (vars only), then ${VAR:-default}",
           "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },
@@ -5180,7 +5194,7 @@
           "type": "array"
         },
         "ambient_context": {
-          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185)",
+          "description": "What the node inherits besides its prompt: the repository's instruction files (workspace, the default), the operator's setup (operator), both (all) or nothing (none) — ADR-119 (C184/C185/C187)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },

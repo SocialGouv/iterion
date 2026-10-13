@@ -42,7 +42,7 @@ If any of these is missing or expired:
 - [ ] Tag and push: `git tag v<X.Y.Z> && git push origin v<X.Y.Z>` (or use the `release-it` flow).
 - [ ] Watch `desktop-release.yml` succeed end-to-end.
 - [ ] Watch `release.yml` (CLI) succeed end-to-end (parallel job on the same tag).
-- [ ] Watch `brew-update.yml` (`workflow_run` on the above) succeed and patch the brew tap's cask SHA.
+- [ ] `brew-update.yml` taps the release after the next nightly release run (it follows `version.yml`'s nightly, 00:03–02:21 UTC measured) — or dispatch it with `tag` to tap now. Watch its tap PR merge with the cask SHA.
 
 ## 6. Post-publish verification
 
@@ -68,7 +68,7 @@ If a release artefact ships a critical bug after publication:
 
 - [ ] **Yank the manifest**: edit the GitHub Release to remove or replace `iterion-desktop-manifest.json` so existing users don't auto-update to the broken version. New users land on a stale version, which is preferred.
 - [ ] **Re-tag a `vX.Y.Z+1` patch release** with the fix and publish; auto-update will lift users off the broken version.
-- [ ] **Revert the brew cask** to the previous good version manually (the cask edits live in the iterion-brew tap repo).
+- [ ] **Revert the brew cask** to the previous good version manually (the cask is `Cask/iterion-desktop.rb` in this repository). The revert holds only until the next nightly: `brew-update.yml` taps the newest release whose four CLI binaries exist — the broken one included — and catches the cask up with that release's `iterion-desktop-darwin-universal.zip` when the cask is behind it. So the revert lasts once a patch release with BOTH builds green exists (its ZIP then wins), or once that ZIP is deleted from the broken release; a desktop-only patch (its CLI build red) reaches the cask only through a `brew-update.yml` dispatch with its tag.
 - [ ] **Communicate**: pin a notice on the GitHub Release describing the issue, recommended action, and patch ETA.
 - [ ] **Post-mortem**: track the regression that escaped CI/QA; add a scenario to [desktop-qa-checklist.md](desktop-qa-checklist.md) so it can't recur.
 

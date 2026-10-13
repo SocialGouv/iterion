@@ -57,6 +57,13 @@ func IsLoopbackBind(bind string) bool {
 	return false
 }
 
+// HostResolver is the guard's one DNS seam: the lookup a hostname goes
+// through before validation. *net.Resolver satisfies it, and a test (or an
+// embedded caller) can answer it without touching the network (#2080).
+type HostResolver interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
 // ResolvePublicHost resolves host and returns a single IP safe to dial. When
 // strict, every resolved IP must be public unicast — any private/link-local/
 // loopback/multicast/metadata hit (or a reserved cluster-internal alias)
@@ -64,6 +71,13 @@ func IsLoopbackBind(bind string) bool {
 // (loopback-bound local mode embedding the user's own dev servers). Resolution
 // always fails closed.
 func ResolvePublicHost(ctx context.Context, host string, strict bool) (net.IP, error) {
+	return ResolvePublicHostWith(ctx, net.DefaultResolver, host, strict)
+}
+
+// ResolvePublicHostWith is ResolvePublicHost through the caller's resolver:
+// same guard, same fail-closed reading, one injected lookup. A nil res is a
+// caller bug and panics — pass net.DefaultResolver for the system resolver.
+func ResolvePublicHostWith(ctx context.Context, res HostResolver, host string, strict bool) (net.IP, error) {
 	if host == "" {
 		return nil, errors.New("httpdial: empty host")
 	}
@@ -88,7 +102,7 @@ func ResolvePublicHost(ctx context.Context, host string, strict bool) (net.IP, e
 		}
 	}
 
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	addrs, err := res.LookupIPAddr(ctx, host)
 	if err != nil {
 		return nil, fmt.Errorf("httpdial: resolve %q: %w", host, err)
 	}
@@ -122,14 +136,23 @@ func SafeTransport(strict bool) *http.Transport {
 			if err != nil {
 				return nil, err
 			}
-			d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.Second}
-			return d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			return PlainDialer().DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		},
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,
 		IdleConnTimeout:       30 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
+}
+
+// PlainDialer returns the dialer SafeTransport connects through, WITHOUT the
+// guard: it bounds the connect and keeps the connection alive, and dials
+// whatever address it is handed. It serves a transport that keeps
+// SafeTransport's bounds while connecting where the guard refuses by design
+// — a proxy's own private address — its caller validating the request's
+// host before any byte reaches that proxy.
+func PlainDialer() *net.Dialer {
+	return &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.Second}
 }
 
 // SafeClient wraps SafeTransport in an *http.Client that does NOT auto-follow

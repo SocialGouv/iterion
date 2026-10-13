@@ -200,8 +200,9 @@ chmod 600 "$1/$3"`
 // CLI prefers ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN over it, and codex
 // prefers OPENAI_API_KEY over CODEX_HOME. So when the container env
 // already carries one of those — a workflow file secret declared with
-// `env:`, a bot's `sandbox.env:`, a devcontainer `${localEnv:…}`
-// expansion — a generic process authenticates with THAT, not with the
+// `env:`, a bot's `sandbox.env:` (the devcontainer's own keys cannot:
+// the deny class refuses them) — a generic process authenticates with
+// THAT, not with the
 // run's forfait, and this export changes nothing for it. That is the
 // operator's declaration winning, which is the intended precedence; it is
 // said out loud because a forfait that silently does not authenticate the

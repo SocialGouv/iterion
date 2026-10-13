@@ -58,21 +58,24 @@ type RetryPolicy struct {
 // RetryPolicyFromEnv builds the in-executor per-node retry budget from the
 // environment, falling back to the built-in defaults (DefaultMaxAttempts /
 // DefaultMaxAttemptsTransient) for any dimension left unset. This is the
-// LAYER-1 knob: it bounds how many times a transient backend failure
-// (rate-limit, session-limit, idle-watchdog, network/5xx) is retried
-// IN-EXECUTOR with exponential backoff before the failure bubbles up to a
-// run-level failed_resumable (which the LAYER-2 auto-resume then handles).
+// LAYER-1 knob: it bounds how many times a retryable backend failure is
+// retried IN-EXECUTOR with exponential backoff before the failure bubbles up
+// to a run-level failed_resumable (which the LAYER-2 auto-resume then
+// handles).
 //
 // The env values are RETRY counts (they exclude the initial attempt), so
-// ITERION_NODE_MAX_TRANSIENT_RETRIES=8 yields 9 attempts. A value of 0 means
-// "no retry" (fail-fast); a negative or non-numeric value is ignored (keeps
-// the default) rather than silently disabling retries.
+// ITERION_NODE_MAX_TRANSIENT_RETRIES=8 yields 9 attempts. ITERION_NODE_MAX_RETRIES=0
+// is fail-fast, for the transient budget too unless that one is set; the
+// transient budget never drops below the standard one. A negative or
+// non-numeric value is ignored (keeps the default) rather than silently
+// disabling retries.
 //
-//   - ITERION_NODE_MAX_TRANSIENT_RETRIES → the connectivity/transient budget
-//     (network blips, upstream 5xx, rate-limit, idle hang). Default: 5 retries
-//     (6 attempts).
-//   - ITERION_NODE_MAX_RETRIES → the standard budget for deterministic-but-
-//     retryable errors (signal kill). Default: 2 retries (3 attempts).
+//   - ITERION_NODE_MAX_TRANSIENT_RETRIES → the transient budget: a failure
+//     the executor recognises by its error as an idle stream, a network
+//     failure or an upstream 5xx. Default: 5 retries (6 attempts).
+//   - ITERION_NODE_MAX_RETRIES → the standard budget for the other retryable
+//     failures (a signal kill, a rate or usage limit a backend reports as
+//     retryable). Default: 2 retries (3 attempts).
 func RetryPolicyFromEnv() RetryPolicy {
 	rp := RetryPolicy{}
 	if n, ok := envRetryCount("ITERION_NODE_MAX_RETRIES"); ok {
@@ -97,6 +100,31 @@ func envRetryCount(key string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// wire is the policy as it crosses into the sandbox runner (IOTask.Retry),
+// resolved: every field carries what this launcher spends, so the runner's
+// own defaults — another release's, in an older image — never fill one in.
+func (rp RetryPolicy) wire() *delegate.IORetryPolicy {
+	return &delegate.IORetryPolicy{
+		MaxAttempts:          rp.maxAttempts(),
+		MaxAttemptsTransient: rp.maxAttemptsTransient(),
+		BackoffBase:          rp.backoffBase(),
+	}
+}
+
+// RetryPolicyFromWire is the runner's side of the crossing: the launcher's
+// policy, field for field. A nil one comes from a launcher that predates
+// IOTask.Retry and yields the zero policy — the built-in defaults.
+func RetryPolicyFromWire(w *delegate.IORetryPolicy) RetryPolicy {
+	if w == nil {
+		return RetryPolicy{}
+	}
+	return RetryPolicy{
+		MaxAttempts:          w.MaxAttempts,
+		MaxAttemptsTransient: w.MaxAttemptsTransient,
+		BackoffBase:          w.BackoffBase,
+	}
 }
 
 func (rp RetryPolicy) maxAttempts() int {

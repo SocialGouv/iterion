@@ -53,13 +53,14 @@ type pledgeView struct {
 	// Connected reports whether the donor still has a credential of this
 	// kind connected. A pledge without one is inert — say so rather than
 	// showing an "active" contribution that can never be served.
-	Connected bool             `json:"connected"`
-	Enabled   bool             `json:"enabled"`
-	Status    string           `json:"status"`
-	Limits    credpool.Limits  `json:"limits"`
-	Window    *credpool.Window `json:"window,omitempty"`
-	Bots      []string         `json:"bots,omitempty"`
-	Health    string           `json:"health"`
+	Connected   bool             `json:"connected"`
+	Enabled     bool             `json:"enabled"`
+	Status      string           `json:"status"`
+	Limits      credpool.Limits  `json:"limits"`
+	Window      *credpool.Window `json:"window,omitempty"`
+	Bots        []string         `json:"bots,omitempty"`
+	FallbackUse bool             `json:"fallback_use,omitempty"`
+	Health      string           `json:"health"`
 	// HealthDetail tells the donor what to do about an unhealthy pledge.
 	HealthDetail  string  `json:"health_detail,omitempty"`
 	CooldownUntil *string `json:"cooldown_until,omitempty"`
@@ -154,6 +155,11 @@ type pledgeRequest struct {
 	Limits  credpool.Limits  `json:"limits"`
 	Window  *credpool.Window `json:"window"`
 	Bots    []string         `json:"bots"`
+	// FallbackUse consents the pledge to the routing fallback door
+	// (ADR-121 § Delivery 2): it may serve a FALLBACK rung of a run that
+	// holds its own credential. Donor-set, plain replace like the rest —
+	// every PUT re-states it.
+	FallbackUse bool `json:"fallback_use"`
 	// KeyID names WHICH of the donor's API keys is lent. Required for an
 	// api_key pledge: a donor may hold several per provider and chooses
 	// deliberately rather than letting a resolver pick.
@@ -216,6 +222,7 @@ func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 	// one #1368 carries: it needs a canonical bot id at the source rather
 	// than a third private spelling rule.
 	p.Limits, p.Window, p.Bots = req.Limits, req.Window, req.Bots
+	p.FallbackUse = req.FallbackUse
 	if req.Enabled != nil {
 		p.Enabled = *req.Enabled
 	}
@@ -478,6 +485,7 @@ func (s *Server) toPledgeView(r *http.Request, p credpool.Pledge, now time.Time,
 		Limits:        p.Limits,
 		Window:        p.Window,
 		Bots:          p.Bots,
+		FallbackUse:   p.FallbackUse,
 		Health:        string(p.Health),
 		HealthDetail:  p.HealthDetail,
 		CooldownUntil: optRFC3339(p.CooldownUntil),

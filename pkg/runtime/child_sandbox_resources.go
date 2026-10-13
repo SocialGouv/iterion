@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,17 +63,84 @@ func (e *Engine) sharedClaudeRoot() (workspace, claudeRoot string, err error) {
 	return workspace, path.Join(workspace, ".claude"), nil
 }
 
-// assertWorkspaceRoot is the first line of both scripts. `set -eu` alone would
-// let a missing root pass: `cp` of nothing and `rm -rf` of nothing both exit 0,
-// so the wrong-root case would read as a clean no-op.
+// sandboxClaudeSymlinkExit is the status assertSharedResourceRoots exits with
+// when the shared `.claude` root is a symbolic link. The script writes the
+// link's target — and nothing else — to stdout, so the refusal the engine
+// returns names it: the host cannot stat a path inside the sandbox. `readlink`
+// is absent from some minimal images; an unnamed target refuses all the same.
+const sandboxClaudeSymlinkExit = 4
+
+// assertSharedResourceRoots is the first line of all three scripts (snapshot,
+// restore, reset). `set -eu` alone would let a missing root pass: `cp` of
+// nothing and `rm -rf` of nothing both exit 0, so the wrong-root case would
+// read as a clean no-op.
 //
 // It catches a root the sandbox does not have at all. It does NOT certify that
 // the root is the right one — an existing-but-wrong directory passes. That is
 // why the derivation above mirrors the driver rather than guessing, and why
 // this assert is the floor and not the guarantee.
-const assertWorkspaceRoot = `test -d "$3" || { echo "shared workspace root $3 is absent from the sandbox — ` +
+//
+// Then it holds the host sites' rule (refuseAClaudeSymlink) inside the
+// sandbox: `rm -rf "$1/<name>"` and `cp -a` through a `.claude` symlink act on
+// the link's TARGET, outside the workspace the run owns — and the agent
+// working in that sandbox is exactly who can plant one. Only the final
+// component is examined, as on the host: a workspace REACHED through a symlink
+// is the same tree on both sides, and refusing it would refuse every run under
+// a symlinked checkout.
+var assertSharedResourceRoots = `test -d "$3" || { echo "shared workspace root $3 is absent from the sandbox — ` +
 	`the driver copied the workspace somewhere else" >&2; exit 3; }
+if test -L "$1"; then
+ readlink "$1" 2>/dev/null || true
+ echo "shared .claude root $1 is a symlink — the snapshot, restore and reset would remove and rewrite through it, outside the workspace; replace the link with a real directory" >&2
+ exit ` + strconv.Itoa(sandboxClaudeSymlinkExit) + `
+fi
 `
+
+// sharedResourceScriptError turns a shared-resource script's result into the
+// engine's error, nil for a clean exit. The `.claude`-symlink refusal carries
+// the typed error the host sites return, so one errors.As recognises the class
+// whichever transport wrote.
+//
+// That typed message is the host's — a mirror writing through the link — and
+// these sites instead `rm -rf` and `cp -a` through it. The script's stderr is
+// the only account of what the script itself refused, and the only trace left
+// when the status is NOT the guard's: exit 4 is the script's contract, not a
+// status only the guard can produce, so a coreutil exiting exactly 4 lands in
+// the same branch and the link the typed message names does not exist. The
+// evidence travels with the verdict rather than being dropped.
+//
+// Both accounts always travel; the one holding the most specific fact LEADS.
+// The live one-line view of a run error (pkg/cli's firstLine) keeps the text
+// up to the first newline, and the production transport is `kubectl exec`,
+// which appends its own exit-code line to the stderr it captures: a second
+// line never reaches that view. With the link's target read, the typed
+// refusal leads — the target is the one fact the host cannot read for itself.
+// With nothing read, the typed message adds only `<unreadable>` and the
+// script's account leads, being the whole account of an exit 4 that is not
+// the guard's.
+func sharedResourceScriptError(site, root string, res sandbox.ExecResult) error {
+	if res.ExitCode == 0 {
+		return nil
+	}
+	if res.ExitCode == sandboxClaudeSymlinkExit {
+		target := strings.TrimSpace(string(res.Stdout))
+		named := target != ""
+		if !named {
+			target = "<unreadable>"
+		}
+		linkErr := &claudeSymlinkError{link: root, target: target}
+		said := strings.TrimSpace(string(res.Stderr))
+		switch {
+		case said == "":
+			return fmt.Errorf("%s: %w", site, linkErr)
+		case named:
+			return fmt.Errorf("%s: %w; the script said: %s", site, linkErr, said)
+		default:
+			return fmt.Errorf("%s: %s: %w", site, said, linkErr)
+		}
+	}
+	return fmt.Errorf("%s: exit %d: %s", site, res.ExitCode, res.Stderr)
+}
 
 func (e *Engine) sharedWorkspaceFolder() string {
 	if e.sharedSandbox == nil {
@@ -96,15 +164,12 @@ func (e *Engine) snapshotSharedChildResources(ctx context.Context, backupName st
 		if err != nil {
 			return err
 		}
-		if res.ExitCode != 0 {
-			return fmt.Errorf("shared child resources (backup %s): exit %d: %s", backup, res.ExitCode, res.Stderr)
-		}
-		return nil
+		return sharedResourceScriptError("shared child resources (backup "+backup+")", root, res)
 	}
 	cctx, cancel := context.WithTimeout(ctx, childResourceIOTimeout)
 	defer cancel()
 	err = runScript(cctx, `set -eu
-`+assertWorkspaceRoot+`mkdir -p "$2"
+`+assertSharedResourceRoots+`mkdir -p "$2"
 for name in `+childResourceWords()+`; do
  if test -e "$1/$name" || test -L "$1/$name"; then cp -a "$1/$name" "$2/$name"; fi
 done`)
@@ -115,7 +180,7 @@ done`)
 		ctx, cancel := context.WithTimeout(context.Background(), childResourceIOTimeout)
 		defer cancel()
 		return runScript(ctx, `set -eu
-`+assertWorkspaceRoot+`for name in `+childResourceWords()+`; do
+`+assertSharedResourceRoots+`for name in `+childResourceWords()+`; do
  rm -rf "$1/$name"
  if test -e "$2/$name" || test -L "$2/$name"; then mkdir -p "$1"; cp -a "$2/$name" "$1/$name"; fi
 done
@@ -161,15 +226,12 @@ func (e *Engine) clearBorrowedSandboxResources(ctx context.Context) error {
 		return err
 	}
 	res, err := e.sharedSandbox.Run.Exec(ctx, []string{"sh", "-c", `set -eu
-` + assertWorkspaceRoot + `for name in ` + childResourceWords() + `; do rm -rf "$1/$name"; done`,
+` + assertSharedResourceRoots + `for name in ` + childResourceWords() + `; do rm -rf "$1/$name"; done`,
 		"sh", root, "", workspace}, sandbox.ExecOpts{})
 	if err != nil {
 		return err
 	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("reset borrowed sandbox resources: exit %d: %s", res.ExitCode, res.Stderr)
-	}
-	return nil
+	return sharedResourceScriptError("reset borrowed sandbox resources", root, res)
 }
 
 // resourceDirForRun prevents a bare child.bot beside a bundle main.bot from

@@ -18,6 +18,7 @@ import {
 
 import { useAuth, canEditConfigShares } from "@/auth/AuthContext";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { adminPath } from "@/views/admin/adminRoutes";
 import { listConfigShares, type ShareView } from "@/api/configShareAdmin";
 
 /**
@@ -91,7 +92,7 @@ export default function HubGrid() {
     areas.push({ href: "/integrations", label: "Integrations", desc: "Connect repos and forges", icon: Link2Icon });
   }
   if (user?.is_super_admin && cloud) {
-    areas.push({ href: "/admin/orgs", label: "Admin", desc: "Orgs, audit, platform", icon: GearIcon });
+    areas.push({ href: adminPath("/orgs"), label: "Admin", desc: "Orgs, audit, platform", icon: GearIcon });
   }
 
   // The Config-editor card leads to the dedicated /config-editor route (the

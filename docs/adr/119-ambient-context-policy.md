@@ -5,7 +5,8 @@
 - Deciders: jo (direction: neither interactive-session doctrine nor the
   operator's personal setup should reach a bot; full backend parity in one
   change), Claude (measurements, analysis)
-- Relates to: issue #2062;
+- Relates to: issue #2062, #2107 (the opencode/kimi/grok translations, see
+  the amendment below);
   [061-per-backend-system-prompt-composition-mode.md](061-per-backend-system-prompt-composition-mode.md)
   (amended: the `user` scope leaves claude_code's default);
   [085-pi-as-execution-backend.md](085-pi-as-execution-backend.md);
@@ -139,7 +140,7 @@ The two origins:
 | `claw` | no project-instructions section | claw-code-go's project instructions with the walk stopped at the root, user memory off, `.claude/rules` on | user memory and the ancestors above the root | both |
 | `pi` | `--no-context-files` | `--no-context-files` + the engine-resolved workspace files, appended to the system prompt with pi's own per-directory precedence | the same with the operator files (agent dir and ancestors) | both |
 | `codex` | `project_doc_max_bytes=0` + a per-run `CODEX_HOME` without `AGENTS.md` | per-run `CODEX_HOME` without `AGENTS.md` | `project_doc_max_bytes=0` | unchanged |
-| `opencode`, `kimi`, `grok` | not enforced: diagnostic C185 | | | |
+| `opencode`, `kimi`, `grok` | not enforced: diagnostic C185 — superseded per cell by the [amendment](#amendment-2026-10-12--opencode-kimi-and-grok-measured-translated-or-refused) | | | |
 
 - **`claude_code`.** `claudeMdExcludes` rides the flag settings layer, the
   same `--settings` object that pins the routing variables, so it outranks
@@ -167,12 +168,16 @@ The two origins:
 - **`opencode`, `kimi`, `grok`.** No mechanism is known. An explicit value
   raises the C185 warning, which names the gap. The default is documented
   as not enforced. Each backend gets a follow-up ticket.
+  _(Superseded by the amendment below: the opencode/kimi/grok mechanism now
+  exists, and the ticket is this change.)_
 
 ### Diagnostics
 
 - **C184**, an error: an invalid `ambient_context` value.
 - **C185**, a warning: the declared value is not enforced on the node's
   backend. It fires on explicit values only, never on the default.
+  _(Superseded by the amendment below: C187 now refuses or warns per route
+  on values that cannot be applied, and C185 stays the unmeasured case.)_
 
 ### Legacy variables
 
@@ -203,3 +208,56 @@ today, loads every scope.
 The cross-family plan review (codex) was not run, by the operator's decision
 on 2026-10-01. The implementation follows this record as written. Each slice
 gets a local adversarial round, and so does the whole diff before the push.
+
+## Amendment (2026-10-12) — opencode, kimi and grok: measured, translated or refused
+
+Issue #2107 surveyed the three backends this record left unenforced. kimi was
+measured live (kimi-code 2.1.1, planted markers, its env-model variables
+pointed at an in-process server with an invalid key — no cost); opencode
+(1.19.0 and 2.0.26) and Grok Build (`xai-org/grok-build@2bdd1d6`) were read
+from source, their CLIs not being installed where the survey ran.
+
+**Decision.** Every backend gets a verdict per policy, recorded once in
+`pkg/backend/ambient` (`SupportOf`) and read by the compiler and the engine
+alike: *honoured* (translated), *refused* (the backend loads, whatever
+iterion passes it, files the policy excludes) or *unmeasured* (kept on its
+own conventions). Honoured is earned by a live measurement; a refusal only
+needs the backend's loader to be seen without a switch, since refusing can
+never hand a node a file its policy excludes.
+
+| backend | `none` | `workspace` | `operator` | `all` |
+|---|---|---|---|---|
+| `kimi` | refused | a `KIMI_CODE_HOME` overlay without its `AGENTS.md` | refused | native |
+| `opencode` | refused | refused | refused | native (Claude-Code compatibility layer pinned off) |
+| `grok` | refused | unmeasured | refused | unmeasured |
+
+- **kimi** reads `$KIMI_CODE_HOME/AGENTS.md` and `~/.agents/AGENTS.md` (the
+  operator's) and, from the git root down to the working directory,
+  `.kimi-code/AGENTS.md` plus the first of `AGENTS.md`/`agents.md` (the
+  workspace's). The overlay is codex's `CODEX_HOME` mechanism, now shared
+  (`homeWithoutInstructions`). `~/.agents` is resolved from `HOME`, which no
+  overlay moves: when it holds an instruction file, a declared `workspace` is
+  refused and the default warned once. No switch skips the repository walk.
+- **opencode** reads its global `AGENTS.md`, its global configuration's
+  `instructions`, and (2.x) every `AGENTS.md` up to the home directory past
+  the repository root; its read tool injects the `AGENTS.md` of every
+  directory it reads a file in, ungated by `OPENCODE_DISABLE_PROJECT_CONFIG`.
+- **grok** reads the project's instruction files whenever it trusts the
+  folder, and trusts a repository without hook or MCP configuration without
+  asking; what it reads from `GROK_HOME` and the vendor homes is unmeasured.
+
+**Declared values are applied or refused, never ignored.** A refused policy
+is a compile-time error (**C187**) on the node's own value, on a workflow
+value the node inherits and on every fallback route, and a dispatch-time
+refusal (`delegate.ErrCapabilityUnsupported`, terminal) for what the compiler
+cannot see: a fallback element, a run override, `ITERION_AMBIENT_CONTEXT`.
+C185 stays a warning, now only for unmeasured cells. The default is never
+refused: each backend applies it as far as it can, which on opencode and
+grok is still their own loading.
+
+**Consequences.** A kimi bot stops inheriting the operator's kimi
+`AGENTS.md` by default. A workflow that declares `none` or `operator` and
+runs a node on kimi, opencode or grok no longer compiles with a warning: it
+is refused until the node declares a policy its backend applies or moves to
+an enforcing backend — the fail-closed direction, since those values exist to
+keep a pull request's or an operator's instructions out of a bot.

@@ -86,6 +86,16 @@ type CredentialPreviewPool struct {
 	Considered bool     `json:"considered"`
 	Reason     string   `json:"reason,omitempty"`
 	Wants      []string `json:"wants"`
+	// DoorWants/DoorReason are the routing fallback door's state
+	// (ADR-121 § Delivery 2, slice 5): the credential kinds the run's
+	// own set lacks that its policy ladder would dispatch, and what the
+	// donor-consented pool answers for them — computed OUTSIDE the tier
+	// walk (the pool block above stays bypassed for these runs by the
+	// plan), by the same derivation the live consult runs. Empty when
+	// the door never arms: no policy, no held credential of its own, or
+	// no missing dispatchable kind.
+	DoorWants  []string `json:"door_wants,omitempty"`
+	DoorReason string   `json:"door_reason,omitempty"`
 }
 
 type CredentialPreview struct {

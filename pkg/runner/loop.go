@@ -1261,6 +1261,11 @@ func dispatchDelivery(logger *iterlog.Logger, delivery jsDelivery, action delive
 // Config is the runner bootstrap.
 type Config struct {
 	NATS *natsq.Conn
+	// RunnerPool names the sovereign pool this pod serves (#2029). Empty =
+	// the shared default pool. It is the admission identity: a delivery
+	// stamped for another pool is parked with the run failed, never
+	// executed.
+	RunnerPool string
 	// PreparedConsumer, when non-nil, is a durable consumer whose creation was
 	// already proven by the entrypoint before it claims the rollout epoch. It
 	// remains inert until Run starts fetching. Nil preserves the convenient
@@ -1872,7 +1877,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// the API publishes on iterion.cancel.<run_id>; we react by cancelling
 	// runCtx with the OPERATOR cause, so the engine writes terminal
 	// cancelled (never resurrected), distinct from a shutdown-drain cancel.
-	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, func() { runCancel(runtime.ErrRunCancelled) }); err != nil {
+	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, store.LeaseIdentity{TenantID: msg.TenantID, Pool: msg.RunnerPool}, func() { runCancel(runtime.ErrRunCancelled) }); err != nil {
 		logger.Warn("runner: subscribe cancel %s: %v (continuing without)", msg.RunID, err)
 	}
 
@@ -1882,7 +1887,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// lifecycle as the cancel subscription — torn down with runCtx.
 	r.registerSteerChannel(runCtx, msg.RunID)
 	defer r.unregisterSteerChannel(msg.RunID)
-	if _, err := r.cfg.NATS.SubscribeSteer(runCtx, msg.RunID, func(body []byte, cmdID string) {
+	if _, err := r.cfg.NATS.SubscribeSteer(runCtx, msg.RunID, store.LeaseIdentity{TenantID: msg.TenantID, Pool: msg.RunnerPool}, func(body []byte, cmdID string) {
 		r.handleSteerDelivery(msg.RunID, body, cmdID)
 	}); err != nil {
 		logger.Warn("runner: subscribe steer %s: %v (steering disabled for this run)", msg.RunID, err)
@@ -1908,6 +1913,16 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		return
 	}
 
+	// The pool admission (plan v2.1 D4'): the pod serves ONE pool — a
+	// delivery stamped for another pool, or whose frozen document stamp
+	// disagrees with its message, is a corrupted or replayed publish.
+	// Executing it under either pool's scope is the leak #2029 exists to
+	// make possible.
+	if !r.verifyPoolOrTerm(pre, msg, delivery, logger) {
+		finalStatus = "pool_mismatch"
+		return
+	}
+
 	lock, lockOK, lockStatus := r.acquireRunLock(runCtx, msg, delivery, logger)
 	if !lockOK {
 		finalStatus = lockStatus
@@ -1918,9 +1933,15 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		// (network partition, permissions) shows up in the runner
 		// logs instead of being silently dropped — without this, an
 		// expired-but-not-deleted lease blocks siblings for the full
-		// LockTTL window with no operator visibility.
+		// LockTTL window with no operator visibility. An identity
+		// refusal is the takeover class, not the stuck-KV class: same
+		// ERROR level the heartbeat uses mid-run.
 		if err := lock.Unlock(); err != nil {
-			logger.Warn("runner: lock release for %s: %v", msg.RunID, err)
+			if errors.Is(err, natsq.ErrLeaseIdentityMismatch) {
+				logger.Error("runner: lock release for %s refused — the lease belongs to another admitted identity: %v", msg.RunID, err)
+			} else {
+				logger.Warn("runner: lock release for %s: %v", msg.RunID, err)
+			}
 		}
 	}()
 
@@ -2645,7 +2666,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if superviseHub != nil {
 		hookObservers = []func(store.Event){superviseHub.Publish}
 	}
-	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger, hookObservers)
+	executor, usage, err := r.buildExecutor(ctx, msg, wf, workDir, runLogger, hookObservers)
 	if err != nil {
 		return err
 	}
@@ -2684,6 +2705,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		runtime.WithLogger(runLogger),
 		runtime.WithWorkflowHash(msg.WorkflowHash),
 		runtime.WithWorkDir(workDir),
+		// The frozen pool stamp reaches the engine so any document the run
+		// writes (resume re-stamps, child flows) keeps naming the pool —
+		// the admission compares document ≡ message, and a doc the engine
+		// rebuilt without the stamp would contradict its own message.
+		runtime.WithRunnerPool(msg.RunnerPool),
 		// Sandbox defaults from the operator config (ITERION_SANDBOX_DEFAULT /
 		// ITERION_SANDBOX_HOST_STATE). pkg/cli/run.go wires these for `iterion
 		// run`; the cloud runner must too — else cfg.Sandbox.* is read and
@@ -2879,9 +2905,6 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	}
 	if superviseHub != nil {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
-		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
-			msg.RunID, supervise.SpecsFromWorkflow(wf, runLogger), runLogger)
-		defer stopSup()
 	}
 	// `subbot` nodes: the closure that compiles and runs a child bot on
 	// this pod. Every other launch surface wired one; without it a subbot
@@ -2890,6 +2913,22 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// resume loop that recreates the sandbox pod on every attempt.
 	engineOpts = append(engineOpts, runtime.WithSubbotRunner(r.subbotRunnerFor(msg, parentBundleDir, workDir, runLogger, snapshotRoot)))
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
+	if superviseHub != nil {
+		// The spawn resolves the run's OWN inputs: on a resume the message
+		// carries none (the engine re-reads the stored ones), so read the
+		// row — a pin resolved from the defaults alone would diverge from
+		// the nodes it watches.
+		spawnVars := msg.Vars
+		if msg.Resume != nil {
+			if run, err := r.cfg.Store.LoadRun(ctx, msg.RunID); err == nil && run.Inputs != nil {
+				spawnVars = run.Inputs
+			}
+		}
+		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.RunnerPool, runLogger)
+		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
+			msg.RunID, specs, runLogger)
+		defer stopSup()
+	}
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.
 	r.registerRunEngine(msg.RunID, engine)
@@ -3244,8 +3283,8 @@ func envPositiveFloat(key string) (float64, bool) {
 // through — executeRun reads its RunTotals at the end of the attempt
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
-func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
-	spec, usage, err := r.executorSpec(ctx, msg, wf, logger, hookObservers)
+func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
+	spec, usage, err := r.executorSpec(ctx, msg, wf, workDir, logger, hookObservers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3260,7 +3299,7 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 // buildExecutor so the wiring is assertable: a binder missing here is a
 // capability that silently dies on every cloud run (the supervisor-steer
 // and operator-chat inbox was exactly that).
-func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runview.ExecutorSpec, *metricsEmitter, error) {
+func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event)) (runview.ExecutorSpec, *metricsEmitter, error) {
 	operatorFallbacks, policyLadder := splitMsgFallback(msg.Fallback)
 	var zero runview.ExecutorSpec
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
@@ -3296,7 +3335,13 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// reach stdout but never the persisted run.log.
 		Logger:   logger,
 		StoreDir: r.cfg.WorkDir,
-		BotID:    msg.BotID,
+		// The directory the ENGINE is rooted at (its runtime.WithWorkDir):
+		// the per-run clone for a repo-bound run, the pod's base workspace
+		// otherwise — never r.cfg.WorkDir alone. The fallback screen's
+		// sandbox probe reads this run's repository from it; WorkDir stays
+		// unset, so Claw's file tools keep the pod's workspace.
+		SandboxProbeWorkDir: workDir,
+		BotID:               msg.BotID,
 		// The launch-time decision, carried on the wire. Without it the pod
 		// would resolve auto-memory from the workflow and its own (empty)
 		// environment, so an operator's `--auto-memory off` on a bot whose
@@ -3325,9 +3370,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// ROUTING ladder's stages (ADR-121, Policy-flagged) split off: their
 		// model maps PER NODE at materialization, so they ride
 		// PolicyLadder (ir.ApplyPolicyLadder) instead.
-		RunFallback:      operatorFallbacks,
-		PolicyLadder:     policyLadder,
-		LLMRouteTriggers: llmRouteTriggers(msg),
+		RunFallback:          operatorFallbacks,
+		PolicyLadder:         policyLadder,
+		LLMRouteTriggers:     llmRouteTriggers(msg),
+		LLMRouteClasses:      llmRouteClasses(msg),
+		LLMRouteCrossHarness: llmRouteCrossHarness(msg),
 		// The same deployment default the engine resolves sandbox modes
 		// against — the fallback screen refuses codex stages on nodes
 		// that will run sandboxed, and sandboxed-or-not is this value's
@@ -3415,6 +3462,30 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 // off the wire (ADR-121 §1, the launch-frozen snapshot): the ledger's
 // extension gate is the RUN's set — every node teaches, judges and
 // authored-route agents included.
+// llmRouteClasses reads the run's RESOLVED model_classes overrides off
+// the wire (ADR-121 § Delivery 2): the crossings' class targets. Nil =
+// the shipped table (the empty-on-ignore direction — a stale runner or
+// an old publisher runs the shipped cells, never a partial override).
+func llmRouteClasses(msg *queue.RunMessage) map[string]map[string]string {
+	return msg.FallbackModelClasses
+}
+
+// llmRouteCrossHarness reads the run's RESOLVED cross-harness posture off
+// the wire (ADR-121 § Delivery 2): the first policy entry's value — the
+// publisher stamps every entry from ONE snapshot value, so the first is
+// deterministic. Empty (an old publisher, no policy, or a posture the
+// snapshot clamped away) is the off direction: the runview layer
+// constructs no handoff recorder, the crossings re-refuse at the screen.
+func llmRouteCrossHarness(msg *queue.RunMessage) string {
+	for _, f := range msg.Fallback {
+		if !f.Policy {
+			continue
+		}
+		return f.CrossHarness
+	}
+	return ""
+}
+
 func llmRouteTriggers(msg *queue.RunMessage) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -3441,7 +3512,7 @@ func llmRouteTriggers(msg *queue.RunMessage) []string {
 func splitMsgFallback(entries queue.RunFallback) (operator []ir.Fallback, ladder []ir.PolicyLadderStage) {
 	for _, f := range entries {
 		if f.Policy {
-			ladder = append(ladder, ir.PolicyLadderStage{Harness: f.Backend, Credential: f.Provider, On: f.On})
+			ladder = append(ladder, ir.PolicyLadderStage{Harness: f.Backend, Credential: f.Provider, On: f.On, CrossHarness: f.CrossHarness})
 			continue
 		}
 		operator = append(operator, ir.Fallback{

@@ -1477,9 +1477,12 @@ workflow bm:
 
 // The ceiling lands first (three crossings) and the death later (five): a
 // run that cancelled the siblings of the first branch to end would never
-// see the death.
+// see the death. The dry-run crossing bound is LIFTED here (negative
+// LoopCrossings): the death this test exists for is the program's own at
+// the loop's cap of five, and the default bound of three would decline the
+// edge first — the bound's doing, not the death.
 func TestADeathInOneBranchBesideACeilingInAnotherIsADeath(t *testing.T) {
-	r, err := Run(context.Background(), compileBot(t, branchMixedBot), Options{})
+	r, err := Run(context.Background(), compileBot(t, branchMixedBot), Options{LoopCrossings: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1510,7 +1513,9 @@ func TestTwoCeilingsInTwoBranchesAreACeiling(t *testing.T) {
 }
 
 // A parent whose subbot sits inside a bounded loop: the child is crossed
-// once, then three more times on the false pass.
+// once, then three more times on the false pass — the dry run's default
+// crossing bound (3) declining the back-edge after three re-entries, well
+// short of the cap of 30 the loop declares.
 const loopingParentBot = `schema verdict:
   ok: bool
 
@@ -1529,7 +1534,7 @@ workflow p:
   budget:
     max_iterations: 30
   kid -> check
-  check -> kid when not ok as again(3)
+  check -> kid when not ok as again(30)
   check -> done when ok
 `
 
@@ -3137,5 +3142,87 @@ func TestACeilingPredicateReadsOneTable(t *testing.T) {
 		if got := ceilingOf(tc.code, tc.declined); got != tc.want {
 			t.Errorf("%s: ceilingOf(%q, %q) = %v, want %v", name, tc.code, tc.declined, got, tc.want)
 		}
+	}
+}
+
+// A contracted child projects the parent's answer from its contract ports
+// (#1535): the port name the runtime projects is the name the dry run
+// answers, so a parent reading {{outputs.kid.<port>}} — with no output
+// schema of its own, the ticket's case — resolves the reference where the
+// bare shape left it unresolved and the run ended off the declared path.
+func TestAContractedChildProjectsItsPorts(t *testing.T) {
+	const contractedKid = `schema verdict:
+  ok: bool
+
+judge judge:
+  model: "claude-opus-4-7"
+  output: verdict
+
+tool celebrate:
+  command: "echo yes"
+
+fail refused:
+  code: REFUSED
+  message: "no"
+
+contract kid_c:
+  outputs:
+    ok: bool
+      from: judge.ok
+
+workflow kid:
+  contract: kid_c
+  worktree: none
+  sandbox: none
+  entry: judge
+  judge -> celebrate when ok
+  judge -> refused when not ok
+  celebrate -> done
+`
+	const bareParent = `subbot kid:
+  source: "kid.bot"
+
+fail blocked:
+  code: BLOCKED
+  message: "the child said nothing"
+
+workflow p:
+  worktree: none
+  sandbox: none
+  entry: kid
+  kid -> done when "outputs.kid.ok == true"
+  kid -> blocked else
+`
+
+	// With the contract, the projected port resolves the edge's when: the
+	// run takes the declared path.
+	parent := compileBot(t, bareParent)
+	res, err := Run(context.Background(), parent, withChild(t, contractedKid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Children) == 0 {
+		t.Fatalf("the child was not simulated: %+v", res.Children)
+	}
+	if res.Passes[0].Status != "finished" || res.Passes[0].Deliberate {
+		t.Fatalf("the projected port did not resolve the when-edge: status %q deliberate %v, findings %+v", res.Passes[0].Status, res.Passes[0].Deliberate, res.Findings)
+	}
+	for _, f := range res.Findings {
+		if strings.Contains(f.Detail, "outputs.kid.ok") {
+			t.Fatalf("the projected port reads as unresolved: %+v", f)
+		}
+	}
+
+	// The control: the same parent over the UNCONTRACTED child — the bare
+	// shape answers nothing, the when stays unresolved, and the run does
+	// not take the declared path. This is the branch the projection
+	// closes; it reddens if the projection is muted.
+	parent = compileBot(t, bareParent)
+	res, err = Run(context.Background(), parent, withChild(t, kidBot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Passes[0].Deliberate {
+		t.Fatalf("the unresolved when resolved anyway: status %q, findings %+v", res.Passes[0].Status, res.Findings)
 	}
 }

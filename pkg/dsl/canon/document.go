@@ -15,13 +15,14 @@ import (
 // by the author writer, proven to read as the same program before it is
 // handed back — the .bot text of the document and of its written form is
 // one — on the document's own bytes, its BOM and its line endings kept as
-// Bytes keeps a .bot's. Refused (ErrRefused), the bytes left the author's:
-// a document that does not read; one the .bot reads otherwise than it was
-// written — a prompt body the lexer settles, a line separator in a block
-// scalar, the warnings author.Parse reports (E053) — since the writer would
-// put that reading in the author's place; one that carries YAML comments,
-// which the writer keeps none of; one whose written form reads as another
-// program.
+// Bytes keeps a .bot's. The document's YAML comments ride the nodes they
+// hang on (author.WriteKeepingComments). Refused (ErrRefused), the bytes
+// left the author's: a document that does not read; one the .bot reads
+// otherwise than it was written — a prompt body the lexer settles, a line
+// separator in a block scalar, the warnings author.Parse reports (E053) —
+// since the writer would put that reading in the author's place; one whose
+// written form would lose a comment, or move one on a second pass; one whose
+// written form reads as another program.
 func Document(name string, src []byte) ([]byte, error) {
 	norm := rewrite.Normalize(src)
 	text := []byte(norm.Text)
@@ -29,16 +30,13 @@ func Document(name string, src []byte) ([]byte, error) {
 	if errs := diagnosticsOf(res.Diagnostics, parser.SeverityError); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: does not read: %s", ErrRefused, strings.Join(errs, "; "))
 	}
-	if comments := author.Comments(text); len(comments) > 0 {
-		return nil, fmt.Errorf("%w: carries %d YAML comment line(s) the writer does not keep (the first: %s)", ErrRefused, len(comments), comments[0])
-	}
-	// A commented document is already refused above: a ` #` that ends a
-	// plain value IS a comment, so the reads-otherwise reason is reached
-	// only by documents whose reading differs without one.
-	if read := diagnosticsOf(res.Diagnostics, parser.SeverityWarning); len(read) > 0 {
+	// A ` #` ending a plain value is the one reading a rewrite keeps as the
+	// author wrote it — the comment rides the value — so it refuses only if
+	// the written form would lose it (checked on the written form below).
+	if read := diagnosticsOf(otherReadings(res.Diagnostics), parser.SeverityWarning); len(read) > 0 {
 		return nil, fmt.Errorf("%w: the .bot reads it otherwise than it is written, and a rewrite would put that reading in the author's place: %s", ErrRefused, strings.Join(read, "; "))
 	}
-	out, err := author.Write(res.File)
+	out, err := author.WriteKeepingComments(res.File, text)
 	if err != nil {
 		return nil, fmt.Errorf("%w: cannot be written as a document: %v", ErrRefused, err)
 	}
@@ -46,18 +44,104 @@ func Document(name string, src []byte) ([]byte, error) {
 	if written == norm.Text {
 		return src, nil
 	}
+	if why := commentsMoved(author.Comments(text), author.Comments(out)); why != "" {
+		return nil, fmt.Errorf("%w: its written form would not keep its YAML comments: %s", ErrRefused, why)
+	}
 	// The proof before the write: the written document reads as the same
 	// program — the .bot text of the two is one.
 	back := author.Parse(name, out)
 	if errs := diagnosticsOf(back.Diagnostics, parser.SeverityError); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: its written form does not read back: %s", ErrRefused, strings.Join(errs, "; "))
 	}
+	if why := commentReadingLost(res.Diagnostics, back.Diagnostics); why != "" {
+		return nil, fmt.Errorf("%w: the .bot reads it otherwise than it is written, and its written form would put that reading in the author's place: %s", ErrRefused, why)
+	}
 	if why := firstDifferentLine(unparse.Unparse(res.File), unparse.Unparse(back.File)); why != "" {
 		return nil, fmt.Errorf("%w: its written form reads as another program (%s)", ErrRefused, why)
+	}
+	// The written form is its own canonical form: a comment the writer put
+	// where yaml.v3 reads it back on another node would move again on the
+	// next pass, and `fmt --check` would never be green on the result.
+	again, err := author.WriteKeepingComments(back.File, out)
+	if err != nil {
+		return nil, fmt.Errorf("%w: its written form cannot be written again: %v", ErrRefused, err)
+	}
+	if string(again) != written {
+		return nil, fmt.Errorf("%w: its written form would not keep its YAML comments where they are: written again, it moves them (%s)", ErrRefused, firstDifferentLine(written, string(again)))
 	}
 	// The whole text is one edit, mapped back onto the original bytes: the
 	// BOM stays, and every line ending follows the file's own.
 	return norm.MapBack(src, []rewrite.Edit{{Start: 0, End: len(norm.Text), Repl: written}}), nil
+}
+
+// otherReadings is diags without the comment readings (author.IsCommentReading).
+func otherReadings(diags []parser.Diagnostic) []parser.Diagnostic {
+	var out []parser.Diagnostic
+	for _, d := range diags {
+		if !author.IsCommentReading(d) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// commentReadingLost names the first comment reading of the source the
+// written form does not report as well — the value it reads, with the
+// comment cutting it, gone or changed — "" when the written form keeps
+// every one.
+func commentReadingLost(src, written []parser.Diagnostic) string {
+	kept := map[string]int{}
+	for _, d := range written {
+		if author.IsCommentReading(d) {
+			kept[d.Message]++
+		}
+	}
+	for _, d := range src {
+		if !author.IsCommentReading(d) {
+			continue
+		}
+		if kept[d.Message] == 0 {
+			return d.Error()
+		}
+		kept[d.Message]--
+	}
+	return ""
+}
+
+// commentsMoved names the first YAML comment line the written document
+// does not carry as often as the source — lost, or written twice — "" when
+// the two carry the same lines. Order is not compared: a comment rides its
+// node, and the writer orders the nodes.
+func commentsMoved(src, written []string) string {
+	count := map[string]int{}
+	for _, c := range src {
+		count[c]++
+	}
+	for _, c := range written {
+		count[c]--
+	}
+	for _, c := range src {
+		if count[c] > 0 {
+			return fmt.Sprintf("%d of %d comment line(s) would be lost (the first: %s)", lostCount(count), len(src), c)
+		}
+	}
+	for _, c := range written {
+		if count[c] < 0 {
+			return fmt.Sprintf("a comment line would be written twice (%s)", c)
+		}
+	}
+	return ""
+}
+
+// lostCount is the number of comment lines a count left positive.
+func lostCount(count map[string]int) int {
+	n := 0
+	for _, k := range count {
+		if k > 0 {
+			n += k
+		}
+	}
+	return n
 }
 
 // firstDifferentLine names the first line where the .bot texts a and b

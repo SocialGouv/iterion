@@ -819,6 +819,27 @@ func (s *Service) ResolveMergeConflictFile(ctx context.Context, runID, path, con
 	return runtime.StageResolvedFile(repoRoot, path, content)
 }
 
+// storedLandingVerdict reads the verdict the run's verifier recorded — the
+// HEAD it judged and the landing state it held the landing to — from the
+// run's last checkpoint, wherever a node's output carries both fields. A
+// conflicted landing is re-judged against it before it commits.
+func storedLandingVerdict(r *store.Run) *runtime.LandingVerdict {
+	if r == nil || r.Checkpoint == nil {
+		return nil
+	}
+	for _, out := range r.Checkpoint.Outputs {
+		if out == nil {
+			continue
+		}
+		head, _ := out["contract_head"].(string)
+		tree, _ := out["contract_tree"].(string)
+		if head != "" && tree != "" {
+			return &runtime.LandingVerdict{JudgedHead: head, JudgedTree: tree, LandingCommit: r.FinalCommit}
+		}
+	}
+	return nil
+}
+
 // FinalizeMergeAfterConflict commits the squash merge once every
 // conflicted file has been staged. Reuses the pending message stored
 // on the run unless the caller supplies an override. On success the
@@ -850,7 +871,7 @@ func (s *Service) FinalizeMergeAfterConflict(ctx context.Context, runID, message
 		message = runtime.BuildSquashMessageForMerge(repoRoot, r.BaseCommit, conflictTarget, r.FinalCommit, runtime.RunDisplayName(r))
 	}
 
-	sha, commitErr := runtime.FinalizeConflictMerge(repoRoot, message)
+	sha, commitErr := runtime.FinalizeConflictMerge(repoRoot, message, storedLandingVerdict(r))
 	if commitErr != nil {
 		return nil, commitErr
 	}

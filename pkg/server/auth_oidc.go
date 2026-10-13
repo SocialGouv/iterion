@@ -367,7 +367,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// compare avoids timing leaks on near-miss values. The cookie is
 	// cleared regardless of outcome — single-use semantics.
 	if pending.AgentBinding != "" {
-		ckVal := s.sessionCookie(r, oidcAgentBindingCookie, false)
+		ckVal := s.sessionCookie(r, oidcAgentBindingCookie)
 		clearOIDCAgentBindingCookie(w, s.cfg.CookieDomain, s.cfg.CookieSecure)
 		if subtle.ConstantTimeCompare([]byte(ckVal), []byte(pending.AgentBinding)) != 1 {
 			redirectSSOError(w, r, ssoErrAgentBinding, provQ)

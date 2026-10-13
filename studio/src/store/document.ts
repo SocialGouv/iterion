@@ -178,8 +178,12 @@ export interface DocumentState {
    *  (TabBindingSync): a detached document drops them, an unresolved one
    *  leaves them. Cleared by binding a path. */
   detached: boolean;
-  // Cached so cloud-mode launch/resume can pass it inline. Updated on
-  // openFile / saveFile / parseSource; null otherwise.
+  // Cached so a cloud-mode resume can pass it inline, and so the editor can
+  // tell a text it installed itself from the author's own (a draft tab
+  // following its conversation, the Source view while salvaged). A LAUNCH
+  // neither reads nor writes it: it renders the document it is about and
+  // keeps that text to itself (useLaunchDoc). Updated on openFile /
+  // saveFile / parseSource; null otherwise.
   currentSource: string | null;
   // The unit the document was opened from, for a bot in several files
   // (its files and the revision a save must present); null otherwise.

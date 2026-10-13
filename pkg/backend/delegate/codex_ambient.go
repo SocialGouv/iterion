@@ -2,13 +2,10 @@ package delegate
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
-	"slices"
-	"time"
 )
 
 // codexInstructionFiles are the operator-level instruction files codex reads
@@ -16,10 +13,8 @@ import (
 var codexInstructionFiles = []string{"AGENTS.md", "AGENTS.override.md"}
 
 // codexOverlayDirName holds the per-spawn homes codexHomeWithoutInstructions
-// builds inside the operator's own CODEX_HOME. Inside, so that a file codex
-// replaces by rename (a refreshed auth.json) can be carried back with an
-// atomic rename on the same filesystem.
-const codexOverlayDirName = ".iterion-ambient"
+// builds inside the operator's own CODEX_HOME.
+const codexOverlayDirName = ambientOverlayDirName
 
 // codexAmbientConfig is the `-c` part of the node's ambient-context policy
 // (ADR-119): without the workspace, codex stops reading the repository's
@@ -78,118 +73,9 @@ func codexSpawnEnv(ctx context.Context, task Task) (env map[string]string, relea
 }
 
 // codexHomeWithoutInstructions returns a directory that serves every entry of
-// home through a symlink except codex's instruction files. When home holds no
-// instruction file it returns home itself and builds nothing.
-//
-// Two of codex's writes need care. The sessions directory is created in home
-// first: one codex created inside the overlay would vanish with it, and with
-// it the session the formatting pass resumes. And a file codex replaces by
-// rename (a refreshed auth.json) or creates becomes a regular entry of the
-// overlay: release renames it back into home before removing the overlay, so
-// a rotated refresh token is never lost.
+// home through a symlink except codex's instruction files
+// (homeWithoutInstructions). The sessions directory is created in home first:
+// the formatting pass resumes the session the work pass wrote there.
 func codexHomeWithoutInstructions(home string) (dir string, release func() error, err error) {
-	noop := func() error { return nil }
-	entries, err := os.ReadDir(home)
-	if errors.Is(err, os.ErrNotExist) {
-		return home, noop, nil
-	}
-	if err != nil {
-		return "", nil, fmt.Errorf("delegate: codex: read the codex home %s: %w", home, err)
-	}
-	if !slices.ContainsFunc(entries, func(e os.DirEntry) bool { return slices.Contains(codexInstructionFiles, e.Name()) }) {
-		return home, noop, nil
-	}
-	if err := os.MkdirAll(filepath.Join(home, "sessions"), 0o700); err != nil {
-		return "", nil, fmt.Errorf("delegate: codex: prepare the sessions directory: %w", err)
-	}
-	// Re-read: the listing above predates sessions/, which must be linked.
-	if entries, err = os.ReadDir(home); err != nil {
-		return "", nil, fmt.Errorf("delegate: codex: read the codex home %s: %w", home, err)
-	}
-	root := filepath.Join(home, codexOverlayDirName)
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return "", nil, fmt.Errorf("delegate: codex: prepare the overlay root: %w", err)
-	}
-	// A process killed between the spawn and its release leaves its overlay
-	// behind; sweep the stale siblings (older than a day — no live node runs
-	// that long) with the same carry-back as a normal release, so a token a
-	// crashed node refreshed is not lost with them.
-	sweepStaleCodexOverlays(root)
-	dir, err = os.MkdirTemp(root, "home-")
-	if err != nil {
-		return "", nil, fmt.Errorf("delegate: codex: create the overlay home: %w", err)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if name == codexOverlayDirName || slices.Contains(codexInstructionFiles, name) {
-			continue
-		}
-		if err := os.Symlink(filepath.Join(home, name), filepath.Join(dir, name)); err != nil {
-			return "", nil, errors.Join(fmt.Errorf("delegate: codex: link %s into the overlay home: %w", name, err), releaseCodexOverlay(home, dir))
-		}
-	}
-	return dir, func() error { return releaseCodexOverlay(home, dir) }, nil
-}
-
-// codexOverlayStaleAfter is the age at which a leftover overlay home counts
-// as orphaned by a dead process and gets swept.
-const codexOverlayStaleAfter = 24 * time.Hour
-
-// sweepStaleCodexOverlays releases every overlay home under root whose
-// directory mtime is older than codexOverlayStaleAfter — the residue of a
-// process killed before its release. Each one goes through the same
-// carry-back as a normal release, best-effort: a node that died left nothing
-// to report the error to, and the directories it cannot carry stay for a
-// human rather than being deleted in silence.
-func sweepStaleCodexOverlays(root string) {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		dir := filepath.Join(root, e.Name())
-		info, err := e.Info()
-		if err != nil || time.Since(info.ModTime()) < codexOverlayStaleAfter {
-			continue
-		}
-		_ = releaseCodexOverlay(filepath.Dir(root), dir)
-	}
-}
-
-// releaseCodexOverlay carries back into home every entry codex created or
-// replaced in the overlay, then removes the overlay, which by then holds only
-// symlinks. A directory that already exists in home is left where it is and
-// reported, rather than merged or lost in silence.
-func releaseCodexOverlay(home, dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return fmt.Errorf("delegate: codex: read the overlay home %s: %w", dir, err)
-	}
-	var errs []error
-	for _, e := range entries {
-		if e.Type()&os.ModeSymlink != 0 {
-			continue
-		}
-		src, dst := filepath.Join(dir, e.Name()), filepath.Join(home, e.Name())
-		if e.IsDir() {
-			if _, statErr := os.Lstat(dst); statErr == nil {
-				errs = append(errs, fmt.Errorf("delegate: codex: %s was created in the overlay home but already exists in %s; left in %s", e.Name(), home, src))
-				continue
-			}
-		}
-		if err := os.Rename(src, dst); err != nil {
-			errs = append(errs, fmt.Errorf("delegate: codex: carry %s back into %s: %w", e.Name(), home, err))
-		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("delegate: codex: remove the overlay home %s: %w", dir, err)
-	}
-	_ = os.Remove(filepath.Join(home, codexOverlayDirName)) // only succeeds once empty
-	return nil
+	return homeWithoutInstructions(BackendCodex, home, codexInstructionFiles, []string{"sessions"})
 }

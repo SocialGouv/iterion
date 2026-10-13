@@ -1218,12 +1218,16 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 		"exit_code":   info.ExitCode,
 	}
 	putDelegateModelFields(data, info)
+	// Same rule as delegate_finished: the credential slot the per-credential
+	// ledger keys on (claude_code only reads it as a route source).
+	if info.Fingerprint != "" {
+		data["fingerprint"] = info.Fingerprint
+	}
 	// Same rule as delegate_finished: omitted when the price table did not
-	// know the model. The org-metering accumulator reads delegate_finished
-	// alone today — a delegation that ends here is unbilled there, the
-	// pre-existing shape for every failed attempt; the event carries the
-	// figure so a reader that closes that gap (and the schema re-ask, whose
-	// error event prices the re-ask's own marginal) sees it.
+	// know the model, so an observer can tell "no cost data" from a measured
+	// $0 by the key's absence. A delegation that ends here used to be
+	// unbilled in the org-metering accumulator, which read delegate_finished
+	// alone; the accumulator now books this figure too.
 	if info.CostUSD > 0 {
 		data["cost_usd"] = info.CostUSD
 	}
@@ -1357,6 +1361,12 @@ func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo
 	}
 	if info.FallbackIndex != nil {
 		data["fallback_index"] = *info.FallbackIndex
+	}
+	if info.CrossHarness != "" {
+		// The session contract's third state: this fall-through replaced
+		// a session-bearing node's harness under an active posture — the
+		// switch is SAID here (S4 adds handoff: beside it).
+		data["cross_harness"] = info.CrossHarness
 	}
 	if info.Cooldown {
 		data["cooldown"] = true
@@ -1493,14 +1503,25 @@ func (h *storeHooks) onToolNodeResult(nodeID string, toolName string, input []by
 // observers (ADR-046) fire on every persisted event emitted through the
 // backend-hook layer — the dispatcher's stall-heartbeat seam for the
 // high-frequency tool events that bypass the engine's WithEventObserver.
-func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger, guard *secretguard.Guard, observers ...func(store.Event)) EventHooks {
+func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger, guard *secretguard.Guard, handoff *HandoffRecorder, observers ...func(store.Event)) EventHooks {
 	// Capability detection must happen on the ORIGINAL emitter — the
-	// redacting wrapper below only implements AppendEvent.
+	// wrappers below only implement AppendEvent.
 	attachmentSink, _ := emitter.(AttachmentWriter)
 	toolBlobSink, _ := emitter.(ToolBlobWriter)
 	turnSink, _ := emitter.(TurnWriter)
 	planSink, _ := emitter.(PlanWriter)
 	servedSink, _ := emitter.(NodeServedRecorder)
+	// The routing handoff observes INSIDE the redaction boundary and
+	// OUTSIDE the store — the chain below is redacting(handoff(store)) —
+	// so the recorder sees exactly what persists and the model_fallback
+	// stamp lands on the event before the store reads it. Constructed
+	// here, never by the caller: a wrapper around the argument would hide
+	// the store's optional-sink interfaces from the detection above
+	// (revi R-finding on #2237 — every sink went nil under an active
+	// posture).
+	if handoff != nil {
+		emitter = handoffEmitter{inner: emitter, rec: handoff}
+	}
 	// All event payloads go through the redacting wrapper (Layer 0).
 	emitter = redactingEmitter{inner: emitter, guard: guard, observers: observers}
 	h := &storeHooks{

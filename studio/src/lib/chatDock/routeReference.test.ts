@@ -9,6 +9,7 @@ import {
   dockStandsDown,
   hrefForReference,
 } from "./routeReference";
+import { ADMIN_BASE, adminPath } from "@/views/admin/adminRoutes";
 
 describe("sanitizeReferenceText", () => {
   // Route params are attacker-supplied — the operator only has to open a
@@ -256,6 +257,17 @@ describe("referenceForRoute", () => {
     expect(referenceForRoute("/pipelines")?.label).toBe("Pipelines");
     expect(referenceForRoute("/skills")?.label).toBe("Skills");
     expect(referenceForRoute("/admin/users")?.label).toBe("Admin");
+  });
+
+  // This table mirrors the URL space as literals, by design. The console is
+  // the one family whose mount point is also declared in code (ADMIN_BASE,
+  // which every console link is built from), so drive this case from that
+  // constant: move the console and the dock reddens here instead of quietly
+  // degrading every admin page to a generic view reference.
+  it("recognises the admin console wherever the console says it is mounted", () => {
+    expect(referenceForRoute(ADMIN_BASE)?.label).toBe("Admin");
+    expect(referenceForRoute(adminPath("/users"))?.label).toBe("Admin");
+    expect(referenceForRoute(adminPath("/settings/bot-vars"))?.label).toBe("Admin");
   });
 
   // The assistant's own route is the sole exclusion. Home and future routes

@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -79,6 +80,14 @@ type ValidateOptions struct {
 	// included; zero is a minute. A pass that runs out of time is said so in
 	// the report (`timed_out`), apart from a death of the program.
 	ExecTimeout time.Duration
+	// ExecLoopCrossings bounds how often a pass crosses one bounded loop
+	// before the dry run declines its back-edge (`--exec-loop-crossings`);
+	// zero is the dry run's default (dryrun.DefaultLoopCrossings), a
+	// negative value removes the bound — loops run to their cap, as the
+	// engine does. A loop cut short is said so in the report
+	// (`loops_cut_short`), and a death that follows is the bound's doing,
+	// never the program's — `clean` stays the program's word (#1307).
+	ExecLoopCrossings int
 	// Strict fails the command when the dry run's report is failing — a
 	// pass died, or a reference, shell or fixture finding stands — the
 	// switch a CI gate flips; an expression the dry run could not decide
@@ -581,11 +590,12 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 				collection = bundleHandle.Dir
 			}
 			report, err := dryrun.Run(ctx, cr.Workflow, dryrun.Options{
-				Fixtures: fixtures,
-				Inputs:   inputs,
-				Path:     parsePath,
-				Children: dryRunChildren(collection),
-				Timeout:  opts.ExecTimeout,
+				Fixtures:      fixtures,
+				Inputs:        inputs,
+				Path:          parsePath,
+				Children:      dryRunChildren(collection),
+				Timeout:       opts.ExecTimeout,
+				LoopCrossings: opts.ExecLoopCrossings,
 			})
 			if err != nil {
 				result.ExecError = "dry run: " + err.Error()
@@ -692,16 +702,25 @@ func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic, 
 		if len(mine) == 0 {
 			continue
 		}
-		edits, _ := fix.PlanFor(f.Name, f.Source, mine)
+		edits, _ := fix.PlanFor(f.Name, f.Source, u.Merged, mine)
 		for i := range edits {
 			e := edits[i]
+			nodes := e.Nodes
+			if len(nodes) == 0 {
+				nodes = []string{e.Node}
+			}
 			for _, ref := range e.Refs {
-				for j := range result.Diagnostics {
-					vd := &result.Diagnostics[j]
-					if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.NodeID == e.Node && vd.File == f.Name &&
-						strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
-						vd.Edit = &e
-						break
+				// One edit remedies one diagnostic per instantiation: each
+				// node of Nodes carries it, not only the first match.
+				for _, node := range nodes {
+					for j := range result.Diagnostics {
+						vd := &result.Diagnostics[j]
+						if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.File == f.Name &&
+							vd.NodeID == node &&
+							strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
+							vd.Edit = &e
+							break
+						}
 					}
 				}
 			}
@@ -954,6 +973,14 @@ func (o ValidateOptions) wantsDryRun() bool {
 // errors, said as such — under the dry run's silent logger the engine's
 // own warning would reach no one, and the death would read as the bot's.
 // A null is no value: the var keeps its default, or is shaped.
+//
+// Each value is read AS WRITTEN (ir.ResolveVarTextAsWritten), the reading a
+// published contract takes: `${MODE:-fast}` is "fast" and `${LIST:-a,b}` the
+// list ["a","b"] — the shell's own environment is not consulted, so the
+// verdict and the walk are the same on a laptop and in CI. A value that
+// still holds a reference once its defaults resolve — `${PROJECT_DIR}/x`,
+// a list of such paths — has no answer here: it is handed to the dry run's
+// engine as the text, which reads it as a run does.
 func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error) {
 	vars, err := ParseVarFlags(opts.Vars)
 	if err != nil {
@@ -988,14 +1015,29 @@ func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error)
 		if decl == nil {
 			return nil, fmt.Errorf("%s %q, which names no var of the workflow (declared: %s)", from[k], k, strings.Join(declaredVars(wf), ", "))
 		}
-		typed, err := ir.CoerceVarValue(v, decl.Type)
+		typed, err := ir.ResolveVarTextAsWritten(v, decl.Type)
 		if err != nil {
 			return nil, fmt.Errorf("%s %q: %v is no %s: %v", from[k], k, v, decl.Type, err)
+		}
+		// A reading that kept a reference is handed on as the text, for the
+		// engine to read as a run does: it passes a list or a document
+		// through as it is, so their elements would keep `${PROJECT_DIR}`
+		// where a run resolves it. The reading kept one exactly when it
+		// differs from the reading that resolves every reference to "".
+		bare, err := ir.ResolveVarText(v, decl.Type, noEnvironment)
+		if err != nil {
+			return nil, fmt.Errorf("%s %q: %v is no %s with its references unset: %v", from[k], k, v, decl.Type, err)
+		}
+		if !reflect.DeepEqual(typed, bare) {
+			continue
 		}
 		inputs[k] = typed
 	}
 	return inputs, nil
 }
+
+// noEnvironment answers every reference with the empty string.
+func noEnvironment(string) string { return "" }
 
 // joinErrors lists errors on one line, for a result field.
 func joinErrors(errs []error) string {

@@ -303,7 +303,7 @@ An LLM node's answer is held to its `output:` schema at the end of its turn. Whe
 | `{{run.max_duration_seconds}}` / `.max_cost_usd` / `.max_tokens` / `.max_iterations` | The run's **effective** budget caps. |
 | `{{params.name}}` | `group` parameter during compile-time expansion. |
 
-`{{outputs.<node>.<field>}}` is readable from **any** node that runs after the producer — in a prompt, a command, an expression or a fail message — with no `with` threading; `{{input.<field>}}` only carries what the node's own `input:` schema declares and the incoming edge `with` mapped. Thread through `with` when a value must travel under a chosen name (a loop feedback field, a fan-out item); read `outputs.*` directly otherwise.
+`{{outputs.<node>.<field>}}` is readable from **any** node that runs after the producer — in a prompt, a command, an expression or a fail message — with no `with` threading; `{{input.<field>}}` only carries what the node's own `input:` schema declares and the incoming edge `with` mapped. Thread through `with` when a value must travel under a chosen name (a loop feedback field, a fan-out item); read `outputs.*` directly otherwise. An `{{input.X}}` **no** incoming edge maps is a compile-time warning (**C308**, the field is empty on every path); one another incoming edge maps — a loop's back-edge, a sibling `when` path — is legitimate and empty on those other paths only, which the dry run names as its own `unmapped_on_path` finding (a warning) while the never-mapped case stays `unresolved_ref`.
 
 `fan_out_each` also exposes the current item as `{{outputs.<router>.<as-name>}}`. Environment expressions use `${NAME}` (and supported default forms) before execution. In a tool `command` or `script`, `{{!input.field}}` is the explicit raw-substitution form; ordinary `{{input.field}}` is shell-escaped. Use the raw form only when the value is intentionally executable shell syntax, because it crosses the command-injection boundary.
 
@@ -376,9 +376,12 @@ repository's instruction files (`workspace`, the default — `CLAUDE.md`,
 the files above the repository root (`operator`), both (`all`) or nothing
 (`none`). Declared on the node or the workflow, with a run override
 (`--ambient-context`) and `ITERION_AMBIENT_CONTEXT` below it. Enforced on
-`claude_code`, `claw`, `codex` and `pi`; an explicit value on another
-backend warns (C185). An invalid value is a compile error (C184). Review
-bots that judge a checkout they do not control usually want `none`. See
+`claude_code`, `claw`, `codex` and `pi`; `kimi` applies `workspace` and
+`all`, `opencode` `all`. A declared value a node's backend cannot apply is
+refused — a compile error (C187) and a refusal at dispatch — and one it has
+not been measured against warns (C185); the default is applied as far as
+each backend can. An invalid value is a compile error (C184). Review bots
+that judge a checkout they do not control usually want `none`. See
 [backends.md](backends.md#ambient-context-adr-119--what-a-node-inherits-besides-its-prompt) and
 [ADR-119](adr/119-ambient-context-policy.md).
 
@@ -1152,8 +1155,9 @@ provider did not report in full is counted apart. Two causes:
 
 - A provider that sends no usage at all. On the OpenAI chat wire, usage
   is sent only when requested, and claw requests it from api.openai.com
-  and Foundry only: an endpoint set through `OPENAI_BASE_URL` is not asked,
-  so its calls count as unreported unless it sends usage anyway.
+  and Foundry only: an endpoint set through `OPENAI_BASE_URL` is not asked
+  unless the operator opted it in (`ITERION_OPENAI_STREAM_USAGE=1`), so its
+  calls count as unreported unless it sends usage anyway.
 - A call that ended before its final account: a cut, a stall, a failure
   frame carrying none, or a request abandoned unanswered by the cold-stream
   watchdog. A request the provider refused before serving any of it — a
@@ -1316,9 +1320,21 @@ Migration note: older runtimes read a node's fallbacks in source order, so a bar
 
 A loop back-edge does not count toward [C010](references/diagnostics.md) (one unconditional edge per node), so this pair is the one legal shape with two unconditional edges; the bare edge also serves a conditional back-edge (`… when not approved as fix(3)`) once its cap is reached. Route it to a typed `fail <name>:` when exhaustion is a refusal, or onward when the work banked so far should still be delivered.
 
+**Guarding that exit with the back-edge's own `when`.** Order decides nothing for a bare or `else` exit; it decides everything once the exit carries a `when`. Conditional edges are read in declaration order and the first match wins — and a back-edge carrying a `when` is read among them, never through the order-independent fallback slot, which only an unconditional iteration edge reaches. So a guarded exit works, and only works, **declared after** its back-edge: the back-edge wins while the iteration has work, the exit fires once the iteration is declined. The exit also has to leave the iteration: an exit whose target leads back to this node without crossing the back-edge — the back-edge's own target, or anything else inside the body — re-enters the body with the cap untouched, so only the run's budget ends it, and C011 refuses that pair in either declaration order.
+
+```iter fragment:edges
+write_audit_md -> select_candidate when not was_batch as package_loop(3)
+write_audit_md -> bucket_families when was_batch
+write_audit_md -> phase2_decider when not was_batch
+```
+
+Declared before the back-edge the exit matches on the first pass and the loop never crosses, so [C011](references/diagnostics.md) refuses that order and names it; two exits sharing the condition stay refused in any order, the second being dead. Declaration order is not the layout: a `use`d group's edges are declared after the workflow's own, so a back-edge written inside a group is declared last however high in the file it sits — guard its exit from inside that group, or write the exit bare, the form no order decides. What the guarded form buys over the bare exit: an output carrying no `was_batch` at all matches neither edge, and the run dies of `NO_OUTGOING_EDGE` instead of leaving by an exit that checked nothing.
+
 A bounded loop or foreach may live wholly inside one `fan_out_all`, `fan_out_each`, or `llm` `multi: true` branch. Every branch/item owns independent counters, loop snapshots, outputs, artifact allocations, and a durable cursor; siblings may therefore finish after different numbers of iterations, and a restart or human pause resumes the same local scope without replaying completed iterations. The collector becomes ready only after those local lifecycles terminate, under the existing `wait_all` / `best_effort` policy.
 
 **C244** is reserved for iteration with no unambiguous owner: an iteration edge on the fan-out router, a back-edge from the collector into a body (`join -> a1 as more`), a cycle crossing sibling branches, or a shared-node shape owned by more than one branch. A loop that wraps the fan-out from the join (`join -> router as outer(N)`) remains a normal trunk loop. Use a `subbot` when independent budgets, workspace isolation, or a reusable capability boundary are desired—not merely to obtain per-item counters. See [composition/iteration/sub-bots](groups-iteration-subbots.md).
+
+**A loop cap — or a `foreach` — on a `round_robin` or `llm` router's outgoing edge is refused** at compile time ([C309](references/diagnostics.md)): those routers select their target on their own (`round_robin` alternates over its unconditional edges, `llm` takes the target the model named) without going through the loop-aware evaluator, so `as spin(N)` — or `as foreach spin(item in …)` — on such an edge would silently do nothing. Put the loop on the edge that re-enters the router — that edge does go through the evaluator, honours the cap, and wants the exhaustion exit [C145](references/diagnostics.md) asks for.
 
 Terminal targets `done` and `fail` are reserved and are never declared.
 
@@ -1410,7 +1426,7 @@ workflow:
 
 - **Write a number as digits, without a leading 0.** YAML reads `010` as the octal 8 where the `.bot` reads 10, `0x10` as 16, `+3` as 3, `1e2` as 100 and `01.5` as 1.5. The converter refuses these spellings rather than re-spell them in silence (E051, YAML's reading named): write the number you mean in the `.bot`'s digits (`8` or `10`, `16`, `100`), or — where the value may be text — quote it (`'010'`, a zip code). A `-` is kept where the value is always text — a `with` value, a connector's parameter (`offset: -10`); where a number or a text is taken (a preset's value, a JSON value) a signed number is refused, quote it if it is text; a property that takes a number takes no sign. The same holds for a bool where text is taken: `True` is YAML's spelling, `true` the `.bot`'s, and `draft: true` in a connector's `params:` is the text `true`.
 
-**What else differs.** A prompt declared under `prompts:` as a `|` block is a `.bot` prompt body: its leading and trailing blank lines are dropped, the first line's indentation is taken off every line, and profile 1 drops its interior blank lines — when the body you wrote is read otherwise, `validate` says so (E053, a warning), `fmt` refuses to rewrite the document rather than put that reading in your place, and `fmt --to bot` writes the reading into the `.bot`. YAML's scanner also ends a line at an invisible U+0085 (NEL), U+2028 (LS) or U+2029 (PS): inside a literal block body one is read as the newline the scanner meant (E053 names the reading), but a trailing line holding only such a character is chomped like a blank line before the body is ever read — so the document itself is scanned raw, and one warning lists every line that holds one (E055). A ` #` that follows a plain TEXT value on its line warns the same way — the value ends at the `#` and the rest is a comment YAML drops (`command: echo "see #123"` reads `echo "see`); a number, a bool, a null, a quoted or block scalar keep their trailing comment as the note it reads as. A prompt text written in place (`system: |`) is a string, kept as written. `dsl:` is required (E052). `catalog:` is the `.bot`'s `## ---` frontmatter, read by the one reader the catalogue uses. Comments are not carried either way: a document with YAML comments is refused by `fmt` and left as it is, and it still converts with `--to bot`, which counts the comments the `.bot` is not written with and names the first; `--to yaml` counts the `.bot` comments the document leaves behind. A conversion under `--force` replaces its target whole, and names what the target carried that the new text does not.
+**What else differs.** A prompt declared under `prompts:` as a `|` block is a `.bot` prompt body: its leading and trailing blank lines are dropped, the first line's indentation is taken off every line, and profile 1 drops its interior blank lines — when the body you wrote is read otherwise, `validate` says so (E053, a warning), `fmt` refuses to rewrite the document rather than put that reading in your place, and `fmt --to bot` writes the reading into the `.bot`. YAML's scanner also ends a line at an invisible U+0085 (NEL), U+2028 (LS) or U+2029 (PS): inside a literal block body one is read as the newline the scanner meant (E053 names the reading), but a trailing line holding only such a character is chomped like a blank line before the body is ever read — so the document itself is scanned raw, and one warning lists every line that holds one (E055). A ` #` that follows a plain TEXT value on its line warns the same way — the value ends at the `#` and the rest is a comment YAML drops (`command: echo "see #123"` reads `echo "see`); a number, a bool, a null, a quoted or block scalar keep their trailing comment as the note it reads as. A prompt text written in place (`system: |`) is a string, kept as written. `dsl:` is required (E052). `catalog:` is the `.bot`'s `## ---` frontmatter, read by the one reader the catalogue uses. Comments are not carried from one form to the other: `--to bot` counts the comments the `.bot` is not written with and names the first, and `--to yaml` counts the `.bot` comments the document leaves behind. Within a document they are kept: `fmt` rewrites a commented document in its canonical form with each comment on the node it hangs on, and refuses — leaving the document as it is — only one whose comment the written form cannot hold where it was written. A conversion under `--force` replaces its target whole, and names what the target carried that the new text does not.
 
 ## Validation and references
 

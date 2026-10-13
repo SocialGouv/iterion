@@ -17,6 +17,7 @@
 package reviewtopology
 
 import (
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -251,31 +252,47 @@ func declaresVar(wf *ir.Workflow, name string) bool {
 // A bot's own default of "auto" therefore triggers auto-detection, while
 // an operator asking for "mono"/"dual" is honoured verbatim.
 //
-// Returns the resolved (mode, monoFamily) and whether injection happened
-// (for logging by the caller).
-func InjectIfDeclared(wf *ir.Workflow, inputs map[string]any, rep detect.Report, flagOverride string) (mode, monoFamily string, injected bool) {
+// Returns the resolved (mode, monoFamily), whether injection happened (for
+// logging by the caller), and the launch refusal of
+// InjectIfDeclaredFamilies.
+func InjectIfDeclared(wf *ir.Workflow, inputs map[string]any, rep detect.Report, flagOverride string) (mode, monoFamily string, injected bool, err error) {
 	return InjectIfDeclaredFamilies(wf, inputs, FamiliesFromReport(rep), flagOverride)
 }
 
 // InjectIfDeclaredFamilies is InjectIfDeclared on an already-assembled
 // family set (the cloud publisher derives one from the run's sealed
 // credential bundle, where no host detection report applies).
-func InjectIfDeclaredFamilies(wf *ir.Workflow, inputs map[string]any, fams FamilySet, flagOverride string) (mode, monoFamily string, injected bool) {
+//
+// An operator pin on mono_family naming a family the credential set cannot
+// serve REFUSES the launch: a run whose configuration cannot succeed does
+// not start, and the refusal names the family, the available ones and the
+// fix — the silent substitution this replaces sent a whole repo's review
+// gate dark while every run died at its first review node. A resolver-
+// chosen family never refuses: it comes from the set by construction.
+func InjectIfDeclaredFamilies(wf *ir.Workflow, inputs map[string]any, fams FamilySet, flagOverride string) (mode, monoFamily string, injected bool, err error) {
 	if !declaresVar(wf, VarReviewMode) {
-		return "", "", false
+		return "", "", false, nil
 	}
 	override := strings.TrimSpace(flagOverride)
 	if override == "" {
 		override = inputOverride(inputs, VarReviewMode)
 	}
 	mode, monoFamily = ResolveFamilies(fams, override)
-	// An operator's explicit --var mono_family wins over the resolver's
-	// preference when it names an AVAILABLE family (never silently replace
-	// an operator's explicit choice); an unavailable one keeps the
-	// resolver's pick — visible in the launch summary either way.
 	if mode == ModeMono {
-		if ov := strings.ToLower(inputOverride(inputs, VarMonoFamily)); ov != "" && fams[ov] {
-			monoFamily = ov
+		ov := inputOverride(inputs, VarMonoFamily)
+		if ov != "" && !fams[strings.ToLower(ov)] {
+			return mode, monoFamily, true, fmt.Errorf("mono_family %q is pinned but no credential serves that family on this launch (available: %s) — the review slot it routes to dies at its first node: remove the pin, or add the credential",
+				ov, familyList(fams))
+		}
+		// An operator's explicit --var mono_family wins over the resolver's
+		// preference when it names an AVAILABLE family (never silently
+		// replace an operator's explicit choice). The canonical spelling is
+		// written, not the pin's: the family keys, the declaring bots' var
+		// enums and the router edges' comparisons are all lowercase, and a
+		// verbatim "GPT" would pass here to die at the launch enum gate —
+		// after the run exists, without this fix named.
+		if fams[strings.ToLower(ov)] {
+			monoFamily = strings.ToLower(ov)
 		}
 	}
 	if inputs != nil {
@@ -293,7 +310,23 @@ func InjectIfDeclaredFamilies(wf *ir.Workflow, inputs map[string]any, fams Famil
 			delete(inputs, VarMonoFamily)
 		}
 	}
-	return mode, monoFamily, true
+	return mode, monoFamily, true, nil
+}
+
+// familyList renders the credential-backed families for a launch refusal:
+// sorted, comma-joined, "(none)" when the set is empty.
+func familyList(fams FamilySet) string {
+	names := make([]string, 0, len(fams))
+	for f, ok := range fams {
+		if ok {
+			names = append(names, f)
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return "(none)"
+	}
+	return strings.Join(names, ",")
 }
 
 // PlanReviewEnv is the machine/deployment-wide default for the
@@ -403,12 +436,19 @@ type Injection struct {
 // surface calls one function and logs one summary. reviewModeOverride is
 // the surface-level review-mode override (CLI --review-mode / API field);
 // the other vars have no dedicated field and override via inputs only.
-func InjectAll(wf *ir.Workflow, inputs map[string]any, fams FamilySet, reviewModeOverride string) Injection {
+//
+// A launch refusal (a pinned mono_family no credential serves) comes back
+// as the error: the run does not start.
+func InjectAll(wf *ir.Workflow, inputs map[string]any, fams FamilySet, reviewModeOverride string) (Injection, error) {
 	var inj Injection
-	inj.ReviewMode, inj.MonoFamily, inj.ReviewModeInjected = InjectIfDeclaredFamilies(wf, inputs, fams, reviewModeOverride)
+	var err error
+	inj.ReviewMode, inj.MonoFamily, inj.ReviewModeInjected, err = InjectIfDeclaredFamilies(wf, inputs, fams, reviewModeOverride)
+	if err != nil {
+		return inj, err
+	}
 	inj.PlanReview, inj.PlanReviewInjected = InjectPlanReviewIfDeclared(wf, inputs, fams)
 	inj.LLMFamilies, inj.LLMFamiliesInjected = InjectLLMFamiliesIfDeclared(wf, inputs, fams)
-	return inj
+	return inj, nil
 }
 
 // Summary renders the applied injections for a launch log line, or "" when

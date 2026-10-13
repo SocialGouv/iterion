@@ -84,6 +84,7 @@ export const iterDslKeywords = [
   "multi",
   "needs",
   "not",
+  "on_exceeded",
   "output",
   "over",
   "permission",
@@ -233,6 +234,7 @@ export const iterDslPropertiesByKind = {
     "max_iterations",
     "max_parallel_branches",
     "max_tokens",
+    "on_exceeded",
     "warn_tokens"
   ],
   "compaction": [
@@ -562,6 +564,10 @@ export const iterDslEnumValuesByProperty = {
     "fan_out_each",
     "llm",
     "round_robin"
+  ],
+  "on_exceeded": [
+    "fail",
+    "pause"
   ],
   "reasoning_effort": [
     "high",

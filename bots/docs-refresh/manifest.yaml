@@ -1,7 +1,16 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.6.0
+version: 3.7.0
+## 3.7.0 — COVERAGE AUDIT (the /goal pattern, bot-level): when the run
+## carries reference context, a deterministic inventory of the reference
+## PDFs' sections (coverage_inventory) feeds a cheap read-only auditor
+## (coverage_audit, second model) that classifies every section
+## covered/partial/gap BY READING the produced docs. Gaps route back
+## through the campaign (coverage_loop, bounded 2) with an actionable
+## gap list; the MR body carries the audit table. Convergence can no
+## longer be claimed without measuring it against the reference.
+## ITERION_DOC_ALIGN_MODEL_AUDIT overrides the auditor's model.
 ## 3.6.0 — OPTIONAL CONTEXT SOURCES: reference material materialized
 ## deterministically BEFORE the campaign. Until now Doki read only the
 ## cloned target repo + scope_notes; enrichment grounding (a product

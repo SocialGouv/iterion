@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/runops"
@@ -84,6 +85,30 @@ type ExecutorSpec struct {
 	// Claw's relative file tools. Empty preserves the historical os.Getwd()
 	// fallback for callers that execute in their intended workspace.
 	WorkDir string
+	// SandboxProbeWorkDir is the directory the ENGINE will root this run at
+	// — the value the surface passes to runtime.WithWorkDir. The fallback
+	// screen's sandbox probe derives its repository root from it
+	// (runtime.EngineRepoRoot), so the screen resolves the same repository
+	// the engine's own sandbox resolution will.
+	//
+	// Set it wherever the engine's directory is NOT the one above: the cloud
+	// runner hands the engine a per-run clone, a subbot child inherits its
+	// parent's worktree, a resumed run carries its recorded workspace —
+	// while the executor's tool workspace stays the process workspace.
+	// Empty means "the engine receives WorkDir" and the probe reads that
+	// instead, which is what every surface passing one directory to both
+	// does. Both empty means "the engine is given no directory": it then
+	// fills its own with the process cwd and roots the run at THAT
+	// directory's repository, which is what sandboxProbeRoot answers.
+	//
+	// It is a DIRECTORY, not a root: the probe resolves it through
+	// runtime.EngineRepoRoot, which is the identity on a repository root that
+	// exists and walks up from one that does not.
+	//
+	// NOTHING else reads this field: Claw's tool workspace remains WorkDir's
+	// (resolveExecutorWorkspace), so answering the probe never moves the
+	// agent's file root.
+	SandboxProbeWorkDir string
 	// SourceIssueID is the ticket that owns this run (dispatcher / pipeline
 	// launch). Empty for ad-hoc runs. Used to auto-stamp parent_id when the
 	// bot creates child tickets via board.create.
@@ -136,6 +161,18 @@ type ExecutorSpec struct {
 	// (auth: run-long) on EVERY node of the run, judges and authored-route
 	// agents included.
 	LLMRouteTriggers []string
+	// LLMRouteClasses is the run's RESOLVED model_classes overrides
+	// (ADR-121 § Delivery 2) — the crossings' class targets. Nil = the
+	// shipped table (ResolveClasses substitutes it; StageModel never sees
+	// an empty table).
+	LLMRouteClasses map[string]map[string]string
+	// LLMRouteCrossHarness is the run's RESOLVED cross-harness posture
+	// (ADR-121 § Delivery 2): "off" (the empty-on-ignore default) or an
+	// active mode. An ACTIVE mode is what constructs the run's handoff
+	// recorder — the run-level consumer the posture waited for — and
+	// wraps the store emitter so the neutral event types buffer for the
+	// crossings to seal. Off constructs nothing.
+	LLMRouteCrossHarness string
 	// SandboxOverride and SandboxDefault are the deployment tiers the
 	// runtime resolves the run's sandbox mode from (CLI-strength
 	// ITERION_SANDBOX_OVERRIDE / --sandbox, and the
@@ -379,7 +416,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// (run_fallback_refused), because a refusal the decider cannot read is a
 	// silent fallback.
 	sandboxedHere := runtime.RunWillBeSandboxed(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault,
-		runtime.EngineRepoRoot(spec.WorkDir), spec.SandboxDrivers)
+		runtime.EngineRepoRoot(spec.sandboxProbeRoot()), spec.SandboxDrivers)
 	overrides := spec.ModelOverrides
 	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
@@ -405,7 +442,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		// node unscreened (the review's F2).
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
-	})
+	}, llmroute.ResolveClasses(spec.LLMRouteClasses))
 	for _, refusal := range policyRefusals {
 		spec.Logger.Warn("policy ladder stage not applied — %s", refusal)
 	}
@@ -446,7 +483,25 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// secrets, then thread it through the event hooks so every sink is
 	// scrubbed before persistence.
 	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars, recordedMintedSecrets(ctx, spec))
-	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, spec.EventObservers...)
+	// The routing handoff recorder (ADR-121 § Delivery 2) exists only for
+	// a run whose resolved posture is ACTIVE. Its fallback root is the
+	// run's artifact files dir (the shared state dir arrives later, from
+	// the sandbox driver, and upgrades it); the emitter wrapper makes the
+	// hooks observe post-redaction copies of the neutral event types.
+	var handoff *model.HandoffRecorder
+	artifactDir := ""
+	if fs, ok := spec.Store.(store.RunFilesStore); ok {
+		if dir, derr := fs.EnsureRunFilesDir(ctx, spec.RunID); derr == nil && dir != "" {
+			artifactDir = dir
+		}
+	}
+	if llmroute.CrossHarnessActive(spec.LLMRouteCrossHarness) {
+		handoff = model.NewHandoffRecorder(artifactDir)
+	}
+	// The recorder rides INSIDE the hooks constructor: the capability
+	// detection must see the store's own interfaces, and the wrap lands
+	// between the redaction boundary and the store.
+	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, handoff, spec.EventObservers...)
 	for _, extra := range spec.ExtraHooks {
 		hooks = model.ChainHooks(hooks, extra)
 	}
@@ -558,10 +613,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// closes the host/sandbox parity gap where a bot writing its outputs
 	// there only worked sandboxed. Best-effort: stores without the files
 	// area (or a mkdir failure) just leave the variable unset, as before.
-	if fs, ok := spec.Store.(store.RunFilesStore); ok {
-		if dir, derr := fs.EnsureRunFilesDir(ctx, spec.RunID); derr == nil && dir != "" {
-			opts = append(opts, model.WithArtifactFilesDir(dir))
-		}
+	if artifactDir != "" {
+		opts = append(opts, model.WithArtifactFilesDir(artifactDir))
+	}
+	if handoff != nil {
+		opts = append(opts, model.WithHandoffRecorder(handoff))
 	}
 
 	checker := buildToolChecker(spec.Workflow)
@@ -734,6 +790,36 @@ func resolveExecutorWorkspace(workDir string) (string, error) {
 		return "", fmt.Errorf("runview: tool workspace %q is not a directory", abs)
 	}
 	return abs, nil
+}
+
+// sandboxProbeRoot is the directory the fallback screen's sandbox probe
+// resolves this run's repository from: the engine's own workDir when the
+// surface named it, else WorkDir — the same directory for every surface that
+// passes one value to both the engine and the executor — else the process
+// cwd, which is where an engine given no directory roots itself.
+//
+// That last branch is never "": runtime.EngineRepoRoot stops at the cwd
+// ITSELF for an empty directory, while an engine with no workDir fills it
+// with the cwd first (runtime's defaultWorkDir) and only then resolves that
+// directory's REPOSITORY — so an empty answer screens a subdirectory of the
+// repository the run executes in. A cwd the OS refuses to name is the one
+// case with no answer, and it is the same "" the engine's own chain ends on.
+//
+// It is deliberately NOT resolveExecutorWorkspace's input: that one is Claw's
+// file-tool root, which several surfaces leave at the process workspace while
+// the engine runs the bot in a per-run clone or an inherited worktree.
+func (s ExecutorSpec) sandboxProbeRoot() string {
+	if s.SandboxProbeWorkDir != "" {
+		return s.SandboxProbeWorkDir
+	}
+	if s.WorkDir != "" {
+		return s.WorkDir
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return cwd
 }
 
 func workflowUsesWorkspaceDiagnostics(wf *ir.Workflow) bool {

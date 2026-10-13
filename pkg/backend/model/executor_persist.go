@@ -33,6 +33,14 @@ type clawPersistEnvelope struct {
 	Messages    []api.Message `json:"messages"`
 }
 
+// SessionResumeCapability reports whether `session: persist` can carry the
+// node's conversation across visits, which takes more than resuming by id:
+// after every visit the CLI's transcript is packed from SessionFilesRoot and
+// restored before the next one. opencode resumes by id (sessionResumeBackends)
+// but is absent here: it keeps every session in one SQLite database
+// (<XDG data>/opencode/opencode.db, in 1.19 and 2.x alike), with no file per
+// session for sessionpack.CollectBySessionID to pack, so a persist visit
+// would always degrade to a fresh session.
 func (e *ClawExecutor) SessionResumeCapability(node ir.Node) (string, bool) {
 	name := e.EffectiveBackendName(node)
 	switch name {

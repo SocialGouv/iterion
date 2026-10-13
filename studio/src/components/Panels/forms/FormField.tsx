@@ -416,9 +416,11 @@ interface TagListFieldProps {
 export function TagListField({ label, values, onChange, placeholder = "Add...", help, literalValues }: TagListFieldProps) {
   return (
     <FieldRow label={label} help={help}>
-      {/* 512 chars: long enough for the tool-policy and permission patterns
-          this repo writes. It is a truncation, not an unbounded field —
-          anything longer is cut on commit. */}
+      {/* 512 chars, a truncation: a longer value is cut on commit, with
+          nothing said. The `literalValues` lists (the permission rules) are
+          exempt from it — a cut rule is a different, narrower rule. The
+          other lists here hold references (tools, MCP servers, triggers,
+          enum values) written far shorter than the bound. */}
       <TagInput
         value={values}
         onChange={onChange}

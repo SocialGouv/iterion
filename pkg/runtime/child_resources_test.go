@@ -353,7 +353,7 @@ func TestSnapshotChildResourcesRestoreRefusesAMidRunSymlinkSwap(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(ws, ".claude", "skills"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(ws, ".claude", "skills", "parent.md"), "the parent's own\n")
+	writeFile(t, filepath.Join(ws, ".claude", "skills", "parent.md"), parentClaudeBody)
 	restore, backup, err := snapshotChildResources(ws)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
@@ -382,6 +382,7 @@ func TestSnapshotChildResourcesRestoreRefusesAMidRunSymlinkSwap(t *testing.T) {
 	if !strings.Contains(restoreErr.Error(), backup) {
 		t.Fatalf("the restore error must name the backup for recovery: %v", restoreErr)
 	}
+	assertBackupKeptTheParentsEntry(t, filepath.Join(backup, "skills", "parent.md"))
 	raw, readErr := os.ReadFile(witness)
 	if readErr != nil || string(raw) != "not the run's to touch\n" {
 		t.Fatalf("the restore reached through the link: witness=%q, %v", raw, readErr)

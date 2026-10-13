@@ -26,6 +26,13 @@ func claudeModelDefaultEnv(env map[string]string) map[string]string {
 		}
 		return os.Getenv(key)
 	}
+	// A cloud switch SET withholds the defaults whatever value it carries, and
+	// not only at the one that enters the mode (cloudSwitchOn): a CLI reading
+	// its presence needs that mode's own deployment IDs, and an Anthropic
+	// model name there fails the request. Declining a default is the fail-safe
+	// answer where the readers can disagree — the reading that must be exact
+	// on the value is the one that writes to the operator
+	// (spawnCloudProviderSwitches).
 	for _, key := range []string{FacadeSlotEnvKey, ForfaitSuppressedEnvKey, "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"} {
 		if lookup(key) != "" {
 			return env

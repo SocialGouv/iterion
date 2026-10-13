@@ -15,10 +15,10 @@ import (
 // is not a string is typed already and passes through.
 //
 // It is the NARROWING half only. Every host reads a var through
-// ResolveVarText, which expands the env forms first and calls this; a
-// caller that reaches here directly judges the text as written, which is
-// what a compile-time view of a default must do when it has no
-// environment to speak for.
+// ResolveVarText, which expands the env forms first and calls this, and a
+// view with no environment to speak for through ResolveVarTextAsWritten: a
+// caller that reaches here directly judges the unexpanded text, and splits
+// `${LIST:-a,b}` into ["${LIST:-a", "b}"].
 func CoerceVarValue(v any, vt VarType) (any, error) {
 	s, isStr := v.(string)
 	if !isStr {
@@ -104,13 +104,15 @@ func ResolveVarText(v any, vt VarType, lookup func(string) string) (any, error) 
 	return resolveVarText(v, vt, varExpander(vt, lookup, false))
 }
 
-// resolveVarTextAsWritten is ResolveVarText for a COMPILE-TIME view of a
-// default: the `${VAR:-default}` forms resolve (they have an answer with
-// no environment) and every other reference is kept AS WRITTEN. A
-// published contract must say the same thing on every machine, and
-// resolving `${PROJECT_DIR}/audits` against an empty environment would
-// advertise `/audits` — neither the source text nor any run's value.
-func resolveVarTextAsWritten(v any, vt VarType) (any, error) {
+// ResolveVarTextAsWritten is ResolveVarText for a view that has no run
+// environment to speak for: the `${VAR:-default}` forms resolve (they have
+// an answer with no environment) and every other reference is kept AS
+// WRITTEN, for the run to resolve. A published contract must say the same
+// thing on every machine, and resolving `${PROJECT_DIR}/audits` against an
+// empty environment would advertise `/audits` — neither the source text nor
+// any run's value. `iterion validate --var` reads its launch values the same
+// way, so its verdict does not change between a laptop and CI.
+func ResolveVarTextAsWritten(v any, vt VarType) (any, error) {
 	return resolveVarText(v, vt, varExpander(vt, noEnvLookup, true))
 }
 

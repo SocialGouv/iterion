@@ -239,6 +239,14 @@ func (m *MemoryStore) CreateTeam(_ context.Context, t Team) (Team, error) {
 	if _, ok := m.teamSlugs[t.Slug]; ok {
 		return Team{}, ErrSlugAlreadyTaken
 	}
+	// The one-team-per-pool invariant at create time, same as PatchTeam.
+	if t.RunnerPool != "" {
+		for _, other := range m.teams {
+			if other.ID != t.ID && other.RunnerPool == t.RunnerPool {
+				return Team{}, ErrRunnerPoolHeld
+			}
+		}
+	}
 	m.teams[t.ID] = t
 	m.teamSlugs[t.Slug] = t.ID
 	return t, nil
@@ -276,6 +284,18 @@ func (m *MemoryStore) GetTeamBySlug(_ context.Context, slug string) (Team, error
 	return m.teams[id], nil
 }
 
+// GetTeamByRunnerPool implements Store.
+func (m *MemoryStore) GetTeamByRunnerPool(_ context.Context, pool string) (Team, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, t := range m.teams {
+		if t.RunnerPool == pool {
+			return t, nil
+		}
+	}
+	return Team{}, ErrNotFound
+}
+
 func (m *MemoryStore) GetTeamsByIDs(_ context.Context, ids []string) (map[string]Team, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -309,6 +329,15 @@ func (m *MemoryStore) PatchTeam(_ context.Context, id string, p TeamPatch) (Team
 	if !ok {
 		return Team{}, ErrNotFound
 	}
+	// The one-team-per-pool invariant at the store level (under the same
+	// write lock the race would want): only one team may hold a pool.
+	if p.RunnerPool != nil && *p.RunnerPool != "" && cur.RunnerPool != *p.RunnerPool {
+		for _, other := range m.teams {
+			if other.ID != id && other.RunnerPool == *p.RunnerPool {
+				return Team{}, ErrRunnerPoolHeld
+			}
+		}
+	}
 	if p.Slug != nil && *p.Slug != cur.Slug {
 		if _, taken := m.teamSlugs[*p.Slug]; taken {
 			return Team{}, ErrSlugAlreadyTaken
@@ -335,6 +364,9 @@ func (m *MemoryStore) PatchTeam(_ context.Context, id string, p TeamPatch) (Team
 	}
 	if p.RunnerPool != nil {
 		cur.RunnerPool = *p.RunnerPool
+	}
+	if p.LLMFallback != nil {
+		cur.LLMFallback = *p.LLMFallback
 	}
 	if p.OrgID != nil {
 		cur.OrgID = *p.OrgID

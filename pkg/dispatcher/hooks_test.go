@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/hometest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -72,6 +73,22 @@ func TestHookRunUsesEnv(t *testing.T) {
 	if strings.TrimSpace(string(data)) != "greenlight" {
 		t.Fatalf("env not propagated: %q", data)
 	}
+}
+
+// Every hook a test here spawns runs its login shell under the HOME TestMain
+// made, never the operator's: that one's profile is what the shell would
+// source (#2231).
+func TestHookRunLoginShellReadsNoOperatorProfile(t *testing.T) {
+	dir := t.TempDir()
+	h := &Hook{Script: `printf '%s' "$HOME" > home.txt`}
+	if err := h.Run(context.Background(), newTestLogger(), "home", dir, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "home.txt"))
+	if err != nil {
+		t.Fatalf("read the HOME the hook saw: %v", err)
+	}
+	hometest.RequireNoOperatorProfile(t, string(data))
 }
 
 func TestHooksValidate(t *testing.T) {

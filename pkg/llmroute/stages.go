@@ -23,65 +23,107 @@ import (
 // StageModel maps one held pair to the model spelling its fallback stage
 // carries. nodeModel is the dispatching node's own model (its family is
 // what the crossing serves); ok is false for pairs that cannot serve the
-// node's family, or have no delivery-1 mapping — the caller drops the
-// stage and says so, never emitting a spec dispatch would refuse.
+// node's family, or have no mapping — the caller drops the stage and says
+// so, never emitting a spec dispatch would refuse. The reason names WHICH
+// refusal: the structural no-mapping, or the class table's cell resolving
+// nowhere on the target family — two different answers to "why was this
+// rung skipped", and the caller emits both verbatim.
 //
-// The rules (delivery 1):
+// classes is the EFFECTIVE class table (ResolveClasses over a policy's
+// overrides); a zero ClassTable means the shipped one. Since delivery 2
+// the wholesale-crossing target is the node model's CLASS rendering on
+// the target family — delivery 1 crossed everything to the shipped openai
+// default, which the table's standard cell still pins: an unknown model
+// classifies standard, so every model the table is silent on crosses
+// exactly where it crossed before.
+//
+// The rules:
 //   - claude_code serves anthropic-wire credential families and reads the
 //     node's model BARE (it strips only an `anthropic/` prefix); an
 //     openai-family node model is not servable — no mapping.
 //   - codex serves the openai family: an openai-family node model rides
-//     (a `codex/` prefix strips); a foreign model crosses to the shipped
-//     openai default — the ONE wholesale crossing delivery 1 ships
-//     (codex's catalog is disjoint from every other family's).
+//     (a `codex/` prefix strips); a foreign model crosses to its CLASS's
+//     openai rendering (codex's catalog is disjoint from every other
+//     family's).
 //   - claw requires `provider/model-id` specs (ParseModelSpec errors on
 //     bare ids) and reads its own spelling per credential: anthropic_key
 //     serves anthropic-family ids (`anthropic/` + the bare id); zai_key
 //     likewise (the endpoint answers claude ids with its own model — the
 //     facade); openai_key serves openai-family ids (`openai/` + the bare
-//     id) and crosses a foreign model to `openai/` + the shipped default;
-//     moonshot_key and the remaining key providers have no delivery-1
+//     id) and crosses a foreign model to `openai/` + the class's openai
+//     rendering; moonshot_key and the remaining key providers have no
 //     mapping.
-func StageModel(harness, credential, nodeModel string) (model string, ok bool) {
+func StageModel(harness, credential, nodeModel string, classes ClassTable) (model string, ok bool, reason string) {
+	if classes.forward == nil {
+		classes = ResolveClasses(nil)
+	}
 	if nodeModel == "" {
-		return "", false
+		return "", false, ReasonNoMapping
 	}
 	family, bare := modelFamily(nodeModel)
 	switch harness {
 	case HarnessClaudeCode:
 		if family != familyAnthropicWire {
-			return "", false
+			return "", false, ReasonNoMapping
 		}
-		return bare, true
+		return bare, true, ""
 	case HarnessCodex:
 		switch credential {
 		case CredChatGPTForfait, "openai_key":
 			if family == familyOpenAI {
-				return bare, true
+				return bare, true, ""
 			}
-			return shippedOpenAIDefault, true
+			target, crossed := crossToClass(classes, family, bare, familyOpenAI)
+			if !crossed {
+				return "", false, target
+			}
+			return target, true, ""
 		}
 	case HarnessClaw:
 		switch credential {
 		case "anthropic_key":
 			if family != familyAnthropicWire {
-				return "", false
+				return "", false, ReasonNoMapping
 			}
-			return "anthropic/" + bare, true
+			return "anthropic/" + bare, true, ""
 		case "zai_key":
 			if family != familyAnthropicWire {
-				return "", false
+				return "", false, ReasonNoMapping
 			}
-			return "anthropic/" + bare, true
+			return "anthropic/" + bare, true, ""
 		case "openai_key":
 			if family == familyOpenAI {
-				return "openai/" + bare, true
+				return "openai/" + bare, true, ""
 			}
-			return "openai/" + shippedOpenAIDefault, true
+			target, o := crossToClass(classes, family, bare, familyOpenAI)
+			if !o {
+				return "", false, target
+			}
+			return "openai/" + target, true, ""
 		}
 	}
-	return "", false
+	return "", false, ReasonNoMapping
 }
+
+// crossToClass renders the node model's CLASS on the target family — the
+// wholesale crossing's target. ok=false carries the class-unresolved
+// reason verbatim (the caller composes the drop line from it); ok=true
+// carries the bare target spelling.
+func crossToClass(classes ClassTable, family, bare, targetFamily string) (string, bool) {
+	class := classes.ClassOf(family, bare)
+	target, ok := classes.Target(class, targetFamily)
+	if !ok {
+		return "class " + class + " resolves nowhere on family " + targetFamily, false
+	}
+	return target, true
+}
+
+// ReasonNoMapping is the stage-skip reason for a pair that cannot serve
+// the family at all — verbatim into the caller's drop line. The other
+// skip reason (a class cell resolving nowhere) composes its own phrase,
+// carrying the class and family: a level can fix THAT one with a
+// model_classes cell, never this one.
+const ReasonNoMapping = "has no delivery-1 model mapping"
 
 // shippedOpenAIDefault is the openai family's shipped crossing default
 // (the class table's standard rung; per-level overrides are delivery 2).
@@ -99,9 +141,13 @@ const (
 // endpoints answer) are the anthropic-wire family. The bare id is what
 // the per-credential spellings re-prefix. An UNRECOGNIZED single-segment
 // prefix (`openai_compatible/<id>` — the gateway spelling, whose
-// credential no sealed channel serves) yields familyNone: every mapping
-// refuses it and the stage is dropped, named — a re-prefixed invalid spec
-// would dispatch nowhere.
+// credential no sealed channel serves) yields familyNone. The
+// same-family mappings refuse it and the stage drops, named; the
+// WHOLESALE crossings do NOT — familyNone classifies standard and
+// crosses to the class's openai rendering, exactly as any foreign model
+// (the pre-class behavior for that spelling, pinned by test) — a
+// re-prefixed invalid spec would dispatch nowhere, and the crossing at
+// least spends a servable credential saying so.
 func modelFamily(spec string) (family, bare string) {
 	if before, after, found := strings.Cut(spec, "/"); found && !strings.Contains(after, "/") {
 		switch before {

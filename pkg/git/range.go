@@ -380,7 +380,7 @@ func showAt(dir, ref, relPath string) ([]byte, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "show", ref+":"+relPath)
+	cmd := exec.CommandContext(ctx, "git", NoRunHooks("show", ref+":"+relPath)...)
 	cmd.Dir = dir
 	cmd.Env = gitEnv()
 	var stderr bytes.Buffer

@@ -81,6 +81,8 @@ import (
 //	  forge.ErrSecurityReadMalformed       0
 //	  forge.ErrSecurityReadNoOrgKey        0
 //	  forge/github.ErrInstallationNotOwned  0
+//	  forge.ErrStaleHead                   0  the verdict surface reports it as a refusal, never a retry
+//	  forge.ErrNotMergeable                0  same — the forge stays authoritative on its merge state
 func forgeUpstreamStatus(err error) (int, string) {
 	if err == nil {
 		return 0, ""

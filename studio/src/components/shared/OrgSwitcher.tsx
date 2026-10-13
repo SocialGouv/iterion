@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 
 import { hasOrgRole, useAuth } from "@/auth/AuthContext";
 import { Popover, PopoverClose } from "@/components/ui/Popover";
+import { adminPath } from "@/views/admin/adminRoutes";
 
 // Dedicated organization switcher, pinned at the top of the sidebar
 // (GitHub/Linear pattern). It owns ALL org-level affordances — switch org,
@@ -186,7 +187,7 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
       {isSuper && (
         <PopoverClose asChild>
           <button
-            onClick={closeAfter(() => navigate("/admin/orgs"))}
+            onClick={closeAfter(() => navigate(adminPath("/orgs")))}
             className="flex w-full items-center gap-1.5 px-2 py-1.5 rounded hover:bg-surface-2 text-warning-fg"
           >
             <PlusIcon className="h-4 w-4 shrink-0" />

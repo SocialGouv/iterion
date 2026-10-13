@@ -66,7 +66,7 @@ agent converge:
 
 judge reviewer_claude:
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
-  backend: "claude_code"
+  backend: "${ITERION_VIBE_BACKEND_CLAUDE:-claude_code}"
   ## The `anthropic` hint is LOAD-BEARING, not decorative: the wire's
   ## credential order (secrets.AnthropicWireSlotOrder) puts facade keys
   ## (zai, moonshot) FIRST, and a z.ai key takes the wire as the run's
@@ -198,7 +198,7 @@ judge reviewer_gpt:
 ## differ, and only topology's edges decide which of the two ever runs.
 judge reviewer_claude_glance:
   model: "${ITERION_VIBE_MODEL_CLAUDE_GLANCE:-claude-opus-5-5}"
-  backend: "claude_code"
+  backend: "${ITERION_VIBE_BACKEND_CLAUDE_GLANCE:-claude_code}"
   ## Same Anthropic-direct pin and dial as reviewer_claude — the glance
   ## tier must not resolve onto a facade key either.
   provider: "${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}"

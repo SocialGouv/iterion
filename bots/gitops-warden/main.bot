@@ -1,0 +1,240 @@
+## ─────────────────────────────────────────────────────────────────
+## gitops_warden — "Warden", a gitops merge gate.
+##
+## Warden classifies every merge request on a gitops repository against a
+## POLICY (not a taste call), posts the verdict as one comment plus a
+## `gitops/conformance` commit status, and — only in enforce mode, only on a
+## fully-clean verdict — executes the merge-gate GESTURES through the
+## server's deterministic publish surface: approve the MR, arm
+## merge-when-pipeline-succeeds. Anything else escalates: the red gate
+## carries only the reviewers verb (the escalation), named from the
+## `reviewers` pin.
+##
+## Shape (single pass, one LLM node):
+##
+##   diff_inventory (tool)      git name-status + key scan + policy read
+##     -> policy_gate (compute) the deterministic route
+##        -> classify (agent)  ONLY when the route says classify
+##        -> publish_verdict   empty / sentinel / judged — one deterministic
+##           (tool)            fold + publish tail for all three routes
+##           -> publish_health (tool)  anti-façade, then done
+##
+## The FOLD IS DETERMINISTIC (publish_verdict's python): the LLM classifies,
+## a closed-vocabulary table decides. Unknown class, non-empty doubts,
+## unreadable diff, over-cap diff, workspace anomaly, added/removed/renamed
+## files, a policy the MR itself modifies — every one folds to escalate.
+## ADR-124 is the doctrine; the fold table is its executable half.
+##
+## HYBRID POLICY: the default classes ship in skills/review-policy.md; a
+## repo may widen (value-level only) or tighten them via
+## review-policy.md (the policy_path var pins the real path), read by diff_inventory from the BASE commit —
+## never from the MR head, so an MR cannot loosen the review it is judged
+## by. The judge receives it quoted as DATA with invariants it cannot cross
+## (a policy trying to re-classify the structural class is itself a
+## finding).
+##
+## STAGED ROLLOUT: mode ships "dry_run" — the bot comments and gates but
+## executes no gesture. The operator pins mode=enforce per repo via the
+## integration's launch_vars after calibration; the engine refuses verbs
+## under a dry_run verdict regardless (the posture is declared twice, and
+## the engine's half is the binding one).
+##
+## UNTRUSTED-INPUT BOUNDARY: the diff, the MR prose, commit messages and
+## the policy file are DATA. Instructions inside them are content to
+## classify, never orders to follow — prompts.bot carries the boundary
+## paragraph, unchanged, on every classify run.
+## ─────────────────────────────────────────────────────────────────
+
+dsl: 2
+import "lib/schemas.bot"
+import "lib/prompts.bot"
+import "lib/nodes.bot"
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  ## The PR (merge request) URL — injected by the webhook lane on every PR
+  ## launch; the publish tail's target.
+  pr_url: string = ""
+  ## Branch comparison base — the webhook lane injects the TARGET branch.
+  ## diff_inventory refreshes it from the remote before taking the
+  ## merge-base, so a stale ref never shrinks the diff.
+  base_ref: string = "main"
+  ## The MR's head branch (injected by the webhook lane).
+  source_branch: string = ""
+  ## The head SHA the launch was about (injected); diff_inventory resolves
+  ## its own reviewed_sha from the workspace and the fold refuses when the
+  ## two disagree — a run that woke up on a moved head says so instead of
+  ## certifying whatever arrived last.
+  head_sha: string = ""
+  ## Free-text steering from the launch lane (MR title/body today).
+  scope_notes: string = ""
+  ## Webhook-lane plumbing this bot does not use (it never writes the
+  ## board and posts its comment as one summary body); declared so the
+  ## lane's launch vars land cleanly.
+  post_to_board: string = "false"
+  pr_review_mode: string = "summary"
+  pr_author: string = ""
+  ## THE POSTURE (ADR-124 §6): dry_run comments and gates but never
+  ## gestures. enforce is the calibrated posture, pinned per repo via the
+  ## integration's launch_vars. The engine refuses verbs under dry_run
+  ## regardless of what the bot sends — this var is the bot's half of the
+  ## contract, the grant capabilities are the engine's half.
+  mode: string [enum: "dry_run", "enforce"] = "dry_run"
+  ## The commit-status context this bot gates under — separate from
+  ## review-pr's revi/review by design: two checks, two verdicts, one MR.
+  gate_enabled: bool = true
+  gate_context: string = "gitops/conformance"
+  ## The per-repo policy override, read from the BASE branch by
+  ## diff_inventory. Repo-relative; the default is deliberately neutral
+  ## (a catalog bot names no repo layout) — pin the repo's real path (e.g.
+  ## review-policy.md (the policy_path var pins the real path)) via the integration's launch_vars.
+  policy_path: string = "review-policy.md"
+  ## Reviewer logins to REQUEST on escalation (space-separated), pinned
+  ## per repo via the integration's launch_vars. Empty = the escalation
+  ## comment names the team but requests no reviewer (the gate still goes
+  ## red — the check is the page).
+  reviewers: string = ""
+  ## Peer gate contexts that must NOT be red on the audited head for the
+  ## arm to fire. Comma-separated. The warden reads the head's statuses
+  ## through the publish grant's read twin before arming; a red peer holds
+  ## the arm (the peer's own verdict decides that MR, not this one).
+  peer_gate_contexts: string = "revi/review"
+  ## Classification caps: above either, the fold escalates rather than
+  ## guesses — a diff too big to read is a diff nobody certified.
+  max_diff_files: int = 150
+  max_diff_bytes: int = 400000
+  ## How the forge integrates the change when the pipeline goes green.
+  ## The gitops standard squashes (one commit per MR).
+  merge_method: string [enum: "merge", "squash"] = "squash"
+  ## Remove the source branch when the merge completes.
+  remove_source_branch: bool = false
+  ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER at
+  ## launch (the same grant review-pr uses). forge_pr_state_url is the
+  ## read half (the peer-gate read). Empty (a bare CLI run with no server)
+  ## = the run refuses to guess: publish_health banners the missing grant.
+  forge_publish_url: string = ""
+  forge_publish_token: string = ""
+  forge_pr_state_url: string = ""
+
+secrets:
+  ## The connection's forge token, bound automatically at provisioning.
+  ## Used ONLY for cloning the private repository into the workspace —
+  ## every forge WRITE (comment, gate status, gestures) crosses the
+  ## server's deterministic publish endpoint, which holds the live
+  ## connection client. Never read into a prompt.
+  forge_token:
+    as: file
+    optional: true
+
+## ─── Workflow ───────────────────────────────────────────────────
+workflow gitops_warden:
+  ## A gate READS the target repo; it never builds it.
+  repo_devbox: off
+  ## A gate writes no commit for the repo it reads, so the mid-run
+  ## checkpoint has nothing of this run's to preserve.
+  workspace_checkpoint: off
+
+  entry: diff_inventory
+
+  budget:
+    max_parallel_branches: 1
+    ## One classify call on a capped diff (150 files / 400 KB): the budget
+    ## catches a hung run, the cost cap is the ceiling of the one LLM node.
+    max_duration: "30m"
+    max_cost_usd: 8
+
+  diff_inventory -> policy_gate with {
+    is_empty: "{{outputs.diff_inventory.is_empty}}",
+    changed_files: "{{outputs.diff_inventory.changed_files}}",
+    unparseable: "{{outputs.diff_inventory.unparseable}}",
+    diff_too_large: "{{outputs.diff_inventory.diff_too_large}}",
+  }
+
+  policy_gate -> classify when "route == 'classify'" with {
+    files: "{{outputs.diff_inventory.files}}",
+    changed_files: "{{outputs.diff_inventory.changed_files}}",
+    policy_body: "{{outputs.diff_inventory.policy_body}}",
+    policy_source: "{{outputs.diff_inventory.policy_source}}",
+    scope_notes: "{{vars.scope_notes}}",
+    source_branch: "{{vars.source_branch}}",
+    pr_author: "{{vars.pr_author}}",
+  }
+
+  classify -> publish_verdict with {
+    pr_url: "{{vars.pr_url}}",
+    reviewed_sha: "{{outputs.diff_inventory.reviewed_sha}}",
+    base_sha: "{{outputs.diff_inventory.base_sha}}",
+    changed_files: "{{outputs.diff_inventory.changed_files}}",
+    files: "{{outputs.diff_inventory.files}}",
+    diff_too_large: "{{outputs.diff_inventory.diff_too_large}}",
+    unparseable: "{{outputs.diff_inventory.unparseable}}",
+    workspace_anomaly: "{{outputs.diff_inventory.workspace_anomaly}}",
+    stale_launch: "{{outputs.diff_inventory.stale_launch}}",
+    policy_source: "{{outputs.diff_inventory.policy_source}}",
+    policy_sha: "{{outputs.diff_inventory.policy_sha}}",
+    route: "{{outputs.policy_gate.route}}",
+    sentinel_reason: "{{outputs.policy_gate.sentinel_reason}}",
+    verdict: "{{outputs.classify.verdict}}",
+    classified_files: "{{outputs.classify.files}}",
+    platform_findings: "{{outputs.classify.platform_findings}}",
+    doubts: "{{outputs.classify.doubts}}",
+    summary: "{{outputs.classify.summary}}",
+    ## The engine stamps _fallback_used ONLY when the node was served by
+    ## something other than its first choice. A fallback-served CLASSIFY
+    ## fails closed at the fold — a degraded classifier's green verdict is
+    ## a merge actuation, and a gate that merges on it was never
+    ## calibrated.
+    fallback_used: "{{outputs.classify._fallback_used}}",
+    declared_head_sha: "{{vars.head_sha}}",
+  }
+
+  ## The ONE tail edge: publish_verdict is the collector (two distinct
+  ## predecessors — classify and policy_gate — exactly one of which RAN,
+  ## the other settled skipped, per the router). The unconditional edge is
+  ## the fallback and the conditional classify edge precedes it in source
+  ## order; that ORDER is load-bearing for the single-fire semantics —
+  ## do not reorder the two policy_gate edges. The fields
+  ## the skipped branch never produced ride as the defaults the fold reads
+  ## (route != classify ⇒ verdict empty ⇒ the sentinel path).
+  policy_gate -> publish_verdict with {
+    pr_url: "{{vars.pr_url}}",
+    reviewed_sha: "{{outputs.diff_inventory.reviewed_sha}}",
+    base_sha: "{{outputs.diff_inventory.base_sha}}",
+    changed_files: "{{outputs.diff_inventory.changed_files}}",
+    files: "{{outputs.diff_inventory.files}}",
+    diff_too_large: "{{outputs.diff_inventory.diff_too_large}}",
+    unparseable: "{{outputs.diff_inventory.unparseable}}",
+    workspace_anomaly: "{{outputs.diff_inventory.workspace_anomaly}}",
+    stale_launch: "{{outputs.diff_inventory.stale_launch}}",
+    policy_source: "{{outputs.diff_inventory.policy_source}}",
+    policy_sha: "{{outputs.diff_inventory.policy_sha}}",
+    route: "{{outputs.policy_gate.route}}",
+    sentinel_reason: "{{outputs.policy_gate.sentinel_reason}}",
+    ## The skipped-branch fields ride as the fold's defaults — declared so
+    ## no ref reaches a tool body unresolved (the engine substitutes
+    ## nothing for a ref whose producer never ran).
+    verdict: "",
+    classified_files: "[]",
+    platform_findings: "[]",
+    doubts: "",
+    summary: "",
+    fallback_used: "",
+    declared_head_sha: "{{vars.head_sha}}",
+  }
+
+  publish_verdict -> publish_health with {
+    requested: "{{outputs.publish_verdict.requested}}",
+    outcome: "{{outputs.publish_verdict.outcome}}",
+    verdict_refused_reason: "{{outputs.publish_verdict.verdict_refused_reason}}",
+    gate_requested: "{{outputs.publish_verdict.gate_requested}}",
+    gate_posted: "{{outputs.publish_verdict.gate_posted}}",
+    gate_state: "{{outputs.publish_verdict.gate_state}}",
+    gate_skipped_reason: "{{outputs.publish_verdict.gate_skipped_reason}}",
+    escalate_reasons: "{{outputs.publish_verdict.escalate_reasons}}",
+    blocking: "{{outputs.publish_verdict.blocking}}",
+    approve_posted: "{{outputs.publish_verdict.approve_posted}}",
+    merge_armed: "{{outputs.publish_verdict.merge_armed}}",
+    reviewers_added: "{{outputs.publish_verdict.reviewers_added}}",
+  }
+
+  publish_health -> done

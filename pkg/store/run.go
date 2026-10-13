@@ -541,6 +541,15 @@ type RunLLMRoutePolicy struct {
 	Triggers         []string `json:"triggers" bson:"triggers"`
 	RefusedPinnedKey string   `json:"refused_pinned_key,omitempty" bson:"refused_pinned_key,omitempty"`
 	Strict           bool     `json:"strict,omitempty" bson:"strict,omitempty"`
+	// ModelClasses carries the RESOLVED model_classes overrides (the
+	// entry-wise fold) — the crossings' class targets on this run. The
+	// shipped table is NOT materialized here: nil means the shipped
+	// cells (the consumer substitutes them), so a snapshot that named no
+	// override stays a snapshot that named no override.
+	ModelClasses map[string]map[string]string `json:"model_classes,omitempty" bson:"model_classes,omitempty"`
+	// CrossHarness is the resolved cross-harness posture ("off" once
+	// normalized — the delivery-1 refusal stands under it).
+	CrossHarness string `json:"cross_harness,omitempty" bson:"cross_harness,omitempty"`
 	// Sources maps each field name to the layer that won it ("platform",
 	// "env", "default", "platform_ceiling", or "<level>_lock" when a lock
 	// pinned the field to the default).

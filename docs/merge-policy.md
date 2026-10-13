@@ -27,11 +27,25 @@ green.
   week at three shows the scale set keeps up — runner pods not left pending,
   the queue's latency in `task ci:queue-stats`. `min_entries_to_merge: 3`
   (merges land in batches of 3-5, so the workflows that fire on every push to
-  `main` — Runner Image, Trivy, Sandbox, Brew Tap — run once per batch). A
+  `main` — Tests, Container Image, Trivy, and through Container Image's
+  completion Runner Image and Sandbox Base Images — run once per batch). A
   lone PR still merges after `min_entries_to_merge_wait_minutes` (5).
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
   `mongo-conformance`, `golangci`, `brand`, `revi/review` — and
-  `nats-conformance` once an admin adds it to ruleset 18857412. `fmt-check` is
+  `nats-conformance` once an admin adds it to ruleset 18857412.
+  `test` and `race` are AGGREGATOR CONTEXTS, not test-running jobs: the work
+  lives in the gated legs (`test-unit`, `test-e2e`, `studio`, the
+  `race-shard` matrix) that run in the queue behind them, and each aggregator
+  re-verifies every leg's conclusion under `if: ${{ !cancelled() && <tap skip> }}`
+  — the run-state clause combined with the one verified skip
+  ([below](#the-one-verified-skip-the-homebrew-tap-update)), so an aggregator
+  skips exactly the entries its legs skip and runs on every other one. The
+  required NAMES stay stable — a PR that renamed one could never pass its own
+  queue build — while work scales sideways (shards, new legs). The legs
+  themselves carry the tap skip and nothing else, a contract `internal/ciguard`'s
+  `gatedJobs` enforces: a leg any other condition skips reports Success on the
+  pull request while reddening its queue entry forever, and a leg without the
+  skip spends the heavy minutes the skip exists to save. `fmt-check` is
   STAGED: it reports on the pull request AND in the queue, so the context is
   already there the day the ruleset names it, and `internal/ciguard`'s
   `requiredChecks` carries it. Editing that ruleset from the API needs
@@ -43,13 +57,16 @@ green.
   schema-rollout integration tests (#481); until it is required, a regression
   there merges green. The slow container-image build is intentionally NOT
   required — it builds on merge to `main` and would stall the queue 12 min/PR.
+  A required check carries no `if:`, with one verified exception: the
+  Homebrew tap update ([below](#the-one-verified-skip-the-homebrew-tap-update))
+  — which the two aggregators carry combined with their `!cancelled()` clause.
 
   > **Promoting a check to required is a two-file change.** The eight advisory
   > jobs — `nats-conformance`, `cloud-e2e`, `helm-lint`, `govulncheck`,
   > `desktop-vet-linux`, `desktop-vet-cross`, `docs-links`, `docs-build` — carry
   > `if: github.event_name != 'merge_group'` in `.github/workflows/tests.yml`:
   > a job that cannot block a merge should not hold a runner slot the queue
-  > needs. (`fmt-check` is not listed above and carries no skip: it is STAGED
+  > needs. (`fmt-check` is not listed above and carries no merge-queue skip: it is STAGED
   > to become required — named in `internal/ciguard`'s `requiredChecks`, not
   > yet in the ruleset — and stays in the queue so its context exists the day
   > it names it.) Adding one to this ruleset
@@ -89,11 +106,88 @@ green.
   > goes back to GitHub-hosted runners on the next run. A variable rather than
   > an edit to `tests.yml`, deliberately: repairing by merging does not work
   > when merging is what is broken. Unset means on. Alerting on the scale set
-  > itself is still missing — SocialGouv/iterion#983.
+  > itself is still missing — SocialGouv/iterion#983. Since the mega-job split,
+  > one queue entry holds ~12 concurrent GitHub-hosted jobs on this lane (the
+  > gated legs plus the race-shard matrix): the escape hatch still works, but
+  > it now spends 12 of the org's 20 shared slots per entry — one fork PR from
+  > another repository can starve it, so expect slowness, not silence.
 
 - No required human approval (`required_approving_review_count: 0`) — the bot
   factory's own adversarial review + the checks are the gate; a reviewer still
   merges deliberately.
+
+## The one verified skip: the Homebrew tap update
+
+`brew-update.yml` opens one pull request a night, `chore(brew): update tap to
+vX`, that moves the `version` and `sha256` values of `Formula/iterion.rb` and
+`Cask/iterion-desktop.rb` and nothing else. No heavy check's verdict depends
+on those values (`internal/ciguard`'s tap tests rewrite them), and running the
+checks anyway cost ~57 minutes of compute per pass — on the pull request, then again in the
+queue, where the entry held one of the three build slots for ~25 minutes
+(`test` 24.1, `race` 22.3, `mongo-conformance` 4.0, `golangci` 3.2,
+`fmt-check` 1.8, `vendor-check` 1.0 min, measured on #2314).
+
+So the gated legs (`test-unit`, `test-e2e`, `studio`, `race-shard`), the
+aggregators `test` and `race` that speak for them (combined with their
+`!cancelled()` clause), `mongo-conformance`, `golangci`, `vendor-check` and
+`fmt-check` carry one condition, the only `if:` a required check may carry
+here: they skip a pull request whose title, or a queue entry whose commit
+message, starts with `chore(brew): update tap to ` (the queue squashes a
+single-commit pull request under its commit subject — the repository's
+`COMMIT_OR_PR_TITLE` — so `brew-tap-pr.sh` puts the prefix in both). A title is
+only a claim and a skipped job reports **Success**, so the claim is verified
+where nothing can skip the verification:
+
+- `brand` — required, never skipped, and already a reader of both tap files —
+  runs `scripts/ci/tap-entry-check.sh` with the **same predicate, evaluated**
+  (never re-matched: GitHub's `startsWith` ignores case). It fails unless the
+  diff touches the two tap files alone, matched exactly and with rename
+  detection off, and moves only their `version` and `sha256` values, each
+  from one value `update-brew-tap.sh` writes to another (a dotted numeric
+  version, a 64-hex digest) — a line added, a comment, a `desc`, a Ruby
+  interpolation or an empty digest is refused: the pull request's test merge
+  against its base, the queue entry against the entry it was built on.
+- In the queue it also reads the **live grouping strategy**
+  (`GET /repos/{owner}/{repo}/rules/branches/main`) and fails unless it is
+  `ALLGREEN`. Entries stack — each is built on the one ahead of it — so a tap
+  entry's skipped checks vouch for nothing the entries ahead brought.
+  `ALLGREEN` merges an entry only on its own checks; under `HEADGREEN` a green
+  tail would merge everything ahead of it. **Switching the queue to
+  `HEADGREEN` ejects every tap entry** until the skip leaves `tests.yml` — by
+  design.
+- `internal/ciguard` holds the pieces together: the expression byte for byte
+  on each job, `brand` without it and without `needs:` (a job whose dependency
+  is skipped is skipped too, and passes), the verifier step unconditional (no
+  `if:`, `continue-on-error`, `shell:` or `defaults:`) and fed the same
+  predicate, the tap pull request's title and commit subject starting with it.
+
+The verdict that counts is the queue's. On the pull request the verifier
+judges the test merge against the base it was built on, and retargeting a
+pull request (an `edited` event) re-runs nothing; the queue judges every entry
+again against the entry ahead of it, and a direct merge bypasses every check
+anyway. The workflow file is the pull request's own, so a pull request that
+also edits `tests.yml` can drop the verifier with the rest — the class every
+check here shares, which review and `revi/review` answer, not this check.
+
+A code pull request titled like a tap update does not merge: its heavy checks
+skip, `brand` refuses it, and the entry leaves the queue. A push to `main`
+evaluates the predicate false, so `main` still runs everything.
+
+The tap pull request also opens at night. `brew-update.yml` runs when
+`version.yml`'s nightly run completes (00:03–02:21 UTC on its 27 runs since
+2026-09-11), not on a cron of its own: GitHub fired its 04:37 UTC cron between
+10:46 and 12:21 UTC, inside the queue's working hours. Over 2026-09-12..10-12
+each hour from 00:00 to 05:59 UTC saw 2-7 merges in all, against 19-37 for
+each hour from 06:00 to 21:59. It taps the newest tag whose CLI artefacts are
+complete, so the nightly's own tag, still building, waits for the next night;
+a cask left behind is caught up once its release holds the desktop ZIP; and
+nothing walks the tap back — `update-brew-tap.sh` never writes a version
+below the one a file carries, and `brew-tap-pr.sh` opens a pull request only
+for what `main` does not carry yet, never from a branch whose files sit below
+`main`'s (tap branches outlive their merged pull request here). A
+desktop-only release (its CLI build red) reaches the cask only through a
+dispatch of `brew-update.yml` with its tag, as long as the formula has not
+moved past that tag.
 
 ## Direct pushes (admin bypass)
 

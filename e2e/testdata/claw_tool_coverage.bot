@@ -27,12 +27,11 @@
 ##                                via le smoke test au niveau dispatch)
 ##   - task_output / task_stop / task_update → besoin d'une task qui tourne
 ##   - run_task_packet         → packet semantics complexes
-##   - agent (subagent)        → ExecuteAgent retourne juste un agent_id
-##                               metadata ; la vraie exec subagent passe
-##                               par claw's ConversationLoop qu'iterion
-##                               n'utilise pas (StreamResponse direct).
-##                               Couvert au niveau dispatch par le smoke
-##                               test seulement.
+##   - agent (subagent)        → couvert end-to-end par l'agent 6
+##                               (subagent_runner) contre le
+##                               SubagentRunner que ce test câble ;
+##                               sans runner câblé, chaque appel est
+##                               refusé de façon typée (#1940).
 ##
 ## Couverture attendue ici : 25 tools réels via 3 agents en séquence.
 

@@ -152,7 +152,8 @@ func TestParseConflicts_EndToEnd(t *testing.T) {
 	run("config", "user.name", "t")
 	run("config", "commit.gpgsign", "false")
 	write("file.txt", "alpha\nbravo\ncharlie\n")
-	run("add", "file.txt")
+	write("contract.yaml", "the contract, untouched by the merge\n")
+	run("add", "file.txt", "contract.yaml")
 	run("commit", "-qm", "base")
 
 	run("checkout", "-qb", "feature")
@@ -197,7 +198,8 @@ func TestParseConflicts_EndToEnd(t *testing.T) {
 	if len(det2.Files) != 0 {
 		t.Errorf("after stage Files=%d, want 0", len(det2.Files))
 	}
-	sha, err := FinalizeConflictMerge(dir, "resolved squash")
+	judged := gittest.Run(t, dir, "rev-parse", "HEAD")
+	sha, err := FinalizeConflictMerge(dir, "resolved squash", &LandingVerdict{JudgedHead: judged, JudgedTree: `{"table":{"contract.yaml":{"w":"file:y","i":"y","t":"H","f":"unspecified"}},"rest":{"count":0,"digest":"x"}}`})
 	if err != nil {
 		t.Fatalf("FinalizeConflictMerge: %v", err)
 	}
@@ -209,5 +211,103 @@ func TestParseConflicts_EndToEnd(t *testing.T) {
 func TestStageResolvedFile_RejectsTraversal(t *testing.T) {
 	if err := StageResolvedFile(t.TempDir(), "../escape", "x"); err == nil {
 		t.Error("expected error for path traversal")
+	}
+}
+
+// A run whose bot recorded no landing verdict has no contract to re-judge:
+// its conflicted landing commits as before, and the resolution rides.
+func TestFinalizeConflictMerge_WithoutAStoredVerdictLandsAsBefore(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		gittest.Run(t, dir, args...)
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t.t")
+	run("config", "user.name", "t")
+	run("config", "commit.gpgsign", "false")
+	write("file.txt", "alpha\nbravo\ncharlie\n")
+	run("add", "file.txt")
+	run("commit", "-qm", "base")
+
+	run("checkout", "-qb", "feature")
+	write("file.txt", "alpha\nBRAVO-FEATURE\ncharlie\n")
+	run("commit", "-qam", "feat")
+	run("checkout", "-q", "main")
+	write("file.txt", "alpha\nbravo-main\ncharlie\n")
+	run("commit", "-qam", "main-change")
+	_, _ = gittest.Try(dir, "merge", "--squash", "feature")
+
+	resolved := "alpha\nresolved\ncharlie\n"
+	if err := StageResolvedFile(dir, "file.txt", resolved); err != nil {
+		t.Fatalf("StageResolvedFile: %v", err)
+	}
+	sha, err := FinalizeConflictMerge(dir, "resolved squash", nil)
+	if err != nil {
+		t.Fatalf("a landing without a stored verdict was refused: %v", err)
+	}
+	if got := gittest.Run(t, dir, "show", sha+":file.txt"); got != strings.TrimSuffix(resolved, "\n") {
+		t.Fatalf("the landing carries %q, want the resolution", got)
+	}
+}
+
+// With a verdict, the staged resolution of a contract file the verdict names
+// must carry the bytes that verdict judged.
+func TestFinalizeConflictMerge_RefusesAResolutionThatRewritesTheContract(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		gittest.Run(t, dir, args...)
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@t.t")
+	run("config", "user.name", "t")
+	run("config", "commit.gpgsign", "false")
+	write("file.txt", "alpha\nbravo\ncharlie\n")
+	write("contract.yaml", "the contract\n")
+	run("add", "-A")
+	run("commit", "-qm", "base")
+	judged := gittest.Run(t, dir, "rev-parse", "HEAD")
+
+	run("checkout", "-qb", "feature")
+	write("file.txt", "alpha\nBRAVO-FEATURE\ncharlie\n")
+	run("commit", "-qam", "feat")
+	run("checkout", "-q", "main")
+	write("file.txt", "alpha\nbravo-main\ncharlie\n")
+	run("commit", "-qam", "main-change")
+	_, _ = gittest.Try(dir, "merge", "--squash", "feature")
+	if err := StageResolvedFile(dir, "file.txt", "alpha\nresolved\ncharlie\n"); err != nil {
+		t.Fatalf("StageResolvedFile: %v", err)
+	}
+
+	verdict := &LandingVerdict{JudgedHead: judged,
+		JudgedTree: `{"table":{"contract.yaml":{"w":"file:y","i":"y","t":"H","f":"unspecified"}},"rest":{"count":0,"digest":"x"}}`}
+	if _, err := FinalizeConflictMerge(dir, "resolved squash", verdict); err != nil {
+		t.Fatalf("a resolution the verdict did not name was refused: %v", err)
+	}
+	if err := StageResolvedFile(dir, "contract.yaml", "a contract nobody judged\n"); err != nil {
+		t.Fatalf("StageResolvedFile: %v", err)
+	}
+	_, err := FinalizeConflictMerge(dir, "resolved squash", verdict)
+	if err == nil || !strings.Contains(err.Error(), "not the contract the verdict judged") {
+		t.Fatalf("the landing committed a rewritten contract: err=%v", err)
 	}
 }

@@ -201,7 +201,11 @@ export default function RunSettingsSection({
               operator&apos;s own setup. <code>workspace</code> by default, so
               a bot run behaves the same on every machine. Enforced on{" "}
               <code>claude_code</code>, <code>claw</code>, <code>codex</code>{" "}
-              and <code>pi</code>.
+              and <code>pi</code>; <code>kimi</code> applies{" "}
+              <code>workspace</code> and <code>all</code>,{" "}
+              <code>opencode</code> <code>all</code>. A chosen value a
+              node&apos;s backend cannot apply refuses that node rather than
+              running it with the files the value excludes.
             </div>
           </div>
         </div>

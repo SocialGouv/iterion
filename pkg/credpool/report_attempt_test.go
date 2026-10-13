@@ -606,3 +606,129 @@ func TestAcquire_aFloorBlipGivesTheReservedUnitBack(t *testing.T) {
 		t.Fatalf("the donor's daily unit was not given back after the failed acquisition (%v) — the floor read's error return skips release()", err)
 	}
 }
+
+// The fallback door's fine attribution (ADR-121 § Delivery 2, #2255): a
+// report carrying a per-fingerprint table books only the slice that ran on
+// THIS lease's credential — the rest of the attempt happened on the run's
+// own credentials and never lands on the donor. An ABSENT table (an older
+// runner) keeps the coarse whole-attempt booking.
+func TestReportAttempt_fineAttributionBooksTheLeaseCredentialSlice(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donorKey(t, "alice", "zai", Limits{MaxUSDPerDay: 10})
+	if _, err := h.broker.Acquire(ctx, h.wantKey("run-fine", "zai")); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	l := leaseOfRun(t, h, "run-fine")
+	if l == nil || l.Fingerprint == "" {
+		t.Fatalf("the acquired lease carries no fingerprint: %+v — the fine table has nothing to slice by", l)
+	}
+
+	// The door fired on the donor's credential ($2 of the attempt) and the
+	// run's own key spent $8: the donor books TWO, never ten.
+	if err := h.broker.ReportAttempt(ctx, "run-fine", time.Time{}, Outcome{
+		CostUSD: 10,
+		ByFingerprint: []FingerprintSpend{
+			{Fingerprint: l.Fingerprint, CostUSD: 2},
+			{Fingerprint: "fp-own-key", CostUSD: 8},
+		},
+	}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	day, _, err := h.ledger.Usage(ctx, l.PledgeID, h.now)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if day.CostUSD != 2 {
+		t.Fatalf("the donor's ledger = $%.2f, want $2 — the fine table books only the lease credential's slice", day.CostUSD)
+	}
+}
+
+// TestReportAttempt_fineAttributionZeroWhenTheFallbackNeverFired: a report
+// whose table names no spend on the lease's credential books ZERO — the
+// run armed the door, carried the slot, and never spent the donor's
+// credential. The conditions still ride (an auth failure on the donor's
+// credential must still reach the rotation).
+func TestReportAttempt_fineAttributionZeroWhenTheFallbackNeverFired(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donorKey(t, "alice", "zai", Limits{MaxUSDPerDay: 10})
+	if _, err := h.broker.Acquire(ctx, h.wantKey("run-idle", "zai")); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	l := leaseOfRun(t, h, "run-idle")
+	if l == nil {
+		t.Fatal("no lease")
+	}
+
+	if err := h.broker.ReportAttempt(ctx, "run-idle", time.Time{}, Outcome{
+		CostUSD:       7,
+		Condition:     ConditionAuthFailed,
+		ByFingerprint: []FingerprintSpend{{Fingerprint: "fp-own-key", CostUSD: 7}},
+	}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	day, _, err := h.ledger.Usage(ctx, l.PledgeID, h.now)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if day.CostUSD != 0 {
+		t.Fatalf("the donor's ledger = $%.2f, want $0 — the fallback never ran on their credential", day.CostUSD)
+	}
+}
+
+// TestReportAttempt_noFineTableKeepsTheCoarseBooking: an older runner's
+// report carries no table — the whole attempt books, exactly as before
+// the door existed. The nil-vs-empty distinction is the contract.
+// Mutant: nil-table handled as zero → this test reds.
+func TestReportAttempt_noFineTableKeepsTheCoarseBooking(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donorKey(t, "alice", "zai", Limits{MaxUSDPerDay: 10})
+	if _, err := h.broker.Acquire(ctx, h.wantKey("run-coarse", "zai")); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	l := leaseOfRun(t, h, "run-coarse")
+	if l == nil {
+		t.Fatal("no lease")
+	}
+	if err := h.broker.ReportAttempt(ctx, "run-coarse", time.Time{}, Outcome{CostUSD: 3}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	day, _, err := h.ledger.Usage(ctx, l.PledgeID, h.now)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if day.CostUSD != 3 {
+		t.Fatalf("the coarse booking broke: $%.2f, want $3 — a whole-bundle run's spend must book whole", day.CostUSD)
+	}
+	// A lease stamped BEFORE the fingerprint field existed books coarse
+	// too — the missing stamp is the pre-deploy contract, never a zero.
+	// (Fresh acquire on a FRESH donor, then strip the stamp the way a
+	// pre-deploy lease doc reads — a fresh donor isolates the ledger.)
+	h.donorKey(t, "bob", "zai", Limits{MaxUSDPerDay: 10})
+	if _, err := h.broker.Acquire(ctx, h.wantKey("run-pre", "zai")); err != nil {
+		t.Fatalf("acquire pre-stamp lease: %v", err)
+	}
+	old := leaseOfRun(t, h, "run-pre")
+	if old == nil {
+		t.Fatal("no lease")
+	}
+	old.Fingerprint = ""
+	if err := h.leases.Put(ctx, *old); err != nil {
+		t.Fatalf("strip: %v", err)
+	}
+	if err := h.broker.ReportAttempt(ctx, "run-pre", time.Time{}, Outcome{
+		CostUSD:       4,
+		ByFingerprint: []FingerprintSpend{{Fingerprint: "fp-own-key", CostUSD: 4}},
+	}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	day, _, err = h.ledger.Usage(ctx, old.PledgeID, h.now)
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if day.CostUSD != 4 {
+		t.Fatalf("an unstamped lease booked $%.2f, want $4 — a missing fingerprint keeps the coarse booking, never a zero", day.CostUSD)
+	}
+}
