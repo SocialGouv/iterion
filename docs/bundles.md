@@ -433,8 +433,27 @@ symlink), so the wip bank would stage the mirrored files as the run's own
 work. The run refuses at mirror time and names the link and its target
 (#1569). Remedy: replace the symlink with a real directory — move
 the shared assets into `.claude/` itself, or copy them there — and commit
-that. The plugin-contribution mirrors skip with a warning on the same
-shape instead of failing; only the run-start bundle mirror refuses.
+that. Every site that writes under `.claude` holds the same rule: a pass
+the run depends on refuses, an ambient pass warns and skips it. The run
+fails with this message from the run-start bundle mirror, the library
+mirror when the `.bot` declares skills (and from the injected library
+mirror the cloud path uses, always), a child's resource scope and its
+restore — that one prefixed
+`restore child resources (backup …)` — and the snapshot, restore and reset
+a copy-based sandbox runs against its OWN `.claude` copy, those three prefixed
+`shared child resources (backup …)` or `reset borrowed sandbox resources`,
+and carrying what the in-sandbox script itself said:
+`shared .claude root <path> is a symlink — the snapshot, restore and reset would remove and rewrite through it, outside the workspace`.
+That sentence leads the message instead, the typed one naming
+`<unreadable>` behind it, when the sandbox had no `readlink` to read the
+target with — and an exit 4 that is not this guard at all leads with its
+own cause the same way. The same shape only warns and skips the pass in
+the plugin-contribution mirrors, the hooks merge, the
+tier-sidecar wipe, the orphan pruner, the library mirror with no skill
+declared, and the chatbox skill attach — there the run continues, the
+message delivered without its skill. In the sandbox the link can also be
+one the run's own agent planted; the refusal is then what kept a recursive
+delete inside the workspace.
 
 **`bundle skill "X" shadowed by existing workspace entry`**
 A skill with the same name already exists at `<workDir>/.claude/skills/`.
