@@ -586,7 +586,7 @@ its own policy escalates).
   calibrate against real merge requests, then pin mode=enforce per repo.
 - **Triggers**: gitops-warden, warden
 - **Tags**: code-review, read-only, deploy, git
-- **Vars**: `base_ref` (string), `forge_pr_state_url` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `head_sha` (string), `max_diff_bytes` (int), `max_diff_files` (int), `merge_method` (string), `mode` (string), `peer_gate_contexts` (string), `policy_path` (string), `post_to_board` (string), `pr_author` (string), `pr_review_mode` (string), `pr_url` (string), `remove_source_branch` (bool), `reviewers` (string), `scope_notes` (string), `source_branch` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `forge_pr_state_url` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `head_sha` (string), `max_diff_bytes` (int), `max_diff_files` (int), `merge_method` (string), `mode` (string), `peer_gate_contexts` (string), `policy_path` (string), `post_to_board` (string), `pr_author` (string), `pr_review_mode` (string), `pr_url` (string), `remove_source_branch` (bool), `render_registry_hosts` (string), `reviewers` (string), `scope_notes` (string), `source_branch` (string), `workspace_dir` (string)
 - **Path**: `bots/gitops-warden/main.bot`
 
 ### `revi-converse` — Revi (converse)

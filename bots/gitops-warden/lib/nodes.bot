@@ -30,8 +30,9 @@ agent classify:
 
 ## ─── diff_inventory — the deterministic half of the verdict ─────
 tool diff_inventory:
-  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} POLICY_PATH={{vars.policy_path}} MAX_FILES={{vars.max_diff_files}} MAX_BYTES={{vars.max_diff_bytes}} DECLARED_HEAD={{vars.head_sha}} python3 -I -c "
-import os, subprocess, json
+  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} POLICY_PATH={{vars.policy_path}} MAX_FILES={{vars.max_diff_files}} MAX_BYTES={{vars.max_diff_bytes}} DECLARED_HEAD={{vars.head_sha}} RENDER_REGISTRY_HOSTS={{vars.render_registry_hosts}} python3 -I -c "
+import os, subprocess, json, tempfile, shutil
+from collections import Counter
 os.chdir(os.environ['WS'])
 def git(*a):
     try:
@@ -75,7 +76,7 @@ def unresolved():
     emit({'is_empty': False, 'changed_files': -1, 'reviewed_sha': head, 'base_sha': '',
           'policy_body': '', 'policy_source': 'default', 'policy_sha': '', 'files': [],
           'diff_too_large': False, 'unparseable': True, 'workspace_anomaly': workspace_anomaly,
-          'stale_launch': stale_launch})
+          'stale_launch': stale_launch, 'rendered': {}})
 if git('fetch', '--quiet', 'origin', base).returncode == 0:
     fetched = git('rev-parse', 'FETCH_HEAD')
     if fetched.returncode == 0 and fetched.stdout.strip():
@@ -154,6 +155,214 @@ for fe in files:
             (added_keys if line.startswith('+') else removed_keys).add(key)
     fe['key_paths'] = sorted(added_keys | removed_keys)
     fe['candidate'] = bool(added_keys or removed_keys) and not (removed_keys - added_keys)
+# ── chart render (helm template, base vs head) ──────────────────
+# An ENRICHMENT, never a verdict input. One function, its own scope, one
+# try/except: nothing it binds can reach the node's names (the policy
+# read below depends on the name base), and any exception degrades the RENDER
+# with a french reason instead of killing the gate. Both revisions are
+# rendered from DETACHED SCRATCH WORKTREES — the judged workspace is never
+# written. A chart dir holding a symlink is refused: helm follows links
+# out of the chart and the render would publish runner files into the MR
+# comment. Registry-gated dependencies pull only when the optional
+# registry_user/registry_token secrets are mounted AND the OCI host is on
+# the operator-pinned allowlist (RENDER_REGISTRY_HOSTS) — the credential
+# is never presented to a host the diff named. Caps: charts, rendered
+# lines, wall clock.
+def _render_section(files, mb, head):
+    import time, difflib
+    deadline = time.monotonic() + 600.0
+    max_charts = 8
+    max_lines = 20000
+    def run(cmd, timeout=120, cwd=None, stdin_data=None, env_extra=None):
+        env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
+        if env_extra:
+            env.update(env_extra)
+        # every call is bounded by the section's remaining budget, so one
+        # chart's renders + logins + dependency build cannot overrun it
+        left = deadline - time.monotonic()
+        if left <= 1.0:
+            return None
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
+                                  errors='replace', timeout=min(timeout, left), cwd=cwd, env=env,
+                                  input=stdin_data if stdin_data is not None else '')
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+    chart_dirs = []
+    seen = set()
+    for f in files:
+        bn = os.path.basename(f['path'])
+        is_chart_edit = bn == 'Chart.yaml' and f['status'] in ('M', 'A')
+        is_template_edit = ('/templates/' in f['path'] or f['path'].startswith('templates/')) and f['ext'] in ('yaml', 'yml', 'tpl')
+        if not (is_chart_edit or is_template_edit):
+            continue
+        d = os.path.dirname(f['path'])
+        while True:
+            key = d or '.'
+            if key in seen:
+                break
+            if os.path.isfile(os.path.join(key, 'Chart.yaml')):
+                seen.add(key)
+                chart_dirs.append(key)
+                break
+            if key == '.':
+                break
+            d = os.path.dirname(d)
+    if not chart_dirs:
+        return {}
+    capped = chart_dirs[:max_charts]
+    helm = shutil.which('helm')
+    if helm is None:
+        return {'status': 'unavailable', 'reason': 'helm n' + chr(39) + 'est pas disponible dans l' + chr(39) + 'image du runner',
+                'charts': capped, 'stats': {}, 'diff': ''}
+    reg_tok = '/run/iterion/secrets/registry_token'
+    reg_usr = '/run/iterion/secrets/registry_user'
+    have_reg = os.path.isfile(reg_tok) and os.path.isfile(reg_usr)
+    allowed_hosts = set(h.strip() for h in os.environ.get('RENDER_REGISTRY_HOSTS', '').split(',') if h.strip())
+    def has_symlink(dirpath):
+        for root, dirs, fnames in os.walk(dirpath):
+            for name in dirs + fnames:
+                if os.path.islink(os.path.join(root, name)):
+                    return True
+        return False
+    def dep_hosts(dirpath):
+        # EVERY dependency repository host — oci:// and https?:// alike:
+        # helm dependency build pulls them all, so the allowlist must
+        # cover them all. A file:// or alias (@repo) dependency has no
+        # host and is not gated.
+        oci, web = set(), set()
+        try:
+            body = open(os.path.join(dirpath, 'Chart.yaml'), encoding='utf-8', errors='replace').read()
+        except OSError:
+            return oci, web
+        for line in body.splitlines():
+            st = line.strip()
+            if st.startswith('repository:'):
+                repo = st.split(':', 1)[1].strip().strip(chr(34)).strip(chr(39))
+                if repo.startswith('oci://'):
+                    oci.add(repo[len('oci://'):].split('/', 1)[0])
+                elif repo.startswith('https://') or repo.startswith('http://'):
+                    web.add(repo.split('://', 1)[1].split('/', 1)[0])
+        return oci, web
+    scratch = tempfile.mkdtemp(prefix='warden-render-')
+    results = []
+    unavail = ''
+    try:
+        base_wt = os.path.join(scratch, 'base')
+        head_wt = os.path.join(scratch, 'head')
+        w1 = run(['git', 'worktree', 'add', '--detach', '-q', base_wt, mb])
+        w2 = run(['git', 'worktree', 'add', '--detach', '-q', head_wt, head])
+        if w1 is None or w1.returncode != 0 or w2 is None or w2.returncode != 0:
+            unavail = 'les copies de travail des deux révisions n' + chr(39) + 'ont pas pu être créées'
+        reg_cfg = os.path.join(scratch, 'registry.json')
+        helm_env = {'HELM_REGISTRY_CONFIG': reg_cfg, 'HOME': scratch, 'TMPDIR': scratch}
+        def render(dirpath):
+            return run([helm, 'template', 'warden-rel', dirpath], timeout=120, env_extra=helm_env)
+        def prep_deps(dirpath):
+            hosts, web_hosts = dep_hosts(dirpath)
+            if not hosts and not web_hosts:
+                return 'aucune dépendance distante'
+            refused = sorted(h for h in (hosts | web_hosts) if h not in allowed_hosts)
+            if refused:
+                return 'hôte de dépôt non épinglé par l' + chr(39) + 'opérateur (RENDER_REGISTRY_HOSTS) : ' + ', '.join(refused)
+            if hosts and not have_reg:
+                return 'dépendances dans un registre privé — les secrets registry_user/registry_token sont requis'
+            usr = pw = ''
+            if hosts:
+                try:
+                    usr = open(reg_usr, encoding='utf-8', errors='replace').read().strip()
+                    pw = open(reg_tok, encoding='utf-8', errors='replace').read().strip()
+                except OSError:
+                    return 'les secrets de registre n' + chr(39) + 'ont pas pu être lus'
+            for host in sorted(hosts):
+                r = run([helm, 'registry', 'login', host, '-u', usr, '--password-stdin'], timeout=60, stdin_data=pw + chr(10), env_extra=helm_env)
+                if r is None or r.returncode != 0:
+                    return 'authentification au registre ' + host + ' refusée'
+            r = run([helm, 'dependency', 'build', dirpath], timeout=240, env_extra=helm_env)
+            if r is None or r.returncode != 0:
+                return 'le tirage des dépendances a échoué'
+            return ''
+        for cdir in capped if not unavail else []:
+            if time.monotonic() > deadline:
+                results.append({'chart': cdir, 'status': 'unavailable', 'reason': 'délai de rendu dépassé'})
+                continue
+            old_dir = os.path.join(base_wt, cdir) if cdir != '.' else base_wt
+            new_dir = os.path.join(head_wt, cdir) if cdir != '.' else head_wt
+            if (os.path.isdir(old_dir) and has_symlink(old_dir)) or (os.path.isdir(new_dir) and has_symlink(new_dir)):
+                results.append({'chart': cdir, 'status': 'unavailable', 'reason': 'le chart contient un lien symbolique — rendu refusé (helm suit les liens hors du chart)'})
+                continue
+            new_chart = not os.path.isdir(old_dir)
+            if not os.path.isdir(new_dir):
+                results.append({'chart': cdir, 'status': 'unavailable', 'reason': 'chart absent de la tête'})
+                continue
+            r_new = render(new_dir)
+            r_old = None if new_chart else render(old_dir)
+            if r_new is None or (not new_chart and r_old is None):
+                results.append({'chart': cdir, 'status': 'unavailable', 'reason': 'le rendu helm a dépassé son délai'})
+                continue
+            if r_new.returncode != 0 or (not new_chart and r_old.returncode != 0):
+                why = prep_deps(new_dir)
+                if why == '' and not new_chart:
+                    why = prep_deps(old_dir)
+                if why:
+                    results.append({'chart': cdir, 'status': 'unavailable', 'reason': 'rendu impossible : ' + why})
+                    continue
+                r_new = render(new_dir)
+                r_old = None if new_chart else render(old_dir)
+                if r_new is None or r_new.returncode != 0 or (not new_chart and (r_old is None or r_old.returncode != 0)):
+                    results.append({'chart': cdir, 'status': 'unavailable', 'reason': 'le rendu helm a échoué après le tirage des dépendances'})
+                    continue
+            old_lines = [] if new_chart else r_old.stdout.splitlines()
+            new_lines = r_new.stdout.splitlines()
+            if len(old_lines) > max_lines or len(new_lines) > max_lines:
+                results.append({'chart': cdir, 'status': 'unavailable', 'reason': 'rendu trop volumineux pour être comparé (plus de ' + str(max_lines) + ' lignes)'})
+                continue
+            d = chr(10).join(difflib.unified_diff(old_lines, new_lines, fromfile='base', tofile='head', lineterm=''))
+            ka, kr = Counter(), Counter()
+            for line in d.splitlines():
+                if line.startswith('+++') or line.startswith('---'):
+                    continue
+                if not (line.startswith('+') or line.startswith('-')):
+                    continue  # a context line is an unchanged resource
+                st = line[1:].strip()
+                if st.startswith('kind:'):
+                    kind = st.split(':', 1)[1].strip()
+                    (ka if line.startswith('+') else kr)[kind] += 1
+            results.append({'chart': cdir, 'status': 'ok',
+                            'reason': ('chart nouveau : rendu de la tête seule' if new_chart else ''),
+                            'stats': {'kinds_added': dict(ka), 'kinds_removed': dict(kr)}, 'diff': d[:12000]})
+    except Exception as e:
+        unavail = 'le rendu a échoué : ' + type(e).__name__ + ' : ' + str(e)[:120]
+    finally:
+        run(['git', 'worktree', 'remove', '--force', os.path.join(scratch, 'base')], timeout=60)
+        run(['git', 'worktree', 'remove', '--force', os.path.join(scratch, 'head')], timeout=60)
+        shutil.rmtree(scratch, ignore_errors=True)
+    if unavail:
+        return {'status': 'unavailable', 'reason': unavail, 'charts': capped, 'stats': {}, 'diff': ''}
+    oks = [x for x in results if x['status'] == 'ok']
+    if not oks:
+        reasons = ' ; '.join(x['chart'] + ' : ' + x['reason'] for x in results)
+        return {'status': 'unavailable', 'reason': reasons, 'charts': capped, 'stats': {}, 'diff': ''}
+    ka, kr, parts, notes = Counter(), Counter(), [], []
+    for x in results:
+        if x['status'] == 'ok':
+            ka.update(x['stats']['kinds_added'])
+            kr.update(x['stats']['kinds_removed'])
+            if x['diff']:
+                parts.append(x['diff'])
+            if x['reason']:
+                notes.append(x['chart'] + ' : ' + x['reason'])
+        else:
+            notes.append(x['chart'] + ' : ' + x['reason'])
+    if len(chart_dirs) > max_charts:
+        notes.append(str(len(chart_dirs) - max_charts) + ' chart(s) non rendus (limite de ' + str(max_charts) + ')')
+    return {'status': 'ok', 'reason': ' ; '.join(notes), 'charts': capped,
+            'stats': {'kinds_added': dict(ka), 'kinds_removed': dict(kr)},
+            'diff': (chr(10) + '---' + chr(10)).join(parts)[:12000]}
+try:
+    rendered = _render_section(files, mb, head)
+except Exception as e:
+    rendered = {'status': 'unavailable', 'reason': 'le rendu a échoué : ' + type(e).__name__ + ' : ' + str(e)[:120], 'charts': [], 'stats': {}, 'diff': ''}
 # The policy override is read from the BASE commit — never from the MR
 # head, so an MR cannot loosen the review it is judged by. The fold
 # escalates when the MR itself modifies the file.
@@ -176,7 +385,8 @@ too_large = len(files) > max_files or total_bytes < 0 or total_bytes > max_bytes
 emit({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': head,
       'base_sha': mb, 'policy_body': policy_body, 'policy_source': ('target-modified' if policy_in_mr else policy_source),
       'policy_sha': policy_sha, 'files': files, 'diff_too_large': too_large,
-      'unparseable': False, 'workspace_anomaly': workspace_anomaly, 'stale_launch': stale_launch})
+      'unparseable': False, 'workspace_anomaly': workspace_anomaly, 'stale_launch': stale_launch,
+      'rendered': rendered})
 "`
   output: inventory_output
   publish: inventory
@@ -189,7 +399,7 @@ emit({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': 
 ## enforce mode. ADR-124 is the doctrine; this node is its executable
 ## half, driven by bots/gitops_warden_gate_test.go.
 tool publish_verdict:
-  command: `PR_URL={{input.pr_url}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_STATE_URL={{vars.forge_pr_state_url}} MODE={{vars.mode}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} REVIEWERS={{vars.reviewers}} PEER_CONTEXTS={{vars.peer_gate_contexts}} MERGE_METHOD={{vars.merge_method}} REMOVE_BRANCH={{vars.remove_source_branch}} RUN_ID={{run.id}} REVIEWED_SHA={{input.reviewed_sha}} BASE_SHA={{input.base_sha}} DECLARED_HEAD={{input.declared_head_sha}} ROUTE={{input.route}} SENTINEL_REASON={{input.sentinel_reason}} CHANGED_FILES={{input.changed_files}} FILES={{input.files}} DIFF_TOO_LARGE={{input.diff_too_large}} UNPARSEABLE={{input.unparseable}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} STALE_LAUNCH={{input.stale_launch}} POLICY_SOURCE={{input.policy_source}} POLICY_SHA={{input.policy_sha}} VERDICT={{input.verdict}} CLASSIFIED_FILES={{input.classified_files}} PLATFORM_FINDINGS={{input.platform_findings}} DOUBTS={{input.doubts}} JUDGE_SUMMARY={{input.summary}} FALLBACK_USED={{input.fallback_used}} python3 -I -c "
+  command: `PR_URL={{input.pr_url}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_STATE_URL={{vars.forge_pr_state_url}} MODE={{vars.mode}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} REVIEWERS={{vars.reviewers}} PEER_CONTEXTS={{vars.peer_gate_contexts}} MERGE_METHOD={{vars.merge_method}} REMOVE_BRANCH={{vars.remove_source_branch}} RUN_ID={{run.id}} REVIEWED_SHA={{input.reviewed_sha}} BASE_SHA={{input.base_sha}} DECLARED_HEAD={{input.declared_head_sha}} ROUTE={{input.route}} SENTINEL_REASON={{input.sentinel_reason}} CHANGED_FILES={{input.changed_files}} FILES={{input.files}} DIFF_TOO_LARGE={{input.diff_too_large}} UNPARSEABLE={{input.unparseable}} RENDERED={{input.rendered}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} STALE_LAUNCH={{input.stale_launch}} POLICY_SOURCE={{input.policy_source}} POLICY_SHA={{input.policy_sha}} VERDICT={{input.verdict}} CLASSIFIED_FILES={{input.classified_files}} PLATFORM_FINDINGS={{input.platform_findings}} DOUBTS={{input.doubts}} JUDGE_SUMMARY={{input.summary}} FALLBACK_USED={{input.fallback_used}} python3 -I -c "
 import os, json, urllib.request, urllib.error, urllib.parse
 
 def emit(d):
@@ -205,6 +415,16 @@ gate_context = envs('GATE_CONTEXT', 'gitops/conformance')
 reviewed = envs('REVIEWED_SHA')
 declared = envs('DECLARED_HEAD')
 reasons = []
+# The render envelope is read once here, before the route table, so every
+# branch below may consult it: the classify edge carries the real
+# envelope, the fallback edge (empty/sentinel routes) carries an empty string — an
+# empty object, no section.
+try:
+    rendered = json.loads(envs('RENDERED') or '{}') or {}
+    if not isinstance(rendered, dict):
+        rendered = {}
+except Exception:
+    rendered = {}
 
 # ── the fold ────────────────────────────────────────────────────
 # Order matters for the reader, not the outcome: every branch appends.
@@ -213,30 +433,30 @@ if route == 'empty':
     # stale launch head or a drifted workspace makes 'no change against
     # base' a verdict about nothing, and in enforce mode it would gesture.
     if envs('STALE_LAUNCH').lower() in ('true', '1', 'yes'):
-        reasons.append('the run woke on a moved head — an empty diff on the wrong revision is not a clean verdict')
+        reasons.append('le run s' + chr(39) + 'est réveillé sur une tête qui a bougé — un diff vide sur la mauvaise révision n' + chr(39) + 'est pas un verdict propre')
     anomaly = envs('WORKSPACE_ANOMALY')
     if anomaly and anomaly != '?':
-        reasons.append('the workspace is not the tree under review')
+        reasons.append('le workspace n' + chr(39) + 'est pas l' + chr(39) + 'arbre sous review')
     elif anomaly == '?':
-        reasons.append('the workspace state could not be read')
+        reasons.append('l' + chr(39) + 'état du workspace n' + chr(39) + 'a pas pu être lu')
 elif route == 'sentinel':
-    reasons.append(envs('SENTINEL_REASON') or 'the diff could not be classified')
+    reasons.append(envs('SENTINEL_REASON') or 'le diff n' + chr(39) + 'a pas pu être classifié')
 else:
     if envs('CHANGED_FILES', '0').strip().lstrip('-').isdigit() and int(envs('CHANGED_FILES', '0')) < 0:
-        reasons.append('the diff could not be read')
+        reasons.append('le diff est resté illisible : il n' + chr(39) + 'a pas pu être lu')
     if envs('DIFF_TOO_LARGE').lower() in ('true', '1', 'yes'):
-        reasons.append('the diff exceeds the classification cap')
+        reasons.append('le diff dépasse la limite de classification')
     if envs('UNPARSEABLE').lower() in ('true', '1', 'yes'):
-        reasons.append('the diff could not be parsed')
+        reasons.append('le diff est resté illisible : il n' + chr(39) + 'a pas pu être interprété')
     anomaly = envs('WORKSPACE_ANOMALY')
     if anomaly and anomaly != '?':
-        reasons.append('the workspace is not the tree under review')
+        reasons.append('le workspace n' + chr(39) + 'est pas l' + chr(39) + 'arbre sous review')
     elif anomaly == '?':
-        reasons.append('the workspace state could not be read')
+        reasons.append('l' + chr(39) + 'état du workspace n' + chr(39) + 'a pas pu être lu')
     if envs('STALE_LAUNCH').lower() in ('true', '1', 'yes'):
-        reasons.append('the run woke on a moved head (the launch named another revision)')
+        reasons.append('le run s' + chr(39) + 'est réveillé sur une tête qui a bougé (le lancement nommait une autre révision)')
     if envs('POLICY_SOURCE') == 'target-modified':
-        reasons.append('the MR modifies the review policy — it cannot judge itself')
+        reasons.append('la MR modifie la politique de review — elle ne peut pas se juger elle-même')
     fb = envs('FALLBACK_USED').strip()
     # The engine passes an edge ref whose producer never ran AS ITS LITERAL
     # (the _fallback_used stamp exists only when the node was actually
@@ -246,14 +466,14 @@ else:
     # marker the unsubstituted-ref guards grep for.
     template_marker = chr(123) * 2
     if fb and template_marker not in fb:
-        reasons.append('the classifier was served by its fallback route — a degraded judge never enforces')
+        reasons.append('le classifier a été servi par sa route de repli (fallback) — un juge dégradé n' + chr(39) + 'enforce jamais')
     try:
         judged = json.loads(envs('CLASSIFIED_FILES', '[]') or '[]')
         if not isinstance(judged, list):
-            reasons.append('the judge file list was unreadable')
+            reasons.append('la liste de fichiers du juge était illisible')
             judged = []
     except Exception:
-        reasons.append('the judge file list was unreadable')
+        reasons.append('la liste de fichiers du juge était illisible')
         judged = []
     # COVERAGE — the inventory is authoritative on what CHANGED; the judge
     # is authoritative on what it MEANS. A verdict about a diff only part
@@ -264,20 +484,23 @@ else:
         if not isinstance(inv, list):
             inv = []
     except Exception:
-        reasons.append('the diff inventory was unreadable')
+        reasons.append('l' + chr(39) + 'inventaire du diff était illisible')
         inv = []
     inv_paths = {str(f.get('path')) for f in inv if isinstance(f, dict)}
     judged_paths = {str(f.get('path')) for f in judged if isinstance(f, dict)}
     unjudged = inv_paths - judged_paths
     if unjudged:
         sample = ', '.join(sorted(unjudged)[:3])
-        reasons.append('the judge classified ' + str(len(judged_paths & inv_paths)) + ' of ' + str(len(inv_paths)) + ' changed files (unclassified: ' + sample + ')')
+        reasons.append('le juge a classifié ' + str(len(judged_paths & inv_paths)) + ' des ' + str(len(inv_paths)) + ' fichiers modifiés (non classifiés : ' + sample + ')')
     # The STRUCTURAL class is deterministic — file status A/D/R/C — so the
     # fold enforces it itself and no judge output can soften it.
     for f in inv:
         if isinstance(f, dict) and str(f.get('status', '')) in ('A', 'D', 'R', 'C'):
-            reasons.append(str(f.get('path', '?')) + ': file ' + str(f.get('status')) + ' (added/removed/renamed — structural)')
+            reasons.append(str(f.get('path', '?')) + ' : fichier ' + str(f.get('status')) + ' (ajouté/supprimé/renommé — structurel)')
     for fe in judged:
+        if not isinstance(fe, dict):
+            reasons.append('entrée du juge illisible (pas un objet)')
+            continue
         # The judge's enums are LLM output over a json field the schema
         # cannot per-entry validate: normalize case, and let anything
         # unrecognized fail closed (unknown escalates, unlisted severity
@@ -287,29 +510,32 @@ else:
         if cls not in ('auto_approvable', 'escalate', 'unknown'):
             cls = 'unknown'
         if cls in ('escalate', 'unknown'):
-            why = str(fe.get('reason') or cls)
+            why = str(fe.get('reason') or ('classe inconnue — le juge n' + chr(39) + 'a pas pu statuer' if cls == 'unknown' else 'escaladé par le juge sans motif'))
             reasons.append(str(fe.get('path', '?')) + ': ' + why)
     try:
         pf = json.loads(envs('PLATFORM_FINDINGS', '[]') or '[]')
         if not isinstance(pf, list):
             pf = []
     except Exception:
-        reasons.append('the judge platform findings were unreadable')
+        reasons.append('les findings plateforme du juge étaient illisibles')
         pf = []
     for f in pf:
+        if not isinstance(f, dict):
+            reasons.append('finding plateforme illisible (pas un objet)')
+            continue
         sev = str(f.get('severity', '')).strip().lower()
         if sev not in ('blocking', 'advisory'):
             sev = 'blocking'  # an unlisted severity blocks (fail closed)
         if sev == 'blocking':
-            reasons.append('platform: ' + str(f.get('rule', '?')) + ' on ' + str(f.get('path', '?')) + ': ' + str(f.get('detail', '')))
+            reasons.append('plateforme : ' + str(f.get('rule', '?')) + ' sur ' + str(f.get('path', '?')) + ' : ' + str(f.get('detail', '')))
     doubts = [l for l in envs('DOUBTS').splitlines() if l.strip()]
     if doubts:
-        reasons.append('the judge listed ' + str(len(doubts)) + ' doubt(s)')
+        reasons.append('le juge a listé ' + str(len(doubts)) + ' doute(s)')
     verdict = envs('VERDICT')
     if verdict not in ('auto_approvable', 'escalate'):
-        reasons.append('the judge verdict was unreadable')
+        reasons.append('le verdict du juge était illisible')
     elif verdict == 'escalate' and not reasons:
-        reasons.append('the judge escalated this merge request')
+        reasons.append('le juge a escaladé cette merge request')
 
 # Clean means ZERO reasons — the route alone decides nothing (the empty
 # route with a sentinel reason is exactly the H2 shape).
@@ -329,14 +555,14 @@ if clean and mode == 'enforce':
     tok = envs('PUB_TOKEN')
     pr = envs('PR_URL')
     if not state_url or not tok:
-        peer_problem = 'no publish grant bound — the gestures cannot cross the deterministic surface'
+        peer_problem = 'aucun grant de publish forge lié — les gestes ne peuvent pas passer par la surface déterministe'
     else:
         try:
             req = urllib.request.Request(state_url + '?pr_url=' + urllib.parse.quote(pr, safe=''), headers={'X-Iterion-Run': tok})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode('utf-8', 'replace'))
             if data.get('commit_statuses_error'):
-                peer_problem = 'the peer statuses read failed: ' + str(data.get('commit_statuses_error'))
+                peer_problem = 'la lecture des statuts des pairs a échoué : ' + str(data.get('commit_statuses_error'))
             else:
                 peers = [c.strip() for c in envs('PEER_CONTEXTS').split(',') if c.strip()]
                 head_sha = str(data.get('head_sha', ''))
@@ -344,9 +570,9 @@ if clean and mode == 'enforce':
                 # must be PRESENT and read success, or the arm is held.
                 # pending / absent / a failed read all hold.
                 if not head_sha:
-                    peer_problem = 'the peer read named no head — treating it as a failed read'
+                    peer_problem = 'la lecture des pairs ne nommait aucune tête — traité comme un échec de lecture'
                 elif reviewed and not reviewed.startswith(head_sha[:7]) and not head_sha.startswith(reviewed[:7]):
-                    peer_problem = 'the head moved since the inventory (the read twin names another revision)'
+                    peer_problem = 'la tête a bougé depuis l' + chr(39) + 'inventaire (la lecture miroir nomme une autre révision)'
                 else:
                     states = {}
                     for st in data.get('commit_statuses', []) or []:
@@ -354,51 +580,54 @@ if clean and mode == 'enforce':
                     for ctx in peers:
                         st = states.get(ctx)
                         if st is None:
-                            peer_problem = 'peer gate ' + ctx + ' has no status on this head — an unverified peer is not a green peer'
+                            peer_problem = 'le gate pair ' + ctx + ' n' + chr(39) + 'a aucun statut sur cette tête — un pair non vérifié n' + chr(39) + 'est pas un pair vert'
                             break
                         if st != 'success':
-                            peer_problem = 'peer gate ' + ctx + ' is ' + st + ' on this head'
+                            peer_problem = 'le gate pair ' + ctx + ' est ' + st + ' sur cette tête'
                             break
                     armed_after_peers = peer_problem == ''
         except Exception as e:
-            peer_problem = 'the peer statuses read failed: ' + str(e)
+            peer_problem = 'la lecture des statuts des pairs a échoué : ' + str(e)
 
 # ── the comment ─────────────────────────────────────────────────
 def esc(s):
-    return str(s).replace(chr(124), chr(92) + chr(124)).replace(chr(10), ' ')
+    return (str(s).replace(chr(124), chr(92) + chr(124)).replace(chr(13), ' ').replace(chr(10), ' ')
+            .replace('<', '&lt;').replace('>', '&gt;'))
+def _d(v):
+    return v if isinstance(v, dict) else {}
 
 lines = []
 badge = 'dry-run' if mode != 'enforce' else 'enforce'
 if route == 'empty' and blocking == 0:
-    lines.append('## Warden — nothing to review')
+    lines.append('## Warden — rien à revoir')
     lines.append('')
-    lines.append('No change against ' + envs('BASE_SHA', '')[:12] + '. Check posted green.')
+    lines.append('Aucun changement contre ' + envs('BASE_SHA', '')[:12] + '. Le check posté est vert.')
 elif route == 'empty':
-    lines.append('## Warden — the empty diff is not a clean verdict')
+    lines.append('## Warden — le diff vide n' + chr(39) + 'est pas un verdict propre')
     lines.append('')
     for r in reasons:
         lines.append('- ' + esc(r))
     lines.append('')
-    lines.append('The gate posts red: an empty diff on the wrong revision or a drifted workspace is a verdict about nothing.')
+    lines.append('Le gate posté est rouge : un diff vide sur la mauvaise révision ou un workspace dérivé est un verdict sur rien.')
 else:
-    verdict_word = 'auto-approvable' if clean else 'needs devops review'
+    verdict_word = 'auto-approvable' if clean else 'avis devops requis'
     lines.append('## Warden — ' + verdict_word + ' (' + badge + ')')
     lines.append('')
     if clean:
-        lines.append('Every changed file is in the simple class and inside the platform guardrails.'
-                     + ('' if mode == 'enforce' else ' This run is DRY-RUN: nothing was approved or armed.'))
+        lines.append('Chaque fichier modifié est dans la classe simple et dans les garde-fous plateforme.'
+                     + ('' if mode == 'enforce' else ' Ce run est en DRY-RUN : rien n' + chr(39) + 'a été approuvé ni armé.'))
     else:
-        lines.append('This merge request needs a devops review:')
+        lines.append('Cette merge request requiert une review devops :')
         for r in reasons:
             lines.append('- ' + esc(r))
         js = envs('JUDGE_SUMMARY')
         if js:
             lines.append('')
-            lines.append('The judge wrote: ' + esc(js))
+            lines.append('Le juge a écrit : ' + esc(js))
         doubts = [l for l in envs('DOUBTS').splitlines() if l.strip()]
         if doubts:
             lines.append('')
-            lines.append('Doubts (what the judge was not certain about):')
+            lines.append('Doutes (ce dont le juge n' + chr(39) + 'était pas certain) :')
             for d in doubts:
                 lines.append('- ' + esc(d))
     lines.append('')
@@ -412,30 +641,86 @@ else:
         inv = []
     invmap = {str(f.get('path')): f for f in inv if isinstance(f, dict)}
     if judged:
-        lines.append('| file | status | class | why |')
+        lines.append('| fichier | statut | classe | pourquoi |')
         lines.append('|---|---|---|---|')
         for fe in judged:
+            if not isinstance(fe, dict):
+                continue
             p = str(fe.get('path', '?'))
             meta = invmap.get(p, {})
             st = str(meta.get('status', '?'))
             lines.append('| ' + esc(p) + ' | ' + esc(st) + ' | ' + esc(str(fe.get('cls', '?'))) + ' | ' + esc(str(fe.get('reason', ''))) + ' |')
+    if rendered:
+        lines.append('')
+        if rendered.get('status') == 'ok':
+            lines.append('### Rendu helm du chart (révision de base vs tête)')
+            st = _d(rendered.get('stats'))
+            ka, kr = _d(st.get('kinds_added')), _d(st.get('kinds_removed'))
+            def kind_label(k):
+                # Kubernetes kinds are alphanumeric; anything else is MR content
+                return k if (k.isalnum() and len(k) <= 63) else '?'
+            bits = []
+            if ka:
+                bits.append('ressources ajoutées : ' + ', '.join(kind_label(str(k)) + ' x' + str(v) for k, v in sorted(ka.items(), key=lambda kv: str(kv[0]))))
+            if kr:
+                bits.append('ressources retirées : ' + ', '.join(kind_label(str(k)) + ' x' + str(v) for k, v in sorted(kr.items(), key=lambda kv: str(kv[0]))))
+            lines.append('Rendu ' + chr(96) + 'helm template' + chr(96) + ' des deux révisions — ' + (' ; '.join(bits) if bits else 'aucune ressource ajoutée ni retirée') + '.')
+            rn = str(rendered.get('reason') or '')
+            if rn:
+                lines.append('')
+                lines.append('Rendu partiel : ' + esc(rn))
+            d = rendered.get('diff')
+            d = d if isinstance(d, str) else ''
+            if d:
+                longest = 0
+                run_len = 0
+                for ch in d:
+                    run_len = run_len + 1 if ch == chr(96) else 0
+                    longest = max(longest, run_len)
+                fence = chr(96) * max(3, longest + 1)
+                lines.append('')
+                lines.append('<details><summary>diff du rendu</summary>')
+                lines.append('')
+                lines.append(fence + 'yaml')
+                lines.append(d)
+                lines.append('')
+                lines.append(fence)
+                lines.append('</details>')
+        else:
+            lines.append('### Rendu helm indisponible : ' + esc(str(rendered.get('reason') or '')))
     try:
         pf = json.loads(envs('PLATFORM_FINDINGS', '[]') or '[]')
     except Exception:
         pf = []
     if pf:
         lines.append('')
-        lines.append('### Platform findings')
+        lines.append('### Constats plateforme')
         for f in pf:
-            lines.append('- [' + esc(str(f.get('severity', '?'))) + '] ' + esc(str(f.get('rule', '?'))) + ' on ' + esc(str(f.get('path', '?'))) + ' — ' + esc(str(f.get('detail', ''))))
+            if not isinstance(f, dict):
+                continue
+            lines.append('- [' + esc(str(f.get('severity', '?'))) + '] ' + esc(str(f.get('rule', '?'))) + ' sur ' + esc(str(f.get('path', '?'))) + ' — ' + esc(str(f.get('detail', ''))))
     psrc = envs('POLICY_SOURCE')
     if psrc == 'override':
         lines.append('')
-        lines.append('Policy: repo override @ ' + esc(envs('POLICY_SHA', '?')[:12]))
+        lines.append('Politique : override du repo @ ' + esc(envs('POLICY_SHA', '?')[:12]))
     lines.append('')
-    lines.append('<details><summary>run</summary>')
+    lines.append('<details><summary>détails du run</summary>')
     lines.append('')
-    lines.append('run ' + esc(envs('RUN_ID')) + ' · head ' + esc(reviewed[:12]) + ' · mode ' + esc(mode))
+    pub = envs('PUB_URL')
+    rid = envs('RUN_ID')
+    run_link = esc(rid)
+    if pub:
+        try:
+            _u = urllib.parse.urlsplit(pub)
+            host = _u.hostname or ''
+            if _u.port:
+                host = host + ':' + str(_u.port)
+            if _u.scheme and host:
+                run_link = ('<a href=' + chr(34) + _u.scheme + '://' + host + '/studio/runs/' + urllib.parse.quote(rid, safe='') + chr(34) + '>'
+                            + esc(rid) + '</a>')
+        except ValueError:
+            run_link = esc(rid)
+    lines.append('run ' + run_link + ' · tête ' + esc(reviewed[:12]) + ' · mode ' + esc(mode))
     lines.append('')
     lines.append('</details>')
 summary = chr(10).join(lines)
@@ -459,16 +744,16 @@ if mode == 'enforce':
     else:
         want_reviewers = [r for r in envs('REVIEWERS').split() if r]
         if not want_reviewers:
-            verdict_note = 'no reviewers pinned on the integration — the red gate is the page'
+            verdict_note = 'aucun reviewer épinglé sur l' + chr(39) + 'intégration — le gate rouge est la page'
 
 # ── the POST ────────────────────────────────────────────────────
 url = envs('PUB_URL')
 tok = envs('PUB_TOKEN')
 pr = envs('PR_URL')
 if not url or not tok or not pr:
-    emit({'requested': True, 'outcome': 'refused', 'verdict_refused_reason': 'no forge publish grant bound (forge_publish_url/token/pr_url) — a run without the grant never guesses',
+    emit({'requested': True, 'outcome': 'refused', 'verdict_refused_reason': 'aucun grant de publish forge lié (forge_publish_url/token/pr_url) — un run sans le grant ne devine jamais',
           'review_url': '', 'gate_requested': gate_enabled, 'gate_posted': False, 'gate_state': '',
-          'gate_skipped_reason': 'no publish grant bound', 'approve_posted': False,
+          'gate_skipped_reason': 'aucun grant de publish lié', 'approve_posted': False,
           'reviewers_added': '', 'merge_armed': False, 'merge_state': '',
           'escalate_reasons': reasons_out, 'blocking': blocking})
 payload = {
@@ -479,7 +764,7 @@ payload = {
     'gate': {'enabled': gate_enabled, 'context': gate_context, 'blocking_count': blocking,
              'threshold': 'escalate', 'total_findings': len(reasons) if reasons else 0,
              'audited_sha': reviewed,
-             'note': (('blocked: ' + ' ; '.join(reasons)) if reasons else ('no change against base' if route == 'empty' else 'simple and platform-conformant'))},
+             'note': (('bloqué : ' + ' ; '.join(reasons)) if reasons else ('aucun changement contre la base' if route == 'empty' else 'simple et conforme plateforme'))},
     'verdict': {'enabled': True, 'approve': want_approve,
                 'arm_merge_when_pipeline_succeeds': want_arm,
                 'merge_method': envs('MERGE_METHOD', 'squash') or 'squash',
@@ -499,14 +784,14 @@ except urllib.error.HTTPError as e:
         detail = e.read().decode('utf-8', 'replace')[:400]
     except Exception:
         pass
-    emit({'requested': True, 'outcome': 'refused', 'verdict_refused_reason': 'the publish endpoint answered ' + str(e.code) + ': ' + detail,
+    emit({'requested': True, 'outcome': 'refused', 'verdict_refused_reason': 'l' + chr(39) + 'endpoint publish a répondu ' + str(e.code) + ' : ' + detail,
           'review_url': '', 'gate_requested': gate_enabled, 'gate_posted': False, 'gate_state': '',
-          'gate_skipped_reason': 'publish failed', 'approve_posted': False, 'reviewers_added': '',
+          'gate_skipped_reason': 'publish en échec', 'approve_posted': False, 'reviewers_added': '',
           'merge_armed': False, 'merge_state': '', 'escalate_reasons': reasons_out, 'blocking': blocking})
 except Exception as e:
-    emit({'requested': True, 'outcome': 'refused', 'verdict_refused_reason': 'the publish endpoint was unreachable: ' + str(e),
+    emit({'requested': True, 'outcome': 'refused', 'verdict_refused_reason': 'l' + chr(39) + 'endpoint publish était injoignable : ' + str(e),
           'review_url': '', 'gate_requested': gate_enabled, 'gate_posted': False, 'gate_state': '',
-          'gate_skipped_reason': 'publish unreachable', 'approve_posted': False, 'reviewers_added': '',
+          'gate_skipped_reason': 'publish injoignable', 'approve_posted': False, 'reviewers_added': '',
           'merge_armed': False, 'merge_state': '', 'escalate_reasons': reasons_out, 'blocking': blocking})
 vr = res.get('verdict') or {}
 # What the server echoed must be read through what THIS run sent. A
@@ -567,22 +852,22 @@ armed = truth(os.environ.get('MERGE_ARMED'))
 mode = os.environ.get('MODE', 'dry_run').strip()
 
 if gate_requested and not gate_posted:
-    emit(False, 'MERGE GATE NOT POSTED: ' + (os.environ.get('GATE_SKIP', '') or 'the forge refused the status'), True)
+    emit(False, 'GATE DE MERGE NON POSTÉ : ' + (os.environ.get('GATE_SKIP', '') or 'la forge a refusé le statut'), True)
 if str(os.environ.get('OUTCOME', '')).strip() == 'refused':
-    emit(False, 'VERDICT REFUSED: ' + (refused or 'the publish surface declined the verdict'), True)
+    emit(False, 'VERDICT REFUSÉ : ' + (refused or 'la surface publish a refusé le verdict'), True)
 # A clean ENFORCE verdict that executed no gesture is the silent no-op
 # shape (a mis-wired fold, stripped capabilities, a refused arm): loud,
 # never quiet. Dry-run executes nothing by contract — quiet is correct.
 if blocking == '0' and mode == 'enforce' and not approved and not armed:
-    emit(False, 'VERDICT NOT ENFORCED: a clean enforce verdict executed no gesture', True)
+    emit(False, 'VERDICT NON ENFORCÉ : un verdict enforce propre n' + chr(39) + 'a exécuté aucun geste', True)
 # A HALF gesture is its own degradation: an approval that landed with no
 # arming behind it (and the reverse) reads as enforcement and is not.
 if blocking == '0' and mode == 'enforce' and approved != armed:
-    emit(False, 'VERDICT PARTIALLY ENFORCED: approve=' + str(approved).lower() + ' armed=' + str(armed).lower(), True)
+    emit(False, 'VERDICT PARTIELLEMENT ENFORCÉ : approuvé=' + str(approved).lower() + ' armé=' + str(armed).lower(), True)
 # A verdict published WITH a refusal note is not a healthy run either:
 # the comment landed, something the bot asked for did not.
 if str(os.environ.get('OUTCOME', '')).strip() == 'posted' and refused:
-    emit(False, 'VERDICT POSTED WITH A REFUSAL: ' + refused, True)
+    emit(False, 'VERDICT PUBLIÉ AVEC UN REFUS : ' + refused, True)
 emit(True, '', False)
 "`
   output: health_output
@@ -593,4 +878,4 @@ compute policy_gate:
   output: policy_gate_output
   expr:
     route: "if(input.is_empty, 'empty', if(input.unparseable or input.diff_too_large or input.changed_files < 0, 'sentinel', 'classify'))"
-    sentinel_reason: "if(input.changed_files < 0, 'the diff could not be read', if(input.unparseable, 'the diff could not be parsed', if(input.diff_too_large, 'the diff exceeds the classification cap — a diff too big to read is a diff nobody certified', 'unclassifiable')))"
+    sentinel_reason: "if(input.changed_files < 0, 'le diff est resté illisible : il a été impossible de le lire', if(input.unparseable, 'le diff est resté illisible : impossible de le lire comme un diff', if(input.diff_too_large, 'le diff dépasse la limite de classification : un diff trop gros pour être lu est un diff que personne ne certifie', 'inclassifiable')))"
