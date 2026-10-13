@@ -482,10 +482,10 @@ func (b *ClaudeCodeBackend) retryDelay() time.Duration {
 
 // formatPass runs one formatting pass: the CLI, or the test seam. It also
 // returns the background work the pass's process lost (see formatOutput).
-func (b *ClaudeCodeBackend) formatPass(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, forfaitSpawn, []string, error) {
+func (b *ClaudeCodeBackend) formatPass(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, credSpawn, []string, error) {
 	if b.formatOutputFn != nil {
 		rm, lost, err := b.formatOutputFn(ctx, task, sessionID)
-		return rm, forfaitSpawn{}, lost, err
+		return rm, credSpawn{}, lost, err
 	}
 	return b.formatOutput(ctx, task, sessionID)
 }
@@ -991,13 +991,13 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 // window notice carries evidence the generic retry would lose, and a dead
 // credential must not be retried at all.
 //
-// spawn is the forfait token the spawn that produced rm was handed. A CLI
-// keeps that token for its whole life, and the store's refresh worker
-// revokes it when it rotates the record; the runner then writes the
-// rotation into the forfait file. An auth render on a token the file no
-// longer carries is that rotation, not a dead credential (see the auth
-// guard).
-func (b *ClaudeCodeBackend) renderedFailure(ctx context.Context, rm *claudesdk.ResultMessage, task Task, pass string, spawn forfaitSpawn) error {
+// spawn is the credential channel the CLI that produced rm was handed, and
+// both auth verdicts read it. A CLI keeps its forfait token for its whole
+// life, and the store's refresh worker revokes it when it rotates the record;
+// the runner then writes the rotation into the forfait file, so an auth render
+// on a token the file no longer carries is that rotation, not a dead
+// credential. The facade slot it also carries is what the remediation names.
+func (b *ClaudeCodeBackend) renderedFailure(ctx context.Context, rm *claudesdk.ResultMessage, task Task, pass string, spawn credSpawn) error {
 	if rm == nil || rm.Result == nil {
 		return nil
 	}
@@ -1069,7 +1069,7 @@ func (b *ClaudeCodeBackend) renderedFailure(ctx context.Context, rm *claudesdk.R
 			task.NodeID, task.Iteration, pass, detail)
 		return &ErrTransient{Provider: BackendClaudeCode, Reason: "forfait token renewed under the running CLI", Detail: detail}
 	}
-	if authErr := authFailureFast(rm.Result, task); authErr != nil {
+	if authErr := authFailureFast(rm.Result, task, spawn); authErr != nil {
 		b.Logger.Error("[%s#%d/claude-code %s] authentication failed — failing fast: %.160s",
 			task.NodeID, task.Iteration, pass, redactAuthRender(strings.TrimSpace(*rm.Result)))
 		return authErr
@@ -1505,10 +1505,10 @@ func settleLedger(l SessionLedger, sessionID string, told, terminated []string) 
 // channel suppressed on purpose, so the CLI can only die on "Not logged in" —
 // a message naming neither the provider the operator pinned nor the credential
 // that was missing, and only after paying for the spawn.
-func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, forfaitSpawn, error) {
+func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, credSpawn, error) {
 	credEnv, selected := anthropicCredRouteForTask(ctx, task)
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
-		return opts, "", forfaitSpawn{}, err
+		return opts, "", credSpawn{}, err
 	}
 	// A facade route clears ANTHROPIC_CUSTOM_HEADERS (the ambient header
 	// rides the route otherwise), and the cleared value is applied AFTER
@@ -1540,7 +1540,7 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 			}
 		}
 	}
-	return opts, currentFingerprint, forfaitSpawnOf(ctx, credEnv), nil
+	return opts, currentFingerprint, credSpawnOf(ctx, credEnv, selected, taskSandboxed(task)), nil
 }
 
 // runRecoveryFormatterPass is the single-pass safety net: when a schema is
@@ -1888,7 +1888,7 @@ func claudeExtraEnvEntries(task Task) (entries [][2]string, overridden []string)
 // task has its native surface withheld here instead. The sentence that used
 // to sit here — "(no tools)" — is what kept that gap invisible for five
 // rounds; what it names is the instruction, not the toolset.
-func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, forfaitSpawn, []string, error) {
+func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, credSpawn, []string, error) {
 	// Use the parent context directly — the runtime already enforces budget
 	// timeouts. Adding a short artificial timeout here risks cancelling the
 	// formatting pass while the CLI is still loading the resumed session.
@@ -1896,7 +1896,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 
 	var schema map[string]any
 	if err := json.Unmarshal(task.OutputSchema, &schema); err != nil {
-		return nil, forfaitSpawn{}, nil, fmt.Errorf("invalid output schema: %w", err)
+		return nil, credSpawn{}, nil, fmt.Errorf("invalid output schema: %w", err)
 	}
 
 	opts := []claudesdk.Option{
@@ -2063,10 +2063,15 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// The structured-output pass loads the same scopes as the session: an
 	// omitted --setting-sources would load every scope, `local` included.
 	opts = append(opts, claudeAmbient(task).settingSourcesOption())
-	credEnv := anthropicCredEnvForTask(ctx, task)
+	credEnv, selected := anthropicCredRouteForTask(ctx, task)
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
-		return nil, forfaitSpawn{}, nil, err
+		return nil, credSpawn{}, nil, err
 	}
+	// Read HERE, not beside the result: the record describes the env this
+	// spawn is handed, and part of it is this process's env, which is not
+	// immutable — the desktop app injects a credential into it the moment the
+	// operator saves one (iterion-desktop's SetSecret).
+	spawn := credSpawnOf(ctx, credEnv, selected, taskSandboxed(task))
 	opts = append(opts, credEnvToOpts(credEnv)...)
 
 	// A GATED node gets one extra sentence — advisory defence in depth beside
@@ -2109,7 +2114,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		}
 		settleLedger(task.SessionLedger, sid, told, lost)
 	}
-	return rm, forfaitSpawnOf(ctx, credEnv), lost, err
+	return rm, spawn, lost, err
 }
 
 // promptWithTimeout wraps claudesdk.Prompt in a goroutine with

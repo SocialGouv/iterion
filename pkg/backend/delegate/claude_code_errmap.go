@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -202,7 +203,10 @@ func isHighConfidenceAuthRender(t string) bool {
 // actually ran. Fail-fast and evidence are two thresholds on purpose:
 // every auth render fails the node legibly, but only the CLI's own
 // high-confidence shapes bench the credential.
-func authFailureFast(result *string, task Task) error {
+//
+// spawn names the credential channel the CLI that produced result was handed;
+// it decides the remediation, never the evidence.
+func authFailureFast(result *string, task Task, spawn credSpawn) error {
 	if result == nil || !isAuthErrorResult(*result) {
 		return nil
 	}
@@ -214,20 +218,134 @@ func authFailureFast(result *string, task Task) error {
 			ObservedAt: time.Now().UTC(),
 		})
 	}
-	// A node PINNED to a facade provider dies naming that provider and the
-	// variable that would have funded it — the unpinned wording indicts the
-	// forfait and the Anthropic key, channels the pin took out of the path,
-	// and sends the operator re-arming credentials that were never the
-	// route. An unpinned node's ambient-auth failure keeps the legacy
-	// wording: there the forfait and the Anthropic key ARE the channels.
-	detail := fmt.Sprintf("check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key: %s", redactAuthRender(t))
-	hint := normalizeProviderHint(task.ProviderHint)
-	if envVar := facadeEnvKey(hint); envVar != "" {
-		detail = fmt.Sprintf("no working %s credential — check %s: %s", hint, envVar, redactAuthRender(t))
+	// The remediation names the channel the spawn RAN on. The legacy wording
+	// indicts the forfait and the Anthropic key, and a facade route cleared
+	// both (facadeRouteEnv): on such a route it sends the operator re-arming
+	// credentials that were never in the path. A route the engine bound to a
+	// credential of the RUN keeps it — there the forfait and the key ARE what
+	// it spends, and no variable of the operator's holds them.
+	//
+	// Every reading comes from the env the spawn was handed, never from the
+	// `provider:` pin. The default precedence over the run's own keys and the
+	// ZAI_API_KEY shortcut reach a facade with an EMPTY hint, so a hint-only
+	// reading mis-names every unpinned facade route — and the pin has no state
+	// left to answer for: a facade hint is either funded, which stamps the
+	// slot (facadeRouteEnv), or refused before the spawn exists
+	// (facadeHintRefusal at both spawn sites).
+	//
+	// The branches are the CLI's own auth precedence, top first:
+	//
+	//   - a cloud-provider switch at the value that enters its mode
+	//     (cloudSwitches) outranks every token: the spawn spent a cloud
+	//     account, and no variable the other readings describe was in the
+	//     request.
+	//   - the slot (FacadeSlotEnvKey) names the vendor whose key died, and
+	//     facadeKeyFromEnv which of the two channels that fund such a route
+	//     paid for it — the run's own key, or the provider's variable. Naming
+	//     both would send the operator to the inert one half the time.
+	//   - failing that, the operator's own ambient variables
+	//     (ambientCredChannels) name themselves: that route carries no slot,
+	//     since its base URL names no vendor. EVERY channel the spawn carried
+	//     is named, not just the first — the CLI sends an API key and a bearer
+	//     in one request, so the provider's verdict can indict any of them.
+	//
+	// Two facts ride whichever branch wins, because they are about a channel
+	// NO branch owns: a cloud switch the CLI may or may not have read as on
+	// (spawnCloudProviderSwitches), and the operator's own
+	// ANTHROPIC_CUSTOM_HEADERS, whose lines the CLI applies over the route's
+	// credential — including a route the engine bound, where nothing else in
+	// the sentence would make the operator suspect their own variable. That
+	// clause has two strengths, because the override is name-agnostic while
+	// only one name is knowably a credential: an Authorization line is said to
+	// replace the route's own, any other content is named as a variable in the
+	// path and nothing is claimed about it (spawnCustomHeaders). Both stand
+	// down where the ambient reading already names the variable among its
+	// channels: there "check it" is the whole answer.
+	//
+	// What every branch owes, wherever the spawn carries a credential these
+	// readings see: at least one channel the sentence names is in the spawn's
+	// path. The legacy disjunction holds it by naming the two channels a route
+	// the engine bound really spends — and, where it names them on an UNBOUND
+	// route, the header clause is what keeps it true, that variable being the
+	// only credential-bearing thing left in such a spawn.
+	//
+	// A spawn whose credential none of them can read keeps the disjunction as
+	// the channel to ARM, not as one that ran: a desktop operator's forfait is
+	// the file under $HOME/.claude, which puts no variable in the spawn at all,
+	// and an expired one renders an auth failure the classifier matches.
+	//
+	// Known limit: a credential a sandbox CONTAINER holds by itself is in
+	// none of these readings — the record sees the engine's map and, on a host
+	// spawn, this process's env (spawnEnvValue) — and that spawn keeps the
+	// legacy wording.
+	lead := "check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key"
+	switch {
+	case len(spawn.cloudSwitches) > 0:
+		lead = fmt.Sprintf("no working credential on the %s route — that mode authenticates with the cloud account's own credentials, not with an Anthropic variable",
+			strings.Join(spawn.cloudSwitches, ", "))
+	case spawn.facadeSlot != "":
+		channel := fmt.Sprintf("this run's %s key", spawn.facadeSlot)
+		if spawn.facadeKeyFromEnv {
+			channel = facadeEnvKey(spawn.facadeSlot)
+		}
+		lead = fmt.Sprintf("no working %s credential — check %s", spawn.facadeSlot, channel)
+	case len(spawn.ambientChannels) == 1:
+		lead = fmt.Sprintf("no working %s credential — check that variable", spawn.ambientChannels[0])
+	case len(spawn.ambientChannels) > 1:
+		lead = fmt.Sprintf("no working credential among the channels this spawn carried — check %s",
+			strings.Join(spawn.ambientChannels, ", "))
+	}
+	if n := len(spawn.ambiguousCloudSwitches); n > 0 {
+		verb, mode := "is", "that mode"
+		if n > 1 {
+			verb, mode = "are", "those modes"
+		}
+		// What such a switch costs depends on whether a mode was entered
+		// anyway: with none on, a CLI reading presence left the token path for
+		// a cloud account. With one on, claw's detectProvider takes the first
+		// switch at cloudSwitchOn and a presence-reading CLI takes the first
+		// one SET, so a cloud account was spent either way and the open
+		// question is which — "instead" would be false there.
+		consequence := "a CLI reading it as on spent a cloud account instead"
+		if len(spawn.cloudSwitches) > 0 {
+			consequence = "a CLI reading it as on may have spent a different cloud account"
+		}
+		lead += fmt.Sprintf(" — and %s %s set to a value other than %q, the one that enters %s, so %s",
+			strings.Join(spawn.ambiguousCloudSwitches, ", "), verb, cloudSwitchOn, mode, consequence)
+	}
+	// One clause for the operator's own ANTHROPIC_CUSTOM_HEADERS, at the
+	// strength of the fact: an Authorization line is a credential under the
+	// name the CLI's own auth uses, while any other line is a credential only
+	// the operator can recognise. Both stand down where the ambient reading
+	// already names the variable among its channels — one name per sentence.
+	switch {
+	case spawn.authorizationHeader && !slices.Contains(spawn.ambientChannels, "ANTHROPIC_CUSTOM_HEADERS"):
+		if len(spawn.cloudSwitches) > 0 {
+			// A cloud-provider route carries the hedged form: claw's vertex
+			// and foundry providers resolve the identity from the environment
+			// and apply the line, its bedrock provider never reads the
+			// variable at all, and which binary a tool node spawned is not
+			// this record's fact.
+			lead += " — and ANTHROPIC_CUSTOM_HEADERS carries an Authorization line, which a CLI that applies it on that route sends in place of the mode's own credential"
+		} else {
+			lead += " — and ANTHROPIC_CUSTOM_HEADERS carries an Authorization line, which the CLI applies over whatever credential this route resolved"
+		}
+	// The weak arm repeats the stand-down guard because the strong arm's own
+	// guard falls through to this case: an Authorization line the ambient
+	// reading already names satisfies spawn.customHeaders too, and without the
+	// repetition the sentence would name the variable twice.
+	//
+	// One text for every route, the strong arm's two forms not being needed
+	// here: this arm claims nothing about the route's own credential being
+	// replaced, and the mechanism it does state is conditioned on a CLI
+	// reading the variable — which covers the one reader known not to read it
+	// on a cloud route (claw's bedrock provider).
+	case spawn.customHeaders && !slices.Contains(spawn.ambientChannels, "ANTHROPIC_CUSTOM_HEADERS"):
+		lead += " — and ANTHROPIC_CUSTOM_HEADERS is in this spawn's path, carrying lines a CLI that reads it applies over the headers its own auth set, so check it for a credential of its own"
 	}
 	return &ErrAuthFailed{
 		Provider: BackendClaudeCode,
-		Detail:   detail,
+		Detail:   fmt.Sprintf("%s: %s", lead, redactAuthRender(t)),
 	}
 }
 

@@ -60,31 +60,31 @@ func TestRenderedFailure_renewedTokenIsTransient(t *testing.T) {
 	ctx := context.Background()
 
 	var tr *ErrTransient
-	if err := b.renderedFailure(ctx, rm, task, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); !errors.As(err, &tr) {
+	if err := b.renderedFailure(ctx, rm, task, "pass 1", credSpawn{dir: dir, token: "at.before"}); !errors.As(err, &tr) {
 		t.Fatalf("a renewed token: err = %v, want ErrTransient", err)
 	}
 	if len(*got) != 0 {
 		t.Fatalf("auth evidence filed for a renewed token: %+v", *got)
 	}
 	var auth *ErrAuthFailed
-	if err := b.renderedFailure(ctx, rm, task, "pass 1", forfaitSpawn{dir: dir, token: "at.after"}); !errors.As(err, &auth) {
+	if err := b.renderedFailure(ctx, rm, task, "pass 1", credSpawn{dir: dir, token: "at.after"}); !errors.As(err, &auth) {
 		t.Fatalf("the token the file still carries: err = %v, want ErrAuthFailed", err)
 	}
 	if len(*got) != 1 {
 		t.Fatalf("a dead credential left %d readings, want 1", len(*got))
 	}
-	if err := b.renderedFailure(ctx, rm, task, "pass 1", forfaitSpawn{}); !errors.As(err, &auth) {
+	if err := b.renderedFailure(ctx, rm, task, "pass 1", credSpawn{}); !errors.As(err, &auth) {
 		t.Fatalf("a spawn without a forfait token: err = %v, want ErrAuthFailed", err)
 	}
 	// A rotation excuses an auth render only: a window notice on a renewed
 	// token is still the window.
 	limit := "You've hit your weekly limit · resets 9pm (Europe/Paris)"
 	var rl *ErrRateLimited
-	if err := b.renderedFailure(ctx, &claudesdk.ResultMessage{Result: &limit}, task, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); !errors.As(err, &rl) {
+	if err := b.renderedFailure(ctx, &claudesdk.ResultMessage{Result: &limit}, task, "pass 1", credSpawn{dir: dir, token: "at.before"}); !errors.As(err, &rl) {
 		t.Fatalf("a window notice on a renewed token: err = %v, want ErrRateLimited", err)
 	}
 	model := "There's an issue with the selected model (claude-x). It may not exist or you may not have access to it."
-	if err := b.renderedFailure(ctx, &claudesdk.ResultMessage{Result: &model}, task, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); err == nil || errors.As(err, &tr) {
+	if err := b.renderedFailure(ctx, &claudesdk.ResultMessage{Result: &model}, task, "pass 1", credSpawn{dir: dir, token: "at.before"}); err == nil || errors.As(err, &tr) {
 		t.Fatalf("a model-unavailable render on a renewed token: err = %v, want the model error", err)
 	}
 }
@@ -100,7 +100,7 @@ func TestRenderedFailure_theWaitEndsWithTheNode(t *testing.T) {
 	cancel()
 	start := time.Now()
 	var auth *ErrAuthFailed
-	if err := b.renderedFailure(ctx, &claudesdk.ResultMessage{Result: &render}, Task{}, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); !errors.As(err, &auth) {
+	if err := b.renderedFailure(ctx, &claudesdk.ResultMessage{Result: &render}, Task{}, "pass 1", credSpawn{dir: dir, token: "at.before"}); !errors.As(err, &auth) {
 		t.Fatalf("err = %v, want ErrAuthFailed", err)
 	}
 	if took := time.Since(start); took > 5*time.Second {
@@ -119,7 +119,7 @@ func TestRenderedFailure_aRenewalShipsAnAnswer(t *testing.T) {
 	if !isAuthErrorResult(answer) {
 		t.Fatal("the fixture must read as an auth render, or this proves nothing")
 	}
-	if err := b.renderedFailure(context.Background(), &claudesdk.ResultMessage{Result: &answer}, Task{}, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); err != nil {
+	if err := b.renderedFailure(context.Background(), &claudesdk.ResultMessage{Result: &answer}, Task{}, "pass 1", credSpawn{dir: dir, token: "at.before"}); err != nil {
 		t.Fatalf("a structured answer on a renewed spawn was not shipped: %v", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestRenderedFailure_waitsForTheRunnerToWriteTheRotation(t *testing.T) {
 	}()
 	defer func() { <-done }()
 	var tr *ErrTransient
-	if err := b.renderedFailure(context.Background(), &claudesdk.ResultMessage{Result: &render}, task, "pass 1", forfaitSpawn{dir: dir, token: "at.before"}); !errors.As(err, &tr) {
+	if err := b.renderedFailure(context.Background(), &claudesdk.ResultMessage{Result: &render}, task, "pass 1", credSpawn{dir: dir, token: "at.before"}); !errors.As(err, &tr) {
 		t.Fatalf("a rotation written after the render: err = %v, want ErrTransient", err)
 	}
 	if len(*got) != 0 {
