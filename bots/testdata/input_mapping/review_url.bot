@@ -1,4 +1,6 @@
-## Guard fixture — a review gate's review_url reads an input no incoming edge maps.
+## Guard fixture — a review gate's review_url and companion system prompt
+## each read an input no incoming edge maps. Both are rendered by
+## renderHumanInstructions, so both readings are the empty string.
 
 dsl: 2
 
@@ -7,6 +9,9 @@ prompt work:
 
 prompt gate_instructions:
   Walk the human through the change.
+
+prompt gate_sys:
+  You are the review companion for {{input.sys_never_mapped}}.
 
 schema verdict:
   approved: bool
@@ -20,6 +25,7 @@ human gate:
   interaction: review
   instructions: gate_instructions
   model: "anthropic/claude-sonnet-4-6"
+  system: gate_sys
   review_url: "{{input.url_never_mapped}}"
 
 workflow review_url:

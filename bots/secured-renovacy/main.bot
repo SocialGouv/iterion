@@ -431,6 +431,8 @@ prompt detect_stack_user:
     override_install_cmd:  "{{vars.override_install_cmd}}"
     override_upgrade_cmd:  "{{vars.override_upgrade_cmd}}"
 
+  Update scope (operator-supplied, may be empty): {{vars.update_scope}}
+
 ## ─── Prompts : Phase 1 — discover_outdated (agentified) ───────────
 prompt discover_outdated_system:
   You are an outdated-package discovery agent. Produce the
@@ -455,7 +457,7 @@ prompt discover_outdated_system:
 
   ## Multi-ecosystem iteration (mandatory)
 
-  For each entry in `outputs.detect_stack.ecosystems`:
+  For each entry in `input.ecosystems`:
     1. Pick the ecosystem-appropriate outdated command (yarn / npm /
        pnpm / pip / cargo / go / composer / bundler / maven / …).
     2. Run it via bash. Normalise the output into the
@@ -471,7 +473,7 @@ prompt discover_outdated_system:
 
   ## Scope filter (operator-supplied)
 
-  If `outputs.detect_stack.notes` carries an `update_scope:` hint
+  If `input.notes` carries an `update_scope:` hint
   (which detect_stack copies from `vars.update_scope`), or
   `vars.update_scope` itself is non-empty, treat the listed
   categories (libraries / languages / tooling / devops / ci_cd)
@@ -612,10 +614,12 @@ prompt discover_outdated_user:
   Discover outdated packages for this repo.
 
   Workspace:    {{vars.workspace_dir}}
+  Ecosystems:   {{input.ecosystems}}
   Pkg manager:  {{input.pkg_manager}}
   Workspaces:   {{input.workspaces}}
   Lock files:   {{input.lock_files}}
   Notes:        {{input.notes}}
+  Update scope: {{vars.update_scope}}
 
   Emit the structured outdated list. Read-only.
 
@@ -767,6 +771,7 @@ prompt security_audit_user:
 
   Workspace:        {{vars.workspace_dir}}
   Package:          {{input.selected_package}}
+  Current version:  {{input.current_version}}
   Target version:   {{input.target_version}}
   Pkg manager:      {{input.pkg_manager}}
   Lock files:       {{input.lock_files}}
@@ -938,7 +943,7 @@ prompt upgrade_system:
     4. Capture stdout+stderr of the upgrade command. Note the exit
        code. Do NOT chain the install step here — `install` is a
        separate downstream node.
-    5. Stay inside `input.workspace_dir`. Do not modify files
+    5. Stay inside `vars.workspace_dir`. Do not modify files
        outside the dependency manifests/lockfiles the manager
        touches on its own.
 
@@ -1048,7 +1053,7 @@ prompt batch_upgrade_system:
        lost.
     4. Do NOT chain the install step, breaking-change fix, or any
        other downstream node here. This is patch-tier only.
-    5. Stay inside `input.workspace_dir`. Only the manifests /
+    5. Stay inside `vars.workspace_dir`. Only the manifests /
        lockfiles the manager touches on its own may be modified.
 
   ## Workspace hygiene (mandatory)
@@ -1147,7 +1152,7 @@ prompt install_system:
        skill's install section notes which flag each manager
        uses for that).
     4. Capture stdout+stderr + exit code.
-    5. Stay inside `input.workspace_dir`.
+    5. Stay inside `vars.workspace_dir`.
 
   Tools: bash, read_file, list_files, glob, grep.
 
@@ -1821,7 +1826,11 @@ schema sha_output:
   sha: string
 
 schema discover_input:
-  workspace_dir: string
+  ## detect_stack's per-ecosystem profiles. The union this node owes is on
+  ## its own screen, not only in the session it forks: a fork is dropped
+  ## when the provider route changes, and the agent then starts with these
+  ## prompts alone.
+  ecosystems: json
   pkg_manager: string
   workspaces: string[]
   lock_files: string[]
@@ -1910,8 +1919,11 @@ schema candidate:
   cap_reason: string
 
 schema audit_input:
-  workspace_dir: string
   selected_package: string
+  ## The pin in place before the bump. The procedure decides `safe` on BOTH
+  ## versions — a current pin flagged as malware refuses the silent auto-bump
+  ## — so the agent is handed it rather than told to reason about it blind.
+  current_version: string
   target_version: string
   pkg_manager: string
   lock_files: string[]
@@ -1951,7 +1963,6 @@ schema changelog_input:
   current_version: string
   target_version: string
   risk: string
-  workspace_dir: string
 
 schema changelog_summary:
   has_breaking: bool
@@ -1975,7 +1986,6 @@ schema changelog_summary:
   engine_requirement_changes: string[]
 
 schema upgrade_input:
-  workspace_dir: string
   pkg_manager: string
   upgrade_cmd_hint: string
   install_cmd_hint: string
@@ -1990,7 +2000,6 @@ schema upgrade_result:
   output: string
 
 schema install_input:
-  workspace_dir: string
   pkg_manager: string
   install_cmd_hint: string
   workspaces: string[]
@@ -2008,7 +2017,6 @@ schema align_input:
   has_breaking: bool
   breaking_changes: string[]
   alignment_steps: string[]
-  workspace_dir: string
 
 schema align_result:
   applied: bool
@@ -2021,7 +2029,6 @@ schema validate_input:
   target_version: string
   risk: string
   align_summary: string
-  workspace_dir: string
 
 schema verdict:
   stable: bool
@@ -2034,7 +2041,6 @@ schema fix_after_input:
   selected_package: string
   blockers: string[]
   fix_plan: string
-  workspace_dir: string
 
 schema fix_after_result:
   applied: bool
@@ -2400,7 +2406,6 @@ schema mark_family_attempted_output:
 ## invocation takes the array of `{name, current, target}` triples and
 ## the manager hint from detect_stack.
 schema batch_upgrade_input:
-  workspace_dir: string
   pkg_manager: string
   patches: json
   notes: string
@@ -4866,7 +4871,7 @@ workflow secured_renovacy:
   }
 
   capture_start_sha -> discover_outdated with {
-    workspace_dir: "{{vars.workspace_dir}}",
+    ecosystems: "{{outputs.detect_stack.ecosystems}}",
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     workspaces: "{{outputs.detect_stack.workspaces}}",
     lock_files: "{{outputs.detect_stack.lock_files}}",
@@ -4892,7 +4897,6 @@ workflow secured_renovacy:
   ## has_patches → enter the fast-track. yarn up bundles every patch
   ## in one invocation; install side-effects are bundled too.
   bucket_patches -> batch_upgrade_patches when has_patches with {
-    workspace_dir: "{{vars.workspace_dir}}",
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     patches: "{{outputs.bucket_patches.patches}}",
     notes: "{{outputs.detect_stack.notes}}",
@@ -5148,8 +5152,8 @@ workflow secured_renovacy:
   ## Fan-out to the two read-only analyses. Both fire concurrently;
   ## intel_join awaits wait_all before routing.
   intel_fanout -> security_audit with {
-    workspace_dir: "{{vars.workspace_dir}}",
     selected_package: "{{outputs.select_candidate.selected_package}}",
+    current_version: "{{outputs.select_candidate.current_version}}",
     target_version: "{{outputs.select_candidate.target_version}}",
     pkg_manager: "{{outputs.resolve_pkg_ecosystem.pkg_manager}}",
     lock_files: "{{outputs.resolve_pkg_ecosystem.lock_files}}",
@@ -5163,7 +5167,6 @@ workflow secured_renovacy:
     current_version: "{{outputs.select_candidate.current_version}}",
     target_version: "{{outputs.select_candidate.target_version}}",
     risk: "{{outputs.select_candidate.risk}}",
-    workspace_dir: "{{vars.workspace_dir}}",
     _session_id: "{{outputs.detect_stack._session_id}}",
     _session_fingerprint: "{{outputs.detect_stack._session_fingerprint}}",
   }
@@ -5183,7 +5186,6 @@ workflow secured_renovacy:
   }
 
   intel_join -> upgrade when safe with {
-    workspace_dir: "{{vars.workspace_dir}}",
     pkg_manager: "{{outputs.resolve_pkg_ecosystem.pkg_manager}}",
     upgrade_cmd_hint: "{{outputs.resolve_pkg_ecosystem.upgrade_cmd}}",
     install_cmd_hint: "{{outputs.resolve_pkg_ecosystem.install_cmd}}",
@@ -5206,7 +5208,6 @@ workflow secured_renovacy:
   }
 
   upgrade -> install when success with {
-    workspace_dir: "{{vars.workspace_dir}}",
     pkg_manager: "{{outputs.resolve_pkg_ecosystem.pkg_manager}}",
     install_cmd_hint: "{{outputs.resolve_pkg_ecosystem.install_cmd}}",
     workspaces: "{{outputs.resolve_pkg_ecosystem.workspaces}}",
@@ -5232,7 +5233,6 @@ workflow secured_renovacy:
     has_breaking: "{{outputs.intel_join.has_breaking}}",
     breaking_changes: "{{outputs.intel_join.breaking_changes}}",
     alignment_steps: "{{outputs.intel_join.alignment_steps}}",
-    workspace_dir: "{{vars.workspace_dir}}",
     _session_id: "{{outputs.detect_stack._session_id}}",
     _session_fingerprint: "{{outputs.detect_stack._session_fingerprint}}",
   }
@@ -5243,7 +5243,6 @@ workflow secured_renovacy:
     target_version: "{{outputs.select_candidate.target_version}}",
     risk: "{{outputs.intel_join.effective_risk}}",
     align_summary: "{{outputs.align_code.summary}}",
-    workspace_dir: "{{vars.workspace_dir}}",
     _session_id: "{{outputs.detect_stack._session_id}}",
     _session_fingerprint: "{{outputs.detect_stack._session_fingerprint}}",
   }
@@ -5261,7 +5260,6 @@ workflow secured_renovacy:
     selected_package: "{{outputs.select_candidate.selected_package}}",
     blockers: "{{outputs.validate_upgrade.blockers}}",
     fix_plan: "{{outputs.validate_upgrade.fix_plan}}",
-    workspace_dir: "{{vars.workspace_dir}}",
     _session_id: "{{outputs.detect_stack._session_id}}",
     _session_fingerprint: "{{outputs.detect_stack._session_fingerprint}}",
   }
@@ -5285,7 +5283,6 @@ workflow secured_renovacy:
     target_version: "{{outputs.select_candidate.target_version}}",
     risk: "{{outputs.intel_join.effective_risk}}",
     align_summary: "{{outputs.fix_after_upgrade.summary}}",
-    workspace_dir: "{{vars.workspace_dir}}",
     _session_id: "{{outputs.fix_after_upgrade._session_id}}",
     _session_fingerprint: "{{outputs.fix_after_upgrade._session_fingerprint}}",
   }

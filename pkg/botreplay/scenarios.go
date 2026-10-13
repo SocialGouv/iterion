@@ -200,7 +200,6 @@ func Scenarios() []Scenario {
 						"value": "cmd/app/old.go", "note": "path cited in the doc not found on disk (cmd/ exists)",
 					},
 				},
-				"hint_count":                  float64(1),
 				"hints_note":                  "1 missing path(s), 0 dead link(s)/anchor(s), 0 unmentioned area(s) — from 4 checkable path(s) + 2 internal link(s) across 3 doc(s); 0 ledger-dismissed excluded",
 				"recently_changed_code_files": []any{},
 				"fail_log":                    "",

@@ -1,7 +1,10 @@
 name: wiki-gen
 display_name: Wikky
 icon: 📖
-version: 1.0.6
+version: 1.0.7
+## 1.0.7 — author no longer declares or receives `workspace_dir`: no
+## channel of the node rendered it, and the agent works from the
+## workspace it is started in.
 ## 1.0.4 — the skill's stale links and anchors are repaired by the tree-wide
 ## link burn-down (#1233); no behaviour change.
 ## 1.0.3 — the commit instruction excludes the `.claude/` scaffold iterion

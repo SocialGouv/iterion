@@ -1,0 +1,27 @@
+## Guard fixture — a human node as the workflow's ENTRY, the shape two
+## shipped examples use. Its input is the run's floor: the vars that declare
+## a default are in it (and in the pause's payload), an undefaulted one the
+## launch may omit is not.
+
+dsl: 2
+
+vars:
+  defaulted: string = "staging"
+  undefaulted: string
+
+prompt gate_instructions:
+  Approve the change for input.defaulted, which the launch floor carries.
+  Then weigh input.undefaulted, which it may not.
+
+schema decision:
+  approve: bool
+
+human gate:
+  output: decision
+  instructions: gate_instructions
+
+workflow human_entry:
+
+  entry: gate
+
+  gate -> done

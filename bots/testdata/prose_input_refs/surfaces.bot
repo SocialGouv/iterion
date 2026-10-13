@@ -1,0 +1,176 @@
+## Guard fixture — prose naming an input field, on every prompt surface the
+## guard walks and in both verdicts: a field the node's input holds that no
+## channel renders, and a field it holds on no route at all. The passing
+## cases are here too — a field the node's own prompt renders, a name another
+## namespace's reference puts on screen, and the whole input a node with no
+## user prompt receives as its user message.
+##
+## A human node's two surfaces are judged apart: the operator reads the
+## instructions and the pause's inbound payload, and the stand-in model of an
+## `llm_or_human` gate reads the system prompt and the whole input, so on
+## `gate` only a field carried by no route is dead prose. A review gate's
+## companion is handed the change under review instead of the input, so on
+## `ship` the same carried field is dead in the system prompt and live in the
+## instructions.
+##
+## The ENTRY node carries the two floor shapes the report has to tell apart: a
+## var that declares a DEFAULT (the floor seeds it) and a name that is no var
+## of the workflow (the floor cannot seed it).
+
+dsl: 2
+
+vars:
+  steering: string = "go"
+
+prompt work:
+  Do the work.
+  The entry floor hands you input.steering, the var that declares a default.
+  input.nowhere is on no carrier at all here.
+
+prompt reader_sys:
+  Act on input.shown, which the user prompt hands you.
+  Weigh input.sys_dead before you answer.
+  The operator's steering is {{vars.steering}}, so input.steering is on screen too.
+  The whole upstream output is here: {{outputs.seed}} — so input.payload is on
+  screen too, serialized inside it.
+
+prompt reader_user:
+  The previous node said: {{input.shown}}
+  Then consider input.user_dead.
+
+prompt judge_sys:
+  You judge the finding, and input.judge_sys_dead is part of the ledger.
+
+prompt judge_user:
+  The finding: {{input.finding}}
+  Compare it with input.judge_user_dead.
+
+prompt route_sys:
+  Pick a lane. input.router_sys_dead says which lanes are open.
+
+prompt route_user:
+  The lanes are a and b; input.router_user_dead ranks them.
+
+prompt gate_instructions:
+  Decide, reading input.human_dead — the pause shows it to you.
+  input.human_absent is on no route at all.
+
+prompt gate_sys:
+  You stand in for the human: input.gate_sys_dead is in your user message,
+  and input.gate_sys_absent is nowhere.
+
+prompt ship_instructions:
+  Test the change, reading input.ship_dead — the pause shows it to you.
+
+prompt ship_sys:
+  You are the review companion. input.ship_dead is the change under review.
+
+prompt brief_sys:
+  You have no user prompt, so your whole input is the user message:
+  input.whole is on screen.
+
+schema seed_out:
+  payload: string
+
+schema reader_in:
+  shown: string
+  sys_dead: string
+
+schema review_in:
+  finding: string
+  judge_sys_dead: string
+
+schema verdict:
+  approved: bool
+
+schema gate_in:
+  human_dead: string
+  gate_sys_dead: string
+
+schema decision:
+  approve: bool
+
+schema brief_in:
+  whole: string
+
+schema ship_in:
+  ship_dead: string
+
+schema ship_verdict:
+  decision: string
+
+agent seed:
+  model: "anthropic/claude-sonnet-4-6"
+  output: seed_out
+  user: work
+
+agent reader:
+  model: "anthropic/claude-sonnet-4-6"
+  input: reader_in
+  system: reader_sys
+  user: reader_user
+
+agent brief:
+  model: "anthropic/claude-sonnet-4-6"
+  input: brief_in
+  system: brief_sys
+
+judge review:
+  model: "anthropic/claude-sonnet-4-6"
+  input: review_in
+  output: verdict
+  system: judge_sys
+  user: judge_user
+
+router pick:
+  mode: llm
+  model: "anthropic/claude-sonnet-4-6"
+  system: route_sys
+  user: route_user
+
+human gate:
+  input: gate_in
+  output: decision
+  interaction: llm_or_human
+  instructions: gate_instructions
+  model: "anthropic/claude-sonnet-4-6"
+  system: gate_sys
+
+human ship:
+  input: ship_in
+  output: ship_verdict
+  interaction: review
+  instructions: ship_instructions
+  model: "anthropic/claude-sonnet-4-6"
+  system: ship_sys
+  posture: human_required
+
+workflow prose_surfaces:
+
+  entry: seed
+
+  seed -> reader with {
+    shown: "{{outputs.seed.payload}}"
+  }
+
+  reader -> review with {
+    finding: "{{outputs.seed.payload}}"
+  }
+
+  review -> pick with {
+    router_user_dead: "{{vars.steering}}"
+  }
+
+  pick -> gate
+
+  pick -> brief with {
+    whole: "{{outputs.seed.payload}}"
+  }
+
+  gate -> ship with {
+    ship_dead: "{{outputs.seed.payload}}"
+  }
+
+  ship -> done
+
+  brief -> done

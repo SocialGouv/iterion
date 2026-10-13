@@ -1,7 +1,13 @@
 name: evolve
 display_name: Evoly
 icon: 🧬
-version: 0.1.4
+version: 0.1.5
+## 0.1.5 — a refine turn shows the steering the operator just typed:
+## investigate renders `{{input.scope_notes}}`, which the refine edge maps
+## from their answer, beside `{{vars.scope_notes}}` — the brief the launch
+## carried, which the turn's own value would otherwise push off the screen.
+## The survey, investigation and workspace_dir mappings are dropped: the
+## prompts render them through `{{outputs.…}}` / `{{vars.…}}` already.
 ## 0.1.2 — the gpt reviewer's `tools: []` is carried by the file again. The
 ## line had been dropped by a formatting pass (an empty list used to read as
 ## an absent one), leaving ten comment lines describing a rule nothing

@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -195,5 +196,44 @@ func TestResolveRef_DrillsIntoAJSONVar(t *testing.T) {
 	}
 	if got := eng.resolveRef(refs[2], sc); got != nil {
 		t.Errorf("an absent member resolved to %#v, want nil", got)
+	}
+}
+
+// The floor seeds the DEFAULTED vars and whatever the launch supplies — not
+// every DECLARED one. A var with no default is absent from the entry node's
+// input unless the launch carries it, and nothing requires the operator to
+// supply it: the launch surfaces refuse unknown keys (ir.UnknownInputNames),
+// never missing ones. So a `{{input.<var>}}` read of an undefaulted var the
+// launch omits renders the literal placeholder on a model's prompt, as
+// asserted below, and `ir.NodeInputKeys` —
+// which answers "can this node's input hold the key?" — is an upper bound on
+// the entry node.
+func TestBuildNodeInput_EntryFloorSeedsOnlyDefaultedVars(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "wf",
+		Entry: "entry",
+		Vars: map[string]*ir.Var{
+			"defaulted":   {Name: "defaulted", Type: ir.VarString, HasDefault: true, Default: "seeded"},
+			"undefaulted": {Name: "undefaulted", Type: ir.VarString},
+		},
+		Nodes: map[string]ir.Node{"entry": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}}},
+		Loops: map[string]*ir.Loop{},
+	}
+	eng := &Engine{workflow: wf}
+
+	input := eng.buildNodeInputRS("entry", resolveScope{vars: eng.resolveVars(nil)})
+
+	if got, ok := input["defaulted"]; !ok || got != "seeded" {
+		t.Errorf(`entry floor "defaulted" = %#v (present=%v), want "seeded" — the floor must seed a defaulted var`, got, ok)
+	}
+	if got, ok := input["undefaulted"]; ok {
+		t.Errorf(`entry floor "undefaulted" = %#v, want absent — the floor seeds defaults, and this var declares none`, got)
+	}
+	rendered := (&model.TemplateResolver{}).Resolve("steering: {{input.undefaulted}}", input, nil)
+	if want := "steering: {{input.undefaulted}}"; rendered != want {
+		t.Errorf("rendered = %q, want %q — an unresolvable input read reaches the model as its own text", rendered, want)
+	}
+	if !ir.NodeInputKeys(wf, "entry")["undefaulted"] {
+		t.Error(`ir.NodeInputKeys(entry) dropped "undefaulted" — it answers what the input CAN hold, and a launch may supply any declared var`)
 	}
 }

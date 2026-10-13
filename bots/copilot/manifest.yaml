@@ -1,7 +1,11 @@
 name: copilot
 display_name: Copi
 icon: 💬
-version: 0.2.10
+version: 0.2.11
+## 0.2.11 — two prompts stop reasoning about values nothing hands them: the
+## posture Copi sets is no longer introduced as the `input.mode` it never
+## receives, and the reflection node's untrusted-input boundary names the
+## workspace it runs in rather than a var no prompt of it renders.
 ## 0.2.8 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside six prompts (80 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer; the two
