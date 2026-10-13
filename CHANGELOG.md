@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.260.0](https://github.com/SocialGouv/iterion/compare/v3.259.2...v3.260.0) (2026-10-13)
+
+### Features
+
+* **studio:** the workflow inspector edits the tool-permission gate ([#2383](https://github.com/SocialGouv/iterion/issues/2383)) ([d4ed16f](https://github.com/SocialGouv/iterion/commit/d4ed16f6892dac64363fdd636425255a8a952f6f)), closes [#1734](https://github.com/SocialGouv/iterion/issues/1734), references [#1580](https://github.com/SocialGouv/iterion/issues/1580) [#1222](https://github.com/SocialGouv/iterion/issues/1222)
+
+    <details><summary>why</summary>
+
+    The node form's rule-list help told the author that a non-empty list REPLACES the workflow's list of its kind and to restate anything they still wanted — from a UI where the workflow's own mode and lists could not be edited at all. No studio code read or wrote `permission`, `allow`, `ask` or `deny` on a workflow block (grep on the base tree, rc=1), so the one instruction the control gives pointed outside the inspector, at the text view.
+
+    </details>
+
+### Bug Fixes
+
+* **backends:** a claude_code auth failure names the credential channel the spawn ran on ([#2384](https://github.com/SocialGouv/iterion/issues/2384)) ([49cb9dc](https://github.com/SocialGouv/iterion/commit/49cb9dc306674784297cf4be402a96aad1befc14)), closes [#1527](https://github.com/SocialGouv/iterion/issues/1527)
+
+    <details><summary>why</summary>
+
+    A claude_code node routed to an anthropic-wire facade — `provider: zai`, the default precedence over the run's own z.ai/Moonshot key, or the ZAI_API_KEY shortcut — died on a rejected facade key with "check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key": the two channels facadeRouteEnv had just cleared out of that very route. The remediation read task.ProviderHint, which every unpinned facade route leaves empty, so it sent the operator re-arming credentials that were never in the…
+
+    </details>
+* **dsl:** C011 permits the exit an iteration back-edge guards, declared after it ([#2382](https://github.com/SocialGouv/iterion/issues/2382)) ([e7f1413](https://github.com/SocialGouv/iterion/commit/e7f1413db3f4181431db40121671d0751da65833)), closes [#1386](https://github.com/SocialGouv/iterion/issues/1386)
+
+    <details><summary>why</summary>
+
+    C011 refused any two edges from one node testing the same field with the same polarity, the bounded-iteration back-edge and the exit sharing its `when` included. An exhaustion exit could therefore not be guarded like its back-edge, and the one form left — a bare edge — carries the node's output onward even when the condition field is missing: a malformed `was_batch` walked into Phase 2 on the solo ledger instead of dying.
+
+    </details>
+
 ## [3.259.2](https://github.com/SocialGouv/iterion/compare/v3.259.1...v3.259.2) (2026-10-13)
 
 ### Bug Fixes
