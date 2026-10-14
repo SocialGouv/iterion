@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.263.0](https://github.com/SocialGouv/iterion/compare/v3.262.2...v3.263.0) (2026-10-14)
+
+### Features
+
+* **author:** every YAML refusal names the spelling that avoids it, and each of its causes ([#2405](https://github.com/SocialGouv/iterion/issues/2405)) ([2063357](https://github.com/SocialGouv/iterion/commit/2063357880229ef5ebd0e656f599d8c9a59aa988)), closes [#1783](https://github.com/SocialGouv/iterion/issues/1783), references [#2404](https://github.com/SocialGouv/iterion/issues/2404) [#2404](https://github.com/SocialGouv/iterion/issues/2404) [#2404](https://github.com/SocialGouv/iterion/issues/2404)
+
+    <details><summary>why</summary>
+
+    A YAML reader's own message says what it saw, never what to write. Six classes of message carried the spelling that avoids them; the rest reached a `.bot` author bare — an anchor sigil in a `&&` command, a block indicator with text on its key's line, a `- ` on a key's line, a `? ` opening a value, the escapes of a double-quoted regex or Windows path, the punctuation of a flow collection, a tag, a `%` directive, YAML's own depth bound, a control character. Two messages a reader gives for several…
+
+    </details>
+
+### Bug Fixes
+
+* **auth:** a stale user write no longer undoes a concurrent deactivation ([#2394](https://github.com/SocialGouv/iterion/issues/2394)) ([d2f61e8](https://github.com/SocialGouv/iterion/commit/d2f61e81188d2cbf860fda8420b07401b6181de6)), closes [#1862](https://github.com/SocialGouv/iterion/issues/1862)
+
+    <details><summary>why</summary>
+
+    An admin password reset read the user row, refused an already-disabled account, hashed a temporary password, then wrote the WHOLE row back — identity.Store.UpdateUser replaces the document by _id in both stores, under no precondition. A `PATCH status=disabled` committed inside that window was silently overwritten: the reset answered 200, revived the account to pending_password_change and handed out a usable temporary password. A second read before the write does not close it, it only moves the…
+
+    </details>
+
 ## [3.262.2](https://github.com/SocialGouv/iterion/compare/v3.262.1...v3.262.2) (2026-10-14)
 
 ### Bug Fixes
