@@ -76,26 +76,28 @@ Then the six limits, in this exact order:
 3. **Concurrency** — `count(active runs for tenant) < MaxConcurrentRuns`
    ([CountActiveRunsByTenant](../pkg/server/launch_gate.go)). Active =
    `queued` or `running`.
-4. **Launch rate** — token-bucket `LaunchRatePerMin` per org, rate =
+4. **Launch rate** — token-bucket `LaunchRatePerMin` per team, rate =
    `perMin/60` per second, burst = `perMin`.
-5. **Monthly cost cap** — `MonthlyUsage.CostUSD < MonthlyCostCapUSD`,
-   read from the Mongo `org_usage` counter.
-6. **Monthly run quota** — `AllowRun()` atomically increments the
-   counter and reports `ok=false` if the new total would exceed
+5. **Monthly run quota** — `AllowRun()` atomically increments the
+   month's `org_usage` counter and refuses when the new total exceeds
    `MonthlyRunQuota`. This is also the **metering** step — a successful
    run consumes one slot at this point.
+6. **Monthly cost cap** — `MonthlyUsage.CostUSD < MonthlyCostCapUSD`,
+   decided off the same post-increment document as step 5, in one round
+   trip. The run quota is tested first, so an org over both caps is
+   answered `monthly_run_quota_exceeded`.
 
 Step 2 binds only when the launch **names** a repository, which every
 automated lane does at the gate. `POST /api/runs` is the exception in
 placement, not in effect: it learns its repository from a connection read that
 must sit behind the suspend check, so it re-runs step 2 — that step alone,
-since step 6 has already metered — once `repoProjectPath` resolves, before the
+since step 5 has already metered — once `repoProjectPath` resolves, before the
 forge reachability probe and the managed-secret mint. The super-admin
 exemption below travels with it: it lives inside the repo check rather than
 only in the gate's prologue, so the one surface that re-runs a step on its own
 cannot answer a super-admin differently from the five that do not.
 
-Steps 3 and 5 are additionally **lowered by any capacity reservation that
+Steps 3 and 6 are additionally **lowered by any capacity reservation that
 does not name this launch's bot** — the floor described below — and refuse
 outright when those reserves take the whole cap (see [When the reserves
 swallow the whole cap](#when-the-reserves-swallow-the-whole-cap), which is
@@ -108,14 +110,14 @@ Super-admins bypass the whole gate (they explicitly opt out of org
 scoping). Local mode (no identity store) has no gate. The gate
 **fail-opens** on a Mongo / store error so a transient blip doesn't
 wedge every launch — quotas are an operator policy, not a hard security
-boundary. The one nuance: when `AllowRun` errors at step 6 the launch
+boundary. The one nuance: when `AllowRun` errors at step 5 the launch
 still proceeds **unmetered** (logged WARN) instead of being denied; the
 denial path is only the deliberate "this would exceed the cap" case.
 
 ## Which surfaces are gated
 
 Every launch of a new workflow passes `gateLaunch` with the identity of
-whoever is launching and meters one monthly run at step 6.
+whoever is launching and meters one monthly run at step 5.
 The slot goes back only when the refusal PROVES nothing started (a
 sealing failure, a bot that does not compile — no document, no queue
 message). When the error says a run may exist or a landed message may be
@@ -169,12 +171,14 @@ Every limit has three knobs: an **override field** (on the Org or the
 Team document — see the table), a **platform env var** (the default
 applied when the override field is zero), and a public **denial reason
 token**. Zero means "no limit" everywhere — the safe default for
-existing deployments. The first row is the exception: the `member` rung is
-authorization, not a limit — it has no field and no env var, it is raised
-by changing the caller's role in the team.
+existing deployments. The first two rows are the exception: having a
+workspace at all, and the `member` rung inside it, are authorization
+rather than limits — no field, no env var; they are cleared by belonging
+to a team and by the caller's role in it.
 
 | Limit | Override field | Platform env var | Denial reason | HTTP |
 |---|---|---|---|---|
+| No workspace: the caller names no team, or one the identity store no longer has | n/a — the caller's team | n/a — not configurable | `no_workspace` | 403 |
 | Below the `member` rung of the team | n/a — the caller's role | n/a — not configurable | `member_role_required` | 403 |
 | Org suspended / read-only | `Status` | n/a — admin action | `org_suspended` | 403 |
 | Concurrent active runs | `MaxConcurrentRuns` | `ITERION_ORG_DEFAULT_MAX_CONCURRENT_RUNS` | `concurrency_cap_exceeded` | 429 (`Retry-After: 30`) |
@@ -244,9 +248,9 @@ to a UI-driven launch.
 
 | Counter | When it bumps | Where |
 |---|---|---|
-| `org_usage.runs` | At launch admission (step 6 above) | [pkg/orgusage/orgusage.go:AllowRun](../pkg/orgusage/orgusage.go) |
+| `org_usage.runs` | At launch admission (step 5 above) | [pkg/orgusage/orgusage.go:AllowRun](../pkg/orgusage/orgusage.go) |
 | `org_usage.cost_usd` + tokens | At the end of each runner execution attempt, from that attempt's accumulated LLM events | [pkg/runner/loop_spend.go:recordOrgSpend](../pkg/runner/loop_spend.go) calls `orgusage.AddSpend` |
-| `webhook_deliveries.count` | At webhook admission (after auth + rate) | [pkg/webhooks/store.go:Counter](../pkg/webhooks/store.go) |
+| `webhook_quotas.count` — one `_id` per org-month, plus one per webhook-month when a per-webhook cap applies | At webhook admission, after the rate limit | [pkg/webhooks/store.go:Counter](../pkg/webhooks/store.go) |
 
 The run counter includes **every** launch: REST `POST /api/runs`,
 `POST /api/runs/{id}/resume` (a resume re-enters the engine and spends
@@ -732,8 +736,10 @@ quota dimension differs.
 
 ## Memory quota — pointer
 
-Memory + knowledge spaces have their own per-org aggregate quota
+Memory + knowledge spaces have their own aggregate quota
 (`MemoryQuotaBytes` on the Org document) plus per-visibility sub-caps.
+The counter the write path enforces is keyed per **team**, so each team
+of the org carries the whole ceiling rather than a share of one.
 The launch gate does **not** evaluate it — memory writes go through a
 separate CAS check inside the memory store. See
 [memory-and-knowledge.md](memory-and-knowledge.md) for the full
@@ -743,8 +749,9 @@ Changing the org override via
 `PATCH /api/admin/orgs/{id} { "memory_quota_bytes": … }` propagates
 into the enforced counter via `SetTenantQuota` on the cloud Mongo
 memory store
-([pkg/server/admin_orgs_routes.go:tenantMemoryQuotaSetter](../pkg/server/admin_orgs_routes.go)) —
-the field on `Team` alone is not enough, the counter has to be told.
+([pkg/server/admin_orgs_routes.go:tenantMemoryQuotaSetter](../pkg/server/admin_orgs_routes.go)),
+once per team of the org — the field alone is not enough, the counter
+has to be told.
 
 ## Prometheus metrics
 

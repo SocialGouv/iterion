@@ -23,7 +23,7 @@ ordering can spare the queue.
 
 - **Explicit compatibility window.** A consumer accepts only
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
-  directions. The current v19 consumer accepts v10–v18 backlog explicitly;
+  directions. The current v24 consumer accepts v10–v23 backlog explicitly;
   this is not implicit forward compatibility.
 - **Server first by default.** Both orders can park a message, and a resume
   recovers the run either way — but not at the same moment. Old runners
@@ -414,34 +414,34 @@ publication uses v19, including workflows without a literal delimiter.
       no v19 messages remain queued or resumable; an old runner cannot execute
       those literals safely.
 
-## Checklist: v19 → v20 (connector packages) — NOT YET BUMPED
+## Checklist: connector packages — NOT YET BUMPED
 
-v20 will carry the connector packages a run resolved at launch
+The bump will carry the connector packages a run resolved at launch
 (`ConnectorRefs`), so a runner materialises the same immutable package the
 publisher compiled against. See [ADR-098](adr/098-connector-catalog.md).
 
-**Nothing is bumped yet**, and this entry exists so the ordering is decided
-before it is rather than discovered during a deploy. The trap to avoid is
-specific: `SchemaVersion` is stamped on **every** message, so the moment the
-server emits v20, a fleet of digest-pinned v19 runners rejects *all* new
-messages — connector runs and ordinary ones alike. That parks the whole
-queue, not one feature.
+**`ConnectorRefs` is not on the wire yet**, and this entry exists so the
+ordering is decided before it is rather than discovered during a deploy. The
+trap to avoid is specific: `SchemaVersion` is stamped on **every** message,
+so the moment the server emits the new version, a digest-pinned fleet still
+on the current one rejects *all* new messages — connector runs and ordinary
+ones alike. That parks the whole queue, not one feature.
 
 - [ ] `ConnectorRefs` added to `RunMessage`, carrying an immutable
       content-addressed package reference (never the package bytes: Forgejo
       is 651 KiB and GitHub 4.8 MiB, so the payload goes out of band beside
       the IR's own offload — ADR-075).
 - [ ] `MinSchemaVersion` stays **10**. The addition is additive from a new
-      runner's point of view, so new runners keep consuming v19 for the whole
-      window.
+      runner's point of view, so new runners keep consuming the current
+      version for the whole window.
 - [ ] **Runners first, then the server** — the inverse of the default order,
       and legitimately so per the rule above: nothing below
       `MinSchemaVersion(new)` exists, so rolling runners first parks nothing.
       The runner is digest-pinned, so this is an explicit values bump, not a
       restart.
-- [ ] Only after the runner fleet reports v20-capable: let the server publish
-      v20. A rollback then re-publishes v19, which the new runners still
-      accept.
+- [ ] Only after the runner fleet reports the new version capable: let the
+      server publish it. A rollback then re-publishes the previous version,
+      which the new runners still accept.
 - [ ] A package referenced by a queued or resumable run is **retained**. A
       reference plus a drift guard cannot retrieve a package replaced after
       the message was published — that turns a resumable run into a

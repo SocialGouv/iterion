@@ -33,13 +33,15 @@ cloud mode the loop is end-to-end:
 ```mermaid
 sequenceDiagram
   participant SRC as external event<br/>(forge/CI/cron)
+  participant SRV as server<br/>(iterion)
   participant RUN as runner pod<br/>(iterion)
   participant EXT as external system<br/>(forge/Slack/...)
 
-  SRC->>RUN: POST /api/webhooks (iwh_ token)
-  Note over RUN: admit (auth/rate/quota)<br/>publish to NATS queue<br/>runner claims + executes<br/>binds org credentials<br/>(BYOK key + file secret)
+  SRC->>SRV: POST /api/webhooks/{provider}/{id} (iwh_ token)
+  Note over SRV: admit (auth/rate/quota)<br/>publish to NATS queue
+  SRV-->>SRC: 202 launched + run id
+  Note over RUN: claims from the queue + executes<br/>binds org credentials<br/>(BYOK key + file secret)
   RUN->>EXT: agent workflow acts (commit,<br/>review, post note...)
-  RUN-->>SRC: 202 launched + run id
 ```
 
 The event is the **trigger**; the agent workflow is the **governed workload**;

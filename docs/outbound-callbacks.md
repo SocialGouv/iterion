@@ -40,8 +40,11 @@ Supply three optional fields when launching a run via `POST /api/runs`
   never interprets it.
 - **`callback_answer_node`** — optionally names the node whose latest
   artifact holds the run's user-facing answer (read from its
-  `final_answer` field). When omitted, iterion scans every
-  artifact-producing node for a `final_answer` field and uses the first.
+  `final_answer` field). When omitted, iterion probes every
+  artifact-producing node of the run's artifact index and returns the
+  first `final_answer` it finds. That index is a map and the scan has no
+  ordering key, so when two nodes carry an answer which one wins is
+  undefined — name the node when it matters.
 
 The three fields are persisted on the run and propagated across the
 cloud queue (`queue.RunMessage`), so both local (in-process) and cloud
@@ -74,8 +77,8 @@ When the run terminates, iterion POSTs this JSON to `callback_url`:
   empty string; receivers should treat that as "post nothing".
 
 Delivery is **best-effort**: a webhook failure is logged and never
-affects the run outcome. The `callback_url` is never logged (it may embed
-a secret in its query string).
+affects the run outcome. The `callback_url` may embed a secret in its query
+string, and the warning for a URL that does not parse prints it whole.
 
 ## Authenticating the payload (HMAC signature)
 
