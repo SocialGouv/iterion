@@ -51,9 +51,11 @@ var botsRegenCatalogCmd = &cobra.Command{
 	Long: `Rebuild the generated region of bots/whats-next/skills/
 iterion-bot-catalog.md (persona table + per-bot cards) from every bot's
 manifest.yaml under the workspace, applying the .iterion/bot-overrides.yaml
-catalog overlay. The runtime does this automatically at whats-next start and
-the studio on every bot-metadata save; use this to refresh the committed copy
-by hand after editing a manifest outside the studio.`,
+catalog overlay. The runtime refreshes a run's OWN copy at run start (the
+bundle that ships the template, that copy alone; only a plain .bot run —
+one with no bot id and no bundle — refreshes every owner) and the studio
+refreshes every owner on each bot-metadata save; use this to refresh the
+committed copy by hand after editing a manifest outside the studio.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		workdir, _ := cmd.Flags().GetString("workdir")

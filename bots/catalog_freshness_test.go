@@ -40,8 +40,9 @@ func catalogTemplates(repoRoot string) ([]string, error) {
 // TestCommittedCatalogIsFresh fails when the committed generated catalog
 // (bots/whats-next/skills/iterion-bot-catalog.md) no longer matches what the
 // current manifests render. A stale committed catalog is not cosmetic: the
-// engine regenerates the file at EVERY run start, so in a worktree run the
-// regen produces a real diff against HEAD and the finalize wip-banks an
+// run of the bot that OWNS it refreshes that copy at start, so when its
+// bundle is the one inside the run's workspace (Nexie is `worktree: none`)
+// the regen produces a real diff against HEAD and the finalize wip-banks an
 // otherwise-clean run (observed on back-to-back smoke runs, 2026-07-07).
 // When this fails, run `iterion bots regen-catalog` and commit the result
 // alongside the manifest change.

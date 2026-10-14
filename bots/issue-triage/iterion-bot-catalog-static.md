@@ -8,9 +8,11 @@ description: Catalog of iterion bots — walk the decision tree to pick which bo
 <!-- This file is the HAND-AUTHORED TEMPLATE for the bot catalog. The
      persona table + per-bot reference cards between the GENERATED markers
      below are produced from each bot's manifest.yaml by
-     botregistry.RegenerateWhatsNextCatalog (run at engine start and on
-     every studio bot-metadata save; it regenerates EVERY bundle shipping
-     this template). Do NOT hand-edit that region — edit the bots'
+     botregistry.RegenerateWhatsNextCatalog: at the start of a run whose
+     own bundle ships this template — this bot's, and that copy alone —
+     on every studio bot-metadata save, and by `iterion bots
+     regen-catalog` (every bundle shipping it). Do NOT hand-edit that
+     region — edit the bots'
      manifest.yaml instead. Everything OUTSIDE the markers is editorial
      routing reasoning maintained by hand. This template lives at the
      bundle ROOT (not skills/) so it is never mirrored as a skill; the

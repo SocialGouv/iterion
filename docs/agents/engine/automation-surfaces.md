@@ -150,10 +150,10 @@ enabled bots only) spliced into a hand-authored
 distinguishers + rituals you maintain by hand). To change Nexie's
 routing, edit a bot's manifest (`display_name` / `description` /
 `when_to_use` / `triggers` / `enabled`) or toggle it in the studio
-Catalog manager — **don't hand-edit the generated region**. Regeneration
-runs automatically before Nexie's run (engine) and on every studio
-bot-metadata save (server); refresh the committed copy by hand with
-`iterion bots regen-catalog`. A workspace overlay
+Catalog manager — **don't hand-edit the generated region**. Regeneration runs on every studio bot-metadata save and at run start;
+which runs refresh which copy, and why, is
+[bot-catalog-regeneration.md](bot-catalog-regeneration.md). Refresh the committed copy
+by hand with `iterion bots regen-catalog`. A workspace overlay
 (`.iterion/bot-overrides.yaml`, gitignored) can hide/show a bot
 per-workspace without editing its manifest. See
 [pkg/botregistry/catalog.go](../../../pkg/botregistry/catalog.go).

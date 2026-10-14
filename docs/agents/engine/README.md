@@ -18,3 +18,4 @@ invariants. The product view is [docs/architecture.md](../../architecture.md).
 | [dsl-errors-resume.md](dsl-errors-resume.md) | A run fails, resumes or rewinds; a checkpoint looks torn. |
 | [worktree-finalization.md](worktree-finalization.md) | A run's workspace finalization misbehaves; touching `finalizeWorktree`. |
 | [automation-surfaces.md](automation-surfaces.md) | Something launched a run and you need to know what. |
+| [bot-catalog-regeneration.md](bot-catalog-regeneration.md) | A run wrote, or did not write, a bot catalogue copy. |

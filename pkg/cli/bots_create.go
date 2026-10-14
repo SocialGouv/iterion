@@ -106,9 +106,10 @@ func BotsCreate(opts BotsCreateOptions, p *Printer) error {
 
 	// Refresh the generated bot catalog Nexie routes on. Best-effort, and
 	// deliberately non-fatal — matching the studio's create endpoint: the
-	// bundle on disk is valid either way, and the catalog is regenerated
-	// at whats-next start and by `iterion bots regen-catalog`. Failing the
-	// command here would contradict the "Bot created" we just printed.
+	// bundle on disk is valid either way, and a router's own copy is
+	// refreshed at the start of its next run (and every owner's by
+	// `iterion bots regen-catalog`). Failing the command here would
+	// contradict the "Bot created" we just printed.
 	catalog, catErr := BotsRegenCatalog(workdir)
 
 	if p.Format == OutputJSON {
