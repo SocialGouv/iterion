@@ -129,7 +129,7 @@ the staging step alone and prints the upload id.
 | `webhooks` | `list · get · create · update · delete · rotate · deliveries` |
 | `forge` | `connections · refresh · repo-bots · oauth-apps · integrations` |
 | `audit` / `usage` / `limits` | `audit team\|org\|admin` · org usage · cost limits |
-| `memory` | `usage · docs · doc get\|put\|delete · export · import` (`--name` space) |
+| `memory` | `docs · doc get\|put\|delete · export · import` (`--name` space) — `usage` carries no space flags, so the server refuses it |
 | `admin users` | `users` alone lists (`--q` matches an email PREFIX or an exact id); `get <user-id>` returns one account's file — status, last sign-in, whether a password sign-in is possible at all, its SSO links, and the orgs/teams it was actually granted; `update <user-id> --data`; `reset-password <user-id>` mints a one-shot temporary password and revokes every session. See [administering accounts](ticket-context.md#an-account-signs-in-and-sees-nothing). |
 | `admin` | `orgs · users · dlq · llm · caps · bots · roles · sandbox` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart); `bots` = platform bot overrides — push any bot without an image rollout, `roles`/`sandbox` = runtime webhook role bindings + `sandbox: auto` image, see [platform-bots.md](platform-bots.md)) |
 | `sso` | `providers · domains` (org-scoped) |

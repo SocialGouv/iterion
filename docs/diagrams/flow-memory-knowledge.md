@@ -2,70 +2,13 @@
 
 A memory space is a quota-governed tree of Markdown documents addressed by a visibility and the qualifiers that visibility needs, and the four surfaces that write one — the REST routes, an agent's memory tool, the auto-memory mirror folding a node's notes back, and the local CLI import — meet at a single store seam, each carrying a different share of the refusals a byte passes on its way in.
 
-> Drawn from the code at commit `3e92b2c89`. What holds this page: `node docs/scripts/check-mermaid.mjs` — every block parses — and `task docs:links`. `internal/docsguard` globs `data-model-*.md` and `access-control.md` only, so no gate reddens when a flow page drifts: the commit above is the claim a redraw must re-verify by hand. [Conventions](README.md).
+> Drawn from the code at commit `f564846d3`. No gate compares this page's prose with the code: the commit above is the claim a redraw must re-verify by hand. [Conventions](README.md).
 
 ## A write, from the four writers down to the bytes
 
 The surfaces that write a space meet at `knowledge.MemoryStore.WriteDocument`, which two adapters implement: Mongo in cloud mode, the filesystem everywhere else. Three of them carry refusals of their own; `iterion memory import` is a fourth, entering at the seam with nothing above it but the per-entry checks of `ImportSpace`. The refusals before the seam belong to the caller, the ones after it to the adapter — and the two adapters do not refuse the same things.
 
-```mermaid
-flowchart TD
-    subgraph writers["The REST, tool and mirror writers"]
-        R["REST - PUT or DELETE /api/memory/doc, POST /api/memory/import"]
-        T["agent tool - memory_write, wired only when the node's memory: block sets write"]
-        M["auto-memory - the deferred SyncBack of one node's mirror, on a context detached from the node's"]
-    end
-    C["cli - iterion memory import, straight to the FS store: the unsafe-path, 2 MiB and secret-scan checks of ImportSpace, and no gate above the seam"] --> SEAM
-    R --> A0{"originGateAllows - the one CSRF boundary, reached before any credential is read, on PUT, DELETE and POST only"}
-    A0 -- "an Origin the deployment does not recognise" --> E403O["403 cross-origin request rejected - unless ITERION_REQUIRE_ORIGIN is 0"]
-    A0 -- "same-origin, loopback, the public URL, or no Origin at all" --> A1{"requireAuth - an iap_ PAT or a session JWT, from the Authorization header or the session cookie"}
-    A1 -- "no bearer" --> E401["401 authentication required"]
-    A1 -- "a bearer that fails" --> E401B["401 token expired, token invalid, or the PAT store's own refusal"]
-    A1 -- "ok" --> A2{"stampAuthedContext - the identity must carry an active TeamID, which becomes the store tenant"}
-    A2 -- "no active team, and /api/memory is deliberately NOT tenant-free" --> E403T["403 credential has no active team - super-admins included"]
-    A2 -- "ok" --> A3{"memoryRef - name, visibility, bot and project from the query, tenant and user from the identity, then ResolveSpaceRef and SpaceRef.Validate"}
-    A3 -- "no name, an unknown visibility, bot without a bot, bot or project without a project, a qualifier carrying a separator or a traversal" --> E400["400 invalid space - the message never names the missing project"]
-    A3 -- "a read - usage, docs, doc or export" --> RD["no further gate, not even on a global space"]
-    A3 -- "a mutation" --> A4{"requireMemoryWriteAuth - visibility=global only"}
-    A4 -- "global, an identity store is wired, and the caller is not IsSuperAdmin" --> E403G["403 writing the global memory space requires super-admin"]
-    A4 -- "not global, or local single-tenant, or super-admin" --> A5{"ValidateDocPath on the path param"}
-    A5 -- "absolute, a .. segment, a NUL byte, a bare dot, or a non-canonical spelling" --> E400P["400 naming the canonical spelling"]
-    A5 -- "ok" --> A6{"PUT only - io.ReadAll over io.LimitReader at the compiled 2 MiB plus one, never ITERION_MEMORY_MAX_DOC"}
-    A6 -- "a longer body" --> A6T["cut at the bound, and the cut is never reported: only an adapter cap left at 2 MiB turns it into a 422"]
-    A6T --> SEAM
-    A6 -- "within" --> SEAM
-    T --> TI{"installWorkspaceMemory calls store.Root on the resolved ref"}
-    TI -- "a legacy scope: block resolves through LegacyBotRef to a tenant-less project ref, which the cloud adapter refuses" --> TF["the node fails with claw backend: memory"]
-    TI -- "ok" --> SEAM
-    M --> MI{"per file: the walk's 2 MiB cap and md-only filter, then the run's secret unmaterializer putting values back to placeholders, then the untouched checksum, then ScanForSecret"}
-    MI -- "a literal credential shape, a non-markdown file, or one the walk could not read" --> MW["refused on its own and joined into ONE warning - the other notes still land, and the store's copy is kept"]
-    MI -- "ok" --> SEAM
-    SEAM["WriteDocument - the one knowledge.MemoryStore seam"] --> AD{"which adapter is wired"}
-    AD -- "cloud" --> C1{"validateCloudTenant - every non-global ref needs a tenant"}
-    C1 -- "no tenant" --> CE["refused before a query is built - a tenant-less id would sit outside every org's isolation"]
-    C1 -- "ok" --> C2{"the body against DefaultMaxDocumentSize, 2 MiB compiled in"}
-    C2 -- "over" --> Q422["422 carrying the store's error text - quota, revision conflict and bad path all collapse into this one status"]
-    C2 -- "ok" --> C3["ensureSpace upserts the space row once, outside the retry loop: quota_bytes from DefaultQuotaFor, used_bytes 0, mode markdown"]
-    C3 --> C4{"read this path's size and revision, then the caller's ExpectedRev"}
-    C4 -- "pinned and stale" --> C409["memory: revision conflict, expected N have M"]
-    C4 -- "ok" --> C5{"aggregate CAS on memory_tenant_usage, keyed on the TEAM id - skipped when the delta is not positive, and when the ref carries no tenant"}
-    C5 -- "the conditional update matches nothing" --> Q422
-    C5 -- "applied, or skipped" --> C6{"per-space CAS on memory_spaces - a quota_bytes of 0 means no sub-cap"}
-    C6 -- "denied" --> C6R["compensate the aggregate back, then 422"]
-    C6 -- "ok" --> C7{"ReplaceOne with upsert, filtered on the revision just read - the compare-and-swap"}
-    C7 -- "duplicate key: a concurrent writer advanced the revision" --> C7R["compensate both counters, then retry until the context is done - or fail outright when ExpectedRev was pinned"]
-    C7R --> C4
-    C7 -- "matched" --> OK["revision N plus 1, with checksum, title, description and tags parsed from the markdown"]
-    AD -- "local" --> F1{"ValidateDocPath again, then scopeFor maps the visibility to a path-clamped Scope"}
-    F1 -- "visibility=private" --> FP["ErrUnsupportedVisibility - no durable FS home, while usage on the same ref still answers"]
-    F1 -- "ok" --> F2{"maxDocumentSize, which honours ITERION_MEMORY_MAX_DOC - raising it widens what the store accepts, never what the REST surface reads"}
-    F2 -- "over" --> Q422
-    F2 -- "ok" --> F3{"the one cross-process lock under the data dir, 5 s of 20 ms spins"}
-    F3 -- "still busy" --> FL["memory: quota lock busy"]
-    F3 -- "held" --> F4{"stat the old size INSIDE the lock, then checkCeilings: the per-space sidecar first, the ONE tree-wide aggregate sidecar second"}
-    F4 -- "either ceiling breached" --> Q422
-    F4 -- "ok" --> F5["Scope.Write, then commitDelta persists both sidecars - revision stays 0, and ExpectedRev is ignored here"]
-```
+The diagram lives on the feature page: [a write, end to end](../memory-and-knowledge.md#a-write-end-to-end).
 
 ## Steps
 
