@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.262.2](https://github.com/SocialGouv/iterion/compare/v3.262.1...v3.262.2) (2026-10-14)
+
+### Bug Fixes
+
+* **test:** the prod-watch cap witnesses age their fixtures from now, not from the calendar ([#2418](https://github.com/SocialGouv/iterion/issues/2418)) ([5ee7921](https://github.com/SocialGouv/iterion/commit/5ee792110f92f5deb332dda749f418c55004eef3)), closes [#2410](https://github.com/SocialGouv/iterion/issues/2410), references [#2161](https://github.com/SocialGouv/iterion/issues/2161) [#2362](https://github.com/SocialGouv/iterion/issues/2362)
+
+    <details><summary>why</summary>
+
+    The three Loki-cap witnesses seeded their records with last_seen 2026-09-30T00:00:00+00:00 while decide reads the wall clock. Retention deletes a record whose sighting passed forget_after_days — 14 days, 336 h (main.bot:4336, `gone_h >= forget_d * 24`) — so from 2026-09-30T00:00:00Z + 336 h = 2026-10-14T00:00:00Z the seeded records were gone at the first decide and the store's cut, the rule all three witnesses exist to judge, never saw them. Measured on the fix: sightings 335 h old green, 337 h…
+
+    </details>
+
 ## [3.262.1](https://github.com/SocialGouv/iterion/compare/v3.262.0...v3.262.1) (2026-10-13)
 
 ### Bug Fixes
