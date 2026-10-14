@@ -122,7 +122,9 @@ workflow w:
   so it can pick e.g. a worktree index.
 - `isolated:` (default `false`) is the mirror of an agent/judge node's
   `readonly:`. See [Fanning subbots out in parallel](#fanning-subbots-out-in-parallel)
-  below — it is what makes the parallel pattern legal.
+  below — it is what makes the parallel pattern legal, and what leaves the
+  child the worktree its own `worktree: auto` gives it; a child declared
+  without it works in the parent's tree.
 - A depth guard bounds nested subbot recursion. Diagnostic **C119** (no `source`).
 - The runtime invokes a host-supplied `SubbotRunner`; both the `iterion run`
   CLI (`pkg/cli/run.go`) and the studio's in-process engine
@@ -234,6 +236,14 @@ on an agent/judge node: the runtime cannot *prove* the child is
 workspace-independent, so you certify it, and the guard then admits the
 parallel fan-out (both `fan_out_each` and static `fan_out_all`).
 
+The flag also decides **which tree the child works in**. A child declared
+`isolated:` keeps the per-run worktree its `worktree: auto` gives it; a child
+declared without it works in the **parent's** tree, where the parent reads its
+result instead of chasing a branch of its own. That is why an isolated fan-out
+can overlap at all: a tree lent to a child admits one writing run at a time,
+so siblings sharing one would take turns however high
+`max_parallel_branches` is.
+
 ```iter fragment
 router dispatch:
   mode: fan_out_each
@@ -303,12 +313,79 @@ under the one-mutating-branch limit). A `parallel_safe` tool followed by any
 > assertion re-opens a last-writer-wins race — the same failure mode the guard
 > exists to prevent.
 
-Parallel child runs are **data-race safe**: they share the parent's `RunStore`,
-whose per-run artifacts/events/checkpoints are isolated by `run_id` and guarded
-by a store-wide lock, and each child gets its own engine + (if `worktree: auto`)
-its own distinct git worktree. Concurrency is bounded only by the parent's
-`max_parallel_branches` (and any `needs:` lease pool). Two accounting/hygiene
-boundaries are worth knowing before a heavy fan-out:
+Parallel child runs are **data-race safe** on the store: they share the
+parent's `RunStore`, whose per-run artifacts/events/checkpoints are isolated by
+`run_id` and guarded by a store-wide lock, and each child gets its own engine.
+On the filesystem the declaration decides, and a parallel fan-out is
+`isolated:` by definition (the guard admits no other): each of those children
+keeps the per-run worktree `worktree: auto` gives it, so concurrency is bounded
+by the parent's `max_parallel_branches` (and any `needs:` lease pool) — never
+by a tree they queue on, since they share none. That holds exactly as far as
+the child actually gets that worktree: a child whose own `.bot` declares
+`worktree: none`, a workspace that is not a git repository or has no commits
+yet, a store with no filesystem root (the cloud store), or a parent sandbox the
+child adopts (a `sandbox:` run, a runner pod — one tree mounted whatever the
+node declares) leaves the siblings in the parent's tree, where its exclusive
+writer makes them take turns however high `max_parallel_branches` is — measured
+peak 1 of 3 in each of those five shapes.
+
+A child the parent did **not** declare `isolated:` works in the **parent's
+tree**: the engine asks whether this run is a subbot child, not whether a
+sandbox is shared, so a local `iterion run` answers as a runner pod does, and
+the child's commits land where the parent reads its result — the parent's
+checkout, or the parent's own per-run worktree when the PARENT declares
+`worktree: auto`, which is how a whole family is isolated from the operator's
+checkout. Those are the children the guard serializes, so one of them writes at
+a time. Three consequences of working in a lent tree are worth knowing: for the
+child's whole pass that tree's
+`.claude/{skills,commands,agents,settings.json}` are ITS mirror and are
+restored to the parent's at its exit — anything else written under those paths
+while it ran is replaced along with it; `.claude` there must be a real
+directory, since a symlink refuses the child's run rather than writing through
+it; and the child marks its node boundaries through
+[workspace versioning](workspace-versioning.md) instead of the per-node git
+refs a worktree run writes, so its first boundary pays one full hash of the
+lent tree (`ITERION_WORKSPACE_TRACK` is that cost's hatch, at the price of what
+`iterion rewind` could restore).
+
+A commit the child makes is durable in the tree it was lent, so the next
+attempt of that child does not start from the blank slate a fresh worktree
+was. A **rewind** restores files and never git history ([what a rewind puts
+back](resume.md#files-the-dropped-nodes-produced)): a run that owns a
+worktree reverts through git, so the replayed child meets a tree without its
+output and the run finishes, while a run working in place — `worktree: none`,
+an `auto` the engine degraded, or an `auto` child in ITS parent's tree —
+keeps the commit while the files go back, so the replayed child finds nothing
+to commit and the run stops there. That is the shape an in-place run's own
+committing tool node has always had. A **retry** meets the same tree the same
+way: a plain `resume` of a family whose child run failed AFTER committing
+re-runs that child from its entry, into the tree that already carries its
+commit.
+
+A node that commits in a tree it does not own therefore has to tolerate its
+own replay, and no catalog child commits through a bare `git commit`: one
+writes its commit with plumbing (`commit-tree`, which an empty diff does not
+fail), the others leave it to an agent whose gate reads the committed STATE.
+A tool node whose `git commit` exits 1 on an empty index makes every replay of
+its family a dead run. Two declarations change the shape instead, and each is
+worth exactly the worktree `worktree: auto` really gives the run it names.
+`isolated:` on the subbot node leaves the child the worktree its own
+`worktree: auto` gives it, and a replay of that child meets a tree without its
+commit — the child's commits ride a storage branch of their own, which only an
+operator's merge brings into the lent tree — at the price of the invisibility
+that declaration asks for; in the five shapes above it leaves the child
+nothing, and the replay dies in the lent tree as described.
+`worktree: auto` on the run the rewind targets keeps the child in place and
+makes that target a worktree run, so the rewind reverts the family's tree
+through git where one aimed at an in-place child does not — as far as that run
+gets a worktree itself: a store with no filesystem root, or a workspace git
+cannot serve, degrades it in place too and leaves the replay where it was.
+
+A **shared sandbox** (a runner pod, a `sandbox:` run) mounts ONE tree whatever
+the node declares, so a child adopting it works in place even when it is
+`isolated:`; there the assertion means its run store alone.
+
+Two accounting/hygiene boundaries are worth knowing before a heavy fan-out:
 
 - **Budget does not compose across the boundary.** A child run is budgeted
   purely from its own `.bot`; the parent's `max_cost_usd` / `max_tokens` /
@@ -358,13 +435,17 @@ workflow tickets:
   collect -> done
 ```
 
-`isolated: true` is what makes this parallel — the `worktree_slot` lease gives
-each child a distinct worktree, and `isolated:` certifies that the child
-confines its writes there rather than to the parent's shared checkout, so the
-safety guard admits the concurrent replays. Without it the fan-out would be
-rejected (see [Fanning subbots out in parallel](#fanning-subbots-out-in-parallel));
-drop `isolated:` and add `max_parallel_branches: 1` if the children genuinely
-share one workspace.
+`isolated: true` is what makes this parallel, twice over: it certifies that the
+child confines its writes to a workspace of its own rather than to the parent's
+shared checkout, so the safety guard admits the concurrent replays — and it is
+what leaves each child the per-run worktree `worktree: auto` gives it, the
+distinct tree those replays need. The `worktree_slot` lease is a plain counted
+resource: it caps how many children hold a slot at once and hands each its
+instance id as `_lease_worktree_slot`, it creates no worktree. Without
+`isolated:` the fan-out would be rejected (see
+[Fanning subbots out in parallel](#fanning-subbots-out-in-parallel)); drop
+`isolated:` and add `max_parallel_branches: 1` if the children genuinely share
+one workspace — the parent's tree is then the one they share.
 
 See [examples/composition/](../examples/composition/) for a runnable tool-only
 demonstration.

@@ -872,6 +872,22 @@ mechanism per run and reports which one ran:
 | paths outside the workspace | neither |
 | paths no execution of the run recorded changing (in place, default scope) | neither — reported in `files.left_in_place` |
 
+Either mechanism restores **files**, and neither rewinds the checkout's git
+history. In a worktree the revert commit keeps the two in step: the replayed
+node meets a tree that no longer holds its output, and `git log` says why. In
+place, a commit the run made after the pivot stays while its files go back, so
+a node whose product IS a commit — its own, or that of a subbot child working
+in the same tree (one the parent did not declare `isolated:`, or an isolated
+one wherever `worktree: auto` could give it none: a store with no filesystem
+root, an adopted sandbox, a child declaring `worktree: none`, a workspace git
+cannot serve) — replays against a tree that already carries it, `git commit`
+reports nothing to commit and the node fails. What makes such a run rewindable
+is OWNING a worktree: the run an operator launches does wherever
+`worktree: auto` — the declaration default — can give it one, a subbot child
+working in its parent's tree does not, whatever its own `.bot` declares — so
+rewind the run that owns the tree, or make the committing node tolerate its
+own replay.
+
 Out-of-tree scratch is untouched by any scope: `${PROJECT_SCRATCH_DIR}` resolves
 outside the workspace, so a campaign bot's `verify.sh` / `verify.log` survives a
 rewind. That is correct — but it does mean a replayed verify gate can meet a

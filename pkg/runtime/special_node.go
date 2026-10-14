@@ -267,6 +267,10 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		NodeID:      nodeID,
 		ReattachKey: e.subbotReattachKey(nodeID, rs.loopCounters, branchID),
 		WorkDir:     e.workDir,
+		// The author's assertion that the child writes no shared workspace:
+		// the runner hands it to the child engine, which then keeps its own
+		// worktree rather than working in this run's tree.
+		Isolated: sn.Isolated,
 		// The child executes where THIS run executes.
 		ParentSandbox: e.activeShare,
 	})

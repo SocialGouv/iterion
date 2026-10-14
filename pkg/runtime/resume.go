@@ -1974,7 +1974,8 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// Three preconditions gate the pruner on resume too (launch site has
 	// the same rationale): I/O clean, plugin+hooks+library complete (the
 	// hooks flag carries the `.claude` symlink veto, #2061), this is
-	// NOT a child subbot (children run in their parent's workspace).
+	// NOT a child subbot (one its parent did not declare `isolated:` runs
+	// in that parent's workspace; no child prunes either way).
 	if pluginsComplete && hooksComplete && libraryComplete && e.parentRunID == "" {
 		pruneWorkspaceMirror(e.workDir, r.Worktree, e.logger)
 	} else if e.logger != nil {

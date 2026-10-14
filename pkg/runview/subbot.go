@@ -220,6 +220,9 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			// The node's `isolated:` assertion: the child keeps a worktree of
+			// its own instead of working in the tree this request lends it.
+			runtime.WithIsolatedChild(req.Isolated),
 			runtime.WithBundle(childBundle),
 			runtime.WithExecutionContext(childContext),
 			// The child executes in the parent's sandbox when the parent has

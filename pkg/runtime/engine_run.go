@@ -240,12 +240,9 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	var worktreeCleanup func()
 	var wtCtx worktreeContext
 	worktreeActive := false
-	if e.workflow.Worktree == "auto" && e.sharedSandbox != nil && e.sharedSandbox.Run != nil {
-		// A subbot child in its parent's sandbox works in the PARENT's tree:
-		// a worktree of its own would be a tree the parent's sandbox never
-		// mounts — its skills mirrored there, its commits landing there.
+	if e.workflow.Worktree == "auto" && e.runsInParentWorkspace() {
 		if e.logger != nil {
-			e.logger.Info("runtime: executing in the parent run's sandbox — running in place in %s (no worktree of its own)", e.workDir)
+			e.logger.Info("runtime: this run executes in parent run %q's workspace — running in place in %s (no worktree of its own)", e.parentRunID, e.workDir)
 		}
 	} else if e.workflow.Worktree == "auto" {
 		// Workspace isolation is the IR default (ir.defaultWorktreeMode),
@@ -859,10 +856,12 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	//     unresolved library ref). The hooks flag carries the `.claude`
 	//     symlink veto: the pruner walks `.claude/<kind>` itself and must
 	//     not follow the link into its target (#2061).
-	//   - A child subbot (parentRunID != "") runs in its PARENT's
-	//     workspace; letting the child prune would delete files the
-	//     parent's own mirror wrote (#1500 Q4). A child never prunes,
-	//     regardless of Worktree state.
+	//   - A child subbot (parentRunID != "") its parent did not declare
+	//     `isolated:` runs in its PARENT's workspace; letting the child
+	//     prune would delete files the parent's own mirror wrote (#1500 Q4).
+	//     No child prunes, regardless of Worktree state: for an isolated
+	//     child, which does own its worktree (runsInParentWorkspace), the
+	//     skip only leaves an orphan file in a tree the run itself owns.
 	//
 	// Use run.Worktree (post-promotion) rather than the local
 	// worktreeActive: `workDirDelegated` promotes a foreign linked

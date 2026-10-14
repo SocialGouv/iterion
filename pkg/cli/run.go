@@ -771,6 +771,9 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			// The node's `isolated:` assertion: the child keeps a worktree of
+			// its own instead of working in the tree this request lends it.
+			runtime.WithIsolatedChild(req.Isolated),
 			// The child executes in the parent's sandbox when the parent has
 			// one — the same tree, on every driver, on this host as on the
 			// runner and the studio.
@@ -790,6 +793,15 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// parent's sandbox mounts and the parent's gate judges.
 		if req.WorkDir != "" {
 			childOpts = append(childOpts, runtime.WithWorkDir(req.WorkDir))
+		}
+		// A child works in the workspace it is lent, so its node boundaries
+		// are workspace-versioning snapshots and not the per-node git refs a
+		// worktree run writes (`rs.isWorktree`). Without a tracker it records
+		// none of them, and their readers — the review of the child's output,
+		// `iterion rewind` — read them. Same wiring the dispatcher's children
+		// and the studio's engine options get.
+		if tracker := runview.WorkspaceTrackerFor(storeDir); tracker != nil {
+			childOpts = append(childOpts, runtime.WithWorkspaceTracker(tracker))
 		}
 		childEng := runtime.New(childWf, s, childExec, childOpts...)
 		// Unlike the studio's in-process runner (runview.subbotRunnerFor, which
