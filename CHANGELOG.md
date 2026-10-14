@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.266.0](https://github.com/SocialGouv/iterion/compare/v3.265.0...v3.266.0) (2026-10-14)
+
+### Features
+
+* **bots,server:** Vetty proves its delivery permission before pushing, and only an answered denial holds ([#2436](https://github.com/SocialGouv/iterion/issues/2436)) ([120435a](https://github.com/SocialGouv/iterion/commit/120435aed63da717ccc48f0fd247ad8645333e10)), closes [#1595](https://github.com/SocialGouv/iterion/issues/1595), references [#1585](https://github.com/SocialGouv/iterion/issues/1585) [#1597](https://github.com/SocialGouv/iterion/issues/1597)
+
+    <details><summary>why</summary>
+
+    Vetty (dep-update-guard) and Billy (branch-improve-loop) push to repositories they do not own with a managed GitHub App installation token. A Renovate bump that also realigns `.github/workflows/**` needs `workflows:write`, which that credential does not carry: the push died at the forge with a 403 after the run had already commented, so the pull request carried an alignment nobody could deliver and the operator read a git error instead of a cause.
+
+    </details>
+
+### Bug Fixes
+
+* **runtime:** a hand-cleared forfait is observed, and the probe that sees it spends no attempt ([#2446](https://github.com/SocialGouv/iterion/issues/2446)) ([2effbfc](https://github.com/SocialGouv/iterion/commit/2effbfca58b72bf01286c1bf5df14e0e663b129f)), closes [#2247](https://github.com/SocialGouv/iterion/issues/2247)
+
+    <details><summary>why</summary>
+
+    A retry armed for the instant a provider announced is invisible to every sweep until that instant: the due scan can only ever match `retry_state.retry_after <= now`. An operator who tops up or clears their forfait by hand reopens the window with no notice, so the run keeps waiting out a wall that has already fallen — the ticket measured four days on six review runs.
+
+    </details>
+
 ## [3.265.0](https://github.com/SocialGouv/iterion/compare/v3.264.0...v3.265.0) (2026-10-14)
 
 ### Features
