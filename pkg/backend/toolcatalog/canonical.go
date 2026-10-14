@@ -1,6 +1,9 @@
 package toolcatalog
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // CanonicalToolName collapses every spelling of the SAME tool onto one key.
 //
@@ -54,10 +57,12 @@ func CanonicalToolName(name string) string {
 	return n
 }
 
-// CanonicalRows is the table itself, copied. Its only consumer is the test
-// that pins every row: a row is an assertion that two spellings are the same
-// tool, and `allow:` widens, so a new one has to be argued in the test before
-// it can grant anything.
+// CanonicalRows is the table itself, copied. Read by the test that pins every
+// row — a row is an assertion that two spellings are the same tool, and
+// `allow:` widens, so a new one has to be argued there before it can grant
+// anything — and by the delegate's own vocabulary derivation, which folds
+// every spelling onto WritingCanonicals to learn what an author may write a
+// file with.
 func CanonicalRows() map[string]string {
 	out := make(map[string]string, len(canonicalToolNames))
 	for k, v := range canonicalToolNames {
@@ -65,6 +70,54 @@ func CanonicalRows() map[string]string {
 	}
 	return out
 }
+
+// WritingCanonicals are the canonical concepts of this table whose tool
+// WRITES A FILE, in the order the roster projections read them. Copied, so a
+// consumer cannot grow the set for everyone else.
+//
+// They are concepts, not spellings: every accepted synonym folds onto one of
+// them through CanonicalToolName, so `write_file`, `apply_patch` and
+// `str_replace` are the same three members as `write` and `edit`.
+//
+// The set lives beside the spelling table for the table's own reason: every
+// reader of it answers a question about the same word, and they may not
+// disagree. The enumeration carries no count — a numeral is the part of an
+// enumeration that goes stale — and it is held by a run,
+// TestTheWritingSetsDocNamesEveryReaderOfIt, which reads the callers out of
+// the tree:
+//
+//   - what `readonly: true` withholds from every claude_code spawn
+//     (delegate.claudeReadonlyWithheld, through claudeNativeForCanonical);
+//   - which of those tools the node's own `tools:` list asked for, so the
+//     operator notice can name the declaration the flag deleted
+//     (delegate.claudeWritersTheDeclarationNames);
+//   - the two corpus rules that keep the flag out of the tree beside a
+//     declared writer, #1816:
+//     bots.TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool (through
+//     declaredWriters) and
+//     botscaffold.TestNoScaffoldedNodeDeclaresReadonlyWithAWritingTool;
+//   - the writing vocabulary every readonly argv row is asserted over
+//     (delegate.claudeWritingDeclarations, floored by
+//     delegate.TestTheWritingVocabularyIsReadFromTheTable).
+//
+// Each held its own literal, and nothing held them equal: growing the
+// delegate's left both corpus rules silently narrower than the rule they
+// enforce.
+//
+// `bash` is NOT a member, and the omission is the contract, not an oversight:
+// a shell writes any file the process can reach, but `readonly:` KEEPS it on
+// claude_code by design (the flag withholds tools, it is not a sandbox —
+// #1651), so a corpus rule that read the shell as a declared writer would
+// refuse the 26 shipped read-only nodes that declare the tool the flag leaves
+// them (measured: the set added to this list, then
+// bots.TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool). codex counts the shell for a different verdict — which sandbox mode
+// its declaration needs (codexSandboxForAllowedTools) — and that question is
+// its own.
+func WritingCanonicals() []string {
+	return slices.Clone(writingCanonicals)
+}
+
+var writingCanonicals = []string{"write", "edit", "notebookedit"}
 
 var canonicalToolNames = map[string]string{
 	// shell. `run_command` is accepted as a Bash grant by the claude_code

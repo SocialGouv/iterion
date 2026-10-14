@@ -184,11 +184,12 @@ the advisory names `git_diff`, `git_status`, `list_files`,
 or a capability other than
 `board.read` / `runs.read` (`board.create`, `board.comment`,
 `board.label`, `board.assign`, `board.move`, `board.close`). `readonly:
-true` does not take a node out of the class: codex and pi enforce it as
-a sandbox, while on claude_code it withholds the file-writing tools a
-node did not declare — not its shell, and not the native roster iterion
-does not own. Every node of this bot reads material derived from the
-audited repository, so the surface alone decides membership.
+true` does not take a node out of the class: codex enforces it as a
+read-only OS sandbox and pi as a four-reader tool list, while on
+claude_code it withholds the file-writing tools — not its shell, and not
+the native roster iterion does not own. Every node of this bot reads
+material derived from the audited repository, so the surface alone
+decides membership.
 
 **Why the marker is a phrase, not an orthography.** A guard that
 enumerated spellings ("dismiss all findings", "approve this run", "the

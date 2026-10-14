@@ -2,6 +2,9 @@ package bots
 
 import (
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -18,8 +21,8 @@ import (
 // says what the node must do ("never edit code", "change nothing", "Do NOT
 // write any file"), and stays true whatever the argv is. A CLAIM states a fact
 // about the argv — and on `claude_code` the argv contradicts it: `readonly:`
-// withholds the file-writing TOOLS the node did not declare, not the write
-// capability, so a node that keeps a shell writes any file it can reach
+// withholds the file-writing TOOLS, not the write capability, so a node that
+// keeps a shell writes any file it can reach
 // (docs/dsl.md, delegate.Task.Readonly). A mandate is left alone on purpose;
 // widening this list to catch one would force a rewrite on every read-only
 // instruction in the catalogue and prove nothing.
@@ -45,34 +48,26 @@ func namesAShell(body string) bool {
 	return strings.Contains(low, "bash") || strings.Contains(low, "shell")
 }
 
-// readonlyWritingCanonicals are the canonical concepts a `tools:` entry has
-// to fold onto for the node to hold a writer the flag leaves in place. They
-// are the delegate's own list (pkg/backend/delegate, claudeWritingCanonicals),
-// read through the shared spelling table, so `write_file`, `apply_patch` and
+// declaredWriters names the writing tools a node's own `tools:` list asks for
+// — the ones `readonly:` removes anyway on every backend that reads the flag.
+//
+// The concepts are toolcatalog.WritingCanonicals(), the ONE set the delegate's
+// own withholding reads (claudeReadonlyWithheld) — not a literal of this
+// file's: a corpus rule narrower than the production list it enforces passes
+// a node the flag would strip, in silence. The fold through
+// CanonicalToolName is what makes `write_file`, `apply_patch` and
 // `str_replace` classify like `write` and `edit`.
-var readonlyWritingCanonicals = []string{"write", "edit", "notebookedit"}
-
-// declaredWriters names the writing tools a node's own `tools:` list grants —
-// the ones `readonly:` does NOT remove on claude_code, because deleting an
-// explicit declaration in silence is what philosophy rule 1 forbids.
 func declaredWriters(tools []string) []string {
-	var kept []string
+	var declared []string
 	for _, name := range tools {
-		for _, canonical := range readonlyWritingCanonicals {
+		for _, canonical := range toolcatalog.WritingCanonicals() {
 			if toolcatalog.CanonicalToolName(name) == canonical {
-				kept = append(kept, name)
+				declared = append(declared, name)
 			}
 		}
 	}
-	return kept
+	return declared
 }
-
-// withholdingScopes are the clauses that bound a statement of the flag to
-// what it really removes: the writers the declaration did NOT name, or the
-// kept one named outright. A statement carrying one is true on a node that
-// declares a writer; an unscoped one is the opposite of what the backend logs
-// on the same run ("readonly: true is NOT enforced for Write").
-var withholdingScopes = []string{"did not declare", "did not name", "does not name", "is kept"}
 
 // readonlySpawnKeepsAShell reports whether a claude_code spawn of this node
 // still offers the model a shell, which is what makes an incapacity claim
@@ -163,7 +158,7 @@ func TestNoReadonlyClaudeCodeNodeIsToldItHoldsNoWritePath(t *testing.T) {
 	}
 	sort.Strings(offenders)
 	if len(offenders) > 0 {
-		t.Errorf("%d prompt line(s) tell a readonly claude_code node that keeps a shell it holds no write path, and no line of the same prompt names that shell — on this backend `readonly:` removes the writing TOOLS the node did not declare, so the shell writes any file it can reach; state the shell, or drop it from the node's tools: list:\n  %s",
+		t.Errorf("%d prompt line(s) tell a readonly claude_code node that keeps a shell it holds no write path, and no line of the same prompt names that shell — on this backend `readonly:` removes the writing TOOLS, not the write capability, so the shell writes any file it can reach; state the shell, or drop it from the node's tools: list:\n  %s",
 			len(offenders), strings.Join(offenders, "\n  "))
 	}
 	// A FLOOR on the walk, because this guard selects on three node fields at
@@ -176,84 +171,341 @@ func TestNoReadonlyClaudeCodeNodeIsToldItHoldsNoWritePath(t *testing.T) {
 	}
 }
 
-// TestNoReadonlyWriterIsToldTheFlagTookItsWritingTools is the other half of
-// the class: a `readonly: true` claude_code node whose OWN `tools:` list
-// names a writer keeps it (TestAReadonlyDeclarationThatNamesAWriterKeepsItAndSaysSo
-// in pkg/backend/delegate asserts the argv, and the backend logs "readonly:
-// true is NOT enforced for Write" on the same run), so a prompt telling that
-// node the flag withholds its writing tools states the opposite of its own
-// surface.
+// TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool is the corpus half of
+// the rule: `readonly: true` and a `tools:` list naming a writer are two
+// statements that contradict each other, and the flag wins wherever it is
+// read, so the pair leaves a node whose prompt mandates a file it cannot
+// write with the tool it names.
 //
-// Why it matters more than a wording: the model reads the prompt as its
-// surface. Told its declared `write_file` was removed, it produces the report
-// the same prompt mandates through `bash` redirection instead — and an author
-// reading the same line believes those nodes hold no writer.
+// Backend-independent, because every backend makes the pair a defect and not
+// one of them keeps the writer:
 //
-// Value-based, not a needle list: the offence is a statement of the flag's
-// withholding with no clause bounding it to the undeclared writers, so a
-// reworded claim is caught too. The escape hatch is greppable —
-// withholdingScopes — and saying "your write_file is kept" discharges it.
-func TestNoReadonlyWriterIsToldTheFlagTookItsWritingTools(t *testing.T) {
+//   - codex runs the node in a read-only OS sandbox (codex.go), pi narrows
+//     its tool list to readers (pi.go), claude_code withholds the writing
+//     natives from both of its spawns (claudeReadonlyWithheld) — the
+//     declaration is dead on all three;
+//   - `claw`, `opencode` and `cliagent` do not read the flag at all, so there
+//     the writer DOES run, inside a workspace the engine admitted the node
+//     into as non-mutating (pkg/runtime, isMutatingNodeIn) — a write beside a
+//     parallel branch that was told nobody mutates.
+//
+// The way out is the declaration the node means: drop `readonly:` when the
+// deliverable is a written file (its fan-out admission goes with it), or drop
+// the writer when the node really only reads.
+//
+// The predicate is the DECLARED writer, and on the three backends that ignore
+// the flag two other shapes hand the node the same writer with the same
+// non-mutating admission, both outside it. An OMITTED `tools:` list is the
+// full native roster there: 0 of the 10 corpus `readonly:` nodes that resolve
+// to one of those backends omits it today, and the nearest miss is
+// `bots/evolve` `review_gpt`, saved only by its declared-EMPTY `tools: []`.
+// And `auto_memory` on claw appends `read_file, write_file, glob` to any
+// NON-EMPTY list (pkg/backend/model/executor_build_task.go), switchable per
+// node, per workflow or deployment-wide (automemory.ModeEnv) — a writer that
+// never appears in `tools:` at all, and 9 of those 10 nodes have a non-empty
+// list. Neither shape is visible here, nor to `isMutatingNodeIn`, which
+// answers on `n.Readonly` before it consults the effective surface.
+//
+// Walked over catalogWorkflowFiles(): every `.bot` of the catalogue bundles,
+// the examples, the dispatcher template embedded in every binary and the
+// operator scripts — so a bundle copying the shape is caught the day it
+// lands. NOT the scaffold templates under pkg/botscaffold/templates: those
+// are Go templates, unparseable as `.bot` until rendered, and the same
+// predicate is asserted on the RENDERED gallery by
+// pkg/botscaffold.TestNoScaffoldedNodeDeclaresReadonlyWithAWritingTool — the
+// root `iterion bots create` copies from, and the one the sibling needle
+// guard needed a floor of its own for.
+//
+// A router cannot be in the class: `readonly:` and `tools:` are not router
+// properties — the parser answers E012 `unknown router property` for both —
+// so `*ir.RouterNode` carries LLMFields whose Readonly no `.bot` can set, and
+// a `case` for it here would be a branch nothing reaches.
+func TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool(t *testing.T) {
+	paths := catalogWorkflowFiles()
+	// A FLOOR on the discovery: this guard reads a glob, and a layout rename
+	// that stopped matching would make it pass over nothing at all. 60 is
+	// under the 70 files shipped today, so bundles may be retired without
+	// touching this line.
+	if len(paths) < 60 {
+		t.Fatalf("the walk found %d workflow file(s), want at least 60: the discovery broke, and this guard is now green over an unexamined corpus", len(paths))
+	}
 	var offenders []string
-	checked := 0
-	for _, sw := range shippedWorkflows(t) {
-		ids := make([]string, 0, len(sw.wf.Nodes))
-		for id := range sw.wf.Nodes {
+	nodes, readonlyNodes, writerNodes := 0, 0, 0
+	for _, path := range paths {
+		wf := compileBotFile(t, path)
+		ids := make([]string, 0, len(wf.Nodes))
+		for id := range wf.Nodes {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
 		for _, id := range ids {
-			llm, ok := sw.wf.Nodes[id].(ir.LLMNode)
+			llm, ok := wf.Nodes[id].(ir.LLMNode)
 			if !ok {
 				continue
 			}
-			f := llm.GetLLMFields()
-			if !f.Readonly || !strings.Contains(resolvedBackend(llm, sw.wf.DefaultBackend), "claude_code") {
+			nodes++
+			writers := declaredWriters(llm.GetTools())
+			if len(writers) > 0 {
+				writerNodes++
+			}
+			if !llm.GetLLMFields().Readonly {
 				continue
 			}
-			writers := declaredWriters(llm.GetTools())
+			readonlyNodes++
 			if len(writers) == 0 {
 				continue
 			}
-			checked++
-			for _, name := range []string{f.SystemPrompt, f.UserPrompt} {
-				p := sw.wf.Prompts[name]
-				if p == nil {
-					continue
-				}
-				// Collapsed the way the model reads it: these statements
-				// wrap, and a per-line probe would call a scoped sentence
-				// unscoped whenever the scope sat one wrap away.
-				prose := strings.ToLower(strings.Join(strings.Fields(p.Body), " "))
-				if !strings.Contains(prose, "readonly") || !strings.Contains(prose, "withhold") {
-					continue
-				}
-				scoped := false
-				for _, scope := range withholdingScopes {
-					if strings.Contains(prose, scope) {
-						scoped = true
-						break
-					}
-				}
-				if !scoped {
-					offenders = append(offenders, fmt.Sprintf("%s%s (writers %v): prompt %q states the withholding with no scope",
-						sw.prefix, id, writers, name))
-				}
-			}
+			offenders = append(offenders, fmt.Sprintf("%s %s (backend %q, writers %v)",
+				path, id, resolvedBackend(llm, wf.DefaultBackend), writers))
 		}
 	}
 	sort.Strings(offenders)
 	if len(offenders) > 0 {
-		t.Errorf("%d prompt(s) tell a readonly claude_code node that the flag withholds its writing tools, while its own tools: list declares one and the backend keeps it — scope the sentence to the writers the node did NOT declare, and name the kept one:\n  %s",
+		t.Errorf("%d node(s) declare `readonly: true` together with a writing tool, which no backend keeps — codex runs the node in a read-only OS sandbox, pi pins its tool list to four readers, claude_code withholds the writing natives from both spawns, and the three that ignore the flag let the node write inside a workspace the engine admitted it into as non-mutating; drop `readonly:` where the deliverable is a written file, or drop the writer:\n  %s",
 			len(offenders), strings.Join(offenders, "\n  "))
 	}
-	// A FLOOR on the discovery: this guard selects on `readonly:`, the
-	// backend AND a declared writer at once, so a narrowed reading of any of
-	// the three would make it pass over nothing. 3 is under the 4 shipped
-	// today (sec-audit-deps, supply-shield, supply-shield-cve `llm_review`,
-	// ultra11y `adjudicate`).
-	if checked < 3 {
-		t.Fatalf("the walk reached %d readonly claude_code node(s) declaring a writer, want at least 3: the discovery broke, and this guard is now green over an unexamined class", checked)
+	// A FLOOR on the node reading too: a `tools:` or `readonly:` accessor
+	// that stopped resolving would leave the walk reading files and
+	// classifying nothing. One count per SELECTION, not one for the walk: the
+	// offender is the INTERSECTION of two predicates, so a total over every
+	// LLM node stays green while either one answers nothing — measured, with
+	// `declaredWriters` returning nil for every node and with the flag read
+	// as always-false, and the whole package stayed green on both.
+	if nodes < 140 {
+		t.Fatalf("the walk reached %d agent/judge node(s), want at least 140: the IR reading broke, and this guard is now green over an unexamined corpus", nodes)
+	}
+	// 45 is under the 57 that carry the flag today, 12 under the 17 that
+	// declare a writer: a bundle may be retired without touching these lines.
+	if readonlyNodes < 45 {
+		t.Fatalf("the walk read `readonly: true` on %d node(s), want at least 45: the flag reading broke, and this guard now intersects an empty set", readonlyNodes)
+	}
+	if writerNodes < 12 {
+		t.Fatalf("the walk read a declared writer on %d node(s), want at least 12: declaredWriters (or the spelling table under it) broke, and this guard now intersects an empty set", writerNodes)
+	}
+}
+
+// bundleReadonlyFlags reads, per bundle directory, whether each node id
+// declares `readonly: true` — unioned over EVERY workflow of the bundle, not
+// its main.bot alone: a sibling entrypoint declares nodes the prose names as
+// freely, and a map built from main.bot would read one of those as absent and
+// call a true sentence stale.
+func bundleReadonlyFlags(t *testing.T) map[string]map[string]bool {
+	t.Helper()
+	out := map[string]map[string]bool{}
+	for _, sw := range shippedWorkflows(t) {
+		bundle := sw.prefix
+		if i := strings.IndexAny(bundle, "/:"); i >= 0 {
+			bundle = bundle[:i]
+		}
+		if out[bundle] == nil {
+			out[bundle] = map[string]bool{}
+		}
+		for id, n := range sw.wf.Nodes {
+			llm, ok := n.(ir.LLMNode)
+			if !ok {
+				continue
+			}
+			out[bundle][id] = out[bundle][id] || llm.GetLLMFields().Readonly
+		}
+	}
+	return out
+}
+
+// isIdentifierByte reports whether b can sit inside a node id, which is what
+// makes the id match below a WHOLE word: `render` inside
+// "attribute-rendering" is not the node `render`, and reading it as one is a
+// false alarm this guard measured before the boundary was added.
+func isIdentifierByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+// readonlyAttributionOwner names the node a `(…)` attribute list at `open`
+// describes: the nearest node id ENDING within 20 characters before the
+// parenthesis, as a whole word. Empty when there is none.
+//
+// Nearest, and not "any id in the window", because these lists are written in
+// sequence — `- gate` one line above `- review (adaptive claude_code,
+// readonly)` put two candidates in front of one parenthesis, and the further
+// one is the sibling bullet, not the subject. 20 characters is what the
+// corpus's own longest connector needs (`triage agent (claw, readonly)`);
+// a window wide enough to reach across a sentence is what read a list of HTML
+// attributes as a node's tool surface.
+func readonlyAttributionOwner(prose string, open int, flags map[string]bool) string {
+	owner, ownerEnd := "", -1
+	for id := range flags {
+		for at := 0; at < open; {
+			i := strings.Index(prose[at:open], id)
+			if i < 0 {
+				break
+			}
+			abs := at + i
+			at = abs + 1
+			end := abs + len(id)
+			if abs > 0 && isIdentifierByte(prose[abs-1]) {
+				continue
+			}
+			if end < len(prose) && isIdentifierByte(prose[end]) {
+				continue
+			}
+			if open-end > 20 || end <= ownerEnd {
+				continue
+			}
+			owner, ownerEnd = id, end
+		}
+	}
+	return owner
+}
+
+// TestNoBundlePageAttributesReadonlyToANodeThatDoesNotDeclareIt is the class
+// contract of a bundle's SHIPPED prose about its own nodes: a README or a
+// skill that lists a node's attributes — `llm_review (claude_code, readonly,
+// board.create + board.label)` — states what the `.bot` declares, and the
+// word is a fact the run can be read against, not a label.
+//
+// Load-bearing because the skill is not author-only: sec-audit-deps' own
+// `review_system` prompt lists `sec-audit-deps.md` under "Required reading
+// (mirrored to .claude/skills/ at run time)", so the node reads its own phase
+// description every run. A node told its flag withholds its only non-shell
+// write path, by a prompt that also hands it `write_file`, is given two
+// contradicting statements of its own surface — and the honest reading of the
+// stale one produces the mandated report through a shell redirection instead.
+//
+// Scope, stated rather than implied: the ATTRIBUTE-LIST shape, a `(…)` group
+// carrying the bare word `readonly` behind a node's name. A page quoting the
+// declaration (`readonly: true`) or discussing the flag in prose is left
+// alone — those say what the flag means, which the needle guard in
+// pkg/backend/delegate owns, not which node carries it.
+func TestNoBundlePageAttributesReadonlyToANodeThatDoesNotDeclareIt(t *testing.T) {
+	flagsByBundle := bundleReadonlyFlags(t)
+	var offenders []string
+	attributions, pages := 0, 0
+	bundles := make([]string, 0, len(flagsByBundle))
+	for bundle := range flagsByBundle {
+		bundles = append(bundles, bundle)
+	}
+	sort.Strings(bundles)
+	for _, bundle := range bundles {
+		flags := flagsByBundle[bundle]
+		if st, err := os.Stat(bundle); err != nil || !st.IsDir() {
+			continue
+		}
+		if err := filepath.WalkDir(bundle, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || filepath.Ext(path) != ".md" {
+				return nil
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			pages++
+			// Collapsed the way a reader reads it: these lists wrap, and the
+			// name wears backticks or bold markers in half the corpus.
+			prose := strings.ToLower(string(raw))
+			for _, strip := range []string{"`", "*"} {
+				prose = strings.ReplaceAll(prose, strip, " ")
+			}
+			prose = strings.Join(strings.Fields(prose), " ")
+			for open := 0; open < len(prose); open++ {
+				if prose[open] != '(' {
+					continue
+				}
+				width := strings.Index(prose[open:], ")")
+				if width < 0 {
+					break
+				}
+				inner := prose[open+1 : open+width]
+				at := strings.Index(inner, "readonly")
+				if at < 0 {
+					continue
+				}
+				if end := at + len("readonly"); end < len(inner) && inner[end] == ':' {
+					continue // a quoted declaration, not an attribute list
+				}
+				owner := readonlyAttributionOwner(prose, open, flags)
+				if owner == "" {
+					continue
+				}
+				attributions++
+				if !flags[owner] {
+					offenders = append(offenders, fmt.Sprintf("%s: %s (%s)", path, owner, inner))
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("%s: %v", bundle, err)
+		}
+	}
+	sort.Strings(offenders)
+	if len(offenders) > 0 {
+		t.Errorf("%d shipped page(s) call a node `readonly` while its `.bot` declares no such flag — the bundles mirror their skills into .claude/skills/ at run time, so the node reads this about itself; state what the declaration says, or restore the flag:\n  %s",
+			len(offenders), strings.Join(offenders, "\n  "))
+	}
+	// TWO floors, because this guard is an intersection as well: the pages it
+	// reads, and the attributions it recognised in them. A collapse step or a
+	// window that stopped matching would leave it reading every page and
+	// judging nothing. 8 is under the 10 attributions shipped today, and 100
+	// is under the 241 pages the walk reads.
+	if pages < 100 {
+		t.Fatalf("the walk read %d bundle page(s), want at least 100: the discovery broke, and this guard is now green over an unexamined corpus", pages)
+	}
+	if attributions < 8 {
+		t.Fatalf("the walk recognised %d node attribute list(s) naming `readonly`, want at least 8: the shape reading broke, and this guard is now green over prose it no longer parses", attributions)
+	}
+}
+
+// TestEveryDroppedReadonlyCommentStatesWhatWentWithTheFlag is the ratchet on
+// the comment the escape hatch leaves behind. A node whose deliverable is a
+// written file drops `readonly:` and says so on itself; the flag carries TWO
+// meanings, and a comment that explains one leaves the next author to
+// rediscover the other by a failed run.
+//
+// The tool half: on claude_code the flag withholds the file-writing tools
+// whatever the `tools:` list says (claudeReadonlyWithheld). The scheduling
+// half: the flag is also the node's non-mutating admission into a parallel
+// branch (pkg/runtime.isMutatingNodeIn returns false on `n.Readonly` alone),
+// so dropping it makes the node mutating — and a second mutating branch under
+// one router is a hard ErrCodeWorkspaceSafety at validation, with nothing in
+// the node to say the flag was deliberately given up.
+func TestEveryDroppedReadonlyCommentStatesWhatWentWithTheFlag(t *testing.T) {
+	const marker = "## no `readonly:`"
+	var offenders []string
+	sites := 0
+	for _, path := range catalogWorkflowFiles() {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		lines := strings.Split(string(raw), "\n")
+		for i, line := range lines {
+			if !strings.Contains(strings.ToLower(line), marker) {
+				continue
+			}
+			sites++
+			// The block is the run of `##` lines the marker opens.
+			block := ""
+			for j := i; j < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[j]), "##"); j++ {
+				block += " " + strings.TrimSpace(lines[j])
+			}
+			block = strings.ToLower(strings.Join(strings.Fields(block), " "))
+			if !strings.Contains(block, "fan-out") && !strings.Contains(block, "fan out") {
+				offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, strings.TrimSpace(line)))
+			}
+		}
+	}
+	if len(offenders) > 0 {
+		t.Errorf("%d comment(s) explain a dropped `readonly:` without naming what went with it — the node's non-mutating fan-out admission (pkg/runtime, isMutatingNodeIn), which makes a parallel branch around this node a workspace-safety refusal; say both halves:\n  %s",
+			len(offenders), strings.Join(offenders, "\n  "))
+	}
+	// A FLOOR on the marker: a comment reworded to "No readonly flag" would
+	// leave this guard reading every bot and finding nothing to judge. 3 is
+	// under the 4 shipped today — three report writers plus
+	// bots/dep-update-guard `verify_build`, the site this guard found — so a
+	// bundle may stop writing a report without touching this line.
+	if sites < 3 {
+		t.Fatalf("the walk found %d dropped-`readonly:` comment(s), want at least 3: the marker was reworded, and this guard is now green over a class it no longer recognises", sites)
 	}
 }
 

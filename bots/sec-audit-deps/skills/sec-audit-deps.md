@@ -86,7 +86,7 @@ skills (`[[lang-js]]`, `[[lang-py]]`, `[[lang-go]]`,
 `[[lang-generic]]`) document which scanners + how to interpret
 their output.
 
-## Phase 5 — `llm_review` (claude_code, readonly, board.create + board.label)
+## Phase 5 — `llm_review` (claude_code, board.create + board.label)
 
 Receives the structured signals. Reads `[[malware-signals]]` for the
 canonical signal catalogue and applies the LLM-reviewer prompt from

@@ -161,15 +161,60 @@ func TestADeclaredWithheldToolIsNotApprovedEither(t *testing.T) {
 // claude_code spawn, spelled as the CLI spells it.
 var claudeWritingNatives = []string{"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
+// claudeWritingDeclarations are the `tools:` spellings a node writes a file
+// with — what `readonly: true` must keep off --allowedTools.
+//
+// DERIVED from the shared spelling table rather than typed: the vocabulary an
+// author may write is every key the table folds onto a writing canonical, and
+// a literal held 6 of the 14 while calling itself the DSL's vocabulary. The
+// canonicals are toolcatalog.WritingCanonicals(), the one set the withholding
+// itself reads, so a concept added there widens this assertion in the same
+// edit. Sorted, because
+// CanonicalRows is a map and a failure has to name the same spelling twice.
+func claudeWritingDeclarations() []string {
+	var out []string
+	for spelling, canonical := range toolcatalog.CanonicalRows() {
+		if slices.Contains(toolcatalog.WritingCanonicals(), canonical) {
+			out = append(out, spelling)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// TestTheWritingVocabularyIsReadFromTheTable floors the derivation above: it
+// is the list every readonly row is asserted against, and a table read that
+// stopped resolving would leave those rows approving nothing and asserting
+// nothing. 12 is under the 14 spellings today, so a synonym may be retired
+// without touching this line.
+func TestTheWritingVocabularyIsReadFromTheTable(t *testing.T) {
+	got := claudeWritingDeclarations()
+	if len(got) < 12 {
+		t.Fatalf("the spelling table folds %d name(s) onto %v, want at least 12: the table read broke, and every readonly row below now asserts over an empty vocabulary (%v)",
+			len(got), toolcatalog.WritingCanonicals(), got)
+	}
+	// The DSL's own canonical spellings, pinned by name: a table that kept 12
+	// rows while dropping the two the catalogue actually writes with would
+	// clear the floor above and prove nothing about them.
+	for _, want := range []string{"write_file", "file_edit", "apply_patch", "notebook_edit"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%q no longer folds onto a writing canonical (%v): it is the spelling the catalogue's own `tools:` lists use, so the readonly rows would stop asserting it", want, got)
+		}
+	}
+}
+
 // TestEverySpawnOfAReadonlyTaskWithholdsTheWritingTools is #1816's witness:
 // `readonly: true` is read by this backend, on both spawns, and a readonly
-// task that did not declare a writing tool does not reach the CLI with one.
+// task does not reach the CLI with a file-writing tool — whatever its own
+// `tools:` list says.
 //
-// The row that bites is the UNDECLARED surface — omitting `tools:` means the
-// full native roster on a CLI backend, which is where the flag used to mean
-// nothing at all. A declaration is unchanged by the flag: it already removes
-// every native it does not name, and the writers it DOES name survive (see
-// TestAReadonlyDeclarationThatNamesAWriterKeepsItAndSaysSo).
+// Two rows bite. The UNDECLARED surface — omitting `tools:` means the full
+// native roster on a CLI backend, which is where the flag used to mean
+// nothing at all. And the DECLARED writer: the flag is the node's access
+// intent, so it wins over a list that names a writer, the way it already does
+// on codex (a read-only OS sandbox) and on pi (a readers-only tool list). The
+// declaration is not dropped in silence — see
+// TestAReadonlyDeclarationThatNamesAWriterLosesItAndIsToldSo.
 func TestEverySpawnOfAReadonlyTaskWithholdsTheWritingTools(t *testing.T) {
 	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
 
@@ -189,6 +234,24 @@ func TestEverySpawnOfAReadonlyTaskWithholdsTheWritingTools(t *testing.T) {
 			NodeID: "n", Readonly: true, AllowedTools: []string{"bash", "read_file"},
 			ToolsDeclared: true, OutputSchema: schemaForTwoSpawns,
 		}},
+		{"declaration naming a writer (the flag wins over the list)", Task{
+			NodeID: "n", Readonly: true, AllowedTools: []string{"bash", "read_file", "write_file"},
+			ToolsDeclared: true, OutputSchema: schemaForTwoSpawns,
+		}},
+		{"declaration naming an editor, gated", Task{
+			NodeID: "n", Readonly: true, AllowedTools: []string{"read_file", "apply_patch"},
+			ToolsDeclared: true, Permission: mustPolicy(t, permission.ModeDeny),
+			OutputSchema: schemaForTwoSpawns,
+		}},
+		// Every spelling the table folds onto a writing canonical, declared
+		// at once: without this row the --allowedTools half of the assertion
+		// is vacuous for the twelve spellings no other row names, and the
+		// rule is the fold, not the six names an author happened to type.
+		{"declaration naming every writing spelling the table folds", Task{
+			NodeID: "n", Readonly: true,
+			AllowedTools:  append([]string{"bash", "read_file"}, claudeWritingDeclarations()...),
+			ToolsDeclared: true, OutputSchema: schemaForTwoSpawns,
+		}},
 	} {
 		spawns := spawnArgv(t, tc.task)
 		if len(spawns) < 2 {
@@ -201,8 +264,11 @@ func TestEverySpawnOfAReadonlyTaskWithholdsTheWritingTools(t *testing.T) {
 					t.Errorf("%s: spawn #%d of a readonly task keeps %q (disallowed=%v)", tc.name, i+1, writer, got)
 				}
 			}
-			if allow := allowedFlag(argv); slices.Contains(allow, "write") || slices.Contains(allow, "edit") {
-				t.Errorf("%s: spawn #%d approves a writing tool on a readonly task (allowed=%v)", tc.name, i+1, allow)
+			allow := allowedFlag(argv)
+			for _, declared := range claudeWritingDeclarations() {
+				if slices.Contains(allow, declared) {
+					t.Errorf("%s: spawn #%d approves %q on a readonly task (allowed=%v)", tc.name, i+1, declared, allow)
+				}
 			}
 		}
 	}
@@ -303,18 +369,19 @@ func TestEverySpawnOfAReadonlyTaskWithholdsTheWorktreeMovingTools(t *testing.T) 
 	}
 }
 
-// TestAReadonlyDeclarationThatNamesAWriterKeepsItAndSaysSo is the limit of
-// the flag on this backend, asserted rather than assumed: a node that
-// declares a writing tool AND `readonly: true` keeps the tool — deleting the
-// specific statement behind the author's back is what philosophy rule 1
-// forbids — and the backend says the flag is not enforced for it.
+// TestAReadonlyDeclarationThatNamesAWriterLosesItAndIsToldSo is how this
+// backend resolves the one conflict `readonly:` can have with a `tools:`
+// list, asserted rather than assumed: the flag wins, on both spawns, and the
+// deleted declaration is named on the node's own log.
 //
-// Four shipped nodes are in this shape (bots/supply-shield,
-// bots/supply-shield-cve, bots/sec-audit-deps `llm_review`,
-// bots/ultra11y `adjudicate`): each declares `write_file` and is told by its
-// own prompt to write a report with it. codex and pi resolve the conflict the
-// other way, which is why this row is a claim about this backend only.
-func TestAReadonlyDeclarationThatNamesAWriterKeepsItAndSaysSo(t *testing.T) {
+// The flag is the node's ACCESS INTENT, and it is also what admits the node
+// into a fan-out branch as non-mutating (pkg/runtime, isMutatingNodeIn), so a
+// writer kept beside it would write in a workspace another branch was told
+// nobody mutates. codex (a read-only OS sandbox) and pi (a readers-only tool
+// list) resolve it the same way; philosophy rule 1 is satisfied by the notice
+// and by the escape hatch it names — dropping `readonly:` — not by keeping
+// the tool.
+func TestAReadonlyDeclarationThatNamesAWriterLosesItAndIsToldSo(t *testing.T) {
 	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
 	rec := spawnRecorded(t, Task{
 		NodeID: "n", Readonly: true,
@@ -326,26 +393,37 @@ func TestAReadonlyDeclarationThatNamesAWriterKeepsItAndSaysSo(t *testing.T) {
 	}
 	for i, argv := range rec.argv {
 		got := disallowed(argv)
-		if slices.Contains(got, "Write") {
-			t.Errorf("spawn #%d deleted the Write this node declares (disallowed=%v)", i+1, got)
-		}
-		// …and the writers it did NOT declare are still withheld, by the
-		// declaration's own half: the flag changes nothing there.
-		for _, writer := range []string{"Edit", "MultiEdit", "NotebookEdit"} {
+		for _, writer := range claudeWritingNatives {
 			if !slices.Contains(got, writer) {
-				t.Errorf("spawn #%d keeps %q, which the declaration never named (disallowed=%v)", i+1, writer, got)
+				t.Errorf("spawn #%d keeps %q on a readonly node (disallowed=%v)", i+1, writer, got)
 			}
 		}
+		// …and the name the author typed is not auto-approved either: a tool
+		// on both flags would make the withholding rest on the CLI resolving
+		// deny over allow.
+		if allow := allowedFlag(argv); slices.Contains(allow, "write_file") {
+			t.Errorf("spawn #%d approves the write_file this node declares, which the same spawn withholds (allowed=%v)", i+1, allow)
+		}
+		// The readers it declared are untouched: the flag withholds the
+		// writers, it does not lock the node down.
+		if allow := allowedFlag(argv); !slices.Contains(allow, "read_file") {
+			t.Errorf("spawn #%d dropped the read_file this node declares (allowed=%v)", i+1, allow)
+		}
 	}
-	if !logged(rec.logs, "readonly: true is NOT enforced for Write") {
-		t.Errorf("the node keeps a declared writer and was not told the flag does not cover it: %v", rec.logs)
+	if !logged(rec.logs, "readonly: true removes Write") {
+		t.Errorf("the node's declared writer was deleted from both flags with no word about it: %v", rec.logs)
+	}
+	// The way out is named, and it is the only one: no `tools:` list can buy
+	// the writer back.
+	if !logged(rec.logs, "Drop readonly:") {
+		t.Errorf("the notice about the deleted declaration names no way out: %v", rec.logs)
 	}
 }
 
 // TestAReadonlyClaudeCodeNodeIsToldWhatTheFlagDoesNotCover pins the two
-// sentences the backend says about a flag it honours in part: the writing
-// tools a declaration asked for and readonly removed, and the shell readonly
-// cannot sandbox here.
+// sentences the backend says about a flag it honours in part: the tools a
+// declaration asked for and readonly removed anyway, and the write paths
+// readonly cannot close here.
 //
 // The silence is the defect #1816 reports — an author who relies on the flag
 // gets no enforcement AND no word about what is left.
@@ -387,13 +465,12 @@ func TestAReadonlyClaudeCodeNodeIsToldWhatTheFlagDoesNotCover(t *testing.T) {
 		t.Errorf("a readonly node kept the subagent tool and was told nothing about it: %v", subagent.logs)
 	}
 
-	// The one declaration this backend DELETES instead of keeping: no
-	// `tools:` list can withhold the worktree-moving pair, so `readonly:`
-	// removes it whatever the declaration says — and philosophy rule 1
-	// forbids replacing an explicit choice in silence. No shell, no subagent
-	// and no declared writer in this shape, so none of the other legs can
-	// answer for this one: before the notice existed, this Execute logged
-	// nothing at all.
+	// A declaration this backend DELETES: `readonly:` removes the
+	// worktree-moving pair whatever the `tools:` list says — and philosophy
+	// rule 1 forbids replacing an explicit choice in silence. No shell, no
+	// subagent and no declared writer in this shape, so none of the other
+	// legs can answer for this one: before the notice existed, this Execute
+	// logged nothing at all.
 	mover := spawnRecorded(t, Task{
 		NodeID: "n", Readonly: true, AllowedTools: []string{"enterworktree", "read_file"},
 		ToolsDeclared: true,
@@ -430,41 +507,34 @@ func TestAReadonlyClaudeCodeNodeIsToldWhatTheFlagDoesNotCover(t *testing.T) {
 		t.Errorf("the notice says the name is not auto-approved, but --allowedTools carries it: %v", allow)
 	}
 
-	// A writer the declaration keeps is named: the flag is not enforced for
-	// it, and silence there is the defect this test exists for.
-	kept := spawnRecorded(t, Task{
+	// A declared writer is deleted and named, like the pair: the flag beats
+	// the list, and silence there is the defect this test exists for — an
+	// author who reads nothing believes the tool their prompt uses is still
+	// on the argv.
+	writer := spawnRecorded(t, Task{
 		NodeID: "n", Readonly: true, AllowedTools: []string{"write", "read_file"},
 		ToolsDeclared: true,
 	})
-	if !logged(kept.logs, "NOT enforced for Write") {
-		t.Errorf("a readonly node kept its declared Write and was told nothing: %v", kept.logs)
+	if !logged(writer.logs, "removes Write") {
+		t.Errorf("a readonly node's declared Write was deleted and it was told nothing: %v", writer.logs)
 	}
-	// …and the consequence that makes a kept writer dangerous is named: the
-	// flag's OTHER meaning is the fan-out admission (pkg/runtime,
-	// isMutatingNodeIn returns false for a readonly agent/judge), so the one
-	// node whose writer survives the flag is also the one the engine will let
-	// run beside a parallel branch in the same workspace. The mover notice
-	// names that admission for a strictly weaker write; the branch that keeps
-	// a real Write may not be the quiet one.
-	if !logged(kept.logs, "shared workspace") {
-		t.Errorf("the kept-writer notice does not say the flag also admits this node into a fan-out branch as non-mutating: %v", kept.logs)
+	// …and the reason the flag wins is named: its OTHER meaning is the
+	// fan-out admission (pkg/runtime, isMutatingNodeIn returns false for a
+	// readonly agent/judge), so a writer kept here would run beside a
+	// parallel branch in the same workspace.
+	if !logged(writer.logs, "shared workspace") {
+		t.Errorf("the deleted-writer notice does not say the flag also admits this node into a fan-out branch as non-mutating: %v", writer.logs)
 	}
 
-	// A node that declares BOTH a writer and the worktree pair draws both
-	// notices on one log, and this backend keeps one declaration while
-	// deleting the other — so neither notice may state the rule for the
-	// node: a kept writer is reported as a kept WRITER, never as "an
-	// explicit declaration is not deleted here", which the line under it
-	// refutes for the same node.
+	// A node that declares BOTH a writer and the worktree pair is told about
+	// both IN ONE notice: they are one rule, so a second branch that could
+	// report one kind and forget the other is what this asserts against.
 	both := spawnRecorded(t, Task{
 		NodeID: "n", Readonly: true, AllowedTools: []string{"write", "enterworktree"},
 		ToolsDeclared: true,
 	})
-	if !logged(both.logs, "a declared writing tool is not deleted here") {
-		t.Errorf("the kept-writer notice does not say which declaration it speaks for: %v", both.logs)
-	}
-	if !logged(both.logs, "removes EnterWorktree") {
-		t.Errorf("the deleted declaration is not reported beside the kept one: %v", both.logs)
+	if !logged(both.logs, "removes Write, EnterWorktree") {
+		t.Errorf("the two declarations the flag deletes are not reported together: %v", both.logs)
 	}
 
 	// And a task without the flag says nothing about it.

@@ -402,16 +402,23 @@ type Task struct {
 	// Each delegate honours it with the lever it has, and they differ: codex
 	// runs the task in a read-only sandbox (codexSandboxForTask), pi narrows
 	// its tool list to readers (piExtraArgsFor), claude_code withholds from
-	// both of its spawns the file-writing tools the node did not declare plus
-	// the worktree-moving pair (claudeReadonlyWithheld). The remaining
-	// backends — claw, opencode, cliagent — do not read the field at all, so
-	// there the node's `tools:` list is its only bound (#1816).
+	// both of its spawns the file-writing tools and the worktree-moving pair
+	// (claudeReadonlyWithheld). The remaining backends — claw, opencode,
+	// cliagent — do not read the field at all, so there the node's `tools:`
+	// list is its only bound (#1816).
 	//
-	// On claude_code the flag therefore removes writing TOOLS, not the write
-	// capability: a shell the node keeps is not locked down, a writing tool
-	// its own `tools:` list names survives, and a subagent it can dispatch
-	// runs on an argv this backend does not build — each residual path is
-	// reported on the node's log (claudeReadonlyNotices).
+	// Wherever it is read, the field beats the node's own `tools:` list: a
+	// writing tool the list names is withheld too — a node whose deliverable
+	// is a written file drops `readonly:`, which drops its non-mutating
+	// admission with it. On claude_code the deleted declaration is named on
+	// the node's log (claudeReadonlyNotices); codex replaces the declaration
+	// with a read-only OS sandbox and pi with a four-reader tool list, both in
+	// silence.
+	//
+	// On claude_code the flag removes writing TOOLS, not the write
+	// capability: a shell the node keeps is not locked down, and a subagent it
+	// can dispatch runs on an argv this backend does not build — each residual
+	// path is reported on the node's log.
 	Readonly bool
 
 	// Images are node-level input image paths (from the `images:` DSL field,

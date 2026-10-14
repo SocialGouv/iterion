@@ -8,10 +8,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
-// NO AGENT OF THIS BUNDLE HOLDS A SHELL. `readonly: true` is a sandbox on
-// the codex and pi backends; on claude_code it withholds the file-writing
-// tools a node did not declare, plus the worktree-moving pair, and nothing
-// more, under bypassPermissions, so a node that declares the flag and a shell
+// NO AGENT OF THIS BUNDLE HOLDS A SHELL. `readonly: true` is a read-only OS
+// sandbox on codex and a four-reader tool list on pi; on claude_code it
+// withholds the file-writing tools, plus the worktree-moving pair, and
+// nothing more, under
+// bypassPermissions, so a node that declares the flag and a shell
 // holds an unlocked shell on a checkout of an untrusted repository. The
 // drafting agent
 // writes two files and needs no shell to do it. What carries the

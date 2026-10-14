@@ -200,8 +200,9 @@ schema surface_pr_link_input:
 
 ## plan — the AUTHOR. Claude Code is preferred; Kimi is the proven rescue
 ## route when Claude's subscription window is closed. readonly withholds the
-## file-writing tools this node did not declare plus the worktree-moving pair
-## on claude_code, and nothing at all on the Kimi route (cliagent does not
+## file-writing tools and the worktree-moving pair on claude_code whatever
+## this node's tools: list says, and nothing at all on the Kimi route
+## (cliagent does not
 ## read the flag) — the shell stays either way, so the deterministic verify
 ## gate + the campaign's own review remain the backstop.
 agent plan:

@@ -1290,7 +1290,7 @@ prompt reattack_system:
      new_findings == [].
 
   You hold no file-writing tool, but you DO hold bash: `readonly: true`
-  on claude_code withholds the writing tools a node did not declare,
+  on claude_code withholds the writing tools whatever a node declares,
   never a shell. Read-only is your MANDATE — burn turns hunting
   variants across the package, not writing edits.
 
@@ -2692,9 +2692,9 @@ agent remediation_report:
 ## Cross-family diversity requires explicit deployment overrides. Each
 ## voter is `readonly: true` + `session: fresh` so it cannot bleed
 ## context from other voters and counts as non-mutating for workspace
-## safety; on claude_code the flag withholds the file-writing tools these
-## voters did not declare and leaves their bash, so writing nothing is their
-## MANDATE (disprove_voter_system). The ONLY mutator in this subgraph is
+## safety; on claude_code the flag withholds the file-writing tools and
+## leaves their bash, so writing nothing is their MANDATE
+## (disprove_voter_system). The ONLY mutator in this subgraph is
 ## fp_append, downstream of the majority converge — preserves the
 ## one-mutating-branch rule.
 ##
@@ -2735,11 +2735,11 @@ judge voter_v2:
   ## list is the FULL native toolset — Write/Edit included on a node WITHOUT
   ## `readonly:` (pkg/backend/delegate/claude_code.go:
   ## claudeNativeDisallowedTools removes nothing for an empty declaration) —
-  ## and `readonly: true` is a sandbox on the codex and pi delegates while
-  ## claude_code only withholds the file-writing tools a node did not declare
-  ## plus the worktree-moving pair -- never the shell this list keeps. The
-  ## list is the first line; the paragraph in disprove_voter_system is the
-  ## second.
+  ## and `readonly: true` is a read-only OS sandbox on codex and a
+  ## four-reader tool list on pi, while claude_code only withholds the
+  ## file-writing tools plus the worktree-moving pair -- never the shell
+  ## this list keeps. The list is the first line; the paragraph in
+  ## disprove_voter_system is the second.
   backend: "claude_code"
   input: voter_input
   output: voter_output

@@ -422,15 +422,17 @@ schema floor_state:
 
 ## What the survey agent RETURNS. It writes nothing, and what makes that true
 ## is the TOOL SET it is given — four readers and no shell. `readonly: true` is
-## declared beside them and each backend honours it with the lever it has:
-## codex and pi make it a sandbox, claude_code withholds the file-writing
-## tools a node did not declare and the worktree-moving pair but has no
-## sandbox for a shell, and claw does not read it. So a node that held a shell
-## under that flag would hold an unlocked shell on a checkout of an untrusted
-## repository. The flag stays — it is also the parallel-workspace statement —
-## but it is not what carries this property. A step that both measures and materialises would also have no
-## moment at which its output could be checked, which is why survey_write
-## exists.
+## declared beside them and each backend answers it with the lever it has:
+## codex makes it a read-only OS sandbox and pi a four-reader tool list,
+## claude_code withholds the file-writing tools and the worktree-moving pair
+## whatever a node's tools: list says but has no sandbox for a shell, and
+## claw, opencode and cliagent do not read the flag at all — on those the
+## tools: list is the only bound. So a node that held a shell under that
+## flag would hold an unlocked shell on a checkout of an untrusted
+## repository. The flag stays — it is also the parallel-workspace
+## statement — but it is not what carries this property. A step that both
+## measures and materialises would also have no moment at which its output
+## could be checked, which is why survey_write exists.
 schema survey_output:
   stacks: json
   declarations: json
@@ -702,10 +704,11 @@ agent survey:
   user: survey_user
   ## NO SHELL. The four readers are what this step needs — it names stacks and
   ## a perimeter, it does not run extractors, and `run_extractors` is the node
-  ## that executes anything. `readonly: true` below is a sandbox on codex and
-  ## pi; on claude_code it withholds writing tools this list does not name and
-  ## leaves a shell, so the shell is removed rather than locked: a property
-  ## carried by a flag that stops at the tool names is not carried.
+  ## that executes anything. `readonly: true` below is an OS sandbox on codex
+  ## and a four-reader tool list on pi; on claude_code it withholds the
+  ## file-writing tools whatever this list says and leaves a shell, so the
+  ## shell is removed rather than locked: a property carried by a flag that
+  ## stops at the tool names is not carried.
   tools: [read_file, glob, grep, skill]
   skills: ["assessment-survey", "assessment-brief"]
   tool_max_steps: 120

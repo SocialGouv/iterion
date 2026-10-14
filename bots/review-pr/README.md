@@ -273,10 +273,11 @@ is a **scheduling** declaration — "this node mutates no workspace file", the
 promise that lets dual fan both reviewers onto one worktree — and a tool
 boundary, with the lever each backend has: `codex` an OS sandbox, `pi` a
 readers-only tool list, `claude_code` the withholding of the file-writing
-tools the node did not declare (here all of them: these nodes declare no
-`tools:` list) plus the worktree-moving pair. It is not a sandbox there — the
-native shell stays — so their prompt and their output schema still carry the
-rest. Declaring `tools:` on them would bound that shell too and is not free: a
+tools whatever the node's `tools:` list says (here it declares none at all)
+plus the worktree-moving pair; `claw`, `opencode` and `cliagent` do not read
+the flag at all, so there the `tools:` list is the only bound. It is not a
+sandbox on `claude_code` either — the native shell stays — so their prompt
+and their output schema still carry the rest. Declaring `tools:` on them would bound that shell too and is not free: a
 non-empty list installs `--disallowedTools`, taking
 `Task`/`WebFetch`/`Skill` off the node on every run. The single downstream `converge` step writes only the report file and
 creates board issues over MCP.

@@ -7,9 +7,9 @@
 ## `readonly: true` is a SCHEDULING assertion — it is what lets workspace
 ## safety run the two side by side — and a partial tool gate: codex (a
 ## read-only sandbox) and pi (a read-only tool list) turn it into full
-## enforcement, while claude_code withholds the file-writing tools a node
-## did not declare plus the worktree-moving pair and keeps the shell that
-## reading a diff needs. So the PROMPTS carry the rest, and the permission
+## enforcement, while claude_code withholds the file-writing tools plus the
+## worktree-moving pair — whatever a node's `tools:` list says — and keeps
+## the shell that reading a diff needs. So the PROMPTS carry the rest, and the permission
 ## gate below enforces it — `permission: deny` with an allow list of
 ## read-only tools
 ## (docs/permissions.md), on by default since in place the reviewers work

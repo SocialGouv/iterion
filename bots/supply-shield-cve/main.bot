@@ -279,9 +279,9 @@ prompt review_system:
 
   Constraints:
   - Read-only on workspace EXCEPT the report file you write — a
-    MANDATE, not your surface: you hold bash, and `readonly: true` on
-    claude_code withholds the writing tools a node did NOT declare — your
-    `write_file` is kept — and never a shell. Write nothing else.
+    MANDATE, not your surface: you hold `write_file` for that report and
+    bash for everything else, and nothing withholds either. Write
+    nothing else.
   - No install / network / build tools. You do NOT write the cache;
     that is update_cache's job. One issue per package, never per advisory.
 
@@ -513,11 +513,16 @@ agent llm_review:
   output: review_output
   system: review_system
   user: review_user
+  ## No `readonly:`: this node's deliverable is the markdown report it
+  ## writes with `write_file`, and the flag withholds the file-writing
+  ## tools whatever this list says. Its non-mutating fan-out admission
+  ## goes with the flag, which is honest for a node that writes. Writing
+  ## nothing else is the MANDATE the prompt carries, not a surface this
+  ## backend bounds — it keeps the shell either way.
   tools: [bash, read_file, write_file, glob, grep]
   capabilities: [board.read, board.create, board.label]
   tool_max_steps: 80
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_REVIEW:-high}"
-  readonly: true
 
 agent forge_report:
   model: "${ITERION_SEC_AUDIT_MODEL_CLAUDE:-claude-opus-5-5}"
