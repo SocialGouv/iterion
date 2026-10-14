@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -113,13 +115,42 @@ type modelsRefreshFlight struct {
 func (s *Server) refreshModels(ctx context.Context) error {
 	s.modelsRefreshMu.Lock()
 	flight := s.modelsRefresh
-	if flight == nil {
+	ours := flight == nil
+	if ours {
 		flight = &modelsRefreshFlight{done: make(chan struct{})}
 		s.modelsRefresh = flight
-		go s.runModelsRefresh(flight)
 	}
 	flight.waiters++
 	s.modelsRefreshMu.Unlock()
+
+	// Started outside the lock because the refusal path calls
+	// finishModelsRefresh, which takes this same mutex. A concurrent request
+	// that joined the flight meanwhile waits on its channel either way —
+	// including on that refusal, which closes it.
+	if ours {
+		started := s.tryGoSafe("models-refresh", func() {
+			// The flight is INSTALLED, so every exit from this task has to
+			// answer it: a panic goSafe recovers would otherwise park this
+			// waiter and every later request on a channel nothing closes,
+			// for the remaining life of the process.
+			err := errors.New("model-spec refresh panicked")
+			defer func() { s.finishModelsRefresh(flight, err) }()
+			// A WRITE, with a deadline of its own: detached from the request
+			// that asked (a client disconnect must not cut the shared cache
+			// rewrite the other waiters are reading) and from the shutdown
+			// SIGNAL, which fires before the HTTP drain — a refresh answered
+			// in that window is started and joined, like every other goSafe
+			// write, rather than refused for the length of the drain.
+			refreshCtx, cancel := context.WithTimeout(context.Background(), modelsRefreshTimeout)
+			defer cancel()
+			err = s.runModelsRefresh(refreshCtx)
+		})
+		if !started {
+			// Past the join nobody is left to wait for the write: answer the
+			// installed flight instead of leaving it unfinished.
+			s.finishModelsRefresh(flight, errors.New("model-spec refresh not started: the server has already joined its background work"))
+		}
+	}
 
 	select {
 	case <-ctx.Done():
@@ -129,7 +160,34 @@ func (s *Server) refreshModels(ctx context.Context) error {
 	}
 }
 
-func (s *Server) runModelsRefresh(flight *modelsRefreshFlight) {
+// modelsRefreshTimeout bounds the AGGREGATOR refresh — the fetch and cache
+// rewrite this task waits on. That fetch carries the registry's own 3s client
+// timeout and the rewrite is local, so this cuts nothing a healthy refresh
+// does: it is there so a wait that never finishes cannot hold a
+// shutdown-registry entry — and a waiting request — for the remaining life of
+// the process.
+//
+// It is not a bound on the whole task: in local mode the detector probe runs
+// BEFORE it, on a context of its own (a probe cut short would be cached as
+// this host's answer about its backends), bounded by detect's own deadlines on
+// the two subprocesses it runs — 3s for the claude CLI auth probe, 5s for the
+// macOS keychain lookup.
+const modelsRefreshTimeout = 30 * time.Second
+
+// runModelsRefresh runs one shared refresh and RETURNS its outcome; publishing
+// it to the flight's waiters is the caller's, so that a task that never
+// reaches the end of this function still answers them.
+//
+// modelspecs.Registry.Refresh gives ctx only the WAIT for the shared
+// fetch+cache rewrite — that work runs on a goroutine of its own under
+// context.Background() — so a ctx cancelled here ends this process's wait and
+// leaves the rewrite running outside the shutdown registry. The join covers
+// the rewrite only while this wait does.
+//
+// The detector probe keeps a context of its own: CachedDetector.Get caches
+// whatever the probe returns for backendDetectTTL, so a probe cut short would
+// be cached as this host's answer about its backends.
+func (s *Server) runModelsRefresh(ctx context.Context) error {
 	if s.cfg.Mode != "cloud" {
 		s.detectorOnce.Do(func() {
 			s.detector = detect.NewCachedDetector(backendDetectTTL)
@@ -146,16 +204,21 @@ func (s *Server) runModelsRefresh(flight *modelsRefreshFlight) {
 	if refreshFn == nil {
 		refreshFn = model.RefreshModelSpecs
 	}
-	flight.err = refreshFn(context.Background())
+	return refreshFn(ctx)
+}
 
+// finishModelsRefresh publishes one generation's outcome to its waiters and
+// retires it, so the next request starts a fresh flight.
+func (s *Server) finishModelsRefresh(flight *modelsRefreshFlight, err error) {
 	s.modelsRefreshMu.Lock()
+	defer s.modelsRefreshMu.Unlock()
+	flight.err = err
 	// Close this generation while holding the lock, before allowing a later
 	// request to install a new channel.
 	close(flight.done)
 	if s.modelsRefresh == flight {
 		s.modelsRefresh = nil
 	}
-	s.modelsRefreshMu.Unlock()
 }
 
 // dedupeSpecs trims, drops empties and removes duplicates while preserving the

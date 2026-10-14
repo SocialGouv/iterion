@@ -67,7 +67,7 @@ func TestScheduleForgeBoardProjectionRegistersForShutdownJoin(t *testing.T) {
 
 	// The projection is registered under a stable, greppable name. If the
 	// production code regressed to a bare `go func()`, no entry lands.
-	srv.stateMu.Lock()
+	srv.bgMu.Lock()
 	var registered bool
 	for _, w := range srv.bgWorkers {
 		if w.name == "server.forgeBoardProjection" {
@@ -75,7 +75,7 @@ func TestScheduleForgeBoardProjectionRegistersForShutdownJoin(t *testing.T) {
 			break
 		}
 	}
-	srv.stateMu.Unlock()
+	srv.bgMu.Unlock()
 	if !registered {
 		t.Fatal("scheduleForgeBoardProjection did not register a bgWorker — the fix for #1345 regressed to a bare goroutine")
 	}

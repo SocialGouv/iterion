@@ -50,14 +50,14 @@ func newJoinTestServer(t *testing.T) (*Server, func() string) {
 // after the body returns, and a test that waits on the wrong one races it.
 func awaitRegisteredLoop(t *testing.T, srv *Server, name string) {
 	t.Helper()
-	srv.stateMu.Lock()
+	srv.bgMu.Lock()
 	var done <-chan struct{}
 	for _, w := range srv.bgWorkers {
 		if w.name == name {
 			done = w.done
 		}
 	}
-	srv.stateMu.Unlock()
+	srv.bgMu.Unlock()
 	if done == nil {
 		t.Fatalf("loop %q was never registered for the shutdown to join", name)
 	}
@@ -249,9 +249,9 @@ func TestShutdownJoinsTheLoopsItCancels(t *testing.T) {
 			t.Fatal("the loop ran anyway — nothing is waiting for its last write")
 		case <-time.After(100 * time.Millisecond):
 		}
-		srv.stateMu.Lock()
+		srv.bgMu.Lock()
 		registered := len(srv.bgWorkers)
-		srv.stateMu.Unlock()
+		srv.bgMu.Unlock()
 		if registered != 0 {
 			t.Fatalf("the refused loop was registered anyway (%d entries) — a join that never comes", registered)
 		}
@@ -278,4 +278,146 @@ func TestGoUntilShutdownStopsOneLoopWithoutTheShutdownSignal(t *testing.T) {
 	}
 	stop()
 	awaitRegisteredLoop(t, srv, "test.earlyStop")
+}
+
+// The overrun warning is the only signal an operator gets about work the exit
+// cut, so it has to stay readable: one entry per TASK with how many of its
+// goroutines were still running, and a count instead of a list once the names
+// stop fitting.
+func TestTheOverrunWarningNamesEachTaskOnce(t *testing.T) {
+	t.Run("one entry per task, however many of its writes overran", func(t *testing.T) {
+		// Every per-request detached write is in the registry, so a burst
+		// answered during the drain overruns as hundreds of entries under ONE
+		// label. Naming it once per entry made a multi-kilobyte Warn line —
+		// what a log collector truncates, at the moment it is the only
+		// evidence of the overrun left.
+		srv, logged := newJoinTestServer(t)
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		const writes = 200
+		for range writes {
+			srv.goSafe("test.stormWrite", func() { <-release })
+		}
+		expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		srv.joinBackgroundWorkers(expired)
+
+		out := logged()
+		if named := strings.Count(out, "server.goSafe:test.stormWrite"); named != 1 {
+			t.Fatalf("the warning names one task %d times in a single %d-byte line: collapse it to one entry and a count", named, len(out))
+		}
+		if want := fmt.Sprintf("server.goSafe:test.stormWrite x%d", writes); !strings.Contains(out, want) {
+			t.Fatalf("the warning does not say how many of that task's writes overran (want %q): %q", want, out)
+		}
+	})
+
+	t.Run("the tasks past the cap are counted, not named", func(t *testing.T) {
+		srv, logged := newJoinTestServer(t)
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		const tasks = maxOverrunNames + 3
+		for i := range tasks {
+			srv.goSafe(fmt.Sprintf("test.overrun%02d", i), func() { <-release })
+		}
+		expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		srv.joinBackgroundWorkers(expired)
+
+		out := logged()
+		if named := strings.Count(out, "server.goSafe:test.overrun"); named != maxOverrunNames {
+			t.Fatalf("the warning names %d of %d overrun tasks, want %d named and the rest counted: %q", named, tasks, maxOverrunNames, out)
+		}
+		if want := fmt.Sprintf("+%d more", tasks-maxOverrunNames); !strings.Contains(out, want) {
+			t.Fatalf("the warning does not count the tasks it did not name (want %q): %q", want, out)
+		}
+	})
+}
+
+// The shipped budget is a WINDOW, not a guarantee. Both halves run on the
+// DEFAULT budget — the number production ships — because no goSafe site allows
+// its own work as little as that: 5s for an audit insert or a last_used_at
+// stamp, 15s for an invitation email, 30s for each half of the forge settle
+// and for the model-spec refresh's aggregator fetch, and no deadline at all
+// for the config-share touch. The join lets a write that completes inside the
+// window finish, and narrows the window for the rest without closing it.
+func TestTheShippedJoinBudgetIsAWindowNotAGuarantee(t *testing.T) {
+	t.Run("a write that completes inside the shipped budget is joined", func(t *testing.T) {
+		srv, _ := newJoinTestServer(t)
+		if budget := srv.backgroundJoinBudget(); budget != defaultBackgroundJoinBudget {
+			t.Fatalf("this witness must run on the shipped budget, not %s", budget)
+		}
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		landed := make(chan struct{})
+		srv.goSafe("test.writeInsideTheBudget", func() {
+			close(entered)
+			<-release
+			close(landed)
+		})
+		<-entered
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		shutdownReturned := make(chan error, 1)
+		go func() { shutdownReturned <- srv.Shutdown(ctx) }()
+		// Released a tenth of the way into the budget: the join is still
+		// waiting, so the write lands before the exit.
+		time.Sleep(50 * time.Millisecond)
+		close(release)
+		select {
+		case err := <-shutdownReturned:
+			if err != nil {
+				t.Fatalf("shutdown: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("Shutdown never returned once the write had")
+		}
+		select {
+		case <-landed:
+		default:
+			t.Fatalf("the exit cut a write that finished well inside the shipped %s budget", defaultBackgroundJoinBudget)
+		}
+	})
+
+	t.Run("a write that outlasts the shipped budget is cut by the exit, and named", func(t *testing.T) {
+		srv, logged := newJoinTestServer(t)
+		if budget := srv.backgroundJoinBudget(); budget != defaultBackgroundJoinBudget {
+			t.Fatalf("this witness must run on the shipped budget, not %s", budget)
+		}
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		landed := make(chan struct{})
+		srv.goSafe("test.writeOutlastingTheBudget", func() {
+			close(entered)
+			<-release
+			close(landed)
+		})
+		<-entered
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		shutdownReturned := make(chan error, 1)
+		started := time.Now()
+		go func() { shutdownReturned <- srv.Shutdown(ctx) }()
+		select {
+		case err := <-shutdownReturned:
+			if err != nil {
+				t.Fatalf("shutdown: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("the exit waited out a write nothing releases: the shipped budget no longer bounds it")
+		}
+		if waited := time.Since(started); waited > 5*time.Second {
+			t.Errorf("the exit waited %s on a %s budget", waited.Round(time.Millisecond), defaultBackgroundJoinBudget)
+		}
+		select {
+		case <-landed:
+			t.Fatal("the write landed although nothing released it")
+		default:
+		}
+		if out := logged(); !strings.Contains(out, "server.goSafe:test.writeOutlastingTheBudget") {
+			t.Fatalf("the warning does not name the write the exit cut: %q", out)
+		}
+	})
 }
