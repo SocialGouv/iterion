@@ -131,7 +131,7 @@ does too.
 | `errtrack.Go` / `errtrack.TrackPanic` ([pkg/errtrack/crash.go](../pkg/errtrack/crash.go)) | a panic in a detached goroutine of the three daemons, tagged with the `surface` that raised it: the server's hub, file watchers, staged-upload reaper, pipeline admission loop, OIDC sweeper, board-dispatch workers and WS/PTY pumps; the runner pod's lease heartbeat, sandbox reaper, queue-depth gauge and credential refreshers; the dispatcher's actor loop and config watcher. This guard **re-panics** — those goroutines hold jobs the process cannot do without, so the crash stays a crash |
 | The dispatcher actor's inner recover blocks and runtime fan-out branches | already recover and log at error level, so the log coupling reports them — no extra call site |
 | The central logger, on the daemons and the studio | every **error** line becomes an event with the record's fields as context; every **warn** line becomes a breadcrumb attached to the next event. A run's own logger is a fork of the process one, so a run's error lines reach the tracker too |
-| [pkg/alert](../pkg/alert/errtrack.go) | run health: `run_failed` and `budget_exceeded` as errors, `stall` and `budget_warning` as warnings, `stall_recovered` as a breadcrumb |
+| [pkg/alert](../pkg/alert/errtrack.go) | run health: `run_failed`, `budget_exceeded` and `route_action_failed` as errors, `stall`, `budget_warning`, `run_parked` and `route_escalated` as warnings, every other kind (`stall_recovered`) as a breadcrumb |
 
 A goroutine added later joins the first class or the second by choosing
 its helper: `goSafe` when the work is best-effort and the process should

@@ -8,6 +8,8 @@ is the complement to [`iterion dispatch`](dispatcher.md): the dispatcher
 is an always-on loop reacting to a tracker; the scheduler is a set of
 cron triggers reacting to the clock.
 
+Diagram: [Flow — triggers and schedules: five sources, two deliveries, three clocks](diagrams/flow-triggers-and-schedules.md)
+
 ## Model
 
 A declarative **manifest** is the single source of truth. `schedule
@@ -198,7 +200,8 @@ agent recovers on its own within one tick.
   floor is 1 minute). For a faster pulse, run the resident scheduler
   (`iterion studio` / `iterion server`) and author the bot with a
   `kind: keepalive` invocation carrying an `interval:` (see below) — the
-  in-process scheduler ticks every 15s by default (`ITERION_SCHEDULER_INTERVAL`).
+  in-process scheduler ticks every 15s by default
+  (`ITERION_SCHEDULER_INTERVAL`, which paces the cloud ticker too).
 - `max_concurrent` is invalid with keepalive (at-most-one-live is the point).
 - `stale_after` should be **≥ the bot's `max_duration`** so a long-but-alive
   run is never falsely reaped. Staleness only ever applies to `running`
@@ -218,8 +221,11 @@ invocations:
 ```
 
 Enable it one-click from the bot's studio home (the
-`/bots/{name}/triggers/from-invocation` route), or toggle **Always-on**
-on a schedule in the studio **Schedules** tab. To also *steer* each
+`/bots/{name}/triggers/from-invocation` route): the trigger
+subscription it stores is fired by the resident scheduler, which a
+cloud replica does not run. In cloud, toggle **Always-on** on a
+schedule in the studio **Schedules** tab instead — that row is what
+the cloud ticker fires. To also *steer* each
 launched run mid-flight (correct it, nudge it), give the bot a
 `supervisor:` block — the engine auto-attaches a supervisor coordinator
 to every keepalive run, no extra wiring.
@@ -582,11 +588,17 @@ you have accepted their loss.
   repo attached (or bind the bot to the connection's managed secret).
 - **A repo-bound schedule survives a re-provision.** Re-provisioning the
   repo integration (enabling another bot, `POST …/forge/repo-bots`)
-  rebuilds its schedule rows from the manifests, but each surviving bot's
+  deletes the integration's schedule rows and rebuilds one per
+  `kind: schedule` invocation carrying a cron, but each surviving bot's
   row keeps its id (runs and audit entries point at it), the vars the
   operator set — merged over the manifest's `schedule.default_vars`,
   operator keys winning — its last fire, pause state, overlap/guard policy
-  and customised cron. A bot whose scheduled behaviour hinges on a var
+  and customised cron. It does **not** keep `stale_after`, the keepalive
+  interval, the pinned `repo_ref`, or the routing and retry overrides, and
+  its last-run and last-error fields start empty. A row whose bot declares no schedule
+  invocation with a cron — an operator-created row that the integration
+  adopted because its `repo_url` matched — is deleted and not recreated.
+  A bot whose scheduled behaviour hinges on a var
   should still declare it in `default_vars`, so a row created from scratch
   delivers too.
 

@@ -9,7 +9,7 @@ invariants. `iterion map find|impact|path` answer the exact questions.
 
 - `pkg/trigger/` — The unifying spine for **event-driven runs**: one canonical `Event` envelope every source (forge webhook, schedule tick, native-board transition, run completion, custom ingest) maps onto, a `Subscription` registry binding (event filter) → (bot launch into a repo/workspace), and the `Evaluator` that consumes events from `pkg/eventbus`, matches subscriptions, and launches/promotes. See [docs/adr/046-event-driven-runs-trigger-spine.md](../../adr/046-event-driven-runs-trigger-spine.md)
 
-- `pkg/eventbus/` — Internal publish/subscribe spine carrying `trigger.Event` values from producers to the trigger `Evaluator`; two interchangeable implementations selected at wiring time — `InProcBus` (local CLI/studio) and `NATSBus` (cloud, the separate `ITERION_EVENTS` stream)
+- `pkg/eventbus/` — Internal publish/subscribe spine carrying `trigger.Event` values from producers to the trigger `Evaluator`; two interchangeable implementations selected at wiring time — `InProcBus` (local CLI/studio) and `NATSBus` (cloud, a queue-group fan-out over the separate Core NATS subject tree `iterion.events.>`)
 
 - `pkg/schedgate/` — Overlap policy + pre-launch guard evaluation shared by the three scheduled-launch surfaces (host crontab, `pkg/trigger.Scheduler`, `pkg/cloudsched`); no I/O beyond running the guard subprocess
 

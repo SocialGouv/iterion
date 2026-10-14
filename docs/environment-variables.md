@@ -156,7 +156,7 @@ than per-deployment.
 
 | Variable | Effect | Default |
 |---|---|---|
-| `ITERION_ALERTS_WEBHOOK_URL` | Generic incoming webhook (Slack / Discord) the alert sink posts to. Empty disables the sink. It is an **operator-set** destination posted to with a plain 15s-timeout client — unlike the operator-*supplied* completion webhooks of `pkg/notify`, it carries no SSRF guard, so point it only at a URL you control. | unset (no webhook sink) |
+| `ITERION_ALERTS_WEBHOOK_URL` | Generic incoming webhook (Slack / Discord) the alert sink posts to. Empty disables the sink. It is posted to with the shared SSRF-guarded client (DNS pinned per connection, redirects refused) in its non-strict mode, so a private-network receiver — an internal Mattermost — is allowed. | unset (no webhook sink) |
 | `ITERION_ALERTS_STALL_TIMEOUT` | No-activity window after which a non-terminal run is flagged **stalled** (Go duration). An unparseable value keeps the default rather than disabling the check. | `5m` |
 | `ITERION_ALERTS_BASE_URL` | Origin used to build clickable `/runs/<id>` deep links in webhook payloads. When unset it is derived from the bind address + port; with an OS-assigned (`0`) port the absolute base is left empty, since a wrong link is worse than none. | derived from bind + port |
 | `ITERION_ALERTS_DESKTOP_ENABLED` | `true` turns on the native desktop-notification sink. Parsed strictly — anything unparseable is `false`. | `false` |
