@@ -122,7 +122,7 @@ Prefer narrowing the *connection*, not the user:
   then the surface that needs it says so instead of failing silently: the
   card's CI panel answers `422` naming `checks:read` and the page to approve
   it on, the health view lists it under `missing_ci_permissions`
-  (`iterion remote forge connections refresh <id>` prints the same line), and
+  (`iterion remote forge refresh <id>` prints the same line), and
   nothing else on the connection is affected — the runtime token is never
   minted with it.
 

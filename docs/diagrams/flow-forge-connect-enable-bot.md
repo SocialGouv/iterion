@@ -2,7 +2,7 @@
 
 Connecting a forge seals one credential for a team, and enabling bots on a repository derives a managed token from that credential, then writes the webhook config that enforces the binding, the forge-side hook and the integration row that reports it, in that order.
 
-> Drawn from the code at commit `f7ef017b7`; how this page is kept true: [README](README.md).
+> Drawn from the code at commit `f564846d3`; how this page is kept true: [README](README.md).
 
 Three connect modes write the same `forge.Connection` row: a pasted personal access token validated by `WhoAmI` before any store write, an OAuth app authorization, or a GitHub App install. The two browser round-trips return on **public** callbacks (`isPublicPath`), authenticated by a one-time signed state and the `iterion_forge_agent` binding cookie compared with `subtle.ConstantTimeCompare` — the team is resolved from the state, never from the URL. The token is sealed under AAD `forge_conn:<id>` and the connection is born `active`.
 
@@ -10,77 +10,13 @@ Three connect modes write the same `forge.Connection` row: a pasted personal acc
 
 The App path is drawn because it is the only one that calls out twice before persisting: `InstallationInfo` captures what the owner approved, and only then does `MintInstallationToken` ask for the intersection of that grant with iterion's wanted set. Asking for a permission the installation lacks fails the whole mint, so the order is load-bearing — the first token already carries the delivery grants.
 
-```mermaid
-sequenceDiagram
-    participant U as team admin
-    participant ST as studio
-    participant S as server
-    participant G as GitHub
-    participant DB as store
-
-    U->>ST: create a GitHub App
-    ST->>S: POST /forge/oauth-apps/github-manifest
-    S->>DB: put forgePending, one-time, 10 min TTL
-    S-->>ST: post_url, manifest, agent-binding cookie
-    ST->>G: POST settings/apps/new, from the operator browser
-    G->>S: GET /api/forge/github/app-manifest/callback with code and state
-    S->>S: take the state once, constant-time cookie compare
-    S->>G: ConvertManifest with the code
-    G-->>S: app id, slug, client creds, private key issued once
-    S->>DB: forge_oauth_apps create, secret and key sealed
-    U->>S: POST /forge/connections with mode app
-    S->>DB: put forgePending pinning the oauth app id
-    S-->>U: install_url for the App slug
-    U->>G: install the App on the chosen repositories
-    G->>S: GET /api/forge/github/app/callback with installation_id and state
-    S->>S: take the state once, cookie compare, team from the state
-    S->>G: VerifyInstallationOwnership, shared platform App only
-    S->>G: InstallationInfo, what the owner approved
-    S->>G: MintInstallationToken, runtime or watch-only permissions
-    S->>DB: forge_connections create, token sealed, purpose stamped, active
-    S->>DB: audit_events forge.connection.created
-    S-->>U: 302 back to the wizard with the connection id
-```
+The sequence is drawn on the feature page: [forge-integrations.md § What it does](../forge-integrations.md#what-it-does).
 
 ## Enable — one request, a fixed write order
 
 `Provision` is the one-action enable. Two stores hold the result and share no transaction, so the **enforcement** half (`webhook_configs`) is written before the forge hook, and the **report** half (`repo_integrations`) last: a failure between them leaves the repo applying settings the report has not caught up with, never a report certifying a configuration that is not in force. A fresh config is rolled back (`rollbackConfig`) on three downstream failures — the admin-client build, the hook upsert and the integration create; an integration *update* answers `ErrProvisionDiverged` instead, and a schedule-sync failure leaves the provision standing. Re-running the same request converges. Same bots, same events and a hook already on the right URL take the idempotent short-circuit, in this order: binding reconcile, operator-settings write, `BotRules` backfill, schedule sync when crons are given, `Created=false`.
 
-```mermaid
-sequenceDiagram
-    participant U as team admin
-    participant S as server
-    participant O as orchestrator
-    participant DB as store
-    participant G as forge
-    participant OA as org admin
-
-    U->>S: GET /forge/repo-bots/preview with connection and bots
-    S-->>U: events, scopes, secret names, commands, conflicts, no writes
-    U->>S: POST /forge/repo-bots with connection, repo, bot ids, options
-    S->>DB: read the team and its parent org
-    alt the org requires provision approval
-        S->>DB: forge_provision_approvals create, request verbatim
-        S->>DB: audit_events approval_requested, team and org trails
-        S-->>U: 202 pending_approval, nothing exists forge-side
-        OA->>S: POST /orgs/{id}/provision-approvals/{id}/approve
-        S->>DB: staleness checks on integration, bot set, repo, connection
-    end
-    S->>O: Provision the request
-    O->>DB: connection, integration by tenant and connection and repo, previous config
-    O->>DB: generic_secrets create, admin token re-sealed, egress hosts pinned
-    O->>DB: forge_connections stamp managed_secret_id
-    O->>DB: bot_secret_bindings upsert, one per enabled bot
-    O->>O: command map, bot rules, fresh iwh_ webhook secret
-    O->>DB: webhook_configs create or update, the enforcement half
-    O->>G: upsert the repo hook with inbound URL, secret, native events
-    O->>DB: repo_integrations create or update, the report half
-    O->>G: re-mint the github_app token for the provisioned repo set
-    O->>DB: scheduled_bots replaced for the integration
-    O-->>S: ProvisionResult with integration, webhook, hook, created
-    S->>DB: audit_events forge.integration.provisioned
-    S-->>U: ProvisionResult
-```
+The write order is drawn on the feature page: [forge-integrations.md § What it does](../forge-integrations.md#what-it-does).
 
 The admin token the connection holds is never what a bot posts with: `ensureManagedSecret` re-seals it once per connection as a team-scoped `generic_secrets` row whose `AllowedHosts` pin the connection's forge host, and each bot gets that secret id under its declared secret name — as a webhook `SecretOverrides` entry (Tier-0 for the direct webhook launch) and as a `bot_secret_bindings` row (so a board-coordinator launch authenticates too). The inbound URL is the connection's `WebhookBaseURL` pin when set, else the deployment's public URL.
 
@@ -96,14 +32,17 @@ stateDiagram-v2
     needs_reauth --> active: a later worker mint succeeds
     needs_reauth --> degraded: a later mint meets ErrPermissionsNotGranted
     active --> [*]: the connection is deleted
+    needs_reauth --> [*]: deleted
+    degraded --> [*]: deleted
+    revoked --> [*]: deleted
 ```
 
 | State | Written by | Leaves by |
 |---|---|---|
 | `active` | every connect path, and a successful worker mint (runtime or security-read) | a refusal below, or deletion |
-| `needs_reauth` | `markRevoked` on `forge.ErrUnauthorized` — it writes this, not `revoked` — and it withdraws the security-read org entry | a later successful mint — or `degraded`, when a later mint meets `ErrPermissionsNotGranted`: the runtime lane's `markRevoked` leaves `AccessTokenExpiresAt` in the past and `ExpiringBefore` filters on kind and expiry only, so the sweep re-mints the connection on every tick |
-| `degraded` | `markDegraded` on the terminal 422 `forge.ErrPermissionsNotGranted`, stamping the forge message and the remediation on `StatusReason` | nothing: `refreshOne` early-exits on a degraded connection, so no code path writes `active` back |
-| `revoked` | one site only: an avatar apply meeting `ErrUnauthorized` on a PAT | nothing: a PAT is not refreshable, and further avatar applies refuse |
+| `needs_reauth` | `markRevoked` on `forge.ErrUnauthorized` — it writes this, not `revoked` — and it withdraws the security-read org entry | a later successful mint or deletion — or `degraded`, when a later mint meets `ErrPermissionsNotGranted`: the runtime lane's `markRevoked` leaves `AccessTokenExpiresAt` in the past and `ExpiringBefore` filters on kind and expiry only, so the sweep re-mints the connection on every tick |
+| `degraded` | `markDegraded` on the terminal 422 `forge.ErrPermissionsNotGranted`, stamping the forge message and the remediation on `StatusReason` | deletion only: `refreshOne` early-exits on a degraded connection, and every connect path creates a new connection row rather than updating this one |
+| `revoked` | one site only: an avatar apply meeting `ErrUnauthorized` on a PAT | deletion only: a PAT is not refreshable, and further avatar applies refuse |
 
 `Purpose` is its own axis, stamped once at the install callback from the App record (`purposeForApp`) and never recomputed: a narrowed runtime App must read as broken rather than relabel itself watch-only. The approval record carries no status field — its existence is the pending state, and approve or reject deletes it, leaving the audit trail as the only durable record.
 
@@ -146,7 +85,7 @@ stateDiagram-v2
 - **A created App whose present permissions contradict the watch-only profile** — `502` and not recorded, naming the page where the orphan App must be deleted; a failure to record one answers `409` with the same link, because its private key is issued once.
 - **A shared platform App that cannot verify installation ownership** — `412` fail-closed naming `ITERION_FORGE_GITHUB_APP_CLIENT_ID` and `_CLIENT_SECRET`; a verified-but-foreign installation is `403 installation is not owned by the authorizing user`.
 - **An unreadable App record at the install callback** — `502 retry the install`: a connection born mislabelled runtime from a watch-only App would neutralise every `Purpose` guard.
-- **A watch-only connection** — `422` at the route, which is the exhaustive guard: `handleUpdateForgeRepoBots` and `handleApproveProvision` reach `Provision` without one. `ensureManagedSecret` refuses again on the full-provision path, where it runs before the bindings — which matters because a binding is keyed `(tenant, bot, secret_name)` and therefore team-global, and nothing rolls it back; the idempotent short-circuit reconciles bindings without passing through it.
+- **A watch-only connection** — `422` at the enable route, which is not the exhaustive guard: `handleUpdateForgeRepoBots` and `handleApproveProvision` reach `Provision` without one. `ensureManagedSecret` refuses again on the full-provision path, where it runs before the bindings — which matters because a binding is keyed `(tenant, bot, secret_name)` and therefore team-global, and nothing rolls it back; the idempotent short-circuit reconciles bindings without passing through it.
 - **A cross-tenant connection or integration id** — `404 not found`, never `403`: `forgeConnForTenant` and `ErrConnectionNotFound` inside `Provision` do not leak existence.
 - **The org approval gate cannot read the team or the org** — `503 provision-approval gate unavailable`, never a silent pass; a second pending request for the same tenant, connection and repo is a `409` duplicate.
 - **A stale parked request** — `409` when the integration vanished, its bot set drifted, the repo was provisioned meanwhile, or the connection is gone; the record stays pending, including after a transient provision failure at replay.
