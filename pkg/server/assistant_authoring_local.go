@@ -103,6 +103,45 @@ func (d *authoringDirectory) read(name string, limit int64) ([]byte, os.FileInfo
 
 var authoringControlName = regexp.MustCompile(`^(?:[a-f0-9]{64}\.lock|[a-f0-9-]{36}\.(?:record|candidate|before|undo))$`)
 
+// authoringListingHook is a test seam: called with an entry's name before
+// each inspection of an entry a control-directory listing holds, so a test
+// can make a concurrent writer's publication or cleanup land in that
+// window — the moment a listed entry stops existing — and once with an
+// empty name after the last inspection, the moment the audit stops
+// answering for the directory. Nil outside tests.
+var authoringListingHook func(string)
+
+func authoringListingWindow(name string) {
+	if authoringListingHook != nil {
+		authoringListingHook(name)
+	}
+}
+
+// authoringExclusionHook is a test seam: called just before the control
+// directory's exclusion file is read, in the window between the moment a
+// save knows the file is there — it created it or found it — and the
+// moment it reads it, so a test can make another writer's removal land
+// there. Nil outside tests.
+var authoringExclusionHook func()
+
+func authoringExclusionWindow() {
+	if authoringExclusionHook != nil {
+		authoringExclusionHook()
+	}
+}
+
+// authoringControlVanished names the absence of one of this save's own
+// control objects — its recovery directory, the control directory inside
+// it, that directory's exclusion file — for a step that has just seen the
+// object there: created it, found it, or audited it. Its absence can only
+// be another writer's removal since, and that is this save's conflict: the
+// state that holds its recovery data is gone, and a retry rebuilds it. The
+// bare ENOENT would answer 404 — that the file being SAVED is not there,
+// which is not what any of these steps looked at.
+func authoringControlVanished(object, stage, path string, err error) error {
+	return errors.Join(authoringConflictError{"authoring " + object + " vanished while " + stage + ": " + path}, err)
+}
+
 func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLock, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -135,6 +174,20 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 	// An operator-owned .iterion symlink may point to another disk. It is a
 	// valid lock location for in-place saves; replacement preflights EXDEV.
 	iterionPath, err := filepath.EvalSymlinks(filepath.Join(physical, ".iterion"))
+	if errors.Is(err, os.ErrNotExist) {
+		// Resolving nothing, one step after creating or finding it, has
+		// two causes that do not answer the same way: an entry pointing
+		// nowhere is a layout no retry repairs, and a directory removed
+		// under this save is a conflict — a retry rebuilds it, or answers
+		// for the workspace that went with it. Neither cause is the
+		// absence of the file being SAVED, which is what a bare ENOENT
+		// answers for.
+		dotIterion := filepath.Join(physical, ".iterion")
+		if _, lstatErr := os.Lstat(dotIterion); lstatErr == nil {
+			return nil, fmt.Errorf("unsafe authoring directory %s", dotIterion)
+		}
+		return nil, authoringControlVanished("recovery directory", "opening it", dotIterion, err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +234,11 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 	if err != nil {
 		return nil, err
 	}
+	authoringExclusionWindow()
 	body, err := readAuthoringIgnore(ctx, control)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, authoringControlVanished("exclusion", "opening the control directory", filepath.Join(control.path, ".gitignore"), err)
+	}
 	if err != nil || string(body) != "*\n" {
 		return nil, fmt.Errorf("unsafe authoring ignore file in %s: %w", control.path, errors.Join(err, errors.New("expected private * exclusion")))
 	}
@@ -197,6 +254,27 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 	if err != nil {
 		return nil, err
 	}
+	// A listing is a snapshot: a concurrent writer publishes its candidate
+	// out of this directory, or drops its record, while this one is already
+	// in hand, and the entry is gone by the time it is inspected. An entry
+	// that is not there holds nothing unsafe — the audit answers for what
+	// the directory HOLDS. What a skipped entry costs is bounded by who
+	// reads it afterwards: this save's own lock is opened, inspected and
+	// compared with the one flock takes; the exclusion file is read and
+	// audited again with the lock held; another file's lock has no reader
+	// here, and the save that takes it audits it as its own. Every entry
+	// present is held to an expected name, every entry but a displaced copy
+	// to being a regular file, and a lock or a record to being readable and
+	// private; the exclusion is opened here too, and its own gate is the
+	// one re-run under the lock. Neither a candidate nor a displaced copy
+	// is held to the private mode, here or at a point of use: a candidate
+	// carries the mode of the file it is about to become, 0644 for a
+	// creation, and a displaced copy is the live file itself, moved aside.
+	// Holding either to the private mode would refuse every save made while
+	// a neighbour is mid-flight. What keeps a foreign writer out of them is
+	// the enclosing directory, audited as private above. A directory this
+	// audit passed is not a directory that stays that way — the checks that
+	// still matter afterwards run where the entry is read.
 	for _, name := range names {
 		if name != ".gitignore" && !authoringControlName.MatchString(name) {
 			return nil, fmt.Errorf("unexpected authoring control entry: %s", filepath.Join(control.path, name))
@@ -207,7 +285,11 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 		if strings.HasSuffix(name, ".before") || strings.HasSuffix(name, ".undo") {
 			continue
 		}
+		authoringListingWindow(name)
 		info, err := control.root.Lstat(name)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -215,7 +297,11 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 			return nil, fmt.Errorf("unsafe authoring control file: %s", name)
 		}
 		if name == ".gitignore" || strings.HasSuffix(name, ".lock") || strings.HasSuffix(name, ".record") {
+			authoringListingWindow(name)
 			f, err := openAuthoringFileAt(control.file, name, os.O_RDONLY, 0)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -225,6 +311,7 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 			}
 		}
 	}
+	authoringListingWindow("")
 	// Conservative folding also serializes differently cased spellings on
 	// case-insensitive filesystems. Extra contention on sensitive filesystems
 	// is harmless. NFC coalesces Darwin's composed/decomposed name aliases.
@@ -244,6 +331,13 @@ func newAuthoringLocalLock(ctx context.Context, path string) (*authoringLocalLoc
 	name := strings.ToLower(norm.NFC.String(normalizeAuthoringLockName(base)))
 	l.lockName = contentSHA256(name) + ".lock"
 	f, err := openAuthoringFileAt(control.file, l.lockName, os.O_CREATE|os.O_RDWR, 0o600)
+	if errors.Is(err, os.ErrNotExist) {
+		// A name this open creates is never the one that is missing: the
+		// directory the audit just answered for is no longer linked
+		// anywhere, so nothing can be created in it. The open's own error
+		// names neither the directory nor a path.
+		return nil, authoringControlVanished("control directory", "taking the lock", control.path, err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -286,6 +380,37 @@ func readAuthoringIgnore(ctx context.Context, control *authoringDirectory) ([]by
 		case <-tick.C:
 		}
 	}
+}
+
+// checkLockedAuthoringExclusion answers for the control directory's
+// exclusion file with the lock held, where the next bytes of recovery data
+// are about to be written beside it: it still holds the private rule, and
+// it still is a file nobody else may read or write. The listing audits the
+// entries it can still see and skips one that went missing under it, and
+// an audit of a shared directory is stale the moment it ends — so the
+// exclusion is answered for here, not there.
+func checkLockedAuthoringExclusion(ctx context.Context, control *authoringDirectory) error {
+	vanished := func(err error) error {
+		return authoringControlVanished("exclusion", "acquiring lock", filepath.Join(control.path, ".gitignore"), err)
+	}
+	body, err := readAuthoringIgnore(ctx, control)
+	if errors.Is(err, os.ErrNotExist) {
+		return vanished(err)
+	}
+	if err != nil {
+		return err
+	}
+	if string(body) != "*\n" {
+		return authoringConflictError{"authoring exclusion changed while acquiring lock"}
+	}
+	f, err := openAuthoringFileAt(control.file, ".gitignore", os.O_RDONLY, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return vanished(err)
+	}
+	if err != nil {
+		return err
+	}
+	return errors.Join(validateAuthoringOwnership(f, true), f.Close())
 }
 
 func validateAuthoringGitExclusion(ctx context.Context, dir string) error {
@@ -451,12 +576,8 @@ func acquireAuthoringLocalLocks(ctx context.Context, paths []string) ([]*authori
 		if err := l.verify(); err != nil {
 			return fail(err)
 		}
-		ignore, err := readAuthoringIgnore(ctx, l.control)
-		if err != nil {
+		if err := checkLockedAuthoringExclusion(ctx, l.control); err != nil {
 			return fail(err)
-		}
-		if string(ignore) != "*\n" {
-			return fail(authoringConflictError{"authoring exclusion changed while acquiring lock"})
 		}
 		if err := validateAuthoringGitExclusion(ctx, l.control.path); err != nil {
 			return fail(err)
@@ -496,7 +617,7 @@ func (l *authoringLocalLock) writeEditorFile(content []byte, createOnly bool, ig
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		tx, err := prepareAuthoringLocal(l, authoringPreviewFile{Operation: "create", Path: l.path, After: string(content)}, ignore, nil)
+		tx, err := prepareAuthoringLocal(l, authoringPreviewFile{Operation: "create", Path: l.path, After: string(content)}, ignore, authoringStepHook)
 		if tx == nil {
 			return err
 		}
