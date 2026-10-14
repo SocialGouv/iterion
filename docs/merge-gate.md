@@ -28,6 +28,8 @@ status.
 
 ## How it works
 
+Diagram: [The revi/review merge gate](diagrams/flow-revi-review-merge-gate.md)
+
 ```
 PR opened / pushed ──▶ launch claims the head:  revi/review = pending
                               │                 ("review in progress")
@@ -36,8 +38,8 @@ PR opened / pushed ──▶ launch claims the head:  revi/review = pending
                               │
                               ├─ inline comments  (advisory)
                               └─ revi/review status on the head SHA
-                                    success  ⟺  0 findings ≥ gate_severity
-                                    failure  ⟺  ≥1 finding  ≥ gate_severity
+                                    success  when the blocking count is 0
+                                    failure  when the count is ≥1
 
                run dies without publishing ──▶ reconciler posts failure
                                                (event + 1-min sweep)
@@ -50,14 +52,17 @@ The context is claimed at launch and answered at the end, so the check is never
 silent while a review is running — see [the in-flight
 claim](#inflight) and [the repair](#interrupted).
 
-1. **Trigger.** Revi auto-reviews on PR `opened`/`reopened`. For the gate to
-   track fixes, enable **`ReviewOnSync`** on the webhook so a push
-   (`synchronize`) re-reviews the new head — otherwise the required check
+1. **Trigger.** Revi auto-reviews on PR `opened`/`reopened`/`ready_for_review`:
+   a draft is not reviewed when it is opened, its flip to ready is the trigger.
+   For the gate to track fixes, enable **`ReviewOnSync`** on the webhook so a
+   push (`synchronize`) re-reviews the new head — otherwise the required check
    would never appear on the pushed SHA and the merge would deadlock.
 2. **Verdict.** The bot's deterministic `publish_review` node counts findings
    whose severity is at or above `gate_severity` (default `high`), and sends
    `{enabled, blocking_count, threshold, total_findings}` in the publish
-   payload.
+   payload. The count fails closed to 1 when there was nothing to count — the
+   diff scope never resolved, or the findings were not machine-readable — and
+   the payload's `note` then replaces the status description.
 3. **Status.** The server (`/api/v1/forge/publish-review`) resolves the PR
    head SHA and posts the `revi/review` commit status through the team
    connection's **live** forge client (a GitHub App mints a fresh token per
@@ -1399,8 +1404,8 @@ marker. A provider that reports no state at all is not treated as a closure.
 The synthetic failure states the remedy that applies to the run it replaces.
 A review that died reads `review died (<reason>) — push again or comment the
 bot's command to re-run`; a run whose queue message is parked on the
-dead-letter queue reads `review parked on the DLQ — operator replay needed
-(iterion remote admin dlq)` instead, because a push there launches a fresh run
+dead-letter queue reads `review parked on the DLQ — operator resume needed
+(iterion remote runs resume)` instead, because a push there launches a fresh run
 and leaves the parked message where it is. Both are the reconciler's own
 marker, so both are repairable and both are ignored by the lane below.
 
@@ -1433,9 +1438,11 @@ enforced by the engine, none by the bot's good manners:
    operator launch-vars pin, flipped after calibration, reversible the same way.
 
 What the engine refuses, always: verdict gestures without an enabled gate (the check is
-the audit and ordering anchor), gestures on a superseded or refused gate, gestures whose
-approval was requested and failed (never arm on an unconfirmed approval), and an arming
-without a sha (an unpinned arming is refused by contract in the forge layer itself).
+the audit and ordering anchor), approval and arming behind a check that posted red (only
+requesting reviewers stays allowed — escalation is what a red verdict is for), gestures
+on a superseded or refused gate, gestures whose approval was requested and failed (never
+arm on an unconfirmed approval), and an arming without a sha (an unpinned arming is
+refused by contract in the forge layer itself).
 
 The forge gestures are optional capabilities (`forge.MergeApprover`, `forge.AutoMergeArmer`,
 `forge.PullReviewerSetter`, `forge.MergeabilityReader`) — a provider that lacks one

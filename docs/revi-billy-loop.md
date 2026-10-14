@@ -156,13 +156,9 @@ The webhook tail resolves everything from the PR and the repo integration:
   `{"source": <main.bot with a larger max_duration>, "force": true}` — the
   checkpoint restarts inside `campaign`, the plan phases are not re-paid.
 - **When the WEEKLY cap parks the gate**, the reset can be days out and
-  the review's `pending` claim blocks the PR that long. The documented
-  maintainer override (`/revi approve`, [merge-gate.md](merge-gate.md))
-  currently fails on a GitHub App integration (`set commit status: forge:
-  insufficient scope`, SocialGouv/iterion#662): the fallbacks are the
-  admin's own status write on the head (same context, "approved by
-  @user: reason" in the description, the comment as `target_url`) or the
-  admin merge-queue bypass.
+  the review's `pending` claim blocks the PR that long. The maintainer
+  override (`/revi approve`, [merge-gate.md](merge-gate.md)) force-greens the
+  check on the current head; the admin merge-queue bypass is the last resort.
 - **A deliberate pass still needs Billy to be able to run.** When the *weekly*
   cap is hard-blocking, the reset can be days out and the pass has no path:
   fix the findings yourself, say so on the PR against their finding ids, and
