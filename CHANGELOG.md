@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.265.0](https://github.com/SocialGouv/iterion/compare/v3.264.0...v3.265.0) (2026-10-14)
+
+### Features
+
+* **author,dsl:** validate says when a document's .bot is another program ([#2440](https://github.com/SocialGouv/iterion/issues/2440)) ([9b4f244](https://github.com/SocialGouv/iterion/commit/9b4f2441c6a074b36dbca8734ca7f9bc205f5aa8)), closes [#1763](https://github.com/SocialGouv/iterion/issues/1763)
+
+    <details><summary>why</summary>
+
+    An author document sits beside the .bot it was written from, and nothing said when the two had drifted apart: a launcher runs the .bot, the author reads the document, and `iterion validate` gave the document a green verdict while the program next to it was another one.
+
+    </details>
+
+### Bug Fixes
+
+* **backends,bots:** `readonly: true` beats a declared writing tool on claude_code, and 3 nodes drop the flag ([#2443](https://github.com/SocialGouv/iterion/issues/2443)) ([65886ed](https://github.com/SocialGouv/iterion/commit/65886ed723d110ca91c16d20f7c312306db2ad99)), closes [#1816](https://github.com/SocialGouv/iterion/issues/1816), references [#1651](https://github.com/SocialGouv/iterion/issues/1651)
+
+    <details><summary>why</summary>
+
+    On claude_code the flag withheld the file-writing natives a node did not declare and KEPT the ones its own `tools:` list named, with a Warn. But `readonly:` is the node's access intent — the meaning it already has on codex (`codex.go:844` returns the `read-only` sandbox before any tool classification) and on pi (`pi.go:562` pins `--tools` to `read,grep,find,ls`), both unconditional, both beating the declaration — and it is also what admits a node into a fan-out branch as non-mutating, so a…
+
+    </details>
+* **rgaa-audit:** the studio dogfood's fixes — anchored recommendations, a truthful trial, a replay-safe ledger ([#2439](https://github.com/SocialGouv/iterion/issues/2439)) ([fa879e4](https://github.com/SocialGouv/iterion/commit/fa879e4c1b68697a005ca4d09f8bc5c262c97b67)), references [SocialGouv/ultra11y#49](https://github.com/SocialGouv/ultra11y/issues/49) [#2438](https://github.com/SocialGouv/iterion/issues/2438) [#2346](https://github.com/SocialGouv/iterion/issues/2346) [#2398](https://github.com/SocialGouv/iterion/issues/2398)
+
+    <details><summary>why</summary>
+
+    First run of Acci v3 on iterion's own studio (bilan in docs/bot-runs/rgaa-audit.md): the rendered layer works end to end, and the run found four bot defects the fixture tests could not show.
+
+    </details>
+* **server:** a stale control listing refuses nothing, so a create-only loser answers 409 ([#2441](https://github.com/SocialGouv/iterion/issues/2441)) ([eca06a0](https://github.com/SocialGouv/iterion/commit/eca06a0b11e3b69f7530cd442b6119a45175b9ee)), closes [#2380](https://github.com/SocialGouv/iterion/issues/2380)
+
+    <details><summary>why</summary>
+
+    Before it takes a file's flock, an authoring save audits the private control directory of the file's own directory: it lists `.iterion/authoring`, then inspects every entry it listed — `control.root.Lstat`, plus an `O_RDONLY` open for the exclusion file, a lock and a record. A concurrent writer renames its `<uuid>.candidate` out of that directory (publication) or removes its `<uuid>.record` (completion) while the listing is already in hand: the inspection gets ENOENT, the audit refuses, and…
+
+    </details>
+
 ## [3.264.0](https://github.com/SocialGouv/iterion/compare/v3.263.3...v3.264.0) (2026-10-14)
 
 ### Features
