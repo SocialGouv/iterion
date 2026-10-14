@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -168,9 +169,6 @@ printf '%s\n' "$CLAUDE_CODE_OAUTH_TOKEN" >> "$LINES/tokens"
 if [ -f "$LINES/rotate-$n" ]; then
 	cp "$LINES/rotate-$n" "$FORFAIT_FILE.tmp" && mv "$FORFAIT_FILE.tmp" "$FORFAIT_FILE"
 fi
-if [ -f "$LINES/late-rotate-$n" ]; then
-	( sleep 0.3; cp "$LINES/late-rotate-$n" "$FORFAIT_FILE.tmp" && mv "$FORFAIT_FILE.tmp" "$FORFAIT_FILE" ) >/dev/null 2>&1 &
-fi
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"s1","model":"fake","tools":[],"mcp_servers":[]}'
 cat "$LINES/$n"
 `
@@ -205,10 +203,38 @@ func runRotatingLate(t *testing.T, task Task, spawns map[int][]byte, lateOn []in
 			t.Fatal(err)
 		}
 	}
+	// The runner rotates the token from outside the CLI's process tree, a
+	// moment after spawn n started. A writer the stand-in CLI started itself
+	// would be one of the node's processes, and end with the node.
+	stop := make(chan struct{})
+	var writers sync.WaitGroup
+	t.Cleanup(func() { close(stop); writers.Wait() })
+	forfaitFile := filepath.Join(forfait, secrets.ClaudeCodeCredentialsFileName)
 	for _, n := range lateOn {
-		if err := os.WriteFile(filepath.Join(lines, fmt.Sprintf("late-rotate-%d", n)), forfaitBlob("at.after"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		writers.Add(1)
+		go func(n int) {
+			defer writers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
+				raw, err := os.ReadFile(filepath.Join(lines, "count"))
+				if c, _ := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && c >= n {
+					break
+				}
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(300 * time.Millisecond):
+			}
+			tmp := forfaitFile + ".tmp"
+			if err := os.WriteFile(tmp, forfaitBlob("at.after"), 0o600); err == nil {
+				_ = os.Rename(tmp, forfaitFile)
+			}
+		}(n)
 	}
 	script := filepath.Join(t.TempDir(), "claude")
 	if err := os.WriteFile(script, []byte(fakeClaudeRotating), 0o755); err != nil {

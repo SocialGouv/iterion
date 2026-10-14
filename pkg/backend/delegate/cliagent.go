@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -316,6 +317,10 @@ type CLIAgentBackend struct {
 const (
 	maxCLIAgentRetries     = 3
 	defaultCLIAgentTimeout = 20 * time.Minute
+	// cliAgentWaitDelay bounds the wait for the agent's output once the agent
+	// has exited, which a process it left running and holding the pipe would
+	// otherwise make endless.
+	cliAgentWaitDelay = 2 * time.Second
 )
 
 // Execute runs the target CLI for the given task and parses its output into a
@@ -1003,6 +1008,10 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 	}
 
 	var cmd *exec.Cmd
+	backend := b.Protocol.Name
+	if backend == "" {
+		backend = "cli_agent"
+	}
 	if task.Sandbox != nil {
 		// Record the in-container PID so cancellation/timeout can actually
 		// terminate the agent: killing the host-side `docker exec` client
@@ -1012,13 +1021,16 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		// The wrapper also self-cleans on retry: attempt N kills whatever
 		// attempt N-1 the pidfile still points to.
 		mark := sandboxDelegateMark(task)
-		cleanup := killSandboxDelegate(task.Sandbox, mark, b.Logger)
+		cleanup := killSandboxDelegate(task.Sandbox, mark, ownerOf(b.Logger, task, backend))
 		defer cleanup()
 		cmd = task.Sandbox.Command(runCtx, wrapSandboxDelegateArgv(mark, argv), sandbox.ExecOpts{
 			Env:     b.sandboxEnv(ctx, task),
 			WorkDir: task.WorkDir,
 			Stdin:   stdin,
 		})
+		// As on the host: once the exec has exited, what holds its output
+		// does not hold the node.
+		cmd.WaitDelay = cliAgentWaitDelay
 	} else {
 		cmd = exec.CommandContext(runCtx, binary, args...) // #nosec G204 — binary/args are backend-configured, not attacker-controlled.
 		// Host arm only. A CLI agent forks its own tools (shells, language
@@ -1028,7 +1040,15 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		// above has its own answer (the pidfile wrapper + in-container kill),
 		// because a container's process tree is not ours to signal.
 		proc.TerminateGroupOnCancel(cmd)
-		cmd.Env = env
+		// The group answers a cancellation; what the agent detached from it,
+		// or left running on a clean exit, carries the node session token and
+		// ends with this run (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
+		token, since := proc.NewNodeSessionToken(), NodeSessionSince()
+		defer SweepLocalNodeSession(b.Logger, task, backend, token, since)
+		cmd.Env = append(append([]string(nil), env...), proc.NodeSessionEntry(token))
+		// A process the agent detached may keep its stdout: once the agent has
+		// exited, its output is not waited for past this, and the run ends.
+		cmd.WaitDelay = cliAgentWaitDelay
 		if task.WorkDir != "" {
 			cmd.Dir = task.WorkDir
 		}
@@ -1049,6 +1069,14 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 	}
 	if cmd.ProcessState != nil {
 		exitCode = cmd.ProcessState.ExitCode()
+	}
+	if errors.Is(runErr, exec.ErrWaitDelay) {
+		// The agent exited successfully and its output was read; what kept
+		// the pipe open is a process it left, which the node session's end
+		// stops and reports.
+		b.Logger.Warn("[%s#%d/%s] the agent exited, and a process it left kept its output open: read what the agent wrote, stopped waiting after %s",
+			task.NodeID, task.Iteration, b.Protocol.Name, cliAgentWaitDelay)
+		runErr = nil
 	}
 	if runErr != nil {
 		return stdout, stderr, exitCode, fmt.Errorf("delegate: %s: %s failed: %w", b.Protocol.Name, binary, runErr)

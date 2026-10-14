@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -36,6 +37,19 @@ func (c *captureSandboxCmdRun) Command(ctx context.Context, cmd []string, opts s
 	// A no-output command: claudesdk.Prompt reads EOF and returns a
 	// ProcessError — the capture has happened by then.
 	return exec.CommandContext(ctx, "true")
+}
+
+// spawns returns the CLI execs it captured — argv, cwd and env, in order —
+// leaving out the exec that ends a spawn (its kill and node session sweep).
+func (c *captureSandboxCmdRun) spawns() (argvs [][]string, cwds []string, envs []map[string]string) {
+	for i, argv := range c.argvs {
+		if slices.Contains(argv, "--print") {
+			argvs = append(argvs, argv)
+			cwds = append(cwds, c.cwds[i])
+			envs = append(envs, c.envs[i])
+		}
+	}
+	return argvs, cwds, envs
 }
 
 // TestAnthropicCredEnv_SandboxForwardsAmbientCreds pins the fix for the
@@ -112,30 +126,31 @@ func TestFormatOutput_SandboxExecParity(t *testing.T) {
 		b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
 		_, _, _, _ = b.formatOutput(ctx, task, "sess-643e6598")
 
-		if len(fake.argvs) != 1 {
-			t.Fatalf("expected exactly one sandbox exec, got %d", len(fake.argvs))
+		argvs, cwds, envs := fake.spawns()
+		if len(argvs) != 1 {
+			t.Fatalf("expected exactly one sandbox CLI exec, got %d", len(argvs))
 		}
-		argv := strings.Join(fake.argvs[0], " ")
+		argv := strings.Join(argvs[0], " ")
 		if !strings.Contains(argv, "--resume sess-643e6598") {
 			t.Errorf("fmt exec must resume the Pass-1 session, argv: %s", argv)
 		}
-		if fake.cwds[0] != "" {
-			t.Errorf("fmt exec cwd = %q — must stay empty so the driver applies the container workingDir (same session key as the main pass)", fake.cwds[0])
+		if cwds[0] != "" {
+			t.Errorf("fmt exec cwd = %q — must stay empty so the driver applies the container workingDir (same session key as the main pass)", cwds[0])
 		}
 		// The exec env must match what the MAIN pass computes from the same
 		// inputs, plus the effort dial.
 		mainCredEnv := anthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
 		for k, v := range mainCredEnv {
-			if fake.envs[0][k] != v {
-				t.Errorf("fmt env[%s] = %q, want the main pass value %q", k, fake.envs[0][k], v)
+			if envs[0][k] != v {
+				t.Errorf("fmt env[%s] = %q, want the main pass value %q", k, envs[0][k], v)
 			}
 		}
-		if _, ok := fake.envs[0]["CLAUDE_CODE_EFFORT_LEVEL"]; !ok {
+		if _, ok := envs[0]["CLAUDE_CODE_EFFORT_LEVEL"]; !ok {
 			t.Error("fmt env missing CLAUDE_CODE_EFFORT_LEVEL")
 		}
 		for _, k := range wantEnvKeys {
-			if fake.envs[0][k] == "" {
-				t.Errorf("fmt env missing %s (keys: %v)", k, envKeys(fake.envs[0]))
+			if envs[0][k] == "" {
+				t.Errorf("fmt env missing %s (keys: %v)", k, envKeys(envs[0]))
 			}
 		}
 	}

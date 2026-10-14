@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/memory"
@@ -335,6 +336,18 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			return delegate.Result{}, err
 		}
 		return b.executeViaSandboxRunner(ctx, task)
+	}
+
+	// The node's shell and its settings hooks run in this process's namespace
+	// — the host's, or the run container's when the sandboxed runner calls
+	// Execute there. What they start carries the node session variable and
+	// ends with the node (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
+	// A runner whose launcher ends the session draws none: everything here
+	// already carries the launcher's, whose end stops and reports it.
+	if !launcherEndsNodeSession(ctx) {
+		token, since := proc.NewNodeSessionToken(), delegate.NodeSessionSince()
+		ctx = proc.WithNodeSessionEnv(ctx, token)
+		defer delegate.SweepLocalNodeSession(b.logger, task, delegate.BackendClaw, token, since)
 	}
 
 	// Resolve API client. Phase C: in cloud mode the runner stamps
@@ -1213,7 +1226,13 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	if forfaitEnv != nil && b.logger != nil {
 		b.logger.Info("[%s#%d/claw] the host's ChatGPT forfait (its access token) was written into the sandbox for this node (ITERION_OPENAI_USE_OAUTH=1); the node spends it at chatgpt.com", task.NodeID, task.Iteration)
 	}
-	cmd := run.Command(ctx, []string{"iterion", "__claw-runner"}, sandbox.ExecOpts{
+	// The runner carries the node session: the wrapper records its pid and
+	// exports the session before exec'ing it. When the node ends — the runner
+	// done, or its exec client killed by an abort, which leaves the runner
+	// running in the container — the runner and everything it left are
+	// stopped (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
+	wrap, endSession := delegate.SandboxNodeSession(run, task, delegate.BackendClaw, b.logger)
+	cmd := run.Command(ctx, wrap([]string{"iterion", "__claw-runner"}), sandbox.ExecOpts{
 		KeepStdinOpen: true,
 		Env:           runnerEnv,
 	})
@@ -1232,6 +1251,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	if err := cmd.Start(); err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: spawn runner: %w", err)
 	}
+	defer endSession()
 
 	mux := delegate.NewMultiplexer(stdoutPipe, stdinPipe, b.multiplexerHandler(ctx, task))
 
@@ -1356,6 +1376,9 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
 	ioTask := delegate.ToIOTask(task)
 	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
 	ioTask.Retry = b.retry.wire()
+	// executeViaSandboxRunner wraps the runner in the node's session and ends
+	// it: the runner draws none of its own.
+	ioTask.LauncherEndsNodeSession = true
 	return ioTask
 }
 

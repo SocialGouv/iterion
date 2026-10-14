@@ -96,7 +96,17 @@ func (s *deliverySandbox) Driver() string {
 	return s.driver
 }
 
-func (s *deliverySandbox) Command(ctx context.Context, _ []string, opts sandbox.ExecOpts) *exec.Cmd {
+// isNodeSessionEnd reports whether argv is the exec that ends a sandboxed
+// spawn's node session, which every sandboxed runner spawn is followed by: a
+// double recording the runner's spawns must not count it as one.
+func isNodeSessionEnd(argv []string) bool {
+	return len(argv) == 3 && argv[0] == "sh" && strings.Contains(argv[2], "iterion-node-session")
+}
+
+func (s *deliverySandbox) Command(ctx context.Context, argv []string, opts sandbox.ExecOpts) *exec.Cmd {
+	if isNodeSessionEnd(argv) {
+		return exec.CommandContext(ctx, "true")
+	}
 	files := s.files()
 	s.mu.Lock()
 	defer s.mu.Unlock()
