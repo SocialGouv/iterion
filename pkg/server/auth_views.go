@@ -52,6 +52,11 @@ type UserView struct {
 	// console could not answer because the fields existed in the store and
 	// nothing exposed them. LastLoginAt is empty when the account has never
 	// completed a sign-in.
+	//
+	// UpdatedAt is the ROW's last change, stamped by the store on every
+	// write: an admin edit, but also a sign-in and a failed sign-in, which
+	// move the login stamp and the brute-force counter. Dormancy is
+	// LastLoginAt's question, not this field's.
 	UpdatedAt   string `json:"updated_at,omitempty"`
 	LastLoginAt string `json:"last_login_at,omitempty"`
 }

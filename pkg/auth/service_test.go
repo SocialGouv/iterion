@@ -115,6 +115,13 @@ func TestChangePasswordPending(t *testing.T) {
 		t.Fatalf("unknown: expected ErrInvalidCredentials, got %v", err)
 	}
 
+	// Nothing has stamped a sign-in yet — the account was created pending and
+	// every attempt above was refused — so the stamp asserted after the
+	// rotation can only be the rotation's own.
+	if before, _ := svc.store.GetUserByEmail(ctx, "ops@example.com"); before.LastLoginAt != nil {
+		t.Fatalf("last_login_at = %v before the rotation: the stamp asserted below would prove nothing", before.LastLoginAt)
+	}
+
 	// Correct rotation activates the account and issues a session.
 	res, err := svc.ChangePasswordPending(ctx, "ops@example.com", "temp-pass-123", "brand-new-pass", "ua", "ip")
 	if err != nil {
@@ -123,8 +130,14 @@ func TestChangePasswordPending(t *testing.T) {
 	if res.AccessToken == "" || res.RefreshToken == "" {
 		t.Fatal("expected a session after rotation")
 	}
-	if u, _ := svc.store.GetUserByEmail(ctx, "ops@example.com"); u.Status != identity.UserStatusActive {
+	u, _ := svc.store.GetUserByEmail(ctx, "ops@example.com")
+	if u.Status != identity.UserStatusActive {
 		t.Fatalf("expected active status after rotation, got %q", u.Status)
+	}
+	// The rotation grants a session, so it owns the stamp its own patch
+	// carries: the account must not read as never-signed-in afterwards.
+	if u.LastLoginAt == nil {
+		t.Error("last_login_at is unset after the rotation that signed the account in")
 	}
 
 	// The new password logs in; the temp no longer works.
@@ -277,5 +290,62 @@ func TestPasswordHashAndVerify(t *testing.T) {
 	}
 	if _, err := VerifyPassword("anything", "$invalid$hash$format$"); !errors.Is(err, ErrInvalidPasswordHash) {
 		t.Fatalf("expected ErrInvalidPasswordHash, got %v", err)
+	}
+}
+
+// TestEveryUserWriteMovesUpdatedAt pins what users.updated_at means now that
+// the STORE stamps it, because the admin console ships the field: it is the
+// ROW's last change, not the last administrative edit. A successful sign-in
+// moves it (the login stamp) and so does a failed one (the brute-force
+// counter), which is why dormancy is LastLoginAt's question — pinned here
+// too, on the field the sign-in itself owns: it lands on a success and stays
+// put on a failure.
+func TestEveryUserWriteMovesUpdatedAt(t *testing.T) {
+	svc := newTestService(t, SignupOpen)
+	ctx := context.Background()
+	res, err := svc.Register(ctx, "stamped@example.com", "correcthorse", "Stamped", "", "ua", "ip")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	read := func() identity.User {
+		t.Helper()
+		u, err := svc.Store().GetUser(ctx, res.User.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+
+	before := read()
+	if before.LastLoginAt != nil {
+		t.Fatalf("last_login_at = %v on a registration: the stamp assertions below would prove nothing", before.LastLoginAt)
+	}
+	if _, err := svc.Login(ctx, "stamped@example.com", "correcthorse", "ua", "ip"); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	afterLogin := read()
+	if !afterLogin.UpdatedAt.After(before.UpdatedAt) {
+		t.Errorf("updated_at after a sign-in = %v, want later than %v", afterLogin.UpdatedAt, before.UpdatedAt)
+	}
+	// The stamp itself: every login path delivers it through the single
+	// stampLogin patch, so this is where the console's dormancy fact is won
+	// or silently lost for every account on the platform. It must carry the
+	// sign-in's own time, not a zero value that would read as "1 Jan 0001".
+	if afterLogin.LastLoginAt == nil || !afterLogin.LastLoginAt.After(before.UpdatedAt) {
+		t.Fatalf("last_login_at after a sign-in = %v, want a stamp later than the row's previous change %v",
+			afterLogin.LastLoginAt, before.UpdatedAt)
+	}
+
+	if _, err := svc.Login(ctx, "stamped@example.com", "WRONG-password", "ua", "ip"); err == nil {
+		t.Fatal("a wrong password must not sign in")
+	}
+	afterFailed := read()
+	if !afterFailed.UpdatedAt.After(afterLogin.UpdatedAt) {
+		t.Errorf("updated_at after a FAILED sign-in = %v, want later than %v", afterFailed.UpdatedAt, afterLogin.UpdatedAt)
+	}
+	// And the contrast that gives the two fields their separate meanings: a
+	// failed sign-in moves updated_at and leaves last_login_at alone.
+	if afterFailed.LastLoginAt == nil || !afterFailed.LastLoginAt.Equal(*afterLogin.LastLoginAt) {
+		t.Errorf("last_login_at after a FAILED sign-in = %v, want %v unchanged", afterFailed.LastLoginAt, afterLogin.LastLoginAt)
 	}
 }

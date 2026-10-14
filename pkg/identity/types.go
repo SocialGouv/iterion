@@ -528,6 +528,11 @@ var (
 	ErrInvalidRole         = errors.New("identity: invalid role")
 	ErrInvitationUsed      = errors.New("identity: invitation already accepted")
 	ErrInvitationExpired   = errors.New("identity: invitation expired")
+	// ErrUserStatusChanged is UserPatch.IfNotStatus refusing the write: the
+	// row's status is one the caller declared it would not act on. Distinct
+	// from ErrNotFound — the account exists, its state moved — so a caller
+	// can tell "no such user" from "an admin disabled it under me".
+	ErrUserStatusChanged = errors.New("identity: user status no longer admits this write")
 )
 
 // NormalizeEmail lower-cases and trims whitespace from an email.
@@ -563,6 +568,75 @@ func SlugifyTeamName(name string) string {
 		out = out[:len(out)-1]
 	}
 	return string(out)
+}
+
+// UserPatch is a PARTIAL user update: only the non-nil fields are written.
+//
+// It exists because UpdateUser replaces the whole document, which makes every
+// "read, change a field, write back" authentication path a lost-update race
+// against every other one — and against the super-admin console. The
+// dangerous directions were measured: an admin-initiated password reset
+// carries the Status it read, so resetting an account another admin disabled
+// in between REVIVES it to pending_password_change and hands out a usable
+// temporary password; a login persisting a default team carries IsSuperAdmin
+// and PasswordHash, so an ordinary click re-grants a platform privilege just
+// revoked and restores a credential just rotated. Same class as TeamPatch's.
+//
+// A writer names the fields it OWNS. The login paths own LastLoginAt and the
+// lockout pair, the team switch owns the defaults, the console owns the
+// status and the privilege flag — nothing else travels with them.
+type UserPatch struct {
+	Name          *string
+	PasswordHash  *string
+	Status        *UserStatus
+	IsSuperAdmin  *bool
+	DefaultTeamID *string
+	DefaultOrgID  *string
+	// GitHubOrgs, when non-nil, replaces the whole list; pointing at an
+	// empty slice clears it (nil = leave untouched).
+	GitHubOrgs *[]string
+	// LastLoginAt, when non-nil, stamps a successful login. There is no
+	// clear direction: no writer un-logs a login.
+	LastLoginAt *time.Time
+	// Lockout, when non-nil, writes the brute-force pair as ONE fact:
+	// FailedLogins and LockedUntil move together or not at all — a counter
+	// written without the deadline it produced is a half-landed lockout.
+	Lockout *UserLockout
+	// IfNotStatus is the patch's PRECONDITION, evaluated atomically with the
+	// write by both stores: a row whose status is one of these is left
+	// untouched and the call returns ErrUserStatusChanged. It is what makes
+	// a credential or status write refuse a snapshot an admin has disabled
+	// since — re-reading before the write cannot, it only moves the window.
+	IfNotStatus []UserStatus
+}
+
+// UserLockout is the brute-force lockout pair UserPatch.Lockout writes
+// together. The zero value clears the lock: no failures, no deadline.
+type UserLockout struct {
+	FailedLogins int
+	LockedUntil  *time.Time
+}
+
+// Empty reports whether the patch names no field to write. A precondition is
+// not a field: an empty patch carrying one is still answered by the stores,
+// which must never report success on a status the caller refused.
+func (p UserPatch) Empty() bool {
+	return p.Name == nil && p.PasswordHash == nil && p.Status == nil && p.IsSuperAdmin == nil &&
+		p.DefaultTeamID == nil && p.DefaultOrgID == nil && p.GitHubOrgs == nil &&
+		p.LastLoginAt == nil && p.Lockout == nil
+}
+
+// statusRefused reports whether status is one the patch declared it would not
+// write over — the memory store's reading of the precondition. Mongo spells
+// the same thing as a `$nin` arm of the update filter; the patch conformance
+// suite runs against both so the two cannot drift.
+func (p UserPatch) statusRefused(status UserStatus) bool {
+	for _, blocked := range p.IfNotStatus {
+		if status == blocked {
+			return true
+		}
+	}
+	return false
 }
 
 // TeamPatch is a PARTIAL team update: only the non-nil fields are written.

@@ -8,6 +8,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/deeplink"
+	"github.com/SocialGouv/iterion/pkg/identity"
 )
 
 // registerForgeGitHubOrgsRoutes wires a read:org OAuth that lists the signed-in
@@ -98,9 +99,10 @@ func (s *Server) handleGitHubOrgsCallback(w http.ResponseWriter, r *http.Request
 	}
 	if st := s.authStore(); st != nil && pending.UserID != "" {
 		if u, err := st.GetUser(r.Context(), pending.UserID); err == nil {
-			u.GitHubOrgs = githubOrgsFromGroups(ext.Groups)
-			u.UpdatedAt = time.Now().UTC()
-			if err := st.UpdateUser(r.Context(), u); err != nil {
+			// The org list is all this callback owns: a whole-row write would
+			// carry the status and the privilege flag its read predates.
+			orgs := githubOrgsFromGroups(ext.Groups)
+			if _, err := st.PatchUser(r.Context(), u.ID, identity.UserPatch{GitHubOrgs: &orgs}); err != nil {
 				httpError(w, http.StatusInternalServerError, "persist github orgs: %v", err)
 				return
 			}

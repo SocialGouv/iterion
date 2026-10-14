@@ -15,8 +15,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
-// runPatchSuite exercises the PatchTeam/PatchOrg contract both Store
-// implementations must satisfy. It matters more than it looks: the two
+// runPatchSuite exercises the PatchUser/PatchTeam/PatchOrg contract both
+// Store implementations must satisfy. It matters more than it looks: the two
 // twins reach the same result by opposite means — the memory store
 // mutates a copied struct, Mongo builds a `$set` of hand-written keys
 // — so a field name that does not match its bson tag would write a NEW
@@ -38,11 +38,169 @@ func runPatchSuite(t *testing.T, s Store) {
 			t.Fatalf("seed team %s: %v", id, err)
 		}
 	}
+	seedUser := func(id, email string, u User) User {
+		t.Helper()
+		u.ID, u.Email, u.CreatedAt, u.UpdatedAt = id, email, now, now
+		if u.Status == "" {
+			u.Status = UserStatusActive
+		}
+		got, err := s.CreateUser(ctx, u)
+		if err != nil {
+			t.Fatalf("seed user %s: %v", id, err)
+		}
+		return got
+	}
 
 	seedOrg("po1", "patch-org-one")
 	seedOrg("po2", "patch-org-two")
 	seedTeam("pt1", "po1", "patch-team-one")
 	seedTeam("pt2", "po1", "patch-team-two")
+
+	t.Run("user: every patchable field round-trips under its bson tag", func(t *testing.T) {
+		seedUser("pu1", "pu1@example.org", User{Name: "Before", PasswordHash: "hash-before"})
+		// One patch per field would pass even if two shared a key; naming
+		// them all at once and reading every one back is what catches a
+		// `$set` key that does not exist on the document.
+		name, hash, team, org := "After", "hash-after", "pt1", "po1"
+		orgs := []string{"socialgouv", "betagouv"}
+		super := true
+		pending := UserStatusPendingPasswordChange
+		until := now.Add(time.Hour)
+		got, err := s.PatchUser(ctx, "pu1", UserPatch{
+			Name: &name, PasswordHash: &hash, Status: &pending, IsSuperAdmin: &super,
+			DefaultTeamID: &team, DefaultOrgID: &org, GitHubOrgs: &orgs,
+			LastLoginAt: &now,
+			Lockout:     &UserLockout{FailedLogins: 3, LockedUntil: &until},
+		})
+		if err != nil {
+			t.Fatalf("PatchUser: %v", err)
+		}
+		switch {
+		case got.Name != "After":
+			t.Errorf("name not applied: %+v", got)
+		case got.PasswordHash != "hash-after":
+			t.Errorf("password_hash not applied: %+v", got)
+		case got.Status != UserStatusPendingPasswordChange:
+			t.Errorf("status not applied: %q", got.Status)
+		case !got.IsSuperAdmin:
+			t.Errorf("is_super_admin not applied: %+v", got)
+		case got.DefaultTeamID != "pt1" || got.DefaultOrgID != "po1":
+			t.Errorf("defaults not applied: %+v", got)
+		case len(got.GitHubOrgs) != 2 || got.GitHubOrgs[0] != "socialgouv":
+			t.Errorf("github_orgs not applied: %+v", got.GitHubOrgs)
+		case got.LastLoginAt == nil || !got.LastLoginAt.Equal(now):
+			t.Errorf("last_login_at not applied: %v", got.LastLoginAt)
+		case got.FailedLogins != 3:
+			t.Errorf("failed_logins not applied: %d", got.FailedLogins)
+		case got.LockedUntil == nil || !got.LockedUntil.Equal(until):
+			t.Errorf("locked_until not applied: %v", got.LockedUntil)
+		}
+		// A patch that names one field leaves every other standing — the
+		// whole point, and the hazard a whole-row write is.
+		back := UserStatusActive
+		got, err = s.PatchUser(ctx, "pu1", UserPatch{Status: &back})
+		if err != nil {
+			t.Fatalf("PatchUser(status): %v", err)
+		}
+		if got.PasswordHash != "hash-after" || got.Name != "After" || !got.IsSuperAdmin {
+			t.Errorf("a status patch clobbered an unnamed field: %+v", got)
+		}
+		// Clearing the lockout writes an explicit null through $set, which
+		// must decode back to the zero value — the half a memory-only test
+		// cannot see.
+		got, err = s.PatchUser(ctx, "pu1", UserPatch{Lockout: &UserLockout{}})
+		if err != nil {
+			t.Fatalf("PatchUser(clear lockout): %v", err)
+		}
+		if got.FailedLogins != 0 || got.LockedUntil != nil {
+			t.Errorf("stale lockout survived the clear: failed=%d until=%v", got.FailedLogins, got.LockedUntil)
+		}
+		// The store keeps a snapshot, not the caller's slice: Mongo marshals
+		// one, and the memory twin must copy — else a caller editing the
+		// slice it passed edits the store from outside.
+		mine := []string{"socialgouv"}
+		if _, err := s.PatchUser(ctx, "pu1", UserPatch{GitHubOrgs: &mine}); err != nil {
+			t.Fatalf("PatchUser(github_orgs): %v", err)
+		}
+		mine[0] = "mutated-after-the-write"
+		if reread, err := s.GetUser(ctx, "pu1"); err != nil {
+			t.Fatalf("GetUser: %v", err)
+		} else if len(reread.GitHubOrgs) != 1 || reread.GitHubOrgs[0] != "socialgouv" {
+			t.Errorf("the store aliased the caller's slice: %+v", reread.GitHubOrgs)
+		}
+		// An empty list is a meaningful write (the user left every org),
+		// distinct from "leave untouched".
+		empty := []string{}
+		got, err = s.PatchUser(ctx, "pu1", UserPatch{GitHubOrgs: &empty})
+		if err != nil {
+			t.Fatalf("PatchUser(clear github_orgs): %v", err)
+		}
+		if len(got.GitHubOrgs) != 0 {
+			t.Errorf("explicit clear left the org list standing: %+v", got.GitHubOrgs)
+		}
+	})
+
+	t.Run("user: the precondition refuses a disabled row and writes nothing", func(t *testing.T) {
+		before := seedUser("pu2", "pu2@example.org", User{PasswordHash: "hash-keep", Status: UserStatusDisabled})
+		hash, active := "hash-new", UserStatusActive
+		if _, err := s.PatchUser(ctx, "pu2", UserPatch{
+			PasswordHash: &hash, Status: &active,
+			IfNotStatus: []UserStatus{UserStatusDisabled},
+		}); !errors.Is(err, ErrUserStatusChanged) {
+			t.Fatalf("want ErrUserStatusChanged, got %v", err)
+		}
+		after, err := s.GetUser(ctx, "pu2")
+		if err != nil {
+			t.Fatalf("GetUser: %v", err)
+		}
+		if after.Status != UserStatusDisabled || after.PasswordHash != before.PasswordHash {
+			t.Fatalf("the refused patch still landed: %+v", after)
+		}
+		// The same patch without the precondition is the explicit
+		// reactivation path, which must stay available.
+		got, err := s.PatchUser(ctx, "pu2", UserPatch{PasswordHash: &hash, Status: &active})
+		if err != nil {
+			t.Fatalf("explicit reactivation: %v", err)
+		}
+		if got.Status != UserStatusActive || got.PasswordHash != "hash-new" {
+			t.Fatalf("reactivation did not land: %+v", got)
+		}
+		// And a precondition listing SEVERAL statuses refuses on any of
+		// them — the list is read, not just its first entry.
+		pending := UserStatusPendingPasswordChange
+		if _, err := s.PatchUser(ctx, "pu2", UserPatch{
+			Status:      &pending,
+			IfNotStatus: []UserStatus{UserStatusDisabled, UserStatusActive},
+		}); !errors.Is(err, ErrUserStatusChanged) {
+			t.Fatalf("want ErrUserStatusChanged on the second listed status, got %v", err)
+		}
+	})
+
+	t.Run("user: a refusal is not a missing account", func(t *testing.T) {
+		seedUser("pu3", "pu3@example.org", User{Status: UserStatusDisabled})
+		name := "ghost"
+		// Unknown id → ErrNotFound, even under a precondition: a caller must
+		// not read "no such user" as "an admin disabled it under me".
+		if _, err := s.PatchUser(ctx, "nobody", UserPatch{
+			Name: &name, IfNotStatus: []UserStatus{UserStatusDisabled},
+		}); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("want ErrNotFound for an unknown id, got %v", err)
+		}
+		// An empty patch reads the row back — but still answers the
+		// precondition rather than reporting success on a refused status.
+		got, err := s.PatchUser(ctx, "pu3", UserPatch{})
+		if err != nil {
+			t.Fatalf("empty PatchUser: %v", err)
+		}
+		if got.ID != "pu3" {
+			t.Fatalf("empty patch did not read back the user: %+v", got)
+		}
+		if _, err := s.PatchUser(ctx, "pu3", UserPatch{
+			IfNotStatus: []UserStatus{UserStatusDisabled},
+		}); !errors.Is(err, ErrUserStatusChanged) {
+			t.Fatalf("an empty patch reported success on a refused status: %v", err)
+		}
+	})
 
 	t.Run("team: a named field moves and the others do not", func(t *testing.T) {
 		name := "Renamed"

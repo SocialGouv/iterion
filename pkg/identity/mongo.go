@@ -185,6 +185,115 @@ func (s *MongoStore) UpdateUser(ctx context.Context, u User) error {
 	return mongoutil.ReplaceOneChecked(ctx, s.users, bson.M{"_id": u.ID}, u, ErrEmailAlreadyTaken, ErrNotFound, "identity: update user")
 }
 
+// PatchUser $sets only the named fields, under the patch's precondition as a
+// filter arm, so a deactivation and a password reset landing together cannot
+// undo each other.
+func (s *MongoStore) PatchUser(ctx context.Context, id string, p UserPatch) (User, error) {
+	filter := userPatchFilter(id, p)
+	if p.Empty() {
+		// Nothing to write — but the precondition still has to be answered:
+		// reading the row back by _id alone would report success on exactly
+		// the status the caller refused to act on.
+		out, err := mongoutil.FindOne[User](ctx, s.users, filter, ErrNotFound, "identity: patch user")
+		if errors.Is(err, ErrNotFound) {
+			return User{}, s.userPatchMiss(ctx, id, p)
+		}
+		return out, err
+	}
+	var out User
+	err := s.users.FindOneAndUpdate(ctx, filter, bson.M{"$set": userPatchSet(p, time.Now().UTC())},
+		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&out)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return User{}, s.userPatchMiss(ctx, id, p)
+		}
+		return User{}, fmt.Errorf("identity: patch user: %w", err)
+	}
+	return out, nil
+}
+
+// userPatchFilter is PatchUser's query: the row by _id, plus — when the patch
+// names a precondition — a `$nin` arm on status, which is what makes the
+// refusal atomic with the write rather than a check the write races.
+//
+// Pure, so a test can read what PatchUser ASKS of Mongo without a server;
+// whether Mongo honours it is the mongo-conformance job's half.
+func userPatchFilter(id string, p UserPatch) bson.M {
+	filter := bson.M{"_id": id}
+	if len(p.IfNotStatus) > 0 {
+		blocked := make([]string, 0, len(p.IfNotStatus))
+		for _, st := range p.IfNotStatus {
+			blocked = append(blocked, string(st))
+		}
+		filter["status"] = bson.M{"$nin": blocked}
+	}
+	return filter
+}
+
+// userPatchSet is PatchUser's `$set` document: one key per field the patch
+// names, each spelled with that field's bson tag on User, plus the write's
+// own updated_at stamp.
+//
+// Pure, so a test can apply it through the real bson codec and compare the
+// row against the memory twin's: a key that does not match a tag writes a NEW
+// document field and leaves the old value standing, silently — the trap
+// runPatchSuite's docstring names.
+func userPatchSet(p UserPatch, at time.Time) bson.M {
+	set := bson.M{"updated_at": at}
+	if p.Name != nil {
+		set["name"] = *p.Name
+	}
+	if p.PasswordHash != nil {
+		set["password_hash"] = *p.PasswordHash
+	}
+	if p.Status != nil {
+		set["status"] = string(*p.Status)
+	}
+	if p.IsSuperAdmin != nil {
+		set["is_super_admin"] = *p.IsSuperAdmin
+	}
+	if p.DefaultTeamID != nil {
+		set["default_team_id"] = *p.DefaultTeamID
+	}
+	if p.DefaultOrgID != nil {
+		set["default_org_id"] = *p.DefaultOrgID
+	}
+	if p.GitHubOrgs != nil {
+		// Copied into a non-nil slice, like the memory twin: a pointer to a
+		// nil slice marshals as BSON null, which decodes back as a nil
+		// GitHubOrgs while the memory store answers an empty list.
+		set["github_orgs"] = append(make([]string, 0, len(*p.GitHubOrgs)), (*p.GitHubOrgs)...)
+	}
+	if p.LastLoginAt != nil {
+		set["last_login_at"] = *p.LastLoginAt
+	}
+	if p.Lockout != nil {
+		set["failed_logins"] = p.Lockout.FailedLogins
+		if p.Lockout.LockedUntil != nil {
+			set["locked_until"] = *p.Lockout.LockedUntil
+		} else {
+			set["locked_until"] = nil
+		}
+	}
+	return set
+}
+
+// userPatchMiss tells "no such user" apart from "the precondition refused
+// it". The guarded filter cannot say which arm it failed to match, and a
+// caller reading a refusal as a missing account would report the wrong thing
+// to an operator — so the miss is re-read by _id alone, once, on the failure
+// path only. A store error from that read propagates: it is never flattened
+// into either verdict.
+func (s *MongoStore) userPatchMiss(ctx context.Context, id string, p UserPatch) error {
+	if len(p.IfNotStatus) == 0 {
+		return ErrNotFound
+	}
+	if _, err := s.GetUser(ctx, id); err != nil {
+		return err
+	}
+	return ErrUserStatusChanged
+}
+
 func (s *MongoStore) ListUsers(ctx context.Context, f UserFilter) ([]User, error) {
 	skip, limit := mongoutil.NormalizePage(f.Offset, f.Limit, 50)
 	return mongoutil.FindPageSorted[User](ctx, s.users, userQueryFilter(f.Query), "created_at", skip, limit,

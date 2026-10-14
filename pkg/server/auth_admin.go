@@ -3,10 +3,10 @@ package server
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -65,27 +65,37 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	statusChangedToDisabled := false
+	// The console owns the status, the privilege flag and the display name —
+	// and nothing else: a whole-row write would carry the password hash this
+	// read predates, restoring a credential a concurrent reset just rotated.
+	patch := identity.UserPatch{Name: req.Name, IsSuperAdmin: req.IsSuperAdmin}
+	// Whether this request disables the account is decided from the REQUEST,
+	// never from the row read above: a re-enable and a sign-in committed
+	// inside that window would make the read say "already disabled" and the
+	// landing deactivation skip the revocation below. Revoking the sessions
+	// of an account that was already disabled is idempotent.
+	//
+	// A disable is the only transition here that cuts live sessions:
+	// pending_password_change requires a rotation at the NEXT sign-in, which
+	// is what this route promises for it (docs/cloud-admin-guide.md §1.6);
+	// the variant that also revokes is reset-password below, which replaces
+	// the credential in the same write.
+	disabling := false
 	if req.Status != nil {
-		switch identity.UserStatus(*req.Status) {
+		next := identity.UserStatus(*req.Status)
+		switch next {
 		case identity.UserStatusActive, identity.UserStatusDisabled, identity.UserStatusPendingPasswordChange:
-			if u.Status != identity.UserStatusDisabled && identity.UserStatus(*req.Status) == identity.UserStatusDisabled {
-				statusChangedToDisabled = true
-			}
-			u.Status = identity.UserStatus(*req.Status)
+			disabling = next == identity.UserStatusDisabled
+			patch.Status = &next
 		default:
 			httpError(w, http.StatusBadRequest, "invalid status")
 			return
 		}
 	}
-	if req.IsSuperAdmin != nil {
-		u.IsSuperAdmin = *req.IsSuperAdmin
-	}
-	if req.Name != nil {
-		u.Name = *req.Name
-	}
-	u.UpdatedAt = time.Now().UTC()
-	if err := s.authStore().UpdateUser(r.Context(), u); err != nil {
+	// No precondition: the super-admin console is the authority on a status,
+	// not a reader of one.
+	u, err = s.authStore().PatchUser(r.Context(), u.ID, patch)
+	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
@@ -96,7 +106,7 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// GetUser-Status check and the CAS-revoke (auth/service.go:282-293)
 	// allows a 15-min access token to be minted after the admin
 	// clicked "disable" — see F-CL-5 in docs/reviews/.
-	if statusChangedToDisabled {
+	if disabling {
 		if err := s.authSvc.RevokeUserSessions(r.Context(), u.ID); err != nil && s.logger != nil {
 			s.logger.Warn("auth: revoke sessions on user %s disable: %v", u.ID, err)
 		}
@@ -139,13 +149,27 @@ func (s *Server) handleAdminResetUserPassword(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusInternalServerError, "hash temp password: %s", err.Error())
 		return
 	}
-	u.PasswordHash = hash
-	u.Status = identity.UserStatusPendingPasswordChange
-	u.UpdatedAt = time.Now().UTC()
-	if err := s.authStore().UpdateUser(r.Context(), u); err != nil {
+	// The credential and the rotation flag move together, under the
+	// precondition that makes the read-time refusal above a guarantee: a
+	// deactivation that commits inside this window takes the write, not the
+	// other way round, and no temporary password is emitted.
+	pending := identity.UserStatusPendingPasswordChange
+	// Into its own variable: a refused patch answers the zero User, and the
+	// refusal below names the account from the row that was read.
+	patched, err := s.authStore().PatchUser(r.Context(), u.ID, identity.UserPatch{
+		PasswordHash: &hash,
+		Status:       &pending,
+		IfNotStatus:  []identity.UserStatus{identity.UserStatusDisabled},
+	})
+	if errors.Is(err, identity.ErrUserStatusChanged) {
+		httpError(w, http.StatusUnprocessableEntity, "user %s is disabled — re-enable the account before resetting its password", u.Email)
+		return
+	}
+	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
+	u = patched
 	// The old credential (and whoever holds it) must lose access now,
 	// not at refresh-TTL expiry.
 	if err := s.authSvc.RevokeUserSessions(r.Context(), u.ID); err != nil && s.logger != nil {

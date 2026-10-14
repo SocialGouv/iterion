@@ -218,13 +218,23 @@ func (s *Service) ConfirmPasswordReset(ctx context.Context, token, newPassword, 
 	if err != nil {
 		return LoginResult{}, err
 	}
-	u.PasswordHash = hash
-	u.Status = identity.UserStatusActive
-	u.FailedLogins = 0
-	u.LockedUntil = nil
-	u.LastLoginAt = &now
-	u.UpdatedAt = now
-	if err := s.store.UpdateUser(ctx, u); err != nil {
+	active := identity.UserStatusActive
+	// The redemption owns the credential, the status it unblocks and the
+	// lockout — under the precondition that a deactivation committed since
+	// the check above wins: a token minted while the account was open must
+	// not reactivate one an admin has closed since, nor hand out a session
+	// for it. The refusal stays opaque, like the disabled check above.
+	u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
+		PasswordHash: &hash,
+		Status:       &active,
+		Lockout:      &identity.UserLockout{},
+		LastLoginAt:  &now,
+		IfNotStatus:  []identity.UserStatus{identity.UserStatusDisabled},
+	})
+	if errors.Is(err, identity.ErrUserStatusChanged) {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	if err != nil {
 		return LoginResult{}, err
 	}
 	// A reset means the old credential may be compromised — kill every
@@ -254,10 +264,23 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	if err != nil {
 		return LoginResult{}, err
 	}
-	now := s.now().UTC()
-	u.PasswordHash = hash
-	u.UpdatedAt = now
-	if err := s.store.UpdateUser(ctx, u); err != nil {
+	// The rotation owns the credential alone, under the precondition that
+	// REPRODUCES the active check above: the row must still be active. The
+	// new password must not land on a closed account, which would also be
+	// handed a fresh session on the next line — nor over an admin password
+	// reset committed since, whose temporary password is already on its way
+	// to the account's owner out of band.
+	u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
+		PasswordHash: &hash,
+		IfNotStatus: []identity.UserStatus{
+			identity.UserStatusDisabled,
+			identity.UserStatusPendingPasswordChange,
+		},
+	})
+	if errors.Is(err, identity.ErrUserStatusChanged) {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	if err != nil {
 		return LoginResult{}, err
 	}
 	if err := s.RevokeUserSessions(ctx, u.ID); err != nil {
