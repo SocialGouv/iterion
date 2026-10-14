@@ -329,6 +329,9 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			// (The runner MAIN loop will need the same option then.)
 			runtime.WithRunnerPool(child.RunnerPool),
 			runtime.WithParentNodeID(req.NodeID),
+			// The node's `isolated:` assertion: the child keeps a worktree of
+			// its own instead of working in the tree this request lends it.
+			runtime.WithIsolatedChild(req.Isolated),
 			// Recursive wiring: a child that declares subbot nodes resolves
 			// its own children relative to ITS directory.
 			runtime.WithSubbotRunner(r.subbotRunnerFor(&child, filepath.Dir(childPath), childWorkDir, childLogger, snapshotRoot...)),

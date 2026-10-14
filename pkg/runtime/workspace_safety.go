@@ -323,6 +323,12 @@ func isMutatingNodeIn(wf *ir.Workflow, node ir.Node, defaultBackend string, reso
 		// workspace, so it is safe to fan out in parallel (mirror of an
 		// agent/judge node's `readonly:`). Absent the flag, the child may do
 		// anything — conservatively mutating.
+		//
+		// The engine honours the same assertion where it chooses the child's
+		// workspace (runsInParentWorkspace): an isolated child keeps the
+		// worktree its `worktree: auto` gives it, which is what lets the
+		// branches admitted here overlap — a tree lent to a child takes one
+		// writing run at a time.
 		return !n.Isolated
 	case *ir.AgentNode:
 		if n.Readonly {

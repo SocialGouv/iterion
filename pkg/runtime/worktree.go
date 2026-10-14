@@ -1315,6 +1315,36 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 	return st.SaveRun(ctx, r)
 }
 
+// runsInParentWorkspace reports whether this run executes in a PARENT run's
+// workspace instead of one of its own, which is what `worktree: auto` must not
+// override: the parent handed it that directory, judges the result there, and
+// keeps owning it for the child's whole life. Two independent facts say so:
+//
+//   - A SUBBOT CHILD its parent did NOT declare `isolated:` — a parent's
+//     subbot node spawned it (parentNodeID, which a run of its own carrying
+//     the parent linkage alone never has: a shard child, a fork) and handed it
+//     the parent's effective workdir. A worktree of its own would park its
+//     commits on a branch the parent has to chase instead of leaving them
+//     where the parent reads its result.
+//   - A run that ADOPTED a parent's live sandbox: a worktree of its own is a
+//     directory that sandbox never mounts, so its skills would mirror and its
+//     commits land outside the one tree every delegate command sees. That
+//     sandbox mounts ONE tree whatever the node declares, so it overrides
+//     `isolated:` too — in a shared sandbox an isolated child confines its
+//     writes to its own run store alone.
+//
+// `isolated:` on the parent's subbot node is the author's own escape hatch: it
+// asserts the child never writes the parent's shared workspace, and it is what
+// admits a parallel subbot fan-out, which only overlaps while each child owns
+// a tree of its own (the workspace resource gate is exclusive per tree). The
+// other way out is to isolate the whole family by declaring `worktree: auto`
+// on the PARENT: the children then work in the parent's worktree and their
+// commits land on the branch the parent finalizes.
+func (e *Engine) runsInParentWorkspace() bool {
+	return (e.parentRunID != "" && e.parentNodeID != "" && !e.isolatedChild) ||
+		(e.sharedSandbox != nil && e.sharedSandbox.Run != nil)
+}
+
 // workspaceIsGitRepo reports whether `dir` (or any parent up to /) is
 // inside a git repository. Used by the engine's worktree precheck so a
 // workflow that defaults to `worktree: auto` against a non-git workspace

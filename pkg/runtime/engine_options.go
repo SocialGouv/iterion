@@ -347,6 +347,17 @@ func WithParentNodeID(parentNodeID string) EngineOption {
 	return func(e *Engine) { e.parentNodeID = parentNodeID }
 }
 
+// WithIsolatedChild records that the parent's subbot node declared
+// `isolated:` for this child — the author's assertion that it confines every
+// write to its own run store or its own worktree and never to the parent's
+// shared workspace. It is what the workspace-safety guard admits a parallel
+// subbot fan-out on, so a child carrying it keeps the worktree `worktree:
+// auto` gives it (runsInParentWorkspace): siblings then overlap instead of
+// queueing on one tree's resource gate.
+func WithIsolatedChild(isolated bool) EngineOption {
+	return func(e *Engine) { e.isolatedChild = isolated }
+}
+
 // WithRunName records a deterministic, human-friendly label on the
 // run metadata at creation. Display-only — the canonical identifier
 // remains the run ID. Optional — empty string is ignored.

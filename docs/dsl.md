@@ -826,7 +826,7 @@ subbot run_ticket:
   isolated: true
 ```
 
-A subbot is a real nested run with its own loops, state, and budget. Parent budget totals do not aggregate child budgets. `isolated: true` is a workspace-safety assertion, not automatic isolation: use it only when the child cannot mutate the parent checkout.
+A subbot is a real nested run with its own loops, state, and budget. Parent budget totals do not aggregate child budgets. `isolated: true` is an author's assertion the runtime cannot prove — use it only when the child cannot mutate the parent checkout — and it is what the engine reads to leave the child the worktree its own `worktree: auto` gives it: a child declared without it works in the parent's tree, which is where the parent reads its result. In a shared sandbox there is one tree whatever the declaration says.
 
 See [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md) for pause/resume, board-write, and concurrency boundaries.
 

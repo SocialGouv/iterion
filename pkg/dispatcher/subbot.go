@@ -176,6 +176,9 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			// The node's `isolated:` assertion: the child keeps a worktree of
+			// its own instead of working in the tree this request lends it.
+			runtime.WithIsolatedChild(req.Isolated),
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's
 			// dir); the ctx-carried depth keeps the recursion bounded.

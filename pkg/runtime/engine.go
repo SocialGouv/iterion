@@ -192,6 +192,7 @@ type Engine struct {
 	repoSHAExpected        string                   // the commit the admission pinned, set via WithTrust
 	runnerPool             string                   // the sovereign pool the run is frozen to, set via WithRunnerPool
 	parentNodeID           string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
+	isolatedChild          bool                     // the parent's subbot node declared `isolated:` for this child, set via WithIsolatedChild
 	preset                 string                   // in-source preset name selected at launch, set via WithPreset
 	runName                string                   // deterministic human-friendly run label, set via WithRunName
 	source                 *store.RunSource         // originating action metadata (dispatcher → issue ref), set via WithSource
@@ -332,6 +333,14 @@ type SubbotRequest struct {
 	// including anything the parent committed. Advisory: empty means "the host
 	// decides".
 	WorkDir string
+	// Isolated carries the subbot node's `isolated:` assertion — the child
+	// confines every write to its own run store or its own worktree, never to
+	// the parent's shared workspace. The runner hands it to the child engine
+	// (WithIsolatedChild): it is what keeps the worktree `worktree: auto`
+	// gives the child instead of lending it the parent's tree, and the
+	// parallel fan-out this same flag admits only overlaps while each child
+	// owns a tree of its own.
+	Isolated bool
 }
 
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its
