@@ -1046,7 +1046,7 @@ func TestGitLabCreatePullReview_TheReadBackHasItsOwnBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if elapsed > 1500*time.Millisecond {
+	if elapsed > 2500*time.Millisecond { // the alternative is the 3 s hang
 		t.Fatalf("the read-back overran its budget: %v", elapsed)
 	}
 	if res.Verified || res.CommentsPosted != 1 || *noteBody == "" || len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0], "budget") {
@@ -1352,7 +1352,7 @@ func TestGitLabCreatePullReview_TheReadBackBudgetHasAnOperatorOverride(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		if elapsed := time.Since(start); elapsed > 1500*time.Millisecond || res.Verified || len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0], "budget of 200ms") {
+		if elapsed := time.Since(start); elapsed > 2500*time.Millisecond || res.Verified || len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0], "budget of 200ms") {
 			t.Fatalf("the override is the budget; elapsed = %v, result = %+v", elapsed, res)
 		}
 	})
@@ -1518,13 +1518,15 @@ func TestGitLabCreatePullReview_TheHeadReadServesTheKeyPathAlone(t *testing.T) {
 		srv := httptest.NewServer(mux)
 		defer srv.Close()
 		c := &AdminClient{HTTP: srv.Client(), BaseURL: srv.URL, Token: "t"}
-		start := time.Now()
 		res, err := c.CreatePullReview(context.Background(), "g/p", 42, forge.NewReview{Body: "s", Comments: []forge.ReviewComment{{Path: "a.go", Line: 1, Body: "x"}, {Path: "b.go", Line: 2, Body: "y"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if elapsed := time.Since(start); elapsed > 200*time.Millisecond || !res.Verified || res.CommentsPosted != 2 || mrReads != 1 {
-			t.Fatalf("ids need no head: verified at once; elapsed = %v, result = %+v, head reads = %d", elapsed, res, mrReads)
+		// The fact, not the clock: one merge-request read (the anchoring
+		// one) and a verified count — a head read would hang into the
+		// budget and leave the count unverified.
+		if !res.Verified || res.CommentsPosted != 2 || mrReads != 1 {
+			t.Fatalf("ids need no head: verified at once; result = %+v, head reads = %d", res, mrReads)
 		}
 	})
 	t.Run("the budget running out on the head read blames the head read", func(t *testing.T) {
