@@ -51,3 +51,11 @@ Login could have issued a separate database query for each org/team membership k
 - **The storage schema includes internal lookup state.** `github_team_keys` is not part of the public API but is critical for login performance.
 - **Tenant isolation is easier to reason about.** The query returns only matching enabled GitHub rows rather than scanning all tenant configs.
 - **Rechallenge if GitHub identifiers change.** If GitHub team identifiers become opaque non-normalizable tokens, the key shape and index should be revisited.
+
+## Status note (2026-10-14)
+
+`FlattenGitHubTeamKeys`
+([pkg/auth/orgsso/types.go](../../pkg/auth/orgsso/types.go)) materialises only
+grants whose `Verified` flag is set. An unverified grant is stored and returned
+by the API but never enters `github_team_keys`, so it matches no login until
+the org has proven it controls that GitHub org.

@@ -10,6 +10,8 @@ For the operator-facing flows (chart, secrets, SSO config), see
 
 ## 1. Signing in
 
+Diagram: [Flow — signing in and authenticating a request](diagrams/flow-auth-login.md)
+
 The login page surfaces every auth method your operator has
 enabled. The basic two:
 
@@ -48,9 +50,11 @@ clicking it lets you:
   - manage **team-scoped API keys** (see §3).
 - Open your account settings (`/account`).
 
-You always have a "personal team" auto-created at sign-up; no
-collaborators land there unless you invite them. Move shared work
-to a real team.
+A sign-up nobody invited gets a "personal team" auto-created;
+accepting an invitation lands you in the team that invited you, and an
+SSO login an org claims (GitHub team-gating, the org's own IdP) lands
+you in that org's team. No collaborators land in a personal team
+unless you invite them. Move shared work to a real team.
 
 ## 3. API keys (BYOK — bring your own key)
 

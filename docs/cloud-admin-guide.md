@@ -85,8 +85,6 @@ curl -X PATCH https://iterion.example.com/api/admin/orgs/$ORG_ID \
   -d '{
     "monthly_run_quota":     1000,
     "monthly_cost_cap_usd":   80.0,
-    "max_concurrent_runs":      5,
-    "launch_rate_per_min":     30,
     "memory_quota_bytes":     1073741824
   }'
 ```
@@ -94,7 +92,7 @@ curl -X PATCH https://iterion.example.com/api/admin/orgs/$ORG_ID \
 UI path: Admin → Organisations → Acme → Limits → Save.
 
 Every field is optional; `0` means "inherit the platform default". For
-the four launch-gate limits that default comes from the
+the launch-gate limits that default comes from the
 `ITERION_ORG_DEFAULT_*` env vars — see
 [quotas-and-limits.md](quotas-and-limits.md). `memory_quota_bytes` is
 the exception: it falls back to the compiled
@@ -108,10 +106,18 @@ enforced memory counter via `SetTenantQuota`
 without that step the change wouldn't take effect, only the displayed
 ceiling would.
 
+`max_concurrent_runs` and `launch_rate_per_min` are **team** fields:
+set them with `PATCH /api/orgs/$ORG_ID/teams/$TEAM_ID/caps`, which 422s
+a value above the matching `ITERION_ORG_DEFAULT_*` ceiling. The org
+handler drops a field it does not declare, so sending them here
+answers 200 and changes nothing.
+
 See [quotas-and-limits.md](quotas-and-limits.md) for what each limit
 actually does at run launch and how to debug a denial.
 
 ### 1.4 Suspend or set an org to read-only
+
+Diagram: [Flow — org and team lifecycle: suspend, soft-delete, purge](diagrams/flow-org-team-lifecycle.md)
 
 ```bash
 curl -X POST https://iterion.example.com/api/admin/orgs/$ORG_ID/status \
@@ -125,6 +131,11 @@ Suspended and read-only orgs deny every run launch with reason
 `org_suspended` and HTTP 403; reads (the studio, the API, the run
 console) still work so the org's members can see what they previously
 ran. The reason is recorded on the audit row.
+
+The handler also accepts `pending_deletion`, the soft-delete state that
+`DELETE /api/admin/orgs/{id}` writes together with a purge deadline:
+posted here it blocks the org without that deadline, and the purge
+sweeper only lists orgs whose `purge_after` has passed.
 
 UI path: Admin → Organisations → Acme → toggle status.
 
@@ -142,10 +153,16 @@ curl "https://iterion.example.com/api/admin/audit?action=org.status_changed"
 curl "https://iterion.example.com/api/admin/audit?actor=$USER_ID&from=2026-06-01T00:00:00Z"
 ```
 
-The stable action tokens (grep `auditTenant`/`auditPlatform` call sites
-for the full list):
+The stable action tokens (grep `auditTenant`/`auditOrg`/`auditPlatform`
+call sites for the full list):
 
-> `org.created` · `org.updated` · `org.status_changed` · `user.password_changed`
+> `org.created` · `org.updated` · `org.status_changed`
+> · `org.settings_updated` · `org.deletion_scheduled` · `org.deletion_canceled`
+> · `org_member.added` · `org_member.role_changed` · `org_member.removed`
+> · `org_invitation.created` · `org_invitation.deleted`
+> · `team.created` · `team.updated` · `team.status_changed`
+> · `team.caps_updated` · `team.deleted` · `member.added`
+> · `user.password_changed`
 > · `user.password_reset` · `user.sessions_revoked` · `member.removed`
 > · `member.role_changed` · `invitation.created` · `invitation.accepted`
 > · `invitation.deleted` · `byok.created` · `byok.updated` · `byok.deleted`

@@ -197,10 +197,6 @@ browser accepts a `__Host-` cookie only with `Secure`, `Path=/` and **no
     would leave the browser holding a `__Host-` cookie the rolled-back build can
     neither overwrite nor delete, and a fresh login would be served the previous
     user's session.
-  - The **refresh** cookie does keep the legacy fallback — it is
-    server-verified, single-use and rotating, and without it the deploy signs
-    out every existing browser. A legacy browser pays one 401, which the SPA
-    answers with a silent refresh, and comes back migrated.
 - **The prefix is withheld** when `CookieSecure` is false (a plaintext local
   studio) or `CookieDomain` is set. Those terms are not a preference: a browser
   *discards* a `__Host-` cookie that breaks them, so emitting one there would

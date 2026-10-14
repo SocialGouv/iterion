@@ -50,3 +50,19 @@ The callback could have verified only the random `state` stored server-side.
 - **Cookie scope is intentionally narrow.** The cookie is HttpOnly and path-scoped to the OIDC route family.
 - **The design depends on Lax semantics.** Browser changes to SameSite=Lax callback behaviour could break or weaken the flow.
 - **Rechallenge if browser behaviour changes.** If Lax stops covering this callback shape, the binding mechanism should be redesigned.
+
+## Status note (2026-10-14)
+
+The binding cookie is written in `beginOIDCFlow`
+([pkg/server/auth_oidc.go](../../pkg/server/auth_oidc.go)), not in
+`auth_routes.go`, which only registers the routes; the name written is
+`__Host-iterion_oidc_agent` wherever `CookieSecure` is on with no
+`CookieDomain`. That prefix mandates `Path=/`, so `agentBindingCookiePath`
+([pkg/server/auth_sessions.go](../../pkg/server/auth_sessions.go)) returns `/`
+there and the narrow `/api/auth/oidc/` path survives only in the
+plaintext-local or explicit-`CookieDomain` case. The binding is also
+conditional: a desktop flow (`?desktop=1`) stores an empty `AgentBinding` on
+purpose and the callback compares only when it is non-empty, proving state,
+PKCE and the desktop-controlled loopback listener instead. `SameSite=Lax`, the
+`HttpOnly` flag and the server-side state keyed by the IdP-echoed state are as
+decided.

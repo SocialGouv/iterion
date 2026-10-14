@@ -50,3 +50,11 @@ All existing-account SSO links could have required explicit user consent.
 - **`email_verified` still has limited value.** It may describe IdP-side email state, but it is not the ownership gate for cross-account linking.
 - **Consent remains the fallback.** Existing accounts that do not pass the domain gate require explicit linking consent.
 - **Rechallenge after stronger consent flows.** Hardened verification plus explicit user consent might make `email_verified` sufficient for some lower-risk linking paths.
+
+## Status note (2026-10-14)
+
+`canAutoLink` ([pkg/auth/oidc_service.go](../../pkg/auth/oidc_service.go)) adds
+a fifth condition to the four above: the target must not be admin or owner of
+any other non-personal team (a personal team is skipped), so a link cannot
+escalate beyond the linking org. The gate also fails closed when the
+membership read errors.
