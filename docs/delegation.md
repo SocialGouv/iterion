@@ -30,8 +30,13 @@ agent implementer:
 
 Delegated coding agents are useful for autonomous implementation work. For a
 review, judge, or plan that should call a provider API in-process, pin both the
-`claw` backend and the model; `readonly: true` constrains the node independently
-of that selection:
+`claw` backend and the model. `readonly: true` classifies the node as
+non-mutating for parallel workspace safety whatever the backend, but only
+`codex`, `pi` and `claude_code` read it as a bound on the delegate: `claw`,
+`opencode` and `cliagent` do not read the flag at all, so there the node's
+`tools:` list is its only bound — the reviewer below declares none, which is
+what leaves it no way to write (#1816; the lever each backend has is in
+[dsl.md](dsl.md)):
 
 ```iter fragment
 agent reviewer:

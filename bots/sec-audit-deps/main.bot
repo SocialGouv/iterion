@@ -254,7 +254,10 @@ prompt review_system:
       ## Errors
 
   Constraints:
-  - Read-only on workspace EXCEPT for the report file you write.
+  - Read-only on workspace EXCEPT for the report file you write — a
+    MANDATE, not your surface: you hold bash, and `readonly: true` on
+    claude_code withholds the writing tools a node did NOT declare — your
+    `write_file` is kept — and never a shell. Write nothing else.
   - You do NOT have install / network / build tools.
   - You do NOT have file_edit on packages.jsonl; that's the
     update_cache tool node's job.

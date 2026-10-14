@@ -34,8 +34,10 @@ notion of what the node can do, never by grepping tool names:
   `board.close` — a comment or a label written off injected text is a
   durable write.
 - `readonly: true` does **not** exempt a node: the codex and pi delegates
-  enforce it as a sandbox mode, claude_code never reads it and runs under
-  `bypassPermissions` with whatever the tool list leaves visible.
+  enforce it as a sandbox mode, claude_code only withholds the file-writing
+  tools the node did not declare and runs under `bypassPermissions` with
+  whatever else the tool list leaves visible — a shell, and a declared
+  `write_file`, included.
 
 **Enforcement:** `bots/catalog_untrusted_input_boundary_test.go` compiles
 every catalog bot, classifies every agent and judge with the rule above,

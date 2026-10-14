@@ -80,6 +80,7 @@ type spawnRecord struct {
 	argv     []string
 	pinned   []map[string]string
 	settings []string // the content of the file --settings names
+	logs     []string // what the backend logged during this Execute, level-prefixed
 }
 
 func spawnRecorded(t *testing.T, task Task) spawnRecord {
@@ -115,12 +116,15 @@ func spawnRecorded(t *testing.T, task Task) spawnRecord {
 		lines = append(lines, level.String()+": "+msg)
 	})
 	res, execErr := b.Execute(context.Background(), task)
+	var rec spawnRecord
+	// Copied under the lock: the SDK's own goroutines reach the hook, and a
+	// reader that only happens to run after them is not thread-safe.
 	mu.Lock()
 	t.Logf("Execute: err=%v, formatting pass used=%v; backend log:\n%s",
 		execErr, res.FormattingPassUsed, strings.Join(lines, "\n"))
+	rec.logs = append([]string(nil), lines...)
 	mu.Unlock()
 
-	var rec spawnRecord
 	rec.argv = readSpawnLog(t, log)
 	for _, line := range readSpawnLog(t, envLog) {
 		vars := map[string]string{}

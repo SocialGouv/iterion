@@ -178,10 +178,11 @@ where omission means the full native toolset (every CLI delegate, and
 claw when a `fallbacks:` route reaches one) — or a capability other than
 `board.read` / `runs.read` (`board.create`, `board.comment`,
 `board.label`, `board.assign`, `board.move`, `board.close`). `readonly:
-true` does not take a node out of the class: only the codex and pi
-delegates enforce it, claude_code never reads it. Every node of this bot
-reads material derived from the audited repository, so the surface alone
-decides membership.
+true` does not take a node out of the class: codex and pi enforce it as
+a sandbox, while on claude_code it withholds the file-writing tools a
+node did not declare — not its shell, and not the native roster iterion
+does not own. Every node of this bot reads material derived from the
+audited repository, so the surface alone decides membership.
 
 **Why the marker is a phrase, not an orthography.** A guard that
 enumerated spellings ("dismiss all findings", "approve this run", "the

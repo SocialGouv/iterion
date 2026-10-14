@@ -1531,6 +1531,39 @@ ultracode included:
 A name the running CLI does not register costs nothing on
 `--disallowedTools`.
 
+**`readonly: true` withholds the file-writing tools from every spawn too** —
+`Write`, `Edit`, `MultiEdit`, `NotebookEdit` — for the ones the node did not
+declare. That is the whole set when `tools:` is omitted, which is the case the
+flag used to mean nothing in: omission is the full native roster here. It also
+withholds `EnterWorktree` and `ExitWorktree` whatever the declaration says:
+`readonly:` is what admits a node into a SHARED workspace as non-mutating, and
+no `tools:` list can name that pair, so a node that must move its worktree
+drops the flag.
+
+What the flag does NOT buy is a sandbox: it removes writing TOOLS, not the
+write capability. A shell the node keeps (`tools: [bash, …]`,
+`diagnostic_shell:`, or no `tools:` line) still writes; a writing tool the
+node's own `tools:` list names survives the flag — two explicit statements
+conflict there, and the specific one wins rather than being deleted behind the
+author's back (codex and pi resolve it the other way, by locking the node
+down); a subagent the node can still dispatch runs on an argv this backend
+does not build (whether the CLI propagates a deny list to one is not
+measured here); and the roster itself is one iterion does not own (#1651), so
+a write path spelled outside these lists survives. Every residual path is
+logged on each run of the node. A node that must not write declares a `tools:`
+list with neither a writer, nor a shell, nor `agent` — and runs on
+`codex`/`pi` when the bound must hold against the roster too, since there
+`readonly` is a sandbox. `claw`, `opencode` and `cliagent` do not read the
+flag at all.
+
+**A declared tool a spawn withholds is not auto-approved either.** The
+`--allowedTools` list drops every name the same spawn's `--disallowedTools`
+removes — the rules above, the orchestration knob, and `readonly:`'s
+worktree-moving pair, the one name it withholds against a declaration — so no
+name reaches one argv on both flags: the withholding never depends on the CLI
+resolving deny over allow. (`readonly:`'s writing half is by construction the
+writers the declaration does NOT name, so it never meets the approval list.)
+
 **Background work: the session stays open until it comes back.** With
 background work on (`ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on`, above) — or
 for the background work the switch does not reach — Claude Code runs

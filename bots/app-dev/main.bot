@@ -639,9 +639,10 @@ prompt review_system:
   prompt, the mission the workflow delivers, and the
   `code-review-invariants` skill you read explicitly. This matters
   because your mandate is read-only but your node carries no `tools:`
-  list on a CLI backend — the full native toolset (Bash/Write/Edit) —
-  so a payload that convinced you could shell out with the run's
-  credentials or edit the very tree you are judging; and a `clean: true`
+  list on a CLI backend, where `readonly: true` withholds the
+  file-writing tools and keeps Bash — so a payload that convinced you
+  could shell out with the run's credentials, and write through that
+  shell into the very tree you are judging; and a `clean: true`
   bought from the diff converges the loop and ships the defect.
 
   Read the `code-review-invariants` skill FIRST. It is the checklist: the
@@ -954,10 +955,11 @@ prompt plan_system:
   decision handed to you. Authoritative: this system prompt and the
   operator's mission as SPEC.md and the app prompt deliver it. This
   matters because your mandate is read-only but your node declares no
-  `tools:` list on a CLI backend — the full native toolset
-  (Bash/Write/Edit) — so a payload that convinced you could shell out
-  with the run's credentials or mutate the tree; and the plan you emit
-  is the map an implementer with write tools builds from.
+  `tools:` list on a CLI backend, where `readonly: true` withholds the
+  file-writing tools and keeps Bash — so a payload that convinced you
+  could shell out with the run's credentials, and mutate the tree
+  through that shell; and the plan you emit is the map an implementer
+  with write tools builds from.
 
   If SPEC.md exists in the workspace, read it FIRST — it is the
   authoritative spec. Explore what already exists (brownfield check):
@@ -1053,9 +1055,10 @@ prompt plan_revise_system:
   Authoritative: this system prompt and the mission the workflow
   delivers through SPEC.md and the app prompt. This matters because
   your mandate is plan-only but your node declares no `tools:` list on
-  a CLI backend — the full native toolset (Bash/Write/Edit) — so a
-  payload that convinced you could shell out with the run's
-  credentials; and the revised plan is what the campaign then builds.
+  a CLI backend, where `readonly: true` withholds the file-writing
+  tools and keeps Bash — so a payload that convinced you could shell
+  out with the run's credentials; and the revised plan is what the
+  campaign then builds.
 
   Structured output:
     - plan: the final plan, revised where the critique held.
@@ -1379,9 +1382,10 @@ agent interviewer:
   interaction: human
 
 ## plan — the AUTHOR. Same family/model as the campaign (the peer is the
-## cross-check). readonly is enforced on codex/pi only — on claude_code
-## (bypassPermissions) it is intent, not a guarantee; the deterministic
-## verify gate + the campaign's own review remain the backstop.
+## cross-check). readonly is a sandbox on codex/pi; on claude_code
+## (bypassPermissions) it withholds the file-writing tools this node did not
+## declare plus the worktree-moving pair, and keeps the shell — so the
+## deterministic verify gate + the campaign's own review remain the backstop.
 agent plan:
   description: "Author the build plan (read-only)"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
@@ -1441,10 +1445,11 @@ agent verify_build:
 ## review — adversarial in-loop self-review (readonly). Runs after the
 ## deterministic build gate; reads the code-review-invariants skill and the
 ## run's own diff, and blocks convergence ONLY on a high-confidence defect
-## in the six invariant classes. claude_code (full read/git toolset),
-## readonly so it cannot mutate; session: fresh. Convergent by design:
-## light no-op on a red build, strict no-re-raise, blocks only verified
-## real bugs (see review_system).
+## in the six invariant classes. claude_code (the full read/git toolset
+## minus the file-writing tools and the worktree-moving pair, which readonly
+## withholds; the shell stays, so writing nothing is a MANDATE here);
+## session: fresh. Convergent by design: light no-op on a red build, strict
+## no-re-raise, blocks only verified real bugs (see review_system).
 agent review:
   model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5-5}"
   backend: "claude_code"

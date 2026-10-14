@@ -60,7 +60,7 @@ type backendFields struct {
 	permAsk    []string
 	permDeny   []string
 	timeout    string   // node-level `timeout:` Go duration ("" = no per-node bound); may contain ${VAR} env refs
-	readonly   bool     // node-level `readonly:` — force delegated agents into a read-only sandbox
+	readonly   bool     // node-level `readonly:` — bound on what the delegate may change, with the lever each backend has (delegate.Task.Readonly)
 	fullAccess bool     // node-level `full_access:` — lift the codex sandbox to danger-full-access (network egress)
 	images     []string // node-level `images:` — templated input image paths forwarded to codex as `-i` (i2i)
 }

@@ -395,9 +395,23 @@ type Task struct {
 	// by the pipeline author.
 	FullAccess bool
 
-	// Readonly, when true, forces delegated agents into a read-only sandbox.
-	// The executor copies this from the node-level `readonly:` DSL field so
-	// backend enforcement matches workspace-safety scheduling.
+	// Readonly, when true, bounds what the delegate may change. The executor
+	// copies it from the node-level `readonly:` DSL field so backend
+	// enforcement matches workspace-safety scheduling.
+	//
+	// Each delegate honours it with the lever it has, and they differ: codex
+	// runs the task in a read-only sandbox (codexSandboxForTask), pi narrows
+	// its tool list to readers (piExtraArgsFor), claude_code withholds from
+	// both of its spawns the file-writing tools the node did not declare plus
+	// the worktree-moving pair (claudeReadonlyWithheld). The remaining
+	// backends — claw, opencode, cliagent — do not read the field at all, so
+	// there the node's `tools:` list is its only bound (#1816).
+	//
+	// On claude_code the flag therefore removes writing TOOLS, not the write
+	// capability: a shell the node keeps is not locked down, a writing tool
+	// its own `tools:` list names survives, and a subagent it can dispatch
+	// runs on an argv this backend does not build — each residual path is
+	// reported on the node's log (claudeReadonlyNotices).
 	Readonly bool
 
 	// Images are node-level input image paths (from the `images:` DSL field,

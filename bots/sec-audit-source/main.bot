@@ -709,7 +709,10 @@ prompt disprove_voter_system:
     }
 
   Constraints:
-  - Read-only on the workspace. NO file_edit, NO write_file.
+  - Read-only on the workspace is your MANDATE, not your surface: you
+    hold no file_edit and no write_file, but you DO hold bash, and
+    `readonly: true` on claude_code withholds the writing tools you did not
+    declare, never a shell. Write nothing.
     fp-known.yaml is appended downstream by a deterministic tool
     on majority dismiss with a cited guard — never by a voter.
   - Severity from triage is informational; do NOT alter it.
@@ -1286,8 +1289,10 @@ prompt reattack_system:
      shaped {file, line, matcher, reason}. held=true ⇔
      new_findings == [].
 
-  You have NO write tools. You are PURELY read-only. Burn turns
-  hunting variants across the package, not writing edits.
+  You hold no file-writing tool, but you DO hold bash: `readonly: true`
+  on claude_code withholds the writing tools a node did not declare,
+  never a shell. Read-only is your MANDATE — burn turns hunting
+  variants across the package, not writing edits.
 
 prompt reattack_user:
   Finding the patch is supposed to fix:
@@ -2686,9 +2691,12 @@ agent remediation_report:
 ## Independent-session agreement signal: all voters default to Opus 5.5.
 ## Cross-family diversity requires explicit deployment overrides. Each
 ## voter is `readonly: true` + `session: fresh` so it cannot bleed
-## context from other voters and cannot mutate the workspace; the
-## ONLY mutator in this subgraph is fp_append, downstream of the
-## majority converge — preserves the one-mutating-branch rule.
+## context from other voters and counts as non-mutating for workspace
+## safety; on claude_code the flag withholds the file-writing tools these
+## voters did not declare and leaves their bash, so writing nothing is their
+## MANDATE (disprove_voter_system). The ONLY mutator in this subgraph is
+## fp_append, downstream of the majority converge — preserves the
+## one-mutating-branch rule.
 ##
 ## To scale to 5 voters: declare voter_v4 / voter_v5 here, extend the
 ## sequential chain (voter_v3 -> voter_v4 -> voter_v5 -> majority_verdict)
@@ -2724,12 +2732,14 @@ judge voter_v2:
   model: "${ITERION_SEC_AUDIT_VOTER_V2_MODEL:-claude-opus-5-5}"
   ## Independent voter (claude_code subscription), pinned to the same
   ## read-plus-shell surface as v1/v3. On claude_code an omitted `tools:`
-  ## list is the FULL native toolset, Write/Edit included
-  ## (pkg/backend/delegate/claude_code.go: claudeNativeDisallowedTools
-  ## removes nothing for an empty declaration), and `readonly: true` is
-  ## enforced by the codex and pi delegates only -- claude_code never reads
-  ## it. The list is the first line; the paragraph in disprove_voter_system
-  ## is the second.
+  ## list is the FULL native toolset — Write/Edit included on a node WITHOUT
+  ## `readonly:` (pkg/backend/delegate/claude_code.go:
+  ## claudeNativeDisallowedTools removes nothing for an empty declaration) —
+  ## and `readonly: true` is a sandbox on the codex and pi delegates while
+  ## claude_code only withholds the file-writing tools a node did not declare
+  ## plus the worktree-moving pair -- never the shell this list keeps. The
+  ## list is the first line; the paragraph in disprove_voter_system is the
+  ## second.
   backend: "claude_code"
   input: voter_input
   output: voter_output

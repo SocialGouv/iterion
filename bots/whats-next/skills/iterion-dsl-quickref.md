@@ -157,7 +157,7 @@ agent w:
                                 # per (bot, repo) that claude_code, claw and pi all read/write, persisted
                                 # through the memory store so it survives a worktree or a cloud pod.
                                 # Distinct from the memory: block below. C132 warns on other backends.
-  readonly: true                # runtime-blocks mutation tools
+  readonly: true                # bounds the mutation tools, with the lever each backend has
   interaction: human            # surfaces ask_user via MCP
   interaction_prompt: ask_msg   # used when interaction is llm or llm_or_human
   interaction_model: "openai/gpt-6-sol"
