@@ -70,7 +70,7 @@ func TestArmUsageWindowRetry_ReadsTheSkippedCredentialFromTheRun(t *testing.T) {
 	}}
 	r := &Runner{cfg: Config{Store: st}}
 
-	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(monday), "run-684", iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(monday), "run-684", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 	if got != usageRetryArmed || !st.armed {
 		t.Fatalf("outcome = %v armed=%v, want an armed retry", got, st.armed)
 	}

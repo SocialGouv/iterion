@@ -31,6 +31,24 @@ type RunRetryStore interface {
 	// attempt. expectedAfter is a CAS guard against an operator or another
 	// sweeper changing the intent concurrently.
 	DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time) (delayed bool, err error)
+	// PullRunRetry pulls an armed retry FORWARD to probeAt (the sweeper's
+	// "now") so the runner's usage preflight — the only authoritative
+	// reading of the provider's window — gets to answer before the
+	// announced instant. expectedAfter is the same CAS guard DelayRunRetry
+	// uses. It spends no attempt and leaves ScheduledAt alone (the max_wait
+	// anchor is not a probe's to move); it keeps expectedAfter in
+	// RunRetryState.ProbeFrom, counts the probe and refuses a row that
+	// already carries a marker.
+	PullRunRetry(ctx context.Context, runID string, expectedAfter, probeAt time.Time) (pulled bool, err error)
+	// RearmProbedRunRetry re-arms a PROBE-MARKED retry at `at` without
+	// spending an attempt or consulting the attempt budget, and consumes
+	// the marker. It is how both halves settle a probe that found the
+	// window still shut: the runner's preflight re-failure arms the
+	// provider's fresh instant, and the sweeper puts ProbeFrom back when a
+	// probed resume never reached the runner at all. Reports rearmed=false
+	// (no error) when the row carries no marker or is no longer
+	// failed_resumable — the caller then takes its ordinary, paid path.
+	RearmProbedRunRetry(ctx context.Context, runID string, at time.Time) (rearmed bool, err error)
 	// ClaimRunRetry LEASES an armed retry, conditioning on expectedAfter
 	// matching what the caller read and on no live lease existing. The
 	// winner sees won=true; every loser sees won=false. The retry stays

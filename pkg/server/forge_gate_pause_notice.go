@@ -46,6 +46,39 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 	if s == nil || run == nil || run.RetryState == nil || run.RetryState.RetryAfter == nil {
 		return
 	}
+	// A probe's re-park has nothing to add. The pull-forward probe
+	// (retry_probe.go) resumes a parked run speculatively, the preflight
+	// refuses, and the free re-arm puts the SAME announced instant back with
+	// the same attempt number — a byte-identical comment, up to one per
+	// probe of the budget on a single provider wall. The park that STARTED
+	// the wait is the one that speaks: a PAID arming clears the probe ledger
+	// (store/mongo.ScheduleRunRetry), so a new wall still gets its notice.
+	//
+	// Who PAYS for a park and whether it opens a new WALL are two questions,
+	// and a paid park that merely RESTORES the announced instant answers them
+	// differently: it clears this ledger while arming the wait the row was
+	// already on, so the pull request hears that instant a second time, under
+	// the attempt number that park charged — bounded by max_attempts, and the
+	// one thing new about it. Which parks those are follows from the rules
+	// rather than from a list: the execution's spend and the age of the pull
+	// decide who pays, the refusal decides which instant, so a park whose
+	// refusal named no instant of its own says the announced one again
+	// whatever made it paid (pkg/runner.armUsageWindowRetry, the cross product
+	// derived in
+	// TestArmUsageWindowRetry_ThePaidArmingsThatRestoreTheAnnouncedInstant).
+	// Telling such a park from a genuinely new wall is the missing fact
+	// below.
+	//
+	// The one thing it cannot say is a probed refusal that names a DIFFERENT
+	// instant from the announced one: the row moves, this comment does not,
+	// and the pull request hears the new instant at the next paid park. The
+	// stand-down keys on the ledger because nothing records what was
+	// announced — telling those apart means persisting it.
+	if run.RetryState.ProbeCount > 0 {
+		s.gateNoticeDebug(run, "pause notice", "re-armed after probe %d of this wait — the pull request was already told about %s",
+			run.RetryState.ProbeCount, run.RetryState.RetryAfter.UTC().Format(time.RFC3339))
+		return
+	}
 	// Where iterion may speak, and through whom, is ONE walk — the run's
 	// publish grant and its (repo, tenant, host) scope — shared with the DLQ
 	// notice. Both comment on a pull request under iterion's forge identity,

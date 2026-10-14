@@ -206,7 +206,7 @@ func TestArmUsageWindowRetry_ReadsTheSpentAttemptsFromTheRun(t *testing.T) {
 	// Budget to spare: the speculative wake still wins.
 	st := newStore(3)
 	r := &Runner{cfg: Config{Store: st}}
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-922", logger); got != usageRetryArmed || !st.armed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-922", spentNothing, logger); got != usageRetryArmed || !st.armed {
 		t.Fatalf("outcome = %v armed = %v, want an armed retry", got, st.armed)
 	}
 	if want := reopens.Add(time.Minute); !st.armedAt.Equal(want) {
@@ -216,7 +216,7 @@ func TestArmUsageWindowRetry_ReadsTheSpentAttemptsFromTheRun(t *testing.T) {
 	// Last attempt: the run gets its one try at the wall.
 	st = newStore(4)
 	r = &Runner{cfg: Config{Store: st}}
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-922", logger); got != usageRetryArmed || !st.armed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-922", spentNothing, logger); got != usageRetryArmed || !st.armed {
 		t.Fatalf("outcome = %v armed = %v, want an armed retry", got, st.armed)
 	}
 	if want := wall.Add(time.Minute); !st.armedAt.Equal(want) {

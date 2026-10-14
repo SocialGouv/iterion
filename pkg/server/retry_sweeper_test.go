@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -28,13 +30,44 @@ import (
 // these tests pin is that each failure lands somewhere legible — resumed,
 // re-armed with a reason, or abandoned with a reason — and never silently.
 
-type fakeRetryLister struct{ refs []mongostore.RetryDueRef }
+type fakeRetryLister struct {
+	refs []mongostore.RetryDueRef
+	// probeRefs is what the not-yet-due scan returns, and probeCalls
+	// records the bounds each pass asked for — the pass must pass the
+	// operator's floor and budget down, not its own.
+	probeRefs  []mongostore.RetryDueRef
+	probeCalls []probeScan
+	probeErr   error
+	// dueErr is the same shape for the DUE scan: rows AND an error, so the
+	// caller's error check is what the test exercises rather than an empty
+	// slice that would pass either way.
+	dueErr error
+}
+
+type probeScan struct {
+	now    time.Time
+	floor  time.Duration
+	budget int
+	limit  int
+}
 
 func (f *fakeRetryLister) ListRunsDueForRetry(_ context.Context, _ time.Time, limit int) ([]mongostore.RetryDueRef, error) {
 	if limit > 0 && len(f.refs) > limit {
-		return f.refs[:limit], nil
+		return f.refs[:limit], f.dueErr
 	}
-	return f.refs, nil
+	return f.refs, f.dueErr
+}
+
+// Rows AND the error, the way a cursor that fails mid-decode answers. A fake
+// that returns (nil, err) is kinder than production and makes the caller's
+// error check untestable: dropping it would leave the slice empty and the
+// loop would pull nothing anyway.
+func (f *fakeRetryLister) ListRunsForRetryProbe(_ context.Context, now time.Time, floor time.Duration, maxProbes, limit int) ([]mongostore.RetryDueRef, error) {
+	f.probeCalls = append(f.probeCalls, probeScan{now: now, floor: floor, budget: maxProbes, limit: limit})
+	if limit > 0 && len(f.probeRefs) > limit {
+		return f.probeRefs[:limit], f.probeErr
+	}
+	return f.probeRefs, f.probeErr
 }
 
 // fakeRetryStore records the sweeper's decisions. Embedding store.RunStore
@@ -54,6 +87,20 @@ type fakeRetryStore struct {
 	armBudget map[string]int // run id -> max attempts seen by ScheduleRunRetry
 	armOK     bool
 	circuit   *store.RetryCircuitState
+
+	pulls        []probePull
+	pullOK       bool
+	pullErr      error
+	probeRearmed map[string]time.Time
+	rearmErr     error
+}
+
+// probePull is one PullRunRetry call: the instant the scan read and the
+// instant the probe asked for.
+type probePull struct {
+	runID string
+	from  time.Time
+	to    time.Time
 }
 
 func newFakeRetryStore() *fakeRetryStore {
@@ -64,7 +111,46 @@ func newFakeRetryStore() *fakeRetryStore {
 		rearmed:   map[string]time.Time{},
 		armBudget: map[string]int{},
 		armOK:     true,
+
+		pullOK:       true,
+		probeRearmed: map[string]time.Time{},
 	}
+}
+
+func (f *fakeRetryStore) PullRunRetry(ctx context.Context, runID string, expectedAfter, probeAt time.Time) (bool, error) {
+	if tenant, ok := store.TenantFromContext(ctx); !ok || tenant == "" {
+		panic("retry sweeper: probe pull without tenant ctx")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pulls = append(f.pulls, probePull{runID: runID, from: expectedAfter, to: probeAt})
+	if f.pullErr != nil {
+		return false, f.pullErr
+	}
+	return f.pullOK, nil
+}
+
+// RearmProbedRunRetry models the store's CAS on the marker: no marker on the
+// run doc, no re-arm — and the marker is CONSUMED, so a second call reports
+// false the way the real update's filter does.
+func (f *fakeRetryStore) RearmProbedRunRetry(_ context.Context, runID string, at time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rearmErr != nil {
+		return false, f.rearmErr
+	}
+	r, ok := f.loadRun[runID]
+	if !ok || r == nil || r.RetryState == nil || r.RetryState.ProbeFrom == nil {
+		return false, nil
+	}
+	// The real update conditions on the status too: a run an operator
+	// resumed (or cancelled) is not re-armed behind their back.
+	if r.Status != store.RunStatusFailedResumable {
+		return false, nil
+	}
+	r.RetryState.ProbeFrom = nil
+	f.probeRearmed[runID] = at
+	return true, nil
 }
 
 func (f *fakeRetryStore) ClaimRunRetry(ctx context.Context, runID string, _ time.Time) (bool, error) {
@@ -200,6 +286,38 @@ func TestSweepDueRetries_ResumesAClaimedRun(t *testing.T) {
 	// run fails for any unrelated reason.
 	if len(st.cleared) != 1 || st.cleared[0] != "run-a" {
 		t.Errorf("cleared = %v, want [run-a] after a successful resume", st.cleared)
+	}
+}
+
+// The due scan's own error branch: reported, and NOT acted on. A sweep that
+// resumed the rows a failed scan handed back would re-enqueue runs the store
+// could not vouch for — and an operator reading the logs would see an idle
+// sweeper instead of a broken one. Twin of
+// TestSweepRetryProbes_AScanErrorPullsNothing, which is where this fake's
+// "rows AND the error" shape comes from.
+func TestSweepDueRetries_AScanErrorResumesNothing(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-a"] = true
+	resumer := &fakeResumer{}
+	s := newRetrySweeperServer(t, st, resumer)
+	var logs bytes.Buffer
+	s.logger = iterlog.New(iterlog.LevelWarn, &logs)
+	now := time.Now().UTC()
+	lister := &fakeRetryLister{
+		refs:   []mongostore.RetryDueRef{dueRef("run-a", now.Add(-time.Minute))},
+		dueErr: errors.New("mongo is down"),
+	}
+
+	s.sweepDueRetries(context.Background(), lister, resumer, now)
+
+	if len(resumer.calls) != 0 {
+		t.Errorf("resumes after a failed scan = %d, want none", len(resumer.calls))
+	}
+	if len(st.claimed) != 0 {
+		t.Errorf("claims after a failed scan = %v, want none", st.claimed)
+	}
+	if got := logs.String(); !strings.Contains(got, "mongo is down") {
+		t.Errorf("the scan error was not reported, so a broken sweeper reads as an idle one; logs:\n%s", got)
 	}
 }
 

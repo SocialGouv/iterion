@@ -321,6 +321,26 @@ type cancelAwareStore struct {
 	calls        int
 	blockCircuit bool
 	successes    int
+
+	probeRearmed   bool
+	probeRearmedAt time.Time
+	probeRearmErr  error
+	// probeRearmErrOnce models a TRANSIENT store blip: the first re-arm
+	// fails, the next one lands. A fake that fails forever cannot tell a
+	// path that gives up from one that tries again.
+	probeRearmErrOnce bool
+	probeRearmCalls   int
+	// probeRearmRefuse models the marker going away under us (the sweeper
+	// stood the probe down, or an operator resumed the run): the store
+	// answers (false, nil), which is NOT an error and NOT a free re-arm.
+	probeRearmRefuse bool
+
+	// abandoned keeps the settlement reasons: a fake that swallows them
+	// cannot witness a run retired days before the instant it waits on.
+	abandoned       []string
+	circuitFailures int
+
+	events []store.Event
 }
 
 func (c *cancelAwareStore) LoadRun(ctx context.Context, _ string) (*store.Run, error) {
@@ -331,12 +351,56 @@ func (c *cancelAwareStore) LoadRun(ctx context.Context, _ string) (*store.Run, e
 	return c.run, nil
 }
 
-func (c *cancelAwareStore) ScheduleRunRetry(ctx context.Context, _ string, at time.Time, _, _ string, _ int) (bool, int, error) {
+func (c *cancelAwareStore) ScheduleRunRetry(ctx context.Context, _ string, at time.Time, _, _ string, maxAttempts int) (bool, int, error) {
 	if err := ctx.Err(); err != nil {
 		return false, 0, err
 	}
+	// The attempt budget is in the real store's FILTER, so a fake that arms
+	// unconditionally is kinder than production and hides every
+	// budget-exhausted path.
+	if spent := c.spentAttempts(); maxAttempts > 0 && spent >= maxAttempts {
+		return false, 0, nil
+	}
 	c.armed, c.armedAt = true, at
-	return true, 1, nil
+	// A PAID arming is a new wait, so the real store's $unset drops the whole
+	// probe ledger (TestRunRetryProbe_APaidArmingResetsTheLedger). A fake that
+	// kept it would hide what the pull request's pause notice reads.
+	if c.run != nil && c.run.RetryState != nil {
+		c.run.RetryState.ProbeFrom, c.run.RetryState.ProbeCount, c.run.RetryState.LastProbeAt = nil, 0, nil
+	}
+	return true, c.spentAttempts() + 1, nil
+}
+
+func (c *cancelAwareStore) spentAttempts() int {
+	if c.run == nil || c.run.RetryState == nil {
+		return 0
+	}
+	return c.run.RetryState.Attempts
+}
+
+func (c *cancelAwareStore) PullRunRetry(ctx context.Context, _ string, _, _ time.Time) (bool, error) {
+	return false, ctx.Err()
+}
+
+// RearmProbedRunRetry models the store's CAS on the probe marker: no marker,
+// no free re-arm.
+func (c *cancelAwareStore) RearmProbedRunRetry(ctx context.Context, _ string, at time.Time) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	c.probeRearmCalls++
+	if c.probeRearmErr != nil && (!c.probeRearmErrOnce || c.probeRearmCalls == 1) {
+		return false, c.probeRearmErr
+	}
+	if c.probeRearmRefuse {
+		return false, nil
+	}
+	if c.run == nil || c.run.RetryState == nil || c.run.RetryState.ProbeFrom == nil {
+		return false, nil
+	}
+	c.run.RetryState.ProbeFrom = nil
+	c.probeRearmed, c.probeRearmedAt = true, at
+	return true, nil
 }
 
 func (c *cancelAwareStore) DelayRunRetry(ctx context.Context, _ string, _, _ time.Time) (bool, error) {
@@ -349,9 +413,22 @@ func (c *cancelAwareStore) ClaimRunRetry(ctx context.Context, _ string, _ time.T
 
 func (c *cancelAwareStore) ClearRunRetry(ctx context.Context, _ string) error { return ctx.Err() }
 
-func (c *cancelAwareStore) AbandonRunRetry(ctx context.Context, _, _ string) error { return ctx.Err() }
+func (c *cancelAwareStore) AbandonRunRetry(ctx context.Context, _, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.abandoned = append(c.abandoned, reason)
+	// Model the real store: the abandon $unsets both the armed instant and
+	// the probe marker, which is what makes settling a probed row
+	// irreversible.
+	if c.run != nil && c.run.RetryState != nil {
+		c.run.RetryState.RetryAfter, c.run.RetryState.ProbeFrom = nil, nil
+	}
+	return nil
+}
 
 func (c *cancelAwareStore) RecordRetryFailure(ctx context.Context, _, _ string, _ time.Time, _ int, _ time.Duration) (*store.RetryCircuitState, error) {
+	c.circuitFailures++
 	if c.blockCircuit {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -385,10 +462,13 @@ func TestRetryCircuitResetRequiresDurableFinishedStatus(t *testing.T) {
 	}
 }
 
-func (c *cancelAwareStore) AppendEvent(ctx context.Context, _ string, _ store.Event) (*store.Event, error) {
+func (c *cancelAwareStore) AppendEvent(ctx context.Context, _ string, ev store.Event) (*store.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// Kept, not swallowed: the timeline event is what an operator reads to
+	// tell one arming from another.
+	c.events = append(c.events, ev)
 	return &store.Event{}, nil
 }
 
@@ -400,7 +480,7 @@ func TestArmUsageWindowRetry_SurvivesACancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	got := r.armUsageWindowRetry(ctx, weeklyWindowErr(time.Now().UTC().Add(30*time.Hour)), "run-a", iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(ctx, weeklyWindowErr(time.Now().UTC().Add(30*time.Hour)), "run-a", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 	if got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed — a cancelled ctx must not disable the carve-out", got)
 	}
@@ -420,7 +500,7 @@ func TestArmUsageWindowRetry_SlowCircuitLeavesTimeForMandatoryArm(t *testing.T) 
 	r := &Runner{cfg: Config{Store: st}}
 
 	started := time.Now()
-	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), "run-slow-circuit", iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), "run-slow-circuit", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 	if got != usageRetryArmed || !st.armed {
 		t.Fatalf("outcome = %v armed=%v, want mandatory per-run retry after circuit timeout", got, st.armed)
 	}
@@ -435,7 +515,7 @@ func TestArmUsageWindowRetry_NotAUsageWindow(t *testing.T) {
 	st := &cancelAwareStore{run: &store.Run{ID: "run-b", Status: store.RunStatusFailedResumable}}
 	r := &Runner{cfg: Config{Store: st}}
 
-	got := r.armUsageWindowRetry(context.Background(), errors.New("tool blew up"), "run-b", iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), errors.New("tool blew up"), "run-b", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 	if got != usageRetryNotApplicable {
 		t.Errorf("outcome = %v, want usageRetryNotApplicable", got)
 	}
@@ -448,7 +528,7 @@ func TestArmUsageWindowRetry_NotAUsageWindow(t *testing.T) {
 // a store with no durable retry surface must not swallow the delivery.
 func TestArmUsageWindowRetry_NoRetryStoreFallsThrough(t *testing.T) {
 	r := &Runner{cfg: Config{Store: plainStore{}}}
-	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), "run-c", iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), "run-c", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 	if got != usageRetryNotApplicable {
 		t.Errorf("outcome = %v, want usageRetryNotApplicable", got)
 	}

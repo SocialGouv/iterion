@@ -333,6 +333,147 @@ identically local and cloud. A run that stops retrying records **why**
 (budget spent, admission denied, source no longer resolvable) rather than
 going quiet.
 
+**Observing a reset nobody announced (cloud).** An operator who tops up or
+clears their forfait by hand reopens the window with no notice, and a retry
+armed for the date the provider named is invisible to every sweep until that
+date — six reviews once slept four days on a wall that had fallen the first
+afternoon. So the sweeper also runs a **pull-forward probe**: it moves a
+not-yet-due `usage_window` retry to *now*, and the ordinary pass resumes it on
+its next tick. The runner's usage preflight is the authoritative reading of
+the window and it refuses *before* anything spends, so the worst case is one
+wasted pod and a retry re-armed on the instant the provider names; the best
+case is a run that comes back hours or days early.
+
+The probe is bounded, and its bounds are the deployment's:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `ITERION_RETRY_PROBE_FLOOR` | How long a wait rests between probes, and how close to its announced instant probing stops being worth a pod | `1h` |
+| `ITERION_RETRY_PROBE_BUDGET` | Probes one armed wait may spend; `0` turns probing off | `24` |
+
+The probe ships **armed**: a deployment that sets neither variable probes every
+parked wait hourly, up to twenty-four times — a bounded day of observation,
+then the run simply waits for the instant the provider named. That is the
+decision, and the bet it makes is one pod an hour per parked wait (the price
+this codebase already accepts for a refusal that names no instant at all)
+against a run sleeping through a window that reopened the first afternoon.
+`ITERION_RETRY_PROBE_BUDGET=0` disarms it in one variable, with no code change
+and no redeploy of anything else.
+
+A probe spends **no attempt**: `max_attempts` is reserved for work that gets
+past the preflight, so a re-failure that followed a probe re-arms for free (a
+probed wait that charged attempts would retire a run before the wall it waits
+on falls — five hourly probes exhaust the default budget in five hours) — free
+while that park follows its pull inside the marker's TTL, which is where the
+exception and its price are stated, below. And a
+probe never shortens a run's life. Four things carry that guarantee, because
+each of them would otherwise break it:
+
+- the sweeper puts the announced instant back instead of re-arming or giving
+  up when a probe-pulled resume is denied or cannot be launched, leaving that
+  decision to the date the provider named;
+- a probed re-failure that names **no** instant keeps the announced one: the
+  fallback for an unparseable refusal is a one-hour guess, and writing a guess
+  over the provider's own word deletes the wall the run is waiting on. The
+  rule reads the **refusal**, not the reset source it produced. A *dated*
+  re-failure still wins, including an earlier one — good news from the
+  provider is not a probe's to override;
+- a credential the launch skipped may reopen sooner, and a row holding the
+  announced instant does not weigh it **at all** — on either arming. The
+  earlier wake looks free, but the write that takes it consumes the marker in
+  the same update, so the only durable copy of the provider's word would be
+  traded for a speculation about another key, and a refusal naming no instant
+  then walks the run down hourly guesses until the budget retires it (measured
+  at the production defaults: five guesses, retired 96 h before the wall).
+  While the wait's probe ledger is **under its budget** the credential loses
+  one probe *floor* and not the wall: the row stays armed on its wall, a free
+  re-arm leaves the ledger where the pull left it, and the next probe gives
+  that key its chance one floor later, free. Once the budget's **last** probe
+  has been pulled, no pass lists that wait again, so what the key loses is the
+  REST of the wait: the run sleeps to the announced instant whatever another
+  credential does. That is the bound on keeping the wall, and it bites where
+  the wall is further out than `budget × floor` — a day at the defaults;
+- a paid arming refused on a spent budget restores that instant too, rather
+  than retiring the run; only a row with no marker left is ever settled;
+- and what is free is the probe's **own** refusal, not every park that follows
+  one. The marker outlives the resume it was written for (the pod reads it off
+  the row), so a run the probe pulled forward, that resumed because the window
+  really had reopened and burnt it again, would otherwise re-park free against
+  an instant that belongs to a window it has already used. Tokens on the clock
+  tell the two apart: an execution that got an answer from the provider parks
+  on a **new** wall — charged, counted, fed to the shared circuit, and
+  announced on the pull request. That spend decides **who pays**, and only
+  that: the announced instant survives a refusal that names none whoever pays
+  for the arming, because the same tokens are reported by a node whose every
+  route was *refused* after one of them burned a session that died, and
+  trading days of waiting for hourly guesses on that reading retires the run
+  the probe exists to save.
+
+The marker answers **two** questions, and they expire differently. *Which
+instant* — the provider's own dated word about this row's wall — holds while
+that instant is still ahead, however old the pull is: it is the only dated fact
+the row has, and the settlement, the restore and the `max_wait` anchor all read
+it there. *Who pays* holds only while the **pull** is recent (one hour, the
+probe pace's own default floor). Only an arming deletes the marker, so a
+probe-driven resume that never parks — it succeeded, its pod was evicted —
+leaves it behind for the rest of the wait, and a park days later, which is
+nobody's probe, would otherwise take the whole free treatment: uncharged,
+uncounted, unfed to the shared circuit, its resume refunded and the pull
+request silent on a wall it never heard of. Once the instant itself is behind
+us the wait is over and both answers are no: the park is charged and announced,
+the resume is a billable launch, the settlement is the sweeper's ordinary one.
+
+That hour is a constant rather than a knob because both errors it can make are
+mild, and the one that is not is on the other side of the split: too short, a
+genuinely probed park (a resume the shared circuit deferred for longer) is
+charged one attempt, its resume is metered, and — since a paid arming clears
+the probe ledger while this one restores the *same* announced instant — that
+wait is probed afresh, pace included, so the probes one wait can cost are
+bounded by `max_attempts × budget` and not by the budget alone (120 pods and 5
+metered launches at the defaults, against 24 and 0), and the pull request hears
+that instant once more, under the attempt number the park charged, because the
+pause notice reads the same ledger; the announced instant survives all of it
+and the run still waits on its wall. Too long, one later park within the hour
+that follows a pull is free. The escape hatch is the pass itself —
+`ITERION_RETRY_PROBE_BUDGET=0` writes no marker at all.
+
+A probe costs **a pod, not a quota unit** — while its resume follows the pull
+inside the marker's TTL (above): that resume passes the same
+admission gate as any launch (a suspended org, an exhausted monthly quota or a
+concurrency cap still stops it, and the row is simply re-armed on its
+announced instant), but the metered increment is handed back — a launch whose
+refusal is expected must not spend the tenant's monthly run quota, which is a
+hard paywall until the month rolls over. A resume the shared circuit or a
+sweeper outage delays past that hour is nobody's probe: it is metered like any
+launch, and the park it causes charges an attempt — `max_attempts` of each per
+wait, the price the TTL's own paragraph states. A run the probe finds genuinely
+reopened therefore runs on the unit its original launch metered — once per
+probed wait: the park that follows that run's real work is charged like any
+other, which closes the probe ledger, so every resume after it is metered
+again.
+
+A forfait nobody resets is probed for a bounded day and then simply waits —
+per parked run, so a large parked fleet multiplies the pods and is where
+lowering the budget (or raising the floor) earns its keep. The day is per
+armed WAIT, and a paid park that restores the announced instant arms a new one
+on that same instant, so a run's own ceiling is `max_attempts × budget` (the
+marker's TTL, above). The pass pulls at
+most two rows a minute whatever the fleet: every row it pulls becomes due, and
+a probe batch as wide as the due pass's would fill the capacity that resumes
+runs whose own instant has arrived. On the pull request a parked run gates,
+the park that STARTED the wait is the one that comments; a probe's re-park
+stays quiet, because it announces the instant already named there — except a
+paid park that merely RESTORED that instant, which clears the ledger this reads
+and so names it once more (above). Which parks those are follows from the two
+rules, and from nothing else: the spend and the age of the pull decide who
+pays, the refusal decides which instant, so a park whose refusal named no
+instant of its own says the announced one again whatever made it paid. When the provider's fresh refusal names a
+*different* one, the row moves and the comment does not: the pull request hears
+the new instant at the next **paid** park — the run's own wake at that instant,
+or the work that reopening the window finally allowed. The operator's own path stays
+`iterion remote runs resume --usage-blocked`, which sweeps and resumes every
+blocked run at once.
+
 **Which reset the wait is armed on (cloud).** The credential a run fails on
 is the one the launch's credential walk fell *through* to — and the one it
 passed over often reopens first: a team key refused on its five-hour window

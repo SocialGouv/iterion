@@ -39,6 +39,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/mdcode` | answers one question about markdown: which of its bytes are code. | — |
 | `internal/pricingtest` | isolates a test binary from the host's live model prices. | — |
 | `internal/proctest` | checks OS resources owned by a test binary. | — |
+| `internal/retryprobetest` | models the durable retry row the usage-window pull-forward probe acts on, so the real decision code of pkg/runner and pkg/server can be driven over… | — |
 | `internal/safepath` | turns a name taken from an archive — a string chosen by whoever wrote the archive — into a path that is safe to write under a root. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — |

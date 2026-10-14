@@ -87,6 +87,11 @@ type Registry struct {
 	// tells those two apart, and it is the difference between "no run is
 	// waiting" and "every waiting run is stranded".
 	RunsRetrySweeps prometheus.Counter
+	// RunsRetryProbes counts the not-yet-due retries a pass pulled forward
+	// so the runner's usage preflight could answer early. It is the cost of
+	// the pull-forward probe made visible: each one is a pod that may find
+	// the window still shut.
+	RunsRetryProbes prometheus.Counter
 }
 
 // New registers the metrics on a fresh registry. Each call gives a
@@ -204,6 +209,10 @@ func New() *Registry {
 		Name: "iterion_runs_retry_sweeps_total",
 		Help: "Retry-sweeper passes completed. Flat at 0 means the sweeper is not running, which the other retry metrics cannot distinguish from an idle one.",
 	})
+	r.RunsRetryProbes = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "iterion_runs_retry_probes_total",
+		Help: "Not-yet-due usage-window retries pulled forward so the runner's preflight could observe a reset the provider never announced.",
+	})
 	r.DLQDepth = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "iterion_dlq_depth",
 		Help: "Messages currently parked on the runs DLQ stream.",
@@ -219,7 +228,7 @@ func New() *Registry {
 		r.AuthLoginsTotal, r.AuthPasswordResetsTotal,
 		r.LaunchDeniedTotal, r.RunsOrphanRecovered, r.OrphanSweepErrors, r.DLQDepth,
 		r.RunsUsageWindowBlocked, r.RunsRetryScheduled,
-		r.RunsRetryResumed, r.RunsRetryPending, r.RunsRetrySweeps,
+		r.RunsRetryResumed, r.RunsRetryPending, r.RunsRetrySweeps, r.RunsRetryProbes,
 	)
 	return r
 }
