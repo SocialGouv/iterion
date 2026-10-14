@@ -493,10 +493,13 @@ func TestFmtToYamlCarriesTheCatalogTheCatalogReaderReads(t *testing.T) {
 		noNote   string // a fragment no note may carry
 		wantNote string // a fragment one note carries
 	}{
-		"a key named twice":  {"## ---\n## name: first\n## description: d\n## name: last\n## ---\n", true, "carries no `catalog:`", ""},
-		"a scalar triggers":  {"## ---\n## name: probe\n## triggers: just-one\n## ---\n", false, "", "the catalog reader reads"},
-		"none of the four":   {"## ---\n## owner: jo\n## ---\n", false, "", "none of the four keys"},
-		"the four, and more": {"## ---\n## name: probe\n## owner: jo\n## ---\n", true, "carries no `catalog:`", "1 key(s) of the frontmatter are not carried by `catalog:` (owner)"},
+		"a key named twice": {"## ---\n## name: first\n## description: d\n## name: last\n## ---\n", true, "carries no `catalog:`", ""},
+		"a scalar triggers": {"## ---\n## name: probe\n## triggers: just-one\n## ---\n", false, "", "the catalog reader reads"},
+		// A frontmatter that is not YAML at all arrives with the remedy of
+		// the author document's table: the same author, the same mistake.
+		"a value holding a colon": {"## ---\n## name: probe\n## description: a: b\n## ---\n", false, "", "quote the whole value"},
+		"none of the four":        {"## ---\n## owner: jo\n## ---\n", false, "", "none of the four keys"},
+		"the four, and more":      {"## ---\n## name: probe\n## owner: jo\n## ---\n", true, "carries no `catalog:`", "1 key(s) of the frontmatter are not carried by `catalog:` (owner)"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			bot := writeBot(t, "c/"+strings.ReplaceAll(name, " ", "_")+".bot", tc.head+body)
