@@ -3,6 +3,53 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.263.1](https://github.com/SocialGouv/iterion/compare/v3.263.0...v3.263.1) (2026-10-14)
+
+### Bug Fixes
+
+* **backends:** claude_code reads `readonly:`, and no declaration lands on both tool flags ([#2409](https://github.com/SocialGouv/iterion/issues/2409)) ([28f6fb5](https://github.com/SocialGouv/iterion/commit/28f6fb5e89388a55a9d6d48872e6d80b4b66f469)), closes [#1673](https://github.com/SocialGouv/iterion/issues/1673), references [#1](https://github.com/SocialGouv/iterion/issues/1) [#1](https://github.com/SocialGouv/iterion/issues/1) [#1816](https://github.com/SocialGouv/iterion/issues/1816) [#1651](https://github.com/SocialGouv/iterion/issues/1651) [#1671](https://github.com/SocialGouv/iterion/issues/1671)
+
+    <details><summary>why</summary>
+
+    A node's `tools:` list became `--allowedTools` while three rules that never consulted it added names to the `--disallowedTools` of the same spawn: headlessWithheldTools, the orchestration knob, and the declaration's own complement. Because claudeNativeForCanonical has no row for workflow/taskoutput/monitor, a declared Workflow, Task, Agent, TaskOutput or Monitor reached one argv on BOTH flags — twelve overlaps, on both spawns — so whether the tool was withheld rested on the CLI resolving deny…
+
+    </details>
+* **compatgw:** a provider-first gateway id resolves under its own qualifier ([#2412](https://github.com/SocialGouv/iterion/issues/2412)) ([c7d7f41](https://github.com/SocialGouv/iterion/commit/c7d7f414b3f62ed3669b4fa13940dd90b7ead09e))
+
+    <details><summary>why</summary>
+
+    A LiteLLM gateway can name its models provider-first (`scaleway/glm-5.2`). Under OPENAI_COMPATIBLE_CATALOG_PROVIDER=scaleway the exact key became `scaleway/scaleway/glm-5.2` and every such id resolved to nothing, so the deployment had to carry each one in the operator table. Measured on the sovereign pool before that table: an unknown window, the 10K compaction floor, seven compactions and 853K tokens for a 59-file review.
+
+    </details>
+* **dsl:** fmt sees the comments written below a document's last content line ([#2411](https://github.com/SocialGouv/iterion/issues/2411)) ([4072abd](https://github.com/SocialGouv/iterion/commit/4072abddbcc88ea1436d49e0715f17f4f3fbb2f6)), closes [#1784](https://github.com/SocialGouv/iterion/issues/1784), references [#1784](https://github.com/SocialGouv/iterion/issues/1784) [#2328](https://github.com/SocialGouv/iterion/issues/2328) [#1760](https://github.com/SocialGouv/iterion/issues/1760) [#2328](https://github.com/SocialGouv/iterion/issues/2328) [#1783](https://github.com/SocialGouv/iterion/issues/1783)
+
+    <details><summary>why</summary>
+
+    `author.Comments` listed what yaml.v3 attaches to a node, plus the source reads for a flow collection's comments and for a directive line's. Below the document's last content line — around a `...` document-end marker, or under the last declaration — yaml.v3 attaches some of the lines written there and reads the rest without attaching them, so `fmt` compared two lists that both missed those lines: it rewrote the document and deleted them with no refusal and no notice, and `fmt --to bot` counted…
+
+    </details>
+* **forge/gitlab:** a review's inline counts are what the merge request holds, read back ([#2419](https://github.com/SocialGouv/iterion/issues/2419)) ([7c20ace](https://github.com/SocialGouv/iterion/commit/7c20aceeab482232896eec53a40c2701f944456a))
+
+    <details><summary>why</summary>
+
+    The GitLab client counted a positioned discussion as posted from the create answer alone. Measured on a GitLab 17 instance (the sovereign Revi on !220): two discussions persisted behind error answers — counted lost, the review reported 0 inline comments, folded both findings into the summary a second time and raised "FORGE PUBLISH FAILED" over a merge request that held every thread. Nothing was logged: the error answers died in the client.
+
+    </details>
+* **runtime:** a subbot child works in its parent's tree, sandbox or not ([#2421](https://github.com/SocialGouv/iterion/issues/2421)) ([f50fac8](https://github.com/SocialGouv/iterion/commit/f50fac8e432de9d96a43114f97c6a3cef51b843c)), closes [#1817](https://github.com/SocialGouv/iterion/issues/1817)
+
+    <details><summary>why</summary>
+
+    The `worktree: auto` in-place rule asked whether a shared sandbox existed while the comment above it stated the rule for a subbot child. The two part ways on a local unsandboxed `iterion run`: the child took a worktree of its own, and its commits landed on that worktree's branch — invisible to the parent that launched it to produce something in the parent's OWN tree.
+
+    </details>
+* **server:** a team grant cannot outlive the org membership it sits inside ([#2406](https://github.com/SocialGouv/iterion/issues/2406)) ([d207380](https://github.com/SocialGouv/iterion/commit/d207380d92faef6581be5a664376507df0356cab)), closes [#1560](https://github.com/SocialGouv/iterion/issues/1560)
+
+    <details><summary>why</summary>
+
+    An org membership is the identity boundary a team grant sits inside, and the handlers that move those rows share no transaction — `pkg/identity` has none, in either store. The placement read the membership and THEN wrote the grant; the off-boarding swept the grants and THEN removed the membership. Either interleaving left a live team grant with nothing behind it: `SwitchTeam` reads the membership rather than trusting a claim, so the token it mints reads the team roster 200 while the org itself…
+
+    </details>
+
 ## [3.263.0](https://github.com/SocialGouv/iterion/compare/v3.262.2...v3.263.0) (2026-10-14)
 
 ### Features
