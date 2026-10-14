@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // lokiCapState: the state decide reads, with a generation already advanced by
@@ -26,6 +27,38 @@ func lokiStore(t *testing.T, out map[string]any) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// lokiCapSeen: the sightings a seeded record of these witnesses carries, minted
+// from now — hours old, inside quiet_after_hours (48) and far inside
+// forget_after_days (14), so the store's cut is the only rule that can take
+// such a record. A fixed instant hands that verdict to retention as the
+// calendar moves past the window.
+func lokiCapSeen() (firstSeen, lastSeen string) { return hoursAgo(5), hoursAgo(3) }
+
+// TestProdWatch_LokiCapSeenStaysTheCutsBusiness: the sightings the witnesses of
+// this file seed must leave the store's cut the only rule that can take their
+// records — in the past, and under 48 h old. Retention is the one rule that
+// deletes on the clock, at forget_after_days (14) = 336 h; the quiet note of
+// quiet_after_hours (48) only stages a notice. That 48 h is therefore a
+// conservative margin far inside retention's window: it reddens here long
+// before a sighting old enough for retention to take a record and leave every
+// cap witness of this file passing for the wrong reason.
+func TestProdWatch_LokiCapSeenStaysTheCutsBusiness(t *testing.T) {
+	t.Parallel()
+	firstSeen, lastSeen := lokiCapSeen()
+	for _, c := range []struct{ field, iso string }{{"first_seen", firstSeen}, {"last_seen", lastSeen}} {
+		at, err := time.Parse(time.RFC3339, c.iso)
+		if err != nil {
+			t.Fatalf("%s: %q is not the instant format decide writes: %v", c.field, c.iso, err)
+		}
+		if age := time.Since(at); age <= 0 || age >= 48*time.Hour {
+			t.Fatalf("%s is %v old: a cap witness needs a sighting in the past, inside quiet_after_hours (48h)", c.field, age)
+		}
+	}
+	if firstSeen > lastSeen {
+		t.Fatalf("first_seen %s is after last_seen %s", firstSeen, lastSeen)
+	}
 }
 
 func lokiMinted(from, n int) []any {
@@ -192,12 +225,13 @@ func TestProdWatch_LokiCapCutsLegacyFirst(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
+	firstSeen, lastSeen := lokiCapSeen()
 	legacyBacklog := map[string]any{"fp": "loki:zz", "kind": "loki", "sources": []any{"errors"}, "severity": "medium",
-		"title_key": "loki_template", "detail_key": "loki_detail", "first_seen": "2026-09-01T00:00:00+00:00",
-		"last_seen": "2026-09-30T00:00:00+00:00", "count": 1, "alerted": false}
+		"title_key": "loki_template", "detail_key": "loki_detail", "first_seen": firstSeen,
+		"last_seen": lastSeen, "count": 1, "alerted": false}
 	legacyAlerted := map[string]any{"fp": "loki:yy", "kind": "loki", "sources": []any{"errors"}, "severity": "medium",
-		"title_key": "loki_template", "detail_key": "loki_detail", "first_seen": "2026-09-01T00:00:00+00:00",
-		"last_seen": "2026-09-30T00:00:00+00:00", "count": 1, "alerted": true}
+		"title_key": "loki_template", "detail_key": "loki_detail", "first_seen": firstSeen,
+		"last_seen": lastSeen, "count": 1, "alerted": true}
 	out, _, err := pwDecide(t, wf, h, map[string]any{"templates": lokiMinted(0, 3), "leak": []any{}},
 		lokiCapState(map[string]any{"loki:zz": legacyBacklog, "loki:yy": legacyAlerted}, 1),
 		map[string]any{"loki": map[string]any{"max_records": 4}, "max_alerts_per_lane": 0})
@@ -220,6 +254,20 @@ func TestProdWatch_LokiCapCutsLegacyFirst(t *testing.T) {
 	if _, there := pwStateNext(t, out)["incidents"].(map[string]any)["loki:yy"]; !there {
 		t.Fatalf("the legacy alerted record must be kept over the cap before any stamped one (store %d)", len(lokiStore(t, out)))
 	}
+	// One tick lower, the minted templates past their read protection: the cut
+	// now compares legacy against stamped, and the legacy one goes.
+	out, _, err = pwDecide(t, wf, h, map[string]any{"templates": []any{}},
+		lokiCapState(pwStateNext(t, out)["incidents"].(map[string]any), 6),
+		map[string]any{"loki": map[string]any{"max_records": 3}, "max_alerts_per_lane": 0})
+	if err != nil {
+		t.Fatalf("tick 6: %v", err)
+	}
+	if _, there := pwStateNext(t, out)["incidents"].(map[string]any)["loki:yy"]; there {
+		t.Fatalf("the legacy record was kept while a stamped one was cut (store %v)", lokiStore(t, out))
+	}
+	if got := lokiStore(t, out); len(got) != 3 {
+		t.Fatalf("the three stamped templates must all be kept, got %v", got)
+	}
 }
 
 // TestProdWatch_LokiCapOffNeverCutsAndLeavesOtherKindsAlone: max_records 0
@@ -228,10 +276,11 @@ func TestProdWatch_LokiCapOffNeverCutsAndLeavesOtherKindsAlone(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
+	firstSeen, lastSeen := lokiCapSeen()
 	seeded := map[string]any{
 		"loki:keep-leak": map[string]any{"fp": "loki:keep-leak", "kind": "leak", "sources": []any{"errors"},
-			"severity": "high", "title_key": "leak", "detail_key": "leak_detail", "first_seen": "2026-09-30T00:00:00+00:00",
-			"last_seen": "2026-09-30T00:00:00+00:00", "count": 1, "alerted": false},
+			"severity": "high", "title_key": "leak", "detail_key": "leak_detail", "first_seen": firstSeen,
+			"last_seen": lastSeen, "count": 1, "alerted": false},
 	}
 	in := map[string]any{"loki": map[string]any{"max_records": 0}, "max_alerts_per_lane": 0}
 	out, _, err := pwDecide(t, wf, h, map[string]any{"templates": lokiMinted(0, 10), "leak": []any{}}, lokiCapState(seeded, 1), in)
@@ -240,7 +289,7 @@ func TestProdWatch_LokiCapOffNeverCutsAndLeavesOtherKindsAlone(t *testing.T) {
 	}
 	st := pwStateNext(t, out)
 	if st["incidents"].(map[string]any)["loki:keep-leak"] == nil {
-		t.Fatal("the leak class record was cut by the template store's cap")
+		t.Fatal("the leak class record is gone: cut by the template store's cap, or forgotten by retention")
 	}
 	if n := len(lokiStore(t, out)); n != 10 {
 		t.Fatalf("setup: 10 minted templates kept with the cap off, got %d", n)
@@ -267,11 +316,12 @@ func TestProdWatch_LokiCapBothLanesCutInOneTick(t *testing.T) {
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
 	h.setMaxPerLane(0)
+	firstSeen, lastSeen := lokiCapSeen()
 	seeded := map[string]any{}
 	for _, id := range []string{"70", "71", "72", "73"} {
 		seeded["sentry:"+id] = map[string]any{"fp": "sentry:" + id, "kind": "sentry", "sources": []any{"sentry"}, "severity": "medium",
-			"title_key": "sentry_issue", "detail_key": "sentry_detail_short", "first_seen": "2026-09-30T00:00:00+00:00",
-			"last_seen": "2026-09-30T00:00:00+00:00", "count": 1, "alerted": false, "status": "",
+			"title_key": "sentry_issue", "detail_key": "sentry_detail_short", "first_seen": firstSeen,
+			"last_seen": lastSeen, "count": 1, "alerted": false, "status": "",
 			"admitted_gen": 1, "tracked_read_gen": 2}
 	}
 	in := map[string]any{"loki": map[string]any{"max_records": 2}, "sentry": map[string]any{"max_records": 2, "read_protect_ticks": 3, "enabled": true,
