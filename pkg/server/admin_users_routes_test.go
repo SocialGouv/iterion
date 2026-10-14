@@ -249,8 +249,8 @@ func TestAdminUserDetail_OrphanGrantIsNamed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed org membership: %v", err)
 	}
-	if again := detailFor(t, s, "u9"); again.Teams[0].OrphanGrant {
-		t.Fatalf("a grant backed by an org membership is not an orphan: %+v", again.Teams[0])
+	if again := detailFor(t, s, "u9"); again.Teams[0].OrphanGrant || again.Teams[0].OffLadder {
+		t.Fatalf("a grant backed by an org membership is neither an orphan nor off the ladder: %+v", again.Teams[0])
 	}
 }
 

@@ -502,6 +502,19 @@ type Invitation struct {
 	AcceptedBy string     `bson:"accepted_by,omitempty" json:"accepted_by,omitempty"`
 }
 
+// AddressedTo reports whether addr is the address this invitation was minted
+// for. Only Email is normalized here: addr arrives normalized — a User row
+// carries it that way (CreateUser and UpdateUser normalize it in both
+// stores) and Register normalizes what a caller typed — while an Invitation
+// row carries whatever its writer left, since neither store normalizes it.
+// Both accept paths gate on this, and the off-boarding's sweep selects the
+// invitations to revoke with it: an invitation the sweep leaves behind is one
+// an account can still accept, so the two must read the same address the
+// same way.
+func (i Invitation) AddressedTo(addr string) bool {
+	return NormalizeEmail(i.Email) == addr
+}
+
 // OIDCLink binds a User to an external IdP identity. Composite key
 // is (Provider, ProviderUserID); the linked user is the lookup
 // target. A user can own multiple links (Google + GitHub).

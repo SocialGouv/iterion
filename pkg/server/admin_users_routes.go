@@ -67,11 +67,27 @@ type adminUserTeamView struct {
 	Status    string `json:"status,omitempty"`
 	Personal  bool   `json:"personal,omitempty"`
 	JoinedAt  string `json:"joined_at,omitempty"`
-	// OrphanGrant marks a team grant whose ORG MEMBERSHIP is missing. The
-	// invariant is that every team grant mirrors up to one; a console that
-	// silently repaired the display would hide exactly the drift an
-	// operator opened this page to find.
+	// OrphanGrant marks a team grant whose ORG MEMBERSHIP is missing — the
+	// fact, for any role: that membership is the boundary a grant sits
+	// inside, and "which grants have none?" is the question this page is
+	// opened with. Whether a missing boundary is SANCTIONED is a second
+	// question, which OffLadder answers in its own field rather than by
+	// dropping the flag: a capability outside the ladder is mirrored up to
+	// no org membership at all (ADR-078 decision 4) and the invitation path
+	// creates exactly that grant, but the same shape is what an off-boarded
+	// holder of a LADDER grant obtains by re-roling it off the ladder
+	// through an invitation to their own address — and the console that
+	// exempted the role reported neither. A console that silently repaired
+	// the display would hide exactly the drift an operator opened this page
+	// to find.
 	OrphanGrant bool `json:"orphan_grant,omitempty"`
+	// OffLadder marks a grant whose ROLE is mirrored up to no org
+	// membership at all (grantNeedsOrgBoundary false — config_editor,
+	// ADR-078 decision 4). On its own it is an ordinary grant; next to
+	// OrphanGrant it is why the missing boundary is expected rather than
+	// drift to repair. One cause per field, as OrphanGrant and MissingTeam
+	// already are.
+	OffLadder bool `json:"off_ladder,omitempty"`
 	// MissingTeam marks a grant whose TEAM ROW is gone — a different drift,
 	// and kept a different field on purpose: one flag for two causes makes
 	// the console name the wrong one, which is worse than naming none.
@@ -195,6 +211,11 @@ func (s *Server) buildAdminUserDetail(ctx context.Context, u identity.User) (adm
 		if !m.JoinedAt.IsZero() {
 			v.JoinedAt = m.JoinedAt.Format(time.RFC3339)
 		}
+		// Whether the role is mirrored up to an org membership at all is a
+		// property of the ROLE, known whether or not the team row can be
+		// read — so it is answered here rather than beside OrphanGrant,
+		// which needs the team's org (ADR-078 decision 4).
+		v.OffLadder = !grantNeedsOrgBoundary(m.Role)
 		if t, ok := teamsByID[m.TeamID]; ok {
 			v.TeamName, v.TeamSlug, v.Personal = t.Name, t.Slug, t.Personal
 			v.Status = string(t.EffectiveStatus())
@@ -204,7 +225,13 @@ func (s *Server) buildAdminUserDetail(ctx context.Context, u identity.User) (adm
 				v.OrgStatus = string(o.EffectiveStatus())
 			}
 			// A personal team sits in a personal org whose membership row
-			// follows the same rule as any other, so no exemption here.
+			// follows the same rule as any other, so no exemption there —
+			// and the role is not an exemption either, only an explanation:
+			// a role outside the ladder mirrors up to no org membership
+			// (grantNeedsOrgBoundary, ADR-078), which OffLadder says in its
+			// own field. Folding it into OrphanGrant took the row off the
+			// page, and with it any grant its off-boarded holder had
+			// re-roled off the ladder.
 			v.OrphanGrant = t.OrgID != "" && !memberOfOrg[t.OrgID]
 		} else {
 			// A grant whose TEAM row is gone is the same defect seen from the

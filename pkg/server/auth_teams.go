@@ -302,9 +302,54 @@ func (s *Server) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
+	// A role change reads the grant and writes it back, so it WRITES a grant
+	// row like the placement does — an off-boarding that runs inside that
+	// window finds nothing to sweep and the write-back re-creates a grant
+	// with no org membership behind it. The team's org is what both guards
+	// read, which is why a role change loads the team.
+	t, err := s.authStore().GetTeam(r.Context(), teamID)
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	// Both guards read the boundary, which is skipped only when NEITHER the
+	// role being written nor the one the grant already carries is mirrored up
+	// to an org membership (grantNeedsOrgBoundary): the invitation path
+	// writes exactly that off-ladder grant with no org membership, so a
+	// re-role that both starts and stays off the ladder has nothing to
+	// confirm. Reading the role being written alone would let the holder of
+	// an orphan LADDER grant — who passes canManageTeam on that grant alone —
+	// re-role THEMSELVES off the ladder and keep it in one request. The same
+	// holder reaches that grant state in two — canManageTeam authorizes
+	// minting an invitation to their own address, and accepting it off the
+	// ladder writes no boundary — which is why `orphan_grant` reports the
+	// missing boundary itself rather than a verdict on the role
+	// (admin_users_routes.go). That pair of requests is capped by no role:
+	// the mint takes any (handleCreateInvitation) and pkg/auth mirrors an
+	// accepted admin/owner invitation up to an ORG ADMIN membership
+	// (grantOrgMembershipForTeam), so the same holder — like any team admin
+	// who is a plain org member — re-enters the org ABOVE their own standing.
+	// That door is the authorization question, measured by
+	// TestTeamInvitations_aTeamAdminMintsItselfUpToOrgAdmin, not something
+	// this guard closes. Climbing ONTO the ladder
+	// needs the boundary, and so does placing any grant on a non-member
+	// (handlePutTeamMember) — which is what keeps a team admin from pulling a
+	// stranger account in.
+	boundary := grantNeedsOrgBoundary(role) || grantNeedsOrgBoundary(mb.Role)
+	if boundary && !s.requireOrgMembershipForGrant(w, r, t.OrgID, memberID) {
+		return
+	}
 	mb.Role = role
 	if err := s.authStore().UpsertMembership(r.Context(), mb); err != nil {
+		// A write that reports an error may have LANDED: the compensation
+		// owes this path too, and answers before the write error does.
+		if boundary && !s.confirmOrgMembershipForGrant(w, r, t.OrgID, teamID, memberID, "role change", grantWriteFailed) {
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	if boundary && !s.confirmOrgMembershipForGrant(w, r, t.OrgID, teamID, memberID, "role change", grantWriteAcked) {
 		return
 	}
 	s.auditTenant(r, teamID, "member.role_changed", "member", memberID, map[string]any{"role": string(role)})

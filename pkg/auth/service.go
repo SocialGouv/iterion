@@ -435,9 +435,9 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 	return s.issueLogin(ctx, u, userAgent, ip)
 }
 
-// issueLogin is the shared post-authentication path used by Login
-// and AcceptInvitation. It picks the active team, mints tokens, and
-// records the refresh session.
+// issueLogin is the shared post-authentication path: every caller that has
+// just authenticated a user ends here. It picks the active team, mints
+// tokens, and records the refresh session.
 func (s *Service) issueLogin(ctx context.Context, u identity.User, userAgent, ip string) (LoginResult, error) {
 	return s.issueLoginInTeam(ctx, u, "", userAgent, ip)
 }
@@ -869,7 +869,7 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 	if !inv.ExpiresAt.IsZero() && s.now().After(inv.ExpiresAt) {
 		return LoginResult{}, identity.ErrInvitationExpired
 	}
-	if identity.NormalizeEmail(inv.Email) != email {
+	if !inv.AddressedTo(email) {
 		return LoginResult{}, ErrInvitationMismatch
 	}
 	hash, err := HashPassword(password)
@@ -889,6 +889,25 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 	if u, err = s.store.CreateUser(ctx, u); err != nil {
 		return LoginResult{}, err
 	}
+	// The invitation is CLAIMED before either access row: it is this
+	// accept's authority and the one write a concurrent off-boarding can
+	// refuse (claimInvitation).
+	if err := s.claimInvitation(ctx, inv, u.ID, now); err != nil {
+		return LoginResult{}, err
+	}
+	// The org membership the team grant is mirrored up to is written FIRST,
+	// as the SSO path does (grantMembership): the two writes share no
+	// transaction, and a grant left standing by a failure between them is
+	// live access to a team of an org the holder is not a member of — the
+	// orphan GET /api/admin/users/{id} reports and the server's own
+	// compensations exist to prevent. The other order leaves an org member
+	// with no team: org-scoped READ — the roster, the org's settings, its
+	// usage and its team and SSO-provider lists — and no team access, which
+	// is the lesser of the two states and why this order is the chosen one.
+	orgID, err := s.grantOrgMembershipForTeam(ctx, u.ID, inv.TeamID, inv.Role, now)
+	if err != nil {
+		return LoginResult{}, err
+	}
 	if err := s.store.UpsertMembership(ctx, identity.Membership{
 		UserID:    u.ID,
 		TeamID:    inv.TeamID,
@@ -898,12 +917,6 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 	}); err != nil {
 		return LoginResult{}, err
 	}
-	// Mirror the team grant up to an org membership so the user is a
-	// first-class member of the team's parent org.
-	orgID, err := s.grantOrgMembershipForTeam(ctx, u.ID, inv.TeamID, inv.Role, now)
-	if err != nil {
-		return LoginResult{}, err
-	}
 	patch := identity.UserPatch{DefaultTeamID: &inv.TeamID}
 	if orgID != "" {
 		patch.DefaultOrgID = &orgID
@@ -911,13 +924,39 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 	if u, err = s.store.PatchUser(ctx, u.ID, patch); err != nil {
 		return LoginResult{}, err
 	}
-	acceptedAt := now
-	inv.AcceptedAt = &acceptedAt
-	inv.AcceptedBy = u.ID
-	if err := s.store.UpdateInvitation(ctx, inv); err != nil {
-		return LoginResult{}, err
-	}
 	return s.issueLogin(ctx, u, userAgent, ip)
+}
+
+// claimInvitation marks inv accepted by userID and is the first ACCESS
+// write of both accept paths — registerWithInvitation creates the account
+// row before it, which is not access and cannot be refused by an
+// off-boarding. UpdateInvitation is conditional on the row in both stores —
+// ErrNotFound once it is gone — so a token whose invitation an org
+// off-boarding has already revoked (pkg/server revokeOrgTeamAccess) writes
+// no access at all. Claiming LAST instead let the two access writes of an
+// accept that had merely READ the row land behind the sweep that was
+// revoking it, walking a removed account back into the org and the team
+// under a 204, with the accept itself answering that it had failed.
+//
+// The order has a price, and it is the fail-closed one: a store error after
+// the claim burns the token, since the row IS the claim. The invitee asks
+// for another invitation, where claiming last answered a retryable error
+// and risked the access instead. On the registration path that price
+// includes the account row already written: the address is taken
+// (identity.ErrEmailAlreadyTaken), so the invitee recovers by logging in
+// with the password they just set and accepting a new invitation as an
+// existing user, not by registering again.
+func (s *Service) claimInvitation(ctx context.Context, inv identity.Invitation, userID string, at time.Time) error {
+	acceptedAt := at
+	inv.AcceptedAt = &acceptedAt
+	inv.AcceptedBy = userID
+	if err := s.store.UpdateInvitation(ctx, inv); err != nil {
+		if errors.Is(err, identity.ErrNotFound) {
+			return fmt.Errorf("%w: it was revoked while it was being accepted", ErrInvitationNotFound)
+		}
+		return err
+	}
+	return nil
 }
 
 // grantOrgMembershipForTeam ensures the user holds an org membership in
@@ -976,7 +1015,7 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 	if err != nil {
 		return identity.Membership{}, err
 	}
-	if identity.NormalizeEmail(inv.Email) != u.Email {
+	if !inv.AddressedTo(u.Email) {
 		return identity.Membership{}, ErrInvitationMismatch
 	}
 	now := s.now().UTC()
@@ -987,16 +1026,18 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 		InvitedBy: inv.InvitedBy,
 		JoinedAt:  now,
 	}
-	if err := s.store.UpsertMembership(ctx, mb); err != nil {
+	// The invitation is CLAIMED before either access row: it is this
+	// accept's authority and the one write a concurrent off-boarding can
+	// refuse (claimInvitation).
+	if err := s.claimInvitation(ctx, inv, u.ID, now); err != nil {
 		return identity.Membership{}, err
 	}
+	// The boundary before the grant, as registerWithInvitation and the SSO
+	// path (grantMembership) do.
 	if _, err := s.grantOrgMembershipForTeam(ctx, u.ID, inv.TeamID, inv.Role, now); err != nil {
 		return identity.Membership{}, err
 	}
-	acceptedAt := now
-	inv.AcceptedAt = &acceptedAt
-	inv.AcceptedBy = u.ID
-	if err := s.store.UpdateInvitation(ctx, inv); err != nil {
+	if err := s.store.UpsertMembership(ctx, mb); err != nil {
 		return identity.Membership{}, err
 	}
 	return mb, nil
