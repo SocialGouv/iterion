@@ -1173,7 +1173,7 @@ func TestProdWatch_SentryNotifyRendersOnlyItsOwnLink(t *testing.T) {
 		out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 			"alerts": []any{map[string]any{"fingerprint": "sentry:9", "kind": "sentry", "severity": "medium", "state": "new",
 				"title_key": "sentry_issue", "title_arg": "t", "detail_key": "sentry_detail_short", "fields": map[string]any{"level": "error", "short_id": short},
-				"evidence": map[string]any{"link": link, "short_id": short}, "count": 1, "first_seen": "2026-09-29T00:00:00+00:00"}},
+				"evidence": map[string]any{"link": link, "short_id": short}, "count": 1, "first_seen": pwAgo(48 * time.Hour)}},
 			"overflow_count": 0, "stale_sources": []any{}, "sinks": []any{map[string]any{"webhook": "w1", "channel": "", "min_severity": "low"}},
 			"labels": map[string]any{}, "app": map[string]any{"name": "demo"}, "sentry": map[string]any{"enabled": true, "link_prefix": prefix},
 			"release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000, "deliver_by": pwDeliverBy()}, nil, map[string]string{"webhooks": h.webhooksFile}))

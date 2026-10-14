@@ -1942,7 +1942,7 @@ func TestProdWatch_NotifyRendersAnyFieldName(t *testing.T) {
 	h := newPWHarness(t)
 	alerts := []map[string]any{{"fingerprint": "loki:t", "kind": "loki", "severity": "low", "state": "quiet", "title_key": "loki_template",
 		"title_arg": "ERROR x", "detail_key": "loki_detail", "fields": map[string]any{"key": "k", "label": "l", "count": 2, "first": "2026-09-23T10:00", "streams": "api"},
-		"evidence": map[string]any{}, "count": 2, "first_seen": "2026-09-23T10:00:00+00:00"}}
+		"evidence": map[string]any{}, "count": 2, "first_seen": pwAgo(8 * 24 * time.Hour)}}
 	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 		"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
 		"labels": map[string]any{"loki_template": "pattern", "loki_detail": "{count} line(s) since {first}, containers: {streams}"},
@@ -2756,7 +2756,7 @@ func TestProdWatch_NoSecretEscapesAnyOutput(t *testing.T) {
 		}
 	}
 	alert := []map[string]any{{"fingerprint": "probe:api", "kind": "probe", "severity": "critical", "state": "new", "title_key": "probe_down", "title_arg": "api",
-		"detail_key": "probe_detail", "fields": map[string]any{}, "evidence": map[string]any{}, "count": 1, "first_seen": "2026-09-23T10:00:00+00:00"}}
+		"detail_key": "probe_detail", "fields": map[string]any{}, "evidence": map[string]any{}, "count": 1, "first_seen": pwAgo(8 * 24 * time.Hour)}}
 	for _, hook := range []string{"hooks.example/CANARY", "/hook CANARY", "/hook\x01CANARY", "https://bob:CANARY@hooks.example.com/hooks/abc",
 		"https://hooks.example.com:CANARY/hooks/abc", "file://localhost/CANARY-hook"} {
 		h := newPWHarness(t)

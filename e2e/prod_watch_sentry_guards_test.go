@@ -164,7 +164,7 @@ func TestProdWatch_SentryScanResistsUnicodeDigitRuns(t *testing.T) {
 	run := strings.Repeat("١", 70)
 	title := run + " x " + run + " y " + run + " z " + run
 	raw := filepath.Join(h.scratch, "sentry_raw-redos.jsonl")
-	b, _ := json.Marshal(map[string]any{"id": "1", "short_id": "P-1", "title": title, "culprit": title, "meta_value": title, "last_seen": "2026-09-29T10:00:00+00:00"})
+	b, _ := json.Marshal(map[string]any{"id": "1", "short_id": "P-1", "title": title, "culprit": title, "meta_value": title, "last_seen": pwAgo(48 * time.Hour)})
 	if err := os.WriteFile(raw, append(b, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestProdWatch_SentryFloodCannotHoldTheCapAgainstAnotherLane(t *testing.T) {
 	var issues []any
 	for k := 0; k < 25; k++ {
 		issues = append(issues, map[string]any{"id": fmt.Sprint(2000 + k), "short_id": fmt.Sprint("P-", 2000+k), "level": "fatal", "status": "unresolved",
-			"in_new": true, "last_seen": "2026-09-29T10:00:00+00:00", "count": 1, "count_scope": "14d", "leaks": []any{}})
+			"in_new": true, "last_seen": pwAgo(48 * time.Hour), "count": 1, "count_scope": "14d", "leaks": []any{}})
 	}
 	signals := map[string]any{"templates": []any{map[string]any{"template_id": "t1", "template": "boom", "count": 60, "count_live": 60,
 		"first_ts": "1", "last_ts": "2", "first_ts_live": "1", "sample": "boom", "sample_live": "boom", "queries": []any{"errors"},
@@ -523,7 +523,7 @@ func TestProdWatch_SentrySecretScanResistsBacktracking(t *testing.T) {
 			t.Parallel()
 			h := newPWHarness(t)
 			raw := filepath.Join(h.scratch, "sentry_raw-kv.jsonl")
-			b, _ := json.Marshal(map[string]any{"id": "1", "short_id": "P-1", "title": "x", "culprit": text, "last_seen": "2026-09-29T10:00:00+00:00"})
+			b, _ := json.Marshal(map[string]any{"id": "1", "short_id": "P-1", "title": "x", "culprit": text, "last_seen": pwAgo(48 * time.Hour)})
 			if err := os.WriteFile(raw, append(b, '\n'), 0o600); err != nil {
 				t.Fatal(err)
 			}

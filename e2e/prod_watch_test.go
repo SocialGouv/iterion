@@ -997,7 +997,7 @@ func TestProdWatch_DeliverySemantics(t *testing.T) {
 		"coverage_partial": "log coverage this tick was PARTIAL: absence of a finding is not evidence"}
 	alerts := []map[string]any{{"fingerprint": "probe:api", "kind": "probe", "severity": "critical", "state": "new", "title_key": "probe_down",
 		"title_arg": "api", "detail_key": "probe_detail", "fields": map[string]any{"url": "u", "status": 503, "ms": 12, "expected": 200},
-		"evidence": map[string]any{}, "count": 1, "first_seen": "2026-09-23T10:00:00+00:00"}}
+		"evidence": map[string]any{}, "count": 1, "first_seen": pwAgo(8 * 24 * time.Hour)}}
 	run := func(sinks []map[string]any, dry bool) (map[string]any, string, error) {
 		return runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 			"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": sinks, "labels": labels,
@@ -3429,7 +3429,7 @@ func TestProdWatch_NotifyRendersUntrustedTextInert(t *testing.T) {
 	}
 	alerts := []map[string]any{{"fingerprint": "loki:t", "kind": "loki", "severity": "medium", "state": "new", "title_key": "loki_template",
 		"title_arg": hostile, "detail_key": "loki_detail", "fields": map[string]any{"count": 1, "first": "2026-09-23T10:00", "streams": "container=api **bold**"},
-		"evidence": map[string]any{"sample": hostile}, "count": 1, "first_seen": "2026-09-23T10:00:00+00:00"}}
+		"evidence": map[string]any{"sample": hostile}, "count": 1, "first_seen": pwAgo(8 * 24 * time.Hour)}}
 	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 		"alerts": alerts, "overflow_count": 0, "stale_sources": stale, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
 		"labels": labels, "app": map[string]any{"name": "demo"}, "release": "", "release_known": false, "dry_run": true, "max_message_chars": 14000, "deliver_by": pwDeliverBy()},
@@ -3479,7 +3479,7 @@ func TestProdWatch_NotifyCutsAMessageOnALineBoundary(t *testing.T) {
 	alerts := []map[string]any{{"fingerprint": "loki:t", "kind": "loki", "severity": "medium", "state": "new", "title_key": "loki_template",
 		"title_arg": "ERROR x", "detail_key": "loki_detail", "fields": map[string]any{"count": 2, "first": "2026-09-29T10:00",
 			"streams": "api @channel see www.evil-sso.com/login " + strings.Repeat("padding ", 20)},
-		"evidence": map[string]any{}, "count": 2, "first_seen": "2026-09-29T10:00:00+00:00"}}
+		"evidence": map[string]any{}, "count": 2, "first_seen": pwAgo(2 * 24 * time.Hour)}}
 	render := func(max int) string {
 		out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 			"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
@@ -3530,7 +3530,7 @@ func TestProdWatch_NotifyRendersTheReleaseInert(t *testing.T) {
 	h := newPWHarness(t)
 	alerts := []map[string]any{{"fingerprint": "probe:api", "kind": "probe", "severity": "critical", "state": "new", "title_key": "probe_down",
 		"detail_key": "probe_detail", "fields": map[string]any{"url": "u", "status": 503, "ms": 5, "expected": 200},
-		"evidence": map[string]any{}, "count": 1, "first_seen": "2026-09-29T10:00:00+00:00"}}
+		"evidence": map[string]any{}, "count": 1, "first_seen": pwAgo(2 * 24 * time.Hour)}}
 	out, stderr, err := runPyWhole(t, h.ws, pwSub(t, pwTool(t, wf, "notify").Script, map[string]any{
 		"alerts": alerts, "overflow_count": 0, "stale_sources": []any{}, "sinks": []map[string]any{{"webhook": "w1", "channel": "#a", "min_severity": "low"}},
 		"labels": map[string]any{"severity": "sév`érité", "release": `ver\sion\`}, "app": map[string]any{"name": "demo"},

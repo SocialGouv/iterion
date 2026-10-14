@@ -446,7 +446,7 @@ func pwOneMemberNote(kind, state, sev, status, name string) map[string]any {
 	return map[string]any{"fingerprint": fmt.Sprintf("folded:%s:%s:%s:%s:0", kind, state, sev, status), "kind": kind, "state": state,
 		"severity": sev, "title_key": title, "title_arg": "", "detail_key": "folded_detail",
 		"fields": map[string]any{"n": 1, "names": name, "more": 0}, "evidence": ev, "count": 1,
-		"first_seen": "2026-09-30T10:00:00+00:00", "prev_severity": "",
+		"first_seen": pwAgo(24 * time.Hour), "prev_severity": "",
 		"members": []any{map[string]any{"fp": kind + ":1", "severity": sev, "prev_severity": "", "transition_at": nil, "name": name, "count": 1}}}
 }
 
@@ -460,7 +460,7 @@ func pwHeldNote(names []string, more int) map[string]any {
 	return map[string]any{"fingerprint": "folded:loki:quiet:low::0", "kind": "loki", "state": "quiet", "severity": "low",
 		"title_key": "loki_template", "title_arg": "", "detail_key": "folded_detail_more",
 		"fields": map[string]any{"n": len(names), "names": strings.Join(names, ", "), "more": more}, "evidence": map[string]any{},
-		"count": len(names) * (len(names) + 1) / 2, "first_seen": "2026-09-28T10:00:00+00:00", "prev_severity": "", "members": members}
+		"count": len(names) * (len(names) + 1) / 2, "first_seen": pwAgo(72 * time.Hour), "prev_severity": "", "members": members}
 }
 
 // TestProdWatch_APartFitsInBothOfItsForms: the greedy sizes each part against

@@ -5,10 +5,21 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // lokiCapState: the state decide reads, with a generation already advanced by
 // n decides, so multi-tick chains are explicit.
+// pwAgo is an incident stamp d before now, in the ISO form the decide step
+// stores (second precision, a +00:00 offset). Fixtures date themselves from
+// the clock: an absolute date ages into retention — forget_after_days (14)
+// after last_seen the record is forgotten before any cap or note reads it —
+// and fixtures written for the end of September turned three witnesses red
+// fourteen days later.
+func pwAgo(d time.Duration) string {
+	return time.Now().UTC().Add(-d).Format("2006-01-02T15:04:05") + "+00:00"
+}
+
 func lokiCapState(incidents map[string]any, gen int) map[string]any {
 	st := pwLokiState(incidents)
 	st["generation"] = gen
@@ -193,11 +204,11 @@ func TestProdWatch_LokiCapCutsLegacyFirst(t *testing.T) {
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
 	legacyBacklog := map[string]any{"fp": "loki:zz", "kind": "loki", "sources": []any{"errors"}, "severity": "medium",
-		"title_key": "loki_template", "detail_key": "loki_detail", "first_seen": "2026-09-01T00:00:00+00:00",
-		"last_seen": "2026-09-30T00:00:00+00:00", "count": 1, "alerted": false}
+		"title_key": "loki_template", "detail_key": "loki_detail", "first_seen": pwAgo(30 * 24 * time.Hour),
+		"last_seen": pwAgo(24 * time.Hour), "count": 1, "alerted": false}
 	legacyAlerted := map[string]any{"fp": "loki:yy", "kind": "loki", "sources": []any{"errors"}, "severity": "medium",
-		"title_key": "loki_template", "detail_key": "loki_detail", "first_seen": "2026-09-01T00:00:00+00:00",
-		"last_seen": "2026-09-30T00:00:00+00:00", "count": 1, "alerted": true}
+		"title_key": "loki_template", "detail_key": "loki_detail", "first_seen": pwAgo(30 * 24 * time.Hour),
+		"last_seen": pwAgo(24 * time.Hour), "count": 1, "alerted": true}
 	out, _, err := pwDecide(t, wf, h, map[string]any{"templates": lokiMinted(0, 3), "leak": []any{}},
 		lokiCapState(map[string]any{"loki:zz": legacyBacklog, "loki:yy": legacyAlerted}, 1),
 		map[string]any{"loki": map[string]any{"max_records": 4}, "max_alerts_per_lane": 0})
@@ -230,8 +241,8 @@ func TestProdWatch_LokiCapOffNeverCutsAndLeavesOtherKindsAlone(t *testing.T) {
 	h := newPWHarness(t)
 	seeded := map[string]any{
 		"loki:keep-leak": map[string]any{"fp": "loki:keep-leak", "kind": "leak", "sources": []any{"errors"},
-			"severity": "high", "title_key": "leak", "detail_key": "leak_detail", "first_seen": "2026-09-30T00:00:00+00:00",
-			"last_seen": "2026-09-30T00:00:00+00:00", "count": 1, "alerted": false},
+			"severity": "high", "title_key": "leak", "detail_key": "leak_detail", "first_seen": pwAgo(24 * time.Hour),
+			"last_seen": pwAgo(24 * time.Hour), "count": 1, "alerted": false},
 	}
 	in := map[string]any{"loki": map[string]any{"max_records": 0}, "max_alerts_per_lane": 0}
 	out, _, err := pwDecide(t, wf, h, map[string]any{"templates": lokiMinted(0, 10), "leak": []any{}}, lokiCapState(seeded, 1), in)
@@ -270,8 +281,8 @@ func TestProdWatch_LokiCapBothLanesCutInOneTick(t *testing.T) {
 	seeded := map[string]any{}
 	for _, id := range []string{"70", "71", "72", "73"} {
 		seeded["sentry:"+id] = map[string]any{"fp": "sentry:" + id, "kind": "sentry", "sources": []any{"sentry"}, "severity": "medium",
-			"title_key": "sentry_issue", "detail_key": "sentry_detail_short", "first_seen": "2026-09-30T00:00:00+00:00",
-			"last_seen": "2026-09-30T00:00:00+00:00", "count": 1, "alerted": false, "status": "",
+			"title_key": "sentry_issue", "detail_key": "sentry_detail_short", "first_seen": pwAgo(24 * time.Hour),
+			"last_seen": pwAgo(24 * time.Hour), "count": 1, "alerted": false, "status": "",
 			"admitted_gen": 1, "tracked_read_gen": 2}
 	}
 	in := map[string]any{"loki": map[string]any{"max_records": 2}, "sentry": map[string]any{"max_records": 2, "read_protect_ticks": 3, "enabled": true,

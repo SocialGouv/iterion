@@ -190,7 +190,7 @@ func pwProbeAlerts(n int) []map[string]any {
 		alerts = append(alerts, map[string]any{"fingerprint": fmt.Sprint("probe:api", k), "kind": "probe", "severity": "critical", "state": "new",
 			"title_key": "probe_down", "title_arg": fmt.Sprint("api", k), "detail_key": "probe_detail",
 			"fields":   map[string]any{"url": "u", "status": 503, "ms": 5, "expected": 200},
-			"evidence": map[string]any{}, "count": 1, "first_seen": "2026-09-29T10:00:00+00:00"})
+			"evidence": map[string]any{}, "count": 1, "first_seen": pwAgo(48 * time.Hour)})
 	}
 	return alerts
 }
