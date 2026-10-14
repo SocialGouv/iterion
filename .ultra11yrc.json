@@ -1,0 +1,201 @@
+{
+  "standard": "rgaa",
+  "sample": {
+    "pages": [
+      {
+        "id": "home",
+        "name": "Accueil du studio (home)",
+        "url": "http://127.0.0.1:4899/studio/",
+        "sources": [
+          "studio/src/components/Home/HomeView.tsx"
+        ],
+        "notes": "page d'accueil et navigation principale (AppShell)"
+      },
+      {
+        "id": "runs",
+        "name": "Runs — liste",
+        "url": "http://127.0.0.1:4899/studio/runs",
+        "sources": [
+          "studio/src/components/Runs/RunsTabsView.tsx"
+        ],
+        "notes": "liste des runs (tableau, filtres)"
+      },
+      {
+        "id": "run-detail",
+        "name": "Run — détail d'un run seedé",
+        "url": "http://127.0.0.1:4899/studio/runs/demo-bot-e2e-fixed",
+        "sources": [
+          "studio/src/components/Runs/RunsTabsView.tsx"
+        ],
+        "notes": "page représentative : détail d'un run (onglets, journal, artefacts)"
+      },
+      {
+        "id": "runs-new",
+        "name": "Lancer un run (formulaire)",
+        "url": "http://127.0.0.1:4899/studio/runs/new",
+        "sources": [
+          "studio/src/components/Runs/LaunchView.tsx"
+        ],
+        "notes": "formulaire de lancement (gabarit formulaire)"
+      },
+      {
+        "id": "bots",
+        "name": "Bots — catalogue",
+        "url": "http://127.0.0.1:4899/studio/bots",
+        "sources": [
+          "studio/src/views/Bots/index.tsx"
+        ],
+        "notes": "catalogue des bots (recherche, cartes)"
+      },
+      {
+        "id": "bot-home",
+        "name": "Bot — fiche demo-bot",
+        "url": "http://127.0.0.1:4899/studio/bots/demo-bot",
+        "sources": [
+          "studio/src/views/Bots/BotHome/index.tsx"
+        ],
+        "notes": "fiche d'un bot"
+      },
+      {
+        "id": "bots-new",
+        "name": "Bot — création",
+        "url": "http://127.0.0.1:4899/studio/bots/new",
+        "sources": [
+          "studio/src/views/Bots/BotBuilder/index.tsx"
+        ],
+        "notes": "assistant de création (formulaire multi-étapes)"
+      },
+      {
+        "id": "editor",
+        "name": "Éditeur de bot",
+        "url": "http://127.0.0.1:4899/studio/editor?file=bots/demo-bot/main.bot",
+        "sources": [
+          "studio/src/components/Editor/EditorTabsView.tsx"
+        ],
+        "notes": "éditeur de fichier .bot (Monaco, onglets)"
+      },
+      {
+        "id": "board",
+        "name": "Board — cartes",
+        "url": "http://127.0.0.1:4899/studio/board",
+        "sources": [
+          "studio/src/views/Board/index.tsx"
+        ],
+        "notes": "tableau des cartes (kanban)"
+      },
+      {
+        "id": "board-labels",
+        "name": "Board — étiquettes",
+        "url": "http://127.0.0.1:4899/studio/board/labels",
+        "sources": [
+          "studio/src/views/Board/Labels.tsx"
+        ],
+        "notes": "gestion des étiquettes (tableau + formulaire)"
+      },
+      {
+        "id": "board-fields",
+        "name": "Board — champs",
+        "url": "http://127.0.0.1:4899/studio/board/fields",
+        "sources": [
+          "studio/src/views/Board/Fields.tsx"
+        ],
+        "notes": "gestion des champs (tableau + formulaire)"
+      },
+      {
+        "id": "pipelines",
+        "name": "Pipelines",
+        "url": "http://127.0.0.1:4899/studio/pipelines",
+        "sources": [
+          "studio/src/views/PipelineBoard/index.tsx"
+        ],
+        "notes": "tableau des pipelines"
+      },
+      {
+        "id": "dispatcher",
+        "name": "Dispatcher",
+        "url": "http://127.0.0.1:4899/studio/dispatcher",
+        "sources": [
+          "studio/src/views/Dispatcher/index.tsx"
+        ],
+        "notes": "état du dispatcher"
+      },
+      {
+        "id": "triggers",
+        "name": "Déclencheurs",
+        "url": "http://127.0.0.1:4899/studio/triggers",
+        "sources": [
+          "studio/src/views/Triggers/index.tsx"
+        ],
+        "notes": "liste des déclencheurs"
+      },
+      {
+        "id": "marketplace",
+        "name": "Marketplace",
+        "url": "http://127.0.0.1:4899/studio/marketplace",
+        "sources": [
+          "studio/src/views/Marketplace/index.tsx"
+        ],
+        "notes": "catalogue marketplace (recherche, résultats)"
+      },
+      {
+        "id": "plugins",
+        "name": "Plugins",
+        "url": "http://127.0.0.1:4899/studio/plugins",
+        "sources": [
+          "studio/src/views/Plugins.tsx"
+        ],
+        "notes": "liste des plugins"
+      },
+      {
+        "id": "secrets",
+        "name": "Secrets",
+        "url": "http://127.0.0.1:4899/studio/secrets",
+        "sources": [
+          "studio/src/views/Secrets.tsx"
+        ],
+        "notes": "gestion des secrets (tableau + formulaire)"
+      },
+      {
+        "id": "skills",
+        "name": "Skills",
+        "url": "http://127.0.0.1:4899/studio/skills",
+        "sources": [
+          "studio/src/views/Skills.tsx"
+        ],
+        "notes": "bibliothèque de skills"
+      },
+      {
+        "id": "insights",
+        "name": "Insights — analytique des runs",
+        "url": "http://127.0.0.1:4899/studio/insights",
+        "sources": [
+          "studio/src/views/RunsAnalytics/index.tsx"
+        ],
+        "notes": "graphiques et tableaux"
+      },
+      {
+        "id": "whats-next",
+        "name": "Whats next",
+        "url": "http://127.0.0.1:4899/studio/whats-next",
+        "sources": [
+          "studio/src/components/WhatsNext/WhatsNextView.tsx"
+        ],
+        "notes": "recommandations"
+      },
+      {
+        "id": "account",
+        "name": "Compte — paramètres",
+        "url": "http://127.0.0.1:4899/studio/account",
+        "sources": [
+          "studio/src/views/account/SettingsPage.tsx"
+        ],
+        "notes": "paramètres du compte (formulaires)"
+      }
+    ],
+    "transverse": [
+      "en-tête et navigation principale (AppShell, studio/src/components/shared/AppShell.tsx)",
+      "palette de commandes globale (studio/src/components/shared/GlobalCommandPalette.tsx)",
+      "notifications toast (studio/src/components/shared/Toast.tsx)"
+    ]
+  }
+}

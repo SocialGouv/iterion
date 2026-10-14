@@ -201,8 +201,15 @@ prompt adjudicate_system:
          and "C" is not its polite synonym — but a `manual` on a criterion
          the engine found no subject for leaves the report inconsistent:
          decide NA there.
-    5. Write every `justification` and finding `message` in FRENCH: they
-       are rendered verbatim in the French report and the board issues.
+       - `recommendations[]` (optional, on any verdict): a good practice no
+         test requires. Each is an object `{file, line, snippet, message}`
+         whose `file` and `line` are one of THIS item's own `evidence[]`
+         anchors, copied as for a citation. A recommendation that is not
+         such an object, or stands on no anchor of this item, is dropped
+         before the fold and counted in the annex.
+    5. Write every `justification`, finding `message` and recommendation
+       `message` in FRENCH: they are rendered verbatim in the French report
+       and the board issues.
 
   When `prior_issues` is not empty, this is a RE-ASK: the engine refused a
   previous verdict on each listed criterion for the stated reason. Fix the
@@ -338,9 +345,10 @@ prompt human_review_instructions:
 
   Verdicts d'agents appliqués : {{input.applied}} — refusés par le moteur :
   {{input.rejected}} — critères encore à évaluer après la contre-lecture :
-  {{input.undecided}} ({{input.undecided_ids}}) — conformités réfutées par
-  le second lecteur : {{input.refuted}} (contre-lecture non appliquée :
-  {{input.refute_degraded}}).
+  {{input.undecided}} ({{input.undecided_ids}}) — revendications réfutées
+  par le second lecteur : {{input.refuted}} (contre-lecture appliquée :
+  {{input.refute_applied}} ; dégradée — procès incomplet ou refusé en
+  partie par le moteur : {{input.refute_degraded}}).
 
   Répondez `approved` (true/false). Avec `undecidable_ids`, déclarez — parmi
   les critères encore à évaluer uniquement — ceux qu'aucun audit de ce
@@ -462,6 +470,8 @@ schema replay_output:
   stale: int
   obsolete: int
   missing: int
+  refused: int
+  recommendations_stripped: int
   audit_sha256: string
 
 schema worklist_input:
@@ -523,6 +533,7 @@ schema fragment_output:
   duplicate: int
   malformed: int
   missing: int
+  recommendations_dropped: int
 
 schema merge_input:
   run_dir: string
@@ -537,6 +548,7 @@ schema merge_output:
   failed_batches: json
   foreign_dropped: int
   citation_rejected: int
+  recommendations_dropped: int
 
 schema probe_input:
   run_dir: string
@@ -599,6 +611,7 @@ schema budget_gate_input:
 schema budget_gate_output:
   run_refuter: bool
   skipped: bool
+  applied_floor: bool
   degraded_floor: bool
   zero: int
   no_reopened: json
@@ -673,6 +686,7 @@ schema refute_apply_output:
   audit_sha256: string
 
 schema review_gate_input:
+  refute_applied: bool
   refute_degraded: bool
   refuted: int
   reopened: json
@@ -681,6 +695,7 @@ schema review_gate_input:
 schema review_gate_output:
   fail_incomplete: bool
   to_human: bool
+  refute_applied: bool
   refute_degraded: bool
   refuted: int
   undecided_ids: json
@@ -694,6 +709,7 @@ schema human_review_input:
   undecided: int
   undecided_ids: json
   refuted: int
+  refute_applied: bool
   refute_degraded: bool
 
 schema human_review_output:
@@ -961,7 +977,10 @@ tool prepare:
       // engine's fold without JSON, so it is dropped (and counted) here.
       const citation = (c) => { if (!isObj(c)) return null; const file = asText(c.file), line = asLine(c.line); if (!file || line === null) return null; const o = { file: file, line: line }; if (typeof c.snippet === "string") o.snippet = c.snippet; if (typeof c.selector === "string") o.selector = c.selector; return o; };
       const finding = (f) => { if (!isObj(f)) return null; const file = asText(f.file), line = asLine(f.line), ref = asText(f.normativeRef); if (!file || line === null || !ref || typeof f.message !== "string") return null; const o = { file: file, line: line, message: f.message, normativeRef: ref }; if (typeof f.snippet === "string") o.snippet = f.snippet; if (typeof f.selector === "string") o.selector = f.selector; return o; };
-      const api = { init, sha256, fingerprint, exists, readJSON, writeJSON, out, refuse, die, auditPath, statePath, commitAudit, checkAudit, once, record, engine, engineJSON, std, countDoc, rate, flagged, undecided, reportLines, sameCounts, layer, layers, listJSON, isObj, asText, asLine, citation, finding };
+      // A recommendation is anchored like a finding (the engine grounds it and
+      // renders it as an advisory) and carries no normative reference.
+      const recommendation = (r) => { if (!isObj(r)) return null; const file = asText(r.file), line = asLine(r.line); if (!file || line === null || typeof r.message !== "string" || !r.message.trim()) return null; const o = { file: file, line: line, message: r.message }; if (typeof r.snippet === "string") o.snippet = r.snippet; if (typeof r.selector === "string") o.selector = r.selector; return o; };
+      const api = { init, sha256, fingerprint, exists, readJSON, writeJSON, out, refuse, die, auditPath, statePath, commitAudit, checkAudit, once, record, engine, engineJSON, std, countDoc, rate, flagged, undecided, reportLines, sameCounts, layer, layers, listJSON, isObj, asText, asLine, citation, finding, recommendation };
       return api;
     }
     fs.writeFileSync(path.join(RUN, "bin", "lib.js"), "module.exports = (" + helpers.toString() + ")();\n");
@@ -1051,6 +1070,10 @@ tool static_audit:
     const r = L.engine(["audit"].concat({{input.audit_args}}, ["--out", RUN, "--json"], L.std({{input.standard}})), { cwd: WS, timeoutMs: 1800000 });
     if (r.code !== 0 && r.code !== 1) L.die("engine audit exit " + r.code + ": " + r.stderr.slice(-4000));
     if (!L.exists(L.auditPath())) L.die("the engine exited " + r.code + " but wrote no audit at " + L.auditPath() + ": " + r.stderr.slice(-2000));
+    // A fresh audit starts a fresh generation: the ledger copy an earlier
+    // fold of this run merged belongs to the audit this one replaced.
+    const ledgerCopy = path.join(RUN, "ledger", {{input.standard}} + ".json");
+    if (L.exists(ledgerCopy)) require("fs").unlinkSync(ledgerCopy);
     const doc = L.readJSON(L.auditPath());
     const core = doc.core || doc;
     const files = Number((core.scope && core.scope.files) || 0);
@@ -1132,7 +1155,11 @@ tool render:
         }
       }
       const check = L.engine(["sample", "check", "--standard", STD, "--json"], { cwd: WS, timeoutMs: 120000 });
-      const missing = (check.json && check.json.missing) ? check.json.missing.map((m) => m.id || m) : [];
+      // A refused lint (no sample block, unreadable rc) is the layer's failure, never an empty "missing" list.
+      // Under --json the engine prints an invalid block's issues on stdout, a
+      // missing block's refusal on stderr.
+      if (check.code !== 0 || !check.json) return degrade("sample check exit " + check.code + ": " + ((check.json && Array.isArray(check.json.issues) && check.json.issues.length) ? check.json.issues.map((i) => (i && i.path ? i.path + ": " : "") + (i && i.message)).join("; ") : (check.stderr || "").slice(-800)));
+      const missing = Array.isArray(check.json.missing) ? check.json.missing.map((m) => m.id || m) : [];
       const scan = L.engine(["scan", "--sample", "--runtime", "local", "--cwd", {{input.engine_pkg_dir}}, "--standard", STD, "--merge", L.auditPath(), "--out", RUN, "--json"], { cwd: WS, timeoutMs: 2700000 });
       if (scan.code !== 0 || !scan.json) return degrade("scan --sample exit " + scan.code + ": " + (scan.stderr || "").slice(-1500));
       sha = L.commitAudit();
@@ -1156,33 +1183,68 @@ tool render:
 ## typed refusal; an absent one is simply a first run.
 tool ledger_replay:
   script: |
-    const path = require("path");
+    const fs = require("fs"), path = require("path");
     const RUN = {{input.run_dir}};
     const L = require(path.join(RUN, "bin", "lib.js")).init(RUN);
     const STD = {{input.standard}};
     let sha = L.checkAudit();
     const prior = L.once("ledger_replay");
     if (prior) L.out(prior);
+    // `copy` is what the final fold merges into: written only from a replay
+    // the engine finished. The engine replays a separate input file, and
+    // writes its audit beside the real one, moved into place once it is whole.
     const copy = path.join(RUN, "ledger", STD + ".json");
-    const none = (reason) => { L.layer("ledger", { status: "absent", reason: reason }); L.out({ ok: true, fail_code: "", reason: reason, present: false, replayed: 0, stale: 0, obsolete: 0, missing: 0, audit_sha256: sha }); };
+    const input = path.join(RUN, "ledger", STD + ".replay-input.json");
+    const replayOut = path.join(RUN, "replay");
+    const none = (reason) => { L.layer("ledger", { status: "absent", reason: reason }); L.out({ ok: true, fail_code: "", reason: reason, present: false, replayed: 0, stale: 0, obsolete: 0, missing: 0, refused: 0, recommendations_stripped: 0, audit_sha256: sha }); };
     if (!{{input.ledger_present}}) none("no ledger at " + {{input.ledger_path}});
     let doc;
-    try { doc = L.readJSON({{input.ledger_path}}); } catch (e) { L.refuse("LEDGER_INVALID", "the ledger at " + {{input.ledger_path}} + " is not readable JSON: " + e.message, { present: true, replayed: 0, stale: 0, obsolete: 0, missing: 0, audit_sha256: sha }); }
+    try { doc = L.readJSON({{input.ledger_path}}); } catch (e) { L.refuse("LEDGER_INVALID", "the ledger at " + {{input.ledger_path}} + " is not readable JSON: " + e.message, { present: true, replayed: 0, stale: 0, obsolete: 0, missing: 0, refused: 0, recommendations_stripped: 0, audit_sha256: sha }); }
     const entries = Array.isArray(doc) ? doc : (doc && Array.isArray(doc.entries) ? doc.entries : null);
-    if (!entries) L.refuse("LEDGER_INVALID", "the ledger at " + {{input.ledger_path}} + " carries no entries[] array", { present: true, replayed: 0, stale: 0, obsolete: 0, missing: 0, audit_sha256: sha });
+    if (!entries) L.refuse("LEDGER_INVALID", "the ledger at " + {{input.ledger_path}} + " carries no entries[] array", { present: true, replayed: 0, stale: 0, obsolete: 0, missing: 0, refused: 0, recommendations_stripped: 0, audit_sha256: sha });
     if (entries.length === 0) none("the ledger at " + {{input.ledger_path}} + " is empty");
-    L.writeJSON(copy, doc);
-    const r = L.engine(["verify", "--apply", copy, "--in", L.auditPath(), "--out", RUN, "--json"].concat(L.std(STD)), { cwd: {{input.workspace_dir}} });
-    if (r.code === 2 || (r.code !== 0 && r.code !== 1)) L.refuse("LEDGER_INVALID", "the engine refused the ledger (exit " + r.code + "): " + (r.stderr || r.stdout).slice(-1500), { present: true, replayed: 0, stale: 0, obsolete: 0, missing: 0, audit_sha256: sha });
-    if (!r.json) L.die("verify --apply <ledger> printed no JSON (exit " + r.code + "): " + r.stderr.slice(-3000));
-    const stale = r.json.stale || [], obsolete = r.json.obsolete || [], missing = r.json.missing || [];
-    const dropped = new Set([].concat(stale, obsolete, missing).map(String));
+    // Every entry the engine writes is an object keyed by a string criterion
+    // id; anything else is not an entry it wrote, and is refused by name.
+    entries.forEach((e, i) => { if (!L.isObj(e) || typeof e.criteriaId !== "string") L.refuse("LEDGER_INVALID", "the ledger at " + {{input.ledger_path}} + " carries an entry #" + i + " that is not an object with a criteriaId", { present: true, replayed: 0, stale: 0, obsolete: 0, missing: 0, refused: 0, recommendations_stripped: 0, audit_sha256: sha }); });
+    // The engine re-grounds a stored recommendation at replay with no fallback:
+    // an advised element since edited — what a recommendation asks for — would
+    // refuse the whole replayed verdict. A recommendation is non-normative, so
+    // the replayed copy carries none (counted).
+    let recStripped = 0;
+    const replayable = entries.map((e) => { if (!L.isObj(e) || !Object.prototype.hasOwnProperty.call(e, "recommendations")) return e; const rec = e.recommendations; recStripped += Array.isArray(rec) ? rec.length : (rec === null || rec === undefined ? 0 : 1); const o = Object.assign({}, e); delete o.recommendations; return o; });
+    L.writeJSON(input, Array.isArray(doc) ? replayable : Object.assign({}, doc, { entries: replayable }));
+    const replayedDoc = path.join(replayOut, "audit-latest.json");
+    if (L.exists(replayedDoc)) fs.unlinkSync(replayedDoc);
+    const r = L.engine(["verify", "--apply", input, "--in", L.auditPath(), "--out", replayOut, "--json"].concat(L.std(STD)), { cwd: {{input.workspace_dir}} });
+    if (r.code === null) L.die("the engine was killed by a signal during the ledger replay (the audit is untouched): " + (r.stderr || "").trim().slice(-600));
+    if (r.code === 2 || (r.code !== 0 && r.code !== 1)) L.refuse("LEDGER_INVALID", "the engine refused the ledger (exit " + r.code + "): " + (r.stderr || r.stdout).slice(-1500), { present: true, replayed: 0, stale: 0, obsolete: 0, missing: 0, refused: 0, recommendations_stripped: 0, audit_sha256: sha });
+    // The replay reads stored fields with string methods and no shape check,
+    // so a value it cannot read (a hand edit, or one the engine wrote and
+    // cannot read back) kills it before it writes anything: that is the
+    // ledger's refusal, with the engine's own message — never a guess at which
+    // field shapes it would have read. A system error (EACCES, ENOSPC…) is the
+    // environment's, not the ledger's: it stays an untyped, resumable death.
+    const said = (r.stderr || "").trim().slice(-600);
+    if (!r.json && /^E[A-Z]+: /m.test(said)) L.die("the engine failed on its environment, not on the ledger (exit " + r.code + "): " + said);
+    if (!r.json) L.refuse("LEDGER_INVALID", "the engine could not replay the ledger at " + {{input.ledger_path}} + " (exit " + r.code + ", no JSON): " + (said || "no message"), { present: true, replayed: 0, stale: 0, obsolete: 0, missing: 0, refused: 0, recommendations_stripped: 0, audit_sha256: sha });
+    // Exit 1 (every fresh entry refused by the gate) nests the replay's own
+    // accounting under `replay`; exit 0 prints it at the top level.
+    const rp = L.isObj(r.json.replay) ? r.json.replay : r.json;
+    const stale = rp.stale || [], obsolete = rp.obsolete || [], missing = rp.missing || [];
+    // A fresh entry the engine's gate still refuses goes back to « à évaluer »
+    // like a stale one: named, and out of the copy.
+    const refused = (r.json.rejectedCriteria || []).map(String);
+    const dropped = new Set([].concat(stale, obsolete, missing, refused).map(String));
     // The copy the final fold merges into keeps only what replayed.
-    const kept = Object.assign({}, Array.isArray(doc) ? { kind: "verdict-ledger" } : doc, { entries: entries.filter((e) => !dropped.has(String(e.criteriaId))) });
+    const kept = Object.assign({}, Array.isArray(doc) ? { kind: "verdict-ledger" } : doc, { entries: replayable.filter((e) => !dropped.has(String(e.criteriaId))) });
+    // Exit 1 writes no audit; exit 0 wrote a whole one beside the real audit.
+    if (L.exists(replayedDoc)) fs.renameSync(replayedDoc, L.auditPath());
     L.writeJSON(copy, kept);
     sha = L.commitAudit();
-    L.layer("ledger", { status: "ok", path: {{input.ledger_path}}, replayed: Number(r.json.replayed || 0), stale: stale, obsolete: obsolete, missing: missing });
-    L.out(L.record("ledger_replay", { ok: true, fail_code: "", reason: "", present: true, replayed: Number(r.json.replayed || 0), stale: stale.length, obsolete: obsolete.length, missing: missing.length, audit_sha256: sha }));
+    const fresh = r.json.replayed !== undefined ? Number(r.json.replayed || 0) : (Array.isArray(rp.fresh) ? rp.fresh.length : 0);
+    const replayed = Math.max(0, fresh - refused.length);
+    L.layer("ledger", { status: refused.length ? "degraded" : "ok", path: {{input.ledger_path}}, replayed: replayed, stale: stale, obsolete: obsolete, missing: missing, refused: refused, recommendations_stripped: recStripped });
+    L.out(L.record("ledger_replay", { ok: true, fail_code: "", reason: "", present: true, replayed: replayed, stale: stale.length, obsolete: obsolete.length, missing: missing.length, refused: refused.length, recommendations_stripped: recStripped, audit_sha256: sha }));
   language: js
   input: replay_input
   output: replay_output
@@ -1261,7 +1323,7 @@ tool write_fragment:
     if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch (e) { raw = []; } }
     if (raw && !Array.isArray(raw) && Array.isArray(raw.verdicts)) raw = raw.verdicts;
     if (!Array.isArray(raw)) raw = [];
-    const byId = {}, count = {};
+    const byId = {}, count = {}, recDropped = {};
     let foreign = 0, malformed = 0;
     for (const v of raw) {
       if (!L.isObj(v)) { malformed++; continue; }
@@ -1272,15 +1334,23 @@ tool write_fragment:
       if (typeof v.reason === "string") o.reason = v.reason;
       if (Array.isArray(v.citations)) { o.citations = []; for (const c of v.citations) { const n = L.citation(c); if (n) o.citations.push(n); else malformed++; } }
       if (Array.isArray(v.findings)) { o.findings = []; for (const f of v.findings) { const n = L.finding(f); if (n) o.findings.push(n); else malformed++; } }
-      if (Array.isArray(v.recommendations)) o.recommendations = v.recommendations.filter((x) => typeof x === "string");
+      // The engine refuses the whole verdict over one recommendation that is
+      // not an anchored object, and offers to drop it instead: dropped here,
+      // counted per criterion.
+      recDropped[id] = 0;
+      if (Array.isArray(v.recommendations)) { o.recommendations = []; for (const r of v.recommendations) { const n = L.recommendation(r); if (n) o.recommendations.push(n); else recDropped[id]++; } }
+      else if (v.recommendations !== undefined && v.recommendations !== null) recDropped[id]++;
       byId[id] = o;
     }
     let duplicate = 0;
     const kept = [];
     for (const id of Object.keys(byId).sort()) { if (count[id] > 1) { duplicate++; continue; } kept.push(byId[id]); }
     const id = {{input.batch_id}};
-    L.writeJSON(path.join(RUN, "fragments", id + ".json"), { batch_id: id, round: {{input.round}}, verdicts: kept, foreign: foreign, duplicate: duplicate, malformed: malformed, duplicate_ids: Object.keys(count).filter((k) => count[k] > 1) });
-    L.out({ batch_id: id, written: kept.length, foreign: foreign, duplicate: duplicate, malformed: malformed, missing: allowed.size - kept.length });
+    const recDroppedKept = {};
+    for (const v of kept) recDroppedKept[v.criteriaId] = recDropped[v.criteriaId];
+    const recTotal = kept.reduce((n, v) => n + recDropped[v.criteriaId], 0);
+    L.writeJSON(path.join(RUN, "fragments", id + ".json"), { batch_id: id, round: {{input.round}}, verdicts: kept, foreign: foreign, duplicate: duplicate, malformed: malformed, duplicate_ids: Object.keys(count).filter((k) => count[k] > 1), recommendations_dropped: recDroppedKept });
+    L.out({ batch_id: id, written: kept.length, foreign: foreign, duplicate: duplicate, malformed: malformed, missing: allowed.size - kept.length, recommendations_dropped: recTotal });
   language: js
   input: fragment_input
   output: fragment_output
@@ -1293,7 +1363,9 @@ tool write_fragment:
 ## one of the anchors THIS criterion's evidence shows (the engine grounds a
 ## citation on the source file, which would accept a stray line), and a NA
 ## on a criterion the engine harvested evidence for must cite that evidence
-## (the contract says so; the fold accepts a bare NA).
+## (the contract says so; the fold accepts a bare NA). A recommendation is
+## non-normative: one that stands on no anchor of the criterion's evidence
+## is dropped and counted, never allowed to cost the verdict it rides on.
 tool merge_verdicts:
   script: |
     const path = require("path");
@@ -1307,30 +1379,48 @@ tool merge_verdicts:
     const have = new Set(fragments.map((f) => f.batch_id));
     const failed = planned.filter((b) => !have.has(b.id)).map((b) => b.id);
     const issues = L.exists(path.join(RUN, "issues.json")) ? L.readJSON(path.join(RUN, "issues.json")) : {};
-    const byId = {};
+    const byId = {}, recDropped = {};
     let foreignDropped = 0;
     for (const f of fragments) {
       foreignDropped += Number(f.foreign || 0) + Number(f.duplicate || 0) + Number(f.malformed || 0);
-      for (const v of f.verdicts || []) byId[v.criteriaId] = v;
+      for (const v of f.verdicts || []) { byId[v.criteriaId] = v; recDropped[v.criteriaId] = Number(L.isObj(f.recommendations_dropped) ? f.recommendations_dropped[v.criteriaId] || 0 : 0); }
       for (const id of f.duplicate_ids || []) if (f.round === round) issues[id] = "two verdicts were returned for this criterion in one batch — return exactly one";
     }
     let citationRejected = 0;
-    const evidenceOf = (id) => { const it = L.readJSON(path.join(wl.items_dir, id + ".json")); return (it.evidence || []).map((e) => String(e.file) + ":" + String(e.line)); };
+    const anchorKey = (a) => String(a.file) + ":" + String(a.line);
+    const evidenceOf = (id) => L.readJSON(path.join(wl.items_dir, id + ".json")).evidence || [];
     for (const id of Object.keys(byId)) {
       const v = byId[id];
-      const anchors = evidenceOf(id);
+      const evidence = evidenceOf(id);
+      const anchors = evidence.map(anchorKey);
       const cited = Array.isArray(v.citations) ? v.citations : [];
       const stray = cited.filter((c) => !anchors.includes(c.file + ":" + c.line));
       if (stray.length) { citationRejected++; issues[id] = "a " + v.verdict + " verdict cited an anchor outside this criterion's own evidence (" + stray.map((c) => c.file + ":" + c.line).join(", ") + ") — cite only the evidence shown"; delete byId[id]; continue; }
-      if (v.verdict === "NA" && anchors.length && cited.length === 0) { citationRejected++; issues[id] = "a NA verdict on a criterion the engine harvested evidence for must cite that evidence (out of scope, not cleared) — copy the evidence anchors into citations[]"; delete byId[id]; }
+      if (v.verdict === "NA" && anchors.length && cited.length === 0) { citationRejected++; issues[id] = "a NA verdict on a criterion the engine harvested evidence for must cite that evidence (out of scope, not cleared) — copy the evidence anchors into citations[]"; delete byId[id]; continue; }
+      // A kept recommendation takes the anchor's own snippet and selector,
+      // which the engine harvested at that line and so grounds by construction.
+      if (Array.isArray(v.recommendations)) {
+        const anchored = [];
+        for (const r of v.recommendations) {
+          const at = evidence.filter((e) => anchorKey(e) === anchorKey(r));
+          const a = at.find((e) => e.snippet === r.snippet) || at[0];
+          if (!a) { recDropped[id]++; continue; }
+          const o = { file: a.file, line: a.line, message: r.message };
+          if (typeof a.snippet === "string") o.snippet = a.snippet;
+          if (typeof a.selector === "string" && a.selector) o.selector = a.selector;
+          anchored.push(o);
+        }
+        v.recommendations = anchored;
+      }
     }
     const items = [];
-    for (const id of wl.ids) if (byId[id] && byId[id].verdict) items.push(byId[id]);
+    let recommendationsDropped = 0;
+    for (const id of wl.ids) if (byId[id] && byId[id].verdict) { items.push(byId[id]); recommendationsDropped += recDropped[id] || 0; }
     const adjudication = Object.assign({}, skeleton, { items: items });
     L.writeJSON(path.join(RUN, "adjudication.json"), adjudication);
     L.writeJSON(path.join(RUN, "issues.json"), issues);
-    L.layer("adjudication", { status: failed.length ? "degraded" : "ok", round: round, filled: items.length, unfilled: wl.ids.length - items.length, failed_batches: failed, foreign_dropped: foreignDropped, citation_rejected: citationRejected });
-    L.out({ ok: true, fail_code: "", reason: failed.length ? "batches without a fragment: " + failed.join(", ") : "", filled: items.length, unfilled: wl.ids.length - items.length, failed_batches: failed, foreign_dropped: foreignDropped, citation_rejected: citationRejected });
+    L.layer("adjudication", { status: failed.length ? "degraded" : "ok", round: round, filled: items.length, unfilled: wl.ids.length - items.length, failed_batches: failed, foreign_dropped: foreignDropped, citation_rejected: citationRejected, recommendations_dropped: recommendationsDropped });
+    L.out({ ok: true, fail_code: "", reason: failed.length ? "batches without a fragment: " + failed.join(", ") : "", filled: items.length, unfilled: wl.ids.length - items.length, failed_batches: failed, foreign_dropped: foreignDropped, citation_rejected: citationRejected, recommendations_dropped: recommendationsDropped });
   language: js
   input: merge_input
   output: merge_output
@@ -1518,9 +1608,13 @@ tool merge_refutations:
 
 ## Applies the trial — refuted conformities go back to « à évaluer » and
 ## leave the ledger, refuted agent findings are pruned, the engine's own
-## static findings are never touched — or reports the trial as degraded
-## when it is incomplete. Under require_complete, degraded is a refusal
-## (routed by review_gate).
+## static findings are never touched. An incomplete trial is not applied.
+## What the engine prunes is reported whether or not it accepts the whole
+## trial: with --prune it rewrites the audit and repairs the ledger whatever
+## its verdict on coverage and grounding, so a refusal there (a claim without
+## a verdict, a retained claim whose anchor does not ground) is named as the
+## degradation of an applied trial. Under require_complete, degraded is a
+## refusal (routed by review_gate).
 tool refute_apply:
   script: |
     const path = require("path");
@@ -1532,16 +1626,31 @@ tool refute_apply:
     if (prior) L.out(prior);
     const draft = L.readJSON(path.join(RUN, "draft", "draft.json"));
     const ledger = path.join(RUN, "ledger", STD + ".json");
-    const degraded = (reason, j) => { L.layer("refutation", { status: "degraded", reason: reason }); L.out(L.record("refute_apply", { ok: true, fail_code: "", reason: reason, applied: false, degraded: true, refuted: Number((j && j.refuted) || 0), unsupported: Number((j && j.unsupported) || 0), cleared: [], removed_findings: 0, reopened: [], skipped_engine: 0, audit_sha256: sha })); };
-    if (!{{input.complete}}) degraded("claims left without a verdict after the re-ask; the trial was not applied", null);
+    if (!{{input.complete}}) {
+      const reason = "claims left without a verdict after the re-ask; the trial was not applied";
+      L.layer("refutation", { status: "degraded", reason: reason, applied: false });
+      L.out(L.record("refute_apply", { ok: true, fail_code: "", reason: reason, applied: false, degraded: true, refuted: 0, unsupported: 0, cleared: [], removed_findings: 0, reopened: [], skipped_engine: 0, audit_sha256: sha }));
+    }
     const r = L.engine(["verify", "--apply", draft.todo_path, "--report", draft.draft_path, "--in", L.auditPath(), "--out", RUN, "--prune", "--json"].concat(L.exists(ledger) ? ["--ledger", ledger] : [], L.std(STD)), { cwd: {{input.workspace_dir}} });
     if (!r.json) L.die("verify --apply <trial> --prune printed no JSON (exit " + r.code + "): " + r.stderr.slice(-3000));
-    const j = r.json, pr = j.pruned || {};
-    if (!j.ok) degraded("the engine did not apply the trial: unadjudicated " + Number(j.unadjudicated || 0) + ", invalid " + Number(j.invalid || 0) + ", missing " + Number(j.missing || 0), j);
+    const j = r.json, g = L.isObj(j.grounding) ? j.grounding : {};
+    // The engine's own write is the next link of the chain, never an outside
+    // modification: it rewrites the audit whenever it could prune.
     sha = L.commitAudit();
+    const refusals = [];
+    if (!L.isObj(j.pruned)) refusals.push("the engine did not prune (" + (r.stderr || "").trim().slice(-800) + ")");
+    if (Number(j.unadjudicated || 0)) refusals.push(Number(j.unadjudicated) + " claim(s) without a verdict");
+    if (Number(j.invalid || 0)) refusals.push(Number(j.invalid) + " verdict(s) outside the trial vocabulary");
+    if (Number(j.missing || 0)) refusals.push(Number(j.missing) + " claim(s) of the report absent from the trial");
+    if (Number(g.failed || 0)) refusals.push(Number(g.failed) + " retained claim(s) whose anchor does not ground in the source: " + (Array.isArray(g.issues) ? g.issues.slice(0, 3).join(" | ") : ""));
+    if (!j.ok && !refusals.length) refusals.push("the engine reported the trial as refused without a cause this node knows (exit " + r.code + ")");
+    const pr = L.isObj(j.pruned) ? j.pruned : {};
+    const cleared = (pr.clearedConformities || []).map(String);
     const reopened = Array.from(new Set([].concat(pr.clearedConformities || [], pr.reopenedCriteria || []).map(String))).sort();
-    L.layer("refutation", { status: "ok", refuted: Number(j.refuted || 0), unsupported: Number(j.unsupported || 0), cleared: pr.clearedConformities || [], removed_findings: Number(pr.removedFindings || 0), reopened: reopened, skipped_engine: Number(pr.skippedEngine || 0) });
-    L.out(L.record("refute_apply", { ok: true, fail_code: "", reason: "", applied: true, degraded: false, refuted: Number(j.refuted || 0), unsupported: Number(j.unsupported || 0), cleared: pr.clearedConformities || [], removed_findings: Number(pr.removedFindings || 0), reopened: reopened, skipped_engine: Number(pr.skippedEngine || 0), audit_sha256: sha }));
+    const reason = refusals.length ? "the engine refused part of the trial: " + refusals.join("; ") : "";
+    const outcome = { applied: L.isObj(j.pruned), degraded: refusals.length > 0, refuted: Number(j.refuted || 0), unsupported: Number(j.unsupported || 0), cleared: cleared, removed_findings: Number(pr.removedFindings || 0), reopened: reopened, skipped_engine: Number(pr.skippedEngine || 0) };
+    L.layer("refutation", Object.assign({ status: refusals.length ? "degraded" : "ok", reason: reason, grounding_failed: Number(g.failed || 0) }, outcome));
+    L.out(L.record("refute_apply", Object.assign({ ok: true, fail_code: "", reason: reason }, outcome, { audit_sha256: sha })));
   language: js
   input: refute_apply_input
   output: refute_apply_output
@@ -1638,10 +1747,14 @@ tool final_report:
     a.push("|---|---|---|");
     a.push("| Analyse statique | " + st(layers.static) + " | " + (layers.static ? layers.static.files + " fichier(s), " + layers.static.findings + " constat(s) moteur, " + layers.static.residual + " critère(s) laissés au jugement" + (layers.static.reason ? " — " + layers.static.reason : "") : "") + " |");
     a.push("| Pages rendues | " + st(layers.rendered) + " | " + (layers.rendered ? (layers.rendered.reason || (layers.rendered.pages_recorded + " page(s) capturée(s), " + layers.rendered.pages_refused + " refusée(s)" + (layers.rendered.missing_kinds && layers.rendered.missing_kinds.length ? " ; types de page manquants : " + layers.rendered.missing_kinds.join(", ") : ""))) : "couche désactivée, ou pas de navigateur / d'échantillon de pages") + " |");
-    a.push("| Registre de verdicts | " + st(layers.ledger) + " | " + (layers.ledger ? (layers.ledger.reason || (layers.ledger.replayed + " verdict(s) rejoués ; périmés : " + fmt(layers.ledger.stale) + " ; obsolètes : " + fmt(layers.ledger.obsolete))) : "") + " |");
-    a.push("| Adjudication par agents | " + st(layers.adjudication) + " | " + (layers.adjudication ? layers.adjudication.filled + " verdict(s) reçus, " + layers.adjudication.unfilled + " sans réponse, lots perdus : " + fmt(layers.adjudication.failed_batches) + ", verdicts écartés (hors lot, doublons, malformés) : " + layers.adjudication.foreign_dropped + ", citations renvoyées : " + layers.adjudication.citation_rejected : "") + " |");
+    a.push("| Registre de verdicts | " + st(layers.ledger) + " | " + (layers.ledger ? (layers.ledger.reason || (layers.ledger.replayed + " verdict(s) rejoués ; périmés : " + fmt(layers.ledger.stale) + " ; obsolètes : " + fmt(layers.ledger.obsolete) + " ; refusés par le gate moteur : " + fmt(layers.ledger.refused || []) + " ; recommandations non rejouées (non normatives) : " + Number(layers.ledger.recommendations_stripped || 0))) : "") + " |");
+    a.push("| Adjudication par agents | " + st(layers.adjudication) + " | " + (layers.adjudication ? layers.adjudication.filled + " verdict(s) reçus, " + layers.adjudication.unfilled + " sans réponse, lots perdus : " + fmt(layers.adjudication.failed_batches) + ", verdicts écartés (hors lot, doublons, malformés) : " + layers.adjudication.foreign_dropped + ", citations renvoyées : " + layers.adjudication.citation_rejected + ", recommandations écartées (pas un objet ancré avec un message, ou hors de l'évidence du critère) : " + Number(layers.adjudication.recommendations_dropped || 0) : "") + " |");
     a.push("| Pliage (gate moteur) | " + st(layers.fold) + " | " + (layers.fold ? layers.fold.applied + " verdict(s) acceptés, refusés : " + fmt(layers.fold.rejected) + ", encore à évaluer : " + fmt(layers.fold.still_open) : "") + " |");
-    a.push("| Contre-lecture | " + st(layers.refutation) + " | " + (layers.refutation ? (layers.refutation.reason || (layers.refutation.refuted + " réfutée(s), " + layers.refutation.unsupported + " non tranchée(s), conformités retirées : " + fmt(layers.refutation.cleared) + ", constats moteur non touchés : " + layers.refutation.skipped_engine)) : "non lancée (désactivée ou budget)") + " |");
+    // A layer counts as an applied trial when it says so, or — written before
+    // the field existed — when it is an ok layer, which that node wrote only
+    // for a trial the engine accepted.
+    const trialCounted = !!layers.refutation && (layers.refutation.applied === true || (layers.refutation.applied === undefined && layers.refutation.status === "ok"));
+    a.push("| Contre-lecture | " + st(layers.refutation) + " | " + (layers.refutation ? (!trialCounted ? (layers.refutation.reason || "procès non appliqué (raison non consignée)") : (layers.refutation.refuted + " réfutée(s), " + layers.refutation.unsupported + " non tranchée(s), conformités retirées : " + fmt(layers.refutation.cleared) + ", constats moteur non touchés : " + layers.refutation.skipped_engine + (layers.refutation.reason ? " — procès appliqué, refus partiel du moteur : " + layers.refutation.reason : ""))) : "non lancée (désactivée, budget, ou aucune revendication à contre-lire)") + " |");
     a.push("| Revue humaine | " + st(layers.human) + " | " + (layers.human ? "indécidables déclarés : " + fmt(layers.human.undecidable) + (layers.human.notes ? " — " + layers.human.notes : "") : "") + " |");
     a.push("| Intégrité du rapport | " + (Object.keys(degraded).length ? "dégradée" : "ok") + " | " + (Object.keys(degraded).length ? Object.values(degraded).join(" ; ") : "la ligne « Décidés » et le taux correspondent au document ; `check --report` accepte le rapport") + " |");
     a.push("");
@@ -1657,7 +1770,15 @@ tool final_report:
     fs.writeFileSync(annexPath, a.join("\n") + "\n");
     const ledger = path.join(RUN, "ledger", STD + ".json");
     let ledgerOut = "";
-    if (L.exists(ledger)) { ledgerOut = path.join(OUT, "ledger", STD + ".json"); L.writeJSON(ledgerOut, L.readJSON(ledger)); }
+    // The delivered ledger is the one a project commits: an anchor inside this
+    // run's workspace is written relative to it, and a page capture from any
+    // run's workspace by the engine's own rule (from its last
+    // `.ultra11y/pages/`, as the replay canonicalises it) — never as the
+    // absolute path of a run's worktree.
+    const roots = Array.from(new Set([WS, fs.realpathSync(WS)])).map((r) => r.replace(/\/+$/, "") + "/");
+    const relFile = (f) => { const posix = f.replace(/\\/g, "/"); const cap = posix.lastIndexOf(".ultra11y/pages/"); if (cap >= 0) return posix.slice(cap); const root = roots.find((r) => f.startsWith(r)); return root ? f.slice(root.length) : f; };
+    const relativise = (v) => { if (Array.isArray(v)) return v.map(relativise); if (!L.isObj(v)) return v; const o = {}; for (const k of Object.keys(v)) o[k] = k === "file" && typeof v[k] === "string" ? relFile(v[k]) : relativise(v[k]); return o; };
+    if (L.exists(ledger)) { ledgerOut = path.join(OUT, "ledger", STD + ".json"); L.writeJSON(ledgerOut, relativise(L.readJSON(ledger))); }
     const reportDir = {{input.report_dir}};
     if (reportDir) {
       fs.mkdirSync(reportDir, { recursive: true });
@@ -1750,6 +1871,7 @@ compute budget_gate:
   expr:
     run_refuter: "input.refute_enabled && input.claims > 0 && (run.max_cost_usd == 0 || run.cost_usd <= run.max_cost_usd * input.share)"
     skipped: "!(input.refute_enabled && input.claims > 0 && (run.max_cost_usd == 0 || run.cost_usd <= run.max_cost_usd * input.share))"
+    applied_floor: "false"
     degraded_floor: "false"
     zero: "0"
     no_reopened: "[]"
@@ -1762,6 +1884,7 @@ compute review_gate:
   expr:
     fail_incomplete: "vars.require_complete && input.refute_degraded"
     to_human: "vars.human_review && !(vars.require_complete && input.refute_degraded)"
+    refute_applied: "input.refute_applied"
     refute_degraded: "input.refute_degraded"
     refuted: "input.refuted"
     undecided_ids: "concat(input.open_ids, input.reopened)"
@@ -1816,9 +1939,9 @@ fail adjudication_incomplete:
   message: "{{outputs.fold_final.reason}}"
 
 fail refute_incomplete:
-  description: "the second reader left claims without a verdict, with require_complete"
+  description: "the refutation trial is degraded (claims without a verdict, or a part the engine refused), with require_complete"
   code: REFUTE_INCOMPLETE
-  message: "the refutation trial was not applied ({{outputs.refute_apply.reason}}) and require_complete is set"
+  message: "the refutation trial is degraded ({{outputs.refute_apply.reason}}) and require_complete is set"
 
 fail human_rejected:
   description: "the operator refused the audit at the human gate"
@@ -2029,6 +2152,7 @@ workflow rgaa_audit:
   }
 
   budget_gate -> review_gate else with {
+    refute_applied: "{{outputs.budget_gate.applied_floor}}",
     refute_degraded: "{{outputs.budget_gate.degraded_floor}}",
     refuted: "{{outputs.budget_gate.zero}}",
     reopened: "{{outputs.budget_gate.no_reopened}}",
@@ -2074,6 +2198,7 @@ workflow rgaa_audit:
   }
 
   refute_apply -> review_gate when ok with {
+    refute_applied: "{{outputs.refute_apply.applied}}",
     refute_degraded: "{{outputs.refute_apply.degraded}}",
     refuted: "{{outputs.refute_apply.refuted}}",
     reopened: "{{outputs.refute_apply.reopened}}",
@@ -2088,12 +2213,13 @@ workflow rgaa_audit:
 
   review_gate -> human_review when to_human with {
     draft_path: "{{outputs.draft_report.draft_path}}",
-    summary: "adjudication: applied={{outputs.fold_final.applied}} rejected={{outputs.fold_final.rejected}} open after the fold={{outputs.fold_final.still_open}}; trial: refuted={{outputs.review_gate.refuted}} not applied={{outputs.review_gate.refute_degraded}}",
+    summary: "adjudication: applied={{outputs.fold_final.applied}} rejected={{outputs.fold_final.rejected}} open after the fold={{outputs.fold_final.still_open}}; trial: applied={{outputs.review_gate.refute_applied}} degraded={{outputs.review_gate.refute_degraded}} refuted={{outputs.review_gate.refuted}}",
     applied: "{{outputs.fold_final.applied}}",
     rejected: "{{outputs.fold_final.rejected}}",
     undecided: "{{outputs.review_gate.undecided}}",
     undecided_ids: "{{outputs.review_gate.undecided_ids}}",
     refuted: "{{outputs.review_gate.refuted}}",
+    refute_applied: "{{outputs.review_gate.refute_applied}}",
     refute_degraded: "{{outputs.review_gate.refute_degraded}}",
   }
 

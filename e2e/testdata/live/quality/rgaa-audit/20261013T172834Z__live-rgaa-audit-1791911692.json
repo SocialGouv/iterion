@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "kind": "bot",
+  "name": "rgaa-audit",
+  "persona": "Acci",
+  "run_id": "live-rgaa-audit-1791911692",
+  "at": "2026-10-13T17:28:34.514098937Z",
+  "iterion_sha": "0210afac6",
+  "task": "Adjudicate the RGAA criteria a static pass cannot decide on a small site with planted defects, then put the draft report on trial; the engine found and gated the rest (board disabled, no browser).",
+  "metrics": {
+    "cost_usd": 11.2552728,
+    "tokens": 155632,
+    "duration_ms": 433641,
+    "iterations": 92,
+    "model_calls": 33,
+    "retries": 0
+  },
+  "aggregate": {
+    "verdicts": [
+      {
+        "model": "openai/gpt-5.5",
+        "family": "openai",
+        "same_family_as_bot": false,
+        "scores": {
+          "completeness": 0.63,
+          "efficacy": 0.66,
+          "output_quality": 0.72,
+          "overall": 0.62,
+          "reliability": 0.74,
+          "restraint": 0.78,
+          "value_for_money": 0.34
+        },
+        "narrative": "The run produced a plausible RGAA audit pipeline result: 99 manual criteria were adjudicated, 90 were applied, the draft report was refuted, and deliverable issue bodies were generated with concrete file/line occurrences and normative references. However the final report explicitly remains incomplete/provisional with 9 undecided criteria, which materially limits the stated goal of adjudicating the static-pass residuals. The delivered issues are useful and grounded for several planted defects such as missing iframe title, unnamed link, unlabeled form controls, missing button name, image alt, and table/header problems, but only 4 blocking issues plus truncated major content are visible from an audit that had 19 NC claims and 34 report claims, so the final artifact evidence is partial. Output quality is generally good: reports include RGAA criteria, tests, reproduction command, remediation advice, and acceptance criteria, though some text is generic or awkward such as “Address the reported non-conformity” and an empty element selector for the image issue. Restraint is acceptable because the work stayed on the audit/reporting task and did not appear to mutate the site, but the process is heavy for a small site. Reliability is decent with no retries or failed batches and clean node completion, but the remaining manual/open criteria and provisional final report prevent a high score. Value for money is weak: $11.25, 155k tokens, 92 iterations, and 33 model calls is expensive for a small static site audit that still ended incomplete.",
+        "relative_narrative": "No previous assessment was provided, so there is no baseline for comparison.",
+        "confidence": 0.82
+      },
+      {
+        "model": "anthropic/claude-sonnet-4-6",
+        "family": "anthropic",
+        "same_family_as_bot": true,
+        "scores": {
+          "completeness": 0.72,
+          "efficacy": 0.78,
+          "output_quality": 0.5,
+          "overall": 0.68,
+          "reliability": 0.8,
+          "restraint": 0.88,
+          "value_for_money": 0.66
+        },
+        "narrative": "The core task was substantially accomplished: all 15 NC findings are traceable to specific file:line defects in the fixture HTML, the adjudication gate correctly forced a reask for 14 citation-less verdicts and accepted all 99 after round 2, and the 9 manually-deferred criteria have sound technical justifications (runtime-determined image src, CSS-dependent contrast, rendered DOM criterion). Arithmetic is self-consistent throughout. However, a systemic template defect leaves all 11 agent-adjudicated NC remediation fields as the raw English stub 'Address the reported non-conformity.' — only the 4 engine-found NCs have real French prescriptions — making 73% of NC guidance unusable as delivered. The 65 NA entries all carry identical boilerplate despite the intro's promise of per-criterion scope statements. Four tool errors in the refutation pass are silently absorbed and disappear from the deliverable. The ledger's per-criterion justifications are detailed and well-reasoned (the 1.1 reasoning about the logo vs Widget prop image is genuinely careful), but these live in a machine-readable artefact rather than the human-facing report where the placeholder defect is most visible. At $11.25 for 99 adjudicated criteria in 7 minutes the throughput is good, but rework is needed on 11 of 15 NC entries before the report is fit for a developer audience.",
+        "relative_narrative": "No previous assessment to compare against.",
+        "confidence": 0.86
+      }
+    ],
+    "mean_scores": {
+      "completeness": 0.675,
+      "efficacy": 0.72,
+      "output_quality": 0.61,
+      "overall": 0.65,
+      "reliability": 0.77,
+      "restraint": 0.8300000000000001,
+      "value_for_money": 0.5
+    },
+    "disagreement": {
+      "completeness": 0.08999999999999997,
+      "efficacy": 0.12,
+      "output_quality": 0.21999999999999997,
+      "overall": 0.06000000000000005,
+      "reliability": 0.06000000000000005,
+      "restraint": 0.09999999999999998,
+      "value_for_money": 0.32
+    }
+  },
+  "evidence_digest": "## static_audit\nmap[_duration_ms:231 audit_path:<scratch>/rgaa-audit/live-rgaa-audit-1791911692/audit-latest.json audit_sha256:65661e1a412354a97d1b1d96aa4ad90ed00afb284ba9f1c6947b262e444630c5 auto_pct:43 fail_code: files:3 findings:7 ok:true reason: residual:99 truncated:false]\n\n## worklist\nmap[_duration_ms:316 audit_sha256:65661e1a412354a97d1b1d96aa4ad90ed00afb284ba9f1c6947b262e444630c5 briefs_dir:<scratch>/rgaa-audit/live-rgaa-audit-1791911692/adjudicate contract:map[manualReasons:[needs-rendered-dom undecidable] requires:map[C:a non-empty justification AND citations[] naming the harvested evidence it cleared (each anchor resolvable and drawn from this criterion's own evidence, and about the same kind of element the harvest recorded there — copy the evidence's own `snippet` rather than retyping the element); a criterion with no harvested evidence cannot be C at all NA:a non-empty justification, and citations[] whenever evidence was presented — a criterion whose subject exists NOW\n…[truncated]…"
+}

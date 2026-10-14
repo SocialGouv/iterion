@@ -36,7 +36,7 @@ The bundles under `bots/`, then the skills they carry.
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.1.6 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.9.14 |
-| `rgaa-audit` | ♿ Acci | RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y engine. | 3.0.0 |
+| `rgaa-audit` | ♿ Acci | RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y engine. | 3.0.1 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 0.1.5 |
 | `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 0.1.10 |
 | `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 0.3.4 |

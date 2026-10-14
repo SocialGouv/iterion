@@ -57,21 +57,29 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   `serve_command` if given; `rendered=required` makes its absence a
   resumable `RENDER_UNAVAILABLE`.
 - `ledger_replay` replays the committed ledger through the engine, which
-  re-grounds every entry; the stale ones go back to the agents.
+  re-grounds every entry; the stale ones, and those its gate refuses (named),
+  go back to the agents. Stored recommendations are not replayed: they are
+  non-normative, and one whose element has since been edited would refuse
+  the verdict it rides on. A ledger the engine cannot read is
+  `LEDGER_INVALID`, with the engine's own message.
 - `worklist` → `plan_batches` → `dispatch` (fan-out per batch) →
   `adjudicate` (read-only agent) → `write_fragment` (item-keyed) →
   `merge_verdicts` (one writer, later rounds win per criterion, citations
-  checked against the shown evidence) → `fold_probe` (the fold on a copy,
-  refusals named and re-asked once) → `fold_final` (the real audit folded
-  exactly once, ledger merged).
+  checked against the shown evidence, recommendations kept only on the
+  criterion's own anchors — the others dropped and counted) →
+  `fold_probe` (the fold on a copy, refusals named and re-asked once) →
+  `fold_final` (the real audit folded exactly once, ledger merged).
 - `draft_report` renders the draft and the trial worklist; `budget_gate`
   skips the second reader, visibly, past `refuter_budget_share` of the cost
   cap; `refute_apply` applies a complete trial with `--prune` (the engine's
-  own findings are never pruned) or reports it as degraded.
+  own findings are never pruned) and reports what it pruned; an incomplete
+  trial is not applied, and the part of an applied one the engine refuses
+  (a retained claim whose anchor does not ground) is named as a degradation.
 - `final_report` renders the report, cross-checks its « Décidés » line and
   RGAA rate against the document, runs the engine's integrity and
   completeness checks, writes the coverage annex, and copies everything to
-  `report_dir` when set.
+  `report_dir` when set — the ledger with workspace-relative anchors, ready
+  to commit.
 - `deliver` builds the issue plan from the engine's own tickets (one per
   criterion, severity-sorted, capped); `publish` files it when
   `post_to_board` is true; `publish_verify` holds the judge's own report to
@@ -88,7 +96,8 @@ Every refusal the bot makes is a typed `fail` node (`ENGINE_UNRESOLVED`,
 `LEDGER_INVALID`, `AUDIT_INTEGRITY`, `ADJUDICATION_INCOMPLETE`,
 `REFUTE_INCOMPLETE`, `HUMAN_REJECTED`, `REPORT_INTEGRITY_FAILED`,
 `GRID_INCOMPLETE`, `BOARD_PUBLISH_INCOMPLETE`); an engine crash stays an
-untyped, resumable error.
+untyped, resumable error — except on a committed ledger the engine cannot
+replay, which is `LEDGER_INVALID` with the engine's own message.
 
 ## Variables that matter
 
@@ -117,6 +126,12 @@ Models and efforts are env dials: `ITERION_RGAA_MODEL_ADJUDICATE`,
 iterion run bots/rgaa-audit --var scope_globs='src/**' --var rendered=off \
   --var report_dir="$PWD/audits" --max-cost-usd 30
 ```
+
+A local run audits the worktree iterion creates from `HEAD`: commit
+`.ultra11yrc.json` and the ledger before launching, or the run does not see
+them. Budget about 2 $ per batch of at most 8 criteria with the default
+models, and pass `--loop-budget-guard off` when you resume a run that hit
+its cap, or the re-ask is declined.
 
 `iterion validate --exec --strict --fixtures bots/testdata/rgaa-audit-dryrun-fixtures.json bots/rgaa-audit/main.bot`
 walks the whole graph without a model, a shell or a workspace.

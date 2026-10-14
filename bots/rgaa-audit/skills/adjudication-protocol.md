@@ -45,7 +45,7 @@ honest C from a lazy one. You can.
 Equally: never invent a non-conformity. An NC you cannot anchor on a real
 file and line, under a real test, is refused — and if it were not, it would
 send someone to fix nothing. A good practice no test requires is not an NC;
-it goes in `recommendations`.
+it goes in `recommendations[]`, anchored like a citation (below).
 
 ## Three cases you will meet
 
@@ -65,6 +65,17 @@ copy its `file`, `line` and `snippet` from the evidence file. The bot checks
 that every citation is among those anchors and sends the verdict back
 otherwise, before the engine ever sees it.
 
+## Recommendations
+
+A recommendation is a good practice no test requires: it never changes the
+verdict, and the report renders it as an advisory. Each one is an object
+`{"file", "line", "snippet", "message"}` whose `file` and `line` are one of
+THIS criterion's evidence anchors, copied exactly as for a citation, with
+the `message` in French. The engine refuses the whole verdict over a single
+free-text recommendation, so the bot drops any recommendation that is not
+such an object or stands on no anchor of the criterion, and counts it in the
+annex: a dropped recommendation costs nothing but itself.
+
 ## The re-ask
 
 When `prior_issues` names your criterion, the engine (or the bot) refused
@@ -79,7 +90,7 @@ refused twice stays « à évaluer » and is named in the annex.
 {
   "batch_id": "r0-b03",
   "verdicts": [
-    {"criteriaId": "6.1", "verdict": "C", "justification": "…", "citations": [{"file": "index.html", "line": 12, "snippet": "<a href=\"/contact\">Nous contacter</a>"}]},
+    {"criteriaId": "6.1", "verdict": "C", "justification": "…", "citations": [{"file": "index.html", "line": 12, "snippet": "<a href=\"/contact\">Nous contacter</a>"}], "recommendations": [{"file": "index.html", "line": 12, "snippet": "<a href=\"/contact\">Nous contacter</a>", "message": "…"}]},
     {"criteriaId": "6.2", "verdict": "NC", "justification": "…", "findings": [{"file": "index.html", "line": 10, "message": "…", "normativeRef": "6.2"}]},
     {"criteriaId": "4.1", "verdict": "NA", "justification": "…"},
     {"criteriaId": "10.7", "verdict": "manual", "reason": "needs-rendered-dom", "justification": "…"}
