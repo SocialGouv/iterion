@@ -53,7 +53,7 @@ func relayHostStore(t *testing.T, runID string, observers ...func(store.Event)) 
 // whatever the runner-side relay reported as a failed write.
 func runRelay(t *testing.T, b *ClawBackend, task delegate.Task, fire func(EventHooks)) []error {
 	t.Helper()
-	handler := b.multiplexerHandler(context.Background(), task)
+	handler := b.multiplexerHandler(context.Background(), task, sessionSeed{})
 	if handler.OnEvent == nil {
 		t.Fatal("the launcher's multiplexer handler has no OnEvent: every event envelope the runner emits is dropped")
 	}
@@ -99,7 +99,7 @@ func eventsOfType(evts []*store.Event, typ store.EventType) []*store.Event {
 // sandboxed claw node left none of these on the host.
 func TestSandboxRelay_StepEventsCrossTheWireIntoTheHostStore(t *testing.T) {
 	b, load := relayHost(t, "run-relay")
-	handler := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan_review", Model: "openai/gpt-5.6-sol"})
+	handler := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan_review", Model: "openai/gpt-5.6-sol"}, sessionSeed{})
 	if handler.OnEvent == nil {
 		t.Fatal("the launcher's multiplexer handler has no OnEvent: every event envelope the runner emits is dropped")
 	}
@@ -226,7 +226,7 @@ func TestApplyRelayedEvent_UnknownIsDroppedMalformedIsAnError(t *testing.T) {
 func TestSandboxRelay_HostWarnsOnAnUndecodableRelayedEvent(t *testing.T) {
 	var logBuf strings.Builder
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}, WithClawLogger(iterlog.New(iterlog.LevelWarn, &logBuf)))
-	handler := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan_review"})
+	handler := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan_review"}, sessionSeed{})
 	handler.OnEvent(string(store.EventLLMRequest), map[string]any{"model": 42})
 	if !strings.Contains(logBuf.String(), "plan_review") || !strings.Contains(logBuf.String(), "llm_request") {
 		t.Fatalf("no warning naming the node and event type, log: %q", logBuf.String())

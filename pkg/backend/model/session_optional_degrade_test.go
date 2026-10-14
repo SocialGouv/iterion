@@ -119,8 +119,8 @@ func TestOptionalSessionAuthFailureDoesNotDegrade(t *testing.T) {
 
 // TestOptionalSessionDegradeEvictsNodeSession: dropping task.SessionID
 // only makes the retry fresh for a backend that keys continuity on the
-// id. A claw node's conversation lives in the (runID, nodeID) session
-// store and is replayed regardless — including the FAILED attempt's
+// id. A claw node's conversation lives in the per-(runID, session key)
+// session store and is replayed regardless — including the FAILED attempt's
 // messages — so the degrade must evict it, exactly as the route-change
 // path does, or the "FRESH session" it logs is not fresh at all.
 func TestOptionalSessionDegradeEvictsNodeSession(t *testing.T) {
@@ -288,14 +288,14 @@ func TestOptionalSessionDegradeKeepsSpendOnCancel(t *testing.T) {
 
 // TestOptionalSessionDegradeSkipsBackendsThatIgnoreTheID: claw never
 // mentions Task.SessionID (its conversation lives in the host's
-// (runID, nodeID) store and is replayed independently), and the generic
-// CLI-agent path behind kimi/grok only ever REPORTS an id. On those,
-// dropping the id produces a byte-identical call — so the degrade would
-// be a whole wasted agentic turn AND would evict the node's accumulated
-// conversation for a failure the session had no part in. Under the
-// shipped `sandbox: auto` that is not a corner case: a sandboxed claw
-// failure flattens to a string at the IPC boundary and classifies
-// UNCLASSIFIED, so every one of them would qualify.
+// per-(runID, session key) store and is replayed independently), and the
+// generic CLI-agent path behind kimi/grok only ever REPORTS an id. On
+// those, dropping the id produces a byte-identical call — so the degrade
+// would be a whole wasted agentic turn AND would evict the node's
+// accumulated conversation for a failure the session had no part in.
+// Under the shipped `sandbox: auto` that is not a corner case: a
+// sandboxed claw failure flattens to a string at the IPC boundary and
+// classifies UNCLASSIFIED, so every one of them would qualify.
 func TestOptionalSessionDegradeSkipsBackendsThatIgnoreTheID(t *testing.T) {
 	for _, backendName := range []string{delegate.BackendClaw, delegate.BackendKimi, delegate.BackendGrok} {
 		t.Run(backendName, func(t *testing.T) {

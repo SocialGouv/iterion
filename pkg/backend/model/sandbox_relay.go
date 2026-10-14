@@ -562,6 +562,102 @@ func ApplyRelayedEvent(h EventHooks, nodeID, eventType string, payload map[strin
 	return false, nil
 }
 
+// SessionMirrorGapEvent is the event type a sandboxed runner relays when the
+// host's copy of the crossing's conversation cannot be kept current: a
+// snapshot the channel's line budget refuses, a write the channel refuses, a
+// replay the runner cannot decode. The runner's stderr carries the same gap
+// for the container's own log, which is the container's to keep; relayed as
+// an event, the gap reaches the operator's log whatever the crossing's
+// outcome — and the gap that costs is the one on a crossing that ANSWERS,
+// since the host's copy is what CompactAndRetry shrinks and what the next
+// crossing on that session key replays.
+//
+// It is not one of the node's metered events: the launcher's own handler
+// consumes it (see [ClawBackend.multiplexerHandler]) and [ApplyRelayedEvent]
+// never sees it.
+const SessionMirrorGapEvent = "session_mirror_gap"
+
+// The gap's reasons. The payload carries one of them and a size, never the
+// far side's own words: the operator-facing sentence is composed on the host
+// from those two, so no in-container text lands in the operator's log
+// unscreened.
+const (
+	// MirrorGapSnapshotRefused: no compaction brought the snapshot under the
+	// channel's line budget, so nothing was written and the host's copy
+	// stays at its last in-budget snapshot.
+	MirrorGapSnapshotRefused = "snapshot_over_budget"
+	// MirrorGapWriteRefused: the channel refused the write itself.
+	MirrorGapWriteRefused = "write_refused"
+	// MirrorGapReplayUndecodable: the seed the launcher sent did not decode
+	// in the container, so the crossing runs without the conversation the
+	// host believes it has.
+	MirrorGapReplayUndecodable = "replay_undecodable"
+)
+
+// relayedMirrorGap is the wire form of a [SessionMirrorGapEvent] payload.
+type relayedMirrorGap struct {
+	Reason string `json:"reason"`
+	Bytes  int    `json:"bytes"`
+}
+
+// NewSessionMirrorGapEvent builds the envelope a sandboxed runner writes for
+// one mirroring gap: reason is one of the MirrorGap* constants, bytes the
+// size of the snapshot or replay the gap is about.
+//
+// Exported for the claw runner sub-binary in `cmd/iterion`, the only producer
+// of this event — the host is its only consumer.
+func NewSessionMirrorGapEvent(reason string, bytes int) (delegate.Envelope, error) {
+	return delegate.NewEventEnvelope(SessionMirrorGapEvent, map[string]any{
+		"reason": reason,
+		"bytes":  bytes,
+	})
+}
+
+// sessionMirrorGapSentence is the operator's account of a relayed gap,
+// composed on this side from the reason and the size. A reason this host has
+// no sentence for is still reported as a gap, and still without the far
+// side's text: a newer runner naming a kind this binary does not know has
+// left the host's copy behind all the same.
+func sessionMirrorGapSentence(payload map[string]any) string {
+	var gap relayedMirrorGap
+	if err := decodeRelayed(payload, &gap); err != nil {
+		return "the runner reported a mirroring gap whose payload does not decode into (reason, bytes) — the gap is real, its size unknown"
+	}
+	switch gap.Reason {
+	case MirrorGapSnapshotRefused:
+		return fmt.Sprintf("a %d-byte snapshot of the conversation stays over the channel's line budget once compacted, so this copy is now behind what the container holds", gap.Bytes)
+	case MirrorGapWriteRefused:
+		return fmt.Sprintf("the channel refused a %d-byte snapshot, so this copy is now behind what the container holds", gap.Bytes)
+	case MirrorGapReplayUndecodable:
+		return fmt.Sprintf("the %d-byte replay this host seeded did not decode in the container, so the crossing answers without the conversation this copy holds", gap.Bytes)
+	default:
+		return fmt.Sprintf("the runner reported a mirroring gap of a kind this host has no sentence for, over %d bytes — the container's stderr carries its own account", gap.Bytes)
+	}
+}
+
+// gapStrandsTheCrossing answers the one question the host's mirror asks of a
+// relayed gap: did this crossing run with LESS of the session than the host
+// holds? Only the two snapshot reasons say the opposite — the container holds
+// MORE than this copy, so a later capture of the same crossing is a
+// continuation the mirror must take. Everything else is read as a crossing
+// left without the session's history, a reason a newer runner names and a
+// payload that does not decode included: a mirror held for one crossing
+// costs that crossing's turns, while mirroring a crossing that holds none of
+// the session REPLACES what the session accumulated (measured: 40 000
+// messages for one). A new reason therefore chooses its side HERE.
+func gapStrandsTheCrossing(payload map[string]any) bool {
+	var gap relayedMirrorGap
+	if err := decodeRelayed(payload, &gap); err != nil {
+		return true
+	}
+	switch gap.Reason {
+	case MirrorGapSnapshotRefused, MirrorGapWriteRefused:
+		return false
+	default:
+		return true
+	}
+}
+
 // decodeRelayed reads a relayed payload map back into its typed wire form.
 func decodeRelayed(payload map[string]any, into any) error {
 	raw, err := json.Marshal(payload)

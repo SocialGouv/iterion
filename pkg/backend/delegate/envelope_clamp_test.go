@@ -237,6 +237,50 @@ func TestEnvelopeWriter_RefusesAnOversizeLineAtTheSource(t *testing.T) {
 	}
 }
 
+// A producer that can act before it writes — the launcher sizes the task
+// envelope before it spawns a runner — asks the writer's own rule, so it
+// refuses exactly what the writer would refuse, with the same words.
+func TestCheckEnvelopeLine_IsTheWritersOwnRule(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		env     Envelope
+		refused bool
+	}{
+		{
+			name: "a line the channel carries",
+			env:  NewSessionReplayEnvelope(json.RawMessage(`[]`)),
+		},
+		{
+			name:    "a line over the cap",
+			env:     Envelope{Type: EnvelopeTask, Data: json.RawMessage(`"` + strings.Repeat("z", 5*1024*1024) + `"`)},
+			refused: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sink strings.Builder
+			checkErr := CheckEnvelopeLine(tc.env)
+			writeErr := NewEnvelopeWriter(&sink).Write(tc.env)
+			if (checkErr != nil) != tc.refused {
+				t.Fatalf("the pre-flight says refused=%v, want %v: %v", checkErr != nil, tc.refused, checkErr)
+			}
+			if (checkErr == nil) != (writeErr == nil) {
+				t.Fatalf("the pre-flight and the writer disagree: check=%v write=%v", checkErr, writeErr)
+			}
+			if checkErr != nil {
+				if checkErr.Error() != writeErr.Error() {
+					t.Errorf("two spellings of one rule: check=%q write=%q", checkErr, writeErr)
+				}
+				if !errors.Is(checkErr, ErrEnvelopeLineTooLong) {
+					t.Errorf("the pre-flight refusal is untyped: %v", checkErr)
+				}
+				if sink.Len() != 0 {
+					t.Errorf("the writer emitted %d bytes of a line it refused", sink.Len())
+				}
+			}
+		})
+	}
+}
+
 func lastBytes(s string, n int) string {
 	if len(s) <= n {
 		return s

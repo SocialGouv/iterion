@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -18,14 +19,24 @@ import (
 // terminal IOResult the runner emitted.
 func driveClawRunner(t *testing.T, preTask []delegate.Envelope, task delegate.IOTask) delegate.IOResult {
 	t.Helper()
+	res, _, _ := driveClawRunnerCollecting(t, preTask, task)
+	return res
+}
+
+// driveClawRunnerCollecting is [driveClawRunner] with the rest of what the
+// runner said: the envelopes it emitted before its terminal result — its
+// relayed events among them — and its stderr, the container's own log.
+func driveClawRunnerCollecting(t *testing.T, preTask []delegate.Envelope, task delegate.IOTask) (delegate.IOResult, []delegate.Envelope, string) {
+	t.Helper()
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
+	var stderrBuf bytes.Buffer
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = runClawRunner(context.Background(), stdinR, stdoutW, io.Discard)
+		_ = runClawRunner(context.Background(), stdinR, stdoutW, &stderrBuf)
 		_ = stdoutW.Close()
 	}()
 
@@ -43,11 +54,17 @@ func driveClawRunner(t *testing.T, preTask []delegate.Envelope, task delegate.IO
 		_ = writer.Write(taskEnv)
 	}()
 
-	// Read envelopes until the terminal result (the runner may emit
-	// intermediate event envelopes first).
-	resultCh := make(chan delegate.IOResult, 1)
+	// Read envelopes until the terminal result, keeping what came before it
+	// (the runner may emit event envelopes first). Every append precedes the
+	// send that hands them over, so the receiving side reads them settled.
+	type outcome struct {
+		res    delegate.IOResult
+		before []delegate.Envelope
+	}
+	resultCh := make(chan outcome, 1)
 	go func() {
 		reader := delegate.NewEnvelopeReader(stdoutR)
+		var before []delegate.Envelope
 		for {
 			env, err := reader.Read()
 			if err != nil {
@@ -57,23 +74,24 @@ func driveClawRunner(t *testing.T, preTask []delegate.Envelope, task delegate.IO
 			if env.Type == delegate.EnvelopeResult {
 				var res delegate.IOResult
 				_ = json.Unmarshal(env.Data, &res)
-				resultCh <- res
+				resultCh <- outcome{res: res, before: before}
 				return
 			}
+			before = append(before, env)
 		}
 	}()
 
 	select {
-	case res, ok := <-resultCh:
+	case got, ok := <-resultCh:
 		if !ok {
 			t.Fatal("runner closed stdout without a result envelope")
 		}
 		_ = stdinW.Close()
 		wg.Wait()
-		return res
+		return got.res, got.before, stderrBuf.String()
 	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for the runner's result envelope")
-		return delegate.IOResult{}
+		return delegate.IOResult{}, nil, stderrBuf.String()
 	}
 }
 

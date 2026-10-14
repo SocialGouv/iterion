@@ -850,10 +850,11 @@ func (e *Engine) templateContext(ctx context.Context, rs *runState, sc resolveSc
 
 // execContext is templateContext plus the ctx run/node IDENTITY, which is
 // a key, not a value: every consumer of it addresses per-run-per-node state
-// — the compaction session store (`sessionKey(runID, nodeID)`), the
-// operator-chat inbox, the ADR-081 async-question binder. That key is
-// unique only where a node id executes once per run, i.e. on the trunk
-// (and on the resume/router paths, which are the trunk re-entered).
+// — the compaction session store (`sessionKey(runID, session key)`, the
+// node's explicit `session_slot:` when it declares one), the operator-chat
+// inbox, the ADR-081 async-question binder. That key is unique only where
+// the node's session key is reached once per run, i.e. on the trunk (and on
+// the resume/router paths, which are the trunk re-entered).
 //
 // It is NOT unique inside a fan-out: `fan_out_each` replays ONE node id
 // per item. Handing the identity to a branch would make N items share one
