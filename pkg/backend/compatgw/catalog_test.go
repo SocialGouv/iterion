@@ -147,3 +147,76 @@ func TestEstimateUSD_TheGatewayBranchPricesFromTheCatalog(t *testing.T) {
 		t.Errorf("EstimateUSD on a prefixed id = %v, want 3 (the full wire id priced)", got)
 	}
 }
+
+// A gateway that names its models provider-first (LiteLLM's
+// `scaleway/glm-5.2`) resolves under OPENAI_COMPATIBLE_CATALOG_PROVIDER=scaleway
+// exactly like the bare `glm-5.2` does: the `q/<id>` key misses, the id as-is
+// is the key. Only the CONFIGURED qualifier is recognised — another provider's
+// prefix stays part of the id — and a table that really holds the doubled key
+// still wins, `q/<id>` being tried first.
+func TestResolveCatalog_AnIdAlreadyCarryingTheQualifierResolves(t *testing.T) {
+	ResetCatalogCaches()
+	get := mapGet(map[string]string{CatalogProviderEnv: "scaleway"})
+	live := modelspecs.NewSeeded(map[string]modelspecs.Spec{
+		"scaleway/glm-5.2": {ContextWindow: 1234, InputCostPerM: 1, OutputCostPerM: 2},
+	})
+	if res := ResolveCatalog("scaleway/glm-5.2", live, get); res.Source != SourceCatalogLive || res.Spec.ContextWindow != 1234 {
+		t.Fatalf("provider-first id resolved %+v, want the live scaleway/glm-5.2 record", res)
+	}
+	if res := ResolveCatalog("Scaleway/GLM-5.2", live, get); res.Source != SourceCatalogLive || res.Spec.ContextWindow != 1234 {
+		t.Fatalf("case-folded provider-first id resolved %+v, want the live record", res)
+	}
+	if res := ResolveCatalog("scaleway/gpt-oss-120b", nil, get); res.Source != SourceCatalogSnapshot || res.Spec.ContextWindow == 0 {
+		t.Fatalf("provider-first id resolved %+v, want the snapshot record", res)
+	}
+	// Another provider's prefix is not the qualifier: it stays in the id and
+	// the lookup misses (the bare-id test above proves the snapshot holds
+	// gpt-oss-120b under scaleway, so only the prefix keeps it unknown).
+	if res := ResolveCatalog("openai/gpt-oss-120b", live, get); res.Known() {
+		t.Fatalf("a foreign provider's prefix was stripped: %+v", res)
+	}
+	// One occurrence is stripped, never every one.
+	if res := ResolveCatalog("scaleway/scaleway/glm-5.2", live, get); res.Known() {
+		t.Fatalf("a doubled prefix was stripped twice: %+v", res)
+	}
+	// The qualifier and the id are read like every lookup here reads them:
+	// lower-cased, trimmed at the ends.
+	loud := mapGet(map[string]string{CatalogProviderEnv: " Scaleway "})
+	if res := ResolveCatalog("  scaleway/glm-5.2 ", live, loud); res.Source != SourceCatalogLive || res.Spec.ContextWindow != 1234 {
+		t.Fatalf("a loud qualifier or a padded id did not resolve: %+v", res)
+	}
+	// Exact stays exact: a remainder the lookups would have to trim is no
+	// id (the lookups trim their arguments, which must not turn
+	// `scaleway/ glm-5.2` into glm-5.2's record).
+	for _, id := range []string{"scaleway/ glm-5.2", "scaleway/\tglm-5.2", "scaleway/glm-5.2 \n"} {
+		if res := ResolveCatalog(id, live, get); id != "scaleway/glm-5.2 \n" && res.Known() {
+			t.Fatalf("inner whitespace resolved %q: %+v", id, res)
+		}
+	}
+	if res := ResolveCatalog("scaleway/glm-5.2 \n", live, get); !res.Known() {
+		t.Fatalf("trailing whitespace is trimmed at the ends like everywhere: %+v", res)
+	}
+	// `q/<id>` is tried FIRST: a table that holds the doubled key answers
+	// with it, not with the stripped one.
+	doubled := modelspecs.NewSeeded(map[string]modelspecs.Spec{
+		"scaleway/scaleway/glm-5.2": {ContextWindow: 42, InputCostPerM: 1, OutputCostPerM: 2},
+		"scaleway/glm-5.2":          {ContextWindow: 1234, InputCostPerM: 1, OutputCostPerM: 2},
+	})
+	if res := ResolveCatalog("scaleway/glm-5.2", doubled, get); res.Source != SourceCatalogLive || res.Spec.ContextWindow != 42 {
+		t.Fatalf("the doubled key did not win: %+v", res)
+	}
+	// Across tables the live table keeps its precedence (ADR-122 §1.2): a
+	// live table holding only the stripped key answers before a snapshot
+	// holding `q/<id>`. nvidia self-namespaces its ids in models.dev, so the
+	// snapshot holds `nvidia/nvidia/<id>` and not `nvidia/<id>`.
+	nv := mapGet(map[string]string{CatalogProviderEnv: "nvidia"})
+	if res := ResolveCatalog("nvidia/nemotron-3-super-120b-a12b", nil, nv); res.Source != SourceCatalogSnapshot {
+		t.Fatalf("the snapshot's self-namespaced nvidia key did not answer: %+v", res)
+	}
+	stripped := modelspecs.NewSeeded(map[string]modelspecs.Spec{
+		"nvidia/nemotron-3-super-120b-a12b": {ContextWindow: 7, InputCostPerM: 1, OutputCostPerM: 2},
+	})
+	if res := ResolveCatalog("nvidia/nemotron-3-super-120b-a12b", stripped, nv); res.Source != SourceCatalogLive || res.Spec.ContextWindow != 7 {
+		t.Fatalf("the live table's stripped key must answer before the snapshot's q/<id>: %+v", res)
+	}
+}

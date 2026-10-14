@@ -1220,10 +1220,16 @@ never merged across sources, and an answer carries its provenance:
    declared 0/0 means unpriced, not free.
 2. `OPENAI_COMPATIBLE_CATALOG_PROVIDER=<q>` — the exact key `q/<id>` in the
    models.dev table (the live table when loaded, else the embedded
-   snapshot). The gateway serves BARE ids, and `<q>` is the upstream
-   provider key those ids live under in models.dev (`scaleway`, in the
-   measured deployment). Exact means exact after lower-casing — no
-   bare-id, suffix, vendor or cross-provider-consensus fallback exists.
+   snapshot). `<q>` is the upstream provider key the gateway's ids live
+   under in models.dev (`scaleway`, in the measured deployment). The
+   gateway serves bare ids (`glm-5.2`) or provider-first ids
+   (`scaleway/glm-5.2`, LiteLLM's naming): an id already carrying `<q>` as
+   its first segment is also looked up as-is — within each table `q/<id>`
+   first, and the live table (both keys) before the snapshot. Exact means
+   exact after lower-casing — no other prefix, suffix, vendor or
+   cross-provider-consensus fallback exists. The operator table above stays
+   exact too: key it by the id the gateway serves (`scaleway/glm-5.2`), or
+   its entry is passed over for the catalog's.
 3. Otherwise unknown, said out loud: the node's `_gateway_spec` records
    `"source":"unknown"`, the estimator prices nothing, and compaction keeps
    the unknown-model floor.
