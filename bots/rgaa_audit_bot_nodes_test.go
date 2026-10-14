@@ -1293,6 +1293,128 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 		}
 	})
 
+	t.Run("the_trial_takes_its_conformities_from_the_audit_the_engine_applies_it_against", func(t *testing.T) {
+		// The engine re-derives the trial's coverage from the audit when it
+		// applies it. A trial drafted from the ledger copy — whose anchors are
+		// written another way (here absolute; on a replaying run, relative or
+		// another run's worktree), and which may lack a conformity the report
+		// states — leaves claims "absent from the trial", or off it unseen.
+		absolute := func(t *testing.T, ledgerPath string, drop bool) (int, string) {
+			t.Helper()
+			var ledger map[string]any
+			rgaaReadJSON(t, ledgerPath, &ledger)
+			moved, dropped := 0, ""
+			var kept []any
+			for _, e := range ledger["entries"].([]any) {
+				m := e.(map[string]any)
+				cites, _ := m["citations"].([]any)
+				if drop && dropped == "" && m["verdict"] == "C" && len(cites) > 0 {
+					dropped = fmt.Sprint(m["criteriaId"])
+					continue
+				}
+				for _, c := range cites {
+					cm := c.(map[string]any)
+					if f := fmt.Sprint(cm["file"]); !filepath.IsAbs(f) {
+						cm["file"] = filepath.Join(site, f)
+						moved++
+					}
+				}
+				kept = append(kept, m)
+			}
+			ledger["entries"] = kept
+			rgaaWriteJSON(t, ledgerPath, ledger)
+			return moved, dropped
+		}
+		// r4's own shape first: a copy complete by criterion, anchors written
+		// another way. Every claim supported, the trial must stand whole.
+		whole := rgaaRunCopy(t, run)
+		if moved, _ := absolute(t, filepath.Join(whole, "ledger", "rgaa.json"), false); moved == 0 {
+			t.Fatal("the ledger copy carries no relative citation to write another way")
+		}
+		wd := rgaaOK(t, "draft_report", rgaaRunNode(t, scripts, "draft_report", site, env, in(map[string]any{"input.run_dir": whole})))
+		var wtodo []map[string]any
+		rgaaReadJSON(t, fmt.Sprint(wd["todo_path"]), &wtodo)
+		for _, it := range wtodo {
+			it["verdict"] = "supported"
+		}
+		rgaaWriteJSON(t, fmt.Sprint(wd["todo_path"]), wtodo)
+		if w := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": whole, "input.complete": true}))); w["degraded"] != false {
+			t.Fatalf("the trial came back degraded on a ledger copy complete by criterion: %v", w["reason"])
+		}
+		dir := rgaaRunCopy(t, run)
+		// Then a copy that also lacks a conformity the report states.
+		moved, dropped := absolute(t, filepath.Join(dir, "ledger", "rgaa.json"), true)
+		if moved == 0 || dropped == "" {
+			t.Fatal("the ledger copy carries no cited conformity to drop or relative citation to write another way")
+		}
+		dr := rgaaOK(t, "draft_report", rgaaRunNode(t, scripts, "draft_report", site, env, in(map[string]any{"input.run_dir": dir})))
+		// What goes on trial is exactly what the audit says agents landed.
+		var doc struct {
+			Core struct {
+				PackAdjudication struct {
+					Criteria []struct {
+						ID        string `json:"id"`
+						Status    string `json:"status"`
+						DecidedBy string `json:"decidedBy"`
+					} `json:"criteria"`
+				} `json:"packAdjudication"`
+			} `json:"core"`
+		}
+		rgaaReadJSON(t, filepath.Join(dir, "audit-latest.json"), &doc)
+		var landed []string
+		for _, c := range doc.Core.PackAdjudication.Criteria {
+			if c.DecidedBy == "agent" && c.Status == "C" {
+				landed = append(landed, c.ID)
+			}
+		}
+		var todo []map[string]any
+		rgaaReadJSON(t, fmt.Sprint(dr["todo_path"]), &todo)
+		var onTrial []string
+		for _, it := range todo {
+			if it["kind"] == "c" {
+				onTrial = append(onTrial, fmt.Sprint(it["criteriaId"]))
+			}
+		}
+		sort.Strings(landed)
+		sort.Strings(onTrial)
+		if len(landed) == 0 || strings.Join(onTrial, ",") != strings.Join(landed, ",") || !rgaaContains(onTrial, dropped) {
+			t.Fatalf("on trial %v, landed in the audit %v (the ledger copy lacks %s)", onTrial, landed, dropped)
+		}
+		for _, it := range todo {
+			it["verdict"] = "supported"
+		}
+		rgaaWriteJSON(t, fmt.Sprint(dr["todo_path"]), todo)
+		// The apply side derives its coverage from the same audit: a claim left
+		// off the trial is named absent.
+		partial := rgaaRunCopy(t, dir)
+		var pd map[string]any
+		rgaaReadJSON(t, filepath.Join(partial, "draft", "draft.json"), &pd)
+		for _, k := range []string{"todo_path", "draft_path"} {
+			rel, err := filepath.Rel(dir, fmt.Sprint(pd[k]))
+			if err != nil || strings.HasPrefix(rel, "..") {
+				t.Fatalf("draft.json %s %v is not under the run directory", k, pd[k])
+			}
+			pd[k] = filepath.Join(partial, rel)
+		}
+		rgaaWriteJSON(t, filepath.Join(partial, "draft", "draft.json"), pd)
+		var short []map[string]any
+		for _, it := range todo {
+			if it["kind"] == "c" && fmt.Sprint(it["criteriaId"]) == dropped {
+				continue
+			}
+			short = append(short, it)
+		}
+		rgaaWriteJSON(t, fmt.Sprint(pd["todo_path"]), short)
+		gap := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": partial, "input.complete": true})))
+		if gap["degraded"] != true || !strings.Contains(fmt.Sprint(gap["reason"]), "1 claim(s) of the report absent from the trial") {
+			t.Fatalf("a trial missing the conformity of %s was not named degraded: %v", dropped, gap["reason"])
+		}
+		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir, "input.complete": true})))
+		if out["degraded"] != false || strings.Contains(fmt.Sprint(out["reason"]), "absent from the trial") {
+			t.Fatalf("a trial every claim of which was supported came back degraded: %v", out["reason"])
+		}
+	})
+
 	var draft map[string]any
 	t.Run("draft_report_puts_every_claim_on_trial", func(t *testing.T) {
 		draft = rgaaOK(t, "draft_report", rgaaRunNode(t, scripts, "draft_report", site, env, in(nil)))

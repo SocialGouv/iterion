@@ -1500,7 +1500,11 @@ tool fold_final:
   output: fold_output
 
 ## The draft report and the trial worklist of its claims (every stated NC
-## and every landed conformity) for the second reader.
+## and every landed conformity) for the second reader. The landed
+## conformities come from the audit — the source the engine re-derives the
+## trial's coverage from when it applies it — never from the ledger copy,
+## whose anchors may be written another way (relative, or another run's
+## worktree) and would leave those claims « absent from the trial ».
 tool draft_report:
   script: |
     const path = require("path");
@@ -1510,8 +1514,7 @@ tool draft_report:
     const sha = L.checkAudit();
     const rep = L.engineJSON(["report", "--in", L.auditPath(), "--out", path.join(RUN, "draft"), "--json"].concat(L.std(STD)), { cwd: {{input.workspace_dir}} });
     if (rep.code !== 0 || !rep.json.path) L.die("draft report exit " + rep.code + ": " + rep.stderr.slice(-3000));
-    const ledger = path.join(RUN, "ledger", STD + ".json");
-    const args = ["verify", "--report", rep.json.path, "--in", L.auditPath(), "--out", path.join(RUN, "refute"), "--max-verify", "0", "--json"].concat(L.exists(ledger) ? ["--conformities", ledger] : ["--no-conformities"], L.std(STD));
+    const args = ["verify", "--report", rep.json.path, "--in", L.auditPath(), "--out", path.join(RUN, "refute"), "--max-verify", "0", "--json"].concat(L.std(STD));
     const v = L.engineJSON(args, { cwd: {{input.workspace_dir}} });
     if (v.code !== 0 || !v.json.todoPath) L.die("verify --report exit " + v.code + ": " + v.stderr.slice(-3000));
     L.writeJSON(path.join(RUN, "refute", "pending.json"), { round: 0, ns: (v.json.items || []).map((i) => i.n) });
