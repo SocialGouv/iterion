@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.264.0](https://github.com/SocialGouv/iterion/compare/v3.263.3...v3.264.0) (2026-10-14)
+
+### Features
+
+* **bots,runtime:** a bot links the run that wrote it — `run.url` and the forge-lane guard ([#2434](https://github.com/SocialGouv/iterion/issues/2434)) ([b07e0a5](https://github.com/SocialGouv/iterion/commit/b07e0a5fb8dda3fcf7fbadee5816867eda5d3b8e)), closes [#2429](https://github.com/SocialGouv/iterion/issues/2429)
+
+    <details><summary>why</summary>
+
+    Anything a bot posts on a forge now ends with the run that produced it: the evidence behind the text, and the way into the platform for a reader meeting this fleet on their own repository.
+
+    </details>
+
+### Bug Fixes
+
+* **server:** an invitation carries no org role above its creator's, and no team outside the org it names ([#2433](https://github.com/SocialGouv/iterion/issues/2433)) ([aa0f402](https://github.com/SocialGouv/iterion/commit/aa0f402469abdeccc583f696126922d794b2a79e))
+
+    <details><summary>why</summary>
+
+    Accepting a team invitation writes the team grant AND, for a role on the org ladder, the org membership that role is mirrored up to (`pkg/auth` `grantOrgMembershipForTeam`: `admin`/`owner` to org **admin**, the others to org **member**). A mint therefore hands out ORG standing, while both minting routes were gated on team or org management alone and bounded the role by nothing their caller held. On `POST /api/orgs/{id}/invitations` the `team_id` the body names was never confirmed to belong to…
+
+    </details>
+* **server:** the shutdown joins the detached writes it spawns, and a census holds the class ([#2432](https://github.com/SocialGouv/iterion/issues/2432)) ([0139d4c](https://github.com/SocialGouv/iterion/commit/0139d4c6335789abeda483b8e54a524cd2179e94)), closes [#1474](https://github.com/SocialGouv/iterion/issues/1474), references [#1257](https://github.com/SocialGouv/iterion/issues/1257) [#1345](https://github.com/SocialGouv/iterion/issues/1345)
+
+    <details><summary>why</summary>
+
+    pkg/server started three kinds of goroutine doing store I/O outside the shutdown join: goSafe (8 call sites — an audit insert, a last_used_at stamp, two invitation emails, the forge reviewer settle, a config-share touch), the OAuth connect kick, and the model-spec refresh flight. A SIGTERM during any of them loses the write, and unlike #1345's projection none of them has a reconciling sweep behind it: the audit row of a mutation answered 200 is simply gone.
+
+    </details>
+
 ## [3.263.3](https://github.com/SocialGouv/iterion/compare/v3.263.2...v3.263.3) (2026-10-14)
 
 ### Bug Fixes
