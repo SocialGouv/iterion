@@ -28,6 +28,9 @@ oracle:
 
 gate_timeout_s: 3600             # wall per gate command (optional; a lot may carry its own)
 
+suites:                          # the repository's own tests, run at EVERY lot's gate (optional)
+  - "the command that runs the unit tests"
+
 lots:
   - id: L1
     title: "one line, in the imperative"
@@ -63,8 +66,8 @@ A trace is not a contract.
 
 The bot reads `status` to know which lots to skip, and **ignores it entirely
 when deciding whether a lot succeeded**. A lot is done if and only if its
-`exit_gate` exits 0 on HEAD, the oracle replays green, and the reference
-directory is untouched.
+`exit_gate` exits 0 on HEAD, the declared `suites` pass, the oracle replays
+green, and the reference directory is untouched.
 
 This is not distrust of any particular agent. It is that a self-reported status
 and a verified one are different kinds of claim, and a programme that conflates
@@ -159,6 +162,8 @@ write them to be:
   gate makes a four-pass lot an eighty-minute wait before any feedback.
 - **Narrow** — a gate that runs the entire test suite for a build-tool upgrade
   reports failures the lot did not cause, and the agent will try to fix them.
+  The repository's own suites are declared once, in `suites`, and run at every
+  gate on a trunk where they pass — not copied into each lot's gate.
 
 A lot with no `exit_gate` is refused rather than assumed to pass. An
 unverifiable lot is indistinguishable from one that was never done.
@@ -289,10 +294,55 @@ shape; a lot written as a flow mapping (`- {id: L1, …}`), or with `id:` below
 another key, cannot be edited by it. `plan_read` refuses such a lot as
 `LOT_UNEDITABLE` before any token is spent, never after the gate.
 
+## `suites`
+
+The repository's own test suites — unit, integration — declared ONCE, at the
+top level, and run at **every** lot's gate once the lot's `exit_gate` has
+passed, one command at a time, under the same wall. The shapes are
+`exit_gate`'s: a list of single-line commands, a bare string being one
+command; anything else — a mapping, a declaration with no command, a NUL
+byte, the key declared twice — is a `CONTRACT_UNREADABLE` refusal: by
+`plan_read` before a lot is picked, and at the gate before any command runs.
+Read at the run's base, like `gate_timeout_s`: a worker who changes them has
+rewritten the contract.
+
+They judge what lands. `done` lands HEAD, so the suites never run over a
+working tree that differs from it — a change, staged or not, an untracked
+file git does not ignore, a change or a deletion behind an index flag
+(`assume-unchanged`, `skip-worktree`), a submodule with work of its own —
+outside the contract's directory and the net. Such a tree is refused before
+any gate command runs, the paths named: commit what is the lot's work, and
+git-ignore, in a commit, what a build or a test run writes — a report a suite
+leaves in the tree is refused on the spot — the verdict measures the tree
+once more on the way out, so nothing lands unjudged; a submodule's work is
+committed or ignored inside the submodule, where an ignore rule of the
+repository does not reach. A gate command that rewrites a tracked path
+or writes a new one — a formatter, an install that rewrites a lockfile,
+generated code — leaves the suites unrun: make the gate leave the tree as it
+found it, or commit what it writes. A lot whose own gate is red goes back with the gate's
+failure; its suites run on the next pass. A lot declared `blocked` stops as
+it always did, and its stop says whether its suites were red on its tree or
+did not run to the end, so the lot after it is not told it broke them. The
+campaign supervisor runs them once more on the final tree, under the longest
+wall any lot's gate gave them, and requalifies a blocked lot only when they
+are green there.
+
+Why a key of its own and not a line in each gate: a gate is narrow by design,
+and a narrow gate lets a lot break what it does not watch. Measured: a lot
+moved a route from GET to POST, its gate ran no test, it converged — and the
+trunk's integration suite went red on a test still sending the GET. A suite
+declared once cannot be left out by the next lot, and `lot_gate` holds only
+when it passes (`suites_passed`).
+
+Declare only suites that pass on the trunk the programme starts from: a suite
+red at the base refuses every lot, whatever the lot did. Keep them fast — the
+repair loop replays them with the gate — and off the network, for the reasons
+`exit_gate` gives.
+
 ## `gate_timeout_s`
 
-The wall each gate command gets — every `exit_gate` entry and the oracle
-replay, one command at a time. Read from the contract **at the run's base**
+The wall each gate command gets — every `exit_gate` entry, every `suites`
+command and the oracle replay, one command at a time. Read from the contract **at the run's base**
 (a lot cannot move its own wall): on the lot first, else at the top level,
 else 3600 s. An integer number of seconds between 1 and 86400; anything else
 is a `CONTRACT_UNREADABLE` refusal before any command runs. It is normative

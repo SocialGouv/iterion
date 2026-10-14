@@ -113,6 +113,20 @@ lots:
 			t.Fatalf("notice = %q, want an unreadable-shape refusal", res.Notice)
 		}
 	})
+
+	t.Run("a gate command holding a NUL byte is refused", func(t *testing.T) {
+		res := run(t, `version: 1
+lots:
+  - id: T4
+    title: nul
+    exit_gate:
+      - "test -f a\0"
+    status: todo
+`, 0)
+		if !res.Refused || !strings.Contains(res.Notice, "NUL") {
+			t.Fatalf("a gate no shell can run must be a typed refusal naming the NUL byte, got %+v", res)
+		}
+	})
 }
 
 // modernizePlanReadOut is the subset of plan_read's output the tests read.
@@ -359,6 +373,64 @@ lots:
 			res := modernizePlanRead(t, script, "version: 1\nlots:\n  - id: L1\n    title: t\n"+line+"\n    exit_gate:\n      - \"true\"\n", "L1", 0)
 			if !res.Refused || !strings.HasPrefix(res.Notice, "LOT_UNEDITABLE") {
 				t.Fatalf("notice = %q, want LOT_UNEDITABLE", res.Notice)
+			}
+		})
+	}
+}
+
+// TestModernizePlanReadRefusesUnreadableSuites: lot_verify reads the
+// repository's suites at the run's base and refuses a declaration it cannot
+// read — after the worker's whole pass. plan_read refuses the same
+// declarations before a lot is picked, and lets every readable one through.
+func TestModernizePlanReadRefusesUnreadableSuites(t *testing.T) {
+	requireModernizeTools(t)
+	script := toolScript(t, "modernize/main.bot", "plan_read")
+	contract := func(top string) string {
+		return "version: 1\n" + top + "lots:\n  - id: L1\n    title: build\n    status: todo\n    exit_gate:\n      - \"true\"\n"
+	}
+	for name, top := range map[string]string{
+		"a mapping":            "suites:\n  unit: \"make test\"\n",
+		"a number in a list":   "suites:\n  - 3\n",
+		"null":                 "suites: ~\n",
+		"an empty list":        "suites: []\n",
+		"a blank command":      "suites: \"  \"\n",
+		"a multi-line command": "suites: |\n  make test\n  make it\n",
+		"a NUL byte":           "suites:\n  - \"make test\\0\"\n",
+		"declared twice":       "suites: \"make test\"\nsuites: \"true\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := modernizePlanRead(t, script, contract(top), "", 0)
+			if !res.Refused || !strings.HasPrefix(res.Notice, "CONTRACT_UNREADABLE") ||
+				!strings.Contains(res.Notice, "suites") || res.LotID != "" {
+				t.Fatalf("refused=%v lot=%q notice=%q, want the typed refusal naming suites", res.Refused, res.LotID, res.Notice)
+			}
+		})
+	}
+	for name, top := range map[string]string{
+		"absent":           "",
+		"a string":         "suites: \"make test\"\n",
+		"a list":           "suites:\n  - \"make test\"\n  - \"make it\"\n",
+		"a one-line block": "suites: |\n  make test\n",
+	} {
+		t.Run("readable: "+name, func(t *testing.T) {
+			res := modernizePlanRead(t, script, contract(top), "", 0)
+			if res.Refused || res.LotID != "L1" {
+				t.Fatalf("refused=%v lot=%q notice=%q, want lot L1 picked", res.Refused, res.LotID, res.Notice)
+			}
+		})
+	}
+	t.Run("a contract that is not a mapping is unreadable", func(t *testing.T) {
+		res := modernizePlanRead(t, script, "- id: L1\n", "", 0)
+		if !res.Refused || !strings.Contains(res.Notice, "not a mapping") {
+			t.Fatalf("refused=%v notice=%q", res.Refused, res.Notice)
+		}
+	})
+	// yq prints one JSON document per YAML document: a stray `---` is two.
+	for name, tail := range map[string]string{"a trailing separator": "---\n", "a second document": "---\nreviewed: true\n"} {
+		t.Run("a contract with "+name+" is unreadable", func(t *testing.T) {
+			res := modernizePlanRead(t, script, contract("")+tail, "", 0)
+			if !res.Refused || !strings.Contains(res.Notice, "not one YAML document") {
+				t.Fatalf("refused=%v notice=%q", res.Refused, res.Notice)
 			}
 		})
 	}

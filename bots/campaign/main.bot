@@ -391,6 +391,9 @@ tool observe:
         refuse("the contract no longer parses at HEAD — a child run left an "
                "unreadable plan, which is a stop, not something to skip over")
     lots = plan.get("lots") or []
+    if not isinstance(lots, list) or not all(isinstance(l, dict) for l in lots):
+        refuse("the contract's `lots` is not a list of lots — a stop, not "
+               "something to skip over")
     landed = set(l.get("id") for l in lots if l.get("status") in ("done", "blocked"))
     eligible = False
     for lot in lots:
@@ -528,30 +531,112 @@ tool steward:
                               capture_output=True, text=True, timeout=timeout)
 
     def sh(cmd, timeout=3600):
-        p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
-                           text=True, timeout=timeout)
-        return p.returncode, (p.stdout + p.stderr)[-4000:]
+        """(exit code, tail, seconds). A command past its wall answers None —
+        a red, never a crash of this node — and its whole process group is
+        killed: killing the shell alone leaves what it started writing to
+        the tree. The output goes to a file, not to memory, and is read back
+        with replacement characters where it is not UTF-8."""
+        import signal
+        import tempfile
+        import time
+        started = time.monotonic()
+        with tempfile.TemporaryFile() as log_f:
+            p = subprocess.Popen(cmd, shell=True, cwd=ws, stdout=log_f,
+                                 stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                code = p.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                p.wait()
+                code = None
+            seconds = time.monotonic() - started
+            log_f.seek(0, os.SEEK_END)
+            log_f.seek(max(0, log_f.tell() - 4000))
+            tail = log_f.read().decode("utf-8", "replace")
+        if code is None:
+            tail = "timed out after %ds; last output:\n%s" % (timeout, tail)
+        return code, tail, seconds
 
+    # History and the tree are read as committed and as on disk — by this
+    # node's reads and by the commands it runs alike: a replace ref and the
+    # repository's stat-cache keys are the worker's to write, and they make
+    # git answer with something else. The keys are appended after the
+    # entries the engine passes in the same channel. "" when done.
+    def neutralise_git():
+        os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
+        slot = os.environ.get("GIT_CONFIG_COUNT", "0") or "0"
+        if not slot.isdigit():
+            return ("GIT_CONFIG_COUNT=%r is not a count, so git's stat cache could not be "
+                    "turned off: the tree cannot be read as it is on disk" % slot)
+        slot = int(slot)
+        for key, value in (("core.checkStat", "default"), ("core.trustctime", "true"),
+                           ("core.ignoreStat", "false"), ("core.fsmonitor", "false"),
+                           ("core.untrackedCache", "false")):
+            os.environ["GIT_CONFIG_KEY_%d" % slot] = key
+            os.environ["GIT_CONFIG_VALUE_%d" % slot] = value
+            slot += 1
+        os.environ["GIT_CONFIG_COUNT"] = str(slot)
+        return ""
+
+    # The engine's own noise — the .claude/ mirror, a tool node's script
+    # scratch, the canonical list it passes in $ITERION_TREE_NOISE — is never
+    # a pass's work (#1364).
+    def is_noise(path):
+        if path == ".claude" or path.startswith(".claude/") \
+                or os.path.basename(path).startswith(".iterion-script-"):
+            return True
+        import shlex
+        for spec in shlex.split(os.environ.get("ITERION_TREE_NOISE", "")):
+            for pre in (":(exclude,top)", "(exclude,top)"):
+                if spec.startswith(pre):
+                    spec = spec[len(pre):]
+                    break
+            if spec.endswith("*") and path.startswith(spec[:-1]):
+                return True
+            if path == spec or path.startswith(spec.rstrip("/") + "/"):
+                return True
+        return False
+
+    # What of the working tree no landing carries, measured the way the
+    # judging bot measures it: every untracked file git does not ignore
+    # (whatever status.showUntrackedFiles says), every submodule's own work,
+    # and every index entry flagged assume-unchanged or skip-worktree —
+    # which `git status` trusts over the disk. A sparse checkout's absent
+    # skip-worktree entries are where it keeps them.
+    def unlanded():
+        st = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "status",
+                             "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+                            capture_output=True, timeout=300)
+        if st.returncode != 0:
+            return ["git status failed: %s" % st.stderr.decode("utf-8", "replace").strip()[-200:]]
+        paths, entries = set(), st.stdout.split(b"\0")
+        i = 0
+        while i < len(entries):
+            entry, i = entries[i], i + 1
+            if len(entry) < 4:
+                continue
+            path = os.fsdecode(entry[3:])
+            if entry[:1] in (b"R", b"C"):
+                i += 1  # -z: a rename's or a copy's source follows as an entry of its own
+            if not is_noise(path):
+                paths.add(path)
+        lv = subprocess.run(["git", "-C", ws, "ls-files", "-v", "-z"], capture_output=True, timeout=120)
+        for entry in lv.stdout.split(b"\0"):
+            if len(entry) < 3:
+                continue
+            tag, path = entry[:1].decode(), os.fsdecode(entry[2:])
+            if not (tag in ("S", "s") or tag.islower()) or is_noise(path):
+                continue
+            paths.add("%s (flagged in the index)" % path)
+        return sorted(paths)
+
+    # The tree before a record, and the record's observed diff: what no
+    # landing carries, the engine's noise left out.
     def changed_paths():
-        st = git("status", "--porcelain")
-        paths = []
-        for line in st.stdout.splitlines():
-            if not line.strip():
-                continue
-            p = line[3:].strip()
-            if " -> " in p:
-                p = p.split(" -> ")[-1]
-            p = p.strip('"')
-            # The engine's own materialised node script (.iterion-script-*):
-            # execution machinery, never part of an observed diff.
-            if os.path.basename(p).startswith(".iterion-script-"):
-                continue
-            # iterion's own scaffold under .claude/ (skills, plugin files):
-            # laid by the engine at run start, never the run's work (#1364).
-            if p.startswith(".claude/"):
-                continue
-            paths.append(p)
-        return sorted(set(paths))
+        return unlanded()
 
     def restore_clean(observed):
         # Only the record's own writes exist: the tree was verified clean
@@ -580,16 +665,18 @@ tool steward:
                           "disposition": "pending_approval", "detail": ext})
 
     # ── Pending ledger requests ──
-    tree_dirty = bool(changed_paths())
+    git_view = neutralise_git()
+    tree_dirty = bool(git_view) or bool(changed_paths())
     if pending and tree_dirty:
         items.append({"ts": now, "type": "dirty_tree",
-                      "detail": changed_paths()[:20],
+                      "detail": git_view or changed_paths()[:20],
                       "note": "a child run left uncommitted changes; the "
                               "steward acts only on committed trees, so every "
                               "pending request is deferred"})
     elif pending:
-        # The plan tells the steward which lots may request a re-baseline.
-        plan_lots = {}
+        # The plan tells the steward which lots may request a re-baseline,
+        # and the wall each lot's commands run under.
+        plan_lots, plan_top = {}, {}
         try:
             import shutil
             # PATH ONLY: a fallback under <ws>/.devbox would run a binary the
@@ -601,11 +688,32 @@ tool steward:
             raw = subprocess.run([yq, "-o=json", os.path.join(ws, plan_rel)],
                                  capture_output=True, text=True, timeout=60)
             if raw.returncode == 0:
-                for l in (json.loads(raw.stdout).get("lots") or []):
+                plan_top = json.loads(raw.stdout)
+                if not isinstance(plan_top, dict):
+                    raise ValueError("the plan is a %s at its top, not a mapping of keys"
+                                     % type(plan_top).__name__)
+                lots = plan_top.get("lots")
+                if lots is not None and (not isinstance(lots, list)
+                                         or not all(isinstance(l, dict) for l in lots)):
+                    raise ValueError("the plan's `lots` is not a list of lots")
+                for l in (lots or []):
                     plan_lots[l.get("id")] = l
         except (OSError, ValueError, subprocess.SubprocessError) as e:
             items.append({"ts": now, "type": "plan_unreadable", "detail": str(e)})
             plan_lots = None
+
+        # The wall lot_verify gives the lot's commands: `gate_timeout_s` on the
+        # lot, else at the top level, else 3600. A value it would refuse is
+        # named, and nothing runs under a wall this node guessed.
+        def wall_of(l):
+            """(seconds, defect): seconds is None when the value is unreadable."""
+            for src, holder in (("lot %s" % l.get("id"), l), ("the top level", plan_top)):
+                if isinstance(holder, dict) and "gate_timeout_s" in holder:
+                    raw = holder.get("gate_timeout_s")
+                    if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 86400:
+                        return None, "unreadable gate_timeout_s at %s (%r)" % (src, raw)
+                    return raw, ""
+            return 3600, ""
 
         for req in pending if plan_lots is not None else []:
             rid = req.get("id") or "?"
@@ -634,7 +742,13 @@ tool steward:
                                       "means the lot overflowed"})
                 continue
 
-            code, log = sh("%s --record" % verify_rel)
+            wall, wall_defect = wall_of(lot)
+            if wall is None:
+                items.append({"ts": now, "type": "refused_unreadable_wall",
+                              "request_id": rid, "lot": req.get("lot"),
+                              "detail": wall_defect})
+                continue
+            code, log, _ = sh("%s --record" % verify_rel, wall)
             observed = changed_paths()
             if code != 0:
                 restore_clean(observed)
@@ -662,7 +776,8 @@ tool steward:
                 "gm(rebaseline): act %s — %d reference(s) re-recorded, "
                 "observed diff matches the announcement" % (rid, len(observed)))
 
-            gate_code, gate_log = sh(verify_rel)
+            gate_code, gate_log, _ = sh(verify_rel, wall)
+            restore_clean(changed_paths())
             if gate_code == 0:
                 verdict = {"id": rid, "gate": "green",
                            "sha": git("rev-parse", "HEAD").stdout.strip(), "ts": now}
@@ -671,7 +786,7 @@ tool steward:
                             % json.dumps(verdict, ensure_ascii=False))
                 git("add", "--", ledger_rel)
                 git("commit", "-m",
-                    "gm(rebaseline): full counter-test green after act %s" % rid)
+                    "gm(rebaseline): full counter-test green after act %s" % rid, "--", ledger_rel)
                 out["acts"] += 1
             else:
                 # The act did not hold: the committed tree it produced fails
@@ -699,12 +814,12 @@ tool steward:
         f.write("%d\t%s\t%s\t%s\t%d\t%s\n"
                 % (run_n, now, before[:12], "yes" if moved else "no",
                    out["acts"], head_now[:12]))
-    add = ["add", "--", journal_rel]
-    if items:
-        add.append(esc_rel)
-    git(*add)
+    # The journal commit takes its own two files and nothing else: what a
+    # child run left in the index is not the supervisor's to land.
+    mine = [journal_rel] + ([esc_rel] if items else [])
+    git("add", "--", *mine)
     git("commit", "-m", "campaign: run %d — child moved=%s, steward acts=%d, "
-        "escalations=%d" % (run_n, "yes" if moved else "no", out["acts"], len(items)))
+        "escalations=%d" % (run_n, "yes" if moved else "no", out["acts"], len(items)), "--", *mine)
 
     # ── Pause policy — configuration applied to facts, in readable code ──
     needs_approval = any(i.get("disposition") == "pending_approval" for i in items)
@@ -780,9 +895,106 @@ tool finalize:
                               capture_output=True, text=True, timeout=timeout)
 
     def sh(cmd, timeout=3600):
-        p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
-                           text=True, timeout=timeout)
-        return p.returncode, (p.stdout + p.stderr)[-4000:]
+        """(exit code, tail, seconds). A command past its wall answers None —
+        a red, never a crash of this node — and its whole process group is
+        killed: killing the shell alone leaves what it started writing to
+        the tree. The output goes to a file, not to memory, and is read back
+        with replacement characters where it is not UTF-8."""
+        import signal
+        import tempfile
+        import time
+        started = time.monotonic()
+        with tempfile.TemporaryFile() as log_f:
+            p = subprocess.Popen(cmd, shell=True, cwd=ws, stdout=log_f,
+                                 stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                code = p.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                p.wait()
+                code = None
+            seconds = time.monotonic() - started
+            log_f.seek(0, os.SEEK_END)
+            log_f.seek(max(0, log_f.tell() - 4000))
+            tail = log_f.read().decode("utf-8", "replace")
+        if code is None:
+            tail = "timed out after %ds; last output:\n%s" % (timeout, tail)
+        return code, tail, seconds
+
+    # History and the tree are read as committed and as on disk — by this
+    # node's reads and by the commands it runs alike: a replace ref and the
+    # repository's stat-cache keys are the worker's to write, and they make
+    # git answer with something else. The keys are appended after the
+    # entries the engine passes in the same channel. "" when done.
+    def neutralise_git():
+        os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
+        slot = os.environ.get("GIT_CONFIG_COUNT", "0") or "0"
+        if not slot.isdigit():
+            return ("GIT_CONFIG_COUNT=%r is not a count, so git's stat cache could not be "
+                    "turned off: the tree cannot be read as it is on disk" % slot)
+        slot = int(slot)
+        for key, value in (("core.checkStat", "default"), ("core.trustctime", "true"),
+                           ("core.ignoreStat", "false"), ("core.fsmonitor", "false"),
+                           ("core.untrackedCache", "false")):
+            os.environ["GIT_CONFIG_KEY_%d" % slot] = key
+            os.environ["GIT_CONFIG_VALUE_%d" % slot] = value
+            slot += 1
+        os.environ["GIT_CONFIG_COUNT"] = str(slot)
+        return ""
+
+    # The engine's own noise — the .claude/ mirror, a tool node's script
+    # scratch, the canonical list it passes in $ITERION_TREE_NOISE — is never
+    # a pass's work (#1364).
+    def is_noise(path):
+        if path == ".claude" or path.startswith(".claude/") \
+                or os.path.basename(path).startswith(".iterion-script-"):
+            return True
+        import shlex
+        for spec in shlex.split(os.environ.get("ITERION_TREE_NOISE", "")):
+            for pre in (":(exclude,top)", "(exclude,top)"):
+                if spec.startswith(pre):
+                    spec = spec[len(pre):]
+                    break
+            if spec.endswith("*") and path.startswith(spec[:-1]):
+                return True
+            if path == spec or path.startswith(spec.rstrip("/") + "/"):
+                return True
+        return False
+
+    # What of the working tree no landing carries, measured the way the
+    # judging bot measures it: every untracked file git does not ignore
+    # (whatever status.showUntrackedFiles says), every submodule's own work,
+    # and every index entry flagged assume-unchanged or skip-worktree —
+    # which `git status` trusts over the disk. A sparse checkout's absent
+    # skip-worktree entries are where it keeps them.
+    def unlanded():
+        st = subprocess.run(["git", "-C", ws, "-c", "core.quotePath=false", "status",
+                             "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+                            capture_output=True, timeout=300)
+        if st.returncode != 0:
+            return ["git status failed: %s" % st.stderr.decode("utf-8", "replace").strip()[-200:]]
+        paths, entries = set(), st.stdout.split(b"\0")
+        i = 0
+        while i < len(entries):
+            entry, i = entries[i], i + 1
+            if len(entry) < 4:
+                continue
+            path = os.fsdecode(entry[3:])
+            if entry[:1] in (b"R", b"C"):
+                i += 1  # -z: a rename's or a copy's source follows as an entry of its own
+            if not is_noise(path):
+                paths.add(path)
+        lv = subprocess.run(["git", "-C", ws, "ls-files", "-v", "-z"], capture_output=True, timeout=120)
+        for entry in lv.stdout.split(b"\0"):
+            if len(entry) < 3:
+                continue
+            tag, path = entry[:1].decode(), os.fsdecode(entry[2:])
+            if (tag in ("S", "s") or tag.islower()) and not is_noise(path):
+                paths.add("%s (flagged in the index)" % path)
+        return sorted(paths)
 
     # PATH ONLY (preflight's find_yq carries the reason): a fallback under
     # <ws>/.devbox would run a binary the target repository supplied (#1799).
@@ -790,66 +1002,90 @@ tool finalize:
         import shutil
         return shutil.which("yq") or ""
 
-    def is_scaffold(line):
-        # iterion lays the bundle's skills (and plugin commands, agents,
-        # settings) under <workspace>/.claude/ at run start: written by the
-        # engine, never by a pass, never the run's work (#1364) -- the rule
-        # finalize applies to the wip bank (runOutputPaths), tracked or not:
-        # the engine rewrites a tracked settings.json to inject plugin hooks,
-        # and a reader that refused on that write would stop every run on a
-        # repository that commits it. A rename is judged on its destination;
-        # a quoted path is unquoted.
-        path = line[3:]
-        if ' -> ' in path:
-            path = path.split(' -> ', 1)[1]
-        path = path.strip()
-        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
-            path = path[1:-1]
-        return path.startswith('.claude/')
     head = git("rev-parse", "HEAD").stdout.strip()
-    # Same exclusion as preflight: the engine's own materialised node script
-    # is execution machinery, not an uncommitted change.
-    dirty = [l for l in git("status", "--porcelain").stdout.splitlines() if l.strip()
-             and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")
-             and not is_scaffold(l)]
+    git_view = neutralise_git()
+    dirty = [git_view] if git_view else unlanded()
 
-    plan = {}
+    # The plan is read as committed: the final tree is HEAD, and what the
+    # working tree holds instead is reported as not judged. An unread plan is
+    # said — in the handoff and in the notice — rather than its counts
+    # reading as zeros and its suites as "none declared".
+    plan, top_keys, unread = {}, [], ""
     yq = find_yq()
+    shown = subprocess.run(["git", "-C", ws, "show", "HEAD:%s" % plan_rel],
+                           capture_output=True, timeout=60)
     if not yq:
-        # The plan is then unread, and the notice says so rather than the
-        # counts reading as zeros.
-        out["notice"] = ("yq is not on PATH, so the plan at %s was not read: "
-                         "lots_done, lots_blocked and requalification are "
-                         "unset, not zero." % plan_rel)
+        unread = "yq is not on PATH"
+    elif shown.returncode != 0:
+        unread = ("it is not committed at HEAD: %s"
+                  % shown.stderr.decode("utf-8", "replace").strip()[-300:])
     else:
-        raw = subprocess.run([yq, "-o=json", os.path.join(ws, plan_rel)],
-                             capture_output=True, text=True, timeout=60)
-        if raw.returncode == 0:
-            plan = json.loads(raw.stdout)
+        import tempfile
+        with tempfile.NamedTemporaryFile("wb", suffix=".yaml", delete=False) as tf:
+            tf.write(shown.stdout)
+        try:
+            raw = subprocess.run([yq, "-o=json", tf.name], capture_output=True, text=True, timeout=60)
+        finally:
+            os.unlink(tf.name)
+        if raw.returncode != 0:
+            unread = "it does not parse: %s" % raw.stderr.strip()[-300:]
+        else:
+            try:
+                plan = json.loads(raw.stdout)
+                top = json.loads(raw.stdout, object_pairs_hook=lambda pairs: pairs)
+            except ValueError as e:
+                # yq prints one JSON document per YAML document: a stray `---`
+                # makes two, which no reader takes as one contract.
+                plan, unread = {}, "it is not one YAML document (%s)" % str(e)[:200]
+            else:
+                if not isinstance(plan, dict):
+                    plan, unread = {}, ("it is a %s at its top, not a mapping of keys"
+                                        % type(plan).__name__)
+                elif plan.get("lots") is not None and not (
+                        isinstance(plan.get("lots"), list)
+                        and all(isinstance(l, dict) for l in plan.get("lots"))):
+                    plan, unread = {}, "its `lots` is not a list of lots"
+                else:
+                    ids = [l.get("id") for l in (plan.get("lots") or [])]
+                    bad = [i for i in ids if not isinstance(i, str) or not i]
+                    dup = sorted({i for i in ids if ids.count(i) > 1})
+                    if bad:
+                        # An id is a KEY: the requalification verdicts, the
+                        # steward's plan and the child runs' only_lot all read
+                        # through it.
+                        plan, unread = {}, ("a lot carries no non-empty string id (%s)"
+                                            % json.dumps(bad[:3], default=str))
+                    elif dup:
+                        plan, unread = {}, ("duplicate lot id(s) %s — an id is a key"
+                                            % ", ".join(dup))
+                    else:
+                        top_keys = [k for k, _ in top]
+    plan_read = not unread
     lots = plan.get("lots") or []
     done = [l for l in lots if l.get("status") == "done"]
     blocked = [l for l in lots if l.get("status") == "blocked"]
     todo = [l for l in lots if l.get("status") not in ("done", "blocked")]
     out["lots_done"], out["lots_blocked"] = len(done), len(blocked)
 
-    # The gate judges COMMITTED trees only. A dirty tree at the end is
-    # reported as exactly that — a verdict over a tree that exists nowhere
-    # would be worth nothing.
-    verdict_line = ""
-    if dirty:
-        oracle_summary = ("NOT JUDGED: %d uncommitted change(s) at campaign "
-                          "end — the counter-test only judges committed "
-                          "trees. Files: %s" % (len(dirty), "; ".join(dirty[:10])))
-    else:
-        code, log = sh(verify_rel)
-        out["oracle_green"] = code == 0
-        for line in reversed((log or "").splitlines()):
-            line = line.strip()
-            if line.startswith("{") and line.endswith("}"):
-                verdict_line = line
-                break
-        oracle_summary = ("GREEN (exit 0)" if code == 0
-                          else "RED (exit %d) — tail:\n\n```\n%s\n```" % (code, log[-1500:]))
+    # The wall lot_verify gives each of a lot's commands: `gate_timeout_s` on
+    # the lot, else at the top level, else 3600. A value it would refuse is
+    # named here, and nothing runs under a wall this node guessed.
+    def wall_of(l):
+        """(seconds, defect): seconds is None when the value is unreadable."""
+        for src, holder in (("lot %s" % l.get("id"), l), ("the top level", plan)):
+            if isinstance(holder, dict) and "gate_timeout_s" in holder:
+                raw = holder.get("gate_timeout_s")
+                if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 86400:
+                    return None, "unreadable gate_timeout_s at %s (%r)" % (src, raw)
+                return raw, ""
+        return 3600, ""
+
+    # Every lot's gate ran the oracle and the suites under its own wall: on the
+    # final tree they get the longest of them, so what no gate timed out is not
+    # timed out here — and each blocked lot reads every run against its own.
+    top_wall, top_wall_defect = wall_of({})
+    final_wall = max([w for w, _ in [wall_of(l) for l in lots] if w is not None]
+                     + ([top_wall] if top_wall is not None else []), default=None)
 
     # Requalification: distinct commands once each, verdicts projected.
     # Same contract surface as modernize's plan_read: a scalar exit_gate is
@@ -878,37 +1114,177 @@ tool finalize:
         gates = [g for g in gates if g]
         if any("\n" in g for g in gates):
             return None, "multi-line exit_gate command"
+        if any("\0" in g for g in gates):
+            return None, "exit_gate command holding a NUL byte"
         return gates, ""
 
-    requal = {"head": head[:12], "commands": {}, "lots": {}}
+    # The repository's suites, declared once at the top of the contract and run
+    # at every lot's gate (modernize's lot_verify), read the same way: one
+    # command as a string or a list of single-line ones. Run once on the final
+    # tree; a blocked lot requalifies only when they are green there too.
+    def suite_commands(doc, keys=()):
+        """(commands, defect): commands is None when the declaration cannot be
+        read, [] when the contract declares none. `keys` are the contract's
+        top-level keys in order: suites declared twice is unreadable."""
+        if list(keys).count("suites") > 1:
+            return None, "suites declared more than once at the top of the contract"
+        if not isinstance(doc, dict) or "suites" not in doc:
+            return [], ""
+        raw = doc.get("suites")
+        cmds = [raw] if isinstance(raw, str) else raw
+        if not isinstance(cmds, list) or not all(isinstance(c, str) for c in cmds):
+            return None, "unreadable suites (%s)" % type(raw).__name__
+        cmds = [c.strip() for c in cmds if c.strip()]
+        if not cmds:
+            return None, "suites declared with no command"
+        if any("\n" in c for c in cmds):
+            return None, "multi-line suites command"
+        if any("\0" in c for c in cmds):
+            return None, "suites command holding a NUL byte"
+        return cmds, ""
+
+    suites, suites_defect = suite_commands(plan, top_keys)
+    if suites and final_wall is None:
+        suites, suites_defect = None, top_wall_defect
+
+    # The commands run in lot_verify's order — a blocked lot's gate, then the
+    # suites, then the oracle — on the committed tree, measured before the
+    # gates and again before the suites: what a command leaves behind is not
+    # what the next one judges.
+    requal = {"head": head[:12], "commands": {}, "suites": [], "lots": {}}
+    commands = {}
     if not dirty and blocked:
-        cmds = []
+        # A command two lots share runs once, under the longer of their
+        # walls; each lot then reads the run against its own wall.
         for l in blocked:
-            for g in (gate_commands(l)[0] or []):
-                if g not in cmds:
-                    cmds.append(g)
-        for c in cmds:
-            code, log = sh(c)
-            requal["commands"][c] = {"rc": code, "tail": log[-400:]}
+            wall, gates = wall_of(l)[0], gate_commands(l)[0]
+            if wall is None or not gates:
+                continue
+            for g in gates:
+                commands[g] = max(commands.get(g, 0), wall)
+        for c, wall in commands.items():
+            code, log, seconds = sh(c, wall)
+            requal["commands"][c] = {"rc": code, "seconds": seconds, "wall": wall,
+                                     "tail": log[-400:]}
+    left_by_gates = unlanded() if commands else []
+
+    suites_red = None
+    # Set when the suites ran green: what they left, and whether HEAD still
+    # names the tree the handoff judges.
+    left_by_suites, head_moved = [], False
+    if not plan_read:
+        suites_summary = "NOT READ: the plan could not be read (%s)." % unread
+    elif suites is None:
+        suites_summary = "NOT RUN: %s." % suites_defect
+    elif not suites:
+        suites_summary = "None declared."
+    elif dirty:
+        suites_summary = "NOT JUDGED: the tree was not committed."
+    elif left_by_gates:
+        suites_summary = ("NOT JUDGED: the gate commands left a tree no landing carries (%s)."
+                          % "; ".join(left_by_gates[:10]))
+    else:
+        for c in suites:
+            code, log, seconds = sh(c, final_wall)
+            requal["suites"].append({"command": c, "rc": code, "seconds": seconds,
+                                     "tail": log[-400:]})
+            if code != 0:
+                suites_red = requal["suites"][-1]
+                break
+        left_by_suites = unlanded()
+        head_moved = git("rev-parse", "HEAD").stdout.strip() != head
+        suites_summary = ("GREEN — every command exited 0" if suites_red is None
+                          else "RED — `%s` %s" % (suites_red["command"],
+                                                  "timed out" if suites_red["rc"] is None
+                                                  else "exited %d" % suites_red["rc"]))
+        if suites_red is None and head_moved:
+            suites_summary = "NOT JUDGED: the suites moved HEAD."
+        elif suites_red is None and left_by_suites:
+            suites_summary = ("NOT JUDGED: the suites left a tree no landing carries (%s)."
+                              % "; ".join(left_by_suites[:10]))
+
+    # The gate judges COMMITTED trees only. A dirty tree at the end is
+    # reported as exactly that — a verdict over a tree that exists nowhere
+    # would be worth nothing.
+    verdict_line, oracle_state = "", "red"
+    if dirty:
+        oracle_state = "unjudged"
+        oracle_summary = ("NOT JUDGED: %d uncommitted change(s) at campaign "
+                          "end — the counter-test only judges committed "
+                          "trees. Files: %s" % (len(dirty), "; ".join(dirty[:10])))
+    elif left_by_gates:
+        oracle_state = "unjudged"
+        oracle_summary = ("NOT JUDGED: the gate commands left a tree no landing carries (%s)."
+                          % "; ".join(left_by_gates[:10]))
+    elif left_by_suites:
+        oracle_state = "unjudged"
+        oracle_summary = ("NOT JUDGED: the suites left a tree no landing carries (%s)."
+                          % "; ".join(left_by_suites[:10]))
+    elif head_moved:
+        oracle_state = "unjudged"
+        oracle_summary = "NOT JUDGED: the suites moved HEAD."
+    elif final_wall is None:
+        oracle_state = "not run"
+        oracle_summary = "NOT RUN: %s." % top_wall_defect
+    else:
+        code, log, _ = sh(verify_rel, final_wall)
+        out["oracle_green"] = code == 0
+        oracle_state = "green" if code == 0 else "red"
+        for line in reversed((log or "").splitlines()):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                verdict_line = line
+                break
+        oracle_summary = ("GREEN (exit 0)" if code == 0
+                          else "RED (%s) — tail:\n\n```\n%s\n```"
+                          % ("timed out" if code is None else "exit %d" % code, log[-1500:]))
+
+    if not dirty and blocked:
         for l in blocked:
+            lid = l.get("id")
             gates, defect = gate_commands(l)
+            wall, wall_defect = wall_of(l)
+            if gates is not None and wall is None:
+                gates, defect = None, wall_defect
             if gates is None:
-                requal["lots"][l.get("id")] = {"verdict": "%s — not "
-                                               "requalifiable" % defect}
+                requal["lots"][lid] = {"verdict": "%s — not requalifiable" % defect}
                 continue
             if not gates:
                 # Zero commands ran; "every gate command green" over an empty
                 # set is the vacuous claim this report exists to refuse.
-                requal["lots"][l.get("id")] = {"verdict": "no exit_gate "
-                                               "declared — not requalifiable"}
+                requal["lots"][lid] = {"verdict": "no exit_gate declared — not requalifiable"}
                 continue
-            reds = [g for g in gates if requal["commands"][g]["rc"] != 0]
+
+            def past(run):
+                """Why a run is red for THIS lot: its exit, or a run longer
+                than the lot's own wall — lot_verify's GATE_TIMEOUT."""
+                if run["rc"] is None:
+                    return "timed out"
+                if run["rc"] != 0:
+                    return "exit %d" % run["rc"]
+                if run["seconds"] > wall:
+                    return "ran %.1fs, past this lot's wall of %ds" % (run["seconds"], wall)
+                return ""
+            reds = [(g, past(requal["commands"][g])) for g in gates if past(requal["commands"][g])]
             if reds:
-                requal["lots"][l.get("id")] = {"verdict": "still blocked",
-                                               "red": reds[0]}
+                requal["lots"][lid] = {"verdict": "still blocked (%s)" % reds[0][1], "red": reds[0][0]}
+            elif suites is None:
+                requal["lots"][lid] = {"verdict": "%s — not requalifiable" % suites_defect}
+            elif left_by_gates or left_by_suites:
+                requal["lots"][lid] = {"verdict": "the commands left a tree no landing "
+                                                  "carries — not requalifiable"}
+            elif head_moved:
+                requal["lots"][lid] = {"verdict": "the suites moved HEAD — not requalifiable"}
+            elif suites and (suites_red is not None
+                             or any(past(r) for r in requal["suites"])):
+                red = suites_red or next(r for r in requal["suites"] if past(r))
+                requal["lots"][lid] = {"verdict": "still blocked — its gate is green, the "
+                                                  "repository's suites are not (%s)" % past(red),
+                                       "red": red["command"]}
             else:
-                requal["lots"][l.get("id")] = {"verdict": "REQUALIFIED — every "
-                                               "gate command green on the final tree"}
+                requal["lots"][lid] = {"verdict": "REQUALIFIED — every gate command%s green "
+                                                  "on the final tree"
+                                                  % (" and every suite" if suites else "")}
         out["requalified"] = sum(1 for v in requal["lots"].values()
                                  if v["verdict"].startswith("REQUALIFIED"))
         with open(os.path.join(ws, requal_rel), "w", encoding="utf-8") as f:
@@ -938,9 +1314,13 @@ tool finalize:
     h = []
     h.append("# Campaign handoff — %s" % now)
     h.append("")
-    h.append("Final tree: `%s`. Programme: %d done, %d blocked, %d not "
-             "reached, of %d lots." % (head[:12], len(done), len(blocked),
-                                       len(todo), len(lots)))
+    if plan_read:
+        h.append("Final tree: `%s`. Programme: %d done, %d blocked, %d not "
+                 "reached, of %d lots." % (head[:12], len(done), len(blocked),
+                                           len(todo), len(lots)))
+    else:
+        h.append("Final tree: `%s`. Programme: NOT READ — the plan at `%s` could "
+                 "not be read (%s); no count below is a zero." % (head[:12], plan_rel, unread))
     h.append("")
     h.append("## 1. Contract extensions (%d) — review these first" % len(exts))
     h.append("")
@@ -974,6 +1354,8 @@ tool finalize:
     h.append("## 4. Final behavioural verdict")
     h.append("")
     h.append(oracle_summary)
+    h.append("")
+    h.append("The repository's suites on the final tree: %s" % suites_summary)
     if verdict_line:
         h.append("")
         h.append("```json")
@@ -997,17 +1379,24 @@ tool finalize:
     os.makedirs(campaign_dir, exist_ok=True)
     with open(os.path.join(ws, handoff_rel), "w", encoding="utf-8") as f:
         f.write("\n".join(h))
-    add = ["add", "--", handoff_rel]
-    if requal["lots"]:
-        add.append(requal_rel)
-    git(*add)
-    git("commit", "-m", "campaign: handoff — %d done, %d blocked, oracle %s"
-        % (len(done), len(blocked),
-           "green" if out["oracle_green"] else ("unjudged" if dirty else "red")))
+    # The handoff commit takes its own files and nothing else: what a child
+    # run left in the index is not the supervisor's to land.
+    mine = [handoff_rel] + ([requal_rel] if requal["lots"] else [])
+    git("add", "--", *mine)
+    suites_state = ("none" if suites_summary == "None declared."
+                    else suites_summary.split(":")[0].split(" — ")[0].lower().rstrip("."))
+    git("commit", "-m", "campaign: handoff — %s, oracle %s, suites %s"
+        % ("%d done, %d blocked" % (len(done), len(blocked)) if plan_read else "plan NOT READ",
+           oracle_state, suites_state), "--", *mine)
 
-    out["notice"] = ("%d done, %d blocked (%d requalify on the final tree), "
-                     "oracle %s" % (len(done), len(blocked), out["requalified"],
-                                    "green" if out["oracle_green"] else "not green"))
+    if plan_read:
+        out["notice"] = ("%d done, %d blocked (%d requalify on the final tree), "
+                         "oracle %s, suites %s" % (len(done), len(blocked), out["requalified"],
+                                                   oracle_state, suites_state))
+    else:
+        out["notice"] = ("the plan at %s was not read (%s): lots_done, lots_blocked "
+                         "and requalified are unset, not zero; oracle %s"
+                         % (plan_rel, unread, oracle_state))
     print(json.dumps(out))
 
   language: py

@@ -136,10 +136,12 @@ prompt campaign_user:
 
   {{input.exit_gate}}
 
-  It then replays the behavioural oracle, and finally verifies that NOT ONE
-  line changed under the oracle's reference directory. That last check is why
-  rule 2 exists: a reference you edited to make the run green is the one
-  failure this programme cannot recover from.
+  When those pass and the contract declares `suites` at its top, it runs
+  them — the repository's own test suites, for every lot, on what you
+  COMMITTED: a test your work breaks refuses the lot even when your gate does
+  not run it. It then replays the behavioural oracle, and finally verifies
+  that NOT ONE line changed under the oracle's reference directory. That last check is why rule 2 exists: a reference you edited to
+  make the run green is the one failure this programme cannot recover from.
 
   {{input.fail_log}}
 
@@ -196,6 +198,14 @@ schema plan_state:
 ## The deterministic verdict. Not one field here is an opinion.
 schema lot_report:
   gate_passed: bool
+  ## The repository's own test suites, declared ONCE at the top of the
+  ## contract (`suites:`) and run at every lot's gate after its exit_gate. A
+  ## lot whose gate does not run them can still break them, and a lot that
+  ## converges over a red suite lands the break on the trunk: measured, a lot
+  ## moved a route from GET to POST, its gate ran no test, it converged, and
+  ## the trunk's integration suite went red on a test still sending the GET.
+  ## True when the contract declares none — the gate as it was.
+  suites_passed: bool
   oracle_passed: bool
   refs_untouched: bool
   refs_changed: string[]
@@ -476,7 +486,43 @@ tool plan_read:
                "was not realised for this node." % (plan_path, e))
     if raw.returncode != 0:
         refuse("the contract at %s is not parseable: %s" % (plan_path, raw.stderr[-800:]))
-    plan = json.loads(raw.stdout)
+    # yq prints one JSON document per YAML document: a second one (a stray
+    # `---`) is a contract no reader can take as one.
+    try:
+        plan = json.loads(raw.stdout)
+    except ValueError as e:
+        refuse("CONTRACT_UNREADABLE: the contract at %s is not one YAML document (%s)."
+               % (plan_path, str(e)[:200]))
+    if not isinstance(plan, dict):
+        refuse("CONTRACT_UNREADABLE: the contract at %s is a %s at its top, not a mapping "
+               "of keys." % (plan_path, type(plan).__name__))
+
+    # The repository's suites, declared once at the top: lot_verify reads them
+    # at the run's base and runs them at every gate. A declaration it would
+    # refuse is refused here, before a worker spends a pass on a lot no gate
+    # could judge — the same predicate, in the same words.
+    top_keys = [k for k, _ in json.loads(raw.stdout, object_pairs_hook=lambda pairs: pairs)]
+    if top_keys.count("suites") > 1:
+        refuse("CONTRACT_UNREADABLE: the contract declares suites more than once at its "
+               "top: two readers of one file may keep different copies of it")
+    if "suites" in plan:
+        suites = plan.get("suites")
+        suite_cmds = [suites] if isinstance(suites, str) else suites
+        if not isinstance(suite_cmds, list) or not all(isinstance(c, str) for c in suite_cmds):
+            refuse("CONTRACT_UNREADABLE: suites at the top level is %r — one command as a "
+                   "string, or a list of command strings, is the only shape this node reads"
+                   % (suites,))
+        suite_cmds = [c.strip() for c in suite_cmds if c.strip()]
+        if not suite_cmds:
+            refuse("CONTRACT_UNREADABLE: suites at the top level declares no command — remove "
+                   "the key, or name the commands the repository's CI runs")
+        if any("\n" in c for c in suite_cmds):
+            refuse("CONTRACT_UNREADABLE: suites at the top level holds a multi-line command — "
+                   "each command is a single line; put multi-line logic in a script file and "
+                   "invoke it")
+        if any("\0" in c for c in suite_cmds):
+            refuse("CONTRACT_UNREADABLE: suites at the top level holds a NUL byte, which no "
+                   "shell command can carry")
 
     oracle = plan.get("oracle") or {}
     out["refs_dir"] = oracle.get("refs_dir") or ""
@@ -618,6 +664,11 @@ tool plan_read:
     # refused. Multi-line logic belongs in a script file the gate invokes.
     gate = [c.strip() for c in gate]
     gate = [c for c in gate if c]
+    # A NUL byte reaches no shell: the verifier's subprocess raises on it, a
+    # tool error the engine retries, never a verdict.
+    if any("\0" in c for c in gate):
+        refuse("lot %s declares an exit_gate command holding a NUL byte, which no "
+               "shell command can carry." % chosen.get("id"))
     if any("\n" in c for c in gate):
         refuse("lot %s declares a multi-line exit_gate command. Each command "
                "must be a single line; put multi-line logic in a script file "
@@ -710,7 +761,7 @@ tool lot_verify:
     acted_blobs = ({{input.acted_blobs}} or "")
     gate_cmds = [c for c in {{input.exit_gate}}.split("\n") if c.strip()]
 
-    report = {"gate_passed": False, "oracle_passed": False, "refs_untouched": False,
+    report = {"gate_passed": False, "suites_passed": False, "oracle_passed": False, "refs_untouched": False,
               "gate_timed_out": False, "contract_unreadable": False,
               "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": "",
               "oracle_invalid": [], "oracle_not_run": False, "oracle_report": {}, "extension_pending": [], "extension_forged": False, "done_self_written": False,
@@ -765,8 +816,29 @@ tool lot_verify:
         emit()
         raise SystemExit(0)
 
-    def plan_doc(text, what):
-        """The whole contract as JSON — `lots` and the top-level keys."""
+    # The working tree is read as it is on disk — by this node's reads and by
+    # the commands it runs alike. The repository's git configuration is the
+    # worker's to write, and these keys make git trust a cached stat over the
+    # file: an edit that keeps its size and restores its mtime reads as no
+    # edit at all. Appended after the entries the engine passes in the same
+    # channel: writing slot 0 would erase one of them.
+    _slot = os.environ.get("GIT_CONFIG_COUNT", "0") or "0"
+    if not _slot.isdigit():
+        unreadable("GIT_CONFIG_COUNT=%r is not a count, so there is no slot to append this "
+                   "node's git configuration to" % _slot)
+    _slot = int(_slot)
+    for _key, _value in (("core.checkStat", "default"), ("core.trustctime", "true"),
+                         ("core.ignoreStat", "false"), ("core.fsmonitor", "false"),
+                         ("core.untrackedCache", "false")):
+        os.environ["GIT_CONFIG_KEY_%d" % _slot] = _key
+        os.environ["GIT_CONFIG_VALUE_%d" % _slot] = _value
+        _slot += 1
+    os.environ["GIT_CONFIG_COUNT"] = str(_slot)
+
+    def plan_doc(text, what, once=()):
+        """The whole contract as JSON — `lots` and the top-level keys. A key in
+        `once` declared twice at the top is unreadable: two readers would keep
+        different copies of it."""
         import tempfile
         yq = find_yq()
         if not yq:
@@ -785,8 +857,16 @@ tool lot_verify:
             unreadable("the contract does not parse (%s): %s" % (what, raw.stderr[-400:]))
         try:
             doc = json.loads(raw.stdout)
+            top = json.loads(raw.stdout, object_pairs_hook=lambda pairs: pairs)
         except ValueError as e:
             unreadable("yq produced no JSON for the contract (%s): %s" % (what, e))
+        if once and isinstance(doc, dict) and isinstance(top, list):
+            keys = [k for k, _ in top]
+            dup = sorted({k for k in keys if k in once and keys.count(k) > 1})
+            if dup:
+                unreadable("the contract declares %s more than once at its top (%s): two "
+                           "readers of one file may keep different copies of it"
+                           % (", ".join(dup), what))
         return doc if isinstance(doc, dict) else {}
 
     def plan_lots(text, what):
@@ -811,7 +891,7 @@ tool lot_verify:
                    "that lives only in the working tree cannot be judged: %s"
                    % (base[:12], base_show.stderr[-300:]))
     head_lots = plan_lots(head_text, "the working tree")
-    base_doc = plan_doc(base_show.stdout, "base %s" % base[:12])
+    base_doc = plan_doc(base_show.stdout, "base %s" % base[:12], once=("suites",))
     base_lots = base_doc.get("lots") or []
     head_lot = lot_of(head_lots, {{input.lot_id}})
     base_lot = lot_of(base_lots, {{input.lot_id}})
@@ -834,6 +914,33 @@ tool lot_verify:
                        % (src, raw))
         return raw
     gate_timeout = gate_timeout_from(base_doc, base_lot)
+
+    # The repository's suites, from the same base: one command as a string, or
+    # a list of single-line commands — exit_gate's shapes, read the way
+    # plan_read reads a gate. Anything else is a contract this node cannot
+    # read; absent is no suite.
+    def suites_from(doc):
+        if not isinstance(doc, dict) or "suites" not in doc:
+            return []
+        raw = doc.get("suites")
+        cmds = [raw] if isinstance(raw, str) else raw
+        if not isinstance(cmds, list) or not all(isinstance(c, str) for c in cmds):
+            unreadable("suites at the top level is %r — one command as a string, or a "
+                       "list of command strings, is the only shape this node reads"
+                       % (raw,))
+        cmds = [c.strip() for c in cmds if c.strip()]
+        if not cmds:
+            unreadable("suites at the top level declares no command — remove the key, "
+                       "or name the commands the repository's CI runs")
+        if any("\n" in c for c in cmds):
+            unreadable("suites at the top level holds a multi-line command — each "
+                       "command is a single line; put multi-line logic in a script "
+                       "file and invoke it")
+        if any("\0" in c for c in cmds):
+            unreadable("suites at the top level holds a NUL byte, which no shell "
+                       "command can carry")
+        return cmds
+    suite_cmds = suites_from(base_doc)
     head_status = (head_lot or {}).get("status")
     if head_status == "blocked":
         report["lot_blocked"] = True
@@ -1148,10 +1255,10 @@ tool lot_verify:
             raise ValueError("duplicate key %s" % ", ".join(dup))
         return dict(pairs)
 
-    def parse(raw, how, strict):
+    def parse(raw, how, strict, hook=None):
         """(True, document) or (False, why it does not parse). `strict`
         refuses a duplicate key: two readers of one file may keep different
-        copies of it."""
+        copies of it. `hook`, when given, builds every mapping instead."""
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as e:
@@ -1172,9 +1279,14 @@ tool lot_verify:
                 return False, (p.stderr or "").strip()[-300:]
             text = p.stdout
         try:
-            return True, json.loads(text, object_pairs_hook=no_dupes if strict else None)
+            return True, json.loads(text, object_pairs_hook=hook or (no_dupes if strict else None))
         except ValueError as e:
             return False, str(e)[:300]
+
+    def top_keys(raw):
+        """A YAML mapping's top-level keys, in order and with their repeats."""
+        ok, pairs = parse(raw, "yaml", False, hook=lambda pairs: pairs)
+        return [k for k, _ in pairs] if ok and isinstance(pairs, list) else []
 
     KIND = {"file": "a file", "symlink": "a symlink", "other": "not a regular file", "absent": "absent"}
 
@@ -1219,7 +1331,13 @@ tool lot_verify:
                 unreadable("the contract at the base %s is not a mapping" % base[:12])
             if not isinstance(h, dict):
                 return ["the plan is no longer a mapping"]
-            return plan_rewrites(b, h)
+            causes = plan_rewrites(b, h)
+            # Every reader takes `suites` once, strictly — plan_read refuses a
+            # contract that declares it twice — whatever the base's other keys
+            # allow.
+            if not strict and top_keys(t_raw).count("suites") > 1:
+                causes.append("top-level suites declared more than once")
+            return causes
         if rule == "register":
             return register_rewrites(b, h)
         return [] if same(b, h) else name_changes(b, h)
@@ -1559,13 +1677,15 @@ tool lot_verify:
             return resolve_in_tree(nxt + ("/" + rest if rest else ""), tree, hops + 1)
         return None
 
-    def banked_tree():
+    def banked_tree(failed=None):
         """The tree the engine's wip bank would commit here: the index as the
         bank's staging rebuilds it from the working tree (the tree noise
         excluded), staged into a scratch index of this node's own. On a cloud
         run nothing banks; HEAD is pushed as the verdict's node left it — the
         record is required in both trees, so a record the run's own tree
-        would drop from the landing fails wherever it lands."""
+        would drop from the landing fails wherever it lands. A staging git
+        refuses — a nested repository with no commit, a file it cannot read —
+        is `failed(why)`'s to report when given, CONTRACT_UNREADABLE when not."""
         import shutil
         import tempfile
         real = git_bytes("rev-parse", "--git-path", "index")
@@ -1574,8 +1694,17 @@ tool lot_verify:
         idx_path = os.fsdecode(real.stdout.strip())
         if not os.path.isabs(idx_path):
             idx_path = os.path.join(ws, idx_path)
-        scratch = os.path.join(tempfile.mkdtemp(prefix="modernize-bank-"), "index")
-        shutil.copyfile(idx_path, scratch)
+        scratch_parent = tempfile.mkdtemp(prefix="modernize-bank-")
+        if os.path.realpath(scratch_parent).startswith(os.path.realpath(ws) + os.sep):
+            # A TMPDIR inside the workspace would put the scratch index under
+            # `git add -A -- :/` itself: relocate, next to the workspace.
+            shutil.rmtree(scratch_parent, ignore_errors=True)
+            scratch_parent = tempfile.mkdtemp(prefix="modernize-bank-",
+                                              dir=os.path.dirname(os.path.realpath(ws)) or "/")
+        scratch = os.path.join(scratch_parent, "index")
+        # copy2: git's racy-entry check compares a file's mtime with the
+        # index's own, and a copy stamped "now" would trust a same-second edit.
+        shutil.copy2(idx_path, scratch)
         # The same options the engine's own git runs with, and the same
         # exclusions its bank stages with ($ITERION_TREE_NOISE, the mirror and
         # the derivable noise): staging the bank's tree is an iterion gesture,
@@ -1613,8 +1742,12 @@ tool lot_verify:
             add_args.append(spec)
         add = subprocess.run(add_args, env=env, capture_output=True, timeout=300)
         if add.returncode != 0:
-            unreadable("cannot stage the working tree as the bank would (%s): %s"
-                       % (plan_rel, add.stderr.decode("utf-8", "replace")[-300:]))
+            why = ("cannot stage the working tree as the bank would (%s): %s"
+                   % (plan_rel, add.stderr.decode("utf-8", "replace")[-300:]))
+            if failed:
+                shutil.rmtree(os.path.dirname(scratch), ignore_errors=True)
+                return failed(why)
+            unreadable(why)
         tree = subprocess.run(["git", "-C", ws, "-c", "core.hooksPath=/dev/null",
                                "-c", "core.fsmonitor=false", "write-tree"], env=env,
                               capture_output=True, timeout=120)
@@ -1752,24 +1885,47 @@ tool lot_verify:
         emit()
         raise SystemExit(0)
 
-    def run(cmd, timeout=None):
-        """(exit code, tail, full stdout). An expiry returns (None, tail, "") —
+    def run(cmd, timeout=None, keep_stdout=False):
+        """(exit code, tail, stdout). An expiry returns (None, tail, "") —
         the caller records it as the GATE_TIMEOUT verdict; raised, it was a
         tool error the engine retried once (the same hour replayed) before
         failed_resumable. The tail is the last 4000 characters of stdout then
         stderr; a reader that needs one whole line of stdout (the oracle's
-        report) takes it from the third value, never from the tail."""
+        report) asks for it (`keep_stdout`) and takes it from the third value,
+        never from the tail.
+        The output goes to files, not to memory — a test suite's log can run
+        to gigabytes — and an expiry kills the command's whole process group:
+        killing the shell alone leaves what it started writing to the tree."""
+        import signal
+        import tempfile
         started = time.monotonic()
-        try:
-            p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
-                               text=True, timeout=timeout or gate_timeout)
-        except subprocess.TimeoutExpired as e:
-            def text_of(v):
-                return v.decode("utf-8", "replace") if isinstance(v, bytes) else (v or "")
-            tail = (text_of(e.stdout) + text_of(e.stderr))[-4000:]
-            return None, "exceeded gate_timeout_s=%d after %ds; last output:\n%s" % (
-                timeout or gate_timeout, int(time.monotonic() - started), tail), ""
-        return p.returncode, (p.stdout + p.stderr)[-4000:], p.stdout
+        wall = timeout or gate_timeout
+        with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+            p = subprocess.Popen(cmd, shell=True, cwd=ws, stdout=out_f, stderr=err_f,
+                                 start_new_session=True)
+            try:
+                code = p.wait(timeout=wall)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                p.wait()
+                code = None
+
+            def last(f):
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 4000))
+                return f.read().decode("utf-8", "replace")
+            tail = (last(out_f) + last(err_f))[-4000:]
+            if code is None:
+                return None, "exceeded gate_timeout_s=%d after %ds; last output:\n%s" % (
+                    wall, int(time.monotonic() - started), tail), ""
+            stdout = ""
+            if keep_stdout:
+                out_f.seek(0)
+                stdout = out_f.read().decode("utf-8", "replace")
+            return code, tail, stdout
 
     def timed_out(what, cmd, log):
         # Not a `lot_blocked` stop: that one ends the run `finished`, and a
@@ -1892,13 +2048,105 @@ tool lot_verify:
     # carry one — must not outrank the credential this run installed. A gate
     # judging against an identity nobody installed, and saying nothing about
     # it, is the silent pass this whole verdict exists to prevent.
+    # The suites judge what lands. They run on the working tree, and `done`
+    # lands HEAD — a cloud run pushes it as it is — so work the lot left
+    # uncommitted would let them pass on a tree no landing carries. Measured
+    # before any gate command, whose own output is not the lot's work, as the
+    # engine's bank would stage the tree (its noise excluded); the contract's
+    # directory and the net have checks of their own.
+    # The net's directory, the references' parent as step 3 reads it.
+    net_dir = os.path.dirname(os.path.normpath({{input.refs_dir}}))
+    owned = [d for d in (contract_dir, net_dir) if d and d != "."]
+    mine = lambda path: any(path == d or path.startswith(d + "/") for d in owned)
+
+    def flagged_paths():
+        """The paths whose index entry `git add`, `git diff` and `git status`
+        trust instead of the working tree — flagged assume-unchanged or
+        skip-worktree: whatever the working tree holds there, an edit or a
+        deletion, no commit stores and no diff shows. Left out: a sparse
+        checkout's skip-worktree entries absent from the disk, which is where
+        a sparse checkout keeps them."""
+        lv = git_bytes("ls-files", "-v", "-z")
+        if lv.returncode != 0:
+            git_fail("read the index flags for", plan_file, lv)
+        out = set()
+        for e in lv.stdout.split(b"\0"):
+            if len(e) > 2:
+                tag, path = e[:1].decode(), os.fsdecode(e[2:])
+                if tag in ("S", "s") or tag.islower():
+                    out.add(path)
+        return sorted(out)
+
+    def unlanded_work():
+        """What of the lot's working tree no landing carries: (paths,
+        submodules, unstageable). `paths`: a tracked path that differs from
+        HEAD, as the bank would stage it or behind an index flag that hides
+        it from the bank, and an untracked file git does not ignore.
+        `submodules`: a submodule with work of its own. `unstageable`: why
+        git refused to stage the tree as the bank would, when it refused."""
+        head = git_bytes("rev-parse", "--verify", "HEAD^{tree}")
+        if head.returncode != 0:
+            git_fail("read HEAD's tree for", plan_file, head)
+        committed = tree_entries_full(head.stdout.decode().strip())
+        refused = []
+        staged = banked_tree(failed=refused.append)
+        if staged is None:
+            return [], [], refused[0]
+        paths = {p for p in set(committed) | set(staged)
+                 if not mine(p) and committed.get(p) != staged.get(p)}
+        paths.update(p for p in flagged_paths() if not mine(p))
+        sub = git_bytes("-c", "core.quotePath=false", "status", "--untracked-files=no", "--porcelain",
+                        "-z", "--ignore-submodules=none")
+        if sub.returncode != 0:
+            git_fail("read the working tree's state for", plan_file, sub)
+        subs = set()
+        for e in sub.stdout.split(b"\0"):
+            path = os.fsdecode(e[3:]) if len(e) > 3 else ""
+            if path and committed.get(path, ("",))[0] == "160000" and not mine(path):
+                subs.add(path)
+        return sorted(paths - subs), sorted(subs), ""
+
+    def unlanded_causes(paths, subs, unstageable):
+        """The refusal's words, the ways out named."""
+        if unstageable:
+            return ("%s. A nested repository with no commit, or a file git cannot read, stops "
+                    "the bank too: remove it, or git-ignore it, in a commit." % unstageable)
+        causes = []
+        if paths:
+            causes.append(
+                "%d path(s) are not committed (%s%s). `done` lands HEAD. Commit them if they "
+                "are the lot's work; if they are a build's or a test run's output, git-ignore "
+                "them, in a commit; clear an index flag (assume-unchanged, skip-worktree) that "
+                "hides a change." % (len(paths), ", ".join(paths[:8]), ", …" if len(paths) > 8 else ""))
+        if subs:
+            causes.append(
+                "%d submodule(s) hold work of their own (%s): commit it in the submodule and "
+                "the new commit here, or git-ignore it in the submodule's own .gitignore — an "
+                "ignore rule of this repository does not reach into a submodule."
+                % (len(subs), ", ".join(subs[:8])))
+        return " ".join(causes)
+
+    # The suites judge what lands, so a tree whose work is not committed is
+    # refused HERE, before any gate command: the gate and the oracle would
+    # spend their hours on a lot whose suites cannot be judged. The rest of
+    # the verdict — the references, the extension certificate, what lands —
+    # is still judged below: this refusal must not hide one of theirs.
+    unjudgeable = False
+    if suite_cmds:
+        paths, subs, unstageable = unlanded_work()
+        if paths or subs or unstageable:
+            unjudgeable = True
+            problems.append("the repository's suites cannot judge this tree, and the gate, the "
+                            "suites and the oracle did not run: %s"
+                            % unlanded_causes(paths, subs, unstageable))
+
     _deploy_credential = {{secrets.deploy_credential}}
     if isinstance(_deploy_credential, str) and os.path.isfile(_deploy_credential):
         os.environ["DEPLOY_CREDENTIAL"] = _deploy_credential
 
     # 1. The lot's own gate, every command, in order.
-    report["gate_passed"] = True
-    for cmd in gate_cmds:
+    report["gate_passed"] = not unjudgeable
+    for cmd in ([] if unjudgeable else gate_cmds):
         code, log, _ = run(cmd)
         if code is None:
             report["gate_passed"] = False
@@ -1909,13 +2157,67 @@ tool lot_verify:
             problems.append("exit_gate command failed (exit %d): %s\n%s" % (code, cmd, log))
             break
 
+    # 1b. The repository's suites, declared once for every lot, under the same
+    #     wall — once the lot's own gate is green: a red gate goes back to the
+    #     worker with its own failure, which a suite's log would push out of
+    #     the tail, and a suite that hangs on a broken build would turn a
+    #     repairable red into the wall's terminal verdict. Never on a tree that
+    #     does not land.
+    #     The tree was measured before the gate: a gate command may since have
+    #     rewritten a tracked path or written a new one — a formatter, an
+    #     install that rewrites a lockfile, generated code — and the suites
+    #     would judge that.
+    suites_ran = False
+    after = unlanded_work() if report["gate_passed"] and suite_cmds else ([], [], "")
+    if any(after):
+        problems.append("the repository's suites were not run: the gate commands left a tree "
+                        "no landing carries — make the gate leave the tree as it found it. %s"
+                        % unlanded_causes(*after))
+    elif report["gate_passed"]:
+        report["suites_passed"] = True
+        for cmd in suite_cmds:
+            code, log, _ = run(cmd)
+            if code is None and report["lot_blocked"]:
+                # The worker declared the lot blocked: it stops as such, and a
+                # wall its suites ran into is not its verdict.
+                report["suites_passed"] = False
+                problems.append("suites command `%s` outlived gate_timeout_s on a lot declared "
+                                "blocked.\n%s" % (cmd, log[-1500:]))
+                break
+            if code is None:
+                report["suites_passed"] = False
+                timed_out("suites command", cmd, log)
+                break
+            if code != 0:
+                report["suites_passed"] = False
+                suites_ran = True
+                problems.append("suites command failed (exit %d): %s — one of the repository's own "
+                                "test suites, run at every lot's gate, is red on this tree: this lot's "
+                                "change broke it, or it was already red at the base %s.\n%s"
+                                % (code, cmd, base[:12], log[-1500:]))
+                break
+    elif suite_cmds and not report["gate_timed_out"] and not unjudgeable:
+        problems.append("the repository's suites were not run: the lot's own exit gate is red, "
+                        "and they run once it passes.")
+    # A lot the worker declared blocked stops whatever its suites say, and its
+    # stop says so — so the lot after it is not told it broke them.
+    if report["lot_blocked"] and suite_cmds and not report["suites_passed"]:
+        report["block_reason"] += (" — and the repository's suites are red on this tree" if suites_ran
+                                   else " — and the repository's suites were not run on it: its tree "
+                                   "is not what lands" if unjudgeable
+                                   else " — and the repository's suites were not run: its own gate is red"
+                                   if not report["gate_passed"]
+                                   else " — and the repository's suites were not run to the end on it")
+
     # 2. The behavioural oracle, replayed. Absent is NOT a pass: a lot verified
     #    without the net is a lot verified against nothing, and reporting that
     #    as success is the failure this whole programme exists to prevent.
     verify = os.path.join(ws, ".golden-master", "verify-oracle.sh")
     if report["gate_timed_out"]:
-        problems.append("the behavioural oracle was not replayed: the exit gate expired first, "
+        problems.append("the behavioural oracle was not replayed: a gate command expired first, "
                         "and the run ends on that wall.")
+    elif unjudgeable:
+        pass  # refused above, with its cause: the oracle's hours wait for a tree that lands
     elif not os.path.isfile(verify):
         problems.append("no behavioural oracle at %s. Build the net before "
                         "modernising against it — a green build proves the code "
@@ -1941,7 +2243,7 @@ tool lot_verify:
                            % os.path.dirname(report_tmp))
         else:
             os.environ["GM_REPORT_TMP"] = report_tmp
-            code, log, out = run(verify)
+            code, log, out = run(verify, keep_stdout=True)
             if os.path.exists(report_tmp):
                 os.unlink(report_tmp)
             # The report is read from the wrapper's FULL stdout: the log tail
@@ -2276,6 +2578,19 @@ tool lot_verify:
                    or "no output")[:300])
             report["refs_untouched"] = False
 
+    # 3b. A path of the net flagged in the index (assume-unchanged,
+    #     skip-worktree) is one every diff above trusts the index for: a
+    #     reference rewritten behind the flag reads as untouched.
+    if refs_dir:
+        net_scope = net_dir or os.path.normpath({{input.refs_dir}})
+        net_flagged = [p for p in flagged_paths()
+                       if p == net_scope or p.startswith(net_scope + "/")]
+        if net_flagged:
+            report["refs_untouched"] = False
+            problems.append("%d path(s) under the net are flagged in the index (%s): a change "
+                            "behind an assume-unchanged or skip-worktree flag escapes every diff "
+                            "— clear the flag." % (len(net_flagged), ", ".join(net_flagged[:8])))
+
     # 4. What lands, judged again after every command this node ran. The
     #    exit_gate commands are the lot's code and the net's harness ran after
     #    the check above: either can rewrite the contract, commit it, or leave
@@ -2289,8 +2604,12 @@ tool lot_verify:
     #     judged on what lands: the commands read the working tree, and on a
     #     cloud run HEAD alone is the landing.
     if report["gate_passed"]:
-        unlanded = records_unlanded(judged_head, judged_head_tree, banked_tree())
-        if unlanded:
+        unstaged = []
+        unlanded = records_unlanded(judged_head, judged_head_tree, banked_tree(failed=unstaged.append))
+        if unstaged:
+            report["gate_passed"] = False
+            problems.append("the landing could not be re-judged, and nothing ran: %s" % unstaged[0])
+        elif unlanded:
             report["gate_passed"] = False
             problems.extend(unlanded)
     if record_landing(done_in, rewritten, "After the gate commands") and not (
@@ -2299,6 +2618,22 @@ tool lot_verify:
         # silent oracle or a forged act keep theirs. Anything else here is a
         # worker-declared stop the refusal voids.
         report["block_reason"] = ""
+
+    # The suites judged a tree measured before them; the oracle ran after.
+    # What any command of this node left behind — the net's app rewriting a
+    # tracked file, a gate's backgrounded child writing late — is measured
+    # once more, on the way out: a green suites verdict over a tree that
+    # changed since is not a verdict over what lands.
+    if suite_cmds and report["suites_passed"] and not report["gate_timed_out"]:
+        paths, subs, unstageable = unlanded_work()
+        if paths or subs or unstageable:
+            report["gate_passed"] = False
+            report["suites_passed"] = False
+            if report["lot_blocked"]:
+                report["block_reason"] += " — and the repository's suites were not run on it: its tree changed under them"
+            problems.append("the repository's suites cannot judge this tree any more: it changed after "
+                            "they ran, and what would land is not what they judged. %s"
+                            % unlanded_causes(paths, subs, unstageable))
 
     report["log_tail"] = "\n".join(problems)[-6000:]
     emit()
@@ -2695,8 +3030,16 @@ tool mark_done:
     blob = git("hash-object", "-w", "--stdin", input=committed_text).stdout.strip()
     if not blob:
         refuse("git hash-object failed — nothing committed.")
+    import shutil
     import tempfile
-    tmp_index = tempfile.mktemp(prefix="modernize-index-")
+    # Same class as banked_tree's scratch: a TMPDIR resolving inside the
+    # workspace would leave the index where a later `git add -A` stages it.
+    index_parent = tempfile.mkdtemp(prefix="modernize-index-")
+    if os.path.realpath(index_parent).startswith(os.path.realpath(ws) + os.sep):
+        shutil.rmtree(index_parent, ignore_errors=True)
+        index_parent = tempfile.mkdtemp(prefix="modernize-index-",
+                                        dir=os.path.dirname(os.path.realpath(ws)) or "/")
+    tmp_index = os.path.join(index_parent, "index")
     env = dict(os.environ, GIT_INDEX_FILE=tmp_index)
     try:
         if git("read-tree", head_sha, env=env).returncode != 0:
@@ -2705,8 +3048,7 @@ tool mark_done:
             refuse("git update-index failed — nothing committed.")
         tree = git("write-tree", env=env).stdout.strip()
     finally:
-        if os.path.exists(tmp_index):
-            os.unlink(tmp_index)
+        shutil.rmtree(index_parent, ignore_errors=True)
     c = git("-c", "user.name=iterion-modernize", "-c", "user.email=modernize@iterion.local",
             "commit-tree", tree, "-p", head_sha, "-m", subject)
     if c.returncode != 0:
@@ -2750,8 +3092,8 @@ compute work_gate:
 compute lot_gate:
   output: gate_state
   expr:
-    converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched && length(outputs.lot_verify.contract_rewritten) == 0 && !outputs.lot_verify.done_self_written"
-    stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched && length(outputs.lot_verify.contract_rewritten) == 0 && !outputs.lot_verify.done_self_written) || outputs.lot_verify.lot_blocked"
+    converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.suites_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched && length(outputs.lot_verify.contract_rewritten) == 0 && !outputs.lot_verify.done_self_written"
+    stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.suites_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched && length(outputs.lot_verify.contract_rewritten) == 0 && !outputs.lot_verify.done_self_written) || outputs.lot_verify.lot_blocked"
     refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0 || outputs.lot_verify.extension_forged"
     ## Its own term, because it takes its own door: a refusal no pass can
     ## repair must not be paid for max_passes times (see the edge below).

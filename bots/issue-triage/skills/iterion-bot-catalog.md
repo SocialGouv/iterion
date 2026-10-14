@@ -763,10 +763,11 @@ It holds NO knowledge of any build tool or runtime. Every command it runs is
 declared in the target repository's own `.modernize/plan.yaml`, which keeps
 the bot universal and lets a human audit the programme without reading it.
 
-A lot is done if and only if three things hold together, as a conjunction and
-never as a score: its declared exit_gate exits 0 on HEAD, the behavioural
-oracle replays green, and NOT ONE line changed under the oracle's reference
-directory. That third check is the separation of powers, verified in git
+A lot is done if and only if four things hold together, as a conjunction and
+never as a score: its declared exit_gate exits 0 on HEAD, the repository's
+own suites declared once in the contract pass, the behavioural oracle replays
+green, and NOT ONE line changed under the oracle's reference directory. That
+last check is the separation of powers, verified in git
 rather than trusted — the party that changes the code must not be able to
 redefine what judges it, because a golden master dies by re-baselining. The
 `status` field an agent writes is read as a bookmark and never as evidence.

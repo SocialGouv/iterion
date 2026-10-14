@@ -13,10 +13,10 @@ The bundles under `bots/`, then the skills they carry.
 | `adr-rechallenge` | ⚖️ ReArchi | Human-in-the-loop ADR re-challenge. | 0.1.3 |
 | `app-dev` | 🏗️ Appy | Autonomous end-to-end APPLICATION development from a prompt — greenfield. | 0.4.4 |
 | `arbitrate` | ⚖️ Themis | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 0.1.4 |
-| `assessment` | 🧭 Assessy | Assesses a repository at the START of a modernisation campaign and writes the contract the execution bot then carries out: the state of the… | 0.1.2 |
+| `assessment` | 🧭 Assessy | Assesses a repository at the START of a modernisation campaign and writes the contract the execution bot then carries out: the state of the… | 0.1.3 |
 | `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 0.1.4 |
 | `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1.9.7 |
-| `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 0.1.2 |
+| `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 0.1.3 |
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.11 |
 | `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.11.0 |
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 0.1.4 |
@@ -30,7 +30,7 @@ The bundles under `bots/`, then the skills they carry.
 | `golden-master` | 🪞 Goldy | Builds a behavioural non-regression net for an EXISTING application, and PROVES it is not blind. | 0.1.6 |
 | `instrument` | 📡 Obsy | Observability instrumentation campaign — one capable agent wires a repo for error tracking and standardized logs, one verified semantic… | 0.2.3 |
 | `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 0.2.3 |
-| `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.6.0 |
+| `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.7.0 |
 | `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (a scheduled tick, zero LLM in this slice — the compiled workflow contains no agent or… | 0.3.0 |
 | `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.5.2 |
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.1.6 |

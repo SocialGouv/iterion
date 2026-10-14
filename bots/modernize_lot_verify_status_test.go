@@ -13,6 +13,7 @@ import (
 // modernizeLotVerifyOut is the subset of lot_verify's report the tests read.
 type modernizeLotVerifyOut struct {
 	GatePassed      bool           `json:"gate_passed"`
+	SuitesPassed    bool           `json:"suites_passed"`
 	OraclePassed    bool           `json:"oracle_passed"`
 	RefsUntouched   bool           `json:"refs_untouched"`
 	LotBlocked      bool           `json:"lot_blocked"`

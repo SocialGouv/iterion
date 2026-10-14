@@ -28,7 +28,7 @@ func modernizeStubs(exec *scenarioExecutor, verdict func(pass int) map[string]an
 	})
 	exec.on("lot_verify", func(_ map[string]any) (map[string]any, error) {
 		out := map[string]any{
-			"gate_passed": false, "oracle_passed": false, "refs_untouched": false,
+			"gate_passed": false, "suites_passed": false, "oracle_passed": false, "refs_untouched": false,
 			"refs_changed": []any{}, "lot_blocked": false, "block_reason": "",
 			"oracle_invalid": []any{}, "extension_pending": []any{},
 			"done_self_written": false, "contract_rewritten": []any{},
@@ -63,7 +63,7 @@ func TestModernize_ConvergedLotIsMarkedByTheGate(t *testing.T) {
 	t.Parallel()
 	exec := newScenarioExecutor()
 	modernizeStubs(exec, func(int) map[string]any {
-		return map[string]any{"gate_passed": true, "oracle_passed": true, "refs_untouched": true}
+		return map[string]any{"gate_passed": true, "suites_passed": true, "oracle_passed": true, "refs_untouched": true}
 	})
 	run := runModernize(t, exec, "run-mod-converged")
 	if run.Status != store.RunStatusFinished {
@@ -224,7 +224,7 @@ func TestModernize_RefusalsAreVerdicts(t *testing.T) {
 	t.Run("mark_done refused: failed, the lot's work banked", func(t *testing.T) {
 		exec := newScenarioExecutor()
 		modernizeStubs(exec, func(int) map[string]any {
-			return map[string]any{"gate_passed": true, "oracle_passed": true, "refs_untouched": true}
+			return map[string]any{"gate_passed": true, "suites_passed": true, "oracle_passed": true, "refs_untouched": true}
 		})
 		exec.on("mark_done", func(_ map[string]any) (map[string]any, error) {
 			return map[string]any{"marked": false, "commit": "", "notice": "lot L1: no `status:` line inside its block", "refused": true, "_tokens": 1}, nil
