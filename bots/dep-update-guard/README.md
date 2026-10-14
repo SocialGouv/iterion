@@ -42,7 +42,17 @@ verify_build   (agent, read-only)     capture the repo's real build+tests into a
 verify_run     (tool, GATE)           re-runs it; the REAL exit code decides. A
                                       precheck rejection (no script / a script that
                                       runs nothing) loops back as fix_verify(2)
-validate_gate  (compute, GATE)        green → commit ; red → hold_unstable
+validate_gate  (compute, GATE)        green → delivery_probe ; red → hold_unstable
+delivery_probe (tool, GATE)           can the runtime token push what `align` wrote?
+                                      HEAD..worktree plus what HEAD adds on top of
+                                      origin/<branch> (never the bump, already on the
+                                      remote); a workflow file whose delivery is
+                                      REFUSED → hold_delivery_permission, no push; a
+                                      preflight that did not answer → the stand-down
+preflight_standdown (compute)         the one refusal that publishes nothing: no
+                                      comment, no gate, arm_automerge still asked to
+                                      take a previous pass's arming down, run ends
+                                      FORGE_PREFLIGHT_UNAVAILABLE
 commit         (agent)                commit + push the alignment onto the PR branch
 commit_check   (compute, GATE)        reads the shas, not the agent's claim:
                                       committed | clean | hold_lost_alignment
@@ -55,8 +65,40 @@ done
 
 Code is committed **only** when the audit verdict is `safe` **and** the
 deterministic verify gate is green; a not-safe bump or a red build
-short-circuits to a hold comment. The six verdicts are `hold_security`,
-`needs_decision`, `hold_unstable`, `hold_lost_alignment`, `committed`, `clean`.
+short-circuits to a hold comment. The seven verdicts are `hold_security`,
+`needs_decision`, `hold_unstable`, `hold_lost_alignment`,
+`hold_delivery_permission`, `committed`, `clean`. The last hold is also typed on
+the run (`FORGE_PERMISSION_DENIED`, the named `delivery_permission_denied` fail
+node) once the comment, the gate and `arm_automerge` have run. It needs an
+ANSWERED refusal — the preflight's verdict, or the forge API's scope list — and
+its cure is an operator's, the probe's reason saying which: a permission the App
+does not hold — approve the delivery permissions, refresh its token, relaunch; a
+classic token short of a scope — reissue it as the reason names, relaunch.
+
+A question **nobody answered** is a different refusal and reaches none of those
+seven: any shape of no-response — a refused or dropped connection, a timeout, a
+status the endpoint never answers verdicts with, a body short, over-long,
+unparseable or missing the verdict fields — is asked once more after a pause and
+then ends the run `FORGE_PREFLIGHT_UNAVAILABLE` (the `delivery_preflight_unavailable`
+fail node), with **no comment and no verdict published** and `arm_automerge`
+ASKED to take down an arming an earlier pass placed (off by default, where the
+forge is deliberately not touched and an operator's own arming survives; the
+node's own verdict value there is `preflight_unavailable`). A service that did
+not answer proves nothing about the credential, so no blocking verdict about one
+is published, and the cure is the one the run's reason names: a relaunch once
+the service answers, or the configuration gap it names (no delivery-capable
+credential mounted, a server with no preflight, a pull request URL that names
+another repository or no pull request at all).
+
+What the pull request DOES carry on that path is iterion closing its own
+merge-gate claim: the launch posts a pending status in the repo's `gate_context`
+([pkg/server/forge_gate_pending.go](../../pkg/server/forge_gate_pending.go)) and
+no verdict replaces it, so the reconciler answers it with a synthetic `failure`
+quoting this run's reason and its cure
+([pkg/server/forge_gate_reconcile.go](../../pkg/server/forge_gate_reconcile.go)).
+An operator reads a red `<gate_context>` saying `review died (…)` — iterion's
+own lane closing a claim it opened, never a statement about the dependency PR
+author's credential.
 
 Workflow block: `entry: prepare`; budget `max_parallel_branches: 1`,
 `max_duration: "4h"`, `max_cost_usd: 25`; `sandbox.image:
@@ -84,6 +126,7 @@ overridable via `VETTY_MODEL_*` / `VETTY_EFFORT_*` env vars.
 | `automerge_method` | string (enum: `squash`, `merge`, `rebase`) | `"squash"` | Merge method asked for when arming; must be one the repo allows |
 | `forge_publish_url` | string | `""` | Deterministic forge-publish grant, injected by the iterion server at launch; empty → direct comment, no gate |
 | `forge_publish_token` | string | `""` | Token for the publish endpoint above (server-injected) |
+| `forge_delivery_preflight_url` | string | `""` | Read-only delivery-permission proof endpoint (server-injected on the same launch); empty → a workflow-touching alignment is refused rather than pushed |
 | `scratch_dir` | string | `"${PROJECT_SCRATCH_DIR}/dep-update-guard"` | Out-of-tree scratch for the gate's `verify.sh` + log — never pollutes the PR branch |
 | `verify_timeout_s` | int | `1200` | Seconds the deterministic verify may run before it is called red (reported as exit 124, never a crashed node) |
 

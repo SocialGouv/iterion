@@ -242,6 +242,7 @@ func TestPorcelainReadersAreClassified(t *testing.T) {
 		"assessment/main.bot:commit:dirty = git(\"status\", \"--porcelain\", \"--untracked-files=all\", \"--\", *expected)":                                   "scoped by pathspec to the assessment's own outputs, which the scaffold never sits under",
 		"golden-master/extend.bot:extend_base:dirty = subprocess.run([\"git\", \"-C\", ws, \"status\", \"--porcelain\", \"-z\"],":                             "filtered where the -z tokens are parsed, below the window",
 		"branch-improve-loop/main.bot:delivery_probe:changed += git('ls-files', '--others', '--exclude-standard', '-z')":                                      "asks only whether a .github/workflows/ path changed",
+		"dep-update-guard/main.bot:delivery_probe:changed += git('ls-files', '--others', '--exclude-standard', '-z')":                                         "asks only whether a .github/workflows/ path changed",
 		"golden-master/main.bot:oracle_run:code, out = run(\"git --no-optional-locks status --porcelain\", ws, timeout=120)":                                  "a tree fingerprint, only ever compared with itself",
 		"golden-master/sync-harness.bot:sync_harness:code, out = run(\"git --no-optional-locks status --porcelain\", ws, timeout=120)":                        "a tree fingerprint, only ever compared with itself",
 		"golden-master/main.bot:oracle_run:p = subprocess.run([\"git\", \"-C\", ws, \"--no-optional-locks\", \"status\", \"--porcelain\", \"-z\"],":           "a path set compared before and after a mutant: the scaffold cancels",

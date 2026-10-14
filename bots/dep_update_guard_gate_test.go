@@ -59,7 +59,10 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 	// `null`, which no quoted value can stand in for.
 	runPageLit := ""
 	runID := "01a0dep"
-	run := func(t *testing.T, verdict, gateContext string, gateEnabled bool, pinOverride ...string) (published, map[string]any) {
+	// align is the "Code alignment" body a node maps in: empty on every
+	// verdict but the delivery hold, whose edge sends the probe's reason
+	// through align_summary.
+	run := func(t *testing.T, verdict, gateContext string, gateEnabled bool, align string, pinOverride ...string) (published, map[string]any) {
 		t.Helper()
 		var got published
 		var seen bool
@@ -97,7 +100,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.audit_summary}}":      `"audited"`,
 			"{{input.cves}}":               `""`,
 			"{{input.malware_signals}}":    `""`,
-			"{{input.align_summary}}":      `""`,
+			"{{input.align_summary}}":      strconv.Quote(align),
 			"{{input.validate_summary}}":   `""`,
 			"{{input.escalation}}":         `""`,
 			"{{input.commit_summary}}":     `""`,
@@ -147,7 +150,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 	// other's. A required check that asserts work nobody did is the same
 	// false-statement class this bot exists to catch in other people's diffs.
 	t.Run("clean: claims no alignment, never a commit", func(t *testing.T) {
-		got, _ := run(t, "clean", "iterion/review", true)
+		got, _ := run(t, "clean", "iterion/review", true, "")
 		if got.Gate == nil {
 			t.Fatal("no gate payload")
 		}
@@ -168,7 +171,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 	// the bump needed nothing — the operator's next move is to re-run Vetty,
 	// and nothing on the PR would have told them so.
 	t.Run("hold_lost_alignment: names the missing work, and blocks", func(t *testing.T) {
-		got, _ := run(t, "hold_lost_alignment", "iterion/review", true)
+		got, _ := run(t, "hold_lost_alignment", "iterion/review", true, "")
 		if got.Gate == nil {
 			t.Fatal("no gate payload")
 		}
@@ -204,7 +207,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 	// deployment that publishes no public address leaves the id alone — a
 	// root-relative link posted on a forge resolves against the FORGE.
 	t.Run("the comment links the run that wrote it", func(t *testing.T) {
-		pub, _ := run(t, "clean", "iterion/review", true)
+		pub, _ := run(t, "clean", "iterion/review", true, "")
 		want := "run [`" + runID + "`](" + runPage + ")"
 		if !strings.Contains(pub.Summary, want) {
 			t.Errorf("the comment does not link its run (%s):\n%s", want, pub.Summary)
@@ -213,7 +216,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		restore := runPage
 		runPage = ""
 		defer func() { runPage = restore }()
-		pub, _ = run(t, "clean", "iterion/review", true)
+		pub, _ = run(t, "clean", "iterion/review", true, "")
 		// The product reference stays (a constant, not this deployment's
 		// address); only the RUN link must be gone.
 		if strings.Contains(pub.Summary, "run [") {
@@ -234,7 +237,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		restore := runID
 		runID = "x](https:evil.example)"
 		defer func() { runID = restore }()
-		pub, _ := run(t, "clean", "iterion/review", true)
+		pub, _ := run(t, "clean", "iterion/review", true, "")
 		if strings.Contains(pub.Summary, "evil.example)") || strings.Contains(pub.Summary, "](https:evil") {
 			t.Errorf("the id was pasted into the footer and published a foreign link:\n%s", pub.Summary)
 		}
@@ -253,7 +256,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 	t.Run("an older engine degrades to the id, never a null address", func(t *testing.T) {
 		runPageLit = "null"
 		defer func() { runPageLit = "" }()
-		pub, _ := run(t, "clean", "iterion/review", true)
+		pub, _ := run(t, "clean", "iterion/review", true, "")
 		if strings.Contains(pub.Summary, "None") || strings.Contains(pub.Summary, "run [") {
 			t.Errorf("the unresolved reference was published as an address:\n%s", pub.Summary)
 		}
@@ -272,7 +275,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"a11ced0 (HEAD -> renovate/go-mods)", "HEAD", "none", "a11ced", "", "  ",
 		} {
 			t.Run(strconv.Quote(bad), func(t *testing.T) {
-				pub, _ := run(t, "committed", "iterion/review", true, bad)
+				pub, _ := run(t, "committed", "iterion/review", true, "", bad)
 				if pub.Gate == nil {
 					t.Fatal("the gate must still be requested — a bad pin costs the pin, not the check")
 				}
@@ -288,8 +291,118 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		}
 	})
 
+	// #1595: the delivery App cannot push .github/workflows/**, so an Actions
+	// bump whose alignment edits the workflow used to 403 at push and arrive
+	// as `hold_lost_alignment` — "the code alignment for this bump is missing
+	// from the branch". The operator then looks for work the bot lost instead
+	// of granting a permission. This verdict's whole job is to be readable:
+	// the cause, and whose move it is.
+	t.Run("hold_delivery_permission: names the permission, not a lost alignment", func(t *testing.T) {
+		got, _ := run(t, "hold_delivery_permission", "iterion/review", true, "")
+		if got.Gate == nil {
+			t.Fatal("no gate payload")
+		}
+		if got.Gate.BlockingCount == 0 {
+			t.Error("a bump whose alignment cannot be delivered must not be mergeable")
+		}
+		if strings.Contains(got.Gate.Note, "unrecognised verdict") {
+			t.Errorf("the gate does not know this verdict, so the check says nothing useful: %q", got.Gate.Note)
+		}
+		for _, want := range []string{"workflow", "permission"} {
+			if !strings.Contains(got.Gate.Note, want) {
+				t.Errorf("the check's note must name %q — a reviewer reads nothing else on the PR: %q", want, got.Gate.Note)
+			}
+		}
+		if strings.Contains(got.Gate.Note, "missing from the branch") {
+			t.Errorf("the check still reports a permission refusal as a lost alignment: %q", got.Gate.Note)
+		}
+		for _, want := range []string{".github/workflows/", "Nothing was committed", "refresh its token"} {
+			if !strings.Contains(got.Summary, want) {
+				t.Errorf("the comment must carry %q — it is the operator's whole next move:\n%s", want, got.Summary)
+			}
+		}
+		if strings.Contains(got.Summary, "ℹ️ Vetty review") {
+			t.Errorf("the comment falls back to the unknown-verdict badge:\n%s", got.Summary)
+		}
+	})
+
+	// TWO causes reach this verdict, and both are ANSWERED refusals — a
+	// permission the App does not hold (the preflight's verdict) and a
+	// classic token short of a scope (the forge API's scope list). Their
+	// cures differ: a grant the operator performs on the App, or a reissued
+	// token. A consumer text keyed on the VERDICT alone prescribes the grant
+	// for both, which sends the operator of a PAT connection after work they
+	// cannot perform — one cause reported as another, on a public pull
+	// request, by the one feature whose whole job is to stop doing that.
+	//
+	// The third cause this menu used to carry — a preflight that did not
+	// answer — can no longer reach a verdict at all: it ends the run as
+	// FORGE_PREFLIGHT_UNAVAILABLE and publishes nothing. A relaunch cure
+	// offered here would describe a hold that cannot happen, which is the
+	// stale half of a menu nobody re-reads.
+	t.Run("hold_delivery_permission: the comment carries BOTH answered cures, and no cure for a hold that cannot happen", func(t *testing.T) {
+		const grant = "Delivery refused before the push: workflows:write is missing or unverified on the " +
+			"runtime token; an operator must approve the App's delivery permissions, refresh its token and relaunch"
+		got, _ := run(t, "hold_delivery_permission", "iterion/review", true, grant)
+		for _, want := range []struct{ frag, why string }{
+			{"the delivery permission for it was refused", "the badge says what happened: the credential was asked and refused"},
+			{"refresh its token", "the grant cure, for a permission the App does not hold"},
+			{"reissue it", "the scope cure, for a runtime token the forge API answered about"},
+			{"applied by hand", "the manual path, which neither cure replaces"},
+		} {
+			if !strings.Contains(got.Summary, want.frag) {
+				t.Errorf("the comment does not carry %q — %s:\n%s", want.frag, want.why, got.Summary)
+			}
+		}
+		if strings.Contains(got.Summary, "once the service answers") {
+			t.Errorf("the comment offers the relaunch cure of a preflight that did not answer — a cause that reaches no verdict, so the menu sends the operator after an outage nobody had:\n%s", got.Summary)
+		}
+	})
+
+	// The third cause, as it arrives: the classic-token branch runs BEFORE the
+	// installation-token question and refuses a PAT carrying no `workflow`
+	// scope (forge.KindPAT is a first-class connection kind). Behind that
+	// refusal there is no App and no delivery permission to approve, so a
+	// comment offering only the grant and the relaunch sends that operator
+	// after work they cannot perform.
+	t.Run("hold_delivery_permission: a token short of a scope gets a cure it can perform", func(t *testing.T) {
+		const scope = "Delivery refused before the push: workflows:write is missing or unverified on the " +
+			"runtime token (classic scope: workflow); reissue the token with the workflow and repo scopes, " +
+			"then relaunch"
+		got, _ := run(t, "hold_delivery_permission", "iterion/review", true, scope)
+		if !strings.Contains(got.Summary, scope) {
+			t.Fatalf("the refusal the probe emitted does not reach the comment, so neither does its cure:\n%s", got.Summary)
+		}
+		if !strings.Contains(got.Summary, "reissue it") {
+			t.Errorf("the comment's cure menu skips the cause this refusal names — a PAT connection has no App to grant anything on:\n%s", got.Summary)
+		}
+	})
+
+	// align_summary renders under "## Code alignment", and the delivery hold
+	// is the one verdict whose edge maps a REASON through it. Pinned as a
+	// substring of the .bot source, that labelling proves the edge and not the
+	// render: a comment that dropped or relocated align_summary would stay
+	// green while the permission refusal read as a description of the
+	// alignment — the wrong-cause diagnosis in another costume.
+	t.Run("hold_delivery_permission: the probe's reason renders under Code alignment", func(t *testing.T) {
+		const reason = "Delivery refused before the push: workflows:write is missing or unverified on the runtime token"
+		const heading = "## Code alignment"
+		got, _ := run(t, "hold_delivery_permission", "iterion/review", true, reason)
+		at := strings.Index(got.Summary, heading)
+		if at < 0 {
+			t.Fatalf("no %q section rendered, so the probe's reason reaches the reader nowhere:\n%s", heading, got.Summary)
+		}
+		section := got.Summary[at+len(heading):]
+		if end := strings.Index(section, "\n## "); end >= 0 {
+			section = section[:end]
+		}
+		if !strings.Contains(section, reason) {
+			t.Errorf("the probe's reason does not render under %q:\n%s", heading, got.Summary)
+		}
+	})
+
 	t.Run("committed: says so, in the badge and the check", func(t *testing.T) {
-		got, _ := run(t, "committed", "iterion/review", true)
+		got, _ := run(t, "committed", "iterion/review", true, "")
 		if got.Gate == nil || !strings.Contains(got.Gate.Note, "alignment committed") {
 			t.Errorf("a real alignment must be stated in the check, got %+v", got.Gate)
 		}
@@ -308,13 +421,14 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		{"hold_unstable", true},
 		{"needs_decision", true},
 		{"hold_lost_alignment", true},
+		{"hold_delivery_permission", true},
 		// Not a verdict the graph can produce today. If one ever appears, the
 		// gate must refuse it rather than wave it through.
 		{"probably_fine", true},
 		{"", true},
 	} {
 		t.Run("verdict="+tc.verdict, func(t *testing.T) {
-			pub, res := run(t, tc.verdict, "iterion/review", true)
+			pub, res := run(t, tc.verdict, "iterion/review", true, "")
 			if pub.Gate == nil {
 				t.Fatal("no gate in the publish payload")
 			}
@@ -346,7 +460,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 	}
 
 	t.Run("unknown verdict says why it blocked", func(t *testing.T) {
-		pub, _ := run(t, "probably_fine", "iterion/review", true)
+		pub, _ := run(t, "probably_fine", "iterion/review", true, "")
 		if !strings.Contains(pub.Gate.Note, "fails closed") {
 			t.Errorf("an operator must be able to tell an unrecognised verdict from a real finding, got note %q", pub.Gate.Note)
 		}
@@ -417,7 +531,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 	})
 
 	t.Run("gate disabled publishes the review without a status", func(t *testing.T) {
-		pub, res := run(t, "committed", "iterion/review", false)
+		pub, res := run(t, "committed", "iterion/review", false, "")
 		if pub.Gate != nil {
 			t.Errorf("gate_enabled=false must post no status, got %+v", pub.Gate)
 		}

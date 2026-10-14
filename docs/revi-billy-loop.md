@@ -206,22 +206,49 @@ only its token digest to the read-only, repository/team/host-scoped
 `POST /api/v1/forge/delivery-preflight` callback under its existing run grant.
 No permission is added to the App automatically.
 
-A missing, expired, rotated or narrower proof refuses the run with
-`FORGE_PERMISSION_DENIED` before analysis. The operator can deliberately
+A missing, expired, rotated or narrower proof — a refusal the server
+ANSWERED — refuses the run with `FORGE_PERMISSION_DENIED` before analysis. The operator can deliberately
 approve delivery permissions on the App, refresh its managed token and
 launch a new run. Classic PAT/OAuth tokens can instead prove `workflow` plus
 repository scopes through the actual token's GitHub `/user` response.
 Fine-grained PATs and external App tokens without managed mint evidence
 remain unverified; their permission cannot be inferred from token syntax.
-A missing callback on an older server fails closed for workflow changes;
-ordinary code changes retain their path. This uses existing bot variables
+A question nobody answered is a different refusal, and the only one the
+probe can reach without a well-formed answer in hand: every shape of
+no-response — a refused or dropped connection, a timeout, a status the endpoint
+does not answer verdicts with, a body short, over-long, unparseable or missing
+the verdict fields — is asked once more after a pause and then ends the run
+`FORGE_PREFLIGHT_UNAVAILABLE`. The permission stays unknown, so no verdict
+about it is published, and the cure is the one the reason names — a relaunch
+once the service answers, or the configuration gap it names. What the pull
+request carries there is iterion's own merge-gate claim being closed: the
+launch posted a pending status in the repo's gate context and the reconciler
+answers it with a synthetic `failure` quoting the run's reason
+([pkg/server/forge_gate_reconcile.go](../pkg/server/forge_gate_reconcile.go)). The
+probe is written as the complement of that list rather than the list itself:
+only a WELL-FORMED answer (HTTP 200, a complete bounded body, the documented
+verdict fields) can produce the permission refusal, so a transport shape nobody
+foresaw cannot become one. A missing callback on an older server fails closed
+for workflow changes, as the service that did not answer; ordinary code changes
+retain their path. This uses existing bot variables
 and a deterministic tool, so no queue-version change is required.
 
 The check is an admission snapshot, not a guarantee against later credential
 revocation or newly authored workflow files. A later push/bank refusal still
 requires the bank failure alert tracked in #885 (PR #1194).
 
+The endpoint is bot-agnostic, and Vetty carries the same probe for its own
+delivery (#1595) — placed at COMMIT time, since what it must judge is what
+`align` wrote, and measuring what the run will push — `HEAD..worktree` plus
+what `HEAD` adds on top of `origin/<branch>` — instead of the branch, so the
+dependency bot's own workflow bump is not held. The DSL refuses a fragment
+outside a bot's `lib/`, so the node is a COPY, and
+`TestDeliveryProbeCopiesAreIdentical` discovers every carrier from the
+compiled bundles and pins the programs byte-identical.
+
 Proof: `TestFixerWorkflowDiffRefusesBeforeAnalysis` runs the compiled catalog
 workflow and real shell tools while counting forbidden analysis calls;
+`TestDepUpdateGuardDeliveryProbeJudgesTheAlignmentNotTheBump` runs Vetty's copy
+against a bumped repository and a stubbed callback, on both sides of the scope;
 `TestForgeDeliveryPreflightUsesActualTokenProof` covers the callback's scope
 and token binding. No live App permission was changed during validation.

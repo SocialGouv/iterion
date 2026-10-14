@@ -601,6 +601,12 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	}{
 		{"held bump", map[string]string{"{{input.verdict}}": `"hold_security"`}},
 		{"unstable build", map[string]string{"{{input.verdict}}": `"hold_unstable"`}},
+		{"alignment the credential may not push", map[string]string{"{{input.verdict}}": `"hold_delivery_permission"`}},
+		// The verdict preflight_standdown hands this node when the delivery
+		// preflight did not answer: no verdict was published, so this is the
+		// only thing standing between an arming an earlier pass placed and a
+		// merge of the bump without its alignment.
+		{"preflight that did not answer", map[string]string{"{{input.verdict}}": `"preflight_unavailable"`}},
 		{"red gate", map[string]string{"{{input.gate_state}}": `"failure"`}},
 		{"gate never landed", map[string]string{"{{input.gate_posted}}": "False"}},
 	} {
@@ -676,6 +682,8 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		{"unstable build", map[string]string{"{{input.verdict}}": `"hold_unstable"`}, "not green", false, ""},
 		{"pending human decision", map[string]string{"{{input.verdict}}": `"needs_decision"`}, "not green", false, ""},
 		{"alignment missing from the branch", map[string]string{"{{input.verdict}}": `"hold_lost_alignment"`}, "not green", false, ""},
+		{"alignment the credential may not push", map[string]string{"{{input.verdict}}": `"hold_delivery_permission"`}, "not green", false, ""},
+		{"preflight that did not answer", map[string]string{"{{input.verdict}}": `"preflight_unavailable"`}, "not green", false, ""},
 		{"unknown verdict", map[string]string{"{{input.verdict}}": `"probably_fine"`}, "not green", false, ""},
 		// A verdict whose status never reached the PR must not merge it: the
 		// gate is what the repo actually gates on.

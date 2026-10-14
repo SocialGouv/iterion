@@ -15,10 +15,10 @@ The bundles under `bots/`, then the skills they carry.
 | `arbitrate` | ⚖️ Themis | Judges the divergence cases a modernisation programme leaves blocked, by applying the target repository's own written arbitration doctrine… | 0.1.4 |
 | `assessment` | 🧭 Assessy | Assesses a repository at the START of a modernisation campaign and writes the contract the execution bot then carries out: the state of the… | 0.1.2 |
 | `bmady` | 🎭 Bmady | BMAD-METHOD-inspired agile delivery bot. | 0.1.4 |
-| `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1.9.3 |
+| `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1.9.5 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 0.1.2 |
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.11 |
-| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.9.5 |
+| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.11.0 |
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 0.1.4 |
 | `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.7.2 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 0.5.1 |

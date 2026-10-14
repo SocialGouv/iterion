@@ -1,7 +1,38 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.9.3
+version: 1.9.5
+## 1.9.5 — the delivery refusal needs an ANSWERED refusal. Only a WELL-FORMED
+## answer — HTTP 200, a body complete within its bound, the verdict fields the
+## preflight documents — or the forge API's own scope list ends the run
+## `FORGE_PERMISSION_DENIED`; every other outcome, foreseen or not (any
+## exception, any other status, a redirect, a timeout, a body short,
+## over-long, unparseable or missing a field), is one outcome asked once more
+## and then typed `FORGE_PREFLIGHT_UNAVAILABLE` on the new
+## `delivery_preflight_unavailable` node. A service that did not answer is no
+## credential to blame: the cure is the one its reason names — a relaunch
+## where the service went silent, a configuration change where it names one —
+## and an enumeration of an HTTP library's failure modes is a blacklist that
+## never converged (#1595). The forge exemption is read from the CREDENTIAL,
+## never from the shape of a URL — an installation token is minted by GitHub,
+## so a GHES pull request in the REST spelling GitHub and Forgejo share is
+## asked about instead of exempting itself — a framing RFC 7230 3.3.3 forbids
+## is not well-formed in any of its spellings, and a URL naming no pull
+## request is refused before the question.
+## 1.9.4 — the delivery preflight stops refusing what it cannot judge and
+## judges what the push carries: a Forgejo/Gitea pull and a GitLab merge
+## request without the `/-` separator are outside the GitHub workflows
+## permission (exempt, not refused), a pull URL with a path suffix is the
+## same pull request, owner/repo are compared case-insensitively as the
+## endpoint does, the delivery diff reads the INDEX, a credential that is
+## not an App installation token is not held for an App-only restriction,
+## and a question that got NO response — a refused, dropped, timed-out or
+## truncated one (a body cut mid-transfer under Content-Length included),
+## from the preflight or from the forge API — is asked once more and then
+## reported as the service, not as a missing permission. The forge API is
+## asked at the origin's own authority, so a GHES off 443 is no longer
+## declared unreachable without being asked, and a classic token short of
+## the `workflow` scope is refused with the cure it can perform (#1595).
 ## 1.9.3 — every body it posts on a forge ends with the run that wrote it:
 ## the evidence behind the text, and the way into the platform for a reader
 ## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)
