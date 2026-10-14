@@ -111,3 +111,11 @@ config_share:
 
 Reference: [docs/config-share.md](../config-share.md),
 [pkg/configshare/schema.go](../../pkg/configshare/schema.go) (`DeriveGrant`).
+
+## Status note (2026-10-14)
+
+The category existence check is no longer a follow-up: a derived,
+category-scoped mint runs a best-effort `ProjectedRead` and answers `400`
+"category … has no editable fields in …" on an empty projection, while a forge
+failure leaves the mint to proceed
+([pkg/server/config_shares_routes.go](../../pkg/server/config_shares_routes.go)).
