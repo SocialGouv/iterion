@@ -916,19 +916,13 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 			seed[name] = resolved
 		}
 	}
-	imageAttachs := map[string]bool{}
-	for name, a := range wf.Attachments {
-		if a != nil && a.Type == ir.AttachmentImage {
-			imageAttachs[name] = true
-		}
-	}
 	e := &ClawExecutor{
 		registry:           registry,
 		prompts:            wf.Prompts,
 		schemas:            wf.Schemas,
 		wfShapes:           WorkflowShapes(wf),
 		cursors:            wf.Cursors,
-		imageAttachs:       imageAttachs,
+		imageAttachs:       imageAttachmentNames(wf),
 		defaultBackend:     wf.DefaultBackend,
 		wfCompress:         wf.Compress,
 		compressEnvDefault: os.Getenv(rewrite.ModeEnv),

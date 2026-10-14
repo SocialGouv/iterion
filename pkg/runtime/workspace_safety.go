@@ -26,6 +26,12 @@ import (
 // "this reviewer only reads" with them. Dropping them would silently reclassify
 // those nodes as mutating and change parallel-branch admission, so they stay.
 //
+// The second vocabulary is advisory only where the ROUTE drops the list. codex
+// does not drop it — it picks a sandbox mode from it — and reads none of those
+// five names, nor `web_fetch`, as read-only: declaring them there buys the
+// workspace-write mode. This map answers what a NAME means to the engine,
+// never what a route makes of it; declarationIsNoBound asks the route.
+//
 // The claw names were missing until 2026-08, which made the C135 migration
 // (`list_files` → `glob`, `search_codebase` → `grep`) flip a read-only claw
 // reviewer to mutating — tightening admission for a rename that changed
@@ -334,12 +340,12 @@ func isMutatingNodeIn(wf *ir.Workflow, node ir.Node, defaultBackend string, reso
 		if n.Readonly {
 			return false
 		}
-		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver, surfaces, escalates, true, nil)
+		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver, surfaces, escalates, unnamedRouteUnread, nil)
 	case *ir.JudgeNode:
 		if n.Readonly {
 			return false
 		}
-		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver, surfaces, escalates, true, nil)
+		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver, surfaces, escalates, unnamedRouteUnread, nil)
 	}
 	return false
 }
@@ -351,11 +357,47 @@ func IsReadOnlyTool(name string) bool {
 	return readOnlyTools[name]
 }
 
-// ToolSurfaceCanWrite reports whether an agent/judge node's EFFECTIVE tool
-// surface can act on the workspace: `full_access:`, a declared tool outside
-// the read-only vocabulary, or an omitted `tools:` list on a backend where
-// omission means the full native toolset (a CLI delegate, or claw when a
-// `fallbacks:` route reaches one). Every other node kind reports false.
+// ToolSurfaceCanWrite reports whether an agent/judge node's DECLARATION, or
+// any route it may take, lets it act on the workspace. It is
+// ToolSurfaceWriteReason with the cause dropped: ONE walk answers both, so a
+// caller's message can never name an arm the verdict did not use — and it
+// carries the same blind spot, named there.
+func ToolSurfaceCanWrite(node ir.Node, defaultBackend string, lookup func(string) string) bool {
+	return ToolSurfaceWriteReason(node, defaultBackend, lookup) != ""
+}
+
+// ToolSurfaceWriteReason names what makes an agent/judge node's DECLARATION, or
+// a ROUTE it may take, a surface that can act on the workspace: `full_access:`,
+// a declared tool outside the read-only vocabulary, a route no `tools:` list
+// bounds, or an omitted list on a backend where omission means the full native
+// toolset (a CLI delegate, or claw when a `fallbacks:` route reaches one).
+// Every other node kind answers "".
+//
+// It answers "" where neither the declaration nor any route it may take lets
+// the node write — which is NOT the same as "the node cannot write". The
+// runtime's own appends widen a claw node's surface past what it declared:
+// `auto_memory: on` grants read_file/write_file/glob and ultracode grants the
+// unbounded `agent` subagent tool, both over a RESTRICTED `tools:` list
+// (pkg/backend/model.assembleEffectiveTools). On codex they add no writer and
+// do something else: the list picks a sandbox MODE, so `interaction:` putting
+// `ask_user` on a non-empty list, or `capabilities:` putting the board/runs
+// MCP tools there, buys the workspace-write mode where codex's built-in shell
+// acts on the worktree. They resolve outside the IR, so
+// only the question that holds an executor reads them, through the
+// effective-surface seam llmToolSurfaceCanWrite asks; a caller of this
+// predicate that must know what a node HOLDS reads that seam, and a claw node
+// restricting `tools:` with `auto_memory: on` — or a codex node restricting
+// them with `interaction:` — joins a boundary class by hand.
+//
+// A DECLARED list is read as no bound wherever the route cannot enforce it: pi,
+// kimi, grok and opencode never receive the list, and claude_code turns it into
+// `--disallowedTools` over a closed native roster iterion does not own. A
+// `fallbacks:` route onto one of those puts the node in whatever its primary
+// backend bounds — a pre-run reading is pessimistic over the whole chain. A
+// route no name resolves is read the same way — the compiled-in detection
+// order's first choice is claude_code (pkg/backend/detect) — and that is the
+// ONE cell where this question and shared-worktree admission differ, because
+// being wrong costs them different things (see unnamedRouteReading).
 //
 // `readonly:` is deliberately NOT consulted. The codex and pi delegates
 // enforce it as a sandbox mode; claude_code never reads it and runs under
@@ -368,19 +410,57 @@ func IsReadOnlyTool(name string) bool {
 // the process environment (what a run does), a lookup that returns "" for
 // every name reads the authored defaults alone (what a catalog guard wants,
 // so its verdict does not depend on the host it runs on).
-func ToolSurfaceCanWrite(node ir.Node, defaultBackend string, lookup func(string) string) bool {
+func ToolSurfaceWriteReason(node ir.Node, defaultBackend string, lookup func(string) string) string {
 	switch n := node.(type) {
 	case *ir.AgentNode:
-		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, nil, nil, false, false, lookup)
+		return llmDeclaredSurfaceWriteReason(node, n.LLMFields, n.Tools, defaultBackend, nil, unnamedRouteIsNoBound, lookup)
 	case *ir.JudgeNode:
-		return llmToolSurfaceCanWrite(node, n.LLMFields, n.Tools, defaultBackend, nil, nil, false, false, lookup)
+		return llmDeclaredSurfaceWriteReason(node, n.LLMFields, n.Tools, defaultBackend, nil, unnamedRouteIsNoBound, lookup)
 	}
-	return false
+	return ""
 }
 
-// llmToolSurfaceCanWrite is the readonly-free half of the agent/judge
-// classification, shared by ToolSurfaceCanWrite and isMutatingNodeCtx so the
-// two cannot drift on what "can write" means.
+// unnamedRouteReading is what a classification makes of a route no name
+// resolves — `backend: ""` or `backend: auto`, which dispatch resolves from the
+// host's own preference order.
+//
+// The two questions this file answers about a node read the same facts and
+// differ on that one cell, because being wrong there costs them different
+// things. For the catalog's prompt-injection contract the cost is one paragraph
+// in a system prompt, against a detection order whose first choice
+// (pkg/backend/detect.DefaultPreferenceOrder) is claude_code, a route no
+// `tools:` list bounds — so the route is read as unbounded. For shared-worktree
+// admission the cost is a fan-out refused that would have been safe, so an
+// unnamed route is left unread and the node is classified on what it declares.
+//
+// It is therefore a parameter of the QUESTION, passed by each entry point, and
+// never derived from what the engine's executor happens to implement: keyed on
+// the resolver, `iterion validate --exec --strict` — whose dry-run executor
+// answers the seam from the PROGRAM alone — answered OK on a workflow the same
+// tree kills at the router.
+type unnamedRouteReading bool
+
+const (
+	// unnamedRouteIsNoBound reads a route no name resolves as one that bounds
+	// no declaration.
+	unnamedRouteIsNoBound unnamedRouteReading = true
+	// unnamedRouteUnread leaves it unread: nothing here resolves it, and the
+	// classification stands on what the node declares.
+	unnamedRouteUnread unnamedRouteReading = false
+)
+
+// routeIsUnnamed reports whether a backend field names no route — the two
+// spellings dispatch resolves from the host: absent, and the explicit `auto`.
+func routeIsUnnamed(backend string) bool {
+	b := strings.TrimSpace(backend)
+	return b == "" || b == "auto"
+}
+
+// llmToolSurfaceCanWrite is the readonly-free agent/judge classification for
+// shared-worktree admission: the declaration and the route first — read by
+// llmDeclaredSurfaceWriteReason, shared with ToolSurfaceWriteReason so the two
+// questions cannot drift on what "can write" means — then the EFFECTIVE surface
+// the executor reports, an arm only this question has an answer for.
 func llmToolSurfaceCanWrite(
 	node ir.Node,
 	fields ir.LLMFields,
@@ -389,16 +469,11 @@ func llmToolSurfaceCanWrite(
 	resolver effectiveBackendResolver,
 	surfaces effectiveToolSurfaceResolver,
 	escalatesToUltracode bool,
-	sharedWorkspace bool,
+	unnamedRoute unnamedRouteReading,
 	lookup func(string) string,
 ) bool {
-	if fields.FullAccess || unrestrictedCLIBackendCanWrite(node, fields, tools, defaultBackend, resolver, lookup, sharedWorkspace) {
+	if llmDeclaredSurfaceWriteReason(node, fields, tools, defaultBackend, resolver, unnamedRoute, lookup) != "" {
 		return true
-	}
-	for _, t := range tools {
-		if !readOnlyTools[t] {
-			return true
-		}
 	}
 	// The declared list is not the list the node holds. `assembleEffectiveTools`
 	// folds the runtime's own opt-ins over it, and two of them widen the
@@ -415,12 +490,45 @@ func llmToolSurfaceCanWrite(
 	if surfaces == nil {
 		return false
 	}
-	for _, t := range surfaces.EffectiveToolNames(node, escalatesToUltracode) {
+	effective := surfaces.EffectiveToolNames(node, escalatesToUltracode)
+	for _, t := range effective {
 		if !toolIsWorkspaceSafe(t) {
 			return true
 		}
 	}
-	return false
+	// That loop reads the names with the ENGINE's vocabulary — a question
+	// channel and the board MCP tools touch no worktree — which is the right
+	// reading on claw and not the one codex takes: there the list picks a
+	// SANDBOX MODE, and one name its classifier does not know buys
+	// workspace-write, where the built-in shell acts on the worktree. The
+	// appends reach that reading: `interaction:` puts `ask_user` on a
+	// non-empty list, `capabilities:` the board/runs MCP tools, an image
+	// attachment `read_image`.
+	//
+	// So the route question is asked a second time over the list the route
+	// RECEIVES — the same walk and the same arms as the declared reading
+	// above, which is how a bound read from NAMES cannot be read from a list
+	// the node will not hold. It only ever adds: every arm that answers for
+	// the effective list answers for the declared one on a route whose bound
+	// does not depend on the names.
+	//
+	// The seam's answer is a UNION over every route the node may take, while
+	// this question is per route: a codex node with a `fallbacks:` route onto
+	// claw is asked about claw's appends too. That is sound only while every
+	// name the runtime appends on ONE route and treats as workspace-safe is
+	// also one codex sandboxes read-only. Measured, the names a route appends
+	// and the codex route does not receive are `todo_write`, and `read_file`
+	// and `glob` under `auto_memory:` — all three reads to codex.
+	//
+	// Pinned where the condition lives, which is the FIELDS an append is
+	// gated on, not a set of names: each field of the node is set in turn and
+	// the producer asked what every route then holds, so a claw-only append
+	// of a name codex sandboxes workspace-write fails instead of refusing a
+	// fan-out whose codex route never receives it —
+	// TestNoRouteAppendsAWorkspaceSafeNameTheCodexRouteDoesNotReceive.
+	// TestANameNoCodexRouteReceivesMustBeReadOnlyToCodex carries the per-name
+	// reading of nonWorkspaceTools — the names that reach this question at all.
+	return unrestrictedRouteWriteReason(node, fields, effective, defaultBackend, resolver, lookup, unnamedRoute) != ""
 }
 
 // The engine's LEAF executors answer both seams admission reads. Asserted at
@@ -438,30 +546,93 @@ var (
 	_ effectiveBackendResolver     = (*model.ClawExecutor)(nil)
 )
 
-func unrestrictedCLIBackendCanWrite(
+// llmDeclaredSurfaceWriteReason names what makes a node's own DECLARATION, or
+// the ROUTE it may take, a surface that can act on the workspace — and "" when
+// neither does. It is the half both questions share, so neither the verdict nor
+// the cause can drift between them.
+func llmDeclaredSurfaceWriteReason(
+	node ir.Node,
+	fields ir.LLMFields,
+	tools []string,
+	defaultBackend string,
+	resolver effectiveBackendResolver,
+	unnamedRoute unnamedRouteReading,
+	lookup func(string) string,
+) string {
+	if fields.FullAccess {
+		return "full_access"
+	}
+	// The author's own line first where there is one: a declared writer is what
+	// the node holds on every route, and naming a route rule instead sends the
+	// reader after a bound the verdict never needed.
+	var acting []string
+	for _, t := range tools {
+		if !readOnlyTools[t] {
+			acting = append(acting, t)
+		}
+	}
+	if len(acting) > 0 {
+		return "tools: " + strings.Join(acting, ", ")
+	}
+	return unrestrictedRouteWriteReason(node, fields, tools, defaultBackend, resolver, lookup, unnamedRoute)
+}
+
+// unrestrictedRouteWriteReason names what the node's ROUTE leaves unbounded —
+// the arms that hold whatever the declared list says, because the route cannot
+// enforce it or resolves too late to be read.
+func unrestrictedRouteWriteReason(
 	node ir.Node,
 	fields ir.LLMFields,
 	tools []string,
 	defaultBackend string,
 	resolver effectiveBackendResolver,
 	lookup func(string) string,
-	sharedWorkspace bool,
-) bool {
+	unnamedRoute unnamedRouteReading,
+) string {
+	// `authored` is the spelling that produced `backend`, carried alongside it
+	// for the message: a route read at an authored default that does not exist
+	// resolves to nothing, and quoting `backend ""` at an author who wrote
+	// `${ITERION_BACKEND}` sends them looking for a field they did not leave
+	// blank.
+	authored := strings.TrimSpace(fields.Backend)
 	backend := strings.TrimSpace(ir.ExpandWithDefault(fields.Backend, lookup))
+	// A `backend:` that NAMES a reference and resolves to nothing here has not
+	// left the route to the workflow default: at dispatch that same spelling is
+	// read against the host's environment FIRST and any name it answers wins,
+	// `default_backend:` answering only on a host that names none
+	// (model.ClawExecutor.resolveBackendName, steps 1-2). So the route is the
+	// host's to decide — the cell a `fallbacks:` route of this spelling already
+	// reaches, and the reading the compiler's own mirror of that precedence
+	// takes (ir.backendReader.effective substitutes the workflow default for an
+	// ABSENT or `auto` field, never for a reference it cannot answer). Reading
+	// it as the workflow default would trust exactly the route this walk cannot
+	// read: a `${VAR}` under `default_backend: claw` would be credited with
+	// claw's bound while the host may name claude_code.
+	unresolvedReference := backend == "" && authored != ""
 	if backend == "" {
+		if authored == "" {
+			authored = strings.TrimSpace(defaultBackend)
+		}
 		backend = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, lookup))
 	}
 	if resolver != nil {
 		if effective := strings.TrimSpace(resolver.EffectiveBackendName(node)); effective != "" {
-			backend = effective
+			backend, authored, unresolvedReference = effective, effective, false
 		}
 	}
+	// Answered before any arm below reads `backend`, which this spelling did
+	// not name. What a pre-run reading of a route nothing here resolves is
+	// worth is the caller's question (see unnamedRouteReading), and it is the
+	// one the `fallbacks:` walk asks for the same spelling.
+	if unresolvedReference && unnamedRoute == unnamedRouteIsNoBound {
+		return unnamedRouteNoBoundReason(authored, "")
+	}
 	// A `{{vars.…}}` backend the resolver did not read (a nil resolver, a
-	// stub) may be claw with a CLI route or a CLI backend outright:
-	// admission is decided once, before the run, so it is pessimistic —
-	// mutating — rather than read-only and eligible for a shared worktree.
+	// stub) may be claw with a CLI route or a CLI backend outright: both
+	// readings are decided once, before the run, so it is pessimistic —
+	// writing — rather than read-only and eligible for a shared worktree.
 	if strings.Contains(backend, "{{") {
-		return true
+		return "backend " + backend + " is unresolved before the run, so no route it may take bounds what the node holds"
 	}
 	// A DECLARED-EMPTY `tools: []` reaches exactly the verdict an undeclared
 	// list reaches, and that is deliberate: it is not a proof that the node
@@ -473,18 +644,23 @@ func unrestrictedCLIBackendCanWrite(
 	// every MCP tool do). On claw the runtime's own
 	// `interaction:` append puts `ask_user` back, and the appends below it
 	// `todo_write` and, under `auto_memory:`, `write_file` (C270 says so at
-	// compile time). The loop below cannot see any of it: it iterates the
-	// declared names, and there are none.
+	// compile time). The declared-name loop the caller runs before this one
+	// cannot see any of it: it iterates the declared names, and there are
+	// none.
 	//
 	// A claw→CLI route un-restricts the node's tool set WHATEVER it
-	// declared: under the always-on bypassPermissions, claude_code
-	// ignores the lowercase `tools:` list entirely and always carries
-	// the full native toolset. So this is checked BEFORE the
-	// list-based early return — a `tools: [read_file]` claw node with a
-	// CLI route still gains Edit/Write on fall-through, and admission
-	// happens once, before the run.
-	if backend == "claw" && fallbacksReachCLIBackend(node, lookup) {
-		return true
+	// declared: a claw list is the node's bound only on claw, which resolves
+	// its ToolDefs from it, and a route that leaves claw is read as taking
+	// that bound with it. So this is checked BEFORE the list-based early
+	// return — a `tools: [read_file]` claw node with a CLI route still gains
+	// Edit/Write on fall-through, and the reading happens once, before the
+	// run. What the route itself does with the list words the reason
+	// (clawCLIRouteWriteReason); the route question below answers for every
+	// claw node this arm does not.
+	if backend == "claw" {
+		if route := fallbackCLIBackendName(node, lookup); route != "" {
+			return clawCLIRouteWriteReason(route, tools)
+		}
 	}
 	// A declaration only bounds a route that can be bounded BY it, and two
 	// kinds cannot.
@@ -506,65 +682,138 @@ func unrestrictedCLIBackendCanWrite(
 	// scheduling assertion the engine already documents, honoured before this
 	// is ever reached — is how an author says otherwise.
 	//
-	// An unnamed backend is deliberately NOT included: `backend: ""` is
-	// resolved at dispatch, and a pre-run reading of it would be a guess.
-	// Widening that one is a separate question with its own measure.
+	// Whether an UNNAMED backend joins them is the caller's question to answer
+	// (see unnamedRouteReading): nothing here resolves `backend: ""`, so what a
+	// pre-run reading of it is worth depends on what being wrong costs.
 	//
 	// A DECLARED-EMPTY list is covered as well as a named one: reading the
 	// stricter declaration as safer than the looser one would invert the guard.
-	if (len(tools) > 0 || toolcatalog.ToolsDeclared(tools)) && routeDeclarationIsNoBound(node, backend, lookup, sharedWorkspace) {
-		return true
+	//
+	// ONE site asks the route question, for every node that reaches it. A claw
+	// node asks it whatever it declared — the spellings the arm above cannot
+	// resolve name no backend to report there, and leaving them to a
+	// list-shaped condition would answer "" for a claw node that declares NO
+	// list while the same node declaring one joins the class, a declaration
+	// coming out LOOSER than its absence. Asking twice is how the two arms
+	// drift apart: the first answers for every node the second would.
+	if backend == "claw" || len(tools) > 0 || toolcatalog.ToolsDeclared(tools) {
+		if reason := routeDeclarationIsNoBound(node, backend, authored, tools, lookup, unnamedRoute); reason != "" {
+			return reason
+		}
 	}
 	if len(tools) > 0 {
-		return false
+		return ""
 	}
-	if backend == "" || backend == "auto" {
-		return false
+	// An omitted list means the full native toolset on a CLI delegate and zero
+	// tools on claw, so an unnamed route decides nothing by itself and the
+	// caller's reading of it answers here too — the same cell as above, so a
+	// declaration cannot come out STRICTER than the absence of one.
+	if routeIsUnnamed(backend) {
+		if unnamedRoute == unnamedRouteIsNoBound {
+			return unnamedRouteNoBoundReason(authored, backend)
+		}
+		return ""
 	}
 	if backend != "claw" {
-		return true
+		// `tools: []` — the author declared a list, and "no `tools:` list
+		// declared" denies their own line. The verdict is the one an
+		// undeclared list reaches, deliberately (the walk above says why), so
+		// only the wording parts: it names which of the two the node wrote.
+		//
+		// What the verdict RESTS ON differs by route, and the message says
+		// which. On a route that reads omission as the full native toolset
+		// the two lists run the same tools. On codex they do not: the
+		// delegate sandboxes a DECLARED-empty list read-only
+		// (delegate.CodexDeclaredListIsReadOnly), so naming the native
+		// toolset there would state the opposite of the seam this walk reads
+		// — what the reading refuses to credit is that sandbox, decided
+		// before the runtime's own appends are.
+		if toolcatalog.ToolsDeclared(tools) {
+			if backend == delegate.BackendCodex {
+				return "`tools: []` on codex names no tool, which is no proof the node holds none: it reaches the verdict an undeclared list reaches, deliberately"
+			}
+			return "`tools: []` on " + backend + " names no tool, which is no proof the node holds none: it reaches the verdict an undeclared list reaches, the full native toolset"
+		}
+		return "no `tools:` list declared on " + backend + ", the full native toolset"
 	}
-	// The node resolves to claw, where an empty tools list means ZERO
-	// tools. But a `fallbacks:` route (ADR-087) on a CLI backend would
-	// run that same empty list as the FULL unrestricted native toolset
-	// under bypassPermissions — so a node admitted here as read-only
-	// could start writing the moment its chain falls through.
-	//
-	// Admission is decided ONCE, before the run, so it must be
-	// pessimistic over the WHOLE chain: mutating if ANY route would be.
-	// The cost is real and accepted — a tools-less claw node that
-	// declares a CLI route stops being eligible for parallel read-only
-	// fan-out — and it is the right trade against N concurrent writers
-	// racing on one worktree with every guard already passed.
-	return fallbacksReachCLIBackend(node, lookup)
+	// The node resolves to claw, where an omitted list means ZERO tools. The
+	// one route that would un-restrict it — a `fallbacks:` entry (ADR-087) on a
+	// CLI backend, which runs that same empty list as the full native toolset
+	// under bypassPermissions — is answered at the top of this walk, for every
+	// claw node and not only the tools-less ones.
+	return ""
 }
 
-// routeDeclarationIsNoBound reports whether the node's primary backend, or any
-// of its `fallbacks:` routes, runs somewhere a `tools:` declaration does not
-// bound what the node holds. An empty/auto name is not one: it is resolved at
-// dispatch and answered by the arm that follows.
-func routeDeclarationIsNoBound(node ir.Node, backend string, lookup func(string) string, sharedWorkspace bool) bool {
-	if declarationIsNoBound(backend, sharedWorkspace) {
-		return true
+// routeDeclarationIsNoBound names the node's primary backend, or the first of
+// its `fallbacks:` routes, that runs somewhere a `tools:` declaration does not
+// bound what the node holds — and "" when every route it may take bounds one.
+//
+// A route is read by the spelling its AUTHOR wrote, not only by what that
+// spelling expanded to: the three shapes below answer differently, and
+// collapsing them onto the expansion alone trusts the one route this walk
+// cannot read.
+//
+// The declared list travels WITH the node onto every route it may take, so it
+// is read against each of them: one route may bound those names and the next
+// one not (declarationIsNoBound).
+func routeDeclarationIsNoBound(node ir.Node, backend, authored string, tools []string, lookup func(string) string, unnamedRoute unnamedRouteReading) string {
+	if unnamedRoute == unnamedRouteIsNoBound && routeIsUnnamed(backend) {
+		return unnamedRouteNoBoundReason(authored, backend)
+	}
+	if clause := declarationNoBoundClause(backend, tools); clause != "" {
+		return strings.TrimSpace(backend) + " " + clause
 	}
 	llm, ok := node.(ir.LLMNode)
 	if !ok {
-		return false
+		return ""
 	}
 	for _, fb := range llm.GetFallbacks() {
+		raw := strings.TrimSpace(fb.Backend)
 		b := strings.TrimSpace(ir.ExpandWithDefault(fb.Backend, lookup))
-		if declarationIsNoBound(b, sharedWorkspace) {
-			return true
+		switch {
+		case raw == "":
+			// A `fallbacks:` entry that names no backend INHERITS the node's,
+			// which the reading above already answered — the unnamed-route
+			// question is about the route the node takes, and this is not
+			// another one.
+			continue
+		case strings.Contains(raw, "{{"):
+			// Nothing here resolves a template, so the route may be any
+			// backend and the reading is pessimistic — WITHOUT naming the
+			// template as a backend and crediting it with what it does to the
+			// list, which no executor has decided yet.
+			return "a `fallbacks:` route still spelled as " + raw + " is unresolved before the run, so no backend it may take bounds what the node holds"
+		case b == "":
+			// A `${VAR}` reference read at an authored default that does not
+			// exist: the route is the host's to decide, which is the same cell
+			// as the node's own unnamed route, so the caller's reading answers
+			// here too. Reading it as "inherits the node's backend" would trust
+			// exactly the route this walk cannot read.
+			if unnamedRoute == unnamedRouteIsNoBound {
+				return "a `fallbacks:` route onto " + raw + " " + unresolvedReferenceClause
+			}
+			continue
+		case routeIsUnnamed(b):
+			// The one spelling left is an explicit `auto`, which on a ROUTE is
+			// a NAME and not "the chain decides": the registry has no backend
+			// called `auto`, so the route dies the moment the chain is needed
+			// (ir.backendReader.routeName) and widens nothing.
+			continue
+		}
+		if clause := declarationNoBoundClause(b, tools); clause != "" {
+			return "a `fallbacks:` route onto " + b + " " + clause
 		}
 	}
-	return false
+	return ""
 }
 
-// declarationIsNoBound answers for ONE named backend, and names no tool.
+// declarationIsNoBound answers for ONE named backend and the list a node
+// declares, and names no tool.
 //
-// Two routes fail to bound a declaration, for two different reasons. pi, kimi,
-// grok and opencode never receive the list at all (C270's subject), so the
-// agent keeps its own toolset whatever the author wrote. claude_code does
+// Two routes NEVER bound a declaration, for two different reasons, and a third
+// bounds it only by the names in it. pi, kimi, grok and opencode never receive
+// the list at all (C270's subject), so the agent keeps its own toolset
+// whatever the author wrote. claude_code does
 // receive it and still is not bounded by it: the list becomes
 // `--disallowedTools` over a CLOSED native roster this project does not own, so
 // it removes the names iterion happens to enumerate and nothing else — measured
@@ -572,24 +821,78 @@ func routeDeclarationIsNoBound(node ir.Node, backend string, lookup func(string)
 // `EnterWorktree` and `ExitWorktree`, which move the worktree the session acts
 // in.
 //
-// Both answers are scoped to the SHARED-WORKSPACE question — "may two branches
-// run on one worktree" — and deliberately not to the wider one
-// `ToolSurfaceCanWrite` answers for the catalog's prompt-injection contract
-// ("what can this node do"). The two are the same fact read at two altitudes,
-// and moving the second one re-classifies bots across the catalog: a real
-// change, with its own measure and its own review, and not this one.
+// codex receives the list and bounds the node by what the NAMES buy: the list
+// picks a sandbox mode and narrows nothing else, since codex runs its built-in
+// shell outside the SDK's per-name callbacks (codex.go's own note at the
+// WithSandbox call; toolcatalog.ConstrainsTools stays claw-only). So the
+// delegate's own classifier answers — `read_file`, `glob` and `grep` buy the
+// read-only mode, while `web_fetch` and the five unregistered advisory names
+// of the vocabulary above buy workspace-write, where that shell can act on the
+// worktree. A name-blind reading of codex left a node declaring the advisory
+// idiom out of the prompt-injection class and admitted it to a shared worktree
+// (#1727).
 //
-// `sharedWorkspace` is therefore a parameter of the QUESTION, passed by each
-// entry point, and never derived from what the engine's executor happens to
-// implement: keyed on the resolver, `iterion validate --exec --strict` — whose
-// dry-run executor answers the seam from the PROGRAM alone — answered OK on a workflow the
-// same tree kills at the router.
-func declarationIsNoBound(backend string, sharedWorkspace bool) bool {
+// Both questions this file answers read it, so neither can drift from the other
+// on a NAMED route. They part on an unnamed one, which this predicate leaves to
+// its callers: see unnamedRouteReading.
+func declarationIsNoBound(backend string, tools []string) bool {
 	b := strings.TrimSpace(backend)
-	if b == "" || b == "auto" || !sharedWorkspace {
+	if routeIsUnnamed(b) {
 		return false
 	}
-	return !toolcatalog.ReceivesToolList(b) || b == delegate.BackendClaudeCode
+	if !toolcatalog.ReceivesToolList(b) || b == delegate.BackendClaudeCode {
+		return true
+	}
+	if b == delegate.BackendCodex {
+		return !delegate.CodexDeclaredListIsReadOnly(tools, toolcatalog.ToolsDeclared(tools))
+	}
+	return false
+}
+
+// declarationNoBoundClause words declarationIsNoBound for the reader, and is
+// empty wherever that predicate is false — the verdict stays single-sourced, so
+// a message can never claim a route the classification bounds. The clause reads
+// after the backend's own name, so one wording serves the node's route and a
+// `fallbacks:` one.
+func declarationNoBoundClause(backend string, tools []string) string {
+	b := strings.TrimSpace(backend)
+	if !declarationIsNoBound(b, tools) {
+		return ""
+	}
+	if !toolcatalog.ReceivesToolList(b) {
+		return "never receives the `tools:` list, so a declared bound is dropped (#1652)"
+	}
+	if b == delegate.BackendCodex {
+		return "maps the `tools:` list onto a sandbox mode, and what this node declares buys the workspace-write one, where codex's built-in shell acts on the worktree (#1727)"
+	}
+	return "takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)"
+}
+
+// unresolvedReferenceClause words a route spelled as a `${VAR}` reference and
+// read at an authored default that does not exist. It reads after the route's
+// own spelling, so one wording serves the node's route and a `fallbacks:` one.
+//
+// It is NOT the unnamed-route clause below: nothing was left to the detection
+// order here, a reference was written and this reading does not resolve it —
+// the run may put any backend there, including one a declared list bounds.
+const unresolvedReferenceClause = "is read at its authored default, which names no route, so nothing here bounds what the node holds"
+
+// unnamedRouteNoBoundReason words the unnamedRouteIsNoBound reading of a route
+// dispatch resolves, naming the spelling the AUTHOR wrote rather than what it
+// expanded to.
+//
+// Two shapes reach it and they are not the same fact. A route left to dispatch
+// (`backend:` absent, or `auto`) is resolved from the host's preference order,
+// whose COMPILED-IN first choice (detect.DefaultPreferenceOrder) is
+// claude_code — a host that sets ITERION_BACKEND_PREFERENCE, or that has no
+// claude_code CLI at all, resolves it elsewhere, so the compiled-in order is
+// the most a pre-run reading may state. A route written as a `${VAR}`
+// reference that resolves to nothing named no route at all.
+func unnamedRouteNoBoundReason(authored, backend string) string {
+	if spelling := strings.TrimSpace(authored); spelling != "" && strings.TrimSpace(backend) == "" {
+		return "backend " + spelling + " " + unresolvedReferenceClause
+	}
+	return fmt.Sprintf("backend %q resolves at dispatch, where the compiled-in detection order's first choice is claude_code, which does not bound what the node holds (#1652)", strings.TrimSpace(backend))
 }
 
 // edgeMayEscalateEffort reports whether any edge INTO this node may hand it
@@ -644,24 +947,65 @@ const ultracodeEffort = "ultracode"
 // the model package keeps its own copy unexported.
 const dynamicEffortInputKey = "_reasoning_effort"
 
-// fallbacksReachCLIBackend reports whether any of a node's `fallbacks:`
-// routes runs on a backend where an empty `tools:` list means the full
-// native toolset rather than none.
-func fallbacksReachCLIBackend(node ir.Node, lookup func(string) string) bool {
+// clawCLIRouteWriteReason words a claw node's `fallbacks:` route onto another
+// backend, where the list the node declared stops being its bound.
+//
+// Where the route's own clause answers, the route runs the full native toolset
+// whatever the node declared: claude_code ignores the lowercase list under the
+// always-on bypassPermissions, and the CLI-agent seam backends never receive
+// it. codex is the one readable route that is NOT that — it maps the list onto
+// a sandbox mode — so where those names buy its read-only mode the reason says
+// what this reading actually refuses to do: credit the route's own sandbox to
+// a node whose primary is claw. The verdict is the claw→CLI one either way,
+// which is what admission has always answered for that chain
+// (TestTheOwnAccountIsReadOnEveryRouteADeclarationBounds pins it) — and on a
+// non-empty list the `interaction:` append puts `ask_user` there, which buys
+// codex workspace-write anyway (model.buildTask).
+func clawCLIRouteWriteReason(route string, tools []string) string {
+	if declarationIsNoBound(route, tools) {
+		return "a `fallbacks:` route onto " + route + " runs the full native toolset, which nothing the node declares bounds"
+	}
+	return "a `fallbacks:` route onto " + route + " leaves claw, where the `tools:` list is the node's bound, and a pre-run reading does not credit the route's own sandbox mode as one"
+}
+
+// fallbackCLIBackendName names the first of a node's `fallbacks:` routes that
+// takes it off claw — and "" when no route it may take does.
+//
+// It answers for the spellings it can READ, and names the one it read: a
+// message that called an unresolved route "a CLI backend" would credit a
+// toolset to a route nothing has resolved yet. What the named route makes of
+// the node's list is clawCLIRouteWriteReason's question, not this one's: an
+// empty list means the full native toolset on claude_code and on the
+// CLI-agent seam, while codex reads it as a sandbox mode.
+//
+// Four spellings are not that. A route left unnamed inherits the node's own
+// backend, claw here. An explicit `auto` on a route is a NAME the registry
+// does not have — resolveChain normalises `auto` only on a route's `provider:`
+// and delegate.DefaultRegistry has no `auto` entry — so the route dies the
+// moment the chain is needed (ir.backendReader.routeName) and widens nothing.
+// A `{{…}}` template, and a reference read at an authored default that does
+// not exist, name no backend at all: routeDeclarationIsNoBound words those
+// two, pessimistically and without naming a backend.
+//
+// `auto` apart, any OTHER name no registry has is named here, and credited
+// with a toolset the route will never run: it dies at the same registry, one
+// spelling later.
+func fallbackCLIBackendName(node ir.Node, lookup func(string) string) string {
 	llm, ok := node.(ir.LLMNode)
 	if !ok {
-		return false
+		return ""
 	}
 	for _, fb := range llm.GetFallbacks() {
+		raw := strings.TrimSpace(fb.Backend)
 		b := strings.TrimSpace(ir.ExpandWithDefault(fb.Backend, lookup))
-		if b == "" || b == "auto" {
-			continue // inherits the node's backend, which is claw here
-		}
-		if b != "claw" {
-			return true
+		switch {
+		case raw == "", strings.Contains(raw, "{{"), b == "", routeIsUnnamed(b):
+			continue
+		case b != "claw":
+			return b
 		}
 	}
-	return false
+	return ""
 }
 
 // branchContainsMutation walks from startNodeID to globalConvergence (or to a
@@ -869,13 +1213,51 @@ func (e *Engine) branchMutationCauseFrom(backends effectiveBackendResolver, surf
 			// A route still spelled as a template was read pessimistically
 			// because nothing resolved it; naming it as a backend would be
 			// the wrong reason, so it is left to the bare node below.
-			if !strings.Contains(backend, "{{") && declarationIsNoBound(backend, true) { // the cause of a shared-worktree refusal
+			// Read with the list the classifier read: on codex the names
+			// decide whether the route bounds them at all, and the list that
+			// decided there is the one the route RECEIVES — the verdict was
+			// taken over it (llmToolSurfaceCanWrite), so a cause read over
+			// the AUTHORED list alone would name no route for a node whose
+			// bound moved with the runtime's own appends. Where no executor
+			// answers, the node's own list is all there is.
+			list := llmDeclaredTools(node)
+			if surfaces != nil {
+				if held := surfaces.EffectiveToolNames(node, edgeMayEscalateEffort(e.workflow, node)); len(held) > 0 {
+					list = held
+				}
+			}
+			if !strings.Contains(backend, "{{") && declarationIsNoBound(backend, list) { // the cause of a shared-worktree refusal
 				return fmt.Sprintf("node %q runs on %s, where a `tools:` list does not bound what the node holds", nodeID, backend)
 			}
 			for _, fb := range llm.GetFallbacks() {
-				if b := strings.TrimSpace(ir.ExpandWithDefault(fb.Backend, nil)); !strings.Contains(b, "{{") && declarationIsNoBound(b, true) {
+				if b := strings.TrimSpace(ir.ExpandWithDefault(fb.Backend, nil)); !strings.Contains(b, "{{") && declarationIsNoBound(b, list) {
 					return fmt.Sprintf("node %q falls back to %s, where a `tools:` list does not bound what the node holds", nodeID, b)
 				}
+			}
+			// The arms above name a ROUTE, which is the first thing an author
+			// can act on. Every other reason this node counts is worded by the
+			// very walk the verdict was taken over — asked here with the same
+			// arguments countsInPass gives it — so a cause is never absent
+			// where a refusal is, and never names a rule the verdict did not
+			// use: a declared writer, `full_access:`, a `tools: []` the route
+			// does not credit, an unresolved route.
+			if reason := llmDeclaredSurfaceWriteReason(node, *llm.GetLLMFields(), llmDeclaredTools(node), e.workflow.DefaultBackend, backends, unnamedRouteUnread, nil); reason != "" {
+				return fmt.Sprintf("node %q: %s", nodeID, reason)
+			}
+			// The walk above reads the node's own list, which is the first
+			// half of the verdict. The second reads the list the route
+			// RECEIVES, and the two do not cover the same cells: the route
+			// question is gated on the list being non-empty, so a node that
+			// declares NO list skips it entirely on the declared reading
+			// while one runtime append makes the same walk answer. So it is
+			// asked here too, over the list the verdict took it over.
+			//
+			// Asked directly, never through llmDeclaredSurfaceWriteReason:
+			// that walk's first arm reads the names LITERALLY as the author's
+			// own line, and an appended `read_image` would be reported as
+			// `tools: read_image` — a line the author never wrote.
+			if reason := unrestrictedRouteWriteReason(node, *llm.GetLLMFields(), list, e.workflow.DefaultBackend, backends, nil, unnamedRouteUnread); reason != "" {
+				return fmt.Sprintf("node %q: %s", nodeID, reason)
 			}
 		}
 		return fmt.Sprintf("node %q", nodeID)
@@ -896,8 +1278,10 @@ type mostPermissiveRoute struct{}
 
 func (mostPermissiveRoute) EffectiveBackendName(ir.Node) string { return delegate.BackendClaw }
 
-// declarationBoundRoutes are the backends on which a node's `tools:` list is
-// the bound on what it holds.
+// declarationBoundRoutes are the backends on which a node's `tools:` list CAN
+// be the bound on what it holds — on claw always, on codex for the names its
+// sandbox reads as read-only (declarationIsNoBound answers per route and per
+// list, which is what the probe below asks).
 var declarationBoundRoutes = []string{delegate.BackendClaw, delegate.BackendCodex}
 
 // answersRoute resolves every node to one backend.
@@ -909,7 +1293,8 @@ func (r answersRoute) EffectiveBackendName(ir.Node) string { return string(r) }
 // a silent backend seam a node counts only if it writes on every route a
 // declaration bounds: neither route is more permissive than the other for
 // every node — claw un-restricts a list the moment a CLI fallback exists, codex
-// holds its full toolset when no list is declared.
+// holds its full toolset when no list is declared and its workspace-write
+// sandbox when the names it declares buy one.
 func (e *Engine) countsInPass(node ir.Node, backends effectiveBackendResolver, surfaces effectiveToolSurfaceResolver, fanOutEachTemplate bool) bool {
 	if _, own := backends.(mostPermissiveRoute); own {
 		for _, route := range declarationBoundRoutes {

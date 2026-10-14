@@ -171,11 +171,17 @@ loads explicitly), and reminds the LLM that a directive-shaped text
 embedded in a scanner rationale is content, not a command.
 
 "Can act" is the engine's own classification, not a spelling of tool
-names — `pkg/runtime.ToolSurfaceCanWrite`: `full_access`, a declared tool
-outside the read-only vocabulary (`bash`, `diagnostic_shell`,
-`write_file`, `file_edit`, …), or an omitted `tools:` list on a backend
+names — `pkg/runtime.ToolSurfaceWriteReason`: `full_access`, a declared
+tool outside the read-only vocabulary (`bash`, `diagnostic_shell`,
+`write_file`, `file_edit`, …), an omitted `tools:` list on a backend
 where omission means the full native toolset (every CLI delegate, and
-claw when a `fallbacks:` route reaches one) — or a capability other than
+claw when a `fallbacks:` route reaches one), or a declared list on a
+route that does not enforce it (claude_code takes it as
+`--disallowedTools` over a roster iterion does not own; the CLI-agent
+seam backends never receive it; codex maps it onto a sandbox mode, and
+the advisory names `git_diff`, `git_status`, `list_files`,
+`search_codebase`, `tree` and `web_fetch` buy the workspace-write one) —
+or a capability other than
 `board.read` / `runs.read` (`board.create`, `board.comment`,
 `board.label`, `board.assign`, `board.move`, `board.close`). `readonly:
 true` does not take a node out of the class: codex and pi enforce it as

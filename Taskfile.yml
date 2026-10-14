@@ -631,6 +631,13 @@ tasks:
     cmds:
       - go run -mod=vendor ./cmd/iterion fmt bots examples
 
+  bots:boundary:gen:
+    desc: Regenerate the committed untrusted-input boundary class — the prompts that owe an UNTRUSTED INPUT BOUNDARY paragraph. Its diff is the review; the guard is `go test -run TestTheUntrustedInputBoundaryClassIsTheFrozenOne ./bots/`
+    env:
+      ITERION_UNTRUSTED_INPUT_MEMBERS_OUT: "{{.ROOT_DIR}}/bots/testdata/untrusted_input_boundary_members.txt"
+    cmds:
+      - go test -count=1 -run TestRecordTheUntrustedInputBoundaryClass ./bots/
+
   fmt:check:
     desc: Fail if a shipped bot or example drifted out of its canonical form, or if .fmt-refused is stale
     cmds:

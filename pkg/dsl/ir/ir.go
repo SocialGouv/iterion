@@ -642,7 +642,7 @@ type LLMNode interface {
 	// three PRE-RUN analyses read a node's backend and would otherwise
 	// be computed from the head element alone: the sandbox's iterion
 	// bind-mount (containsClawNode), parallel-branch admission
-	// (unrestrictedCLIBackendCanWrite), and the fan_out_each mutation
+	// (unrestrictedRouteWriteReason), and the fan_out_each mutation
 	// guard. See ADR-087 decision 1.
 	GetFallbacks() []Fallback
 	GetCompress() string

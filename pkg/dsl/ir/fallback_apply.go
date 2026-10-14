@@ -23,7 +23,7 @@ const RunFallbackName = "run-fallback"
 // executor, and that is the whole point. Three analyses read a node's
 // routes BEFORE the run — the sandbox's iterion bind-mount
 // (containsClawNode), parallel-branch admission
-// (unrestrictedCLIBackendCanWrite) and the fan_out_each mutation guard —
+// (unrestrictedRouteWriteReason) and the fan_out_each mutation guard —
 // and a launch-time route resolved anywhere downstream is invisible to
 // all three. An operator would then be able to reach, through a flag,
 // exactly the crossings the compiler refuses in the .bot: an ungated
