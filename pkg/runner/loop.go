@@ -2024,7 +2024,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// retry re-publishes and acquires afresh, and a DLQ'd run never comes
 	// back. Reporting `interim` there would strand the donor's slot and
 	// committed allowance until the 12h lease TTL.
-	if handled, retryStatus := r.parkUsageLimitRetry(runCtx, err, delivery, msg, logger); handled {
+	if handled, retryStatus := r.parkUsageLimitRetry(runCtx, err, delivery, msg, usage, logger); handled {
 		r.recordPoolSpend(msg, usage, err, false)
 		fireOutcome()
 		finalStatus = retryStatus

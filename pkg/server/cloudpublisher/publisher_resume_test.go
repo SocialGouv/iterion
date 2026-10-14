@@ -104,6 +104,14 @@ func (r *retryStoreSpy) ScheduleRunRetry(_ context.Context, runID string, _ time
 	return true, 1, nil
 }
 
+func (r *retryStoreSpy) PullRunRetry(_ context.Context, _ string, _, _ time.Time) (bool, error) {
+	return false, nil
+}
+
+func (r *retryStoreSpy) RearmProbedRunRetry(_ context.Context, _ string, _ time.Time) (bool, error) {
+	return false, nil
+}
+
 func (r *retryStoreSpy) DelayRunRetry(_ context.Context, _ string, _, _ time.Time) (bool, error) {
 	return false, nil
 }

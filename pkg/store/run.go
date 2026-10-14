@@ -587,6 +587,91 @@ type RunRetryState struct {
 	LastError string `json:"last_error,omitempty" bson:"last_error,omitempty"`
 	// ClaimedAt stamps when a sweeper last took the retry.
 	ClaimedAt *time.Time `json:"claimed_at,omitempty" bson:"claimed_at,omitempty"`
+	// ProbeFrom is the instant the provider announced, kept aside while a
+	// pull-forward probe holds RetryAfter at "now". Non-nil IS the probe
+	// marker: it says the current RetryAfter is a probe's guess and not the
+	// provider's wall, so the arming that follows the probe's re-failure
+	// spends no attempt and the announced instant can be put back. The
+	// first arming after a probe consumes it.
+	//
+	// Read it through AnnouncedProbeFrom (the wall) or ProbeInFlight (who
+	// pays), never bare: the two questions expire differently, and one
+	// accessor answering both got each of them wrong in turn.
+	ProbeFrom *time.Time `json:"probe_from,omitempty" bson:"probe_from,omitempty"`
+	// ProbeCount bounds the probes taken on ONE armed wait: a forfait
+	// nobody resets must stop being probed and simply wait. Reset by a
+	// paid arming, never by a probe's own re-arming — a counter a probe
+	// could reset would bound nothing. A paid arming normally starts a
+	// fresh wait; one that RESTORES the announced instant re-arms the wait
+	// the row was already on, and probes it afresh — see ProbeMarkerTTL for
+	// what that costs. Which armings those are is not a list: the spend and
+	// the age of the pull decide who PAYS, the refusal decides WHICH
+	// INSTANT, so every paid arming whose refusal named no instant of its
+	// own restores this wall and reopens this ledger (the cross product is
+	// derived in
+	// pkg/runner.TestArmUsageWindowRetry_ThePaidArmingsThatRestoreTheAnnouncedInstant).
+	ProbeCount int `json:"probe_count,omitempty" bson:"probe_count,omitempty"`
+	// LastProbeAt paces the probes: one per probe floor on this row,
+	// whatever the sweeper's own cadence.
+	LastProbeAt *time.Time `json:"last_probe_at,omitempty" bson:"last_probe_at,omitempty"`
+}
+
+// ProbeMarkerTTL bounds how long after a pull the probe it started can still
+// be the execution that is talking: one sweep tick to claim and publish the
+// resume, the claim lease (10 minutes) if the first pod died, and the pod's
+// own start and preflight — rounded up to the probe pace's own default floor.
+//
+// It bounds the PAYMENT question only (ProbeInFlight), never the wall
+// (AnnouncedProbeFrom), which is what makes both errors mild and says which
+// they are: too short charges a genuinely probed park one attempt, meters its
+// resume, and — because that charged arming clears the probe ledger while
+// restoring the SAME announced instant — probes the same wait afresh, pace
+// included, so the probes one wait can cost are bounded by max_attempts ×
+// budget rather than by the budget alone, and says that instant again on the
+// pull request the run gates, since the pause notice reads the same ledger
+// (pkg/server.noticeGatePausedForRetry); the announced instant survives either
+// way, so the run still waits on its wall, and a circuit-delayed probe is the
+// case that reaches all of it. Too long gives one later park the probe's free
+// treatment within the hour that follows a pull. The greppable escape hatch is
+// the pass itself — ITERION_RETRY_PROBE_BUDGET=0 writes no marker at all.
+const ProbeMarkerTTL = time.Hour
+
+// AnnouncedProbeFrom is the WALL question: which instant did a pull-forward
+// probe set aside, while that instant is still ahead of now. It belongs to the
+// ROW and not to whoever pays for the next arming — it is the only DATED fact
+// the row has about its wall, so a refusal that names no instant of its own
+// must never overwrite it, however long ago the pull was. Nil state, no
+// marker, or a marker already behind us all answer nil: the instant IS the
+// wait, and once it is behind us there is nothing left to hold aside.
+func (s *RunRetryState) AnnouncedProbeFrom(now time.Time) *time.Time {
+	if s == nil || s.ProbeFrom == nil || !s.ProbeFrom.After(now) {
+		return nil
+	}
+	return s.ProbeFrom
+}
+
+// ProbeInFlight is the PAYMENT question: is the execution now talking the one
+// a probe pulled forward, so its refusal costs nothing and nobody owes an
+// attempt, a monthly quota unit or a notice for it.
+//
+// The marker outlives the resume it was written for by design — ClearRunRetry
+// keeps it so the pod that parks can read it — and only an arming deletes it.
+// A probe-driven resume that never parks (it succeeded, its pod was evicted,
+// it failed for an unrelated reason) therefore leaves it on the row for good,
+// and a LATER park, which is nobody's probe, would take the whole free
+// treatment: uncharged, uncounted, unfed to the shared circuit and silent on
+// the pull request, for as long as the announced instant stays ahead — six
+// more days on a weekly reset probed on day one. The announced instant does
+// not bound this question; the age of the PULL does.
+//
+// A marker with no LastProbeAt answers no: PullRunRetry writes the pair in one
+// update, so the age of a pull is never unknown in production, and the safe
+// answer to "is someone else paying for this park" is always "no".
+func (s *RunRetryState) ProbeInFlight(now time.Time) bool {
+	if s.AnnouncedProbeFrom(now) == nil {
+		return false
+	}
+	return s.LastProbeAt != nil && s.LastProbeAt.After(now.Add(-ProbeMarkerTTL))
 }
 
 // OutputCorrectionEpisode is the durable ledger for bounded schema-output

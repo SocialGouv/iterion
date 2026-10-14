@@ -76,6 +76,16 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 			// A fresh arming supersedes the previous failure note and claim.
 			retryPath("last_error"): "",
 			retryPath("claimed_at"): "",
+			// A PAID arming is a new wait, so the probe ledger starts over:
+			// the budget is per wait. (A probe's own re-arming goes through
+			// RearmProbedRunRetry, which keeps the ledger — that is what
+			// makes the bound a bound.) The arming that RESTORES the
+			// announced instant is paid too and clears the ledger here while
+			// arming the same wait, which is why the bound on one wait is
+			// max_attempts × budget: store.ProbeMarkerTTL states the cost.
+			retryPath("probe_from"):    "",
+			retryPath("probe_count"):   "",
+			retryPath("last_probe_at"): "",
 		},
 		"$inc": bson.M{retryPath("attempts"): 1, "version": 1},
 	}
@@ -130,6 +140,82 @@ func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, 
 	return res.MatchedCount > 0, nil
 }
 
+// PullRunRetry pulls an armed retry forward to probeAt so the runner's usage
+// preflight — the authoritative reading of the provider's window, and the one
+// gate that refuses BEFORE an attempt costs anything — answers now instead of
+// at the announced instant. An operator who cleared their forfait by hand is
+// otherwise unobserved until the date the provider named, days away.
+//
+// It spends no attempt (the probe is speculative; the budget is for work that
+// gets past the preflight) and leaves scheduled_at alone, for DelayRunRetry's
+// reason: the max_wait anchor is not a probe's to move. The announced instant
+// goes to probe_from, which the arming that follows puts back, and whose
+// ABSENCE the filter requires — a second pull over a live marker would
+// overwrite the provider's instant with a probe's own.
+func (s *Store) PullRunRetry(ctx context.Context, runID string, expectedAfter, probeAt time.Time) (bool, error) {
+	now := time.Now().UTC()
+	filter := withTenantFilter(ctx, bson.M{
+		"_id":                    runID,
+		"status":                 string(store.RunStatusFailedResumable),
+		retryPath("retry_after"): expectedAfter.UTC(),
+		retryPath("probe_from"):  bson.M{"$exists": false},
+	})
+	update := bson.M{
+		"$set": bson.M{
+			retryPath("retry_after"):   probeAt.UTC(),
+			retryPath("probe_from"):    expectedAfter.UTC(),
+			retryPath("last_probe_at"): now,
+			"updated_at":               now,
+		},
+		"$inc": bson.M{retryPath("probe_count"): 1, "version": 1},
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: pull retry %s: %w", runID, err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
+// RearmProbedRunRetry re-arms a probe-marked retry at `at` and consumes the
+// marker, without touching attempts — neither the counter nor the budget
+// filter. Both matter: a probe that charged an attempt would retire a run
+// days before the wall it waits on falls (five hourly probes against a
+// four-day reset spend the default budget in five hours), and a probe taken
+// on the LAST attempt the budget allows would be refused outright, ending the
+// run the probe exists to save.
+//
+// probe_count and last_probe_at deliberately survive: they bound and pace the
+// probes of the CURRENT wait, and a ledger a probe's own re-arming could
+// reset would bound nothing.
+func (s *Store) RearmProbedRunRetry(ctx context.Context, runID string, at time.Time) (bool, error) {
+	now := time.Now().UTC()
+	filter := withTenantFilter(ctx, bson.M{
+		"_id":                   runID,
+		"status":                string(store.RunStatusFailedResumable),
+		retryPath("probe_from"): bson.M{"$exists": true},
+	})
+	update := bson.M{
+		"$set": bson.M{
+			retryPath("retry_after"): at.UTC(),
+			// The row was armed before the pull and stays armed: an
+			// outcome consumer deferring to retry_armed must not see a
+			// window where nothing is coming.
+			"continuation_state": store.ContinuationRetryArmed,
+			"updated_at":         now,
+		},
+		"$unset": bson.M{
+			retryPath("probe_from"): "",
+			retryPath("claimed_at"): "",
+		},
+		"$inc": bson.M{"version": 1},
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: re-arm probed retry %s: %w", runID, err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
 // ClaimRunRetry leases an armed retry, conditioning on the retry_after value
 // the caller read AND on no live lease existing. First writer wins; every
 // other replica sees won=false — no leader election.
@@ -168,6 +254,13 @@ func (s *Store) ClaimRunRetry(ctx context.Context, runID string, expectedAfter t
 // resume's counterpart to the lease taken by ClaimRunRetry. Without it a
 // retry_after in the past would survive on the row and re-fire the moment
 // the resumed run failed again for an unrelated reason.
+//
+// The probe ledger deliberately survives it. Every resume clears the retry,
+// including the one a probe just pulled forward, and it runs BEFORE the pod
+// reaches the usage preflight — so clearing probe_from here would delete the
+// marker precisely in the case it exists for, and clearing probe_count would
+// hand each probe a fresh budget and make the bound unbounded. The next PAID
+// arming is what resets the ledger.
 func (s *Store) ClearRunRetry(ctx context.Context, runID string) error {
 	update := bson.M{
 		"$unset": bson.M{retryPath("retry_after"): "", retryPath("claimed_at"): ""},
@@ -195,8 +288,14 @@ func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string) error
 			"continuation_state": store.ContinuationFinal,
 			"updated_at":         now,
 		},
-		"$unset": bson.M{retryPath("retry_after"): ""},
-		"$inc":   bson.M{"version": 1},
+		"$unset": bson.M{
+			retryPath("retry_after"): "",
+			// Nothing is armed, so there is no wait left to probe: a marker
+			// surviving here would make the next arming of a
+			// hand-resumed run free.
+			retryPath("probe_from"): "",
+		},
+		"$inc": bson.M{"version": 1},
 	}
 	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update)); err != nil {
 		return fmt.Errorf("store/mongo: abandon retry %s: %w", runID, err)
@@ -250,6 +349,69 @@ func (s *Store) ListRunsDueForRetry(ctx context.Context, before time.Time, limit
 	var out []RetryDueRef
 	if err := cur.All(ctx, &out); err != nil {
 		return nil, fmt.Errorf("store/mongo: decode runs due for retry: %w", err)
+	}
+	return out, nil
+}
+
+// ListRunsForRetryProbe returns usage-window retries that are NOT yet due and
+// are worth probing, soonest-armed first — the rows ListRunsDueForRetry
+// structurally cannot see, which is why a reset an operator performs by hand
+// goes unobserved until the provider's own date.
+//
+// floor does two jobs with one number: a row coming due within it is left to
+// the due pass (probing it buys nothing), and a row probed within it is
+// skipped, so the pace is one probe per floor per row whatever the sweeper's
+// cadence. maxProbes bounds the probes of one wait; a non-positive budget
+// means probing is off and the scan does not run — the filter alone would
+// then still match every never-probed row.
+func (s *Store) ListRunsForRetryProbe(ctx context.Context, now time.Time, floor time.Duration, maxProbes, limit int) ([]RetryDueRef, error) {
+	if maxProbes <= 0 {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	at := now.UTC()
+	cur, err := s.runs.Find(ctx,
+		withTenantFilter(ctx, bson.M{
+			"status":                 string(store.RunStatusFailedResumable),
+			retryPath("reason"):      "usage_window",
+			retryPath("retry_after"): bson.M{"$gt": at.Add(floor)},
+			// A row already pulled forward is being settled by the due
+			// pass; re-pulling it would overwrite the announced instant.
+			retryPath("probe_from"): bson.M{"$exists": false},
+			// The three bounds need $and: they are all $or, and one bson.M
+			// cannot carry the key twice. Each needs its "field absent"
+			// branch, for the type-bracketing reason ScheduleRunRetry
+			// documents — {$lt: n} does not match a missing field, so
+			// without it the FIRST probe of every run would be refused.
+			"$and": []bson.M{
+				{"$or": []bson.M{
+					{retryPath("probe_count"): bson.M{"$exists": false}},
+					{retryPath("probe_count"): bson.M{"$lt": maxProbes}},
+				}},
+				{"$or": []bson.M{
+					{retryPath("last_probe_at"): bson.M{"$exists": false}},
+					{retryPath("last_probe_at"): bson.M{"$lte": at.Add(-floor)}},
+				}},
+				// A live lease means a replica is acting on this row.
+				{"$or": []bson.M{
+					{retryPath("claimed_at"): bson.M{"$exists": false}},
+					{retryPath("claimed_at"): bson.M{"$lt": at.Add(-retryClaimLease)}},
+				}},
+			},
+		}),
+		options.Find().
+			SetProjection(bson.M{"_id": 1, "tenant_id": 1, "owner_id": 1, "bot_id": 1, "bot_source_tenant": 1, "file_path": 1, retryStateField: 1}).
+			SetSort(bson.M{retryPath("retry_after"): 1}).
+			SetLimit(int64(limit)))
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: list runs for retry probe: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []RetryDueRef
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("store/mongo: decode runs for retry probe: %w", err)
 	}
 	return out, nil
 }

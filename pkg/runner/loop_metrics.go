@@ -605,6 +605,23 @@ func (m *metricsEmitter) RunTotals() (costUSD float64, inputTokens, outputTokens
 	return m.runCostUSD, m.runInputTokens, m.runOutputTokens, m.runAggregateTokens
 }
 
+// spentOnTheProvider reports that this execution got an answer the provider
+// charged for — any of the three disjoint token counts, or a priced cost.
+//
+// The pull-forward probe (pkg/server/retry_probe.go) rests on a shut window
+// refusing BEFORE anything is spent, which is why a probe's re-failure costs
+// no attempt. Tokens on the clock say the opposite happened: the window
+// reopened, this run used it, and the park that follows is a new wall rather
+// than the probe's answer. A nil emitter (no executor was ever built) spent
+// nothing.
+func (m *metricsEmitter) spentOnTheProvider() bool {
+	if m == nil {
+		return false
+	}
+	costUSD, inputTokens, outputTokens, aggregateTokens := m.RunTotals()
+	return costUSD > 0 || inputTokens > 0 || outputTokens > 0 || aggregateTokens > 0
+}
+
 // SawAuthFailure reports whether the provider rejected this run's
 // credential at any point during the attempt.
 func (m *metricsEmitter) SawAuthFailure() bool {

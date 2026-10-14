@@ -111,6 +111,117 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 		}
 	})
 
+	// The pull-forward probe turns ONE park into up to a whole probe budget of
+	// them: each cycle resumes the run, the preflight re-refuses, and the free
+	// re-arm puts the SAME announced instant back with the same attempt
+	// number. The notice is built on "one park = one outcome event = one
+	// comment", and nothing downstream dedupes it — so the developer's pull
+	// request collects byte-identical comments until the budget runs out. The
+	// park that STARTED the wait speaks; a probe's re-park has nothing to add.
+	t.Run("a probe's re-park does not repeat the notice", func(t *testing.T) {
+		s, c := newWorld(t)
+		at := time.Now().UTC().Add(95 * time.Minute)
+		run := parkedRun(t, s, "node \"campaign\": rate_limited: You've hit your weekly limit · resets 9pm", at)
+
+		s.noticeGatePausedForRetry(context.Background(), run)
+		first := len(c.bodies)
+		// What one probe cycle leaves on the row: the probe ledger counted
+		// it, and the re-arm it caused announces the instant the PR was
+		// already told about. (A PAID arming starts a fresh wait and clears
+		// the ledger, so a genuinely new wall still speaks.)
+		run.RetryState.ProbeCount = 1
+		s.noticeGatePausedForRetry(context.Background(), run)
+
+		if first != 1 {
+			t.Fatalf("the park that started the wait posted %d notices, want 1", first)
+		}
+		// Nothing on the comment would tell a reader the two apart, which is
+		// why suppressing the second loses nothing: same instant, same
+		// attempt, same words.
+		run.RetryState.ProbeCount = 0
+		before := gatePauseNoticeBody(run, pauseNoticeRoleReviewer, time.Now().UTC())
+		run.RetryState.ProbeCount = 1
+		if after := gatePauseNoticeBody(run, pauseNoticeRoleReviewer, time.Now().UTC()); after != before {
+			t.Fatalf("a probe's re-park would say something new, so the notice must not be suppressed:\n%s\n---\n%s", before, after)
+		}
+		if len(c.bodies) != 1 {
+			t.Fatalf("notices on %s#%d after ONE probe cycle = %d, want 1 — with the default budget of %d probes a single provider wall would post %d identical comments:\n%s",
+				c.repo, c.number, len(c.bodies), defaultRetryProbeBudget, defaultRetryProbeBudget+1, strings.Join(c.bodies, "\n---\n"))
+		}
+	})
+
+	// What that suppression does NOT cover, measured here rather than left to
+	// a reader: a park whose PULL is older than store.ProbeMarkerTTL pays its
+	// own way, and the paid arming clears the very ledger this gate reads
+	// while restoreAnnouncedInstant puts the SAME instant back. So the pull
+	// request hears that instant again, under the attempt number the park
+	// charged — one extra comment per such park, bounded by max_attempts.
+	// Telling it from a genuinely new wall is the same missing fact as below:
+	// nothing records what the pull request was told.
+	t.Run("a park past the marker's TTL names the same instant again", func(t *testing.T) {
+		s, c := newWorld(t)
+		at := time.Now().UTC().Add(95 * time.Minute)
+		run := parkedRun(t, s, "node \"campaign\": rate_limited: You've hit your weekly limit · resets 9pm", at)
+
+		s.noticeGatePausedForRetry(context.Background(), run)
+		run.RetryState.ProbeCount = 1
+		s.noticeGatePausedForRetry(context.Background(), run)
+		if len(c.bodies) != 1 {
+			t.Fatalf("notices after the park and one probe cycle = %d, want 1", len(c.bodies))
+		}
+
+		// What the charged park leaves on the row: the ledger cleared and the
+		// attempt spent, with retry_after still the announced instant
+		// (pkg/runner.armUsageWindowRetry, pinned by
+		// TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndReopensTheWaitsProbeLedger).
+		run.RetryState.ProbeCount, run.RetryState.Attempts = 0, run.RetryState.Attempts+1
+		s.noticeGatePausedForRetry(context.Background(), run)
+		if len(c.bodies) != 2 {
+			t.Fatalf("notices after the charged park = %d, want 2: this gate reads the probe ledger, which that park cleared", len(c.bodies))
+		}
+		if !strings.Contains(c.bodies[1], at.Format("15:04 UTC")) {
+			t.Fatalf("the second notice does not name the instant the first already announced:\n%s", c.bodies[1])
+		}
+		if !strings.Contains(c.bodies[1], "attempt 3") {
+			t.Fatalf("the second notice does not report the attempt that park charged, which is the one thing new about it:\n%s", c.bodies[1])
+		}
+	})
+
+	// What the ledger-keyed stand-down above cannot see: a probed refusal
+	// that names a DIFFERENT instant moves the row without a word, because
+	// nothing records what the pull request was told. The silence is bounded
+	// — the next PAID park clears the ledger and speaks, naming the instant
+	// the row really holds.
+	t.Run("a probed re-park on a new instant is silent until the next paid park", func(t *testing.T) {
+		s, c := newWorld(t)
+		at := time.Now().UTC().Add(95 * time.Minute)
+		run := parkedRun(t, s, "node \"campaign\": rate_limited: You've hit your weekly limit · resets 9pm", at)
+
+		s.noticeGatePausedForRetry(context.Background(), run)
+		if len(c.bodies) != 1 {
+			t.Fatalf("the park that started the wait posted %d notices, want 1", len(c.bodies))
+		}
+
+		// The probe's re-failure named a wall five days out instead.
+		moved := at.Add(5 * 24 * time.Hour)
+		run.RetryState.RetryAfter, run.RetryState.ProbeCount = &moved, 2
+		s.noticeGatePausedForRetry(context.Background(), run)
+		if len(c.bodies) != 1 {
+			t.Fatalf("notices = %d, want the probe's re-park still suppressed", len(c.bodies))
+		}
+
+		// The next PAID arming (the wake at that instant, or the work a
+		// reopened window allowed) clears the ledger — and speaks.
+		run.RetryState.ProbeCount, run.RetryState.Attempts = 0, 3
+		s.noticeGatePausedForRetry(context.Background(), run)
+		if len(c.bodies) != 2 {
+			t.Fatalf("notices = %d after a paid park, want 2: a wall the pull request has never heard of must be announced", len(c.bodies))
+		}
+		if !strings.Contains(c.bodies[1], moved.Format("15:04 UTC")) {
+			t.Fatalf("the second notice does not name the instant the row holds (%s):\n%s", moved.Format(time.RFC3339), c.bodies[1])
+		}
+	})
+
 	t.Run("spend ceiling warns that waiting may not suffice", func(t *testing.T) {
 		s, c := newWorld(t)
 		run := parkedRun(t, s, "node \"campaign\": rate_limited: You've hit your org's monthly spend limit · ask your admin to raise it", time.Now().UTC().Add(time.Hour))

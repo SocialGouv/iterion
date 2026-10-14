@@ -54,6 +54,9 @@ type runResumer interface {
 // and no sweeper).
 type retryDueLister interface {
 	ListRunsDueForRetry(ctx context.Context, before time.Time, limit int) ([]mongostore.RetryDueRef, error)
+	// ListRunsForRetryProbe is the other half of the same capability: the
+	// not-yet-due rows the due scan structurally cannot see (retry_probe.go).
+	ListRunsForRetryProbe(ctx context.Context, now time.Time, floor time.Duration, maxProbes, limit int) ([]mongostore.RetryDueRef, error)
 }
 
 // runRetrySweeper ticks sweepDueRetries until ctx is cancelled. Started by
@@ -65,8 +68,9 @@ type retryDueLister interface {
 // sweep counter, "no run is waiting" and "every waiting run is stranded" are
 // the same observation. Verified against production and they were.
 func (s *Server) runRetrySweeper(ctx context.Context, lister retryDueLister) {
-	s.infof("retry sweeper: watching for runs whose provider quota window has reopened (every %s, up to %d per pass)",
-		retrySweepInterval, retrySweepBatch)
+	bounds := retryProbeBoundsFromEnv()
+	s.infof("retry sweeper: watching for runs whose provider quota window has reopened (every %s, up to %d per pass; probing not-yet-due waits every %s, %d per wait)",
+		retrySweepInterval, retrySweepBatch, bounds.floor, bounds.budget)
 	t := time.NewTicker(retrySweepInterval)
 	defer t.Stop()
 	for {
@@ -75,6 +79,9 @@ func (s *Server) runRetrySweeper(ctx context.Context, lister retryDueLister) {
 			return
 		case <-t.C:
 			s.sweepDueRetries(ctx, lister, s.runs, time.Now().UTC())
+			// Second pass, after the due one: what it pulls forward is
+			// resumed by the due pass on the next tick, never here.
+			s.sweepRetryProbes(ctx, lister, time.Now().UTC())
 		}
 	}
 }
@@ -260,6 +267,28 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		return
 	}
 
+	// A PROBE's resume is speculative by construction: the preflight it
+	// exists to ask refuses before anything spends, so it is not a billable
+	// launch. gateLaunch's last step is also the metering increment, and
+	// adm.rollback is the only refund — the branches above call it on
+	// FAILURE, which a resume that succeeded never reaches: the refusal
+	// happens later, inside the pod, where no admission handle exists. Left
+	// charged, one parked wait spends its whole probe budget of the org's
+	// monthly run quota (plus one per-minute launch token each) on launches
+	// whose refusal is EXPECTED, and the tenant's real launches are denied
+	// 402 until the month rolls over. The residual under-count — a probe
+	// that finds the window genuinely reopened — is one run the original
+	// launch already metered, once per probed wait: the park that follows
+	// that run's real work spends an attempt, and a paid arming clears the
+	// probe ledger (store/mongo.ScheduleRunRetry), so the resumes after it
+	// are metered again. A marker left over from a pull whose own resume is
+	// long gone names no probe in flight (store.ProbeInFlight bounds it by the
+	// age of the pull): that row is due on its own account and its resume is
+	// an ordinary billable launch.
+	if ref.RetryState.ProbeInFlight(time.Now().UTC()) {
+		adm.rollback(s.logger)
+	}
+
 	// The claim was a lease, not a disarm (so a pod death before this point
 	// leaves the retry re-claimable). Now that the resume is enqueued, clear
 	// it — otherwise a past retry_after would survive and re-fire the moment
@@ -289,6 +318,13 @@ func circuitRetryDelayAt(ref mongostore.RetryDueRef, run *store.Run, circuit *st
 		delayedUntil = delayedUntil.Add(rand.N(jitter))
 	}
 	anchor := ref.RetryAfter().UTC()
+	// On a probe-pulled row the armed instant is "now", so the legacy
+	// fallback above would measure the horizon from the probe instead of from
+	// the wait the probe interrupted — the announced instant it set aside is
+	// that row's real origin.
+	if probed := ref.RetryState.AnnouncedProbeFrom(now); probed != nil {
+		anchor = probed.UTC()
+	}
 	if ref.RetryState != nil && ref.RetryState.ScheduledAt != nil {
 		anchor = ref.RetryState.ScheduledAt.UTC()
 	}
@@ -338,6 +374,9 @@ func retryDenialIsTransient(reason string) bool {
 // run's outcome so the consumers that stood down on the armed retry get
 // the event they were promised.
 func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStore, tenantID, runID, reason string) {
+	if s.standDownProbedRetry(ctx, retryStore, tenantID, runID, reason) {
+		return
+	}
 	if !s.disarmRetry(ctx, retryStore, tenantID, runID, reason) {
 		return
 	}
@@ -376,6 +415,9 @@ func (s *Server) disarmRetry(ctx context.Context, retryStore store.RunRetryStore
 // reArmRetry gives a failed resume another chance inside the attempt
 // budget. ScheduleRunRetry's own budget check is what stops this looping.
 func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, cause error) {
+	if s.standDownProbedRetry(ctx, retryStore, ref.TenantID, ref.ID, cause.Error()) {
+		return
+	}
 	maxAttempts := s.retryMaxAttempts(ctx, ref.ID)
 	at := time.Now().UTC().Add(retryReenqueueBackoff)
 	scheduled, _, err := retryStore.ScheduleRunRetry(ctx, ref.ID, at, retryReason(ref), retryCode(ref), maxAttempts)

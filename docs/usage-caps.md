@@ -41,6 +41,17 @@ durable retry armed for the instant the window reopens. **A capped run is not
 a lost run; it is a run that waits.** The cap reuses the provider-refusal
 path wholesale rather than inventing a recovery of its own.
 
+A window an operator clears by hand reopens with no notice, so the wait is not
+only passive: a bounded hourly probe pulls a parked run forward to let the
+usage preflight answer early, free of its attempt budget and of the monthly
+run quota while that resume follows its pull inside the marker's TTL (one
+hour). Past that hour the pull is nobody's probe any more: the resume is
+metered like any launch and the park it causes charges an attempt, so one wait
+can cost up to `max_attempts` of each
+([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)
+— `ITERION_RETRY_PROBE_FLOOR`, `ITERION_RETRY_PROBE_BUDGET`, `0` to disarm).
+The direct path remains `iterion remote runs resume --usage-blocked`.
+
 ## Configuration
 
 | Variable | Values | Default |
