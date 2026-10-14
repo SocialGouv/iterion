@@ -2,46 +2,13 @@
 
 A run parks durably when a question needs a person or an operator stops it, comes back through a ladder of refusals whose surface verdicts all precede the claim while the budget preflight follows it and re-parks the run, and an explicit rewind moves its checkpoint backwards instead of forwards.
 
-> Drawn from the code at commit `3e92b2c89`. How this page is kept true: [README](README.md).
+> Drawn from the code at commit `f564846d3`. How this page is kept true: [README](README.md).
 
-The whole run-status machine — the launch edges, the terminal edges, the delete tombstone — is drawn once by [data-model-runs.md](data-model-runs.md#run-status-vocabulary) and is not redrawn here. This page keeps the parked subgraph and names, on every edge, the function or the predicate that owns it: **five** producers write `paused_waiting_human` — four through the shared `doPause`, the parallel-branch gate through `store.PauseRun` itself — **four** write `paused_operator`, one compare-and-set brings a run back, and a rewind lands in `paused_operator` with a marker of its own. The record a pause leaves behind — the question — has its own lifecycle and its own vocabulary, drawn second.
+The whole run-status machine — the launch edges, the terminal edges, the delete tombstone — is drawn once by [data-model-runs.md](data-model-runs.md#run-status-vocabulary) and is not redrawn here. The parked subgraph is drawn by [resume.md](../resume.md#resumable-states), each edge naming the function or the predicate that owns it: **five** producers write `paused_waiting_human` — four through the shared `doPause`, the parallel-branch gate through `store.PauseRun` itself — **four** write `paused_operator`, one compare-and-set brings a run back, and a rewind lands in `paused_operator` with a marker of its own. The record a pause leaves behind — the question — has its own lifecycle and its own vocabulary, drawn below.
 
 ## Who parks a run, and what brings it back
 
-```mermaid
-stateDiagram-v2
-%% vocabulary: store.RunStatus
-    running --> paused_waiting_human: "a human node - pauseAtHuman then persistPause"
-    running --> paused_waiting_human: "a mid-step ask_user, a tool-permission ask or an await escalation - pauseForBackendInteraction"
-    running --> paused_waiting_human: "the recovery dispatcher parks a FAILED node - pauseForRecovery, cp.RecoveryPause"
-    running --> paused_waiting_human: "the review gate, the companion verdict and the whole thread on the record - pauseReviewGate"
-    running --> paused_waiting_human: "a parallel branch reaching a human node - pauseBranchAtHuman, its own per-branch interaction id, store.PauseRun directly"
-    running --> paused_operator: "the operator signal - handleOperatorPauseWithCheckpoint"
-    running --> paused_operator: "the daily spend cap - reason cost_cap_daily"
-    running --> paused_operator: "a declared budget on_exceeded pause - reason budget_cap_run"
-    running --> paused_operator: "the budget preflight AFTER the resume claim, on_exceeded pause - pauseSpentBudgetBeforeResume"
-    running --> failed_resumable: "the same preflight under the default policy - finalizeSpentBudgetBeforeResume, code budget_exceeded"
-    running --> failed_resumable: "an interrupted node - the checkpoint is kept"
-    running --> failed: "a reserved fail node, or a failure with no way forward"
-    paused_waiting_human --> paused_waiting_human: "refused BEFORE the claim, status untouched - no answers, SCRATCH_NOT_PORTABLE, a changed source, an incompatible artifact contract, a severed worktree gitdir, a bundle above this engine"
-    paused_waiting_human --> running: "resumeFromPause - answers required by RequiresResumeAnswers, then the claimForResume CAS consumes the pause pointer"
-    paused_operator --> running: "resumeFromFailure - no answers, an operator through CanOperatorResume"
-    failed_resumable --> running: "resumeFromFailure - the one status CanAutoResume admits, so machinery may take this edge"
-    cancelled --> running: "resumeFromFailure - an operator only, never machinery"
-    failed_resumable --> paused_waiting_human: "the answered-gate replay - replayAnsweredGate flips back to the pause path, which then claims from there"
-    cancelled --> paused_waiting_human: "the same replay - a refusal between the flip and the claim leaves the run parked here, pointer consumed"
-    paused_operator --> paused_waiting_human: "the same replay - skipped for a durable mission resume, whose narrowed CAS owns the status"
-    paused_waiting_human --> queued: "the cloud hop - SubmitResume flips the run before it publishes"
-    failed_resumable --> queued: "the same hop - every CanOperatorResume status takes it in cloud mode"
-    queued --> running: "the runner claims THIS attempt - ClaimQueuedRunIfAttempt, and the pause pointer picks the path"
-    queued --> paused_waiting_human: "a resume refused before its claim is released to ResumeSpec.PriorStatus, pending question kept - releaseRefusedResume"
-    queued --> failed_resumable: "the same release when PriorStatus is empty or is not a CanOperatorResume status"
-    rewinding: rewinding - a step of Service.Rewind, which claims the exact document it read by writing cancelled, and not a store.RunStatus value
-    paused_waiting_human --> rewinding: "iterion rewind - a rewindable status and a checkpoint"
-    failed --> rewinding: "failed is rewindable although no resume admits it"
-    rewinding --> paused_operator: "re-anchored - LastRewindAt and ResumeRequiresExplicit stamped under a version-checked save"
-    rewinding --> cancelled: "a workspace revert that fails after the claim leaves the claim's own status, checkpoint intact"
-```
+The diagram lives on [resume.md](../resume.md#resumable-states), beside the resumable-status matrix it belongs to; what each of its states means here:
 
 | state | what it means here | code |
 | --- | --- | --- |
@@ -94,7 +61,7 @@ stateDiagram-v2
 | engine | the sync point arms the in-process doorbell BEFORE reading the store, then parks on the bell, a 5 s ticker, the deadline or cancellation | `awaitAsyncAnswers` |
 | engine | writes the per-invocation wait token, and fails the node when the deferred clear cannot remove it | `store.SetAwaitAnswersWait` |
 | user | answers an async question while the run is running or paused, which queues a node-scoped delivery and rings the doorbell | `handleAnswerInteraction`, `Service.AnswerInteractionCtx`, `model.RecordAsyncAnswer` |
-| user | answers a blocking gate through one of five doors: the studio form and the CLI post the resume route, plus `answer-human`, the host-event gate and the operator MCP tools | `handleResumeRun`, `handleAnswerHuman`, `handleDeliverHostEvent`, `local_resume` |
+| user | answers a blocking gate through one of six doors: the studio form and the CLI post the resume route, the run WebSocket carries an `answer` envelope, plus `answer-human`, the host-event gate and the operator MCP tools | `handleResumeRun`, `handleAnswer`, `handleAnswerHuman`, `handleDeliverHostEvent`, `local_resume` |
 | server | meters a resume as a launch and hands the unit back on every return before the engine may have started | `Server.gateLaunch`, `launchAdmission.rollback` |
 | server | runs the preflight BEFORE promoting staged uploads, because promotion consumes them and would make the studio's forced retry impossible | `Service.PreflightResume`, `promoteAnswerUploads` |
 | server | the surface tier, in a load-bearing order: the scratch and the lineage are judged before the source digest, and a forceable refusal is shown behind them | `Service.Resume`, `validateResumable`, `ValidateResumeScratch`, `ValidateResumeLineage`, `scratchBeforeForce` |

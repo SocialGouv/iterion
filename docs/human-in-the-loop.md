@@ -6,8 +6,8 @@ an approval before a deploy, a missing requirement only a human knows, a
 first-class, **resumable** part of the graph: a run can pause, wait for a
 human (for seconds or for days), and pick up exactly where it left off.
 
-This page covers the `human` node, the six accepted interaction values, the form
-the studio renders, and every way to answer (studio, CLI, HTTP).
+This page covers the `human` node, the seven accepted interaction values, the
+form the studio renders, and every way to answer (studio, CLI, HTTP, MCP).
 
 ## The `human` node
 
@@ -152,12 +152,21 @@ flowchart TD
 
 | Mode | Behaviour | Use it when |
 |---|---|---|
-| `human` | Always pause for a person. | Approvals, gates, anything needing real judgment. |
+| `human` | Pause for a person. | Approvals, gates, anything needing real judgment. |
 | `llm` | An LLM answers automatically; the run never blocks. | Unattended pipelines, chat bots that must not stall (e.g. [`examples/clarify/main.bot`](../examples/clarify/main.bot)). |
 | `llm_or_human` | The LLM answers when confident, else escalates to a human. | Cut routine pauses while keeping a human backstop. |
 | `review` | A companion LLM walks a reviewer through testing the change, ending in a squash-merge — see [review-merge-gate.md](review-merge-gate.md). | Ship gates. |
 | `none` | On `agent`/`judge`, a mid-step interaction request is rejected instead of pausing. An explicit `none` on a `human` node currently follows the normal human-pause path. | Disable interaction capability on LLM nodes; prefer the default `human` value for human nodes. |
 | `async` | On `agent`/`judge`, the node posts **non-blocking** questions via `ask_user_async` and keeps working; answers arrive in its node-scoped inbox and an `await_answers` node is the discretionary sync point (**ADR-081**). | Long-running agents that need a clarification without stalling — see [async-interaction.md](async-interaction.md). |
+| `human_or_host` | A human gate that also accepts an answer attested by the host application, on a field the manifest's `host_event_field` names (`POST /api/runs/{id}/host-event`); the first source to answer wins. | Chat gates whose answer can come from an action the host completed — see [assistant-dock.md](assistant-dock.md). |
+
+On an `agent` or `judge`, the synchronous modes (`human`, `llm`,
+`llm_or_human`, `human_or_host`) need a backend whose `ask_user` is wired —
+`claw`, `claude_code`, or `pi` on its RPC transport. Routed to `codex`,
+`kimi`, `grok` or `opencode` the node only receives the interaction protocol
+as prompt text and runs to completion without ever pausing; **C271** warns
+when the source names one of them, and a route the source does not decide
+(`auto`, a `{{vars.x}}`) is not screened at all.
 
 Modes are also why the same workflow can run fully autonomously in cloud
 mode (LLM answers) and interactively on a desk (human answers) with no
@@ -182,7 +191,12 @@ A `paused_waiting_human` run is resumable from anywhere:
   or `--answers-file answers.json`. Values are coerced to the schema
   (`"true"` → `bool`, enum membership checked).
 - **HTTP** — `POST /api/runs/{id}/resume` with the answers map (this is
-  what cloud webhooks and the SDK use).
+  what cloud webhooks and the SDK use), or
+  `POST /api/runs/{id}/answer-human` with the answers alone — the same
+  resume on the run's recorded workflow, a 409 when the run is not
+  `paused_waiting_human`.
+- **MCP** — `local_resume` with an `answers` object, on the operator MCP
+  server ([mcp-server.md](mcp-server.md)).
 
 Every exchange is persisted to `interactions/<id>.json`, so the question,
 the answers, and who answered are all part of the run's auditable record
