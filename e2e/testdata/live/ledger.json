@@ -63,8 +63,11 @@
     },
     {
       "target": "test:live:bot:rgaa-audit",
-      "last_run": "0001-01-01T00:00:00Z",
-      "verdict": "never"
+      "last_run": "2026-10-13T17:28:34.516688326Z",
+      "verdict": "pass",
+      "duration_sec": 822,
+      "cost_usd": 11.2552728,
+      "ref": "0210afac6e5b"
     },
     {
       "target": "test:live:bot:sec-audit-deps",

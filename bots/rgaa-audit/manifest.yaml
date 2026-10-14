@@ -1,7 +1,16 @@
 name: rgaa-audit
 display_name: Acci
 icon: ♿
-version: 3.0.0
+version: 3.0.1
+## 3.0.1 — first dogfood on iterion's studio (#2346): a recommendation is an
+## object anchored on the criterion's own evidence (a free-text one used to
+## cost its verdict at the fold) and is never replayed from the ledger; a
+## replayed verdict the engine's gate refuses is named, and a ledger the engine
+## cannot read is LEDGER_INVALID with its own message; the trial reports what
+## the engine pruned even when it refuses part of it, chains the engine's
+## write, and says so at the human gate; a refused page-sample lint fails the
+## rendered layer before any scan; the delivered ledger's anchors are
+## workspace-relative.
 ## 3.0.0 — rebuilt on the ultra11y engine (SocialGouv/ultra11y 5.42.1, pinned
 ## by version and sha256). The engine finds, gates and reports; iterion
 ## orchestrates: criteria adjudicated in parallel batches by read-only agents,

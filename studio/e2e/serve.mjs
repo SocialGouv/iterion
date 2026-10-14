@@ -125,8 +125,13 @@ function run(args, { json = false } = {}) {
 
 const store = ["--store-dir", storeDir];
 
+// ITERION_E2E_FIXED_RUN_IDS=1 pins the two seeded run ids so a page sample
+// (an accessibility scan of /runs/<id>) can name them across boots.
+const fixedIds = process.env.ITERION_E2E_FIXED_RUN_IDS === "1";
+const runId = (id) => (fixedIds ? ["--run-id", id] : []);
+
 const fixtureRun = run(
-  ["run", "bots/demo-bot/main.bot", ...store, "--json"],
+  ["run", "bots/demo-bot/main.bot", ...store, ...runId("demo-bot-e2e-fixed"), "--json"],
   { json: true },
 );
 if (fixtureRun.status !== "finished") {
@@ -134,7 +139,7 @@ if (fixtureRun.status !== "finished") {
 }
 
 const previewRun = run(
-  ["run", "bots/preview-bot/main.bot", ...store, "--json"],
+  ["run", "bots/preview-bot/main.bot", ...store, ...runId("preview-bot-e2e-fixed"), "--json"],
   { json: true },
 );
 if (previewRun.status !== "finished") {

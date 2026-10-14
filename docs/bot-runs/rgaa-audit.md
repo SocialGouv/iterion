@@ -9,6 +9,98 @@ The bilans below v3 are the v1/v2 single-agent auditor, kept as the record
 of why v3 exists. Earlier runs (pre-dedicated-file) are recorded in the
 2026-06 campaign bilans.
 
+## 2026-10-13 — first dogfood on iterion's studio (#2346): the rendered layer proven, 30 $ short of 19 batches, four bot defects found and fixed (run 01a13705-d54a)
+
+- Status: **partial, degraded and saying so** — the whole graph ran on the real studio
+  (static, rendered, adjudication, trial, report, per-page grid, annex, issue plan), but the
+  cost cap cut 7 of the 19 adjudication batches: 69 of the 106 criteria stay « à évaluer » and
+  the rate is provisional. Board publication not exercised (`post_to_board=false`).
+- Versions: bot rgaa-audit 3.0.0 plus this branch's `render` fix (run base `0d506c744`); the
+  trial ran on the old `refute_apply`, and its fix, like the recommendation and ledger fixes
+  below, landed after the run and is proven by the node tests, not by this run · iterion
+  `116120b35` (local build) · ultra11y 5.42.1, pinned and fingerprinted · the engine's
+  Playwright Chromium 1248, installed under the project (`PLAYWRIGHT_BROWSERS_PATH`) ·
+  adjudicator and second reader on `claude_code` / `claude-opus-5-5`.
+- Method: the studio recipe this bilan ships — `.ultra11yrc.json` (21 pages with the view
+  files as `sources`, 3 transverse components) and `studio/e2e/serve.mjs` with
+  `ITERION_E2E_FIXED_RUN_IDS=1`, so the seeded run ids survive a reboot and `/runs/<id>` can
+  be sampled — then `iterion run bots/rgaa-audit --sandbox none --merge-into none --var
+  scope_globs='studio/src/**' --var rendered=required --var serve_command='… node
+  studio/e2e/serve.mjs' --var serve_ready_url=http://127.0.0.1:4899/api/server/info
+  --max-cost-usd 30`; resumed once at 60 $ (`iterion resume --run-id … --max-cost-usd 60`).
+  The resumed run died `AUDIT_INTEGRITY` at `final_report` (the old `refute_apply` had not
+  recorded the engine's rewrite of the audit); the hash record was realigned on the engine's
+  write by hand and the run rewound to `final_report` (`iterion rewind --node final_report` +
+  `resume --force`).
+- Result: **35.36 $** over 24 model calls — adjudication 14 calls, 27.71 $ (0.29 to 3.78 $
+  for a batch of at most 8 criteria, 5 min on average), second reader 10 calls, 7.65 $ — and
+  26 min of run time over three segments (40 min from launch to finish, pauses included).
+  - Static: 553 files, 15 engine findings, 100 criteria left to judgement.
+  - Rendered: 21 pages captured, none refused; the page-kind lint names the 6 kinds the studio
+    does not have (contact, legal notice, accessibility statement, site map, help,
+    authentication — the last one cloud-only).
+  - Adjudication: 12 batches answered (54 verdicts); 7 lost — 4 cancelled when the cap was
+    hit, 1 adjudicated but stopped at the cap before its fragment was written, 1 on a
+    claude-code `error_during_execution`, 1 never started. Fold: 33 verdicts accepted, 67
+    criteria still open — 49 from the lost batches, **18 refused for a single recommendation
+    without a file** (#2398).
+  - Trial: 95 claims, 20 refuted, 2 unsupported; the engine cleared 2 conformities (3.1,
+    11.12) and refused the grounding of 9 retained claims anchored on page URLs. The
+    delivered annex still says « the engine did not apply the trial »: that is the misreport
+    fixed below.
+  - Report: its own line reads 10 C, 11 NC, 16 NA, 69 to assess — **11 % provisional**
+    (10 ÷ 90). The bot's recount of `criteria[]` gives 12 C and 13 %: two subject-less
+    criteria left open (13.3, 13.4) are counted both « sans sujet » and « à évaluer » by the
+    engine (SocialGouv/ultra11y#42), and the annex reports the integrity layer as degraded.
+  - Issue plan: 12 issues, severity-sorted — 11.1 blocking (18 occurrences), 7.1 and 10.7
+    (28 occurrences each) among the major ones.
+  - Ledger: 34 verdicts, committed as `.ultra11y/verdicts/rgaa.json` for the next run to
+    replay through the engine — the run's own ledger with its 56 capture anchors rewritten
+    relative to the workspace after the run, the form `final_report` now delivers.
+- Value: the rendered layer works end to end on a real SPA (served by the e2e harness,
+  sampled, scanned, merged before adjudication); the annex names every degraded layer with
+  its cause; the issue plan is the engine's own, capped and severity-sorted.
+- Findings / misses — four bot defects, fixed in 3.0.1 with a test seen red on each:
+  - **a recommendation cost its verdict**: `write_fragment` kept only string recommendations,
+    while the engine requires an object anchored on a file and refuses the whole verdict over
+    a single free-text one. Every recommendation was either lost (an object) or fatal (a
+    string). They are now objects kept only on an anchor of the criterion's own evidence,
+    with that anchor's snippet so they ground; the rest are dropped and counted in the annex,
+    and the prompt and the adjudication skill state the shape. A stored recommendation is not
+    replayed from the ledger either: the engine re-grounds it with no fallback, so an
+    advised element since edited would refuse the replayed verdict; and a replayed verdict
+    the engine's gate refuses is now named instead of being counted as replayed. The
+    adversarial review of these fixes hardened the replay further: a ledger the engine
+    cannot read is `LEDGER_INVALID` with the engine's own message, a failure of the
+    environment stays a resumable error, and the replayed audit is written beside the real
+    one and moved into place once whole.
+  - **the trial report contradicted the audit**: with `--prune` the engine rewrites the audit
+    and repairs the ledger whatever its verdict on coverage and grounding. The node chained
+    the hash only on `ok` (→ `AUDIT_INTEGRITY` at `final_report`) and reported « not applied »
+    while 3.1 and 11.12 had been cleared. It now chains the engine's write, reports what was
+    pruned and names the part the engine refused — in the annex and at the human gate.
+  - **a refused page-sample lint read as « no kind missing »**: `render` now fails the layer
+    on it, before any scan, with the lint's own issues as the reason.
+  - **the delivered ledger carried this run's absolute workspace paths** (56 capture
+    anchors under the run's worktree): `final_report` now writes every anchor relative to the
+    workspace, and a capture from any run's worktree from its `.ultra11y/pages/`, the rule
+    the engine's replay applies.
+- Engine (upstream): the trial grounds a page URL as a file, so every trial of a rendered
+  audit comes back refused in part (SocialGouv/ultra11y#49); the « Décidés » double count
+  stays (SocialGouv/ultra11y#42).
+- Engine facts paid on this run:
+  - a local run executes in the worktree iterion creates from `HEAD` (`worktree: auto` is
+    the default): the first attempt died `RENDER_UNAVAILABLE` on a recipe not yet committed;
+  - on a resume, `loop_budget_guard` prices the re-ask at the previous iteration — the whole
+    19-batch fan-out, 27.7 $ — and declined it, although the re-ask replans only the refused
+    criteria;
+  - a local `claude_code` run inherits the shell's provider keys: a `ZAI_API_KEY` in the
+    environment routes it to the z.ai facade.
+- Lessons for next run: about 2 $ a batch, so a cold studio run is 19 batches + one re-ask +
+  the trial, about 50–60 $; the committed ledger replays 34 verdicts for free and leaves
+  about 9–12 batches. Pass `--loop-budget-guard off` on a resume. Commit the recipe and the
+  ledger before launching.
+
 ## 2026-10-13 — v3 on the ultra11y engine lands (PR #2387); Ally (`ultra11y`) retired into it
 
 - Status: **structural + engine-proven, dogfood pending** — the real node scripts run on
