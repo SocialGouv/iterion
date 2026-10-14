@@ -179,9 +179,9 @@ A judge **MUST**:
 - advise rather than act as a hard semantic gate (see §5.2);
 - avoid unnecessary external effects.
 
-`readonly: true` (**DSL** intent) protects the **checkout** and classifies
-parallelism safety. It does **not** by itself block an MCP or API with
-external effects. A judge **SHOULD** add a read-only tool allowlist, no
+`readonly: true` (**DSL** intent) protects the **checkout** on the backends
+that read it (§7) and classifies parallelism safety everywhere. It does
+**not** by itself block an MCP or API with external effects. A judge **SHOULD** add a read-only tool allowlist, no
 production APIs, no writes to external systems, no mutation permissions.
 
 A unique writer is required **only** when several branches converge on the
@@ -467,7 +467,7 @@ candidate MUST NOT be promoted.
 
 | Marker | Guarantees | Does not guarantee |
 |---|---|---|
-| `readonly: true` | a sandbox on codex/pi; the file-writing tools withheld on claude_code | no shell bound, no MCP / API / external-system effect |
+| `readonly: true` | an OS sandbox on codex, a four-reader tool list on pi; the file-writing tools withheld on claude_code | no shell bound, no MCP / API / external-system effect — and nothing at all on `claw`, `opencode` and `cliagent`, which do not read the flag at all |
 | `isolated: true` | contract promises a private store/namespace | an OS sandbox |
 | `parallel_safe: true` | `fan_out_each` with disjoint item-keyed outputs | safety if keys overlap |
 | `await: wait_all` | convergence barrier | a unique writer |

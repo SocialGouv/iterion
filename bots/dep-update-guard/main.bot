@@ -703,8 +703,9 @@ agent align:
 ## out-of-tree verify.sh (it does NOT judge; the tool's exit code does).
 ## NO `readonly:` here, and the full native toolset is what the contract
 ## needs: the deliverable IS a written file, `verify_run` refuses a missing
-## one, and on claude_code `readonly:` withholds the file-writing tools a
-## node did not declare.
+## one, and on claude_code `readonly:` withholds the file-writing tools
+## whatever the tools: list says. The node's non-mutating fan-out admission
+## goes with the flag, which is honest for a node that writes.
 agent verify_build:
   model: "${VETTY_MODEL_VALIDATE:-claude-opus-5-5}"
   backend: "claude_code"

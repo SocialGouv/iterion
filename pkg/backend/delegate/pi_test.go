@@ -169,6 +169,21 @@ func TestPiExtraArgsFor(t *testing.T) {
 		if i < 0 || strings.Contains(ro[i+1], "bash") || strings.Contains(ro[i+1], "write") {
 			t.Errorf("args = %v, want a read-only tool set", ro)
 		}
+
+		// …and the flag beats the node's own `tools:` list, which is the
+		// sentence three doc pages and the claude_code notice say about this
+		// backend ("codex enforces it with a read-only OS sandbox and pi by
+		// pinning the tool list to readers"). Asserted here rather than quoted: a pi that honoured a
+		// declared writer under the flag would make that sentence false, and
+		// claude_code's own rule (#1816) rests on it being true.
+		declared := piExtraArgsFor(Task{
+			Model: "m", Readonly: true,
+			AllowedTools: []string{"bash", "read_file", "write_file"}, ToolsDeclared: true,
+		}, nil)
+		j := slices.Index(declared, "--tools")
+		if j < 0 || strings.Contains(declared[j+1], "bash") || strings.Contains(declared[j+1], "write") {
+			t.Errorf("args = %v, want a read-only tool set on a readonly node that DECLARES a writer: the flag wins here, and claude_code says so on every such run", declared)
+		}
 	})
 
 	t.Run("offline only under sandbox, with an escape hatch", func(t *testing.T) {

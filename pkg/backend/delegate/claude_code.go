@@ -137,12 +137,6 @@ var claudeNativeForCanonical = map[string][]string{
 	"skill":        {"Skill"},
 }
 
-// claudeWritingCanonicals are the canonical tool concepts that write a file.
-// The shared spelling table (toolcatalog.CanonicalToolName) maps every
-// accepted synonym onto one of them, so `write_file`, `apply_patch` and
-// `str_replace` are the same three concepts as `write` and `edit`.
-var claudeWritingCanonicals = []string{"write", "edit", "notebookedit"}
-
 // claudeWorktreeMovingTools are the two tools that MOVE the worktree the
 // session acts in. They are read from the live CLI's own `system/init` roster
 // (2.1.220), the one source gatedFormattingWithheld enumerates too, so the
@@ -159,38 +153,42 @@ var claudeWritingCanonicals = []string{"write", "edit", "notebookedit"}
 var claudeWorktreeMovingTools = []string{"EnterWorktree", "ExitWorktree"}
 
 // claudeReadonlyWithheld is what `readonly: true` removes from EVERY spawn of
-// a claude_code task: this backend's roster for the concepts above, minus
-// whatever the node's own `tools:` list names, plus the worktree-moving pair
-// no declaration can name. The first half is a projection of
-// claudeNativeForCanonical rather than a list of its own, so a native
-// spelling added there is withheld here in the same edit.
+// a claude_code task: this backend's whole roster for the file-writing
+// concepts (toolcatalog.WritingCanonicals), plus the worktree-moving pair.
+// The first half is a projection of claudeNativeForCanonical over that shared
+// set rather than a list of its own, so a native spelling added there is
+// withheld here in the same edit — and a writing concept added to the shared
+// set moves this withholding and the two corpus rules over the catalogue
+// together, which is what kept them from drifting apart.
 //
-// The bite is the UNDECLARED surface, where omitting `tools:` means the full
-// native roster and `readonly:` used to mean nothing at all. A DECLARED list
-// already removes every native it does not name, so the subtraction below
-// changes nothing for it — and a writing tool it DOES name survives the flag:
-// two explicit author statements conflict there, and deleting the specific
-// one silently is what philosophy rule 1 forbids. codex and pi resolve that
-// conflict the other way, by locking the node down; claudeReadonlyNotices
-// states the difference on the node's own log.
+// It takes no task: the flag's withholding is the same list for every node,
+// which IS the rule — a list that varied with the declaration is what let a
+// declared writer through.
 //
-// What the flag does not buy here at all: a sandbox. codex runs a readonly
-// task in a read-only OS sandbox and pi narrows its tool list to readers;
+// The flag beats the node's own `tools:` list, which is the meaning it
+// already has on the two other backends that read it — codex runs the task in
+// a read-only OS sandbox, pi narrows its tool list to readers — and the
+// meaning the engine relies on: `readonly:` is also what admits the node into
+// a fan-out branch as non-mutating (pkg/runtime.isMutatingNodeIn), so a
+// writer kept beside it would write in a workspace a parallel branch was told
+// nobody mutates. A node whose deliverable is a written file drops
+// `readonly:`; that is the escape hatch, and philosophy rule 1 is answered by
+// it plus the notice claudeReadonlyNotices logs for the deleted declaration,
+// never by keeping the tool in silence.
+//
+// The bite is widest on the UNDECLARED surface, where omitting `tools:` means
+// the full native roster and `readonly:` used to mean nothing at all.
+//
+// What the flag does not buy here at all: a sandbox. codex answers it with a
+// read-only OS sandbox and pi by pinning the tool list to four readers
+// (`--tools read,grep,find,ls`, neither a writer nor a shell among them);
 // this backend has neither lever, so a shell the node keeps is still a write
 // path. The roster is also one this project does not own (#1651): a writing
 // tool outside these lists survives the withholding.
-func claudeReadonlyWithheld(task Task) []string {
-	var granted map[string]bool
-	if toolBoundaryApplies(task) {
-		granted = claudeNativeToolsForAllowed(task.AllowedTools, task.DiagnosticShell)
-	}
+func claudeReadonlyWithheld() []string {
 	var withheld []string
-	for _, canonical := range claudeWritingCanonicals {
-		for _, name := range claudeNativeForCanonical[canonical] {
-			if !granted[name] {
-				withheld = append(withheld, name)
-			}
-		}
+	for _, canonical := range toolcatalog.WritingCanonicals() {
+		withheld = append(withheld, claudeNativeForCanonical[canonical]...)
 	}
 	return append(withheld, claudeWorktreeMovingTools...)
 }
@@ -252,8 +250,7 @@ func claudeSpawnBounds(task Task) []claudesdk.Option {
 // claudeSpawnBoundWithheld is the half of a spawn's --disallowedTools that
 // claudeSpawnBounds owns: the tools no headless session can use, the
 // single-subagent surface when the opt-in knob removes it from a node that is
-// not ultracode, and the file-writing tools a `readonly:` node did not
-// declare.
+// not ultracode, and the file-writing tools of a `readonly:` node.
 //
 // `readonly:` belongs here and not beside the declaration: it is the node's
 // access intent, not its tool list, so it holds on the structured-output
@@ -266,7 +263,7 @@ func claudeSpawnBoundWithheld(task Task) []string {
 		withheld = append(withheld, orchestrationTools...)
 	}
 	if task.Readonly {
-		withheld = append(withheld, claudeReadonlyWithheld(task)...)
+		withheld = append(withheld, claudeReadonlyWithheld()...)
 	}
 	return withheld
 }
@@ -285,29 +282,28 @@ func claudeSpawnKeeps(task Task, native string) bool {
 // it names one (`diagnostic_shell` included).
 func claudeKeepsShell(task Task) bool { return claudeSpawnKeeps(task, "Bash") }
 
-// claudeWritersTheDeclarationKeeps names the file-writing tools the node's
-// own `tools:` list grants, which `readonly:` therefore leaves in place. It
-// reads the projection the argv is built from (claudeNativeToolsForAllowed),
-// so it names what the spawn really keeps, not what a name suggests.
-func claudeWritersTheDeclarationKeeps(task Task) []string {
+// claudeWritersTheDeclarationNames names the file-writing tools the node's
+// own `tools:` list asks for and `readonly:` removes anyway. It reads the
+// projection the argv is built from (claudeNativeToolsForAllowed), so it
+// names what the declaration really granted, not what a name suggests.
+func claudeWritersTheDeclarationNames(task Task) []string {
 	if !toolBoundaryApplies(task) {
 		return nil
 	}
 	granted := claudeNativeToolsForAllowed(task.AllowedTools, task.DiagnosticShell)
-	var kept []string
-	for _, canonical := range claudeWritingCanonicals {
+	var named []string
+	for _, canonical := range toolcatalog.WritingCanonicals() {
 		for _, name := range claudeNativeForCanonical[canonical] {
 			if granted[name] {
-				kept = append(kept, name)
+				named = append(named, name)
 			}
 		}
 	}
-	return kept
+	return named
 }
 
 // claudeWorktreeMoversTheDeclarationNames names the worktree-moving tools the
-// node's own `tools:` list asks for and `readonly:` removes anyway — the one
-// declaration this backend deletes instead of keeping.
+// node's own `tools:` list asks for and `readonly:` removes anyway.
 //
 // Names are compared through claudeFoldedToolName, the same key the approval
 // subtraction uses: `EnterWorktree`, `enterworktree` and `enter_worktree` are
@@ -333,17 +329,29 @@ func claudeWorktreeMoversTheDeclarationNames(task Task) []string {
 	return named
 }
 
+// claudeDeclarationsTheFlagDeletes names the tools the node's own `tools:`
+// list asks for and `readonly:` removes anyway: the file-writing natives the
+// declaration granted, then the worktree-moving pair. One list because they
+// are one rule — the flag is the node's access intent and it beats the
+// declaration — so a notice reads it rather than enumerating the kinds, and
+// the kind added next draws its notice from the same place.
+//
+// Nil for a task without the flag, and for an undeclared surface: omitting
+// `tools:` states nothing for the flag to contradict.
+func claudeDeclarationsTheFlagDeletes(task Task) []string {
+	if !task.Readonly {
+		return nil
+	}
+	return append(claudeWritersTheDeclarationNames(task),
+		claudeWorktreeMoversTheDeclarationNames(task)...)
+}
+
 // claudeReadonlyNotices are what the backend owes a node that declared
-// `readonly: true`, a flag it honours in part: the writing tools the node's
-// own declaration keeps despite the flag, the worktree-moving tools it
-// declared and the flag deletes anyway, and the shell the flag cannot sandbox
-// here. Each names the way out — philosophy rule 1: a limit this backend
-// cannot deliver is said out loud, never downgraded in silence, and the one
-// declaration it does delete is named rather than dropped behind the author's
-// back. Each notice therefore says which declaration it speaks for: a node
-// that declares a writer AND the worktree pair draws both, and a claim that
-// declarations are never deleted here would contradict its neighbour on that
-// node's own log.
+// `readonly: true`, a flag it honours in part: the tools the node's own
+// `tools:` list named and the flag deletes anyway, and the write paths the
+// flag cannot close here. Each names the way out — philosophy rule 1: an
+// operator's explicit choice is never replaced in silence, and a limit this
+// backend cannot deliver is said out loud rather than downgraded.
 //
 // Empty for a task that did not declare the flag, and for one whose
 // declaration leaves nothing to say: a readonly node that declares readers
@@ -353,19 +361,14 @@ func claudeReadonlyNotices(task Task) []string {
 		return nil
 	}
 	var notices []string
-	if kept := claudeWritersTheDeclarationKeeps(task); len(kept) > 0 {
+	if deleted := claudeDeclarationsTheFlagDeletes(task); len(deleted) > 0 {
 		notices = append(notices, fmt.Sprintf(
-			"readonly: true is NOT enforced for %s: this node's own tools: list declares them, and a declared writing tool is not deleted here — codex and pi resolve the same conflict the other way, by locking the node down. The flag is also what admits this node into a fan-out branch as non-mutating, so a writer it keeps may run beside another branch's files in a shared workspace. Drop one of the two statements",
-			strings.Join(kept, ", ")))
-	}
-	if deleted := claudeWorktreeMoversTheDeclarationNames(task); len(deleted) > 0 {
-		notices = append(notices, fmt.Sprintf(
-			"readonly: true removes %s whatever this node's tools: list says, and the name is not auto-approved either: no tools: list can withhold the pair that MOVES the worktree, and readonly: is also what admits this node into a shared workspace as non-mutating. Drop readonly: — it is the only way out",
+			"readonly: true removes %s whatever this node's tools: list says, and the names are not auto-approved either: the flag is this node's access intent, which codex enforces with a read-only OS sandbox and pi by pinning the tool list to readers, and it is also what admits this node into a shared workspace as non-mutating — a write beside a branch that was told nobody mutates is what it can least afford. Drop readonly: — it is the only way out",
 			strings.Join(deleted, ", ")))
 	}
 	if residual := claudeReadonlyResidualWritePaths(task); len(residual) > 0 {
 		notices = append(notices, fmt.Sprintf(
-			"readonly: true withholds the file-writing tools this node did not declare, but this backend has no read-only sandbox: %s. Declare a tools: list with neither, or run the node on codex or pi, whose readonly is a sandbox",
+			"readonly: true withholds the file-writing tools, but this backend has no read-only sandbox: %s. Declare a tools: list with neither, or run the node on codex, whose readonly is an OS sandbox, or pi, whose readonly pins the tool list to readers",
 			strings.Join(residual, "; and ")))
 	}
 	return notices
@@ -388,8 +391,9 @@ func claudeReadonlyNotices(task Task) []string {
 //
 // The roster itself is one this project does not own (#1651): a write path
 // spelled outside every list here survives both the withholding and this
-// notice, which is why the notice names the backends whose readonly is a
-// sandbox rather than claiming one.
+// notice, which is why the notice names what the other two backends' readonly
+// closes — an OS sandbox on codex, the tool list itself on pi — rather than
+// claiming a sandbox here.
 func claudeReadonlyResidualWritePaths(task Task) []string {
 	var paths []string
 	if claudeKeepsShell(task) {
@@ -519,15 +523,14 @@ func claudeCodeSystemPrompt(task Task) string {
 // rest on the CLI resolving deny over allow — a precedence this repo has
 // never executed. The declaration keeps its own tools; it loses only the
 // names a rule that never consulted it removes anyway: headlessWithheldTools,
-// the orchestration knob, and `readonly:`'s worktree-moving pair, which no
-// declaration can grant. `readonly:`'s writing half cannot reach this
-// subtraction — it is by construction the writers the declaration does NOT
-// grant, and the approval list is that declaration plus MCP FQN extras — so
-// composing it here is defence against a future term that does, not a case
-// this one has. The declaration's own half of the disallow list is
-// subtracted too, where it is redundant as long as every native name grants
-// itself through claudeNativeForCanonical — included so the invariant does
-// not rest on that.
+// the orchestration knob, and `readonly:`'s withholding — the writing natives
+// and the worktree-moving pair, both of which the flag takes whatever the
+// list says. That is where a declared `write_file` leaves --allowedTools: the
+// flag puts it on the deny half, and this subtraction is what keeps the same
+// spawn from auto-approving it. The declaration's own half of the disallow
+// list is subtracted too, where it is redundant as long as every native name
+// grants itself through claudeNativeForCanonical — included so the invariant
+// does not rest on that.
 func claudeToolOptions(task Task, extraAllowedTools []string) []claudesdk.Option {
 	if !toolBoundaryApplies(task) {
 		return nil

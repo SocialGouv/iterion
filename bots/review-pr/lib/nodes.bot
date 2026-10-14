@@ -93,10 +93,12 @@ judge reviewer_claude:
   ## workspace file, which is what lets dual fan both reviewers onto one
   ## worktree — and a tool boundary, with the lever each backend has:
   ## codex an OS sandbox, pi a readers-only tool list, claude_code the
-  ## withholding of the file-writing tools the node did not declare,
-  ## which here is every one of them (no `tools:` list), plus the pair
-  ## that moves the worktree. It is not a sandbox there: the native shell
-  ## stays, so the prompt and the output schema still carry the rest.
+  ## withholding of the file-writing tools whatever this node's `tools:`
+  ## list says (here it declares none at all), plus the pair that moves
+  ## the worktree; claw, opencode and cliagent do not read the flag at
+  ## all, so there the `tools:` list is the only bound. It is not a
+  ## sandbox on claude_code either: the native shell stays, so the
+  ## prompt and the output schema still carry the rest.
   ## Declaring `tools:` here would bound that shell too, and is not free
   ## — a non-empty list installs --disallowedTools and takes
   ## Task/WebFetch/Skill off this node on every run.
