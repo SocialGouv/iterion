@@ -1,6 +1,6 @@
 # ADR-122 — A gateway's models are resolved exactly: the operator's table, then a qualified catalog key, offline included
 
-- Status: accepted (2026-10-01, #2028 slice 4)
+- Status: accepted (2026-10-01, #2028 slice 4; amended 2026-10-13 — provider-first gateway ids, see Amendment)
 - Date: 2026-09-30
 - Deciders: jo (direction), Claude (analysis)
 - Note: numbered 122 — 118 is the merge-gate ADR on main, 119/120/121 are claimed (#2062, the agent-tree slice, and #2119's adaptive-routing ADR, merged 2026-10-02)
@@ -108,3 +108,14 @@ and compact inside their container, which has neither the cache nor a route to m
 - The snapshot drifts between refreshes. Every answer it gives carries its as-of date.
 - ADR-042's reasoning still holds for every non-gateway lookup, because the snapshot is not a general fallback.
 - A declared price of 0/0 still reads as unpriced. Declaring a model free is a follow-up.
+
+## Amendment 2026-10-13: provider-first gateway ids
+
+The decision above took the gateway to serve BARE ids (`glm-5.2`), the measured shape when it was written. A
+LiteLLM gateway can also name its models provider-first — `scaleway/glm-5.2` — and under
+`OPENAI_COMPATIBLE_CATALOG_PROVIDER=scaleway` the exact key `scaleway/scaleway/glm-5.2` resolved to nothing:
+the deployment had to carry every id in the operator table. Resolution now tries, once `q/<id>` misses, the id
+as-is when its first segment IS `q`. Only the configured qualifier is recognised — another provider's prefix
+stays part of the id, so the "no cross-provider fallback" consequence holds. Within each table `q/<id>` is
+tried first; across tables the live table (both keys) keeps its precedence over the snapshot, as §1.2 says.
+The wire id is untouched: what the gateway serves is what it receives.

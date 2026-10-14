@@ -20,7 +20,8 @@ import (
 //     max output, the two prices; prices arrive as a pair or not at all);
 //  2. OPENAI_COMPATIBLE_CATALOG_PROVIDER=<q> — an exact `q/<id>` lookup in
 //     the live models.dev table when it is loaded, else the embedded
-//     snapshot;
+//     snapshot (an id already carrying `q/` as its first segment is also
+//     tried as-is: see qualifiedIDs);
 //  3. unknown, said out loud.
 //
 // There is no bare-id, suffix, vendor or static fallback: a gateway id is
@@ -42,9 +43,13 @@ const CatalogModelsEnv = "OPENAI_COMPATIBLE_MODELS"
 const ResolvedEnvName = "ITERION_OPENAI_COMPATIBLE_RESOLVED"
 
 // CatalogProviderEnv names the models.dev provider whose EXACT keys answer
-// the gateway's ids — the gateway serves BARE ids, and <q> is the upstream
-// provider key in models.dev ("scaleway" in the measured deployment).
-// Empty means the operator table (or nothing) decides.
+// the gateway's ids — <q> is the upstream provider key in models.dev
+// ("scaleway" in the measured deployment). The gateway serves bare ids
+// (`glm-5.2`, key `q/glm-5.2`) or provider-first ids (`scaleway/glm-5.2`,
+// LiteLLM's naming): an id already carrying <q> as its first segment is
+// also looked up as-is — within each table `q/<id>` first, and the live
+// table (both keys) before the snapshot. Empty means the operator table (or
+// nothing) decides.
 const CatalogProviderEnv = "OPENAI_COMPATIBLE_CATALOG_PROVIDER"
 
 // Provenance of a resolved record — recorded on the node output
@@ -191,16 +196,21 @@ func ResolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 	if prov == "" {
 		return Resolved{Source: SourceUnknown}
 	}
+	ids := qualifiedIDs(prov, modelID)
 	// The live table answers only when it is actually loaded — an offline
 	// runner's registry falls through to the snapshot instead of blocking.
 	if live != nil {
-		if e, ok := live.LookupExact(prov, modelID); ok {
-			return Resolved{Spec: e, Source: SourceCatalogLive}
+		for _, id := range ids {
+			if e, ok := live.LookupExact(prov, id); ok {
+				return Resolved{Spec: e, Source: SourceCatalogLive}
+			}
 		}
 	}
-	if e, ok := modelspecs.SnapshotLookupExact(prov, modelID); ok {
-		warnStaleSnapshot()
-		return Resolved{Spec: e, Source: SourceCatalogSnapshot}
+	for _, id := range ids {
+		if e, ok := modelspecs.SnapshotLookupExact(prov, id); ok {
+			warnStaleSnapshot()
+			return Resolved{Spec: e, Source: SourceCatalogSnapshot}
+		}
 	}
 	// Said out loud, once per id per process: the record on the node
 	// output is easy to miss, and a mis-set OPENAI_COMPATIBLE_CATALOG_PROVIDER
@@ -209,6 +219,24 @@ func ResolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 		iterlog.NewFromEnv(os.Stderr).Warn("openai_compatible: id %q is in no table (set %s, or %s=<models.dev provider> — currently %q)", modelID, CatalogModelsEnv, CatalogProviderEnv, prov)
 	}
 	return Resolved{Source: SourceUnknown}
+}
+
+// qualifiedIDs lists the ids the qualifier q is tried against for one
+// gateway id, in order: the id itself (key `q/<id>`) and, when the id
+// already carries q as its first segment, the id without it (so the key is
+// the id as-is). A gateway naming its models provider-first — LiteLLM's
+// `scaleway/glm-5.2` — would otherwise be looked up as
+// `scaleway/scaleway/glm-5.2` and resolve to nothing. Only the configured
+// qualifier is recognised: another provider's prefix is part of the id, one
+// occurrence is stripped, and a remainder the lookups would have to trim
+// (`scaleway/ glm-5.2`) is not an id — exact stays exact.
+func qualifiedIDs(q, modelID string) []string {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	ids := []string{id}
+	if rest, ok := strings.CutPrefix(id, strings.ToLower(strings.TrimSpace(q))+"/"); ok && rest != "" && rest == strings.TrimSpace(rest) {
+		ids = append(ids, rest)
+	}
+	return ids
 }
 
 // unknownWarns bounds the per-id warning to one line each, whatever a
