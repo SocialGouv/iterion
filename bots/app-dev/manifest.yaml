@@ -1,7 +1,10 @@
 name: app-dev
 display_name: Appy
 icon: 🏗️
-version: 0.4.1
+version: 0.4.2
+## 0.4.2 — every body it posts on a forge ends with the run that wrote it:
+## the evidence behind the text, and the way into the platform for a reader
+## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)
 ## 0.4.0 — a missing verify.sh is a refusal, and the in-loop review still runs on it (#1598)
 ## 0.3.2 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside nineteen prompts (84 in all) now reach the

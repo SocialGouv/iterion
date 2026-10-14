@@ -177,6 +177,9 @@ prompt converse_system:
   prose message; the run fails when the structured output is missing.
 
 prompt converse_user:
+  This run — the body's mandatory footer links it (url is EMPTY on a
+  deployment with no public address: then the id, with no link):
+  id {{run.id}} · url {{run.url}}
   Workspace:           {{vars.workspace_dir}}
   Base ref:            {{vars.base_ref}}
   PR URL:           {{vars.pr_url}}

@@ -69,6 +69,44 @@ Find an existing marker comment, then UPDATE vs CREATE:
 - Forgejo: `GET /repos/{o}/{r}/issues/{num}/comments`; `PATCH
   …/issues/comments/{id}` or `POST …/issues/{num}/comments`.
 
+### The run footer — mandatory, and the last line of the body
+
+The comment ends with the run that produced it:
+
+```
+<the body's last line>
+
+---
+🤖 [iterion](https://iterion.cloud) · run [`<run id>`](<run url>)
+```
+
+The blank line before `---` is not decoration: a `---` directly under
+text makes that text a heading (setext), so the body's last line would
+be promoted to one on every pull request.
+
+`<run url>` and `<run id>` are given to you in your prompt (the engine
+resolves them; `<run url>` is this run's own page on the deployment that
+executed it). The link is what a reader follows to see the steps, the
+models and the cost behind the verdict — its evidence, and the way into
+the platform for someone meeting it on their own repository.
+
+Three rules, because a wrong link is worse than none:
+
+- `<run url>` EMPTY — a deployment that publishes no public address (a
+  local run), or one whose origin the engine refused — or a value still
+  carrying an unsubstituted `{{` delimiter, which an engine predating the
+  member leaves behind: write the id with no link,
+  ``🤖 iterion · run `<run id>` ``. Never substitute a host.
+- `<run id>` is CALLER-CHOSEN at launch and only screened for path
+  traversal, so it may itself hold markdown. Use it as the label only when
+  it is plain — letters, digits, `.`, `_`, `:`, `-` — and otherwise write
+  `run [this run](<run url>)` with no id at all. An id pasted raw can close
+  the label early and publish someone else's link under your signature.
+  With no `<run url>` AND an id like that, still name the run: put the id
+  in a code span with any backtick removed, where its brackets are inert.
+- Updating the sticky comment keeps the footer current: it names THIS run,
+  the one whose verdict the body now carries.
+
 ## 4. Inline review comments (HIGH packages, best-effort)
 
 Anchor a comment on the changed-lockfile line that introduced the HIGH

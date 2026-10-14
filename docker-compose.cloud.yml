@@ -213,6 +213,10 @@ services:
       # serve the run's files itself, and an empty /var/lib/iterion exists
       # in its image too.
       ITERION_RUNNER_WORKDIR: /var/lib/iterion/work
+      # The runner builds the run links its bots publish (a pull-request
+      # body, a review, a chat message) from this origin — the same one
+      # the server answers on. Unset, a bot prints the run id alone.
+      ITERION_PUBLIC_URL: ${ITERION_PUBLIC_URL:-http://localhost:4891}
       ITERION_LOG_FORMAT: json
       ITERION_LOG_LEVEL: info
       # Cloud mode refuses to start without a JWT secret: the same value

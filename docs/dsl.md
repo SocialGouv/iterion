@@ -298,6 +298,7 @@ An LLM node's answer is held to its `output:` schema at the end of its turn. Whe
 | `{{loop.name.iteration}}` / `.max` / `.previous_output` | Declared-loop state. |
 | `{{each.name.item}}` / `.index` / `.count` / `.first` / `.last` / `.empty` | Sequential edge-`foreach` state. |
 | `{{run.id}}` | Current run id. |
+| `{{run.url}}` | The run's own page on the deployment executing it (`<public origin>/studio/runs/<id>`), for the body a bot publishes outside — a pull request, a review, a chat message. EMPTY where the deployment publishes no usable public origin — `ITERION_PUBLIC_URL` unset (a local `iterion run`), or refused by `deeplink.PublicOrigin` because it carries no http(s) scheme, holds whitespace or carries userinfo (the engine logs which, once): print the id alone rather than a root-relative path, which a forge resolves against ITSELF. See [the run namespace](#the-run-namespace). |
 | `{{run.tree_noise}}` | The canonical tree-noise pathspecs (`':(exclude,top).claude' ':(exclude,top)devbox.lock' ':(exclude,top).iterion-script-*'`) — what a scope gate or a whole-tree staging must exclude, because the run's setup and tooling wrote it, never the pass's work. In a **prompt** it renders ready to paste into a git command. In an EXECUTABLE body it does not: a tool `command:` shell-escapes it into ONE argument, and a `script:` body JSON-encodes it (`"':(exclude,top).claude' …"` — one double-quoted word under `sh`/`bash`) — `git add` refuses it, and a `git status`-based gate silently ignores it and lists the noise anyway. Read `$ITERION_TREE_NOISE` in both (set for every tool process, host and sandbox), **unquoted**: the value is space-separated and must word-split into one pathspec per entry — `"$ITERION_TREE_NOISE"` collapses them into a single pathspec that matches nothing, so the exclusion vanishes in silence. See [the run namespace](#the-run-namespace) and [bot authoring](agents/bots/bot-authoring.md). |
 | `{{run.elapsed_seconds}}` / `.cost_usd` / `.tokens` / `.iterations` | What the run has consumed so far — see [the run namespace](#the-run-namespace). |
 | `{{run.max_duration_seconds}}` / `.max_cost_usd` / `.max_tokens` / `.max_iterations` | The run's **effective** budget caps. |
@@ -611,6 +612,7 @@ block through vars that drift from it in silence.
 | Member | Type | Meaning |
 |---|---|---|
 | `run.id` | string | The run id. |
+| `run.url` | string | The absolute studio page of this run, built from the deployment's public origin (`ITERION_PUBLIC_URL`, carried by the runner beside the server) — the address a forge-facing bot publishes so a reader reaches the steps, the models and the cost behind its output. Empty string when no origin is configured, or when the configured one is not an absolute http(s) address a stranger could follow. |
 | `run.elapsed_seconds` | float | Active time consumed. Monotonic, so an OS suspend does not count; prior active time is preserved across a resume. |
 | `run.cost_usd` | float | LLM spend booked so far. A call whose price could not be resolved is NOT in it — see [budget](#budget-and-loop-back-edges). |
 | `run.tokens` | int | Tokens consumed so far. |

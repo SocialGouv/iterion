@@ -31,6 +31,10 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 		Summary string         `json:"summary"`
 		Gate    map[string]any `json:"gate"`
 	}
+	// The run page the engine resolves into the comment's footer. A subtest
+	// blanks it to exercise a deployment with no public address.
+	runPage := "https://iterion.example/studio/runs/01a0bil"
+	runID := "01a0bil"
 	runBanked := func(t *testing.T, ledger, clean, pushed, verifyOK, verifySkipped, verifyPassed, banked, take string) (published, bool) {
 		t.Helper()
 		var got published
@@ -63,6 +67,8 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 			"{{input.verify_passed}}":      verifyPassed,
 			"{{vars.gate_enabled}}":        "true",
 			"{{vars.gate_context}}":        "iterion/review",
+			"{{run.url}}":                  runPage,
+			"{{run.id}}":                   runID,
 		} {
 			if !strings.Contains(body, ref) {
 				t.Fatalf("%s is no longer referenced by publish_verdict — the test wires nothing", ref)
@@ -107,6 +113,86 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 	}
 
 	allFixed := `[{"id":"R1111","status":"fixed","commit":"abc1234567890"}]`
+
+	// Every comment a bot posts names the run that wrote it: the reader's way
+	// to the steps, the models and the cost behind the verdict, and the way
+	// into the platform for someone meeting it on their own forge. With no
+	// public address the footer carries the id alone — a root-relative link
+	// posted on a forge resolves against the FORGE.
+	t.Run("the comment links the run that wrote it", func(t *testing.T) {
+		got, _ := run(t, allFixed, "true", "true", "true")
+		if want := "run [`" + runID + "`](" + runPage + ")"; !strings.Contains(got.Summary, want) {
+			t.Errorf("the comment does not link its run (%s):\n%s", want, got.Summary)
+		}
+
+		restore := runPage
+		runPage = ""
+		defer func() { runPage = restore }()
+		got, _ = run(t, allFixed, "true", "true", "true")
+		// The product reference stays (it is a constant, not an address of
+		// this deployment); only the RUN link must be absent.
+		if strings.Contains(got.Summary, "run [") {
+			t.Errorf("with no public address the footer must not link a run:\n%s", got.Summary)
+		}
+		if !strings.Contains(got.Summary, "run `"+runID+"`") {
+			t.Errorf("with no public address the footer must still name the run id:\n%s", got.Summary)
+		}
+	})
+
+	// A run id is CALLER-CHOSEN at launch and screened only for path traversal
+	// (store.SanitizePathComponent accepts `]`, `(`, `)` and a backtick), so an
+	// id can hold markdown. Pasted raw into the footer's label it closes the
+	// link early and publishes an attacker's host under this bot's signature,
+	// on someone else's repository — WHATWG resolves a slash-free
+	// `https:evil.example`, so no path separator is needed.
+	t.Run("a run id holding markdown never becomes a link", func(t *testing.T) {
+		restore := runID
+		runID = "x`](https:evil.example)`"
+		defer func() { runID = restore }()
+		got, _ := run(t, allFixed, "true", "true", "true")
+		if strings.Contains(got.Summary, "evil.example)") || strings.Contains(got.Summary, "](https:evil") {
+			t.Errorf("the id was pasted into the footer and published a foreign link:\n%s", got.Summary)
+		}
+		if !strings.Contains(got.Summary, "run [this run]("+runPage+")") {
+			t.Errorf("the run link must survive with a fixed label when the id is unusable:\n%s", got.Summary)
+		}
+	})
+
+	// The two degradations COMPOSED: no public address and an id no label can
+	// carry. Each alone is covered above; together they used to leave the
+	// comment with no identifier at all, which is the assertion this footer
+	// exists to avoid.
+	t.Run("no address and an unusable id still name the run", func(t *testing.T) {
+		restoreP, restoreI := runPage, runID
+		runPage, runID = "", "x`](https:evil.example)`"
+		defer func() { runPage, runID = restoreP, restoreI }()
+		got, _ := run(t, allFixed, "true", "true", "true")
+		// No link at all (no address to link to), and the id named inside a
+		// code span — where its brackets and parentheses are inert text, which
+		// is why naming it there is safe when labelling it is not.
+		if strings.Contains(got.Summary, "run [") {
+			t.Errorf("a link was published with no address:\n%s", got.Summary)
+		}
+		if !strings.Contains(got.Summary, "run `x](https:evil.example)`") {
+			t.Errorf("the run must still be named, inside a code span:\n%s", got.Summary)
+		}
+	})
+
+	// Same for the engine that predates the member: C153 is a warning, so the
+	// bundle admits and the reference arrives unsubstituted. The footer must
+	// degrade to the id, never publish the delimiter inside a link.
+	t.Run("an older engine degrades to the id, never a template delimiter", func(t *testing.T) {
+		restore := runPage
+		runPage = "{" + "{run.url}}"
+		defer func() { runPage = restore }()
+		got, _ := run(t, allFixed, "true", "true", "true")
+		if strings.Contains(got.Summary, "run.url") || strings.Contains(got.Summary, "run [") {
+			t.Errorf("the unresolved reference was published as a link:\n%s", got.Summary)
+		}
+		if !strings.Contains(got.Summary, "run `"+runID+"`") {
+			t.Errorf("the footer must still name the run id:\n%s", got.Summary)
+		}
+	})
 
 	t.Run("a refused finding keeps the gate red", func(t *testing.T) {
 		got, _ := run(t, `[{"id":"R1111","status":"fixed"},{"id":"R2222","status":"refused","note":"not reachable from any caller"}]`,

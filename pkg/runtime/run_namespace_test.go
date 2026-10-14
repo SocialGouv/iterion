@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -193,6 +194,39 @@ func TestRunTreeNoiseRendersTheCanonicalPathspecs(t *testing.T) {
 	}
 	if !containsEach(s, "':(exclude,top).claude'", "':(exclude,top)devbox.lock'", "':(exclude,top).iterion-script-*'") {
 		t.Fatalf("run.tree_noise = %q, want every canonical exclusion", s)
+	}
+}
+
+// TestRunURLRendersTheRunsOwnStudioPage pins the member a bot reads to
+// publish its own evidence: the address of THIS run's page on the
+// deployment executing it. The link is the entry point a reader of a
+// pull-request body, a review or a chat message follows, so it must be
+// absolute, carry the studio prefix, and name this run — and it must be
+// EMPTY, not a host-less path, where the deployment publishes no origin
+// (a local `iterion run`), because a root-relative link posted on a forge
+// resolves against the forge.
+func TestRunURLRendersTheRunsOwnStudioPage(t *testing.T) {
+	eng := New(budgetedWorkflow(), tmpStore(t), newStubExecutor())
+	rs := eng.newRunState("01a09ec6-b5b3-7660-8ef1-295031b7260d", nil)
+
+	t.Setenv(deeplink.PublicBaseEnv, "https://iterion.cloud")
+	want := "https://iterion.cloud/studio/runs/01a09ec6-b5b3-7660-8ef1-295031b7260d"
+	// Every consumer of the namespace, not just the expression evaluator:
+	// the mapping path is what an edge `with` and a fail `message:` read,
+	// and a tool command reads the same resolution.
+	if got := resolveRunPath(rs, []string{"url"}); got != want {
+		t.Errorf("run.url = %#v, want %q", got, want)
+	}
+	if got := eng.exprContext(rs, nil).Run([]string{"url"}); got != want {
+		t.Errorf("expr run.url = %#v, want %q", got, want)
+	}
+	if got := eng.resolveMapping(mapping(t, "{{run.url}}"), rs.scope()); got != want {
+		t.Errorf("mapping {{run.url}} = %#v, want %q", got, want)
+	}
+
+	t.Setenv(deeplink.PublicBaseEnv, "")
+	if got := resolveRunPath(rs, []string{"url"}); got != "" {
+		t.Errorf("run.url with no public origin = %#v, want the empty string", got)
 	}
 }
 

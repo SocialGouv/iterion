@@ -861,6 +861,9 @@ prompt finalize_mr_system:
   Be honest: report exactly what happened.
 
 prompt finalize_mr_user:
+  This run — the body's mandatory footer links it (url is EMPTY on a
+  deployment with no public address: then the id, with no link):
+  id {{run.id}} · url {{run.url}}
   Workspace: {{input.workspace_dir}}
   Desired branch (may be empty → derive): {{input.mr_branch}}
   Base (may be empty → base_ref): {{input.mr_base}}
@@ -2358,8 +2361,11 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 ## local path) where git resolves the credential on its own. No LLM — the push
 ## is a mechanical act once the campaign banked the commits.
 ##
-## Keep this python body free of the double-quote character: the whole body is
-## wrapped by the shell in a double-quoted argument.
+## Three characters this python body must not contain, each for its own
+## reason: the double quote (the shell wraps the whole body in a
+## double-quoted argument), the backtick (it closes the DSL raw string the
+## body is written in -- write chr(96) instead, comments included) and a
+## bare dollar sign (the shell expands it inside those double quotes).
 tool push_back_tool:
   command: `TOKEN_PATH={{secrets.forge_token.path}} PUSH_BRANCH={{vars.push_branch}} PR_URL={{vars.pr_url}} PR_STATE_URL={{vars.forge_pr_state_url}} PR_STATE_TOKEN={{vars.forge_publish_token}} python3 -I -c "
 import os, subprocess, json, re, urllib.request, urllib.error, urllib.parse
@@ -2497,11 +2503,14 @@ if u:
 ## gate green — and says in its description that the re-review was the fixer own,
 ## so nobody reads it as an independent one.
 ##
-## Keep this python body free of the double-quote character: the whole body is
-## wrapped by the shell in a double-quoted argument.
+## Three characters this python body must not contain, each for its own
+## reason: the double quote (the shell wraps the whole body in a
+## double-quoted argument), the backtick (it closes the DSL raw string the
+## body is written in -- write chr(96) instead, comments included) and a
+## bare dollar sign (the shell expands it inside those double quotes).
 tool publish_verdict:
-  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} BANKED_BRANCH={{input.banked_branch}} HOW_TO_TAKE={{input.how_to_take}} SUPERSEDED={{input.superseded}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} VERIFY_PASSED={{input.verify_passed}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} python3 -I -c "
-import os, json, urllib.request, urllib.error
+  command: `PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_URL={{input.pr_url}} LEDGER={{input.finding_ledger}} SUMMARY={{input.review_summary}} CLEAN={{input.branch_clean}} PUSHED={{input.commits_pushed}} PUSH_REASON={{input.push_reason}} BANKED_BRANCH={{input.banked_branch}} HOW_TO_TAKE={{input.how_to_take}} SUPERSEDED={{input.superseded}} VERIFY_OK={{input.verify_ok}} VERIFY_SKIPPED={{input.verify_skipped}} VERIFY_PASSED={{input.verify_passed}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} RUN_URL={{run.url}} RUN_ID={{run.id}} python3 -I -c "
+import os, json, re, urllib.request, urllib.error
 
 def flag(name):
     return str(os.environ.get(name, '')).strip().lower() in ('1', 'true', 'yes', 'on')
@@ -2605,6 +2614,46 @@ if ledger:
 
 gate_enabled = flag('GATE_ENABLED')
 gate_ctx = str(os.environ.get('GATE_CONTEXT') or '').strip()
+# The run that wrote this comment: the way to the steps, the models and the
+# cost behind the verdict, and the way into the platform for someone meeting
+# this bot on their own repository. A deployment with no public address (a
+# local run) leaves the id alone rather than a link nobody can follow.
+#
+# A run id is CALLER-CHOSEN at launch and only screened for path traversal,
+# so it may hold markdown: an id like 'x](https://evil' would close the
+# label early and publish a foreign link under this bot's signature. Only a
+# plain id becomes a label; anything else is dropped and the link keeps a
+# fixed one (the URL itself is path-escaped).
+# An engine that predates the run.url member leaves the reference
+# UNRESOLVED, and an
+# unsubstituted template delimiter inside a markdown link is a dead relative
+# link on the reader's repository. A value still carrying one is no address,
+# as review-pr's ai_value reads it: the bot keeps working and the footer
+# degrades to the id alone.
+def resolved(v):
+    v = str(v or '').strip()
+    return '' if v.startswith(chr(123) * 2) else v
+bt = chr(96)
+run_url = resolved(os.environ.get('RUN_URL'))
+run_id = resolved(os.environ.get('RUN_ID'))
+raw_id = run_id
+if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]*', run_id):
+    run_id = ''
+foot = '_\U0001F916 [iterion](https://iterion.cloud)'
+if run_url:
+    label = (bt + run_id + bt) if run_id else 'this run'
+    foot = foot + ' · run [' + label + '](' + run_url + ')'
+elif run_id:
+    foot = foot + ' · run ' + bt + run_id + bt
+elif raw_id:
+    # No address AND an id no label can carry: name the run anyway — a
+    # verdict with no identifier is the assertion this footer exists to
+    # avoid. Inside a code span, with backticks stripped, the id can
+    # neither close the span nor open a link.
+    foot = foot + ' · run ' + bt + raw_id.replace(bt, '') + bt
+body.append('')
+body.append(foot + '_')
+
 payload = {'pr_url': pr, 'summary': nl.join(body), 'mode': 'summary', 'comments': []}
 if gate_enabled and gate_ctx:
     blocking = len(unresolved)

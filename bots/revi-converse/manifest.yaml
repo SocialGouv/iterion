@@ -1,7 +1,10 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.5
+version: 0.1.6
+## 0.1.6 — every body it posts on a forge ends with the run that wrote it:
+## the evidence behind the text, and the way into the platform for a reader
+## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)
 ## 0.1.5 — the converse agent gets review-pr 0.9.12's Anthropic pin and GLM
 ## route, on the same dials (ITERION_VIBE_PROVIDER_CLAUDE,
 ## ITERION_VIBE_MODEL_CLAUDE_FALLBACK): unpinned, a forfait skipped at a

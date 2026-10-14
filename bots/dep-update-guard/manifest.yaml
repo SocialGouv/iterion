@@ -1,7 +1,10 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.9.4
+version: 2.9.5
+## 2.9.5 — every body it posts on a forge ends with the run that wrote it:
+## the evidence behind the text, and the way into the platform for a reader
+## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)
 ## 2.9.3 — the no-script refusal carries the catalogue-wide NO VERIFY SCRIPT marker (#1598)
 ## 2.9.1 — a refusal stands EVERY commitment down, and vouching comes first.
 ## (a) The four vouched_sha exits are no longer one class: the two structural

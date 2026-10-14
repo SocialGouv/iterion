@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -358,6 +359,16 @@ func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOpt
 	e := &Engine{workflow: wf, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget()}
 	for _, opt := range opts {
 		opt(e)
+	}
+	// `run.url` renders empty when the deployment's public origin is unusable,
+	// and a bot then publishes its run id with no link. That is the safe
+	// behaviour, not a silent one: the reason is said HERE, the first place a
+	// logger exists — a typo in ITERION_PUBLIC_URL is an operator's mistake to
+	// read, never a link that quietly went missing. Once per engine, so once
+	// per run and once per subbot child (pkg/runner builds one each), never
+	// per node.
+	if _, err := deeplink.PublicOrigin(); err != nil && e.logger != nil {
+		e.logger.Warn("run.url resolves empty, so a bot publishing on a forge will print its run id without a link: %v", err)
 	}
 	return e
 }

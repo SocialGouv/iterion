@@ -51,6 +51,14 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 	// pinOverride, when non-empty, replaces the audited_sha fixture — the one
 	// input on the committed path that an AGENT produces, so the one that can
 	// arrive in a shape the server refuses.
+	// The run page the engine resolves into the comment's signature. A
+	// subtest blanks it to exercise a deployment with no public address.
+	runPage := "https://iterion.example/studio/runs/01a0dep"
+	// When set, the EXACT python literal substituted for {{run.url}}: what an
+	// engine predating the member renders in a script body is the JSON
+	// `null`, which no quoted value can stand in for.
+	runPageLit := ""
+	runID := "01a0dep"
 	run := func(t *testing.T, verdict, gateContext string, gateEnabled bool, pinOverride ...string) (published, map[string]any) {
 		t.Helper()
 		var got published
@@ -97,6 +105,8 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `"` + srv.URL + `/api/v1/forge/publish-review"`,
 			"{{vars.forge_publish_token}}": `"run-token"`,
+			"{{run.url}}":                  runURLLit(runPage, runPageLit),
+			"{{run.id}}":                   `"` + runID + `"`,
 			"{{vars.gate_enabled}}":        boolLit(gateEnabled),
 			"{{vars.gate_context}}":        `"` + gateContext + `"`,
 		} {
@@ -185,6 +195,70 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			if strings.Contains(got.Summary, `"`+title+`"`) && !strings.Contains(got.Summary, "## "+title) {
 				t.Errorf("the comment cites section %q, which it did not render:\n%s", title, got.Summary)
 			}
+		}
+	})
+
+	// Every comment a bot posts names the run that wrote it: the reader's way
+	// to the steps, the models and the cost behind the verdict, and the way
+	// into the platform for someone meeting it on their own forge. A
+	// deployment that publishes no public address leaves the id alone — a
+	// root-relative link posted on a forge resolves against the FORGE.
+	t.Run("the comment links the run that wrote it", func(t *testing.T) {
+		pub, _ := run(t, "clean", "iterion/review", true)
+		want := "run [`" + runID + "`](" + runPage + ")"
+		if !strings.Contains(pub.Summary, want) {
+			t.Errorf("the comment does not link its run (%s):\n%s", want, pub.Summary)
+		}
+
+		restore := runPage
+		runPage = ""
+		defer func() { runPage = restore }()
+		pub, _ = run(t, "clean", "iterion/review", true)
+		// The product reference stays (a constant, not this deployment's
+		// address); only the RUN link must be gone.
+		if strings.Contains(pub.Summary, "run [") {
+			t.Errorf("with no public address the signature must not link the run:\n%s", pub.Summary)
+		}
+		if !strings.Contains(pub.Summary, "run `"+runID+"`") {
+			t.Errorf("with no public address the signature must still name the run id:\n%s", pub.Summary)
+		}
+	})
+
+	// A run id is CALLER-CHOSEN at launch and screened only for path
+	// traversal (store.SanitizePathComponent accepts `]`, `(`, `)` and a
+	// backtick), so an id can hold markdown. Pasted raw into the footer's
+	// label it closes the link early and publishes an attacker's host under
+	// this bot's signature, on someone else's repository. WHATWG resolves a
+	// slash-free `https:evil.example`, so no path separator is needed.
+	t.Run("a run id holding markdown never becomes a link", func(t *testing.T) {
+		restore := runID
+		runID = "x](https:evil.example)"
+		defer func() { runID = restore }()
+		pub, _ := run(t, "clean", "iterion/review", true)
+		if strings.Contains(pub.Summary, "evil.example)") || strings.Contains(pub.Summary, "](https:evil") {
+			t.Errorf("the id was pasted into the footer and published a foreign link:\n%s", pub.Summary)
+		}
+		if !strings.Contains(pub.Summary, "[this run](") {
+			t.Errorf("the run link must survive with a fixed label when the id is unusable:\n%s", pub.Summary)
+		}
+		if !strings.Contains(pub.Summary, runPage) {
+			t.Errorf("the footer must still point at this run's own page:\n%s", pub.Summary)
+		}
+	})
+
+	// An engine that predates the run.url member leaves the reference
+	// UNRESOLVED, and a script body renders a missing ref as the JSON `null`
+	// literal — C153 is a warning, so the bundle still admits there. The
+	// footer must degrade to the id, never publish "None" as an address.
+	t.Run("an older engine degrades to the id, never a null address", func(t *testing.T) {
+		runPageLit = "null"
+		defer func() { runPageLit = "" }()
+		pub, _ := run(t, "clean", "iterion/review", true)
+		if strings.Contains(pub.Summary, "None") || strings.Contains(pub.Summary, "run [") {
+			t.Errorf("the unresolved reference was published as an address:\n%s", pub.Summary)
+		}
+		if !strings.Contains(pub.Summary, "run `"+runID+"`") {
+			t.Errorf("the footer must still name the run id:\n%s", pub.Summary)
 		}
 	})
 
@@ -307,6 +381,8 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `"` + redir.URL + `/api/v1/forge/publish-review"`,
 			"{{vars.forge_publish_token}}": `"run-token"`,
+			"{{run.url}}":                  runURLLit(runPage, runPageLit),
+			"{{run.id}}":                   `"` + runID + `"`,
 			"{{vars.gate_enabled}}":        `True`,
 			"{{vars.gate_context}}":        `"iterion/review"`,
 		} {
@@ -369,6 +445,8 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `""`,
 			"{{vars.forge_publish_token}}": `""`,
+			"{{run.url}}":                  runURLLit(runPage, runPageLit),
+			"{{run.id}}":                   `"` + runID + `"`,
 			"{{vars.gate_enabled}}":        `True`,
 			"{{vars.gate_context}}":        `"iterion/review"`,
 		} {
@@ -442,4 +520,14 @@ func toolScript(t *testing.T, rel, node string) string {
 		t.Fatalf("%s has no script body", node)
 	}
 	return tn.Script
+}
+
+// runURLLit renders the python literal the engine substitutes for
+// {{run.url}}: a quoted string normally, or the raw literal a caller pins —
+// the JSON `null` an engine predating the member leaves in a script body.
+func runURLLit(page, override string) string {
+	if override != "" {
+		return override
+	}
+	return `"` + page + `"`
 }

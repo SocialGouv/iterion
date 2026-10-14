@@ -370,6 +370,9 @@ prompt forge_report_system:
   summary.
 
 prompt forge_report_user:
+  This run — the body's mandatory footer links it (url is EMPTY on a
+  deployment with no public address: then the id, with no link):
+  id {{run.id}} · url {{run.url}}
   Workspace: {{input.workspace_dir}}
   PR ref hint: {{input.pr_ref}}
   Marker: {{input.forge_marker}}
