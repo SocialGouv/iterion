@@ -17,21 +17,25 @@ import (
 //
 // It is the oracle behind every "this text or document IS the program the
 // author wrote" guarantee: the JSON transport (a cloud launch), the unparser
-// (the studio's save path) and their tests all ask the same question.
+// (the studio's save path), the conversions of an author document and E056
+// on the .bot beside one all ask the same question — and every one of them
+// shows the answer to someone, so the difference named is the WORKFLOW's
+// wherever both sides compiled one. A diagnostic difference between two
+// files that are not the same workflow is that difference's consequence,
+// and the sorted code list names no construct to go and read. The codes
+// remain the only answer available where one side compiled no workflow, and
+// the only one that can see a difference two equal workflows still hold.
 func SameProgram(a, b *CompileResult) string {
+	if why := FirstWorkflowDifference(a.Workflow, b.Workflow); why != "" {
+		return why
+	}
 	if ca, cb := diagnosticCodes(a), diagnosticCodes(b); !reflect.DeepEqual(ca, cb) {
 		return fmt.Sprintf("diagnostics differ: %v vs %v", ca, cb)
 	}
-	if a.Workflow == nil || b.Workflow == nil {
-		if (a.Workflow == nil) != (b.Workflow == nil) {
-			return "one side compiled to a workflow and the other did not"
-		}
-		return ""
+	if (a.Workflow == nil) != (b.Workflow == nil) {
+		return "one side compiled to a workflow and the other did not"
 	}
-	if reflect.DeepEqual(a.Workflow, b.Workflow) {
-		return ""
-	}
-	return firstWorkflowDifference(a.Workflow, b.Workflow)
+	return ""
 }
 
 func diagnosticCodes(cr *CompileResult) []string {
@@ -43,12 +47,22 @@ func diagnosticCodes(cr *CompileResult) []string {
 	return codes
 }
 
-// firstWorkflowDifference names what differs between two compiled workflows
-// that are not DeepEqual, coarsely: enough for a test failure or a refused
-// save to point at the construct, without reproducing the whole IR. Nodes
-// are walked by sorted id, so the difference named is the same on every
-// run — never the one a map's iteration happened on.
-func firstWorkflowDifference(a, b *Workflow) string {
+// FirstWorkflowDifference names what differs between two compiled workflows,
+// coarsely: enough for a test failure, a refused save or a warning about the
+// file beside a document to point at the construct, without reproducing the
+// whole IR. A field is named by its IR name, which is the camel case of the
+// DSL key it is read from for all but a handful: the permission lists are
+// `PermissionAllow`/`Ask`/`Deny` for `allow:`/`ask:`/`deny:`, and
+// `ActiveMCPServers` and `ResolvedMCPServers` are filled after project
+// config resolution, from no key at all. Nodes are walked by sorted
+// id, so the difference named is the same on every run — never the one a
+// map's iteration happened on. It is "" where the two are one workflow, and
+// where either side compiled none: there is then no workflow to differ by,
+// and SameProgram's own answer is the one to say.
+func FirstWorkflowDifference(a, b *Workflow) string {
+	if a == nil || b == nil || reflect.DeepEqual(a, b) {
+		return ""
+	}
 	for _, id := range slices.Sorted(maps.Keys(a.Nodes)) {
 		if _, ok := b.Nodes[id]; !ok {
 			return fmt.Sprintf("node %q is missing", id)
@@ -94,5 +108,17 @@ func firstWorkflowDifference(a, b *Workflow) string {
 			return part.name + " differ"
 		}
 	}
-	return "the workflows differ outside nodes, edges, prompts, schemas, vars, loops, budget, resources and contracts"
+	// Every other field, under its own name and in the order the workflow
+	// declares them: a field the IR gains later is named without anyone
+	// listing it here.
+	va, vb := reflect.ValueOf(*a), reflect.ValueOf(*b)
+	for i := 0; i < va.NumField(); i++ {
+		if f := va.Type().Field(i); f.IsExported() && !reflect.DeepEqual(va.Field(i).Interface(), vb.Field(i).Interface()) {
+			return "the workflows differ in " + f.Name
+		}
+	}
+	// Every field of a workflow is exported, so the walk above names one
+	// whenever the two are not DeepEqual. What is left to say is the fact
+	// itself, never a field no workflow has.
+	return "the workflows differ"
 }

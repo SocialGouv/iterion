@@ -26,12 +26,31 @@ import (
 //
 // Returns nil when bundle is nil or has no prompts/ directory.
 func MergeBundlePrompts(f *ast.File, b *bundle.Bundle) error {
-	if f == nil || b == nil || b.PromptsDir == "" {
+	if f == nil {
 		return nil
+	}
+	files, originDir, err := BundlePromptFiles(b)
+	if err != nil {
+		return err
+	}
+	MergePromptFiles(f, files, originDir)
+	return nil
+}
+
+// BundlePromptFiles is the READ of MergeBundlePrompts: the bundle's
+// `prompts/*.md` keyed by their bundle-relative slash path, and the
+// directory a diagnostic inside one of those bodies is named under. It is
+// split out for a caller that merges the same prompts into two files it
+// COMPARES — one read is one contribution to both sides, where a read per
+// side makes a prompt file saved in between a difference between them.
+// (nil, "", nil) when the bundle is nil or has no prompts/ directory.
+func BundlePromptFiles(b *bundle.Bundle) (map[string]string, string, error) {
+	if b == nil || b.PromptsDir == "" {
+		return nil, "", nil
 	}
 	entries, err := os.ReadDir(b.PromptsDir)
 	if err != nil {
-		return fmt.Errorf("bundle: read prompts dir %s: %w", b.PromptsDir, err)
+		return nil, "", fmt.Errorf("bundle: read prompts dir %s: %w", b.PromptsDir, err)
 	}
 	files := make(map[string]string, len(entries))
 	for _, entry := range entries {
@@ -51,21 +70,20 @@ func MergeBundlePrompts(f *ast.File, b *bundle.Bundle) error {
 		p := filepath.Join(b.PromptsDir, entry.Name())
 		info, err := os.Stat(p)
 		if err != nil {
-			return fmt.Errorf("bundle: read prompt %s: %w", entry.Name(), err)
+			return nil, "", fmt.Errorf("bundle: read prompt %s: %w", entry.Name(), err)
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("bundle: prompt %s is not a regular file (mode %s)", entry.Name(), info.Mode().Type())
+			return nil, "", fmt.Errorf("bundle: prompt %s is not a regular file (mode %s)", entry.Name(), info.Mode().Type())
 		}
 		body, err := os.ReadFile(p)
 		if err != nil {
-			return fmt.Errorf("bundle: read prompt %s: %w", entry.Name(), err)
+			return nil, "", fmt.Errorf("bundle: read prompt %s: %w", entry.Name(), err)
 		}
 		files[bundle.DirPrompts+"/"+entry.Name()] = string(body)
 	}
 	// The origin is derived from PromptsDir, not Dir: a diagnostic inside a
 	// prompt names the file on disk whichever way the bundle was assembled.
-	MergePromptFiles(f, files, filepath.Dir(b.PromptsDir))
-	return nil
+	return files, filepath.Dir(b.PromptsDir), nil
 }
 
 // MergePromptFiles is the ONE rule every surface merges bundle prompts by;

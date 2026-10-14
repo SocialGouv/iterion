@@ -86,7 +86,9 @@ func RunDiagram(opts DiagramOptions, p *Printer) error {
 	}
 	if doc != nil {
 		result.SourceKind = "author"
-		result.BotPath = doc.botPath
+		// Named as the document was named, as validate names it: `file` is
+		// echoed as the operator typed it, and the .bot reads in that form.
+		result.BotPath = doc.botNamed
 	}
 
 	if p.Format == OutputJSON {
@@ -94,7 +96,7 @@ func RunDiagram(opts DiagramOptions, p *Printer) error {
 	} else {
 		p.Header("Diagram: " + opts.File)
 		if doc != nil {
-			p.KV("Reads as", doc.botPath)
+			p.KV("Reads as", doc.botNamed)
 		}
 		p.KV("Workflow", wf.Name)
 		p.KV("View", opts.View)

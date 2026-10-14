@@ -286,7 +286,9 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	}
 	if doc != nil {
 		result.SourceKind = "author"
-		result.BotPath = doc.botPath
+		// Named as the document was named: `file` is echoed as the operator
+		// typed it, and the .bot beside it reads in that same form.
+		result.BotPath = doc.botNamed
 	}
 
 	// Parse — under the path in full: an include resolves beside the file
@@ -312,6 +314,19 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		if d := doc.noWrittenForm(); d != nil {
 			// An error (E054): an OK here followed by a refusal to write the
 			// .bot would be a lie.
+			result.addParseDiagnostic(*d)
+		}
+		// A warning (E056): the verdict is the document's program, and the
+		// .bot beside it — the one a launcher opens — is another program,
+		// or none. Both sides are read in this bundle, whose prompts the
+		// comparison reads once and merges into each of them, so a node
+		// reading one is no difference between the two files. A prompt of
+		// that bundle that cannot be read names itself.
+		d, err := doc.twinAnotherProgram(u, bundleHandle)
+		if err != nil {
+			return err
+		}
+		if d != nil {
 			result.addParseDiagnostic(*d)
 		}
 	} else {
@@ -353,7 +368,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	// node-level prompt references.
 	if bundleHandle != nil && u.Merged != nil {
 		if err := runview.MergeBundlePrompts(u.Merged, bundleHandle); err != nil {
-			return fmt.Errorf("bundle: merge prompts: %w", err)
+			return err
 		}
 	}
 
@@ -611,7 +626,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	} else {
 		p.Header("Validate: " + path)
 		if doc != nil {
-			p.KV("Reads as", doc.botPath)
+			p.KV("Reads as", doc.botNamed)
 		}
 		if bundleName != "" || bundleVersion != "" {
 			p.KV("Bundle", bundleName+" "+bundleVersion)
