@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -196,6 +197,25 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusBadRequest, "invalid role")
 		return
 	}
+	// A mint is the one team-scoped act that hands out ORG standing, since
+	// accepting the invitation mirrors its role up to an org membership, so
+	// it is capped by the minter's own: the team names the org that cap is
+	// read in. A team that cannot be read is a cap that cannot be applied,
+	// which refuses the mint rather than minting uncapped.
+	t, err := s.authStore().GetTeam(r.Context(), teamID)
+	if errors.Is(err, identity.ErrNotFound) {
+		// The words the service answers on its own read of the team, so a
+		// team that is not there reads the same from either side.
+		httpError(w, http.StatusNotFound, "%s", auth.ErrTeamNotFound.Error())
+		return
+	}
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "read the team: %v", err)
+		return
+	}
+	if !s.requireOrgStandingToInvite(w, r, id, t.OrgID, role) {
+		return
+	}
 	tok, inv, err := s.authSvc.CreateInvitation(r.Context(), teamID, req.Email, role, id.UserID)
 	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
@@ -324,14 +344,12 @@ func (s *Server) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 	// minting an invitation to their own address, and accepting it off the
 	// ladder writes no boundary — which is why `orphan_grant` reports the
 	// missing boundary itself rather than a verdict on the role
-	// (admin_users_routes.go). That pair of requests is capped by no role:
-	// the mint takes any (handleCreateInvitation) and pkg/auth mirrors an
-	// accepted admin/owner invitation up to an ORG ADMIN membership
-	// (grantOrgMembershipForTeam), so the same holder — like any team admin
-	// who is a plain org member — re-enters the org ABOVE their own standing.
-	// That door is the authorization question, measured by
-	// TestTeamInvitations_aTeamAdminMintsItselfUpToOrgAdmin, not something
-	// this guard closes. Climbing ONTO the ladder
+	// (admin_users_routes.go). What that pair of requests can carry is capped
+	// at the minter's own org standing (requireOrgStandingToInvite), since
+	// pkg/auth mirrors an accepted ladder invitation up to an org membership
+	// (grantOrgMembershipForTeam): the same holder mints only a role mirrored
+	// up to NOTHING, which is the off-ladder grant this guard reads.
+	// Climbing ONTO the ladder
 	// needs the boundary, and so does placing any grant on a non-member
 	// (handlePutTeamMember) — which is what keeps a team admin from pulling a
 	// stranger account in.

@@ -401,16 +401,16 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
             {orgTeams.length > 0 && (
               <div>
                 <label htmlFor="org-invite-team" className="sr-only">
-                  Also add to team
+                  Team to join
                 </label>
                 <Select
                   size="md"
                   id="org-invite-team"
                   value={draft.team_id}
                   onChange={(e) => setDraft({ ...draft, team_id: e.target.value })}
-                  title="Also grant access to a team — otherwise the invitee joins the org with no team and needs a second invite"
+                  title="The team the invitation joins — accepting it grants the role above in that team. Named none, it joins the org's primary team"
                 >
-                  <option value="">No team (org only)</option>
+                  <option value="">The org's primary team (default)</option>
                   {orgTeams.map((t) => (
                     <option key={t.id} value={t.id}>
                       + team: {t.name}

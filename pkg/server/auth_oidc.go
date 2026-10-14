@@ -145,7 +145,11 @@ func (s *Server) resolveOrgTenants(r *http.Request) []string {
 		// SSO is org-level, but stored under the org's primary team
 		// (the storage tenant) — resolve the public org slug to that team.
 		if o, err := s.authStore().GetOrgBySlug(r.Context(), org); err == nil {
-			push(s.firstTeamInOrg(r.Context(), o.ID))
+			// Non-oracle by this function's contract, like the slug miss
+			// above: a team list that cannot be read offers no tenant
+			// rather than telling the caller the org exists.
+			primary, _ := s.firstTeamInOrg(r.Context(), o.ID)
+			push(primary)
 		}
 	}
 	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
