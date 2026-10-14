@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 
@@ -632,6 +633,350 @@ func TestFmtRewritesACommentedDocumentKeepingItsComments(t *testing.T) {
 	}
 	if _, err := os.Stat("k/hello.bot"); err != nil {
 		t.Fatalf("the .bot of a commented document was not written: %v", err)
+	}
+}
+
+// footTwinHelloDoc carries `# twice` as a mid-document FOOT comment — a
+// blank line below it — so the same text written in the trailing region is a
+// second comment, over nodes that carry none in between.
+const footTwinHelloDoc = "dsl: 2\nprompts:\n  ask: Say hello.\n  # twice\n\nnodes:\n  - agent: hello\n    model: m\n    system: ask\nworkflow:\n  name: hello\n  entry: hello\n  edges:\n    - hello -> done\n"
+
+// quotedHelloDoc ends on a multi-line QUOTED value whose last line starts
+// with `#`: the author's text up to the closing quote, and no comment.
+const quotedHelloDoc = "dsl: 2\nnodes:\n  - agent: hello\n    model: m\n    system: ask\nworkflow:\n  name: hello\n  entry: hello\n  edges:\n    - hello -> done\nprompts:\n  ask: \"Say hello.\n    # not a comment\"\n"
+
+// flowCloseHelloDoc writes the same comment text twice around a flow
+// collection — inside it and after its closing bracket — on a closing line
+// whose own value holds a `#`, which a reader of that line must look past
+// to find the comment; flowBareCloseHelloDoc writes the pair as a bare `#`,
+// which a scan one character short of the line's end never meets.
+const flowCloseHelloDoc = "dsl: 2\nprompts: {ask: \"Say hello.\", # twice\n  other: \"a # b\"} # twice\nnodes:\n  - agent: hello\n    model: m\n    system: ask\nworkflow:\n  name: hello\n  entry: hello\n  edges:\n    - hello -> done\n"
+
+const flowBareCloseHelloDoc = "dsl: 2\nprompts: {ask: \"Say hello.\", #\n  other: b} #\nnodes:\n  - agent: hello\n    model: m\n    system: ask\nworkflow:\n  name: hello\n  entry: hello\n  edges:\n    - hello -> done\n"
+
+// commentLinesOf counts the comment lines text carries, independently of the
+// reader `fmt`'s own guard calls: a comment runs to the end of its line, so
+// a line carries at most ONE. Every `#` opening a line or written after a
+// blank anywhere else on it is a candidate — the first of a line may sit
+// inside a quoted value and the comment after it — minus the texts the
+// caller declares as the author's own; the first candidate that survives
+// that subtraction is the line's comment. A `strings.Contains` of one kept
+// text cannot see a lost duplicate of it; this count can.
+func commentLinesOf(text string, notComments ...string) string {
+	skip := map[string]int{}
+	for _, l := range notComments {
+		skip[l]++
+	}
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		for ci := 0; ci < len(line); ci++ {
+			if line[ci] != '#' || (ci > 0 && line[ci-1] != ' ' && line[ci-1] != '\t') {
+				continue
+			}
+			found := strings.TrimSpace(line[ci:])
+			if skip[found] > 0 {
+				skip[found]--
+				continue
+			}
+			out = append(out, found)
+			break
+		}
+	}
+	sort.Strings(out)
+	return strings.Join(out, "|")
+}
+
+// The count `fmt`'s tables measure against is held to what YAML says a
+// comment is: one per line, running to the end of it. A text carrying a
+// ` #` of its own is ONE comment, and the candidate the declared-text
+// subtraction leaves is the line's — the quoted `#` of a flow collection's
+// closing line skipped, the comment after it taken.
+func TestCommentLinesOfCountsOneCommentPerLine(t *testing.T) {
+	for _, tc := range []struct {
+		name, text, want string
+		notComments      []string
+	}{
+		{name: "a comment carrying a hash of its own", text: "a: b # c # d\n", want: "# c # d"},
+		{name: "the same, on its own line", text: "# c # d\na: b\n", want: "# c # d"},
+		{name: "three hashes in one comment", text: "a: b # 1 # 2 # 3\n", want: "# 1 # 2 # 3"},
+		{name: "a declared quoted hash, the comment after it", text: "  other: \"a # b\"} # twice\n", notComments: []string{`# b"} # twice`}, want: "# twice"},
+		{name: "a line with no comment at all", text: "a: b\n", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commentLinesOf(tc.text, tc.notComments...); got != tc.want {
+				t.Fatalf("commentLinesOf(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// A comment written below the last content line that no node holds — the
+// comment on a `...` marker's own line, a block the one below the marker
+// displaces, anything under a commented marker line — is one the canonical
+// form cannot hold, since the writer emits no marker: `fmt` refuses the
+// document by name and leaves its bytes as they are, under --check too,
+// while `--to bot` writes the .bot and counts the comment among those it
+// does not carry. A comment the rewrite DOES keep, and a `#` that is text,
+// are rewritten all the same.
+func TestFmtRefusesTheCommentsOfADocumentEndMarker(t *testing.T) {
+	inTempWorkspace(t)
+	for _, tc := range []struct {
+		dir, body, tail, first string
+		n                      int
+	}{
+		{"m", authorHelloDoc, "... # end note\n", "# end note", 1},
+		{"a", authorHelloDoc, "# before\n...\n# after\n", "# before", 2},
+		{"b", authorHelloDoc, "...  # end\n# after\n", "# end", 2},
+		{"r", authorHelloDoc, "... # one\n...  # two\n", "# one", 2},
+		// A block a blank line keeps off the node above AND the block
+		// below a bare marker displaces off the document's foot is hung on
+		// nothing: the refusal is the only thing between it and a rewrite
+		// that deletes it without a word.
+		{"d", authorHelloDoc, "\n# p\n\n...\n# q\n", "# p", 2},
+		{"s", authorHelloDoc, "\n# x\n\n...  # x\n", "# x", 2},
+		// The SAME text as a mid-document foot comment and on the marker's
+		// line: two comments, one of which no written form can hold. Read
+		// as one, the marker's line is deleted and the rewrite says nothing.
+		{"ft", footTwinHelloDoc, "...  # twice\n", "# twice", 2},
+		{"ft2", footTwinHelloDoc, "...\n\n# twice\n", "# twice", 2},
+		{"ft3", footTwinHelloDoc, "...\n...\n# twice\n", "# twice", 2},
+	} {
+		t.Run(tc.dir, func(t *testing.T) {
+			src := tc.body + tc.tail
+			doc := writeBot(t, tc.dir+"/end.bot.yaml", src)
+			jp, _ := jsonPrinter()
+			res, err := RunFmt(FmtOptions{Paths: []string{doc}, Printer: jp})
+			if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "(the first: "+tc.first+")") {
+				t.Fatalf("the comment of a document-end marker was not refused by name: %v %q", err, res.Refused)
+			}
+			if got, _ := os.ReadFile(doc); string(got) != src {
+				t.Fatalf("the author's bytes were rewritten:\n%q", got)
+			}
+			if _, err := RunFmt(FmtOptions{Paths: []string{tc.dir}, Check: true, Printer: jp}); !errors.Is(err, ErrFmtRefused) {
+				t.Fatalf("--check in a walk: %v, want ErrFmtRefused", err)
+			}
+			res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+			want := fmt.Sprintf("%s: %d YAML comment line(s) are not carried into the .bot (the first: %s)", doc, tc.n, tc.first)
+			if err != nil || !strings.Contains(strings.Join(res.Notices, "\n"), want) {
+				t.Fatalf("--to bot did not count the marker's comments: %v %q, want %q", err, res.Notices, want)
+			}
+		})
+	}
+	// An INDENTED comment above the marker is one yaml.v3 hangs on the last
+	// node it is written under: the rewrite keeps it, so the document is
+	// rewritten rather than refused, --check is green afterwards and `--to
+	// bot` counts it ONCE. The same holds of a block scalar's body line
+	// that starts with `#`, which is no comment at all.
+	for _, tc := range []struct {
+		dir, src string
+		text     []string
+		n        int
+	}{
+		{"i", authorHelloDoc + "  # inner\n...\n", nil, 1},
+		{"i2", authorHelloDoc + "  # i1\n...\n# below\n", nil, 2},
+		{"i3", authorHelloDoc + "  # i1\n# i2\n...\n", nil, 2},
+		{"bs", strings.Replace(authorHelloDoc, "  ask: Say hello.\n", "  ask: |\n    Say hello.\n    # Role\n", 1) + "...\n", []string{"# Role"}, 0},
+		// A mid-document FOOT comment and its twin above a bare marker are
+		// two comments the rewrite keeps where they hang: read as one, the
+		// second is deleted and the rewrite says nothing.
+		{"ft4", footTwinHelloDoc + "# twice\n...\n", nil, 2},
+		{"ft5", footTwinHelloDoc + "\n# twice\n", nil, 2},
+		// A multi-line QUOTED value whose last line starts with `#` carries
+		// no comment at all: read as one, the document is unformattable and
+		// `--to bot` names the author's own prose.
+		{"q", quotedHelloDoc, []string{`# not a comment"`, "# not a comment'"}, 0},
+		{"q2", quotedHelloDoc + "...\n", []string{`# not a comment"`, "# not a comment'"}, 0},
+		// The same text written INSIDE a flow collection and after its
+		// closing bracket is two comments: read as one, `fmt` left these
+		// two files alone for a comment it said it would write twice,
+		// though its own rewrite carries both.
+		{"fc", flowCloseHelloDoc, []string{`# b"} # twice`, "# b'"}, 2},
+		{"fcb", flowBareCloseHelloDoc, nil, 2},
+	} {
+		t.Run(tc.dir+" is rewritten", func(t *testing.T) {
+			doc := writeBot(t, tc.dir+"/end.bot.yaml", tc.src)
+			jp, _ := jsonPrinter()
+			res, err := RunFmt(FmtOptions{Paths: []string{doc}, Printer: jp})
+			if err != nil || len(res.Refused) != 0 {
+				t.Fatalf("a document whose rewrite keeps every comment was refused: %v %q", err, res.Refused)
+			}
+			got, _ := os.ReadFile(doc)
+			if string(got) == tc.src {
+				t.Fatalf("the document was not rewritten:\n%s", got)
+			}
+			if had, kept := commentLinesOf(tc.src, tc.text...), commentLinesOf(string(got), tc.text...); had != kept {
+				t.Fatalf("the rewrite carries the comment lines %q, the author's file %q:\n%s", kept, had, got)
+			}
+			if _, err := RunFmt(FmtOptions{Paths: []string{tc.dir}, Check: true, Printer: jp}); err != nil {
+				t.Fatalf("--check after fmt: %v", err)
+			}
+			res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+			if err != nil {
+				t.Fatalf("--to bot: %v", err)
+			}
+			notices := strings.Join(res.Notices, "\n")
+			if tc.n == 0 {
+				if strings.Contains(notices, "YAML comment line(s)") {
+					t.Fatalf("--to bot counted a comment a document carries none of: %q", res.Notices)
+				}
+				return
+			}
+			want := fmt.Sprintf("%s: %d YAML comment line(s) are not carried into the .bot", doc, tc.n)
+			if !strings.Contains(notices, want) {
+				t.Fatalf("--to bot counted the comments otherwise: %q, want %q", res.Notices, want)
+			}
+		})
+	}
+	t.Run("a hash that is text", func(t *testing.T) {
+		src := strings.Replace(looseHelloDoc, "ask: Say hello.", `ask: "a#b and a # inside quotes"`, 1)
+		if src == looseHelloDoc {
+			t.Fatal("the fixture no longer holds the prompt this test rewrites")
+		}
+		doc := writeBot(t, "t/text.bot.yaml", src)
+		jp, _ := jsonPrinter()
+		res, err := RunFmt(FmtOptions{Paths: []string{doc}, Printer: jp})
+		if err != nil || len(res.Refused) != 0 {
+			t.Fatalf("a document whose only `#` are text was refused: %v %q", err, res.Refused)
+		}
+		got, _ := os.ReadFile(doc)
+		if string(got) == src || !strings.Contains(string(got), "a#b and a # inside quotes") {
+			t.Fatalf("the text was not rewritten, or the `#` of its value did not survive:\n%s", got)
+		}
+	})
+}
+
+// headerCommentDoc declares its script's indentation with a header whose
+// comment opens against the indicators (`|2#c`, no blank before the `#`,
+// which the scanner reads as a comment all the same), and its body holds a
+// line starting with `#` above the column its first line sits at.
+const headerCommentDoc = "dsl: 2\nworkflow:\n  name: hello\n  entry: run\n  edges:\n    - run -> done\nnodes:\n  - tool: run\n    language: sh\n    script: |2#c\n        echo one\n      # not a comment\n"
+
+// A header read short would take that body line for a comment the written
+// form loses, and `fmt` would refuse a document it rewrites whole: the file
+// is rewritten, nothing is named among the refusals, the body line survives
+// and `--check` is green afterwards.
+func TestFmtRewritesADocumentWhoseHeaderCommentOpensAgainstItsIndicators(t *testing.T) {
+	inTempWorkspace(t)
+	doc := writeBot(t, "hc/end.bot.yaml", headerCommentDoc)
+	jp, _ := jsonPrinter()
+	res, err := RunFmt(FmtOptions{Paths: []string{doc}, Printer: jp})
+	if err != nil || len(res.Refused) != 0 {
+		t.Fatalf("a document whose rewrite keeps every comment was refused: %v %q", err, res.Refused)
+	}
+	got, _ := os.ReadFile(doc)
+	if string(got) == headerCommentDoc {
+		t.Fatalf("the document was not rewritten:\n%s", got)
+	}
+	if !strings.Contains(string(got), "# not a comment") {
+		t.Fatalf("the rewrite dropped the body line the header declares:\n%s", got)
+	}
+	if !strings.Contains(string(got), "#c") {
+		t.Fatalf("the rewrite dropped the header's own comment:\n%s", got)
+	}
+	if _, err := RunFmt(FmtOptions{Paths: []string{"hc"}, Check: true, Printer: jp}); err != nil {
+		t.Fatalf("--check after fmt: %v", err)
+	}
+}
+
+// The --force note counts the YAML comment lines the document it replaces
+// carries, and the author's own prose is none of them: a `#` opening a line
+// of a multi-line quoted value, or written inside one, is that value's
+// text — wherever yaml.v3 puts the value's position, which is its anchor or
+// its tag when it carries one, in the shorthand form (`!!str`, `!a'b`) or in
+// the verbatim one (`!<a'b>`, delimited by its `>`). This is the surface
+// that reads a document's comments with NO .bot validity check in the way
+// (an anchor is E050 at every other door), so it is where that count is
+// proven; the last row is the control that the note still fires on a comment
+// the target really carries.
+func TestFmtForceCountsNoCommentInsideAPropertiedValue(t *testing.T) {
+	inTempWorkspace(t)
+	jp, _ := jsonPrinter()
+	bot := writeBot(t, "p/x.bot", looseBot)
+	carried := func(res FmtResult) string {
+		for _, n := range res.Notices {
+			if strings.Contains(n, "--force replaces it whole") {
+				return n
+			}
+		}
+		return ""
+	}
+	for _, tc := range []struct{ name, target, want string }{
+		{"an anchor on a line of its own", "dsl: 2\nprompts:\n  ask: &a\n    \"Say hello.\n    # not a comment\"\n", ""},
+		{"a tag on a line of its own", "dsl: 2\nprompts:\n  ask: !!str\n    \"Say hello.\n    # not a comment\"\n", ""},
+		{"a comment carrying a quote between the two", "dsl: 2\nprompts:\n  ask: &a # \" anchored\n    \"Say hello.\n    # not a comment\"\n", `(the first: # " anchored)`},
+		{"a tagged quoted value inside a flow collection", "dsl: 2\nprompts: {ask: !!str \"Say hello. # not a comment\"}\n", ""},
+		{"an anchored quoted value inside one, over lines", "dsl: 2\nprompts: {ask: &a\n    \"Say hello.\n    # not a comment\"}\n", ""},
+		{"a verbatim tag name carrying a quote", "dsl: 2\nprompts:\n  ask: !<a'b>\n    'Say hello.\n    # not a comment'\n", ""},
+		{"a verbatim tag on a quoted value inside a flow collection", "dsl: 2\nprompts: {ask: !<a> \"Say hello. # not a comment\"}\n", ""},
+		{"a body indentation declared behind a verbatim tag", "dsl: 2\nprompts:\n  ask: !<a> |2\n      echo one\n    # not a comment\n", ""},
+		{"a comment the target really carries", "# real\ndsl: 2\nprompts:\n  ask: &a\n    \"Say hello.\n    # not a comment\"\n", "(the first: # real)"},
+		// The property line carries a COMMENT, and the comment an
+		// indicator: the block scalar below declares nothing, so its body
+		// is the author's text and the count is the one comment the line
+		// itself carries — not two.
+		{"a `|9` written in the comment of a property line", "dsl: 2\nprompts:\n  ask: &a # |9\n    |\n    echo one\n    # not a comment\n", "1 comment line(s) it carries are not in what p/x.bot writes (the first: # |9)"},
+		{"a `>9` written in the comment of a verbatim tag's line", "dsl: 2\nprompts:\n  ask: !<a> # >9\n    |\n    echo one\n    # not a comment\n", "1 comment line(s) it carries are not in what p/x.bot writes (the first: # >9)"},
+		{"a comment of a property line with no indicator in it", "dsl: 2\nprompts:\n  ask: &a # plain\n    |\n    echo one\n    # not a comment\n", "1 comment line(s) it carries are not in what p/x.bot writes (the first: # plain)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile("p/x.bot.yaml", []byte(tc.target), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Printer: jp})
+			if err != nil {
+				t.Fatalf("--to yaml --force: %v", err)
+			}
+			switch note := carried(res); {
+			case tc.want == "" && note != "":
+				t.Fatalf("--force named the author's own text a lost comment line: %q", note)
+			case tc.want != "" && !strings.Contains(note, tc.want):
+				t.Fatalf("--force counted the comments otherwise: %q, want %q", note, tc.want)
+			}
+		})
+	}
+}
+
+// `--to yaml --force` reads its target with no .bot validity check, so it
+// is where the comments of a flow collection holding a DANGLING key are
+// counted for real: yaml.v3 hands the comment written after that key back
+// MOVED onto the collection, beside whatever the closing line and the
+// block below it carry. The note counts the lines the target writes — the
+// moved copy once, a same text written further down where it is written,
+// and a block scalar's body line not at all — never one line more than the
+// target holds.
+func TestFmtForceCountsAMovedFlowCommentOnce(t *testing.T) {
+	inTempWorkspace(t)
+	jp, _ := jsonPrinter()
+	bot := writeBot(t, "p/x.bot", looseBot)
+	carried := func(res FmtResult) string {
+		for _, n := range res.Notices {
+			if strings.Contains(n, "--force replaces it whole") {
+				return n
+			}
+		}
+		return ""
+	}
+	for _, tc := range []struct{ name, target, want string }{
+		{"the moved text alone", "dsl: 2\nprompts: {ask: # c\n  }\nother: y\n", "1 comment line(s) it carries are not in what p/x.bot writes (the first: # c)"},
+		{"the same text on a content line below the close", "dsl: 2\nprompts: {ask: # c\n  }\nother: y # c\n", "2 comment line(s) it carries are not in what p/x.bot writes (the first: # c)"},
+		{"a line between the close and the same text", "dsl: 2\nprompts: {ask: # c\n  }\nz: y # q\nw: v # c\n", "3 comment line(s) it carries are not in what p/x.bot writes (the first: # c)"},
+		{"the same text on the closing line", "dsl: 2\nprompts: {ask: # c\n  } # c\n", "2 comment line(s) it carries are not in what p/x.bot writes (the first: # c)"},
+		{"a bare hash on the closing line", "dsl: 2\nprompts: {ask: #\n  } #\n", "2 comment line(s) it carries are not in what p/x.bot writes (the first: #)"},
+		{"an own-line same text below the close", "dsl: 2\nprompts: {ask: # c\n  }\n# c\nother: y\n", "2 comment line(s) it carries are not in what p/x.bot writes (the first: # c)"},
+		{"the same text in a block scalar's body below", "dsl: 2\nprompts: {ask: # c\n  }\ns: |\n  # c\n", "1 comment line(s) it carries are not in what p/x.bot writes (the first: # c)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile("p/x.bot.yaml", []byte(tc.target), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Printer: jp})
+			if err != nil {
+				t.Fatalf("--to yaml --force: %v", err)
+			}
+			if note := carried(res); !strings.Contains(note, tc.want) {
+				t.Fatalf("--force counted the comments otherwise: %q, want %q", note, tc.want)
+			}
+		})
 	}
 }
 
