@@ -218,6 +218,21 @@ default and warns in the server log, naming the variable:
 | `ITERION_GATE_SWEEP_INTERVAL` | Time between two passes (Go duration). The sweeper's lease is paced by it, capped at the default: its TTL is three intervals, three minutes at most, so a long interval does not delay the failover. A new term's first pass runs at once. | `1m` |
 | `ITERION_GATE_SWEEP_LOOKBACK` | How far back an ordinary pass reaches (Go duration). The ordinary publish grant outlives it by 30 minutes. | `1h` |
 | `ITERION_GATE_SWEEP_DEEP_EVERY` | Passes between two deep ones, which reach the whole 8-day horizon. | `30` |
+
+## Forge publish read-back (server)
+
+After posting a review's inline comments, the GitLab client reads the merge
+request's discussions back and counts what it holds (the counts a bot
+reports, and what the summary folds). The read runs under its own budget so
+the summary note always follows on the caller's clock — a bot's publish call
+has its own timeout (review-pr allows 120 s), and the budget stays well
+inside it; past the budget the counts are the create answers, unverified,
+and the publish log says so.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_FORGE_READBACK_BUDGET` | Budget of the whole read-back, reads and pauses included (Go duration). A value that is not a positive duration leaves the default in force and is named in the publish diagnostics. | `15s` |
+
 ## Platform environment isolation (cloud)
 
 A cloud server or runner keeps its own credentials out of what the workflows

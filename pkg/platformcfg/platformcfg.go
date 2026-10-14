@@ -350,6 +350,8 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_NATIVE_INDEX_RESCAN":       true,
 	"ITERION_ORPHAN_RECONCILE_INTERVAL": true,
 	"ITERION_WEBHOOK_SYNC_DEBOUNCE":     true,
+	// The forge publish's read-back budget (pkg/forge/gitlab).
+	"ITERION_FORGE_READBACK_BUDGET": true,
 	// Identities presented to forges and providers.
 	"ITERION_FORGE_BRAND_AVATAR": true,
 	"ITERION_GIT_AUTHOR_NAME":    true,

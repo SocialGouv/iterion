@@ -48,6 +48,13 @@ func (h AdminHTTP) DoErrBody(ctx context.Context, method, path string, body, out
 	return DoJSONErrBody(ctx, h.client, method, h.apiBase+path, h.provider, h.setHeaders, body, out)
 }
 
+// DoFull is Do that also returns the response headers, for the calls that
+// read pagination or rate-limit facts a status alone does not carry.
+func (h AdminHTTP) DoFull(ctx context.Context, method, path string, body, out any) (int, http.Header, error) {
+	code, _, hdr, err := DoJSONFull(ctx, h.client, method, h.apiBase+path, h.provider, h.setHeaders, body, out)
+	return code, hdr, err
+}
+
 // DoTyped performs one call and TYPES a non-2xx answer itself, instead of
 // handing the status back for the call site to map. A rate-limited answer
 // arrives typed from the transport, with the wait read from response headers

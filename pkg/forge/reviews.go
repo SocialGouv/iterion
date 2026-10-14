@@ -61,6 +61,15 @@ type ReviewResult struct {
 	// Verified reports whether CommentsPosted was confirmed by a follow-up
 	// read (or by per-comment create responses), not assumed.
 	Verified bool
+	// Diagnostics names, for the operator's log, what the forge answered to
+	// an inline comment that did not land cleanly — the status and the
+	// body's head — and whether the follow-up read found the comment on the
+	// pull request anyway; and the follow-up read's own failure when the
+	// counts could not be confirmed. Empty on a clean publish. Carried with
+	// an error too, when the review landed nowhere: what each create
+	// answered is then the operator's only lead. Never user-facing: the
+	// review body says what was folded, not why.
+	Diagnostics []string
 	// Fallback is "" for a clean inline post, "summary" when inline
 	// anchoring was rejected wholesale and every comment was folded into
 	// the review body, "partial" when only some inline comments landed
