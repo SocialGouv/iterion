@@ -135,7 +135,7 @@ func (c *AdminClient) GetIssue(ctx context.Context, repo string, number int) (fo
 func (c *AdminClient) CreateIssue(ctx context.Context, repo string, in forge.NewIssue) (forge.IssueRef, error) {
 	body := map[string]any{"title": in.Title}
 	if in.Body != "" {
-		body["description"] = in.Body
+		body["description"] = forge.InertGitLabQuickActions(in.Body)
 	}
 	if len(in.Labels) > 0 {
 		body["labels"] = strings.Join(in.Labels, ",")
@@ -159,7 +159,7 @@ func (c *AdminClient) UpdateIssue(ctx context.Context, repo string, number int, 
 		body["title"] = *patch.Title
 	}
 	if patch.Body != nil {
-		body["description"] = *patch.Body
+		body["description"] = forge.InertGitLabQuickActions(*patch.Body)
 	}
 	if patch.Labels != nil {
 		body["labels"] = strings.Join(*patch.Labels, ",")
@@ -196,7 +196,7 @@ type gitlabNote struct {
 // CommentIssue posts a note on an issue.
 func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
 	var n gitlabNote
-	code, err := c.do(ctx, http.MethodPost, "/projects/"+projectID(repo)+"/issues/"+strconv.Itoa(number)+"/notes", map[string]any{"body": body}, &n)
+	code, err := c.do(ctx, http.MethodPost, "/projects/"+projectID(repo)+"/issues/"+strconv.Itoa(number)+"/notes", map[string]any{"body": forge.InertGitLabQuickActions(body)}, &n)
 	if err != nil {
 		return forge.CommentRef{}, err
 	}
@@ -221,7 +221,7 @@ func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int,
 // reply lane resolves.
 func (c *AdminClient) CommentPullRequest(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
 	var n gitlabNote
-	code, err := c.do(ctx, http.MethodPost, "/projects/"+projectID(repo)+"/merge_requests/"+strconv.Itoa(number)+"/notes", map[string]any{"body": body}, &n)
+	code, err := c.do(ctx, http.MethodPost, "/projects/"+projectID(repo)+"/merge_requests/"+strconv.Itoa(number)+"/notes", map[string]any{"body": forge.InertGitLabQuickActions(body)}, &n)
 	if err != nil {
 		return forge.CommentRef{}, err
 	}
