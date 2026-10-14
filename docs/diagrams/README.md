@@ -14,7 +14,16 @@ Every diagram page here is a **view** over the code, never a second source of tr
 | [data-model-credentials.md](data-model-credentials.md) | Provider keys and forfaits at rest, the sealed bundle and the pool lease in flight, the four meters and the routing policy; the credential tier walk. |
 | [data-model-automation.md](data-model-automation.md) | The trigger spine (subscriptions, effects, board events and cursors), the two scheduled surfaces, and what is leased by whom. |
 | [data-model-knowledge.md](data-model-knowledge.md) | Memory spaces and documents, config shares and their deliveries, user notifications. |
-| [access-control.md](access-control.md) | Who can be a caller, the roles, the authorization decision points, and the gate × principal matrix. |
+| [access-control.md](access-control.md) | Who can be a caller (12 principal kinds), the roles, the authorization decision points, and the gate × principal matrix. |
+| [flow-auth-login.md](flow-auth-login.md) | Flow — signing in and authenticating a request. |
+| [flow-org-team-lifecycle.md](flow-org-team-lifecycle.md) | Flow — org and team lifecycle: suspend, soft-delete, purge. |
+| [flow-forge-connect-enable-bot.md](flow-forge-connect-enable-bot.md) | Flow — connect a forge, enable a bot on a repository. |
+| [flow-webhook-to-run.md](flow-webhook-to-run.md) | Flow — webhook-to-run: the admission gates, every refusal, and the one chokepoint. |
+| [flow-revi-review-merge-gate.md](flow-revi-review-merge-gate.md) | Flow — The revi/review merge gate. |
+| [flow-cloud-run-lifecycle.md](flow-cloud-run-lifecycle.md) | Flow — Cloud run lifecycle. |
+| [flow-credential-resolution.md](flow-credential-resolution.md) | Flow — Credential resolution — which credential funds a cloud run. |
+| [flow-secrets-sealed-bundle.md](flow-secrets-sealed-bundle.md) | Flow — the sealed credentials bundle. |
+| [flow-config-share.md](flow-config-share.md) | Flow — config-share: the mint, the two access paths, the fail-closed write. |
 
 Reading order for a newcomer: identity → forge & bots → runs → access control; credentials, automation and knowledge stand alone.
 
