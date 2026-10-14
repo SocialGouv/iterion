@@ -103,6 +103,113 @@ func TestForgePublishReview_HappyPath(t *testing.T) {
 	}
 }
 
+// A review whose forge answers did not match what the pull request holds
+// (a create that errored but persisted, a read-back that failed) reaches the
+// caller as inline_diagnostics and the operator's log as one warn line per
+// diagnostic — the trail that tells a miscount from a loss once the run is
+// gone. Red if the handler drops ReviewResult.Diagnostics on either side.
+func TestForgePublishReview_InlineDiagnosticsReachTheResponseAndTheLog(t *testing.T) {
+	s, fake := newForgePublishTestServer(t)
+	logged := warnLogOf(t, s)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	fake.res = forge.ReviewResult{
+		URL: "https://gitlab.example/o/r/-/merge_requests/42", CommentsPosted: 2, SuggestionsPosted: 1, Verified: true,
+		Diagnostics: []string{
+			"inline comment a.go:3: HTTP 500 Internal Server Error — the merge request holds it anyway",
+			"inline comment b.go:9: HTTP 500 Internal Server Error — the merge request holds it anyway",
+		},
+	}
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", validPublishBody))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.InlineDiagnostics) != 2 || resp.InlineDiagnostics[0] != fake.res.Diagnostics[0] || resp.InlineDiagnostics[1] != fake.res.Diagnostics[1] {
+		t.Fatalf("inline_diagnostics = %q, want the two forge diagnostics verbatim", resp.InlineDiagnostics)
+	}
+	if !strings.Contains(w.Body.String(), `"inline_diagnostics"`) {
+		t.Fatalf("response body lacks inline_diagnostics: %s", w.Body.String())
+	}
+	for _, d := range fake.res.Diagnostics {
+		want := "forge publish: github o/r#42: " + d
+		if n := strings.Count(logged.String(), want); n != 1 {
+			t.Fatalf("warn line %q appears %d time(s), want exactly one:\n%s", want, n, logged.String())
+		}
+	}
+}
+
+// A review that landed nowhere answers 502 — and still carries what each
+// create answered: the diagnostics reach the response and the warn log on
+// the failure path too, the operator's only lead on a publish with no trace
+// on the merge request.
+func TestForgePublishReview_ReviewFailureStillReportsInlineDiagnostics(t *testing.T) {
+	s, fake := newForgePublishTestServer(t)
+	logged := warnLogOf(t, s)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	fake.err = errors.New("gitlab: create merge request summary note: HTTP 403")
+	fake.res = forge.ReviewResult{Diagnostics: []string{`inline comment "a.go":3: HTTP 400 {"message":{"line_code":["can't be blank"]}}`}}
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", validPublishBody))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Published || len(resp.InlineDiagnostics) != 1 || resp.InlineDiagnostics[0] != fake.res.Diagnostics[0] {
+		t.Fatalf("inline_diagnostics = %q on the failure path, want the forge diagnostic verbatim", resp.InlineDiagnostics)
+	}
+	if want := "forge publish: github o/r#42: " + fake.res.Diagnostics[0]; strings.Count(logged.String(), want) != 1 {
+		t.Fatalf("log lacks the warn line %q:\n%s", want, logged.String())
+	}
+	// A caller keeping only the head of the body (review-pr keeps 500
+	// bytes) must still read the reason: the diagnostics come LAST.
+	if body := w.Body.String(); strings.Index(body, `"skipped_reason"`) > strings.Index(body, `"inline_diagnostics"`) {
+		t.Fatalf("inline_diagnostics must follow skipped_reason in the body: %s", body)
+	}
+}
+
+// warnLogOf makes the server log at warn into a buffer the handler's own
+// goroutines may write too, and stubs the reviewer bookkeeping those
+// goroutines run (self-assign, withdraw) to "no capability", so the warn
+// lines a test reads are the publish's alone.
+func warnLogOf(t *testing.T, s *Server) *lockedBuffer {
+	t.Helper()
+	logged := &lockedBuffer{}
+	s.logger = iterlog.New(iterlog.LevelWarn, logged)
+	s.forgeReviewerAssignerFor = func(context.Context, forge.Connection) forge.ReviewerAssigner { return nil }
+	s.forgeReviewRequestWithdrawerFor = func(context.Context, forge.Connection) forge.ReviewRequestWithdrawer { return nil }
+	return logged
+}
+
+// A clean publish carries no diagnostics: the field is absent from the body
+// and nothing is logged at warn — so an operator grepping the warn line
+// sees only the publishes that need a look.
+func TestForgePublishReview_CleanPublishHasNoInlineDiagnostics(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	logged := warnLogOf(t, s)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", validPublishBody))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "inline_diagnostics") {
+		t.Fatalf("clean publish must omit inline_diagnostics: %s", w.Body.String())
+	}
+	if l := logged.String(); strings.Contains(l, "forge publish: github o/r#42: ") {
+		t.Fatalf("clean publish must log no diagnostic:\n%s", l)
+	}
+}
+
 func TestForgePublishReview_AuthFailures(t *testing.T) {
 	s, fake := newForgePublishTestServer(t)
 	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})

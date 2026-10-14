@@ -517,6 +517,14 @@ type publishReviewResponse struct {
 	// rather than fatal, but reported so the caller's output contract can be
 	// fixed instead of the loss going unnoticed.
 	DroppedComments []string `json:"dropped_comments,omitempty"`
+	// InlineDiagnostics names, per inline comment that did not land cleanly,
+	// what the forge answered and whether the pull request holds the comment
+	// anyway — and the follow-up read's own failure when verified is false.
+	// Operator-facing (each line is also logged at warn); empty on a clean
+	// publish. See forge.ReviewResult.Diagnostics. LAST on purpose: a caller
+	// that keeps the head of a 502 body (review-pr keeps 500 bytes) must
+	// still read skipped_reason before these.
+	InlineDiagnostics []string `json:"inline_diagnostics,omitempty"`
 }
 
 // handleForgePublishReview authenticates the per-run token, validates the
@@ -658,6 +666,9 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		if s.logger != nil {
 			s.logger.Warn("forge publish: %s %s#%d review failed (%v); gate posted=%v state=%q",
 				conn.Provider, grant.Repo, number, reviewErr, gate.posted, gate.state)
+			for _, d := range res.Diagnostics {
+				s.logger.Warn("forge publish: %s %s#%d: %s", conn.Provider, grant.Repo, number, d)
+			}
 		}
 		// The verdict comment IS the review body — a review that did not land
 		// means the human-facing explanation never reached the MR. Executing
@@ -666,23 +677,32 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		// says so.
 		verdict := refuseVerdict(req.Verdict, "the review did not publish: "+reviewErr.Error())
 		writeJSONStatus(w, http.StatusBadGateway, publishReviewResponse{
-			Published:       false,
-			Provider:        string(conn.Provider),
-			SkippedReason:   fmt.Sprintf("create pull review: %v", reviewErr),
-			DroppedComments: droppedComments,
-			GatePosted:      gate.posted,
-			GateState:       gate.state,
-			GateContext:     gate.context,
-			GateSHA:         gate.sha,
-			GateError:       gate.errText,
-			GateSHAUnpinned: gate.shaUnpinned,
-			Verdict:         verdict,
+			Published:         false,
+			Provider:          string(conn.Provider),
+			SkippedReason:     fmt.Sprintf("create pull review: %v", reviewErr),
+			InlineDiagnostics: res.Diagnostics,
+			DroppedComments:   droppedComments,
+			GatePosted:        gate.posted,
+			GateState:         gate.state,
+			GateContext:       gate.context,
+			GateSHA:           gate.sha,
+			GateError:         gate.errText,
+			GateSHAUnpinned:   gate.shaUnpinned,
+			Verdict:           verdict,
 		})
 		return
 	}
 	if s.logger != nil {
 		s.logger.Info("forge publish: %s %s#%d → %d inline comment(s) (verified=%v fallback=%q)",
 			conn.Provider, grant.Repo, number, res.CommentsPosted, res.Verified, res.Fallback)
+		// One warn line per inline comment the forge did not take cleanly:
+		// the status and body it answered, and whether the read-back found
+		// the comment on the pull request anyway. What tells a miscount
+		// (counted lost, actually posted) from a loss (folded into the
+		// summary) once the run is gone.
+		for _, d := range res.Diagnostics {
+			s.logger.Warn("forge publish: %s %s#%d: %s", conn.Provider, grant.Repo, number, d)
+		}
 	}
 
 	// Merge gate: post the deterministic revi/review commit status on the PR
@@ -717,6 +737,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		SuggestionsPosted: res.SuggestionsPosted,
 		Verified:          res.Verified,
 		Fallback:          res.Fallback,
+		InlineDiagnostics: res.Diagnostics,
 		DroppedComments:   droppedComments,
 		GatePosted:        gate.posted,
 		GateState:         gate.state,
