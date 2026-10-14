@@ -200,6 +200,64 @@ func TestGetModels_ConcurrentForcedRefreshesAreCoalesced(t *testing.T) {
 	}
 }
 
+// What modelsRefreshTimeout bounds, and what it does not: the aggregator
+// refresh carries it, and the local detector probe that precedes it runs on a
+// context of its own. A reader who takes the deadline for a bound on the whole
+// task would read the registry entry, and the request waiting on it, as
+// bounded by 30s — in local mode they are not.
+func TestTheModelsRefreshDeadlineBoundsTheAggregatorRefresh(t *testing.T) {
+	t.Run("the aggregator refresh carries the deadline", func(t *testing.T) {
+		srv, _ := newTestServer(t)
+		// Cloud skips the detector half: the aggregator is what is measured here.
+		srv.cfg.Mode = "cloud"
+		budgets := make(chan time.Duration, 1)
+		srv.modelSpecsRefresh = func(ctx context.Context) error {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				budgets <- 0
+				return nil
+			}
+			budgets <- time.Until(deadline)
+			return nil
+		}
+		if err := srv.refreshModels(context.Background()); err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+		budget := <-budgets
+		if budget <= 0 || budget > modelsRefreshTimeout {
+			t.Fatalf("the aggregator refresh ran on a %s budget, want one inside modelsRefreshTimeout (%s): a fetch that never finishes would hold a shutdown-registry entry, and the request waiting on it, for the life of the process", budget, modelsRefreshTimeout)
+		}
+	})
+
+	t.Run("the local detector probe runs outside that deadline", func(t *testing.T) {
+		srv, _ := newTestServer(t)
+		srv.cfg.Mode = "local"
+		const hookWork = 50 * time.Millisecond
+		probed := make(chan struct{})
+		srv.OnForceRefresh = func() { close(probed); time.Sleep(hookWork) }
+		srv.modelSpecsRefresh = func(context.Context) error { return nil }
+
+		// A task whose deadline is already spent: whatever still runs is not
+		// bounded by it.
+		spent, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+		defer cancel()
+		<-spent.Done()
+		started := time.Now()
+		err := srv.runModelsRefresh(spent)
+		select {
+		case <-probed:
+		default:
+			t.Fatalf("the detector half was skipped on a spent deadline (the refresh returned %v): it is bounded by that deadline after all, and the comment on modelsRefreshTimeout describes a probe this code no longer runs", err)
+		}
+		if err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+		if elapsed := time.Since(started); elapsed < hookWork {
+			t.Fatalf("the detector half returned in %s, less than the %s it was made to take: it did not run to completion", elapsed.Round(time.Millisecond), hookWork)
+		}
+	})
+}
+
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

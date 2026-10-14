@@ -779,9 +779,12 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 	// publish on that PR withdraws what this one missed. A recover between
 	// the halves would buy nothing an already best-effort, self-healing call
 	// does not already have.
+	// Both deadlines are taken INSIDE the task: a goSafe refused past the
+	// shutdown's join never runs fn, and a timer context acquired before the
+	// call would then never be released.
 	settleParent := context.WithoutCancel(r.Context())
-	saCtx, saCancel := context.WithTimeout(settleParent, 30*time.Second)
 	s.goSafe("forge-publish-reviewer-settle", func() {
+		saCtx, saCancel := context.WithTimeout(settleParent, 30*time.Second)
 		defer saCancel()
 		s.selfAssignReviewer(saCtx, conn, grant.Repo, number)
 		wCtx, wCancel := context.WithTimeout(settleParent, 30*time.Second)

@@ -465,11 +465,21 @@ type Server struct {
 	// server's state.
 	shutdown chan struct{}
 
-	// bgWorkers holds one entry per live loop started through goUntilShutdown,
-	// so the shutdown can join them after the HTTP drain instead of cancelling
-	// them and exiting while a write is still in flight. bgJoined records that
-	// the join already happened, after which a loop must not be started at all.
-	// Both guarded by stateMu.
+	// bgWorkers holds one entry per live goroutine registered through
+	// registerBackgroundWorker — the loops of goUntilShutdown and the detached
+	// best-effort writes of goSafe — so the shutdown can join them after the
+	// HTTP drain instead of cancelling them and exiting while a write is still
+	// in flight. bgJoined records that the join already happened, after which
+	// nothing may be registered at all.
+	//
+	// Both guarded by bgMu, a mutex of their OWN: every audited mutation,
+	// every webhook delivery, every PAT and config-share request registers
+	// here, and borrowing stateMu would put a write-lock on the server's
+	// central state on each of them — queueing them behind any project-switch
+	// writer, and the pipeline board, /api/bots and /api/server/info behind
+	// them. Nothing holding bgMu takes another lock, so it is always the
+	// innermost one.
+	bgMu      sync.Mutex
 	bgWorkers []backgroundWorker
 	bgJoined  bool
 	// bgJoinBudget overrides defaultBackgroundJoinBudget; zero means the
@@ -716,13 +726,13 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		// Pre-allocate the projection semaphore so its ACQUIRE stays
 		// lock-free — a per-webhook send to a pre-built chan is atomic.
 		// scheduleForgeBoardProjection still enters tryGoUntilShutdown
-		// after the acquire, and THAT takes stateMu briefly to append
-		// the bgWorker (inherent to every registered loop); a lazy
-		// semaphore init would have added a SECOND stateMu.Lock on the
-		// same delivery, queueing behind any project-switch writer and
+		// after the acquire, and THAT takes bgMu briefly to append the
+		// bgWorker (inherent to every registered goroutine); a lazy
+		// semaphore init would have added a stateMu.Lock on the same
+		// delivery, queueing behind any project-switch writer and
 		// stalling /api/bots, /api/server/info and the pipeline board.
-		// Pre-allocating drops that second lock; the
-		// tryGoUntilShutdown lock stays.
+		// Pre-allocating avoids it; the registry's append takes bgMu,
+		// not stateMu.
 		forgeProjSem:        make(chan struct{}, forgeProjectionSemCap),
 		authSvc:             cfg.AuthService,
 		signer:              cfg.AuthSigner,

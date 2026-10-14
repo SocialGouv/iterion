@@ -120,7 +120,8 @@ pod marked Terminating
    ├─ /readyz → 503 {"status":"draining"}         ← immediately
    ├─ wait config.server.shutdownDelay (5s)       ← the lame-duck window
    ├─ run-console drain      ⎫ config.server.shutdownTeardown (30s),
-   └─ http.Server.Shutdown   ⎭ split ⅔ / ⅓ so in-flight requests keep a window
+   ├─ http.Server.Shutdown   ⎭ split ⅔ / ⅓ so in-flight requests keep a window
+   └─ background join        ← 500ms, one budget for every background goroutine
 ```
 
 The lame-duck window is the whole point. Endpoint removal is asynchronous:
@@ -145,6 +146,67 @@ watch the shutdown signal — only the studio's `/api/ws` hub does. Those
 sockets therefore get a TCP reset at process exit rather than a close
 frame; clients reconnect, so it is cosmetic, but a deploy is visible in a
 watching browser.
+
+### The background join
+
+After the HTTP drain, the shutdown JOINS every goroutine the server registered
+— the sweeps and lease campaigns started through `goUntilShutdown`, and the
+detached best-effort writes of `goSafe`: an audit row, a `last_used_at` stamp,
+an invitation email. Cancelling them would not be enough: a loop stopped by a
+cancel alone returns after its cancel did, so the process could exit between a
+claim and its release, or mid-insert into a store already being torn down, and
+the grace period would never have covered that last write.
+
+ONE budget covers them all (`defaultBackgroundJoinBudget`, 500ms; a server may
+override it through `bgJoinBudget`), spent INSIDE the window above rather than
+added to it — so the exit costs the same whether the server started two
+background goroutines or twenty. Whatever is still running when the budget runs
+out is named in a warning: past that point the process is leaving, and the only
+thing an operator can act on is WHICH one overran — so each task is named ONCE,
+with how many of its goroutines were still running, because every per-request
+write goes through the same registry and a burst of them under one label would
+otherwise be a multi-kilobyte log line.
+
+That budget is a WINDOW, not a guarantee, and it is far shorter than what the
+sites it joins allow themselves: 5s for an audit insert or a `last_used_at`
+stamp, 15s for an invitation email, 30s for each half of the forge reviewer
+settle and for the model-spec refresh's aggregator fetch, 60s for the OAuth
+connect kick — and no deadline at all for the config-share touch, the one
+joined write that takes none. A write that completes inside the window
+finishes; one that does not is cut by the exit exactly as it was before the
+join existed, and the warning names it. The join
+NARROWS the window in which a write is lost — it does not close it — and the
+lever that widens it is the grace-period arithmetic below, not a deadline at
+the site.
+
+A goroutine the join is waiting for may ask for one last write on its way out —
+a sweep's final audit row — and that write is joined too, out of the same
+budget: the registry is re-read until it is empty, so a chain of such writes
+cannot stretch the exit beyond the one window either.
+
+Work asked for AFTER the join is refused and logged rather than started —
+nobody is left to wait for it. That is a claim about the ORDER, so the join is
+the sequence's last wait: the board dispatcher's drain — the one other thing
+`Shutdown` waits for, while its in-flight cards release their claims — is
+waited for *before* it, because a card finishing there can ask for one more
+best-effort write, and a registry closed a step early would refuse it with the
+process demonstrably still alive. The drain window — between the shutdown signal
+and `http.Server.Shutdown` returning — splits by registration path:
+
+- a WRITE (`goSafe`) is still started and still joined. Requests are answered
+  until the drain ends and the join comes after it, so the audit row of a
+  mutation answered 200 during a rolling update is covered. It carries its own
+  deadline, never the shutdown's, because the point is to let that last write
+  finish inside the grace period rather than cut it there.
+- a LOOP (`goUntilShutdown` / `tryGoUntilShutdown`) is refused on the signal
+  and says so: it would run on an already-cancelled context, with every store
+  call in it failing as a generic `context canceled`. Its caller records the
+  work as deferred to its reconciliation sweep instead — what the forge→board
+  projection does with a webhook answered in that window.
+
+The census of every goroutine `pkg/server` starts, each with what joins it or
+why the join is not owed, is a test:
+[pkg/server/background_class_test.go](../pkg/server/background_class_test.go).
 
 ### Sizing `terminationGracePeriodSeconds`
 

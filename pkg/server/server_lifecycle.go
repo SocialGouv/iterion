@@ -12,7 +12,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
-	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -497,18 +496,28 @@ func (s *Server) oauthRefreshWorker() *secrets.OAuthRefreshWorker {
 // which every run drawing the credential is handed a token the server
 // knows is dead.
 //
-// Detached from the request context (which dies with the response) and
-// bounded on its own, best-effort throughout: the upload has already
-// succeeded, and a provider that is down must not turn into a failed
-// connect. The claim makes it safe to overlap with the periodic sweep —
-// whichever gets there first does the exchange.
+// Detached from the request context (which dies with the response), bounded
+// on its own, and joined by the shutdown like the periodic sweep it borrows
+// its worker from: the sweep CLAIMS each record before exchanging at the
+// provider, so a process that exits mid-sweep leaves a record fenced by a
+// claim nobody holds until RefreshClaimTTL runs out. Best-effort throughout:
+// the upload has already succeeded, and a provider that is down must not turn
+// into a failed connect. The claim makes it safe to overlap with the periodic
+// sweep — whichever gets there first does the exchange.
 func (s *Server) kickOAuthRefresh(ownerKey string, kind secrets.OAuthKind) {
 	worker := s.oauthRefreshWorker()
 	if worker == nil {
 		return
 	}
-	errtrack.Go("server.oauthRefreshOnConnect", func() {
-		ctx, cancel := context.WithTimeout(context.Background(), oauthConnectRefreshTimeout)
+	s.goUntilShutdown("server.oauthRefreshOnConnect", func(parent context.Context) {
+		// The JOIN is what this site owes, not the cancel. The sweep claims a
+		// record before exchanging and hands the claim back on the SAME
+		// context, so a context cancelled at the shutdown signal turns every
+		// release into "context canceled" and leaves the record fenced for
+		// RefreshClaimTTL — the very failure the join exists to prevent. The
+		// kick keeps its own deadline instead, and the shutdown waits for it
+		// inside the join budget.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), oauthConnectRefreshTimeout)
 		defer cancel()
 		// The count is the SWEEP's, not this owner's: RunOnce is a full pass
 		// over every due record, and reading "owner=X … rotated 3" as three
@@ -855,20 +864,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// only requirement is that the PROCESS not exit mid-release, and the
 	// dispatcher drains while HTTP connections wind down.
 	err := s.server.Shutdown(ctx)
-	// Every background loop is joined here, after the drain: the two assistant
-	// coordinators cancelled above, plus everything started through
-	// goUntilShutdown. One budget covers them all at once — so the process does
-	// not exit while a sweep is mid-write, and a sweep that ignores its cancel
-	// cannot hold the exit.
-	s.joinBackgroundWorkers(ctx,
-		backgroundWorker{name: "server.assistantWatch", done: watchDone},
-		backgroundWorker{name: "server.assistantMissions", done: missionDone},
-	)
-	s.flushForgeTally()
 	s.stateMu.RLock()
 	boardDone := s.boardDispDone
 	s.stateMu.RUnlock()
 	if boardDone != nil { // nil when the cloud board dispatcher never started
+		// Waited BEFORE the join, which is what makes the join the LAST
+		// thing this shutdown waits for: a card this drain is finishing can
+		// ask for one more best-effort write on its way out, and a registry
+		// closed while the process is still waiting here would refuse
+		// exactly that write — the shape joinBackgroundWorkers already
+		// covers for the goroutines IT waits for. The drain is not itself in
+		// the registry, so the join's budget does not bound it.
+		//
 		// Bounded by ctx only: a caller shutting down with no deadline
 		// waits for the drain however long it takes (the drain's own claim
 		// releases run on a detached 10s context, so in practice this is
@@ -879,5 +886,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			s.logger.Warn("shutdown: board dispatcher drain still running at the deadline — in-flight claim releases may be cut")
 		}
 	}
+	// Every background loop is joined here, after the drain: the two assistant
+	// coordinators cancelled above, plus everything started through
+	// goUntilShutdown. One budget covers them all at once — so the process does
+	// not exit while a sweep is mid-write, and a sweep that ignores its cancel
+	// cannot hold the exit. Nothing waits after it, so this is where the
+	// registry closes.
+	s.joinBackgroundWorkers(ctx,
+		backgroundWorker{name: "server.assistantWatch", done: watchDone},
+		backgroundWorker{name: "server.assistantMissions", done: missionDone},
+	)
+	// Last, so the forge request tally reports every call this process made —
+	// the drain's and the joined writes' included.
+	s.flushForgeTally()
 	return err
 }
