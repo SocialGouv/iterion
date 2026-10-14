@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
 // fakeGitLab serves canned responses for the adapter tests. It asserts
@@ -168,6 +169,31 @@ func TestGitLabComment(t *testing.T) {
 	}
 	if (*calls)["POST notes1"] != 1 {
 		t.Fatalf("expected 1 note call, got %d", (*calls)["POST notes1"])
+	}
+}
+
+// The dispatcher's own GitLab writer posts a bot's comment as a note: a
+// quick-action line in it is made inert like every other GitLab write, so
+// it cannot run with the tracker token's rights.
+func TestGitLabCommentIsInert(t *testing.T) {
+	t.Setenv(forge.GitLabQuickActionsEnv, "")
+	var sent string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/issues/1/notes", func(w http.ResponseWriter, r *http.Request) {
+		var in map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		sent = in["body"]
+		w.WriteHeader(http.StatusCreated)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	a := newGitLab(t, srv.URL)
+	id := fmt.Sprintf("gitlab:%s/owner/repo#1", stripScheme(srv.URL))
+	if err := a.Comment(context.Background(), id, "done\n/close\n/merge"); err != nil {
+		t.Fatalf("Comment: %v", err)
+	}
+	if sent != "done\n\\/close\n\\/merge" {
+		t.Fatalf("comment sent as %q, want its quick-action lines inert", sent)
 	}
 }
 

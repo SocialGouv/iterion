@@ -233,6 +233,26 @@ and the publish log says so.
 |---|---|---|
 | `ITERION_FORGE_READBACK_BUDGET` | Budget of the whole read-back, reads and pauses included (Go duration). A value that is not a positive duration leaves the default in force and is named in the publish diagnostics. | `15s` |
 
+## GitLab quick actions (server)
+
+GitLab runs a quick action — `/merge`, `/approve`, `/close`, `/label`,
+`/assign` … — written at the start of a line of a note or of an issue or
+merge-request description, with the rights of the account that posts it.
+What the server and the board dispatcher send GitLab — review findings and
+summaries, comments, issue and merge-request descriptions — carries model
+output, so a line GitLab could run (`/` then a letter at column 0 — GitLab
+never runs an indented one) gets a backslash before its slash: GitLab no
+longer runs it, and in prose it renders the same (inside a code block the
+backslash shows). A one-click suggestion whose replacement holds such a line
+is shown as text instead, since changing it would change the code the click
+applies; when the guard rewrites a finding's own text, the suggestion fences
+that text opens at the top level become `text` blocks. Text a bot posts itself with its own forge token (a skill calling
+the GitLab API or `glab`) does not go through this guard.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_FORGE_GITLAB_QUICK_ACTIONS` | `live` (any case) posts text as written, quick actions included — for an instance that drives GitLab through a bot's comments on purpose. Read as inherited: a project `.env` cannot set it. Any other value keeps the guard. | unset (guarded) |
+
 ## Platform environment isolation (cloud)
 
 A cloud server or runner keeps its own credentials out of what the workflows

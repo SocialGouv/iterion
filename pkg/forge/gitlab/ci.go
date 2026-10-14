@@ -408,7 +408,7 @@ func (c *AdminClient) CreatePull(ctx context.Context, repo string, in forge.NewP
 		"title":         title,
 	}
 	if in.Body != "" {
-		body["description"] = in.Body
+		body["description"] = forge.InertGitLabQuickActions(in.Body)
 	}
 	var mr gitlabMR
 	code, err := c.do(ctx, http.MethodPost, "/projects/"+projectID(repo)+"/merge_requests", body, &mr)
@@ -433,7 +433,7 @@ func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, p
 		body["title"] = *patch.Title
 	}
 	if patch.Body != nil {
-		body["description"] = *patch.Body
+		body["description"] = forge.InertGitLabQuickActions(*patch.Body)
 	}
 	if patch.TargetBranch != nil {
 		body["target_branch"] = *patch.TargetBranch

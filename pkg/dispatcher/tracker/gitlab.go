@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -171,7 +172,7 @@ func (a *GitLabAdapter) Comment(ctx context.Context, id, body string) error {
 	if !ok {
 		return ErrNotFound
 	}
-	in := map[string]string{"body": body}
+	in := map[string]string{"body": forge.InertGitLabQuickActions(body)}
 	return a.do(ctx, http.MethodPost, fmt.Sprintf("/projects/%s/issues/%d/notes", a.pid, num), in, nil)
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,19 +25,35 @@ type gitlabMRDiffRefs struct {
 	} `json:"diff_refs"`
 }
 
-// renderGitLabCommentBody appends GitLab's suggestion fence. The
-// ```suggestion:-0+N syntax extends the applied range N lines below the
-// anchored line, which maps a Line..LineEnd span with new_line = Line.
-func renderGitLabCommentBody(c forge.ReviewComment) string {
-	body := c.Body
-	if strings.TrimSpace(c.Suggestion) != "" {
-		below := 0
-		if c.LineEnd > c.Line {
-			below = c.LineEnd - c.Line
-		}
-		body += "\n\n```suggestion:-0+" + strconv.Itoa(below) + "\n" + strings.TrimRight(c.Suggestion, "\n") + "\n```"
+// renderGitLabCommentBody renders a finding as the note body GitLab is sent:
+// the finding text with its quick-action lines made inert, then GitLab's
+// one-click suggestion fence. The ```suggestion:-0+N syntax extends the
+// applied range N lines below the anchored line, which maps a Line..LineEnd
+// span with new_line = Line. A replacement with a line GitLab could run as a
+// quick action cannot be fenced as given — making it inert would change the
+// code the click applies — so it is shown as text, inert, and fenced reports
+// false: no one-click suggestion was posted. The finding text can carry
+// suggestion fences of its own, which GitLab makes applicable too: when the
+// guard rewrites a line of that text, the suggestion fences it opens at the
+// top level become `text` blocks, so no rewritten code is one click away.
+func renderGitLabCommentBody(c forge.ReviewComment) (body string, fenced bool) {
+	body = forge.InertGitLabQuickActions(c.Body)
+	if forge.GitLabRunsQuickActionLine(c.Body) {
+		body = suggestionFenceInfo.ReplaceAllString(body, "${1}text")
 	}
-	return body
+	replacement := strings.TrimRight(strings.ReplaceAll(c.Suggestion, "\r", ""), "\n")
+	if strings.TrimSpace(replacement) == "" {
+		return body, false
+	}
+	if forge.GitLabRunsQuickActionLine(replacement) {
+		return body + "\n\nProposed replacement — not applicable in one click, a line of it reads as a GitLab quick action:\n```\n" +
+			forge.InertGitLabQuickActions(replacement) + "\n```", false
+	}
+	below := 0
+	if c.LineEnd > c.Line {
+		below = c.LineEnd - c.Line
+	}
+	return body + "\n\n```suggestion:-0+" + strconv.Itoa(below) + "\n" + replacement + "\n```", true
 }
 
 // CreatePullReview publishes a review onto a merge request. GitLab has no
@@ -78,7 +95,8 @@ func (c *AdminClient) CreatePullReview(ctx context.Context, repo string, number 
 
 	outcomes := make([]threadOutcome, 0, len(in.Comments))
 	for _, rc := range in.Comments {
-		o := threadOutcome{rc: rc, body: renderGitLabCommentBody(rc)}
+		o := threadOutcome{rc: rc}
+		o.body, o.suggestion = renderGitLabCommentBody(rc)
 		req := map[string]any{
 			"body": o.body,
 			"position": map[string]any{
@@ -168,7 +186,7 @@ func (c *AdminClient) CreatePullReview(ctx context.Context, repo string, number 
 			continue
 		}
 		posted++
-		if strings.TrimSpace(o.rc.Suggestion) != "" {
+		if o.suggestion {
 			suggestions++
 		}
 	}
@@ -177,6 +195,7 @@ func (c *AdminClient) CreatePullReview(ctx context.Context, repo string, number 
 	if len(failed) > 0 {
 		summary += "\n\n" + forge.FoldCommentsMarkdown(failed)
 	}
+	summary = forge.InertGitLabQuickActions(summary)
 	ncode, nerr := c.do(ctx, http.MethodPost, mrPath+"/notes", map[string]any{"body": summary}, &struct{}{})
 	noteOK := nerr == nil && ncode/100 == 2
 	if !noteOK && posted == 0 {
@@ -199,16 +218,27 @@ func (c *AdminClient) CreatePullReview(ctx context.Context, repo string, number 
 	return res, nil
 }
 
+// suggestionFenceInfo matches the word `suggestion` opening the info string
+// of a fence line — backticks or tildes, up to three blanks of indent — so
+// that word alone becomes `text` (`suggestion:-0+1` reads as `text:-0+1`,
+// GitLab taking the language before the colon). Every other byte of the line
+// stays: whether the line opens or closes a block, or opens none at all, is
+// decided by bytes the rename does not touch. A fence nested deeper (in a
+// list item, an alert, a footnote) is not matched and needs no demotion: a
+// line the guard rewrites starts at column 0, which ends such a container.
+var suggestionFenceInfo = regexp.MustCompile("(?mi)^([ \t]{0,3}(?:`{3,}|~{3,})[ \t]*)suggestion\\b")
+
 // threadOutcome is one inline comment's fate: what the create answered, and
 // what the read-back found.
 type threadOutcome struct {
-	rc      forge.ReviewComment
-	body    string
-	id      string // the discussion id a 2xx create answered with ("" otherwise)
-	created bool   // the create answered 2xx
-	refused bool   // the create answered 4xx: a verdict, not a lost answer
-	landed  bool   // the merge request holds it (the read-back's verdict)
-	errText string
+	rc         forge.ReviewComment
+	body       string
+	suggestion bool   // body carries a one-click suggestion block
+	id         string // the discussion id a 2xx create answered with ("" otherwise)
+	created    bool   // the create answered 2xx
+	refused    bool   // the create answered 4xx: a verdict, not a lost answer
+	landed     bool   // the merge request holds it (the read-back's verdict)
+	errText    string
 }
 
 // positionedNoteKey identifies a positioned note the way the publish wrote
