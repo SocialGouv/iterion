@@ -37,14 +37,12 @@ const loopDoc = "dsl: 2\nprompts:\n  ask: Say hello.\n  judge_it: Is it right?\n
 // `iterion diagram x.bot.yaml` draws the .bot the document stands for: in
 // every view, the diagram `diagram x.bot` draws once `fmt --to bot` has
 // written that .bot — which the diagram itself never writes — and the result
-// says it read a document, and which .bot it stands for.
+// says it read a document, and which .bot it stands for, named as the
+// document was named.
 func TestDiagramDrawsTheBotADocumentStandsFor(t *testing.T) {
 	inTempWorkspace(t)
 	doc := writeBot(t, "d/hello.bot.yaml", loopDoc)
-	abs, err := filepath.Abs("d/hello.bot")
-	if err != nil {
-		t.Fatal(err)
-	}
+	named := "d/hello.bot"
 	views := []string{"compact", "detailed", "full"}
 	fromDoc := map[string]DiagramResult{}
 	for _, view := range views {
@@ -52,8 +50,8 @@ func TestDiagramDrawsTheBotADocumentStandsFor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("diagram --view %s of the document: %v", view, err)
 		}
-		if res.SourceKind != "author" || res.BotPath != abs || res.File != doc || res.WorkflowName != "hello" || !strings.Contains(res.Mermaid, "check") {
-			t.Fatalf("--view %s: source_kind %q bot_path %q file %q workflow %q, want author / %s / the document / hello, and a diagram that draws check:\n%s", view, res.SourceKind, res.BotPath, res.File, res.WorkflowName, abs, res.Mermaid)
+		if res.SourceKind != "author" || res.BotPath != named || res.File != doc || res.WorkflowName != "hello" || !strings.Contains(res.Mermaid, "check") {
+			t.Fatalf("--view %s: source_kind %q bot_path %q file %q workflow %q, want author / %s / the document / hello, and a diagram that draws check:\n%s", view, res.SourceKind, res.BotPath, res.File, res.WorkflowName, named, res.Mermaid)
 		}
 		fromDoc[view] = res
 	}
@@ -79,8 +77,12 @@ func TestDiagramDrawsTheBotADocumentStandsFor(t *testing.T) {
 	if err := RunDiagram(DiagramOptions{File: doc}, hp); err != nil {
 		t.Fatalf("diagram, human form: %v", err)
 	}
-	if !strings.Contains(out.String(), "Reads as") || !strings.Contains(out.String(), abs) {
-		t.Fatalf("the human form does not say which .bot the document stands for:\n%s", out.String())
+	// The value of the `Reads as` line, not its presence anywhere in the
+	// output: the header already carries the document's own name, which
+	// holds the .bot's as a substring.
+	m := regexp.MustCompile(`(?m)^ *Reads as: +(.+?) *$`).FindStringSubmatch(out.String())
+	if m == nil || m[1] != named {
+		t.Fatalf("the human form reads as %q, want %s — the .bot named as the document was named:\n%s", m, named, out.String())
 	}
 }
 
@@ -296,12 +298,16 @@ func TestADocumentWhoseBotFmtWillNotWriteOverIsRefused(t *testing.T) {
 			dir := strings.ReplaceAll(name, " ", "_")
 			doc := writeBot(t, dir+"/x.bot.yaml", helloDocWith(""))
 			tc.place(t, dir+"/x.bot")
-			if _, err := diagramJSON(t, doc, ""); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("diagram: %v, want the refusal saying the .bot %s", err, tc.want)
+			// The one sentence that names both files names them in one
+			// form: the document as it was given, and its .bot the same
+			// way — the words `fmt --to bot` uses for the same .bot.
+			sentence := doc + " stands for " + dir + "/x.bot, which " + tc.want
+			if _, err := diagramJSON(t, doc, ""); err == nil || !strings.Contains(err.Error(), sentence) {
+				t.Fatalf("diagram: %v, want the refusal saying %q", err, sentence)
 			}
 			jp, _ := jsonPrinter()
-			if err := RunValidate(doc, jp); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("validate: %v, want the refusal saying the .bot %s", err, tc.want)
+			if err := RunValidate(doc, jp); err == nil || !strings.Contains(err.Error(), sentence) {
+				t.Fatalf("validate: %v, want the refusal saying %q", err, sentence)
 			}
 			res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp})
 			if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], tc.want) {
