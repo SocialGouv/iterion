@@ -38,7 +38,20 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
 - **After a realigned cut, the mirrors.** The cut moves the CONSTANT, and
   whatever spells the number out has to follow. Two guards hold that, and
   both are required checks: the floor tests derive their expectations from
-  the constants rather than repeating them, and
+  the constants rather than repeating them — a probe that needs a release
+  *below* a floor derives it from that floor
+  ([`internal/floortest.Below`](../../../internal/floortest/floortest.go)),
+  never from a lower pin, which names the floor itself the day two floors are
+  cut in one release; `floortest.EachPinOrder` replays such a case with two
+  pins on one release — keyed on `parser.MaxProfile`, the pin the cut moves,
+  and run once where the live pins already carry that state — and
+  `floortest`'s own sweep (`TestNoTestSpellsABelowFloorAsAnotherPin`) fails
+  any `_test.go`, the files routed through the helper included, that builds a
+  floor from one pin while naming another, or that keys a collapse case on a
+  profile pin read by a literal index. The hatch is a `floortest:exempt`
+  comment NAMING the pin it covers, with the reason: it reaches that pin and
+  no other, so one case cannot vouch for a sibling pin spliced in beside it —
+  and
   `TestEveryShippedBundleDeclaresAFloorThatReachesWhatItNeeds` (pkg/bundle)
   walks the 41 shipped `bots/*/` and `examples/*/` manifests and refuses one
   whose `requires.iterion` no longer reaches what its own sources need —

@@ -26,6 +26,10 @@ func TestAFloorBelowTheProfilesReleaseDrawsC252(t *testing.T) {
 	if !strings.Contains(found.Message, `">= 0.0.1"`) || !strings.Contains(found.Message, parser.ProfileSince[2]) || !strings.Contains(found.Hint, `">= `+parser.ProfileSince[2]+`"`) {
 		t.Fatalf("C252 = %+v", *found)
 	}
+	// floortest:exempt ProfileSince, ContractSince — the contract release
+	// here is a floor ABOVE the profile's, not below it: two floors cut in one
+	// release make this case a duplicate of its neighbour, never a false
+	// expectation.
 	for _, req := range []string{">= " + parser.ProfileSince[2], ">= " + parser.ContractSince, parser.ProfileSince[2]} {
 		m := &bundle.Manifest{Name: "probe", Requires: &bundle.Requires{Iterion: req}}
 		for _, d := range CheckConsistency(Input{Manifest: m, Syntax: bundle.SyntaxRequirements{Profile: 2, DeclaredBy: []string{"main.bot"}}, EngineBuild: "v" + parser.ProfileSince[2]}) {

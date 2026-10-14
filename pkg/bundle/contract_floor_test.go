@@ -1,16 +1,36 @@
 package bundle
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/floortest"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
+
+// floorProbes asks, one per entry of the syntax-floor table, for that
+// entry's release: the list every walk of the table shares, so a floor added
+// to the table is held by each of them at once.
+func floorProbes() []SyntaxRequirements {
+	return []SyntaxRequirements{
+		{Profile: parser.MaxProfile, DeclaredBy: []string{"main.bot"}},
+		{Profile: 1, ImportedBy: []string{"main.bot"}},
+		{Profile: 1, ContractedBy: []string{"main.bot"}},
+		{Profile: 1, AliasBy: []string{"main.bot"}},
+		{Profile: 1, MatchingBy: []string{"main.bot"}},
+		{Profile: 1, EmptyToolsBy: []string{"main.bot"}},
+	}
+}
 
 // A bundle that declares a contract asks for the release that reads
 // `contract` — the walk names the files that declare one, in the main or in
 // a fragment, and the floor predicate takes the highest release among what
 // the sources use; a bundle that uses nothing asks for nothing.
+//
+// The floor cases run in both pin orders: the day `contract` and the profile
+// are cut in one release, a case that wrote "a release below the contract
+// release" as another pin would be writing the contract release itself.
 func TestSyntaxRequirementsRecordContractsAndAskForTheirRelease(t *testing.T) {
 	files := map[string]string{
 		"main.bot":  "import \"lib/c.bot\"\n\nworkflow w:\n  contract: c\n  entry: done\n",
@@ -20,35 +40,48 @@ func TestSyntaxRequirementsRecordContractsAndAskForTheirRelease(t *testing.T) {
 	if !reflect.DeepEqual(req.ContractedBy, []string{"lib/c.bot"}) || !req.UsesContract() || !req.Asks() {
 		t.Fatalf("requirements %+v", req)
 	}
-	one := SyntaxRequirements{Profile: 1, ContractedBy: []string{"main.bot"}}
-	if pf := CheckSyntaxFloor(nil, one); pf.OK || pf.Need != parser.ContractSince || pf.Reason != "contract" {
-		t.Fatalf("no manifest: %+v", pf)
-	}
-	if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= " + parser.ContractSince}}, one); !pf.OK {
-		t.Fatalf("the contract release declared: %+v", pf)
-	}
-	if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= " + parser.ImportSince}}, one); pf.OK {
-		t.Fatalf("the import release alone passed for a contract: %+v", pf)
-	}
-	if got := one.Describe(); got != "`contract` (main.bot)" {
-		t.Fatalf("describe: %q", got)
-	}
-	all := SyntaxRequirements{Profile: 2, DeclaredBy: []string{"main.bot"}, ImportedBy: []string{"main.bot"}, ContractedBy: []string{"lib/c.bot"}}
-	if pf := CheckSyntaxFloor(nil, all); pf.Need != parser.ContractSince || pf.Reason != "contract" {
-		t.Fatalf("profile 2, import and contract: %+v", pf)
-	}
-	if got := all.Describe(); got != "dsl profile 2 (main.bot) and `import` (main.bot) and `contract` (lib/c.bot)" {
-		t.Fatalf("describe: %q", got)
-	}
+	profile := fmt.Sprintf("dsl profile %d", parser.MaxProfile)
+	floortest.EachPinOrder(t, parser.ContractSince, func(t *testing.T) {
+		one := SyntaxRequirements{Profile: 1, ContractedBy: []string{"main.bot"}}
+		if pf := CheckSyntaxFloor(nil, one); pf.OK || pf.Need != parser.ContractSince || pf.Reason != "contract" {
+			t.Fatalf("no manifest: %+v", pf)
+		}
+		// floortest:exempt ContractSince — the floor declared here is the one
+		// this case is AT, read from its own pin; the release BELOW it comes
+		// from floortest.Below, never from a sibling pin.
+		if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= " + parser.ContractSince}}, one); !pf.OK {
+			t.Fatalf("the contract release declared: %+v", pf)
+		}
+		if pf := CheckSyntaxFloor(&Manifest{Requires: &Requires{Iterion: ">= " + floortest.Below(t, parser.ContractSince)}}, one); pf.OK {
+			t.Fatalf("a release below the contract release passed for a contract: %+v", pf)
+		}
+		if got := one.Describe(); got != "`contract` (main.bot)" {
+			t.Fatalf("describe: %q", got)
+		}
+		// The newest profile is the one the collapse repoints, so the second
+		// order really puts two floors on one release.
+		all := SyntaxRequirements{Profile: parser.MaxProfile, DeclaredBy: []string{"main.bot"}, ImportedBy: []string{"main.bot"}, ContractedBy: []string{"lib/c.bot"}}
+		needsTheHighestPinTouched(t, CheckSyntaxFloor(nil, all), map[string]string{
+			profile:    parser.ProfileSince[parser.MaxProfile],
+			"import":   parser.ImportSince,
+			"contract": parser.ContractSince,
+		})
+		if want := profile + " (main.bot) and `import` (main.bot) and `contract` (lib/c.bot)"; all.Describe() != want {
+			t.Fatalf("describe: %q, want %q", all.Describe(), want)
+		}
+	})
 	for _, quiet := range []SyntaxRequirements{{}, {Profile: 1}, {Profile: 1, Unread: []string{"x"}}} {
 		if quiet.Asks() {
 			t.Fatalf("%+v asks for a floor", quiet)
 		}
 	}
 	// The registry of floors names every pin, so a floor added later is
-	// held by the release test and the scaffold alike.
+	// held by the release test and the scaffold alike. It reads the pins
+	// outside any collapsed order: SyntaxFloors projects a table built at
+	// package init, while the pin a collapse repoints is read live.
 	floors := SyntaxFloors()
-	if floors["parser.ContractSince"] != parser.ContractSince || floors["parser.ImportSince"] != parser.ImportSince || floors["parser.ProfileSince[2]"] != parser.ProfileSince[2] {
+	profilePin := fmt.Sprintf("parser.ProfileSince[%d]", parser.MaxProfile)
+	if floors["parser.ContractSince"] != parser.ContractSince || floors["parser.ImportSince"] != parser.ImportSince || floors[profilePin] != parser.ProfileSince[parser.MaxProfile] {
 		t.Fatalf("SyntaxFloors: %v", floors)
 	}
 }
@@ -61,14 +94,7 @@ func TestEveryFloorTheTableAsksForIsPinned(t *testing.T) {
 	for _, release := range SyntaxFloors() {
 		pinned[release] = true
 	}
-	probes := []SyntaxRequirements{
-		{Profile: parser.MaxProfile, DeclaredBy: []string{"main.bot"}},
-		{Profile: 1, ImportedBy: []string{"main.bot"}},
-		{Profile: 1, ContractedBy: []string{"main.bot"}},
-		{Profile: 1, AliasBy: []string{"main.bot"}},
-		{Profile: 1, MatchingBy: []string{"main.bot"}},
-		{Profile: 1, EmptyToolsBy: []string{"main.bot"}},
-	}
+	probes := floorProbes()
 	for i, f := range syntaxFloors {
 		if len(f.pins) == 0 {
 			t.Errorf("table entry %d contributes no pin to the registry", i)

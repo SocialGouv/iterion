@@ -31,6 +31,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/docsguard` | holds tests that keep this repository's documentation honest from inside the test suite, where a required check can see them. | `FS` |
 | `internal/envtrust` | tells apart the environment iterion INHERITED from the part a project `.env` filled in. | — |
 | `internal/floorsalign` | realigns the syntax-floor pins at the release cut. | — |
+| `internal/floortest` | derives, for a syntax-floor test, the release below a floor from the floor itself. | — |
 | `internal/fswatch` | preserves filesystem watcher errors with resource evidence captured in the failing process, where the limits actually apply. | — |
 | `internal/gittest` | the one place iterion's tests build a `git` subprocess, a throwaway repository, or unregister a worktree. | — |
 | `internal/hometest` | keeps a test binary off the operator's homes: the iterion home (ITERION_HOME) and the user home (HOME). | — |
