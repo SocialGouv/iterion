@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runops"
@@ -38,48 +37,25 @@ var readCapabilities = map[string]bool{
 func authoredDefaults(string) string { return "" }
 
 // actingPrompt is one agent/judge that can act on what it reads: a tool
-// surface the engine classifies as able to write (pkg/runtime.ToolSurfaceCanWrite)
-// or a capability that writes to the board.
+// surface the engine classifies as able to write
+// (pkg/runtime.ToolSurfaceWriteReason) or a capability that writes to the board.
 type actingPrompt struct {
 	node         string
 	systemPrompt string
 	reasons      []string
 }
 
-// declaredListIsNotABound names why a backend cannot be trusted to enforce a
-// node's `tools:` list, or "" when it can. Keyed on the engine's own
-// enumeration rather than a literal, so a backend added to
-// toolcatalog.ReceivesToolList is classified here without a second edit.
-//
-// An empty or "auto" backend resolves by detection preference, whose first
-// choice is claude_code (pkg/backend/detect), so it is treated as such.
-func declaredListIsNotABound(backend string) string {
-	switch backend {
-	case "claude_code", "", "auto":
-		return "claude_code: a declared tools list becomes --disallowedTools over a roster iterion does not own (#1652)"
-	case "claw", "codex":
-		// claw resolves ToolDefs from the list; codex maps it onto a sandbox
-		// mode it actually enforces.
-		return ""
-	default:
-		if !toolcatalog.ReceivesToolList(backend) {
-			return "backend " + backend + " never receives the tools list, so the declared bound is dropped (#1652)"
-		}
-		return ""
-	}
-}
-
-// resolvedBackend reads a node's backend at its authored default, falling back
-// to the workflow's, so the classification does not depend on the host.
-func resolvedBackend(llm ir.LLMNode, defaultBackend string) string {
-	b := strings.TrimSpace(ir.ExpandWithDefault(llm.GetLLMFields().Backend, authoredDefaults))
-	if b == "" {
-		b = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, authoredDefaults))
-	}
-	return b
-}
-
 // actingPrompts classifies every agent and judge of a compiled bot.
+//
+// The tool surface is the ENGINE's question, asked once: a `tools:` list is not
+// a BOUND everywhere it is accepted — claude_code takes it as
+// `--disallowedTools` over a closed native roster iterion does not own
+// (measured on CLI 2.1.220, #1652), and the CLI-agent seam backends never
+// receive the list at all — so a read-only-looking list narrows INTENT, not
+// capability. `pkg/runtime.ToolSurfaceWriteReason` is where that rule lives,
+// and it answers with the arm that decided, so this guard's message cannot name
+// a reason the verdict did not use.
+//
 // Capabilities follow the executor's inheritance rule: a node that declares
 // none runs with the workflow's list (pkg/backend/model/executor_build_task.go,
 // effectiveCaps).
@@ -91,19 +67,7 @@ func actingPrompts(wf *ir.Workflow) []actingPrompt {
 			continue
 		}
 		var reasons []string
-		if runtime.ToolSurfaceCanWrite(node, wf.DefaultBackend, authoredDefaults) {
-			reasons = append(reasons, toolSurfaceReason(llm, wf.DefaultBackend))
-		} else if r := declaredListIsNotABound(resolvedBackend(llm, wf.DefaultBackend)); r != "" {
-			// A `tools:` list is not a BOUND everywhere it is accepted.
-			// claude_code takes it as --disallowedTools over a closed native
-			// roster iterion does not own (measured on CLI 2.1.220, #1652),
-			// so a read-only-looking list still leaves every native writer
-			// the roster gained since; and the CLI-agent seam backends never
-			// receive the list at all (pkg/backend/toolcatalog.ReceivesToolList),
-			// so there a declared bound is dropped in silence. Either way the
-			// declaration narrows INTENT, not capability — and every LLM node
-			// of a catalog bot reads material it did not write, so the node is
-			// in the class whatever its list says.
+		if r := runtime.ToolSurfaceWriteReason(node, wf.DefaultBackend, authoredDefaults); r != "" {
 			reasons = append(reasons, r)
 		}
 		caps := llm.GetCapabilities()
@@ -122,33 +86,6 @@ func actingPrompts(wf *ir.Workflow) []actingPrompt {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].node < out[j].node })
 	return out
-}
-
-// toolSurfaceReason names, for the failure message, what makes the node's
-// tool surface a writing one.
-func toolSurfaceReason(llm ir.LLMNode, defaultBackend string) string {
-	f := llm.GetLLMFields()
-	if f.FullAccess {
-		return "full_access"
-	}
-	tools := llm.GetTools()
-	if len(tools) == 0 {
-		backend := strings.TrimSpace(ir.ExpandWithDefault(f.Backend, authoredDefaults))
-		if backend == "" {
-			backend = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, authoredDefaults))
-		}
-		if backend == "claw" {
-			return "no tools: declared, and a fallbacks: route onto a CLI backend runs the full native toolset"
-		}
-		return "no tools: declared on " + backend + ", the full native toolset"
-	}
-	var acting []string
-	for _, t := range tools {
-		if !runtime.IsReadOnlyTool(t) {
-			acting = append(acting, t)
-		}
-	}
-	return "tools: " + strings.Join(acting, ", ")
 }
 
 // shippedWorkflow is one compiled workflow of the catalogue, with the prefix
@@ -308,6 +245,115 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 	}
 	if len(stale) > 0 {
 		t.Errorf("%d stale exemption(s):\n  %s", len(stale), strings.Join(stale, "\n  "))
+	}
+}
+
+// TestEveryActingPromptSaysWhatMakesItOne keeps the class's MESSAGE as true as
+// its verdict: the walk above is the only report an author gets when a prompt
+// of theirs joins the class, and a reason that names nothing — the dangling
+// `tools: ` an all-read-only declared list produced, since that list names no
+// writer at all — sends them looking for a tool they never wrote.
+//
+// It carries the same FLOOR argument as the walk, one level down: `members`
+// counts the prompts the class actually reached, and a predicate that stopped
+// classifying would report the same green as one that classifies them all —
+// the failure a guard cannot report about itself. 120 is under the 143 of
+// today, so a bundle may be retired without touching this line.
+func TestEveryActingPromptSaysWhatMakesItOne(t *testing.T) {
+	var offenders []string
+	members := 0
+	for _, sw := range shippedWorkflows(t) {
+		for _, m := range actingPrompts(sw.wf) {
+			members++
+			if len(m.reasons) == 0 {
+				offenders = append(offenders, sw.prefix+m.node+": in the class with no reason at all")
+				continue
+			}
+			for _, r := range m.reasons {
+				if txt := strings.TrimSpace(r); txt == "" || strings.HasSuffix(txt, ":") {
+					offenders = append(offenders, fmt.Sprintf("%s%s: reason %q names nothing after its label", sw.prefix, m.node, r))
+				}
+			}
+		}
+	}
+	sort.Strings(offenders)
+	if len(offenders) > 0 {
+		t.Errorf("%d acting prompt(s) are in the class for a reason that names nothing — the message must name the arm that decided (a declared tool, the route, a capability):\n  %s",
+			len(offenders), strings.Join(offenders, "\n  "))
+	}
+	if members < 120 {
+		t.Fatalf("the class reached %d acting prompts, want at least 120: the catalogue did not shrink by that much, so the predicate stopped classifying and this guard is now passing over prompts nobody examined", members)
+	}
+	t.Logf("classified %d acting prompts", members)
+}
+
+// TestEveryCatalogueLLMNodeIsOutOfTheClassOnlyWhereNamed is the COMPLEMENT of
+// the two walks above, and it exists because neither can report the failure
+// that matters most: a prompt that LEAVES the class. The walk reports a member
+// whose system prompt lacks the paragraph; a rule that stops classifying a
+// route reports nothing at all, and the floor one level down is a COUNT — 120
+// against the 143 of today — so 23 prompts may fall out in silence.
+//
+// Measured: dropping the claude_code arm of the engine's rule
+// (pkg/runtime.declarationIsNoBound) leaves both walks above green while
+// adr-rechallenge/frame_arguments, feed-watch/synthesize,
+// sec-audit-source/reviewer_isolation and whats-next/nexie quietly stop owing a
+// prompt-injection boundary — the four prompts that arm is the only reason
+// for, and it is the arm #1727 moved out of this file's private copy of the
+// rule into the engine's own.
+//
+// So the complement is NAMED, with the reason its route bounds what the node
+// holds. A node outside the class that nobody named fails; a named node that is
+// back in the class fails too; an entry naming no node of the catalogue fails.
+// The list cannot rot in any of the three directions.
+func TestEveryCatalogueLLMNodeIsOutOfTheClassOnlyWhereNamed(t *testing.T) {
+	bounded := map[string]string{
+		"evolve/review_gpt": "backend claw with `tools: []`: on claw the list IS the node's ToolDefs, so an empty one resolves to zero tools",
+	}
+
+	var unnamed, stale []string
+	seen := map[string]bool{}
+	for _, sw := range shippedWorkflows(t) {
+		inClass := map[string]bool{}
+		for _, m := range actingPrompts(sw.wf) {
+			inClass[m.node] = true
+		}
+		ids := make([]string, 0, len(sw.wf.Nodes))
+		for id, node := range sw.wf.Nodes {
+			if _, ok := node.(ir.LLMNode); !ok {
+				continue
+			}
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			key := sw.prefix + id
+			why, named := bounded[key]
+			if named {
+				seen[key] = true
+			}
+			switch {
+			case inClass[id] && named:
+				stale = append(stale, fmt.Sprintf("%s is in the class now: drain its entry (%s)", key, why))
+			case inClass[id], named:
+			default:
+				unnamed = append(unnamed, key)
+			}
+		}
+	}
+	for key := range bounded {
+		if !seen[key] {
+			stale = append(stale, key+" names no agent/judge of the catalogue: drain its entry")
+		}
+	}
+	sort.Strings(unnamed)
+	sort.Strings(stale)
+	if len(unnamed) > 0 {
+		t.Errorf("%d agent/judge prompt(s) the class does not reach and nobody named — a prompt-injection boundary is owed unless the route BOUNDS what the node holds; name it here with that reason, or fix the rule (pkg/runtime.ToolSurfaceWriteReason):\n  %s",
+			len(unnamed), strings.Join(unnamed, "\n  "))
+	}
+	if len(stale) > 0 {
+		t.Errorf("%d stale entr(y/ies):\n  %s", len(stale), strings.Join(stale, "\n  "))
 	}
 }
 

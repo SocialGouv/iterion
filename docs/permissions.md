@@ -232,10 +232,25 @@ change silently re-opens whatever the list forgot to name. A per-node `deny:`
 says the same thing in one rule, and survives the roster changing.
 
 One cost worth knowing before substituting one for the other: the
-parallel-branch scheduler reads `tools:` and not the policy
-(`runtime.ToolSurfaceCanWrite`), so a node bounded by `deny:` alone still
-counts as possibly-mutating and loses read-only fan-out eligibility. A node
-that needs that eligibility still needs the `tools:` list.
+parallel-branch scheduler reads `tools:` and not the policy, so a node
+bounded by `deny:` alone counts as possibly-mutating and loses read-only
+fan-out eligibility. On claude_code the `tools:` list does not buy it back
+either — the route takes the list as `--disallowedTools` over a roster
+iterion does not own, so admission reads the node as possibly-mutating
+whatever it declares (#1652). What buys the eligibility there is the
+author's own assertion, `readonly:`, which admission honours; the list is
+the bound on claw, and on codex for the names its sandbox reads as
+read-only — `git_diff`, `tree` and the rest of the advisory vocabulary buy
+the `workspace-write` mode, so a codex node declaring them counts as
+possibly-mutating (#1727). The list read there is the one the route
+RECEIVES, not the one the author wrote: `assembleEffectiveTools` appends
+`ask_user` under `interaction:`, the board/runs MCP tools under
+`capabilities:`, and `read_image` on every non-claw backend when a prompt
+references an image `attachments:` entry — none of which is in codex's
+read-only set, so those fields cost a codex node its read-only fan-out
+eligibility too. `readonly:` buys it back, on codex as on claude_code. The
+static reading (`iterion validate --exec`) answers the same, since all three
+are decided by the program: `model.NewProgramExecutor` carries them.
 
 A rule is a *bound on what runs*, never a grant of what exists: a node
 whose `tools:` omits a tool cannot call it however its `allow:` reads. The

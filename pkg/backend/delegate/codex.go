@@ -830,7 +830,37 @@ func codexSandboxForAllowedTools(allowed []string) string {
 			return "workspace-write"
 		}
 	}
-	return "read-only"
+	return codexSandboxReadOnly
+}
+
+// codexSandboxReadOnly is the mode a task gets when nothing it declares can
+// write. It is the only bound a `tools:` list buys on codex, whose built-in
+// shell runs outside the SDK's per-name callbacks.
+const codexSandboxReadOnly = "read-only"
+
+// CodexDeclaredListIsReadOnly reports whether a DECLARED `tools:` list alone
+// puts codex in that mode. It is the question a pre-run reader of a node's
+// surface asks, answered by the classifier the delegate runs for real, so the
+// reader cannot drift from the sandbox the task will get.
+//
+// The read-only set is CODEX's, and it OVERLAPS a reader's own read-only
+// vocabulary rather than nesting inside it, in both directions. It is `read`,
+// `glob`, `grep`, `ls`, `websearch`, `toolsearch`, `todowrite` and `skill` by
+// CANONICAL name, and nothing else: `web_fetch`, `git_diff`, `git_status`,
+// `list_files`, `search_codebase` and `tree` buy workspace-write here while
+// pkg/runtime reads them as read-only, and `ls`, `websearch`, `toolsearch`,
+// `todowrite` and `skill` are read-only here while that map does not carry
+// them at all. The canonicalisation is the other half of the difference: this
+// classifier reads `Read` and `read_file` as the same tool, a reader matching
+// its own map literally does not.
+//
+// It answers for what the AUTHOR declared. An undeclared list is no bound at
+// all, and the runtime's own appends are outside the question: `interaction:`
+// puts `ask_user` on a non-empty list, and that name buys workspace-write.
+// `readonly:` and `full_access:` are the author's own locks, read by
+// codexSandboxForTask before a declared list is ever classified.
+func CodexDeclaredListIsReadOnly(tools []string, declared bool) bool {
+	return codexSandboxForTask(Task{ToolsDeclared: declared, AllowedTools: tools}) == codexSandboxReadOnly
 }
 
 // codexSandboxForTask maps the DSL's access intent to Codex. readonly is the
@@ -842,7 +872,7 @@ func codexSandboxForAllowedTools(allowed []string) string {
 // so it is read-only: the author asked for no tools at all.
 func codexSandboxForTask(task Task) string {
 	if task.Readonly {
-		return "read-only"
+		return codexSandboxReadOnly
 	}
 	if task.FullAccess {
 		return "danger-full-access"

@@ -21,8 +21,11 @@ func TestToolSurfaceCanWrite_IgnoresReadonlyWhereAdmissionHonoursIt(t *testing.T
 		LLMFields: ir.LLMFields{Readonly: true, Backend: "claude_code"},
 		Tools:     []string{"bash", "read_file"},
 	}
-	if !ToolSurfaceCanWrite(shell, "", authoredDefaults) {
-		t.Error("a readonly agent holding bash can still write: readonly is not enforced by claude_code")
+	// The REASON, not the bool: a claude_code route answers for this node too,
+	// so a bool assertion stays green with the declared-writer arm deleted and
+	// proves nothing about the shell the test is named for.
+	if got := ToolSurfaceWriteReason(shell, "", authoredDefaults); got != "tools: bash" {
+		t.Errorf("a readonly agent holding bash can still write, and the shell is what decides: got %q, want %q", got, "tools: bash")
 	}
 	if isMutatingNode(shell) {
 		t.Error("parallel-branch admission must keep honouring readonly")
@@ -39,9 +42,10 @@ func TestToolSurfaceCanWrite_IgnoresReadonlyWhereAdmissionHonoursIt(t *testing.T
 	}
 }
 
-// An omitted tools: list is the full native toolset on a CLI delegate, zero
-// tools on claw and on a direct model call; the workflow default backend
-// fills in when the node declares none.
+// An omitted tools: list is the full native toolset on a CLI delegate and zero
+// tools on claw; the workflow default backend fills in when the node declares
+// none, and a route no name resolves is read as the detection order's first
+// choice, claude_code.
 func TestToolSurfaceCanWrite_OmittedToolsFollowTheEffectiveBackend(t *testing.T) {
 	for _, tc := range []struct {
 		backend, dflt string
@@ -50,8 +54,8 @@ func TestToolSurfaceCanWrite_OmittedToolsFollowTheEffectiveBackend(t *testing.T)
 		{"claude_code", "", true},
 		{"codex", "", true},
 		{"kimi", "", true},
-		{"", "", false},
-		{"auto", "", false},
+		{"", "", true},
+		{"auto", "", true},
 		{"claw", "", false},
 		{"", "claude_code", true},
 		{"", "claw", false},
@@ -68,12 +72,23 @@ func TestToolSurfaceCanWrite_OmittedToolsFollowTheEffectiveBackend(t *testing.T)
 // would run that route with the full native toolset, so it is a writer; a
 // route that inherits the node's backend, or names claw, is not.
 func TestToolSurfaceCanWrite_ClawFallbackReachingACLIBackend(t *testing.T) {
+	// A NAME, not "": the table reads the AUTHORED defaults, so an
+	// implementation that leaked the process environment into the catalogue
+	// question would route the three reference rows onto claw — a route claw's own
+	// list bounds — and redden them. Pinning the variable empty would hide
+	// exactly that leak.
+	t.Setenv("ITERION_TEST_ROUTE_BACKEND", "claw")
 	for _, tc := range []struct {
 		route string
 		want  bool
 	}{
 		{"claude_code", true},
 		{"${ITERION_TEST_ROUTE_BACKEND:-codex}", true},
+		// A reference read at an authored default that does not exist names
+		// no route at all: the host decides it, so a tools-less claw node
+		// gets the pessimistic reading its `tools: []` twin already got.
+		{"${ITERION_TEST_ROUTE_BACKEND}", true},
+		{"$ITERION_TEST_ROUTE_BACKEND", true},
 		{"", false},
 		{"auto", false},
 		{"claw", false},
@@ -89,27 +104,36 @@ func TestToolSurfaceCanWrite_ClawFallbackReachingACLIBackend(t *testing.T) {
 	}
 }
 
-// A declared list bounds a CLI backend: only the read-only vocabulary keeps a
-// node out of the class, and a name the engine does not know as read-only
-// (a shell, a writer, an MCP or wrapper tool) puts it in.
+// A declared list keeps a node out of the class only where its route enforces
+// the list AND every name is in the read-only vocabulary: a name the engine
+// does not know as read-only (a shell, a writer, an MCP or wrapper tool) puts
+// it in whatever the route, and a route that drops the list (claude_code, the
+// CLI-agent seam) puts it in whatever the names.
 func TestToolSurfaceCanWrite_DeclaredTools(t *testing.T) {
 	readOnly := []string{"read_file", "glob", "grep", "web_fetch", "git_diff", "git_status", "list_files", "search_codebase", "tree"}
-	n := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claude_code"}, Tools: readOnly}
+	n := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw"}, Tools: readOnly}
 	if ToolSurfaceCanWrite(n, "", authoredDefaults) {
-		t.Error("a claude_code node whose declared list is read-only cannot write")
+		t.Error("a claw node whose declared list is read-only cannot write: claw resolves its ToolDefs from the list")
+	}
+	onClaudeCode := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claude_code"}, Tools: readOnly}
+	if !ToolSurfaceCanWrite(onClaudeCode, "", authoredDefaults) {
+		t.Error("the same list on claude_code bounds nothing: it becomes --disallowedTools over a roster iterion does not own")
 	}
 	for _, name := range readOnly {
 		if !IsReadOnlyTool(name) {
 			t.Errorf("%s is read-only", name)
 		}
 	}
+	// These judges name no backend, so the unnamed-route arm answers for them
+	// too: the assertion is on the REASON, which names the arm that decided,
+	// and a bool one would stay green with the declared-name arm deleted.
 	for _, name := range []string{"bash", "diagnostic_shell", "write_file", "file_edit", "edit_file", "workspace_grep", "ask_user"} {
 		if IsReadOnlyTool(name) {
 			t.Errorf("%s must not be read-only", name)
 		}
 		n := &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "j"}, Tools: append([]string{"read_file"}, name)}
-		if !ToolSurfaceCanWrite(n, "", authoredDefaults) {
-			t.Errorf("a judge holding %s can act", name)
+		if got := ToolSurfaceWriteReason(n, "", authoredDefaults); got != "tools: "+name {
+			t.Errorf("a judge holding %s can act, and the declared name is what decides: got %q, want %q", name, got, "tools: "+name)
 		}
 	}
 }

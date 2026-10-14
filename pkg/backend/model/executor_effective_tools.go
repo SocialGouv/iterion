@@ -114,6 +114,19 @@ func (e *ClawExecutor) routeBackends(node ir.Node) []string {
 // backend resolves to none, which every pre-run analysis already reads as "the
 // IR is all there is". A run that carries an override is judged again, by the
 // engine, against what that run actually holds.
+//
+// `vars:` is the one input a CALLER owes before asking either seam, and the
+// only program-carried field this constructor does not seed from the workflow
+// (NewClawExecutor does, from the declared defaults). Two readings were
+// available and neither belongs here: the host one resolves a default spelled
+// `${PROJECT_DIR}` against the machine, which is what this type exists not to
+// do, and the as-written one would RELAX a pre-run guard — measured, a route
+// spelled `{{vars.b}}` with a default naming claw or codex is read as
+// unresolved today, so admission refuses it, and resolving it admits the pair
+// (TestTheProgramOnlyReadingAnswersTheProgramsOwnAppends carries the row).
+// Pre-run analyses take the pessimistic side of what they cannot resolve;
+// pkg/dryrun calls SetVars with the run's own values, which nils the cached
+// executor, so `iterion validate --exec` reads them resolved.
 func NewProgramExecutor(wf *ir.Workflow) *ClawExecutor {
 	if wf == nil {
 		return &ClawExecutor{staticProgramOnly: true}
@@ -123,5 +136,26 @@ func NewProgramExecutor(wf *ir.Workflow) *ClawExecutor {
 		defaultBackend:    wf.DefaultBackend,
 		wfAutoMemory:      wf.AutoMemory,
 		wfCapabilities:    wf.Capabilities,
+		// The image-attachment append is decided by the PROGRAM — a
+		// workflow's `attachments:` and the prompt body that references one —
+		// so the seams read it here too. On every backend but claw it puts
+		// `read_image` on the node's effective list, and codex sandboxes that
+		// name workspace-write: a reading that dropped these two fields would
+		// admit a parallel fan-out the engine refuses.
+		prompts:      wf.Prompts,
+		imageAttachs: imageAttachmentNames(wf),
 	}
+}
+
+// imageAttachmentNames names the workflow's image-typed attachments — the one
+// place either executor builds that set, so the program-only reading and the
+// host's cannot answer a different effective surface for the same file.
+func imageAttachmentNames(wf *ir.Workflow) map[string]bool {
+	names := map[string]bool{}
+	for name, a := range wf.Attachments {
+		if a != nil && a.Type == ir.AttachmentImage {
+			names[name] = true
+		}
+	}
+	return names
 }

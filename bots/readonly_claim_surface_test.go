@@ -256,3 +256,13 @@ func TestNoReadonlyWriterIsToldTheFlagTookItsWritingTools(t *testing.T) {
 		t.Fatalf("the walk reached %d readonly claude_code node(s) declaring a writer, want at least 3: the discovery broke, and this guard is now green over an unexamined class", checked)
 	}
 }
+
+// resolvedBackend reads a node's backend at its authored default, falling back
+// to the workflow's, so the classification does not depend on the host.
+func resolvedBackend(llm ir.LLMNode, defaultBackend string) string {
+	b := strings.TrimSpace(ir.ExpandWithDefault(llm.GetLLMFields().Backend, authoredDefaults))
+	if b == "" {
+		b = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, authoredDefaults))
+	}
+	return b
+}

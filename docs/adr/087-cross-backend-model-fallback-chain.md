@@ -8,7 +8,7 @@
   [pkg/backend/model/executor_build_task.go](../../pkg/backend/model/executor_build_task.go)
   (`executeBackend`, `buildTask`, `stampDelegateOutputMeta`),
   [pkg/runtime/workspace_safety.go](../../pkg/runtime/workspace_safety.go)
-  (`unrestrictedCLIBackendCanWrite`),
+  (`unrestrictedRouteWriteReason`, `fallbackCLIBackendName`),
   [pkg/backend/delegate/delegate.go](../../pkg/backend/delegate/delegate.go)
   (`ErrRateLimited`, `Task`)
 - **Supersedes**: the deferral recorded in
@@ -60,8 +60,9 @@ resilient ones:
    name.** `containsClawNode` walks literal `.Backend` fields to decide
    whether to bind-mount the `iterion` binary into the sandbox
    ([sandbox_mounts.go](../../pkg/runtime/sandbox_mounts.go), `addClawBinaryMount`);
-   `unrestrictedCLIBackendCanWrite` returns `backend != "claw"` to admit
-   parallel branches ([workspace_safety.go:129](../../pkg/runtime/workspace_safety.go));
+   `unrestrictedRouteWriteReason` reads every route of the node to admit
+   parallel branches, and `fallbackCLIBackendName` is the `backend != "claw"`
+   element of it ([workspace_safety.go](../../pkg/runtime/workspace_safety.go));
    `validateFanOutEachWorkspaceSafety` gates fan-out on that classification.
    A chain resolved inside the executor is invisible to all three: a
    tools-less `claw` judge with a CLI fallback is admitted read-only, then
@@ -100,7 +101,7 @@ not a transparent one. Ten decisions.
 `fallbacks:` lands on `ir.AgentNode` / `ir.JudgeNode`, not in executor-private
 state. `containsClawNode` takes the **union** of every element's backend, so
 a `claw` element that appears only in a fallback block still gets the
-in-container binary mount. `unrestrictedCLIBackendCanWrite` takes the **most
+in-container binary mount. `unrestrictedRouteWriteReason` takes the **most
 permissive** element: a node is mutating if ANY element would be. Both
 `EffectiveBackendName` callers keep working; only their input widens.
 
@@ -384,7 +385,7 @@ Resolve the chain inside `ClawExecutor` as today, leave the IR untouched.
 
 **Rejected because**: `containsClawNode` decides the in-container `iterion`
 bind-mount from static `.Backend` fields at sandbox start, and
-`unrestrictedCLIBackendCanWrite` admits parallel branches from one resolved
+`unrestrictedRouteWriteReason` admits parallel branches from one resolved
 backend before the run. Executor-private means the sandbox fallback dies
 with `exec: iterion: not found` and a `fan_out_each` over N items can run N
 write-capable agents on one worktree — both after every refusal that would

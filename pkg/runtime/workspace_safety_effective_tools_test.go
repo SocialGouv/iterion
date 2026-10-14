@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -26,7 +27,28 @@ import (
 // answers what the test wants certifies the test, not the product.
 func effectiveSurfaceEngine(t *testing.T, wf *ir.Workflow, opts ...model.ClawExecutorOption) *Engine {
 	t.Helper()
+	pinTheHostsAutoMemoryMode(t)
 	return &Engine{workflow: wf, executor: model.NewClawExecutor(model.NewRegistry(), wf, opts...)}
+}
+
+// pinTheHostsAutoMemoryMode holds the one HOST input a reading of the tool
+// surface resolves outside the program.
+//
+// `auto_memory:` resolves through a launch override, the workflow, and this
+// environment variable (ClawExecutor.autoMemoryEnvDefault), and the mode grants
+// `write_file` and `glob` on a claw route — `write_file` is a name no reading
+// treats as workspace-safe, so a node every row here describes as a reader
+// becomes a writer. Left unpinned, this file answers one surface on a
+// developer's box and another on a machine that exports the name, and the
+// failure blames the node's own fields.
+//
+// Every test that builds the production executor calls it; the rest of the
+// resolution chain needs no pin, since each row names the route it is about
+// (an unnamed one would reach the host's credential probe, which is why the
+// grid reads the program-only executor instead).
+func pinTheHostsAutoMemoryMode(t *testing.T) {
+	t.Helper()
+	t.Setenv(automemory.ModeEnv, "")
 }
 
 func agentNode(id string, tools []string, backend string, mutate func(*ir.AgentNode)) *ir.AgentNode {
@@ -352,6 +374,7 @@ func TestTheSharedWorktreeQuestionDoesNotDependOnWhatTheExecutorImplements(t *te
 // many branches ask — and by the time the refusal it causes is returned, so a
 // refused fan-out is not the first an operator hears of it.
 func TestTheRunSaysWhichExecutorCannotAnswerAndWhichSeamsItLacks(t *testing.T) {
+	pinTheHostsAutoMemoryMode(t)
 	var buf bytes.Buffer
 	wf := twoReaderBranches()
 	production := model.NewClawExecutor(model.NewRegistry(), wf)
@@ -443,6 +466,7 @@ func (resolvesBackendToAndAnswers) EffectiveToolNames(ir.Node, bool) []string { 
 // with the typed WORKSPACE_SAFETY error, and the reason names the executor and
 // the method to implement.
 func TestAnExecutorThatCannotAnswerTheSeamIsRefusedAParallelFanOutByName(t *testing.T) {
+	pinTheHostsAutoMemoryMode(t)
 	for _, shape := range []struct {
 		name           string
 		mk             func(id string) ir.Node
@@ -504,6 +528,7 @@ func TestAnExecutorThatCannotAnswerTheSeamIsRefusedAParallelFanOutByName(t *test
 // named. Each verdict is checked against the same topology with a node that
 // DECLARES a writer, under the production executor.
 func TestAnUnvouchedNodeIsAdmittedExactlyWhereADeclaredWriterWouldBe(t *testing.T) {
+	pinTheHostsAutoMemoryMode(t)
 	production := func(wf *ir.Workflow) *Engine {
 		return &Engine{workflow: wf, executor: model.NewClawExecutor(model.NewRegistry(), wf)}
 	}
@@ -607,6 +632,7 @@ func TestAnUnvouchedNodeIsAdmittedExactlyWhereADeclaredWriterWouldBe(t *testing.
 // wrong way. These fixtures' reasons do not depend on what an executor answers,
 // so the two refusals read the same, word for word.
 func TestARefusalBlamesTheExecutorOnlyWhenItsSilenceDecided(t *testing.T) {
+	pinTheHostsAutoMemoryMode(t)
 	chain := func() *ir.Workflow {
 		router := &ir.RouterNode{BaseNode: ir.BaseNode{ID: "fan"}, RouterMode: ir.RouterFanOutAll}
 		return &ir.Workflow{
@@ -704,6 +730,7 @@ func (f forwardsBothSeams) EffectiveBackendName(node ir.Node) string {
 // IR backend, which admission reads through EffectiveBackendName, not through
 // the tool seam.
 func TestFollowingTheRefusalsRemedyGivesBackTheProductionVerdict(t *testing.T) {
+	pinTheHostsAutoMemoryMode(t)
 	toClaudeCode, err := model.ParseModelOverrides(nil, []string{"claude_code"}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -740,6 +767,7 @@ func TestFollowingTheRefusalsRemedyGivesBackTheProductionVerdict(t *testing.T) {
 // refused where the production executor refuses, and wherever a declared
 // writer would be, with the reason naming the seam it lacks.
 func TestForwardingHalfTheRemedyIsStillReadAtTheWorstCase(t *testing.T) {
+	pinTheHostsAutoMemoryMode(t)
 	toClaudeCode, err := model.ParseModelOverrides(nil, []string{"claude_code"}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -809,6 +837,7 @@ func TestTheSandboxReadsTheIRAloneForAnExecutorThatCannotAnswerTheBackendSeam(t 
 // and a wrapper forwarding both methods, resolve the same template and admit —
 // and the reason never quotes the template as if it were a backend.
 func TestAnUnreadTemplateBackendIsTheExecutorsSilenceNotTheBranchsOwnAccount(t *testing.T) {
+	pinTheHostsAutoMemoryMode(t)
 	wf := twoReaderBranches(func(n *ir.AgentNode) { n.Backend = "{{vars.b}}" })
 	production := model.NewClawExecutor(model.NewRegistry(), wf)
 	production.SetVars(map[string]any{"b": "claw"})
@@ -866,6 +895,7 @@ func TestTheSeamWarningIsLoggedAtAdmissionNotAtTheSandboxsQuestion(t *testing.T)
 // route the IR names is not the branch's own account — the refusal names the
 // executor, not a route the node may never take.
 func TestARouteTheIRNamesIsTheExecutorsToAnswer(t *testing.T) {
+	pinTheHostsAutoMemoryMode(t)
 	wf := twoReaderBranches(func(n *ir.AgentNode) { n.Backend = "claude_code" })
 	toClaw, err := model.ParseModelOverrides(nil, []string{"claw"}, nil)
 	if err != nil {
@@ -894,6 +924,7 @@ func TestARouteTheIRNamesIsTheExecutorsToAnswer(t *testing.T) {
 // codex fallback does not write on its own account, and while the backend seam
 // is silent the refusal names the executor — never a bare node.
 func TestTheOwnAccountIsReadOnEveryRouteADeclarationBounds(t *testing.T) {
+	pinTheHostsAutoMemoryMode(t)
 	wf := twoReaderBranches(func(n *ir.AgentNode) {
 		n.Backend = "codex"
 		n.Fallbacks = []ir.Fallback{{Name: "alt", Backend: "codex"}}
@@ -938,6 +969,7 @@ func TestTheOwnAccountIsReadOnEveryRouteADeclarationBounds(t *testing.T) {
 // a backend — for a primary route an executor left unresolved, and for a
 // fallback, which no executor resolves before the run.
 func TestAReasonNeverNamesATemplateAsABackend(t *testing.T) {
+	pinTheHostsAutoMemoryMode(t)
 	t.Run("a templated fallback", func(t *testing.T) {
 		wf := twoReaderBranches(func(n *ir.AgentNode) { n.Fallbacks = []ir.Fallback{{Name: "alt", Backend: "{{vars.fb}}"}} })
 		production := model.NewClawExecutor(model.NewRegistry(), wf)

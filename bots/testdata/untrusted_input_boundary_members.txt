@@ -1,0 +1,188 @@
+# The untrusted-input boundary class, frozen: every acting prompt of the
+# catalogue and the reason it is in the class, one `<bundle>/<node><TAB>reason`
+# line per reason. Generated, never hand-edited — the generator is in
+# bots/untrusted_input_members_test.go, run by `task bots:boundary:gen`.
+#
+# A prompt in this list owes its system prompt the UNTRUSTED INPUT BOUNDARY
+# paragraph (docs/agents/bots/untrusted-input.md).
+adr-cartograph/campaign	capability board.create
+adr-cartograph/campaign	no `tools:` list declared on claude_code, the full native toolset
+adr-cartograph/survey_code	no `tools:` list declared on claude_code, the full native toolset
+adr-cartograph/verify_build	no `tools:` list declared on claude_code, the full native toolset
+adr-rechallenge/file_change_ticket	capability board.create
+adr-rechallenge/file_change_ticket	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+adr-rechallenge/frame_arguments	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+adr-rechallenge/survey_code	tools: bash
+adr-rechallenge/write_addendum	tools: bash, write_file, file_edit
+app-dev/campaign	capability board.create
+app-dev/campaign	no `tools:` list declared on claude_code, the full native toolset
+app-dev/deploy	no `tools:` list declared on claude_code, the full native toolset
+app-dev/finalize_mr	capability board.comment
+app-dev/finalize_mr	tools: bash
+app-dev/interviewer	tools: bash, write_file
+app-dev/plan	no `tools:` list declared on claude_code, the full native toolset
+app-dev/plan_review	tools: bash
+app-dev/plan_revise	no `tools:` list declared on claude_code, the full native toolset
+app-dev/review	no `tools:` list declared on claude_code, the full native toolset
+app-dev/verify_build	no `tools:` list declared on claude_code, the full native toolset
+arbitrate/arbitrate_judge	no `tools:` list declared on claude_code, the full native toolset
+assessment/judgement	tools: skill
+assessment/plan_draft	tools: skill, write_file, edit_file
+assessment/survey	tools: skill
+bmady/analyst	tools: bash
+bmady/architect	tools: bash
+bmady/dev	tools: bash, write_file, file_edit
+bmady/pm	tools: bash
+bmady/qa	tools: bash
+branch-improve-loop/campaign	no `tools:` list declared on claude_code, the full native toolset
+branch-improve-loop/finalize_mr	capability board.comment
+branch-improve-loop/finalize_mr	tools: bash
+branch-improve-loop/plan	no `tools:` list declared on claude_code, the full native toolset
+branch-improve-loop/plan_review	tools: bash
+branch-improve-loop/plan_revise	no `tools:` list declared on claude_code, the full native toolset
+branch-improve-loop/review	no `tools:` list declared on claude_code, the full native toolset
+branch-improve-loop/verify_build	no `tools:` list declared on claude_code, the full native toolset
+cli/dispatch_bots_default:triage	no `tools:` list declared on claude_code, the full native toolset
+copilot/copi	tools: workspace_grep, diagnostic_shell, skill
+copilot/judge	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+copilot/reflect	tools: workspace_grep, diagnostic_shell, skill
+dep-update-guard/align	no `tools:` list declared on claude_code, the full native toolset
+dep-update-guard/commit	no `tools:` list declared on claude_code, the full native toolset
+dep-update-guard/security_audit	no `tools:` list declared on claude_code, the full native toolset
+dep-update-guard/verify_build	no `tools:` list declared on claude_code, the full native toolset
+devbox-setup/detect_stack	tools: bash
+devbox-setup/generate_devbox	tools: write_file, bash
+docs-refresh/campaign	backend {{vars.llm_backend}} is unresolved before the run, so no route it may take bounds what the node holds
+docs-refresh/campaign	capability board.create
+docs-refresh/coverage_audit	backend {{vars.llm_backend}} is unresolved before the run, so no route it may take bounds what the node holds
+docs-refresh/finalize_mr	capability board.comment
+docs-refresh/finalize_mr	tools: bash
+e2e-coverage/campaign	no `tools:` list declared on claude_code, the full native toolset
+e2e-coverage/plan	no `tools:` list declared on claude_code, the full native toolset
+e2e-coverage/plan_review	tools: bash
+e2e-coverage/plan_revise	no `tools:` list declared on claude_code, the full native toolset
+e2e-coverage/verify_build	no `tools:` list declared on claude_code, the full native toolset
+evolve/emit_backlog	capability board.assign
+evolve/emit_backlog	capability board.create
+evolve/emit_backlog	capability board.label
+evolve/emit_backlog	tools: bash
+evolve/investigate	tools: bash
+evolve/load_nexie_handoff	capability board.create
+evolve/load_nexie_handoff	capability board.label
+evolve/load_nexie_handoff	tools: bash
+evolve/propose_evolutions	tools: bash
+evolve/review_claude	tools: bash
+evolve/revise_vision	tools: bash
+evolve/survey	tools: bash
+evolve/synthesize_vision	tools: bash
+feature-dev/campaign	capability board.create
+feature-dev/campaign	no `tools:` list declared on claude_code, the full native toolset
+feature-dev/finalize_mr	capability board.comment
+feature-dev/finalize_mr	tools: bash
+feature-dev/plan	no `tools:` list declared on claude_code, the full native toolset
+feature-dev/plan_review	tools: bash
+feature-dev/plan_revise	no `tools:` list declared on claude_code, the full native toolset
+feature-dev/review	no `tools:` list declared on claude_code, the full native toolset
+feature-dev/verify_build	no `tools:` list declared on claude_code, the full native toolset
+feature-gap-fill/campaign	capability board.create
+feature-gap-fill/campaign	no `tools:` list declared on claude_code, the full native toolset
+feature-gap-fill/plan	no `tools:` list declared on claude_code, the full native toolset
+feature-gap-fill/plan_review	tools: bash
+feature-gap-fill/plan_revise	no `tools:` list declared on claude_code, the full native toolset
+feature-gap-fill/verify_build	no `tools:` list declared on claude_code, the full native toolset
+feed-watch/synthesize	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+gitops-warden/classify	no `tools:` list declared on claude_code, the full native toolset
+golden-master/extend:extend_campaign	no `tools:` list declared on claude_code, the full native toolset
+golden-master/mutants_adversary	no `tools:` list declared on claude_code, the full native toolset
+golden-master/oracle_campaign	no `tools:` list declared on claude_code, the full native toolset
+golden-master/reanchor:reanchor_campaign	no `tools:` list declared on claude_code, the full native toolset
+instrument/campaign	capability board.create
+instrument/campaign	no `tools:` list declared on claude_code, the full native toolset
+instrument/finalize_mr	capability board.comment
+instrument/finalize_mr	tools: bash
+instrument/review	no `tools:` list declared on claude_code, the full native toolset
+instrument/verify_build	no `tools:` list declared on claude_code, the full native toolset
+issue-triage/triage	capability board.assign
+issue-triage/triage	capability board.comment
+issue-triage/triage	capability board.label
+issue-triage/triage	tools: skill
+modernize/upgrade_campaign	no `tools:` list declared on claude_code, the full native toolset
+product-docs/campaign	capability board.create
+product-docs/campaign	no `tools:` list declared on claude_code, the full native toolset
+product-docs/diagram	no `tools:` list declared on claude_code, the full native toolset
+product-docs/finalize_mr	capability board.comment
+product-docs/finalize_mr	tools: bash
+product-docs/publish	tools: bash
+revi-converse/converse_agent	no `tools:` list declared on claude_code, the full native toolset
+review-env/deploy	no `tools:` list declared on claude_code, the full native toolset
+review-pr/converge	capability board.create
+review-pr/converge	capability board.label
+review-pr/converge	no `tools:` list declared on claude_code, the full native toolset
+review-pr/reviewer_claude	no `tools:` list declared on claude_code, the full native toolset
+review-pr/reviewer_claude_glance	no `tools:` list declared on claude_code, the full native toolset
+review-pr/reviewer_gpt	tools: bash
+review-pr/reviewer_gpt_glance	tools: bash
+rgaa-audit/adjudicate	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+rgaa-audit/publish	capability board.create
+rgaa-audit/publish	capability board.label
+rgaa-audit/publish	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+rgaa-audit/refute	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+sec-audit-deps/enumerate_deps	tools: bash
+sec-audit-deps/llm_review	capability board.create
+sec-audit-deps/llm_review	capability board.label
+sec-audit-deps/llm_review	tools: bash, write_file
+sec-audit-source/detect_tech	tools: bash
+sec-audit-source/patch_author	tools: bash, write_file, file_edit
+sec-audit-source/project_context_generate	tools: bash, write_file
+sec-audit-source/reattack	tools: bash
+sec-audit-source/remediation_report	capability board.label
+sec-audit-source/remediation_report	tools: bash, write_file
+sec-audit-source/report_card	capability board.create
+sec-audit-source/report_card	capability board.label
+sec-audit-source/report_card	tools: bash, write_file
+sec-audit-source/reviewer_isolation	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+sec-audit-source/triage	tools: bash
+sec-audit-source/voter_v1	tools: bash
+sec-audit-source/voter_v2	tools: bash
+sec-audit-source/voter_v3	tools: bash
+secured-renovacy/align_code	tools: bash, write_file, file_edit
+secured-renovacy/batch_upgrade_patches	tools: bash
+secured-renovacy/changelog_review	tools: bash
+secured-renovacy/detect_stack	tools: bash
+secured-renovacy/discover_outdated	tools: bash
+secured-renovacy/family_align_code	tools: bash, write_file, file_edit
+secured-renovacy/fix_after_upgrade	tools: bash, write_file, file_edit
+secured-renovacy/install	tools: bash
+secured-renovacy/p2_campaign	no `tools:` list declared on claude_code, the full native toolset
+secured-renovacy/p2_verify_build	no `tools:` list declared on claude_code, the full native toolset
+secured-renovacy/security_audit	tools: bash
+secured-renovacy/upgrade	tools: bash
+secured-renovacy/validate_upgrade	tools: bash
+smoke/board_smoke:smoke	capability board.create
+smoke/board_smoke:smoke	capability board.move
+smoke/board_smoke:smoke	no `tools:` list declared on claude_code, the full native toolset
+supply-shield-cve/enumerate_deps	tools: bash
+supply-shield-cve/forge_report	tools: bash
+supply-shield-cve/llm_review	capability board.create
+supply-shield-cve/llm_review	capability board.label
+supply-shield-cve/llm_review	tools: bash, write_file
+supply-shield/enumerate_deps	tools: bash
+supply-shield/forge_report	tools: bash
+supply-shield/llm_review	capability board.create
+supply-shield/llm_review	capability board.label
+supply-shield/llm_review	tools: bash, write_file
+test-coverage/campaign	no `tools:` list declared on claude_code, the full native toolset
+test-coverage/plan	no `tools:` list declared on claude_code, the full native toolset
+test-coverage/plan_review	tools: bash
+test-coverage/plan_revise	no `tools:` list declared on claude_code, the full native toolset
+test-coverage/verify_build	no `tools:` list declared on claude_code, the full native toolset
+whats-next/nexie	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+whole-improve-loop/campaign	no `tools:` list declared on claude_code, the full native toolset
+whole-improve-loop/finalize_mr	capability board.comment
+whole-improve-loop/finalize_mr	tools: bash
+whole-improve-loop/plan	no `tools:` list declared on claude_code, the full native toolset
+whole-improve-loop/plan_review	tools: bash
+whole-improve-loop/plan_revise	no `tools:` list declared on claude_code, the full native toolset
+whole-improve-loop/verify_build	no `tools:` list declared on claude_code, the full native toolset
+wiki-gen/author	capability board.create
+wiki-gen/author	no `tools:` list declared on claude_code, the full native toolset
