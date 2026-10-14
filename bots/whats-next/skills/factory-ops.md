@@ -149,12 +149,41 @@ before diagnosing a missing bot face or requesting an explicit replacement.
 
 ## GitHub workflow edits need a delivery-capable token
 
-Billy 1.8 refuses a `.github/workflows/` diff before planning when the
-runtime token lacks verified `workflows:write`. Treat
-`FORGE_PERMISSION_DENIED` as an operator configuration decision: approve
-App delivery permissions deliberately, refresh the token and relaunch.
-Installation grants alone do not prove the narrower token's capabilities.
-Do not schedule repeated analysis attempts against the same missing proof.
+Billy refuses a `.github/workflows/` diff before planning when the runtime
+token is PROVED to lack `workflows:write`. Vetty refuses the same delivery at
+commit time — only when the ALIGNMENT it is about to push touches that path,
+never the dependency bot's own workflow bump.
+
+Which refusal it is depends on whether anyone ANSWERED. An answered refusal —
+the preflight's verdict, or the forge API's scope list — is published as the
+`hold_delivery_permission` verdict (a red comment, a red gate, and
+`arm_automerge` asked to take down a commitment an earlier pass placed — off
+by default, where the forge is not touched) and the run ends
+`FORGE_PERMISSION_DENIED`. It has two causes, both configuration decisions:
+a permission the App does not hold — approve App delivery permissions
+deliberately — or a classic token short of a scope — reissue it with
+`workflow`. Then relaunch. Installation grants alone do not prove the
+narrower token's capabilities.
+
+A preflight that did NOT answer is the other refusal: the run ends
+`FORGE_PREFLIGHT_UNAVAILABLE` and **no comment and no verdict are published**,
+because a service that went silent proves nothing about anybody's credential.
+Read the run's REASON — it names the cure, and the code covers two families:
+a service that answered nothing (relaunch once it answers; there is no grant
+to approve and nothing to reissue) and a configuration gap the probe could not
+get past (no delivery-capable credential mounted, a server with no preflight
+service, a pull request URL that names another repository or no pull request at
+all — each cure is a
+configuration change, then a relaunch). Never advise approving a grant or
+reissuing a token on that code, and never schedule repeated analysis attempts
+against a missing proof.
+
+The pull request is not left untouched, and an operator will ask: the launch
+claims the repo's `gate_context` with a pending status, and with no verdict to
+replace it the server's reconciler closes that claim with a synthetic
+`failure` — a red `<gate_context>` reading `review died (…)` and quoting the
+run's reason. That is iterion closing its own gate claim, not a statement
+about the credential; the bot itself published nothing.
 See [Revi/Billy delivery preflight](../../../docs/revi-billy-loop.md).
 
 ## Child resources differ from the parent

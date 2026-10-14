@@ -197,6 +197,75 @@ Which is why the preflight's agreement 7 sharpens its wording once
 
 ---
 
+## When the alignment touches a workflow file
+
+Agreement 5 covers a real and narrow hole: Renovate **must** hold
+`workflows:write` (`helpers:pinGitHubActionDigests` rewrites
+`.github/workflows/**`), while the App that delivers Vetty's alignment need
+not — and GitHub refuses outright an App push touching that path without it.
+So Renovate can open an Actions bump whose alignment Vetty cannot push.
+
+Vetty asks before pushing. `delivery_probe` sends the digest of the token
+actually mounted in the run to the server's read-only
+`POST /api/v1/forge/delivery-preflight`, which answers against the permission
+proof recorded when that token was minted — never the installation's advertised
+grant. Only when the staged alignment touches `.github/workflows/**`: the
+probe measures what this run will push — `HEAD..worktree`, the index included,
+plus what `HEAD` adds on top of `origin/<branch>` — so the ordinary digest-pin
+bump (already committed and pushed by Renovate's own App, needing no alignment)
+is never held.
+
+Two credential kinds can be PROVED, and only those two: an App installation
+token (`ghs_`), against the permission proof recorded when it was minted, and a
+classic PAT or OAuth token (`ghp_`/`gho_`), against the scope list the forge API
+stamps on its own answer. A fine-grained PAT, an external App token or a
+user-to-server token is DELIVERED unverified — the App workflows restriction
+this preflight proves does not apply to it — so for those a refusal still
+arrives at push, where the unmoved head reads as `hold_lost_alignment`.
+
+An ANSWERED refusal — the preflight's verdict, or the forge API's scope list
+for a classic token — is the verdict `hold_delivery_permission`: a red comment
+naming the permission, a red gate, no push attempted, and `arm_automerge` asked
+to take down a commitment an earlier pass placed (off by default, where the
+forge is deliberately not touched and an operator's own arming survives). The
+run then ends `FORGE_PERMISSION_DENIED`, quoting what `arm_automerge` actually
+reported. The cure is an operator's, and the reason the comment carries says
+which: a permission the App does not hold — approve the delivery permissions,
+refresh its managed token and re-run Vetty on the PR; a classic token short of
+a scope — reissue it as the reason names and re-run Vetty. Either way the
+alignment can be applied by hand instead.
+
+A question **nobody answered** never becomes a verdict. Every shape of
+no-response — a refused or dropped connection, a timeout, a status the endpoint
+does not answer verdicts with, a body short, over-long, unparseable or missing
+the verdict fields — is one outcome: asked once more after a pause, then the run
+ends `FORGE_PREFLIGHT_UNAVAILABLE` with no comment and no verdict published,
+`arm_automerge` ASKED to take a previous pass's arming down (off by default,
+where the forge is deliberately not touched and an operator's own arming
+survives), and the cure in the reason: a relaunch where the service went
+silent, the configuration gap where it names one — no delivery-capable
+credential mounted, a server with no preflight service, a pull request URL that
+names another repository or no pull request at all. That asymmetry is the
+point: a blocking check on a
+third party's dependency PR is a statement about THEIR credential, and an
+outage of ours is no evidence for it.
+
+What the pull request does carry on that path is iterion closing its OWN
+merge-gate claim, not a verdict: the launch posts a pending status in the
+repo's `gate_context`, nothing replaces it, and the reconciler answers with a
+synthetic `failure` quoting the run's reason and its cure
+([pkg/server/forge_gate_reconcile.go](../pkg/server/forge_gate_reconcile.go)).
+An operator sees a red `<gate_context>` reading `review died (…)`; the lane
+that opened the claim is the lane that closed it.
+The probe is built as the complement of a blacklist for the same reason — three
+rounds of hardening each found one more failure shape of the HTTP library that
+an enumeration had missed. Granting `workflows:write` is **connection-wide** — every
+bot minting a runtime token on that connection carries it, and an actor that
+can rewrite CI runs arbitrary code in it — so it stays a deliberate,
+per-connection decision (#1595).
+
+---
+
 ## The preflight
 
 ```
@@ -211,7 +280,7 @@ It reads; it never writes. Seven agreements:
 | 2 | the required check pins its producing App | any credential that can post a status satisfies the gate |
 | 3 | the installed dependency App's login matches Vetty's `author_allowlist` | Vetty never sees the PRs it exists to guard |
 | 4 | the Renovate App is live and holds what its config demands | Renovate's push is refused for a reason unrelated to the bump |
-| 5 | the delivery App is live, reaches this repository, can touch what Renovate may bump, and the workflow's secrets exist | the alignment cannot be delivered |
+| 5 | the delivery App is live, reaches this repository, can touch what Renovate may bump, and the workflow's secrets exist | the alignment cannot be delivered — a workflow-touching one is held by name (see below), the rest is refused at push |
 | 6 | the repository is inside the Renovate installation | no dependency PR is ever opened here |
 | 7 | every required context has actually been produced | the PR blocks forever — or, armed, cannot converge |
 

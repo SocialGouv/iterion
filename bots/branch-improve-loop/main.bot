@@ -1397,9 +1397,14 @@ schema plan_budget_gate_state:
 
 ## Before any plan or campaign, prove the capability of the token that will
 ## deliver this branch. A permission advertised on the installation is not
-## evidence about its narrower runtime token. Unknown is a typed refusal.
+## evidence about its narrower runtime token. An ANSWERED refusal ends the
+## run on the credential; an unanswered question ends it on the service.
 schema delivery_probe_state:
   ok: bool
+  ## denied: an ANSWERED refusal, and the only shape that may become a
+  ## blocking verdict on a pull request. `ok` false with `denied` false is
+  ## the third outcome: nobody answered, so the permission is unknown.
+  denied: bool
   code: string
   reason: string
 
@@ -1625,20 +1630,36 @@ print(json.dumps({'ok': True, 'code': '', 'reason': 'git repository at ' + ws + 
 
 tool delivery_probe:
   command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} PR={{vars.pr_url}} CHECK_URL={{vars.forge_delivery_preflight_url}} CHECK_AUTH={{vars.forge_publish_token}} TOKEN_PATH={{secrets.forge_token.path}} python3 -I -c "
-import os, subprocess, json, sys, re, hashlib, urllib.request, urllib.parse
+import os, subprocess, json, sys, re, hashlib, time, urllib.request, urllib.parse
 ws = os.environ.get('WS', '').strip()
 base = os.environ.get('BASE', '').strip()
 pr = os.environ.get('PR', '').strip()
-def emit(ok, reason):
-    code = '' if ok else 'FORGE_PERMISSION_DENIED'
+def emit(ok, denied, code, reason):
     if not ok:
         sys.stderr.write(code + ': ' + reason + chr(10))
-    print(json.dumps({'ok': ok, 'code': code, 'reason': reason}))
+    print(json.dumps({'ok': ok, 'denied': denied, 'code': code, 'reason': reason}))
     raise SystemExit(0)
+def deliver(reason):
+    emit(True, False, '', reason)
+def hold(reason):
+    # THE BLOCKING VERDICT on a third party's pull request, and the only
+    # thing here that can publish one. Its two call sites each read a
+    # WELL-FORMED ANSWER on the line above -- an answered denial -- and
+    # nothing else in this program reaches it.
+    emit(False, True, 'FORGE_PERMISSION_DENIED', reason)
+def unavailable(reason):
+    # Nobody answered, so the permission is UNKNOWN: never a verdict about
+    # anybody's credential, and the cure is the one this reason names -- a
+    # relaunch where the service went silent, a configuration change where
+    # it names one. The run ends typed on this: the bot publishes no comment
+    # and no verdict, and where the launch claimed a merge-gate context the
+    # server's reconciler closes that claim with a synthetic failure
+    # carrying this cause (pkg/server/forge_gate_reconcile.go).
+    emit(False, False, 'FORGE_PREFLIGHT_UNAVAILABLE', reason)
 def git(*args):
     p = subprocess.run(['git', '-C', ws] + list(args), capture_output=True, timeout=30)
     if p.returncode:
-        emit(False, 'workflows:write preflight could not inspect the delivery diff; fix the checkout and relaunch')
+        unavailable('workflows:write preflight could not inspect the delivery diff; fix the checkout and relaunch')
     return p.stdout
 try:
     ref = ''
@@ -1648,15 +1669,28 @@ try:
             ref = candidate
             break
     if not ref:
-        emit(False, 'workflows:write preflight requires a reachable base_ref')
+        unavailable('workflows:write preflight requires a readable git checkout: neither the base nor HEAD resolves to a commit')
     changed = git('diff', '--no-renames', '--name-only', '-z', ref + '...HEAD')
     # Include changes later reverted within the branch: Git pushes commits,
     # not only the final net diff. Keep both sides of renames as delete/add.
     changed += git('log', '--format=', '--no-renames', '--name-only', '-z', ref + '..HEAD')
     changed += git('diff', '--no-renames', '--name-only', '-z', 'HEAD')
+    # The push carries the INDEX: a path staged and then restored in the
+    # working tree is absent from 'diff HEAD' and present in the commit.
+    changed += git('diff', '--no-renames', '--name-only', '-z', '--cached')
     changed += git('ls-files', '--others', '--exclude-standard', '-z')
+    # Commits this workspace already made and has not pushed: the remote
+    # branch carries the dependency bot's own bump, so reading what HEAD
+    # adds on top of it never reads the bump.
+    p = subprocess.run(['git', '-C', ws, 'symbolic-ref', '--quiet', '--short', 'HEAD'], capture_output=True, timeout=30)
+    branch = p.stdout.decode().strip() if p.returncode == 0 else ''
+    if branch:
+        pushed = 'refs/remotes/origin/' + branch
+        p = subprocess.run(['git', '-C', ws, 'rev-parse', '--verify', '-q', pushed + '^{commit}'], capture_output=True, timeout=30)
+        if p.returncode == 0:
+            changed += git('log', '--format=', '--no-renames', '--name-only', '-z', pushed + '..HEAD')
     if not any(p.lstrip(b'\n').startswith(b'.github/workflows/') for p in changed.split(b'\x00')):
-        emit(True, 'delivery diff has no GitHub workflows')
+        deliver('delivery diff has no GitHub workflows')
     origin = git('remote', 'get-url', 'origin').decode().strip()
     parsed = urllib.parse.urlsplit(origin)
     if parsed.scheme in ('https', 'http', 'ssh'):
@@ -1666,13 +1700,11 @@ try:
         host, repo = (m.group(1), m.group(2)) if m else ('', '')
     repo = repo[:-4] if repo.endswith('.git') else repo
     pr_parts = urllib.parse.urlsplit(pr)
-    if '/-/merge_requests/' in pr_parts.path:
-        emit(True, 'GitLab merge request; GitHub workflows permission does not apply')
-    is_github = host.lower() == 'github.com' or bool(re.search(r'/pull/[0-9]+/?$', pr_parts.path))
-    if not is_github:
-        emit(False, 'workflows:write preflight cannot identify the forge; provide the GitHub pull request URL')
-    if pr and (pr_parts.hostname != host or pr_parts.path.rsplit('/pull/', 1)[0].strip('/') != repo):
-        emit(False, 'workflows:write preflight refuses a PR and push origin that name different repositories')
+    # Read before the forge is identified: an installation token is minted
+    # by GitHub itself, which is the one POSITIVE signal available here that
+    # the push goes to a GitHub host. The origin of a GitHub Enterprise
+    # Server is just a hostname, and the shape of the pull request URL is
+    # whatever an operator typed.
     token = ''
     for path in (os.environ.get('TOKEN_PATH') or '/run/iterion/secrets/forge_token',):
         if path and os.path.isfile(path):
@@ -1685,36 +1717,149 @@ try:
             token = os.environ.get(name, '').strip()
             if token:
                 break
+    # The forge the PUSH goes to decides, and that is the ORIGIN -- never the
+    # shape of a URL an operator typed. GitHub spells a pull request /pull/N
+    # on the web and /pulls/N in its REST API, which is the exact path Forgejo
+    # and Gitea serve theirs on, so a path read before the origin cannot tell
+    # a GitHub pull request from an exempt one.
+    is_github = host.lower() == 'github.com' or bool(re.search(r'/pull/[0-9]+(?:[/?#]|$)', pr_parts.path))
+    # A run carrying an installation token is never exempt, whatever the URL
+    # looks like: a GHES serves its REST pull requests on /pulls/N -- the path
+    # Forgejo serves its own on -- and reading that path as an exemption turns
+    # this guard off on the forge family that enforces the very restriction
+    # being proved.
+    if not is_github and not token.startswith('ghs_'):
+        # Neither forge enforces the App workflows restriction this preflight
+        # proves, so a workflow-touching delivery there owes no answer.
+        if re.search(r'/(?:-/)?merge_requests/[0-9]+(?:[/?#]|$)', pr_parts.path):
+            deliver('GitLab merge request; GitHub workflows permission does not apply')
+        if re.search(r'/pulls/[0-9]+(?:[/?#]|$)', pr_parts.path):
+            deliver('Forgejo/Gitea pull request; GitHub workflows permission does not apply')
+        unavailable('workflows:write preflight cannot identify the forge; provide the GitHub pull request URL and relaunch')
+    # Both shapes GitHub spells a pull request in, stripped the same way:
+    # /pull/7 on the web, /pulls/7 in its REST API (pkg/forge.ParsePullURL
+    # accepts both). Reading only the first makes the REST spelling of THIS
+    # repository read as another one.
+    pr_repo = re.sub(r'/(?:pull|pulls)/[0-9]+(?:[/?#].*)?$', '', pr_parts.path)
+    if pr and ((pr_parts.hostname or '').lower() != host.lower() or pr_repo.strip('/').lower() != repo.lower()):
+        unavailable('workflows:write preflight refuses a PR and push origin that name different repositories; relaunch with the pull request this origin belongs to')
+    # The question is ABOUT a pull request, so there has to be one. The
+    # endpoint refuses a URL that names none (pkg/forge.ParsePullURL, a 400),
+    # and asking anyway would report a service that answered as a service
+    # that did not -- under a cure, a relaunch, that no URL of this shape will
+    # ever satisfy.
+    if not re.search(r'/(?:pull|pulls)/[0-9]+(?:[/?#]|$)', pr_parts.path):
+        unavailable('workflows:write preflight needs the GitHub pull request this delivery targets; relaunch with its URL')
     if not token:
-        emit(False, 'workflows:write cannot be verified: no runtime forge token is mounted; connect a delivery-capable credential and relaunch')
+        unavailable('workflows:write cannot be verified: no runtime forge token is mounted; connect a delivery-capable credential and relaunch')
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
     opener = urllib.request.build_opener(NoRedirect())
+    def ask(request, who, read_answer, cure):
+        # THE INVERSION this helper exists for. The only outcome that can
+        # become a blocking verdict on a third party's pull request is a
+        # WELL-FORMED ANSWER: HTTP 200, a body complete within its bound,
+        # carrying the fields the endpoint documents, read by read_answer.
+        # EVERYTHING else is one outcome -- the service did not answer --
+        # whatever shape it arrives in: any exception of any type, any other
+        # status, a redirect, a timeout, a body cut short, over-long,
+        # unparseable or missing a field. Enumerating an HTTP library's
+        # failure modes is a blacklist, and a blacklist is never complete;
+        # this is its complement, so a shape nobody foresaw is refused a
+        # verdict by construction. The preflight and the publish endpoint
+        # are the same server, and a restarting pod drops one request and
+        # serves the next, so the question is asked once more after 2 s
+        # before the run ends on it.
+        for attempt in (1, 2):
+            try:
+                with opener.open(request, timeout=10) as response:
+                    # A message whose framing RFC 7230 3.3.3 forbids has no
+                    # complete body to be well-formed about: two lengths
+                    # (http.client keeps the FIRST), a comma-folded list of
+                    # them, an unparseable one, or a length beside a transfer
+                    # coding. http.client reads the last three as no length at
+                    # all, which is exactly what the completeness term below
+                    # reads as a body that arrived whole -- so the framing is
+                    # judged here, by what it IS and not by one spelling of
+                    # what it is not.
+                    framings = response.headers.get_all('Content-Length') or []
+                    coding = response.headers.get('Transfer-Encoding')
+                    well_framed = len(framings) < 2 and not (framings and coding) and all(f.strip().isdigit() for f in framings)
+                    if response.status == 200 and well_framed:
+                        body = response.read(8193)
+                        # response.length is what the framing still OWES: a
+                        # Content-Length body cut mid-transfer is a short
+                        # read, not an exception. 8193 is one byte past the
+                        # bound, so an over-long answer shows up as one
+                        # instead of being silently cut to a valid prefix.
+                        if not response.length and len(body) <= 8192:
+                            answer = read_answer(response.headers, body)
+                            if answer is not None:
+                                return answer
+            except Exception:
+                pass
+            if attempt == 2:
+                unavailable('workflows:write could not be established: ' + who + ' did not answer (asked twice); the permission itself is unknown and nothing was pushed, so ' + cure)
+            time.sleep(2)
     # Classic PAT/OAuth scopes can be read from the actual token's API
     # response. Installation and fine-grained tokens have no such header.
     if token.startswith(('ghp_', 'gho_')):
-        api = 'https://api.github.com' if host.lower() == 'github.com' else 'https://' + host + '/api/v3'
+        # The origin's whole AUTHORITY, not just its hostname: a GHES does
+        # not have to listen on 443, and dropping the port asked the one
+        # question that would have been answered at an address nobody serves
+        # -- an outage that was not real. netloc keeps the port and the IPv6
+        # brackets; the userinfo a clone URL may carry is dropped, being a
+        # credential and not an address. The SCP-like shape has no netloc.
+        authority = parsed.netloc.rsplit('@', 1)[-1] if parsed.scheme in ('https', 'http') else host
+        api = 'https://api.github.com' if host.lower() == 'github.com' else 'https://' + authority + '/api/v3'
         request = urllib.request.Request(api + '/user', headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json'})
-        with opener.open(request, timeout=10) as response:
-            scopes = {s.strip() for s in response.headers.get('X-OAuth-Scopes', '').split(',')}
+        def token_scopes(headers, body):
+            # The scope list GitHub stamps on every answer about a classic
+            # token. Its ABSENCE is not an empty scope list: it says what
+            # answered is not the forge API.
+            granted = headers.get('X-OAuth-Scopes')
+            if granted is None:
+                return None
+            return {s.strip() for s in granted.split(',')}
+        scopes = ask(request, 'the forge API', token_scopes, 'relaunch when it is reachable')
         if 'workflow' in scopes and ('repo' in scopes or 'public_repo' in scopes):
-            emit(True, 'runtime token confirms workflow and repository scopes')
-        emit(False, 'workflows:write is missing or unverified on the runtime token (classic scope: workflow)')
+            deliver('runtime token confirms workflow and repository scopes')
+        hold('workflows:write is missing or unverified on the runtime token (classic scope: workflow); reissue the token with the workflow and repo scopes, then relaunch')
+    if not token.startswith('ghs_'):
+        deliver('the runtime credential is not a GitHub App installation token, so the App workflows restriction this preflight proves does not apply; the push reports its own refusal')
     url = os.environ.get('CHECK_URL', '').strip()
     auth = os.environ.get('CHECK_AUTH', '').strip()
     if not url or not auth or not pr:
-        emit(False, 'workflows:write cannot be verified: no scoped delivery preflight service is available; update the server, refresh the App token and relaunch')
+        unavailable('workflows:write cannot be verified: no scoped delivery preflight service is available; update the server, refresh the App token and relaunch')
     payload = json.dumps({'pr_url': pr, 'credential_sha256': hashlib.sha256(token.encode()).hexdigest()}).encode()
     request = urllib.request.Request(url, data=payload, headers={'X-Iterion-Run': auth, 'Content-Type': 'application/json'})
-    with opener.open(request, timeout=10) as response:
-        verdict = json.loads(response.read(8192))
-    if verdict.get('ok') is True and verdict.get('code') == '':
-        emit(True, verdict.get('reason', 'runtime token delivery permission confirmed'))
-    emit(False, verdict.get('reason') or 'workflows:write is missing or unverified on the runtime token')
+    def preflight_verdict(headers, body):
+        # The two answers pkg/server/forge_delivery_preflight.go gives, and
+        # no third: {ok, code, reason} under HTTP 200. Its 4xx carry an
+        # error envelope written by another helper, never a verdict, which
+        # is why a status outside the documented one never reaches here.
+        try:
+            answer = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(answer, dict):
+            return None
+        permitted, code, reason = answer.get('ok'), answer.get('code'), answer.get('reason')
+        if not isinstance(permitted, bool) or not isinstance(code, str) or not isinstance(reason, str) or not reason.strip():
+            return None
+        if permitted and code == '':
+            return (True, reason)
+        if not permitted and code == 'FORGE_PERMISSION_DENIED':
+            return (False, reason)
+        return None
+    permitted, reason = ask(request, 'the delivery preflight service', preflight_verdict, 'relaunch when it answers')
+    if permitted:
+        deliver(reason)
+    hold(reason)
 except Exception:
     # Never echo a token, callback grant or upstream response in a refusal.
-    emit(False, 'workflows:write preflight could not establish delivery permission; verify the credential and preflight service, then relaunch')
+    unavailable('workflows:write preflight could not establish delivery permission; verify the credential and preflight service, then relaunch')
 "`
   output: delivery_probe_state
 
@@ -2844,6 +2989,15 @@ fail delivery_permission_denied:
   code: FORGE_PERMISSION_DENIED
   message: "{{outputs.delivery_probe.reason}}"
 
+## The preflight that did NOT answer. A service that went silent proves
+## nothing about the runtime token, so it is not the permission refusal: the
+## cure is the one the reason names — a relaunch where the service went
+## silent, a configuration change where it names one — and an unattended lane
+## reads which refusal this is off the code rather than off the wording.
+fail delivery_preflight_unavailable:
+  code: FORGE_PREFLIGHT_UNAVAILABLE
+  message: "{{outputs.delivery_probe.reason}}"
+
 ## plan_exhausted — the plan phase outgrew its share. resumable: true
 ## because the cure is "widen the budget and carry on": a terminal failure
 ## would make the operator re-pay a plan phase this run already completed,
@@ -2941,7 +3095,12 @@ workflow branch_improve_loop:
 
   delivery_probe -> plan_topology when ok
 
-  delivery_probe -> delivery_permission_denied when not ok
+  ## An ANSWERED refusal ends the run on the credential; everything else —
+  ## any shape of no-answer, foreseen or not — ends it on the service. The
+  ## fallback is what makes that exhaustive.
+  delivery_probe -> delivery_permission_denied when denied
+
+  delivery_probe -> delivery_preflight_unavailable else
 
   workspace_probe -> workspace_not_a_repo when not ok
 

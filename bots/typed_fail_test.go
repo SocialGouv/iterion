@@ -58,9 +58,42 @@ func workspaceProbeRefusals() []codedRefusal {
 func codedRefusals() []codedRefusal {
 	out := workspaceProbeRefusals()
 	return append(out,
-		codedRefusal{bot: "branch-improve-loop", from: "delivery_probe", condition: "ok", negated: true,
+		codedRefusal{bot: "branch-improve-loop", from: "delivery_probe", condition: "denied",
 			failNode: "delivery_permission_denied", code: "FORGE_PERMISSION_DENIED",
 			messageRefs: []string{"{{outputs.delivery_probe.reason}}"}},
+		// The same probe's other refusal, and the reason it is not the same
+		// code: nobody answered. The cure is a relaunch, not a grant, and the
+		// `else` is what makes the pair exhaustive — a transport shape nobody
+		// foresaw cannot end up on the permission refusal.
+		codedRefusal{bot: "branch-improve-loop", from: "delivery_probe", elseEdge: true,
+			failNode: "delivery_preflight_unavailable", code: "FORGE_PREFLIGHT_UNAVAILABLE",
+			messageRefs: []string{"{{outputs.delivery_probe.reason}}"}},
+		// The same refusal on the dependency guard, reached one node later.
+		// Vetty's probe runs at COMMIT time — the question is what the
+		// alignment wrote, which does not exist before `align` runs — so the
+		// refusal is also a verdict the pull request must carry: it goes
+		// through the comment, the red gate and the auto-merge stand-down
+		// first, and the run is typed on the far side of them. Hence the
+		// guard edge from `arm_automerge`, and a message naming it as well as
+		// the probe that holds the cause.
+		codedRefusal{
+			bot: "dep-update-guard", from: "arm_automerge",
+			expression: "outputs.post_feedback.verdict == 'hold_delivery_permission'",
+			failNode:   "delivery_permission_denied", code: "FORGE_PERMISSION_DENIED",
+			messageRefs: []string{"{{outputs.delivery_probe.reason}}", "{{outputs.arm_automerge.reason}}"},
+		},
+		// Vetty's half of the same pair. It publishes no verdict — a service
+		// that did not answer says nothing about the credential, so nothing
+		// is posted on a third party's pull request — which is why the guard
+		// reads the probe's own code instead of post_feedback's verdict, and
+		// why the path still runs through arm_automerge: an arming an earlier
+		// pass placed would otherwise merge the bump without its alignment.
+		codedRefusal{
+			bot: "dep-update-guard", from: "arm_automerge",
+			expression: "outputs.delivery_probe.code == 'FORGE_PREFLIGHT_UNAVAILABLE'",
+			failNode:   "delivery_preflight_unavailable", code: "FORGE_PREFLIGHT_UNAVAILABLE",
+			messageRefs: []string{"{{outputs.delivery_probe.reason}}", "{{outputs.arm_automerge.reason}}"},
+		},
 		// The plan phase outgrew its share of the run's budget. The cure
 		// is "raise the caps and carry on": a terminal failure would make
 		// the operator re-pay a plan phase the run already completed,

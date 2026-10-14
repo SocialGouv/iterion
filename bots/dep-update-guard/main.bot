@@ -118,6 +118,12 @@ vars:
   ## no gate.
   forge_publish_url: string = ""
   forge_publish_token: string = ""
+  ## Read-only proof of the runtime token's DELIVERY permission, asked before
+  ## the alignment is pushed. Injected by the server on the same launch as the
+  ## publish grant above, and declared here for the same reason. Empty (a
+  ## local run, or a server that does not mint it) means the question cannot
+  ## be asked — which is a typed refusal, never an assumed yes.
+  forge_delivery_preflight_url: string = ""
   ## Out-of-tree scratch for the deterministic gate’s verify script/log
   ## (${PROJECT_SCRATCH_DIR} resolves outside the PR checkout — never
   ## pollute the PR branch).
@@ -574,6 +580,19 @@ schema verify_result:
 
 schema validate_gate_output:
   stable: bool
+
+## Before the alignment is pushed, prove the capability of the token that
+## will push it. A permission advertised on the installation is not evidence
+## about its narrower runtime token. An ANSWERED refusal is a verdict on the
+## pull request; an unanswered question is a typed failure of the run.
+schema delivery_probe_state:
+  ok: bool
+  ## denied: an ANSWERED refusal, and the only shape that may become a
+  ## blocking verdict on a pull request. `ok` false with `denied` false is
+  ## the third outcome: nobody answered, so the permission is unknown.
+  denied: bool
+  code: string
+  reason: string
 
 schema commit_input:
   files_changed: string[]
@@ -1238,6 +1257,259 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'prechec
 "`
   output: verify_result
 
+## delivery_probe -- the DETERMINISTIC precondition of the push: can the
+## credential this run holds deliver what `align` wrote? GitHub REJECTS an
+## App push touching .github/workflows/** outright when the token lacks
+## `workflows` (pkg/forge/github/app_client.go), and that refusal arrives as
+## a failed push whose cause has nothing to do with the bump.
+##
+## BASE=HEAD is the whole placement, and it is not the branch: the bump is
+## already committed and pushed by the dependency bot's own App, so the only
+## commits THIS run will push are the ones `commit` is about to make out of
+## the working tree. HEAD is therefore the probe's base, and its "delivery
+## diff" is the staged + unstaged + untracked alignment. A bump that merely
+## TOUCHES a workflow file -- the ordinary Actions digest pin, which needs no
+## alignment at all -- leaves that diff empty and is never held.
+##
+## Byte-identical to branch-improve-loop's node (delivery_probe_drift_test.go
+## pins the copies): the DSL refuses a fragment outside the bot's own lib/,
+## so the shared guard is a copy, and a copy drifts unless something asserts
+## it cannot.
+tool delivery_probe:
+  command: `WS={{vars.workspace_dir}} BASE=HEAD PR={{vars.pr_url}} CHECK_URL={{vars.forge_delivery_preflight_url}} CHECK_AUTH={{vars.forge_publish_token}} TOKEN_PATH={{secrets.forge_token.path}} python3 -I -c "
+import os, subprocess, json, sys, re, hashlib, time, urllib.request, urllib.parse
+ws = os.environ.get('WS', '').strip()
+base = os.environ.get('BASE', '').strip()
+pr = os.environ.get('PR', '').strip()
+def emit(ok, denied, code, reason):
+    if not ok:
+        sys.stderr.write(code + ': ' + reason + chr(10))
+    print(json.dumps({'ok': ok, 'denied': denied, 'code': code, 'reason': reason}))
+    raise SystemExit(0)
+def deliver(reason):
+    emit(True, False, '', reason)
+def hold(reason):
+    # THE BLOCKING VERDICT on a third party's pull request, and the only
+    # thing here that can publish one. Its two call sites each read a
+    # WELL-FORMED ANSWER on the line above -- an answered denial -- and
+    # nothing else in this program reaches it.
+    emit(False, True, 'FORGE_PERMISSION_DENIED', reason)
+def unavailable(reason):
+    # Nobody answered, so the permission is UNKNOWN: never a verdict about
+    # anybody's credential, and the cure is the one this reason names -- a
+    # relaunch where the service went silent, a configuration change where
+    # it names one. The run ends typed on this: the bot publishes no comment
+    # and no verdict, and where the launch claimed a merge-gate context the
+    # server's reconciler closes that claim with a synthetic failure
+    # carrying this cause (pkg/server/forge_gate_reconcile.go).
+    emit(False, False, 'FORGE_PREFLIGHT_UNAVAILABLE', reason)
+def git(*args):
+    p = subprocess.run(['git', '-C', ws] + list(args), capture_output=True, timeout=30)
+    if p.returncode:
+        unavailable('workflows:write preflight could not inspect the delivery diff; fix the checkout and relaunch')
+    return p.stdout
+try:
+    ref = ''
+    for candidate in (base, 'refs/remotes/origin/' + base):
+        p = subprocess.run(['git', '-C', ws, 'rev-parse', '--verify', '-q', candidate + '^{commit}'], capture_output=True, timeout=30)
+        if p.returncode == 0:
+            ref = candidate
+            break
+    if not ref:
+        unavailable('workflows:write preflight requires a readable git checkout: neither the base nor HEAD resolves to a commit')
+    changed = git('diff', '--no-renames', '--name-only', '-z', ref + '...HEAD')
+    # Include changes later reverted within the branch: Git pushes commits,
+    # not only the final net diff. Keep both sides of renames as delete/add.
+    changed += git('log', '--format=', '--no-renames', '--name-only', '-z', ref + '..HEAD')
+    changed += git('diff', '--no-renames', '--name-only', '-z', 'HEAD')
+    # The push carries the INDEX: a path staged and then restored in the
+    # working tree is absent from 'diff HEAD' and present in the commit.
+    changed += git('diff', '--no-renames', '--name-only', '-z', '--cached')
+    changed += git('ls-files', '--others', '--exclude-standard', '-z')
+    # Commits this workspace already made and has not pushed: the remote
+    # branch carries the dependency bot's own bump, so reading what HEAD
+    # adds on top of it never reads the bump.
+    p = subprocess.run(['git', '-C', ws, 'symbolic-ref', '--quiet', '--short', 'HEAD'], capture_output=True, timeout=30)
+    branch = p.stdout.decode().strip() if p.returncode == 0 else ''
+    if branch:
+        pushed = 'refs/remotes/origin/' + branch
+        p = subprocess.run(['git', '-C', ws, 'rev-parse', '--verify', '-q', pushed + '^{commit}'], capture_output=True, timeout=30)
+        if p.returncode == 0:
+            changed += git('log', '--format=', '--no-renames', '--name-only', '-z', pushed + '..HEAD')
+    if not any(p.lstrip(b'\n').startswith(b'.github/workflows/') for p in changed.split(b'\x00')):
+        deliver('delivery diff has no GitHub workflows')
+    origin = git('remote', 'get-url', 'origin').decode().strip()
+    parsed = urllib.parse.urlsplit(origin)
+    if parsed.scheme in ('https', 'http', 'ssh'):
+        host, repo = parsed.hostname or '', parsed.path.strip('/')
+    else:
+        m = re.match(r'(?:[^@/:]+@)?([^/:]+):(.+)', origin)
+        host, repo = (m.group(1), m.group(2)) if m else ('', '')
+    repo = repo[:-4] if repo.endswith('.git') else repo
+    pr_parts = urllib.parse.urlsplit(pr)
+    # Read before the forge is identified: an installation token is minted
+    # by GitHub itself, which is the one POSITIVE signal available here that
+    # the push goes to a GitHub host. The origin of a GitHub Enterprise
+    # Server is just a hostname, and the shape of the pull request URL is
+    # whatever an operator typed.
+    token = ''
+    for path in (os.environ.get('TOKEN_PATH') or '/run/iterion/secrets/forge_token',):
+        if path and os.path.isfile(path):
+            with open(path) as f:
+                token = f.read().strip()
+            if token:
+                break
+    if not token:
+        for name in ('GH_TOKEN', 'GITHUB_TOKEN'):
+            token = os.environ.get(name, '').strip()
+            if token:
+                break
+    # The forge the PUSH goes to decides, and that is the ORIGIN -- never the
+    # shape of a URL an operator typed. GitHub spells a pull request /pull/N
+    # on the web and /pulls/N in its REST API, which is the exact path Forgejo
+    # and Gitea serve theirs on, so a path read before the origin cannot tell
+    # a GitHub pull request from an exempt one.
+    is_github = host.lower() == 'github.com' or bool(re.search(r'/pull/[0-9]+(?:[/?#]|$)', pr_parts.path))
+    # A run carrying an installation token is never exempt, whatever the URL
+    # looks like: a GHES serves its REST pull requests on /pulls/N -- the path
+    # Forgejo serves its own on -- and reading that path as an exemption turns
+    # this guard off on the forge family that enforces the very restriction
+    # being proved.
+    if not is_github and not token.startswith('ghs_'):
+        # Neither forge enforces the App workflows restriction this preflight
+        # proves, so a workflow-touching delivery there owes no answer.
+        if re.search(r'/(?:-/)?merge_requests/[0-9]+(?:[/?#]|$)', pr_parts.path):
+            deliver('GitLab merge request; GitHub workflows permission does not apply')
+        if re.search(r'/pulls/[0-9]+(?:[/?#]|$)', pr_parts.path):
+            deliver('Forgejo/Gitea pull request; GitHub workflows permission does not apply')
+        unavailable('workflows:write preflight cannot identify the forge; provide the GitHub pull request URL and relaunch')
+    # Both shapes GitHub spells a pull request in, stripped the same way:
+    # /pull/7 on the web, /pulls/7 in its REST API (pkg/forge.ParsePullURL
+    # accepts both). Reading only the first makes the REST spelling of THIS
+    # repository read as another one.
+    pr_repo = re.sub(r'/(?:pull|pulls)/[0-9]+(?:[/?#].*)?$', '', pr_parts.path)
+    if pr and ((pr_parts.hostname or '').lower() != host.lower() or pr_repo.strip('/').lower() != repo.lower()):
+        unavailable('workflows:write preflight refuses a PR and push origin that name different repositories; relaunch with the pull request this origin belongs to')
+    # The question is ABOUT a pull request, so there has to be one. The
+    # endpoint refuses a URL that names none (pkg/forge.ParsePullURL, a 400),
+    # and asking anyway would report a service that answered as a service
+    # that did not -- under a cure, a relaunch, that no URL of this shape will
+    # ever satisfy.
+    if not re.search(r'/(?:pull|pulls)/[0-9]+(?:[/?#]|$)', pr_parts.path):
+        unavailable('workflows:write preflight needs the GitHub pull request this delivery targets; relaunch with its URL')
+    if not token:
+        unavailable('workflows:write cannot be verified: no runtime forge token is mounted; connect a delivery-capable credential and relaunch')
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    opener = urllib.request.build_opener(NoRedirect())
+    def ask(request, who, read_answer, cure):
+        # THE INVERSION this helper exists for. The only outcome that can
+        # become a blocking verdict on a third party's pull request is a
+        # WELL-FORMED ANSWER: HTTP 200, a body complete within its bound,
+        # carrying the fields the endpoint documents, read by read_answer.
+        # EVERYTHING else is one outcome -- the service did not answer --
+        # whatever shape it arrives in: any exception of any type, any other
+        # status, a redirect, a timeout, a body cut short, over-long,
+        # unparseable or missing a field. Enumerating an HTTP library's
+        # failure modes is a blacklist, and a blacklist is never complete;
+        # this is its complement, so a shape nobody foresaw is refused a
+        # verdict by construction. The preflight and the publish endpoint
+        # are the same server, and a restarting pod drops one request and
+        # serves the next, so the question is asked once more after 2 s
+        # before the run ends on it.
+        for attempt in (1, 2):
+            try:
+                with opener.open(request, timeout=10) as response:
+                    # A message whose framing RFC 7230 3.3.3 forbids has no
+                    # complete body to be well-formed about: two lengths
+                    # (http.client keeps the FIRST), a comma-folded list of
+                    # them, an unparseable one, or a length beside a transfer
+                    # coding. http.client reads the last three as no length at
+                    # all, which is exactly what the completeness term below
+                    # reads as a body that arrived whole -- so the framing is
+                    # judged here, by what it IS and not by one spelling of
+                    # what it is not.
+                    framings = response.headers.get_all('Content-Length') or []
+                    coding = response.headers.get('Transfer-Encoding')
+                    well_framed = len(framings) < 2 and not (framings and coding) and all(f.strip().isdigit() for f in framings)
+                    if response.status == 200 and well_framed:
+                        body = response.read(8193)
+                        # response.length is what the framing still OWES: a
+                        # Content-Length body cut mid-transfer is a short
+                        # read, not an exception. 8193 is one byte past the
+                        # bound, so an over-long answer shows up as one
+                        # instead of being silently cut to a valid prefix.
+                        if not response.length and len(body) <= 8192:
+                            answer = read_answer(response.headers, body)
+                            if answer is not None:
+                                return answer
+            except Exception:
+                pass
+            if attempt == 2:
+                unavailable('workflows:write could not be established: ' + who + ' did not answer (asked twice); the permission itself is unknown and nothing was pushed, so ' + cure)
+            time.sleep(2)
+    # Classic PAT/OAuth scopes can be read from the actual token's API
+    # response. Installation and fine-grained tokens have no such header.
+    if token.startswith(('ghp_', 'gho_')):
+        # The origin's whole AUTHORITY, not just its hostname: a GHES does
+        # not have to listen on 443, and dropping the port asked the one
+        # question that would have been answered at an address nobody serves
+        # -- an outage that was not real. netloc keeps the port and the IPv6
+        # brackets; the userinfo a clone URL may carry is dropped, being a
+        # credential and not an address. The SCP-like shape has no netloc.
+        authority = parsed.netloc.rsplit('@', 1)[-1] if parsed.scheme in ('https', 'http') else host
+        api = 'https://api.github.com' if host.lower() == 'github.com' else 'https://' + authority + '/api/v3'
+        request = urllib.request.Request(api + '/user', headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json'})
+        def token_scopes(headers, body):
+            # The scope list GitHub stamps on every answer about a classic
+            # token. Its ABSENCE is not an empty scope list: it says what
+            # answered is not the forge API.
+            granted = headers.get('X-OAuth-Scopes')
+            if granted is None:
+                return None
+            return {s.strip() for s in granted.split(',')}
+        scopes = ask(request, 'the forge API', token_scopes, 'relaunch when it is reachable')
+        if 'workflow' in scopes and ('repo' in scopes or 'public_repo' in scopes):
+            deliver('runtime token confirms workflow and repository scopes')
+        hold('workflows:write is missing or unverified on the runtime token (classic scope: workflow); reissue the token with the workflow and repo scopes, then relaunch')
+    if not token.startswith('ghs_'):
+        deliver('the runtime credential is not a GitHub App installation token, so the App workflows restriction this preflight proves does not apply; the push reports its own refusal')
+    url = os.environ.get('CHECK_URL', '').strip()
+    auth = os.environ.get('CHECK_AUTH', '').strip()
+    if not url or not auth or not pr:
+        unavailable('workflows:write cannot be verified: no scoped delivery preflight service is available; update the server, refresh the App token and relaunch')
+    payload = json.dumps({'pr_url': pr, 'credential_sha256': hashlib.sha256(token.encode()).hexdigest()}).encode()
+    request = urllib.request.Request(url, data=payload, headers={'X-Iterion-Run': auth, 'Content-Type': 'application/json'})
+    def preflight_verdict(headers, body):
+        # The two answers pkg/server/forge_delivery_preflight.go gives, and
+        # no third: {ok, code, reason} under HTTP 200. Its 4xx carry an
+        # error envelope written by another helper, never a verdict, which
+        # is why a status outside the documented one never reaches here.
+        try:
+            answer = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(answer, dict):
+            return None
+        permitted, code, reason = answer.get('ok'), answer.get('code'), answer.get('reason')
+        if not isinstance(permitted, bool) or not isinstance(code, str) or not isinstance(reason, str) or not reason.strip():
+            return None
+        if permitted and code == '':
+            return (True, reason)
+        if not permitted and code == 'FORGE_PERMISSION_DENIED':
+            return (False, reason)
+        return None
+    permitted, reason = ask(request, 'the delivery preflight service', preflight_verdict, 'relaunch when it answers')
+    if permitted:
+        deliver(reason)
+    hold(reason)
+except Exception:
+    # Never echo a token, callback grant or upstream response in a refusal.
+    unavailable('workflows:write preflight could not establish delivery permission; verify the credential and preflight service, then relaunch')
+"`
+  output: delivery_probe_state
+
 ## Post the complete review comment on the PR (forge REST + token).
 ## DETERMINISTIC feedback (no LLM): compose the verdict comment from the
 ## structured verdict fields and POST it via the forge REST API with the
@@ -1291,6 +1563,7 @@ tool post_feedback:
         "needs_decision": "\U0001F9ED Needs a human decision (architectural)",
         "hold_unstable":  "⚠️ HOLD — build/tests not green after alignment",
         "hold_lost_alignment": "\U0001F6D1 HOLD — the alignment for this bump is NOT on the branch",
+        "hold_delivery_permission": "\U0001F6D1 HOLD — this bump's alignment edits a workflow file, and the delivery permission for it was refused",
         "committed":      "✅ Aligned — code updated on this branch; review & merge",
         "clean":          "✅ Safe bump — no code alignment needed",
     }
@@ -1319,6 +1592,28 @@ tool post_feedback:
            "hold_lost_alignment": "Held — the code alignment this run produced for the bump is NOT on this branch: "
                                   "nothing was committed and the head is still the bot's bump commit. Re-run Vetty on "
                                   "this PR to redo it; merging as-is ships the bump without it.",
+           # TWO causes reach this verdict, and both are ANSWERED refusals:
+           # a permission the App does not hold (the preflight's verdict) and
+           # a classic token short of a scope (the forge API's scope list).
+           # Their cures differ, so the text carries both and points at the
+           # refusal that tells them apart. That refusal always renders: the
+           # edge into post_feedback maps the probe's reason through
+           # align_summary behind a literal prefix, so "Code alignment" is
+           # never the empty section on this verdict. A preflight that did
+           # NOT answer is deliberately absent — it reaches none of the
+           # published verdicts (post_feedback never runs on it; the value
+           # it hands arm_automerge is preflight_unavailable), it ends the
+           # run as FORGE_PREFLIGHT_UNAVAILABLE, and a relaunch cure offered
+           # here would describe a hold that cannot happen.
+           "hold_delivery_permission": "Held BEFORE pushing — the alignment this bump needs edits a GitHub "
+                                       "workflow file, and the delivery credential was REFUSED the `workflows` "
+                                       "permission when asked for it, so the push was not attempted (GitHub "
+                                       "refuses an App push touching .github/workflows/** without it). "
+                                       "Nothing was committed. The refusal above says which cure applies: a "
+                                       "permission the App does not hold — approve the delivery permissions "
+                                       "and refresh its token, then re-run Vetty on this PR; a classic token "
+                                       "short of a scope — reissue it as the refusal names, then re-run "
+                                       "Vetty. Either way the alignment can also be applied by hand.",
            "clean": "Nothing to align."}.get(s(verdict), "")
     did = (s(commit_summary) + " " if s(commit_summary) else "") + did + \
         " **Vetty never merges past a check** — whether this lands is the repo's own required checks' decision, " \
@@ -1364,7 +1659,7 @@ tool post_feedback:
     # worse than no gate.
     GATE_BLOCKING = {"clean": 0, "committed": 0,
                      "hold_security": 1, "hold_unstable": 1, "needs_decision": 1,
-                     "hold_lost_alignment": 1}
+                     "hold_lost_alignment": 1, "hold_delivery_permission": 1}
     gate_on = bool(gate_enabled)
     blocking = GATE_BLOCKING.get(s(verdict))
     if blocking is None:
@@ -1378,6 +1673,7 @@ tool post_feedback:
         "hold_security": "supply-chain risk: the bump was not applied",
         "hold_unstable": "build/tests not green after alignment",
         "hold_lost_alignment": "the code alignment for this bump is missing from the branch",
+        "hold_delivery_permission": "the alignment edits a GitHub workflow file and the delivery credential was refused the workflows permission",
         "needs_decision": "an architectural decision is pending a human",
     }.get(s(verdict), "")
     if s(verdict) not in GATE_BLOCKING:
@@ -1962,6 +2258,61 @@ compute commit_check:
     did_commit: "outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha"
     alignment_lost: "outputs.align.applied && !(outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha)"
 
+## preflight_standdown — the input `arm_automerge` needs on the one refusal
+## path where the bot publishes no verdict of its own. A preflight that did
+## not answer says nothing about the credential, so no comment and no gate
+## verdict are posted (the launch's own gate claim is closed by the server's
+## reconciler, which carries this cause and not a permission); but
+## an arming an earlier pass placed outlives the run that placed it, and the
+## forge would merge this bump the moment its own checks went green. So the
+## refusal still runs through `arm_automerge`, with a verdict that is not
+## green and a gate that never landed.
+compute preflight_standdown:
+  output: automerge_input
+  expr:
+    pr_url: "vars.pr_url"
+    verdict: "'preflight_unavailable'"
+    gate_posted: "false"
+    gate_state: "''"
+    gate_sha: "''"
+    ## Nothing was pushed, so the only revision this run can name is the
+    ## head it read.
+    audited_sha: "outputs.prepare.head_sha"
+    committed_sha: "''"
+
+## The delivery refusal, typed on the RUN — the hold comment and the red gate
+## are for the humans reading the pull request; `failure_code` is what
+## `iterion runs list`, the studio and the alert sinks read, and the cure the
+## probe's reason names (approve the App's delivery permissions and refresh
+## its token, or reissue a classic token with the `workflow` scope) is the
+## operator's to take. Terminal: nothing about this run changes by resuming
+## it, and the alignment does not survive the re-clone anyway.
+##
+## Reached AFTER the verdict is published, never instead of it: the comment
+## carries the cause to the PR, and `arm_automerge` runs first because it is
+## what takes down a commitment an earlier pass placed. A refusal that ended
+## the run first would leave that arming live, and the forge would merge the
+## bump the moment its own checks went green. Its own reason says what it did:
+## with arming off (the default) the forge is deliberately not touched.
+fail delivery_permission_denied:
+  description: "the runtime token cannot push the workflow files this alignment changed"
+  code: FORGE_PERMISSION_DENIED
+  message: "{{outputs.delivery_probe.reason}} — nothing was committed and nothing was pushed; the verdict is on the pull request. Auto-merge: {{outputs.arm_automerge.reason}}"
+
+## The preflight that did NOT answer, typed on the run — and the reason it
+## is a different failure from the hold above. A service that did not answer
+## proves nothing about any credential, so no verdict about one is published:
+## the hold's red comment and blocking check are for an ANSWERED refusal.
+## What the pull request carries on this path is iterion closing its own
+## merge-gate claim — the pending status the launch posted, answered by the
+## server's reconciler with a synthetic failure quoting the reason below, the
+## cure in it included. Terminal, like its sibling: the alignment does not
+## survive the re-clone a resume performs.
+fail delivery_preflight_unavailable:
+  description: "the delivery preflight did not answer, so the push was not attempted"
+  code: FORGE_PREFLIGHT_UNAVAILABLE
+  message: "{{outputs.delivery_probe.reason}} — nothing was committed and nothing was pushed, and no verdict about the credential was published. Auto-merge: {{outputs.arm_automerge.reason}}"
+
 ## ─── Workflow ───────────────────────────────────────────────────
 workflow dep_update_guard:
   ## Scanners + build toolchain live in the sec sandbox image. One
@@ -2059,10 +2410,50 @@ workflow dep_update_guard:
 
   verify_run -> validate_gate else
 
-  ## Green → commit the alignment onto the PR branch.
-  validate_gate -> commit when stable with {
+  ## Green → prove the push is possible, then commit the alignment onto the
+  ## PR branch. The probe is the LAST gate before the only mutation this bot
+  ## makes on someone else's repository, and it reads the working tree the
+  ## commit is about to carry — not the bump, which is already on the remote.
+  validate_gate -> delivery_probe when stable
+
+  delivery_probe -> commit when ok with {
     files_changed: "{{outputs.align.files_changed}}",
     breaking_summary: "{{outputs.align.breaking_summary}}",
+  }
+
+  ## An ANSWERED refusal — the preflight's verdict, or the forge API's scope
+  ## list — and nothing else: the credential cannot push what the alignment
+  ## wrote → HOLD, no commit, no push attempt. The probe's own reason is the
+  ## cause the comment and the required check carry: this hold is the one
+  ## whose cure belongs to the operator — the App grant or a reissued token
+  ## scope, and the reason says which — so a generic wording would send them
+  ## looking for work the bot supposedly lost.
+  delivery_probe -> post_feedback when denied with {
+    pr_url: "{{vars.pr_url}}",
+    verdict: "hold_delivery_permission",
+    audit_summary: "{{outputs.security_audit.summary}}",
+    ## Rendered under "Code alignment": what became of the alignment.
+    align_summary: "Delivery refused before the push: {{outputs.delivery_probe.reason}}",
+    validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
+    ## Nothing was pushed, so the verdict covers the head this run read.
+    audited_sha: "{{outputs.prepare.head_sha}}",
+  }
+
+  ## Neither a permitted delivery nor an answered denial: NOBODY ANSWERED.
+  ## The fallback is the whole guarantee — a shape this program never
+  ## foresaw cannot reach the hold, because reaching it takes a `denied`
+  ## nothing but a well-formed answer sets. Here the run stands any arming
+  ## down and ends typed, with the pull request untouched.
+  delivery_probe -> preflight_standdown else
+
+  preflight_standdown -> arm_automerge with {
+    pr_url: "{{outputs.preflight_standdown.pr_url}}",
+    verdict: "{{outputs.preflight_standdown.verdict}}",
+    gate_posted: "{{outputs.preflight_standdown.gate_posted}}",
+    gate_state: "{{outputs.preflight_standdown.gate_state}}",
+    gate_sha: "{{outputs.preflight_standdown.gate_sha}}",
+    audited_sha: "{{outputs.preflight_standdown.audited_sha}}",
+    committed_sha: "{{outputs.preflight_standdown.committed_sha}}",
   }
 
   ## Red → HOLD comment, no commit.
@@ -2146,4 +2537,16 @@ workflow dep_update_guard:
     committed_sha: "{{outputs.commit.sha}}",
   }
 
-  arm_automerge -> done
+  ## The delivery refusal is the one verdict that is also a RUN failure: every
+  ## other hold is a judgment about the bump, this one says the run's own
+  ## credential cannot do the job. It is typed here, at the end, so the
+  ## comment, the gate and `arm_automerge` all ran first.
+  arm_automerge -> delivery_permission_denied when "outputs.post_feedback.verdict == 'hold_delivery_permission'"
+
+  ## The other delivery refusal, which published no verdict to key on: the
+  ## probe's own code says which of the two it was, and the two values are
+  ## mutually exclusive by construction (one call site each). A path where
+  ## the probe never ran carries no code at all and takes neither edge.
+  arm_automerge -> delivery_preflight_unavailable when "outputs.delivery_probe.code == 'FORGE_PREFLIGHT_UNAVAILABLE'"
+
+  arm_automerge -> done else

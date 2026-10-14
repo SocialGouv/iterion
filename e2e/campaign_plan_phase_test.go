@@ -31,10 +31,12 @@ func stubWorkspaceProbeOK(exec *scenarioExecutor) {
 }
 
 // The real delivery probe is exercised by runtime's compiled-bot regression
-// suite. Control-flow scenarios supply its successful precondition explicitly.
+// suite. Control-flow scenarios supply its successful precondition explicitly,
+// with every field the real program prints: the probe answers three outcomes
+// and a stub short of one of them is kinder than the producer it stands in for.
 func stubDeliveryProbeOK(exec *scenarioExecutor) {
 	exec.on("delivery_probe", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{"ok": true, "code": "", "reason": "delivery permission established", "_tokens": 0, "_cost_usd": 0.0}, nil
+		return map[string]any{"ok": true, "denied": false, "code": "", "reason": "delivery permission established", "_tokens": 0, "_cost_usd": 0.0}, nil
 	})
 }
 

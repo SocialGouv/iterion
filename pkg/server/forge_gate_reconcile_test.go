@@ -558,3 +558,73 @@ func TestGateRelaunch_StandsDownOnASecondBudgetDeath(t *testing.T) {
 		t.Fatal("a relaunch that died of something else keeps the ordinary recovery")
 	}
 }
+
+// A bot that stood down because its delivery preflight answered nothing
+// publishes no comment and no verdict — but its launch CLAIMED the repo's gate
+// context with a pending status, and this reconciler closes that claim. So the
+// pull request does carry a synthetic failure, and the remedy it reads is the
+// only instruction an operator gets: "push again" cannot restore a preflight
+// service, grant a permission or mount a credential.
+func TestGateReconcile_APreflightThatDidNotAnswerSendsTheReaderToTheRunsCure(t *testing.T) {
+	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+	s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+	run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusFailed
+	run.FailureCode = forgePreflightUnavailableFailureCode
+	run.Error = "workflows:write could not be established: the delivery preflight service did not answer (asked twice); " +
+		"the permission itself is unknown and nothing was pushed, so relaunch when it answers"
+	if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerEvent); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d statuses, want 1 — the launch's claim is still unanswered", gc.setCalls)
+	}
+	if strings.Contains(gc.last.Description, "push again") {
+		t.Errorf("description = %q — a push asks the same silent service the same question", gc.last.Description)
+	}
+	if !strings.Contains(gc.last.Description, "the run's reason names the cure") {
+		t.Errorf("description = %q, want the remedy that reaches the cure", gc.last.Description)
+	}
+	if n := utf8.RuneCountInString(gc.last.Description); n > 140 {
+		t.Errorf("description is %d runes — a forge truncates at 140 and the remedy is the part that must survive", n)
+	}
+}
+
+// The other delivery code is NOT a member of that remedy table, and this is
+// what keeps the branch above from growing a dead sibling: when the preflight
+// ANSWERED a denial the bot publishes its own verdict in the gate context, so
+// the reconciler finds the check answered and writes nothing at all.
+func TestGateReconcile_AnAnsweredDeliveryDenialIsLeftAlone(t *testing.T) {
+	gc := &listingGateClient{
+		fakeGateClient: fakeGateClient{headSHA: "deadbeef"},
+		statuses: []forge.CommitStatus{{
+			Context:     "iterion/review",
+			State:       forge.CommitStateFailure,
+			Description: "the runtime token cannot push the workflow files this alignment changed",
+		}},
+	}
+	s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+	run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusFailed
+	run.FailureCode = "FORGE_PERMISSION_DENIED"
+	run.Error = "workflows:write is missing or unverified on the runtime token"
+	if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerEvent); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gc.setCalls != 0 {
+		t.Fatalf("posted %d statuses (%q), want 0 — the bot's own verdict already answers this context",
+			gc.setCalls, gc.last.Description)
+	}
+}

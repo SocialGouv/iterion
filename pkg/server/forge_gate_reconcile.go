@@ -80,6 +80,23 @@ const gateDLQDescriptionReplay = "review parked on the DLQ — operator replay n
 // deliberately changed nothing has approved nothing either.
 const gateDeclineDescription = "a bot was dispatched here and declined the task — nothing was pushed, a human decides from here"
 
+// forgePreflightUnavailableFailureCode is the code a BOT stamps on its own
+// `fail` node when the delivery preflight it asked about the credential it
+// mounts answered nothing at all. Same family as declinedFailureCode — the
+// bot writes it, the platform reads it — so it is declared where it is read,
+// and nothing here learns which bot ended on it.
+const forgePreflightUnavailableFailureCode store.FailureCode = "FORGE_PREFLIGHT_UNAVAILABLE"
+
+// gatePreflightUnavailableRemedy replaces the generic remedy when a bot stood
+// down because its delivery preflight did not answer. The bot publishes no
+// comment and no verdict on that path, so this synthetic status — the launch's
+// own gate claim being closed — is the only thing the pull request carries,
+// and "push again" is the one instruction that cannot work: a new head asks
+// the same silent service the same question. The run's reason names the cure
+// (a relaunch when the service went quiet, a configuration change when it
+// names one), so the remedy sends the reader there.
+const gatePreflightUnavailableRemedy = ") — the run's reason names the cure, then relaunch"
+
 // gateBudgetRemedy replaces the generic remedy when the run died on its own
 // budget. "Push again or comment the bot's command" is the one instruction
 // that cannot work: the next run reviews the same diff against the same cap
@@ -134,6 +151,9 @@ func gateInterruptedDescriptionFor(run *store.Run) string {
 	}
 	if run != nil && run.FailureCode == store.FailureBudgetExceeded {
 		return gateDiedDescriptionPrefix + reason + gateBudgetRemedy
+	}
+	if run != nil && run.FailureCode == forgePreflightUnavailableFailureCode {
+		return gateDiedDescriptionPrefix + reason + gatePreflightUnavailableRemedy
 	}
 	return gateDiedDescriptionPrefix + reason + ") — push again or comment the bot's command to re-run"
 }

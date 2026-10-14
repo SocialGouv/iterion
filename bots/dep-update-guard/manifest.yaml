@@ -1,7 +1,58 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.9.5
+version: 2.11.0
+## 2.11.0 — the delivery hold needs an ANSWERED refusal, and nothing else can
+## reach it. Three rounds of hardening each found one more transport shape
+## published as a blocking verdict on a third party's pull request: a
+## URLError, then a dropped connection (RemoteDisconnected is a
+## ConnectionResetError, not a URLError), then a Content-Length body cut
+## mid-transfer — which raises nothing at all and returns a short read.
+## Enumerating an HTTP library's failure modes is a blacklist and never
+## complete, so the probe carries its complement instead: only a WELL-FORMED
+## answer — HTTP 200, a body complete within its bound, the verdict fields
+## the endpoint documents — or the forge API's own scope list can publish
+## `hold_delivery_permission`, whose cure menu is now the two answered causes
+## (the App grant, a reissued classic scope). EVERY other outcome is one:
+## the preflight did not answer. It is asked once more, then the run ends on
+## the new `delivery_preflight_unavailable` node as
+## `FORGE_PREFLIGHT_UNAVAILABLE` — no comment and no verdict published, an
+## arming an earlier pass placed ASKED to stand down (arming is off by
+## default, where the forge is deliberately not touched), and the cure in the
+## reason: a relaunch where the service went silent, the configuration gap
+## where it names one. No blocking verdict about anybody's credential is
+## published; the red `<gate_context>` an operator may read there is
+## iterion's own reconciler closing the gate claim the launch posted (#1595).
+## Three terms carry that complement. The exemption is read from the
+## CREDENTIAL, never from the shape of a URL: an installation token is minted
+## by GitHub, so a GitHub Enterprise Server pull request addressed in the REST
+## spelling GitHub and Forgejo share is asked about instead of exempting
+## itself and turning the guard off. A framing RFC 7230 3.3.3 forbids is not
+## well-formed in ANY of its spellings — two lengths, a comma-folded list of
+## them, an unparseable one, a length beside a transfer coding — while a
+## legitimate transfer coding still carries its answer. And a URL naming no
+## pull request is refused before the question, rather than spending the
+## credential digest on one the endpoint answers with a 400.
+## 2.10.0 — the push is PROVED possible before it is attempted. GitHub refuses
+## outright an App push touching .github/workflows/** with a token lacking
+## `workflows`, and `iterion-forge-core` — the App that delivers Vetty's
+## alignment — does not hold it while Renovate (which must, for
+## `helpers:pinGitHubActionDigests`) does. So an Actions bump whose alignment
+## edits the workflow ended in a 403 at push, surfaced as
+## `hold_lost_alignment`: "the code alignment for this bump is missing from
+## the branch" — a permission an operator must grant, reported as work the bot
+## lost. `delivery_probe` (branch-improve-loop's node, copied; the DSL refuses
+## a fragment outside the bot's own lib/) now asks the server's read-only
+## delivery preflight before `commit`, and a refusal becomes the seventh
+## verdict, `hold_delivery_permission`: blocking in the gate table, refused by
+## arm_automerge, and typed on the run as FORGE_PERMISSION_DENIED once the
+## comment, the gate and arm_automerge have run.
+## Its SCOPE is the whole point, in both directions: the probe measures what
+## this run will push — HEAD..worktree, the index included, plus what HEAD
+## adds on top of origin/<branch> — never base..HEAD, which is the dependency
+## bot's own bump, already on the remote under its own App.
+## So the ordinary Actions digest pin, which touches a workflow file and needs
+## no alignment at all, is never held.
 ## 2.9.5 — every body it posts on a forge ends with the run that wrote it:
 ## the evidence behind the text, and the way into the platform for a reader
 ## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)
