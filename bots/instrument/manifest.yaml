@@ -1,7 +1,10 @@
 name: instrument
 display_name: Obsy
 icon: 📡
-version: 0.2.2
+version: 0.2.3
+## 0.2.3 — every body it posts on a forge ends with the run that wrote it:
+## the evidence behind the text, and the way into the platform for a reader
+## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)
 ## 0.2.2 — the in-loop review gains a redaction-net class (attack every
 ## outbound path a value travels: query string, cookies, access log,
 ## stack-trace frame-locals, free-text interpolation, process argv — paid:

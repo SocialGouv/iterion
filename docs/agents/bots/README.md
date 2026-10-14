@@ -7,6 +7,7 @@ touch names:
 | Leaf | Read it when |
 |---|---|
 | [skills.md](skills.md) | Editing a bundle's `skills/`. |
+| [run-link.md](run-link.md) | A bot posts anything on a forge — a body, a review, a comment, a reply. |
 | [convergence.md](convergence.md) | Writing a loop, campaign or reviewer bot. |
 | [untrusted-input.md](untrusted-input.md) | A prompt carrying untrusted text in an acting node. |
 | [input-reaches-the-model.md](input-reaches-the-model.md) | Adding, dropping or re-referencing a field on an LLM node's input. |

@@ -1,7 +1,10 @@
 name: supply-shield-cve
 display_name: Vulny
 icon: 🚨
-version: 0.1.5
+version: 0.1.6
+## 0.1.6 — every body it posts on a forge ends with the run that wrote it:
+## the evidence behind the text, and the way into the platform for a reader
+## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)
 ## 0.1.4 — `${BUNDLE_SKILLS_DIR}` is constrained absolute at launch and
 ## re-checked by each reader that joins a skill name onto it, so it can be
 ## neither empty nor relative.

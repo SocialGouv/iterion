@@ -47,6 +47,8 @@ interactive sessions).
 - **`.bot` traps.** A tool node's `command:` runs under `bash -c`; a `script:`
   with `language: sh` runs `sh`, so keep it POSIX ([pitfalls](docs/workflow_authoring_pitfalls.md#shell-portability-for-tool-nodes)).
   A literal `{{` in a template is `{{"{{"}}` ([delimiters](docs/dsl.md#literal-template-delimiters)).
+- **A bot links its run** — `{{run.url}}` in what it posts
+  ([the rule](docs/agents/bots/run-link.md)).
 - **Conventions.** Tests: the standard `testing` package. CLI: Cobra (one file
   per command, `cmd/iterion/`), output through `Printer`. Logs: `pkg/log`.
   Errors and tracing: extend `pkg/errtrack`, never a second tracker. Run state

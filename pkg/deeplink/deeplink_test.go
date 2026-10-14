@@ -1,9 +1,11 @@
 package deeplink
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +60,117 @@ func TestLegacyRunReproducesWhatWasWrittenNotWhatWouldBeWrittenToday(t *testing.
 		want := base + "/runs/" + id
 		if got := LegacyRun(base, id); got != want {
 			t.Errorf("LegacyRun(%q) = %q, want %q — a status carrying the second string would not be recognised", id, got, want)
+		}
+	}
+}
+
+// RunFromEnv is what a RUN publishes outside the deployment, so its policy
+// on a missing origin is the opposite of Run's: no address rather than a
+// root-relative path a pull-request reader cannot follow.
+func TestRunFromEnvPublishesAnAbsolutePageOrNothing(t *testing.T) {
+	const runID = "01a09ec6-b5b3-7660-8ef1-295031b7260d"
+
+	t.Setenv(PublicBaseEnv, "https://iterion.cloud/")
+	if got, want := RunFromEnv(runID), "https://iterion.cloud/studio/runs/"+runID; got != want {
+		t.Errorf("RunFromEnv = %q, want %q", got, want)
+	}
+	if got, want := PublicBase(), "https://iterion.cloud"; got != want {
+		t.Errorf("PublicBase = %q, want %q (trailing slash trimmed)", got, want)
+	}
+
+	// No origin configured (a local `iterion run`): the empty string says
+	// "this deployment publishes no public address". A root-relative
+	// "/studio/runs/<id>" posted on a forge resolves against the FORGE's
+	// host, which is a link to someone else's 404.
+	t.Setenv(PublicBaseEnv, "")
+	if got := RunFromEnv(runID); got != "" {
+		t.Errorf("RunFromEnv with no %s = %q, want the empty string", PublicBaseEnv, got)
+	}
+	t.Setenv(PublicBaseEnv, "   ")
+	if got := RunFromEnv(runID); got != "" {
+		t.Errorf("RunFromEnv with a blank %s = %q, want the empty string", PublicBaseEnv, got)
+	}
+
+	// No run id is the same refusal: a link to the run LIST would claim to
+	// be the run's own page.
+	t.Setenv(PublicBaseEnv, "https://iterion.cloud")
+	if got := RunFromEnv("  "); got != "" {
+		t.Errorf("RunFromEnv with no run id = %q, want the empty string", got)
+	}
+}
+
+// An origin a stranger cannot follow is refused with a REASON, because the
+// alternative is worse than nothing: a scheme-less value makes the published
+// link relative (it resolves against the forge the comment sits on), a value
+// with whitespace truncates the destination, and userinfo publishes the
+// credential in a comment on someone else's repository.
+func TestPublicOriginRefusesWhatAStrangerCannotFollow(t *testing.T) {
+	const runID = "01a09ec6"
+	for _, tc := range []struct{ name, env, wantIn string }{
+		{"no scheme", "iterion.example", "no http(s) scheme"},
+		{"protocol-relative", "//iterion.example", "no http(s) scheme"},
+		{"not a url", "not a url at all", "whitespace"},
+		{"inner newline", "https://a.example\nhttps://b.example", "whitespace"},
+		{"userinfo", "https://admin:s3cr3t@iterion.example", "userinfo"},
+		{"no host", "https://", "names no host"},
+		// A no-break space survives PublicBase's TrimSpace only at the ends,
+		// so an inner one reaches here — the realistic paste from a wiki or a
+		// ticket. An ASCII-only check accepted it.
+		{"no-break space", "https://a.example\u00a0b.example", "whitespace"},
+		{"line separator", "https://a.example\u2028b.example", "whitespace"},
+		// Studio() concatenates, so a query or fragment would swallow the
+		// run's own path: right host, wrong page, no sign of it in the link.
+		{"query", "https://iterion.example/?utm=x", "query or a fragment"},
+		{"bare query", "https://iterion.example?utm=x", "query or a fragment"},
+		{"fragment", "https://iterion.example#frag", "query or a fragment"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(PublicBaseEnv, tc.env)
+			base, err := PublicOrigin()
+			if err == nil {
+				t.Fatalf("PublicOrigin(%q) = %q, want a refusal", tc.env, base)
+			}
+			if !errors.Is(err, ErrPublicBaseUnusable) {
+				t.Errorf("refusal is not typed: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantIn) {
+				t.Errorf("refusal %q does not say why (want %q)", err, tc.wantIn)
+			}
+			// What a bot would publish: nothing at all, so it prints the run
+			// id alone — never a relative link, never a credential.
+			if got := RunFromEnv(runID); got != "" {
+				t.Errorf("RunFromEnv with %s=%q = %q, want the empty string", PublicBaseEnv, tc.env, got)
+			}
+		})
+	}
+
+	// A deployment served under a path prefix is legitimate, and the studio
+	// sits under that prefix too.
+	t.Setenv(PublicBaseEnv, "https://forge.example/iterion")
+	if got, want := RunFromEnv(runID), "https://forge.example/iterion/studio/runs/"+runID; got != want {
+		t.Errorf("RunFromEnv under a path prefix = %q, want %q", got, want)
+	}
+
+	// What is published is the form that was JUDGED, not the raw env value:
+	// an accepted origin comes back parsed (the scheme normalised), so the
+	// link a reader clicks is the one the predicate ruled on.
+	t.Setenv(PublicBaseEnv, "HTTPS://ITERION.EXAMPLE/")
+	base, err := PublicOrigin()
+	if err != nil {
+		t.Fatalf("PublicOrigin refused an uppercase scheme: %v", err)
+	}
+	if strings.HasPrefix(base, "HTTPS") {
+		t.Errorf("PublicOrigin returned the raw value %q, not the parsed form it judged", base)
+	}
+	if got, want := RunFromEnv(runID), "https://ITERION.EXAMPLE/studio/runs/"+runID; got != want {
+		t.Errorf("RunFromEnv with an uppercase scheme = %q, want %q", got, want)
+	}
+
+	// A port and a punycode host are ordinary, not findings.
+	for _, ok := range []string{"https://iterion.example:4891", "https://xn--iterin-bva.example"} {
+		t.Setenv(PublicBaseEnv, ok)
+		if _, err := PublicOrigin(); err != nil {
+			t.Errorf("PublicOrigin refused a legitimate origin %q: %v", ok, err)
 		}
 	}
 }

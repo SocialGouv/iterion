@@ -1263,6 +1263,8 @@ tool post_feedback:
     audited_sha = {{input.audited_sha}}
     token_ref = {{secrets.forge_token.path}}
     pub_url = {{vars.forge_publish_url}}
+    run_url = {{run.url}}
+    run_id = {{run.id}}
     pub_token = {{vars.forge_publish_token}}
     gate_enabled = {{vars.gate_enabled}}
     gate_context = {{vars.gate_context}}
@@ -1321,7 +1323,37 @@ tool post_feedback:
         " **Vetty never merges past a check** — whether this lands is the repo's own required checks' decision, " \
         "and only the exact commit reported above can be merged."
     section("What Vetty did", did)
-    parts.append("_\U0001F916 Posted by Vetty (dep-update-guard) — deterministic feedback._")
+    # The run that wrote this comment: the reader's way to the steps, the
+    # models and the cost behind the verdict, and the way into the platform
+    # for someone meeting this bot on their own repository. No public address
+    # configured (a local run) leaves the id alone, never a made-up host.
+    #
+    # A run id is CALLER-CHOSEN at launch and only screened for path
+    # traversal, so it may hold markdown: an id like `x](https://evil` would
+    # close this label early and publish a foreign link under Vetty's
+    # signature. Only a plain id becomes a label; anything else is dropped
+    # and the link keeps a fixed one (the URL itself is path-escaped).
+    # On an engine that predates `run.url` the reference is UNRESOLVED, and a
+    # script body renders a missing ref as the JSON `null` literal (shimmed to
+    # None above), never as the delimiter itself — so s() empties it here and
+    # the footer degrades to the id alone. The sibling command-body node of
+    # branch-improve-loop needs its own guard for this, because THERE the
+    # delimiter does survive into the rendering.
+    rid = s(run_id) if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", s(run_id) or "") else ""
+    foot = "_\U0001F916 [iterion](https://iterion.cloud)"
+    if s(run_url):
+        label = "`" + rid + "`" if rid else "this run"
+        foot += " · run [" + label + "](" + s(run_url) + ")"
+    elif rid:
+        foot += " · run `" + rid + "`"
+    elif s(run_id):
+        # No address AND an id no label can carry: name the run anyway —
+        # a verdict with no identifier is the assertion this footer exists
+        # to avoid. Inside a code span, with backticks stripped, the id
+        # can neither close the span nor open a link.
+        foot += " · run `" + s(run_id).replace(chr(96), "") + "`"
+    foot += " — Vetty, deterministic feedback"
+    parts.append(foot + "._")
     body = "\n".join(parts)
 
     # DETERMINISTIC gate verdict: a table over the verdict the graph already

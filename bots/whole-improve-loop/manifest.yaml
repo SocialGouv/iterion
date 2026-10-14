@@ -1,7 +1,10 @@
 name: whole-improve-loop
 display_name: Willy
 icon: 🌍
-version: 2.5.1
+version: 2.5.2
+## 2.5.2 — every body it posts on a forge ends with the run that wrote it:
+## the evidence behind the text, and the way into the platform for a reader
+## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)
 ## 2.5.0 — a missing verify.sh is a refusal, not a pass (#1598)
 ## 2.4.2 — the verify gate's clean-tree precheck no longer counts the `.claude/`
 ## scaffold iterion mirrors into the worktree as the pass's uncommitted work,

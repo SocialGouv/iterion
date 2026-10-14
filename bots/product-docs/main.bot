@@ -955,6 +955,9 @@ prompt finalize_mr_system:
   short summary. Be honest: report exactly what happened.
 
 prompt finalize_mr_user:
+  This run — the body's mandatory footer links it (url is EMPTY on a
+  deployment with no public address: then the id, with no link):
+  id {{run.id}} · url {{run.url}}
   Workspace (the docs repo): {{input.workspace_dir}}
   Product: {{input.product_id}}
   Open as DRAFT: {{input.draft}}

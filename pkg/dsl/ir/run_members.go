@@ -10,6 +10,7 @@ package ir
 // command is the failure #1464 exists to prevent.
 var RunMembers = []string{
 	"id",
+	"url",
 	"elapsed_seconds",
 	"cost_usd",
 	"tokens",

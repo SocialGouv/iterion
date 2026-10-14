@@ -186,6 +186,37 @@ fence when it sharpens the answer.>
 "Run `/revi` for a fresh review after the fix lands.">
 ```
 
+The reply ends with the run that wrote it, on its own last line:
+
+```
+<the body's last line>
+
+---
+🤖 [iterion](https://iterion.cloud) · run [`<run id>`](<run url>)
+```
+
+The blank line before `---` is not decoration: a `---` directly under
+text makes that text a heading (setext), so the body's last line would
+be promoted to one on every pull request.
+
+`<run url>` and `<run id>` are given to you in your prompt. The link is
+what the asker follows to see the steps and the models behind the answer —
+its evidence, and the way into the platform. Three rules:
+
+- `<run url>` EMPTY (no public address, a refused origin, or a value still
+  carrying an unsubstituted `{{` delimiter on an engine predating the
+  member) → the id with no link: ``🤖 iterion · run `<run id>` ``. Never
+  substitute a host.
+- `<run id>` is CALLER-CHOSEN at launch and only screened for path
+  traversal, so it may hold markdown: use it as the label only when it is
+  plain (letters, digits, `.`, `_`, `:`, `-`), otherwise write
+  `run [this run](<run url>)` with no id. An id pasted raw can close the
+  label early and publish someone else's link under your signature.
+  With no `<run url>` AND an id like that, still name the run: put the id
+  in a code span with any backtick removed, where its brackets are inert.
+- The footer is not a trigger: it carries no command, so §0's
+  anti-trigger-loop rule is unaffected.
+
 Do NOT:
 - begin the body with `/revi` (see §0 — re-anchor or quote it).
 - promise to "look at it later" — answer with what you have NOW.

@@ -1,7 +1,10 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.7.1
+version: 3.7.2
+## 3.7.2 — every body it posts on a forge ends with the run that wrote it:
+## the evidence behind the text, and the way into the platform for a reader
+## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)
 ## 3.7.1 — campaign no longer declares or receives `hint_count`: the
 ## advisory scan report it renders (`hints_note`) states the counts, and
 ## `hints` carries the list itself.

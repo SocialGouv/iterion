@@ -3,6 +3,7 @@ package runtime
 import (
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
@@ -56,7 +57,15 @@ func runNamespace(rs *runState) map[string]any {
 		}
 	}
 	return map[string]any{
-		"id":                   rs.runID,
+		"id": rs.runID,
+		// The run's own page on the deployment that executes it — the one
+		// address a bot can publish so a reader of its pull request, its
+		// review or its chat message reaches the evidence (steps, outputs,
+		// cost) and the platform behind it. Built from the deployment's
+		// public origin (deeplink.PublicBaseEnv), which the runner carries
+		// beside the server; EMPTY when none is configured, so a bot prints
+		// the id alone rather than a link nobody can follow.
+		"url":                  deeplink.RunFromEnv(rs.runID),
 		"elapsed_seconds":      elapsed.Seconds(),
 		"cost_usd":             st.CostUSD,
 		"tokens":               int64(st.Tokens),

@@ -675,6 +675,9 @@ prompt coverage_audit_user:
   audit this inventory against them. Return the structured result.
 
 prompt finalize_mr_user:
+  This run — the body's mandatory footer links it (url is EMPTY on a
+  deployment with no public address: then the id, with no link):
+  id {{run.id}} · url {{run.url}}
   PR to amend (pr_url — EMPTY = open a new PR · SET = amend THIS PR): {{input.pr_url}}
   Workspace: {{input.workspace_dir}}
   PR head branch (amend push target, engine-provided; may be empty): {{input.source_branch}}

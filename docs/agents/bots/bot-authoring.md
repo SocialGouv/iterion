@@ -13,6 +13,7 @@ before writing or amending any `.bot` that can commit code.
 ## The leaves
 
 [Skills live with their bundle](skills.md) · [loops converge](convergence.md) ·
+[a forge-facing bot links its run](run-link.md) ·
 [the UNTRUSTED INPUT BOUNDARY](untrusted-input.md) ·
 [a value on an input reaches the model only if a channel renders it](input-reaches-the-model.md) ·
 [repo- and stack-agnostic](universality.md) ·
