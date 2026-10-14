@@ -368,3 +368,12 @@ a Git revert, not an alternate path that can silently drift back into use.
 8. `${BUNDLE_DIR}`, then share the scripts.
 9. Studio read-only opening — after `feat/assistant-epic` is integrated.
 10. Extend to the remaining shared subbots; cloud stays out of scope.
+
+## Status note (2026-10-14)
+
+`pkg/runner` wires `WithSubbotRunner`: once in the cloud run loop
+([pkg/runner/loop.go](../../pkg/runner/loop.go), `runtime.WithSubbotRunner(r.subbotRunnerFor(...))`)
+and once for a child run ([pkg/runner/subbot.go](../../pkg/runner/subbot.go)).
+A cloud run reaching a `subbot` node therefore executes the child rather than
+dying at the node, so §9's premise — "`pkg/runner` **never** wires
+`WithSubbotRunner`" — no longer describes the code.

@@ -1,69 +1,12 @@
 # Bot resolution — team row, platform override, baked catalog
 
-Every site that turns a bot id into launchable source walks three tiers in one order — the launching team's own stored bundle, then the deployment's platform override, then the catalog baked into the image — and records which one served.
+Every site that turns a bot id into launchable source walks three tiers in one order — the launching team's own stored bundle, then the deployment's platform override, then the catalog baked into the image — and, on a cloud deployment, records which one served.
 
-> Drawn from the code at commit `3e92b2c89`. One authority owns the walk, `pkg/server/bot_resolver.go`, and a static sweep test forbids a new direct `botregistry` read anywhere in `pkg/server`. How this page is kept true: [README](README.md).
+> Drawn from the code at commit `f564846d3`. One authority owns the walk, `pkg/server/bot_resolver.go`, and a static sweep test refuses a direct call to the six `botregistry` lookups it names from any `pkg/server` file outside the nine it allowlists by reason. How this page is kept true: [README](README.md).
 
 ## The cascade
 
-```mermaid
-flowchart TD
-  entry["a launch surface calls resolveBotTiered with the team the launch is FOR"]
-  idq{"a bot id, or one inferable from a catalog-shaped path"}
-  none["nothing resolved: nil, and the caller keeps its own not-found"]
-  fold["platformSlug: the requested slug NormalizeName-folded against the platform entry set, into its OWN variable"]
-  storeq{"a bot-source store is wired"}
-  teamq{"the team id is non-empty"}
-  team{"TEAM tier: teamBotRow - the indexed read, then a normalized scan of that one tenant"}
-  teamerr["refused: resolve bot slug team tier - only a genuine absence falls through"]
-  plat{"PLATFORM tier: GetBySlug under the platform sentinel tenant"}
-  platerr["refused: resolve bot slug platform tier - a store blip must never launch the stale baked bundle"]
-  stored["storedLaunchBot: materialize the file map to a temp dir at 0644, stamp Path, Ref, sourceRowID and the decoded manifest"]
-  emptymain["refused: main.bot is empty"]
-  shadow["warnIfOverrideShadowsNewerBake: one deduped Warn per shadow - the launch proceeds on the override"]
-  baked{"BAKED tier: botregistry.ResolveBotPath over the configured bot roots"}
-  absent["not found here: nil, and the caller decides"]
-  bakederr["refused: a matching malformed bundle keeps its discovery diagnostic, an unreadable source is an explicit read error"]
-  read["read main.bot, then manifest.yaml and manifest.yml"]
-  modeq{"cloud mode"}
-  snap["snapshotLaunchBot: freeze the parent collection plus every transitively named subbot bundle, each child resolved through THIS cascade with the same team id"]
-  snaperr["refused: child depth over 8, an unsafe or escaping source, a missing child, a symlink, over 32 MiB or over 4096 files"]
-  tier["Tier: the one conversion site from the resolver Origin to store.BotSourceTier"]
-  stamp["StampBundle: the compile dir, the bundle ref and the tier onto the LaunchSpec"]
-  publish["the publisher writes runs.bot_source_tenant and runs.bot_source_tier, and puts the ref on the queue message"]
-  payloadq{"the message fits the queue payload"}
-  offload["the snapshot moves to an IR blob keyed by run id and content digest"]
-  runnerq{"materializeBotBundle: does the ref carry a snapshot"}
-  opened["decode against SnapshotDigest, materialize a private collection, open it as the run bundle"]
-  legacy["legacy ref: re-fetch the row and demand the stored version equals the ref version, else the attempt fails with version drift"]
-
-  entry --> idq
-  idq -->|"neither"| none
-  idq --> fold --> storeq
-  storeq -->|"local mode, no stored tier"| baked
-  storeq --> teamq
-  teamq -->|"empty: platform over baked"| plat
-  teamq --> team
-  team -->|"any other store error"| teamerr
-  team -->|"found"| stored
-  team -->|"genuine absence"| plat
-  plat -->|"any error but ErrNotFound"| platerr
-  plat -->|"found"| stored
-  plat -->|"ErrNotFound"| baked
-  stored -->|"empty entry"| emptymain
-  stored --> shadow --> modeq
-  baked -->|"os.ErrNotExist"| absent
-  baked -->|"a discovery failure"| bakederr
-  baked --> read --> modeq
-  modeq -->|"local"| tier
-  modeq -->|"cloud"| snap
-  snap -->|"a bound or a child refuses"| snaperr
-  snap --> tier --> stamp --> publish --> payloadq
-  payloadq -->|"no"| offload --> runnerq
-  payloadq -->|"yes"| runnerq
-  runnerq -->|"inline, or by SnapshotRef"| opened
-  runnerq -->|"no snapshot"| legacy
-```
+The cascade is drawn on the feature page: [platform-bots.md § How it works](../platform-bots.md#how-it-works).
 
 Reading notes, because the picture hides three things:
 
@@ -154,7 +97,7 @@ stateDiagram-v2
 | `team` | `storedLaunchBot` resolved the launching team's own row — origin `team` | resume re-resolves THAT row under its own tenant, at its current version |
 | `platform` | the read under the `platform:` sentinel found a row — origin `platform` | the same, with `bot_source_tenant` holding the sentinel; an admin delete sends the next launch to the baked tier |
 | `baked` | `ResolveBotPath` answered off the filesystem — origin `catalog` | `ServedByStoredBot` is false whatever a stale tenant stamp beside it says |
-| empty | the launch predates the stamp, or resolved no bot at all — a loose `.bot` | `ServedByStoredBot` falls back to a non-empty `bot_source_tenant`, because the tier alone misses every pre-stamp stored run |
+| empty | a run of a local deployment (no publisher stamps it), a launch that predates the stamp, or one that resolved no bot at all — a loose `.bot` | `ServedByStoredBot` falls back to a non-empty `bot_source_tenant`, because the tier alone misses every pre-stamp stored run |
 
 The pseudo-state is not a tier: entering it, the slug is held by no tier at all, `resolveBotTiered` answers nil and the caller keeps its own not-found — which is not the `empty` row above, a stamp on a run. Five other state vocabularies look like this one and are not it: `store.RunStatus`, the native board state, the dispatcher claim lifecycle, the forge board columns (`forge_board_bindings.status_mapping`) and `BankState` (see the [README glossary](README.md#glossary)). The row's own write outcomes — created at version 1, updated, `ErrVersionConflict`, deleted with its history retained — are store errors, not a persisted enum.
 
@@ -182,7 +125,7 @@ The pseudo-state is not a tier: entering it, the slug is held by no tier at all,
 | `bot_sources` | both stored tiers are rows of this one collection: the team row under its team id, the platform override under the `platform:` sentinel. Read by slug on every resolution, written by every push, fork and delete; `(tenant_id, slug)` is unique |
 | `bot_source_versions` | one snapshot per write, `_id` of `<row id>:<version>`, 30-day TTL on its write time. Created BEFORE the insert, so a failed create leaves only an orphan no pin can name; retained across a delete, so a mission's pin still serves what its preview certified |
 | `audit_events` | a platform mutation lands on the platform log as `platform.bot.<action>`, a team mutation on the team's as `bot_source.<action>`, each with the slug, the version and the content digest. The history purge takes the same split, as `history.purged`; the count of snapshots removed rides the response body, never the audit meta |
-| `runs` | written with `bot_source_tenant` and `bot_source_tier`; read back by `ObservedRunnerBuilds` for the fleet half of the engine floor |
+| `runs` | written, by the cloud publisher, with `bot_source_tenant` and `bot_source_tier`; read back by `ObservedRunnerBuilds` for the fleet half of the engine floor |
 | `"S3: ir/<run_id>-bundle-<digest>.json"` | the frozen collection itself: the publisher parks it here when the queue envelope would not fit the payload limit, keyed by run id and snapshot digest, and the runner fetches it back through `SnapshotRef` before the digest check |
 
 The adjacent source families do not take part in this precedence: `plugin_sources` is a team-scoped git binding resolved separately, and a `marketplace` install is local-mode only, landing in the workspace `.botz/` or the host plugin dir — no path promotes either into a `bot_sources` row.

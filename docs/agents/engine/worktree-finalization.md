@@ -8,20 +8,25 @@ When a workflow declares `worktree: auto`, the engine creates a fresh git
 worktree at `<store-dir>/worktrees/<run-id>` and runs all nodes inside it
 (see `pkg/runtime/worktree.go`). On a clean exit, `finalizeWorktree`:
 
-1. Reads the worktree's HEAD. If unchanged, no-op (the run made no commits).
-2. **Always** creates a persistent branch on that HEAD (default
+1. Refuses before any write — preserving the worktree — when its path is the
+   repo root, or when it cannot prove the tree is the run's own.
+2. Reads the worktree's HEAD, then banks any uncommitted run output as a
+   `wip(iterion): auto-banked uncommitted run output` commit and re-reads
+   HEAD. If HEAD still equals the tip the run started from, no-op.
+3. **Always** creates a persistent branch on that HEAD (default
    `iterion/run/<run id>`, overridable via `--branch-name`). This
    is the GC guard — without it the commits would only be reachable via
    reflog and eligible for `git gc` after ~30 days.
-3. **Best-effort** merges the run's commits into the user's
+4. **Best-effort** merges the run's commits into the user's
    currently-checked-out branch — by default as ONE **squash** commit
    (title = the first commit's subject, body = the per-commit
    `- <sha> <subject>` list); `--merge-strategy merge` fast-forwards
    instead (preserves history). Skipped — with a warning logged — if any
    guard fails (dirty working tree, branch switched mid-run, non-FF,
    detached HEAD at start), and never attempted for a wip-banked HEAD
-   (unreviewed output stays on the storage branch only).
-4. Removes the worktree directory.
+   (unreviewed output stays on the storage branch only — so a run that
+   committed nothing but left a dirty tree lands `merge_status: skipped`).
+5. Removes the worktree directory.
 
 The result is persisted on `run.json` as `final_commit`, `final_branch`,
 `merged_into`, `merged_commit` (differs from `final_commit` under

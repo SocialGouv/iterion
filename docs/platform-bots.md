@@ -34,6 +34,69 @@ is CLI-first.
 
 ## How it works
 
+Diagram: [Bot resolution — team row, platform override, baked catalog](diagrams/flow-bot-resolution-overrides.md)
+— the cascade below; the step table, the guards and the collections it touches
+are on that page.
+
+```mermaid
+flowchart TD
+  entry["a launch surface calls resolveBotTiered with the team the launch is FOR"]
+  idq{"a bot id, or one inferable from a catalog-shaped path"}
+  none["nothing resolved: nil, and the caller keeps its own not-found"]
+  fold["platformSlug: the requested slug NormalizeName-folded against the platform entry set, into its OWN variable"]
+  storeq{"a bot-source store is wired"}
+  teamq{"the team id is non-empty"}
+  team{"TEAM tier: teamBotRow - the indexed read, then a normalized scan of that one tenant"}
+  teamerr["refused: resolve bot slug team tier - only a genuine absence falls through"]
+  plat{"PLATFORM tier: GetBySlug under the platform sentinel tenant"}
+  platerr["refused: resolve bot slug platform tier - a store blip must never launch the stale baked bundle"]
+  stored["storedLaunchBot: materialize the file map to a temp dir at 0644, stamp Path, Ref, sourceRowID and the decoded manifest"]
+  emptymain["refused: main.bot is empty"]
+  shadow["warnIfOverrideShadowsNewerBake: one deduped Warn per shadow - the launch proceeds on the override"]
+  baked{"BAKED tier: botregistry.ResolveBotPath over the configured bot roots"}
+  absent["not found here: nil, and the caller decides"]
+  bakederr["refused: a matching malformed bundle keeps its discovery diagnostic, an unreadable source is an explicit read error"]
+  read["read main.bot, then manifest.yaml and manifest.yml"]
+  modeq{"cloud mode"}
+  snap["snapshotLaunchBot: freeze the parent collection plus every transitively named subbot bundle, each child resolved through THIS cascade with the same team id"]
+  snaperr["refused: child depth over 8, an unsafe or escaping source, a missing child, a symlink, over 32 MiB or over 4096 files"]
+  tier["Tier: the one conversion site from the resolver Origin to store.BotSourceTier"]
+  stamp["StampBundle: the compile dir, the bundle ref and the tier onto the LaunchSpec"]
+  publish["cloud: the publisher writes runs.bot_source_tenant and runs.bot_source_tier, and puts the ref on the queue message - a local run keeps neither"]
+  payloadq{"the message fits the queue payload"}
+  offload["the snapshot moves to an IR blob keyed by run id and content digest"]
+  runnerq{"materializeBotBundle: does the ref carry a snapshot"}
+  opened["decode against SnapshotDigest, materialize a private collection, open it as the run bundle"]
+  legacy["legacy ref: re-fetch the row and demand the stored version equals the ref version, else the attempt fails with version drift"]
+
+  entry --> idq
+  idq -->|"neither"| none
+  idq --> fold --> storeq
+  storeq -->|"local mode, no stored tier"| baked
+  storeq --> teamq
+  teamq -->|"empty: platform over baked"| plat
+  teamq --> team
+  team -->|"any other store error"| teamerr
+  team -->|"found"| stored
+  team -->|"genuine absence"| plat
+  plat -->|"any error but ErrNotFound"| platerr
+  plat -->|"found"| stored
+  plat -->|"ErrNotFound"| baked
+  stored -->|"empty entry"| emptymain
+  stored --> shadow --> modeq
+  baked -->|"os.ErrNotExist"| absent
+  baked -->|"a discovery failure"| bakederr
+  baked --> read --> modeq
+  modeq -->|"local"| tier
+  modeq -->|"cloud"| snap
+  snap -->|"a bound or a child refuses"| snaperr
+  snap --> tier --> stamp --> publish --> payloadq
+  payloadq -->|"no"| offload --> runnerq
+  payloadq -->|"yes"| runnerq
+  runnerq -->|"inline, or by SnapshotRef"| opened
+  runnerq -->|"no snapshot"| legacy
+```
+
 - **Storage**: an override is an ordinary `pkg/botsource` row under the
   reserved sentinel tenant `platform:` — same collection, validation and
   compile check as team-authored bots (the pattern platform LLM
@@ -87,26 +150,21 @@ is CLI-first.
   platform + baked floor each team-aware form falls through to. A static
   sweep (`bot_resolver_sweep_test.go`) fails a new tenant-free metadata
   read that is not declared with its reason.
-- **Known gap — the pipelines control center.** Its "launch now" action
-  and its ticket-admission check resolve the bot on the platform + baked
-  tiers and launch by *filesystem path* (`entry.MainFile()`) rather than
-  through the tiered resolver, so a stored bundle has no path to launch
-  from: a team's fork of a catalog slug runs its ORIGIN there, and a bot
-  only the team authored cannot be carded at all. Both halves move
-  together — making the check tenant-aware alone would create cards that
-  can never launch — so it belongs with the launch-surface work of #871,
-  not the metadata pass. Tracked as **#970**.
 - **Launch**: the server resolves the override ONCE, materializes it to a
   temp dir, and compiles against it (prompts/ participate in IR and the
-  workflow hash). The queue message (schema v9) carries a
-  `bot_bundle {tenant_id, slug, version}` ref; the **runner** fetches the
-  row from Mongo, **verifies the version still matches**, materializes it
-  into ephemeral scratch and attaches it as the run's bundle *instead of*
-  the stale baked one — full fidelity: manifest, skills/, prompts/,
-  devbox.json.
-- **Version drift**: a push racing an in-flight launch fails that attempt
-  loudly (`version drift: store has vN+1, launch resolved vN`) rather than
-  pairing the launch's IR with newer resources. A resume re-resolves the
+  workflow hash). The queue message's `bot_bundle` ref carries the frozen
+  bundle collection and its sha256 digest — inline, or as an IR blob
+  reference when the envelope would not fit the payload limit; the
+  **runner** materializes those bytes after the digest check and attaches
+  them as the run's bundle *instead of* the stale baked one — full
+  fidelity: manifest, skills/, prompts/, devbox.json. A ref carrying no
+  snapshot is the legacy path: there the runner fetches the row from Mongo
+  and holds its version to the ref's.
+- **Version drift**: a push racing an in-flight launch cannot repoint it —
+  the snapshot the ref carries is what runs. Only a legacy ref with no
+  snapshot re-reads the row, and that attempt fails loudly
+  (`version drift: store has vN+1, launch resolved vN`) rather than pairing
+  the launch's IR with newer resources. A resume re-resolves the
   current row, so a skills-or-manifest-only push self-heals — but a push
   that changed `main.bot` or `prompts/` moves the workflow hash, so the
   resume is REFUSED until you force it (and the auto-retry sweeper, which
@@ -291,13 +349,14 @@ releases carry bots, and removes the trap for the next release.
   staged via the host-bind path does not provision inside a k8s sandbox —
   a pre-existing gap shared with baked bundles.
 
-## Rollout note (queue schema v9)
+## Rollout note (the queue schema)
 
-v9 added `bot_bundle` + `sandbox_image` to the RunMessage. Runners accept
-**both v8 and v9** (the change is additive), so queued v8 messages stay
-consumable by upgraded runners. The reverse direction keeps the standard
-policy: a pre-bump runner rejects v9, so roll server and runner from the
-same release (or runner first) as usual.
+`bot_bundle` and `sandbox_image` ride the RunMessage, whose wire version is
+`queue.SchemaVersion` = **24**. A consumer accepts **v10 through v24**
+(`queue.MinSchemaVersion` = 10), so a message older than v10 is not
+consumable at all. The reverse direction keeps the standard policy: a
+pre-bump runner rejects a message from a newer server, so roll server and
+runner from the same release (or runner first) as usual.
 
 ## Platform settings: bot roles + sandbox image + bot vars
 

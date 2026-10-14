@@ -4,11 +4,11 @@ A backend is the executor iterion routes a node to — either the in-process
 provider client and Iterion-native tool loop, or a coding-agent CLI with its
 own tool loop — and one workflow can mix them per node. `model:` is an
 independent wire-model pin, not a request for a particular backend. Iterion
-ships six: `claw` (in-process LLM SDK),
+ships seven: `claw` (in-process LLM SDK),
 `claude_code` (Claude Code CLI), `pi` (pi coding agent), `kimi` (Kimi Code
-CLI), `grok` (Grok Build CLI), and `codex` (Codex CLI). It auto-detects
-whatever credentials you already have signed in: the
-default preference considers `claude_code` and `claw`; the other four require
+CLI), `grok` (Grok Build CLI), `opencode` (OpenCode CLI) and `codex` (Codex
+CLI). It auto-detects whatever credentials you already have signed in: the
+default preference order is `claude_code` then `claw`; the other five require
 an explicit opt-in. This page documents the resolution chain, credentials,
 support boundaries, and overrides.
 
@@ -17,7 +17,7 @@ flowchart LR
   MODEL["model: (optional wire-model pin)"] -.-> NODE{"🧠 Workflow node"}
   NODE --> RESOLVE{"backend: pin / workflow / env / credential detection"}
   RESOLVE -->|"claw"| DIRECT(["⚡ In-process provider client<br/>+ Iterion-native tools"])
-  RESOLVE -->|"claude_code · codex · pi · kimi · grok"| CLI[["🛠️ Delegated coding-agent CLI<br/>+ its own tool loop"]]
+  RESOLVE -->|"claude_code · codex · pi · kimi · grok · opencode"| CLI[["🛠️ Delegated coding-agent CLI<br/>+ its own tool loop"]]
 ```
 
 > **Cloud BYOK.** The auto-detection below is the *host/env* path. In

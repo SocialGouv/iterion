@@ -14,7 +14,7 @@ flowchart LR
   LEX --> PAR["🌳 Parser<br/>recursive descent"]
   PAR --> AST["AST"]
   AST --> IR["🧩 IR compile<br/>nodes · edges · schemas"]
-  IR --> VAL{{"✅ Validate<br/>C001–C199 diagnostics"}}
+  IR --> VAL{{"✅ Validate<br/>inside ir.Compile · C001–C313"}}
   VAL --> RUN(["⚙️ Runtime<br/>execute · budget · persist"])
 ```
 
@@ -1342,7 +1342,7 @@ Terminal targets `done` and `fail` are reserved and are never declared.
 
 ## Worktrees, sandboxing, permissions, and budgets
 
-- `worktree: auto` executes in a per-run worktree and preserves a run branch. Final merge behavior depends on CLI/studio flags and delegated merge authority; see [merge policy](merge-policy.md) and [resume](resume.md).
+- `worktree: auto` executes in a per-run worktree and preserves a run branch, unless the run works in place — [From a `.bot` to a running graph](diagrams/flow-bot-to-running-graph.md) draws when it does. Final merge behavior depends on CLI/studio flags and delegated merge authority; see [worktree finalization](agents/engine/worktree-finalization.md) and [resume](resume.md).
 - `sandbox: auto` resolves a devcontainer/default image. Block form supports image/build, user/workspace, host-state, environment, mounts, post-create, and network policy; see [sandbox](sandbox.md).
 - `permission: off|ask|deny` plus `allow:`/`ask:`/`deny:` rules creates an execution-time tool gate. Mode and rule lists are declarable on the `workflow` block and on an `agent`/`judge` node; a node list REPLACES the workflow list of the same kind, and the CLI overrides append to whichever won. See [permissions](permissions.md).
 - `compress: off|on|ultra` controls output compression where supported; see [ultracode](ultracode.md).
