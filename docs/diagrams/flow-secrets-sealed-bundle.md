@@ -2,49 +2,15 @@
 
 A cloud run's credentials travel in two halves that never share a channel: the sealed bundle waits in Mongo under a random ref, and the only key that opens it rides the run's own queue message.
 
-> Drawn from the code at commit `f7ef017b7`; how this page is kept true: [README](README.md).
+> Drawn from the code at commit `f564846d3`; how this page is kept true: [README](README.md).
 
 ## The exchange
 
-```mermaid
-sequenceDiagram
-  participant ADM as team admin<br/>or the forge minter
-  participant SRV as server<br/>(publisher)
-  participant DB as Mongo<br/>generic_secrets, run_secrets
-  participant NQ as NATS<br/>the run's pool subject
-  participant RUN as runner pod
-  participant SBX as sandbox driver<br/>+ egress proxy
-
-  ADM->>SRV: POST /api/teams/.../secrets - name + value
-  SRV->>DB: SealGenericSecret under AAD generic_secret:id
-  ADM->>SRV: POST /api/teams/.../bots/.../bindings - secret_id, allowed_hosts
-  SRV->>DB: bot_secret_bindings row, one per declared secret name
-  Note over SRV: launch admitted: requireSafeOrigin, then gateLaunch
-  SRV->>DB: ResolveGenericWithBindings - webhook-override, user, binding, team
-  DB-->>SRV: per name: plaintext, egress lock, store id
-  Note over SRV: refuses: untrusted workspace + a required secret<br/>refuses: a required name that resolves to nothing
-  SRV->>SRV: NewRunBundleDEK, 32 bytes, then SealRunBundle<br/>AAD run_secrets:tenant/pool/run, key_id dek
-  SRV->>DB: run_secrets record - random UUID ref, expires_at now+24h
-  SRV->>NQ: RunMessage v24 carrying SecretsRef AND BundleDEK
-  NQ->>RUN: delivery on the run's own pool subject
-  Note over RUN: refuses: a schema version outside 10 to 24<br/>Naks with a delay, and only the last permitted delivery parks
-  RUN->>DB: Get SecretsRef under the run's tenant ctx
-  DB-->>RUN: sealed_bundle + key_id
-  Note over RUN: refuses: record tenant unequal to message tenant<br/>refuses: key_id dek with no 32-byte BundleDEK
-  RUN->>RUN: AES-GCM sealer from BundleDEK, OpenRunBundle,<br/>secrets.WithCredentials on the run ctx
-  RUN->>SBX: file secrets as 0600 SecretFileMounts<br/>or 0600 host files under /run/iterion/secrets
-  loop every 5 minutes while the run lives
-    RUN->>DB: re-read each GenericRefs record and unseal it
-    RUN->>SBX: SecretFileRefresher pushes a rotated value in place
-  end
-  SBX->>SBX: placeholders substituted toward permitted hosts only<br/>403 blocked by sandbox secret policy elsewhere
-  RUN->>DB: Delete SecretsRef - terminal-clean outcome only
-  Note over RUN: every Nak path keeps the record so the redelivery<br/>re-opens the same ref - the TTL reaps it at 24h
-```
+The sequence is drawn on the page that owns the bundle: [Cloud architecture → Sealed credentials bundle lifecycle](../cloud-architecture.md#sealed-credentials-bundle-lifecycle).
 
 Reading notes:
 
-- **The two channels are the feature.** Mongo holds the ciphertext, the queue message holds the 32-byte DEK; neither alone opens a bundle, and the runner process boots with `SealerOptional` — no platform key material reaches the pod for the current (`dek`) cohort.
+- **The two channels are the feature.** Mongo holds the ciphertext, the queue message holds the 32-byte DEK; neither alone opens a bundle, and the runner process boots with `SealerOptional` — no platform key is needed to open a current (`dek`) bundle.
 - **The binding is cryptographic, not just a field check.** `RunBundleAAD` is `run_secrets:<tenant>/<pool>/<run>`, so a record served under another identity cannot open even when the `rec.TenantID == msg.TenantID` comparison is satisfied. The run-only AAD is `legacyRunBundleAAD`, reserved for id-less records.
 - **A resume re-resolves and re-seals.** `SubmitResume` mints a fresh bundle, ref and DEK rather than re-publishing the old ref; the previous record is dropped on the paused run's clean exit, and the TTL covers the rest.
 - **No bundle is a legitimate state.** An empty `SecretsRef` proceeds credential-less (the runner falls back to pod env); the publisher also produces no bundle at all when the run has neither an LLM credential nor a generic secret, when the store or sealer is unwired, or when the tenant id is empty.

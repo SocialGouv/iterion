@@ -2,77 +2,11 @@
 
 Every cloud launch and every resume walks the same seven tiers to decide which LLM credential funds the run, then seals what it found under a key minted for that run alone.
 
-> Drawn from the code at commit `f7ef017b7`. One chokepoint owns the walk — `Publisher.resolveAndSealCredentials` — and the tier order is `credential_plan.go`'s, shared by the live resolution and its metadata-only preview. How this page is kept true: [README](README.md).
+> Drawn from the code at commit `f564846d3`. One chokepoint owns the walk — `Publisher.resolveAndSealCredentials` — and the tier order is `credential_plan.go`'s, shared by the live resolution and its metadata-only preview. How this page is kept true: [README](README.md).
 
 ## The walk
 
-```mermaid
-flowchart TD
-  entry["a launch or a resume calls Publisher.resolveAndSealCredentials"]
-  policy["resolveRunLLMRoutePolicy already froze pair_order and triggers on the run"]
-  poolmap{"runnerPoolForTeam, team read fresh"}
-  poolstate{"poolRoutes: the registry knows the pool, state active"}
-  refusepool["refused: the pool mapping and its state are known, never guessed"]
-  tenant{"tenant_id set"}
-  nobundle["no bundle: an empty-tenant record would be unsealable by any team"]
-  fb{"llmFallbackForTeam, team read fresh"}
-  refusefb["refused: unreadable store, or an unknown llm_fallback value"]
-  envq{"every LLM route is openai_compatible"}
-  t1["tier 1 BYOK: secrets.Resolve over api_keys, the webhook pin then keyRank 0 to 3"]
-  cand{"per candidate: workload audience, concurrency ceiling, usage window"}
-  probe["forfaitWindowClosed may spend one live usage probe, written to usage_windows"]
-  skipped["passed over, and remembered for tier 7"]
-  slot{"the slot is named by the policy pair order"}
-  unsealed["read, never sealed"]
-  t2["tier 2 Generic: the workflow secrets of a TRUSTED workspace"]
-  refusetrust["refused: an untrusted workspace cannot be given a REQUIRED secret"]
-  t3["tier 3 OAuth forfait: the owner record, then the team shared record"]
-  sharedq{"pool-mapped team, or llm_fallback=none"}
-  t4["tier 4 Org: orgtier credentials the org audience lends this team"]
-  t5["tier 5 Pool: only while no UNPINNED route is funded, holdsDefaultLLMCredential - a pinned-only key does not close it"]
-  t6["tier 6 Platform: the free wire families, and only if the pool did not grant"]
-  t7["tier 7 Restore: a passed-over credential returns to a family no tier served"]
-  door["fallback door: ONE donor-consented grant for a ladder kind the bundle lacks, unless the shared tiers are blocked"]
-  stamp["the ladder, then the stamp: families, fingerprints, funded tiers, reopen time"]
-  refuseq{"what the bundle holds, judged over the run's routes"}
-  refusecred["refused: runview.ErrNoLLMCredential, HTTP 422 NO_LLM_CREDENTIAL"]
-  warn["side effect, not a verdict: one Warn naming the tiers consulted when nothing funds an LLM route"]
-  nothing["no record at all: the runner falls back to its pod env"]
-  seal["seal under a fresh 32-byte per-run DEK, AAD run_secrets tenant/pool/run"]
-  record["a run_secrets record, 24h TTL; the ref AND the DEK ride the RunMessage"]
-  runner["the runner opens it, materializes the OAuth dirs, follows the store records"]
-
-  entry --> policy --> poolmap
-  poolmap -->|"store error"| refusepool
-  poolmap -->|"mapped"| poolstate
-  poolmap -->|"unmapped"| tenant
-  poolstate -->|"unknown, not active, or no registry"| refusepool
-  poolstate --> tenant
-  tenant -->|"empty"| nobundle
-  tenant --> fb
-  fb -->|"error or unknown value"| refusefb
-  fb --> envq
-  envq -->|"yes, env-funded"| t2
-  envq -->|"no"| t1
-  t2 -->|"env-funded: no tier funds an openai_compatible route"| stamp
-  t1 --> cand
-  cand -->|"refused"| skipped
-  cand -->|"usable"| slot
-  slot -->|"unlisted"| unsealed
-  slot -->|"listed"| t2
-  skipped --> t2
-  t2 -->|"untrusted and a secret is required"| refusetrust
-  t2 --> t3
-  t3 --> probe --> sharedq
-  sharedq -->|"yes, the shared tiers are not consulted"| t7
-  sharedq -->|"no"| t4
-  t4 --> t5 --> t6 --> t7
-  t7 --> door --> stamp --> warn --> refuseq
-  refuseq -->|"every pinned provider unfunded, under the knob or the sovereign policy"| refusecred
-  refuseq -->|"nothing an LLM route can spend, and no generic secret either"| nothing
-  refuseq -->|"funded, or generic secrets only"| seal
-  seal --> record --> runner
-```
+The walk is drawn on the page that owns the first tier: [BYOK API keys → Mental model](../byok.md#mental-model).
 
 Reading notes, because the picture hides three things:
 

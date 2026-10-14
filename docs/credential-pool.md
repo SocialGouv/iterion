@@ -56,15 +56,26 @@ decide whether to hedge a figure or state it.
 ## Resolution order (where the pool sits)
 
 `resolveAndSealCredentials`
-([pkg/server/cloudpublisher/publisher.go](../pkg/server/cloudpublisher/publisher.go)):
+([pkg/server/cloudpublisher/publisher.go](../pkg/server/cloudpublisher/publisher.go))
+walks the seven `credentialTier` constants of
+[credential_plan.go](../pkg/server/cloudpublisher/credential_plan.go); the
+pool is the fifth:
 
 1. **BYOK API keys** — team-scoped, personal-first.
-2. **Personal OAuth forfait** — the run owner's own.
-3. **Org OAuth forfait** — `secrets.OrgOwnerKey(tenant)`, the fallback for
-   automated runs whose owner is a synthetic identity.
-4. **Pool** — only when steps 1–3 produced **nothing at all**. Spending a
-   contributor's lent credential while the tenant holds a usable key of its
-   own would take a donation nobody needed.
+2. **Generic** — the workflow's own secrets; nothing here funds an LLM call.
+3. **OAuth forfait** — the run owner's own, then the team's shared record
+   (`secrets.OrgOwnerKey(tenant)` — its argument is a tenant id, so that
+   record is the TEAM's), the fallback for automated runs whose owner is a
+   synthetic identity.
+4. **Org tier** — the parent org's own credentials under the
+   `orgtier:<org id>` sentinel, for the teams its `CredentialAudience`
+   admits.
+5. **Pool** — only while the bundle holds no default LLM credential
+   (`holdsDefaultLLMCredential`), re-checked as both credential maps empty
+   when the tier runs. Spending a contributor's lent credential while the
+   tenant holds a usable key of its own would take a donation nobody needed.
+
+Platform and restore follow it.
 
 Order within the pool (`poolWantOrder`): subscriptions first — `claude_code`
 (a lent Claude forfait runs natively there), then `codex` — and only then
