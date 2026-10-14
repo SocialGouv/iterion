@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.263.3](https://github.com/SocialGouv/iterion/compare/v3.263.2...v3.263.3) (2026-10-14)
+
+### Bug Fixes
+
+* **forge/gitlab:** no line iterion posts to GitLab can run as a quick action ([#2431](https://github.com/SocialGouv/iterion/issues/2431)) ([1333865](https://github.com/SocialGouv/iterion/commit/1333865e2fb2c52b538a1bd4379ac07fa8c0d8f8)), closes [#2413](https://github.com/SocialGouv/iterion/issues/2413), references [#2422](https://github.com/SocialGouv/iterion/issues/2422)
+
+    <details><summary>why</summary>
+
+    GitLab runs a quick action — /merge, /approve, /close, /label, /assign … — written at column 0 of a note or of an issue or merge-request description, with the rights of the account that posts it, API posts included. What the server and the board dispatcher post to GitLab is model output over untrusted content (review findings and summaries, comments, bot-written descriptions): a prompt-injected finding carrying /merge would run with the bot's rights, past the merge gate's deterministic surface.
+
+    </details>
+
 ## [3.263.2](https://github.com/SocialGouv/iterion/compare/v3.263.1...v3.263.2) (2026-10-14)
 
 ### Bug Fixes
