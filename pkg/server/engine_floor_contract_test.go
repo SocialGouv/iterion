@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/floortest"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
@@ -40,9 +41,15 @@ func TestAdminBotsPush_RefusesABundleWithAContractWithoutAFloor(t *testing.T) {
 			t.Errorf("refusal %q does not mention %q", w.Body.String(), want)
 		}
 	}
-	w = adminBotsPutQuery(s, admin, "contracted", "", pushContractBundle(">= "+parser.ImportSince))
+	low := floortest.Below(t, parser.ContractSince)
+	w = adminBotsPutQuery(s, admin, "contracted", "", pushContractBundle(">= "+low))
 	if w.Code != http.StatusConflict {
-		t.Fatalf("push with the import floor = %d, want 409 — a floor below the contract release admits runners that cannot read it", w.Code)
+		t.Fatalf("push with a floor below the contract release = %d, want 409 — such a floor admits runners that cannot read it", w.Code)
+	}
+	for _, want := range []string{"`contract` (main.bot)", low, parser.ContractSince} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("the refusal of a floor below the contract release, %q, does not mention %q", w.Body.String(), want)
+		}
 	}
 	w = adminBotsPutQuery(s, admin, "contracted", "", pushContractBundle(">= "+parser.ContractSince))
 	if w.Code/100 != 2 {
