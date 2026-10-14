@@ -522,11 +522,22 @@ func (s *Server) handleListOrgInvitations(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// An org invitation is a team invitation against a team in the org;
-	// list the union across the org's teams.
-	teams, _ := s.authStore().ListTeamsByOrg(r.Context(), orgID)
+	// list the union across the org's teams. This list is how the
+	// invitation a mint left pending is found to be revoked, so a read
+	// that failed answers the store's error rather than the empty list of
+	// an org with nothing pending.
+	teams, err := s.authStore().ListTeamsByOrg(r.Context(), orgID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "resolve the org's teams: %v", err)
+		return
+	}
 	out := make([]identity.Invitation, 0)
 	for _, t := range teams {
-		invs, _ := s.authStore().ListInvitationsByTeam(r.Context(), t.ID)
+		invs, err := s.authStore().ListInvitationsByTeam(r.Context(), t.ID)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "list the invitations of team %s: %v", t.ID, err)
+			return
+		}
 		out = append(out, invs...)
 	}
 	writeJSON(w, struct {
@@ -558,10 +569,35 @@ func (s *Server) handleCreateOrgInvitation(w http.ResponseWriter, r *http.Reques
 	// Default to the org's first non-personal team when none is given.
 	teamID := req.TeamID
 	if teamID == "" {
-		teamID = s.firstTeamInOrg(r.Context(), orgID)
+		primary, err := s.firstTeamInOrg(r.Context(), orgID)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "resolve the org's teams: %v", err)
+			return
+		}
+		teamID = primary
 	}
 	if teamID == "" {
 		httpError(w, http.StatusBadRequest, "org has no team to invite into")
+		return
+	}
+	// The team the invitation joins comes from the REQUEST, where canManageOrg
+	// authorized the org of the PATH and nothing about another one — the same
+	// confirmation the org-scoped caps PATCH and the invitation DELETE owe,
+	// in their words: a team of another org and a team that is nowhere are
+	// one answer, since telling them apart tells an org admin which ids
+	// exist outside their own tenant. Accepting such an invitation writes a
+	// team grant, and on the ladder an org membership, inside a tenant this
+	// caller does not manage.
+	t, err := s.authStore().GetTeam(r.Context(), teamID)
+	if err != nil && !errors.Is(err, identity.ErrNotFound) {
+		httpError(w, http.StatusInternalServerError, "read the team: %v", err)
+		return
+	}
+	if err != nil || t.OrgID != orgID {
+		httpError(w, http.StatusNotFound, "team not in org")
+		return
+	}
+	if !s.requireOrgStandingToInvite(w, r, id, t.OrgID, role) {
 		return
 	}
 	tok, inv, err := s.authSvc.CreateInvitation(r.Context(), teamID, req.Email, role, id.UserID)
@@ -686,20 +722,47 @@ func (s *Server) handleCreateOrgTeam(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, toTeamSummaryView(t))
 }
 
+// primaryTeamOfOrgOrFail resolves the org's primary team for the org routes
+// whose resource stays team-keyed (ADR-048) and ANSWERS the request when it
+// cannot: **500** with the store's error when the org's teams cannot be listed
+// — a read that failed is not an org without a team — and **404** when the org
+// really holds none. It returns false once it has answered, so the caller
+// returns without touching the tenant store. The invitation mint resolves the
+// same team through firstTeamInOrg directly: an org with no team to invite
+// into is a 400 on that route, not the 404 of a missing SSO tenant.
+func (s *Server) primaryTeamOfOrgOrFail(w http.ResponseWriter, r *http.Request, orgID string) (string, bool) {
+	teamID, err := s.firstTeamInOrg(r.Context(), orgID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "resolve the org's teams: %v", err)
+		return "", false
+	}
+	if teamID == "" {
+		httpError(w, http.StatusNotFound, "org has no team")
+		return "", false
+	}
+	return teamID, true
+}
+
 // firstTeamInOrg returns the org's "primary team": the first non-personal
 // team, else any team. It is the **storage tenant** for org-level resources
 // that stay team-keyed by design — SSO providers/domains and the team an
 // org invitation joins — so the org REST surface never has to re-key those
-// stores (ADR-048 "As built"). Returns "" when the org has no team.
-func (s *Server) firstTeamInOrg(ctx context.Context, orgID string) string {
+// stores (ADR-048 "As built"). Returns "" when the org has no team, and the
+// store's error when its teams cannot be LISTED: a read that failed is not
+// an org without a team, and every caller but the non-oracle SSO discovery
+// (resolveOrgTenants) answers it rather than falling back.
+func (s *Server) firstTeamInOrg(ctx context.Context, orgID string) (string, error) {
 	teams, err := s.authStore().ListTeamsByOrg(ctx, orgID)
-	if err != nil || len(teams) == 0 {
-		return ""
+	if err != nil {
+		return "", err
+	}
+	if len(teams) == 0 {
+		return "", nil
 	}
 	for _, t := range teams {
 		if !t.Personal {
-			return t.ID
+			return t.ID, nil
 		}
 	}
-	return teams[0].ID
+	return teams[0].ID, nil
 }

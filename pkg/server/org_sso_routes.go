@@ -69,9 +69,8 @@ func (s *Server) handleListOrgSSOProviders(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusForbidden, "not a member")
 		return
 	}
-	teamID := s.firstTeamInOrg(r.Context(), orgID)
-	if teamID == "" {
-		httpError(w, http.StatusNotFound, "org has no team")
+	teamID, ok := s.primaryTeamOfOrgOrFail(w, r, orgID)
+	if !ok {
 		return
 	}
 	rows, err := s.orgSSO.ListByTenant(store.WithTenant(r.Context(), teamID), teamID)
@@ -93,9 +92,8 @@ func (s *Server) handleCreateOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 		httpError(w, http.StatusForbidden, "admin or owner required")
 		return
 	}
-	teamID := s.firstTeamInOrg(r.Context(), orgID)
-	if teamID == "" {
-		httpError(w, http.StatusNotFound, "org has no team")
+	teamID, ok := s.primaryTeamOfOrgOrFail(w, r, orgID)
+	if !ok {
 		return
 	}
 	var req orgSSOProviderReq
@@ -133,9 +131,8 @@ func (s *Server) handleUpdateOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 		httpError(w, http.StatusForbidden, "admin or owner required")
 		return
 	}
-	teamID := s.firstTeamInOrg(r.Context(), orgID)
-	if teamID == "" {
-		httpError(w, http.StatusNotFound, "org has no team")
+	teamID, ok := s.primaryTeamOfOrgOrFail(w, r, orgID)
+	if !ok {
 		return
 	}
 	providerID := r.PathValue("provider_id")
@@ -173,9 +170,8 @@ func (s *Server) handleDeleteOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 		httpError(w, http.StatusForbidden, "admin or owner required")
 		return
 	}
-	teamID := s.firstTeamInOrg(r.Context(), orgID)
-	if teamID == "" {
-		httpError(w, http.StatusNotFound, "org has no team")
+	teamID, ok := s.primaryTeamOfOrgOrFail(w, r, orgID)
+	if !ok {
 		return
 	}
 	providerID := r.PathValue("provider_id")
@@ -202,9 +198,8 @@ func (s *Server) handleTestOrgSSOProvider(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusForbidden, "admin or owner required")
 		return
 	}
-	teamID := s.firstTeamInOrg(r.Context(), orgID)
-	if teamID == "" {
-		httpError(w, http.StatusNotFound, "org has no team")
+	teamID, ok := s.primaryTeamOfOrgOrFail(w, r, orgID)
+	if !ok {
 		return
 	}
 	providerID := r.PathValue("provider_id")

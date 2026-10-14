@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -125,6 +126,54 @@ func (s *Server) canManageOrg(ctx context.Context, id auth.Identity, orgID strin
 		return false
 	}
 	return om.Role.AtLeast(identity.OrgRoleAdmin)
+}
+
+// requireOrgStandingToInvite refuses to mint a team invitation whose role
+// would be mirrored up to an org role its creator does not hold. Accepting an
+// invitation writes the team grant AND, for a role on the org ladder, an org
+// membership at identity.OrgRoleForTeamRole (pkg/auth
+// grantOrgMembershipForTeam), so minting one hands out ORG standing: capped by
+// the team-management check alone, a team admin who is a plain org member
+// mints an admin/owner invitation for their own address and comes back an org
+// admin, and the off-boarded holder of an orphan admin grant re-enters the org
+// on that grant alone. The cap is the minter's own standing, read from the
+// store rather than from their token — a claim can predate a removal — and
+// read again here on the org route, whose gate read it before the body named
+// the team.
+//
+// A role mirrored up to NOTHING (config_editor, rank 0 — ADR-078 decision 4,
+// the same predicate as grantNeedsOrgBoundary) carries no org standing to
+// exceed and is never refused here; neither is an invitation into a team with
+// no parent org, which has no boundary to read, as in
+// requireOrgMembershipForGrant. Platform admins pass: IsSuperAdmin is the
+// escape hatch, and they hold no org membership for a cap to read.
+//
+// It answers the request and returns false when the invitation must not be
+// minted. orgID is the org of the team the invitation joins, which both
+// minting routes resolve before they call: POST /api/teams/{id}/invitations
+// from the team it names, POST /api/orgs/{id}/invitations from the team its
+// body names, once that team is confirmed to be in the org of the path.
+func (s *Server) requireOrgStandingToInvite(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID string, role identity.Role) bool {
+	want := identity.OrgRoleForTeamRole(role)
+	if orgID == "" || want == "" || id.IsSuperAdmin {
+		return true
+	}
+	om, err := s.authStore().GetOrgMembership(r.Context(), id.UserID, orgID)
+	switch {
+	case err == nil && om.Role.AtLeast(want):
+		return true
+	case err != nil && !errors.Is(err, identity.ErrNotFound):
+		httpError(w, http.StatusInternalServerError, "resolve your org membership: %v", err)
+		return false
+	}
+	have := "none"
+	if err == nil && om.Role != "" {
+		have = string(om.Role)
+	}
+	httpError(w, http.StatusForbidden,
+		"a team invitation cannot carry an org role above its creator's: an invitation at role %s is mirrored up to an org %s membership when it is accepted, and your own org role in this team's organization is %s",
+		role, want, have)
+	return false
 }
 
 // clientIP picks the audit IP for an inbound request. The default
