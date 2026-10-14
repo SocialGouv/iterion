@@ -27,11 +27,61 @@ func TestCommentsCountEachPhysicalCommentOnce(t *testing.T) {
 		{"the head above and an inside same-text comment", "# c\n[\n # c\n]\n", 2},
 		{"a foot on the closing line", "[a, # c\n b] # c\n", 2},
 		{"a foot after the close", "[a, # c\n b]\n# c\n", 2},
+		{"a foot on a closing line whose value holds a hash", "[\"a # b\", # c\n \"c # d\"] # c\n", 2},
+		{"a bare hash foot on the closing line", "[a, #\n b] #\n", 2},
+		// A DANGLING key inside the collection is the shape yaml.v3 MOVES
+		// the inside comment for, hanging it on the node beside whatever
+		// the closing line or the block below it carries: the moved copy
+		// is the one the sourced read already listed, and a same text
+		// written anywhere else is its own comment, counted where it is
+		// written and never a second time here.
+		{"a dangling key, the same text on a content line below", "vars:\n  l: [a: # c\n  ]\n  w: v # c\nworkflow:\n  name: w\n  entry: done\n", 2},
+		{"a dangling key, a line between the close and the same text", "vars:\n  l: [a: # c\n  ]\n  z: y # q\n  w: v # c\nworkflow:\n  name: w\n  entry: done\n", 3},
+		{"a dangling key, the same text in a block scalar's body below", "vars:\n  l: [a: # c\n  ]\n  s: |\n    # c\nworkflow:\n  name: w\n  entry: done\n", 1},
+		{"a dangling key, the same text on its own closing line", "vars:\n  l: [a: # c\n  ] # c\nworkflow:\n  name: w\n  entry: done\n", 2},
+		{"a dangling key, a bare hash on its own closing line", "vars:\n  l: [a: #\n  ] #\nworkflow:\n  name: w\n  entry: done\n", 2},
+		{"a dangling key, an own-line same text below the close", "vars:\n  l: [a: # c\n  ]\n  # c\n  w: v\nworkflow:\n  name: w\n  entry: done\n", 2},
+		{"a dangling key at the root, the same text on its foot", "[a: # c\n]\n# c\n", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Comments([]byte(tc.src))
 			if len(got) != tc.want {
 				t.Fatalf("got %d comment(s) %v, want %d:\n%s", len(got), got, tc.want, tc.src)
+			}
+		})
+	}
+}
+
+// The two slots yaml.v3 hangs a flow collection's comments on are filled
+// from two regions of the source and no other: its LINE comment from the
+// closing bracket's own line, its FOOT comment from the own-line comment
+// block below that line, the blank lines inside the block included. The
+// first line that is neither blank nor an own-line comment ends the foot
+// block — what is written below it belongs to another node, and counting it
+// here would hand a moved comment a second listing.
+//
+// The foot region is read for a slot no document measured fills with a
+// MOVED comment — yaml.v3 hangs that one on the node's line — so this is
+// where its bound is exercised.
+func TestCommentsAfterCloseCountsItsOwnRegion(t *testing.T) {
+	// `  ] # c` closes the collection on line 2; two own-line comments
+	// follow, a blank between them, then a content line carrying the same
+	// text again.
+	lines := sourceLines([]byte("a: [x: # c\n  ] # c\n# c\n\n# c\nb: 2 # c\n"))
+	for _, tc := range []struct {
+		name string
+		text string
+		foot bool
+		want int
+	}{
+		{"the closing line's own comment", "# c", false, 1},
+		{"the foot block below it", "# c", true, 2},
+		{"a text written nowhere near", "# z", false, 0},
+		{"a text written nowhere near, foot", "# z", true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commentsAfterClose(tc.text, lines, 2, tc.foot); got != tc.want {
+				t.Fatalf("commentsAfterClose(%q, foot=%v) = %d, want %d", tc.text, tc.foot, got, tc.want)
 			}
 		})
 	}
