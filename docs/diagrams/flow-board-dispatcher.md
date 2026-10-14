@@ -2,7 +2,7 @@
 
 A board card becomes a run when one dispatcher tick walks it through a gauntlet of guards, claims it under a fenced lease, hands its bot to a runner, and settles the card on exactly one of five dispositions.
 
-> Drawn from the code at commit `3e92b2c89`. How this page is kept true: [README](README.md).
+> Drawn from the code at commit `f564846d3`. How this page is kept true: [README](README.md).
 
 The machine exists twice with one semantics: a local daemon (`pkg/dispatcher`) whose single actor goroutine owns all mutable state, and a cloud twin (`pkg/server/boarddispatch.go` over `pkg/dispatcher/boardmongo`) that runs per replica with no leader election. The tick below is the local one; [the cloud twin](#the-cloud-twin) names every point where the same decision is taken differently. The run's own status machine belongs to [data-model-runs.md](data-model-runs.md#run-status-vocabulary) and is not redrawn here — a run status and a claim state are two of the five vocabularies the [glossary](README.md#glossary) keeps apart.
 
@@ -44,7 +44,7 @@ flowchart TD
     setup --> hooks["after_create once, then before_run - sh -lc in the workspace"]
     hooks -- "hook failed" --> fin
     hooks --> run["runner.Dispatch - the compiled bot runs"]
-    run --> afterrun["after_run - on EVERY return, best-effort, it never overrides the verdict"]
+    run --> afterrun["after_run - on every return of the dispatch, best-effort, it never overrides the verdict"]
     afterrun --> teardown["clean return only - before_remove, remove the directory, deregister the worktree"]
     teardown --> fin["finishRun on the actor - free the slot, stamp last_run, choose the disposition"]
     fin -- "err is nil" --> okd["COMPLETED - maybeTransitionToCompleted to completed_state, default review, then Release"]
@@ -78,7 +78,7 @@ The three **filing** dispositions — COMPLETED, GAVE UP, REVERT — are execute
 | server | starts the lease heartbeat only once the workspace is ours, and reports a supersession once | `StartClaimSession`, `claimSession.loop`, `cmdClaimLost` |
 | server | the in-progress move and the mkdir, off the actor | `runDispatchSetup`, `fencedUpdateState`, `cmdDispatchSetupDone` |
 | runner | the hooks and the dispatch, on the worker goroutine | `runWorker`, `Hook.Run`, `Runner.Dispatch` |
-| server | `after_run` on every return, then teardown on a clean return only — both on the worker goroutine, before the claim is released | the `after_run` hook, `cleanupWorkspace`, the `before_remove` hook |
+| server | `after_run` on every return of the dispatch, then teardown on a clean return only — both on the worker goroutine, before the claim is released | the `after_run` hook, `cleanupWorkspace`, the `before_remove` hook |
 | server | the one choke point of the retry policy — five dispositions from one error | `finishRun`, `exhausted`, `retrypolicy.IsDeterministic` |
 | store | the three filing dispositions: the chosen transition first, `Release` last, then the heartbeat stops | `runFinishWorker`, `maybeTransitionToCompleted`, `revertTransition`, `stampGiveUp` |
 | server | PARKED and HELD, settled on the actor — claim kept, heartbeat stopped, no `Release` | `moveToAwaitingInput`, `stopClaimSession`, `recordDispatchSkip` |
@@ -87,23 +87,7 @@ The three **filing** dispositions — COMPLETED, GAVE UP, REVERT — are execute
 
 ## The claim
 
-```mermaid
-stateDiagram-v2
-%% vocabulary: native.Issue claim fields - claim, claim_epoch, claim_lease_until - fenced by tracker.ClaimToken
-    [*] --> unclaimed: a card nobody holds - the only shape ListCandidates returns
-    unclaimed --> claimed: Claim or ClaimLease CAS - the epoch is bumped, the 15 min lease stamped
-    unclaimed --> unclaimed: ErrClaimConflict - another holder won, this candidate is skipped
-    claimed --> claimed: RenewClaim at lease/3, and every owner write is a CAS on claim plus claim_epoch
-    claimed --> superseded: a renewal answers ErrClaimConflict - the latch warns once and the worker is cancelled
-    claimed --> retained: PARKED on a pause, or HELD on an operator cancel - the claim stays, the heartbeat stops
-    claimed --> unclaimed: ReleaseOwned after the finish transition - the disposition is on the card
-    retained --> unclaimed: the boot sweep drops it once THIS daemon pid is gone, and dispatch re-parks
-    retained --> recovery: the lease ran out AND the run has left paused or cancelled - while the park reason stands the pre-transfer table conserves the claim instead
-    claimed --> recovery: the lease ran out with nobody renewing - an owner that died mid-run, and only with the watchdog on
-    superseded --> [*]: whoever holds the card now decides what happens next
-    recovery --> unclaimed: the disposition landed - Complete, Fail, GiveUp, Repark or Release
-    recovery --> recovery: the filing did NOT land - the recovery claim is kept and re-judged next pass
-```
+The claim's own state machine lives with the feature: [dispatcher.md — State machine](../dispatcher.md#state-machine).
 
 | state | what it means | code |
 | --- | --- | --- |

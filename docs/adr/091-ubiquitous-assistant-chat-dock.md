@@ -299,3 +299,13 @@ than the session, and both were bugs before they were principles:
   shell-level assistant may still reserve a separate outer column.
 
 Neither changes the decision; they are what it costs to hold it.
+
+## Status note (2026-10-14)
+
+Decision (A) describes one `useWhatsNextSession` for the lifetime of the
+authenticated app; the code runs one session engine **per conversation**.
+`AssistantProvider` mounts a `RunSessionPump` — which calls
+`useWhatsNextSession` — for every background conversation, plus the on-screen
+conversation's own engine, each publication stamped with a `sessionKey` so the
+parent can tell this engine's session from the one it replaced. All of them sit
+above the route tree, so what the decision bought is unchanged.

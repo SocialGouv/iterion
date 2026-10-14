@@ -121,15 +121,24 @@ parts and zero shared locks across blocking tracker I/O.
 
 ## State machine
 
-Issues flow through:
+A dispatched issue is held by a claim, and what releases, retains or transfers it is the disposition its run ends on — the whole tick is in [the flow page](diagrams/flow-board-dispatcher.md).
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Unclaimed
-  Unclaimed --> ClaimedRunning : tick + slot available + tracker.Claim ok
-  ClaimedRunning --> Unclaimed : Runner returned nil — tracker.Release,<br/>drop the run, free the slot
-  ClaimedRunning --> RetryScheduled : Runner returned error / ctx cancelled<br/>(stall, user cancel, external state change)<br/>Schedule retry with exponential backoff,<br/>claim is freed
-  RetryScheduled --> Unclaimed
+%% vocabulary: native.Issue claim fields - claim, claim_epoch, claim_lease_until - fenced by tracker.ClaimToken
+    [*] --> unclaimed: a card nobody holds - the only shape ListCandidates returns
+    unclaimed --> claimed: Claim or ClaimLease CAS - the epoch is bumped, the 15 min lease stamped
+    unclaimed --> unclaimed: ErrClaimConflict - another holder won, this candidate is skipped
+    claimed --> claimed: RenewClaim at lease/3, and every owner write is a CAS on claim plus claim_epoch
+    claimed --> superseded: a renewal answers ErrClaimConflict - the latch warns once and the worker is cancelled
+    claimed --> retained: PARKED on a pause, or HELD on an operator cancel - the claim stays, the heartbeat stops
+    claimed --> unclaimed: ReleaseOwned after the finish transition - the disposition is on the card
+    retained --> unclaimed: the boot sweep drops it once THIS daemon pid is gone, and dispatch re-parks
+    retained --> recovery: the lease ran out AND the run has left paused or cancelled - while the park reason stands the pre-transfer table conserves the claim instead
+    claimed --> recovery: the lease ran out with nobody renewing - an owner that died mid-run, and only with the watchdog on
+    superseded --> [*]: whoever holds the card now decides what happens next
+    recovery --> unclaimed: the disposition landed - Complete, Fail, GiveUp, Repark or Release
+    recovery --> recovery: the filing did NOT land - the recovery claim is kept and re-judged next pass
 ```
 
 The slot accounting is **global** (`agent.max_concurrent`) **plus
@@ -202,10 +211,12 @@ which tickets are being worked on right now. Behaviour:
 |----------------------------------------|-----------------------------------------------------|
 | Claim succeeds, source ≠ target        | `UpdateState(id, running_state)`, record source     |
 | Claim succeeds, source == target       | No-op (idempotent)                                  |
-| Claim succeeds, transition rejected    | Log warn, continue (the claim is already taken)     |
+| Claim succeeds, transition rejected (`ErrTransitionRejected`, not supported) | Log warn, continue (the claim is already taken) |
+| Claim succeeds, transition answers `ErrClaimConflict` | Abort — the fence says the claim is no longer ours, so the run is never started |
 | `running_state: none` (or YAML empty)  | Transition disabled — issues stay in their source   |
 | Workspace create / runID mint fails    | Revert state, release claim                         |
-| Run cancelled (`context.Canceled`)     | Revert state, release claim, keep workspace         |
+| Run force-reaped (a literal `context.Canceled`) | Revert state, release claim, keep workspace |
+| Run cancelled by the operator (`ErrRunCancelled`) | No revert, no retry: the claim is retained and the ticket stays held until an explicit resume |
 | Run failed (non-cancel)                | Revert state, release claim, schedule retry         |
 | Run finished cleanly (`err == nil`)    | **No revert.** If the workflow moved the state itself (docs-refresh → `review`), that is honoured. If it left the card in `running_state`, the dispatcher moves it to `agent.completed_state` (default `review`) — see `maybeTransitionToCompleted`. |
 | Daemon shutdown (Ctrl+C, SIGTERM)      | Revert each in-flight ticket's transition           |
@@ -244,7 +255,16 @@ Each tick (`polling.interval_ms`, default 30s):
    set (operator closed the GitHub issue, dragged the native card to
    "done"), cancel the worker. The dispatch is yielded back to the
    tracker as the source of truth.
-3. **Fetch candidates.** `tracker.ListCandidates(ctx)`. The native
+3. **Sweep the parked cards.** `reconcileParked` finishes the
+   lifecycle of cards answered out of band; `reconcileStrandedPaused`
+   re-parks a paused `last_run`. Both run even while the dispatcher is
+   paused.
+4. **The gates that end the tick here.** Paused, the daily spend cap
+   reached (`limits.max_cost_per_day_usd`), or already at
+   `agent.max_concurrent` — that last one returns without calling the
+   tracker at all. A discovery still in flight also returns; the next
+   tick re-evaluates.
+5. **Fetch candidates.** `tracker.ListCandidates(ctx)`. The native
    adapter filters by `Eligible` board states; the GitHub adapter
    passes labels through `gh issue list --search`. Every external
    adapter (github/forgejo/gitlab) also **honors body-declared
@@ -259,11 +279,11 @@ Each tick (`polling.interval_ms`, default 30s):
    typo, a closed issue, or a cross-repo ref never holds. So a mis-parse
    can only under-block, never silently wedge a ticket. Each hold is
    logged at info level.
-4. **Sort.** `priority desc, created_at asc, identifier asc`.
-5. **Dispatch.** Walk candidates, skip those already claimed locally
+6. **Sort.** `priority desc, created_at asc, identifier asc`.
+7. **Dispatch.** Walk candidates, skip those already claimed locally
    or queued for retry, and dispatch as long as both global and
    per-state slots have room.
-6. **Broadcast snapshot.** Publish to the WS bridge so the dashboard
+8. **Broadcast snapshot.** Publish to the WS bridge so the dashboard
    shows the new state.
 
 ### Claim selection on the cloud board — what is never claimed
@@ -479,7 +499,8 @@ hooks:
 ```
 
 Hooks execute via `sh -lc` with `cwd=<workspace path>`. The dispatcher
-exports five environment variables before invoking the hook:
+exports six environment variables, on top of its own, before
+invoking the hook:
 
 | Var                          | Value                                  |
 |------------------------------|----------------------------------------|
@@ -488,6 +509,7 @@ exports five environment variables before invoking the hook:
 | `ITERION_ISSUE_STATE`        | current workflow state                 |
 | `ITERION_RUN_ID`             | the engine run ID for this dispatch    |
 | `ITERION_WORKSPACE`          | absolute workspace path                |
+| `ITERION_STORE_DIR`          | the run store directory, when the dispatch carries one |
 
 A failed `after_create` or `before_run` aborts the dispatch and feeds
 the retry queue; failed `after_run` / `before_remove` are logged at
@@ -920,6 +942,10 @@ when `server.port` is set — pass `iterion dispatch --no-server`.
 
 | Endpoint                                            | Method | Description                              |
 |-----------------------------------------------------|--------|------------------------------------------|
+| `/api/v1/dispatcher/status`                          | GET    | Manager state (`state`, `has_config`, `last_error`, `started_at`). |
+| `/api/v1/dispatcher/config`                          | GET, PUT | Read or replace the persisted config. |
+| `/api/v1/dispatcher/start` · `/stop` · `/pause` · `/resume` | POST | Daemon lifecycle — what the studio's dispatcher control bar drives. |
+| `/api/v1/dispatcher/defaults/apply`                  | POST   | Persist the baked-in defaults and start; `409` when a config already exists. |
 | `/api/v1/dispatcher/state`                           | GET    | Live snapshot (running, retries, slots). |
 | `/api/v1/dispatcher/refresh`                         | POST   | Force an immediate tick.                 |
 | `/api/v1/dispatcher/reload`                          | POST   | Re-parse the YAML config.                |
@@ -1063,9 +1089,6 @@ reopen, so the column editor cannot become the way around a refusal.
 - Always pair `iterion dispatch` with `iterion studio` (or just visit
   `http://localhost:<server.port>`) — the dashboard is much more
   useful than tailing logs when debugging stall / retry behaviour.
-- For headless / containerized deployments, set `server.port: 0` and
-  scrape `/api/v1/dispatcher/state` via Prometheus' `json_exporter` or
-  similar.
 - Hot-reload is your friend during workflow iteration: tweak
   `dispatch.vars`, save, watch the next dispatch pick up the new
   prompt without restarting the daemon.

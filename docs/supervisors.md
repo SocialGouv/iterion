@@ -183,6 +183,12 @@ The skip is loud (a `supervisors: N declared supervisor(s) disabled by
 for cost control, or to isolate a supervisor suspected of steering a
 run astray.
 
+Two refusals sit past that ladder, each logged as a warning only: an
+unreadable frozen pool stamp keeps the whole surface off, and on a
+pool-stamped run every supervisor whose effective model — the DSL pin,
+else `ITERION_DEFAULT_SUPERVISOR_MODEL` — is not gateway-routed is
+dropped. The session-board coordinator is gated by the same pair.
+
 ## The perseverance-coach pattern
 
 The shipped use of the DSL block is **Persy**, the perseverance coach

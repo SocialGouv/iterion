@@ -7,6 +7,8 @@ already knows which page you are on.
 Design rationale and rejected alternatives:
 [ADR-091](adr/091-ubiquitous-assistant-chat-dock.md).
 
+Diagram: [Flow — the assistant dock, run watches and the session board](diagrams/flow-assistant-dock-session-board.md)
+
 ## The three states
 
 | State          | What you see                                                              |
@@ -16,7 +18,7 @@ Design rationale and rejected alternatives:
 | `docked-right` | A full-height column at the right edge; the page reflows beside it, it never covers it |
 
 Opening from closed picks `floating` on a wide viewport and
-`docked-right` at or below Tailwind's `lg` breakpoint (1024px), where a
+`docked-right` at or below Tailwind's `md` breakpoint (768px), where a
 floating panel would swallow the screen. That is a point-in-time choice:
 an already-open dock does not re-dock itself when you resize, and an
 explicit dock/undock always wins afterwards.
@@ -282,10 +284,12 @@ and the old project's persisted watches resume when that project is selected
 again. Successful child
 completion is internal progress and stays silent; only root Done resolves the
 watch. Episode delivery uses a lease/compare-and-swap, so two cloud replicas
-cannot buy two assistant turns for one failure. Repeated identical failures,
-episode count, cooldown and the assistant conversation's remaining budget are
-bounded. A target already armed for Iterion's native retry is left to that
-retry rather than diagnosed prematurely.
+cannot buy two assistant turns for one failure. The cooldown and the assistant
+conversation's remaining budget bound the spend; the episode count is not
+capped, and episodes are deduplicated per outcome event, so a target that
+fails, is resumed and fails again mints another one. A target already armed
+for Iterion's native retry is left to that retry rather than diagnosed
+prematurely.
 
 Creating the exact same owner/target/assistant watch with the same policy and
 limits is idempotent and returns the existing record. This covers HTTP retries
@@ -347,6 +351,9 @@ GET  /api/runs/{target}/assistant-missions
 GET  /api/runs/{target}/assistant-missions/{mission}
 POST /api/runs/{target}/assistant-missions/{mission}/stop
 ```
+
+The dock does not call these routes: the only client is the CLI (`iterion
+remote runs mission start|list|get|stop`).
 
 Local detached-run mode refuses mission creation because its subprocess wire
 cannot preserve receipt identity. Cloud resumes carry the receipt through the
@@ -642,6 +649,8 @@ What you can drag onto the composer today:
 | A card on `/board`       | `card/<id>`          |
 | A pipeline card being launched | `run/<id>`, or `card/<id>` before it has a run |
 | A bot card in `/bots`    | `bot/<path>`         |
+| The node inspector header in a run console | `node/<run>/<node>` |
+| A file in a bot's files drawer | `bot-file/<team>/<slug>/<path>` |
 
 Each attaches as a chip you can remove before sending, capped at 8 —
 past a handful you can no longer see what you attached. The chips clear
@@ -668,10 +677,6 @@ Both mint through the same `mintReference` as the route-derived half, so
 a dropped payload inherits the same guarantee: an id whose shape the
 vocabulary does not accept is **refused**, not repaired — a repaired
 pointer would resolve to something you did not point at.
-
-`node/<run>/<node>` is in the vocabulary but has no drag source yet: node
-selection is component state, not a route param, so nothing can currently
-publish one.
 
 ## Assistant vs steering on `/runs/:id`
 
