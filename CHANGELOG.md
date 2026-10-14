@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.263.2](https://github.com/SocialGouv/iterion/compare/v3.263.1...v3.263.2) (2026-10-14)
+
+### Bug Fixes
+
+* **runtime:** one predicate answers both tool-surface questions; a codex `tools:` list is no bound ([#2426](https://github.com/SocialGouv/iterion/issues/2426)) ([380fe35](https://github.com/SocialGouv/iterion/commit/380fe353f35ec28ace8b96febed65522d41bc362)), closes [#1727](https://github.com/SocialGouv/iterion/issues/1727), references [#1652](https://github.com/SocialGouv/iterion/issues/1652) [#1652](https://github.com/SocialGouv/iterion/issues/1652) [#1651](https://github.com/SocialGouv/iterion/issues/1651)
+
+    <details><summary>why</summary>
+
+    Two questions ask "can this node act on what it reads" — the catalogue's prompt-injection contract, which decides who owes an UNTRUSTED INPUT BOUNDARY paragraph, and shared-worktree admission, which decides who may fan out onto one checkout — and they answered differently. `ToolSurfaceCanWrite` passed `sharedWorkspace=false`, which killed the route arm outright: a `backend: claude_code` node declaring `tools: [read_file]` was reported as unable to write, though that list becomes…
+
+    </details>
+
 ## [3.263.1](https://github.com/SocialGouv/iterion/compare/v3.263.0...v3.263.1) (2026-10-14)
 
 ### Bug Fixes
