@@ -2,7 +2,6 @@ package runview
 
 import (
 	"testing"
-	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -33,12 +32,15 @@ func TestHookEventObserversReachTheBroker(t *testing.T) {
 	if !extraSeen {
 		t.Error("extra observer not invoked")
 	}
+	// The observers ran synchronously above, and the broker's own fan-out is a
+	// non-blocking send by its caller, so a delivered event is already
+	// buffered: read it without a clock.
 	select {
 	case got := <-sub.C:
 		if got.Type != store.EventAssistantText || got.Seq != 7 {
 			t.Fatalf("broker got %+v; want the published assistant_text", got)
 		}
-	case <-time.After(2 * time.Second):
+	default:
 		t.Fatal("broker subscriber never received the hook event — the broker is missing from hookEventObservers")
 	}
 }

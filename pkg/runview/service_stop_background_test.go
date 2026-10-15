@@ -11,9 +11,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// alertPollFrame names the alert manager's stall-poll goroutine. The manager
-// owns it, so the frame is the only oracle available from here.
-const alertPollFrame = "alert.(*Manager).Start.func1"
+// alertPollFrame names the alert manager's stall-poll goroutine,
+// pipelineSchedulerFrame the pipeline scheduler's. Both workers own their
+// goroutine — production closes nothing when either returns — so the frame is
+// the only oracle available from here.
+const (
+	alertPollFrame         = "alert.(*Manager).Start.func1"
+	pipelineSchedulerFrame = "runview.(*Service).startPipelineScheduler.func1"
+)
 
 func liveGoroutines(frame string) int {
 	buf := make([]byte, 1<<20)
@@ -64,6 +69,7 @@ func stableGoroutines(frame string) int {
 // engines that are still writing to the store they started on.
 func TestStopBackground_StopsEveryWorkerAndLeavesRunsAlone(t *testing.T) {
 	alertBase := stableGoroutines(alertPollFrame)
+	schedBase := stableGoroutines(pipelineSchedulerFrame)
 	svc, err := NewService(t.TempDir(),
 		WithLogger(iterlog.Nop()),
 		WithMaxConcurrentPipelines(2),
@@ -91,20 +97,38 @@ func TestStopBackground_StopsEveryWorkerAndLeavesRunsAlone(t *testing.T) {
 	defer cancel()
 	svc.StopBackground(stopCtx)
 
-	for name, done := range map[string]<-chan struct{}{
-		"orphan reconcile":   svc.reconcileDone,
-		"pipeline scheduler": svc.pipelineStop,
-	} {
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			t.Errorf("%s is still running after StopBackground", name)
-		}
+	// The reconcile goroutine closes reconcileDone on its way out and
+	// StopBackground AWAITS that close (stopPeriodicReconcile, bounded by
+	// stopCtx), so the fact is already true here: a channel still open is the
+	// defect, not a report in flight — and a timer arm would only make the
+	// verdict one a starved host can flip.
+	select {
+	case <-svc.reconcileDone:
+	default:
+		t.Errorf("orphan reconcile is still running after StopBackground")
 	}
-	// The alert manager owns its goroutine, so the oracle is the goroutine
-	// itself: it must be gone, not merely signalled.
-	if n := settlePollGoroutines(alertPollFrame, alertBase); n != alertBase {
-		t.Errorf("alert stall poll: %d live after StopBackground, want %d", n, alertBase)
+	// pipelineStop is the scheduler's stop SIGNAL, closed by StopBackground
+	// itself, so reading it says the signal was sent and nothing about the
+	// worker reading it. Two separate verdicts then: the signal here, and
+	// below the goroutine — which is the one that matters, and which neither
+	// worker reports on its own.
+	select {
+	case <-svc.pipelineStop:
+	default:
+		t.Errorf("the pipeline scheduler was never signalled: StopBackground left pipelineStop open")
+	}
+	for _, w := range []struct {
+		kind  string
+		frame string
+		base  int
+	}{
+		{"pipeline scheduler", pipelineSchedulerFrame, schedBase},
+		{"alert stall poll", alertPollFrame, alertBase},
+	} {
+		if n := settlePollGoroutines(w.frame, w.base); n != w.base {
+			t.Errorf("%s: %d live after StopBackground, want %d — the worker is still scanning a store the caller has re-pointed away from",
+				w.kind, n, w.base)
+		}
 	}
 
 	// The run keeps its context and its handle: nothing was drained.

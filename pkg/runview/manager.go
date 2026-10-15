@@ -76,8 +76,9 @@ type Manager struct {
 	handles map[string]*runHandle
 	stopped bool
 	// handoffGrace bounds the wait for a previous runner to finish leaving
-	// (see registerHandoffGrace). Overridable so a test that asserts the
-	// REFUSAL path does not have to burn the production grace on every run.
+	// (see registerHandoffGrace). Overridable so a hand-off witness can set
+	// the grace its scenario needs: the tests raise it to an hour, which makes
+	// a wait that must not be paid unmistakable when it is.
 	handoffGrace time.Duration
 }
 

@@ -147,13 +147,47 @@ func TestBumpLoopCtx_BusyEngineIsPending(t *testing.T) {
 	// Nothing drains the channel: the command is delivered but unacked
 	// (run busy inside a long node). The caller gets the honest
 	// "queued, will apply" — not a fake success, not a hang.
-	start := time.Now()
-	_, err := svc.BumpLoopCtx(context.Background(), runID, BumpLoopRequest{LoopName: "l", Delta: 1})
-	if !errors.Is(err, ErrSteerPending) {
-		t.Fatalf("err = %v, want ErrSteerPending", err)
+	//
+	// A real clock, deliberately: this fixture is a Service with its own
+	// background workers, which synctest's durable-block contract does not
+	// cover (docs/test-waits.md). So the two figures are chosen to be ones no
+	// scheduler decides. The LOWER one is the property — pending that comes
+	// back before steerAckTimeout is a command the engine was never given its
+	// boundary to answer in — and a timer cannot fire early, so load can only
+	// push elapsed up, never under. The upper one is a hang guard calibrated
+	// against the LOADED call, not the nominal one: measured on this tree at
+	// 2.02-2.05s over `-race -count=5`, and once at 3.79s inside the same
+	// five — the 2s window plus the 1.78s of pure scheduling #2161 measured on
+	// one loaded call. So #1471's 10x applies to ~3.8s: 30s is ~8x of it, 60s
+	// is ~16x, and the 5s bound this replaces (#2362) left 1.2s over a call
+	// already seen to take 3.79s. The forbidden alternative here is an HTTP
+	// handler parked forever, not a late answer, so the only cost of the
+	// larger figure is 60s instead of 30s spent proving a genuine park, inside
+	// a package whose own `-timeout` is 1200s.
+	const pendingHangGuard = 60 * time.Second
+	type pending struct {
+		err     error
+		elapsed time.Duration
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("pending took %s, want bounded by steerAckTimeout", elapsed)
+	answered := make(chan pending, 1)
+	go func() {
+		start := time.Now()
+		_, err := svc.BumpLoopCtx(context.Background(), runID, BumpLoopRequest{LoopName: "l", Delta: 1})
+		answered <- pending{err: err, elapsed: time.Since(start)}
+	}()
+	select {
+	case got := <-answered:
+		if !errors.Is(got.err, ErrSteerPending) {
+			t.Fatalf("err = %v, want ErrSteerPending", got.err)
+		}
+		if got.elapsed < steerAckTimeout {
+			t.Fatalf("pending came back in %s, inside the %s ack window: the engine was never given a "+
+				"boundary to answer in, so the caller is told 'queued' about a command nobody waited for",
+				got.elapsed, steerAckTimeout)
+		}
+	case <-time.After(pendingHangGuard):
+		t.Fatalf("BumpLoopCtx did not return in %s against a %s ack window: an undrained channel hangs the "+
+			"caller instead of answering 'queued, will apply'", pendingHangGuard, steerAckTimeout)
 	}
 }
 

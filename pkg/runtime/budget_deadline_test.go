@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,21 +13,95 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// requireBudgetDeadline returns the per-node budget deadline the engine put on
+// a node's context, or an error naming the premise that failed. Both fixtures
+// of this file aim at that deadline, and a fixture asked to aim at one it never
+// got reports that instead of blocking until the harness timeout — so the
+// regression "the engine stopped arming a per-node deadline" fails as itself,
+// in milliseconds, in whichever witness runs first.
+func requireBudgetDeadline(ctx context.Context, nodeID string) (time.Time, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return time.Time{}, fmt.Errorf("fixture: node %q got no budget deadline to aim at", nodeID)
+	}
+	return deadline, nil
+}
+
 // ctxBlockingExecutor blocks in Execute (for the node named "slow") until the
-// context is cancelled, then returns ctx.Err(). Every other node returns fast.
-// Simulates a single long-running / hung node — a stuck delegate subprocess, a
-// runaway survey, a scanner with no internal bound — that the boundary budget
-// check (which only gates NEW node starts) cannot interrupt.
+// context is cancelled, then returns ctx.Err() — carrying `usage` when the
+// caller sets one, which is what the node burned before it was cut off. Every
+// other node returns fast. Simulates a single long-running / hung node — a
+// stuck delegate subprocess, a runaway survey, a scanner with no internal
+// bound — that the boundary budget check (which only gates NEW node starts)
+// cannot interrupt.
+//
+// started and armed are the premise every caller judges itself by: the node
+// reached the executor AND carried the engine's per-node budget deadline. A
+// node that got NO deadline returns that fact as its error instead of blocking
+// forever, so the regression TestNodeDeadlineFromDurationBudget guards fails on
+// its own assertion in milliseconds instead of on the harness timeout
+// (measured: 45s of `-timeout 45s` before, 0.03s now).
+//
+// expire, when set, is called once the node has started and found its
+// deadline: it spends the run's duration budget on the clock the test owns
+// (expireDurationBudget builds the pair). The engine's verdict then rests on
+// an ORDER the test staged — the node started, THEN the cap ran out — never on
+// a race between a loaded scheduler and a few hundred milliseconds.
 type ctxBlockingExecutor struct {
 	blockNode string
+	usage     map[string]any
+	expire    func()
+	started   atomic.Bool
+	armed     atomic.Bool
 }
 
 func (e *ctxBlockingExecutor) Execute(ctx context.Context, node ir.Node, _ map[string]any) (map[string]any, error) {
-	if node.NodeID() == e.blockNode {
-		<-ctx.Done()
-		return nil, ctx.Err()
+	if node.NodeID() != e.blockNode {
+		return map[string]any{"ok": true}, nil
 	}
-	return map[string]any{"ok": true}, nil
+	// Recorded BEFORE the deadline is read: a node the engine never
+	// dispatched and a node dispatched without a deadline are different
+	// facts, and the tests below name them differently.
+	e.started.Store(true)
+	if _, err := requireBudgetDeadline(ctx, e.blockNode); err != nil {
+		return nil, err
+	}
+	e.armed.Store(true)
+	if e.expire != nil {
+		e.expire()
+	}
+	<-ctx.Done()
+	// A copy, not the field: the engine stamps `_duration_ms` onto whatever
+	// map a node hands back (stampNodeDuration, on every exit), so returning
+	// `usage` itself would let two executions of this fixture write one map.
+	// maps.Clone(nil) is nil, so a caller that declared no usage is unchanged.
+	return maps.Clone(e.usage), ctx.Err()
+}
+
+// expireDurationBudget puts a run's duration budget on a clock the test
+// advances by hand, and returns the two halves a per-node deadline witness
+// needs: the clock to hand the engine, and the spend that exhausts the cap.
+//
+// Frozen until the spend, the cap cannot be consumed by anything upstream of
+// the node under observation — the engine's own construction, the store, the
+// entry node — so the pre-exec gate always sees the full allowance and the
+// node is always reached and always armed. That is the #2447 flake at its
+// root: a 300ms cap that a merge-queue runner spent before `slow` started,
+// leaving the booking its witness asserts with nothing to book (measured, run
+// 38611812306: `the timed-out node's tokens never reached the run: 0`). Spent
+// from inside the node, the other half of the premise holds too — the engine's
+// post-exec verdict reads a budget that is genuinely out of time.
+//
+// The spend is the cap plus the sliver a real clock adds between the cut and
+// the verdict, so `RemainingDuration() <= 0` is read past the cap rather than
+// exactly on it. The per-node deadline itself is untouched: the engine still
+// arms it from the remaining budget, and the node still dies on it, on the
+// real clock.
+func expireDurationBudget(t *testing.T, wf *ir.Workflow) (now func() time.Time, spend func()) {
+	t.Helper()
+	budgetCap := capOf(t, wf)
+	clock := newBudgetTestClock()
+	return clock.Now, func() { clock.Advance(budgetCap + time.Millisecond) }
 }
 
 // TestNodeDeadlineFromDurationBudget verifies that a single node which runs
@@ -58,9 +133,19 @@ func TestNodeDeadlineFromDurationBudget(t *testing.T) {
 		Budget:  &ir.Budget{MaxDuration: "300ms"},
 	}
 
-	exec := &ctxBlockingExecutor{blockNode: "slow"}
+	// The budget's clock is the test's, frozen until `slow` starts: the cap
+	// measures how long the NODE is held, never how long the engine took to
+	// reach it. Without that, everything upstream raced the 300ms — and a
+	// runner that won the race took the pre-exec refusal instead, which emits
+	// the same budget_exceeded(duration) failure this test reads, so the
+	// witness passed with `slow` never dispatched. Measured on this tree: with
+	// 400ms of upstream work, the test passes while `context.WithDeadline` is
+	// REMOVED from engine_exec.go — the regression it guards, green.
+	clockNow, spendTheCap := expireDurationBudget(t, wf)
+	exec := &ctxBlockingExecutor{blockNode: "slow", expire: spendTheCap}
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
+	eng.budgetClock = clockNow
 
 	start := time.Now()
 	err := eng.Run(context.Background(), "run-node-deadline", nil)
@@ -69,13 +154,36 @@ func TestNodeDeadlineFromDurationBudget(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from node deadline / budget exceeded")
 	}
+	// The premise, before any verdict: this run is about a node the deadline
+	// CUT, so a run that never dispatched `slow` — or dispatched it with no
+	// deadline on its context — says nothing about that and must not pass.
+	if !exec.started.Load() {
+		t.Fatalf("node %q never ran (%v): the duration deadline had nothing to cancel", exec.blockNode, err)
+	}
+	if !exec.armed.Load() {
+		t.Fatalf("node %q ran with no budget deadline on its context (%v): the per-node duration deadline is gone", exec.blockNode, err)
+	}
 	if !strings.Contains(err.Error(), "budget exceeded") || !strings.Contains(err.Error(), "duration") {
 		t.Errorf("expected 'budget exceeded ... duration' error, got: %v", err)
 	}
-	// The deadline must fire near max_duration. If the per-node deadline were
-	// missing, the blocking node would hang forever and this would time out.
-	if elapsed > 5*time.Second {
-		t.Errorf("run took %v — the slow node was not force-cancelled by the duration deadline", elapsed)
+	// A hang guard, and calibrated as one. The denominator #1471's 10x applies
+	// to is the whole eng.Run — the 300ms the node is HELD plus the engine's
+	// own setup, the store and the entry node — and it is the LOADED figure:
+	// an idle denominator calibrates a bound against the case it never fails
+	// in. Measured on this tree, two runs of each shape: 0.32-0.39s over
+	// `-race -count=20`, and 0.33-0.46s inside a full `-race` run of this
+	// package; this family's own tail under a whole-repo `go test ./...` adds
+	// 443ms on top (override_test.go measured it, a heavier machine than
+	// saturated cores), so ~0.9s loaded. That puts the old 5s at ~6x, BELOW
+	// the rule's 10x, where 30s is ~33x. The
+	// forbidden alternative is a node held with no deadline at all, not a late
+	// answer — and a node left unbounded no longer reaches this bound anyway:
+	// it has no deadline to report, so the armed check above fails first, in
+	// milliseconds.
+	const deadlineHangGuard = 30 * time.Second
+	if elapsed > deadlineHangGuard {
+		t.Errorf("run took %v against a %s guard — the slow node was not force-cancelled by the duration deadline",
+			elapsed, deadlineHangGuard)
 	}
 
 	r, err := s.LoadRun(context.Background(), "run-node-deadline")
@@ -145,9 +253,9 @@ func (e *internalTimeoutExecutor) Execute(ctx context.Context, node ir.Node, _ m
 		// engine never dispatched, and armInternalTimeout answers them
 		// differently.
 		e.started.Store(true)
-		deadline, ok := ctx.Deadline()
-		if !ok {
-			return nil, fmt.Errorf("fixture: node %q got no budget deadline to aim at", e.blockNode)
+		deadline, err := requireBudgetDeadline(ctx, e.blockNode)
+		if err != nil {
+			return nil, err
 		}
 		e.sawDeadline.Store(true)
 		e.deadlineAtNS.Store(deadline.UnixNano())

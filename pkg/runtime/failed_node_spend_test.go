@@ -859,21 +859,6 @@ func TestFailedHumanLLMHalfBooksItsSpendInProduction(t *testing.T) {
 	}
 }
 
-// meteredCtxBlockingExecutor is main's ctxBlockingExecutor with the one thing
-// this file is about: the hung node reports what it burned before the deadline
-// cut it off.
-type meteredCtxBlockingExecutor struct {
-	blockNode string
-}
-
-func (e *meteredCtxBlockingExecutor) Execute(ctx context.Context, node ir.Node, _ map[string]any) (map[string]any, error) {
-	if node.NodeID() == e.blockNode {
-		<-ctx.Done()
-		return map[string]any{"_tokens": 12_000, "_cost_usd": 3.10}, ctx.Err()
-	}
-	return map[string]any{"ok": true}, nil
-}
-
 // The duration-deadline exit is its own terminal return — it never reaches
 // handleNodeFailure, so the booking threaded through that call cannot cover
 // it. Neither side of this branch's merge tested it: the spend tests have no
@@ -900,17 +885,43 @@ func TestBudgetDeadlineFailureBooksWhatTheNodeBurned(t *testing.T) {
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
 		Loops:   map[string]*ir.Loop{},
-		// Long enough to reach "slow", short enough that the run's remaining
-		// duration is genuinely spent when the deadline fires — main's rule is
-		// that the deadline must have ELAPSED, not merely be close.
+		// How long "slow" is HELD before the deadline cuts it, nothing else:
+		// the budget's clock below is the test's, so the cap is not also a
+		// race against the engine's own setup and the entry node.
 		Budget: &ir.Budget{MaxDuration: "300ms"},
 	}
 
+	// The witness is the BOOKING, so the node must be the one that spends the
+	// cap. Frozen until "slow" starts, then spent from inside it: the
+	// deadline-killed node is reached whatever the host is doing, and the
+	// engine's post-exec verdict still reads a budget that is out of time.
+	// Measured without this (#2447, merge-group run 38611812306, job
+	// race-shard (2)): 400ms of upstream work under -race spends the 300ms
+	// first, "slow" is refused before it starts, and the assertion below reads
+	// the 0 of a node that never ran — `the timed-out node's tokens never
+	// reached the run: 0`.
+	clockNow, spendTheCap := expireDurationBudget(t, wf)
+	exec := &ctxBlockingExecutor{
+		blockNode: "slow",
+		usage:     map[string]any{"_tokens": 12_000, "_cost_usd": 3.10},
+		expire:    spendTheCap,
+	}
 	st := tmpStore(t)
-	eng := New(wf, st, &meteredCtxBlockingExecutor{blockNode: "slow"})
+	eng := New(wf, st, exec)
+	eng.budgetClock = clockNow
 	err := eng.Run(context.Background(), "run-deadline-spend", nil)
 	if err == nil {
 		t.Fatal("the duration deadline was supposed to end the run")
+	}
+	// A run that never reached "slow", or reached it with no deadline to die
+	// on, has no spend to book: it cannot answer this test's question either
+	// way, so it fails here naming which half of the premise is missing
+	// instead of reporting 0 tokens as a lost booking.
+	if !exec.started.Load() {
+		t.Fatalf("node %q never ran (%v): there was no deadline-killed spend to book", exec.blockNode, err)
+	}
+	if !exec.armed.Load() {
+		t.Fatalf("node %q ran with no budget deadline on its context (%v): the per-node duration deadline is gone", exec.blockNode, err)
 	}
 	if !strings.Contains(err.Error(), "budget exceeded") || !strings.Contains(err.Error(), "duration") {
 		t.Fatalf("this test rests on taking the duration-deadline exit, got: %v", err)
@@ -924,7 +935,8 @@ func TestBudgetDeadlineFailureBooksWhatTheNodeBurned(t *testing.T) {
 		t.Fatal("no checkpoint to read the budget from")
 	}
 	if r.Checkpoint.BudgetTokensUsed != 12_000 {
-		t.Fatalf("the timed-out node's tokens never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+		t.Fatalf("the timed-out node's tokens never reached the run: %d — it reported 12000 on its way out, "+
+			"so the booking on the duration-deadline exit is what is missing", r.Checkpoint.BudgetTokensUsed)
 	}
 	if r.Checkpoint.BudgetCostUSD != 3.10 {
 		t.Fatalf("the timed-out node's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
