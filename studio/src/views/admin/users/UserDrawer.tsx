@@ -267,7 +267,7 @@ function OrgsSection({
   const removeFrom = async (o: AdminUserOrgView) => {
     const ok = await confirm({
       title: "Remove from organization?",
-      message: `Removing this account from "${o.org_name ?? o.org_id}" also revokes every team grant it holds inside that organization.`,
+      message: `Removing this account from "${o.org_name ?? o.org_id}" also revokes every team grant it holds inside that organization, and the pending invitations it created there, except config_editor ones, which carry no org role. Any pending invitation addressed to the account itself, in a team of that organization, is revoked too, whoever created it — an invitation link already sent stops working.`,
       confirmLabel: "Remove",
       confirmVariant: "danger",
     });
@@ -475,7 +475,7 @@ function TeamsSection({
   const removeFrom = async (t: AdminUserTeamView) => {
     const ok = await confirm({
       title: "Revoke team access?",
-      message: `Remove this account from "${t.team_name ?? t.team_id}"? Its organization membership is kept.`,
+      message: `Remove this account from "${t.team_name ?? t.team_id}"? Its organization membership is kept — and where it holds none in the team's organization, the pending invitations it addressed to its own address in this team are revoked with the grant: an invitation link already sent stops working.`,
       confirmLabel: "Revoke",
       confirmVariant: "danger",
     });

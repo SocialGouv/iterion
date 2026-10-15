@@ -102,6 +102,13 @@ func (s *Server) handlePutOrgMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditOrg(r, orgID, "org_member.added", "member", memberID, map[string]any{"role": string(role), "email": u.Email})
+	// This write is idempotent on an EXISTING membership too, so it is also a
+	// way an org role goes DOWN: the pending invitations the member minted
+	// above the role just written are reconciled here as they are on the
+	// roster's own PATCH.
+	if !s.reconcileMintedInvitations(w, r, orgID, memberID, role, "placement") {
+		return
+	}
 	writeJSON(w, map[string]any{"user_id": memberID, "org_id": orgID, "role": string(role)})
 }
 
@@ -614,6 +621,40 @@ func (s *Server) confirmOrgMembershipForGrant(w http.ResponseWriter, r *http.Req
 		return false
 	}
 	s.auditTenant(r, teamID, "member.removed", "member", memberID, map[string]any{"reason": reasonCode})
-	httpError(w, status, "%s — the team grant was revoked; %s", reason, next)
+	// The grant just taken back is the premise the mint's own confirmation
+	// keeps a self-addressed invitation on (standingAfterMintTakesInvitation),
+	// and the rule takes the rows kept on it where the org membership row is
+	// GONE — the fact that premise stood beside
+	// (standingGoneTakesAddressedTo). This exit has both states: on the 409
+	// the row is definitively gone, so whoever withdrew the premise takes
+	// what rested on it, a row left there being a re-entry ticket into the
+	// team whose grant was unwound; on the 500 the row could not be READ, so
+	// the rule cannot decide, no sweep runs, and the body names the row that
+	// may stand as the sibling exits of the same rule do
+	// (sweepInvitationsKeptOnTeamGrant).
+	//
+	// The sweep runs on its own budget, as the reads above do: the revoke may
+	// have spent the one they would otherwise share, and the sweep still has
+	// to happen. Its failure names the row in the refusal rather than
+	// changing the status: the caller's write is refused either way, and an
+	// operator reading this body is the one who can revoke the row by hand.
+	kept := ""
+	if !gone {
+		kept = fmt.Sprintf(", and a pending invitation %s addressed to their own address in this team may stand on it: whether the rule takes such a row rests on the org membership row this exit could not read (listed by GET /api/teams/%s/invitations, revoked by hand)",
+			subject, teamID)
+	}
+	if gone {
+		ictx, icancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
+		defer icancel()
+		if serr := s.revokeInvitationsKeptOnTeamGrant(ictx, requestActor(r), teamID, memberID, "creator_team_grant_unwound"); serr != nil {
+			if s.logger != nil {
+				s.logger.Error("team grant %s/%s was unwound but sweeping the pending invitations kept on it failed: %v — such a row stands on a grant that is gone and accepting it would seat them back in the team",
+					memberID, teamID, serr)
+			}
+			kept = fmt.Sprintf(", and sweeping the pending invitations %s addressed to their own address in this team failed: %v — such a row stands on the grant just revoked (listed by GET /api/teams/%s/invitations, revoked by hand)",
+				subject, serr, teamID)
+		}
+	}
+	httpError(w, status, "%s — the team grant was revoked%s; %s", reason, kept, next)
 	return false
 }
