@@ -117,6 +117,10 @@ export interface BindPreviewModel {
   secrets: Array<{ botId: string; secret: string; missing: boolean }>;
   hasMissingSecrets: boolean;
   identity: { handle: string; provider: string; baseUrl: string } | null;
+  /** The base the hook URL will be built from (the connection's pin, else the
+   *  deployment's public URL), as the server reported it: the empty string is
+   *  an answer — no public URL — and null means the server reported none. */
+  hookBaseUrl: string | null;
   conflicts: string[];
   hasConflicts: boolean;
 }
@@ -163,6 +167,7 @@ export function buildBindPreviewModel(
     secrets,
     hasMissingSecrets: secrets.some((s) => s.missing),
     identity,
+    hookBaseUrl: preview.hook_base_url ?? null,
     conflicts,
     hasConflicts: conflicts.length > 0,
   };

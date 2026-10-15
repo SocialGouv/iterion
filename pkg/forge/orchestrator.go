@@ -729,13 +729,22 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		createdConfig = true
 	}
 
-	// Register / update the forge-side hook. On any failure during a fresh
-	// provision, roll the just-created config back so we don't strand an
-	// orphan inbound endpoint.
+	// The config write above is live from here on: every step until the
+	// forge-side hook matches it returns through undoConfigWrite.
+	written := configWrite{
+		created:   createdConfig,
+		webhookID: webhookID,
+		wroteHash: cfg.TokenHash,
+		hasPrev:   hasPrevCfg,
+		prev:      prevCfg,
+	}
+
 	admin, err := o.AdminFor(ctx, conn)
 	if err != nil {
-		o.rollbackConfig(ctx, createdConfig, webhookID)
-		return ProvisionResult{}, fmt.Errorf("forge: build admin client: %w", err)
+		// No forge call was made, so the forge-side hook is certainly the one
+		// it had: the undo is unambiguous.
+		return ProvisionResult{}, o.undoConfigWrite(ctx, written, false,
+			fmt.Errorf("forge: build admin client: %w", err))
 	}
 	hookURL := o.inboundURL(conn, webhookID)
 	spec := HookSpec{URL: hookURL, Secret: plaintext, Events: nativeEvents, Active: true}
@@ -744,8 +753,11 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// is "" — upsertHook treats that as "no prior hook".
 	hookID, err := o.upsertHook(ctx, admin, req.RepoFullName, existing.HookID, hookURL, spec)
 	if err != nil {
-		o.rollbackConfig(ctx, createdConfig, webhookID)
-		return ProvisionResult{}, err
+		// Before the refusal is typed, undone and logged: a forge that quotes
+		// the request it refused hands the secret back, and this is the last
+		// frame that knows which bytes it is.
+		err = scrubHookSecret(err, spec.Secret)
+		return ProvisionResult{}, o.undoConfigWrite(ctx, written, true, hookRefusal(conn, hookURL, err))
 	}
 
 	ri := RepoIntegration{
@@ -827,6 +839,10 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 // the delivery URL) or creates a fresh one, always pushing the current
 // spec (events + secret).
 func (o *Orchestrator) upsertHook(ctx context.Context, admin Admin, repo, priorID, hookURL string, spec HookSpec) (string, error) {
+	// priorWrite is what the write attempted before the probe ended on: the
+	// probe below is a READ, so the undo of a failure there classifies on
+	// whatever this write settled (hookReadError).
+	var priorWrite error
 	if priorID != "" {
 		h, err := admin.UpdateHook(ctx, repo, priorID, spec)
 		if err == nil {
@@ -836,8 +852,21 @@ func (o *Orchestrator) upsertHook(ctx context.Context, admin Admin, repo, priorI
 			return "", fmt.Errorf("forge: update hook: %w", err)
 		}
 		// fall through: the stored hook is gone on the forge — recreate it.
+		// The forge said so, which is a settled answer: it holds the hook it
+		// held, so a probe failure after this still owes the previous config.
+		priorWrite = err
 	}
-	if found, err := admin.GetHook(ctx, repo, hookURL); err == nil && found != nil {
+	// GetHook answers (nil, nil) for "no hook at this URL", so an ERROR is
+	// never that: falling through to CreateHook on a failed probe registers a
+	// SECOND hook on the same delivery URL (GitLab and Forgejo both allow it)
+	// and every event is then delivered twice. Typed as the read it is, so the
+	// undo does not read a failed GET as a hook write of unknown outcome and
+	// leave a working repo on a secret the forge never received.
+	found, err := admin.GetHook(ctx, repo, hookURL)
+	if err != nil {
+		return "", &hookReadError{op: "probe hook by URL", err: err, priorWrite: priorWrite}
+	}
+	if found != nil {
 		h, err := admin.UpdateHook(ctx, repo, found.ID, spec)
 		if err != nil {
 			return "", fmt.Errorf("forge: update hook: %w", err)
@@ -853,8 +882,104 @@ func (o *Orchestrator) upsertHook(ctx context.Context, admin Admin, repo, priorI
 
 func (o *Orchestrator) rollbackConfig(ctx context.Context, created bool, webhookID string) {
 	if created && webhookID != "" {
-		_ = o.Webhooks.Delete(ctx, webhookID)
+		rctx, cancel := repairContext(ctx)
+		defer cancel()
+		_ = o.Webhooks.Delete(rctx, webhookID)
 	}
+}
+
+// configRepairTimeout bounds a repair on its own context: long enough for a
+// store round-trip on a loaded cluster, short enough that a wedged store
+// cannot hold the request handler.
+const configRepairTimeout = 10 * time.Second
+
+// repairContext detaches the repair of a config write from the request that
+// asked for it. The cancellation of that request is itself one of the
+// failures being repaired — the operator's tab closed, a gateway read
+// timeout on a slow self-managed forge — so a repair that inherits it cannot
+// run exactly when it is owed, and the stored config is then left carrying a
+// secret the forge's live hook does not sign with: every delivery to the
+// repo answers 401 (the production store hands the context to the driver,
+// pkg/webhooks/mongo.go).
+func repairContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), configRepairTimeout)
+}
+
+// configWrite is the webhook config a provision wrote before the forge
+// accepted anything: whether it CREATED it (so undoing is a delete) or
+// REPLACED one (so undoing is putting the previous back), the hash it wrote
+// (the compare-and-set of the restore), and the previous config itself.
+type configWrite struct {
+	created   bool
+	webhookID string
+	wroteHash string
+	hasPrev   bool
+	prev      webhooks.Config
+}
+
+// undoConfigWrite unwinds that write when a later step fails, and is the ONE
+// place every step between the write and a matching forge-side hook returns
+// through. It answers the error the caller returns.
+//
+// A fresh provision deletes the config it created: an inbound endpoint no
+// hook calls is an orphan.
+//
+// A re-provision REPLACED a config whose secret the forge's live hook still
+// signs with, so the previous one goes back — but only when the forge
+// provably did not apply the new hook: no forge call was made, or
+// forgeRejectedTheWrite says so (a hook request never sent, a step that ended
+// on a read, a request that never left, a refusal the forge answered). On an
+// INDETERMINATE failure the write may have landed, in which case the forge
+// now holds the new secret and the stored config is the one that matches it:
+// restoring there is what would break a working repo, so the config stays and
+// the error names the remedy.
+//
+// Both halves repair on a context of their own (repairContext), since the
+// request's cancellation is one of the failures they undo.
+func (o *Orchestrator) undoConfigWrite(ctx context.Context, w configWrite, calledForge bool, err error) error {
+	if w.created {
+		o.rollbackConfig(ctx, true, w.webhookID)
+		return err
+	}
+	if calledForge && !forgeRejectedTheWrite(err) {
+		return &HookWriteIndeterminateError{WebhookID: w.webhookID, Err: err}
+	}
+	rctx, cancel := repairContext(ctx)
+	defer cancel()
+	// A restore that itself fails is not a detail the caller may lose: it is
+	// the moment the repo stops receiving, and only both errors say so.
+	if rerr := o.restoreConfig(rctx, w); rerr != nil {
+		return errors.Join(err, rerr)
+	}
+	return err
+}
+
+// restoreConfig puts a re-provision's previous webhook config back, after the
+// step it was written for failed. The counterpart of rollbackConfig for the
+// UPDATE half: there is no config to delete, there is one to un-replace — the
+// secret the forge still signs its deliveries with lives in it.
+//
+// Compare-and-set on the hash this provision wrote: a concurrent provision
+// that landed in the meantime (the operator pinning a base and re-enabling
+// while a slow forge call is still in flight) owns the stored config AND the
+// forge-side hook, and overwriting it with this attempt's snapshot would
+// break the repo the winner just fixed. A re-read that fails is reported,
+// never resolved by a blind write.
+func (o *Orchestrator) restoreConfig(ctx context.Context, w configWrite) error {
+	if !w.hasPrev {
+		return nil
+	}
+	cur, err := o.Webhooks.Get(ctx, w.prev.ID)
+	if err != nil {
+		return &ConfigRestoreError{WebhookID: w.prev.ID, Err: fmt.Errorf("re-read the stored config: %w", err)}
+	}
+	if cur.TokenHash != w.wroteHash {
+		return nil
+	}
+	if err := o.Webhooks.Update(ctx, w.prev); err != nil {
+		return &ConfigRestoreError{WebhookID: w.prev.ID, Err: err}
+	}
+	return nil
 }
 
 // forgeTokenEgressHosts returns the egress host allowlist a connection's
@@ -1180,17 +1305,28 @@ func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, conn
 	return o.Connections.Delete(ctx, connID)
 }
 
-// inboundURL builds the hook URL the forge will call back on. The single
-// place a hook address is decided, so the per-connection override needs to
-// exist in exactly one spot: a connection that pins WebhookBaseURL keeps
-// its own base, everyone else follows the deployment's public URL and moves
-// with it.
-func (o *Orchestrator) inboundURL(conn Connection, webhookID string) string {
+// HookBaseURL is the origin every hook of this connection is registered
+// under — its pinned WebhookBaseURL, else the deployment's public URL — with
+// no trailing slash. The single place a hook address is decided, so the
+// per-connection override needs to exist in exactly one spot: a connection
+// that pins its base keeps it, everyone else follows the deployment's public
+// URL and moves with it.
+//
+// Exported because the enable preview announces this base to the operator
+// before any write: a second derivation there is a promise the provision can
+// break, and the operator reads a host the forge will never be called on.
+func (o *Orchestrator) HookBaseURL(conn Connection) string {
 	base := conn.WebhookBaseURL
 	if base == "" {
 		base = o.PublicURL
 	}
-	return strings.TrimRight(base, "/") + "/api/webhooks/" + string(conn.Provider) + "/" + webhookID
+	return strings.TrimRight(base, "/")
+}
+
+// inboundURL builds the hook URL the forge will call back on, from the base
+// HookBaseURL decides.
+func (o *Orchestrator) inboundURL(conn Connection, webhookID string) string {
+	return o.HookBaseURL(conn) + "/api/webhooks/" + string(conn.Provider) + "/" + webhookID
 }
 
 // ---- small helpers ----
@@ -1543,8 +1679,8 @@ func operatorGateDisabled(vars map[string]string) bool {
 	return ok && GateValueDisables(v)
 }
 
-// anyBotGatesMerges reports whether any of these bots declares the `statuses`
-// scope — i.e. posts a commit status, i.e. can be a REQUIRED check.
+// BotGatesMerges reports whether one bot declares the `statuses` scope —
+// i.e. posts a commit status, i.e. can be a REQUIRED check.
 //
 // A required check lives on ONE head SHA: if the bot does not re-run when the
 // author pushes a fix, the status is simply absent from the new head —
@@ -1553,9 +1689,19 @@ func operatorGateDisabled(vars map[string]string) bool {
 // re-review on sync is not an operator preference on such a repo, it is what
 // makes the gate survivable. Derived from the DECLARED capability, never from
 // a bot id.
+//
+// Exported because the studio announces the posture (the enable preview, the
+// repo rows) from the same declaration the provision forces re-review on: a
+// second reading of "does this bot gate?" would tell the operator one thing
+// and arm another.
+func BotGatesMerges(fr *bundle.ForgeRequirements) bool {
+	return fr != nil && fr.TokenScopes[bundle.ForgeScopeStatuses] != ""
+}
+
+// anyBotGatesMerges folds BotGatesMerges over a provisioned bot set.
 func anyBotGatesMerges(bots []string, frByBot map[string]*bundle.ForgeRequirements) bool {
 	for _, b := range bots {
-		if fr := frByBot[b]; fr != nil && fr.TokenScopes[bundle.ForgeScopeStatuses] != "" {
+		if BotGatesMerges(frByBot[b]) {
 			return true
 		}
 	}

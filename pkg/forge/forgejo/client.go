@@ -131,9 +131,14 @@ func (c *AdminClient) ListRepos(ctx context.Context, q forge.RepoQuery) ([]forge
 	return out, nil
 }
 
+// hooksPageQuery asks for the largest page a Forgejo/Gitea serves by default
+// (MAX_RESPONSE_ITEMS, 50) instead of the default page, so the delivery-URL
+// probe and the audit listing read past the first page of hooks.
+const hooksPageQuery = "?limit=50"
+
 func (c *AdminClient) GetHook(ctx context.Context, repo, deliveryURL string) (*forge.HookHandle, error) {
 	var hooks []forgejoHook
-	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/hooks", nil, &hooks)
+	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/hooks"+hooksPageQuery, nil, &hooks)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +159,7 @@ func (c *AdminClient) GetHook(ctx context.Context, repo, deliveryURL string) (*f
 // without the delivery-URL filter.
 func (c *AdminClient) ListHooks(ctx context.Context, repo string) ([]forge.HookHandle, error) {
 	var hooks []forgejoHook
-	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/hooks", nil, &hooks)
+	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/hooks"+hooksPageQuery, nil, &hooks)
 	if err != nil {
 		return nil, err
 	}
@@ -168,26 +173,31 @@ func (c *AdminClient) ListHooks(ctx context.Context, repo string) ([]forge.HookH
 	return out, nil
 }
 
+// CreateHook registers a new repository hook. A refusal carries the
+// instance's own message: it is what tells the operator which setting the
+// remedy lives in.
 func (c *AdminClient) CreateHook(ctx context.Context, repo string, spec forge.HookSpec) (forge.HookHandle, error) {
 	var h forgejoHook
-	code, err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/hooks", hookBody(spec), &h)
+	code, errBody, err := c.http().DoErrBody(ctx, http.MethodPost, "/repos/"+repo+"/hooks", hookBody(spec), &h)
 	if err != nil {
 		return forge.HookHandle{}, err
 	}
 	if code/100 != 2 {
-		return forge.HookHandle{}, statusErr("create hook", code)
+		return forge.HookHandle{}, forge.HookWriteErr("forgejo", "create hook", code, errBody)
 	}
 	return h.toHandle(), nil
 }
 
+// UpdateHook edits an existing repository hook, carrying a refusal's own
+// message as CreateHook does.
 func (c *AdminClient) UpdateHook(ctx context.Context, repo, hookID string, spec forge.HookSpec) (forge.HookHandle, error) {
 	var h forgejoHook
-	code, err := c.do(ctx, http.MethodPatch, "/repos/"+repo+"/hooks/"+url.PathEscape(hookID), editBody(spec), &h)
+	code, errBody, err := c.http().DoErrBody(ctx, http.MethodPatch, "/repos/"+repo+"/hooks/"+url.PathEscape(hookID), editBody(spec), &h)
 	if err != nil {
 		return forge.HookHandle{}, err
 	}
 	if code/100 != 2 {
-		return forge.HookHandle{}, statusErr("update hook", code)
+		return forge.HookHandle{}, forge.HookWriteErr("forgejo", "update hook", code, errBody)
 	}
 	if h.ID == 0 { // some Gitea versions return 200 with empty body on edit
 		hid, _ := strconv.ParseInt(hookID, 10, 64)

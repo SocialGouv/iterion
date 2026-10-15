@@ -283,7 +283,12 @@ export default function IntegrationsTab({
                 key={c.id}
                 teamID={teamID}
                 conn={c}
-                integrations={integrations.filter((i) => i.connection_id === c.id)}
+                // The RAW answer, not `?? []`: undefined means the team's
+                // integrations are unknown here (in flight, or a read that
+                // failed), and the card states neither a count nor a repo list
+                // it does not hold. What the card's Enable panel decides on,
+                // it reads itself.
+                integrations={integrationsQuery.data?.filter((i) => i.connection_id === c.id)}
                 repoBots={repoCapableBots}
                 canManage={canManage}
                 onChanged={reload}

@@ -16,6 +16,16 @@ type EnablePreview struct {
 	Binds     map[string]string // bot id → workflow-secret name (forge_token default)
 	Scopes    map[string]string // unioned token scopes (from forge: blocks)
 	Conflicts []string          // bots that cannot be auto-installed, with a reason
+	// GatesMerges is the merge-gate posture enabling these bots installs: true
+	// when one of them posts a commit status (BotGatesMerges), which is what
+	// makes the repo's merges gateable and forces re-review on every push.
+	//
+	// Computed over the SELECTED bots. Provision derives review_on_sync from
+	// the same predicate but over the UNION of the selection with the bots
+	// already bound to the repo, so the two agree for a repo not yet
+	// integrated on this connection — which is the only case the studio
+	// offers the posture for.
+	GatesMerges bool
 }
 
 // PreviewEnable mirrors Provision's bot-resolution + event/command derivation
@@ -64,10 +74,11 @@ func PreviewEnable(ctx context.Context, teamID string, botFn BotForgeLookup, inv
 	}
 
 	return EnablePreview{
-		Events:    unionAllEvents(provisionable, frByBot, invByBot),
-		Commands:  commands,
-		Binds:     binds,
-		Scopes:    UnionScopes(reqs...),
-		Conflicts: conflicts,
+		Events:      unionAllEvents(provisionable, frByBot, invByBot),
+		Commands:    commands,
+		Binds:       binds,
+		Scopes:      UnionScopes(reqs...),
+		Conflicts:   conflicts,
+		GatesMerges: anyBotGatesMerges(provisionable, frByBot),
 	}
 }

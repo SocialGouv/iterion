@@ -31,6 +31,7 @@ import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 import { connectionKindLabel, connectionStatusLabel } from "./connectionLabels";
 import { BRAND_LOGO_URL, type ConfirmFn, statusTone } from "./forgeShared";
 import { EnableRepoPanel } from "./EnableRepoPanel";
+import { WebhookBaseRow } from "./WebhookBaseRow";
 
 export function ConnectionCard({
   teamID,
@@ -47,7 +48,12 @@ export function ConnectionCard({
 }: {
   teamID: string;
   conn: ForgeConnection;
-  integrations: ForgeIntegration[];
+  /** The connection's integrations, or undefined when the team's list is
+   *  unknown (in flight, or a read that failed). What this card DISPLAYS, and
+   *  nothing else: an unknown list states neither a count nor a repo. The
+   *  Enable panel reads the team's list itself, because whether a list is
+   *  fresh is a fact about the read. */
+  integrations?: ForgeIntegration[];
   repoBots: BotEntryWithSchema[];
   canManage: boolean;
   onChanged: () => void;
@@ -60,11 +66,17 @@ export function ConnectionCard({
   logoUploadURL?: string;
 }) {
   const [enabling, setEnabling] = useState(!!autoOpenEnable);
+  // What this card can list. The count it states, and the repos it offers to
+  // disable, are what it was handed; an unknown list states neither.
+  const enabledRepos = integrations ?? [];
 
   const disconnect = async () => {
+    const count = integrations
+      ? ` (${integrations.length} repo${integrations.length === 1 ? "" : "s"})`
+      : "";
     const ok = await confirm({
       title: "Disconnect forge?",
-      message: `Disconnecting removes every webhook iterion created on ${conn.account_login ?? conn.provider} (${integrations.length} repo${integrations.length === 1 ? "" : "s"}).`,
+      message: `Disconnecting removes every webhook iterion created on ${conn.account_login ?? conn.provider}${count}.`,
       confirmLabel: "Disconnect",
       confirmVariant: "danger",
     });
@@ -136,13 +148,21 @@ export function ConnectionCard({
         confirm={confirm}
       />
 
+      <WebhookBaseRow
+        teamID={teamID}
+        conn={conn}
+        canManage={canManage}
+        onChanged={onChanged}
+        onError={onError}
+      />
+
       <div>
         <div className="text-xs uppercase tracking-wider text-fg-muted mb-1">Enabled repos</div>
-        {integrations.length === 0 ? (
+        {enabledRepos.length === 0 ? (
           <div className="text-fg-muted text-sm">None yet.</div>
         ) : (
           <ul className="space-y-1">
-            {integrations.map((i) => (
+            {enabledRepos.map((i) => (
               <RepoRow
                 key={i.id}
                 teamID={teamID}

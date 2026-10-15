@@ -12,7 +12,7 @@ bot-secret binding — in one action.
 
 ## What it does
 
-In the studio, **`/teams/<id>` → Integrations**:
+In the studio, **Integrations → Repositories** (`/integrations`):
 
 1. **Connect a forge** once — OAuth (when an OAuth app is configured) or
    paste a personal access token (the fallback, and the only path for
@@ -21,7 +21,17 @@ In the studio, **`/teams/<id>` → Integrations**:
    **sealed**.
 2. **Enable a repo** — pick a repo the credential can administer, check the
    forge-capable bots (each shows the events it subscribes to + its manifest
-   rationale), and click Enable. In one server action iterion:
+   rationale), pick the **`Merge gate`** posture when one of them gates
+   merges (`Gate merges`, the default, or `Advisory only` — the
+   `gate_enabled` pin of
+   [merge-gate.md](merge-gate.md#disabling-the-gate-per-repo--first-review-only-re-review-on-demand))
+   — offered only for a repo not yet enabled on this connection; an enabled
+   repo changes it on the repo page — and click Enable. The preview says
+   `Will deliver to:` and the hook URL about to be registered; the
+   connection's **`Webhook delivery`** row above it pins another base for a
+   forge that cannot reach this deployment's public URL
+   ([webhooks.md](webhooks.md#when-a-forge-cannot-reach-the-deployments-public-url)).
+   In one server action iterion:
    - derives a team-scoped **managed `forge_token`** secret from the
      connection (created once per connection);
    - creates (or extends) the iterion **webhook config** for that repo, with
@@ -137,6 +147,11 @@ from it).
 - Insufficient scope (the token can't create a hook) surfaces as a
   structured `insufficient_scope` 403 so the studio can prompt to reconnect
   with broader scope or paste a PAT.
+- A forge that refuses the hook's address answers a structured
+  `hook_url_refused` 422 that quotes the forge's own message and names the
+  remedy for the case — no public URL, a public URL that is not an absolute
+  http(s) URL, a pin the forge does not accept, or a base to pin
+  ([details](webhooks.md#hook-url-refused)).
 
 ## API
 
@@ -149,13 +164,14 @@ by signed state + an agent-binding cookie:
 |---|---|---|
 | GET | `/connections` | list connections |
 | POST | `/connections` | connect (`mode: pat` \| `oauth` \| `app`) → `{connection}`, `{authorize_url}`, or `{install_url}` (GitHub-only `app`) |
+| PATCH | `/connections/{conn_id}` | pin or clear the hook base (`{"webhook_base_url": "<base>" \| ""}`, sent alone), or toggle `security_read_enabled` |
 | DELETE | `/connections/{conn_id}` | disconnect (deprovisions every repo first) |
 | GET | `/connections/{conn_id}/health` | stored + live connection and token health |
 | POST | `/connections/{conn_id}/refresh` | GitHub App only: re-probe installation grants, persist them, and mint a fresh token |
 | GET | `/connections/{conn_id}/repos?search=&page=` | repo picker (admin-capable only) |
 | GET | `/api/forge/oauth/callback` | **public** OAuth redirect target |
 | GET | `/repo-bots` | list active integrations |
-| GET | `/repo-bots/preview?connection_id=&bots=` | events + scopes + conflicts, no writes |
+| GET | `/repo-bots/preview?connection_id=&bots=` | events + scopes + conflicts + the merge-gate posture (`gates_merges`) and the hook base (`hook_base_url`), no writes |
 | POST | `/repo-bots` | enable `{connection_id, repo, bot_ids}` → `ProvisionResult` |
 | PATCH | `/repo-bots/{integration_id}` | update an integration — bot set and/or operator settings |
 | DELETE | `/repo-bots/{integration_id}` | disable |

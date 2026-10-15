@@ -24,6 +24,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { errorMessage } from "@/lib/errorHints";
 import { forgeLabel } from "@/lib/forge";
+import { hookBaseProblem, hookDeliveryAddress } from "@/lib/hookBase";
 import { isRepoCapable } from "@/lib/triggers";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -510,9 +511,13 @@ function ReviewStep({
           <Spinner /> Computing what this bot will subscribe to…
         </div>
       ) : previewErr ? (
+        // This Enable registers the hook — and on a repo already enabled,
+        // moves it to the connection's pinned base. Without the preview the
+        // screen can name neither that address nor what the bot subscribes
+        // to, so it provisions nothing.
         <InlineBanner tone="warning" layout="inline">
-          Couldn't compute the preview ({previewErr}) — you can still enable;
-          the server validates the request.
+          What enabling this bot would provision could not be read ({previewErr}) — Enable
+          stays out until it can.
         </InlineBanner>
       ) : (
         model && <PreviewPanel model={model} provider={repo.provider} />
@@ -529,7 +534,7 @@ function ReviewStep({
         <Button
           variant="primary"
           onClick={() => void enable()}
-          disabled={busy || previewLoading || (model?.hasConflicts ?? false)}
+          disabled={busy || previewLoading || previewErr !== null || (model?.hasConflicts ?? false)}
           loading={busy}
         >
           {busy ? "Enabling…" : `Enable ${label}`}
@@ -540,8 +545,8 @@ function ReviewStep({
 }
 
 // PreviewPanel renders the dry-run: events, token scopes, slash-commands,
-// secret bindings (missing ones flagged), identity, conflicts. Sections
-// with no data are simply omitted.
+// secret bindings (missing ones flagged), identity, the address the hook is
+// registered under, conflicts. Sections with no data are simply omitted.
 function PreviewPanel({
   model,
   provider,
@@ -550,6 +555,10 @@ function PreviewPanel({
   provider: string;
 }) {
   const wording = forgeLabel(provider);
+  // Binding a bot provisions the repo, which registers (or moves) the hook:
+  // the address it will be delivered to is a consequence of this write, read
+  // from the same table the Enable panel reads.
+  const hookBaseIssue = model.hookBaseUrl === null ? null : hookBaseProblem(model.hookBaseUrl);
   return (
     <div className="rounded-[var(--radius-lg)] border border-border-subtle bg-surface-1 p-3 text-xs space-y-2.5">
       {model.events.length > 0 && (
@@ -616,6 +625,24 @@ function PreviewPanel({
           <span className="text-fg-default">@{model.identity.handle}</span>
           {model.identity.baseUrl && (
             <span className="text-fg-muted"> on {model.identity.baseUrl}</span>
+          )}
+        </PreviewSection>
+      )}
+
+      {model.hookBaseUrl !== null && (
+        <PreviewSection title="Will deliver to:">
+          {hookBaseIssue === null ? (
+            <span className="font-mono text-fg-default">
+              {hookDeliveryAddress(model.hookBaseUrl, provider)}
+            </span>
+          ) : (
+            <span className="text-warning-fg">
+              {hookBaseIssue}; pin a base URL on{" "}
+              <Link href="/integrations" className="text-accent-text hover:underline">
+                the connection
+              </Link>
+              .
+            </span>
           )}
         </PreviewSection>
       )}

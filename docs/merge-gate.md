@@ -287,6 +287,38 @@ operator pin buys the whole posture. On the integration's launch vars
 { "gate_enabled": "false" }
 ```
 
+**The same pin, from the studio.** The Enable panel (Integrations →
+Repositories) carries a **`Merge gate`** fieldset whenever a selected bot
+gates merges and the repo has no integration on that connection yet:
+`Gate merges` is checked by default and sends no pin at all, `Advisory only`
+sends `gate_enabled: "false"` with the enable.
+
+Once the repo is enabled the pin belongs to the integration, so the panel
+only reports the stored posture and names the one place that changes it —
+`Merge gate: Advisory only — change it on the repo page`. That page
+(`/repos/:key`) carries a **`Merge gate`** select —
+`Gate merges — the bots post a merge-gate status` against
+`Advisory only — no merge-gate status` — writing
+`gate_enabled` `"true"` / `"false"` into the integration's `launch_vars` and
+leaving its other pins alone. The options name the status, but the pin is
+the whole posture: with the gate off, provisioning also stops forcing
+`review_on_sync`, so pushes are no longer re-reviewed — for every bot
+co-enabled on the repo. The one thing the select cannot move is a
+`review_on_sync` an operator pinned through the webhook API
+(`review_on_sync_pinned`, below).
+
+The repo page's select is admin-only (disabled for anyone who cannot manage
+the team); the Enable panel is an admin surface rather than a role-gated
+widget — the server refuses a member's enable with 403 `admin or owner
+required`. The select is shown on a repo whose integration the page holds,
+when that repo's bound bots gate merges **or** the integration already pins
+`gate_enabled`, so a repo pinned to advisory keeps the control that puts
+the gate back. And both read a stored value the way the server does
+(`forge.GateValueDisables`: absent = gate on; present = on only for
+`true`/`1`/`yes`/`on`, trimmed and case-insensitive), so a hand-written
+`gate_enabled: "0"` reads as `Advisory only` in the studio and as a disabled
+gate in the engine.
+
 Two properties of the pin worth knowing before setting it:
 
 - it is **repo-wide**: the operator var layer applies to every co-enabled

@@ -310,6 +310,10 @@ type Server struct {
 	authorTrustOnce   sync.Once
 	forgeOrchestrator *forge.Orchestrator
 	forgeStates       forgeStateBackend
+	// forgeGatesMemo holds the merge-gate posture of a (tenant, bot) pair for
+	// a short window, for the repo listing every open studio tab polls
+	// (gatesMergesMemo). Zero value ready.
+	forgeGatesMemo gatesMergesMemo
 	// forgeSecurityMint mints a connection's org-wide security-read token.
 	// A field rather than a direct method call so the enable endpoint can be
 	// driven without a live GitHub App (the mint is the one step that needs

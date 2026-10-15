@@ -139,6 +139,10 @@ function fixture(overrides: Partial<ForgeEnablePreview> = {}): ForgeEnablePrevie
     secrets: [{ bot_id: "revi", secret: "REVI_TOKEN" }],
     commands: [{ command: "revi", bot_id: "revi" }],
     identity: { handle: "iterion-bot", provider: "github", base_url: "https://github.com" },
+    // Both always travel with a real preview response (the server computes
+    // them for every call), so the fixture carries them too.
+    gates_merges: false,
+    hook_base_url: "https://iterion.example.org",
     conflicts: [],
     ...overrides,
   };
@@ -166,6 +170,16 @@ describe("buildBindPreviewModel", () => {
       baseUrl: "https://github.com",
     });
     expect(m!.hasConflicts).toBe(false);
+    // Binding provisions the repo, so the review step owes the address the
+    // hook will be registered under, exactly as the server reported it.
+    expect(m!.hookBaseUrl).toBe("https://iterion.example.org");
+  });
+
+  it("carries an empty base as the answer it is", () => {
+    // The server reports "" when the deployment has no public URL: an empty
+    // base is a fact to warn about, not a missing field.
+    const m = buildBindPreviewModel(fixture({ hook_base_url: "" }), []);
+    expect(m!.hookBaseUrl).toBe("");
   });
 
   it("falls back to normalized events when native ones are absent", () => {
@@ -202,6 +216,7 @@ describe("buildBindPreviewModel", () => {
       secrets: undefined,
       commands: undefined,
       identity: undefined,
+      hook_base_url: undefined,
       conflicts: undefined,
     } as unknown as ForgeEnablePreview;
     const m = buildBindPreviewModel(sparse, []);
@@ -211,6 +226,9 @@ describe("buildBindPreviewModel", () => {
     expect(m!.commands).toEqual([]);
     expect(m!.secrets).toEqual([]);
     expect(m!.identity).toBeNull();
+    // Null, not "": a server that reported no base said nothing about the
+    // address, and the review step says nothing in turn.
+    expect(m!.hookBaseUrl).toBeNull();
     expect(m!.conflicts).toEqual([]);
     expect(m!.hasConflicts).toBe(false);
   });

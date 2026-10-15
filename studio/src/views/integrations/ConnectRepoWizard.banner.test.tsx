@@ -17,9 +17,23 @@ vi.mock("wouter", () => ({
   useLocation: () => ["/integrations/connect", navigate],
 }));
 
-vi.mock("@/auth/AuthContext", () => ({
-  useAuth: () => ({ activeTeam: { team_id: "t1", team_name: "Team" } }),
-}));
+// `orgs` and `user` are what the step's permission read (useCanManageTeam)
+// consumes; the real context types both as always-present, so the double
+// carries them rather than being kinder than the producer. An empty tree =
+// a member, which this witness does not care about.
+vi.mock("@/auth/AuthContext", async () => {
+  const actual = await vi.importActual<typeof import("@/auth/AuthContext")>(
+    "@/auth/AuthContext",
+  );
+  return {
+    ...actual,
+    useAuth: () => ({
+      activeTeam: { team_id: "t1", team_name: "Team" },
+      user: null,
+      orgs: [],
+    }),
+  };
+});
 
 vi.mock("@/api/bots", async () => {
   const actual = await vi.importActual<typeof import("@/api/bots")>("@/api/bots");
