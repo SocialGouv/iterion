@@ -43,8 +43,8 @@ func itoa(n int) string { return string(rune('0' + n)) }
 
 // TestPerNodeSessionFollowsTheRunIdentity pins the contract the engine's
 // branch dispatch relies on: the per-node session store is reachable ONLY
-// through the ctx run identity, and its key is `(runID, nodeID)` with no
-// branch discriminator.
+// through the ctx run identity, and its key is `(runID, session key)` with
+// no branch discriminator.
 //
 // So the identity decides which of two behaviours a repeated node id gets,
 // and both are intended:

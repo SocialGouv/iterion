@@ -170,6 +170,67 @@ func TestSchemaReask_ClawContinuesTheCompletedConversation(t *testing.T) {
 	}
 }
 
+// A `session_slot:` is ONE conversation several nodes share, and the schema
+// re-ask is the path that reads it back. The node's own request carries the
+// slot's earlier turns, and the re-ask continues from them: the slot once,
+// the answer, the feedback. Keyed on the bare node id the slot is invisible
+// on both — and the bare node id is an address no site writes, so a
+// transcript found there is residue and never the answer being re-asked
+// about.
+func TestSchemaReask_ClawContinuesASharedSlotsConversation(t *testing.T) {
+	const (
+		siblingTurn = "DRAFT-TURN: the outline the other node wrote"
+		residueTurn = "RESIDUE-TURN: a transcript under the bare node id"
+	)
+	mock := newMockClient(
+		toolUseEvents("tu_1", "structured_output", `{"verdict":true}`, 50, 20),
+		toolUseEvents("tu_2", "structured_output", `{"verdict":true,"reason":"because"}`, 30, 10),
+	)
+	reg := NewRegistry()
+	reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
+	exec := newTestClawExecutor(reg, verdictWorkflow())
+	judge := verdictJudge("")
+	judge.Session = ir.SessionPersist
+	judge.SessionSlot = "assistant_conversation"
+
+	exec.sessions.save("run-reask", "assistant_conversation", []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: siblingTurn}}},
+	})
+	exec.sessions.save("run-reask", judge.ID, []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: residueTurn}}},
+	})
+
+	output, err := exec.Execute(WithRunID(context.Background(), "run-reask"), judge, map[string]any{})
+	if err != nil {
+		t.Fatalf("the re-ask was supposed to deliver the node: %v", err)
+	}
+	if output["reason"] != "because" {
+		t.Fatalf("output = %v, want the re-asked answer", output)
+	}
+	calls := mock.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("expected the answer and one re-ask, got %d provider calls", len(calls))
+	}
+	first, second := calls[0].Messages, calls[1].Messages
+
+	if got := textOccurrences(first, siblingTurn); got != 1 {
+		t.Errorf("the slot's conversation appears %d times in the node's own request, want exactly once — the shared slot is what session_slot buys", got)
+	}
+	if got := textOccurrences(second, siblingTurn); got != 1 {
+		t.Errorf("the slot's conversation appears %d times in the re-ask, want exactly once", got)
+	}
+	if got := textOccurrences(first, residueTurn) + textOccurrences(second, residueTurn); got != 0 {
+		t.Errorf("a transcript stored under the bare node id reached the model %d times — residue served as this node's own conversation", got)
+	}
+	last := lastUserText(t, second)
+	if !strings.Contains(last, schemaRetryFeedbackMarker) || !strings.Contains(last, "reason") {
+		t.Errorf("the re-ask's user turn does not carry the validation error: %q", last)
+	}
+	if got := textOccurrences(second, reaskPrompt); got != 1 {
+		t.Errorf("the prompt appears %d times in the re-ask's conversation, want exactly once", got)
+	}
+}
+
 // pauseConversation is a claw conversation captured at an ask_user pause:
 // the prompt, then the assistant's pending tool_use.
 func pauseConversation(t *testing.T) json.RawMessage {

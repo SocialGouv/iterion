@@ -50,8 +50,8 @@ func init() {
 	rootCmd.AddCommand(clawRunnerCmd)
 }
 
-// sandboxRunnerSessionID is the runID half of the (runID, nodeID) key
-// the in-runner session store uses. Fixed because each runner process
+// sandboxRunnerSessionID is the runID half of the (runID, session key)
+// key the in-runner session store uses. Fixed because each runner process
 // has exactly one store and no real runID travels over the IPC wire
 // (it's a launcher-side concept). The value is opaque to the host
 // store — the launcher's OnSessionCapture mirrors snapshots into the
@@ -87,8 +87,8 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		}
 		if env.Type == delegate.EnvelopeSessionReplay {
 			// V2-4: stash the snapshot; we'll load it into the local
-			// store once the task envelope arrives (NodeID is the key
-			// half of the store entry).
+			// store once the task envelope arrives — the task carries
+			// the key half of the store entry.
 			replaySnapshots = append(replaySnapshots, append([]byte(nil), env.Data...))
 			continue
 		}
@@ -171,14 +171,21 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// mirrors every save back across the IPC. The runner-local store
 	// is required so applySessionMessages prepends the replayed prior
 	// messages to the LLM's first call (preserves compaction-retry
-	// semantics across the sandbox boundary).
+	// semantics across the sandbox boundary). The key is the task's
+	// session key — its explicit session_slot when it has one — which is
+	// the key the in-container backend reads and writes.
+	// A replay that does not decode leaves this crossing without the
+	// conversation the launcher believes it sent, so the gap is relayed as
+	// well as written to stderr: the launcher logs the relayed event whatever
+	// the outcome, and the stderr line is the container's own log of it.
 	sessionStore := model.NewNodeSessionStore()
 	for _, snap := range replaySnapshots {
-		if err := sessionStore.SaveSnapshot(sandboxRunnerSessionID, ioTask.NodeID, snap); err != nil {
-			fmt.Fprintf(stderr, "iterion-claw-runner: warn: decode session_replay: %v\n", err)
+		if err := sessionStore.SaveSnapshot(sandboxRunnerSessionID, model.TaskSessionKey(task), snap); err != nil {
+			relaySessionMirrorGap(dispatcher, stderr, model.MirrorGapReplayUndecodable, len(snap),
+				"decode session_replay: %v", err)
 		}
 	}
-	captureSink := &dispatcherCaptureSink{dispatcher: dispatcher}
+	captureSink := &dispatcherCaptureSink{dispatcher: dispatcher, stderr: stderr}
 	ctx = model.WithSandboxRunnerSession(ctx, sandboxRunnerSessionID, sessionStore, captureSink)
 	if ioTask.LauncherEndsNodeSession {
 		ctx = model.WithLauncherEndedNodeSession(ctx)

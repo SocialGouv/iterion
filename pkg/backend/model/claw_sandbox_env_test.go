@@ -444,20 +444,11 @@ func TestExecuteViaSandboxRunner_SendsTheLaunchersBudgetAndHooks(t *testing.T) {
 // the task that envelope carried.
 func dispatchCapturingTheTask(t *testing.T, b *ClawBackend, workDir string) delegate.IOTask {
 	t.Helper()
-	captured := filepath.Join(t.TempDir(), "task.ndjson")
-	_, err := b.executeViaSandboxRunner(context.Background(), delegate.Task{
-		NodeID: "n", Model: "openai/gpt-5", WorkDir: workDir, Sandbox: &taskCaptureSandbox{path: captured},
+	envelope := firstDispatchedEnvelope(t, b, context.Background(), delegate.Task{
+		NodeID: "n", Model: "openai/gpt-5", WorkDir: workDir,
 	})
-	if err == nil {
-		t.Fatal("a runner that never answers must fail the dispatch")
-	}
-	line, err := os.ReadFile(captured)
-	if err != nil {
-		t.Fatalf("read what the runner received: %v", err)
-	}
-	var envelope delegate.Envelope
-	if err := json.Unmarshal(line, &envelope); err != nil || envelope.Type != delegate.EnvelopeTask {
-		t.Fatalf("the runner's first envelope = %q (%v), want the task", line, err)
+	if envelope.Type != delegate.EnvelopeTask {
+		t.Fatalf("the runner's first envelope is %q, want the task", envelope.Type)
 	}
 	var crossed delegate.IOTask
 	if err := json.Unmarshal(envelope.Data, &crossed); err != nil {

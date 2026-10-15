@@ -11,6 +11,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
@@ -1172,6 +1174,27 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		return delegate.Result{}, fmt.Errorf("claw backend: executeViaSandboxRunner called without a sandbox handle")
 	}
 
+	// The task envelope is built and SIZED before anything is spawned. It is
+	// the one launcher→runner envelope whose payload no producer bounds: a
+	// resumed crossing carries its whole pre-pause conversation
+	// (ResumeConversation), which the other direction's clamp refuses rather
+	// than truncate, for the reason stated there — a cut one resumes onto a
+	// corrupted conversation (see [delegate.ClampToolResult]). Over the line
+	// cap the channel's writer refuses it either way; refused HERE the node
+	// fails with the size named and no runner was started, where the same
+	// refusal after the spawn has to kill a process that is already reading.
+	taskEnv, err := delegate.NewTaskEnvelope(b.runnerIOTask(task))
+	if err != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: build task envelope: %w", err)
+	}
+	if err := delegate.CheckEnvelopeLine(taskEnv); err != nil {
+		if len(task.ResumeConversation) > 0 {
+			return delegate.Result{}, fmt.Errorf("claw backend: node %q: the task does not cross the sandbox channel, and %d of those bytes are the conversation this crossing resumes: %w",
+				task.NodeID, len(task.ResumeConversation), err)
+		}
+		return delegate.Result{}, fmt.Errorf("claw backend: node %q: the task does not cross the sandbox channel: %w", task.NodeID, err)
+	}
+
 	// The runner is the same iterion binary inside the container,
 	// invoked via a hidden subcommand. The container image is
 	// expected to ship `iterion` on PATH (the production Dockerfile
@@ -1253,24 +1276,21 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	}
 	defer endSession()
 
-	mux := delegate.NewMultiplexer(stdoutPipe, stdinPipe, b.multiplexerHandler(ctx, task))
+	// V2-4: the host's copy of this task's session crosses BEFORE the task
+	// envelope — the runner stashes it, then loads it into its local store
+	// once the task arrives, so applySessionMessages prepends the replayed
+	// history to the LLM's first call. Resolved before the multiplexer
+	// exists because the mirror in the other direction needs its outcome
+	// (see [sessionSeed]).
+	seed := b.sessionSeedForCrossing(ctx, task)
 
-	// V2-4: when the host's session store has prior messages for this
-	// (runID, nodeID), seed the runner with a session_replay envelope
-	// BEFORE the task envelope. The runner stashes the snapshot until
-	// the task arrives, then loads it into its local store so
-	// applySessionMessages prepends the replayed history to the LLM's
-	// first call. This preserves CompactAndRetry semantics across the
-	// sandbox boundary.
-	hostRunID, hostStore := runtimeContextFrom(ctx)
-	if hostStore != nil && hostRunID != "" && task.NodeID != "" {
-		if snapshot := hostStore.LoadSnapshot(hostRunID, task.NodeID); len(snapshot) > 0 {
-			replayEnv := delegate.NewSessionReplayEnvelope(snapshot)
-			if err := mux.Send(replayEnv); err != nil {
-				_ = cmd.Process.Kill()
-				_ = cmd.Wait()
-				return delegate.Result{}, fmt.Errorf("claw backend: send session_replay: %w", err)
-			}
+	mux := delegate.NewMultiplexer(stdoutPipe, stdinPipe, b.multiplexerHandler(ctx, task, seed))
+
+	if len(seed.replay) > 0 {
+		if err := mux.Send(delegate.NewSessionReplayEnvelope(seed.replay)); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: send session_replay: %w", err)
 		}
 	}
 
@@ -1306,14 +1326,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		}
 	}
 
-	// Send the task envelope. The runner blocks on its
-	// EnvelopeReader.Read() until this arrives.
-	taskEnv, err := delegate.NewTaskEnvelope(b.runnerIOTask(task))
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return delegate.Result{}, fmt.Errorf("claw backend: build task envelope: %w", err)
-	}
+	// Send the task envelope — built and sized before the spawn. The runner
+	// blocks on its EnvelopeReader.Read() until this arrives.
 	if err := mux.Send(taskEnv); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -1360,6 +1374,79 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		res.BackendName = delegate.BackendClaw
 	}
 	return res, nil
+}
+
+// sessionSeed is what the pre-spawn seed could hand a sandboxed crossing of
+// the host's copy of its session: the bounded replay, and whether the host
+// held a conversation it could NOT deliver. Both halves are read by the
+// mirror in the other direction — a crossing that was given none of the
+// session's history did not continue it, so its own capture must not become
+// it (see [ClawBackend.multiplexerHandler]).
+type sessionSeed struct {
+	replay  json.RawMessage
+	refused bool
+}
+
+// sessionSeedForCrossing reads the host's session store under the task's
+// session key — its explicit session_slot when the node declares one — and
+// bounds what it finds for the IPC channel. For a node with a slot that is
+// the conversation the slot's other nodes built.
+//
+// The store is uncapped and the channel is not, so what crosses is clamped
+// first: a conversation too long for one line is compacted, and one that
+// stays too long is left behind with its size named. The crossing is still
+// spawned — the replay is context the model is better off with, never the
+// node's own work, and a refused line would strand the dispatch on a runner
+// it has to kill.
+//
+// A task that carries its own history gets no replay: the in-container path
+// ignores the store for such a task exactly as an in-process node does (see
+// [applySessionMessagesForTask]), so a replay would cross the channel for a
+// reader that never reads it. The BOUND still runs for it, because its
+// verdict is what the mirror reads: a copy this channel can carry is a copy
+// the crossing that produced the carried history was given too, so the
+// capture coming back continues the session; a copy it cannot carry reached
+// no crossing at all, and what comes back is one crossing's own blind turns,
+// which must not become the session (see [ClawBackend.multiplexerHandler]).
+// The price of that verdict is the bound's own pass — nothing for a copy
+// that fits a line, the compaction attempt for one that does not, which is
+// exactly the copy whose verdict decides a session.
+// ResumeConversation is the reachable half of that pair — a continued
+// conversation is refused on this arm, in [ClawBackend.Execute], before any
+// seed is computed — and both are read here so the two spellings of a
+// carried history stay one rule.
+func (b *ClawBackend) sessionSeedForCrossing(ctx context.Context, task delegate.Task) sessionSeed {
+	hostRunID, hostStore := runtimeContextFrom(ctx)
+	sessKey := taskSessionKey(task)
+	if hostStore == nil || hostRunID == "" || sessKey == "" {
+		return sessionSeed{}
+	}
+	snapshot := hostStore.LoadSnapshot(hostRunID, sessKey)
+	if len(snapshot) == 0 {
+		return sessionSeed{}
+	}
+	carriesOwnHistory := len(task.ResumeConversation) > 0 || len(task.ContinueConversation) > 0
+	replay, reduced, err := constrainSessionSnapshotForWire(snapshot)
+	if err != nil {
+		if b.logger != nil {
+			if carriesOwnHistory {
+				b.logger.Warn("[%s#%d/claw] the host's copy of session %q reached no crossing (%v), so the history this one carries is not that session's: its capture stays out of it",
+					task.NodeID, task.Iteration, sessKey, err)
+			} else {
+				b.logger.Warn("[%s#%d/claw] the sandboxed crossing is spawned without its replayed conversation: %v",
+					task.NodeID, task.Iteration, err)
+			}
+		}
+		return sessionSeed{refused: true}
+	}
+	if carriesOwnHistory {
+		return sessionSeed{}
+	}
+	if reduced && b.logger != nil {
+		b.logger.Warn("[%s#%d/claw] compacted the replayed conversation to cross the sandbox channel (%d -> %d bytes)",
+			task.NodeID, task.Iteration, len(snapshot), len(replay))
+	}
+	return sessionSeed{replay: replay}
 }
 
 // runnerIOTask is the task envelope's payload for the in-container runner.
@@ -2140,7 +2227,7 @@ func canonicalMCPToolName(name string) string {
 //     into the host's nodeSessionStore so CompactAndRetry compacts the
 //     latest history. Pre-spawn, the launcher seeds a session_replay
 //     envelope from the host store (see [executeViaSandboxRunner]).
-func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task) delegate.MultiplexerHandler {
+func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed) delegate.MultiplexerHandler {
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
 	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
@@ -2148,6 +2235,22 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 		toolByName[td.Name] = td
 	}
 	hostRunID, hostStore := runtimeContextFrom(ctx)
+	// The mirror's key is the launcher's, not the wire's: a session_capture
+	// envelope carries the snapshot alone, and the host holds the task the
+	// runner is executing.
+	hostSessKey := taskSessionKey(task)
+	// Whether this crossing holds none of the session's history, from the two
+	// sides that know: the seed's own outcome, and the runner's word for a
+	// replay that did not survive the channel. Either way the crossing
+	// answers without the conversation this host holds, and its capture must
+	// not become it. Both reach this flag before any capture can — the runner
+	// loads the replay into its local store before it runs the node, and
+	// [delegate.Multiplexer.Run] dispatches every envelope in order — and it
+	// is atomic because the guard is load-bearing while the dispatch's
+	// schedule is the multiplexer's to change.
+	var stranded atomic.Bool
+	stranded.Store(seed.refused)
+	var strandedOnce sync.Once
 	return delegate.MultiplexerHandler{
 		OnToolCall: func(toolCtx context.Context, name string, input json.RawMessage) (string, error) {
 			// A runner forwards the name the tool was advertised under — its
@@ -2190,14 +2293,57 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			return td.Execute(toolCtx, input)
 		},
 		OnSessionCapture: func(snapshot json.RawMessage) {
-			if hostStore == nil || hostRunID == "" || task.NodeID == "" {
+			if hostStore == nil || hostRunID == "" || hostSessKey == "" {
 				return
 			}
-			// Best-effort mirror — failures keep the host store one
-			// snapshot behind but the next capture will reconcile.
-			_ = hostStore.SaveSnapshot(hostRunID, task.NodeID, snapshot)
+			// A crossing that holds none of the session's history — the
+			// seed could not deliver it, or the runner says the replay did
+			// not decode over there — captures its own turns, not a
+			// continuation, so saving them would REPLACE the conversation the
+			// session's other nodes built — and the durable blob a persist
+			// node packs from it — with the turns of one crossing that never
+			// saw it. What the host keeps is also what CompactAndRetry
+			// shrinks, which is how the next attempt's seed comes to fit.
+			if stranded.Load() {
+				strandedOnce.Do(func() {
+					if b.logger != nil {
+						b.logger.Warn("[%s#%d/claw] this crossing's own conversation stays out of session %q: it holds none of that history, so its capture is not the session's — what the host holds is kept for the next attempt to compact and replay",
+							task.NodeID, task.Iteration, hostSessKey)
+					}
+				})
+				return
+			}
+			// Best-effort mirror — a failure keeps the host store one
+			// snapshot behind and the next capture reconciles it, but it is
+			// named: the host's copy is what CompactAndRetry shrinks and what
+			// the next crossing replays. SaveSnapshot fails only on a
+			// snapshot that does not decode as a conversation, so the size is
+			// the whole account — far-side text never reaches this log.
+			if err := hostStore.SaveSnapshot(hostRunID, hostSessKey, snapshot); err != nil && b.logger != nil {
+				b.logger.Warn("[%s#%d/claw] the host's copy of session %q is now behind: the %d-byte capture the runner mirrored does not decode as a conversation",
+					task.NodeID, task.Iteration, hostSessKey, len(snapshot))
+			}
 		},
 		OnEvent: func(eventType string, payload map[string]any) {
+			// A mirroring gap is the launcher's own diagnostic, not one of
+			// the node's metered events: it is reported HERE, whatever the
+			// crossing's outcome, from the numbers the runner sent. The
+			// container's own account of it stays in the container's log;
+			// this line is the host's, composed from the reason and the size.
+			if eventType == SessionMirrorGapEvent {
+				// A gap the host cannot rule out of the replay direction says
+				// this crossing holds LESS of the session than the host does:
+				// the mirror then keeps what it has, as it does for a seed it
+				// could not deliver.
+				if gapStrandsTheCrossing(payload) {
+					stranded.Store(true)
+				}
+				if b.logger != nil {
+					b.logger.Warn("[%s#%d/claw] the host's copy of session %q: %s",
+						task.NodeID, task.Iteration, hostSessKey, sessionMirrorGapSentence(payload))
+				}
+				return
+			}
 			// What the in-container loop observed — its LLM steps, the
 			// tools it ran, its retries and compactions, its per-turn
 			// anchors — re-fired through THIS process's hooks so a

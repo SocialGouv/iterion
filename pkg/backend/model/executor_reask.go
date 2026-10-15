@@ -132,28 +132,38 @@ func (e *ClawExecutor) planSchemaReask(ctx context.Context, backendName string, 
 
 // completedClawConversation is the conversation the claw session store holds
 // for the task — what the backend captured when the first answer's
-// generation completed — sanitized into a provider-neutral replay and ended
-// on the answer itself, or nil when nothing was captured (no runtime
-// context, or an in-container runner without the capture sink). Looked up
-// under the task's session key and, for a slot node, under the node id as
-// well: the sandbox capture sink mirrors an in-container loop under the
-// node id.
+// generation completed — sanitized into a provider-neutral replay, or nil
+// when nothing was captured (no runtime context, or an in-container runner
+// without the capture sink).
 //
-// The capture ends where the REQUEST ended: a structured call appends the
-// assistant's answer to its conversation, a tool loop that closed on text
-// returns the final text beside its messages, so the capture's last turn
-// is the prompt or the last tool result. The re-ask is about that answer,
-// so it is put back as the last assistant turn, from the output the backend
-// parsed it into — the model must see what it answered to fix it.
+// The task's session key is the ONE address, on either side of the sandbox
+// boundary: an in-process capture writes it and a sandboxed crossing's
+// capture is mirrored under it, so no other entry is consulted. What a
+// non-empty entry holds is the SESSION's conversation, which for a shared
+// `session_slot:` is this crossing's once its own capture landed and the
+// slot's earlier turns when it did not — the mirror is best-effort by
+// contract, and a crossing the channel could not seed deliberately keeps its
+// own turns out of the slot. Continuing the slot's earlier turns is then
+// continuing a SIBLING's conversation: the answer under correction is absent
+// from it, and the trailing-assistant guard below does not catch the case,
+// because a sibling's entry ends on the sibling's own assistant turn. Telling
+// the two apart needs an identity on the entry — which crossing wrote it —
+// not a comparison of its text.
+//
+// The capture ends where the REQUEST ended: a tool loop that closed on text
+// returns the final text beside its messages, so the capture's last turn is
+// the prompt or the last tool result, and the answer the re-ask is about is
+// put back as the last assistant turn from the output the backend parsed it
+// into — the model must see what it answered to fix it. A capture that
+// ALREADY ends on an assistant turn gets nothing appended: a structured
+// call's own answer is that turn, and two consecutive assistant turns is
+// not a conversation a provider accepts.
 func (e *ClawExecutor) completedClawConversation(ctx context.Context, task *delegate.Task, result delegate.Result) json.RawMessage {
 	runID, sessions := runtimeContextFrom(ctx)
 	if runID == "" || sessions == nil {
 		return nil
 	}
 	messages := sessions.load(runID, taskSessionKey(*task))
-	if len(messages) == 0 && task.SessionSlot != "" && task.NodeID != "" {
-		messages = sessions.load(runID, task.NodeID)
-	}
 	if len(messages) == 0 {
 		return nil
 	}

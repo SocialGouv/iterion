@@ -498,9 +498,9 @@ func providerFallbackEligible(backendName string) bool {
 //
 // Everyone else only ever REPORTS a session id and never resumes one:
 // claw never mentions Task.SessionID at all (its conversation lives in
-// the host's (runID, nodeID) store and is replayed independently), and
-// the generic CLI-agent path behind kimi/grok parses an id out of the
-// CLI's output without ever passing one back in.
+// the host's per-(runID, session key) store and is replayed
+// independently), and the generic CLI-agent path behind kimi/grok parses
+// an id out of the CLI's output without ever passing one back in.
 //
 // Deliberately its own set rather than a reuse of
 // providerFallbackEligible: that one answers "does this backend honour

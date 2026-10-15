@@ -1127,7 +1127,60 @@ across the channel.
   launcher seeds a `session_replay` envelope before the task
   envelope, the runner stashes the snapshot, then loads it into its
   local store once the task arrives so applySessionMessages
-  prepends the replayed prior messages to the LLM's first call.
+  prepends the replayed prior messages to the LLM's first call. Both
+  sides address the store by the task's session key — its explicit
+  `session_slot:` when the node declares one, the node id otherwise —
+  so a slot is one conversation whichever side of the boundary a
+  crossing runs on. Neither store is capped and the channel is: each
+  direction therefore bounds its snapshot against
+  [delegate.MaxEnvelopeLineBytes] first
+  (`model.ConstrainSessionSnapshotForWire`), compacting the conversation
+  to fit and keeping its recent turns. A conversation that stays over the
+  bound is refused with its size named — because writing the line would fail
+  the launcher's reader and with it the whole channel. The seed then spawns
+  the crossing without its replay, and the mirror keeps that crossing's own
+  turns OUT of the session: it holds none of its history, so its capture is
+  not a continuation of it, and what the host keeps is what the next attempt
+  compacts and replays. The same applies to a crossing the runner says never
+  decoded the replay it was seeded — the relayed gap, not the seed's outcome,
+  is what the host knows it by. A task that carries its own history gets no
+  replay — a pause resumed here (`ResumeConversation`); a continued
+  conversation never reaches this arm, `ClawBackend.Execute` refuses it in
+  process — because the in-container path ignores the store for such a task,
+  as an in-process node does. The BOUND still runs on the host's copy,
+  because its verdict is what the mirror reads: a copy this channel can
+  carry is one the crossing that produced that carried history was given
+  too, so the capture coming back continues the session; a copy it cannot
+  carry reached no crossing at all, and what comes back is one blind
+  crossing's own turns, which must not replace the session the host holds.
+  The residual is version skew alone: a crossing stranded by a relayed gap
+  (a replay a container could not decode, a reason a newer runner names) and
+  then resumed does mirror, because the host's copy is deliverable and
+  nothing on the pause says the crossing never saw it.
+  Every gap in the host's copy — a refused snapshot, a refused write, a
+  replay the runner could not decode — is relayed as a `session_mirror_gap`
+  event, which the launcher logs whatever the crossing's outcome; the
+  runner's stderr carries the same gap for the container's own log.
+  That bound is a CALLER's duty here, unlike the tool-result clamp
+  `pkg/backend/delegate` enforces inside the type's one unexported
+  constructor: it needs the claw compactor, which lives in
+  `pkg/backend/model` — and `pkg/backend/model` imports
+  `pkg/backend/delegate`, so the envelope constructors cannot reach it.
+  Five envelopes can carry a conversation, and each answers the line cap
+  its own way; a sixth producer has to choose one of them, and nothing in
+  the gate will say so. `session_replay` (the seed) and `session_capture`
+  (the runner's sink) compact and, failing that, refuse — above. A
+  `tool_result`'s `ask_user` payload is refused whole by the clamp
+  [delegate.ClampToolResult] — truncating it would resume onto a corrupted
+  conversation. The `task` envelope carries a resumed crossing's
+  `ResumeConversation`, which that same reason keeps whole, so the launcher
+  SIZES it before it spawns anything: an over-cap resume fails its node with
+  both sizes named, and no runner is started. The `result` envelope carries
+  `PendingConversation`, how a sandboxed crossing reports a pause, and is
+  the one left unanswered: the writer refuses it at the source and the
+  runner exits on that refusal, its size on the container's own log — so a
+  pause over the cap fails loudly, but as a channel-level failure that
+  carries no structured result and books none of the crossing's spend.
 - ✅ **Per-step LLM observability — metering parity.** The in-container
   runner's claw backend carries [model.SandboxRelayHooks], which emit
   each `llm_request` and `llm_step_finished` (model, input / output /

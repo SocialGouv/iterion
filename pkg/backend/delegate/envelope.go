@@ -286,13 +286,9 @@ func NewEnvelopeWriter(w io.Writer) *EnvelopeWriter {
 // first ([ClampToolResult], the relay's event clamp); reaching this
 // refusal means one did not.
 func (ew *EnvelopeWriter) Write(env Envelope) error {
-	buf, err := json.Marshal(env)
+	buf, err := encodeEnvelopeLine(env)
 	if err != nil {
-		return fmt.Errorf("delegate: encode envelope: %w", err)
-	}
-	if len(buf)+1 > MaxEnvelopeLineBytes {
-		return fmt.Errorf("delegate: refusing to write a %q envelope of %d bytes (line cap %d): %w",
-			env.Type, len(buf)+1, MaxEnvelopeLineBytes, ErrEnvelopeLineTooLong)
+		return err
 	}
 	buf = append(buf, '\n')
 	ew.mu.Lock()
@@ -301,6 +297,35 @@ func (ew *EnvelopeWriter) Write(env Envelope) error {
 		return fmt.Errorf("delegate: write envelope: %w", err)
 	}
 	return nil
+}
+
+// encodeEnvelopeLine marshals env into the bytes of its NDJSON line —
+// newline excluded, counted — and refuses one over [MaxEnvelopeLineBytes].
+// The one place the channel's line rule is applied, so a producer that
+// sizes an envelope before it acts gets the same verdict, and the same
+// words, as the writer that would have refused it.
+func encodeEnvelopeLine(env Envelope) ([]byte, error) {
+	buf, err := json.Marshal(env)
+	if err != nil {
+		return nil, fmt.Errorf("delegate: encode envelope: %w", err)
+	}
+	if len(buf)+1 > MaxEnvelopeLineBytes {
+		return nil, fmt.Errorf("delegate: refusing to write a %q envelope of %d bytes (line cap %d): %w",
+			env.Type, len(buf)+1, MaxEnvelopeLineBytes, ErrEnvelopeLineTooLong)
+	}
+	return buf, nil
+}
+
+// CheckEnvelopeLine reports whether env crosses the channel as one NDJSON
+// line, with the refusal [EnvelopeWriter.Write] would return.
+//
+// For a producer that can act BEFORE it writes: the launcher sizes the task
+// envelope before it spawns a runner, so a task the channel cannot carry
+// fails its node with the size named instead of landing the same refusal on
+// a process that then has to be killed.
+func CheckEnvelopeLine(env Envelope) error {
+	_, err := encodeEnvelopeLine(env)
+	return err
 }
 
 // NewTaskEnvelope builds a task envelope wrapping an [IOTask]. The

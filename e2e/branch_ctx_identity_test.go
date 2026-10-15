@@ -59,12 +59,13 @@ func (e *ctxProbeExecutor) probes(t *testing.T, nodeID string, want int) []ctxPr
 //
 // The template snapshot is a VALUE: every branch gets its own, and it carries
 // the run id, which is what keeps `{{run.id}}` rendering there. The ctx run
-// identity is a KEY — the per-node compaction session store files under
-// `(runID, nodeID)`, as do the operator-chat inbox and the ADR-081
-// async-question binder — and `fan_out_each` replays ONE node id per item, so
-// that key is not unique inside a fan-out. Sharing it makes a failed item's
-// transcript the next item's history; pkg/backend/model's
-// TestPerNodeSessionFollowsTheRunIdentity is that mechanism, isolated.
+// identity is a KEY — the compaction session store files under
+// `(runID, session key)`, as do the operator-chat inbox and the ADR-081
+// async-question binder under the node id — and `fan_out_each` replays ONE
+// node id per item, so that key is not unique inside a fan-out. Sharing it
+// makes a failed item's transcript the next item's history;
+// pkg/backend/model's TestPerNodeSessionFollowsTheRunIdentity is that
+// mechanism, isolated.
 //
 // So: branch dispatch carries the snapshot and NOT the identity; the trunk
 // carries both.

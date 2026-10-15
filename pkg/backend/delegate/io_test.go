@@ -20,33 +20,36 @@ func TestIOTaskRoundTrip(t *testing.T) {
 			{Type: "text", Text: "do the thing"},
 			{Type: "image", MediaType: "image/png", Data: "aW1hZ2U=", Path: "assets/image.png", Name: "diagram"},
 		},
-		AllowedTools:          []string{"Bash", "Read"},
-		Readonly:              true,
-		OutputSchema:          json.RawMessage(`{"type":"object"}`),
-		Model:                 "anthropic/claude-sonnet-4-6",
-		HasTools:              true,
-		ToolMaxSteps:          10,
-		MaxTokens:             8192,
-		WorkDir:               "/workspace",
-		BaseDir:               "/workspace",
-		RepoRoot:              "/repo",
-		ReasoningEffort:       "high",
-		Ultracode:             true,
-		SecretsHygiene:        true,
-		SecretFiles:           []SecretFileHint{{Name: "aws", Path: "/run/secrets/aws", Env: "AWS_SHARED_CREDENTIALS_FILE"}},
-		CursorFragments:       []string{"**style:** prefer small changes", "**tests:** verify behavior"},
-		PresetFragment:        "Focus on maintainability.",
-		CompactThresholdRatio: 0.85,
-		CompactPreserveRecent: 4,
-		SessionID:             "sess-abc",
-		ForkSession:           true,
-		Handoff:               "/state/routing-handoff/implement.md",
-		HandoffMode:           "restart",
-		InteractionEnabled:    true,
-		ResumeAnswer:          "yes please",
-		SettingsHooks:         json.RawMessage(`{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}`),
-		AmbientContext:        ambient.None,
-		AmbientContextSource:  "workflow",
+		AllowedTools:           []string{"Bash", "Read"},
+		Readonly:               true,
+		OutputSchema:           json.RawMessage(`{"type":"object"}`),
+		Model:                  "anthropic/claude-sonnet-4-6",
+		HasTools:               true,
+		ToolMaxSteps:           10,
+		MaxTokens:              8192,
+		WorkDir:                "/workspace",
+		BaseDir:                "/workspace",
+		RepoRoot:               "/repo",
+		ReasoningEffort:        "high",
+		Ultracode:              true,
+		SecretsHygiene:         true,
+		SecretFiles:            []SecretFileHint{{Name: "aws", Path: "/run/secrets/aws", Env: "AWS_SHARED_CREDENTIALS_FILE"}},
+		CursorFragments:        []string{"**style:** prefer small changes", "**tests:** verify behavior"},
+		PresetFragment:         "Focus on maintainability.",
+		CompactThresholdRatio:  0.85,
+		CompactPreserveRecent:  4,
+		SessionID:              "sess-abc",
+		SessionSlot:            "assistant_conversation",
+		ForkSession:            true,
+		ResumeConversation:     json.RawMessage(`[{"role":"user","content":[{"type":"text","text":"may I?"}]}]`),
+		ResumePendingToolUseID: "tu_ask",
+		Handoff:                "/state/routing-handoff/implement.md",
+		HandoffMode:            "restart",
+		InteractionEnabled:     true,
+		ResumeAnswer:           "yes please",
+		SettingsHooks:          json.RawMessage(`{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}`),
+		AmbientContext:         ambient.None,
+		AmbientContextSource:   "workflow",
 	}
 
 	ioTask := ToIOTask(original)
@@ -122,6 +125,25 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	}
 	if got.ForkSession != original.ForkSession {
 		t.Errorf("ForkSession = %v", got.ForkSession)
+	}
+	// The session slot is the KEY the runner seeds its local store under, so
+	// the in-container backend reads back what the launcher replayed; lost on
+	// the wire, a slot node's crossing silently keys on its bare node id.
+	if got.SessionSlot != original.SessionSlot {
+		t.Errorf("SessionSlot = %q, want %q — the runner would key its session store on the bare node id", got.SessionSlot, original.SessionSlot)
+	}
+	// A resumed task carries its pause. The in-runner prepend of the stored
+	// conversation is skipped on ResumeConversation alone
+	// (model.applySessionMessagesForTask), so dropped on the wire a resumed
+	// sandboxed node is handed the session's history instead of its pause.
+	// The pending tool_use id travels with that conversation: the
+	// in-container backend answers THAT block, and the task is its only
+	// source for the id.
+	if string(got.ResumeConversation) != string(original.ResumeConversation) {
+		t.Errorf("ResumeConversation = %s, want %s — the pause would be replaced by the stored session history", got.ResumeConversation, original.ResumeConversation)
+	}
+	if got.ResumePendingToolUseID != original.ResumePendingToolUseID {
+		t.Errorf("ResumePendingToolUseID = %q, want %q", got.ResumePendingToolUseID, original.ResumePendingToolUseID)
 	}
 	if got.InteractionEnabled != original.InteractionEnabled {
 		t.Errorf("InteractionEnabled = %v", got.InteractionEnabled)

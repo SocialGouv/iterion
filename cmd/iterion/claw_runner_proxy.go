@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
 
@@ -218,18 +219,99 @@ func (d *proxyDispatcher) callTool(ctx context.Context, name string, input json.
 // last-known-good one.
 type dispatcherCaptureSink struct {
 	dispatcher *proxyDispatcher
+	stderr     io.Writer
 }
 
-// Capture is non-blocking by contract (it runs on the LLM loop's hot
-// path). Errors writing the envelope are silently dropped — the sink
-// is best-effort; failure means the host store falls one snapshot
-// behind, which is recoverable on the next save.
+// Capture never fails the node, and it is not free: an in-budget snapshot
+// costs a length check, while one over the budget pays a full compaction pass
+// over the whole conversation on every save — measured at 45 ms for five
+// megabyte-sized turns and seconds for tens of thousands of short ones, on
+// the LLM loop's hot path, since a conversation only grows and every later
+// save pays it again — the cost is accepted here, not hidden. A mirror that stopped mirroring is what makes
+// CompactAndRetry shrink the wrong conversation, so the cost buys the host's
+// copy staying current, and what it cannot buy it reports (see [gap]).
+//
+// The (runID, session key) pair the local store used is dropped rather than
+// put on the wire: the session_capture envelope carries the snapshot alone,
+// and the launcher keys the mirror from the task it sent — the host's runID
+// and that task's session key are the launcher's to own.
+//
+// The snapshot is bounded first, by the same rule the launcher's replay
+// obeys in the other direction: the store it comes from is uncapped, while
+// the channel's reader fails the WHOLE channel on a line over
+// [delegate.MaxEnvelopeLineBytes]. Unbounded, a conversation past the cap
+// is refused on this save AND on every later one — it only grows — so the
+// host would hold a stale, smaller conversation for the rest of the run.
 func (s *dispatcherCaptureSink) Capture(_ string, _ string, snapshot []byte) {
 	if s == nil || s.dispatcher == nil {
 		return
 	}
-	env := delegate.NewSessionCaptureEnvelope(snapshot)
-	_ = s.dispatcher.write(env)
+	bounded, reduced, err := model.ConstrainSessionSnapshotForWire(snapshot)
+	if err != nil {
+		s.gap(model.MirrorGapSnapshotRefused, len(snapshot),
+			"the host's mirror of this conversation is now behind: %v", err)
+		return
+	}
+	if reduced {
+		// Not a gap: the host then holds a compacted form of the SAME
+		// conversation — the shape its own retry path produces — so this
+		// line stays on stderr and nothing crosses but the snapshot.
+		s.warn("compacted the session snapshot to cross the channel (%d -> %d bytes)", len(snapshot), len(bounded))
+	}
+	if err := s.dispatcher.write(delegate.NewSessionCaptureEnvelope(bounded)); err != nil {
+		s.gap(model.MirrorGapWriteRefused, len(bounded),
+			"the host's mirror of this conversation is now behind: %v", err)
+	}
+}
+
+// gap is [relaySessionMirrorGap] for this sink's own channels.
+func (s *dispatcherCaptureSink) gap(reason string, size int, format string, args ...any) {
+	relaySessionMirrorGap(s.dispatcher, s.stderr, reason, size, format, args...)
+}
+
+// warn names a diagnostic on the runner's stderr, the runner's one channel
+// for something non-fatal that must not fail the node.
+func (s *dispatcherCaptureSink) warn(format string, args ...any) {
+	runnerWarn(s.stderr, format, args...)
+}
+
+// runnerWarn writes one non-fatal diagnostic to the runner's stderr: the
+// container's own log, which this process writes without knowing what the
+// launcher reads of it.
+func runnerWarn(stderr io.Writer, format string, args ...any) {
+	if stderr == nil {
+		return
+	}
+	fmt.Fprintf(stderr, "iterion-claw-runner: warn: "+format+"\n", args...)
+}
+
+// relaySessionMirrorGap reports one gap in the HOST's copy of this crossing's
+// conversation — a snapshot the channel's budget refuses, a write it refuses,
+// a replay that did not decode — on BOTH channels this process has, because
+// neither alone is enough: the relayed event is logged by the launcher
+// whatever the crossing's outcome, but travels on the channel a refused
+// write has just shown to be broken, while the stderr line survives that
+// break as the container's own log.
+//
+// The event carries the reason and the size only — the launcher composes its
+// own sentence from them, so the far side's own words stay in the container's
+// log rather than landing in the operator's unscreened.
+//
+// Every gap in the host's copy goes through here: two in the capture sink,
+// one on the seeded replay this runner could not decode.
+func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, size int, format string, args ...any) {
+	runnerWarn(stderr, format, args...)
+	if d == nil {
+		return
+	}
+	env, err := model.NewSessionMirrorGapEvent(reason, size)
+	if err != nil {
+		runnerWarn(stderr, "relaying that gap to the launcher failed too: %v", err)
+		return
+	}
+	if err := d.write(env); err != nil {
+		runnerWarn(stderr, "relaying that gap to the launcher failed too: %v — the line above is its only account", err)
+	}
 }
 
 // registerSandboxLocalTools fills reg with every tool

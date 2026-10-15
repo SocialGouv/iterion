@@ -111,17 +111,25 @@ func (e *Engine) handleNodeFailure(ctx context.Context, rs *runState, nodeID str
 	return false, code, nil
 }
 
-// tryCompact invokes the optional Compactor on the executor and
-// swallows ErrCompactionUnsupported (architectural no-op for backends
-// without a long-lived conversation handle). Real compaction errors
-// log as a warning and fall through to a plain retry.
+// tryCompact invokes the optional Compactor on the executor. Real
+// compaction errors log as a warning and fall through to a plain retry;
+// ErrCompactionUnsupported is not an error (an architectural no-op for
+// backends without a long-lived conversation handle, or a node with no
+// conversation stored yet) but it IS reported: the run log already says
+// compact_and_retry was chosen, and an unreported no-op would leave it
+// reading as a compaction that happened.
 func (e *Engine) tryCompact(ctx context.Context, nodeID string) {
 	c, ok := e.executor.(Compactor)
 	if !ok {
 		e.logger.Warn("recovery: executor does not support compaction; falling back to plain retry for node %q", nodeID)
 		return
 	}
-	if err := c.Compact(ctx, nodeID); err != nil && !errors.Is(err, ErrCompactionUnsupported) {
+	err := c.Compact(ctx, nodeID)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrCompactionUnsupported):
+		e.logger.Info("recovery: nothing was compacted for node %q (%v); retrying as it stands", nodeID, err)
+	default:
 		e.logger.Warn("recovery: compact failed for node %q: %v; retrying without compaction", nodeID, err)
 	}
 }
