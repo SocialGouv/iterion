@@ -1,6 +1,7 @@
 package botregistry
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -193,6 +194,94 @@ func catalogRelPath(abs, workdir string) string {
 	return filepath.ToSlash(abs)
 }
 
+// catalogTemplateShipped reports whether the bundle rooted at bundleDir
+// ships the hand-authored catalog template — the condition that makes the
+// generated skills/iterion-bot-catalog.md one of that bundle's own skills,
+// and the ONE test every write below is gated on (the per-bundle loop and
+// the single-bundle entry point both ask it, so neither can hold its own
+// idea of who owns a catalog).
+//
+// A missing template is "owns none". An empty root and every other stat
+// failure are errors, never a bare false: ownership unknown is not
+// ownership refused, and writing into a bundle is not a decision to take
+// off a verdict the filesystem never gave.
+func catalogTemplateShipped(bundleDir string) (bool, error) {
+	if strings.TrimSpace(bundleDir) == "" {
+		return false, fmt.Errorf("botregistry: catalog ownership needs a bundle root, got an empty path")
+	}
+	if _, err := os.Stat(filepath.Join(bundleDir, catalogStaticName)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("botregistry: stat catalog template under %s: %w", bundleDir, err)
+	}
+	return true, nil
+}
+
+// samePath reports whether two paths name the same directory: the absolute
+// cleaned forms first, then their symlink-resolved forms, so a workspace
+// and a bundle spelled through different links still match. Paths that
+// cannot be resolved compare as given — a mismatch stays a mismatch rather
+// than becoming a guess.
+func samePath(a, b string) bool {
+	absA, err := filepath.Abs(a)
+	if err != nil {
+		absA = filepath.Clean(a)
+	}
+	absB, err := filepath.Abs(b)
+	if err != nil {
+		absB = filepath.Clean(b)
+	}
+	if absA == absB {
+		return true
+	}
+	resA, errA := filepath.EvalSymlinks(absA)
+	resB, errB := filepath.EvalSymlinks(absB)
+	return errA == nil && errB == nil && resA == resB
+}
+
+// pathUnder reports whether path lies inside root (root itself included).
+// The lexical test runs on the cleaned absolute forms, then on the
+// symlink-resolved ones: a workspace handed over through a link (the
+// run's workspace, a bind-mounted checkout) holds the same bundle under
+// another spelling, and reading that as "outside" would skip the owner's
+// own refresh in silence.
+func pathUnder(path, root string) bool {
+	if samePath(path, root) {
+		return true
+	}
+	if lexicallyUnder(path, root) {
+		return true
+	}
+	resPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	resRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	return lexicallyUnder(resPath, resRoot)
+}
+
+// lexicallyUnder reports whether path is root or sits below it, comparing
+// the absolute cleaned forms only.
+func lexicallyUnder(path, root string) bool {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // RegenerateWhatsNextCatalog refreshes the orchestrator-facing bot
 // catalog. It discovers EVERY bundle that ships
 // iterion-bot-catalog-static.md (whats-next, issue-triage, any future
@@ -208,7 +297,66 @@ func catalogRelPath(abs, workdir string) string {
 // catalog owner. Writing into the bundle SOURCE (never directly into
 // <workspace>/.claude/skills/) lets the runtime's "workspace wins" mirror
 // markers refresh the workspace copy cleanly.
+//
+// An owner whose own template cannot be read is reported — never read as
+// "not an owner" — but costs that bundle alone: the other owners are
+// refreshed and the failures come back joined, with the first written
+// path.
+//
+// Every owner is the right write set for an operator gesture (the CLI, a
+// studio save, the freshness gate): it refreshes the whole checkout. A
+// caller acting on behalf of ONE run wants RegenerateCatalogForBundle.
 func RegenerateWhatsNextCatalog(workdir string) (string, error) {
+	return regenerateCatalogs(workdir, "")
+}
+
+// RegenerateCatalogForBundle refreshes ONLY the catalog owned by the
+// bundle rooted at bundleDir, rendered from the manifests discovered under
+// workdir. It is the write set a caller regenerating on behalf of ONE run
+// needs: the workspace-wide set is every owner under the workspace, while
+// a run mirrors only its OWN bundle's skills, so a write for any other
+// owner leaves a file that run has no copy of — in a git workspace, an
+// uncommitted edit to a tracked file every time the running generator
+// renders differently from the checkout.
+//
+// Returns the written path, or "" with a nil error when that bundle has
+// nothing of its own to refresh: it ships no template (it owns no
+// catalog), or its root lies outside workdir (a materialized .botz, a
+// bundle opened from a clone beside the workspace) — the regeneration
+// renders from the workspace's manifests and never writes outside it, so
+// such a bundle keeps the copy its packer froze.
+//
+// A bundle UNDER workdir that ships the template but is not among the
+// bundles discovered there is an error: discovery owns what a bundle IS
+// (a directory with manifest.yaml and main.bot), and refreshing the other
+// owners instead is exactly the collateral write this entry point exists
+// to prevent.
+func RegenerateCatalogForBundle(workdir, bundleDir string) (string, error) {
+	shipped, err := catalogTemplateShipped(bundleDir)
+	if err != nil {
+		return "", err
+	}
+	if !shipped {
+		return "", nil
+	}
+	if !pathUnder(bundleDir, workdir) {
+		return "", nil
+	}
+	return regenerateCatalogs(workdir, bundleDir)
+}
+
+// regenerateCatalogs renders the generated region from the manifests
+// discovered under workdir into every discovered owner's skills dir — or,
+// when onlyBundleDir is non-empty, into that bundle alone. The rendered
+// CONTENT is the full discovered set either way: narrowing the write set
+// never narrows the routing table it carries.
+//
+// Per-owner failures are collected and returned joined, the healthy
+// owners refreshed regardless of where the broken one sorts. A partial
+// DISCOVERY is the opposite case and still refuses everything before the
+// first write: it would silently delete the skipped bundle's row from
+// every catalog it rewrote.
+func regenerateCatalogs(workdir, onlyBundleDir string) (string, error) {
 	abs, err := filepath.Abs(workdir)
 	if err != nil {
 		return "", fmt.Errorf("botregistry: resolve workdir %s: %w", workdir, err)
@@ -256,38 +404,70 @@ func RegenerateWhatsNextCatalog(workdir string) (string, error) {
 	}
 
 	first := ""
+	var failures []error
 	for i := range bundles {
 		owner := bundles[i]
-		// The template lives at the BUNDLE ROOT, not skills/, so it is
-		// never mirrored into <workspace>/.claude/skills/ as a (duplicate
-		// `name: iterion-bot-catalog`) skill — only the generated file is.
-		staticPath := filepath.Join(owner.Path, catalogStaticName)
-		if _, statErr := os.Stat(staticPath); statErr != nil {
+		if onlyBundleDir != "" && !samePath(owner.Path, onlyBundleDir) {
 			continue
 		}
-		static, err := os.ReadFile(staticPath)
+		dest, err := refreshCatalogOwner(bundles, owner, abs)
 		if err != nil {
-			return first, fmt.Errorf("botregistry: read catalog template %s: %w", staticPath, err)
+			// One bundle's filesystem problem is charged to that
+			// bundle alone: the owners hold independent files, and
+			// cancelling the rest would make the write set the walk
+			// order instead of the rule, leaving healthy owners stale
+			// depending on where the broken one happens to sort.
+			failures = append(failures, err)
+			continue
 		}
-		block := RenderCatalogBlock(bundles, owner.Name, abs)
-		out, err := spliceGeneratedBlock(string(static), block)
-		if err != nil {
-			return first, fmt.Errorf("botregistry: %s: %w", staticPath, err)
-		}
-		skillsDir := filepath.Join(owner.Path, bundle.DirSkills)
-		if err := os.MkdirAll(skillsDir, 0o755); err != nil {
-			return first, fmt.Errorf("botregistry: mkdir %s: %w", skillsDir, err)
-		}
-		dest := filepath.Join(skillsDir, catalogGeneratedName)
-		out = reanchorForDepth(out, filepath.Dir(staticPath), skillsDir)
-		if err := store.WriteFileAtomic(dest, []byte(out), 0o644); err != nil {
-			return first, fmt.Errorf("botregistry: write catalog %s: %w", dest, err)
-		}
-		if first == "" {
+		if dest != "" && first == "" {
 			first = dest
 		}
 	}
+	if len(failures) > 0 {
+		return first, errors.Join(failures...)
+	}
+	if onlyBundleDir != "" && first == "" {
+		return "", fmt.Errorf("botregistry: the bundle at %s ships %s but is none of the bundles discovered under %s (a layout discovery does not accept — %s plus %s at the root — or a name another discovery root claimed first), so nothing was regenerated for it", onlyBundleDir, catalogStaticName, abs, bundle.ManifestFile, bundle.MainBotFile)
+	}
 	return first, nil
+}
+
+// refreshCatalogOwner splices the generated region rendered from bundles
+// into the catalog owned by one of them, and returns where it wrote.
+// ("", nil) means that bundle ships no template, i.e. it owns no catalog
+// and there was nothing to write. Every error names the bundle it
+// belongs to, so the caller can report it without cancelling the others.
+func refreshCatalogOwner(bundles []EntryWithSchema, owner EntryWithSchema, workdir string) (string, error) {
+	// The template lives at the BUNDLE ROOT, not skills/, so it is
+	// never mirrored into <workspace>/.claude/skills/ as a (duplicate
+	// `name: iterion-bot-catalog`) skill — only the generated file is.
+	staticPath := filepath.Join(owner.Path, catalogStaticName)
+	switch shipped, err := catalogTemplateShipped(owner.Path); {
+	case err != nil:
+		return "", err
+	case !shipped:
+		return "", nil
+	}
+	static, err := os.ReadFile(staticPath)
+	if err != nil {
+		return "", fmt.Errorf("botregistry: read catalog template %s: %w", staticPath, err)
+	}
+	block := RenderCatalogBlock(bundles, owner.Name, workdir)
+	out, err := spliceGeneratedBlock(string(static), block)
+	if err != nil {
+		return "", fmt.Errorf("botregistry: %s: %w", staticPath, err)
+	}
+	skillsDir := filepath.Join(owner.Path, bundle.DirSkills)
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		return "", fmt.Errorf("botregistry: mkdir %s: %w", skillsDir, err)
+	}
+	dest := filepath.Join(skillsDir, catalogGeneratedName)
+	out = reanchorForDepth(out, filepath.Dir(staticPath), skillsDir)
+	if err := store.WriteFileAtomic(dest, []byte(out), 0o644); err != nil {
+		return "", fmt.Errorf("botregistry: write catalog %s: %w", dest, err)
+	}
+	return dest, nil
 }
 
 // spliceGeneratedBlock replaces the content between the generated markers

@@ -178,9 +178,10 @@ func warnDiscoveryErrors(w io.Writer, diags []botregistry.DiscoveryError) {
 // generated region of the whats-next bundle's iterion-bot-catalog.md)
 // from the live manifests discovered under workdir, applying the
 // workspace overlay. Returns the written path, or "" when the workspace
-// ships no catalog template. The runtime regenerates this automatically
-// at whats-next start and the studio on every bot-metadata save; this is
-// the manual escape hatch (and the way to refresh the committed copy).
+// ships no catalog template. Every owner under workdir is refreshed, as
+// for a studio bot-metadata save; a run refreshes only the copy its own
+// bundle owns (botregistry.RegenerateCatalogForBundle). This is the
+// manual escape hatch (and the way to refresh the committed copy).
 func BotsRegenCatalog(workdir string) (string, error) {
 	return botregistry.RegenerateWhatsNextCatalog(workdir)
 }

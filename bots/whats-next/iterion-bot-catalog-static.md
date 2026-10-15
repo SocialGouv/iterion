@@ -8,8 +8,11 @@ description: Catalog of iterion bots — pick a bot name for each roadmap_item.a
 <!-- This file is the HAND-AUTHORED TEMPLATE for the bot catalog. The
      persona table + per-bot reference cards between the GENERATED markers
      below are produced from each bot's manifest.yaml by
-     botregistry.RegenerateWhatsNextCatalog (run at whats-next start and
-     on every studio bot-metadata save). Do NOT hand-edit that region —
+     botregistry.RegenerateWhatsNextCatalog: at the start of a run whose
+     own bundle ships this template — this bot's, and that copy alone —
+     on every studio bot-metadata save, and by `iterion bots
+     regen-catalog` (every bundle shipping it). Do NOT hand-edit that
+     region —
      edit the bots' manifest.yaml instead (display_name / description /
      when_to_use / triggers / enabled), or toggle a bot in the studio
      Catalog manager. Everything OUTSIDE the markers is editorial routing

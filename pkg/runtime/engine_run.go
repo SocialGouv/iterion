@@ -773,12 +773,13 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// Refresh the orchestrator-facing bot catalog from the live manifests
 	// (display_name / description / when_to_use / triggers / enabled +
 	// the workspace overlay) BEFORE mirroring, so an edited bot or a
-	// catalog toggle reaches Nexie on her next run. Writes into the
-	// whats-next bundle SOURCE skills dir; the mirror below then refreshes
-	// the workspace copy via its marker logic. Best-effort + no-op unless
-	// this workspace ships the catalog template — a failure must never
-	// abort the run (the mirror falls back to the on-disk catalog).
-	if _, err := botregistry.RegenerateWhatsNextCatalog(e.workDir); err != nil {
+	// catalog toggle reaches a router on its next run. Writes into the
+	// owning bundle's SOURCE skills dir; the mirror below then refreshes
+	// the workspace copy via its marker logic. Scoped to the catalog this
+	// run OWNS (regenerateBotCatalog); best-effort and a no-op for a run
+	// that owns none — a failure must never abort the run (the mirror
+	// falls back to the on-disk catalog).
+	if _, err := e.regenerateBotCatalog(run.BotID); err != nil {
 		if e.logger != nil {
 			e.logger.Warn("bot catalog regen: %v", err)
 		}
@@ -901,6 +902,40 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		}
 	}
 	return nil
+}
+
+// regenerateBotCatalog refreshes the generated bot catalog this run's OWN
+// bundle owns — the only catalog whose file is one of the run's own
+// skills, the mirror copying no other bundle's skills
+// (mirrorBundleSkills). A write for any other owner is collateral: it
+// lands as an uncommitted edit to a tracked file of the workspace
+// whenever the generator in the running binary renders differently from
+// the checked-out tree — the standing case for a review run, whose binary
+// is by construction older than the head it reviews. Which bundle owns
+// which catalog is botregistry's to answer, from the same discovery that
+// builds the write set; the engine holds no second opinion.
+//
+// botID is what the LAUNCHER recorded on the run document
+// (store.Run.BotID), never re-derived here — inventing an id from the
+// file path is precisely what runview.BotIDForPath refuses to do. A run
+// with no id and no bundle keeps the workspace-wide refresh: that is a
+// plain .bot run, and the engine cannot enumerate what a loose .bot
+// opens — a script node reads whatever path it is given — so the
+// historical behaviour stays rather than leaving a catalog stale under a
+// reader nobody can name. A run that names a bot and holds no bundle
+// refreshes nothing: it mirrors no skill at all (mirrorBundleSkills
+// returns on a nil bundle), so every owner's copy is a file that run
+// cannot read. A launch surface persisting no id (today every one but
+// the cloud — see runview.BotIDForRun) keeps the former, the operator's
+// own workspace behaviour.
+func (e *Engine) regenerateBotCatalog(botID string) (string, error) {
+	if e.bundle != nil {
+		return botregistry.RegenerateCatalogForBundle(e.workDir, e.bundle.Dir)
+	}
+	if botID != "" {
+		return "", nil
+	}
+	return botregistry.RegenerateWhatsNextCatalog(e.workDir)
 }
 
 // reconcileExecutionWorkspace stamps the effective workspace identity only

@@ -242,7 +242,7 @@ type Engine struct {
 	loopBudgetGuardOverride  string                               // CLI/Launch-level loop_budget_guard override ("on"|"off"|""); highest precedence, above the workflow block; set via WithLoopBudgetGuard
 	repoDevboxOverride       string                               // CLI/Launch-level repo_devbox override ("on"|"off"|""); highest precedence, above the workflow block; set via WithRepoDevbox
 	attachmentPromote        AttachmentPromoteFunc                // optional: invoked after CreateRun to materialise attachments
-	bundle                   *bundle.Bundle                       // optional: bundle backing this run; nil for plain .bot runs
+	bundle                   *bundle.Bundle                       // optional: bundle backing this run; nil for a plain .bot run AND for a bot run whose bundle is not in hand — pkg/runner/loop.go resolves none when the bot id does not resolve or its directory fails to open (both warn "skills not mirrored"), and none at all, silently, when ITERION_BOTS_PATH is unset. A nil here is "no bundle in hand", never "this run has no bot": what the run IS lives on its document (store.Run.BotID)
 	contributions            *Contributions                       // optional: pre-resolved plugin/library skills (cloud runner pods have no iterion home); nil = resolve locally. Set via WithContributions
 	contributionsUnresolved  bool                                 // dispatch arrived without the payload: the ambient declaration is unverifiable (WithContributionsUnresolved); local CLI runs never set it
 	pauseSignal              <-chan struct{}                      // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
