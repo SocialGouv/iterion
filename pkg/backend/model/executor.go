@@ -1474,7 +1474,9 @@ func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[stri
 	return output, err
 }
 
-// redactedNodeError is a node error whose text went through the guard. The
+// redactedNodeError is an error whose text went through the run's redaction —
+// built at the node boundary ([ClawExecutor.scrubNodeError]) and, for text the
+// sandbox crossing reads off the far side, by the backend that raises it. The
 // error below it answers errors.Is / errors.As, but is not unwrapped: a
 // reporter walking the chain (Sentry records every link's Error()) would
 // print its text unredacted.
@@ -1487,15 +1489,28 @@ func (r *redactedNodeError) Error() string        { return r.msg }
 func (r *redactedNodeError) Is(target error) bool { return errors.Is(r.err, target) }
 func (r *redactedNodeError) As(target any) bool   { return errors.As(r.err, target) }
 
-func (e *ClawExecutor) scrubNodeError(err error) error {
-	if err == nil || e.secretGuard == nil {
+// redactedThrough is redact applied to an error's TEXT while the error below
+// keeps answering errors.Is / errors.As. The wrapper is returned only when
+// the pass changed something: an error that lost nothing keeps its own type,
+// so a consumer that type-asserts it is not made to go through the chain for
+// no reason. A nil redactor is the run's redaction kill switch, and the error
+// goes through untouched.
+func redactedThrough(redact func(string) string, err error) error {
+	if err == nil || redact == nil {
 		return err
 	}
 	msg := err.Error()
-	if red := e.secretGuard.Redact(msg); red != msg {
+	if red := redact(msg); red != msg {
 		return &redactedNodeError{msg: red, err: err}
 	}
 	return err
+}
+
+// scrubNodeError is the node boundary's pass, run on the way out of Execute —
+// after the delegation hooks have already reported the failure, which is why a
+// backend quoting far-side text redacts it where it raises the error.
+func (e *ClawExecutor) scrubNodeError(err error) error {
+	return redactedThrough(e.secretGuard.Redact, err)
 }
 
 func (e *ClawExecutor) executeNode(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {

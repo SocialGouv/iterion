@@ -235,9 +235,28 @@ type scriptedSandbox struct {
 }
 
 func (s *scriptedSandbox) Driver() string { return "scripted" }
-func (s *scriptedSandbox) Command(ctx context.Context, _ []string, _ sandbox.ExecOpts) *exec.Cmd {
-	s.spawned.Add(1)
-	return exec.CommandContext(ctx, "sh", append([]string{"-c", s.script, "sh"}, s.args...)...)
+func (s *scriptedSandbox) Command(ctx context.Context, argv []string, _ sandbox.ExecOpts) *exec.Cmd {
+	return scriptedSpawn(ctx, argv, func() *exec.Cmd {
+		s.spawned.Add(1)
+		return exec.CommandContext(ctx, "sh", append([]string{"-c", s.script, "sh"}, s.args...)...)
+	})
+}
+
+// scriptedSpawn gives the runner's spawn to a test's script and runs every
+// other exec as written, as it would in the container. The launcher spawns
+// the runner as `… iterion __claw-runner` behind the node session's wrapper;
+// the exec that ends the node session is another argv. A double answering
+// that exec with the runner's script would run the script a second time, and
+// a pipe-holding script would then hold the end of the node. The script never
+// ran the wrapper, so the sweep finds nothing of the runner's to stop.
+func scriptedSpawn(ctx context.Context, argv []string, runner func() *exec.Cmd) *exec.Cmd {
+	if n := len(argv); n >= 2 && argv[n-2] == "iterion" && argv[n-1] == "__claw-runner" {
+		return runner()
+	}
+	if len(argv) == 0 {
+		return exec.CommandContext(ctx, "false")
+	}
+	return exec.CommandContext(ctx, argv[0], argv[1:]...)
 }
 func (s *scriptedSandbox) Exec(context.Context, []string, sandbox.ExecOpts) (sandbox.ExecResult, error) {
 	return sandbox.ExecResult{}, nil

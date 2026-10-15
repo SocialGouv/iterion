@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math/rand"
 	"strings"
 	"sync"
 	"testing"
@@ -655,4 +657,171 @@ func TestLog_WithWriterNilSafe(t *testing.T) {
 	}
 	// A nil writer degrades to Discard rather than panicking on write.
 	NewWithFormat(LevelInfo, nil, FormatHuman).WithWriter(nil).Info("no panic")
+}
+
+// What LogBlock writes for a body is the body plus a continuation prefix per
+// LINE, so a bound on the body alone is not a bound on the log. The property
+// below is read off the WRITER, for the shapes a third party chooses between:
+// one byte per line (the worst case for the prefix), long lines (where the
+// prefix is noise), no newline at all, and nothing but newlines (which the
+// renderer trims to a single empty line).
+func TestBlockPreviewRenderedBoundsWhatTheWriterReceives(t *testing.T) {
+	bodies := map[string]string{
+		"one byte per line":    strings.Repeat("d\n", 300000),
+		"thousand-byte lines":  strings.Repeat(strings.Repeat("d", 1000)+"\n", 600),
+		"no newline at all":    strings.Repeat("d", 400000),
+		"nothing but newlines": strings.Repeat("\n", 200000),
+	}
+	// Including the budgets too small for a prefixed line, where a marker
+	// nobody asked for would itself break the bound.
+	for _, max := range []int{4, 27, 28, 42, 43, 1 << 12, 1 << 16, 1 << 20} {
+		for name, body := range bodies {
+			t.Run(fmt.Sprintf("%s/max=%d", name, max), func(t *testing.T) {
+				kept := BlockPreviewRendered(body, max)
+				var buf bytes.Buffer
+				New(LevelInfo, &buf).LogBlock(LevelInfo, "📄", "header:", kept)
+				// The header line is the caller's, not the body's budget.
+				written := buf.Len() - len("15:04:05 📄 header:\n")
+				if written > max {
+					t.Errorf("the writer received %d bytes of body for a %d-byte bound", written, max)
+				}
+				if renderedBlockSize(body) <= max {
+					// Under the bound: handed on as produced, no marker.
+					if kept != body {
+						t.Errorf("a body rendering in %d bytes was cut under a %d-byte bound", renderedBlockSize(body), max)
+					}
+					return
+				}
+				// A budget below one prefixed line plus the marker cannot
+				// render a body at all: the header goes out alone.
+				if max < len(blockIndent)+1+len("...[truncated]") {
+					if kept != "" {
+						t.Errorf("a %d-byte bound kept %q, want no body: the marker alone renders past it", max, kept)
+					}
+					return
+				}
+				// Over the bound: cut, marked, and — once the budget is big
+				// enough to carry a diagnostic — most of the budget used. A
+				// bound that keeps nothing is unusable.
+				if !strings.Contains(kept, "...[truncated]") {
+					t.Errorf("an over-bound body was cut without the marker: %.40q", kept)
+				}
+				if max >= 1<<12 && written < max/2 {
+					t.Errorf("the writer received only %d bytes for a %d-byte bound — the cut throws away the diagnostic", written, max)
+				}
+			})
+		}
+	}
+	// The marker alone, for a budget that fits it and nothing else. (A body
+	// whose own rendering fits is returned whole, however small max is — the
+	// bound is a maximum, not a target.)
+	long := strings.Repeat("d", 64)
+	if got := BlockPreviewRendered(long, 28); got != "...[truncated]" {
+		t.Errorf("BlockPreviewRendered(64 bytes, 28) = %q, want the marker alone", got)
+	}
+	if got := BlockPreviewRendered("tiny", 28); got != "tiny" {
+		t.Errorf("BlockPreviewRendered(%q, 28) = %q, want it whole: its own rendering fits", "tiny", got)
+	}
+	if got := BlockPreviewRendered("", 1<<10); got != "" {
+		t.Errorf("BlockPreviewRendered(\"\") = %q, want empty", got)
+	}
+	// The cut stays on a rune boundary, like Truncate's — at every budget
+	// where a cut actually HAPPENS. A budget below one prefixed line plus the
+	// marker returns no body at all, and "" is valid UTF-8 whatever the cut
+	// does, so that budget gets the assertion it can carry: no body.
+	multiByte := strings.Repeat("é", 100)
+	if got := BlockPreviewRendered(multiByte, 20); got != "" {
+		t.Errorf("BlockPreviewRendered(200 bytes, 20) = %q, want no body: one prefixed line plus the marker is already past 20", got)
+	}
+	// Two bytes per rune and one line, so this test knows the rendering
+	// without asking the subject: the body plus one line's prefix and
+	// newline. The band below is every budget at which a byte cut actually
+	// HAPPENS — from the smallest that keeps a body (the marker's own
+	// prefixed line, plus one for the body) to the largest that still cuts
+	// (one under the whole body's rendering). Below it the function returns
+	// the marker alone and above it the body whole, and utf8.ValidString has
+	// nothing to watch there, so each budget also has to produce a MARKED cut
+	// of whole runes: a band that drifts off the cutting range reddens here
+	// instead of going vacuous. The smallest that keeps a body is the marker's
+	// own prefixed line, the body's first prefixed line, and one byte of body.
+	const perLine = len(blockIndent) + 1
+	const smallestBodyBudget = 2*perLine + len("...[truncated]") + 1
+	if got := BlockPreviewRendered(multiByte, smallestBodyBudget-1); got != "...[truncated]" {
+		t.Errorf("one byte under the band: BlockPreviewRendered = %q, want the marker alone", got)
+	}
+	for max := smallestBodyBudget; max < len(multiByte)+len(blockIndent)+1; max++ {
+		got := BlockPreviewRendered(multiByte, max)
+		if !utf8.ValidString(got) {
+			t.Errorf("max=%d: BlockPreviewRendered cut inside a rune: %q", max, got)
+		}
+		body, marked := strings.CutSuffix(got, "\n...[truncated]")
+		if !marked || strings.Trim(body, "é") != "" {
+			t.Errorf("max=%d: want a marked cut of whole runes, got %q", max, got)
+		}
+	}
+}
+
+// The bound AT the boundary, read off the writer against an accounting this
+// test does itself.
+//
+// The property above picks its assertion by calling renderedBlockSize — the
+// subject's own oracle — and every body it drives is far over or far under
+// every budget, so an accounting that misjudges a body by one line's prefix
+// agrees with itself and ships. This shape is one the test can account for:
+// 1000 single-byte lines, each written as the continuation prefix, its byte,
+// and the newline the renderer puts back. The budgets sweep the whole band
+// where an accounting short by one newline per line and the real renderer
+// disagree.
+func TestBlockPreviewRenderedHoldsAtTheBoundary(t *testing.T) {
+	const lines = 1000
+	const perLine = len(blockIndent) + 2 // prefix + one byte + newline
+	const rendered = lines * perLine
+	body := strings.Repeat("d\n", lines)
+	for max := lines*len(blockIndent) - 100; max <= rendered+1; max++ {
+		kept := BlockPreviewRendered(body, max)
+		var buf bytes.Buffer
+		New(LevelInfo, &buf).LogBlock(LevelInfo, "📄", "header:", kept)
+		written := buf.Len() - len("15:04:05 📄 header:\n")
+		if written > max {
+			t.Fatalf("max=%d: the writer received %d bytes of body", max, written)
+		}
+		if max >= rendered && kept != body {
+			t.Fatalf("max=%d: a body rendering in %d bytes came back cut", max, rendered)
+		}
+	}
+}
+
+// The same bound over shapes nobody enumerated. The accounting has one term
+// per line and one per byte, so what breaks it is a SHAPE — where the
+// newlines fall, how long the runs are, how many bytes a rune takes — and the
+// third party choosing the text chooses the shape. Read off the real writer,
+// with the cut's rune safety on the same pass.
+func TestBlockPreviewRenderedBoundsRandomShapes(t *testing.T) {
+	r := rand.New(rand.NewSource(7))
+	for i := 0; i < 4000; i++ {
+		var sb strings.Builder
+		for j := 1 + r.Intn(400); j > 0; j-- {
+			switch r.Intn(4) {
+			case 0:
+				sb.WriteByte('\n')
+			case 1:
+				sb.WriteString(strings.Repeat("d", 1+r.Intn(40)))
+			case 2:
+				sb.WriteString("é")
+			default:
+				sb.WriteString("dd\n")
+			}
+		}
+		body, max := sb.String(), 1+r.Intn(900)
+		kept := BlockPreviewRendered(body, max)
+		var buf bytes.Buffer
+		New(LevelInfo, &buf).LogBlock(LevelInfo, "📄", "header:", kept)
+		written := buf.Len() - len("15:04:05 📄 header:\n")
+		if written > max {
+			t.Fatalf("i=%d max=%d: the writer received %d bytes of body for %q", i, max, written, body)
+		}
+		if !utf8.ValidString(kept) {
+			t.Fatalf("i=%d max=%d: the cut left invalid UTF-8: %q (body %q)", i, max, kept, body)
+		}
+	}
 }

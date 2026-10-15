@@ -382,8 +382,9 @@ func TestSandboxRelay_ABulkyStepStillDeliversItsTokenCounts(t *testing.T) {
 // has no bulk to cut, so it cannot be brought under the line cap. It is
 // refused rather than written (writing it would fail the launcher's
 // reader and with it the run's whole IPC) and the refusal is REPORTED on
-// the runner's stderr, which the launcher folds into the node's error.
-// The one lossy case in the relay is never a silent one.
+// the runner's stderr, which the launcher reports for the operator — a
+// lost observation never fails the node. The one lossy case in the relay
+// is never a silent one.
 func TestSandboxRelay_AnUnshrinkablePayloadIsRefusedAndReported(t *testing.T) {
 	b, load := relayHost(t, "run-relay-unshrinkable")
 	calls := make([]ToolCallEntry, 60000)
