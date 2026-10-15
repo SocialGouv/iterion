@@ -474,7 +474,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	if len(capped) == 0 {
 		return nil
 	}
-	d, blocked := parkDecision(wf, capped)
+	d, blocked := parkDecision(wf, capped, r.launchVarEdges(ctx, wf, msg, logger))
 	if !blocked {
 		if logger != nil {
 			logger.Info("runner: run %s starts with %d capped route(s) it may avoid — the mid-run guard stops a claude_code call on a hard-capped one if the run takes it", msg.RunID, len(capped))
@@ -738,18 +738,77 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string
 	return k.keyForSlot(slot), true
 }
 
+// launchVarEdges is the edge filter the park walk reads THIS RUN's topology
+// through: a branch the run's own launch vars exclude is not a branch it may
+// take, so a capped route standing on one parks nothing
+// (ir.Workflow.LaunchVarEdgeFilter decides which transitions qualify).
+//
+// What the message carries is not what the message IS: `Resume` is stamped by
+// the runner itself on a REDELIVERED launch (resolveDeliveryPreconditions,
+// queue.Admit's AsResume), which still holds this run's launch vars — the
+// first park's own status flip puts the run in exactly that state. So the vars
+// decide, not the shape: the message's where it has them, and the run
+// document's Inputs otherwise — a resume PUBLICATION carries none, and the
+// attempt it continues resumes from the checkpoint those stored inputs built.
+// Both readings are the same values: nothing writes a run's inputs after its
+// launch persisted them.
+//
+// Without either — no store, or a document that cannot be read — the walk
+// keeps the whole-graph answer: folding the declared defaults alone would
+// speak for a launch that may have overridden them. Reading the document is
+// what makes the retry honour the instant the park promised: a woken resume
+// must walk the same topology the launch did, or it parks again past it.
+func (r *Runner) launchVarEdges(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage, logger *iterlog.Logger) ir.EdgeFilter {
+	if wf == nil || msg == nil {
+		return nil
+	}
+	if len(msg.Vars) == 0 && msg.Resume != nil {
+		inputs, ok := r.storedLaunchVars(ctx, msg, logger)
+		if !ok {
+			return nil
+		}
+		return wf.LaunchVarEdgeFilter(inputs)
+	}
+	return wf.LaunchVarEdgeFilter(msg.Vars)
+}
+
+// storedLaunchVars reads the launch inputs off the run document — the vars a
+// resume publication does not carry. False when there is no document to read:
+// the caller keeps the whole-graph answer rather than folding defaults that
+// may not be this run's, and says why.
+func (r *Runner) storedLaunchVars(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) (map[string]any, bool) {
+	if r.cfg.Store == nil {
+		return nil, false
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), usageCapStoreTimeout)
+	defer cancel()
+	rctx = store.WithIdentity(rctx, msg.TenantID, msg.OwnerID)
+	run, err := r.cfg.Store.LoadRun(rctx, msg.RunID)
+	if err != nil || run == nil {
+		if logger != nil {
+			logger.Warn("runner: run %s: launch inputs unreadable for the usage-cap walk (%v) — judging the whole graph, which may park a run whose launch vars exclude the capped route", msg.RunID, err)
+		}
+		return nil, false
+	}
+	return run.Inputs, true
+}
+
 // parkDecision answers whether a run cannot start, and when it can.
 //
 // A HARD-capped route parks the run only when it cannot be avoided — every
 // execution from the entry to a terminal crosses a capped route
-// (ir.Workflow.AlwaysReaches, fan-out branches all taken): a hard cap stops a
-// call in flight, so a run with a path around it may start and be stopped
+// (ir.Workflow.AlwaysReachesVia, fan-out branches all taken): a hard cap stops
+// a call in flight, so a run with a path around it may start and be stopped
 // there if it goes that way. A SOFT cap stops nothing in flight — it only
 // refuses NEW work — so a soft-capped route the run may reach at all
-// (ir.Workflow.CanReach) parks it: letting the run through to find out would
-// spend it uninterrupted. So does a hard cap on a route no in-flight guard
-// can stop (cappedRoutes clears its Stop). A capped supervisor parks the run
-// whatever its paths: it runs on every execution.
+// (ir.Workflow.CanReachVia) parks it: letting the run through to find out
+// would spend it uninterrupted. So does a hard cap on a route no in-flight
+// guard can stop (cappedRoutes clears its Stop). A capped supervisor parks the
+// run whatever its paths: it runs on every execution.
+//
+// Both walks read the run's own topology: open drops the transitions its
+// launch vars already excluded (launchVarEdges), so neither a route the run
+// cannot reach parks it, nor a branch it cannot take frees it.
 //
 // The retry is armed for the earliest reopening after which neither holds —
 // coming back later waits for nothing, coming back earlier parks again. A
@@ -759,7 +818,7 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string
 //
 // Deterministic whatever order the routes were read in: the candidates are
 // sorted by instant, then by node id.
-func parkDecision(wf *ir.Workflow, capped map[string]usagecap.Decision) (usagecap.Decision, bool) {
+func parkDecision(wf *ir.Workflow, capped map[string]usagecap.Decision, open ir.EdgeFilter) (usagecap.Decision, bool) {
 	ids := make([]string, 0, len(capped))
 	for id := range capped {
 		ids = append(ids, id)
@@ -782,10 +841,10 @@ func parkDecision(wf *ir.Workflow, capped map[string]usagecap.Decision) (usageca
 				return true
 			}
 		}
-		if wf.CanReach(func(n ir.Node) bool { return cappedAt(n, t, true) }) {
+		if wf.CanReachVia(open, func(n ir.Node) bool { return cappedAt(n, t, true) }) {
 			return true
 		}
-		return wf.AlwaysReaches(func(n ir.Node) bool { return cappedAt(n, t, false) })
+		return wf.AlwaysReachesVia(open, func(n ir.Node) bool { return cappedAt(n, t, false) })
 	}
 	if !parkedAt(time.Time{}) {
 		return usagecap.Decision{}, false
@@ -797,11 +856,23 @@ func parkDecision(wf *ir.Workflow, capped map[string]usagecap.Decision) (usageca
 		}
 	}
 	slices.SortFunc(resets, func(a, b time.Time) int { return a.Compare(b) })
+	// What the narrowed walk accepted, not the candidate set: a capped route
+	// on a branch the launch excluded is on no path of this run, and the
+	// operator reads this number in the run document's failure reason.
+	// A supervisor is on every execution and is no graph node, so it counts
+	// without being walked to.
+	onThePaths := 0
+	for _, id := range ids {
+		if strings.HasPrefix(id, supervisorRouteIDPrefix) ||
+			wf.CanReachVia(open, func(n ir.Node) bool { return n != nil && n.NodeID() == id }) {
+			onThePaths++
+		}
+	}
 	pick := func(match func(usagecap.Decision) bool) usagecap.Decision {
 		for _, id := range ids {
 			if d := capped[id]; match(d) {
-				if len(capped) > 1 {
-					d.Reason += fmt.Sprintf(" — %d capped routes on the run's paths", len(capped))
+				if onThePaths > 1 {
+					d.Reason += fmt.Sprintf(" — %d capped routes on the run's paths", onThePaths)
 				}
 				return d
 			}

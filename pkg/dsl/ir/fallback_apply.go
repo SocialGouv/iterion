@@ -193,7 +193,11 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 // refuses a route the run would take; it only screens less, the pre-#1606
 // posture for every var. Nil when nothing declares or overrides a var,
 // which reads exactly as before.
-func launchVarsView(w *Workflow, overrides map[string]string) map[string]any {
+//
+// An override is read as a VALUE, so both launch shapes fold through this one
+// reading: the screen's `--var` text, and the queue message's already-typed
+// `Vars` (LaunchVarEdgeFilter).
+func launchVarsView[V any](w *Workflow, overrides map[string]V) map[string]any {
 	if len(w.Vars) == 0 {
 		return nil
 	}
@@ -270,6 +274,25 @@ var EngineSuppliedVarNames = []string{
 // The price is stated on launchVarsView: a name consulted but discarded
 // still counts.
 func referencesEngineSuppliedName(raw any, vt VarType) bool {
+	return probesVarText(raw, vt, isEngineSuppliedName)
+}
+
+// consultsAnyEnvName reports whether reading raw as a var of type vt would
+// consult the environment AT ALL — the same walk, with every name matching.
+// A reader whose premise is that two readings of the text agree needs this
+// one, not the engine-supplied list: every name's answer can move between
+// them (LaunchVarEdgeFilter).
+func consultsAnyEnvName(raw any, vt VarType) bool {
+	return probesVarText(raw, vt, func(string) bool { return true })
+}
+
+func isEngineSuppliedName(name string) bool {
+	return slices.Contains(EngineSuppliedVarNames, name)
+}
+
+// probesVarText reports whether reading raw as a var of type vt would consult
+// a name match accepts, reading the text the way dispatch expands THAT type.
+func probesVarText(raw any, vt VarType, match func(string) bool) bool {
 	s, isText := raw.(string)
 	if !isText || !strings.ContainsRune(s, '$') {
 		return false
@@ -277,28 +300,28 @@ func referencesEngineSuppliedName(raw any, vt VarType) bool {
 	if vt == VarJSON {
 		out, _ := CoerceVarValue(s, vt)
 		if text, notJSON := out.(string); notJSON {
-			return probesEngineSuppliedName(text, expandPolicy{bracedOnly: true})
+			return probesEnvName(text, expandPolicy{bracedOnly: true}, match)
 		}
 		found := false
 		expandJSONLeaves(out, func(leaf string) string {
-			if probesEngineSuppliedName(leaf, expandPolicy{bracedOnly: true}) {
+			if probesEnvName(leaf, expandPolicy{bracedOnly: true}, match) {
 				found = true
 			}
 			return leaf
 		})
 		return found
 	}
-	return probesEngineSuppliedName(s, expandPolicy{})
+	return probesEnvName(s, expandPolicy{}, match)
 }
 
-// probesEngineSuppliedName reports whether expanding s under policy would
-// consult an engine-supplied name. Non-listed names answer through
-// LookupEnv, as at dispatch, so a name reached through an inner expansion is
-// still consulted; a listed name's own value is irrelevant to the probe.
-func probesEngineSuppliedName(s string, policy expandPolicy) bool {
+// probesEnvName reports whether expanding s under policy would consult a name
+// match accepts. A name it does not accept answers through LookupEnv, as at
+// dispatch, so a name reached through an inner expansion is still consulted;
+// an accepted name's own value is irrelevant to the probe.
+func probesEnvName(s string, policy expandPolicy, match func(string) bool) bool {
 	found := false
 	expandWithDefault(s, func(name string) string {
-		if slices.Contains(EngineSuppliedVarNames, name) {
+		if match(name) {
 			found = true
 			return ""
 		}

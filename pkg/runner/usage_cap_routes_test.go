@@ -257,7 +257,7 @@ func TestParkDecision_IsDeterministic(t *testing.T) {
 	}
 	wf := chainWorkflow(agentRoute("b", "", "", ""), agentRoute("a", "", "", ""))
 	for range 20 {
-		d, blocked := parkDecision(wf, capped)
+		d, blocked := parkDecision(wf, capped, nil)
 		if !blocked || d.Reason[:1] != "a" {
 			t.Fatalf("parkDecision = %+v, %v; want blocked on node a's decision", d, blocked)
 		}

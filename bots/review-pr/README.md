@@ -376,6 +376,39 @@ on a route nobody chose:
 
 See [main.bot](main.bot) for the full DSL.
 
+## Running mono-GPT while the Anthropic window is spent
+
+A launch pinning `mono_family=gpt` takes `topology -> reviewer_gpt`, and the
+usage-cap pre-flight reads that: the claude reviewers are off such a run's
+topology, so an operator cap on the Anthropic window does not park it for
+them ([usage-caps.md](../../docs/usage-caps.md#what-a-cap-does-not-stop)). A
+webhook launch needs no `--var` for it: `SubmitLaunch` resolves the family
+through `reviewtopology.InjectAll` into the run's launch vars before
+publishing it (`pkg/server/cloudpublisher`), which is the reading the
+pre-flight folds.
+
+Two routes of this bot are NOT the reviewers' and stay on the wire by
+default, so a deployment that must review on GPT through a spent window moves
+both:
+
+| route | default | off the wire with |
+|---|---|---|
+| `pacer` supervisor | `anthropic/claude-opus-5-5` — every execution runs it, so a capped one parks the run | `ITERION_VIBE_MODEL_SUPERVISOR=openai/gpt-6-sol`, or `ITERION_SUPERVISORS=off` |
+| `converge` merge step | `claude_code` + `anthropic` — on every path that reviews anything, which parks the run under a SOFT cap (a hard one leaves it to the mid-run guard, the empty-diff path reaching `done` without it) | `ITERION_VIBE_BACKEND_EMIT=claw` + `ITERION_VIBE_MODEL_EMIT=openai/gpt-6-sol` + `ITERION_VIBE_PROVIDER_EMIT=auto` |
+
+The provider hint travels with the backend for the credential walk's sake —
+left at `anthropic` it still describes an Anthropic route the node no longer
+takes — but it is not what the cap reads: a claw route is metered on the
+credential its `openai/…` model resolves, so the run starts either way. The
+GLM rescue route below `converge` is unreachable from claw anyway (claw reads
+no hint).
+The four `ITERION_VIBE_*` dials repoint live through `bot-vars` like every
+other dial here, without re-releasing the bundle; `ITERION_SUPERVISORS` is the
+machine-wide kill switch instead, the heavier lever of the two. With both
+routes moved, a mono-GPT review starts under a spent window with no override
+on the inactive claude nodes
+(`TestUsageCapPreflight_MonoGPTOnTheReviewPrBot`, `pkg/runner`).
+
 ## Layout — a bot in several files
 
 `main.bot` holds the header, the vars, the secrets, the supervisor and the workflow; the
