@@ -445,8 +445,8 @@ nothing and is not the cap's to park; a store read that fails is headroom for
 that credential alone.
 
 The run then parks on the **paths** it can take
-([`ir.Workflow.AlwaysReaches`](../pkg/dsl/ir/uses_llm.go), the walk
-`AlwaysReachesLLM` runs, over those walls — a fan-out's branches all run, so a
+([`ir.Workflow.AlwaysReachesVia`](../pkg/dsl/ir/uses_llm.go), over those walls
+and over THIS run's own transitions — a fan-out's branches all run, so a
 capped branch is on every execution):
 
 - a **hard**-capped claude_code route parks the run only when every
@@ -454,8 +454,9 @@ capped branch is on every execution):
   path avoids does not — a hard cap stops a call in flight, so the mid-run
   guard stops the run there if it goes that way;
 - a **soft**-capped route parks the run as soon as the run may reach it at
-  all (`ir.Workflow.CanReach`): a soft cap refuses new work and stops nothing
-  in flight, so a run let through to find out would spend it uninterrupted;
+  all (`ir.Workflow.CanReachVia`): a soft cap refuses new work and stops
+  nothing in flight, so a run let through to find out would spend it
+  uninterrupted;
 - so does a **hard**-capped route on any backend but claude_code — claw, pi,
   opencode, or one resolved at dispatch: the mid-run guard reads the usage
   readings only claude_code sessions report, so nothing would stop that call
@@ -470,10 +471,86 @@ capped branch is on every execution):
   `ITERION_SUPERVISORS=0`) are not judged; one that resolves no model spends
   nothing.
 
+**The paths are this run's, not the graph's.** A launch that pins a family has
+already excluded branches the graph still carries, and a capped route on one
+of them can spend nothing: `review-pr` launched with `--var mono_family=gpt`
+takes `topology -> reviewer_gpt`, never the unconditional `topology ->
+reviewer_claude` beside it. So both walks read this run's topology through
+[`ir.Workflow.LaunchVarEdgeFilter`](../pkg/dsl/ir/launch_var_edges.go), over
+the run's effective vars — the workflow's declared defaults under the launch's
+own values, the two layers `resolveVars` stacks. An edge is dropped only where
+the pre-flight answers the way the engine will at the crossing: its `when`
+reads nothing but `vars.…` and evaluates false, or it is the fallback a
+matching `vars` guard pre-empts (the engine takes a guardless edge only when
+no guard matched). It is sound because the value is the same at both readings
+— a run's vars are built once from its inputs and never written again, and a
+var whose text the environment answers is left undecided — and because the
+same expression decides at the crossing.
+
+The vars decide, not the message's shape. A launch carries them; a REDELIVERED
+launch still does (the runner stamps `Resume` on it when the run already has
+resumable state, which this very park creates); a resume PUBLICATION carries
+none, and the pre-flight then reads the run document's own `inputs`, which
+nothing rewrites after the launch persisted them. That is what makes the retry
+honour the instant it was armed for: a woken resume walks the same topology
+the launch did. With neither — no store, or a document that cannot be read —
+the walk keeps the whole-graph answer and says so in the log.
+
+Everything a launch does not settle keeps the whole-graph answer: a predicate
+reading a node's output or mixing one in, the `Condition` field form, a var
+nothing declares or supplies, a value the run may read remapped under its
+workspace, a fan-out or `llm` router's branches (taken whatever their
+predicate says), a round-robin's cycled edges (it reads no predicate at all),
+a var whose text the environment answers (the settings overlay is repointable
+while a run waits, so two readings may differ), and the exit beside an
+iteration back-edge — a `loop` or `foreach` edge whose `when` holds is still
+declined at its cap or its fuel, and the exit is the crossing then. The
+pre-flight that decides whether a cap applies at all (`AlwaysReachesLLM`) is
+deliberately NOT narrowed: it refuses rather than admits, so a launch
+excluding a model-free branch must not make it refuse.
+
+Two prunes are refused outright, because a walk that reaches no terminal reads
+as "every path is walled" — true for any wall, including one no execution
+crosses. A node never loses its last transition: dropped, they would make it
+read as a wall, and a hard cap would take the blame for a death that is the
+node's own missing edge. Keeping them is all that refusal buys — they also
+keep the routes BEHIND that node on the walk, so a route only it led to still
+parks the run under a soft cap, exactly as it does with no prune at all. And a
+prune that leaves the entry unable to reach ANY terminal is dropped whole: the
+whole-graph answer stands for that run.
+
 The retry is armed for the **earliest reopening after which the run could
 start**: on alternative branches the first hard-capped route to reopen is
 enough, in sequence the run needs the last. The decision does not depend on
 the order the routes were read in.
+
+### A bot whose family a launch pins — the deployment half
+
+The prune only stops a cap from parking a run for routes the run cannot take;
+it changes nothing about routes it does take. A mono-GPT `review-pr` keeps two
+anthropic-wire routes after it, and both are real spend:
+
+- the `pacer` supervisor, `${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-opus-5-5}`
+  — a route every execution takes, so a capped one parks the run whatever the
+  prune said about the reviewers. Take it off the wire with
+  `ITERION_VIBE_MODEL_SUPERVISOR=openai/gpt-6-sol` (any spec off the wire), or
+  stop spawning it with `ITERION_SUPERVISORS=off`;
+- the `converge` merge step, `claude_code` + `anthropic` by default — on every
+  path that reviews anything. Under a HARD cap it parks nothing (the bot's
+  empty-diff short-circuit reaches `done` without it, and the mid-run guard
+  stops the call if the run goes that way), but under a SOFT cap a reachable
+  route is enough: move it with `ITERION_VIBE_BACKEND_EMIT=claw`,
+  `ITERION_VIBE_MODEL_EMIT=openai/gpt-6-sol` and
+  `ITERION_VIBE_PROVIDER_EMIT=auto`. The backend and the model are what this
+  verdict reads — a claw route is metered on the credential its model resolves
+  — so a leftover `anthropic` hint does not park the run; clearing it is the
+  node's own instruction, for the credential walk.
+
+With both off the wire a mono-GPT review starts under a spent Anthropic
+window, soft or hard, with no override on the inactive claude nodes. The whole
+profile is pinned on the real bot by
+`TestUsageCapPreflight_MonoGPTOnTheReviewPrBot` (`pkg/runner`), case by case
+([the bot's own dials](../bots/review-pr/README.md#running-mono-gpt-while-the-anthropic-window-is-spent)).
 
 ## Cloud
 

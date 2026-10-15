@@ -1312,8 +1312,12 @@ func remapRepoRoot(val any, repoRoot, projectDir string) (any, bool) {
 		changed := false
 		out := make([]any, len(v))
 		for i, e := range v {
-			out[i], _ = remapRepoRoot(e, repoRoot, projectDir)
-			changed = changed || out[i] != e
+			var moved bool
+			// What the recursion reports, never a comparison of the two
+			// values: a `json` document nests, and `any != any` panics on
+			// every element Go cannot compare — a list or an object.
+			out[i], moved = remapRepoRoot(e, repoRoot, projectDir)
+			changed = changed || moved
 		}
 		if changed {
 			return out, true

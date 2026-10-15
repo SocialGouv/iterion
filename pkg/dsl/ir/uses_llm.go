@@ -53,6 +53,14 @@ func (w *Workflow) UsesLLM() bool {
 // not try to predict it. It asks the weaker, decidable question: does a
 // model-free path exist at all?
 //
+// ONE exception, and only for a caller that NARROWS a refusal: a run's launch
+// vars are fixed for its whole life, so an edge whose `when` reads nothing but
+// those vars has the same answer here as at the crossing
+// (LaunchVarEdgeFilter, passed to AlwaysReachesVia / CanReachVia). This
+// predicate takes no filter — it decides whether a cap applies at all, so
+// narrowing it would REFUSE runs a model-free branch excludes rather than
+// admit them, which is the opposite of what the exception is sound for.
+//
 // Conservative in the direction that matters: an empty or unreachable
 // graph, a workflow whose entry is missing, or any shape this cannot walk
 // answers true, keeping today's behaviour rather than opening the gate.
@@ -86,7 +94,24 @@ func (w *Workflow) AlwaysReachesLLM() bool {
 // true. Supervisors are not graph nodes and are not consulted: a caller whose
 // walls include them says so itself.
 func (w *Workflow) AlwaysReaches(wall func(Node) bool) bool {
-	out, ok := w.walkable()
+	return w.AlwaysReachesVia(nil, wall)
+}
+
+// EdgeFilter reports whether a walk may follow an edge. A walk given one
+// answers over the executions those edges allow, rather than over every
+// execution the graph admits; nil follows every edge.
+type EdgeFilter func(*Edge) bool
+
+// AlwaysReachesVia is AlwaysReaches over the executions open allows — the
+// question a pre-flight asks about ONE run whose launch already excluded some
+// of the graph's transitions (LaunchVarEdgeFilter).
+//
+// It narrows in the direction that REFUSES: with fewer transitions, fewer
+// paths reach a terminal around the walls, so a run whose remaining paths all
+// cross one is refused in advance instead of being stopped at the call. That
+// is sound only for a filter whose dropped edges the run could not have taken.
+func (w *Workflow) AlwaysReachesVia(open EdgeFilter, wall func(Node) bool) bool {
+	out, ok := w.walkable(open)
 	if !ok {
 		return true
 	}
@@ -134,7 +159,13 @@ func (w *Workflow) AlwaysReaches(wall func(Node) bool) bool {
 // CanReach reports whether some execution from the entry node reaches a node
 // target accepts. Conservative: a graph walkable() refuses answers true.
 func (w *Workflow) CanReach(target func(Node) bool) bool {
-	out, ok := w.walkable()
+	return w.CanReachVia(nil, target)
+}
+
+// CanReachVia is CanReach over the executions open allows: a target only the
+// dropped transitions led to is not one this run can reach.
+func (w *Workflow) CanReachVia(open EdgeFilter, target func(Node) bool) bool {
+	out, ok := w.walkable(open)
 	if !ok {
 		return true
 	}
@@ -159,15 +190,27 @@ func (w *Workflow) CanReach(target func(Node) bool) bool {
 // walkable returns the graph's successor lists, or false when a walk from the
 // entry cannot conclude anything: no nodes, no entry, or an edge from a node
 // the entry reaches into a node the workflow does not define.
-func (w *Workflow) walkable() (map[string][]string, bool) {
+//
+// open, when given, keeps only the edges it accepts — except an edge into a
+// node the workflow does not define, which stays in its source's successor
+// list whatever the filter says: a graph whose REACHABLE part still holds one
+// stays refused, so no predicate can lift the refusal by claiming the
+// malformed edge itself. A filter that puts the SOURCE off the run's paths
+// does conclude, on the run the filter describes: the malformed node is one
+// it never reaches.
+func (w *Workflow) walkable(open EdgeFilter) (map[string][]string, bool) {
 	if w == nil || len(w.Nodes) == 0 || w.Entry == "" || w.Nodes[w.Entry] == nil {
 		return nil, false
 	}
 	out := map[string][]string{}
 	for _, e := range w.Edges {
-		if e != nil {
-			out[e.From] = append(out[e.From], e.To)
+		if e == nil {
+			continue
 		}
+		if open != nil && w.Nodes[e.To] != nil && !open(e) {
+			continue
+		}
+		out[e.From] = append(out[e.From], e.To)
 	}
 	seen := map[string]bool{w.Entry: true}
 	stack := []string{w.Entry}

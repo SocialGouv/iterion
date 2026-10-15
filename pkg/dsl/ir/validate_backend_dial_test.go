@@ -763,7 +763,7 @@ func TestLaunchVarsView_ReadsVarTextThroughTheOverlayThenTheProcessEnv(t *testin
 	}}
 	// The overlay says claw and the process environment nothing: dispatch
 	// stores claw — the view must too.
-	if got := launchVarsView(w, nil)["b"]; got != "claw" {
+	if got := launchVarsView[string](w, nil)["b"]; got != "claw" {
 		t.Errorf("view[b] = %q, want claw — dispatch reads a stored bot var", got)
 	}
 	// Overrides take the same reading (resolveVars expands both), here with
@@ -784,7 +784,7 @@ func TestLaunchVarsView_ExpandsAsManyTimesAsDispatch(t *testing.T) {
 	w := &Workflow{Vars: map[string]*Var{
 		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${C1606_INNER}"},
 	}}
-	got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}")
+	got := runBackend.withVars(launchVarsView[string](w, nil)).name("{{vars.b}}")
 	if got != "claw" {
 		t.Errorf("run reading of {{vars.b}} = %q, want claw — dispatch expands the substituted value a second time", got)
 	}
@@ -901,7 +901,7 @@ func TestLaunchVarsView_EngineSuppliedNamesStayUndecided(t *testing.T) {
 		w := &Workflow{Vars: map[string]*Var{
 			"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${" + name + "}/x"},
 		}}
-		if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}"); got != "" {
+		if got := runBackend.withVars(launchVarsView[string](w, nil)).name("{{vars.b}}"); got != "" {
 			t.Errorf("{{vars.b}} with ${%s} in its text = %q, want undecided — the path comes from engine state the screen does not have", name, got)
 		}
 	}
@@ -909,12 +909,12 @@ func TestLaunchVarsView_EngineSuppliedNamesStayUndecided(t *testing.T) {
 	w := &Workflow{Vars: map[string]*Var{
 		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${C1606_UNSET:-${PROJECT_DIR}}"},
 	}}
-	if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}"); got != "" {
+	if got := runBackend.withVars(launchVarsView[string](w, nil)).name("{{vars.b}}"); got != "" {
 		t.Errorf("a nested ${PROJECT_DIR} = %q, want undecided", got)
 	}
 	// Control: an ordinary dial still decides, on its default.
 	w.Vars["d"] = &Var{Name: "d", Type: VarString, HasDefault: true, Default: "${C1606_UNSET:-claw}"}
-	if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.d}}"); got != "claw" {
+	if got := runBackend.withVars(launchVarsView[string](w, nil)).name("{{vars.d}}"); got != "claw" {
 		t.Errorf("a plain dial = %q, want claw — the guard must not swallow ordinary expansions", got)
 	}
 }
@@ -961,7 +961,7 @@ func TestLaunchVarsView_JSONProbeReadsLeavesBracedOnly(t *testing.T) {
 		"cfg": {Name: "cfg", Type: VarJSON, HasDefault: true, Default: `{"backend":"claw","note":"$PROJECT_DIR"}`},
 		"doc": {Name: "doc", Type: VarJSON, HasDefault: true, Default: `{"backend":"${PROJECT_DIR}"}`},
 	}}
-	run := runBackend.withVars(launchVarsView(w, nil))
+	run := runBackend.withVars(launchVarsView[string](w, nil))
 	if got := run.name("{{vars.cfg.backend}}"); got != "claw" {
 		t.Errorf("{{vars.cfg.backend}} = %q, want claw — a bare $NAME in a json leaf is data, the var must not be omitted", got)
 	}
@@ -1003,7 +1003,7 @@ func TestLaunchVarsView_ConsultedButDiscardedStaysUndecided(t *testing.T) {
 	w := &Workflow{Vars: map[string]*Var{
 		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${C1606_OUTER_SET:-${PROJECT_DIR}}"},
 	}}
-	if got := runBackend.withVars(launchVarsView(w, nil)).name("{{vars.b}}"); got != "" {
+	if got := runBackend.withVars(launchVarsView[string](w, nil)).name("{{vars.b}}"); got != "" {
 		t.Errorf("{{vars.b}} = %q, want undecided — the probe cannot see that dispatch discards the inner expansion", got)
 	}
 }
@@ -1021,7 +1021,7 @@ func TestLaunchVarsView_IndirectEngineNameStaysUndecided(t *testing.T) {
 	w := &Workflow{Vars: map[string]*Var{
 		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${${C1606_INDIRECT}}"},
 	}}
-	if _, ok := launchVarsView(w, nil)["b"]; ok {
+	if _, ok := launchVarsView[string](w, nil)["b"]; ok {
 		t.Errorf("view[b] present — dispatch resolves ${${C1606_INDIRECT}} to the PROJECT_DIR path; the var must stay undecided")
 	}
 }
@@ -1063,7 +1063,7 @@ func TestLaunchVarsView_ProbeSeesAnIndirectionThroughTheOverlay(t *testing.T) {
 	w := &Workflow{Vars: map[string]*Var{
 		"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${${ITERION_ZZ_WHICH}}"},
 	}}
-	if v, ok := launchVarsView(w, nil)["b"]; ok {
+	if v, ok := launchVarsView[string](w, nil)["b"]; ok {
 		t.Errorf("view[b] = %q, want the var left undecided — dispatch reads a path the screen cannot", v)
 	}
 }
@@ -1082,7 +1082,7 @@ func TestLaunchVarsView_CoercionFallbackReadsTheOverlay(t *testing.T) {
 	w := &Workflow{Vars: map[string]*Var{
 		"b": {Name: "b", Type: VarBool, HasDefault: true, Default: "${ITERION_ZZ_FLAG}"},
 	}}
-	if got := launchVarsView(w, nil)["b"]; got != "claw" {
+	if got := launchVarsView[string](w, nil)["b"]; got != "claw" {
 		t.Errorf("view[b] = %#v, want \"claw\" — dispatch's coercion fallback expands through the overlay", got)
 	}
 }
