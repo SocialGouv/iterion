@@ -10,7 +10,9 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { useCanManageTeam } from "@/hooks/useCanManageTeam";
 import { EnableRepoPanel } from "@/views/teams/tabs/integrations/EnableRepoPanel";
+import { WebhookBaseRow } from "@/views/teams/tabs/integrations/WebhookBaseRow";
 
 export interface ReposStepProps {
   teamID: string;
@@ -33,6 +35,7 @@ export default function ReposStep({
   onError,
   onDone,
 }: ReposStepProps) {
+  const canManage = useCanManageTeam(teamID);
   const conn = useMemo(
     () => connections.find((c) => c.id === connectionID) ?? null,
     [connections, connectionID],
@@ -94,6 +97,17 @@ export default function ReposStep({
           </span>
         </div>
       </header>
+
+      {/* Above the Enable panel: a forge that refuses this deployment's
+          public URL has to be pinned to a host it accepts BEFORE a repo is
+          enabled, since the hook is registered by the enable itself. */}
+      <WebhookBaseRow
+        teamID={teamID}
+        conn={conn}
+        canManage={canManage}
+        onChanged={() => void reloadConnections()}
+        onError={onError}
+      />
 
       <EnableRepoPanel
         teamID={teamID}

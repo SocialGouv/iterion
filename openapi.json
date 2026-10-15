@@ -4610,6 +4610,9 @@
           "connection_status": {
             "type": "string"
           },
+          "gates_merges": {
+            "type": "boolean"
+          },
           "integration_id": {
             "type": "string"
           },

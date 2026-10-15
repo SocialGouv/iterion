@@ -7603,6 +7603,7 @@ export interface components {
             clone_url?: string;
             connection_id: string;
             connection_status?: string;
+            gates_merges?: boolean;
             integration_id: string;
             provider: string;
             repo_full_name: string;

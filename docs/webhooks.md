@@ -9,16 +9,17 @@ This document covers **inbound** webhooks — external events arriving on
 ("call me back when this run finishes") is documented in
 [outbound-callbacks.md](outbound-callbacks.md).
 
-> **Prefer the Integrations tab for forge repos.** The manual lifecycle
+> **Prefer the forge integrations for forge repos.** The manual lifecycle
 > below (mint a token, paste the URL + token into the forge) is the
 > low-level path. For a GitLab/GitHub/Forgejo repo, the studio's
-> **Integrations** tab connects the forge once (OAuth or PAT) and
-> **provisions the hook + token + this webhook config for you** when you
-> enable a bot — see [forge-integrations.md](forge-integrations.md). Such
-> configs carry a `provisioned_by` marker, render read-only here, and
-> reject direct delete/rotate (409) — manage them from Integrations. The
-> manual path remains for the Generic JSON trigger and for webhooks you
-> want to own by hand.
+> **Integrations → Repositories** tab (`/integrations`) connects the forge
+> once (OAuth or PAT) and **provisions the hook + token + this webhook
+> config for you** when you enable a bot — see
+> [forge-integrations.md](forge-integrations.md). Such configs carry a
+> `provisioned_by` marker, render read-only here, and reject direct
+> delete/rotate (409) — manage them from **Integrations → Repositories**.
+> The manual path remains for the Generic JSON trigger and for webhooks
+> you want to own by hand.
 
 Four providers are wired: GitLab (incl. `/revi` re-review command),
 GitHub, Forgejo/Gitea, and a bot-agnostic Generic JSON endpoint
@@ -26,10 +27,10 @@ GitHub, Forgejo/Gitea, and a bot-agnostic Generic JSON endpoint
 
 ## Lifecycle
 
-1. An org admin creates a webhook through the studio (`Webhooks` tab on
-   `/teams/<id>`) or the API. Iterion mints an `iwh_…` token (32 bytes
-   of randomness behind a recognisable prefix) and returns it **exactly
-   once** alongside the new `Config` document
+1. An org admin creates a webhook through the studio (the `Webhooks` tab
+   of **Integrations**, `/integrations`) or the API. Iterion mints an
+   `iwh_…` token (32 bytes of randomness behind a recognisable prefix)
+   and returns it **exactly once** alongside the new `Config` document
    ([pkg/webhooks/token.go:MintToken](../pkg/webhooks/token.go)).
 2. The admin pastes the inbound URL + token into the forge:
    - GitLab → Settings → Webhooks → URL `https://…/api/webhooks/gitlab/<id>` + Secret Token `iwh_…`
@@ -43,7 +44,7 @@ GitHub, Forgejo/Gitea, and a bot-agnostic Generic JSON endpoint
    ([pkg/webhooks/types.go:Config](../pkg/webhooks/types.go)).
 
 Rotate or revoke at any time: `POST /api/teams/{id}/webhooks/{webhook_id}/rotate`
-returns a fresh plaintext (also shown once) and updates the forge's
+returns a fresh plaintext (also shown once); updating the forge's
 "secret" field is then a manual step.
 
 ## When a forge cannot reach the deployment's public URL
@@ -55,7 +56,8 @@ hooks with it.
 
 A forge may refuse that host outright. **GitLab** rejects any webhook URL
 outside its instance-wide outbound allowlist with `Invalid url given`
-(HTTP 422, surfaced as `create hook: HTTP 422`), and getting a host listed
+(HTTP 422, which the enable reports as
+[`hook_url_refused`](#hook-url-refused)), and getting a host listed
 is an administrative act on the forge's side — Admin area → Settings →
 Network → Outbound requests. A deployment that serves two names, or that is
 migrating between them, then has one connection that cannot follow.
@@ -67,6 +69,28 @@ iterion remote forge connections webhook-base <conn-id> \
   --url https://iterion.old-and-allowlisted.example
 iterion remote forge connections webhook-base <conn-id> --url ""   # clear
 ```
+
+**From the studio**, the same pin lives on the connection card:
+**Integrations → Repositories** (`/integrations`) → the connection's
+**`Webhook delivery`** row, which says where this connection's hooks point:
+the pinned base in monospace, or else `this deployment's public URL`. An
+admin sets one with `Pin a base URL`, and afterwards `Change` / `Unpin`.
+The connect wizard's **Repositories** step
+carries the same row above the bot list, so a connection that needs the pin
+gets it before its first repo is enabled. A watch-only
+([`security_read`](forge-security-read.md)) connection provisions no hook,
+so the row is absent there. Below it, the Enable panel's preview reads
+`Will deliver to:` followed by `<base>/api/webhooks/<provider>/…` — the
+address the hook will carry, read before the write rather than after it;
+only the webhook id is elided, since the base is what the pin moves. A
+deployment with no public URL and no pin has no address to announce, and the
+line says that instead of disappearing: `Will deliver to: no address — this
+deployment has no public URL; pin a base URL on the connection above.` A base
+that is not an absolute http(s) URL — a public URL set without its scheme —
+gets the same warning, quoting it: `no address — "<base>" is not an absolute
+http(s) URL (auth.publicUrl / ITERION_PUBLIC_URL)`, followed by the same remedy.
+Both provisioning surfaces carry the line and the warning: the Enable panel
+and the bind wizard's Review step.
 
 It takes effect at the next provision of each repo on that connection, and
 the value must be scheme+host (the `/api/webhooks/<provider>/<id>` route is
@@ -113,6 +137,88 @@ Prefer getting the canonical host allowlisted and clearing the pin. It is
 an escape hatch for the interval where that is out of your hands, not a
 target state — the pinned host has to keep resolving and serving for as
 long as the pin is there.
+
+### <a name="hook-url-refused"></a>`hook_url_refused` — the forge said no to the URL
+
+A forge that refuses the hook URL fails the enable with **HTTP 422**
+`{"error":"hook_url_refused","detail":"…"}` — a typed refusal ahead of the
+generic upstream mapping, because the operator's next gesture depends on
+what the connection pins today. Both the create and the update path raise
+it, so a re-enable that moves a hook reports it exactly like a first enable.
+
+The detail opens on the provider, the refused URL and the forge's own
+sentence, read from the body it refused with and quoted — `gitlab refused to
+register the webhook at https://… (HTTP 422: "Invalid url given")` — one
+line, whitespace collapsed and capped, absent when the answer carried no
+message. That quote is what tells two refusals apart: a 422 is also how a
+forge refuses a hook for something other than its address (a project hook
+limit, a rejected field), so the remedy after it hedges rather than asserts,
+and it is one of four:
+
+- **No public URL.** With nothing pinned and a refused address that is
+  relative (it starts with `/`), the deployment had no base to build it from —
+  `auth.publicUrl` / `ITERION_PUBLIC_URL` is empty, which the chart's
+  defaults allow — and no forge accepts a relative address. The detail leads
+  with this cause, because setting the public URL is the fix and a
+  per-connection pin is the wrong lesson to draw from a relative address.
+- **Not an absolute http(s) URL.** With nothing pinned and a refused address
+  that is neither relative nor `http(s)://host…` — a public URL set without
+  its scheme is the usual shape, since the configuration checks the scheme
+  only when canonical redirects are on — the detail quotes the address and
+  asks for the public URL as scheme+host (`https://…`), or a pin.
+- **Unpinned.** The detail names the usual cause — a forge that only
+  delivers to allowlisted hosts — and gives the two doors to a pin: the
+  connection's `Webhook delivery` row, or the `webhook-base` CLI above. Then
+  retry the enable; on an org that requires provisioning approval, approve
+  the pending request again rather than parking a duplicate.
+- **Pinned.** The detail names the base this connection pins and sends the
+  reader to the forge's own allowlist (GitLab: Admin area → Settings →
+  Network → Outbound requests) or to changing the pin. A pin the forge
+  refuses in turn is the common second mistake: the 422 is about the
+  address, not about a pin being missing.
+
+**A refused re-provision leaves the working hook working.** A re-provision
+mints a fresh `iwh_` and stores the new webhook config *before* it touches
+the forge hook, since the two ends have to move together. What iterion does
+when that hook upsert fails follows what the failure proves about the forge:
+
+- **A failure the forge could not have applied** leaves the forge holding
+  the hook it already had, and the previous stored config goes back, so the
+  old URL and old secret keep authenticating the deliveries that are still
+  arriving. That is: a forge 4xx other than 408 and 499 (the 422 above, a
+  401/403 on the grant, a hook that is gone); a request that never left
+  (a DNS failure, a refused connection, a failed TLS certificate check); a
+  step that ended on a read — the probe that looks the hook up by its
+  delivery URL — when nothing before it was applied; a hook request that was
+  never sent, because the credential it goes with could not be minted (a
+  GitHub App's installation token); or no forge call at all (opening the
+  connection's admin client failed).
+- **A failure that proves nothing** may have been applied: the forge may
+  already sign with the new secret. That is a 408 or a 499 (a gateway may
+  have forwarded the write before giving up), a 5xx, a timeout or a reset
+  mid-flight, a cancelled request. Restoring the old config there is what
+  would break the hook, so the new one stays and the error says so, naming
+  the remedy — re-run the same request, provisioning converges. Such an
+  outcome is also logged at Warn with the webhook id, since it may need an
+  operator who is not the one watching the answer.
+
+The restore is a compare-and-set rather than a blind write: it re-reads the
+stored config and puts the previous one back only while the token hash is
+still the one this provision wrote. A concurrent provision that won the race
+is left alone — its secret is the one the forge now holds. A re-read or a
+write that fails in turn is returned with the hook failure instead of being
+swallowed: a hook nobody can authenticate is not something to learn from the
+delivery log. That answer is a 500 that tells the restore's story first; when
+the hook failure behind it was a refused address, it keeps the
+`hook_url_refused` code and the remedy above after it. A *fresh* provision has nothing to restore and keeps its own
+rollback, deleting the config it just created.
+
+**Known limit: concurrent re-provisions of the same repo are not
+serialised.** Two that overlap can interleave their config write and their
+hook write, and leave the stored config and the forge hook on different
+secrets — the compare-and-set bounds what a loser's restore can overwrite,
+it does not order the two provisions. Re-run the request if two raced: a
+re-provision reconciles both ends from the stored config.
 
 ## Auth modes — token vs HMAC
 

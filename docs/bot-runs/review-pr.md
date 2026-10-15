@@ -1061,7 +1061,9 @@ disabled and diff the two finding sets.
   `Invalid url given` (HTTP 422) that names neither the setting nor the host —
   it looks like a malformed URL. Probe it early with a throwaway hook: the
   whole webhook half of an integration depends on it, while direct launches
-  work regardless.
+  work regardless. iterion's own answer to that refusal,
+  [`hook_url_refused`](../webhooks.md#hook-url-refused), names the refused
+  URL and the connection's pin.
 - Verifying a status on GitLab needs the **full** SHA: `GET
   /repository/commits/<short-sha>/statuses` returns `[]` rather than an error.
 

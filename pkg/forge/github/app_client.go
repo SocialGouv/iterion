@@ -1138,7 +1138,9 @@ func (a *AppClient) GetHook(ctx context.Context, repo, deliveryURL string) (*for
 func (a *AppClient) CreateHook(ctx context.Context, repo string, spec forge.HookSpec) (forge.HookHandle, error) {
 	c, err := a.rest(ctx)
 	if err != nil {
-		return forge.HookHandle{}, err
+		// The installation token the write is sent with could not be minted:
+		// no hook request left, whatever the token endpoint answered.
+		return forge.HookHandle{}, &forge.HookNotSentError{Step: "mint installation token", Err: err}
 	}
 	return c.CreateHook(ctx, repo, spec)
 }
@@ -1146,7 +1148,9 @@ func (a *AppClient) CreateHook(ctx context.Context, repo string, spec forge.Hook
 func (a *AppClient) UpdateHook(ctx context.Context, repo, hookID string, spec forge.HookSpec) (forge.HookHandle, error) {
 	c, err := a.rest(ctx)
 	if err != nil {
-		return forge.HookHandle{}, err
+		// The installation token the write is sent with could not be minted:
+		// no hook request left, whatever the token endpoint answered.
+		return forge.HookHandle{}, &forge.HookNotSentError{Step: "mint installation token", Err: err}
 	}
 	return c.UpdateHook(ctx, repo, hookID, spec)
 }

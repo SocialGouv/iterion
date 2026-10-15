@@ -37,6 +37,48 @@ func TestPreviewEnable_CommandOnlyBotNotConflict(t *testing.T) {
 	}
 }
 
+// TestPreviewEnable_GatesMergesFollowsTheStatusesScope: the posture the
+// operator consents to in the enable dialog must be the one Provision arms,
+// so the preview reads the SAME declaration (the `statuses` token scope) that
+// forces review_on_sync.
+func TestPreviewEnable_GatesMergesFollowsTheStatusesScope(t *testing.T) {
+	invFn := func(context.Context, string, string) ([]bundle.Invocation, error) { return nil, nil }
+	for _, tc := range []struct {
+		name string
+		bots []string
+		want bool
+	}{
+		{"a statuses bot gates", []string{"gate-bot"}, true},
+		{"co-enabled with a non-gating bot", []string{"review-pr", "gate-bot"}, true},
+		{"no statuses scope anywhere", []string{"review-pr", "revi-converse"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pv := PreviewEnable(context.Background(), "t1", testBotLookup, invFn, tc.bots)
+			if len(pv.Conflicts) != 0 {
+				t.Fatalf("fixture bots must all be provisionable, got %v", pv.Conflicts)
+			}
+			if pv.GatesMerges != tc.want {
+				t.Errorf("GatesMerges = %v, want %v for %v — the dialog would promise a posture "+
+					"other than the one the provision installs", pv.GatesMerges, tc.want, tc.bots)
+			}
+		})
+	}
+}
+
+// TestBotGatesMerges_IsTheOneDerivation pins the predicate every surface
+// shares: the declared `statuses` scope, at any level, and nothing else.
+func TestBotGatesMerges_IsTheOneDerivation(t *testing.T) {
+	if BotGatesMerges(nil) {
+		t.Error("a bot with no forge: block declares no status")
+	}
+	if BotGatesMerges(&bundle.ForgeRequirements{TokenScopes: map[string]string{"pull_requests": "write"}}) {
+		t.Error("pull_requests:write is not a commit status")
+	}
+	if !BotGatesMerges(&bundle.ForgeRequirements{TokenScopes: map[string]string{bundle.ForgeScopeStatuses: "write"}}) {
+		t.Error("a declared statuses scope is what makes a bot a required check")
+	}
+}
+
 func TestPreviewEnable_NoForgeNoInvocationIsConflict(t *testing.T) {
 	pv := PreviewEnable(context.Background(), "t1",
 		func(context.Context, string, string) (*bundle.ForgeRequirements, error) { return nil, nil },

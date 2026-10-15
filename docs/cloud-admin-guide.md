@@ -3,7 +3,9 @@
 **Audience.** The platform operator who runs `iterion server` for
 multiple teams **and** the org admin who manages their team inside it.
 Two halves: §1 covers the platform-wide knobs only super-admins reach;
-§2 covers the org self-serve flows on `/teams/<id>`. Each step pairs
+§2 covers the org self-serve flows, on `/teams/<id>` for the team's own
+settings and on `/integrations` for everything wired to the outside
+world (webhooks, secrets, bot bindings, forge repos). Each step pairs
 the UI path with the equivalent curl so this page works for both the
 studio user and the CI script.
 
@@ -285,12 +287,15 @@ values.
 ## Part 2 — Org admin (team owner / admin)
 
 You're a member of one or more orgs and your role in at least one is
-`admin` or `owner`. Everything here is self-serve at
-`https://iterion.example.com/teams/<id>`.
+`admin` or `owner`. Everything here is self-serve from the studio:
+`https://iterion.example.com/teams/<id>` for the team's own settings,
+`https://iterion.example.com/integrations` for the integrations the team
+consumes.
 
 ### 2.1 Create an inbound webhook from the studio
 
-UI: `/teams/<id>` → Webhooks → "Create webhook".
+UI: **Integrations → Webhooks** (`/integrations?tab=webhooks`) →
+"Create webhook".
 
 1. Pick a **provider**: GitLab, GitHub, Forgejo/Gitea, or Generic.
 2. Pick the **bot scope**: one bot, several bots, or "wildcard" (any
@@ -362,8 +367,9 @@ curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/bots/review-pr/bindi
   }'
 ```
 
-UI path: `/teams/<id>` → Secrets → "New secret"; then Bots → review-pr
-→ "Bind a secret" → pick the stored one.
+UI path: **Integrations → Secrets** (`/integrations?tab=secrets`) → "Add
+team secret"; then **Integrations → Bot bindings** → pick review-pr →
+"Add binding" → pick the stored secret.
 
 The full binding resolution chain (user > binding > team) and what
 `allowed_hosts` enforces is in
@@ -371,8 +377,9 @@ The full binding resolution chain (user > binding > team) and what
 
 ### 2.3 Watch usage
 
-UI path: `/teams/<id>` → Usage. The run/cost counters are **org-scoped**
-(they sum every team in the org), so the API is keyed on the org:
+UI path: `/orgs/<id>` → Usage. The run/cost counters are **org-scoped**
+(they sum every team in the org), so the view and the API are both keyed
+on the org:
 
 ```bash
 curl https://iterion.example.com/api/orgs/$ORG_ID/usage
@@ -393,7 +400,7 @@ curl "https://iterion.example.com/api/teams/$TEAM_ID/audit?action=byok.created"
 curl "https://iterion.example.com/api/teams/$TEAM_ID/audit?actor=$USER_ID"
 ```
 
-UI path: `/teams/<id>` → Audit.
+UI path: `/teams/<id>` → Audit log.
 
 **Requires team admin** (not just membership) because rows expose
 member emails and IPs. Tokens are stable and listed in §1.5.
@@ -407,7 +414,7 @@ curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/invitations \
 # Response: { "invitation": { … }, "token": "…" }
 ```
 
-UI path: `/teams/<id>` → Members → "Invite".
+UI path: `/teams/<id>` → Team access → "Invite a member".
 
 When SMTP is configured, the new member receives an email with a link
 to `${PUBLIC_URL}/invitations/accept?token=…` (the SPA accept page,

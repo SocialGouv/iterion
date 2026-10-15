@@ -2,7 +2,9 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -314,6 +316,15 @@ type forgeEnablePreview struct {
 	Commands          []forgePreviewCommand `json:"commands,omitempty"`
 	Identity          forgePreviewIdent     `json:"identity"`
 	Conflicts         []string              `json:"conflicts"`
+	// GatesMerges is the merge-gate posture the enable installs: one of the
+	// selected bots posts a commit status, so merges become gateable and
+	// every push is re-reviewed to keep the status on the current head.
+	GatesMerges bool `json:"gates_merges"`
+	// HookBaseURL is the origin the webhook will be registered under — the
+	// connection's pin, else the deployment's public URL. Shown because a
+	// forge that only delivers to allowlisted hosts refuses the other one,
+	// and the operator can read that mismatch before the write.
+	HookBaseURL string `json:"hook_base_url"`
 }
 
 type forgePreviewBind struct {
@@ -378,13 +389,121 @@ func (s *Server) handlePreviewForgeEnable(w http.ResponseWriter, r *http.Request
 		Commands:          commands,
 		Identity:          forgePreviewIdent{Handle: conn.AccountLogin, Provider: string(conn.Provider), BaseURL: conn.BaseURL()},
 		Conflicts:         pv.Conflicts,
+		GatesMerges:       pv.GatesMerges,
+		HookBaseURL:       s.forgeOrchestrator.HookBaseURL(conn),
 	})
+}
+
+// hookPinGesture names where an operator pins a connection's webhook base:
+// the studio row, and the CLI for whoever is not in the studio.
+func hookPinGesture(connectionID string) string {
+	if connectionID == "" {
+		connectionID = "<conn-id>"
+	}
+	return "(Integrations → Repositories → the connection's \"Webhook delivery\" row, " +
+		"or iterion remote forge connections webhook-base " + connectionID + " --url <base>)"
+}
+
+// hookRefusedRetry is the gesture after the setting. An org that requires
+// provisioning approval answered the refusal to the APPROVER and kept the
+// request parked, so "enable the repo again" would ask the team admin to
+// park a duplicate — which the store refuses.
+const hookRefusedRetry = "then retry the enable (on an org that requires approval, approve the pending request again)."
+
+// absoluteHTTPURL reports an address a forge can dial: an http(s) scheme AND
+// a host. "Parses" is not the question — a deployment public URL whose scheme
+// was forgotten ("iterion.example.org") parses fine and reaches the forge
+// verbatim, which is how it gets refused.
+func absoluteHTTPURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+// hookRefusedDetail is the operator's remedy for a forge that refused the
+// webhook address, quoting what the forge itself said: a 422 is also how a
+// forge refuses a hook for a reason that has nothing to do with the address
+// (a project hook limit, a rejected field), and the remedy differs. Four
+// cases, four gestures — the connection pins a base the forge does not
+// accept, the deployment has no public URL at all, its public URL is not an
+// absolute http(s) URL, or nothing is pinned yet — and the generic
+// "provisioning failed: HTTP 422" names none of them.
+func hookRefusedDetail(e *forge.HookRefusedError) string {
+	head := fmt.Sprintf("%s refused to register the webhook at %s (HTTP 422", e.Provider, e.URL)
+	if e.Detail != "" {
+		head += fmt.Sprintf(": %q", e.Detail)
+	}
+	head += "). "
+	switch {
+	case e.Pinned != "":
+		return head + fmt.Sprintf("This connection pins %s: check that the forge accepts that host "+
+			"(GitLab: Admin area → Settings → Network → Outbound requests), or change the pin.", e.Pinned)
+	case strings.HasPrefix(e.URL, "/"):
+		// A relative address: the deployment's public URL is unset, and no
+		// forge accepts that. Naming the allowlist here would send the
+		// operator to pin a per-connection escape hatch for a one-setting
+		// deployment gap.
+		return head + "This deployment has no public URL configured (auth.publicUrl / ITERION_PUBLIC_URL), " +
+			"so the webhook address is relative: set it, or pin a base URL on this connection " +
+			hookPinGesture(e.ConnectionID) + ", " + hookRefusedRetry
+	case !absoluteHTTPURL(e.URL):
+		// An address no forge can dial — a public URL whose scheme was
+		// forgotten is the one this deployment ships with, since
+		// config.Validate only checks PublicURL's scheme and host when
+		// canonical redirects are on (off by default). The allowlist is the
+		// wrong door, and so is "no public URL configured": there is one, and
+		// adding the scheme is the gesture.
+		return head + fmt.Sprintf("The webhook address %s is not an absolute http(s) URL: this deployment's "+
+			"public URL (auth.publicUrl / ITERION_PUBLIC_URL) must be scheme+host, so set it to https://… "+
+			"(a forgotten scheme is the usual cause), or pin a base URL on this connection %s, %s",
+			e.URL, hookPinGesture(e.ConnectionID), hookRefusedRetry)
+	default:
+		return head + "The usual cause is a forge that only delivers to allowlisted hosts: pin a webhook base URL " +
+			"it accepts on this connection " + hookPinGesture(e.ConnectionID) + ", " + hookRefusedRetry
+	}
 }
 
 // writeForgeProvisionError maps orchestrator/admin failures to stable HTTP
 // shapes the studio can act on.
 func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
+	var restoreFailed *forge.ConfigRestoreError
+	var hookRefused *forge.HookRefusedError
+	var indeterminate *forge.HookWriteIndeterminateError
 	switch {
+	case errors.As(err, &restoreFailed):
+		// First: the repo has stopped receiving deliveries, which outranks the
+		// hook failure it is joined with — whichever case matched that one would
+		// answer with the hook's story alone. Logged whole: the answer goes to
+		// one operator, and this one needs ops to see it too.
+		s.logWarn("forge: provisioning failed and the stored webhook config could not be restored: %v", err)
+		if errors.As(err, &hookRefused) {
+			// A refused ADDRESS joined with a failed restore is two facts, not
+			// one: the repo stopped receiving (500, the restore's story, said
+			// first) AND the only gesture that makes the next attempt succeed
+			// is a webhook base the forge accepts. The machine code travels
+			// with it, since a 500 whose cause is a refused URL is still that
+			// refusal for whatever the studio renders for it.
+			writeJSONStatus(w, http.StatusInternalServerError, map[string]any{
+				"error":  "hook_url_refused",
+				"detail": restoreFailed.Error() + " " + hookRefusedDetail(hookRefused),
+			})
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "%v", err)
+	case errors.As(err, &hookRefused):
+		// Ahead of the upstream mapping, which would mirror the forge's 422
+		// with "provisioning failed: …HTTP 422" — a status the operator
+		// cannot act on, for the one provisioning failure whose fix is a
+		// setting on this very connection. Logged whole, because the detail
+		// is capped and the forge's message may name a cause the remedy only
+		// hedges at.
+		s.logWarn("forge: the webhook address was refused: %v", err)
+		writeJSONStatus(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":  "hook_url_refused",
+			"detail": hookRefusedDetail(hookRefused),
+		})
 	case errors.Is(err, forge.ErrLaunchVarsDrop):
 		// The operator's own request is inadmissible as sent: it would drop
 		// pins it did not name. 400, with the echo and the escape hatch in
@@ -406,6 +525,19 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 		})
 	case errors.Is(err, forge.ErrConnectionNotFound):
 		httpError(w, http.StatusNotFound, "connection not found")
+	case errors.As(err, &indeterminate):
+		// The stored config may not match the forge's live hook, so the repo
+		// may have stopped authenticating until someone re-runs the request.
+		// Ahead of the upstream mapping only to log it: a state that needs an
+		// operator gesture cannot live in the one browser tab that asked, and
+		// the mapping (a 502 for the forge's 5xx, a 429 with its Retry-After)
+		// is what the answer keeps. The text already went through the hook
+		// secret's scrub.
+		s.logWarn("forge: webhook %s: a hook write's outcome is unknown, so the repo may be delivering with a secret the forge does not hold — re-run the request: %v",
+			indeterminate.WebhookID, err)
+		if !writeForgeUpstreamError(w, err, "provisioning failed: %v", err) {
+			httpError(w, http.StatusBadGateway, "provisioning failed: %v", err)
+		}
 	case writeForgeUpstreamError(w, err, "provisioning failed: %v", err):
 		// A forge that throttled or fell over says so itself.
 	default:

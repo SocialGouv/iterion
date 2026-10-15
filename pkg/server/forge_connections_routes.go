@@ -54,6 +54,68 @@ type forgeTeamRepo struct {
 	IntegrationID     string   `json:"integration_id"`
 	BotIDs            []string `json:"bot_ids"`
 	SyncIssuesEnabled bool     `json:"sync_issues_enabled"`
+	// GatesMerges is the row's merge-gate posture: one of its bound bots
+	// posts a commit status (forge.BotGatesMerges). ABSENT — never false —
+	// when a bound bot does not resolve: "no bot gates" and "we could not
+	// read a bot" are different facts, and the second one must not be served
+	// as the first.
+	GatesMerges *bool `json:"gates_merges,omitempty"`
+}
+
+// gatesMergesResolver answers the merge-gate posture of a bot set over two
+// memos: one per request (a team's repos share their bots) on top of the
+// server's short-TTL one (the listing is polled on a fixed cadence, and each
+// miss is a bot-source store round-trip).
+//
+// The posture is an OR, so one gating bot DECIDES the row whatever its
+// siblings answer. nil — the row omits the field and the listing still
+// answers — only when nothing gated and a bot of the set does not resolve,
+// which is what a repo switcher needs from a bot that was renamed or
+// withdrawn. Every bot of a row is resolved even once one gates, so the warn
+// set does not depend on the row's bot order; the memos make the rest of the
+// scan a map hit. Each unresolvable bot is warned ONCE per request, however
+// many rows bind it — the per-request memo holds that failure, the
+// cross-request one never does (gatesMergesMemo.answer).
+func (s *Server) gatesMergesResolver(ctx context.Context, teamID string) func([]string) *bool {
+	if s.forgeOrchestrator == nil || s.forgeOrchestrator.Bots == nil {
+		return func([]string) *bool { return nil }
+	}
+	perRequest := map[string]gatesMergesAnswer{}
+	answer := func(bot string) gatesMergesAnswer {
+		if a, seen := perRequest[bot]; seen {
+			return a
+		}
+		a := s.forgeGatesMemo.answer(teamID, bot, func() gatesMergesAnswer {
+			fr, err := s.forgeOrchestrator.Bots(ctx, teamID, bot)
+			if err != nil {
+				return gatesMergesAnswer{err: err}
+			}
+			return gatesMergesAnswer{gates: forge.BotGatesMerges(fr)}
+		})
+		perRequest[bot] = a
+		if a.err != nil {
+			s.logWarn("forge: team %s: bot %q does not resolve, so the repos bound to it report no merge-gate posture: %v", teamID, bot, a.err)
+		}
+		return a
+	}
+	return func(bots []string) *bool {
+		gates, unreadable := false, false
+		for _, b := range bots {
+			switch a := answer(b); {
+			case a.err != nil:
+				unreadable = true
+			case a.gates:
+				gates = true
+			}
+		}
+		if gates {
+			return &gates
+		}
+		if unreadable {
+			return nil
+		}
+		return &gates
+	}
 }
 
 // handleListTeamForgeRepos is the RepoSwitcher's data source: the team's
@@ -84,6 +146,7 @@ func (s *Server) handleListTeamForgeRepos(w http.ResponseWriter, r *http.Request
 		for _, c := range conns {
 			byConn[c.ID] = c
 		}
+		gatesMerges := s.gatesMergesResolver(r.Context(), teamID)
 		for _, it := range ints {
 			row := forgeTeamRepo{
 				ConnectionID:      it.ConnectionID,
@@ -92,6 +155,7 @@ func (s *Server) handleListTeamForgeRepos(w http.ResponseWriter, r *http.Request
 				IntegrationID:     it.ID,
 				BotIDs:            it.BotIDs,
 				SyncIssuesEnabled: it.SyncIssuesEnabled,
+				GatesMerges:       gatesMerges(it.BotIDs),
 			}
 			if row.BotIDs == nil {
 				row.BotIDs = []string{}

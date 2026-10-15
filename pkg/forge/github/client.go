@@ -259,9 +259,14 @@ func (c *AdminClient) ListRepos(ctx context.Context, q forge.RepoQuery) ([]forge
 	return out, nil
 }
 
+// hooksPageQuery asks for the largest page GitHub serves (100): the
+// delivery-URL probe and the audit listing see every hook a repository can
+// hold, never only the first 30 of the default page.
+const hooksPageQuery = "?per_page=100"
+
 func (c *AdminClient) GetHook(ctx context.Context, repo, deliveryURL string) (*forge.HookHandle, error) {
 	var hooks []githubHook
-	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/hooks", nil, &hooks)
+	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/hooks"+hooksPageQuery, nil, &hooks)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +287,7 @@ func (c *AdminClient) GetHook(ctx context.Context, repo, deliveryURL string) (*f
 // without the delivery-URL filter.
 func (c *AdminClient) ListHooks(ctx context.Context, repo string) ([]forge.HookHandle, error) {
 	var hooks []githubHook
-	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/hooks", nil, &hooks)
+	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/hooks"+hooksPageQuery, nil, &hooks)
 	if err != nil {
 		return nil, err
 	}
@@ -296,26 +301,31 @@ func (c *AdminClient) ListHooks(ctx context.Context, repo string) ([]forge.HookH
 	return out, nil
 }
 
+// CreateHook registers a new repository hook. A refusal carries GitHub's own
+// message and validation errors ("Validation Failed", "config.url …"): it is
+// what tells the operator which setting the remedy lives in.
 func (c *AdminClient) CreateHook(ctx context.Context, repo string, spec forge.HookSpec) (forge.HookHandle, error) {
 	var h githubHook
-	code, err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/hooks", hookBody(spec), &h)
+	code, errBody, err := c.doErr(ctx, http.MethodPost, "/repos/"+repo+"/hooks", hookBody(spec), &h)
 	if err != nil {
 		return forge.HookHandle{}, err
 	}
 	if code/100 != 2 {
-		return forge.HookHandle{}, statusErr("create hook", code)
+		return forge.HookHandle{}, forge.HookWriteErr("github", "create hook", code, errBody)
 	}
 	return h.toHandle(), nil
 }
 
+// UpdateHook edits an existing repository hook, carrying a refusal's own
+// message as CreateHook does.
 func (c *AdminClient) UpdateHook(ctx context.Context, repo, hookID string, spec forge.HookSpec) (forge.HookHandle, error) {
 	var h githubHook
-	code, err := c.do(ctx, http.MethodPatch, "/repos/"+repo+"/hooks/"+url.PathEscape(hookID), hookBody(spec), &h)
+	code, errBody, err := c.doErr(ctx, http.MethodPatch, "/repos/"+repo+"/hooks/"+url.PathEscape(hookID), hookBody(spec), &h)
 	if err != nil {
 		return forge.HookHandle{}, err
 	}
 	if code/100 != 2 {
-		return forge.HookHandle{}, statusErr("update hook", code)
+		return forge.HookHandle{}, forge.HookWriteErr("github", "update hook", code, errBody)
 	}
 	return h.toHandle(), nil
 }

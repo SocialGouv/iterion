@@ -42,9 +42,10 @@ export interface ForgeIntegration {
   sync_issues_enabled?: boolean;
   /** Operator overrides stamped onto every run this integration launches
    *  (pkg/forge.RepoIntegration.LaunchVars) — durable across
-   *  re-provisioning. `review_tier` (glance/guard/audit, review-pr only)
-   *  is the one the studio surfaces today; any other key round-trips
-   *  through updateForgeRepoBots unmodified. */
+   *  re-provisioning. The studio surfaces `review_tier`
+   *  (glance/guard/audit, review-pr only) and `gate_enabled` (the merge-gate
+   *  posture); any other key round-trips through updateForgeRepoBots
+   *  unmodified. */
   launch_vars?: Record<string, string>;
   created_at: string;
 }
@@ -62,6 +63,11 @@ export interface ForgeTeamRepo {
   integration_id: string;
   bot_ids: string[];
   sync_issues_enabled: boolean;
+  /** True when a bot bound here declares the `statuses` forge scope — it
+   *  posts a merge-gate commit status, so the repo has a posture to choose.
+   *  OMITTED when the server could not resolve one of the row's bots: that
+   *  is "unknown", never "no gate". */
+  gates_merges?: boolean;
 }
 
 /** Stable identity of a connected repo across connections. */
@@ -150,6 +156,17 @@ export interface ForgeEnablePreview {
   /** Slash-commands the enabled bots add to the webhook (command → bot). */
   commands?: Array<{ command: string; bot_id: string }>;
   identity: { handle: string; provider: string; base_url: string };
+  /** True when a provisionable selected bot declares the `statuses` forge
+   *  scope — the server's own anyBotGatesMerges predicate, the one that
+   *  forces review_on_sync. The merge-gate posture is a choice only then. */
+  gates_merges: boolean;
+  /** The base the inbound hook URL will be built from: this connection's
+   *  pinned `webhook_base_url`, else the deployment's public URL; no
+   *  trailing slash. Optional because a server that predates the field
+   *  reports none, which is not the same answer as "no public URL" (the
+   *  empty string): a surface says nothing about an address it was not
+   *  given. */
+  hook_base_url?: string;
   /** Non-empty = a bot can't be auto-installed (neither forge: nor an
    *  invocation). */
   conflicts: string[];
@@ -231,6 +248,26 @@ export async function connectForge(
   })) as ConnectForgeResult;
 }
 
+// setForgeConnectionWebhookBase pins the base this connection's inbound hook
+// URLs are built from — for a forge that cannot reach the deployment's public
+// URL (a self-managed GitLab whose outbound allowlist names another host
+// answers HTTP 422 to the hook registration). The EMPTY STRING clears the pin
+// and hands the connection back to the public URL.
+//
+// Sent ALONE: the server refuses a body that also carries
+// security_read_enabled, because the two are unrelated operations and nothing
+// makes them atomic.
+export async function setForgeConnectionWebhookBase(
+  teamID: string,
+  connID: string,
+  base: string,
+): Promise<ForgeConnection> {
+  return request(`/teams/${teamID}/forge/connections/${connID}`, {
+    method: "PATCH",
+    body: JSON.stringify({ webhook_base_url: base }),
+  });
+}
+
 export async function deleteForgeConnection(teamID: string, connID: string): Promise<void> {
   await request<void>(`/teams/${teamID}/forge/connections/${connID}`, { method: "DELETE" });
 }
@@ -268,12 +305,21 @@ export async function previewForgeEnable(
   return request(`/teams/${teamID}/forge/repo-bots/preview?${params.toString()}`);
 }
 
+// enableForgeRepoBots provisions a repo's bots on a connection.
+//
+// launchVars, when passed, pins operator overrides on the integration
+// (`gate_enabled` for the merge-gate posture). OMITTED leaves the stored pins
+// alone — and the server refuses a non-nil map that would drop keys the repo
+// already pins, so a caller only passes one for a repo it is integrating for
+// the first time; an already-integrated repo changes its pins through
+// updateForgeRepoBots, over its whole launch_vars map.
 export async function enableForgeRepoBots(
   teamID: string,
   connID: string,
   repo: string,
   botIDs: string[],
   scheduleCrons?: Record<string, string>,
+  launchVars?: Record<string, string>,
 ): Promise<ForgeProvisionResult> {
   return request(`/teams/${teamID}/forge/repo-bots`, {
     method: "POST",
@@ -283,28 +329,36 @@ export async function enableForgeRepoBots(
       bot_ids: botIDs,
       schedule_crons:
         scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
+      launch_vars: launchVars,
     }),
   });
 }
 
-// updateForgeRepoBots sets an integration's EXACT bot set (replace
-// semantics — the per-bot unbind). Empty lists are rejected server-side;
-// removing the last bot is disableForgeIntegration.
+// updateForgeRepoBots patches one integration.
+//
+// botIDs, when passed, sets its EXACT bot set (replace semantics — the per-bot
+// unbind); empty lists are rejected server-side, and removing the last bot is
+// disableForgeIntegration. UNDEFINED omits `bot_ids`, which keeps the stored
+// set (pkg/server forgeUpdateReq): a caller changing only the launch vars must
+// pass undefined rather than echo a bot set read when its page loaded — a
+// concurrent bind would be undone by that snapshot.
 //
 // launchVars, when passed, REPLACES the integration's whole launch_vars map
 // server-side (forge.RepoIntegration.LaunchVars is not merged on PATCH) —
 // callers that want to change one key must spread the integration's
-// current launch_vars first (see ReviewTierSelect).
+// current launch_vars first (see RepoDetail's review tier and merge gate).
 export async function updateForgeRepoBots(
   teamID: string,
   integrationID: string,
-  botIDs: string[],
+  botIDs: string[] | undefined,
   scheduleCrons?: Record<string, string>,
   launchVars?: Record<string, string>,
 ): Promise<ForgeProvisionResult> {
   return request(`/teams/${teamID}/forge/repo-bots/${integrationID}`, {
     method: "PATCH",
     body: JSON.stringify({
+      // JSON.stringify omits a key whose value is undefined, which is how
+      // "keep the stored bot set" reaches the server.
       bot_ids: botIDs,
       schedule_crons:
         scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,

@@ -75,13 +75,21 @@ export function useConnectWizard(
   const providerParam = (q.get("provider") as ForgeProvider | null) ?? "github";
   const baseParam = q.get("base") ?? "";
 
-  // A returning App-install / OAuth round-trip forces the step; otherwise
-  // the URL's ?step= wins, falling back to "provider".
-  const step: Step = connectedID
-    ? "repos"
-    : explicitStep && STEP_ORDER.includes(explicitStep)
-      ? explicitStep
-      : "provider";
+  // A returning App-install / OAuth round-trip (?connected=<id> alone) forces
+  // "repos"; otherwise the URL's ?step= wins, falling back to "provider".
+  //
+  // `step=done` outranks it: the Done step NAMES the connection it just
+  // enabled a repo on, so its own URL carries ?connected= too — read as a
+  // round-trip, that URL would send the operator back to "repos" and Done
+  // would never render.
+  const step: Step =
+    explicitStep === "done"
+      ? "done"
+      : connectedID
+        ? "repos"
+        : explicitStep && STEP_ORDER.includes(explicitStep)
+          ? explicitStep
+          : "provider";
 
   // The bind wizard (and any caller) can hand us a ?returnTo= in-app path
   // to land on after the connect flow. It must survive both SPA step

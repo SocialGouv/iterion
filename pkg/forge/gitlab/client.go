@@ -177,11 +177,17 @@ func (c *AdminClient) ListRepos(ctx context.Context, q forge.RepoQuery) ([]forge
 	return out, nil
 }
 
+// hooksPageQuery asks for the largest page GitLab serves. A project holds at
+// most 100 hooks, so one page carries them all: the delivery-URL probe and
+// the audit listing see every hook, never only the first 20 of the default
+// page.
+const hooksPageQuery = "?per_page=100"
+
 // GetHook finds the iterion hook on repo by its delivery URL (idempotency
 // probe). Returns (nil, nil) when no hook matches.
 func (c *AdminClient) GetHook(ctx context.Context, repo, deliveryURL string) (*forge.HookHandle, error) {
 	var hooks []gitlabHook
-	code, err := c.do(ctx, http.MethodGet, "/projects/"+projectID(repo)+"/hooks", nil, &hooks)
+	code, err := c.do(ctx, http.MethodGet, "/projects/"+projectID(repo)+"/hooks"+hooksPageQuery, nil, &hooks)
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +208,7 @@ func (c *AdminClient) GetHook(ctx context.Context, repo, deliveryURL string) (*f
 // without the delivery-URL filter.
 func (c *AdminClient) ListHooks(ctx context.Context, repo string) ([]forge.HookHandle, error) {
 	var hooks []gitlabHook
-	code, err := c.do(ctx, http.MethodGet, "/projects/"+projectID(repo)+"/hooks", nil, &hooks)
+	code, err := c.do(ctx, http.MethodGet, "/projects/"+projectID(repo)+"/hooks"+hooksPageQuery, nil, &hooks)
 	if err != nil {
 		return nil, err
 	}
@@ -216,28 +222,31 @@ func (c *AdminClient) ListHooks(ctx context.Context, repo string) ([]forge.HookH
 	return out, nil
 }
 
-// CreateHook registers a new project hook.
+// CreateHook registers a new project hook. A refusal carries GitLab's own
+// message ("Invalid url given", "url is blocked: …"): it is what tells the
+// operator which setting the remedy lives in.
 func (c *AdminClient) CreateHook(ctx context.Context, repo string, spec forge.HookSpec) (forge.HookHandle, error) {
 	var h gitlabHook
-	code, err := c.do(ctx, http.MethodPost, "/projects/"+projectID(repo)+"/hooks", hookBody(spec), &h)
+	code, errBody, err := c.http().DoErrBody(ctx, http.MethodPost, "/projects/"+projectID(repo)+"/hooks", hookBody(spec), &h)
 	if err != nil {
 		return forge.HookHandle{}, err
 	}
 	if code/100 != 2 {
-		return forge.HookHandle{}, statusErr("create hook", code)
+		return forge.HookHandle{}, forge.HookWriteErr("gitlab", "create hook", code, errBody)
 	}
 	return h.toHandle(), nil
 }
 
-// UpdateHook edits an existing project hook in place.
+// UpdateHook edits an existing project hook in place, carrying a refusal's
+// own message as CreateHook does.
 func (c *AdminClient) UpdateHook(ctx context.Context, repo, hookID string, spec forge.HookSpec) (forge.HookHandle, error) {
 	var h gitlabHook
-	code, err := c.do(ctx, http.MethodPut, "/projects/"+projectID(repo)+"/hooks/"+url.PathEscape(hookID), hookBody(spec), &h)
+	code, errBody, err := c.http().DoErrBody(ctx, http.MethodPut, "/projects/"+projectID(repo)+"/hooks/"+url.PathEscape(hookID), hookBody(spec), &h)
 	if err != nil {
 		return forge.HookHandle{}, err
 	}
 	if code/100 != 2 {
-		return forge.HookHandle{}, statusErr("update hook", code)
+		return forge.HookHandle{}, forge.HookWriteErr("gitlab", "update hook", code, errBody)
 	}
 	return h.toHandle(), nil
 }

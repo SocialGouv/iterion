@@ -32,6 +32,7 @@ import { useConfirm } from "@/hooks/useConfirm";
 import { errorMessage } from "@/lib/errorHints";
 import { forgeLabel } from "@/lib/forge";
 import { humanizeCron } from "@/lib/humanizeCron";
+import { mergeGateEnabled } from "@/lib/mergeGate";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { botLaunchFile } from "@/views/Bots/botPaths";
@@ -250,7 +251,9 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
     if (!integration) return;
     setReviewTierBusy(true);
     try {
-      await updateForgeRepoBots(teamID, integration.id, integration.bot_ids, undefined, {
+      // No bot set: an absent bot_ids keeps the stored one server-side, while
+      // the page's snapshot would unbind whatever was bound since it loaded.
+      await updateForgeRepoBots(teamID, integration.id, undefined, undefined, {
         ...integration.launch_vars,
         review_tier: tier,
       });
@@ -259,6 +262,32 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
       setErr(errorMessage(e));
     } finally {
       setReviewTierBusy(false);
+    }
+  };
+
+  // Merge gate: the posture of the bots that post a merge-gate commit status,
+  // pinned per repo on the integration's launch_vars (`gate_enabled`), like
+  // the review tier above — durable across re-provisioning. "Advisory only"
+  // silences the status AND the forced re-review on every push.
+  const [gateBusy, setGateBusy] = useState(false);
+  const gateOn = mergeGateEnabled(integration?.launch_vars);
+  const gatePinned = integration?.launch_vars?.gate_enabled !== undefined;
+  const setMergeGate = async (value: string) => {
+    if (!integration) return;
+    setGateBusy(true);
+    try {
+      // The whole map: a PATCH's launch_vars is the exact desired set, so the
+      // repo's other pins (review_tier, gate_context…) travel with the change.
+      // The bot set does not: absent, it is kept server-side (see setReviewTier).
+      await updateForgeRepoBots(teamID, integration.id, undefined, undefined, {
+        ...integration.launch_vars,
+        gate_enabled: value === "off" ? "false" : "true",
+      });
+      await reload();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setGateBusy(false);
     }
   };
 
@@ -416,6 +445,41 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
             <span className="text-caption text-fg-muted">
               Pinned on this repo&apos;s integration — survives re-provisioning.
             </span>
+          </div>
+        </Card>
+      )}
+
+      {/* Merge gate (a bot here posts the status, or the posture is pinned).
+          The integration carries the posture: without it in hand the card
+          would state one it cannot read. */}
+      {integration != null && (repo.gates_merges === true || gatePinned) && (
+        <Card flush>
+          <header className="flex items-center justify-between border-b border-border-subtle px-4 py-2.5">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-muted">
+              Merge gate
+            </h2>
+          </header>
+          <div className="flex flex-wrap items-center gap-3 px-4 py-2.5">
+            <label htmlFor="merge-gate-select" className="sr-only">
+              Merge gate
+            </label>
+            <Select
+              id="merge-gate-select"
+              value={gateOn ? "on" : "off"}
+              onChange={(e) => void setMergeGate(e.target.value)}
+              disabled={!canManage || gateBusy}
+              className="max-w-xs"
+            >
+              <option value="on">Gate merges — the bots post a merge-gate status</option>
+              <option value="off">Advisory only — no merge-gate status</option>
+            </Select>
+            <div className="text-caption text-fg-muted">
+              <div>Pinned on this repo&apos;s integration — survives re-provisioning.</div>
+              <div>
+                Turning the gate off also stops forcing a re-review on every push, for every
+                bot on this repo.
+              </div>
+            </div>
           </div>
         </Card>
       )}
