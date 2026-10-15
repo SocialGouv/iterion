@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -27,16 +29,165 @@ import (
 type sweeper struct {
 	name  string
 	sweep func(t *testing.T, w *nodeWorld) (SweepReport, error)
+	// hold arms the implementation's scan gate: the seam a witness holds a
+	// sweep at, to stage what must show between two of its scans.
+	hold func(t *testing.T, w *nodeWorld) *scanWindow
 }
 
 var sweepers = []sweeper{
-	{"go", func(_ *testing.T, w *nodeWorld) (SweepReport, error) { return SweepNodeSession(w.token, w.since) }},
-	{"sh", func(t *testing.T, w *nodeWorld) (SweepReport, error) { return shSweep(t, w, nil) }},
+	{
+		name:  "go",
+		sweep: func(_ *testing.T, w *nodeWorld) (SweepReport, error) { return SweepNodeSession(w.token, w.since) },
+		hold:  holdGoSweep,
+	},
+	{
+		name:  "sh",
+		sweep: func(t *testing.T, w *nodeWorld) (SweepReport, error) { return shSweep(t, w, nil) },
+		hold:  holdShSweep,
+	},
 	// The program's other way to read an environment, for a container whose
 	// grep does not read NUL-separated records.
-	{"sh-without-grep-z", func(t *testing.T, w *nodeWorld) (SweepReport, error) {
-		return shSweep(t, w, grepWithoutZ(t))
-	}},
+	{
+		name: "sh-without-grep-z",
+		sweep: func(t *testing.T, w *nodeWorld) (SweepReport, error) {
+			return shSweep(t, w, grepWithoutZ(t))
+		},
+		hold: holdShSweep,
+	},
+}
+
+// premiseWait bounds how long a witness waits for a fact it needs before it
+// gives up — a ceiling, not an expectation: every such wait ends the instant
+// the fact is true.
+const premiseWait = 30 * time.Second
+
+// awaitPremise holds the test until the fact a witness needs is true, and ends
+// the test when it never comes: a premise that did not happen fails as itself,
+// never as a verdict on the sweep.
+func awaitPremise(t *testing.T, what string, fact func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(premiseWait)
+	for !fact() {
+		if time.Now().After(deadline) {
+			t.Fatalf("premise, within %s: %s", premiseWait, what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// awaitSessionHolds holds the test until a scan of token would find pid: a
+// process carries the entry only once its exec is done.
+func awaitSessionHolds(t *testing.T, token, name string, pid int) {
+	t.Helper()
+	awaitPremise(t, fmt.Sprintf("session %s never held %s (pid %d)", token, name, pid), func() bool {
+		found, err := FindNodeSession(token)
+		if err != nil {
+			t.Fatalf("FindNodeSession: %v", err)
+		}
+		return slices.ContainsFunc(found, func(p SessionProcess) bool { return p.PID == pid })
+	})
+}
+
+// scanWindow is a sweep held at a scan it has just finished, before it acts on
+// what the scan found: a witness that needs a process to show between two
+// scans starts it there instead of guessing when the window opens. The two
+// implementations are held through their own seam — sweepScanGate here,
+// sweepScanGateFile in the program — and read as one window.
+type scanWindow struct {
+	// held reports whether the sweep is held at a scan, and what that scan
+	// found of the session.
+	held func() (found int, ok bool)
+	// resume lets the sweep act on that scan and look again.
+	resume func()
+	// passed reports whether the sweep has already LEFT the gate.
+	passed func() bool
+}
+
+// await holds the test until the sweep is held at a scan and returns what that
+// scan found of the session.
+func (win *scanWindow) await(t *testing.T) int {
+	t.Helper()
+	found := 0
+	awaitPremise(t, "the sweep never reached the scan gate it is held at", func() bool {
+		n, ok := win.held()
+		found = n
+		return ok
+	})
+	return found
+}
+
+// holdGoSweep holds SweepNodeSession at the first scan it finishes, through the
+// package's sweepScanGate seam. The seam is a package variable, so a witness
+// that arms it does not run in parallel with another.
+func holdGoSweep(t *testing.T, _ *nodeWorld) *scanWindow {
+	var found atomic.Int64
+	var paused, left atomic.Bool
+	resumed := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(resumed) })
+	// gated is read and written by the sweep's goroutine alone.
+	gated := false
+	sweepScanGate = func(n int) {
+		if gated {
+			return
+		}
+		gated = true
+		found.Store(int64(n))
+		paused.Store(true)
+		<-resumed
+		left.Store(true)
+	}
+	// The cleanup order is load-bearing: LIFO runs the sweep's join (which
+	// resumes and waits for it to return) before this nil, so the sweep never
+	// reads the seam after it is cleared.
+	t.Cleanup(func() { resume(); sweepScanGate = nil })
+	return &scanWindow{
+		held: func() (int, bool) {
+			if !paused.Load() {
+				return 0, false
+			}
+			return int(found.Load()), true
+		},
+		resume: resume,
+		passed: left.Load,
+	}
+}
+
+// holdShSweep holds the sweep program at the first scan it finishes, through
+// the gate file it reports its scans to.
+// nextGateID numbers the scan gates: a world that holds a second sweep must
+// not find the first one's release or scan log on its own gate path.
+var nextGateID atomic.Uint64
+
+func holdShSweep(t *testing.T, w *nodeWorld) *scanWindow {
+	gate := filepath.Join(w.dir, "gate-"+strconv.FormatUint(nextGateID.Add(1), 10))
+	sweepScanGateFile = gate
+	resume := sync.OnceFunc(func() {
+		if err := os.WriteFile(gate+".resume", nil, 0o600); err != nil {
+			t.Error(err)
+		}
+	})
+	// The cleanup order is load-bearing, as holdGoSweep's: the join resumes
+	// and waits before the path is cleared.
+	t.Cleanup(func() { resume(); sweepScanGateFile = "" })
+	return &scanWindow{
+		held: func() (int, bool) {
+			scanned, err := os.ReadFile(gate + ".scanned")
+			if err != nil {
+				return 0, false
+			}
+			// A line the program is still writing is no scan yet.
+			first, _, whole := strings.Cut(string(scanned), "\n")
+			if !whole {
+				return 0, false
+			}
+			return len(strings.Fields(first)), true
+		},
+		resume: resume,
+		passed: func() bool {
+			_, err := os.Stat(gate + ".passed")
+			return err == nil
+		},
+	}
 }
 
 // shSweep runs the sweep program the way the sandbox exec runs it — its own
@@ -326,6 +477,34 @@ func (w *nodeWorld) stopAll() {
 	}
 }
 
+// sweepInBackground runs the sweep while the test stages the window the sweep
+// must see. The returned function joins it and answers what it did; the join
+// also runs when the test ends, with the hold released, so a held sweep never
+// outlives the test holding it.
+func (w *nodeWorld) sweepInBackground(s sweeper, win *scanWindow) func() (SweepReport, error) {
+	w.t.Helper()
+	type outcome struct {
+		r   SweepReport
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, err := s.sweep(w.t, w)
+		done <- outcome{r, err}
+	}()
+	var got outcome
+	join := sync.OnceFunc(func() {
+		win.resume()
+		select {
+		case got = <-done:
+		case <-time.After(premiseWait):
+			w.t.Errorf("the sweep did not return within %s of its hold being released", premiseWait)
+		}
+	})
+	w.t.Cleanup(join)
+	return func() (SweepReport, error) { join(); return got.r, got.err }
+}
+
 func TestSweepStopsTheSessionAndNothingElse(t *testing.T) {
 	for _, s := range sweepers {
 		t.Run(s.name, func(t *testing.T) {
@@ -339,25 +518,31 @@ func TestSweepStopsTheSessionAndNothingElse(t *testing.T) {
 }
 
 // A process that shows after a scan found nothing — the way a child in the
-// middle of its exec is missed for an instant — is stopped.
+// middle of its exec is missed for an instant — is stopped. The window is
+// staged, not awaited: the sweep is held at a scan it has finished, `late`
+// starts and joins the session there, and only then does the sweep act on that
+// scan. Both facts the witness rests on are asserted — the held scan found
+// nothing, read from the sweep's own view, and `late` is in the session before
+// the sweep looks again — so a window that did not open fails as itself.
+//
+// Not parallel: the holds arm a package seam.
 func TestSweepStopsAProcessThatShowsAfterAnEmptyScan(t *testing.T) {
 	for _, s := range sweepers {
 		t.Run(s.name, func(t *testing.T) {
-			t.Parallel()
 			w := newNodeWorld(t)
-			type outcome struct {
-				r   SweepReport
-				err error
+			win := s.hold(t, w)
+			sweep := w.sweepInBackground(s, win)
+			if found := win.await(t); found != 0 {
+				t.Fatalf("premise: the scan the sweep is held at found %d process(es) of the session, want a scan that found nothing", found)
 			}
-			done := make(chan outcome, 1)
-			go func() {
-				r, err := s.sweep(t, w)
-				done <- outcome{r, err}
-			}()
-			time.Sleep(NodeSessionSettle / 5)
 			w.marked["late"] = w.sh("late", []string{w.entry()}, true, false, `exec sleep 300`)
-			got := <-done
-			w.check(got.r, got.err)
+			awaitSessionHolds(t, w.token, "late", w.marked["late"])
+			if win.passed() {
+				t.Fatal("premise: the sweep left the scan gate before `late` joined the session: the window was not staged")
+			}
+			win.resume()
+			awaitPremise(t, "the gate never recorded the sweep passing", win.passed)
+			w.check(sweep())
 		})
 	}
 }
@@ -414,10 +599,27 @@ int main(void) { pthread_t t; pthread_create(&t, 0, run, 0); pthread_exit(0); }
 			t.Parallel()
 			w := newNodeWorld(t)
 			w.marked["leaderless"] = w.start("leaderless", []string{w.entry()}, true, false, bin)
-			time.Sleep(200 * time.Millisecond) // the leader exits
+			dir := "/proc/" + strconv.Itoa(w.marked["leaderless"])
+			awaitPremise(t, "the leaderless process never lost the environment its leader held", func() bool {
+				if _, err := os.ReadFile(dir + "/environ"); err == nil {
+					return false // the leader is still there to answer
+				}
+				_, throughAThread := readEnviron(dir)
+				return throughAThread
+			})
 			w.check(s.sweep(t, w))
 		})
 	}
+}
+
+// awaitUndumpable holds the test until pid runs with an environment nobody of
+// this uid can read: its prctl(PR_SET_DUMPABLE, 0) has run.
+func awaitUndumpable(t *testing.T, name string, pid int) {
+	t.Helper()
+	awaitPremise(t, name+" never made its environment unreadable", func() bool {
+		_, readable := readEnviron("/proc/" + strconv.Itoa(pid))
+		return !readable && isRunning(pid)
+	})
 }
 
 // A process that made itself non-dumpable, as a setuid program or a hardened
@@ -437,13 +639,13 @@ int main(void) { prctl(PR_SET_DUMPABLE, 0, 0, 0, 0); sleep(300); return 0; }
 			w.marked["parent"] = w.start("parent", []string{w.entry()}, true, false,
 				"sh", "-c", `"$0" & echo $! > "$1.child"; exec sleep 300`, bin)
 			w.marked["undumpable child"] = w.waitPid("undumpable child", filepath.Join(w.dir, "parent.pid.child"))
-			time.Sleep(200 * time.Millisecond) // prctl runs
+			awaitUndumpable(t, "the undumpable child", w.marked["undumpable child"])
 			w.check(s.sweep(t, w))
 		})
 		t.Run(s.name+"/alone", func(t *testing.T) {
 			w := newNodeWorld(t)
 			pid := w.start("undumpable", []string{w.entry()}, true, false, bin)
-			time.Sleep(200 * time.Millisecond) // prctl runs
+			awaitUndumpable(t, "the undumpable process", pid)
 			w.controls["undumpable"] = pid
 			r, err := s.sweep(t, w)
 			if err != nil {
@@ -471,23 +673,81 @@ func TestNestedSessionsAccumulate(t *testing.T) {
 	w.controls["nested"] = pid
 	// The process is found once its exec is done: until then its environment
 	// reads empty.
-	for _, tok := range []string{outer, inner} {
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			found, err := FindNodeSession(tok)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if slices.ContainsFunc(found, func(p SessionProcess) bool { return p.PID == pid }) {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Errorf("session %s does not hold the nested process (pid %d)", tok, pid)
-				break
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+	awaitSessionHolds(t, outer, "nested", pid)
+	awaitSessionHolds(t, inner, "nested", pid)
+}
+
+// A gate nobody releases ends the program on its own error line: a held sweep
+// must never parse as a sweep that found nothing. The bound here is short, so
+// the test pays seconds, not the production default.
+func TestSweepProgram_aGateNobodyReleasesIsAnError(t *testing.T) {
+	w := newNodeWorld(t)
+	gateFile := filepath.Join(w.dir, "gate-error")
+	sweepScanGateFile = gateFile
+	oldWait := sweepGateWaitSeconds
+	sweepGateWaitSeconds = 2
+	t.Cleanup(func() { sweepScanGateFile = ""; sweepGateWaitSeconds = oldWait })
+	sinceFile := filepath.Join(w.dir, "since")
+	if err := os.WriteFile(sinceFile, []byte(strconv.FormatUint(uint64(w.since), 10)), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	script, err := NodeSessionSweepScript(w.token, sinceFile)
+	if err != nil {
+		t.Fatalf("NodeSessionSweepScript: %v", err)
+	}
+	out, err := exec.Command("sh", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("sweep program: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "error the scan gate at "+gateFile+" was never released") {
+		t.Errorf("a gate nobody releases answered no release-timeout error:\n%s", out)
+	}
+	if _, err := ParseNodeSessionSweep(string(out)); err == nil {
+		t.Errorf("a sweep the gate killed parsed as a report:\n%s", out)
+	}
+}
+
+// The scan gate's bound lives inside the witness's ceiling, so a held sweep
+// fails its own gate before the witness that holds it gives up on it.
+func TestSweepGateWaitIsInsideTheWitnessCeiling(t *testing.T) {
+	if sweepGateWaitSeconds >= int(premiseWait/time.Second) {
+		t.Fatalf("sweepGateWaitSeconds = %d is not under the witness ceiling %d", sweepGateWaitSeconds, int(premiseWait/time.Second))
+	}
+}
+
+// Two sweeps of one world hold at their own gate: the second hold's path is
+// the one the next program renders, never the first hold's.
+func TestSweepGatesArePerSweep(t *testing.T) {
+	w := newNodeWorld(t)
+	first := holdShSweep(t, w)
+	firstPath := sweepScanGateFile
+	rendered := func() string {
+		sinceFile := filepath.Join(w.dir, "since")
+		if err := os.WriteFile(sinceFile, []byte(strconv.FormatUint(uint64(w.since), 10)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		script, err := NodeSessionSweepScript(w.token, sinceFile)
+		if err != nil {
+			t.Fatalf("NodeSessionSweepScript: %v", err)
+		}
+		return script
+	}
+	if !strings.Contains(rendered(), "GATE='"+firstPath+"'") {
+		t.Errorf("the first render does not gate at the first sweep's path %s", firstPath)
+	}
+	second := holdShSweep(t, w)
+	secondPath := sweepScanGateFile
+	if secondPath == firstPath {
+		t.Fatalf("two sweeps of one world hold at one gate path %s", firstPath)
+	}
+	if !strings.Contains(rendered(), "GATE='"+secondPath+"'") {
+		t.Errorf("the second render does not gate at the second sweep's path %s", secondPath)
+	}
+	if strings.Contains(rendered(), "GATE='"+firstPath+"'") {
+		t.Errorf("the second render still gates at the first sweep's path %s", firstPath)
+	}
+	first.resume()
+	second.resume()
 }
 
 func TestSweepWithNothingLeftStopsNothing(t *testing.T) {
