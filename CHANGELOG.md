@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.266.2](https://github.com/SocialGouv/iterion/compare/v3.266.1...v3.266.2) (2026-10-15)
+
+### Bug Fixes
+
+* **bots,botregistry,server:** the boundary walk is every shipped workflow, and 12 acting prompts join the class ([#2476](https://github.com/SocialGouv/iterion/issues/2476)) ([05098ec](https://github.com/SocialGouv/iterion/commit/05098ecb0bd7cbe91a07dd988b0f619f157f90b8)), closes [#1722](https://github.com/SocialGouv/iterion/issues/1722), references [#1652](https://github.com/SocialGouv/iterion/issues/1652)
+
+    <details><summary>why</summary>
+
+    The package held two definitions of "every shipped workflow". The UNTRUSTED INPUT BOUNDARY walk, `shippedWorkflows`, read `bots/*/*.bot` plus the dispatcher's embedded fallback and excluded `examples/**` and `scripts/adhoc/**` by decision; `catalogWorkflowFiles`, fifteen lines away in the same package, counted them. `botregistry.DefaultPaths` is `[bots examples .botz]`, so `examples/` IS routable — by the zero-config dispatcher, the studio and the server — and twelve acting prompts there and…
+
+    </details>
+* **runtime,bots:** a run refreshes only the bot catalog its own bundle owns ([#2474](https://github.com/SocialGouv/iterion/issues/2474)) ([88e5ff6](https://github.com/SocialGouv/iterion/commit/88e5ff61c33e19f23dff74ba28c5e84577977ec7)), closes [#2120](https://github.com/SocialGouv/iterion/issues/2120), references [#2120](https://github.com/SocialGouv/iterion/issues/2120)
+
+    <details><summary>why</summary>
+
+    The engine regenerated the bot catalog at every run start, for every bundle under the workspace shipping iterion-bot-catalog-static.md, whatever the run was (runPersistWorkspace, pkg/runtime/engine_run.go). But a run mirrors only its OWN bundle's skills, so every other owner's copy was a file that run cannot read — and, in a git workspace, an uncommitted edit to a tracked file each time the running generator renders differently from the checkout. That is the standing case for a review run,…
+
+    </details>
+* **sandbox:** the session store keys by the node's session slot, not its bare node id ([#2472](https://github.com/SocialGouv/iterion/issues/2472)) ([fdf6950](https://github.com/SocialGouv/iterion/commit/fdf69507bf3e8080b89a54320ed9bb30985fcd4e)), closes [#1547](https://github.com/SocialGouv/iterion/issues/1547), references [#2385](https://github.com/SocialGouv/iterion/issues/2385)
+
+    <details><summary>why</summary>
+
+    The in-process claw path addresses a node's conversation by its session key — the explicit `session_slot:` when there is one, else the node id — while every sandbox site addressed it by the bare `task.NodeID`: the pre-spawn replay seed, the host's mirror of the runner's captures, the runner's own local store, `ClawExecutor.Compact` and the schema re-ask. `task.SessionSlot` defaults to the node id, so the divergence bit exactly the nodes that declare a slot — the shared-conversation feature…
+
+    </details>
+
 ## [3.266.1](https://github.com/SocialGouv/iterion/compare/v3.266.0...v3.266.1) (2026-10-15)
 
 ### Bug Fixes
