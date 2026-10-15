@@ -1,7 +1,10 @@
 name: rgaa-audit
 display_name: Acci
 icon: ♿
-version: 3.0.1
+version: 3.0.2
+## 3.0.2 — the trial takes its conformities from the audit, the source the
+## engine re-derives its coverage from (a replaying run wrote the ledger's
+## capture anchors another way and left them « absent from the trial »).
 ## 3.0.1 — first dogfood on iterion's studio (#2346): a recommendation is an
 ## object anchored on the criterion's own evidence (a free-text one used to
 ## cost its verdict at the fold) and is never replayed from the ledger; a

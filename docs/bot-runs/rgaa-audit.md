@@ -9,6 +9,71 @@ The bilans below v3 are the v1/v2 single-agent auditor, kept as the record
 of why v3 exists. Earlier runs (pre-dedicated-file) are recorded in the
 2026-06 campaign bilans.
 
+## 2026-10-14 — r3 and r4: the first complete studio audit, its ledger replayed, its trial run (runs 01a13b95-2e46, 01a13bf2-0e79)
+
+- Status: **validated end to end, board publication not exercised** — r3 decided all 106
+  criteria; r4 replayed r3's ledger and ran the second reader, which found the defect fixed
+  here (3.0.2).
+- Versions: bot rgaa-audit 3.0.1 (#2439) · iterion `3f786feac` (r3), main `13cb0edcf` plus
+  r3's ledger (r4) · ultra11y 5.42.1 · the engine's Chromium 1248 · adjudicator and second
+  reader on `claude_code` / `claude-opus-5-5`.
+- Method: the studio recipe of #2439; `--loop-budget-guard off`; r3 capped at 60 $ on the
+  34-verdict ledger of r2; r4 capped at 30 $ on r3's ledger, committed on a local branch first
+  (a run audits the worktree of `HEAD`).
+- Result, r3: **41.90 $** for 21 adjudication calls (0.14 to 5.62 $ a batch, 2.8 min on
+  average) and 22 min.
+  - Ledger: 32 verdicts replayed, 2 stale.
+  - Adjudication: 17 batches and 4 re-asks, none lost. The fold accepted all 74 verdicts
+    and refused none.
+  - Recommendations: all 22 kept and folded, none refused. r2 lost 18 verdicts of 54 to them
+    (#2398, closed).
+  - Report: **106/106 decided — 41 C, 32 NC, 33 NA, 56 %**, not provisional; integrity ok.
+  - The second reader was **skipped** by `refuter_budget_share`: 0.6 × 60 $ = 36 $, already
+    spent when the trial would start.
+  - Issue plan: 47 issues, 15 of them advisory, none blocking.
+- Result, r4: **20.39 $** — adjudication 8 calls for 11.91 $, second reader 13 calls for
+  8.48 $ — and 15 min.
+  - Ledger: 93 verdicts replayed, 22 stored recommendations not replayed, 10 stale. All 10
+    stale ones are anchored on page captures: the rendered DOM differs from one boot of the
+    studio to the next on the same source.
+  - Adjudication: the 10 stale criteria were re-adjudicated, 1 needing the re-ask, and none
+    was left open.
+  - Trial: 123 claims (87 NC, 36 C). 1 refuted and 2 unsupported, all three NC; every
+    conformity was supported or partly supported. The engine removed 2 agent findings and
+    left 1 of its own untouched.
+  - Report: **106/106 — 38 C, 35 NC, 33 NA, 52 %**; integrity ok.
+  - Issue plan: 39 issues, 4 of them advisory.
+  - Ledger: 102 verdicts, committed here as the studio's baseline.
+- Value: the first complete audit of the studio. Replaying the ledger halves the cost of a
+  run (r4 20 $, r3 42 $) and leaves the budget for the trial.
+- Findings / misses:
+  - **the trial drew its conformities from the ledger copy, while the engine re-derives them
+    from the audit when it applies the trial**. On a replaying run the two write a capture
+    anchor differently (relative in the ledger, the run's absolute worktree path in the
+    audit), so 16 conformities read « absent from the trial ». The second reader had
+    supported or partly supported all 16, so r4's ledger is checked on substance; only the
+    bookkeeping missed. Fixed in 3.0.2: `draft_report` takes the conformities from the audit.
+    The node test fails on the old source with 77 claims absent; on r4's own data, an
+    audit-drawn trial leaves none absent.
+  - **r4's trial was degraded by a second cause, which 3.0.2 does not remove**: the
+    conformity of 1.3 cites `BackendsTab.tsx:104` with the adjudicator's retyping of the
+    harvester's snippet — a closing backtick after `shrink-0`, where the source reads
+    `shrink-0 ${` (the element spans lines 104–110). The fold accepts it through its
+    evidence-anchor fallback; the trial grounds retained claims without one and refuses it.
+    The committed ledger carries that citation, so every trial that re-judges 1.3 comes back
+    degraded the same way, until the engine aligns the two (SocialGouv/ultra11y#50) or the
+    bot gives a citation its anchor's own snippet (#2453).
+  - the second reader's budget share was spent before the trial: at a 60 $ cap, r3 had
+    already spent 42 $ adjudicating 74 criteria (32 came replayed from r2's ledger).
+  - **captures churn between boots**: 10 of 103 replayed verdicts went stale on unchanged
+    source. A weekly run re-adjudicates about 10 % unless the served studio pins what its
+    pages show (#2347).
+  - after the trial pruned two findings of 10.7, the page grid leaves 10.7 « à évaluer » on
+    18 pages. The document decides it NC, and the annex does not name the page gap (#2449).
+- Lessons for next run: adjudication costs about 0.57 $ a criterion here, so a studio run
+  with no ledger (103 criteria, about 58 $) needs a cap near 100 $ for the second reader to
+  start at the 0.6 share; a run replaying this ledger costs about 20 $ with the trial.
+
 ## 2026-10-13 — first dogfood on iterion's studio (#2346): the rendered layer proven, 30 $ short of 19 batches, four bot defects found and fixed (run 01a13705-d54a)
 
 - Status: **partial, degraded and saying so** — the whole graph ran on the real studio
