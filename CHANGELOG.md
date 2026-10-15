@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.266.1](https://github.com/SocialGouv/iterion/compare/v3.266.0...v3.266.1) (2026-10-15)
+
+### Bug Fixes
+
+* **backends,proc:** what an agent node starts ends with the node ([#2448](https://github.com/SocialGouv/iterion/issues/2448)) ([8aad1cc](https://github.com/SocialGouv/iterion/commit/8aad1ccea93e5e8bbbfcc6ab08cf8c77f60abe9a))
+
+    <details><summary>why</summary>
+
+    An agent node's processes outlived it. The end of a delegation terminated the delegated CLI and nothing else, while the rule the engine injects into headless sessions tells agents to start anything longer with `nohup … &`. Measured on a modernization campaign: the agent node left the target's world running (application server, database, object store); one minute later the gate node booted its own world in the same workspace — the target derives its state directory and ports from the workspace…
+
+    </details>
+* **rgaa-audit:** the trial takes its conformities from the audit; the studio ledger takes r4's 102 verdicts ([#2455](https://github.com/SocialGouv/iterion/issues/2455)) ([be150f3](https://github.com/SocialGouv/iterion/commit/be150f3a6611f55565c8f5d2f150f0eec426bd7a)), references [SocialGouv/ultra11y#50](https://github.com/SocialGouv/ultra11y/issues/50) [#2453](https://github.com/SocialGouv/iterion/issues/2453) [#2346](https://github.com/SocialGouv/iterion/issues/2346) [#2449](https://github.com/SocialGouv/iterion/issues/2449) [#2453](https://github.com/SocialGouv/iterion/issues/2453) [#2347](https://github.com/SocialGouv/iterion/issues/2347)
+
+    <details><summary>why</summary>
+
+    r3 and r4 on iterion's studio (bilan in docs/bot-runs/rgaa-audit.md): the first complete audit (106/106 decided, 56 % then 52 %), the ledger replayed (r4: 93 verdicts for free, 20 $ instead of 42 $), and the second reader run on it.
+
+    </details>
+
 ## [3.266.0](https://github.com/SocialGouv/iterion/compare/v3.265.0...v3.266.0) (2026-10-14)
 
 ### Features
