@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/git"
@@ -85,7 +86,7 @@ func runWardenFold(t *testing.T, over map[string]string) wardenVerdict {
 	vals := map[string]string{
 		"pr_url": "https://pic.example/o/r/-/merge_requests/7", "forge_publish_url": "", "forge_publish_token": "",
 		"forge_pr_state_url": "", "mode": "dry_run", "gate_enabled": "true", "gate_context": "gitops/conformance",
-		"reviewers": "", "peer_gate_contexts": "revi/review", "merge_method": "squash", "remove_source_branch": "false",
+		"reviewers": "", "peer_gate_contexts": "revi/review", "peer_gate_wait_seconds": "0", "peer_gate_poll_seconds": "0", "merge_method": "squash", "remove_source_branch": "false",
 		"pr_url_in": "", "run.id": "run-test-1", "reviewed_sha": "abc123defabc123", "base_sha": "base111base11111",
 		"route": "classify", "sentinel_reason": "", "changed_files": "1",
 		"files":          `[{"path":"apps/x/values.yaml","status":"M","ext":"yaml","added":2,"removed":2,"key_paths":["image"],"candidate":true}]`,
@@ -105,6 +106,8 @@ func runWardenFold(t *testing.T, over map[string]string) wardenVerdict {
 		rendered = strings.ReplaceAll(rendered, "{{vars."+k+"}}", wq(v))
 	}
 	rendered = strings.ReplaceAll(rendered, "{{run.id}}", "'run-test-1'")
+	rendered = strings.ReplaceAll(rendered, "{{run.max_duration_seconds}}", "'0'")
+	rendered = strings.ReplaceAll(rendered, "{{run.elapsed_seconds}}", "'0'")
 	if strings.Contains(rendered, "{{") {
 		t.Fatalf("unsubstituted ref left in the command: %s", firstRef(rendered))
 	}
@@ -215,7 +218,7 @@ func runWardenPublish(t *testing.T, over map[string]string) (wardenPublish, ward
 	vals := map[string]string{
 		"pr_url": "https://pic.example/o/r/-/merge_requests/7", "forge_publish_url": srv.URL, "forge_publish_token": "tok-1",
 		"forge_pr_state_url": "", "mode": "enforce", "gate_enabled": "true", "gate_context": "gitops/conformance",
-		"reviewers": "", "peer_gate_contexts": "revi/review", "merge_method": "squash", "remove_source_branch": "false",
+		"reviewers": "", "peer_gate_contexts": "revi/review", "peer_gate_wait_seconds": "0", "peer_gate_poll_seconds": "0", "merge_method": "squash", "remove_source_branch": "false",
 		"run.id": "run-test-1", "reviewed_sha": "abc123defabc123", "base_sha": "base111base11111",
 		"route": "classify", "sentinel_reason": "", "changed_files": "1",
 		"files":          `[{"path":"apps/x/values.yaml","status":"M","ext":"yaml","added":2,"removed":2,"key_paths":["image"],"candidate":true}]`,
@@ -239,6 +242,8 @@ func runWardenPublish(t *testing.T, over map[string]string) (wardenPublish, ward
 		rid = v
 	}
 	rendered = strings.ReplaceAll(rendered, "{{run.id}}", wq(rid))
+	rendered = strings.ReplaceAll(rendered, "{{run.max_duration_seconds}}", wq("0"))
+	rendered = strings.ReplaceAll(rendered, "{{run.elapsed_seconds}}", wq("0"))
 	if strings.Contains(rendered, "{{") {
 		t.Fatalf("unsubstituted ref left in the command: %s", firstRef(rendered))
 	}
@@ -347,7 +352,7 @@ func TestGitopsWardenPublish_RedPeerGateHoldsTheArm(t *testing.T) {
 		vals := map[string]string{
 			"pr_url": "https://pic.example/o/r/-/merge_requests/7", "forge_publish_url": srv.URL, "forge_publish_token": "tok-1",
 			"forge_pr_state_url": srv.URL + "/state", "mode": "enforce", "gate_enabled": "true", "gate_context": "gitops/conformance",
-			"reviewers": "", "peer_gate_contexts": "revi/review", "merge_method": "squash", "remove_source_branch": "false",
+			"reviewers": "", "peer_gate_contexts": "revi/review", "peer_gate_wait_seconds": "0", "peer_gate_poll_seconds": "0", "merge_method": "squash", "remove_source_branch": "false",
 			"run.id": "run-test-1", "reviewed_sha": "abc123defabc123", "base_sha": "base111base11111",
 			"route": "classify", "sentinel_reason": "", "changed_files": "1",
 			"files":          `[{"path":"apps/x/values.yaml","status":"M","ext":"yaml","added":2,"removed":2,"key_paths":["image"],"candidate":true}]`,
@@ -364,6 +369,8 @@ func TestGitopsWardenPublish_RedPeerGateHoldsTheArm(t *testing.T) {
 			rendered = strings.ReplaceAll(rendered, "{{vars."+k+"}}", wq(v))
 		}
 		rendered = strings.ReplaceAll(rendered, "{{run.id}}", "'run-test-1'")
+		rendered = strings.ReplaceAll(rendered, "{{run.max_duration_seconds}}", "'0'")
+		rendered = strings.ReplaceAll(rendered, "{{run.elapsed_seconds}}", "'0'")
 		out, sherr, err := shOut(rendered)
 		if err != nil && len(out) == 0 {
 			t.Fatalf("publish_verdict failed: %v (%q) stderr: %.800s", err, out, sherr)
@@ -479,7 +486,7 @@ func TestGitopsWardenPublish_PeerStatesThatHoldTheArm(t *testing.T) {
 			vals := map[string]string{
 				"pr_url": "https://pic.example/o/r/-/merge_requests/7", "forge_publish_url": srv.URL, "forge_publish_token": "tok-1",
 				"forge_pr_state_url": srv.URL + "/state", "mode": "enforce", "gate_enabled": "true", "gate_context": "gitops/conformance",
-				"reviewers": "", "peer_gate_contexts": "revi/review", "merge_method": "squash", "remove_source_branch": "false",
+				"reviewers": "", "peer_gate_contexts": "revi/review", "peer_gate_wait_seconds": "0", "peer_gate_poll_seconds": "0", "merge_method": "squash", "remove_source_branch": "false",
 				"run.id": "run-test-1", "reviewed_sha": "abc123defabc123", "base_sha": "base111base11111",
 				"route": "classify", "sentinel_reason": "", "changed_files": "1",
 				"files":          `[{"path":"apps/x/values.yaml","status":"M","ext":"yaml","added":2,"removed":2,"key_paths":["image"],"candidate":true}]`,
@@ -496,6 +503,8 @@ func TestGitopsWardenPublish_PeerStatesThatHoldTheArm(t *testing.T) {
 				rendered = strings.ReplaceAll(rendered, "{{vars."+k+"}}", wq(v))
 			}
 			rendered = strings.ReplaceAll(rendered, "{{run.id}}", "'run-test-1'")
+			rendered = strings.ReplaceAll(rendered, "{{run.max_duration_seconds}}", "'0'")
+			rendered = strings.ReplaceAll(rendered, "{{run.elapsed_seconds}}", "'0'")
 			out, sherr, err := shOut(rendered)
 			if err != nil && len(out) == 0 {
 				t.Fatalf("publish_verdict failed: %v (%q) stderr: %.800s", err, out, sherr)
@@ -681,7 +690,7 @@ func TestGitopsWardenFold_UnresolvedFallbackRefIsNotAFallback(t *testing.T) {
 	vals := map[string]string{
 		"pr_url": "https://pic.example/o/r/-/merge_requests/7", "forge_publish_url": "", "forge_publish_token": "",
 		"forge_pr_state_url": "", "mode": "dry_run", "gate_enabled": "true", "gate_context": "gitops/conformance",
-		"reviewers": "", "peer_gate_contexts": "revi/review", "merge_method": "squash", "remove_source_branch": "false",
+		"reviewers": "", "peer_gate_contexts": "revi/review", "peer_gate_wait_seconds": "0", "peer_gate_poll_seconds": "0", "merge_method": "squash", "remove_source_branch": "false",
 		"run.id": "run-test-1", "reviewed_sha": "abc123defabc123", "base_sha": "base111base11111",
 		"route": "classify", "sentinel_reason": "", "changed_files": "1",
 		"files":          `[{"path":"apps/x/values.yaml","status":"M","ext":"yaml","added":2,"removed":2,"key_paths":["image"],"candidate":true}]`,
@@ -700,6 +709,8 @@ func TestGitopsWardenFold_UnresolvedFallbackRefIsNotAFallback(t *testing.T) {
 		rendered = strings.ReplaceAll(rendered, "{{vars."+k+"}}", wq(v))
 	}
 	rendered = strings.ReplaceAll(rendered, "{{run.id}}", "'run-test-1'")
+	rendered = strings.ReplaceAll(rendered, "{{run.max_duration_seconds}}", "'0'")
+	rendered = strings.ReplaceAll(rendered, "{{run.elapsed_seconds}}", "'0'")
 	// No unsubstituted-ref assertion HERE on purpose: the literal in the
 	// body is the case under test.
 	out, sherr, err := shOut(rendered)
@@ -1058,5 +1069,336 @@ func TestGitopsWardenInventory_RenderStatsIgnoreContextLines(t *testing.T) {
 	}
 	if len(r.Stats.KindsAdded) != 0 || len(r.Stats.KindsRemoved) != 0 {
 		t.Fatalf("a value-only template edit must add/remove no kind, got added=%v removed=%v (context lines counted)", r.Stats.KindsAdded, r.Stats.KindsRemoved)
+	}
+}
+
+// peerState is a read-twin body for the audited head with the given
+// commit_statuses JSON array.
+func peerState(statuses string) string {
+	return "{\"open\":true,\"state\":\"open\",\"head_sha\":\"abc123defabc123\",\"commit_statuses\":" + statuses + "}"
+}
+
+// runWardenPublishState runs publish_verdict in enforce against a capture
+// server whose read twin answers state(hit) on its hit-th call, and returns
+// what the endpoint received, the node's verdict_output and the number of
+// read-twin calls. The default window is 5 s polled every 50 ms.
+func runWardenPublishState(t *testing.T, over map[string]string, state func(hit int) string) (wardenPublish, wardenVerdict, int) {
+	t.Helper()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	var mu sync.Mutex
+	var got wardenPublish
+	hits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/state", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		hits++
+		h := hits
+		mu.Unlock()
+		body := state(h)
+		if strings.HasPrefix(body, "!") {
+			code := 0
+			_, _ = fmt.Sscanf(body[1:], "%d", &code)
+			w.WriteHeader(code)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		approve, arm := got.Verdict.Approve, got.Verdict.Arm
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, "{\"published\":true,\"review_url\":\"x\",\"gate_posted\":true,\"gate_state\":\"success\",\"verdict\":{\"approve_posted\":%v,\"merge_armed\":%v,\"merge_state\":\"mwps\"}}", approve, arm)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	vals := map[string]string{
+		"pr_url": "https://pic.example/o/r/-/merge_requests/7", "forge_publish_url": srv.URL, "forge_publish_token": "tok-1",
+		"forge_pr_state_url": srv.URL + "/state", "mode": "enforce", "gate_enabled": "true", "gate_context": "gitops/conformance",
+		"reviewers": "", "peer_gate_contexts": "revi/review", "peer_gate_wait_seconds": "5", "peer_gate_poll_seconds": "0.05",
+		"merge_method": "squash", "remove_source_branch": "false",
+		"reviewed_sha": "abc123defabc123", "base_sha": "base111base11111",
+		"route": "classify", "sentinel_reason": "", "changed_files": "1",
+		"files":          `[{"path":"apps/x/values.yaml","status":"M","ext":"yaml","added":2,"removed":2,"key_paths":["image"],"candidate":true}]`,
+		"diff_too_large": "false", "unparseable": "false", "workspace_anomaly": "", "stale_launch": "false",
+		"policy_source": "default", "policy_sha": "", "declared_head_sha": "", "rendered": "{}",
+		"verdict":           "auto_approvable",
+		"classified_files":  `[{"path":"apps/x/values.yaml","cls":"auto_approvable","rule":"image-bump","reason":"same image, new tag"}]`,
+		"platform_findings": `[]`, "doubts": "", "summary": "clean bump", "fallback_used": "",
+	}
+	for k, v := range over {
+		vals[k] = v
+	}
+	rendered := toolCommand(t, "gitops-warden/main.bot", "publish_verdict")
+	for k, v := range vals {
+		rendered = strings.ReplaceAll(rendered, "{{input."+k+"}}", wq(v))
+		rendered = strings.ReplaceAll(rendered, "{{vars."+k+"}}", wq(v))
+	}
+	rendered = strings.ReplaceAll(rendered, "{{run.id}}", wq("run-test-1"))
+	maxD, el := "0", "0"
+	if v, ok := over["run.max_duration_seconds"]; ok {
+		maxD = v
+	}
+	if v, ok := over["run.elapsed_seconds"]; ok {
+		el = v
+	}
+	rendered = strings.ReplaceAll(rendered, "{{run.max_duration_seconds}}", wq(maxD))
+	rendered = strings.ReplaceAll(rendered, "{{run.elapsed_seconds}}", wq(el))
+	if strings.Contains(rendered, "{{") {
+		t.Fatalf("unsubstituted ref left in the command: %s", firstRef(rendered))
+	}
+	out, sherr, err := shOut(rendered)
+	if err != nil && len(out) == 0 {
+		t.Fatalf("publish_verdict failed: %v (out %q) stderr: %.800s", err, out, sherr)
+	}
+	var res wardenVerdict
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatalf("output is not verdict_output JSON: %v (%q)", err, out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return got, res, hits
+}
+
+// A peer still running when the verdict lands is waited for: pending twice,
+// then success — the arm is sent after three reads, never before.
+func TestGitopsWardenPublish_PeerConcludingInsideTheWindowArms(t *testing.T) {
+	got, res, hits := runWardenPublishState(t, nil, func(h int) string {
+		if h < 3 {
+			return peerState(`[{"context":"revi/review","state":"pending"}]`)
+		}
+		return peerState(`[{"context":"revi/review","state":"success"}]`)
+	})
+	if !got.Verdict.Approve || !got.Verdict.Arm {
+		t.Fatalf("a peer that concluded green inside the window must arm: approve=%v arm=%v (reason %q, %d reads)", got.Verdict.Approve, got.Verdict.Arm, res.RefusedReason, hits)
+	}
+	if hits != 3 {
+		t.Errorf("reads = %d, want 3 (pending, pending, success)", hits)
+	}
+}
+
+// A pinned peer the pipeline has not created yet is absent, not red: it is
+// waited for like a running one.
+func TestGitopsWardenPublish_AbsentPeerIsWaitedFor(t *testing.T) {
+	got, res, hits := runWardenPublishState(t, map[string]string{"peer_gate_contexts": "revi/review,gitops-mr-review"}, func(h int) string {
+		if h < 2 {
+			return peerState(`[{"context":"revi/review","state":"success"}]`)
+		}
+		return peerState(`[{"context":"revi/review","state":"success"},{"context":"gitops-mr-review","state":"success"}]`)
+	})
+	if !got.Verdict.Arm {
+		t.Fatalf("the absent peer concluded green on the 2nd read — the arm must follow (reason %q, %d reads)", res.RefusedReason, hits)
+	}
+	if hits != 2 {
+		t.Errorf("reads = %d, want 2", hits)
+	}
+}
+
+// A peer that never concludes holds the arm once the window expires, and
+// the reason names both the peer state and the expired window.
+func TestGitopsWardenPublish_PeerPendingPastTheWindowHolds(t *testing.T) {
+	got, res, hits := runWardenPublishState(t, map[string]string{"peer_gate_wait_seconds": "1"}, func(int) string {
+		return peerState(`[{"context":"revi/review","state":"pending"}]`)
+	})
+	if got.Verdict.Approve || got.Verdict.Arm {
+		t.Fatalf("a peer pending past the window must hold: approve=%v arm=%v", got.Verdict.Approve, got.Verdict.Arm)
+	}
+	if !strings.Contains(res.RefusedReason, "est pending") || !strings.Contains(res.RefusedReason, "fenêtre d'attente") {
+		t.Errorf("reason = %q, want the pending peer and the expired window", res.RefusedReason)
+	}
+	if hits < 2 {
+		t.Errorf("reads = %d, want several polls inside the window", hits)
+	}
+}
+
+// A terminal red peer holds at once: waiting cannot turn it green.
+func TestGitopsWardenPublish_FailedPeerHoldsWithoutWaiting(t *testing.T) {
+	got, res, hits := runWardenPublishState(t, nil, func(int) string {
+		return peerState(`[{"context":"revi/review","state":"failure"}]`)
+	})
+	if got.Verdict.Arm {
+		t.Fatal("a red peer must hold the arm")
+	}
+	if hits != 1 {
+		t.Errorf("reads = %d, want 1 — a terminal red peer is never waited for", hits)
+	}
+	if !strings.Contains(res.RefusedReason, "est failure") {
+		t.Errorf("reason = %q, want the red peer named", res.RefusedReason)
+	}
+}
+
+// peerStateHead is peerState with an explicit head sha.
+func peerStateHead(head, statuses string) string {
+	return "{\"open\":true,\"state\":\"open\",\"head_sha\":\"" + head + "\",\"commit_statuses\":" + statuses + "}"
+}
+
+// rva-peerwait round: one non-regression per finding.
+
+// A canceled/skipped peer reads `error`: terminal, held at once — never
+// counted green, never waited for.
+func TestGitopsWardenPublish_ErrorPeerHoldsAtOnce(t *testing.T) {
+	got, res, hits := runWardenPublishState(t, nil, func(int) string {
+		return peerState(`[{"context":"revi/review","state":"error"}]`)
+	})
+	if got.Verdict.Arm || got.Verdict.Approve {
+		t.Fatalf("an error peer must hold: approve=%v arm=%v", got.Verdict.Approve, got.Verdict.Arm)
+	}
+	if hits != 1 || !strings.Contains(res.RefusedReason, "est error") {
+		t.Errorf("reads=%d reason=%q, want 1 read naming the error peer", hits, res.RefusedReason)
+	}
+}
+
+// A head that moves while the window runs holds at once, even with every
+// peer green on the new head.
+func TestGitopsWardenPublish_HeadMovedMidWindowHolds(t *testing.T) {
+	got, res, hits := runWardenPublishState(t, nil, func(h int) string {
+		if h == 1 {
+			return peerState(`[{"context":"revi/review","state":"pending"}]`)
+		}
+		return peerStateHead("fff000fff000fff", `[{"context":"revi/review","state":"success"}]`)
+	})
+	if got.Verdict.Arm {
+		t.Fatal("a moved head must hold the arm")
+	}
+	if hits != 2 || !strings.Contains(res.RefusedReason, "la tête a bougé") {
+		t.Errorf("reads=%d reason=%q, want 2 reads and the moved-head reason", hits, res.RefusedReason)
+	}
+}
+
+// The head check compares FULL shas: a head sharing only a 7-char prefix
+// with the audited revision is another revision.
+func TestGitopsWardenPublish_ShortPrefixHeadHolds(t *testing.T) {
+	got, res, _ := runWardenPublishState(t, nil, func(int) string {
+		return peerStateHead("abc123d00000000", `[{"context":"revi/review","state":"success"}]`)
+	})
+	if got.Verdict.Arm || !strings.Contains(res.RefusedReason, "la tête a bougé") {
+		t.Fatalf("a prefix-only head match must hold: arm=%v reason=%q", got.Verdict.Arm, res.RefusedReason)
+	}
+}
+
+// An empty head in the answer is a failed read: retried, then the arm
+// follows the green read.
+func TestGitopsWardenPublish_EmptyHeadIsRetried(t *testing.T) {
+	got, _, hits := runWardenPublishState(t, nil, func(h int) string {
+		if h == 1 {
+			return peerStateHead("", `[{"context":"revi/review","state":"success"}]`)
+		}
+		return peerState(`[{"context":"revi/review","state":"success"}]`)
+	})
+	if !got.Verdict.Arm || hits != 2 {
+		t.Fatalf("an empty head is retried then armed: arm=%v reads=%d", got.Verdict.Arm, hits)
+	}
+}
+
+// A transient read failure is retried: HTTP 500 then green arms.
+func TestGitopsWardenPublish_ServerErrorReadIsRetried(t *testing.T) {
+	got, _, hits := runWardenPublishState(t, nil, func(h int) string {
+		if h == 1 {
+			return "!500"
+		}
+		return peerState(`[{"context":"revi/review","state":"success"}]`)
+	})
+	if !got.Verdict.Arm || hits != 2 {
+		t.Fatalf("a 500 is retried then armed: arm=%v reads=%d", got.Verdict.Arm, hits)
+	}
+}
+
+// A permanent read refusal (401) holds at once — waiting cannot fix it.
+func TestGitopsWardenPublish_PermanentReadRefusalHoldsAtOnce(t *testing.T) {
+	got, res, hits := runWardenPublishState(t, nil, func(int) string {
+		return "!401"
+	})
+	if got.Verdict.Arm || hits != 1 || !strings.Contains(res.RefusedReason, "HTTP 401") {
+		t.Fatalf("a 401 must hold after one read: arm=%v reads=%d reason=%q", got.Verdict.Arm, hits, res.RefusedReason)
+	}
+}
+
+// The twin reporting its own lister failure is retried like a 5xx.
+func TestGitopsWardenPublish_StatusesErrorIsRetried(t *testing.T) {
+	got, _, hits := runWardenPublishState(t, nil, func(h int) string {
+		if h == 1 {
+			return "{\"open\":true,\"head_sha\":\"abc123defabc123\",\"commit_statuses_error\":\"forge 502\"}"
+		}
+		return peerState(`[{"context":"revi/review","state":"success"}]`)
+	})
+	if !got.Verdict.Arm || hits != 2 {
+		t.Fatalf("a lister error is retried then armed: arm=%v reads=%d", got.Verdict.Arm, hits)
+	}
+}
+
+// pending then failure: the retry flag is per read — the terminal red
+// on read 2 holds at once instead of waiting out the window.
+func TestGitopsWardenPublish_PendingThenFailureHoldsAtSecondRead(t *testing.T) {
+	got, res, hits := runWardenPublishState(t, nil, func(h int) string {
+		if h == 1 {
+			return peerState(`[{"context":"revi/review","state":"pending"}]`)
+		}
+		return peerState(`[{"context":"revi/review","state":"failure"}]`)
+	})
+	if got.Verdict.Arm || hits != 2 || !strings.Contains(res.RefusedReason, "est failure") {
+		t.Fatalf("pending then failure must hold at read 2: arm=%v reads=%d reason=%q", got.Verdict.Arm, hits, res.RefusedReason)
+	}
+}
+
+// A context listed twice keeps its WORST state, in BOTH list orders.
+func TestGitopsWardenPublish_DuplicateContextWorstStateWins(t *testing.T) {
+	for _, order := range []string{
+		`[{"context":"revi/review","state":"success"},{"context":"revi/review","state":"failure"}]`,
+		`[{"context":"revi/review","state":"failure"},{"context":"revi/review","state":"success"}]`,
+	} {
+		body := order
+		got, _, _ := runWardenPublishState(t, nil, func(int) string { return peerState(body) })
+		if got.Verdict.Arm {
+			t.Errorf("a context red in any duplicate must hold (list %s)", body)
+		}
+	}
+}
+
+// The window is clamped to what the run budget leaves: 10 s left of a
+// 1800 s run (minus the 180 s publish margin) means a single read.
+func TestGitopsWardenPublish_RunBudgetClampsTheWindow(t *testing.T) {
+	got, _, hits := runWardenPublishState(t, map[string]string{
+		"run.max_duration_seconds": "1800", "run.elapsed_seconds": "1790",
+	}, func(int) string { return peerState(`[{"context":"revi/review","state":"pending"}]`) })
+	if got.Verdict.Arm || hits != 1 {
+		t.Fatalf("a run with no budget left reads once and holds: arm=%v reads=%d", got.Verdict.Arm, hits)
+	}
+}
+
+// A zero poll step falls back to the default instead of spinning.
+func TestGitopsWardenPublish_ZeroPollDoesNotSpin(t *testing.T) {
+	_, _, hits := runWardenPublishState(t, map[string]string{
+		"peer_gate_wait_seconds": "0.5", "peer_gate_poll_seconds": "0",
+	}, func(int) string { return peerState(`[{"context":"revi/review","state":"pending"}]`) })
+	if hits > 2 {
+		t.Fatalf("a zero poll step spun %d reads in a 0.5 s window", hits)
+	}
+}
+
+// The gate never waits for its own context.
+func TestGitopsWardenPublish_OwnGateContextIsNotAPeer(t *testing.T) {
+	got, res, _ := runWardenPublishState(t, map[string]string{
+		"peer_gate_contexts": "revi/review,gitops/conformance",
+	}, func(int) string { return peerState(`[{"context":"revi/review","state":"success"}]`) })
+	if !got.Verdict.Arm {
+		t.Fatalf("the own gate context must be ignored as a peer (reason %q)", res.RefusedReason)
+	}
+}
+
+// A malformed twin answer (not JSON) is a transient read failure: retried,
+// then the arm follows the green read.
+func TestGitopsWardenPublish_MalformedAnswerIsRetried(t *testing.T) {
+	got, _, hits := runWardenPublishState(t, nil, func(h int) string {
+		if h == 1 {
+			return "<html>bad gateway</html>"
+		}
+		return peerState(`[{"context":"revi/review","state":"success"}]`)
+	})
+	if !got.Verdict.Arm || hits != 2 {
+		t.Fatalf("a malformed answer is retried then armed: arm=%v reads=%d", got.Verdict.Arm, hits)
 	}
 }
