@@ -18,6 +18,10 @@ func TestBroker_FanOutToTwoSubscribers(t *testing.T) {
 	b.Publish(store.Event{Seq: 0, Type: store.EventRunStarted, RunID: "run-1"})
 	b.Publish(store.Event{Seq: 1, Type: store.EventRunFinished, RunID: "run-1"})
 
+	// Both events are already buffered: Publish fans out with a non-blocking
+	// send performed by its caller — this goroutine — so there is no delivery
+	// latency to wait for. A timer arm here would be a second ready case to
+	// lose to (measured: a select picks the ready timer 500/1000 times).
 	for i, sub := range []*EventSubscription{a, c} {
 		for n := 0; n < 2; n++ {
 			select {
@@ -28,8 +32,8 @@ func TestBroker_FanOutToTwoSubscribers(t *testing.T) {
 				if e.Seq != int64(n) {
 					t.Errorf("sub %d event %d Seq = %d, want %d", i, n, e.Seq, n)
 				}
-			case <-time.After(time.Second):
-				t.Fatalf("sub %d timed out waiting for event %d", i, n)
+			default:
+				t.Fatalf("sub %d never got event %d: Publish returned without buffering it", i, n)
 			}
 		}
 	}
@@ -45,21 +49,22 @@ func TestBroker_RoutesByRunID(t *testing.T) {
 	b.Publish(store.Event{Seq: 0, RunID: "run-A", Type: store.EventNodeStarted})
 	b.Publish(store.Event{Seq: 0, RunID: "run-B", Type: store.EventNodeStarted})
 
+	// Buffered by the Publish calls above, before they returned.
 	select {
 	case e := <-subA.C:
 		if e.RunID != "run-A" {
 			t.Errorf("subA got run %q", e.RunID)
 		}
-	case <-time.After(time.Second):
-		t.Fatalf("subA timed out")
+	default:
+		t.Fatalf("subA got nothing: run-A's event was not routed to it")
 	}
 	select {
 	case e := <-subB.C:
 		if e.RunID != "run-B" {
 			t.Errorf("subB got run %q", e.RunID)
 		}
-	case <-time.After(time.Second):
-		t.Fatalf("subB timed out")
+	default:
+		t.Fatalf("subB got nothing: run-B's event was not routed to it")
 	}
 }
 
@@ -73,13 +78,14 @@ func TestBroker_CancelStopsDelivery(t *testing.T) {
 	if c := b.SubscriberCount("run-1"); c != 0 {
 		t.Errorf("SubscriberCount = %d, want 0", c)
 	}
-	// Channel must be closed.
+	// Channel must be closed — and Cancel closes it under the write lock
+	// before it returns, so the fact is already true here.
 	select {
 	case _, ok := <-sub.C:
 		if ok {
 			t.Errorf("channel delivered after Cancel")
 		}
-	case <-time.After(time.Second):
+	default:
 		t.Fatalf("channel not closed after Cancel")
 	}
 }
@@ -92,13 +98,15 @@ func TestBroker_CloseRunDrainsAllSubs(t *testing.T) {
 		b.Subscribe("run-1"),
 	}
 	b.CloseRun("run-1")
+	// CloseRun closes every subscriber channel under the write lock before it
+	// returns: nothing is in flight to wait for.
 	for i, sub := range subs {
 		select {
 		case _, ok := <-sub.C:
 			if ok {
 				t.Errorf("sub %d: channel delivered after CloseRun", i)
 			}
-		case <-time.After(time.Second):
+		default:
 			t.Fatalf("sub %d: channel not closed", i)
 		}
 	}
