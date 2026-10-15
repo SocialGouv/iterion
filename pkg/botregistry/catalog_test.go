@@ -265,6 +265,99 @@ func TestRegenerateWhatsNextCatalog_LooseFileSkipDoesNotBlock(t *testing.T) {
 	}
 }
 
+func TestRegenerateWhatsNextCatalog_ShadowedLooseFileDoesNotBlock(t *testing.T) {
+	// A shadowed LOOSE .bot carries no card at all — loose files are
+	// filtered out of the catalog, and the name routes to the claimer — so
+	// the refusal, which exists to stop a partial list from deleting a
+	// bot's row, must not fire on it. It runs at every run start: a second
+	// `main.bot` dropped under examples/ would otherwise freeze every
+	// regeneration in the workspace.
+	dir := fixtureCatalogWorkspace(t)
+	ClearSchemaCache()
+	stub := "agent x:\n  model: \"test\"\n"
+	writeFile(t, filepath.Join(dir, "examples", "demo-a", "main.bot"), stub)
+	writeFile(t, filepath.Join(dir, "examples", "demo-b", "main.bot"), stub)
+
+	// The premise, asserted rather than assumed: this workspace really does
+	// hold a shadowed source for the regen to pass over.
+	_, diags, err := ListWithDiagnostics(ListOptions{Paths: DefaultPaths(dir)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diags) != 1 || diags[0].Kind != DiscoveryErrorShadowed {
+		t.Fatalf("diags = %#v, want exactly one shadowed diagnostic", diags)
+	}
+
+	dest, err := RegenerateWhatsNextCatalog(dir)
+	if err != nil {
+		t.Fatalf("a shadowed source must not block regen: %v", err)
+	}
+	if dest == "" {
+		t.Fatal("expected the catalog to regenerate")
+	}
+}
+
+func TestRegenerateWhatsNextCatalog_ShadowedBundleBlocks(t *testing.T) {
+	// The other side of the same classification: a shadowed BUNDLE is the
+	// one shape whose card nothing else carries. Cards are built from
+	// bundles, so when a loose `main.bot` (or any .bot) takes the bundle's
+	// name first, the bundle leaves the list and regenerating rewrites the
+	// COMMITTED catalog with its row and card deleted — in silence, at every
+	// run start and on every studio bot-metadata save. That deletion is what
+	// this refusal exists to stop, so the kind alone cannot clear it.
+	dir := fixtureCatalogWorkspace(t)
+	ClearSchemaCache()
+
+	// The committed state: a catalog regenerated while the workspace was
+	// clean, carrying the bundle's card.
+	dest, err := RegenerateWhatsNextCatalog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(committed), "`enabled-bot`") {
+		t.Fatalf("the committed catalog must carry the bundle's card to begin with:\n%s", committed)
+	}
+
+	// A loose .bot claiming the bundle's name. It sorts first inside bots/,
+	// so it is the one that holds the name.
+	ClearSchemaCache()
+	writeFile(t, filepath.Join(dir, "bots", "aaa.bot"),
+		"## ---\n## name: enabled-bot\n## ---\nagent x:\n  model: \"test\"\n")
+
+	// The premise, asserted rather than assumed: the BUNDLE is the source
+	// that lost the name, and the path the diagnostic reports is relative to
+	// the WORKSPACE — which is what the refusal must re-anchor it on, the
+	// process's own directory being nowhere near it. The whole
+	// classification rests on that pairing, so it is pinned here.
+	_, diags, err := ListWithDiagnostics(ListOptions{Paths: DefaultPaths(dir), Workdir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diags) != 1 || diags[0].Kind != DiscoveryErrorShadowed || diags[0].Path != "bots/enabled-bot" {
+		t.Fatalf("diags = %#v, want exactly one shadowed diagnostic naming the bundle directory, workspace-relative", diags)
+	}
+	if info, serr := os.Stat(resolveDiagPath(dir, diags[0].Path)); serr != nil || !info.IsDir() {
+		t.Fatalf("re-anchoring %q on %q must find the bundle directory: %v", diags[0].Path, dir, serr)
+	}
+
+	if _, err := RegenerateWhatsNextCatalog(dir); err == nil {
+		t.Error("regenerating over a shadowed BUNDLE must refuse: its card is in no other entry, so the committed row would be deleted")
+	} else if !strings.Contains(err.Error(), "enabled-bot") {
+		t.Errorf("the refusal must name the source: %v", err)
+	}
+	after, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(committed) {
+		t.Errorf("the committed catalog was rewritten anyway:\n--- before ---\n%s\n--- after ---\n%s", committed, after)
+	}
+}
+
 // The template is spliced verbatim one directory deeper than where it is
 // authored; a relative target that resolved next to the template names
 // nothing next to the copy. The re-anchor is what keeps the spliced link

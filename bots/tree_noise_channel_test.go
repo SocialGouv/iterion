@@ -44,7 +44,7 @@ func executableTreeNoiseRefs(n ir.Node) []*ir.Ref {
 // source text; the prompt-side count is the floor that keeps the walk
 // honest.
 func TestRunTreeNoiseNeverRendersInAnExecutableBody(t *testing.T) {
-	targets := catalogWorkflowFiles()
+	targets := catalogWorkflowFiles(t)
 	if len(targets) == 0 {
 		t.Fatal("no catalog workflows found — discovery glob likely broke")
 	}

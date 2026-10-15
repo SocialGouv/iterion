@@ -99,8 +99,20 @@ chat:
 			t.Fatalf("malformed bots/review-pr must shadow the stale .botz copy, got %+v", entry)
 		}
 	}
-	if len(diags) != 1 || !strings.Contains(diags[0].Path, filepath.Join("bots", "review-pr")) {
-		t.Fatalf("diags = %#v, want the higher-precedence bundle diagnostic", diags)
+	// Two diagnostics, both true of this workspace: the malformed source
+	// that HOLDS the name, and the stale copy that lost it — the loser is
+	// reported rather than dropped in silence, with the claimer named.
+	if len(diags) != 2 {
+		t.Fatalf("diags = %#v, want the bundle diagnostic and the shadowed stale copy", diags)
+	}
+	if diags[0].Kind != DiscoveryErrorBundle || !strings.Contains(diags[0].Path, filepath.Join("bots", "review-pr")) {
+		t.Fatalf("diags[0] = %#v, want the higher-precedence bundle diagnostic", diags[0])
+	}
+	if diags[1].Kind != DiscoveryErrorShadowed || !strings.Contains(diags[1].Path, filepath.Join(".botz", "review-pr")) {
+		t.Fatalf("diags[1] = %#v, want the stale .botz copy reported as shadowed", diags[1])
+	}
+	if !strings.Contains(diags[1].Error, filepath.Join("bots", "review-pr")) {
+		t.Errorf("diags[1].Error = %q, want it to name the source that claimed the name", diags[1].Error)
 	}
 
 	_, err = ResolveBotPath("review-pr", DefaultPaths(dir))
@@ -109,6 +121,61 @@ chat:
 	}
 	if !strings.Contains(err.Error(), "chat:") || !strings.Contains(err.Error(), "unavailable") {
 		t.Fatalf("ResolveBotPath = %v, want the malformed chat diagnostic", err)
+	}
+}
+
+func TestList_ShadowedSourceIsReportedNotDropped(t *testing.T) {
+	// Two sources that both LOAD and claim one name: the first routes, and
+	// the second is unreachable by any name — `iterion run main`, the
+	// dispatcher and the studio all resolve to the first. Dropping the
+	// loser in silence is why a second `main.bot` in a workspace never
+	// appears and nothing says why, and why a check reading the entries
+	// cannot see what that file holds.
+	dir := t.TempDir()
+	stub := "agent x:\n  model: \"test\"\n"
+	writeFile(t, filepath.Join(dir, "examples", "first", "main.bot"), stub)
+	writeFile(t, filepath.Join(dir, "examples", "second", "main.bot"), stub)
+
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: DefaultPaths(dir)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Path != filepath.Join(dir, "examples", "first", "main.bot") {
+		t.Fatalf("entries = %+v, want only the first claimer of the name", entries)
+	}
+	if len(diags) != 1 {
+		t.Fatalf("diags = %#v, want one for the shadowed second source", diags)
+	}
+	if diags[0].Kind != DiscoveryErrorShadowed || diags[0].Path != filepath.Join(dir, "examples", "second", "main.bot") {
+		t.Fatalf("diags[0] = %#v, want the second main.bot reported as shadowed", diags[0])
+	}
+	if !strings.Contains(diags[0].Error, `"main"`) || !strings.Contains(diags[0].Error, filepath.Join("examples", "first", "main.bot")) {
+		t.Errorf("diags[0].Error = %q, want the claimed name and the claimer's path", diags[0].Error)
+	}
+	// Resolution is unchanged by the new diagnostic: the name belongs to the
+	// claimer, and answering "unavailable" because something ELSE was
+	// skipped would break a bot that works (diagForName reads bundle/file
+	// diagnostics only).
+	got, err := ResolveBotPath("main", DefaultPaths(dir))
+	if err != nil {
+		t.Fatalf("ResolveBotPath(main) = %v, want the claimer's path", err)
+	}
+	if got != filepath.Join(dir, "examples", "first", "main.bot") {
+		t.Errorf("ResolveBotPath(main) = %q, want the first claimer", got)
+	}
+
+	// The remedy the diagnostic names: a distinct frontmatter name lifts
+	// the shadow, and both sources route.
+	writeFile(t, filepath.Join(dir, "examples", "second", "main.bot"), "## ---\n## name: second-demo\n## ---\n"+stub)
+	entries, diags, err = ListWithDiagnostics(ListOptions{Paths: DefaultPaths(dir)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diags) != 0 {
+		t.Fatalf("diags = %#v, want none once the second source declares its own name", diags)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %+v, want both sources routable", entries)
 	}
 }
 

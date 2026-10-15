@@ -1,7 +1,9 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.9.5
+version: 1.9.6
+## 1.9.6 — the supervisor reads the agent's activity as data: its policy carries the
+## UNTRUSTED INPUT BOUNDARY paragraph, as every acting prompt of a shipped workflow does (#1722)
 ## 1.9.5 — the delivery refusal needs an ANSWERED refusal. Only a WELL-FORMED
 ## answer — HTTP 200, a body complete within its bound, the verdict fields the
 ## preflight documents — or the forge API's own scope list ends the run

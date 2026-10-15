@@ -14,7 +14,7 @@ import (
 // exception: the release pipeline writes it, a record of past releases, not
 // a page a reader copies from.
 func TestFilesListsEveryMarkdownWithAFence(t *testing.T) {
-	root := filepath.Join("..", "..", "..", "..")
+	root := filepath.Join("..", "..", "..")
 	files, err := Files(root)
 	if err != nil {
 		t.Fatal(err)

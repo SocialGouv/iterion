@@ -123,8 +123,21 @@ func (s *Server) newBakedCatalogResolver() *platformcfg.Resolver[bakedCatalog] {
 		if err != nil {
 			return nil, fmt.Errorf("bot catalog walk for the override-staleness check: %w", err)
 		}
-		if len(diagnostics) > 0 {
-			return nil, fmt.Errorf("bot catalog walk for the override-staleness check: %s", diagnostics[0].Error)
+		for _, d := range diagnostics {
+			// A SHADOWED source leaves no gap in this projection: the name
+			// it lost routes to the claimer, whose version is the one
+			// collected below — including when the claimer is a loose .bot
+			// carrying no version, in which case nothing VERSIONED serves
+			// that name, which is what this map must then say (the field
+			// answers what would serve if the override were removed, and the
+			// bundle that lost the name serves nothing at all). Any other
+			// diagnostic is a source whose version could not be read, and
+			// answering "nothing is shadowed" out of a partial catalog would
+			// clear an override that really is stale.
+			if d.Kind == botregistry.DiscoveryErrorShadowed {
+				continue
+			}
+			return nil, fmt.Errorf("bot catalog walk for the override-staleness check: %s", d.Error)
 		}
 		out := bakedCatalog{versions: make(map[string]string, len(entries))}
 		for _, e := range entries {

@@ -645,7 +645,7 @@ func toSet(xs []string) map[string]bool {
 }
 
 func TestLLMInputFieldsReachTheirOwnPrompt(t *testing.T) {
-	r := sweepFiles(t, catalogWorkflowFiles())
+	r := sweepFiles(t, catalogWorkflowFiles(t))
 	if v := floorViolations(r); len(v) > 0 {
 		t.Fatalf("the sweep proves nothing:\n%s", strings.Join(v, "\n"))
 	}

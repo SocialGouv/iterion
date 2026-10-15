@@ -60,9 +60,10 @@ func (s *Server) botListOptions() botregistry.ListOptions {
 // renders the typed form inline on selection, so a separate "lite"
 // endpoint would just double the request count. Disabled bots are
 // included (Enabled=false) so the studio can show them to flip back on.
-// discovery_errors carries one entry per skipped malformed bundle: a bad
-// manifest must not blank the gallery, but it must not vanish silently
-// either.
+// discovery_errors carries one entry per skipped bot source, with the kind of
+// skip it was: a bad manifest must not blank the gallery, but it must not
+// vanish silently either — and neither must a well-formed source nothing
+// routes to.
 func (s *Server) handleBotsList(w http.ResponseWriter, r *http.Request) {
 	// The catalog can be empty (cloud with no baked path, or a bare workspace)
 	// while the team still has authored bots — so don't short-circuit on
@@ -93,18 +94,65 @@ func (s *Server) handleBotsList(w http.ResponseWriter, r *http.Request) {
 // relative; an external --bots-path has no trustworthy public root, so retain
 // the source basename and a source-relative error without exposing the host or
 // container prefix to authenticated tenants.
+//
+// The source's own parent prefix goes first, which keeps the message
+// source-relative (`broken-chat/manifest.yaml: …`) rather than reducing it to
+// a bare file name. Then EVERY remaining absolute path in the message is cut
+// to its last element, whoever put it there: a diagnostic may name a SECOND
+// source — a shadowed one names the claimer that holds its name, which sits
+// in another root — and a kind added later may name a third. The default is
+// inverted on purpose, so a message this function has never seen loses a path
+// instead of leaking one.
 func redactAbsoluteDiscoveryPaths(diags []botregistry.DiscoveryError) []botregistry.DiscoveryError {
 	out := append([]botregistry.DiscoveryError(nil), diags...)
 	for i := range out {
-		if !filepath.IsAbs(out[i].Path) {
-			continue
+		if filepath.IsAbs(out[i].Path) {
+			path := filepath.Clean(out[i].Path)
+			prefix := filepath.Dir(path) + string(filepath.Separator)
+			out[i].Path = filepath.Base(path)
+			out[i].Error = strings.ReplaceAll(out[i].Error, prefix, "")
 		}
-		path := filepath.Clean(out[i].Path)
-		prefix := filepath.Dir(path) + string(filepath.Separator)
-		out[i].Path = filepath.Base(path)
-		out[i].Error = strings.ReplaceAll(out[i].Error, prefix, "")
+		out[i].Error = redactAbsolutePathsInText(out[i].Error)
 	}
 	return out
+}
+
+// redactAbsolutePathsInText rewrites every absolute path in a diagnostic
+// message to its last element, keeping the punctuation the sentence wrapped it
+// in (quotes, brackets, a trailing comma or period) so the prose still reads.
+// Whitespace and its runs are preserved.
+func redactAbsolutePathsInText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	for i := 0; i < len(s); {
+		j := i
+		for j < len(s) && !isSpace(s[j]) {
+			j++
+		}
+		b.WriteString(redactAbsolutePathToken(s[i:j]))
+		k := j
+		for k < len(s) && isSpace(s[k]) {
+			k++
+		}
+		b.WriteString(s[j:k])
+		i = k
+	}
+	return b.String()
+}
+
+// redactAbsolutePathToken returns one whitespace-delimited token with its
+// absolute path, if that is what it holds, reduced to the path's last element.
+func redactAbsolutePathToken(tok string) string {
+	const openers = `"'([{<`
+	const closers = `"')]}>,;:.`
+	inner := strings.TrimLeft(tok, openers)
+	open := tok[:len(tok)-len(inner)]
+	body := strings.TrimRight(inner, closers)
+	if !filepath.IsAbs(body) {
+		return tok
+	}
+	return open + filepath.Base(filepath.Clean(body)) + inner[len(body):]
 }
 
 // handleBotsGet returns one bot with its full schema. Returns 404 when

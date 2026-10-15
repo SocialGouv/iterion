@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
@@ -327,6 +328,167 @@ func TestBotSourceListing_AnUnreadableCatalogIsNotACleanInventory(t *testing.T) 
 			t.Errorf("no row may claim a verdict when the check could not run; got %+v", v)
 		}
 	}
+}
+
+// A catalog holding a source whose NAME another one claimed is still a
+// complete version projection: the claimer is what routes, and its version is
+// what an override would hold back. Treating that diagnostic like an
+// unreadable manifest would answer "unknown" for every row of a workspace
+// that merely holds two `main.bot` files — the inventory going blind on a
+// workspace that works.
+func TestBotSourceListing_AShadowedCatalogSourceStillYieldsAVerdict(t *testing.T) {
+	s, editor, _ := newBotSourceTestServer(t)
+	edCtx := auth.WithIdentity(context.Background(), editor)
+	seedBakedBot(t, s, "reviewer", "0.8.0")
+
+	// Two loose .bot files answering to the same name ("main"), beside the
+	// baked bundle: discovery keeps the first and records the second.
+	root := s.cfg.Bots.Paths[0]
+	for _, demo := range []string{"demo-a", "demo-b"} {
+		dir := filepath.Join(root, demo)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, botsource.MainBotFile), []byte(testBotMain), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The premise, asserted rather than assumed.
+	_, diags, err := botregistry.ListWithDiagnostics(botregistry.ListOptions{Paths: s.cfg.Bots.Paths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diags) != 1 || diags[0].Kind != botregistry.DiscoveryErrorShadowed {
+		t.Fatalf("diags = %#v, want exactly one shadowed diagnostic", diags)
+	}
+	s.bakedCatalog = s.newBakedCatalogResolver()
+
+	files := map[string]string{
+		botsource.MainBotFile: testBotMain,
+		"manifest.yaml":       "name: reviewer\nversion: 0.7.0\n",
+	}
+	body, _ := json.Marshal(botSourcePutReq{Files: files})
+	r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/reviewer", strings.NewReader(string(body))).WithContext(edCtx)
+	r.SetPathValue("id", "t1")
+	r.SetPathValue("slug", "reviewer")
+	w := httptest.NewRecorder()
+	s.handlePutBotSource(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("store = %d: %s", w.Code, w.Body.String())
+	}
+
+	req := httptest.NewRequest("GET", "/api/teams/t1/bot-sources", nil).WithContext(edCtx)
+	req.SetPathValue("id", "t1")
+	rec := httptest.NewRecorder()
+	s.handleListBotSources(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ShadowCheckUnavailable bool                `json:"shadow_check_unavailable"`
+		BotSources             []botSourceMetaView `json:"bot_sources"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ShadowCheckUnavailable {
+		t.Errorf("a shadowed source is not an unreadable catalog; got %s", rec.Body.String())
+	}
+	for _, v := range got.BotSources {
+		if v.Slug != "reviewer" {
+			continue
+		}
+		if !v.ShadowsNewerVersion || v.ShadowedVersion != "0.8.0" {
+			t.Errorf("the 0.7.0 override must still be reported against the 0.8.0 bake; got %+v", v)
+		}
+		return
+	}
+	t.Fatal("reviewer absent from the listing")
+}
+
+// TestBotSourceListing_AShadowedBAKEIsNotAVersionBelow is the premise the
+// shadowed classification above rests on, asserted rather than trusted: this
+// field answers "what would serve if this override were removed", so the map
+// must carry what ROUTES for a name — never what a source would have carried
+// had it won the name.
+//
+// Here the bake itself is the loser: a loose `aaa.bot` claims `reviewer`
+// first, so the 0.8.0 bundle routes nowhere and the loose file, which has no
+// version, is what `iterion run reviewer`, the dispatcher and the studio all
+// resolve. A 0.7.0 override therefore holds nothing back, and the honest
+// answer is the one the resolver gives. Reporting the 0.8.0 bundle as a
+// version below would name a bundle no launch can reach.
+func TestBotSourceListing_AShadowedBAKEIsNotAVersionBelow(t *testing.T) {
+	s, editor, _ := newBotSourceTestServer(t)
+	edCtx := auth.WithIdentity(context.Background(), editor)
+	seedBakedBot(t, s, "reviewer", "0.8.0")
+
+	// Sorts before the bundle inside the root, so it claims the name.
+	root := s.cfg.Bots.Paths[0]
+	claimer := filepath.Join(root, "aaa.bot")
+	if err := os.WriteFile(claimer, []byte("## ---\n## name: reviewer\n## ---\n"+testBotMain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The premise: the BUNDLE is what lost the name, and what serves the name
+	// is the claimer — the oracle every launch surface goes through.
+	_, diags, err := botregistry.ListWithDiagnostics(botregistry.ListOptions{Paths: s.cfg.Bots.Paths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diags) != 1 || diags[0].Kind != botregistry.DiscoveryErrorShadowed || diags[0].Path != filepath.Join(root, "reviewer") {
+		t.Fatalf("diags = %#v, want one shadowed diagnostic naming the baked bundle", diags)
+	}
+	serves, err := botregistry.ResolveBotPath("reviewer", s.cfg.Bots.Paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serves != claimer {
+		t.Fatalf("what serves %q = %q, want the claimer %q", "reviewer", serves, claimer)
+	}
+	s.bakedCatalog = s.newBakedCatalogResolver()
+
+	files := map[string]string{
+		botsource.MainBotFile: testBotMain,
+		"manifest.yaml":       "name: reviewer\nversion: 0.7.0\n",
+	}
+	body, _ := json.Marshal(botSourcePutReq{Files: files})
+	r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/reviewer", strings.NewReader(string(body))).WithContext(edCtx)
+	r.SetPathValue("id", "t1")
+	r.SetPathValue("slug", "reviewer")
+	w := httptest.NewRecorder()
+	s.handlePutBotSource(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("store = %d: %s", w.Code, w.Body.String())
+	}
+
+	req := httptest.NewRequest("GET", "/api/teams/t1/bot-sources", nil).WithContext(edCtx)
+	req.SetPathValue("id", "t1")
+	rec := httptest.NewRecorder()
+	s.handleListBotSources(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ShadowCheckUnavailable bool                `json:"shadow_check_unavailable"`
+		BotSources             []botSourceMetaView `json:"bot_sources"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ShadowCheckUnavailable {
+		t.Errorf("the catalog was read: a shadowed source is not an unreadable catalog; got %s", rec.Body.String())
+	}
+	for _, v := range got.BotSources {
+		if v.Slug != "reviewer" {
+			continue
+		}
+		if v.ShadowsNewerVersion || v.ShadowedVersion != "" {
+			t.Errorf("the override holds back nothing that routes; got %+v", v)
+		}
+		return
+	}
+	t.Fatal("reviewer absent from the listing")
 }
 
 // docs/platform-bots.md promises the shadow fields on BOTH listings, and one

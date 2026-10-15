@@ -75,6 +75,16 @@ evolve/review_claude	tools: bash
 evolve/revise_vision	tools: bash
 evolve/survey	tools: bash
 evolve/synthesize_vision	tools: bash
+examples/cursors/sample:reviewer	backend "" resolves at dispatch, where the compiled-in detection order's first choice is claude_code, which does not bound what the node holds (#1652)
+examples/deploy-e2e:deploy_and_test	no `tools:` list declared on claude_code, the full native toolset
+examples/fallbacks/main:implement	tools: bash
+examples/phase-budget-guard:implement	backend "" resolves at dispatch, where the compiled-in detection order's first choice is claude_code, which does not bound what the node holds (#1652)
+examples/phase-budget-guard:plan	backend "" resolves at dispatch, where the compiled-in detection order's first choice is claude_code, which does not bound what the node holds (#1652)
+examples/review-merge-gate:implement	no `tools:` list declared on claude_code, the full native toolset
+examples/review-merge-gate:provision_review_env	no `tools:` list declared on claude_code, the full native toolset
+examples/supervisor/sample:implement	backend "" resolves at dispatch, where the compiled-in detection order's first choice is claude_code, which does not bound what the node holds (#1652)
+examples/ultracode/sample:implementer	tools: bash, write_file, file_edit
+examples/web-search/research:researcher	tools: web_search
 feature-dev/campaign	capability board.create
 feature-dev/campaign	no `tools:` list declared on claude_code, the full native toolset
 feature-dev/finalize_mr	capability board.comment
@@ -127,6 +137,8 @@ rgaa-audit/publish	capability board.create
 rgaa-audit/publish	capability board.label
 rgaa-audit/publish	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
 rgaa-audit/refute	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+scripts/adhoc/whats-next-prompts-review:review_prompts	tools: bash
+scripts/adhoc/whats-next-skills-gen:generate_skills	tools: bash, write_file
 sec-audit-deps/enumerate_deps	tools: bash
 sec-audit-deps/llm_review	capability board.create
 sec-audit-deps/llm_review	capability board.label

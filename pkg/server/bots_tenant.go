@@ -33,7 +33,7 @@ type botEntryView struct {
 // entries are read-only in the studio (platform bots are managed through the
 // admin API/CLI); team entries are editable. Outside cloud / without an active
 // team it returns catalog + platform, all read-only. The second return carries
-// one diagnostic per skipped malformed source so the list endpoint can expose
+// one diagnostic per skipped bot source so the list endpoint can expose
 // partial discovery instead of letting a bad bundle vanish silently.
 func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, []botregistry.DiscoveryError, error) {
 	var catalog []botregistry.EntryWithSchema

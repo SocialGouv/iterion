@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/internal/docfences"
+	"github.com/SocialGouv/iterion/pkg/dsl/docfences"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
@@ -36,7 +36,7 @@ import (
 //
 // Markdown renderers read only the first word, so the tags are invisible
 // to readers and only this test sees them. The fences are read by
-// pkg/dsl/internal/docfences — an indented fence, its body, a body line
+// pkg/dsl/docfences — an indented fence, its body, a body line
 // indented less than the fence — the helper the author tests read the
 // same documentation through.
 

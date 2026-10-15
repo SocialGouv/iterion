@@ -13,10 +13,7 @@ import (
 // interactions and supervisors are checked along with the visible main file.
 // Explicit deployment overrides remain supported; this checks shipped defaults.
 func TestCatalogCurrentModelDefaults(t *testing.T) {
-	paths, err := teamBotFiles()
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("catalog discovery: %v (%d files)", err, len(paths))
-	}
+	paths := teamBotFiles(t)
 	checked, models, anthropic, openai := 0, 0, 0, 0
 	for _, path := range paths {
 		u := unit.LoadDir(path)

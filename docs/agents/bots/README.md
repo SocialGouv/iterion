@@ -10,6 +10,7 @@ touch names:
 | [run-link.md](run-link.md) | A bot posts anything on a forge — a body, a review, a comment, a reply. |
 | [convergence.md](convergence.md) | Writing a loop, campaign or reviewer bot. |
 | [untrusted-input.md](untrusted-input.md) | A prompt carrying untrusted text in an acting node. |
+| [shipped-workflow-corpus.md](shipped-workflow-corpus.md) | A guard, a gate or a count over "every workflow this repository ships". |
 | [input-reaches-the-model.md](input-reaches-the-model.md) | Adding, dropping or re-referencing a field on an LLM node's input. |
 | [universality.md](universality.md) | The repo- and stack-agnostic universality rules (vars, prompts, scanners). |
 | [taxonomy.md](taxonomy.md) | The six-verb navigation spine: `category:` and `tags:`. |

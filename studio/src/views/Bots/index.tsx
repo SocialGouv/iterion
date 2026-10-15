@@ -353,7 +353,7 @@ export default function BotsView() {
       {discoveryErrors.length > 0 && (
         <InlineBanner
           tone="warning"
-          title={`${discoveryErrors.length} bot${discoveryErrors.length === 1 ? "" : "s"} skipped — malformed bundle`}
+          title={`${discoveryErrors.length} bot${discoveryErrors.length === 1 ? "" : "s"} skipped`}
         >
           <ul className="list-disc pl-4">
             {discoveryErrors.map((d, i) => (

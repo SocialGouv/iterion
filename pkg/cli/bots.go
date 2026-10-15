@@ -40,8 +40,8 @@ type BotsListOptions struct {
 	// AND a "view by tag" means). Empty = all.
 	Tags []string
 
-	// ErrW, when set, receives one warning line per skipped malformed
-	// bundle/bot file (discovery keeps listing the valid siblings). Nil
+	// ErrW, when set, receives one warning line per skipped bot source
+	// (discovery keeps listing the valid siblings). Nil
 	// discards the warnings — the structured diagnostics stay available
 	// through botregistry.ListWithDiagnostics.
 	ErrW io.Writer
@@ -163,7 +163,7 @@ func botMatchesTaxonomy(e botregistry.Entry, categories, tags []string) bool {
 	return true
 }
 
-// warnDiscoveryErrors reports each skipped malformed source on w. Kept
+// warnDiscoveryErrors reports each skipped bot source on w. Kept
 // off the primary writer so the JSON/markdown payload stays parseable.
 func warnDiscoveryErrors(w io.Writer, diags []botregistry.DiscoveryError) {
 	if w == nil {

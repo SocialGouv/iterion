@@ -3,8 +3,12 @@
 // copies — for the tests that hold them to the language: the ```iter fences
 // to the parser and the compiler (pkg/dsl/ir), the ```yaml author fences to
 // the author document's converter, and the ```iter fences to the author
-// round trip (pkg/dsl/author). It depends on the standard library alone, so
-// any DSL package's tests may read the same fences the same way.
+// round trip (pkg/dsl/author), and the ```iter fences to the boundary the
+// prompts they teach owe (bots). It depends on the standard library alone,
+// and it sits outside `internal` because the guards that hold the
+// documentation to what it teaches do not all live under pkg/dsl: a second
+// reader is a second answer to "what does this repository teach", and the
+// narrower one decides what no guard sees.
 package docfences
 
 import (

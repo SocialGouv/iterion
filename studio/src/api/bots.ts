@@ -309,22 +309,25 @@ export interface BotEntryWithSchema extends BotEntry {
 
 /** BotDiscoveryError is one bot source the registry skipped: the bundle
  *  directory or .bot file at `path` failed to load (e.g. a malformed
- *  manifest `chat:` block). Discovery is per-entry fault-tolerant, so
- *  the bot is ABSENT from the list — this is the channel that keeps the
- *  skip visible. Mirrors botregistry.DiscoveryError. */
+ *  manifest `chat:` block), or its name was already claimed. Discovery is
+ *  per-entry fault-tolerant, so the bot is ABSENT from the list — this is
+ *  the channel that keeps the skip visible. Mirrors
+ *  botregistry.DiscoveryError. */
 export interface BotDiscoveryError {
   path: string;
   error: string;
-  /** What the skipped source is known to be. Only "bundle" and "file"
-   *  name an actual bot source; "walk" is an unreadable path whose
-   *  contents are unknown. Optional on older servers. */
-  kind?: "bundle" | "file" | "walk";
+  /** What the skipped source is known to be. "bundle" and "file" name a
+   *  source that failed to load; "shadowed" one that loads but whose name
+   *  another source claimed, so nothing routes to it; "walk" an
+   *  unreadable path whose contents are unknown. Optional on older
+   *  servers. */
+  kind?: "bundle" | "file" | "shadowed" | "walk";
 }
 
 interface ListResponse {
   bots: BotEntryWithSchema[];
-  /** One entry per skipped malformed bundle/bot file. Absent when
-   *  everything discovered cleanly. */
+  /** One entry per skipped bot source, each carrying the kind of skip it
+   *  was. Absent when everything discovered cleanly. */
   discovery_errors?: BotDiscoveryError[];
 }
 
@@ -341,9 +344,9 @@ export async function listBots(): Promise<BotEntryWithSchema[]> {
 }
 
 /** listBotsWithDiagnostics is listBots plus the per-source discovery
- *  errors: the bots whose bundle failed to load and were therefore
- *  skipped. The bots store keeps them so the gallery can warn instead
- *  of letting a malformed bundle vanish silently. */
+ *  errors: the bot sources discovery skipped, each with the reason. The
+ *  bots store keeps them so the gallery can warn instead of letting a
+ *  skipped source vanish silently. */
 export async function listBotsWithDiagnostics(): Promise<{
   bots: BotEntryWithSchema[];
   discoveryErrors: BotDiscoveryError[];

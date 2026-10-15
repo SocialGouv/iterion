@@ -131,9 +131,9 @@ func TestTheUntrustedInputBoundaryClassIsTheFrozenOne(t *testing.T) {
 	}
 	// Both directions, line by line. Skipping a frozen line because the NODE
 	// still has some other live line hides a reason that stopped applying —
-	// and 28 of the 143 members carry two or more, so that is most of the
+	// and 27 of the 154 members carry two or more, so that is most of the
 	// board capabilities. The count below cannot see it either: the prompt
-	// stays in the class, so 143 is still 143.
+	// stays in the class, so 154 is still 154.
 	for _, line := range frozen {
 		if liveLines[line] {
 			continue

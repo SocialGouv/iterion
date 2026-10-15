@@ -206,7 +206,7 @@ func TestNoReadonlyClaudeCodeNodeIsToldItHoldsNoWritePath(t *testing.T) {
 // list. Neither shape is visible here, nor to `isMutatingNodeIn`, which
 // answers on `n.Readonly` before it consults the effective surface.
 //
-// Walked over catalogWorkflowFiles(): every `.bot` of the catalogue bundles,
+// Walked over catalogWorkflowFiles: every `.bot` of the catalogue bundles,
 // the examples, the dispatcher template embedded in every binary and the
 // operator scripts — so a bundle copying the shape is caught the day it
 // lands. NOT the scaffold templates under pkg/botscaffold/templates: those
@@ -221,7 +221,7 @@ func TestNoReadonlyClaudeCodeNodeIsToldItHoldsNoWritePath(t *testing.T) {
 // so `*ir.RouterNode` carries LLMFields whose Readonly no `.bot` can set, and
 // a `case` for it here would be a branch nothing reaches.
 func TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool(t *testing.T) {
-	paths := catalogWorkflowFiles()
+	paths := catalogWorkflowFiles(t)
 	// A FLOOR on the discovery: this guard reads a glob, and a layout rename
 	// that stopped matching would make it pass over nothing at all. 60 is
 	// under the 70 files shipped today, so bundles may be retired without
@@ -473,7 +473,7 @@ func TestEveryDroppedReadonlyCommentStatesWhatWentWithTheFlag(t *testing.T) {
 	const marker = "## no `readonly:`"
 	var offenders []string
 	sites := 0
-	for _, path := range catalogWorkflowFiles() {
+	for _, path := range catalogWorkflowFiles(t) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("%s: %v", path, err)

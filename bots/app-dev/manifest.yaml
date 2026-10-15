@@ -1,7 +1,9 @@
 name: app-dev
 display_name: Appy
 icon: 🏗️
-version: 0.4.2
+version: 0.4.3
+## 0.4.3 — the supervisor reads the agent's activity as data: its policy carries the
+## UNTRUSTED INPUT BOUNDARY paragraph, as every acting prompt of a shipped workflow does (#1722)
 ## 0.4.2 — every body it posts on a forge ends with the run that wrote it:
 ## the evidence behind the text, and the way into the platform for a reader
 ## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)

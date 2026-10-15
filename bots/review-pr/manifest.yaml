@@ -1,7 +1,9 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.14
+version: 0.9.15
+## 0.9.15 — the supervisor reads the agent's activity as data: its policy carries the
+## UNTRUSTED INPUT BOUNDARY paragraph, as every acting prompt of a shipped workflow does (#1722)
 ## 0.9.14 — the description's word wrap no longer starts a line with a
 ## ```suggestion fence marker. In a generated bot catalogue that opener
 ## had no closer, so hundreds of lines a router model reads — the cards
