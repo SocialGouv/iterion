@@ -1388,6 +1388,35 @@ tool, ultracode or not, carries a `## Subagents in this session` section
 that says so. A process the node needs running while it works, such as a
 dev server, is started from the shell itself (`nohup … &`).
 
+**What a node starts ends with the node.** Every agent spawn — claude_code
+and its structured-output pass, codex, the CLI agents, pi, the claw shell and
+settings hooks, and a sandboxed claw node's runner — exports a variable of its
+own, `ITERION_NODE_SESSION_<hash>=1`, that every process it starts inherits,
+whether it was backgrounded, `nohup`ed or detached into its own session. When
+the delegation ends, on every exit path, the engine stops the session: the
+processes still carrying the variable, those an earlier scan found, and every
+descendant of either — TERM once to each, a new scan every 50 ms until two in
+a row find nothing, within five seconds, then KILL the same way. A process
+still running after that is named as an error; a process of the same user,
+started since the session began, whose environment cannot be read is named
+and left running. In a sandbox the sweep runs inside the run's container, in
+the exec that already terminates the CLI; elsewhere it scans the engine's own
+`/proc`, and on a platform without one the engine says once that it cannot.
+What a sweep stopped is named in the run log and in a `delegate_background`
+event (phase `abandoned`) on every backend; on claude_code it also joins the
+background work the delegation lost (`TerminatedBackgroundTasks`), so a run
+forked from that turn tells the resumed agent its server is gone. A CLI
+agent's output is not waited for more than two seconds past its exit, so a
+process that keeps the pipe cannot hold the node. A node that runs after an
+agent node — the gate that judges its work, above all — therefore starts its
+own world instead of finding the agent's. Not stopped: a process that
+detaches from every process of the session and then loses the variable — a
+daemon that unsets it, or one that daemonizes and rewrites its title over its
+environment, as `nginx` and `redis-server --daemonize yes` do — what a
+container engine starts (`docker compose up -d`: the engine's daemon owns it),
+and what the claw `repl` tool starts. Why:
+[ADR-127](adr/127-an-agent-nodes-processes-end-with-the-node.md).
+
 An operator who wants background work — subagents and shells that run while
 the main agent keeps working — asks for it: `ITERION_CLAUDE_CODE_BACKGROUND_TASKS=on`
 pins the switch empty in both layers instead (the CLI reads it as set only

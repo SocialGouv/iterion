@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -440,7 +441,13 @@ const headlessSubagentRule = "\n\n## Subagents in this session\n\n" +
 	"a tool result before your next step. Never end your turn to wait for work to " +
 	"finish: anything still running when you produce your final output is lost. " +
 	"A Bash command that outlives its timeout is killed: give it a timeout that " +
-	"fits, and start anything longer with `nohup … &` and poll it."
+	"fits, and start anything longer with `nohup … &` and poll it." +
+	headlessProcessLifetime
+
+// headlessProcessLifetime closes every headless rule: what an agent starts
+// ends with its node (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
+const headlessProcessLifetime = " Every process you start, with `nohup` or detached, " +
+	"is stopped when this session ends: a later step starts its own."
 
 // headlessBackgroundRule replaces headlessSubagentRule when background work
 // is on (backgroundTasksOnFromEnv). The CLI's own guidance then says every
@@ -456,7 +463,8 @@ const headlessBackgroundRule = "\n\n## Background work in this session\n\n" +
 	"notification with it. So, unlike what the Bash tool says, do not end your turn " +
 	"to wait for a background command whose result you need: read the output file " +
 	"its result names until the command has finished, or run it in the foreground " +
-	"with a timeout that fits."
+	"with a timeout that fits." +
+	headlessProcessLifetime
 
 // headlessBackgroundUnheldRule is headlessBackgroundRule with the background
 // lifecycle off (ITERION_CLAUDE_CODE_BACKGROUND_LIFECYCLE=off): nothing that
@@ -469,7 +477,8 @@ const headlessBackgroundUnheldRule = "\n\n## Background work in this session\n\n
 	"background by DEFAULT here, so pass `run_in_background: false` on every Agent " +
 	"call — its report is then the tool result — and give a command a timeout that " +
 	"fits instead of backgrounding it. Never end your turn to wait for background " +
-	"work: no turn will come to deliver it."
+	"work: no turn will come to deliver it." +
+	headlessProcessLifetime
 
 // claudeCodeSystemPrompt is the text Execute's spawn appends to the CLI's
 // native system prompt: the task's own sections, then what the session does
@@ -769,8 +778,17 @@ func (b *ClaudeCodeBackend) formatPass(ctx context.Context, task Task, sessionID
 // in-container claude process recorded by the command wrapper
 // (native:221edac8). Execute must defer it so aborted sessions leak neither.
 func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option, func()) {
+	opts, end := b.buildSpawnOptions(task)
+	return opts, func() { end() }
+}
+
+// buildSpawnOptions is buildTransportOptions with the end a delegation needs:
+// it terminates the spawn and stops every process the node left behind
+// (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md), runs once, and
+// returns the labels of what it stopped.
+func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, func() []string) {
 	var opts []claudesdk.Option
-	var cleanup func()
+	se := &spawnEnd{}
 	// The flag settings object perTaskSpawnOpts hands the spawn below. The
 	// builder finds it on argv and moves it, routing pin added, into a file.
 	_, flagSettings := claudeSpawnPins(task)
@@ -882,9 +900,9 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		// leaks the in-container process (native:221edac8 — leaked
 		// claudes stack across retries and starve the forfait). The
 		// wrapper writes its PID to a pidfile then exec's claude (same
-		// PID, same fds); Execute defers killSandboxDelegate.
+		// PID, same fds); the end kills it, then sweeps the mark.
 		mark := sandboxDelegateMark(task)
-		cleanup = killSandboxDelegate(run, mark, b.Logger, sandboxSettingsFile(mark))
+		se.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSettingsFile(mark))
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			env = claudeModelDefaultEnv(env)
 			// Surface the resolved CLI invocation so failures like
@@ -906,6 +924,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 			// later wires cmd.StdinPipe() but docker has already closed
 			// stdin on the child, claude reads EOF, and exits 0 with no
 			// output — matching the cli_exit_code=0 silent-failure path.
+			se.started()
 			return run.Command(ctx, wrapSandboxDelegateArgv(mark, argv), sandbox.ExecOpts{
 				WorkDir:       cwd,
 				Env:           env,
@@ -921,9 +940,13 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		// entries via hostSpawnEnv), and (c) pin the routing variables at the
 		// values that env holds (claudeSettingsFiles.pinHost).
 		files := &claudeSettingsFiles{}
-		cleanup = func() { files.remove(b.Logger) }
+		token := proc.NewNodeSessionToken()
+		se.end = func() []string {
+			files.remove(b.Logger)
+			return SweepLocalNodeSession(b.Logger, task, BackendClaudeCode, token, se.sinceStart())
+		}
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = claudeModelDefaultEnv(env)
+			env = withNodeSessionEnv(claudeModelDefaultEnv(env), token)
 			keys := make([]string, 0, len(env))
 			for k := range env {
 				keys = append(keys, k)
@@ -937,6 +960,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 			files.pinHost(cmd, flagSettings)
 			b.Logger.Info("claude-code: host exec %v (cwd=%s, stdin=%v, task_env_keys=%v)",
 				redactedArgvPreview(path, cmd.Args[1:]), cwd, openStdin, keys)
+			se.started()
 			return cmd
 		}))
 	}
@@ -957,7 +981,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		}
 	}
 
-	return opts, cleanup
+	return opts, se.run
 }
 
 // claudeCodeThinkingDisplay resolves the --thinking-display value passed
@@ -1021,12 +1045,13 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		})
 	}()
 
-	opts, spawnCleanup := b.buildTransportOptions(task)
-	// Remove the flag settings file and terminate the in-container claude on
-	// every exit path — clean, aborted, or panicking. Idempotent: after a
-	// clean CLI exit the recorded PID is gone and the kill script no-ops
-	// (native:221edac8).
-	defer spawnCleanup()
+	opts, endSpawn := b.buildSpawnOptions(task)
+	// End the spawn on every exit path — clean, aborted, or panicking: remove
+	// the flag settings file, terminate the in-container claude
+	// (native:221edac8), stop every process the node left behind (ADR-127).
+	// The session's end runs it first, where what it stopped is recorded;
+	// here it is the safety net, and a no-op after that.
+	defer endSpawn()
 	// Allowed-tools registration is deferred to a single call near the end
 	// of this function. WithAllowedTools APPENDS to the SDK's slice, so
 	// registering the base set here and again below (combined with MCP
@@ -1160,6 +1185,9 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	startTime := time.Now()
 	rm, sessMeta, streamErr := b.runSession(streamCtx, prompt, task, opts)
 	duration := time.Since(startTime)
+	// The process has ended, and what it started ends with it: what was
+	// stopped joins the background work it lost.
+	sessMeta.terminatedBackground = appendLabels(sessMeta.terminatedBackground, endSpawn()...)
 	// What the process left behind is recorded under the session it actually
 	// ran (a fork's own new id). What it was told is settled only if it took
 	// the prompt that told it — it answered, or the CLI announced the turn
@@ -2273,16 +2301,19 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// The flag settings object perTaskSpawnOpts hands the spawn below. The
 	// builder finds it on argv and moves it, routing pin added, into a file.
 	_, flagSettings := claudeSpawnPins(task)
+	// This pass runs the node's tools in a process of its own: what it starts
+	// ends with it (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
+	fe := &spawnEnd{}
 	if task.Sandbox != nil {
 		// When sandboxed, route the CLI subprocess through the sandbox driver so
 		// it resumes the session inside the container (where the session file
 		// lives) rather than spawning a host claude that can't see it.
 		run := task.Sandbox
-		// The settings file this spawn writes in the container stays until
-		// the run's sandbox is torn down: it holds the static pins and values
-		// of the container's own environment, nothing a process there cannot
-		// already read, and removing it would cost an exec per pass.
+		// One exec ends the pass: it removes the settings file this spawn
+		// writes in the container, terminates the recorded CLI and stops what
+		// the pass left behind.
 		mark := sandboxDelegateMark(task) + "-fmt"
+		fe.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSettingsFile(mark))
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			env = claudeModelDefaultEnv(env)
 			b.Logger.Info("claude-code [fmt]: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
@@ -2293,7 +2324,8 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			if err != nil {
 				return claudeFailedCmd(ctx, path, err)
 			}
-			cmd := run.Command(ctx, argv, sandbox.ExecOpts{
+			fe.started()
+			cmd := run.Command(ctx, wrapSandboxDelegateArgv(mark, argv), sandbox.ExecOpts{
 				WorkDir:       cwd,
 				Env:           env,
 				KeepStdinOpen: openStdin,
@@ -2311,8 +2343,12 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		// what's stuck.
 		files := &claudeSettingsFiles{}
 		defer files.remove(b.Logger)
+		token := proc.NewNodeSessionToken()
+		fe.end = func() []string {
+			return SweepLocalNodeSession(b.Logger, task, BackendClaudeCode, token, fe.sinceStart())
+		}
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = claudeModelDefaultEnv(env)
+			env = withNodeSessionEnv(claudeModelDefaultEnv(env), token)
 			cmd := exec.CommandContext(ctx, path, args...)
 			cmd.Dir = cwd
 			// Seed os.Environ() before the per-task entries — matching the
@@ -2325,9 +2361,13 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			cmd.Env = hostSpawnEnv(env)
 			files.pinHost(cmd, flagSettings)
 			captureCmd(cmd)
+			fe.started()
 			return cmd
 		}))
 	}
+	// The safety net of the end the pass runs below, for the paths that
+	// return before it.
+	defer fe.run()
 
 	// Forward BYOK credentials and effort level into the formatting pass so
 	// the resumed session uses the same auth path as Pass 1.
@@ -2378,6 +2418,9 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			fn(BackgroundWork{Backend: BackendClaudeCode, Phase: BackgroundAbandoned, Running: len(lost), Tasks: lost, Reason: reason})
 		}
 	}
+	// The process has ended, and what it started ends with it: what was
+	// stopped joins the work it lost.
+	lost = appendLabels(lost, fe.run()...)
 	// A process that answered — or launched work — took its prompt.
 	if rm != nil || len(lost) > 0 {
 		sid := sessionID

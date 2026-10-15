@@ -422,6 +422,12 @@ func TestExecuteViaSandboxRunner_SendsTheLaunchersBudgetAndHooks(t *testing.T) {
 			if got := string(crossed.SettingsHooks); got != hooks {
 				t.Errorf("the runner's settings hooks = %s, the workspace's = %s", got, hooks)
 			}
+			// The launcher wraps the runner in the node's session and ends
+			// it: the runner must draw none of its own, or what it stops is
+			// reported into its own stderr and the launcher finds nothing.
+			if !crossed.LauncherEndsNodeSession {
+				t.Errorf("the task does not tell the runner the launcher ends the node's session")
+			}
 		})
 	}
 	// A launcher that predates the field: the runner keeps its built-in
@@ -465,7 +471,10 @@ func dispatchCapturingTheTask(t *testing.T, b *ClawBackend, workDir string) dele
 type taskCaptureSandbox struct{ path string }
 
 func (s *taskCaptureSandbox) Driver() string { return "task-capture" }
-func (s *taskCaptureSandbox) Command(ctx context.Context, _ []string, _ sandbox.ExecOpts) *exec.Cmd {
+func (s *taskCaptureSandbox) Command(ctx context.Context, argv []string, _ sandbox.ExecOpts) *exec.Cmd {
+	if isNodeSessionEnd(argv) {
+		return exec.CommandContext(ctx, "true")
+	}
 	return exec.CommandContext(ctx, "sh", "-c", `head -n 1 > "$0"`, s.path)
 }
 func (s *taskCaptureSandbox) Exec(context.Context, []string, sandbox.ExecOpts) (sandbox.ExecResult, error) {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -139,9 +140,13 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			b.Logger.Warn("[%s#%d/codex] %v", task.NodeID, task.Iteration, rerr)
 		}
 	}()
-	if len(spawnEnv) > 0 {
-		opts = append(opts, codexsdk.WithEnv(spawnEnv))
-	}
+	// What either pass starts carries the node session and ends with this run
+	// (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md), before the
+	// home it works in is released.
+	token, since := proc.NewNodeSessionToken(), NodeSessionSince()
+	spawnEnv = withNodeSessionEnv(spawnEnv, token)
+	defer SweepLocalNodeSession(b.Logger, task, BackendCodex, token, since)
+	opts = append(opts, codexsdk.WithEnv(spawnEnv))
 
 	opts = append(opts, codexsdk.WithStderr(func(line string) {
 		stderrCapture.AppendLine(line)

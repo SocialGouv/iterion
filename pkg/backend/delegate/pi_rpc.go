@@ -130,10 +130,19 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	var mark string
 	if task.Sandbox != nil {
 		mark = sandboxDelegateMark(task)
-		sandboxCleanup = killSandboxDelegate(task.Sandbox, mark, b.Logger)
+		sandboxCleanup = killSandboxDelegate(task.Sandbox, mark, ownerOf(b.Logger, task, BackendPi))
 	}
 	if sandboxCleanup != nil {
 		defer sandboxCleanup()
+	}
+	// On the host, what pi starts carries the node session token and ends
+	// with this run (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
+	// Deferred before the client, so the client's Close runs first.
+	env := piRPCEnv(ctx, task, b.Logger)
+	if task.Sandbox == nil {
+		token, since := proc.NewNodeSessionToken(), NodeSessionSince()
+		env = append(env, proc.NodeSessionEntry(token))
+		defer SweepLocalNodeSession(b.Logger, task, BackendPi, token, since)
 	}
 
 	collector := &piCollector{task: task, logger: b.Logger, settled: make(chan struct{})}
@@ -149,7 +158,7 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		// by default), so container boot plus a few servers genuinely exceeds
 		// 30s.
 		RequestTimeout: piColdTimeout,
-		Env:            piRPCEnv(ctx, task, b.Logger),
+		Env:            env,
 		Spawn:          b.spawner(task, binary, mark),
 		OnEvent:        collector.onEvent,
 		OnStderr: func(line string) {

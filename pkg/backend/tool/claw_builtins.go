@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
 )
 
@@ -143,6 +144,11 @@ func executeWorkspaceBash(ctx context.Context, input map[string]any, workspace s
 	extraEnv := bashExtraEnv
 	if ctxEnv := BashExtraEnvFromContext(ctx); len(ctxEnv) > 0 {
 		extraEnv = append(append([]string{}, bashExtraEnv...), ctxEnv...)
+	}
+	// What the shell starts carries the node's session and ends with the node
+	// (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
+	if session := proc.NodeSessionEnvFrom(ctx); len(session) > 0 {
+		extraEnv = append(append([]string{}, extraEnv...), session...)
 	}
 	if len(extraEnv) > 0 {
 		return clawtools.ExecuteBashWithEnv(ctx, input, workspace, extraEnv)

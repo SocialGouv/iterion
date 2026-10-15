@@ -104,6 +104,13 @@ type IOTask struct {
 	// from a launcher that predates it: the runner keeps the built-in
 	// defaults.
 	Retry *IORetryPolicy `json:"retry,omitempty"`
+	// LauncherEndsNodeSession says the launcher spawned the runner inside the
+	// node's session and ends that session when the node ends
+	// (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md): what the
+	// runner starts carries it already, and the launcher's sweep is the one
+	// that stops and reports it. False from a launcher that predates it: the
+	// runner then ends a session of its own.
+	LauncherEndsNodeSession bool `json:"launcher_ends_node_session,omitempty"`
 }
 
 // IORetryPolicy is model.RetryPolicy on the wire (this package cannot

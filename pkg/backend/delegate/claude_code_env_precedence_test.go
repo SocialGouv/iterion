@@ -126,10 +126,11 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{
 					}
 					got := map[string]string{}
 					if sandboxed {
-						if len(fake.envs) != 1 {
-							t.Fatalf("want one sandbox spawn, got %d (%v)", len(fake.envs), err)
+						_, _, envs := fake.spawns()
+						if len(envs) != 1 {
+							t.Fatalf("want one sandbox spawn, got %d (%v)", len(envs), err)
 						}
-						got = fake.envs[0]
+						got = envs[0]
 					} else {
 						if err != nil {
 							t.Fatal(err)

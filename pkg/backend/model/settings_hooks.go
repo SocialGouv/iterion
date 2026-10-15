@@ -331,7 +331,9 @@ func runCommandHook(ctx context.Context, event string, hctx hooks.Context, h set
 	if hctx.ToolError != nil {
 		isError = "1"
 	}
-	c.Env = append(os.Environ(),
+	// A hook is the node's: what it starts carries the node's session and ends
+	// with the node (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
+	c.Env = append(append(os.Environ(), proc.NodeSessionEnvFrom(ctx)...),
 		"HOOK_EVENT="+event,
 		"HOOK_TOOL_NAME="+hctx.ToolName,
 		"HOOK_TOOL_INPUT="+truncateHookEnvValue(string(inputJSON)),

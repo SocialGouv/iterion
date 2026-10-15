@@ -181,6 +181,10 @@ var botVarsInfraPrefixes = []string{
 	// Written by the engine for a child: a run's identity and stores, the
 	// ticket it serves — and the bounds on a run's interactive shell.
 	"ITERION_RUN_", "ITERION_ISSUE_",
+	// A node session's variable (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md):
+	// a stored one would make a spawn carry another delegation's session, and
+	// that delegation's end would stop it.
+	"ITERION_NODE_SESSION_",
 	// The sovereign-pool run-stream prefix (#2029) is JetStream topology,
 	// not an environment knob: a stored bot var that could move a run's
 	// stream would route it outside its pool.

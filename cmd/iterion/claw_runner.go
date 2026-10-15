@@ -180,6 +180,9 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	}
 	captureSink := &dispatcherCaptureSink{dispatcher: dispatcher}
 	ctx = model.WithSandboxRunnerSession(ctx, sandboxRunnerSessionID, sessionStore, captureSink)
+	if ioTask.LauncherEndsNodeSession {
+		ctx = model.WithLauncherEndedNodeSession(ctx)
+	}
 
 	// Build a minimal ClawBackend. The registry resolves the API
 	// client from the standard ITERION_*_KEY env vars, which the

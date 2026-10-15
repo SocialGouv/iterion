@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,11 @@ type modelDefaultsRun struct {
 
 func (r *modelDefaultsRun) Driver() string { return "kubernetes" }
 func (r *modelDefaultsRun) Command(ctx context.Context, argv []string, opts sandbox.ExecOpts) *exec.Cmd {
+	if !slices.Contains(argv, "--print") {
+		// The exec that ends a spawn (its kill and node session sweep), not a
+		// CLI spawn: it must not replace the spawn this double captured.
+		return exec.CommandContext(ctx, "true")
+	}
 	r.env = map[string]string{}
 	for k, v := range opts.Env {
 		r.env[k] = v

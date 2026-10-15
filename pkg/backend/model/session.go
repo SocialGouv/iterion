@@ -324,6 +324,22 @@ func WithSandboxRunnerSession(ctx context.Context, runID string, store *NodeSess
 	return context.WithValue(ctx, runtimeContextKey{}, runtimeContext{runID: runID, store: store, sink: sink})
 }
 
+type launcherEndsNodeSessionKey struct{}
+
+// WithLauncherEndedNodeSession marks ctx as a sandboxed runner's whose
+// launcher wrapped it in the node's session and ends that session when the
+// node ends (delegate.IOTask.LauncherEndsNodeSession): Execute then draws no
+// session of its own, and what the node starts is stopped and reported by the
+// launcher's sweep.
+func WithLauncherEndedNodeSession(ctx context.Context) context.Context {
+	return context.WithValue(ctx, launcherEndsNodeSessionKey{}, true)
+}
+
+func launcherEndsNodeSession(ctx context.Context) bool {
+	ended, _ := ctx.Value(launcherEndsNodeSessionKey{}).(bool)
+	return ended
+}
+
 // runtimeContextFrom extracts the runID + session store from ctx. The
 // returned store is nil when no executor wired one in.
 func runtimeContextFrom(ctx context.Context) (string, *nodeSessionStore) {
