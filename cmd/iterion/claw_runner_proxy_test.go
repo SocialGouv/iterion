@@ -293,7 +293,8 @@ func TestClawRunner_RelayHooksCrossTheWireAsEventEnvelopes(t *testing.T) {
 
 // TestClawRunner_RelayReportsADeadChannelOnStderr: a hook cannot return an
 // error, so a relay write that fails is written to stderr — which the
-// launcher captures into the node's error — instead of vanishing.
+// launcher reports for the operator, and folds into the node's error when the
+// dead channel fails the crossing — instead of vanishing.
 func TestClawRunner_RelayReportsADeadChannelOnStderr(t *testing.T) {
 	runnerStdinR, _ := io.Pipe()
 	runnerStdoutR, runnerStdoutW := io.Pipe()

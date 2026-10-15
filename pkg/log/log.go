@@ -436,6 +436,71 @@ func BlockPreview(s string, max int) string {
 	return safeByteCut(s, max) + "\n...[truncated]"
 }
 
+// BlockPreviewRendered is [BlockPreview] bounded on what [Logger.LogBlock]
+// WRITES rather than on the body it is given: every line of a block carries
+// blockIndent, which the caller never sees, so a body bounded on its own
+// bytes still reaches the log up to eight times over — one byte of text per
+// line against thirteen of prefix (measured: a 1 MiB body of single-byte
+// lines renders as 7.5 MiB). Callers whose body is third-party text, with
+// the third party choosing both its size and where its newlines fall, bound
+// it here.
+//
+// The cut is rune-safe (see [Truncate]), newlines are preserved, and the
+// marker lands on its own line — itself inside max, down to a max that only
+// fits the marker (below that, the header goes out with no body at all). The
+// accounting rounds UP (a trailing newline the renderer trims is still
+// charged a line), so the returned body never renders past max and never
+// over-reserves by more than one line's prefix.
+//
+// The accounting is the HUMAN renderer's, the one that carries the prefix. In
+// JSON mode the body travels as a record field, which this bound covers for
+// what it adds (no indent) but not for what JSON escaping adds on top — the
+// property every byte cap in the tree has.
+func BlockPreviewRendered(s string, max int) string {
+	if s == "" {
+		return ""
+	}
+	// What one body line costs the writer: the continuation prefix plus the
+	// newline the renderer puts back.
+	const perLine = len(blockIndent) + 1
+	const marker = "...[truncated]"
+	if renderedBlockSize(s) <= max {
+		return s
+	}
+	// Not even one prefixed line fits: a marker nobody asked for would put
+	// the block OVER the bound it is here to hold.
+	if max < perLine+len(marker) {
+		return ""
+	}
+	budget := max - (perLine + len(marker))
+	used, end := perLine, 0
+	for end < len(s) {
+		step := 1
+		if s[end] == '\n' {
+			step = perLine
+		}
+		if used+step > budget {
+			break
+		}
+		used += step
+		end++
+	}
+	if end == 0 {
+		return marker
+	}
+	return safeByteCut(s, end) + "\n" + marker
+}
+
+// renderedBlockSize is how many bytes [Logger.LogBlock] writes for body s,
+// excluding its header line.
+func renderedBlockSize(s string) int {
+	if s == "" {
+		return 0
+	}
+	lines := strings.Count(strings.TrimRight(s, "\n"), "\n") + 1
+	return len(strings.TrimRight(s, "\n")) - (lines - 1) + lines*(len(blockIndent)+1)
+}
+
 // safeByteCut returns s[:max] pulled back to the nearest preceding
 // rune boundary so the returned string is always valid UTF-8.
 // Continuation bytes have the bit pattern 10xxxxxx; we walk back

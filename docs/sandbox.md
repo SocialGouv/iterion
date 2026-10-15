@@ -1027,6 +1027,132 @@ executes the in-container tools itself and builds, for each
 launcher-placed one, a proxy ToolDef closure that round-trips the call
 across the channel.
 
+**The launcher's side of the crossing has three rules of its own**, in
+`executeViaSandboxRunner`, `refuseForwardedCall` and `multiplexerHandler`
+([pkg/backend/model/claw_backend.go](../pkg/backend/model/claw_backend.go)):
+
+- **`cmd.Wait` is bounded — the read before it is not.** `cmd.Wait` waits for
+  the goroutine copying the runner's stderr, and that copier ends only when
+  every holder of the pipe closes it — a descendant the driver's command left
+  behind is such a holder, so a node whose result envelope has already been
+  read would never return. `cmd.WaitDelay` (2 s, `clawRunnerWaitDelay`, set
+  before `Start` so the context watcher is armed whatever the driver's
+  `Cmd.Cancel`) bounds that drain and every early abort. The bound expiring is
+  not the node's failure: `exec.ErrWaitDelay` on a runner that answered is
+  reported as an abandoned drain, never charged to the node. What no bound
+  covers is the multiplexer's READ of the stdout pipe, before that `Wait`: a
+  runner that dies without writing its result envelope (an in-container OOM
+  kill, a failed `write result envelope`) while a descendant holds the pipe
+  parks the node until something cancels the run — the cancellation closes the
+  pipes `clawRunnerWaitDelay` later and the dispatch returns. Running that
+  `Wait` concurrently with the read is NOT the fix: `Wait` closes this
+  process's end of `StdoutPipe` as its last act (`os/exec`: "it is incorrect
+  to call Wait before all reads from the pipe have completed"), so a host
+  inside a slow envelope handler loses an answer the runner had already
+  written — measured, 3 runs out of 3. Bounding that read means owning the
+  pipe instead of borrowing `StdoutPipe`'s: issue
+  [#2457](https://github.com/SocialGouv/iterion/issues/2457).
+- **The runner's stderr is reported on every outcome that joined it.** It is
+  the container's one channel for a diagnostic that does not fail the node — a
+  replay it could not decode, a relayed event too large to ship, a
+  settings-hooks notice — and the only account of a runner that died before the
+  launcher finished seeding it. One `defer`, armed after a successful `Start`,
+  so the outcomes whose error does not carry the buffer report it too: a node
+  that answers has no error at all, and an abort's error folds it nowhere.
+  Every `Wait` of the dispatch goes through one chokepoint that marks the
+  runner joined, and the report reads nothing before that mark: exec's copier
+  goroutine owns the stderr buffer until `Wait` returns, so a dispatch that
+  UNWINDS instead of returning — a launcher-side tool panicking through the
+  multiplexer — has no readable buffer and reports nothing rather than racing
+  the copier for a torn one. What it writes is a log BLOCK whose RENDERED size
+  is bounded at `maxFieldSize` — the logger's own bound, because the block's
+  continuation prefix is the logger's and a container writing one byte per line
+  would otherwise put eight times the cap in the run log — and what arrives is
+  the container's log, with the container's newlines and the container's idea of
+  how much to write; `WARN` when the crossing failed, `INFO` when the node
+  answered. A healthy crossing's empty stderr stays silent, and so does the
+  pass below: an operator log that would drop the record on its level is asked
+  BEFORE the buffer is scanned, so a silent crossing costs no scan of the
+  container's log. The ERROR of a failed crossing keeps the whole buffer: the
+  bound here is the log's, and the three error returns that quote the runner's
+  stderr hand it to `onDelegateError`, which persists it uncapped — a sibling
+  gap of the non-crossing sinks, not something this bound covers. The other
+  sibling is the relayed step's own two blocks (the response and the thinking
+  text): what bounds them at a crossing is the IPC's per-field budget, which
+  is the BODY's, so 1 MiB of single-byte lines reaches the run log as 7.5 MiB
+  (measured) and ten such steps as 79 MB. Bounding those is a cut an operator
+  reads — the thinking text has no other surface, it is not persisted — so it
+  is a decision of its own, not a corollary of this bound.
+- **The far side's text crosses the run's redaction before the operator's log
+  or an error keeps it.** The container's stderr, the runner's structured
+  error, the line the host could not decode and the argument of a refused
+  forwarded call go through `Task.RedactSecrets` where the launcher reads them
+  (`redactedFarSide`), once per text: the run log AND every error the crossing
+  raises carry placeholders. The error matters as much as the log: the hooks
+  that report a failed delegation read it where it is raised, before the node
+  boundary's own scrub. The texts that reach the log and nothing else — a
+  refused call's argument, a relayed event's type and the decoder's complaint
+  about it — go through the same pass behind the sink's own gate
+  (`farSideForLog`, a `%s` argument the logger formats only for a record it
+  keeps), so an operator log that drops the line pays no scan there either. Of
+  those, the type the FAR SIDE chose arrives on the DEBUG arm, the one
+  reporting an event this host does not consume: `ApplyRelayedEvent` raises a
+  decode error only from inside a case on one of this host's own constants, so
+  the warn line's type is a host literal today and crosses the pass as the
+  honest default for the arm that will one day quote a chosen one. The gate is
+  owed at the relayed hooks' sinks too (`hooks.go`), where a relayed retry's
+  error is bounded only by the IPC's per-field budget: a run at `--log-level
+  error` must not pay a 1 MiB pass for a line it drops. A formatted line owes
+  nothing but its argument's laziness; a log BLOCK's body is a string the
+  caller builds, so the block sinks of those hooks go through one owner —
+  `storeHooks.logFarSideBlock`, which asks the sink and only then redacts —
+  rather than each copying the test. A
+  relayed payload does NOT cross there — it re-enters the host as an event, so
+  its event copy is scrubbed by Layer 0 and its log line by `h.red` at the
+  store-hook sink (`hooks.go`): a new relayed hook owes the pass there, at
+  every argument of its line, the tool's name and the model's own included. A
+  relayed turn capture owes it TWICE over, because what that hook writes is not
+  a log line: the `TurnCheckpoint` the per-node timeline and the Fork API serve
+  is persisted outside Layer 0's event wrapper, so every far-side value it
+  keeps — the tool call's name and its finish reason as much as its input
+  preview — crosses `h.red` at that sink or reaches disk in clear. Two of that
+  record's far-side strings are kept as produced, each with the reader that
+  needs the value itself: `backend`, which a fork reads to pick the child's
+  backend and to gate the conversation replay, and `session_id`, the key it
+  resumes the backend session with.
+
+  Three sinks of that kind, not one: the turn checkpoint, the run's PLAN store
+  (a relayed `todo_write` snapshots the agent's todo list, so a todo's status,
+  priority and id cross the pass with its prose — all model-authored, and the
+  enums the container's own tool checks are a request, not a verdict), and the
+  tool payload's sidecar BLOB, whose
+  directory is named with the call's `tool_use_id`. That id crosses the pass
+  ONCE, where the blob is written, and the same string goes in the event as
+  `<kind>_ref`: the key the studio's tool panel and the files-touched route
+  fetch the blob with. Two copies of one far-side value, one of them rewritten
+  by Layer 0 and the other not, would leave the far side's text on the
+  filesystem under a name nothing can fetch.
+
+  The pass never costs an error its chain: `redactedThrough` rebuilds the
+  message only when the pass changed it and answers `errors.Is` / `errors.As`
+  either way, without unwrapping, so a reporter that records every link
+  (`pkg/errtrack`, Sentry) reaches no link holding the far side's text in
+  clear.
+
+  What a CUT crossing's error carries, today, is what the crossing OBSERVED,
+  redacted — not the reason the run ended. The multiplexer tests the context
+  only between two envelopes, and what unblocks a read parked on a held pipe is
+  `clawRunnerWaitDelay` closing this process's own ends, so the error of a
+  cancelled or timed-out crossing usually names the closed pipe or the signal
+  that killed the runner; the cut reaches the error's chain only when the
+  multiplexer happens to notice the context between two envelopes. Three
+  readers need the cut itself: a convergence quoting a cancelled sibling's
+  cause, the engine's duration-budget arm, and recovery dispatch, which
+  classifies by the error's TEXT and finds the container's whole stderr quoted
+  there. Issue [#2456](https://github.com/SocialGouv/iterion/issues/2456) owns
+  that, because carrying a cut out of the crossing re-models how the engine
+  classifies one.
+
 > **Where an advertised tool executes is a boundary, not a fallback.**
 > A tool the runner proxies runs on the HOST, with the launcher's
 > process, cwd, filesystem and network position — so the routing cannot
@@ -1230,8 +1356,8 @@ across the channel.
     every cut marked — the token counts are what the run is metered on. A
     payload still over the cap after that (thousands of short strings,
     nothing left to cut) is refused and reported on the runner's stderr,
-    which the launcher folds into the node's error: one lost
-    observation, never a dead channel, and never a silent one.
+    which the launcher reports for the operator: one lost observation,
+    never a dead channel, and never a silent one.
   - **The reply direction is bounded the same way.** A host-side tool
     result travelling BACK to the container (an MCP call's result, a
     large file read, a `go test ./...` transcript) is cut to

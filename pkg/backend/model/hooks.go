@@ -167,8 +167,8 @@ type NodeServedRecorder interface {
 //     the full bytes;
 //   - otherwise the full bytes go to a sidecar blob via blobSink, and the
 //     event carries `data[key+"_preview"]` (first 4 KB), `data[key+"_size"]`
-//     (total bytes), and `data[key+"_ref"]` (= toolUseID — the path is
-//     deterministic from run_id + tool_use_id + kind).
+//     (total bytes), and `data[key+"_ref"]` (the blob's key — the path is
+//     deterministic from run_id + that key + kind).
 //
 // When blobSink is nil or toolUseID is empty (an emitter without the
 // capability, a call with no tool_use id), falls back to capped inline
@@ -192,7 +192,17 @@ func persistToolPayload(ctx context.Context, guard *secretguard.Guard, blobSink 
 		data[key+"_size"] = len(content)
 		return
 	}
-	size, err := blobSink.WriteToolBlob(ctx, runID, toolUseID, key, content)
+	// The id is third-party text too, not only the payload: the model writes
+	// it, and on a sandboxed node it crosses the relay as the container sent
+	// it. It becomes a DIRECTORY NAME on the filesystem store — a sink
+	// outside the redacting wrapper, like the blob beside it — so the pass
+	// runs here, once, and the same string goes in the event: the blob's key
+	// and the ref every reader fetches it with (the studio's tool panel,
+	// the files-touched route) are one value, not two copies of it that
+	// Layer 0 rewrites on one side only. The pass leaves a provider's real
+	// call id (`toolu_…`, `call_…`) as produced.
+	blobKey := guard.Redact(toolUseID)
+	size, err := blobSink.WriteToolBlob(ctx, runID, blobKey, key, content)
 	if err != nil {
 		// Sidecar write failed — fall back to capped inline so the
 		// event still carries the data (degraded preview only).
@@ -202,7 +212,7 @@ func persistToolPayload(ctx context.Context, guard *secretguard.Guard, blobSink 
 	}
 	data[key+"_preview"] = string(content[:toolInlineThreshold])
 	data[key+"_size"] = size
-	data[key+"_ref"] = toolUseID
+	data[key+"_ref"] = blobKey
 }
 
 // storeHooks bundles the captured state shared by every closure built
@@ -308,6 +318,31 @@ func (h *storeHooks) emit(nodeID string, evType store.EventType, data map[string
 	})
 }
 
+// logFarSideBlock writes one log block whose BODY is text from outside this
+// process — the model's answer, a container's relayed step, a tool's payload —
+// through the run's redaction, asking the sink BEFORE paying for the pass.
+//
+// The gate belongs here rather than at each sink. A formatted line gets this
+// for free ([farSideForLog]: iterlog drops a record above its level before
+// fmt.Sprintf), but a block body is a string the caller builds, so every
+// builder of one owed the same IsEnabled test — and a sink that forgets it
+// pays the run's whole secret guard (an unmaterialize, a heuristic detector
+// and a recursive decode) over a field bounded only by the IPC's 1 MiB budget,
+// for output nobody will see.
+//
+// Only for a body that reaches the operator's log and nothing else. Text that
+// also lands in an event or an error is redacted eagerly, where it is built:
+// those keep it whatever the log level is.
+//
+// Whether an empty body is worth a header is the CALLER's call, as it is for
+// [iterlog.Logger.LogBlock] itself (which prints the header alone).
+func (h *storeHooks) logFarSideBlock(level iterlog.Level, emoji, header, body string) {
+	if !h.logger.IsEnabled(level) {
+		return
+	}
+	h.logger.LogBlock(level, emoji, header, h.red(body))
+}
+
 // onLLMPrompt implements the OnLLMPrompt hook.
 func (h *storeHooks) onLLMPrompt(nodeID string, systemPrompt string, userMessage string) {
 	data := map[string]any{
@@ -349,16 +384,24 @@ func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
 	}
 	h.emit(nodeID, store.EventLLMRequest, data)
 
-	toolInfo := ""
-	if info.ToolCount > 0 {
-		toolInfo = fmt.Sprintf(", %d tools", info.ToolCount)
+	// The model string and the effort are the far side's account of the call
+	// it made — a relayed llm_request carries whatever the container wrote
+	// (pkg/backend/model/sandbox_relay.go re-fires this hook from an `event`
+	// envelope), so they cross the run's redaction like the content below.
+	// The sink is asked first: the pass is the run's secret guard, and a
+	// record the log drops on its level is never scanned for it.
+	if h.logger.IsEnabled(iterlog.LevelInfo) {
+		toolInfo := ""
+		if info.ToolCount > 0 {
+			toolInfo = fmt.Sprintf(", %d tools", info.ToolCount)
+		}
+		reasoningInfo := ""
+		if info.ReasoningEffort != "" {
+			reasoningInfo = fmt.Sprintf(", reasoning=%s", h.red(info.ReasoningEffort))
+		}
+		h.logger.Logf(iterlog.LevelInfo, "🤖", "[%s#%d/claw] LLM call: %s (%d msgs%s%s)",
+			nodeID, info.Iteration, h.red(info.Model), info.MessageCount, toolInfo, reasoningInfo)
 	}
-	reasoningInfo := ""
-	if info.ReasoningEffort != "" {
-		reasoningInfo = fmt.Sprintf(", reasoning=%s", info.ReasoningEffort)
-	}
-	h.logger.Logf(iterlog.LevelInfo, "🤖", "[%s#%d/claw] LLM call: %s (%d msgs%s%s)",
-		nodeID, info.Iteration, info.Model, info.MessageCount, toolInfo, reasoningInfo)
 }
 
 // onLLMRetry implements the OnLLMRetry hook.
@@ -375,12 +418,22 @@ func (h *storeHooks) onLLMRetry(nodeID string, info RetryInfo) {
 	}
 	h.emit(nodeID, store.EventLLMRetry, data)
 
-	errMsg := ""
-	if info.Error != nil {
-		errMsg = info.Error.Error()
+	// A relayed retry carries the CONTAINER's account of the provider call
+	// (pkg/backend/model/sandbox_relay.go re-fires this hook from an `event`
+	// envelope), and an in-process one carries the provider's — third-party
+	// text either way, so the line crosses the run's redaction like every
+	// other content this file writes to the log. Behind the sink's own gate:
+	// a relayed error is bounded only by the IPC's per-field budget (1 MiB),
+	// and the pass over it is the run's whole secret guard — a run at
+	// --log-level error would pay it for a line it then drops.
+	if h.logger.IsEnabled(iterlog.LevelWarn) {
+		errMsg := ""
+		if info.Error != nil {
+			errMsg = h.red(info.Error.Error())
+		}
+		h.logger.Warn("LLM retry [%s]: attempt %d, delay %dms: %s",
+			nodeID, info.Attempt, info.Delay.Milliseconds(), errMsg)
 	}
-	h.logger.Warn("LLM retry [%s]: attempt %d, delay %dms: %s",
-		nodeID, info.Attempt, info.Delay.Milliseconds(), errMsg)
 }
 
 // onLLMStepFinish implements the OnLLMStepFinish hook.
@@ -449,9 +502,9 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 		// body under the header so length doesn't crowd the log.
 		// The [node#iter/claw] tag must lead the header so the
 		// per-node Logs tab's prefix filter associates the line.
-		h.logger.LogBlock(iterlog.LevelInfo, "💬",
+		h.logFarSideBlock(iterlog.LevelInfo, "💬",
 			fmt.Sprintf("[%s#%d/claw] response step %d:", nodeID, step.Iteration, step.Number),
-			h.red(step.Text))
+			step.Text)
 	}
 	// Per-tool log line for the claw (in-process) path. The
 	// claude_code delegate prints its own
@@ -459,23 +512,36 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 	// stream decoding, so we skip those here — the bridge
 	// hook in executor.go only ferries event payloads, and
 	// the LLMStepInfo arrives only for claw's direct loop.
-	if len(step.ToolCalls) > 0 {
+	// Nothing in this loop leaves the operator's log, so the sink is asked
+	// once for all of it: every far-side value below costs the run's secret
+	// pass, and a log that keeps no INFO record keeps none of these (a
+	// DEBUG-enabled logger keeps INFO too — the levels are ordered). The
+	// block bodies ask again through [storeHooks.logFarSideBlock] — one owner
+	// for the rule, one IsEnabled compare for the repetition.
+	if len(step.ToolCalls) > 0 && h.logger.IsEnabled(iterlog.LevelInfo) {
 		for _, tc := range step.ToolCalls {
+			// The NAME is the far side's too, not only the input: a
+			// relayed llm_step_finished carries the name the container
+			// sent. One pass per call, read by all four lines below.
+			name := h.red(tc.Name)
 			detail := tooldisplay.HeaderDetail(tc.Name, tc.Input, tooldisplay.SnakeCaseKeys)
 			if detail != "" {
-				h.logger.Logf(iterlog.LevelInfo, "🔧", "[%s#%d/claw] %s %s", nodeID, step.Iteration, tc.Name, h.red(detail))
+				h.logger.Logf(iterlog.LevelInfo, "🔧", "[%s#%d/claw] %s %s", nodeID, step.Iteration, name, h.red(detail))
 			} else {
-				h.logger.Logf(iterlog.LevelInfo, "🔧", "[%s#%d/claw] %s", nodeID, step.Iteration, tc.Name)
+				h.logger.Logf(iterlog.LevelInfo, "🔧", "[%s#%d/claw] %s", nodeID, step.Iteration, name)
 			}
 			if body := tooldisplay.BlockBody(tc.Name, tc.Input); body != "" {
-				h.logger.LogBlock(iterlog.LevelInfo, "🔧",
-					fmt.Sprintf("[%s#%d/claw] tool input %s:", nodeID, step.Iteration, tc.Name),
-					h.red(body))
+				h.logFarSideBlock(iterlog.LevelInfo, "🔧",
+					fmt.Sprintf("[%s#%d/claw] tool input %s:", nodeID, step.Iteration, name),
+					body)
 			}
+			// The raw input keeps its own gate around the HEADER too: the
+			// name it formats is far-side text, bounded only by the IPC
+			// budget, so a DEBUG-less run must not copy it either.
 			if h.logger.IsEnabled(iterlog.LevelDebug) {
-				h.logger.LogBlock(iterlog.LevelDebug, "🔧",
-					fmt.Sprintf("[%s#%d/claw] raw input %s:", nodeID, step.Iteration, tc.Name),
-					h.red(string(tc.Input)))
+				h.logFarSideBlock(iterlog.LevelDebug, "🔧",
+					fmt.Sprintf("[%s#%d/claw] raw input %s:", nodeID, step.Iteration, name),
+					string(tc.Input))
 			}
 		}
 	}
@@ -496,10 +562,10 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 	// (LogBlock), so full reasoning text at INFO doesn't crowd the log.
 	// Metrics-only line kept as fallback when no text was captured.
 	if step.Thinking != "" {
-		h.logger.LogBlock(iterlog.LevelInfo, "🧠",
+		h.logFarSideBlock(iterlog.LevelInfo, "🧠",
 			fmt.Sprintf("[%s#%d/claw] thinking step %d (~%d tok, %dms):",
 				nodeID, step.Iteration, step.Number, step.ReasoningTokens, step.ThinkingMs),
-			h.red(step.Thinking))
+			step.Thinking)
 	} else if step.ReasoningTokens > 0 || step.ThinkingMs > 0 {
 		h.logger.Logf(iterlog.LevelInfo, "🧠", "[%s#%d/claw] step %d thinking: ~%d tok, %dms",
 			nodeID, step.Iteration, step.Number, step.ReasoningTokens, step.ThinkingMs)
@@ -758,7 +824,14 @@ func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 	toolCalls := make([]store.TurnToolCall, len(info.ToolCalls))
 	for i, tc := range info.ToolCalls {
 		toolCalls[i] = store.TurnToolCall{
-			Name:         tc.Name,
+			// The record is PERSISTED and served by the timeline and the
+			// Fork API, and Layer 0 wraps the event sink, not this one: the
+			// name a relayed turn carries is the container's text as much as
+			// the input beside it, so it crosses the run's redaction here or
+			// it reaches disk in clear. The pass leaves a tool name that
+			// holds no secret untouched, so the one consumer that classifies
+			// by name (pkg/benchmark/discovery) reads what it read before.
+			Name:         h.red(tc.Name),
 			InputPreview: iterlog.Truncate(h.red(string(tc.Input)), toolInlineThreshold),
 		}
 	}
@@ -771,12 +844,21 @@ func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 		turnIdx = 0
 	}
 	turn := &store.TurnCheckpoint{
-		RunID:        h.runID,
-		NodeID:       nodeID,
-		LoopIter:     iter,
-		TurnIndex:    turnIdx,
+		RunID:     h.runID,
+		NodeID:    nodeID,
+		LoopIter:  iter,
+		TurnIndex: turnIdx,
+		// Two far-side strings of this record are kept as produced, each
+		// because a reader needs the value itself: Backend, which a fork reads
+		// to pick the child's backend and to gate the conversation replay, and
+		// SessionID below, the key that fork resumes the backend session with
+		// (pkg/runview/fork.go) — a rewritten one resumes nothing.
+		// FinishReason has no such reader: nothing in the tree compares the
+		// persisted one to a literal (the studio's trace reads the event's
+		// copy, which Layer 0 scrubs), so the container's choice of words
+		// crosses the run's pass like the tool names beside it.
 		Backend:      backend,
-		FinishReason: info.FinishReason,
+		FinishReason: h.red(info.FinishReason),
 		ToolCalls:    toolCalls,
 		TextDigest:   sha256Hex(info.Text),
 		Usage: store.TurnUsage{
@@ -905,8 +987,20 @@ func isPlanTool(name string) bool {
 // Status is canonicalised to the claude_code vocabulary (`done` →
 // `completed`) so the studio renders both backends' plans identically.
 // Returns nil on any parse failure or when there are no items (e.g. a
-// claw `todo_write` read call). redact scrubs secret values from the
-// free-text fields (nil-safe).
+// claw `todo_write` read call).
+//
+// redact (nil-safe) is the run's secret pass, and EVERY string of the
+// record crosses it, not only its prose: the snapshot is persisted by a
+// sink Layer 0 does not wrap, and every field of a todo is model-authored
+// — `id` is free-form by schema ("stable identifier for the todo item"),
+// and the status and priority enums are checked by the TOOL, in the
+// container, not by this parse. On a sandboxed node that makes all of them
+// the container's text (the relayed tool_started hook feeds this), and a
+// container's own validation is a request, not a verdict — the same reason
+// the launcher re-applies the permission gate to a forwarded call. So a
+// field left out of the pass reaches disk as the far side wrote it. The
+// pass leaves the plan's own vocabulary untouched, which is what the
+// studio counts on (`pending` | `in_progress` | `completed`).
 func parsePlanTodos(input json.RawMessage, redact func(string) string) []store.PlanTodo {
 	if len(input) == 0 {
 		return nil
@@ -940,10 +1034,10 @@ func parsePlanTodos(input json.RawMessage, redact func(string) string) []store.P
 		}
 		out = append(out, store.PlanTodo{
 			Content:    scrub(t.Content),
-			Status:     status,
+			Status:     scrub(status),
 			ActiveForm: scrub(t.ActiveForm),
-			Priority:   t.Priority,
-			ID:         t.ID,
+			Priority:   scrub(t.Priority),
+			ID:         scrub(t.ID),
 		})
 	}
 	return out
@@ -986,14 +1080,20 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 	// and rendered by the Tools tab + in-flight footer in the
 	// run view, so a per-call log line is just noise.
 	if info.Error != nil {
+		// The NAME is as third-party as the error text beside it — the
+		// model wrote it, and a relayed tool_called carries what the
+		// container sent — so the line crosses the run's redaction whole,
+		// not only its error. (The input preview crossed it already, at
+		// rememberInput, where the cut would split a value it recognises.)
+		toolName := h.red(info.ToolName)
 		// The rejected input goes on the same line: an error naming a missing
 		// property is not actionable without the payload that omitted it.
 		if preview := h.takeInput(info.ToolUseID); preview != "" {
 			h.logger.Error("Tool error [%s]: %s — %s (%dms)\n  rejected input: %s",
-				nodeID, info.ToolName, errText, info.Duration.Milliseconds(), preview)
+				nodeID, toolName, errText, info.Duration.Milliseconds(), preview)
 		} else {
 			h.logger.Error("Tool error [%s]: %s — %s (%dms)",
-				nodeID, info.ToolName, errText, info.Duration.Milliseconds())
+				nodeID, toolName, errText, info.Duration.Milliseconds())
 		}
 	} else {
 		h.takeInput(info.ToolUseID)

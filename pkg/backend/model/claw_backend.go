@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"slices"
 	"sort"
 	"strings"
@@ -1146,6 +1147,65 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 // Sandboxed execution — Phase 4 V1
 // ---------------------------------------------------------------------------
 
+// clawRunnerWaitDelay bounds the orphan-pipe wait of the runner's Cmd.
+//
+// [exec.Cmd.Wait] waits for the goroutine copying the child's stderr, and
+// that copier ends only when EVERY holder of the pipe has closed it — so a
+// descendant the runner left behind (a sandbox driver starts a process that
+// starts processes) keeps Wait blocked after the runner itself is gone, with
+// no bound of its own. [exec.Cmd.WaitDelay] is that bound; its clock starts
+// when Wait observes the child's exit or when ctx is done, so it never
+// shortens a runner still working, and it covers the final drain and every
+// early abort at once.
+const clawRunnerWaitDelay = 2 * time.Second
+
+// redactedFarSide is text produced on the far side of this backend's
+// boundaries — the container's stderr, the runner's structured error, the
+// type and the decode failure of a relayed event, an argument the agent
+// wrote — put through the run's Layer-0 sink redaction before this backend
+// hands it to anything that outlives the dispatch. A relayed payload the
+// host DOES decode is not this pass's business: it re-enters as an event,
+// redacted by Layer 0 and, for the log line, at its store-hook sink.
+//
+// Two such sinks, not one. The operator's log is this backend's own, so a
+// backend writing third-party text to it owes the pass. The ERROR it
+// returns owes it too: the hooks that report a failed delegation read that
+// error where it is raised — the run log's "Delegation failed" line, the
+// delegate_error event, the error tracker — and the node's own scrub
+// ([ClawExecutor.scrubNodeError]) only runs at Execute, after all of them.
+// Redacting at the crossing covers every reader at once; [redactedThrough]
+// is the same pass for an error whose Is/As chain has to survive it.
+//
+// [delegate.Task.RedactSecrets] is nil when the run's redaction kill switch
+// is set, and the text then goes through unchanged.
+func redactedFarSide(task delegate.Task, s string) string {
+	if task.RedactSecrets == nil {
+		return s
+	}
+	return task.RedactSecrets(s)
+}
+
+// farSideForLog is [redactedFarSide] deferred to the moment a log record is
+// FORMATTED, for the far-side text that only ever reaches the operator's log.
+//
+// iterlog drops a record above the logger's level before it reaches
+// fmt.Sprintf (pkg/log: the level test precedes the format), so a %s argument
+// of this type costs the run's secret pass only on a line the log actually
+// keeps — the same "ask the sink before the pass" the stderr report gets from
+// an explicit IsEnabled gate. Two shapes because the logger has two: a
+// formatted line evaluates its arguments lazily, a LogBlock BODY is a plain
+// string the caller must build, so that one still owes the gate.
+//
+// Only for a sink that drops. Text that also reaches an error or an event is
+// redacted eagerly through [redactedFarSide]: those keep it whatever the log
+// level is.
+type farSideForLog struct {
+	task delegate.Task
+	text string
+}
+
+func (f farSideForLog) String() string { return redactedFarSide(f.task, f.text) }
+
 // executeViaSandboxRunner forwards the task to the iterion-claw-runner
 // sub-process inside the sandbox container.
 //
@@ -1168,7 +1228,11 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 // OnToolCall to the in-process tool registry + MCP manager so MCP
 // tools become reachable across the IPC; V2-3 wires OnAskUser to the
 // engine pause path; V2-4 wires OnSessionCapture for compaction-retry.
-func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate.Task) (delegate.Result, error) {
+//
+// The error is a NAMED result because the stderr report below is a defer that
+// reads the outcome to pick its level; nothing reads the result value, hence
+// the blank name beside it.
+func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate.Task) (_ delegate.Result, err error) {
 	run := task.Sandbox
 	if run == nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: executeViaSandboxRunner called without a sandbox handle")
@@ -1271,10 +1335,93 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
+	// Every Wait below — the aborts and the final drain — is bounded here:
+	// see clawRunnerWaitDelay for the pipe a dead runner's descendant holds.
+	// BEFORE Start, which both reads the field to decide whether to arm the
+	// context watcher and hands it to the watcher goroutine it starts: a
+	// later assignment is a data race, and it arms nothing for a driver
+	// whose Cmd carries no Cancel.
+	//
+	// An OVERRIDE, deliberately: a driver sets this field for its own Wait
+	// (the kubernetes driver, for a credential plugin holding kubectl's
+	// pipes), while the crossing's bound is the launcher's promise that THIS
+	// dispatch hands the node back. The crossing owns it, whatever the driver
+	// chose — pinned by a witness that hands this call a Cmd bounded at an
+	// hour and still expects the node back.
+	cmd.WaitDelay = clawRunnerWaitDelay
+
 	if err := cmd.Start(); err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: spawn runner: %w", err)
 	}
 	defer endSession()
+
+	// Joining the runner is what makes its stderr readable: exec's copier
+	// goroutine owns the buffer until cmd.Wait returns, and Wait joins it on
+	// every path — the WaitDelay overrun closes the pipes and still waits for
+	// the copier (os/exec: awaitGoroutines). So every Wait of this dispatch
+	// goes through here, and the report below reads nothing until one has
+	// returned: an UNWOUND dispatch (a launcher-side tool panicking through
+	// the multiplexer) reaches the defer with no Wait at all, and there is
+	// nothing safe to read on that path.
+	joined := false
+	wait := func() error {
+		err := cmd.Wait()
+		joined = true
+		return err
+	}
+
+	// The buffer crosses the run's redaction ONCE, for every reader: the
+	// pass is the run's secret guard (an unmaterialize, a heuristic detector
+	// and a recursive decode over the whole text), not a string replace, and
+	// the report below quotes the same buffer the error branches do. Caching
+	// it is safe because every reader joins the runner first.
+	runnerStderr := sync.OnceValue(func() string { return redactedFarSide(task, stderrBuf.String()) })
+
+	// The runner's stderr is its ONE channel for a diagnostic that does not
+	// fail the node — a session_replay it could not decode, a relayed event
+	// too large to ship, a settings-hooks notice — and the only account of a
+	// runner that died before the launcher finished seeding it. Reported on
+	// every outcome of a started crossing that JOINED it: three of the error
+	// returns also fold the buffer into the node's error, the aborts below
+	// fold it nowhere, and a node that answers has no error at all.
+	defer func() {
+		// The buffer has a live writer until the runner is joined, so a
+		// dispatch unwinding without one reports nothing: there is no
+		// outcome to pick a level from either.
+		if !joined {
+			return
+		}
+		// The level follows the outcome — a crossing that failed owes the
+		// operator the container's last words, a node that answered surfaces
+		// its container's log without alarming on it.
+		level, emoji := iterlog.LevelWarn, "⚠️ "
+		if err == nil {
+			level, emoji = iterlog.LevelInfo, "📄"
+		}
+		// Asked BEFORE the pass, not after: the pass is the run's secret
+		// guard over the container's whole log, and the record it feeds is
+		// dropped on its level before anything prints — so a buffer no sink
+		// will keep is never scanned. One condition, not two: a backend with
+		// no operator log is a logger that enables nothing.
+		if !b.logger.IsEnabled(level) {
+			return
+		}
+		diag := strings.TrimSpace(runnerStderr())
+		if diag == "" {
+			return
+		}
+		// A block, not a line: the buffer is the container's log, so it
+		// arrives with newlines in it, and a single formatted line would
+		// print one prefixed line followed by every other one bare. Bounded
+		// at maxFieldSize on what the LOGGER WRITES, not on the body handed
+		// to it: how much a runner writes is the container's choice, and so
+		// is where it puts its newlines — every block line carries the
+		// logger's continuation prefix, so a 1 MiB body of single-byte lines
+		// is 7.5 MiB of run log.
+		b.logger.LogBlock(level, emoji,
+			fmt.Sprintf("[%s#%d/claw] the sandbox runner's stderr:", task.NodeID, task.Iteration),
+			iterlog.BlockPreviewRendered(diag, maxFieldSize))
+	}()
 
 	// V2-4: the host's copy of this task's session crosses BEFORE the task
 	// envelope — the runner stashes it, then loads it into its local store
@@ -1289,7 +1436,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	if len(seed.replay) > 0 {
 		if err := mux.Send(delegate.NewSessionReplayEnvelope(seed.replay)); err != nil {
 			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+			_ = wait()
 			return delegate.Result{}, fmt.Errorf("claw backend: send session_replay: %w", err)
 		}
 	}
@@ -1303,12 +1450,12 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		permEnv, err := delegate.NewPermissionPolicyEnvelope(task.Permission.Config())
 		if err != nil {
 			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+			_ = wait()
 			return delegate.Result{}, fmt.Errorf("claw backend: build permission_policy envelope: %w", err)
 		}
 		if err := mux.Send(permEnv); err != nil {
 			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+			_ = wait()
 			return delegate.Result{}, fmt.Errorf("claw backend: send permission_policy: %w", err)
 		}
 	}
@@ -1321,7 +1468,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	if modelroute.Parse(task.Model).Gateway() {
 		if err := mux.Send(delegate.NewGatewayV1Envelope()); err != nil {
 			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+			_ = wait()
 			return delegate.Result{}, fmt.Errorf("claw backend: send gateway_v1: %w", err)
 		}
 	}
@@ -1330,7 +1477,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// blocks on its EnvelopeReader.Read() until this arrives.
 	if err := mux.Send(taskEnv); err != nil {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		_ = wait()
 		return delegate.Result{}, fmt.Errorf("claw backend: send task envelope: %w", err)
 	}
 
@@ -1342,21 +1489,47 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// closing stdin after Run returns is purely belt-and-suspenders.
 	_ = stdinPipe.Close()
 
-	waitErr := cmd.Wait()
+	waitErr := wait()
+	if errors.Is(waitErr, exec.ErrWaitDelay) {
+		// The runner exited on its own and only the drain was abandoned:
+		// [exec.Cmd.Wait] returns this sentinel instead of nil when
+		// WaitDelay closed the pipes of an otherwise successful command.
+		// The node's outcome is the result envelope the multiplexer already
+		// read, so the drain is reported, never charged to the node.
+		if b.logger != nil {
+			b.logger.Warn("[%s#%d/claw] the sandbox runner exited but left its pipes held; abandoned the drain after %s",
+				task.NodeID, task.Iteration, clawRunnerWaitDelay)
+		}
+		waitErr = nil
+	}
+
+	// The far side's three accounts of a failure — the stderr it wrote
+	// (redacted by the pass above, shared with the report), the structured
+	// error it sent, and the line the host could not decode (the
+	// multiplexer's error quotes it) — are quoted by every error below, and
+	// those errors are read by the delegation hooks long before the node's
+	// own scrub: see [redactedFarSide]. They cross the run's redaction where
+	// they are read. The chain is not spent on it: waitErr keeps its %w (an
+	// exec.ExitError's text is the OS's "exit status N", nothing of the
+	// container's), and runErr keeps its Is/As through [redactedThrough],
+	// which rebuilds the message only when the pass changed it and leaves
+	// the cause reachable either way.
+	runnerError := redactedFarSide(task, ioRes.Error)
 
 	if runErr != nil && !errors.Is(runErr, io.EOF) {
-		return delegate.Result{}, fmt.Errorf("claw backend: multiplexer: %w (stderr: %s)", runErr, stderrBuf.String())
+		return delegate.Result{}, fmt.Errorf("claw backend: multiplexer: %w (stderr: %s)",
+			redactedThrough(task.RedactSecrets, runErr), runnerStderr())
 	}
 	if errors.Is(runErr, io.EOF) && ioRes.Error == "" && waitErr == nil {
 		// Runner closed stdout without sending a result envelope and
 		// exited cleanly — this should not happen with a well-formed
 		// runner, but surface a clear diagnostic instead of a misleading
 		// success.
-		return delegate.Result{}, fmt.Errorf("claw backend: runner exited without sending result envelope (stderr: %s)", stderrBuf.String())
+		return delegate.Result{}, fmt.Errorf("claw backend: runner exited without sending result envelope (stderr: %s)", runnerStderr())
 	}
 
 	if waitErr != nil && ioRes.Error == "" {
-		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, stderrBuf.String())
+		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, runnerStderr())
 	}
 	if ioRes.Error != "" {
 		// Preserve waitErr for errors.Is / errors.As consumers when
@@ -1364,9 +1537,9 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		// (the normal error path). Without %w on waitErr, downstream
 		// classifiers would lose the exec.ExitError typing.
 		if waitErr != nil {
-			return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %s (exit: %w)", ioRes.Error, waitErr)
+			return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %s (exit: %w)", runnerError, waitErr)
 		}
-		return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %s", ioRes.Error)
+		return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %s", runnerError)
 	}
 
 	res := delegate.FromIOResult(ioRes)
@@ -1472,10 +1645,11 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
 // settingsHooksForWire reads the host's .claude/settings.json hooks document
 // for the sandbox crossing and emits every diagnostic on the LAUNCHER side —
 // the in-container registration's warnings go to the container's stderr,
-// which the launcher surfaces only on failure, so on a successful sandboxed
-// run this pass is the diagnostic's only channel. Returns nil when there is
-// nothing useful to ship (no document, or one claw cannot parse — a document
-// of the wrong JSON type is warned about here, never shipped in silence).
+// which the launcher reports for the operator on every outcome, so this pass
+// keeps the diagnostic on the side that owns the document. Returns nil when
+// there is nothing useful to ship (no document, or one claw cannot parse — a
+// document of the wrong JSON type is warned about here, never shipped in
+// silence).
 func settingsHooksForWire(workDir, nodeID string, iteration int, logger *iterlog.Logger) json.RawMessage {
 	doc, err := readSettingsHooksDoc(workDir)
 	if err != nil {
@@ -2083,10 +2257,14 @@ func evaluateForwardedCall(p *permission.Policy, spellings []string, args map[st
 // refuseForwardedCall records a forwarded tool call the launcher refuses and
 // returns err. The refusal happens on the host's side of the boundary, so it
 // is logged and emitted from here — not left to the runner's event relay,
-// which whatever forged the call also controls.
+// which whatever forged the call also controls. Its text quotes the call the
+// other side sent, argument included, so THIS log line owes the run's
+// redaction. The error itself travels to two readers that already handle it:
+// back over the IPC as the refused call's result, to the side that wrote the
+// argument, and to the OnToolCall hook, whose own sink redacts its text.
 func (b *ClawBackend) refuseForwardedCall(task delegate.Task, name string, err error) error {
 	if b.logger != nil {
-		b.logger.Warn("[%s/claw] %v", task.NodeID, err)
+		b.logger.Warn("[%s/claw] %s", task.NodeID, farSideForLog{task, err.Error()})
 	}
 	if b.hooks.OnToolCall != nil {
 		b.hooks.OnToolCall(task.NodeID, LLMToolCallInfo{ToolName: name, Error: err})
@@ -2353,13 +2531,24 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			if b.logger == nil {
 				return
 			}
+			// A decoder's complaint about an event's fields is the
+			// container's text — a parse failure quotes the value it could
+			// not read — and so is the TYPE on the arm below it: an
+			// unknown type is the far side's own spelling, while a type
+			// that failed to decode matched a case on one of this host's
+			// constants ([ApplyRelayedEvent] raises an error from nowhere
+			// else). Both go through the run's redaction all the same,
+			// because the pass is what keeps a sink of this class honest
+			// when a new arm quotes a type the far side chose; and through
+			// [farSideForLog], this sink being the only reader, so an
+			// operator log that drops the record on its level pays no pass.
 			switch {
 			case err != nil:
-				b.logger.Warn("[%s#%d/claw] the sandbox runner relayed a %s event this host cannot decode — the node's per-step metering is incomplete: %v",
-					task.NodeID, task.Iteration, eventType, err)
+				b.logger.Warn("[%s#%d/claw] the sandbox runner relayed a %s event this host cannot decode — the node's per-step metering is incomplete: %s",
+					task.NodeID, task.Iteration, farSideForLog{task, eventType}, farSideForLog{task, err.Error()})
 			case !handled:
 				b.logger.Debug("[%s#%d/claw] the sandbox runner relayed a %s event this host does not consume",
-					task.NodeID, task.Iteration, eventType)
+					task.NodeID, task.Iteration, farSideForLog{task, eventType})
 			}
 		},
 	}
