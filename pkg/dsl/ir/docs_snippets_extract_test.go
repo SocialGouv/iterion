@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/internal/docfences"
+	"github.com/SocialGouv/iterion/pkg/dsl/docfences"
 )
 
 // The extractor must see a fence wherever markdown allows one — indented

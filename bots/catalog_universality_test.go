@@ -81,10 +81,7 @@ func TestCatalogBotsAreRepoAgnostic(t *testing.T) {
 	// The productised team lives under bots/ (this package's dir); the
 	// remaining single-file catalog bots (e.g. clarify) stay under
 	// examples/. Cover both so neither set can regress.
-	teamBots, err := teamBotFiles()
-	if err != nil {
-		t.Fatalf("glob team bots: %v", err)
-	}
+	teamBots := teamBotFiles(t)
 	demoBots, err := filepath.Glob("../examples/*/main.bot")
 	if err != nil {
 		t.Fatalf("glob demo catalog bots: %v", err)
@@ -236,10 +233,7 @@ var manifestNameRe = regexp.MustCompile(`(?m)^name:\s*"?([A-Za-z0-9_.-]+)"?`)
 // are intentionally exempt: they don't use visibility:bot, so their botID
 // divergence is harmless. Only memory consumers are gated.
 func TestPerBotMemoryConsumersHaveStableBotID(t *testing.T) {
-	bots, _ := teamBotFiles()
-	if len(bots) == 0 {
-		t.Fatal("no team bots found under bots/*/main.bot")
-	}
+	bots := teamBotFiles(t)
 	for _, botPath := range bots {
 		data, err := botUnitSource(botPath)
 		if err != nil {
@@ -281,7 +275,7 @@ func TestPerBotMemoryConsumersHaveStableBotID(t *testing.T) {
 }
 
 func TestCatalogBotsAreStackAgnostic(t *testing.T) {
-	teamBots, _ := teamBotFiles()
+	teamBots := teamBotFiles(t)
 	demoBots, _ := filepath.Glob("../examples/*/main.bot")
 	botPaths := append(teamBots, demoBots...)
 	if len(botPaths) == 0 {

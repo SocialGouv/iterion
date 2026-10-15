@@ -164,7 +164,7 @@ func shellWord(s string) string {
 // this guard reads the shell bodies, where the author writes the invocation.
 func TestCatalogPythonRunsIsolated(t *testing.T) {
 	found := 0
-	for _, path := range catalogWorkflowFiles() {
+	for _, path := range catalogWorkflowFiles(t) {
 		pr := parseBotUnit(path)
 		if pr.File == nil {
 			t.Logf("%s: not inspected (unparseable — the parse/compile test owns that)", path)

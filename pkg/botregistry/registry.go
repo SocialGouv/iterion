@@ -266,10 +266,12 @@ func EnsureNameFree(opts ListOptions, name string) error {
 // diagForName matches a requested bot name against the discovery
 // diagnostics. Only bot-source diagnostics (a bundle dir or a loose
 // file that failed to load) are considered — an unreadable plain
-// directory never claimed a bot name. The only handle a malformed
-// source offers is its directory / file base (normalized the way
-// ResolveBotPath resolves); the extension trim applies to files only,
-// so a bundle dir with a dot in its name keeps it.
+// directory never claimed a bot name, and a shadowed source LOST its
+// name to a claimer the entries already carry, which is the answer
+// callers want. The only handle a malformed source offers is its
+// directory / file base (normalized the way ResolveBotPath resolves);
+// the extension trim applies to files only, so a bundle dir with a dot
+// in its name keeps it.
 func diagForName(diags []DiscoveryError, name string) *DiscoveryError {
 	nn := NormalizeName(name)
 	for i := range diags {
@@ -314,19 +316,29 @@ const (
 	// read (e.g. a permission-denied directory). It may or may not hold a
 	// bot source — the contents are unknown.
 	DiscoveryErrorWalk DiscoveryErrorKind = "walk"
+	// DiscoveryErrorShadowed is a bot source whose NAME another source
+	// already claimed: it loads, but `iterion run <name>`, the dispatcher
+	// and the studio all resolve that name to the claimer, so nothing
+	// routes to this one and it contributes no Entry. The remedy is a
+	// distinct name — a bundle's manifest `name:`, a loose file's `## ---`
+	// frontmatter `name:` — which is why the path is reported rather than
+	// dropped.
+	DiscoveryErrorShadowed DiscoveryErrorKind = "shadowed"
 )
 
 // DiscoveryError is one skipped bot source: the bundle directory or bot
-// file at Path failed to load, so it produced no Entry. Discovery is
-// per-entry fault-tolerant — one malformed manifest (e.g. an invalid
-// chat: block, which validateChatSurface fails on purpose) must not
-// blank discovery for every otherwise-valid bot in the workspace — and
-// the failure rides this structured channel to the CLI/API/Studio
-// instead of aborting the walk.
+// file at Path produced no Entry — it failed to load, or it loaded and
+// nothing routes to it (Kind says which). Discovery is per-entry
+// fault-tolerant — one malformed manifest (e.g. an invalid chat: block,
+// which validateChatSurface fails on purpose) must not blank discovery
+// for every otherwise-valid bot in the workspace — and the skip rides
+// this structured channel to the CLI/API/Studio instead of aborting the
+// walk.
 type DiscoveryError struct {
-	// Path is the bundle directory or bot file that failed to load.
+	// Path is the bundle directory or bot file that was skipped.
 	Path string `json:"path" yaml:"path"`
-	// Error is the load diagnostic (parse or validation failure).
+	// Error is why it was skipped: a load diagnostic (parse or validation
+	// failure), or the name another source already claimed.
 	Error string `json:"error" yaml:"error"`
 	// Kind is what the skipped source is known to be. Only "bundle" and
 	// "file" name an actual bot source; "walk" is an unreadable path
@@ -373,6 +385,20 @@ func ListWithDiagnostics(opts ListOptions) ([]Entry, []DiscoveryError, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries, diags, nil
+}
+
+// resolveDiagPath re-anchors a diagnostic's path on the workspace root
+// ListWithDiagnostics made it relative to (a path outside that workspace
+// stays absolute, and is returned as it came). It is the one reverse of the
+// relativization above, for a consumer in this package that must look AT the
+// skipped source rather than only report it: the process's own directory is
+// nowhere near the workspace, so a bare stat of the reported path answers
+// about nothing.
+func resolveDiagPath(workdir, p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(workdir, filepath.FromSlash(p))
 }
 
 // WorkdirFromPaths recovers the workspace root from a set of discovery
@@ -465,11 +491,12 @@ func DefaultPaths(workDir string) []string {
 // bot. Bundles (directories with manifest.yaml + main.bot) collapse
 // into one entry; individual .bot files become one entry each.
 // Missing roots are skipped silently so callers can pass optimistic
-// default paths. A source that fails to load (malformed manifest,
-// unreadable file or subdirectory) is recorded as a DiscoveryError and
-// skipped — the walk continues so one bad bundle cannot blank its valid
-// siblings. The error return stays for fatal failures (an unstat-able
-// or misconfigured explicit root).
+// default paths. A source that produces no entry is recorded as a
+// DiscoveryError and skipped — it failed to load (malformed manifest,
+// unreadable file or subdirectory), or its name was already claimed, so
+// nothing routes to it — and the walk continues, so one bad bundle
+// cannot blank its valid siblings. The error return stays for fatal
+// failures (an unstat-able or misconfigured explicit root).
 func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 	var entries []Entry
 	var diags []DiscoveryError
@@ -477,20 +504,9 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 	// Names are claimed as sources are encountered, not in a final pass.
 	// This preserves root precedence even when the higher-precedence source
 	// is malformed: bots/foo must reserve "foo" so a stale .botz/foo cannot
-	// silently become runnable in its place.
-	seenName := map[string]bool{}
-	addEntry := func(e *Entry) {
-		if e == nil || seen[e.Path] {
-			return
-		}
-		seen[e.Path] = true
-		key := NormalizeName(e.Name)
-		if seenName[key] {
-			return
-		}
-		seenName[key] = true
-		entries = append(entries, *e)
-	}
+	// silently become runnable in its place. The claimer's path is kept, so
+	// a source that loses the name can name what it lost to.
+	claimedBy := map[string]string{}
 	// Diags dedupe by path the way entries do: overlapping roots (e.g. an
 	// explicit "." beside "./bots") would otherwise report the same
 	// malformed bundle once per root that reaches it.
@@ -501,13 +517,36 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 			if kind == DiscoveryErrorFile {
 				base = strings.TrimSuffix(base, filepath.Ext(base))
 			}
-			seenName[NormalizeName(base)] = true
+			// First claimer wins, here as in addEntry: a later malformed
+			// sibling holds the name too, but it is not who took it. A
+			// claimer's path is never empty, so the zero value reads as
+			// "free".
+			if key := NormalizeName(base); claimedBy[key] == "" {
+				claimedBy[key] = path
+			}
 		}
 		if seenDiag[path] {
 			return
 		}
 		seenDiag[path] = true
 		diags = append(diags, DiscoveryError{Path: path, Error: err.Error(), Kind: kind})
+	}
+	addEntry := func(e *Entry) {
+		if e == nil || seen[e.Path] {
+			return
+		}
+		seen[e.Path] = true
+		key := NormalizeName(e.Name)
+		if winner, taken := claimedBy[key]; taken {
+			// The source loaded, yet no name reaches it. Recorded instead
+			// of dropped: a silent skip is why an operator's second
+			// main.bot never appears in the catalog, and why a workspace
+			// check reading the entries alone cannot see what it holds.
+			recordDiag(e.Path, DiscoveryErrorShadowed, fmt.Errorf("bot name %q is already claimed by %s, so nothing routes to this source: give it a distinct name", e.Name, winner))
+			return
+		}
+		claimedBy[key] = e.Path
+		entries = append(entries, *e)
 	}
 
 	for _, root := range roots {

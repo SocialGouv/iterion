@@ -377,11 +377,26 @@ func regenerateCatalogs(workdir, onlyBundleDir string) (string, error) {
 	// unknown (conservative). A skipped LOOSE .bot file never contributes
 	// a card (they are excluded below), so a broken demo under examples/
 	// must not freeze the catalog. The kind recorded at skip time decides
-	// — re-stat'ing the path here would silently downgrade to
-	// non-blocking whenever the stat itself fails.
+	// which is which, since a kind added later must refuse until it is
+	// classified here.
 	var blocking []DiscoveryError
 	for _, d := range diags {
-		if d.Kind != DiscoveryErrorFile {
+		switch d.Kind {
+		case DiscoveryErrorFile:
+		case DiscoveryErrorShadowed:
+			// A shadowed source loaded; whether its card survives depends on
+			// WHAT it is. A loose .bot contributes none either way, and the
+			// name routes to the claimer. A shadowed BUNDLE is the opposite:
+			// the card this catalog carries under that name is built from a
+			// bundle, so when the claimer is a loose `main.bot` that took the
+			// name first, regenerating DELETES the row — the silent deletion
+			// this refusal exists to stop. Statting the path is sound HERE
+			// because the failing side is the blocking one: the downgrade the
+			// recorded kind avoids would go the other way.
+			if info, err := os.Stat(resolveDiagPath(abs, d.Path)); err != nil || info.IsDir() {
+				blocking = append(blocking, d)
+			}
+		default:
 			blocking = append(blocking, d)
 		}
 	}
@@ -390,7 +405,7 @@ func regenerateCatalogs(workdir, onlyBundleDir string) (string, error) {
 		for _, d := range blocking {
 			parts = append(parts, d.Path+": "+d.Error)
 		}
-		return "", fmt.Errorf("botregistry: refusing to regenerate the catalog from partial discovery — fix or remove the malformed bundle(s): %s", strings.Join(parts, "; "))
+		return "", fmt.Errorf("botregistry: refusing to regenerate the catalog from partial discovery — a bot missing from it would lose its row and card in the committed file; fix or remove the source(s) first: %s", strings.Join(parts, "; "))
 	}
 
 	// The catalog routes to dispatchable bundles only. Loose .bot demo

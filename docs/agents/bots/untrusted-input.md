@@ -103,11 +103,42 @@ new bot, a new capability or a reworded reason makes it stale and the gate
 says so. Regenerate it with `task bots:boundary:gen` and review the diff;
 never edit it by hand.
 
-The walk is every `*.bot` of every bundle — not just each
-`main.bot`, because a bundle may ship sibling entrypoints (golden-master) or
-none at all (smoke) — plus the dispatcher's zero-config fallback
-(`pkg/cli/templates/dispatch_bots_default.bot`), which is compiled into every
-binary and runs against a raw issue body.
+The walk is every workflow this repository ships, and that set has ONE
+definition, with its roots, their per-root floors, what the engine ROUTES
+beyond them and what a walk REACHED rather than returned:
+[the shipped-workflow corpus](shipped-workflow-corpus.md).
+
+A node of a bundle's `main.bot` is keyed `<bundle>/<node>`; every other file is
+keyed by its path relative to `bots/` without the extension
+(`examples/ultracode/sample:implementer`, `golden-master/extend:extend_campaign`),
+except the dispatcher fallback, which keeps the historical
+`cli/dispatch_bots_default:`.
+
+A `supervisor NAME:` is not a graph node — `ir.Workflow.Supervisors` is a field
+beside `Nodes` — so the class walk and its complement are both blind to it, and
+a supervisor is the laundering shape the paragraph exists for: it is shown the
+supervised run's own events (assistant text and command output quoting the
+target repository) and what it says reaches the watched node as an "Operator
+queued message", i.e. as authority, into nodes that hold bash and write_file.
+`TestEverySupervisorPolicyCarriesTheBoundary` is its class, with no exemption
+list: a supervisor declares no `tools:`, so nothing in its declaration could
+fill one.
+
+One step upstream is the policy a PAGE hands an author to copy, which lands in
+a repository no guard here reaches:
+`TestEveryDocumentedSupervisorPolicyCarriesTheBoundary` parses the `iter`
+fences of the documentation and holds every supervisor policy BODY they show
+to the paragraph. Its fence set and its reader are `pkg/dsl/docfences`, the
+same definition pkg/dsl's own snippet guards use — the docs tree, the root
+README and SKILL, and every bot's and example's markdown and skills — because
+a second reader is a second answer to what this repository teaches, and the
+narrower one decides what no guard sees. Two things it must not do, both paid
+for: resolve a `system:` inside the single fence that declares the supervisor
+(splitting a snippet in two, an ordinary edit, would take the body out of
+sight — the policy resolves across the whole PAGE), and count a declaration
+whose body it never read towards its floor (a guard can then inspect zero
+bodies and report green over what it skipped; the floor is on the bodies
+inspected, and the pass-overs are named in the log).
 
 A second guard keeps the paragraph a LITERAL region: no template reference of
 any namespace between the marker and the blank line that closes it. Naming a

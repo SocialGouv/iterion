@@ -2,14 +2,15 @@ package bots
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	"github.com/SocialGouv/iterion/pkg/dsl/docfences"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runops"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
@@ -95,66 +96,64 @@ type shippedWorkflow struct {
 	wf     *ir.Workflow
 }
 
+// shippedWorkflowPrefix is the key one workflow file's nodes are reported
+// under, and the one place that answers it: the frozen class, the `deferred`
+// exemptions and the `bounded` complement all name a node the same way.
+//
+// A bundle's `main.bot` keeps the historical `bot/node` key. Every other file
+// is keyed by its path relative to `bots/` without the extension, closed with
+// `:` — a bundle's sibling entrypoint (`golden-master/extend:`), an example
+// (`examples/ultracode/sample:`), an operator script
+// (`scripts/adhoc/whats-next-skills-gen:`) — so one file's node can never be
+// mistaken for another's, and no key of a tree outside bots/ can collide with
+// a bundle name. The dispatcher fallback is the one exception: it keeps the
+// historical `cli/dispatch_bots_default:` rather than the
+// `pkg/cli/templates/…` its path would give.
+func shippedWorkflowPrefix(path string) string {
+	// The walk runs from bots/, so a bundle file is the only kind that
+	// reaches it without climbing out of the package directory.
+	inBundle := !strings.HasPrefix(path, "../")
+	switch {
+	case path == dispatchFallbackPath:
+		return "cli/dispatch_bots_default:"
+	case inBundle && filepath.Base(path) == "main.bot":
+		return filepath.Dir(path) + "/"
+	default:
+		return strings.TrimSuffix(strings.TrimPrefix(path, "../"), ".bot") + ":"
+	}
+}
+
 // shippedWorkflows compiles EVERY workflow this repository ships, not just the
 // `main.bot` of each bundle. A bundle may carry sibling entrypoints
 // (golden-master ships extend.bot, reanchor.bot and sync-harness.bot) and a
 // bundle may have no main.bot at all (smoke ships board_smoke.bot) — stat-ing
 // main.bot made all of those invisible to the class, which is how three acting
-// prompts shipped with no paragraph and no way to redden. The dispatcher's
-// zero-config fallback is shipped too, compiled into every binary and run
-// against a raw issue body, so it is walked from here rather than left
-// outside every guard.
+// prompts shipped with no paragraph and no way to redden.
 //
-// Nodes of a `main.bot` keep the historical `bot/node` key; a sibling
-// entrypoint is keyed `bot/file:node` so one file's node can never be
-// mistaken for another's.
+// It walks `catalogWorkflowFiles`, so "every shipped workflow" has ONE
+// definition in this package instead of two that drifted: the examples and the
+// operator scripts under `scripts/adhoc/` are in it, as they always were in
+// the parse/compile gate, and `botregistry.DefaultPaths` discovers `examples/`
+// as enabled entries the zero-config dispatcher, the studio and the server can
+// route to — so an acting prompt there owes the paragraph exactly like a
+// bundle's. The floor under each root comes with that enumerator, which
+// asserts it: a discovery that narrows reddens here instead of making every
+// guard of this file green over an unexamined catalogue, which is the failure
+// a guard cannot report about itself. What that table of globs does NOT reach
+// yet the engine routes is the subject of
+// TestEveryRoutableBotIsAShippedWorkflow, which asks the registry itself.
 func shippedWorkflows(t *testing.T) []shippedWorkflow {
 	t.Helper()
-	var out []shippedWorkflow
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read bots dir: %v", err)
-	}
-	for _, e := range entries {
-		if !e.IsDir() || e.Name() == "testdata" {
-			continue
+	paths := catalogWorkflowFiles(t)
+	out := make([]shippedWorkflow, 0, len(paths))
+	byPrefix := make(map[string]string, len(paths))
+	for _, path := range paths {
+		prefix := shippedWorkflowPrefix(path)
+		if first, dup := byPrefix[prefix]; dup {
+			t.Fatalf("%s and %s are both keyed %q: one file's nodes would answer for the other's in the frozen class and in every exemption list", first, path, prefix)
 		}
-		bot := e.Name()
-		paths, err := filepath.Glob(filepath.Join(bot, "*.bot"))
-		if err != nil {
-			t.Fatalf("glob %s: %v", bot, err)
-		}
-		sort.Strings(paths)
-		for _, path := range paths {
-			prefix := bot + "/"
-			if filepath.Base(path) != "main.bot" {
-				prefix = bot + "/" + strings.TrimSuffix(filepath.Base(path), ".bot") + ":"
-			}
-			out = append(out, shippedWorkflow{prefix: prefix, wf: compileBotFile(t, path)})
-		}
-	}
-	// NOT walked, deliberately, and this is the greppable statement of it:
-	// `../examples/**` and `../scripts/adhoc/**`. `catalogWorkflowFiles` in
-	// this package counts them as shipped workflows, and `botregistry.List`
-	// discovers `examples/` as enabled entries the dispatcher can route to —
-	// so six acting prompts there and two under `scripts/adhoc/` are in the
-	// class by the predicate and outside this walk by decision. Tracked in
-	// #1722; the exclusion is a scope boundary, not a verdict that they are
-	// safe.
-	const dispatchFallback = "../pkg/cli/templates/dispatch_bots_default.bot"
-	if _, err := os.Stat(dispatchFallback); err == nil {
-		out = append(out, shippedWorkflow{prefix: "cli/dispatch_bots_default:", wf: compileBotFile(t, dispatchFallback)})
-	} else {
-		t.Fatalf("the dispatcher fallback template is no longer at %s: it is embedded in every binary and runs on a raw issue body, so it may not drop out of this walk silently", dispatchFallback)
-	}
-	// A FLOOR, because both boundary guards read this walk: if it narrows —
-	// a layout rename, a glob that stops matching — every guard built on it
-	// goes green over an unexamined catalogue, which is the failure a guard
-	// cannot report about itself. 38 is under the 41 shipped today, so a
-	// bundle may be retired without touching this line, and a wholesale loss
-	// cannot pass.
-	if len(out) < 38 {
-		t.Fatalf("the walk reached %d shipped workflows, want at least 38: the catalogue did not shrink by that much, so the discovery broke and every guard reading this walk is now passing over an unexamined corpus", len(out))
+		byPrefix[prefix] = path
+		out = append(out, shippedWorkflow{prefix: prefix, wf: compileBotFile(t, path)})
 	}
 	return out
 }
@@ -257,7 +256,7 @@ func TestCatalogUntrustedInputBoundaryOnActingPrompts(t *testing.T) {
 // It carries the same FLOOR argument as the walk, one level down: `members`
 // counts the prompts the class actually reached, and a predicate that stopped
 // classifying would report the same green as one that classifies them all —
-// the failure a guard cannot report about itself. 120 is under the 143 of
+// the failure a guard cannot report about itself. 130 is under the 154 of
 // today, so a bundle may be retired without touching this line.
 func TestEveryActingPromptSaysWhatMakesItOne(t *testing.T) {
 	var offenders []string
@@ -281,8 +280,8 @@ func TestEveryActingPromptSaysWhatMakesItOne(t *testing.T) {
 		t.Errorf("%d acting prompt(s) are in the class for a reason that names nothing — the message must name the arm that decided (a declared tool, the route, a capability):\n  %s",
 			len(offenders), strings.Join(offenders, "\n  "))
 	}
-	if members < 120 {
-		t.Fatalf("the class reached %d acting prompts, want at least 120: the catalogue did not shrink by that much, so the predicate stopped classifying and this guard is now passing over prompts nobody examined", members)
+	if members < 130 {
+		t.Fatalf("the class reached %d acting prompts, want at least 130: the catalogue did not shrink by that much, so the predicate stopped classifying and this guard is now passing over prompts nobody examined", members)
 	}
 	t.Logf("classified %d acting prompts", members)
 }
@@ -291,8 +290,8 @@ func TestEveryActingPromptSaysWhatMakesItOne(t *testing.T) {
 // the two walks above, and it exists because neither can report the failure
 // that matters most: a prompt that LEAVES the class. The walk reports a member
 // whose system prompt lacks the paragraph; a rule that stops classifying a
-// route reports nothing at all, and the floor one level down is a COUNT — 120
-// against the 143 of today — so 23 prompts may fall out in silence.
+// route reports nothing at all, and the floor one level down is a COUNT — 130
+// against the 154 of today — so 24 prompts may fall out in silence.
 //
 // Measured: dropping the claude_code arm of the engine's rule
 // (pkg/runtime.declarationIsNoBound) leaves both walks above green while
@@ -309,6 +308,24 @@ func TestEveryActingPromptSaysWhatMakesItOne(t *testing.T) {
 func TestEveryCatalogueLLMNodeIsOutOfTheClassOnlyWhereNamed(t *testing.T) {
 	bounded := map[string]string{
 		"evolve/review_gpt": "backend claw with `tools: []`: on claw the list IS the node's ToolDefs, so an empty one resolves to zero tools",
+		// The examples, all five on claw, where the declaration IS the bound.
+		// The runtime's own appends resolve outside the IR and none of them
+		// is read here, so an example that turns `auto_memory:` on — which
+		// grants write_file on claw — holds more than it declares and owes
+		// the paragraph by hand (docs/agents/bots/untrusted-input.md, "What
+		// it does not read"). TWO members take a live append, both
+		// `interaction:`-driven and neither of them that one:
+		// `async-questions/main:draft` (async adds the ask_user pair) and
+		// `examples/clarify/main:facilitator` (llm adds ask_user alone — on
+		// claw the append is granted whatever the list holds,
+		// executor_build_task.go's `interactionGranted`). Both add only the
+		// ask_user family, which the engine classifies as a question channel
+		// touching no workspace (pkg/runtime.nonWorkspaceTools).
+		"examples/async-questions/main:draft":    "backend claw with no `tools:` list: on claw the list IS the node's ToolDefs, so an absent one resolves to zero tools",
+		"examples/async-questions/main:finalize": "backend claw with no `tools:` list: on claw the list IS the node's ToolDefs, so an absent one resolves to zero tools",
+		"examples/clarify/main:facilitator":      "backend claw with no `tools:` list: on claw the list IS the node's ToolDefs, so an absent one resolves to zero tools",
+		"examples/deploy-e2e:verdict":            "backend claw with no `tools:` list: on claw the list IS the node's ToolDefs, so an absent one resolves to zero tools",
+		"examples/fallbacks/main:review":         "backend claw with a read-only `tools:` list and a `fallbacks:` route that stays on claw, which resolves its ToolDefs from that list",
 	}
 
 	var unnamed, stale []string
@@ -355,6 +372,208 @@ func TestEveryCatalogueLLMNodeIsOutOfTheClassOnlyWhereNamed(t *testing.T) {
 	if len(stale) > 0 {
 		t.Errorf("%d stale entr(y/ies):\n  %s", len(stale), strings.Join(stale, "\n  "))
 	}
+}
+
+// TestEverySupervisorPolicyCarriesTheBoundary is the class for the prompts
+// neither walk above can see: a `supervisor NAME:` is not a graph node —
+// ir.Workflow.Supervisors is a field beside Nodes, and actingPrompts iterates
+// wf.Nodes — so nine shipped supervisors sat outside both the class and its
+// complement, in silence.
+//
+// A supervisor is the laundering shape the paragraph exists for, read from the
+// engine: what it is shown is the supervised run's recent events, assistant
+// text and command output quoting the target repository (pkg/supervise.
+// buildUserPrompt, "Recent activity"), i.e. untrusted; what it says reaches
+// the watched node as "Operator queued message" (pkg/supervise.
+// FormatOperatorMessages), i.e. as authority, into nodes that hold bash and
+// write_file. An instruction a supervisor relays out of a file it read is an
+// instruction the implementer receives as its operator's.
+//
+// There is no exemption list, because nothing in a supervisor's declaration
+// could fill one: it declares no `tools:`, so ToolSurfaceWriteReason has
+// nothing to answer about, and the only bound on its reach — what the watched
+// node holds — is resolved at spawn, not in the IR. A supervisor that declares
+// no policy prompt at all reddens too: buildSystemPrompt grafts Spec.System on
+// the engine's own framing, so an absent policy leaves nowhere for the
+// boundary to live.
+func TestEverySupervisorPolicyCarriesTheBoundary(t *testing.T) {
+	var offenders []string
+	checked := 0
+	for _, sw := range shippedWorkflows(t) {
+		for _, sup := range sw.wf.Supervisors {
+			checked++
+			key := sw.prefix + sup.Name
+			if sup.System == "" {
+				offenders = append(offenders, key+": declares no `system:` policy, so the boundary has nowhere to live")
+				continue
+			}
+			p := sw.wf.Prompts[sup.System]
+			if p == nil {
+				offenders = append(offenders, fmt.Sprintf("%s: `system: %s` resolves to no declared prompt (C193 is only a warning)", key, sup.System))
+				continue
+			}
+			if !strings.Contains(p.Body, untrustedInputBoundaryMarker) {
+				offenders = append(offenders, fmt.Sprintf("%s (policy %q, watches %v)", key, sup.System, sup.Watches))
+			}
+		}
+	}
+	sort.Strings(offenders)
+	if len(offenders) > 0 {
+		t.Errorf("%d supervisor polic(y/ies) lack the %s paragraph — a supervisor reads the supervised run's own transcript and its message reaches the watched node as an operator's, so the boundary is owed there too (docs/agents/bots/untrusted-input.md):\n  %s",
+			len(offenders), untrustedInputBoundaryMarker, strings.Join(offenders, "\n  "))
+	}
+	// Same floor argument as the walks above: 9 supervisors ship today, so 7
+	// lets two be retired while a discovery that narrowed — or a compiler
+	// that stopped filling Supervisors — cannot leave this guard green over
+	// an empty class.
+	if checked < 7 {
+		t.Fatalf("the walk reached %d supervisor(s), want at least 7 of the 9 that ship: the discovery narrowed or the declarations stopped compiling, and this guard is now green over a class nobody examined", checked)
+	}
+	t.Logf("checked %d supervisor policies", checked)
+}
+
+// docIterFences is every `iter` fence of the repository's documentation: the
+// programs a reader — a human, or an agent given the authoring skill — copies
+// into their own repository.
+//
+// Both the SET of files and the fence reader are pkg/dsl/docfences, the
+// definition pkg/dsl's own snippet guards hold the documentation to: the docs
+// tree, the root README/SKILL, and every bot's and example's own markdown and
+// skills — 612 files, 150 `iter` fences today, of which 122 under docs/. A
+// reader of its own here would be a second answer to "what does this
+// repository teach": it walked docs/ alone (so a bundle skill, the strongest
+// case of "what is copied is what ships", was invisible) and matched only
+// backtick fences at the start of a line, where the shared reader reads every
+// opener CommonMark does — tildes, blockquoted, indented in a list item.
+//
+// A `Malformed` fence (a body line indented less than its fence) fails rather
+// than being silently half-read, and the floor is under today's count, since a
+// reader that stopped finding fences would leave every guard built on it green
+// over nothing.
+func docIterFences(t *testing.T) []docfences.Fence {
+	t.Helper()
+	root := ".."
+	files, err := docfences.Files(root)
+	if err != nil {
+		t.Fatalf("documentation file set under %s: %v", root, err)
+	}
+	var out []docfences.Fence
+	for _, f := range files {
+		fences, err := docfences.Extract(f, "iter")
+		if err != nil {
+			t.Fatalf("extract the `iter` fences of %s: %v", f, err)
+		}
+		for _, fence := range fences {
+			if fence.Malformed != "" {
+				t.Errorf("%s:%d: %s — the fence cannot be read as the program it shows", fence.File, fence.Line, fence.Malformed)
+				continue
+			}
+			out = append(out, fence)
+		}
+	}
+	if len(out) < 130 {
+		t.Fatalf("found %d `iter` fence(s) in the %d documentation file(s) under %s, want at least 130: the extraction stopped reading the documentation", len(out), len(files), root)
+	}
+	return out
+}
+
+// TestEveryDocumentedSupervisorPolicyCarriesTheBoundary is the same class one
+// step upstream: the policy body a PAGE hands an author to copy.
+//
+// The guard above holds every supervisor this repository ships and can see
+// none of the ones it teaches. docs/supervisors.md carries the primary path's
+// template — the same declaration examples/supervisor/sample.bot ships, which
+// does carry the paragraph — and a policy copied out of a paragraph-less
+// snippet lands in the operator's own repository, where no guard of this one
+// reaches. It is the argument TestCatalogHasNoAuthorQuotedRefs makes for
+// examples/: what is copied is what ships.
+//
+// The fence is PARSED rather than pattern-matched, so a page that names its
+// policy anything at all is covered and the `system:` reference is resolved by
+// name the way the compiler resolves it. The parse stops at the AST: a
+// `fragment` declares a supervisor without the `workflow` block ir.Compile
+// requires, so compiling one yields no Workflow at all (C006, and a nil
+// return) — which is how this guard first ran green over zero snippets, until
+// its floor said so. An `invalid` fence is an anti-example the page tells the
+// reader NOT to copy, so it is passed over.
+//
+// The policy is resolved over the WHOLE PAGE, not the one fence that declares
+// the supervisor: splitting a snippet in two — the supervisor in one fence,
+// `prompt <name>:` in the next, an ordinary documentation edit — would
+// otherwise take the body out of this guard's sight entirely. And the floor is
+// on the bodies INSPECTED, never on the declarations seen: counting a
+// pass-over towards it let the guard read zero bodies and still report green
+// over the count of what it skipped.
+func TestEveryDocumentedSupervisorPolicyCarriesTheBoundary(t *testing.T) {
+	type supervisorRef struct {
+		page   string
+		where  string
+		policy string
+	}
+	// The prompts of a page, by name, and the supervisors it declares: a
+	// `system:` resolves against every fence of its own file.
+	pageBodies := map[string]map[string]string{}
+	var refs []supervisorRef
+	for _, f := range docIterFences(t) {
+		if strings.HasPrefix(f.Info, "invalid") {
+			continue
+		}
+		res := parser.Parse(f.File, f.Body)
+		if res.File == nil {
+			continue
+		}
+		page := filepath.ToSlash(f.File)
+		if pageBodies[page] == nil {
+			pageBodies[page] = map[string]string{}
+		}
+		for _, p := range res.File.Prompts {
+			pageBodies[page][p.Name] = p.Body
+		}
+		for _, sup := range res.File.Supervisors {
+			refs = append(refs, supervisorRef{
+				page:   page,
+				where:  fmt.Sprintf("%s:%d (supervisor %q)", page, f.Line, sup.Name),
+				policy: sup.System,
+			})
+		}
+	}
+	var offenders, bodyless []string
+	inspected := 0
+	for _, ref := range refs {
+		body, declared := pageBodies[ref.page][ref.policy]
+		switch {
+		case ref.policy == "":
+			offenders = append(offenders, ref.where+": the snippet declares no `system:` policy, so what it teaches has nowhere to carry the boundary")
+		case !declared:
+			// The page shows no body for this policy at all — a shape
+			// example, not a template: there is no prose for a reader to
+			// copy, so there is nothing to carry the paragraph. Named in the
+			// log, so a page that LOSES its policy text is visible as a drop
+			// in what was inspected.
+			bodyless = append(bodyless, fmt.Sprintf("%s: policy %q is declared nowhere on the page", ref.where, ref.policy))
+		case !strings.Contains(body, untrustedInputBoundaryMarker):
+			inspected++
+			offenders = append(offenders, fmt.Sprintf("%s: policy %q", ref.where, ref.policy))
+		default:
+			inspected++
+		}
+	}
+	sort.Strings(offenders)
+	sort.Strings(bodyless)
+	if len(offenders) > 0 {
+		t.Errorf("%d documented supervisor polic(y/ies) show a body without the %s paragraph — an author copies the page, and the copy ships where no guard of this repository can see it:\n  %s",
+			len(offenders), untrustedInputBoundaryMarker, strings.Join(offenders, "\n  "))
+	}
+	// One documented supervisor policy carries a body today
+	// (docs/supervisors.md, the primary path's template). A floor of one on
+	// the bodies READ, because a guard over zero bodies is the same green as
+	// a guard over all of them.
+	if inspected < 1 {
+		t.Fatalf("no documented supervisor policy BODY was read (%d declaration(s) seen, %d with no body on their page:\n  %s), so this guard examined nothing: the fence extraction, the parser, or a page's policy text moved",
+			len(refs), len(bodyless), strings.Join(bodyless, "\n  "))
+	}
+	t.Logf("inspected %d documented supervisor policy body/ies of %d declaration(s); %d declare a policy their page shows no body for:\n  %s",
+		inspected, len(refs), len(bodyless), strings.Join(bodyless, "\n  "))
 }
 
 // TestUntrustedInputBoundaryParagraphInterpolatesNothing keeps the paragraph
@@ -412,9 +631,9 @@ func TestUntrustedInputBoundaryParagraphInterpolatesNothing(t *testing.T) {
 	}
 	// Same floor argument as the walk, one level down: `checked` counts the
 	// paragraphs this guard actually inspected, and a guard that inspects one
-	// of 121 reports the same green as a guard that inspects all of them.
-	if checked < 100 {
-		t.Fatalf("only %d UNTRUSTED INPUT BOUNDARY paragraphs were inspected, want at least 100: this guard stopped seeing its own subject", checked)
+	// of 151 reports the same green as a guard that inspects all of them.
+	if checked < 130 {
+		t.Fatalf("only %d UNTRUSTED INPUT BOUNDARY paragraphs were inspected, want at least 130: this guard stopped seeing its own subject", checked)
 	}
 	sort.Strings(offenders)
 	if len(offenders) > 0 {

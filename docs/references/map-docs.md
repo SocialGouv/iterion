@@ -149,6 +149,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/bots/engine-bot-agnostic.md`](../agents/bots/engine-bot-agnostic.md) | The ENGINE stays bot-agnostic | Read it when engine code is about to name a bot or bake one in. | — |
 | [`docs/agents/bots/input-reaches-the-model.md`](../agents/bots/input-reaches-the-model.md) | A value on an input reaches the model only if a channel of THAT node renders it | Read it when adding, dropping or re-referencing a field on an LLM node's input schema or on an edge's `with`. | — |
 | [`docs/agents/bots/run-link.md`](../agents/bots/run-link.md) | A forge-facing bot links its run | Anything a bot posts outside the deployment — a pull-request body, a review, a | — |
+| [`docs/agents/bots/shipped-workflow-corpus.md`](../agents/bots/shipped-workflow-corpus.md) | The shipped-workflow corpus | Every guard that holds this repository's `.bot` files to something — they | — |
 | [`docs/agents/bots/skills.md`](../agents/bots/skills.md) | Skills live with their bundle | Read it when editing a bundle's `skills/` — the mirror into `.claude/skills`, naming, and the sharing rule. | — |
 | [`docs/agents/bots/taxonomy.md`](../agents/bots/taxonomy.md) | Category & tags — the six-verb navigation spine | Read it when touching a manifest's `category:` / `tags:`, adding a tag | — |
 | [`docs/agents/bots/toolchain-devbox.md`](../agents/bots/toolchain-devbox.md) | A bot's toolchain is its `devbox.json` | Read it when a bot needs a binary the sandbox does not carry. | — |

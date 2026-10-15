@@ -71,7 +71,7 @@ import (
 // would be substituted by the empty string). A shape with no words is
 // reported as such rather than printed wrong.
 func TestCatalogPromptProseNamesAnInputTheNodeShows(t *testing.T) {
-	targets := catalogWorkflowFiles()
+	targets := catalogWorkflowFiles(t)
 	if len(targets) == 0 {
 		t.Fatal("no catalog workflows found — discovery glob likely broke")
 	}

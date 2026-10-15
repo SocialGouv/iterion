@@ -36,13 +36,7 @@ func TestCatalogToolCommandsDoNotOptOutOfShellEscaping(t *testing.T) {
 	// text: `command:` has three spellings (backtick, double-quoted, block
 	// scalar) and a scan that knows only the first is blind to the other two —
 	// three catalog commands were never inspected.
-	paths, err := teamBotFiles()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(paths) == 0 {
-		t.Fatal("no catalog bots found — the lint would pass vacuously")
-	}
+	paths := teamBotFiles(t)
 	for _, path := range paths {
 		bot := filepath.Dir(path)
 		pr := parseBotUnit(path)
@@ -80,10 +74,7 @@ func TestCatalogHasNoAuthorQuotedRefs(t *testing.T) {
 	// The catalog AND the shipped examples: an example is copied by whoever
 	// starts a bot, so an injectable shape there propagates further than one
 	// in a catalog bot.
-	paths, err := teamBotFiles()
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths := teamBotFiles(t)
 	examples, err := filepath.Glob("../examples/*/*.bot")
 	if err != nil {
 		t.Fatal(err)

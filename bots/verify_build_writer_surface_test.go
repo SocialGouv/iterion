@@ -78,8 +78,9 @@ func TestEveryVerifyBuildNodeKeepsTheWritingToolsItsContractNeeds(t *testing.T) 
 	// that narrows — would leave it green over the ones it no longer reaches.
 	// 10 bundles ship the node today, every one of them on `claude_code`, so
 	// 8 lets two be retired without touching this line while a rename across
-	// the rest cannot pass. The shared walk's own floor (shippedWorkflows)
-	// answers for a wholesale loss of bundles; it cannot see this id.
+	// the rest cannot pass. The enumerator's per-root floor (catalogRoots, via
+	// catalogRootFiles) answers for a wholesale loss of bundles; it cannot see
+	// this id.
 	if checked < 8 {
 		t.Fatalf("the walk reached %d verify_build node(s), want at least 8 of the 10 bundles that ship the contract: the id was renamed or the discovery narrowed, and this guard is now green over an unexamined class", checked)
 	}

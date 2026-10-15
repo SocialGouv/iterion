@@ -42,7 +42,7 @@ import (
 // loop's back-edge overlays what changes per iteration; a first pass reads an
 // empty `fail_log`) and is not this test's business.
 func TestCatalogInputReadsAreMappedByAnIncomingEdge(t *testing.T) {
-	targets := catalogWorkflowFiles()
+	targets := catalogWorkflowFiles(t)
 	if len(targets) == 0 {
 		t.Fatal("no catalog workflows found — discovery glob likely broke")
 	}

@@ -469,6 +469,84 @@ func TestBotsListExplicitPathsPinnedAcrossSwitch(t *testing.T) {
 	}
 }
 
+// TestBotsListRoute_ShadowedSourceHidesTheClaimersPath holds the redaction to
+// EVERY path a diagnostic names, not the skipped source's own.
+//
+// A shadowed source names the claimer that holds its name, and the claimer
+// lives in another root — so stripping the loser's own parent prefix leaves
+// the second absolute path in the message, on the one configuration
+// redactAbsoluteDiscoveryPaths exists for: catalogs pinned outside WorkDir,
+// served to authenticated tenants.
+func TestBotsListRoute_ShadowedSourceHidesTheClaimersPath(t *testing.T) {
+	botregistry.ClearSchemaCache()
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	// Two bundles whose MANIFEST name is the same: the first root claims it,
+	// the second loses it and nothing routes to it.
+	writeBotFile(t, filepath.Join(rootA, "revi", "manifest.yaml"), "name: revi\ndescription: the claimer\n")
+	writeBotFile(t, filepath.Join(rootA, "revi", "main.bot"), testBotSrc)
+	writeBotFile(t, filepath.Join(rootB, "revi-copy", "manifest.yaml"), "name: revi\ndescription: the copy\n")
+	writeBotFile(t, filepath.Join(rootB, "revi-copy", "main.bot"), testBotSrc)
+
+	srv := New(Config{
+		DisableAuth: true,
+		Bots:        BotsConfig{Paths: []string{rootA, rootB}},
+	}, iterlog.New(iterlog.LevelError, nil))
+	srv.handler = srv.mux
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/bots", nil)
+	rec := httptest.NewRecorder()
+	srv.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		DiscoveryErrors []struct {
+			Path  string `json:"path"`
+			Error string `json:"error"`
+			Kind  string `json:"kind"`
+		} `json:"discovery_errors"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+	}
+	if len(resp.DiscoveryErrors) != 1 || resp.DiscoveryErrors[0].Kind != string(botregistry.DiscoveryErrorShadowed) {
+		t.Fatalf("discovery_errors = %+v, want one shadowed diagnostic; body=%s", resp.DiscoveryErrors, rec.Body.String())
+	}
+	d := resp.DiscoveryErrors[0]
+	if d.Path != "revi-copy" || !strings.Contains(d.Error, `"revi" is already claimed`) {
+		t.Errorf("discovery_errors[0] = %+v, want the shadowed source and what claimed its name", d)
+	}
+	for _, root := range []string{rootA, rootB} {
+		if strings.Contains(d.Error, root) {
+			t.Errorf("discovery_errors[0] = %+v, must not expose the absolute catalog root %q", d, root)
+		}
+	}
+	if filepath.IsAbs(d.Path) {
+		t.Errorf("discovery_errors[0].path = %q, must not be absolute", d.Path)
+	}
+}
+
+// TestRedactAbsolutePathsInText covers the shapes a diagnostic wraps a path in
+// — a bare path, a quoted one, a parenthesised one, one ending a clause — and
+// the relative paths that must survive untouched, since a message whose paths
+// are all workspace-relative is the normal case.
+func TestRedactAbsolutePathsInText(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"bot name \"revi\" is already claimed by /srv/catalog/revi, so nothing routes", "bot name \"revi\" is already claimed by revi, so nothing routes"},
+		{`open "/srv/catalog/a/manifest.yaml": no such file`, `open "manifest.yaml": no such file`},
+		{"lstat (/srv/catalog/deep) failed.", "lstat (deep) failed."},
+		{"bot name \"revi\" is already claimed by ../bots/revi, so nothing routes", "bot name \"revi\" is already claimed by ../bots/revi, so nothing routes"},
+		{"broken-chat/manifest.yaml: chat: node has no text_field", "broken-chat/manifest.yaml: chat: node has no text_field"},
+		{"two paths /a/b/one and /c/d/two\nand a newline /e/f/three", "two paths one and two\nand a newline three"},
+		{"", ""},
+	} {
+		if got := redactAbsolutePathsInText(tc.in); got != tc.want {
+			t.Errorf("redactAbsolutePathsInText(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestBotsListRoute_MalformedBundleSurfacesDiscoveryError(t *testing.T) {
 	botregistry.ClearSchemaCache()
 	dir := t.TempDir()
