@@ -72,15 +72,19 @@ attaches no repository.
 **Plan phase (ADR-091).** The plan is AUTHORED by default on every
 deployment (claude, read-only); `plan_phase: off` is the explicit opt-out
 (plan in stride, the v2 shape). `plan_review: auto` resolves at launch
-from the run's credentials and gates ONLY the peer review: when a SECOND
-model family is available, the plan is critiqued by a cross-family peer
-(`claw` + `openai/gpt-6-astra` by default) and revised by the SAME author
-session before the campaign implements; otherwise the campaign receives
-the author's plan stamped as unreviewed (`plan_provenance`).
-`plan_review_policy` picks the mid-run peer-unavailability behaviour:
-`skip` (default — the reviewer's `action: skip` route: continue
-unreviewed, loudly stamped) or `wait` (the run parks failed_resumable,
-the usage-window retry resumes it — the deliberate-spend posture).
+from the run's credentials — the claude/gpt pair — and gates ONLY the
+peer review: when it resolves on, the plan is critiqued by this
+bundle's own pinned reviewer (`kimi` + `kimi-code/kimi-for-coding`, no
+OpenAI route) and revised by the AUTHOR before the campaign implements;
+otherwise the campaign receives the author's plan stamped as unreviewed
+(`plan_provenance`). The pair the gate counts is not the credential
+that reviewer spends: a host credentialed claude + kimi — the pair the
+Kimi peer needs — resolves `auto` off, and `plan_review: on` is the
+switch that asks for the review anyway. `plan_review_policy` picks the
+mid-run peer-unavailability behaviour: `skip` (default — the reviewer's
+`action: skip` route: continue unreviewed, loudly stamped) or `wait`
+(the run parks failed_resumable, the usage-window retry resumes it —
+the deliberate-spend posture).
 
 **Persy.** A `supervisor persy:` block watches the `campaign` node
 (docs/supervisors.md): the perseverance coach that pushes back on

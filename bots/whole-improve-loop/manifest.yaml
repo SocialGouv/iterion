@@ -1,7 +1,10 @@
 name: whole-improve-loop
 display_name: Willy
 icon: 🌍
-version: 2.5.3
+version: 2.5.4
+## 2.5.4 — plan_revise renders the sweep plan's own stated assumptions and
+## risks: the plan and the critique ride its prompt instead of an inherited
+## session, which `inherit_if_available` does not promise.
 ## 2.5.3 — the supervisor reads the agent's activity as data: its policy carries the
 ## UNTRUSTED INPUT BOUNDARY paragraph, as every acting prompt of a shipped workflow does (#1722)
 ## 2.5.2 — every body it posts on a forge ends with the run that wrote it:

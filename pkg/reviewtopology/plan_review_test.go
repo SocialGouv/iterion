@@ -3,6 +3,8 @@ package reviewtopology
 import (
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 )
 
 func fams(names ...string) FamilySet {
@@ -32,6 +34,44 @@ func TestResolvePlanReview(t *testing.T) {
 		if got := ResolvePlanReview(tc.fams, tc.override); got != tc.want {
 			t.Errorf("%s: ResolvePlanReview = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestFamiliesFromReportCountsOnlyParticipatingCredentials pins what a
+// credential has to be for `plan_review: auto` to see a second family. Only
+// two families participate (claude, gpt), and a backend outside them backs
+// NONE — so a host credentialed claude + kimi has one family and the pair
+// review resolves off. The bundles' pages state this, and without the mapping
+// measured here the sentence rests on nothing.
+//
+// The pair this gate counts is not, on every bundle, the credential the peer
+// node spends: feature-dev's reviewer is pinned `kimi` +
+// `kimi-code/kimi-for-coding` with no model or backend fallback, so `auto`
+// resolves OFF on exactly the host that could run it. That is the shipped
+// behaviour, not an intent this test endorses — `plan_review: on` is the
+// override, measured below, and gating on the families a bundle's peer node
+// declares is a change to the gate, not to this mapping.
+func TestFamiliesFromReportCountsOnlyParticipatingCredentials(t *testing.T) {
+	rep := detect.Report{
+		Backends: []detect.BackendStatus{
+			{Name: detect.BackendClaudeCode, Available: true},
+			{Name: "kimi", Available: true},
+			{Name: detect.BackendCodex, Available: false},
+		},
+		Providers: []detect.ProviderStatus{
+			{Name: "moonshot", Available: true},
+			{Name: "openai", Available: false},
+		},
+	}
+	got := FamiliesFromReport(rep)
+	if len(got) != 1 || !got[FamilyClaude] {
+		t.Fatalf("FamiliesFromReport(claude_code + kimi + moonshot) = %v, want only %q: a backend and a provider outside the two participating families back none", got, FamilyClaude)
+	}
+	if mode := ResolvePlanReview(got, ""); mode != PlanReviewOff {
+		t.Errorf("plan_review auto on a claude + kimi host = %q, want %q — the pair review needs two participating families, whatever CLI the bundle pins its peer to", mode, PlanReviewOff)
+	}
+	if mode := ResolvePlanReview(got, "on"); mode != PlanReviewOn {
+		t.Errorf("plan_review on a claude + kimi host, overridden %q = %q, want %q — the explicit switch is how that host gets the peer review its own credentials could run", "on", mode, PlanReviewOn)
 	}
 }
 
