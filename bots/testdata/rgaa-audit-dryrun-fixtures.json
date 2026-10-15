@@ -9,7 +9,7 @@
   "write_fragment": {"batch_id": "r0-b01", "written": 2, "foreign": 0, "duplicate": 0, "malformed": 0, "missing": 0, "recommendations_dropped": 0},
   "merge_verdicts": {"ok": true, "fail_code": "", "reason": "", "filled": 3, "unfilled": 0, "failed_batches": [], "foreign_dropped": 0, "citation_rejected": 0, "recommendations_dropped": 0},
   "fold_probe": {"ok": true, "fail_code": "", "reason": "", "pending": 1, "pending_ids": ["1.2"], "applied": 2, "rejected": 1, "unfilled": 0, "flagged_open": 0, "round": 0},
-  "fold_final": {"ok": true, "fail_code": "", "reason": "", "applied": 3, "still_manual": 0, "rejected": 0, "still_open": 0, "still_open_ids": [], "flagged_open": 0, "ledger_path": "/scratch/rgaa-audit/run-1/ledger/rgaa.json", "audit_sha256": "a2"},
+  "fold_final": {"ok": true, "fail_code": "", "reason": "", "applied": 3, "still_manual": 0, "rejected": 0, "still_open": 0, "still_open_ids": [], "flagged_open": 0, "citations_restored": 0, "ledger_path": "/scratch/rgaa-audit/run-1/ledger/rgaa.json", "audit_sha256": "a2"},
   "draft_report": {"ok": true, "fail_code": "", "reason": "", "draft_path": "/scratch/rgaa-audit/run-1/draft/rgaa-2026-10-13.md", "claims": 9, "nc_claims": 6, "c_claims": 3, "todo_path": "/scratch/rgaa-audit/run-1/refute/VERIFY.todo.json", "audit_sha256": "a2"},
   "plan_refute": {"batches": [{"id": "r0-c01", "round": 0, "ns": [1, 2, 3], "items": [{"n": 1, "criteriaId": "2.1", "file": "index.html", "line": 23, "selector": "iframe", "claim": "iframe sans title", "kind": "nc", "citations": []}]}], "count": 1, "round": 0},
   "write_refute_fragment": {"batch_id": "r0-c01", "written": 3, "foreign": 0, "missing": 0, "invalid": 0},

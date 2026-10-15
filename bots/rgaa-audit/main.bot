@@ -584,6 +584,7 @@ schema fold_output:
   still_open: int
   still_open_ids: json
   flagged_open: int
+  citations_restored: int
   ledger_path: string
   audit_sha256: string
 
@@ -980,7 +981,72 @@ tool prepare:
       // A recommendation is anchored like a finding (the engine grounds it and
       // renders it as an advisory) and carries no normative reference.
       const recommendation = (r) => { if (!isObj(r)) return null; const file = asText(r.file), line = asLine(r.line); if (!file || line === null || typeof r.message !== "string" || !r.message.trim()) return null; const o = { file: file, line: line, message: r.message }; if (typeof r.snippet === "string") o.snippet = r.snippet; if (typeof r.selector === "string") o.selector = r.selector; return o; };
-      const api = { init, sha256, fingerprint, exists, readJSON, writeJSON, out, refuse, die, auditPath, statePath, commitAudit, checkAudit, once, record, engine, engineJSON, std, countDoc, rate, flagged, undecided, reportLines, sameCounts, layer, layers, listJSON, isObj, asText, asLine, citation, finding, recommendation };
+      // Edit distances from a transcription to a harvested snippet, whitespace
+      // collapsed: to some excerpt of it (an alignment free to start and end
+      // anywhere in the snippet — none for a copy or an excerpt, a few for a
+      // retyping), to its head (free to end anywhere — an element starts its
+      // own snippet, a container only runs into it) and to the whole of it.
+      // Compared under NFKC, as the engine's grounding compares. A
+      // transcription over four times the line's longest snippet is no
+      // retyping of any of them: the alignment reads its head, the same head
+      // for every anchor of the line.
+      const flatText = (s) => String(s).normalize("NFKC").replace(/\s+/g, " ").trim();
+      const distances = (text, snippet, cap) => {
+        const b = flatText(snippet), a = flatText(text).slice(0, cap);
+        let ex = new Array(b.length + 1).fill(0), wh = Array.from({ length: b.length + 1 }, (_, j) => j);
+        for (let i = 1; i <= a.length; i++) {
+          const ex2 = [i], wh2 = [i];
+          for (let j = 1; j <= b.length; j++) {
+            const sub = a[i - 1] === b[j - 1] ? 0 : 1;
+            ex2.push(Math.min(ex[j] + 1, ex2[j - 1] + 1, ex[j - 1] + sub));
+            wh2.push(Math.min(wh[j] + 1, wh2[j - 1] + 1, wh[j - 1] + sub));
+          }
+          ex = ex2;
+          wh = wh2;
+        }
+        return { excerpt: Math.min.apply(null, ex), head: Math.min.apply(null, wh), whole: wh[b.length] };
+      };
+      // Of the evidence anchors at a transcription's own file:line, the one it
+      // stands on: the one its snippet copies; else the nearest by excerpt
+      // distance, then the one its selector names, then by head distance, then
+      // by whole distance. `edits` is the excerpt distance (0: a copy or an
+      // excerpt), null when it transcribed no snippet — then the anchor its
+      // selector names, else the first.
+      const nearestAnchor = (evidence, o) => {
+        const key = (x) => String(x.file) + ":" + String(x.line);
+        const at = evidence.filter((e) => key(e) === key(o));
+        if (!at.length) return null;
+        const named = (e) => typeof o.selector === "string" && o.selector !== "" && e.selector === o.selector;
+        if (typeof o.snippet !== "string" || !flatText(o.snippet)) return { anchor: at.find(named) || at[0], edits: null };
+        const copy = at.find((e) => e.snippet === o.snippet);
+        if (copy) return { anchor: copy, edits: 0 };
+        const text = (e) => typeof e.snippet === "string" ? e.snippet : "";
+        const cap = 4 * Math.max.apply(null, at.map((e) => flatText(text(e)).length)) + 64;
+        let best = null;
+        for (const e of at) {
+          const d = distances(o.snippet, text(e), cap);
+          const rank = [d.excerpt, named(e) ? 0 : 1, d.head, d.whole];
+          const i = best ? rank.findIndex((r, k) => r !== best.rank[k]) : -1;
+          if (!best || (i >= 0 && rank[i] < best.rank[i])) best = { anchor: e, rank: rank };
+        }
+        return { anchor: best.anchor, edits: best.rank[0] };
+      };
+      // The criteria an engine apply refused: every fold JSON carries the list,
+      // and a decision read from its absence would read "nothing refused".
+      const rejectedOf = (json, what) => { if (!Array.isArray(json.rejectedCriteria)) die(what + " printed no rejectedCriteria list"); return json.rejectedCriteria; };
+      // A transcription restored from the anchor it stands on: the anchor's
+      // own snippet and selector (none when the anchor has none). A copy or an
+      // excerpt of the anchor (`edits` 0) is returned as written.
+      const restoreFrom = (o, near) => {
+        if (near.edits === 0) return o;
+        const r = Object.assign({}, o);
+        delete r.snippet;
+        delete r.selector;
+        if (typeof near.anchor.snippet === "string") r.snippet = near.anchor.snippet;
+        if (typeof near.anchor.selector === "string" && near.anchor.selector) r.selector = near.anchor.selector;
+        return r;
+      };
+      const api = { init, sha256, fingerprint, exists, readJSON, writeJSON, out, refuse, die, auditPath, statePath, commitAudit, checkAudit, once, record, engine, engineJSON, std, countDoc, rate, flagged, undecided, reportLines, sameCounts, layer, layers, listJSON, isObj, asText, asLine, citation, finding, recommendation, nearestAnchor, restoreFrom, rejectedOf };
       return api;
     }
     fs.writeFileSync(path.join(RUN, "bin", "lib.js"), "module.exports = (" + helpers.toString() + ")();\n");
@@ -1233,7 +1299,7 @@ tool ledger_replay:
     const stale = rp.stale || [], obsolete = rp.obsolete || [], missing = rp.missing || [];
     // A fresh entry the engine's gate still refuses goes back to « à évaluer »
     // like a stale one: named, and out of the copy.
-    const refused = (r.json.rejectedCriteria || []).map(String);
+    const refused = L.rejectedOf(r.json, "the ledger replay").map(String);
     const dropped = new Set([].concat(stale, obsolete, missing, refused).map(String));
     // The copy the final fold merges into keeps only what replayed.
     const kept = Object.assign({}, Array.isArray(doc) ? { kind: "verdict-ledger" } : doc, { entries: replayable.filter((e) => !dropped.has(String(e.criteriaId))) });
@@ -1325,12 +1391,19 @@ tool write_fragment:
     if (!Array.isArray(raw)) raw = [];
     const byId = {}, count = {}, recDropped = {};
     let foreign = 0, malformed = 0;
+    // The engine reads a verdict trimmed and case-blind among the verdicts
+    // its contract lists: written here in its own spelling, the merge and the
+    // fold read the verdict the engine folds.
+    const contract = L.readJSON(path.join(RUN, "worklist.json")).contract || {};
+    if (!Array.isArray(contract.verdicts) || !contract.verdicts.length) L.die("the worklist carries no engine verdict vocabulary (contract.verdicts)");
+    const VERDICTS = contract.verdicts.map(String);
+    const verdictOf = (x) => { if (x === undefined || x === null) return null; const w = String(x), k = w.trim().toLowerCase(); return VERDICTS.find((d) => d.toLowerCase() === k) || w; };
     for (const v of raw) {
       if (!L.isObj(v)) { malformed++; continue; }
       const id = String(v.criteriaId || v.id || "");
       if (!allowed.has(id)) { foreign++; continue; }
       count[id] = (count[id] || 0) + 1;
-      const o = { criteriaId: id, verdict: v.verdict === undefined || v.verdict === null ? null : String(v.verdict), justification: typeof v.justification === "string" ? v.justification : "" };
+      const o = { criteriaId: id, verdict: verdictOf(v.verdict), justification: typeof v.justification === "string" ? v.justification : "" };
       if (typeof v.reason === "string") o.reason = v.reason;
       if (Array.isArray(v.citations)) { o.citations = []; for (const c of v.citations) { const n = L.citation(c); if (n) o.citations.push(n); else malformed++; } }
       if (Array.isArray(v.findings)) { o.findings = []; for (const f of v.findings) { const n = L.finding(f); if (n) o.findings.push(n); else malformed++; } }
@@ -1394,22 +1467,17 @@ tool merge_verdicts:
       const evidence = evidenceOf(id);
       const anchors = evidence.map(anchorKey);
       const cited = Array.isArray(v.citations) ? v.citations : [];
-      const stray = cited.filter((c) => !anchors.includes(c.file + ":" + c.line));
+      const stray = cited.filter((c) => !anchors.includes(anchorKey(c)));
       if (stray.length) { citationRejected++; issues[id] = "a " + v.verdict + " verdict cited an anchor outside this criterion's own evidence (" + stray.map((c) => c.file + ":" + c.line).join(", ") + ") — cite only the evidence shown"; delete byId[id]; continue; }
       if (v.verdict === "NA" && anchors.length && cited.length === 0) { citationRejected++; issues[id] = "a NA verdict on a criterion the engine harvested evidence for must cite that evidence (out of scope, not cleared) — copy the evidence anchors into citations[]"; delete byId[id]; continue; }
-      // A kept recommendation takes the anchor's own snippet and selector,
-      // which the engine harvested at that line and so grounds by construction.
+      // A kept recommendation takes the snippet and selector of the anchor it
+      // stands on, unless it copies or excerpts it: the fold grounds a
+      // recommendation with no fallback, and a recommendation never costs its
+      // verdict. Citations reach the fold as written (fold_final restores the
+      // ones the engine accepts); findings stay as written.
       if (Array.isArray(v.recommendations)) {
         const anchored = [];
-        for (const r of v.recommendations) {
-          const at = evidence.filter((e) => anchorKey(e) === anchorKey(r));
-          const a = at.find((e) => e.snippet === r.snippet) || at[0];
-          if (!a) { recDropped[id]++; continue; }
-          const o = { file: a.file, line: a.line, message: r.message };
-          if (typeof a.snippet === "string") o.snippet = a.snippet;
-          if (typeof a.selector === "string" && a.selector) o.selector = a.selector;
-          anchored.push(o);
-        }
+        for (const r of v.recommendations) { const near = L.nearestAnchor(evidence, r); if (near) anchored.push(L.restoreFrom(r, near)); else recDropped[id]++; }
         v.recommendations = anchored;
       }
     }
@@ -1445,7 +1513,7 @@ tool fold_probe:
     if (adj.items.length) {
       const r = L.engine(["verify", "--apply", path.join(RUN, "adjudication.json"), "--in", copy, "--out", dir, "--json"].concat(L.std({{input.standard}})), { cwd: {{input.workspace_dir}} });
       if (!r.json) L.die("fold probe printed no JSON (exit " + r.code + "): " + r.stderr.slice(-3000));
-      applied = Number(r.json.applied || 0); rejected = (r.json.rejectedCriteria || []).map(String); issueList = (r.json.issues || []).map(String);
+      applied = Number(r.json.applied || 0); rejected = L.rejectedOf(r.json, "the fold probe").map(String); issueList = (r.json.issues || []).map(String);
     }
     const probed = L.readJSON(copy);
     const filled = new Set(adj.items.map((i) => i.criteriaId));
@@ -1470,7 +1538,15 @@ tool fold_probe:
 
 ## THE fold of the real audit: partial, once, with the ledger merged into
 ## the replayed copy. What the engine still refuses stays « à évaluer » and
-## is named in the annex; under require_complete it is a typed refusal.
+## is named in the annex; under require_complete it is a typed refusal. A
+## citation the fold forgives as written can still fail the trial, which
+## grounds a conformity's citations as stored, with no fallback to the anchor
+## (SocialGouv/ultra11y#50): each citation of a conformity that neither
+## copies nor excerpts an anchor at its own file:line is given the snippet
+## and selector of the anchor it stands on, the engine judges both versions
+## on copies of the audit, and a criterion keeps its restored citations only
+## where it accepts both and the restored text grounds as written — the
+## fold's verdict is the as-written one.
 tool fold_final:
   script: |
     const path = require("path");
@@ -1482,17 +1558,56 @@ tool fold_final:
     if (prior) L.out(prior);
     const adj = L.readJSON(path.join(RUN, "adjudication.json"));
     const ledger = path.join(RUN, "ledger", STD + ".json");
+    const wl = L.readJSON(path.join(RUN, "worklist.json"));
+    const candidates = {};
+    for (const it of adj.items) {
+      if (it.verdict !== "C" || !Array.isArray(it.citations) || !it.citations.length) continue;
+      const evidence = L.readJSON(path.join(wl.items_dir, it.criteriaId + ".json")).evidence || [];
+      const probes = [];
+      const citations = it.citations.map((c) => { const near = L.nearestAnchor(evidence, c); const r = near ? L.restoreFrom(c, near) : c; if (r !== c) probes.push(Object.assign({}, r, { message: "literal grounding probe" })); return r; });
+      if (probes.length) candidates[it.criteriaId] = { item: Object.assign({}, it, { citations: citations }), changed: probes.length, probes: probes };
+    }
+    let folded = adj, citationsRestored = 0;
+    const restoredIds = [], keptIds = [];
+    if (Object.keys(candidates).length) {
+      const refusedBy = (name, doc) => {
+        const dir = path.join(RUN, "restore", name);
+        L.writeJSON(path.join(dir, "adjudication.json"), doc);
+        L.writeJSON(path.join(dir, "audit-latest.json"), L.readJSON(L.auditPath()));
+        const r = L.engine(["verify", "--apply", path.join(dir, "adjudication.json"), "--in", path.join(dir, "audit-latest.json"), "--out", dir, "--json"].concat(L.std(STD)), { cwd: {{input.workspace_dir}} });
+        if (!r.json) L.die("the " + name + " restore probe printed no JSON (exit " + r.code + "): " + r.stderr.slice(-3000));
+        return new Set(L.rejectedOf(r.json, "the " + name + " restore probe").map(String));
+      };
+      const asWritten = refusedBy("as-written", adj);
+      // The restored version is probed with each restored citation also
+      // posed as a recommendation: the fold grounds a recommendation
+      // literally, as the trial grounds a citation, so a restored text that
+      // does not ground (an anchor snippet cut inside a decomposed accent,
+      // which the fold would still forgive through another anchor) is
+      // refused there.
+      const restored = refusedBy("restored", Object.assign({}, adj, { items: adj.items.map((it) => { const c = candidates[it.criteriaId]; return c ? Object.assign({}, c.item, { recommendations: (c.item.recommendations || []).concat(c.probes) }) : it; }) }));
+      folded = Object.assign({}, adj, { items: adj.items.map((it) => {
+        const c = candidates[it.criteriaId];
+        if (!c) return it;
+        if (asWritten.has(it.criteriaId) || restored.has(it.criteriaId)) { keptIds.push(it.criteriaId); return it; }
+        restoredIds.push(it.criteriaId);
+        citationsRestored += c.changed;
+        return c.item;
+      }) });
+    }
+    const foldedPath = path.join(RUN, "adjudication.folded.json");
+    L.writeJSON(foldedPath, folded);
     let applied = 0, stillManual = 0, rejected = [];
-    if (adj.items.length) {
-      const r = L.engine(["verify", "--apply", path.join(RUN, "adjudication.json"), "--in", L.auditPath(), "--out", RUN, "--ledger", ledger, "--json"].concat(L.std(STD)), { cwd: {{input.workspace_dir}} });
+    if (folded.items.length) {
+      const r = L.engine(["verify", "--apply", foldedPath, "--in", L.auditPath(), "--out", RUN, "--ledger", ledger, "--json"].concat(L.std(STD)), { cwd: {{input.workspace_dir}} });
       if (!r.json) L.die("the final fold printed no JSON (exit " + r.code + "): " + r.stderr.slice(-3000));
-      applied = Number(r.json.applied || 0); stillManual = Number(r.json.stillManual || 0); rejected = (r.json.rejectedCriteria || []).map(String);
+      applied = Number(r.json.applied || 0); stillManual = Number(r.json.stillManual || 0); rejected = L.rejectedOf(r.json, "the final fold").map(String);
     }
     sha = L.commitAudit();
     const doc = L.readJSON(L.auditPath());
     const open = L.undecided(doc), flaggedOpen = L.flagged(doc);
-    L.layer("fold", { status: open.length ? "partial" : "ok", applied: applied, still_manual: stillManual, rejected: rejected, still_open: open, flagged_open: flaggedOpen, ledger: L.exists(ledger) ? ledger : "" });
-    const base = { applied: applied, still_manual: stillManual, rejected: rejected.length, still_open: open.length, still_open_ids: open, flagged_open: flaggedOpen.length, ledger_path: L.exists(ledger) ? ledger : "", audit_sha256: sha };
+    L.layer("fold", { status: open.length ? "partial" : "ok", applied: applied, still_manual: stillManual, rejected: rejected, still_open: open, flagged_open: flaggedOpen, ledger: L.exists(ledger) ? ledger : "", citations_restored: citationsRestored, citations_restored_ids: restoredIds, citations_kept_ids: keptIds });
+    const base = { applied: applied, still_manual: stillManual, rejected: rejected.length, still_open: open.length, still_open_ids: open, flagged_open: flaggedOpen.length, citations_restored: citationsRestored, ledger_path: L.exists(ledger) ? ledger : "", audit_sha256: sha };
     if ({{input.require_complete}} && open.length) L.out(L.record("fold_final", Object.assign({ ok: false, fail_code: "ADJUDICATION_INCOMPLETE", reason: open.length + " criteria are still « à évaluer » after the fold and require_complete is set: " + open.join(", ") }, base)));
     L.out(L.record("fold_final", Object.assign({ ok: true, fail_code: "", reason: "" }, base)));
   language: js
@@ -1752,7 +1867,9 @@ tool final_report:
     a.push("| Pages rendues | " + st(layers.rendered) + " | " + (layers.rendered ? (layers.rendered.reason || (layers.rendered.pages_recorded + " page(s) capturée(s), " + layers.rendered.pages_refused + " refusée(s)" + (layers.rendered.missing_kinds && layers.rendered.missing_kinds.length ? " ; types de page manquants : " + layers.rendered.missing_kinds.join(", ") : ""))) : "couche désactivée, ou pas de navigateur / d'échantillon de pages") + " |");
     a.push("| Registre de verdicts | " + st(layers.ledger) + " | " + (layers.ledger ? (layers.ledger.reason || (layers.ledger.replayed + " verdict(s) rejoués ; périmés : " + fmt(layers.ledger.stale) + " ; obsolètes : " + fmt(layers.ledger.obsolete) + " ; refusés par le gate moteur : " + fmt(layers.ledger.refused || []) + " ; recommandations non rejouées (non normatives) : " + Number(layers.ledger.recommendations_stripped || 0))) : "") + " |");
     a.push("| Adjudication par agents | " + st(layers.adjudication) + " | " + (layers.adjudication ? layers.adjudication.filled + " verdict(s) reçus, " + layers.adjudication.unfilled + " sans réponse, lots perdus : " + fmt(layers.adjudication.failed_batches) + ", verdicts écartés (hors lot, doublons, malformés) : " + layers.adjudication.foreign_dropped + ", citations renvoyées : " + layers.adjudication.citation_rejected + ", recommandations écartées (pas un objet ancré avec un message, ou hors de l'évidence du critère) : " + Number(layers.adjudication.recommendations_dropped || 0) : "") + " |");
-    a.push("| Pliage (gate moteur) | " + st(layers.fold) + " | " + (layers.fold ? layers.fold.applied + " verdict(s) acceptés, refusés : " + fmt(layers.fold.rejected) + ", encore à évaluer : " + fmt(layers.fold.still_open) : "") + " |");
+    const restoredIds = layers.fold && Array.isArray(layers.fold.citations_restored_ids) ? layers.fold.citations_restored_ids : [];
+    const keptIds = layers.fold && Array.isArray(layers.fold.citations_kept_ids) ? layers.fold.citations_kept_ids : [];
+    a.push("| Pliage (gate moteur) | " + st(layers.fold) + " | " + (layers.fold ? layers.fold.applied + " verdict(s) acceptés, refusés : " + fmt(layers.fold.rejected) + ", encore à évaluer : " + fmt(layers.fold.still_open) + ", citations retapées ou incomplètes rétablies depuis leur ancre : " + Number(layers.fold.citations_restored || 0) + (restoredIds.length ? " (" + restoredIds.join(", ") + ")" : "") + (keptIds.length ? ", gardées telles qu'écrites (le moteur refuse l'une des deux versions) : " + keptIds.join(", ") : "") : "") + " |");
     // A layer counts as an applied trial when it says so, or — written before
     // the field existed — when it is an ok layer, which that node wrote only
     // for a trial the engine accepted.

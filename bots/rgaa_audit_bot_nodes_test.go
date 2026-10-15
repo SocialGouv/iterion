@@ -349,6 +349,117 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 		}
 	})
 
+	t.Run("the_anchor_a_transcription_stands_on_is_the_one_it_copies_else_the_one_it_retypes", func(t *testing.T) {
+		// lib.js's nearestAnchor and restoreFrom on harvests the fixture site
+		// does not grow: a container whose snippet runs into its element; two
+		// anchors with one snippet that only their selectors tell apart; an
+		// anchor with no selector; a long quote a short sibling would win if
+		// each anchor cut the quote to its own length; a named selector against
+		// the anchor a transcription starts; a quote cut inside a decomposed
+		// accent; an element and its child.
+		probe := map[string]string{"_anchor": `const RUN = {{input.run_dir}};
+const L = require(require("path").join(RUN, "bin", "lib.js")).init(RUN);
+const element = '<button type="button" class="ml-auto inline-flex items-center gap-1 rounded px-2 py-1">Menu</button>';
+const field = '<input type="text" class="w-full" placeholder="Filtrer">';
+const sibling = '<a href="/x">X</a></p>';
+const helpLink = '<a class="fr-link" href="/aide" title="Aide en ligne">Aide en ligne</a> ' + sibling;
+const inner = '<a class="nav" href="/one">One</a>';
+const outer = '<a class="outer" title="tt"><a class="nav" href="/two">Two</a>';
+const decomposed = '<a href="/cv" title="Re\u0301sume\u0301">CV</a>';
+const parent = '<nav><a href="#"></a></nav>', child = '<a href="#"></a></nav>';
+const at = (line, selector, snippet) => Object.assign({ file: "page.html", line: line, snippet: snippet }, selector ? { selector: selector } : {});
+const evidence = [
+  at(1, "span.logo", '<span class="logo">' + element.slice(0, 40)), at(1, "button.ml-auto", element),
+  at(2, "input#tag", field), at(2, "input#search", field),
+  at(3, "", "<p>Texte</p>"),
+  at(4, "a", sibling), at(4, "a.fr-link", helpLink),
+  at(5, "a.nav", inner), at(5, "a.outer", outer),
+  at(6, "a.cv", decomposed),
+  at(7, "nav", parent), at(7, "a", child),
+];
+const cite = (line, o) => Object.assign({ file: "page.html", line: line }, o);
+const cases = {
+  truncatedElement: cite(1, { snippet: element.slice(0, 30) + "…" }),
+  retypedNamedField: cite(2, { snippet: field + "\x60", selector: "input#search" }),
+  copiedNamedField: cite(2, { snippet: field, selector: "input#search" }),
+  retypedUnnamedField: cite(2, { snippet: field + "\x60" }),
+  retypedParagraph: cite(3, { snippet: "<p>Texte</p>\x60", selector: "p.agent" }),
+  longQuote: cite(4, { snippet: helpLink + ' <span>Lorem ipsum</span>'.repeat(8) + "\x60" }),
+  namedOverStarted: cite(5, { snippet: '<a class="nav" href="/…', selector: "a.outer" }),
+  cutAccent: cite(6, { snippet: '<a href="/cv" title="Re' }),
+  retypedChild: cite(7, { snippet: child + "\x60" }),
+  selectorOnly: cite(7, { selector: "a" }),
+  blankSnippet: cite(7, { snippet: "   ", selector: "a" }),
+  unknownSelector: cite(7, { selector: "no-such-selector" }),
+  widenedCopy: cite(7, { snippet: "  " + parent.replace(" ", "   ") + " " }),
+  midExcerpt: cite(7, { snippet: 'a href="#"></a' }),
+  offLine: cite(8, { snippet: parent }),
+};
+const out = {};
+for (const [k, o] of Object.entries(cases)) {
+  const near = L.nearestAnchor(evidence, o);
+  out[k] = near ? { snippet: near.anchor.snippet, selector: near.anchor.selector || "", edits: near.edits, restored: L.restoreFrom(o, near) } : null;
+}
+L.out({ ok: true, cases: out });
+`}
+		r := rgaaRunNode(t, probe, "_anchor", site, env, in(nil))
+		if r.Code != 0 {
+			t.Fatalf("anchor probe died: %s", r.Stderr)
+		}
+		got := r.Out["cases"].(map[string]any)
+		pick := func(k string) map[string]any {
+			m, _ := got[k].(map[string]any)
+			if m == nil {
+				t.Fatalf("%s: no anchor (%v)", k, got[k])
+			}
+			return m
+		}
+		edits := func(k string) any { return pick(k)["edits"] }
+		for k, want := range map[string]string{
+			"truncatedElement":    "button.ml-auto",
+			"retypedNamedField":   "input#search",
+			"retypedUnnamedField": "input#tag",
+			"longQuote":           "a.fr-link",
+			"namedOverStarted":    "a.outer",
+			"cutAccent":           "a.cv",
+			"retypedChild":        "a",
+			"selectorOnly":        "a",
+			"blankSnippet":        "a",
+			"unknownSelector":     "nav",
+		} {
+			if sel := pick(k)["selector"]; sel != want {
+				t.Fatalf("%s stands on %v, want %s (%v)", k, sel, want, got[k])
+			}
+		}
+		for _, k := range []string{"copiedNamedField", "widenedCopy", "midExcerpt"} {
+			if rgaaInt(edits(k)) != 0 {
+				t.Fatalf("%s: edits %v, want 0 — a copy or an excerpt of an anchor", k, edits(k))
+			}
+			restored, _ := pick(k)["restored"].(map[string]any)
+			if fmt.Sprint(restored["snippet"]) == fmt.Sprint(pick(k)["snippet"]) && k != "copiedNamedField" {
+				t.Fatalf("%s was rewritten to its anchor %v: a copy or an excerpt stays as written", k, restored)
+			}
+		}
+		if restored, _ := pick("copiedNamedField")["restored"].(map[string]any); restored["selector"] != "input#search" {
+			t.Fatalf("the exact copy naming input#search came back as %v: it stays as written", restored)
+		}
+		for _, k := range []string{"selectorOnly", "blankSnippet", "unknownSelector"} {
+			if edits(k) != nil {
+				t.Fatalf("%s: edits %v, want null — nothing transcribed", k, edits(k))
+			}
+		}
+		if rgaaInt(edits("cutAccent")) < 1 || rgaaInt(edits("retypedChild")) < 1 {
+			t.Fatalf("a cut accent (%v) and a retyping (%v) are no excerpts: under NFKC the cut quote is not the anchor's text", edits("cutAccent"), edits("retypedChild"))
+		}
+		restored, _ := pick("retypedParagraph")["restored"].(map[string]any)
+		if _, sel := restored["selector"]; restored["snippet"] != "<p>Texte</p>" || sel {
+			t.Fatalf("the retyped paragraph came back as %v, want its anchor whole — its snippet, and no selector since the anchor has none", restored)
+		}
+		if got["offLine"] != nil {
+			t.Fatalf("a transcription at a line with no anchor stands on %v, want none", got["offLine"])
+		}
+	})
+
 	var auditOut map[string]any
 	t.Run("static_audit_runs_the_engine_and_records_the_document_hash", func(t *testing.T) {
 		auditOut = rgaaOK(t, "static_audit", rgaaRunNode(t, scripts, "static_audit", site, env, in(map[string]any{"input.max_files": 4000, "input.audit_args": prep["audit_args"]})))
@@ -935,6 +1046,69 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 	// The run as the adjudication left it, before the real fold: the start
 	// of the agent-non-conformity trial below.
 	preFold := rgaaRunCopy(t, run)
+	// The batch whose fragment the merge keeps for a criterion: the re-ask's
+	// when it was re-asked, else round 0's.
+	keptBatchOf := func(t *testing.T, id string) batch {
+		t.Helper()
+		r1, _ := filepath.Glob(filepath.Join(preFold, "batches", "r1-*.json"))
+		for _, p := range r1 {
+			var rb batch
+			rgaaReadJSON(t, p, &rb)
+			if rgaaContains(rb.IDs, id) {
+				return rb
+			}
+		}
+		for _, r0 := range round0 {
+			if rgaaContains(r0.IDs, id) {
+				return r0
+			}
+		}
+		t.Fatalf("no batch planned %s", id)
+		return batch{}
+	}
+	// mergeOnCopy writes the kept batch of each criterion of `set` on a copy of
+	// the run before the fold, the fixture agent answering the rest of each
+	// batch, merges, and returns the copy, the merge output and the merged
+	// items by criterion.
+	type mergedItem struct {
+		CriteriaID      string           `json:"criteriaId"`
+		Verdict         any              `json:"verdict"`
+		Citations       []map[string]any `json:"citations"`
+		Findings        []map[string]any `json:"findings"`
+		Recommendations []map[string]any `json:"recommendations"`
+	}
+	mergeOnCopy := func(t *testing.T, dir string, set map[string]map[string]any) (map[string]any, map[string]mergedItem) {
+		t.Helper()
+		written := map[string]bool{}
+		for id := range set {
+			b := keptBatchOf(t, id)
+			if written[b.ID] {
+				continue
+			}
+			written[b.ID] = true
+			var verdicts []any
+			for _, x := range b.IDs {
+				if v, ok := set[x]; ok {
+					verdicts = append(verdicts, v)
+				} else {
+					verdicts = append(verdicts, rgaaFixtureVerdict(t, itemsDir, x))
+				}
+			}
+			if frag := writeFragment(t, dir, b, verdicts); rgaaInt(frag["written"]) != len(b.IDs) || rgaaInt(frag["malformed"]) != 0 {
+				t.Fatalf("fragment %s: %v", b.ID, frag)
+			}
+		}
+		merged := mergeVerdicts(t, dir, 1)
+		var adj struct {
+			Items []mergedItem `json:"items"`
+		}
+		rgaaReadJSON(t, filepath.Join(dir, "adjudication.json"), &adj)
+		byID := map[string]mergedItem{}
+		for _, it := range adj.Items {
+			byID[it.CriteriaID] = it
+		}
+		return merged, byID
+	}
 
 	var fold map[string]any
 	t.Run("fold_final_folds_the_real_audit_once_records_its_hash_and_re_emits_on_re_entry", func(t *testing.T) {
@@ -1635,6 +1809,36 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 		if !strings.Contains(string(annex), "| Contre-lecture | ok | 3 réfutée(s), 1 non tranchée(s), conformités retirées : 3.1, constats moteur non touchés : 2 |") {
 			t.Fatalf("an ok layer without `applied` does not render its counts:\n%s", annex)
 		}
+		// The fold row: the citations fold_final restored and those it kept as
+		// written, by criterion; a fold layer from before 3.0.3 reads 0.
+		foldRow := func() string {
+			final := rgaaOK(t, "final_report", rgaaRunNode(t, scripts, "final_report", site, env, in(map[string]any{"input.run_dir": dir, "input.html_report": false, "input.report_dir": "", "input.require_complete": false, "input.undecidable_present": false, "input.undecidable_path": "", "input.scope_notes": ""})))
+			annex, err := os.ReadFile(fmt.Sprint(final["annex_path"]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range strings.Split(string(annex), "\n") {
+				if strings.HasPrefix(l, "| Pliage (gate moteur) |") {
+					return l
+				}
+			}
+			t.Fatalf("the annex has no fold row:\n%s", annex)
+			return ""
+		}
+		var fold map[string]any
+		rgaaReadJSON(t, filepath.Join(dir, "layers", "fold.json"), &fold)
+		fold["citations_restored"], fold["citations_restored_ids"], fold["citations_kept_ids"] = 3, []any{"1.3", "8.9"}, []any{"10.2"}
+		rgaaWriteJSON(t, filepath.Join(dir, "layers", "fold.json"), fold)
+		if row := foldRow(); !strings.HasSuffix(row, ", citations retapées ou incomplètes rétablies depuis leur ancre : 3 (1.3, 8.9), gardées telles qu'écrites (le moteur refuse l'une des deux versions) : 10.2 |") {
+			t.Fatalf("the fold row does not name the restored and the kept citations: %s", row)
+		}
+		delete(fold, "citations_restored")
+		delete(fold, "citations_restored_ids")
+		delete(fold, "citations_kept_ids")
+		rgaaWriteJSON(t, filepath.Join(dir, "layers", "fold.json"), fold)
+		if row := foldRow(); !strings.HasSuffix(row, ", citations retapées ou incomplètes rétablies depuis leur ancre : 0 |") {
+			t.Fatalf("a fold layer from before 3.0.3 does not read 0 restored: %s", row)
+		}
 	})
 
 	t.Run("refuted_engine_non_conformities_are_reported_as_left_untouched", func(t *testing.T) {
@@ -1728,6 +1932,498 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir, "input.complete": true})))
 		if rgaaInt(out["removed_findings"]) != hit || !rgaaContains(rgaaStrings(out["reopened"]), ncID) || rgaaContains(rgaaStrings(out["cleared"]), ncID) {
 			t.Fatalf("refuted agent NC on %s: removed_findings=%v reopened=%v cleared=%v (want %d removed, the criterion reopened, no conformity cleared)", ncID, out["removed_findings"], out["reopened"], out["cleared"], hit)
+		}
+	})
+
+	t.Run("a_retyped_citation_is_folded_with_its_anchor_s_text_so_the_trial_grounds_what_the_fold_accepted", func(t *testing.T) {
+		// The fold grounds a retyped snippet through its fallback to the
+		// criterion's evidence anchor; the trial grounds a conformity's
+		// citations as stored, with no fallback
+		// (TestRgaaAuditKnownUpstreamDefectTheTrialRefusesARetypedSnippetTheFoldAccepted).
+		// Through the real merge, fold, draft and trial: the merge hands the
+		// citations over as written, the fold stores the anchor's text for the
+		// retyped ones and keeps an excerpt as written, and the trial stands.
+		// A NA's retyped citation, which no trial grounds, is folded as
+		// written.
+		collapse := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+		for _, cID := range ids {
+			// The first evidence item of each anchor line of the criterion.
+			var c []map[string]any
+			seen := map[string]bool{}
+			for _, e := range rgaaEvidenceOf(t, itemsDir, cID) {
+				k := fmt.Sprintf("%v:%v", e["file"], e["line"])
+				if s, _ := e["snippet"].(string); s != "" && !seen[k] {
+					seen[k] = true
+					c = append(c, e)
+				}
+			}
+			if len(c) < 2 {
+				continue
+			}
+			// The r4 retyping: a closing backtick the source does not carry.
+			retype := func(e map[string]any) string {
+				s := fmt.Sprint(e["snippet"]) + "`"
+				src, err := os.ReadFile(filepath.Join(site, fmt.Sprint(e["file"])))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(collapse(string(src)), collapse(s)) {
+					t.Fatalf("the retyped snippet %q occurs in %v: the case would not need the fallback", s, e["file"])
+				}
+				return s
+			}
+			retyped, retyped2 := retype(c[0]), retype(c[1])
+			// An excerpt from the middle of the second anchor, the way an
+			// adjudicator quotes one attribute of an element.
+			whole := []rune(fmt.Sprint(c[1]["snippet"]))
+			excerpt := string(whole[len(whole)/4 : len(whole)-len(whole)/4])
+			dir := rgaaRunCopy(t, preFold)
+			v := rgaaFixtureVerdict(t, itemsDir, cID)
+			v["citations"] = []any{
+				map[string]any{"file": c[1]["file"], "line": c[1]["line"], "snippet": excerpt},
+				map[string]any{"file": c[0]["file"], "line": c[0]["line"], "snippet": retyped},
+				map[string]any{"file": c[1]["file"], "line": c[1]["line"], "snippet": retyped2},
+			}
+			// A NA on another criterion with an anchor, its citation retyped.
+			var naID string
+			var na map[string]any
+			for _, x := range ids {
+				if ev := rgaaEvidenceOf(t, itemsDir, x); x != cID && naID == "" && len(ev) > 0 {
+					if s, _ := ev[0]["snippet"].(string); s != "" {
+						naID = x
+						na = map[string]any{"criteriaId": x, "verdict": "NA", "justification": "Hors périmètre (fixture).", "citations": []any{map[string]any{"file": ev[0]["file"], "line": ev[0]["line"], "snippet": retype(ev[0])}}}
+					}
+				}
+			}
+			if naID == "" {
+				t.Fatal("no second criterion carries an anchor")
+			}
+			_, items := mergeOnCopy(t, dir, map[string]map[string]any{cID: v, naID: na})
+			if got := items[cID].Citations; len(got) != 3 || got[0]["snippet"] != excerpt || got[1]["snippet"] != retyped || got[2]["snippet"] != retyped2 {
+				t.Fatalf("the merge handed %s's citations over as %v, want them as written", cID, got)
+			}
+			fold := rgaaOK(t, "fold_final", rgaaRunNode(t, scripts, "fold_final", site, env, in(map[string]any{"input.run_dir": dir, "input.require_complete": false})))
+			var doc packAuditDoc
+			rgaaReadJSON(t, filepath.Join(dir, "audit-latest.json"), &doc)
+			for _, cr := range doc.Criteria {
+				if cr.ID == cID && (cr.Status != "C" || rgaaInt(fold["rejected"]) != 0) {
+					t.Fatalf("the fold left %s %s and rejected %v", cID, cr.Status, fold["rejected"])
+				}
+			}
+			// The trial grounds what the fold accepted.
+			dr := rgaaOK(t, "draft_report", rgaaRunNode(t, scripts, "draft_report", site, env, in(map[string]any{"input.run_dir": dir})))
+			var todo []map[string]any
+			rgaaReadJSON(t, fmt.Sprint(dr["todo_path"]), &todo)
+			onTrial := false
+			for _, it := range todo {
+				it["verdict"] = "supported"
+				onTrial = onTrial || (fmt.Sprint(it["criteriaId"]) == cID && it["kind"] == "c")
+			}
+			if !onTrial {
+				t.Fatalf("the trial does not put %s's conformity on trial", cID)
+			}
+			rgaaWriteJSON(t, fmt.Sprint(dr["todo_path"]), todo)
+			out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir, "input.complete": true})))
+			if out["applied"] != true || out["degraded"] != false {
+				t.Fatalf("the trial over the restored citation: applied=%v degraded=%v reason=%q", out["applied"], out["degraded"], out["reason"])
+			}
+			final := rgaaOK(t, "final_report", rgaaRunNode(t, scripts, "final_report", site, env, in(map[string]any{"input.run_dir": dir, "input.html_report": false, "input.report_dir": "", "input.require_complete": false, "input.undecidable_present": false, "input.undecidable_path": "", "input.scope_notes": ""})))
+			annex, err := os.ReadFile(fmt.Sprint(final["annex_path"]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(annex), "citations retapées ou incomplètes rétablies depuis leur ancre : 2 ("+cID+") |") {
+				t.Fatalf("the annex does not name the two restored citations:\n%s", annex)
+			}
+			// What the fold folded.
+			var folded struct {
+				Items []mergedItem `json:"items"`
+			}
+			rgaaReadJSON(t, filepath.Join(dir, "adjudication.folded.json"), &folded)
+			var cited []map[string]any
+			for _, it := range folded.Items {
+				if it.CriteriaID == cID {
+					cited = it.Citations
+				}
+			}
+			if len(cited) != 3 {
+				t.Fatalf("%s was folded with citations %v", cID, cited)
+			}
+			if _, sel := cited[0]["selector"]; cited[0]["snippet"] != excerpt || sel {
+				t.Fatalf("%s's excerpt was folded as %v, want it as written (%q, no selector)", cID, cited[0], excerpt)
+			}
+			for i, a := range map[int]map[string]any{1: c[0], 2: c[1]} {
+				gs, _ := cited[i]["selector"].(string)
+				ws, _ := a["selector"].(string)
+				if cited[i]["snippet"] != a["snippet"] || gs != ws {
+					t.Fatalf("%s's retyped citation %d was folded as %v, want its anchor's snippet and selector %v", cID, i, cited[i], a)
+				}
+			}
+			if rgaaInt(fold["citations_restored"]) != 2 {
+				t.Fatalf("fold_final: %v (want the two retyped citations counted, not the excerpt)", fold)
+			}
+			for _, it := range folded.Items {
+				if it.CriteriaID == naID && (len(it.Citations) != 1 || fmt.Sprint(it.Citations[0]) != fmt.Sprint(na["citations"].([]any)[0])) {
+					t.Fatalf("the NA %s was folded with %v, want its citation as written", naID, it.Citations)
+				}
+				for _, r := range it.Recommendations {
+					if r["message"] == "literal grounding probe" {
+						t.Fatalf("%s was folded with the restore probe's recommendation %v: the probes stay on the copies", it.CriteriaID, r)
+					}
+				}
+			}
+			return
+		}
+		t.Fatal("no criterion carries two anchor lines")
+	})
+
+	t.Run("the_fold_keeps_its_as_written_verdict_on_every_citation_and_stores_the_anchor_s_text_only_where_it_accepts_both", func(t *testing.T) {
+		// The engine's fold forgives a retyped citation through an anchor it
+		// recognises in it, and refuses any other snippet that does not
+		// ground. fold_final restores a citation only where the engine accepts
+		// both the as-written and the restored text: on every case below the
+		// fold's verdict through the bot is the engine's on the text as the
+		// agent wrote it, and a fabrication still reaches it as written.
+		tagRe := regexp.MustCompile(`^<\s*([a-zA-Z][\w-]*)`)
+		attrRe := regexp.MustCompile(`=\s*"([^"]*)"`)
+		sepRe := regexp.MustCompile(`[\s/_-]+`)
+		// A word as the engine counts one: a piece of an attribute value, split
+		// on blanks, slashes, underscores and hyphens, of three characters or
+		// more.
+		wordOf := func(s string) string {
+			for _, m := range attrRe.FindAllStringSubmatch(s, -1) {
+				for _, w := range sepRe.Split(m[1], -1) {
+					if len(w) >= 3 {
+						return w
+					}
+				}
+			}
+			return ""
+		}
+		snip := func(e map[string]any, s string) map[string]any {
+			return map[string]any{"file": e["file"], "line": e["line"], "snippet": s}
+		}
+		type citeCase struct {
+			name              string
+			accepted, restore bool
+			cite              func(e map[string]any, tag, word string) map[string]any
+			verdict           string
+		}
+		retyped := func(e map[string]any, _, _ string) map[string]any { return snip(e, fmt.Sprint(e["snippet"])+"`") }
+		cases := []citeCase{
+			{"retyped with a closing backtick", true, true, retyped, ""},
+			{"retyped in capitals", true, true, func(e map[string]any, _, _ string) map[string]any {
+				return snip(e, strings.ToUpper(fmt.Sprint(e["snippet"])))
+			}, ""},
+			{"the same tag sharing one word", true, true, func(e map[string]any, tag, word string) map[string]any {
+				return snip(e, "<"+tag+` data-q="`+word+`">Zyqw</`+tag+">")
+			}, ""},
+			{"only the anchor's selector", true, true, func(e map[string]any, _, _ string) map[string]any {
+				return map[string]any{"file": e["file"], "line": e["line"], "selector": e["selector"]}
+			}, ""},
+			{"another tag sharing no word", false, false, func(e map[string]any, _, _ string) map[string]any {
+				return snip(e, `<x-zzqx data-q="qwzx">Zyqw</x-zzqx>`)
+			}, ""},
+			{"the same tag sharing no word", false, false, func(e map[string]any, tag, _ string) map[string]any {
+				return snip(e, "<"+tag+` data-q="qwzx">Zyqw</`+tag+">")
+			}, ""},
+			{"only another tag's selector", false, false, func(e map[string]any, _, _ string) map[string]any {
+				return map[string]any{"file": e["file"], "line": e["line"], "selector": "x-zzqx.qwzx"}
+			}, ""},
+			// The engine reads a verdict trimmed and case-blind: a conformity
+			// spelled " c " is folded and tried as C, and restored as one.
+			{"retyped, its verdict spelled in lower case", true, true, retyped, " c "},
+			// The anchor text the bot would restore does not ground — its item
+			// file is rewritten below to the anchor plus an attribute the source
+			// does not carry, as a snippet the engine cut inside a decomposed
+			// accent fails — while the fold forgives both the retyping and that
+			// text through the anchor it recognises in them. Only the literal
+			// probe refuses the restore, and the citation is folded as written.
+			{"retyped, its restored text refused", true, false, retyped, ""},
+		}
+		// One criterion per case, its first anchor carrying a tag, a word and
+		// a selector.
+		type pick struct {
+			id, tag, word string
+			anchor        map[string]any
+		}
+		var picks []pick
+		for _, id := range ids {
+			ev := rgaaEvidenceOf(t, itemsDir, id)
+			if len(ev) == 0 || len(picks) == len(cases) {
+				continue
+			}
+			s, _ := ev[0]["snippet"].(string)
+			sel, _ := ev[0]["selector"].(string)
+			tm, word := tagRe.FindStringSubmatch(s), wordOf(s)
+			if tm == nil || word == "" || sel == "" || strings.EqualFold(tm[1], "x-zzqx") {
+				continue
+			}
+			picks = append(picks, pick{id: id, tag: strings.ToLower(tm[1]), word: word, anchor: ev[0]})
+		}
+		if len(picks) < len(cases) {
+			t.Fatalf("the fixture harvests %d criteria with a tagged, worded, selected first anchor, the table needs %d", len(picks), len(cases))
+		}
+		verdicts := map[string]map[string]any{}
+		for i, c := range cases {
+			p := picks[i]
+			verdict := c.verdict
+			if verdict == "" {
+				verdict = "C"
+			}
+			verdicts[p.id] = map[string]any{"criteriaId": p.id, "verdict": verdict, "justification": "Conforme sur l'évidence citée (fixture).", "citations": []any{c.cite(p.anchor, p.tag, p.word)}}
+		}
+		// The engine alone, on the text as written.
+		raw := rgaaRunCopy(t, preFold)
+		var adj map[string]any
+		rgaaReadJSON(t, filepath.Join(raw, "adjudication.json"), &adj)
+		for _, it := range adj["items"].([]any) {
+			m := it.(map[string]any)
+			if v, ok := verdicts[fmt.Sprint(m["criteriaId"])]; ok {
+				m["verdict"], m["citations"] = v["verdict"], v["citations"]
+			}
+		}
+		rgaaWriteJSON(t, filepath.Join(raw, "adjudication.json"), adj)
+		var engineFold foldOut
+		rgaaEngineJSON(t, bin, site, nil, &engineFold, "verify", "--apply", filepath.Join(raw, "adjudication.json"), "--in", filepath.Join(raw, "audit-latest.json"), "--out", raw, "--json", "--standard", std, "--lang", "fr")
+		// The bot: merge, then the real fold — on a copy whose worklist points at
+		// its own item files, the last case's anchor text replaced there by one
+		// that grounds nowhere.
+		dir := rgaaRunCopy(t, preFold)
+		var wlCopy map[string]any
+		rgaaReadJSON(t, filepath.Join(dir, "worklist.json"), &wlCopy)
+		rel, err := filepath.Rel(run, itemsDir)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			t.Fatalf("the item files %s are not under the run directory", itemsDir)
+		}
+		wlCopy["items_dir"] = filepath.Join(dir, rel)
+		rgaaWriteJSON(t, filepath.Join(dir, "worklist.json"), wlCopy)
+		last := picks[len(cases)-1]
+		var item map[string]any
+		rgaaReadJSON(t, filepath.Join(dir, rel, last.id+".json"), &item)
+		ev := item["evidence"].([]any)
+		e0 := ev[0].(map[string]any)
+		if s := fmt.Sprint(e0["snippet"]); strings.Contains(s, ">") {
+			e0["snippet"] = strings.Replace(s, ">", ` data-zzqx="qwzx">`, 1)
+		} else {
+			e0["snippet"] = s + ` data-zzqx="qwzx"`
+		}
+		rgaaWriteJSON(t, filepath.Join(dir, rel, last.id+".json"), item)
+		mergeOnCopy(t, dir, verdicts)
+		botFold := rgaaOK(t, "fold_final", rgaaRunNode(t, scripts, "fold_final", site, env, in(map[string]any{"input.run_dir": dir, "input.require_complete": false})))
+		var layer struct {
+			Rejected []string `json:"rejected"`
+			Kept     []string `json:"citations_kept_ids"`
+		}
+		rgaaReadJSON(t, filepath.Join(dir, "layers", "fold.json"), &layer)
+		var folded struct {
+			Items []mergedItem `json:"items"`
+		}
+		rgaaReadJSON(t, filepath.Join(dir, "adjudication.folded.json"), &folded)
+		byID := map[string][]map[string]any{}
+		for _, it := range folded.Items {
+			byID[it.CriteriaID] = it.Citations
+		}
+		for i, c := range cases {
+			p := picks[i]
+			refused := rgaaContains(engineFold.RejectedCriteria, p.id)
+			if refused == c.accepted {
+				t.Fatalf("%s on %s: the engine, given it as written, refused=%v — the case does not exercise it as described", c.name, p.id, refused)
+			}
+			if rgaaContains(layer.Rejected, p.id) != refused {
+				t.Fatalf("%s on %s: the engine refuses it as written=%v, through the bot=%v — the bot changed the fold's verdict", c.name, p.id, refused, !refused)
+			}
+			got := byID[p.id]
+			if len(got) != 1 {
+				t.Fatalf("%s on %s was folded with %v", c.name, p.id, got)
+			}
+			restoredHere := got[0]["snippet"] == p.anchor["snippet"]
+			if want := c.cite(p.anchor, p.tag, p.word); restoredHere != c.restore || (!c.restore && fmt.Sprint(got[0]) != fmt.Sprint(want)) {
+				t.Fatalf("%s on %s was folded as %v, want %s", c.name, p.id, got[0], map[bool]string{true: "its anchor's text", false: fmt.Sprintf("as written %v", want)}[c.restore])
+			}
+			if keptHere := rgaaContains(layer.Kept, p.id); keptHere != !c.restore {
+				t.Fatalf("%s on %s: the fold layer names it among the citations kept as written=%v, want %v (%v)", c.name, p.id, keptHere, !c.restore, layer.Kept)
+			}
+		}
+		if rgaaInt(botFold["citations_restored"]) != 5 {
+			t.Fatalf("fold_final: %v (want the five citations the engine accepts both ways restored)", botFold)
+		}
+		// What the probes judged never reaches the ledger the next run replays.
+		var ledger struct {
+			Entries []map[string]any `json:"entries"`
+		}
+		rgaaReadJSON(t, filepath.Join(dir, "ledger", "rgaa.json"), &ledger)
+		for _, e := range ledger.Entries {
+			if rgaaContains(layer.Rejected, fmt.Sprint(e["criteriaId"])) {
+				t.Fatalf("the ledger copy holds %v, which the real fold refused", e["criteriaId"])
+			}
+		}
+	})
+
+	t.Run("every_restored_citation_of_a_conformity_is_probed_and_one_refused_restore_keeps_the_criterion_as_written", func(t *testing.T) {
+		// Three retyped citations on three anchor lines of one conformity, the
+		// middle anchor's text rewritten on the copy to the anchor plus an
+		// attribute the source lacks: the fold forgives every retyping, but
+		// the middle restore does not ground as written, so the literal probe
+		// refuses it — and the criterion is folded as written, all three.
+		var cID string
+		var c []map[string]any
+		for _, x := range ids {
+			var keyed []map[string]any
+			seen := map[string]bool{}
+			for _, e := range rgaaEvidenceOf(t, itemsDir, x) {
+				k := fmt.Sprintf("%v:%v", e["file"], e["line"])
+				if s, _ := e["snippet"].(string); s != "" && strings.Contains(s, ">") && !seen[k] {
+					seen[k] = true
+					keyed = append(keyed, e)
+				}
+			}
+			if len(keyed) >= 3 {
+				cID, c = x, keyed[:3]
+				break
+			}
+		}
+		if cID == "" {
+			t.Fatal("no criterion carries three anchor lines")
+		}
+		dir := rgaaRunCopy(t, preFold)
+		var wlCopy map[string]any
+		rgaaReadJSON(t, filepath.Join(dir, "worklist.json"), &wlCopy)
+		rel, err := filepath.Rel(run, itemsDir)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			t.Fatalf("the item files %s are not under the run directory", itemsDir)
+		}
+		wlCopy["items_dir"] = filepath.Join(dir, rel)
+		rgaaWriteJSON(t, filepath.Join(dir, "worklist.json"), wlCopy)
+		var item map[string]any
+		rgaaReadJSON(t, filepath.Join(dir, rel, cID+".json"), &item)
+		for _, e := range item["evidence"].([]any) {
+			m := e.(map[string]any)
+			if fmt.Sprintf("%v:%v", m["file"], m["line"]) == fmt.Sprintf("%v:%v", c[1]["file"], c[1]["line"]) {
+				m["snippet"] = strings.Replace(fmt.Sprint(m["snippet"]), ">", ` data-zzqx="qwzx">`, 1)
+			}
+		}
+		rgaaWriteJSON(t, filepath.Join(dir, rel, cID+".json"), item)
+		var written []any
+		for _, e := range c {
+			written = append(written, map[string]any{"file": e["file"], "line": e["line"], "snippet": fmt.Sprint(e["snippet"]) + "`"})
+		}
+		mergeOnCopy(t, dir, map[string]map[string]any{cID: {"criteriaId": cID, "verdict": "C", "justification": "Conforme sur l'évidence citée (fixture).", "citations": written}})
+		fold := rgaaOK(t, "fold_final", rgaaRunNode(t, scripts, "fold_final", site, env, in(map[string]any{"input.run_dir": dir, "input.require_complete": false})))
+		var layer struct {
+			Rejected []string `json:"rejected"`
+			Kept     []string `json:"citations_kept_ids"`
+		}
+		rgaaReadJSON(t, filepath.Join(dir, "layers", "fold.json"), &layer)
+		var folded struct {
+			Items []mergedItem `json:"items"`
+		}
+		rgaaReadJSON(t, filepath.Join(dir, "adjudication.folded.json"), &folded)
+		for _, it := range folded.Items {
+			if it.CriteriaID == cID && fmt.Sprint(it.Citations) != fmt.Sprint(written) {
+				t.Fatalf("%s was folded with %v, want all three citations as written %v (one restore does not ground)", cID, it.Citations, written)
+			}
+		}
+		if rgaaContains(layer.Rejected, cID) || !rgaaContains(layer.Kept, cID) || rgaaInt(fold["citations_restored"]) != 0 {
+			t.Fatalf("fold: rejected %v, kept %v, restored %v — want %s accepted, kept as written, nothing restored", layer.Rejected, layer.Kept, fold["citations_restored"], cID)
+		}
+	})
+
+	t.Run("the_merge_hands_citations_and_findings_over_as_written_and_anchors_a_retyped_recommendation", func(t *testing.T) {
+		// On a line holding an element and its child (the parent first, its
+		// snippet containing the child's): the merge leaves a retyped
+		// citation and the findings as the agent wrote them — fold_final
+		// decides what is restored —, and a retyped recommendation takes the
+		// child it retypes, not the parent it is just as near an excerpt of.
+		var id string
+		var parent, child map[string]any
+	search:
+		for _, cand := range ids {
+			ev := rgaaEvidenceOf(t, itemsDir, cand)
+			for i, a := range ev {
+				for _, b := range ev[i+1:] {
+					as, _ := a["snippet"].(string)
+					bs, _ := b["snippet"].(string)
+					if fmt.Sprintf("%v:%v", a["file"], a["line"]) == fmt.Sprintf("%v:%v", b["file"], b["line"]) && bs != "" && as != bs && strings.Contains(as, bs) && a["selector"] != b["selector"] {
+						id, parent, child = cand, a, b
+						break search
+					}
+				}
+			}
+		}
+		if id == "" {
+			t.Fatal("the fixture harvests no criterion with an element before its child on one line")
+		}
+		var ncID string
+		var ncAnchor map[string]any
+		for _, x := range keptBatchOf(t, id).IDs {
+			for _, e := range rgaaEvidenceOf(t, itemsDir, x) {
+				if s, _ := e["snippet"].(string); x != id && ncID == "" && s != "" {
+					ncID, ncAnchor = x, e
+				}
+			}
+		}
+		if ncID == "" {
+			t.Fatalf("the batch of %s carries no other criterion with an anchor", id)
+		}
+		at := func(e map[string]any, kv ...any) map[string]any {
+			m := map[string]any{"file": e["file"], "line": e["line"]}
+			for i := 0; i+1 < len(kv); i += 2 {
+				m[kv[i].(string)] = kv[i+1]
+			}
+			return m
+		}
+		// And a NA spelled in lower case citing nothing, on a third criterion
+		// with evidence: the merge reads it as the engine does, and sends it
+		// back like a "NA".
+		var naID string
+		for _, x := range ids {
+			if x != id && x != ncID && naID == "" && len(rgaaEvidenceOf(t, itemsDir, x)) > 0 {
+				naID = x
+			}
+		}
+		// A verdict outside the vocabulary is handed over as written, so the
+		// engine names it ("unknown verdict"), never dropped as unanswered.
+		var unkID, zeroID string
+		for _, x := range ids {
+			if x != id && x != ncID && x != naID {
+				if unkID == "" {
+					unkID = x
+				} else if zeroID == "" {
+					zeroID = x
+				}
+			}
+		}
+		retypedCitation := at(child, "snippet", fmt.Sprint(child["snippet"])+"`")
+		retypedFinding := at(ncAnchor, "snippet", fmt.Sprint(ncAnchor["snippet"])+"`", "message", "Constat dont l'extrait est retapé (fixture).", "normativeRef", ncID)
+		bareFinding := at(ncAnchor, "message", "Constat sans extrait (fixture).", "normativeRef", ncID)
+		merged, items := mergeOnCopy(t, rgaaRunCopy(t, preFold), map[string]map[string]any{
+			naID:   {"criteriaId": naID, "verdict": " na ", "justification": "Rien de tel ici (fixture)."},
+			unkID:  {"criteriaId": unkID, "verdict": "N/A", "justification": "Mot hors vocabulaire (fixture)."},
+			zeroID: {"criteriaId": zeroID, "verdict": 0, "justification": "Valeur non textuelle (fixture)."},
+			id: {"criteriaId": id, "verdict": "C", "justification": "Conforme (fixture).", "citations": []any{retypedCitation},
+				"recommendations": []any{at(child, "snippet", fmt.Sprint(child["snippet"])+"`", "message", "Recommandation retapée (fixture).")}},
+			ncID: {"criteriaId": ncID, "verdict": "NC", "justification": "Non conforme (fixture).", "findings": []any{retypedFinding, bareFinding}},
+		})
+		if cited := items[id].Citations; len(cited) != 1 || cited[0]["snippet"] != retypedCitation["snippet"] || cited[0]["selector"] != nil {
+			t.Fatalf("%s's citation went to the fold as %v, want it as written", id, cited)
+		}
+		rec := items[id].Recommendations
+		if gs, _ := rec[0]["selector"].(string); len(rec) != 1 || rec[0]["snippet"] != child["snippet"] || gs != child["selector"] || rec[0]["message"] != "Recommandation retapée (fixture)." {
+			t.Fatalf("%s's recommendation went to the fold as %v, want the child anchor %v with its message (the parent is %v)", id, rec, child, parent)
+		}
+		found := items[ncID].Findings
+		if len(found) != 2 || found[0]["snippet"] != retypedFinding["snippet"] || found[0]["selector"] != nil || found[1]["snippet"] != nil || found[1]["selector"] != nil {
+			t.Fatalf("%s's findings went to the fold as %v, want both as written", ncID, found)
+		}
+		if _, handed := items[naID]; handed || rgaaInt(merged["citation_rejected"]) != 1 {
+			t.Fatalf("the uncited NA spelled \" na \" on %s: handed over=%v, merge %v — want it sent back like a \"NA\"", naID, handed, merged)
+		}
+		if it, ok := items[unkID]; !ok || it.Verdict != "N/A" {
+			t.Fatalf("the verdict \"N/A\" on %s: handed over=%v as %v — want it handed over as written, for the engine to name", unkID, ok, it.Verdict)
+		}
+		if it, ok := items[zeroID]; !ok || it.Verdict != "0" {
+			t.Fatalf("the verdict 0 on %s: handed over=%v as %v — want it handed over as the text \"0\", for the engine to name", zeroID, ok, it.Verdict)
 		}
 	})
 
@@ -2100,6 +2796,91 @@ func TestRgaaAuditKnownUpstreamDefectBareNAOnEvidenceIsAccepted(t *testing.T) {
 	rgaaEngineJSON(t, bin, site, nil, &f, append([]string{"verify", "--apply", filepath.Join(run, "adj.json"), "--in", audit, "--out", run, "--json"}, std...)...)
 	if f.Applied != 1 || rgaaContains(f.RejectedCriteria, target) {
 		t.Fatalf("the fold now refuses a bare NA on %s (applied=%d rejected=%v): upstream enforces its contract — lift the bot-side check in merge_verdicts", target, f.Applied, f.RejectedCriteria)
+	}
+}
+
+// KNOWN UPSTREAM DEFECT (ultra11y 5.42.1, SocialGouv/ultra11y#50): the fold
+// grounds a citation whose snippet the adjudicator retyped through its
+// fallback to the evidence anchor and lands the verdict; the trial grounds
+// every retained claim as stored, with no fallback, and refuses it — a
+// conformity the fold accepted fails every later trial. The bot's
+// fold_final gives such a citation its anchor's own snippet
+// (TestRgaaAuditEngineDrivenNodes). When this test FAILS, read which side
+// moved: a trial that grounds the retyping no longer needs the restore; a
+// fold that refuses it as written leaves fold_final nothing to restore (it
+// restores only what the fold accepts as written) — the agent is re-asked.
+func TestRgaaAuditKnownUpstreamDefectTheTrialRefusesARetypedSnippetTheFoldAccepted(t *testing.T) {
+	bin, _ := rgaaResolveEngine(t)
+	site := rgaaCopyFixtureSite(t)
+	run := filepath.Join(t.TempDir(), "run")
+	if err := os.MkdirAll(run, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	audit := filepath.Join(run, "audit-latest.json")
+	std := []string{"--standard", "rgaa", "--lang", "fr"}
+	if code, _, stderr := rgaaEngineRun(t, bin, site, nil, append([]string{"audit", ".", "--graph", "--jsx", "--out", run, "--json"}, std...)...); code != 0 {
+		t.Fatalf("audit exit %d: %s", code, stderr)
+	}
+	var worklist worklistOut
+	rgaaEngineJSON(t, bin, site, nil, &worklist, append([]string{"verify", "--manual", "--in", audit, "--out", run, "--no-web", "--json"}, std...)...)
+	var todo struct {
+		Items []struct {
+			CriteriaID string           `json:"criteriaId"`
+			Evidence   []map[string]any `json:"evidence"`
+		} `json:"items"`
+	}
+	rgaaReadJSON(t, worklist.TodoPath, &todo)
+	// The whole worklist adjudicated as the fixture agent does (C on the
+	// first anchor, NA where nothing was harvested), one citation retyped.
+	var items []any
+	var target string
+	var anchor map[string]any
+	for _, it := range todo.Items {
+		if len(it.Evidence) == 0 {
+			items = append(items, map[string]any{"criteriaId": it.CriteriaID, "verdict": "NA", "justification": "Aucun sujet de ce type dans le périmètre audité (fixture)."})
+			continue
+		}
+		e := it.Evidence[0]
+		snippet, _ := e["snippet"].(string)
+		if target == "" && snippet != "" {
+			target, anchor = it.CriteriaID, e
+			snippet += "`"
+		}
+		items = append(items, map[string]any{"criteriaId": it.CriteriaID, "verdict": "C", "justification": "Conforme sur l'évidence citée (fixture).", "citations": []any{map[string]any{"file": e["file"], "line": e["line"], "snippet": snippet}}})
+	}
+	if target == "" {
+		t.Fatal("no criterion carries an anchor with a snippet to retype")
+	}
+	var skeleton map[string]any
+	rgaaReadJSON(t, worklist.VerdictsPath, &skeleton)
+	skeleton["items"] = items
+	rgaaWriteJSON(t, filepath.Join(run, "adj.json"), skeleton)
+	var f foldOut
+	rgaaEngineJSON(t, bin, site, nil, &f, append([]string{"verify", "--apply", filepath.Join(run, "adj.json"), "--in", audit, "--out", run, "--json"}, std...)...)
+	if rgaaContains(f.RejectedCriteria, target) {
+		t.Fatalf("the fold now refuses the retyped citation of %s (%v): the engine no longer forgives what its trial refuses — fold_final restores nothing the fold refuses as written, so such a verdict is now re-asked", target, f.Issues)
+	}
+	rep := rgaaReportPath(t, bin, site, audit, filepath.Join(run, "draft"), std)
+	var trial struct {
+		TodoPath string `json:"todoPath"`
+	}
+	rgaaEngineJSON(t, bin, site, nil, &trial, append([]string{"verify", "--report", rep, "--in", audit, "--out", filepath.Join(run, "refute"), "--max-verify", "0", "--json"}, std...)...)
+	var claims []map[string]any
+	rgaaReadJSON(t, trial.TodoPath, &claims)
+	for _, c := range claims {
+		c["verdict"] = "supported"
+	}
+	rgaaWriteJSON(t, trial.TodoPath, claims)
+	var applied struct {
+		Grounding struct {
+			Failed int      `json:"failed"`
+			Issues []string `json:"issues"`
+		} `json:"grounding"`
+	}
+	rgaaEngineJSON(t, bin, site, nil, &applied, append([]string{"verify", "--apply", trial.TodoPath, "--report", rep, "--in", audit, "--out", run, "--prune", "--json"}, std...)...)
+	want := fmt.Sprintf("cited snippet not found in %v:%v", anchor["file"], anchor["line"])
+	if applied.Grounding.Failed != 1 || len(applied.Grounding.Issues) != 1 || !strings.HasPrefix(applied.Grounding.Issues[0], want) {
+		t.Fatalf("the trial refused %d claim(s) %v, want exactly the retyped citation of %s (%q): when it grounds it, upstream aligned the trial with the fold (SocialGouv/ultra11y#50) and the restore in fold_final is no longer needed for the trial", applied.Grounding.Failed, applied.Grounding.Issues, target, want)
 	}
 }
 

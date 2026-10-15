@@ -46,7 +46,11 @@ batch are dropped.
    are still open after the probe are re-asked too, because a `manual` there
    leaves the report inconsistent.
 4. The real audit is folded exactly once. What is still refused stays
-   « à évaluer » and is named in the annex.
+   « à évaluer » and is named in the annex. Before that fold, a conformity's
+   citation whose snippet is retyped or missing is given its anchor's own
+   snippet and selector where the engine accepts both versions and the
+   restored text grounds: the second reader's trial grounds a conformity's
+   citations as stored, with no fallback to the anchor.
 
 ## What a run leaves behind
 

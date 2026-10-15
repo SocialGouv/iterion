@@ -68,7 +68,8 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   checked against the shown evidence, recommendations kept only on the
   criterion's own anchors — the others dropped and counted) →
   `fold_probe` (the fold on a copy, refusals named and re-asked once) →
-  `fold_final` (the real audit folded exactly once, ledger merged).
+  `fold_final` (the real audit folded exactly once, ledger merged; a retyped
+  citation folded with its anchor's text where the engine accepts both).
 - `draft_report` renders the draft and the trial worklist; `budget_gate`
   skips the second reader, visibly, past `refuter_budget_share` of the cost
   cap; `refute_apply` applies a complete trial with `--prune` (the engine's

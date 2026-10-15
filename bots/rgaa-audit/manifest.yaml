@@ -1,7 +1,22 @@
 name: rgaa-audit
 display_name: Acci
 icon: ♿
-version: 3.0.2
+version: 3.0.3
+## 3.0.3 — a citation snippet the adjudicator retyped is folded with its
+## anchor's text (#2453): the fold accepted it through a fallback to the
+## anchor, and every later trial, which grounds a conformity's citations as
+## stored, refused it. fold_final gives each citation of a conformity that
+## neither copies nor excerpts its anchor the snippet and selector of the
+## anchor it stands on (the nearest when several share the line), has the
+## engine judge both versions on copies of the audit, and keeps the restored
+## text only where it accepts both and the text grounds as written: the
+## fold's verdict stays the one on the text as written, a fabrication's
+## included. Findings stay as written; a retyped recommendation takes the
+## nearest anchor, a copied one stays as written; the annex names the
+## criteria restored. A verdict is read as the engine reads it, trimmed and
+## case-blind. A ledger can still hold a retyped citation (written before
+## 3.0.3, or one whose restore the engine refused): the replay keeps it, so
+## heal such an entry by hand (the studio's ledger is clean).
 ## 3.0.2 — the trial takes its conformities from the audit, the source the
 ## engine re-derives its coverage from (a replaying run wrote the ledger's
 ## capture anchors another way and left them « absent from the trial »).
