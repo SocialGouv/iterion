@@ -95,18 +95,21 @@ describe("a launch the view has moved on from", () => {
         <Launch file="bots/z.bot" />
       </LaunchDocStoreProvider>,
     );
-    await waitFor(() => expect(launched()).toBe("source of bots/z.bot\n"));
+    // The source and the form settle in separate renders: wait for the
+    // render that carries both of this launch's own, not for the first one.
+    await waitFor(() =>
+      expect(seen).toContainEqual({
+        file: "bots/z.bot",
+        source: "source of bots/z.bot\n",
+        vars: ["var_of_bots/z.bot"],
+      }),
+    );
 
-    expect(seen).not.toContainEqual({
-      file: "bots/z.bot",
-      source: "source of bots/x.bot\n",
-      vars: ["var_of_bots/x.bot"],
-    });
-    expect(seen).toContainEqual({
-      file: "bots/z.bot",
-      source: "source of bots/z.bot\n",
-      vars: ["var_of_bots/z.bot"],
-    });
+    // No render on the way there showed this launch the previous one's
+    // program, whatever form it carried at that moment.
+    expect(
+      seen.filter((s) => s.file === "bots/z.bot" && s.source === "source of bots/x.bot\n"),
+    ).toEqual([]);
   });
 
   // The form is the other half of what a launch sends: the var names come
@@ -128,7 +131,14 @@ describe("a launch the view has moved on from", () => {
       </LaunchDocStoreProvider>,
     );
     expect(form()).toBe("NO DOC");
-    await waitFor(() => expect(form()).toBe("var_of_bots/z.bot"));
+    // Wait on what the hook answered, not on the page: the record of a
+    // render lands one effect flush after the DOM shows it, and a negative
+    // asserted before that flush would pass for the wrong reason.
+    await waitFor(() =>
+      expect(seen).toContainEqual(
+        expect.objectContaining({ file: "bots/z.bot", vars: ["var_of_bots/z.bot"] }),
+      ),
+    );
 
     expect(seen.filter((r) => r.file === "bots/z.bot")).not.toContainEqual(
       expect.objectContaining({ vars: ["var_of_bots/x.bot"] }),
