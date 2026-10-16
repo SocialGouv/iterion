@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.268.1](https://github.com/SocialGouv/iterion/compare/v3.268.0...v3.268.1) (2026-10-16)
+
+### Bug Fixes
+
+* **bots:** the plan author sees its own assumptions and risks, and the boundary names them ([#2491](https://github.com/SocialGouv/iterion/issues/2491)) ([5acee5c](https://github.com/SocialGouv/iterion/commit/5acee5c1bdf367387af2c49429d79718912cd64c)), references [#1740](https://github.com/SocialGouv/iterion/issues/1740)
+
+    <details><summary>why</summary>
+
+    A value on an LLM node's input reaches the model only if a channel of THAT node renders it, and a session is not a channel. The seven `plan_revise` nodes received the author's own `assumptions` and `risks` on their input and rendered neither: six answer the peer critique under `session: inherit_if_available`, which `applySessionContinuity` marks droppable and the retry path re-sends without, and feature-dev's node is deliberately `fresh` (its Kimi fallback has no cross-backend session handoff),…
+
+    </details>
+
 ## [3.268.0](https://github.com/SocialGouv/iterion/compare/v3.267.0...v3.268.0) (2026-10-16)
 
 ### Features
