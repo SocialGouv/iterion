@@ -16,13 +16,14 @@
 // box is the Combobox's own — a second input above it would read as a
 // rival way to do the same thing.
 
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
 import { RoleSelect } from "@/components/shared/RoleSelect";
 import type { Confirmer } from "@/hooks/useConfirm";
+import { reconcileRole } from "@/lib/roleAuthority";
 import { confirmOwnerGrant } from "@/lib/roles";
 
 export interface MemberCandidate {
@@ -69,6 +70,11 @@ export function AddExistingMemberPanel({
   // operator would then face a panel that names nobody while "Add" stays
   // enabled, one click from placing an account they can no longer see.
   const [picked, setPicked] = useState<MemberCandidate | null>(null);
+  // Ids unique to this instance: one component serves two rosters, and two
+  // panels on one page would give a label the other panel's control.
+  const panelID = useId();
+  const userFieldID = `${panelID}-account`;
+  const roleFieldID = `${panelID}-role`;
 
   // The pin survives the search being CLEARED — the case it exists for,
   // since committing a pick empties a server-backed list — but not the
@@ -82,6 +88,12 @@ export function AddExistingMemberPanel({
   // Derived, not held: the same reconciliation the drawer applies to its org
   // pick. A stale selection disarms the button as well as leaving the list.
   const effectiveUserID = stale ? "" : userID;
+  // The same reconciliation for the ROLE: `roles` is what the caller may
+  // write, which their own standing caps, and a <select> whose value matches
+  // no option renders the FIRST one — the panel would then add an account at
+  // a role the operator never saw. Null when nothing is offered, which
+  // disarms the panel rather than falling back to a role outside the list.
+  const effectiveRole = reconcileRole(roles, role);
 
   const options: ComboboxOption<string>[] = shown.map((c) => ({
     value: c.user_id,
@@ -93,13 +105,13 @@ export function AddExistingMemberPanel({
   }));
 
   const submit = async () => {
-    if (!effectiveUserID) return;
+    if (!effectiveUserID || effectiveRole == null) return;
     // The prompt belongs to the WRITE, not to the dropdown. Guarding the
     // select guarded a gesture that writes nothing — and since the role is
     // deliberately kept after a successful add (adding a batch of people is
     // the actual gesture), the SECOND owner grant fired no prompt at all.
-    if (!(await confirmOwnerGrant(confirm, role))) return;
-    await onAdd(effectiveUserID, role);
+    if (!(await confirmOwnerGrant(confirm, effectiveRole))) return;
+    await onAdd(effectiveUserID, effectiveRole);
     // Clear the selection, keep the role: adding a batch of people to one
     // team is the actual gesture, and re-picking the role each time is
     // where an operator mis-clicks.
@@ -114,11 +126,11 @@ export function AddExistingMemberPanel({
 
       <div className="flex gap-2 items-end">
         <div className="flex-1 min-w-0">
-          <label htmlFor="add-member-user" className="sr-only">
+          <label htmlFor={userFieldID} className="sr-only">
             Account
           </label>
           <Combobox
-            id="add-member-user"
+            id={userFieldID}
             size="md"
             value={effectiveUserID}
             options={options}
@@ -132,22 +144,22 @@ export function AddExistingMemberPanel({
           />
         </div>
         <div>
-          <label htmlFor="add-member-role" className="sr-only">
+          <label htmlFor={roleFieldID} className="sr-only">
             Role
           </label>
           <RoleSelect
             size="md"
-            id="add-member-role"
-            value={role}
+            id={roleFieldID}
+            value={effectiveRole ?? ""}
             roles={roles}
-            disabled={busy}
+            disabled={busy || effectiveRole == null}
             onChange={setRole}
           />
         </div>
         <Button
           variant="primary"
           loading={busy}
-          disabled={!effectiveUserID || busy}
+          disabled={!effectiveUserID || busy || effectiveRole == null}
           onClick={() => void submit()}
         >
           {addLabel}
@@ -156,6 +168,12 @@ export function AddExistingMemberPanel({
 
       {!loading && options.length === 0 && (
         <p className="text-caption text-fg-subtle">{emptyMessage}</p>
+      )}
+      {effectiveRole == null && (
+        <p className="text-caption text-fg-subtle">
+          No role here is yours to grant, so nothing can be added from this
+          panel.
+        </p>
       )}
     </Card>
   );

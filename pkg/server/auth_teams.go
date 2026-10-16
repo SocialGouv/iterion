@@ -214,7 +214,8 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusInternalServerError, "read the team: %v", err)
 		return
 	}
-	if !s.requireOrgStandingToInvite(w, r, id, t.OrgID, role) {
+	ok, grantCapped := s.requireRankToInvite(w, r, id, t.OrgID, teamID, role)
+	if !ok {
 		return
 	}
 	tok, inv, err := s.authSvc.CreateInvitation(r.Context(), teamID, req.Email, role, id.UserID)
@@ -223,13 +224,16 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.auditTenant(r, teamID, "invitation.created", "invitation", inv.ID, map[string]any{"email": inv.Email, "role": string(inv.Role)})
-	// The cap above was read BEFORE the row landed, and the sweep that
+	// The caps above were read BEFORE the row landed, and the sweep that
 	// follows a write lowering the minter's own standing only sees the rows
-	// its listing reaches: the confirmation is what covers a mint that
-	// straddles such a write. It runs before the token leaves — by email or
-	// in the response — so an invitation that did not survive it reaches
+	// its listing reaches: the confirmations are what cover a mint that
+	// straddles such a write. They run before the token leaves — by email or
+	// in the response — so an invitation that did not survive them reaches
 	// nobody.
 	if !s.confirmOrgStandingAfterMint(w, r, id, t.OrgID, inv) {
+		return
+	}
+	if !s.confirmTeamGrantAfterMint(w, r, id, grantCapped, inv) {
 		return
 	}
 	// When a real mailer is wired, deliver the invitation by email too
@@ -355,8 +359,8 @@ func (s *Server) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 	// ladder writes no boundary — which is why `orphan_grant` reports the
 	// missing boundary itself rather than a verdict on the role
 	// (admin_users_routes.go). What that pair of requests can carry is capped
-	// at the minter's own org standing (requireOrgStandingToInvite), since
-	// pkg/auth mirrors an accepted ladder invitation up to an org membership
+	// at the minter's own org standing and team grant (requireRankToInvite),
+	// since pkg/auth mirrors an accepted ladder invitation up to an org membership
 	// (grantOrgMembershipForTeam): the same holder mints only a role mirrored
 	// up to NOTHING, which is the off-ladder grant this guard reads.
 	// Climbing ONTO the ladder
@@ -365,6 +369,9 @@ func (s *Server) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 	// stranger account in.
 	boundary := grantNeedsOrgBoundary(role) || grantNeedsOrgBoundary(mb.Role)
 	if boundary && !s.requireOrgMembershipForGrant(w, r, t.OrgID, memberID) {
+		return
+	}
+	if !s.requireRankOverMember(w, r, id, "", teamID, memberID, role, false) {
 		return
 	}
 	mb.Role = role
@@ -381,13 +388,21 @@ func (s *Server) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditTenant(r, teamID, "member.role_changed", "member", memberID, map[string]any{"role": string(role)})
+	// A write that lowered the member's grant owes the sweep the org writes
+	// owe on a demotion: their pending invitations are measured against the
+	// cap that would bind their minting NOW (the role just written), and the
+	// rows it refuses go. A raise measures the same cap and takes nothing.
+	if !s.reconcileTeamRankInvitations(w, r, teamID, memberID, role, "role change") {
+		return
+	}
 	writeJSON(w, mb)
 }
 
 // authGrantSweepActor is the audit actor of the invitation lines the auth
-// service's own grant-revoking writes produce: those writes serve no request,
-// so the subsystem names itself (auditSystem) and the cause of each line says
-// which write it was (auth.MembershipRevokedBySSOReason).
+// service's own authority-lowering writes produce: those writes serve no
+// request, so the subsystem names itself (auditSystem) and the cause of each
+// line says which write it was (auth.MembershipRevokedBySSOReason, or the
+// one cause every lowering write shares, creator_team_rank_lowered).
 const authGrantSweepActor = "auth"
 
 // wireTeamGrantSweep registers, on the auth service this server is built on,
@@ -417,12 +432,53 @@ func (s *Server) wireTeamGrantSweep() {
 	})
 }
 
+// wireTeamRankReconcile registers, on the auth service this server is built
+// on, the reconcile its authority-lowering writes owe (auth.TeamRankReconcile):
+// the GitHub SSO reconciliation that revokes a grant the allow-list no longer
+// grants, and the logged-in accept that writes a lower team role over the
+// acceptee's existing grant. Whoever lowers a team authority re-measures the
+// mint cap that would bind their target NOW against the rows they left — the
+// same selection the HTTP writes run (takeTeamRankInvitations), with the
+// value the write left carried in, and the audit line under the one cause
+// every lowering write shares (creator_team_rank_lowered). pkg/auth cannot
+// reach the invitation rules or the audit store, and a second selection there
+// would be a second rule to keep in step with this one.
+//
+// Like the kept-on-grant sweep, it runs on a context detached from the
+// caller's, on the same budget the HTTP writes give it: the authority is
+// already lowered, so a caller that goes away would otherwise leave exactly
+// the rows the reconcile exists to take.
+func (s *Server) wireTeamRankReconcile() {
+	if s.authSvc == nil {
+		return
+	}
+	s.authSvc.SetTeamRankReconcile(func(ctx context.Context, userID, teamID string, grant identity.Role) error {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), grantCompensationTimeout)
+		defer cancel()
+		if err := s.takeTeamRankInvitations(rctx, systemActor(authGrantSweepActor), teamID, userID, grant, "creator_team_rank_lowered"); err != nil {
+			return fmt.Errorf("the team role of %s in team %s is lowered to %s but the invitations they minted above it stand: %w (listed by GET /api/teams/%s/invitations, revoked by hand)",
+				userID, teamID, teamGrantName(grant), err, teamID)
+		}
+		return nil
+	})
+}
+
 func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	teamID := r.PathValue("id")
 	memberID := r.PathValue("user_id")
 	if !s.canManageTeam(r.Context(), id, teamID) {
 		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	// A removal of a grant that is not THERE writes over no rank: it takes
+	// nothing away, so no ladder is read and the route keeps its own answer —
+	// DeleteMembership is idempotent on both stores, so a grant already gone
+	// answers 204 rather than 403. That existence test and the rank the team
+	// ladder measures are ONE read inside the guard, which removesGrant asks
+	// for: two reads of the same row can disagree, and the one that decided
+	// whether a ladder was read at all would then be the stale one.
+	if !s.requireRankOverMember(w, r, id, "", teamID, memberID, "", true) {
 		return
 	}
 	if err := s.authStore().DeleteMembership(r.Context(), memberID, teamID); err != nil {
@@ -442,6 +498,15 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	// the two, which a confirmation would then keep on the grant this
 	// request is about to revoke.
 	if !s.sweepInvitationsKeptOnTeamGrant(w, r, teamID, memberID, "creator_team_grant_removed") {
+		return
+	}
+	// The minted half rides the same withdrawal: with the grant gone, the cap
+	// that would bind the member's minting NOW refuses every role their
+	// standing does not cover (K.2 measures no grant), so their pending
+	// invitations above that go. It runs LAST — after the kept-on-grant sweep
+	// above — so this selection is the write's last invitation action and the
+	// removal's ordering rules hold.
+	if !s.reconcileTeamRankInvitations(w, r, teamID, memberID, "", "removal") {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -26,7 +26,7 @@ import (
 // member's org role carries no rank above the writer's own standing, and a
 // standing that drops takes with it the pending invitations its holder minted
 // above what they now hold — the one place a cap read at the mint
-// (requireOrgStandingToInvite) could be outlived.
+// (requireRankToInvite) could be outlived.
 
 // seedAccount registers an account the accept paths can resolve: an
 // invitation is addressed to an ADDRESS, which they read from the account's
@@ -297,9 +297,10 @@ func TestOrgMembers_aRoleWriteCannotRaiseAboveTheWritersOwnStanding(t *testing.T
 // What the cap does not take away: every rank a writer already holds, in both
 // directions — an org owner appoints an owner, an org admin writes admin, an
 // org admin LOWERS an admin to member (the rank the row carried, so the write
-// is a lowering and not a no-op), an org admin lowers a row ranked ABOVE
-// their own, and a platform admin writes anything (IsSuperAdmin is the escape
-// hatch, and they hold no org membership for a cap to read).
+// is a lowering and not a no-op), an org owner lowers another owner — equal
+// rank, which the rank of the TARGET passes too (requireRankOverMember) — and
+// a platform admin writes anything (IsSuperAdmin is the escape hatch, and
+// they hold no org membership for a cap to read).
 func TestOrgMembers_theRoleWritesThatStillGoThrough(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -312,7 +313,7 @@ func TestOrgMembers_theRoleWritesThatStillGoThrough(t *testing.T) {
 		{"an org owner appoints an owner", func(t *testing.T, s *Server) context.Context { return seedOrgOwner(t, s) }, "", identity.OrgRoleOwner},
 		{"an org admin writes admin", func(*testing.T, *Server) context.Context { return orgAdminCtx() }, "", identity.OrgRoleAdmin},
 		{"an org admin lowers an admin to member", func(*testing.T, *Server) context.Context { return orgAdminCtx() }, identity.OrgRoleAdmin, identity.OrgRoleMember},
-		{"an org admin lowers an owner to member", func(*testing.T, *Server) context.Context { return orgAdminCtx() }, identity.OrgRoleOwner, identity.OrgRoleMember},
+		{"an org owner lowers an owner to member", func(t *testing.T, s *Server) context.Context { return seedOrgOwner(t, s) }, identity.OrgRoleOwner, identity.OrgRoleMember},
 		{"a platform admin writes owner", func(*testing.T, *Server) context.Context { return superAdminCtx() }, "", identity.OrgRoleOwner},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -342,14 +343,12 @@ func TestOrgMembers_theRoleWritesThatStillGoThrough(t *testing.T) {
 	}
 }
 
-// The cap is on the rank WRITTEN, which leaves a LOWERING free whoever the
-// row belongs to: an org admin still writes `member` on an OWNER's row, and
-// that write carries the invitation sweep, so what the owner minted above
-// `member` goes with it. Measured rather than refused — rule 1 caps what a
-// writer hands OUT, and the same org admin already revokes any pending
-// invitation of the org by hand (DELETE /api/orgs/{id}/invitations/{invite_id}),
-// so the sweep hands them no authority they did not have.
-func TestOrgMembers_aLoweringOfARowRankedAboveTheWriterGoesThroughAndSweeps(t *testing.T) {
+// The cap is on the rank WRITTEN, so it leaves a LOWERING free whatever rank
+// the row carries: `member` on an OWNER's row is written, and that write
+// carries the invitation sweep, so what the owner minted above `member` goes
+// with it. WHO may make it is the target's rank (requireRankOverMember): an
+// owner's row takes an owner or a platform admin, which is what writes here.
+func TestOrgMembers_aLoweringOfAnOwnersRowGoesThroughAndSweeps(t *testing.T) {
 	s := newOrgCredsTestServer(t)
 	ctx := context.Background()
 	real := s.authStore()
@@ -357,15 +356,46 @@ func TestOrgMembers_aLoweringOfARowRankedAboveTheWriterGoesThroughAndSweeps(t *t
 	handOverID, handOverTok := mintInvitationAs(t, s, ownerCtx, "t1", "successor@example.com", identity.RoleOwner)
 	seedAccount(t, s, "successor", "successor@example.com")
 
-	w := patchOrgRole(s, orgAdminCtx(), "o1", "orgowner", identity.OrgRoleMember)
+	w := patchOrgRole(s, superAdminCtx(), "o1", "orgowner", identity.OrgRoleMember)
 	if w.Code != http.StatusOK {
-		t.Fatalf("an org admin lowering the org owner: code=%d body=%s, want 200", w.Code, w.Body.String())
+		t.Fatalf("a platform admin lowering the org owner: code=%d body=%s, want 200", w.Code, w.Body.String())
 	}
 	if om, err := real.GetOrgMembership(ctx, "orgowner", "o1"); err != nil || om.Role != identity.OrgRoleMember {
 		t.Errorf("the owner's row is %+v (%v), want a plain member", om, err)
 	}
 	if got, err := real.GetInvitation(ctx, handOverID); err == nil {
 		t.Errorf("the sweep did not follow the lowering of a higher-ranked row: %+v", got)
+	}
+	if _, err := s.authSvc.AcceptInvitationForExistingUser(ctx, "successor", handOverTok); err == nil {
+		t.Error("the revoked hand-over invitation was still accepted")
+	}
+}
+
+// And the same chain written by an author the two rank rules BIND, since a
+// platform admin returns at the first line of both: an org OWNER lowering a
+// PEER owner passes the target rule at equal rank and the cap below their own
+// standing, so the cap, the rank guard, the write and the sweep are measured
+// in one request — the chain a change that swept only for platform admins
+// would leave witnessed nowhere.
+func TestOrgMembers_anOwnerLoweringAPeerOwnerSweepsWhatTheyMinted(t *testing.T) {
+	const peerOwner = "orgowner2"
+	s := newOrgCredsTestServer(t)
+	ctx := context.Background()
+	real := s.authStore()
+	ownerCtx := seedOrgOwner(t, s)
+	handOverID, handOverTok := mintInvitationAs(t, s, ownerCtx, "t1", "successor@example.com", identity.RoleOwner)
+	seedAccount(t, s, "successor", "successor@example.com")
+	seedOrgRow(t, s, peerOwner, "o1", identity.OrgRoleOwner)
+
+	w := patchOrgRole(s, memberCtx(peerOwner), "o1", "orgowner", identity.OrgRoleMember)
+	if w.Code != http.StatusOK {
+		t.Fatalf("an org owner lowering a peer owner: code=%d body=%s, want 200", w.Code, w.Body.String())
+	}
+	if om, err := real.GetOrgMembership(ctx, "orgowner", "o1"); err != nil || om.Role != identity.OrgRoleMember {
+		t.Errorf("the peer's row is %+v (%v), want a plain member", om, err)
+	}
+	if got, err := real.GetInvitation(ctx, handOverID); err == nil {
+		t.Errorf("the sweep did not follow a lowering written by an author the rank rules bind: %+v", got)
 	}
 	if _, err := s.authSvc.AcceptInvitationForExistingUser(ctx, "successor", handOverTok); err == nil {
 		t.Error("the revoked hand-over invitation was still accepted")
@@ -550,8 +580,14 @@ func TestOrgMembers_aDemotionRevokesTheInvitationsTheMemberMintedAboveTheirNewSt
 		t.Errorf("the revoked invitation wrote its team grant: %+v", mb)
 	}
 
+	// The member row went too: the demoted creator holds no grant in any team
+	// of the org, so the cap that would bind their minting now measures a
+	// grant that covers nothing and refuses the member row the old standing
+	// carried — the team half of the same predicate the mirror half answers.
+	if _, err := real.GetInvitation(ctx, atID); err == nil {
+		t.Errorf("the member invitation of a demoted creator who holds no grant stands: the cap that binds them now refuses it")
+	}
 	for _, kept := range []struct{ what, id string }{
-		{"at the new standing", atID},
 		{"mirrored up to nothing", offLadderID},
 		{"somebody else minted for the demoted member, above the new standing", toThemID},
 		{"minted by somebody else", othersID},
@@ -561,14 +597,16 @@ func TestOrgMembers_aDemotionRevokesTheInvitationsTheMemberMintedAboveTheirNewSt
 			t.Errorf("the demotion revoked the invitation %s: %v", kept.what, err)
 		}
 	}
-	if _, err := s.authSvc.AcceptInvitationForExistingUser(ctx, "second", atTok); err != nil {
-		t.Errorf("the invitation at the new standing no longer accepts: %v", err)
+	if _, err := s.authSvc.AcceptInvitationForExistingUser(ctx, "second", atTok); err == nil {
+		t.Errorf("the member invitation of a creator who can no longer mint it still accepts")
 	}
 
 	// Recorded where the row lived, with the cause — and exactly the rows
 	// the sweep took, held past the quiet window: a count read at the first
-	// insert would stay green on a sweep that took everything.
-	rows := waitForTenantAuditRows(t, s.auditStore, "t1", "invitation.deleted", 2)
+	// insert would stay green on a sweep that took everything. Three rows:
+	// the admin one, its self-addressed twin, and the member row the
+	// creator's absent grant no longer covers.
+	rows := waitForTenantAuditRows(t, s.auditStore, "t1", "invitation.deleted", 3)
 	var named *audit.Event
 	for i, e := range rows {
 		if e.TargetID == aboveID {
@@ -770,8 +808,12 @@ func TestOrgMembers_aPlacementThatLowersARoleRevokesTheInvitationsAboveIt(t *tes
 	if got, err := real.GetInvitation(ctx, aboveID); err == nil {
 		t.Errorf("the admin invitation of a member placed back at member stands: %+v", got)
 	}
-	if _, err := real.GetInvitation(ctx, atID); err != nil {
-		t.Errorf("the placement revoked the invitation at the new standing: %v", err)
+	// The member row went with it: the creator placed back at member holds no
+	// grant in any team, so the cap that would bind their minting now
+	// measures a grant that covers nothing and refuses the row the old
+	// standing carried.
+	if got, err := real.GetInvitation(ctx, atID); err == nil {
+		t.Errorf("the member invitation of a creator who can no longer mint it stands: %+v", got)
 	}
 }
 
@@ -2362,9 +2404,10 @@ func TestTeamMembers_removingAGrantTakesOnlyWhatThatGrantWasThePremiseOf(t *test
 // a mint out of its own window: a selection made before the delete reaches no
 // row minted between the two, and the mint's own confirmation would keep such
 // a row on the grant this request is about to revoke. The order is read from
-// the mint's answer — issued through the route, right after the sweep's only
-// listing — the grant being already gone, so a creator has none left for a
-// confirmation to keep a row on.
+// the mint's answer — issued through the route, right after the kept-on-grant
+// sweep's own listing (the write selects once more after it, for the rows its
+// creator minted) — the grant being already gone, so a creator has none left
+// for a confirmation to keep a row on.
 func TestTeamMembers_theSweepOfARemovedGrantSelectsAfterTheDelete(t *testing.T) {
 	s := newOrgCredsTestServer(t)
 	ctx := context.Background()
@@ -2408,8 +2451,12 @@ func TestTeamMembers_theSweepOfARemovedGrantSelectsAfterTheDelete(t *testing.T) 
 	if drop.Code != http.StatusNoContent {
 		t.Fatalf("removing the orphan grant: code=%d body=%s, want 204", drop.Code, drop.Body.String())
 	}
-	if gate.listings() != 1 {
-		t.Fatalf("the request listed t1's invitations %d times, want 1 — then the mint did not land in the window the test describes", gate.listings())
+	// Two listings, both after the delete: the kept-on-grant sweep's own, and
+	// the minted half the same write owes (reconcileTeamRankInvitations) —
+	// the removal's ordering rule makes the LAST of them the write's last
+	// invitation action. The hook fired on the first.
+	if listings := gate.listings(); listings != 2 {
+		t.Fatalf("the request listed t1's invitations %d times, want 2 — then the mint did not land in the window the test describes", listings)
 	}
 	if !gate.hookFired() {
 		t.Fatalf("the hook never ran: no listing of t1's invitations followed the delete of %s's grant, so this witness measured nothing", racerID)
@@ -2436,18 +2483,36 @@ func TestTeamMembers_theSweepOfARemovedGrantSelectsAfterTheDelete(t *testing.T) 
 
 // standingReadFailGate fails the org-membership read of ONE account in ONE
 // org while armed — the read the sweep of a removed grant makes once that
-// grant is already deleted — and answers every other read normally.
+// grant is already deleted — and answers every other read normally. The read
+// it cannot serve is named by the DELETE it follows rather than by an ordinal:
+// the rank guard reads the same row before that delete (requireRankOverMember),
+// and a gate keyed on a read count would answer the guard instead.
 type standingReadFailGate struct {
 	identity.Store
-	userID, orgID string
+	userID, orgID, teamID string
 
 	mu    sync.Mutex
 	armed bool
+
+	// removed marks the grant removal this scenario is about, which the
+	// sweep's read FOLLOWS. It is held under mu with armed, so one decision
+	// reads one snapshot of both.
+	removed bool
+}
+
+func (g *standingReadFailGate) DeleteMembership(ctx context.Context, userID, teamID string) error {
+	err := g.Store.DeleteMembership(ctx, userID, teamID)
+	if userID == g.userID && teamID == g.teamID {
+		g.mu.Lock()
+		g.removed = true
+		g.mu.Unlock()
+	}
+	return err
 }
 
 func (g *standingReadFailGate) GetOrgMembership(ctx context.Context, userID, orgID string) (identity.OrgMembership, error) {
 	g.mu.Lock()
-	fire := g.armed && userID == g.userID && orgID == g.orgID
+	fire := g.armed && g.removed && userID == g.userID && orgID == g.orgID
 	g.mu.Unlock()
 	if fire {
 		return identity.OrgMembership{}, errors.New("identity: get org membership: connection reset by peer")
@@ -2477,7 +2542,7 @@ func TestTeamMembers_aStandingUnreadableAfterTheGrantWentNamesTheTeamListing(t *
 		t.Fatalf("the caller holds an org membership row (%+v) — then it is not the team-grant-only caller this exit answers", om)
 	}
 
-	gate := &standingReadFailGate{Store: real, userID: racerID, orgID: "o1", armed: true}
+	gate := &standingReadFailGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1", armed: true}
 	s.authSvc.SetStoreForTest(gate)
 	drop := httptest.NewRecorder()
 	s.handleRemoveMember(drop, teamReq(teamAdminCtx(), "DELETE", "/api/teams/t1/members/"+racerID, "", "t1", racerID))
@@ -3501,6 +3566,112 @@ func TestTeamMembers_anSSORevokedGrantTakesTheRowKeptOnIt(t *testing.T) {
 	}
 	if rows[0].TargetID != invID {
 		t.Errorf("the audit line names invitation %s, want %s", rows[0].TargetID, invID)
+	}
+}
+
+// The MINTED half of the SSO reconcile: the revoke is a LOWERING of the
+// creator's team authority to no grant at all, so the rows they minted above
+// the cap that binds NOW go with it — the member row of a plain org member,
+// whose mirror their standing still covers, included. Beside the kept half
+// the sweep takes (this holder's org row answers, so the kept sweep takes
+// nothing of theirs), the reconcile the server registers
+// (SetTeamRankReconcile) runs the minted half through the real login path,
+// under the one cause every lowering write shares, attributed to the
+// subsystem: this login served no request of its own.
+func TestTeamMembers_anSSORevokedGrantTakesTheRowsMintedAboveWhatRemains(t *testing.T) {
+	s := newSSOGrantTestServer(t, identity.RoleMember)
+	ctx := context.Background()
+	res, err := s.authSvc.LoginWithExternal(ctx, ghLogin("racer", "acme/*", "acme/eng"), "ua", "ip")
+	if err != nil {
+		t.Fatalf("the matching login: %v", err)
+	}
+	uid := res.User.ID
+	if om, err := s.authStore().GetOrgMembership(ctx, uid, "o1"); err != nil || om.Role != identity.OrgRoleMember {
+		t.Fatalf("the org row the grant mirrored up to: %+v (%v), want a plain member — the standing the mint rests on", om, err)
+	}
+	// The allow-list grants member; the org admin raises the grant to owner
+	// (the row's SOURCE is preserved), which is what makes its holder a
+	// minter above the role their standing mirrors.
+	patched := httptest.NewRecorder()
+	s.handleUpdateMember(patched, teamReq(orgAdminCtx(), "PATCH", "/api/teams/t1/members/"+uid, `{"role":"owner"}`, "t1", uid))
+	if patched.Code != http.StatusOK {
+		t.Fatalf("raising the github_sso grant to owner: code=%d body=%s", patched.Code, patched.Body.String())
+	}
+	selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: uid})
+	invID, selfTok := mintInvitationAs(t, s, selfCtx, "t1", res.User.Email, identity.RoleMember)
+	if _, err := s.authStore().GetInvitation(ctx, invID); err != nil {
+		t.Fatalf("the mint's confirmation did not keep the row (%v) — then this is not the state the reconcile re-measures", err)
+	}
+
+	if _, err := s.authSvc.LoginWithExternal(ctx, ghLogin("racer", "other/*"), "ua", "ip"); err != nil {
+		t.Fatalf("the login that no longer matches: %v", err)
+	}
+	if _, err := s.authStore().GetMembership(ctx, uid, "t1"); !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("the github_sso grant stands after a login that no longer matches: %v — then no authority was lowered and this witness measures nothing", err)
+	}
+	if _, err := s.authStore().GetInvitation(ctx, invID); err == nil {
+		t.Error("RE-ENTRY TICKET: the row the holder minted stands on the no-grant state the revoke just left them in")
+	} else if !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("reading the row the reconcile was there to take: %v", err)
+	}
+	// The kept sweep took nothing here — this holder's org row answers — so
+	// the one line on the trail is the minted half's, under the lowering's
+	// own cause, written by the subsystem.
+	rows := waitForTenantAuditRows(t, s.auditStore, "t1", "invitation.deleted", 1)
+	if got := rows[0].Meta["reason"]; got != "creator_team_rank_lowered" {
+		t.Errorf("the audit line's cause is %v, want creator_team_rank_lowered", got)
+	}
+	if rows[0].ActorKind != "system" || rows[0].ActorID != authGrantSweepActor {
+		t.Errorf("the audit line's actor is %s/%s, want system/%s", rows[0].ActorKind, rows[0].ActorID, authGrantSweepActor)
+	}
+	// The taken row accepts no more.
+	if _, err := s.authSvc.AcceptInvitationForExistingUser(ctx, uid, selfTok); err == nil {
+		t.Error("the accept of a taken invitation succeeded")
+	}
+}
+
+// The counterfactual, on the same write: a creator whose ORG STANDING covers
+// the mirror and carries the team keeps the row they minted. The standing
+// that answered at the mint answers at the revoke — K.2 measures no grant for
+// a creator this high — and the trail holds no line: the revoke took the
+// grant and nothing the holder owns beside it.
+func TestTeamMembers_anSSORevokedGrantLeavesTheRowsTheCreatorStandingCovers(t *testing.T) {
+	s := newSSOGrantTestServer(t, identity.RoleAdmin)
+	ctx := context.Background()
+	res, err := s.authSvc.LoginWithExternal(ctx, ghLogin("racer", "acme/*", "acme/eng"), "ua", "ip")
+	if err != nil {
+		t.Fatalf("the matching login: %v", err)
+	}
+	uid := res.User.ID
+	// The allow-list grants member at most (orgsso RoleForGroups), so the
+	// standing that carries the team is written here directly: the holder's
+	// org row rises to admin, the state the keep side is about — a creator
+	// whose standing answers for the team, whatever their grant falls to.
+	if err := s.authStore().UpsertOrgMembership(ctx, identity.OrgMembership{
+		UserID: uid, OrgID: "o1", Role: identity.OrgRoleAdmin, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if om, err := s.authStore().GetOrgMembership(ctx, uid, "o1"); err != nil || om.Role != identity.OrgRoleAdmin {
+		t.Fatalf("the holder's org row: %+v (%v), want an admin — then this is not the standing that carries the team", om, err)
+	}
+	selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: uid})
+	invID, _ := mintInvitationAs(t, s, selfCtx, "t1", res.User.Email, identity.RoleMember)
+	if _, err := s.authStore().GetInvitation(ctx, invID); err != nil {
+		t.Fatalf("the row the standing's mint kept (%v) — then this is not the state the counterfactual is about", err)
+	}
+
+	if _, err := s.authSvc.LoginWithExternal(ctx, ghLogin("racer", "other/*"), "ua", "ip"); err != nil {
+		t.Fatalf("the login that no longer matches: %v", err)
+	}
+	if _, err := s.authStore().GetMembership(ctx, uid, "t1"); !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("the github_sso grant stands after a login that no longer matches: %v", err)
+	}
+	if _, err := s.authStore().GetInvitation(ctx, invID); err != nil {
+		t.Errorf("the standing that carries the team lost the row its holder minted (%v) — a revoke took what no cap of theirs refuses", err)
+	}
+	if got := tenantAuditRows(t, s.auditStore, "t1", "invitation.deleted"); len(got) != 0 {
+		t.Errorf("the reconcile recorded %d revocations for a creator whose standing still carries the team: %+v", len(got), got)
 	}
 }
 

@@ -449,17 +449,23 @@ func (s *Service) resolveOrgIDForTeam(ctx context.Context, teamID string) (strin
 // currently matches. Only github_sso-minted memberships are touched —
 // human-created ones (Source empty / invitation / manual) are never revoked.
 //
-// Each revoke withdraws the premise a mint's own confirmation keeps a
-// self-addressed invitation on — a grant in the team, held by a creator with
-// no org membership row in its org (pkg/server
-// standingAfterMintTakesInvitation) — so the rows kept on the grant go with
-// it, through the sweep the server registers (SetTeamGrantSweep): the one
-// selection the three writes that owe it share. A sweep that fails fails the
-// login, as every other store error on this path does: the row it could not
-// take is a re-entry ticket into the team this revoke just closed.
+// Each revoke withdraws two premises at once. The kept half: the grant is
+// the premise a mint's own confirmation keeps a self-addressed invitation on
+// — a grant in the team, held by a creator with no org membership row in its
+// org (pkg/server standingAfterMintTakesInvitation) — so the rows kept on
+// the grant go with it, through the sweep the server registers
+// (SetTeamGrantSweep): the one selection the three writes that owe it share.
+// The minted half: the revoke is a LOWERING of the creator's team authority
+// to no grant at all, so the rows they minted above what that leaves them —
+// the cap that would bind their minting NOW refuses them — go too, through
+// the reconcile the server registers (SetTeamRankReconcile). A sweep or a
+// reconcile that fails fails the login, as every other store error on this
+// path does: the row it could not take is a re-entry ticket into the team
+// this revoke just closed.
 //
-// With no sweep registered, a grant is NOT revoked: taking the grant and
-// leaving the rows kept on it is the state this exists to prevent, and a
+// With either seam unregistered, a grant is NOT revoked: taking the grant
+// and leaving the rows that rest on it — kept on it, or minted above the
+// authority its loss leaves — is the state this exists to prevent, and a
 // silent half-revoke is not an answer the caller can act on.
 func (s *Service) reconcileGitHubGrants(ctx context.Context, userID string, matched map[string]struct{}, now time.Time) error {
 	memberships, err := s.store.ListMembershipsByUser(ctx, userID)
@@ -476,11 +482,17 @@ func (s *Service) reconcileGitHubGrants(ctx context.Context, userID string, matc
 		if s.teamGrantSweep == nil {
 			return fmt.Errorf("auth: no team-grant invitation sweep is registered, so revoking the %s grant of %s would leave the pending invitations kept on it standing (SetTeamGrantSweep)", m.TeamID, userID)
 		}
+		if s.teamRankReconcile == nil {
+			return fmt.Errorf("auth: no team-rank reconcile is registered, so revoking the %s grant of %s would leave the invitations they minted above the authority its loss leaves standing (SetTeamRankReconcile)", m.TeamID, userID)
+		}
 		if err := s.store.DeleteMembership(ctx, userID, m.TeamID); err != nil {
 			return err
 		}
 		if err := s.teamGrantSweep(ctx, userID, m.TeamID, MembershipRevokedBySSOReason); err != nil {
 			return fmt.Errorf("auth: sweep the invitations kept on the %s grant of %s, revoked with the github allow-list that granted it: %w", m.TeamID, userID, err)
+		}
+		if err := s.teamRankReconcile(ctx, userID, m.TeamID, ""); err != nil {
+			return fmt.Errorf("auth: take the invitations the %s grant of %s minted above the authority its revoke leaves: %w", m.TeamID, userID, err)
 		}
 	}
 	return nil

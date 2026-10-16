@@ -175,12 +175,23 @@ func TestLoginGitHub_RevokesStaleGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The sweep this reconcile owes, recorded: it takes the rows kept on
-	// each grant it revokes (SetTeamGrantSweep).
+	// The sweeps this reconcile owes, recorded: it takes the rows kept on
+	// each grant it revokes (SetTeamGrantSweep) and re-measures the mint cap
+	// over the rows its holder minted (SetTeamRankReconcile) — the revoke is
+	// a lowering to no grant, so the minted half is called with "".
 	type swept struct{ userID, teamID, reason string }
 	var sweeps []swept
 	svc.SetTeamGrantSweep(func(_ context.Context, userID, teamID, reason string) error {
 		sweeps = append(sweeps, swept{userID, teamID, reason})
+		return nil
+	})
+	type ranked struct {
+		userID, teamID string
+		grant          identity.Role
+	}
+	var reconciles []ranked
+	svc.SetTeamRankReconcile(func(_ context.Context, userID, teamID string, grant identity.Role) error {
+		reconciles = append(reconciles, ranked{userID, teamID, grant})
 		return nil
 	})
 
@@ -192,6 +203,11 @@ func TestLoginGitHub_RevokesStaleGrant(t *testing.T) {
 	// and the human-created membership — never revoked — asked for nothing.
 	if len(sweeps) != 1 || sweeps[0] != (swept{res.User.ID, teamID, MembershipRevokedBySSOReason}) {
 		t.Errorf("the reconcile swept %+v, want exactly the %s grant of %s under %q", sweeps, teamID, res.User.ID, MembershipRevokedBySSOReason)
+	}
+	// The minted half ran for the same one grant, with the value the revoke
+	// left: no grant at all.
+	if len(reconciles) != 1 || reconciles[0] != (ranked{res.User.ID, teamID, ""}) {
+		t.Errorf("the reconcile re-measured %+v, want exactly the %s rows of %s with no grant", reconciles, teamID, res.User.ID)
 	}
 	// The stale github_sso membership is revoked...
 	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); !errors.Is(err, identity.ErrNotFound) {
@@ -280,6 +296,11 @@ func TestLoginGitHub_aSweepThatFailsTakesTheLoginWithIt(t *testing.T) {
 		calls++
 		return sweepErr
 	})
+	mintedCalls := 0
+	svc.SetTeamRankReconcile(func(_ context.Context, _, _ string, _ identity.Role) error {
+		mintedCalls++
+		return nil
+	})
 
 	_, err = svc.LoginWithExternal(ctx, githubExt("u5", "other/*"), "ua", "ip")
 	if err == nil {
@@ -287,6 +308,9 @@ func TestLoginGitHub_aSweepThatFailsTakesTheLoginWithIt(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("the reconcile called the sweep %d times, want 1 — then this is not the failure the test describes", calls)
+	}
+	if mintedCalls != 0 {
+		t.Errorf("the minted half ran %d times behind a kept sweep that failed — the kept half is the write's earlier invitation action, and a failure there ends the write", mintedCalls)
 	}
 	if !errors.Is(err, sweepErr) {
 		t.Errorf("the login's error does not carry the sweep's own cause: %v", err)
@@ -300,5 +324,78 @@ func TestLoginGitHub_aSweepThatFailsTakesTheLoginWithIt(t *testing.T) {
 	// login reports is a row kept on a grant that no longer exists.
 	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); !errors.Is(err, identity.ErrNotFound) {
 		t.Errorf("the grant reads %v, want it gone — the reconcile deletes before it sweeps, which is what makes the unswept rows a residue", err)
+	}
+}
+
+// The same fail-closed posture, on the minted half: a revoke with no rank
+// reconcile registered is NOT a revoke — taking the grant and leaving the
+// rows its holder minted above the no-grant state standing is the state the
+// seam exists to prevent, so the reconcile refuses before it deletes
+// anything and the login fails with it.
+func TestLoginGitHub_aRevokeWithNoRankReconcileRegisteredIsRefused(t *testing.T) {
+	svc, teamID := githubFixture(t, identity.RoleMember)
+	ctx := context.Background()
+
+	res, err := svc.LoginWithExternal(ctx, githubExt("u6", "acme/*", "acme/eng"), "ua", "ip")
+	if err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); err != nil {
+		t.Fatalf("the grant the allow-list wrote: %v", err)
+	}
+	svc.SetTeamGrantSweep(func(_ context.Context, _, _, _ string) error { return nil })
+
+	_, err = svc.LoginWithExternal(ctx, githubExt("u6", "other/*"), "ua", "ip")
+	if err == nil {
+		t.Fatalf("the login answered no error with the minted half unregistered — then the revoke left the rows minted above the no-grant state standing")
+	}
+	for _, want := range []string{"no team-rank reconcile is registered", teamID, res.User.ID, "SetTeamRankReconcile"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not carry %q: %v", want, err)
+		}
+	}
+	// And nothing was taken: the refusal comes before the delete.
+	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); err != nil {
+		t.Errorf("the grant was revoked anyway (%v) — a refusal after the delete leaves exactly the state it refuses", err)
+	}
+}
+
+// A minted-half reconcile that fails there fails the login, as the kept
+// sweep's does: the grant is already revoked, so the rows it could not take
+// are the invitations the no-grant state no longer covers — re-entry
+// tickets — and the login answers the failure, naming the team, the holder
+// and the half that failed.
+func TestLoginGitHub_aRankReconcileThatFailsTakesTheLoginWithIt(t *testing.T) {
+	svc, teamID := githubFixture(t, identity.RoleMember)
+	ctx := context.Background()
+
+	res, err := svc.LoginWithExternal(ctx, githubExt("u7", "acme/*", "acme/eng"), "ua", "ip")
+	if err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); err != nil {
+		t.Fatalf("the grant the allow-list wrote: %v", err)
+	}
+
+	svc.SetTeamGrantSweep(func(_ context.Context, _, _, _ string) error { return nil })
+	rankErr := errors.New("listing this team's invitations failed")
+	svc.SetTeamRankReconcile(func(_ context.Context, _, _ string, _ identity.Role) error {
+		return rankErr
+	})
+
+	_, err = svc.LoginWithExternal(ctx, githubExt("u7", "other/*"), "ua", "ip")
+	if err == nil {
+		t.Fatalf("the login answered no error with the minted half failing — then the rows minted above the no-grant state stand and nobody is told")
+	}
+	if !errors.Is(err, rankErr) {
+		t.Errorf("the login's error does not carry the reconcile's own cause: %v", err)
+	}
+	for _, want := range []string{teamID, res.User.ID, "minted"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the login's error does not name %q: %v", want, err)
+		}
+	}
+	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); !errors.Is(err, identity.ErrNotFound) {
+		t.Errorf("the grant reads %v, want it gone — the delete precedes the reconcile, which is what makes the untaken rows a residue", err)
 	}
 }

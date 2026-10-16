@@ -27,6 +27,12 @@ interface BaseProps {
   id?: string;
   size?: "sm" | "md";
   disabled?: boolean;
+  /**
+   * id of the element that explains the select — the reason a disabled one
+   * carries. A `title` is not an accessible description, so without this the
+   * explanation of a dead control exists for a mouse only.
+   */
+  describedBy?: string;
   onChange: (role: string) => unknown;
 }
 
@@ -45,6 +51,7 @@ export function RoleSelect(props: BaseProps & ConfirmProps) {
     id,
     size,
     disabled = false,
+    describedBy,
     confirmChangeFrom,
     confirm,
     onChange,
@@ -75,6 +82,7 @@ export function RoleSelect(props: BaseProps & ConfirmProps) {
       value={value}
       disabled={disabled}
       aria-label={ariaLabel}
+      aria-describedby={describedBy}
       onChange={(e) => void handle(e.target.value)}
     >
       {roles.map((r) => (

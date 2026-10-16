@@ -129,58 +129,169 @@ func (s *Server) canManageOrg(ctx context.Context, id auth.Identity, orgID strin
 	return om.Role.AtLeast(identity.OrgRoleAdmin)
 }
 
-// requireOrgStandingToInvite refuses to mint a team invitation whose role
-// would be mirrored up to an org role its creator does not hold. Accepting an
-// invitation writes the team grant AND, for a role on the org ladder, an org
-// membership at identity.OrgRoleForTeamRole (pkg/auth
-// grantOrgMembershipForTeam), so minting one hands out ORG standing: capped by
+// requireRankToInvite applies the two caps a mint owes on the role it hands
+// out, on ONE read of the minter's own org standing, which both measure.
+// Accepting an invitation writes the team GRANT it names and, for a role on
+// the org ladder, an org membership at identity.OrgRoleForTeamRole (pkg/auth
+// grantOrgMembershipForTeam), so minting one hands out both ranks: capped by
 // the team-management check alone, a team admin who is a plain org member
 // mints an admin/owner invitation for their own address and comes back an org
-// admin, and the off-boarded holder of an orphan admin grant re-enters the org
-// on that grant alone. The cap is the minter's own standing, read from the
-// store rather than from their token — a claim can predate a removal — and
-// read again here on the org route, whose gate read it before the body named
-// the team.
+// admin, the off-boarded holder of an orphan admin grant re-enters the org on
+// that grant alone, and on a team with NO parent org — where no org rank is
+// mirrored at all — a team admin mints `owner` for their own address and
+// reaches every grant of the team on the next request.
+//
+//   - the ORG cap measures the role's org mirror against the minter's own
+//     standing in the team's org, and is the whole rule for a minter who
+//     holds that org through an admin/owner standing: they manage every team
+//     in it (canManageTeam, orgAdminOfTeam), so no grant of theirs bounds
+//     what they hand out inside it.
+//   - the TEAM cap measures the minted TEAM role against the minter's own
+//     grant, where their authority over the team IS that grant: a team with
+//     no parent org, or an org standing below admin. It is the mint's twin of
+//     the cap requireRankOverMember puts on the role a roster write puts on a
+//     row, and the two together are what makes a team rank a boundary rather
+//     than a delay.
+//
+// Both caps read the minter's own rows rather than their token — a claim can
+// predate a removal — and the standing is read once here, on the org route
+// too, whose gate read it before the body named the team.
 //
 // A role mirrored up to NOTHING (config_editor, rank 0 — ADR-078 decision 4,
 // the same predicate as grantNeedsOrgBoundary) carries no org standing to
-// exceed and is never refused here; neither is an invitation into a team with
-// no parent org, which has no boundary to read, as in
-// requireOrgMembershipForGrant. Platform admins pass: IsSuperAdmin is the
-// escape hatch, and they hold no org membership for a cap to read.
+// exceed and sits on no team ladder, so neither cap measures it. Platform
+// admins pass: IsSuperAdmin is the escape hatch, and they hold no membership
+// row for a cap to read.
 //
-// This read is taken BEFORE the invitation row lands, so it is half of a
+// Each cap is read BEFORE the invitation row lands, so each is half of a
 // pair: confirmOrgStandingAfterMint re-reads the standing once the row is
-// there, since a write that lowers it sweeps only the rows its own listing
-// reaches. Both minting routes owe both halves.
+// there, and confirmTeamGrantAfterMint the grant, since a write that lowers
+// either sweeps only the rows its own listing reaches. Both minting routes
+// owe every half, which is why this guard is the one call they make.
 //
 // It answers the request and returns false when the invitation must not be
-// minted. orgID is the org of the team the invitation joins, which both
-// minting routes resolve before they call: POST /api/teams/{id}/invitations
-// from the team it names, POST /api/orgs/{id}/invitations from the team its
-// body names, once that team is confirmed to be in the org of the path.
-func (s *Server) requireOrgStandingToInvite(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID string, role identity.Role) bool {
+// minted. grantCapped reports that the team cap measured the minter's grant,
+// which is the premise confirmTeamGrantAfterMint re-reads. orgID is the org
+// of the team the invitation joins, which both minting routes resolve before
+// they call: POST /api/teams/{id}/invitations from the team it names, POST
+// /api/orgs/{id}/invitations from the team its body names, once that team is
+// confirmed to be in the org of the path.
+func (s *Server) requireRankToInvite(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, role identity.Role) (ok bool, grantCapped bool) {
 	want := identity.OrgRoleForTeamRole(role)
-	if orgID == "" || want == "" || id.IsSuperAdmin {
+	if want == "" || id.IsSuperAdmin {
+		return true, false
+	}
+	if orgID != "" {
+		have, answered := s.ownOrgStanding(w, r, id, orgID)
+		if answered {
+			return false, false
+		}
+		if !have.AtLeast(want) {
+			httpError(w, http.StatusForbidden,
+				"a team invitation cannot carry an org role above its creator's: an invitation at role %s is mirrored up to an org %s membership when it is accepted, and your own org role in this team's organization is %s",
+				role, want, orgStandingName(have))
+			return false, false
+		}
+		if have.AtLeast(identity.OrgRoleAdmin) {
+			return true, false
+		}
+	}
+	mine, _, err := s.readTeamGrantRole(r.Context(), id.UserID, teamID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "resolve your own grant in team %s: %v", teamID, err)
+		return false, false
+	}
+	if !mine.AtLeast(role) {
+		httpError(w, http.StatusForbidden,
+			"a team invitation cannot carry a team role above its creator's grant: accepting an invitation at role %s writes that grant in this team, and your own is %s — %s",
+			role, teamGrantName(mine), teamRankRemedy(role, orgID != ""))
+		return false, false
+	}
+	return true, true
+}
+
+// confirmTeamGrantAfterMint re-reads the minter's own GRANT in the team the
+// invitation joins once the row has LANDED, and revokes the invitation unless
+// that grant still covers the team role it carries. The cap is a check taken
+// BEFORE the act, and the two share no transaction: a write that lowers that
+// grant — the team-member PATCH, its DELETE, the org off-boarding cascade,
+// the SSO reconciliation — reaches only the rows its own listing sees, so a
+// mint whose read preceded it and whose INSERT follows it outlives it and
+// still hands out a rank its creator has lost. This is the team twin of
+// confirmOrgStandingAfterMint.
+//
+// capped is the cap's own report that it measured the grant
+// (requireRankToInvite), rather than a second read of the standing asking
+// whether it would have: where the mint rested on an org standing of admin
+// or above, no grant was measured and none is re-read here. This
+// confirmation covers the mint that straddled a lowering WHERE the mint
+// measured the grant; the lowerings themselves are covered by their own
+// writes, which re-measure the cap that would bind the creator NOW against
+// the rows they left (teamRankTakesInvitation): the sweep of a standing that
+// falls (revokeInvitationsAboveOrgStanding) reads the grant too where the
+// new standing is below admin, and the writes that lower a GRANT — the team
+// PATCH and PUT, the DELETE, the grant compensation, the GitHub SSO
+// reconciliation, the logged-in accept that writes a lower team role over an
+// existing grant — run the team sweep (reconcileTeamRankInvitations, and the
+// seam the service's own writes call: SetTeamRankReconcile). What the two
+// pairs together close is the boundary this guard once stated, short of one
+// stated straddle: no team invitation stands at a rank the authority that
+// minted it no longer covers, whichever write lowered that authority —
+// except a mint that rested on an org standing of admin or above
+// (capped=false) whose INSERT lands after a lowering write's listing: the
+// sweep's listing missed the row, and this confirmation, told no grant was
+// measured, returns early, so the row stands at a rank that authority no
+// longer covers until the next lowering of it re-lists the team. The
+// standing half has no such gap — its confirmation re-reads the standing
+// unconditionally. The one state the writes still hand OVER is the role
+// mirrored up to NOTHING (config_editor, ADR-078), which no cap has ever
+// measured.
+//
+// The re-read runs on a context DETACHED from the request and on its own
+// budget, as the standing's does: a client that goes away is the most
+// ordinary reason a cap cannot be re-confirmed, and a revoke that died with
+// it would leave exactly the invitation this guard exists to remove. A grant
+// that cannot be READ takes the invitation back too and answers 500 naming
+// that read, under the audit cause of the row it could not read
+// (mintGrantRead): a cap that cannot be confirmed is not one.
+//
+// It answers the request and returns false when the invitation did not
+// survive.
+func (s *Server) confirmTeamGrantAfterMint(w http.ResponseWriter, r *http.Request, id auth.Identity, capped bool, inv identity.Invitation) bool {
+	if !capped {
 		return true
 	}
-	have, answered := s.ownOrgStanding(w, r, id, orgID)
-	switch {
-	case answered:
-		return false
-	case have.AtLeast(want):
+	rctx, rcancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
+	defer rcancel()
+	mine, _, err := s.readTeamGrantRole(rctx, id.UserID, inv.TeamID)
+	if err == nil && mine.AtLeast(inv.Role) {
 		return true
+	}
+	reason := "creator_team_rank_dropped"
+	if err != nil {
+		reason = mintGrantRead.reason
+	}
+	fate := s.revokeUnconfirmedInvitation(r, inv, reason)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("team %s: confirming the team grant of %s after invitation %s was minted failed: %v — %s",
+				inv.TeamID, id.UserID, inv.ID, err, fate)
+		}
+		httpError(w, http.StatusInternalServerError,
+			"confirming your own grant in the team this invitation joins after it was minted failed: %v — a cap that cannot be confirmed is not one, so %s",
+			err, fate)
+		return false
 	}
 	httpError(w, http.StatusForbidden,
-		"a team invitation cannot carry an org role above its creator's: an invitation at role %s is mirrored up to an org %s membership when it is accepted, and your own org role in this team's organization is %s",
-		role, want, orgStandingName(have))
+		"a team invitation cannot carry a team role above its creator's grant: accepting an invitation at role %s writes that grant in this team, and your own is %s by the time it was minted — %s",
+		inv.Role, teamGrantName(mine), fate)
 	return false
 }
 
 // confirmOrgStandingAfterMint re-reads the minter's own org standing once the
 // invitation row has LANDED, and revokes it unless that standing still covers
-// the role it carries. requireOrgStandingToInvite is a check taken BEFORE the
-// act, and the two share no transaction: a write that lowers the minter's own
+// the role it carries. requireRankToInvite's org cap is a check taken BEFORE
+// the act, and the two share no transaction: a write that lowers the minter's own
 // standing — the roster's PATCH, the placement, the off-boarding cascade —
 // sweeps the invitations they minted above what they are left with, but only
 // the rows its listing can see, so a mint whose read preceded that write and
@@ -421,7 +532,7 @@ func (s *Server) revokeUnconfirmedInvitation(r *http.Request, inv identity.Invit
 		return "the invitation this request minted is already revoked"
 	default:
 		if s.logger != nil {
-			s.logger.Error("team %s: revoking invitation %s, whose creator's org standing could not be confirmed, failed: %v — it stands at a rank its creator does not hold",
+			s.logger.Error("team %s: revoking invitation %s, whose cap the mint could not confirm, failed: %v — it stands at a rank its creator does not hold",
 				inv.TeamID, inv.ID, err)
 		}
 		return fmt.Sprintf("revoking the invitation this request minted failed too (%v), so invitation %s stands at a rank its creator does not hold: revoke it by hand", err, inv.ID)
@@ -543,6 +654,337 @@ func (s *Server) ownTeamGrantGone(ctx context.Context, userID, teamID string) (b
 // orgStandingName names a standing in a refusal, including the one an account
 // with no org membership row holds.
 func orgStandingName(role identity.OrgRole) string {
+	if role == "" {
+		return "none"
+	}
+	return string(role)
+}
+
+// requireRankOverMember refuses a roster write that names a member ranked
+// above its author: no demotion, removal or placement reaches a row above the
+// writer's own rank, read from the store on both sides. Every write in that
+// domain calls THIS guard — the roster's PATCH and DELETE on an org row, and
+// the PATCH, DELETE and PUT on a team grant — so the rule lives at one place
+// rather than as a copy per route.
+//
+// Two ladders, each read from the ROW rather than from a token, which a write
+// since does not rewrite:
+//
+//   - the ORG ladder (member < admin < owner) binds every write whose org is
+//     known, team-scope ones included: the target's current org role there
+//     against the writer's own standing (readOwnOrgStanding, the read the
+//     role cap takes). A team admin whose org standing is `member` therefore
+//     does not write over the grant of an org admin.
+//   - the TEAM ladder (viewer < member < admin < owner) binds a team-scope
+//     write whose authority comes from the writer's own GRANT alone, on BOTH
+//     sides of that write: the rank the target holds, and the rank being
+//     written (teamRole). An admin or owner of the team's parent org manages
+//     every team in it (canManageTeam, orgAdminOfTeam), so for them the org
+//     ladder above is the whole rule; config_editor is orthogonal to the
+//     ladder (rank 0, ADR-078), so it outranks no grant and is capped by
+//     none.
+//
+// The cap on the rank WRITTEN is the team twin of
+// requireOrgStandingToWriteOrgRole, and it is what makes the target half a
+// boundary rather than a delay: without it a team admin writes `owner` on
+// their OWN grant and reaches every grant of the team on the next request.
+// It binds that own row like any other.
+//
+// Equal rank passes, which is what leaves an owner writing an owner, an admin
+// an admin, and any member their own row. A target with no row on a ladder
+// stands below every rung of it. A rank this build cannot PLACE on its ladder
+// is not below any of them, so it is refused rather than written over, and a
+// rank that cannot be READ refuses the write with the store's error instead of
+// writing unranked. Platform admins pass: IsSuperAdmin is the escape hatch,
+// and they hold no membership row for a ladder to place them on — which is
+// also the remedy every refusal here names, beside the standings that can
+// make the write on the route that refused it (orgRankRemedy, teamRankRemedy).
+//
+// An author who holds no org row at all — an orphan team grant, which
+// GET /api/admin/users/{id} reports as drift — stands below every rung of the
+// org ladder, so the org ladder refuses them every target that HAS an org row
+// (docs/cloud-rest-api.md states it). Their refusal names no rank of the
+// target's: the org roster that rank is read from answers them 403.
+//
+// The ranks are read ONCE, as the last check before the write: a promotion of
+// the target that lands between that read and the write is not seen. Closing
+// that window takes a conditional membership write — a pkg/identity seam both
+// stores would owe — rather than a second read, which would only move it.
+//
+// removesGrant marks the one write whose target may hold no row to rank at
+// all: a team-member DELETE takes a grant away, and one that is not THERE
+// takes nothing, so no ladder is read and the route keeps its own answer. That
+// existence test is the SAME read the team ladder measures, taken first and
+// once — a second read of the row could answer differently, and the earlier
+// one deciding whether a ladder is read at all is the stale one. A grant that
+// cannot be READ is not one that is absent: it refuses the removal with the
+// store's error. A grant that appears AFTER that read is the boundary below.
+//
+// teamID is empty for an org-scope write; a team-scope one passes the team and
+// the guard resolves its parent org itself, since the org ladder binds it too.
+// A team that no longer EXISTS has no parent org to read, so the team ladder
+// is the whole rule there, as for a team that never had one: a write that
+// answered before this guard — clearing the dangling grant a deleted team
+// leaves — is not turned into a 404 by it. teamRole is the team role the write
+// puts on the row, empty when it removes a grant and on an org-scope write,
+// whose own cap is requireOrgStandingToWriteOrgRole.
+//
+// It answers the request and returns false when the write must not happen.
+func (s *Server) requireRankOverMember(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID, memberID string, teamRole identity.Role, removesGrant bool) bool {
+	if id.IsSuperAdmin {
+		return true
+	}
+	ctx := r.Context()
+	// The removal's own read, which the team ladder below measures rather
+	// than re-reading: a grant that is not there leaves no rank to compare,
+	// on either ladder.
+	var theirs identity.Role
+	var hasGrant, grantRead bool
+	if removesGrant && teamID != "" {
+		var err error
+		theirs, hasGrant, err = s.readTeamGrantRole(ctx, memberID, teamID)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "resolve the grant of %s in team %s: %v", memberID, teamID, err)
+			return false
+		}
+		if !hasGrant {
+			return true
+		}
+		grantRead = true
+	}
+	if teamID != "" {
+		t, err := s.authStore().GetTeam(ctx, teamID)
+		switch {
+		case errors.Is(err, identity.ErrNotFound):
+			orgID = ""
+		case err != nil:
+			httpError(w, http.StatusInternalServerError, "resolve the organization of team %s: %s", teamID, err.Error())
+			return false
+		default:
+			orgID = t.OrgID
+		}
+	}
+	standing := orgStandingAfterRemoval
+	if orgID != "" {
+		have, answered := s.ownOrgStanding(w, r, id, orgID)
+		if answered {
+			return false
+		}
+		standing = have
+		// readOwnOrgStanding reads the row of the account it is GIVEN, so the
+		// target's rank comes from the same read, with the same policy: a row
+		// that is not there is a standing below every rung, and a row that
+		// cannot be read is an error this guard must not compare against.
+		theirs, hasRow, err := s.readOwnOrgStanding(ctx, memberID, orgID)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "resolve the org membership of %s: %v", memberID, err)
+			return false
+		}
+		if hasRow && !have.AtLeast(theirs) {
+			httpError(w, http.StatusForbidden,
+				"a roster write does not reach a member whose org rank the writer's own does not cover: %s — %s",
+				orgRankRefused(memberID, theirs, have), orgRankRemedy(theirs, have, teamID != ""))
+			return false
+		}
+	}
+	// The team ladder measures the writer's own grant against the target's
+	// and against the rank it writes. An admin or owner of the team's parent
+	// org holds the team through the ORG — the same row canManageOrg reads,
+	// so the standing above answers it — and is bound by the org ladder
+	// instead.
+	if teamID == "" || standing.AtLeast(identity.OrgRoleAdmin) {
+		return true
+	}
+	mine, _, err := s.readTeamGrantRole(ctx, id.UserID, teamID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "resolve your own grant in team %s: %v", teamID, err)
+		return false
+	}
+	// config_editor carries no rank to raise (ADR-078), so the cap leaves the
+	// capability alone and measures the ladder roles only.
+	if teamRole != "" && teamRole != identity.RoleConfigEditor && !mine.AtLeast(teamRole) {
+		httpError(w, http.StatusForbidden,
+			"a team role is not written above the writer's own grant: writing the role %s in this team takes that grant, and your own is %s — %s",
+			teamRole, teamGrantName(mine), teamRankRemedy(teamRole, orgID != ""))
+		return false
+	}
+	if !grantRead {
+		theirs, hasGrant, err = s.readTeamGrantRole(ctx, memberID, teamID)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "resolve the grant of %s in team %s: %v", memberID, teamID, err)
+			return false
+		}
+	}
+	if !hasGrant || theirs == identity.RoleConfigEditor || mine.AtLeast(theirs) {
+		return true
+	}
+	httpError(w, http.StatusForbidden,
+		"a team grant is not written over a member whose team rank the writer's own does not cover: the role of %s in this team is %s, and your own is %s — %s",
+		memberID, teamGrantName(theirs), teamGrantName(mine), teamRankRemedy(theirs, orgID != ""))
+	return false
+}
+
+// requireRankOverTeamMembers refuses a team DELETION whose roster holds a
+// member ranked above its author on the ORG ladder. Deleting a team clears
+// every grant it holds, so it is a roster write over each of them at once —
+// the rule is requireRankOverMember's org ladder applied to every row the
+// deletion clears, at the one place that clears them.
+//
+// The TEAM ladder does not apply here: it governs a write whose author's
+// authority over the team is their own GRANT, and this route admits none —
+// its gate is canManageOrg (an org admin or owner standing, read from the
+// row) or a platform admin, so the org standing above is the author's whole
+// authority over the team, on the target's rank and on their own. A team
+// with no parent org answers at the gate: the route's explicit OrgID
+// disjunct refuses EVERYONE there — a platform admin included, whose
+// exemption lives only where the gate can read an org — before canManageOrg
+// runs, so no ladder is read for a deletion nothing authorizes.
+//
+// The author's standing and each member's rank are read from the ROWS, the
+// same reads requireRankOverMember takes (ownOrgStanding,
+// readOwnOrgStanding): a row that is not there stands below every rung, a
+// rank that cannot be READ refuses the deletion with the store's error, and
+// the author's own row having gone away in between leaves them a standing of
+// none, below every member that holds a row.
+//
+// members is the team's roster the caller has already read for the deletion
+// itself — one read serves the rule and the act, and the rule runs BEFORE the
+// first revoke, so a refused deletion leaves the team and every grant it
+// holds as they were. Where the refusal sits in the route's own order: after
+// the 404 (no team), the 403 gate, the 422 (personal team), the 409s (the
+// author's active team, the residue) and the 500 of that members read, and
+// before any side effect. The residue 409 precedes it, so a rank-refused
+// author naming a non-empty team learns the tenant holds data first, and
+// only once the team is empty does this guard answer them — refusing before
+// the residue is looked at is the gate's own 403, higher up.
+//
+// Equal rank passes, which is what leaves an org admin deleting a team whose
+// members stand at or below admin; an empty roster passes with nothing to
+// compare. Platform admins pass: IsSuperAdmin is the escape hatch, and they
+// hold no membership row for a ladder to place them on — which is also the
+// remedy every refusal here names, beside the owner standing that tops the
+// ladder and so is never outranked; a rank this build cannot place is
+// covered by no standing at all, and there the remedy is the platform admin
+// alone (deleteTeamRemedy).
+//
+// It answers the request and returns false when the deletion must not happen.
+func (s *Server) requireRankOverTeamMembers(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID string, members []identity.Membership) bool {
+	if id.IsSuperAdmin {
+		return true
+	}
+	have, answered := s.ownOrgStanding(w, r, id, orgID)
+	if answered {
+		return false
+	}
+	for _, m := range members {
+		theirs, hasRow, err := s.readOwnOrgStanding(r.Context(), m.UserID, orgID)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "resolve the org membership of %s: %v", m.UserID, err)
+			return false
+		}
+		if hasRow && !have.AtLeast(theirs) {
+			httpError(w, http.StatusForbidden,
+				"a team is not deleted over a member whose org rank the author's own does not cover: %s — %s",
+				orgRankRefused(m.UserID, theirs, have), deleteTeamRemedy(theirs))
+			return false
+		}
+	}
+	return true
+}
+
+// orgRankRefused states the two org ranks a refusal of the org ladder is
+// about. A writer who holds NO org row reads no org roster — canViewOrg
+// refuses them — so their refusal names the target's rank as being above
+// their own rather than naming the rank itself.
+func orgRankRefused(memberID string, theirs, have identity.OrgRole) string {
+	if have == orgStandingAfterRemoval {
+		return fmt.Sprintf("the org role of %s in this org stands above your own, which is none", memberID)
+	}
+	return fmt.Sprintf("the org role of %s in this org is %s, and your own is %s",
+		memberID, orgStandingName(theirs), orgStandingName(have))
+}
+
+// orgRankRemedy names who writes the org rank the org ladder refused, FOR THE
+// ROUTE that refused it: the org roster's own writes are gated on
+// canManageOrg, which any member holding the target's rank passes, while a
+// team-scope write is gated on canManageTeam, which inside an org only its
+// admins and owners pass — a plain member of the org holding the target's
+// rank reaches no team of it. A rank this build cannot PLACE is covered by no
+// standing at all (OrgRole.AtLeast is false on both sides of rank zero), so
+// there a platform admin is the only remedy; and a writer with no org row is
+// named a remedy that does not disclose the rank theirs is.
+func orgRankRemedy(theirs, have identity.OrgRole, teamScope bool) string {
+	switch {
+	case !theirs.Valid():
+		return "a platform admin writes it"
+	case !teamScope && have != orgStandingAfterRemoval:
+		return fmt.Sprintf("a member of this org who already holds %s writes it, or a platform admin", theirs)
+	case theirs == identity.OrgRoleOwner || have == orgStandingAfterRemoval:
+		return "an owner of this organization writes it, or a platform admin"
+	}
+	return "an admin or owner of this organization writes it, or a platform admin"
+}
+
+// deleteTeamRemedy names who deletes the team the container rule refused, so
+// the refusal offers only a remedy that works on this route: an owner tops
+// the org ladder the rule measures and is never outranked by it, while a rank
+// this build cannot PLACE is covered by no standing at all (OrgRole.AtLeast
+// is false on both sides of rank zero) — there an owner would execute the
+// remedy and be refused again, and a platform admin is the only one who
+// reaches the row.
+func deleteTeamRemedy(theirs identity.OrgRole) string {
+	if !theirs.Valid() {
+		return "a platform admin deletes this team"
+	}
+	return "an owner of this organization, or a platform admin, deletes this team"
+}
+
+// teamRankRemedy names who writes the team rank the team ladder refused,
+// whether it refused the target's or the one being written: a member of the
+// team holding that rank — named only where canManageTeam admits them at all,
+// which is admin and above — an admin or owner of the parent org where the
+// team has one, and a platform admin.
+func teamRankRemedy(role identity.Role, hasOrg bool) string {
+	var remedies []string
+	if role.AtLeast(identity.RoleAdmin) {
+		remedies = append(remedies, fmt.Sprintf("a member of this team who already holds %s writes it", role))
+	}
+	if hasOrg {
+		remedies = append(remedies, "an admin or owner of the team's organization")
+	}
+	return joinRemedies(remedies, "a platform admin")
+}
+
+// joinRemedies reads a list of remedies as a sentence does, with last after an
+// "or" — the remedy every refusal here ends on, which is why it is named
+// apart rather than taken from the end of the list.
+func joinRemedies(remedies []string, last string) string {
+	if len(remedies) == 0 {
+		return last
+	}
+	return strings.Join(remedies, ", ") + ", or " + last
+}
+
+// readTeamGrantRole reads one account's role in teamID — the grant ROW, never
+// a token's claim — and answers whether that row is THERE at all. An account
+// with no grant holds no team role, which the ladder places below every rung,
+// so ErrNotFound is an answer and not an error; any other failure is returned,
+// for a guard that must not compare a rank it could not read.
+func (s *Server) readTeamGrantRole(ctx context.Context, userID, teamID string) (identity.Role, bool, error) {
+	mb, err := s.authStore().GetMembership(ctx, userID, teamID)
+	switch {
+	case errors.Is(err, identity.ErrNotFound):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	}
+	return mb.Role, true, nil
+}
+
+// teamGrantName names a team role in a refusal, including the one an account
+// holding no grant in the team has (orgStandingName's twin on the team
+// ladder).
+func teamGrantName(role identity.Role) string {
 	if role == "" {
 		return "none"
 	}

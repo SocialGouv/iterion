@@ -49,6 +49,10 @@ func (s *Server) registerTeamLifecycleRoutes() {
 // an existence oracle over arbitrary ids. An org admin adds someone by email
 // invitation (which the invitee accepts) and keeps PATCH/DELETE over the
 // members they already hold.
+//
+// It carries no rank guard of its own: requireRankOverMember exempts platform
+// admins — they hold no org row for a ladder to place them on — so on a route
+// only they reach, a call to it could never refuse.
 func (s *Server) handlePutOrgMember(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	orgID := r.PathValue("id")
@@ -297,6 +301,16 @@ func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
 // handleDeleteTeam removes an EMPTY team. The reorg case it exists for is a
 // team created by mistake — a wrong name, a duplicate — which until now was
 // permanent.
+//
+// The route is gated on canManageOrg (org admin or owner) or a platform
+// admin, and the rank rule on top of that gate is the org ladder over every
+// grant the deletion clears (requireRankOverTeamMembers): no author deletes a
+// team whose roster holds a member their own standing does not cover. The
+// refusals keep their precedence — 404 (no team), 403 (the gate), 422
+// (personal team), 409 (the author's active team, the residue), the 500 of
+// the members read the rule itself reuses — and the rank rule answers before
+// the first revoke, so a refused deletion leaves the team and its grants
+// untouched.
 func (s *Server) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	teamID := r.PathValue("id")
@@ -329,6 +343,11 @@ func (s *Server) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	members, err := s.authStore().ListMembershipsByTeam(r.Context(), teamID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "list members: %v", err)
+		return
+	}
+	// The rank rule, before the first revoke: the members read above serves
+	// the rule and the act from one read.
+	if !s.requireRankOverTeamMembers(w, r, id, t.OrgID, members) {
 		return
 	}
 	for _, m := range members {
@@ -401,6 +420,9 @@ func (s *Server) handlePutTeamMember(w http.ResponseWriter, r *http.Request) {
 	if !s.requireOrgMembershipForGrant(w, r, t.OrgID, memberID) {
 		return
 	}
+	if !s.requireRankOverMember(w, r, id, "", teamID, memberID, role, false) {
+		return
+	}
 	now := time.Now().UTC()
 	if err := s.authStore().UpsertMembership(r.Context(), identity.Membership{
 		UserID: memberID, TeamID: teamID, Role: role, InvitedBy: id.UserID, JoinedAt: now,
@@ -417,6 +439,13 @@ func (s *Server) handlePutTeamMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditTenant(r, teamID, "member.added", "member", memberID, map[string]any{"role": string(role), "email": u.Email})
+	// An idempotent placement can LOWER the role it re-writes, which is the
+	// same authority-lowering write the PATCH is: the member's pending
+	// invitations are measured against the cap that would bind their minting
+	// NOW (the role just written), and the rows it refuses go.
+	if !s.reconcileTeamRankInvitations(w, r, teamID, memberID, role, "placement") {
+		return
+	}
 	writeJSON(w, map[string]any{"user_id": memberID, "team_id": teamID, "role": string(role)})
 }
 
@@ -653,6 +682,22 @@ func (s *Server) confirmOrgMembershipForGrant(w http.ResponseWriter, r *http.Req
 			}
 			kept = fmt.Sprintf(", and sweeping the pending invitations %s addressed to their own address in this team failed: %v — such a row stands on the grant just revoked (listed by GET /api/teams/%s/invitations, revoked by hand)",
 				subject, serr, teamID)
+		}
+		// The rows the member MINTED go with the grant too: the cap that would
+		// bind their minting NOW measures no grant (K.2), so every role their
+		// standing does not cover is refused. It runs after the sweep above,
+		// as the removal's own order does, and its failure is carried in a
+		// clause of its own — the exit already has a status and a body, and
+		// the residue is the caller's to revoke by hand, like the kept rows'.
+		tctx, tcancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
+		defer tcancel()
+		if terr := s.takeTeamRankInvitations(tctx, requestActor(r), teamID, memberID, "", "creator_team_rank_lowered"); terr != nil {
+			if s.logger != nil {
+				s.logger.Error("team grant %s/%s was unwound but revoking the pending invitations %s minted above what now covers them failed: %v — such an invitation still carries a rank its creator no longer holds",
+					memberID, teamID, memberID, terr)
+			}
+			kept += fmt.Sprintf(", and revoking the pending invitations they minted above what now covers them failed: %v — such an invitation still carries a rank its creator no longer holds (listed by GET /api/teams/%s/invitations, revoked by hand)",
+				terr, teamID)
 		}
 	}
 	httpError(w, status, "%s — the team grant was revoked%s; %s", reason, kept, next)
