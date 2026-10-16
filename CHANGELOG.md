@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.268.0](https://github.com/SocialGouv/iterion/compare/v3.267.0...v3.268.0) (2026-10-16)
+
+### Features
+
+* **bots:** gitops-warden waits for its peer gates inside a bounded window ([#2480](https://github.com/SocialGouv/iterion/issues/2480)) ([e5e993d](https://github.com/SocialGouv/iterion/commit/e5e993dc4e9818491dc341ff4ca177402df77e97))
+
+    <details><summary>why</summary>
+
+    The warden read its pinned peer gates (revi/review, and next the devops' gitops-mr-review report) ONCE, at publish time: a peer still running at that instant held the arm until someone commented /warden again. On the team's gitops repos the CI jobs routinely finish after the verdict, so the "single gate" the operator chose could not arm on its own.
+
+    </details>
+
+### Bug Fixes
+
+* **server:** no org role is written above the writer's own, and a standing that drops takes the invitations it minted ([#2484](https://github.com/SocialGouv/iterion/issues/2484)) ([e505c33](https://github.com/SocialGouv/iterion/commit/e505c334eaaa47d4b56c632244da4f821773366d))
+
+    <details><summary>why</summary>
+
+    Two rules on the org rank. Both read the membership row from the store, never the token, which a removal does not rewrite.
+
+    </details>
+
 ## [3.267.0](https://github.com/SocialGouv/iterion/compare/v3.266.2...v3.267.0) (2026-10-16)
 
 ### Features
