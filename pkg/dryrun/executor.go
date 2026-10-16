@@ -103,8 +103,9 @@ type Executor struct {
 
 	mu   sync.Mutex
 	vars map[string]any
-	// program answers the two seams the engine's admission reads — the tool
-	// surface and the backend — from the dry run's own vars. Guarded by mu,
+	// program answers the three seams the engine's admission reads — the
+	// tool surface, the backend and a node's `fallbacks:` routes — from the
+	// dry run's own vars. Guarded by mu,
 	// built on the first question and rebuilt after SetVars changes them;
 	// one handed out is never written again.
 	program  *model.ClawExecutor
@@ -1005,22 +1006,356 @@ func sortFindings(fs []Finding) {
 // machines, and refuse a file a run with `--auto-memory off` admits. A dry run
 // judges the program; a run is judged again by the engine, against what that
 // run holds.
+//
+// The appends are decided per ROUTE — `auto_memory: on` grants write_file on
+// claw and nothing on codex — so this answer is a union over the backends the
+// node may run on, and those are THIS dry run's reading of them (routeBackends),
+// never the program executor's second reading of the same routes: that one
+// resolves a route's `when:` gate from the value this package invented for an
+// unsupplied var, and a surface taken over it dropped claw's appends from a node
+// whose admission counted the claw route — `validate --exec` clean on a fan-out
+// `--var rescue=on` has the engine refuse at the router.
 func (x *Executor) EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool) []string {
-	return x.programExecutor().EffectiveToolNames(node, mayEscalateToUltracode)
+	return x.programExecutor().EffectiveToolNamesOnRoutes(node, mayEscalateToUltracode, x.routeBackends(node))
+}
+
+// routeBackends is this dry run's ONE reading of the backends a node may run
+// on, for every question that needs the set: the primary its backend seam
+// answers, then each route its fallback seam answers that is not that primary.
+//
+// Both halves are the answers the engine's admission reads, so a question
+// answered from this list cannot disagree with the verdict taken on it — the
+// drift this file's seams exist to remove, one package further in.
+func (x *Executor) routeBackends(node ir.Node) []string {
+	// Both seams below read the node, so the nil arm the tool surface documents
+	// ("nothing to add", the declared list) is answered here rather than
+	// resolved: this is the one reader a nil node reaches.
+	if node == nil {
+		return nil
+	}
+	primary := x.EffectiveBackendName(node)
+	out := []string{primary}
+	for _, route := range x.EffectiveFallbackBackends(node) {
+		if route != primary {
+			out = append(out, route)
+		}
+	}
+	return out
 }
 
 // EffectiveBackendName answers the engine's backend seam for a dry run, from
-// the same program-only executor, given the dry run's vars — the launch values,
-// the defaults, and the value it invents for a var that has neither, as for the
-// rest of the program: the node's backend, else the workflow's, `{{vars.…}}`
-// resolved from those vars, and "" where the program names neither — the IR is
-// all there is, which is what the guard read before this seam was asked of a
-// dry run. An executor that
+// the same program-only executor, given the dry run's vars — the launch values
+// and the program's own defaults, as for the rest of the program: the node's
+// backend, else the workflow's, `{{vars.…}}` resolved from those vars, and ""
+// where the program names neither — the IR is all there is, which is what the
+// guard read before this seam was asked of a dry run. An executor that
 // cannot answer is read at the worst case, so without it the dry run would
 // refuse fan-outs of agents and judges not marked `readonly:` wherever a node
 // declaring a write tool would be refused.
+//
+// On a launch this program does not fully specify, a TEMPLATED routing field is
+// answered by the author's own spelling instead — the same reading, and the
+// same reason, as the fallback seam below it (launchDecidesTheProgramsRoutes):
+// a template is the one part of a routing field the LAUNCH decides, the value
+// this package seeded for an undecided var is no run's, and admission reads an
+// unresolved spelling as the route it is. It is also the only name the author
+// can act on; the shape this package seeds ("x" for a string) appears nowhere
+// in their program.
 func (x *Executor) EffectiveBackendName(node ir.Node) string {
+	if authored := x.authoredBackendTheLaunchDecides(node); authored != "" {
+		return authored
+	}
 	return x.programExecutor().EffectiveBackendName(node)
+}
+
+// authoredBackendTheLaunchDecides is the spelling that decides where a node
+// runs on a launch the program does not fully specify — and "" where the
+// program's own values decide the field, or where the launch decides every var.
+//
+// It reads the two fields dispatch reads, in dispatch's order
+// (model.ClawExecutor.resolveBackendName steps 1-2): the node's own `backend:`,
+// then the workflow's `default_backend:`. A spelling that RESOLVES to a route
+// decides the node's route there and the workflow default is never reached;
+// every other one may leave the route to that default — absent, `auto`, or a
+// reference that resolves to nothing — so the default is read wherever the
+// node's own field could reach it.
+func (x *Executor) authoredBackendTheLaunchDecides(node ir.Node) string {
+	if x.launchDecidesTheProgramsRoutes() {
+		return ""
+	}
+	own := strings.TrimSpace(nodeBackendField(node))
+	if fieldIsTemplated(own) {
+		return own
+	}
+	if x.routeSpellingResolvesToARoute(own) {
+		return ""
+	}
+	if x.wf == nil {
+		return ""
+	}
+	if d := strings.TrimSpace(x.wf.DefaultBackend); fieldIsTemplated(d) {
+		return d
+	}
+	return ""
+}
+
+// nodeBackendField is a node's own `backend:` spelling, read off the three
+// kinds dispatch reads one from (model.ClawExecutor.resolveBackendName) — a
+// kind that declares none routes through the workflow default alone.
+func nodeBackendField(node ir.Node) string {
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		return n.Backend
+	case *ir.JudgeNode:
+		return n.Backend
+	case *ir.RouterNode:
+		return n.Backend
+	}
+	return ""
+}
+
+// routeSpellingResolvesToARoute reports whether a `backend:` spelling names the
+// node's route once this dry run's own vars and environment are read: not
+// nothing, and not the explicit `auto` — the two spellings dispatch resolves
+// from elsewhere. It is the reading dispatch takes before it consults the
+// workflow default, asked of the resolver that takes it
+// (ResolveRoutingField) and not of the syntax.
+//
+// It is asked of the spellings the launch does not decide — a name, a `${VAR}`
+// reference, `auto`, an absent field: a template is answered before it, by the
+// author's own spelling (authoredBackendTheLaunchDecides), since nothing here
+// resolves what that launch has yet to supply. Of those, the ones that resolve
+// to nothing do leave the route to the workflow default, and reach it here; a
+// `${VAR}` the host answers names the node's route, and the default is a field
+// the node never reaches.
+func (x *Executor) routeSpellingResolvesToARoute(raw string) bool {
+	resolved := x.programExecutor().ResolveRoutingField(raw)
+	return resolved != "" && resolved != "auto"
+}
+
+// EffectiveFallbackBackends answers the engine's fallback-route seam for a dry
+// run, from the same program-only executor and the same vars as the backend
+// seam beside it. So on a launch the program fully specifies, `validate --exec`
+// reads a `backend: "{{vars.fb}}"` route, and a route's `when:` gate, the way
+// the run it simulates will — an executor that cannot answer leaves admission
+// reading those routes from the IR, where a template bounds nothing: the dry
+// run would refuse a fan-out the run admits.
+//
+// Those vars are the PROGRAM's — its declared defaults, and what the caller
+// supplied — plus a shape this package invents for a var that has neither
+// (VarValue). Where it invented one, the routes are read as their AUTHOR wrote
+// them (authoredFallbackRoutes): the launch decides a template and a gate, the
+// shape this package seeded is no run's value, and a verdict taken on it is a
+// verdict about no run. It is the same pessimistic reading an executor that
+// cannot answer the seam at all leaves standing, and it is this surface's whole
+// guarantee, because the dry run's two passes cover a free-form var's domain
+// with one shape: resolved from that shape, `backend: "{{vars.fb}}"` reads as
+// the backend "x" and a route gated on `vars.rescue == 'on'` as one no run
+// takes, and `validate --exec` would go CLEAN on a fan-out `--var rescue=on`
+// has the engine refuse at the router.
+func (x *Executor) EffectiveFallbackBackends(node ir.Node) []string {
+	if x.launchDecidesTheProgramsRoutes() {
+		return x.programExecutor().EffectiveFallbackBackends(node)
+	}
+	return x.authoredFallbackRoutes(node)
+}
+
+// launchDecidesTheProgramsRoutes reports whether every var this program
+// declares carries a value something before the run decided: the author's own
+// default, or a value the caller supplied. There — and only there — this dry
+// run's vars are a run's vars, so every seam it answers is the executor's own
+// answer and the verdict an operator reads before launching is the verdict
+// that launch takes.
+//
+// A var with neither is seeded with a shape of its type (launchInputs,
+// VarValue) and nothing before the launch decides the value, so a verdict
+// taken on that shape is a verdict about no run: the two passes cover a
+// free-form var's domain with one value, and `--var rescue=on` is a launch the
+// program allows and no pass reads. Without the program in hand nothing is
+// known, which reads as undecided.
+//
+// WHICH vars a routing field reads decides nothing here, deliberately: no
+// parsing of an expression's shape admits a fan-out. That question has no sound
+// cheap answer — a gate spelled `vars['x']` reads the vars namespace WHOLE, so
+// the vars it may read are every var the program declares, and a field resting
+// on the program's own default sits beside a gate resting on the launch — and
+// any answer to it moves with a spelling its author is free to change. What the
+// coarser rule costs is said where it is incurred: the refusal names the vars
+// the launch must decide, and the `--var` that ends the pessimistic reading
+// (UndecidedRouteReading).
+func (x *Executor) launchDecidesTheProgramsRoutes() bool {
+	return x.wf != nil && len(x.varsTheLaunchMustDecide()) == 0
+}
+
+// varsTheLaunchMustDecide are the vars this program declares with no default
+// that the caller supplied no value for, sorted — the ones nothing before the
+// launch decides. This pass reads a shape of each where it can produce one and
+// nothing at all where it cannot (launchInputs); neither is a value a run would
+// hold.
+func (x *Executor) varsTheLaunchMustDecide() []string {
+	if x.wf == nil {
+		return nil
+	}
+	var out []string
+	for name, v := range x.wf.Vars {
+		if _, supplied := x.given[name]; supplied || v == nil || v.HasDefault {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// fieldIsTemplated reports whether a routing field carries a template span —
+// the one part of such a field the LAUNCH decides, where a name is the
+// program's own and a `${VAR}` reference is the host's. It is the reading
+// admission takes of the answer too (pkg/runtime reads a surviving `{{` as an
+// unresolved route), so the two cannot part on what counts as resolved.
+func fieldIsTemplated(raw string) bool {
+	return strings.Contains(raw, "{{")
+}
+
+// authoredFallbackRoutes is the reading taken on a launch the program does not
+// fully specify: a node's `fallbacks:` routes as their AUTHOR wrote them,
+// pessimistic in the two places the launch is what decides them.
+//
+//   - a route's `when:` gate is NOT evaluated: the launch may make it true, so
+//     every route counts — the reading a dry run owes a gate no value of its
+//     own decides.
+//   - a `backend:` carrying a template keeps the author's spelling, which
+//     admission reads as the unresolved route it is. Every other spelling is
+//     resolved where the program and the host decide it (ResolveRoutingField,
+//     the reading every routing field takes at dispatch), so the route is the
+//     backend the program says it is, named as the run will name it — quoting
+//     `${VAR:-claw}` as if it were a backend names a route no registry has. A
+//     spelling that resolves to nothing (`${VAR}` unset) inherits the node's
+//     backend, as it does at dispatch, so it adds no route to read.
+//
+// A route that executes nothing (`action: skip`) or names no backend of its own
+// resolves none either way. The node's own route is out of the answer, as it is
+// out of the executor's (model.ClawExecutor.EffectiveFallbackBackends): a
+// `fallbacks:` entry that names it to vary a credential leaves nothing for a
+// reader of this answer to judge.
+func (x *Executor) authoredFallbackRoutes(node ir.Node) []string {
+	var out []string
+	for _, r := range x.authoredRoutes(node) {
+		out = append(out, r.backend)
+	}
+	return out
+}
+
+// authoredRoute is one route of the answer above, with what about it the LAUNCH
+// decides: the two spellings the reading is pessimistic about, carried on the
+// route the reading PRODUCED rather than on the `fallbacks:` entry it came
+// from.
+//
+// The distinction is the one the refusal's clause rests on: an entry whose
+// route the answer drops — a gated route onto the node's own backend, a second
+// route onto a backend an earlier one already named — costs this reading
+// nothing, so a refusal saying the launch moved it would name a reading the
+// verdict did not take.
+type authoredRoute struct {
+	backend   string
+	templated bool
+	gated     bool
+}
+
+// authoredRoutes is authoredFallbackRoutes with that provenance kept.
+func (x *Executor) authoredRoutes(node ir.Node) []authoredRoute {
+	llm, ok := node.(ir.LLMNode)
+	if !ok {
+		return nil
+	}
+	program := x.programExecutor()
+	own := x.EffectiveBackendName(node)
+	at := map[string]int{}
+	var out []authoredRoute
+	for _, fb := range llm.GetFallbacks() {
+		raw := strings.TrimSpace(fb.Backend)
+		if fb.Action == ir.FallbackActionSkip || raw == "" {
+			continue
+		}
+		b, templated := raw, fieldIsTemplated(raw)
+		if !templated {
+			if b = program.ResolveRoutingField(raw); b == "" {
+				continue
+			}
+		}
+		if b == own {
+			continue
+		}
+		gated := strings.TrimSpace(fb.When) != ""
+		if i, dup := at[b]; dup {
+			// Two entries onto ONE backend: the answer carries that backend
+			// once, and what the launch decides about it is a property of the
+			// entries together — never of the one its author happened to write
+			// first. An ungated entry beside a gated one is a route every
+			// launch takes, so the presence of that backend rests on no gate;
+			// a templated spelling anywhere is one a launch resolves.
+			out[i].gated = out[i].gated && gated
+			out[i].templated = out[i].templated || templated
+			continue
+		}
+		at[b] = len(out)
+		out = append(out, authoredRoute{backend: b, templated: templated, gated: gated})
+	}
+	return out
+}
+
+// UndecidedRouteReading says what this dry run read pessimistically about where
+// a node runs, and which `--var` ends that reading — and "" where the launch
+// decides every routing field the node reaches.
+//
+// What it promises is the READING, never the verdict: supplying the vars it
+// names has the dry run resolve the node's routing fields as the run will, and
+// the verdict that follows is the executor's own — which may be the same
+// refusal, for a program that is refused on every launch. The two states are
+// what an author needs and all this seam can honestly offer: a refusal
+// CARRYING the clause is not the run's verdict, one without it is. Promising
+// the refusal would lift is a promise a per-node reading cannot keep — the
+// reason beside the clause names ONE route, and the node's other routes decide
+// nothing about it.
+//
+// It answers the engine's wording seam (runtime.UndecidedRouteReporter), read
+// wherever a refusal names a route. What an author can act on in these cells is
+// not their program — the route may be exactly the one they meant — but the
+// launch the verdict was taken on, and a refusal naming a route they have no
+// reason to change sends them to `--no-strict` or to a `readonly:` they do not
+// mean, which is how a static gate stops being read at all.
+//
+// The two readings it reports are the two the rule takes
+// (authoredFallbackRoutes, authoredBackendTheLaunchDecides), each named only
+// where this node carries the field it rests on.
+func (x *Executor) UndecidedRouteReading(node ir.Node) string {
+	undecided := x.varsTheLaunchMustDecide()
+	if len(undecided) == 0 {
+		return ""
+	}
+	templated := x.authoredBackendTheLaunchDecides(node) != ""
+	gated := false
+	for _, r := range x.authoredRoutes(node) {
+		templated = templated || r.templated
+		gated = gated || r.gated
+	}
+	var readings []string
+	if templated {
+		readings = append(readings, "leaves a templated routing field unresolved")
+	}
+	if gated {
+		readings = append(readings, "counts a gated route as one every launch takes")
+	}
+	if len(readings) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(undecided))
+	flags := make([]string, 0, len(undecided))
+	for _, name := range undecided {
+		names = append(names, "`"+name+"`")
+		flags = append(flags, "--var "+name+"=…")
+	}
+	return fmt.Sprintf("the launch supplies no value for %s, so this verdict %s — pass `%s` and it reads the routes the run takes",
+		strings.Join(names, ", "), strings.Join(readings, " and "), strings.Join(flags, " "))
 }
 
 func (x *Executor) programExecutor() *model.ClawExecutor {
@@ -1034,16 +1369,26 @@ func (x *Executor) programExecutor() *model.ClawExecutor {
 	return x.program
 }
 
-// The engine reaches both seams through OPTIONAL type assertions, so an
-// executor that forgets a method still compiles as one — and the engine then
-// reads it at the worst case: every agent and judge it runs that is not
-// `readonly:` counts as writing, and the simulation's parallel fan-outs of them
-// are refused. Asserted here, beside the implementation, so a rename breaks the
-// build rather than a verdict — and against the EXPORTED seams, not structural
-// copies: a copy catches a rename and misses the seam gaining a term.
-// pkg/runtime cannot assert it for us: dryrun imports it, not the other way
-// round.
+// The engine reaches these seams through OPTIONAL type assertions, so an
+// executor that forgets a method still compiles as one — and a forgotten seam
+// costs the reading it answers: for the tool surface and the backend the worst
+// case, where every agent and judge the simulation runs that is not
+// `readonly:` counts as writing and its parallel fan-outs are refused; for a
+// node's `fallbacks:` routes the IR's own reading of them, where a route
+// spelled as a template bounds nothing. Asserted here, beside the
+// implementation, so a rename breaks the build rather than a verdict — and
+// against the EXPORTED seams, not structural copies: a copy catches a rename
+// and misses the seam gaining a term.
+//
+// The wording seam is pinned with them: what a forgotten UndecidedRouteReading
+// costs is a refusal that names a route read pessimistically and says nothing
+// about the `--var` that ends that reading — an author sent to change a
+// program that is not wrong.
+// pkg/runtime cannot assert any of it for us: dryrun imports it, not the other
+// way round.
 var (
 	_ runtime.EffectiveToolSurfaceResolver = (*Executor)(nil)
 	_ runtime.EffectiveBackendResolver     = (*Executor)(nil)
+	_ runtime.EffectiveFallbackResolver    = (*Executor)(nil)
+	_ runtime.UndecidedRouteReporter       = (*Executor)(nil)
 )

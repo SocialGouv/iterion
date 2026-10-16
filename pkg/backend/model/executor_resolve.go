@@ -180,6 +180,59 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 	return dedupeChain(chain, e.resolveBackendName(node), e.baselineModel(node))
 }
 
+// EffectiveFallbackBackends reports the backends a node's `fallbacks:` routes
+// resolve to for THIS run, in chain order and deduplicated: the chain dispatch
+// itself walks (resolveChain), so the run's vars have been read through
+// resolveRoutingField, each route's `when:` gate has been evaluated against
+// them, and a launch-time route materialised onto the node
+// (ir.ApplyRunFallback) is in it like an authored one.
+//
+// The node's OWN route is not in the answer — a caller resolves that through
+// EffectiveBackendName, and a route that names that same backend to swap a
+// credential on it leaves nothing for a reader of this answer to judge — and
+// neither is a route that names no backend of its own: that one inherits the
+// node's, so it adds no route to read. A spelling the run resolves to nothing
+// (`${VAR}` unset) inherits it too, which is what dispatch does with it
+// (dedupeChain's effective(), then the dispatch's own empty-Backend reading).
+// An `action: skip` route is absent for the same reason read the other way:
+// it completes the node where it is reached, so no backend is ever resolved
+// for it.
+//
+// A route whose `when:` gate the executor cannot evaluate is absent too: the
+// gate deactivates it (fallbackWhenActive), and dispatch walks that same
+// reading, so the route is out of both chains.
+//
+// It exists so a pre-run analysis that keys on a node's routes can ask instead
+// of re-deriving them from the IR, which is wrong in both directions: a route
+// spelled `{{vars.fb}}` is a backend NAME at dispatch and nothing in the IR,
+// and a route the run's vars gate off is in the IR and never in the chain. The
+// answer may still carry a `{{…}}` span, for the one reading
+// resolveRoutingField does not make: a template over a namespace that does not
+// exist before the node runs (`{{outputs.…}}`) stays as written, and a caller
+// reads it as the unresolved route it is.
+//
+// Same seam, and same reason, as EffectiveBackendName and EffectiveToolNames.
+func (e *ClawExecutor) EffectiveFallbackBackends(node ir.Node) []string {
+	if e == nil || node == nil {
+		return nil
+	}
+	// Seeded with the node's own route, so a `fallbacks:` entry that names it
+	// to vary a credential is recognised as the node's route and not as one
+	// more for a caller to read.
+	seen := map[string]bool{e.resolveBackendName(node): true}
+	var out []string
+	for _, el := range e.resolveChain(node) {
+		// A legacy `provider:` element never varies Backend (chainElement's
+		// own note), so what is left here is the `fallbacks:` block's.
+		if el.Skip || el.Backend == "" || seen[el.Backend] {
+			continue
+		}
+		seen[el.Backend] = true
+		out = append(out, el.Backend)
+	}
+	return out
+}
+
 // fallbackWhenActive evaluates a route's optional `when:` gate against the
 // run's vars. The compiler guarantees the expr parses and reads only
 // vars.* (C173), so a runtime failure here is exceptional; it deactivates
@@ -204,6 +257,22 @@ func (e *ClawExecutor) fallbackWhenActive(nodeID string, fb ir.Fallback) bool {
 			nodeID, fb.Name, fb.When, err)
 	}
 	return false
+}
+
+// ResolveRoutingField is the reading dispatch takes of a routing field — a
+// node's `backend:`, a route's, the workflow default — against this executor's
+// vars and environment (resolveRoutingField).
+//
+// It exists for a caller that owes a pre-run answer per FIELD where
+// resolveChain answers per chain. pkg/dryrun does: on a launch its program does
+// not fully specify it keeps the author's spelling of a TEMPLATED field, the
+// one part of it that launch decides, and owes the program's own reading of
+// every other spelling — and a second copy of that reading is the drift the
+// seams above exist to remove. The answer is taken against the vars a caller
+// handed THIS executor (SetVars), so it is the answer its chain would be built
+// from.
+func (e *ClawExecutor) ResolveRoutingField(raw string) string {
+	return e.resolveRoutingField(raw)
 }
 
 // lookupPath walks a dotted path into a nested map, returning nil when any

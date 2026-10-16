@@ -510,7 +510,7 @@ func TestAnExecutorThatCannotAnswerTheSeamIsRefusedAParallelFanOutByName(t *test
 						t.Fatalf("err = %v, want the typed workspace-safety refusal a node declaring a write tool gets", err)
 					}
 					for _, id := range []string{"a", "b"} {
-						want := `node "` + id + `" counts as writing because executor ` + ex.typ + " does not implement " + ex.missing + ", so " + ex.unread + " — implement or forward EffectiveToolNames and EffectiveBackendName on the executor, or mark the node `readonly:`"
+						want := `node "` + id + `" counts as writing because executor ` + ex.typ + " does not implement " + ex.missing + ", so " + ex.unread + " — implement or forward the three seams admission reads (EffectiveToolNames, EffectiveBackendName, EffectiveFallbackBackends) on the executor, or mark the node `readonly:`"
 						if !strings.Contains(rerr.Message, want) {
 							t.Errorf("the refusal does not say why branch %q counts, nor what to implement:\n got: %s\nwant: …%s…", id, rerr.Message, want)
 						}
@@ -710,25 +710,24 @@ func TestARefusalBlamesTheExecutorOnlyWhenItsSilenceDecided(t *testing.T) {
 	})
 }
 
-// forwardsBothSeams is a wrapper that follows the refusal's remedy to the
-// letter: it forwards the two methods admission reads, and nothing else.
-type forwardsBothSeams struct {
-	NodeExecutor
-	inner *model.ClawExecutor
+// forwardsEverySeamTheRemedyNames is a wrapper that follows the refusal's
+// remedy to the letter: it forwards the three methods admission reads, and
+// nothing else. The two-seam shape — the one an embedder's wrapper has the day
+// a third seam lands — is forwardsTheTwoOlderSeams, which keeps the
+// pessimistic reading of a node's routes.
+type forwardsEverySeamTheRemedyNames struct {
+	forwardsTheTwoOlderSeams
 }
 
-func (f forwardsBothSeams) EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool) []string {
-	return f.inner.EffectiveToolNames(node, mayEscalateToUltracode)
-}
-
-func (f forwardsBothSeams) EffectiveBackendName(node ir.Node) string {
-	return f.inner.EffectiveBackendName(node)
+func (f forwardsEverySeamTheRemedyNames) EffectiveFallbackBackends(node ir.Node) []string {
+	return f.inner.EffectiveFallbackBackends(node)
 }
 
 // The refusal's remedy, followed to the letter, gives back the production
 // verdict — including where a launch override routes a node elsewhere than its
 // IR backend, which admission reads through EffectiveBackendName, not through
-// the tool seam.
+// the tool seam, and on a node carrying a `fallbacks:` route this run's vars
+// resolve, which it reads through neither.
 func TestFollowingTheRefusalsRemedyGivesBackTheProductionVerdict(t *testing.T) {
 	pinTheHostsAutoMemoryMode(t)
 	toClaudeCode, err := model.ParseModelOverrides(nil, []string{"claude_code"}, nil)
@@ -743,18 +742,36 @@ func TestFollowingTheRefusalsRemedyGivesBackTheProductionVerdict(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name string
+		wf   func() *ir.Workflow
+		vars map[string]any
 		opts []model.ClawExecutorOption
 	}{
-		{"no launch override", nil},
-		{"a launch override routing every node to claude_code", []model.ClawExecutorOption{model.WithModelOverrides(toClaudeCode)}},
+		{name: "no launch override", wf: func() *ir.Workflow { return twoReaderBranches() }},
+		{
+			name: "a launch override routing every node to claude_code",
+			wf:   func() *ir.Workflow { return twoReaderBranches() },
+			opts: []model.ClawExecutorOption{model.WithModelOverrides(toClaudeCode)},
+		},
+		{
+			name: "a `fallbacks:` route this run's vars resolve onto claw",
+			wf:   func() *ir.Workflow { return twoFallbackRouteBranches("claw", "{{vars.fb}}", "") },
+			vars: map[string]any{"fb": "claw"},
+		},
+		{
+			name: "a `fallbacks:` route this run's vars resolve off claw",
+			wf:   func() *ir.Workflow { return twoFallbackRouteBranches("claw", "{{vars.fb}}", "") },
+			vars: map[string]any{"fb": "claude_code"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			wf := twoReaderBranches()
+			wf := tc.wf()
 			production := model.NewClawExecutor(model.NewRegistry(), wf, tc.opts...)
+			production.SetVars(tc.vars)
 			want := verdict((&Engine{workflow: wf, executor: production}).validateWorkspaceSafety("fan", wf.Edges))
-			got := verdict((&Engine{workflow: wf, executor: forwardsBothSeams{production, production}}).validateWorkspaceSafety("fan", wf.Edges))
+			wrapper := forwardsEverySeamTheRemedyNames{forwardsTheTwoOlderSeams{production, production}}
+			got := verdict((&Engine{workflow: wf, executor: wrapper}).validateWorkspaceSafety("fan", wf.Edges))
 			if got != want {
-				t.Errorf("a wrapper forwarding both methods the refusal names reads differently from the executor it wraps:\n wrapper:    %s\n production: %s", got, want)
+				t.Errorf("a wrapper forwarding every method the refusal names reads differently from the executor it wraps:\n wrapper:    %s\n production: %s", got, want)
 			}
 		})
 	}
@@ -844,8 +861,8 @@ func TestAnUnreadTemplateBackendIsTheExecutorsSilenceNotTheBranchsOwnAccount(t *
 	if err := (&Engine{workflow: wf, executor: production}).validateWorkspaceSafety("fan", wf.Edges); err != nil {
 		t.Fatalf("precondition: the production executor resolves {{vars.b}} to claw and admits two reader branches: %v", err)
 	}
-	if err := (&Engine{workflow: wf, executor: forwardsBothSeams{production, production}}).validateWorkspaceSafety("fan", wf.Edges); err != nil {
-		t.Fatalf("precondition: a wrapper forwarding both methods gives back the production verdict: %v", err)
+	if err := (&Engine{workflow: wf, executor: forwardsEverySeamTheRemedyNames{forwardsTheTwoOlderSeams{production, production}}}).validateWorkspaceSafety("fan", wf.Edges); err != nil {
+		t.Fatalf("precondition: a wrapper forwarding every seam the remedy names gives back the production verdict: %v", err)
 	}
 	for _, silent := range []struct {
 		name     string
@@ -884,8 +901,15 @@ func TestTheSeamWarningIsLoggedAtAdmissionNotAtTheSandboxsQuestion(t *testing.T)
 	if err := e.validateWorkspaceSafety("fan", wf.Edges); err == nil {
 		t.Fatal("precondition: the fan-out is refused")
 	}
-	if got := strings.Count(buf.String(), "does not implement"); got != 1 {
-		t.Errorf("admission warned %d times, want once: %q", got, buf.String())
+	// One line per thing an operator can act on, and each once per ENGINE —
+	// never once per node or per branch, which is what admission asks for.
+	for _, line := range []string{
+		"does not implement runtime.EffectiveToolSurfaceResolver or runtime.EffectiveBackendResolver",
+		"does not implement runtime.EffectiveFallbackResolver",
+	} {
+		if got := strings.Count(buf.String(), line); got != 1 {
+			t.Errorf("admission warned %d times about %q, want once: %q", got, line, buf.String())
+		}
 	}
 }
 
@@ -905,8 +929,8 @@ func TestARouteTheIRNamesIsTheExecutorsToAnswer(t *testing.T) {
 	if err := (&Engine{workflow: wf, executor: production}).validateWorkspaceSafety("fan", wf.Edges); err != nil {
 		t.Fatalf("precondition: the production executor routes both claude_code readers onto claw and admits them: %v", err)
 	}
-	if err := (&Engine{workflow: wf, executor: forwardsBothSeams{production, production}}).validateWorkspaceSafety("fan", wf.Edges); err != nil {
-		t.Fatalf("precondition: forwarding both methods gives back the production verdict: %v", err)
+	if err := (&Engine{workflow: wf, executor: forwardsEverySeamTheRemedyNames{forwardsTheTwoOlderSeams{production, production}}}).validateWorkspaceSafety("fan", wf.Edges); err != nil {
+		t.Fatalf("precondition: forwarding every seam the remedy names gives back the production verdict: %v", err)
 	}
 	err = (&Engine{workflow: wf, executor: forwardsToolsOnly{production, production}}).validateWorkspaceSafety("fan", wf.Edges)
 	if err == nil {
@@ -967,19 +991,29 @@ func TestTheOwnAccountIsReadOnEveryRouteADeclarationBounds(t *testing.T) {
 // A route still spelled as a template when the reason is written was read
 // pessimistically BECAUSE nothing resolved it, so the reason never names it as
 // a backend — for a primary route an executor left unresolved, and for a
-// fallback, which no executor resolves before the run.
+// fallback the run's vars leave as written. Where the run DOES resolve a
+// fallback route, the reason names what it resolved to: the route the chain
+// takes, never the spelling it was written as.
 func TestAReasonNeverNamesATemplateAsABackend(t *testing.T) {
 	pinTheHostsAutoMemoryMode(t)
 	t.Run("a templated fallback", func(t *testing.T) {
 		wf := twoReaderBranches(func(n *ir.AgentNode) { n.Fallbacks = []ir.Fallback{{Name: "alt", Backend: "{{vars.fb}}"}} })
 		production := model.NewClawExecutor(model.NewRegistry(), wf)
-		production.SetVars(map[string]any{"fb": "claw"})
 		err := (&Engine{workflow: wf, executor: production}).validateWorkspaceSafety("fan", wf.Edges)
 		if err == nil {
-			t.Fatal("precondition: a fallback left to a template is read pessimistically and refused")
+			t.Fatal("precondition: a fallback route this run's vars do not answer is read pessimistically and refused")
 		}
 		if strings.Contains(err.Error(), "falls back to {{") {
 			t.Errorf("the reason names a template as the backend the node falls back to: %s", err.Error())
+		}
+		resolved := model.NewClawExecutor(model.NewRegistry(), wf)
+		resolved.SetVars(map[string]any{"fb": "claude_code"})
+		rerr := (&Engine{workflow: wf, executor: resolved}).validateWorkspaceSafety("fan", wf.Edges)
+		if rerr == nil {
+			t.Fatal("precondition: a route this run resolves onto claude_code is refused")
+		}
+		if !strings.Contains(rerr.Error(), "claude_code") || strings.Contains(rerr.Error(), "{{vars.fb}}") {
+			t.Errorf("the reason must name the route the run resolves, not the spelling it was written as: %s", rerr.Error())
 		}
 	})
 	t.Run("a templated primary an executor answers with nothing", func(t *testing.T) {

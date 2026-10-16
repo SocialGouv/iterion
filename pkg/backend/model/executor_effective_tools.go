@@ -34,6 +34,31 @@ import (
 // A nil/empty answer means "nothing to add" — the caller then reads the
 // declared list, which is what it did before this seam existed.
 func (e *ClawExecutor) EffectiveToolNames(node ir.Node, mayEscalateToUltracode bool) []string {
+	// Answered before the routes are resolved: resolving them reads the node
+	// (its id and kind, for a launch override), so the documented nil arm has
+	// to be the first thing either method does.
+	if e == nil || node == nil {
+		return nil
+	}
+	return e.EffectiveToolNamesOnRoutes(node, mayEscalateToUltracode, e.routeBackends(node))
+}
+
+// EffectiveToolNamesOnRoutes is EffectiveToolNames over a route list its CALLER
+// resolved — the appends, and the union over routes, taken here exactly as the
+// method above takes them.
+//
+// It exists for one caller: a reading that answers the engine's fallback seam
+// itself must not have the appends taken over a SECOND reading of the node's
+// routes. pkg/dryrun does — it answers a route the dry run's own program
+// resolves, and the author's spelling for one that would rest on a value it
+// invented — and a dry run that let this method resolve the routes again
+// reported a fan-out clean on the surface of routes its own admission counted
+// (`validate --exec` clean, `iterion run` refused at the router).
+//
+// A nil answer where the node is not an LLM node, and the empty list where the
+// caller resolved no route, are the answers of the method above, for the same
+// reason: "nothing to add", read by the caller as the declared list.
+func (e *ClawExecutor) EffectiveToolNamesOnRoutes(node ir.Node, mayEscalateToUltracode bool, routes []string) []string {
 	if e == nil || node == nil {
 		return nil
 	}
@@ -68,7 +93,7 @@ func (e *ClawExecutor) EffectiveToolNames(node ir.Node, mayEscalateToUltracode b
 			out = append(out, name)
 		}
 	}
-	for _, backend := range e.routeBackends(node) {
+	for _, backend := range routes {
 		for _, ultra := range efforts {
 			for _, name := range e.assembleEffectiveTools(f, backend, caps, ultra) {
 				add(name)
@@ -79,18 +104,21 @@ func (e *ClawExecutor) EffectiveToolNames(node ir.Node, mayEscalateToUltracode b
 }
 
 // routeBackends lists every backend a node may run on: the resolved primary,
-// plus each `fallbacks:` element that names one of its own. An element with an
-// empty Backend inherits the primary and adds nothing.
+// plus the `fallbacks:` routes EffectiveFallbackBackends resolves — one
+// reading of the chain for this question and for admission's, so neither can
+// drift from what dispatch walks.
+//
+// That holds for THIS executor's readings. A caller whose own answer to the
+// fallback seam is not this one — pkg/dryrun's, which keeps the author's
+// spelling for a route resting on a value it invented — owes the union the
+// routes it answers, through EffectiveToolNamesOnRoutes.
 func (e *ClawExecutor) routeBackends(node ir.Node) []string {
 	primary := e.resolveBackendName(node)
 	out := []string{primary}
-	seen := map[string]bool{primary: true}
-	for _, el := range e.resolveChain(node) {
-		if el.Backend == "" || seen[el.Backend] {
-			continue
+	for _, route := range e.EffectiveFallbackBackends(node) {
+		if route != primary {
+			out = append(out, route)
 		}
-		seen[el.Backend] = true
-		out = append(out, el.Backend)
 	}
 	return out
 }

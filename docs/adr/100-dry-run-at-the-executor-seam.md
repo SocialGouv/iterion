@@ -78,6 +78,21 @@ syntax check must hold text to the interpreter that will read it (F13).
   image; a connector action is not executed; a `language:` without a checker
   is said unchecked. Separating syntax from binaries from arguments (F13) is
   what makes the first honest.
+- **A fan-out's admission, where the launch is not fully specified.** The
+  engine's parallel-branch guard asks the executor where each node runs, and
+  the dry run answers it from the program's values and the caller's `--var`.
+  A var the program declares with neither has no value before the launch, so
+  a routing field that launch could still move — a templated `backend:`, a
+  `when:` gate on a `fallbacks:` route — is read as its author wrote it: the
+  pessimistic side, which refuses rather than admits. The refusal names those
+  vars and the `--var` that decides them; supply them and the dry run answers
+  what the run answers. A child a `subbot` hands work to is launched by its
+  `with:` mappings, not the parent's `--var`: the dry run reads that hand-off
+  as far as the compiled program states it — a literal verbatim, a lone
+  `{{vars.x}}` reference as the parent's value of x — and every other mapping
+  leaves the child's var undecided, so the same pessimistic side stands there.
+  Which vars a field READS decides nothing — the dry run
+  parses no expression shape to admit a fan-out (#1778).
 - **The registry.** A `bot://` child is not simulated; its output is a shape,
   said as such.
 - **Unbounded loops.** Their fuel is their ceiling; C098 names the missing

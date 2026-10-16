@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -100,5 +101,53 @@ func TestBothSeamsOfADryRunReadTheSameVars(t *testing.T) {
 	}
 	if got := x.EffectiveToolNames(node, false); !slices.Contains(got, "write_file") {
 		t.Errorf("the tool seam answered %v for a claw node with `auto_memory: on` — it did not read the vars the backend seam read", got)
+	}
+}
+
+// The fallback-route seam, asked of a dry run, answers from the same program
+// and the same vars: a route spelled `{{vars.fb}}` is the backend THIS dry run
+// resolves, and a route whose `when:` gate those vars leave false is not in
+// the answer at all — so `validate --exec` reads a node's chain the way the
+// run it simulates will walk it. An executor that cannot answer leaves the
+// parallel-branch guard reading those routes from the IR, where a template
+// bounds nothing: the dry run would refuse a fan-out the run admits.
+func TestTheDryRunResolvesFallbackRoutesFromItsVars(t *testing.T) {
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "a"},
+		LLMFields: ir.LLMFields{Backend: "claw"},
+		Tools:     []string{"read_file"},
+		Fallbacks: []ir.Fallback{
+			{Name: "alt", Backend: "{{vars.fb}}", Model: "anthropic/claude-haiku-4-5"},
+			{Name: "rescue", Backend: "codex", Model: "openai/gpt-5.5", When: "vars.rescue == 'on'"},
+		},
+	}
+	x := &Executor{wf: &ir.Workflow{Nodes: map[string]ir.Node{"a": node}}}
+	x.SetVars(map[string]any{"fb": "claude_code", "rescue": "off"})
+	got := x.EffectiveFallbackBackends(node)
+	if !slices.Contains(got, "claude_code") {
+		t.Errorf("a dry run reports %v for a chain whose first route this run's vars resolve to claude_code — admission would read the template as a route nothing bounds and refuse a fan-out the run judges on claude_code", got)
+	}
+	if slices.Contains(got, "codex") {
+		t.Errorf("a route this dry run's vars gate off is in its answer: %v — the chain the run walks does not contain it", got)
+	}
+	// …and the gate is read, not assumed: the same chain with the var on
+	// carries the route.
+	x.SetVars(map[string]any{"rescue": "on"})
+	if got := x.EffectiveFallbackBackends(node); !slices.Contains(got, "codex") {
+		t.Errorf("with rescue=on the dry run still drops the gated route: %v", got)
+	}
+}
+
+// The tool surface's documented nil arm — "nothing to add", read by the caller
+// as the declared list — survives being answered over a ROUTE LIST: resolving
+// one reads the node, so a reading that resolved the routes first would turn
+// the arm into a panic inside a safety guard.
+func TestTheToolSurfaceSeamAnswersNothingForNoNode(t *testing.T) {
+	x := &Executor{wf: &ir.Workflow{}}
+	if got := x.EffectiveToolNames(nil, false); got != nil {
+		t.Errorf("EffectiveToolNames(nil) = %v, want nil", got)
+	}
+	if got := model.NewProgramExecutor(nil).EffectiveToolNames(nil, true); got != nil {
+		t.Errorf("the program executor's own nil arm answers %v, want nil", got)
 	}
 }

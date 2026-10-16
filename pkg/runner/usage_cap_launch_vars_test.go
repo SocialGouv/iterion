@@ -659,6 +659,11 @@ func TestARunsLaunchInputsAreWrittenOnlyFromTheLaunchMap(t *testing.T) {
 		// A contract's declared input PORTS (ast.Contract.Inputs), the other
 		// field of that name in this tree.
 		"pkg/dsl/parser/parser_contract.go": "p.parseContractPorts()",
+		// The dry run's simulated CHILD launch: derived from the parent's
+		// `with:` hand-off and what the parent was given, and carried on
+		// dryrun.Options — persisted nowhere, and never the run document's
+		// launch map (#1778).
+		"pkg/dryrun/run.go": "subbotLaunch(wf, node, opts.Inputs)",
 	}
 	// The types whose `Inputs` is not a run's launch values, with what it is.
 	// A composite literal of any OTHER type keyed `Inputs` is read as the run

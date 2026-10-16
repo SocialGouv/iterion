@@ -404,6 +404,7 @@ func runPass(ctx context.Context, wf *ir.Workflow, opts Options, shell ShellChec
 		x.simulate = func(ctx context.Context, child *ir.Workflow, path, node string) (Pass, *Executor, error) {
 			childOpts := opts
 			childOpts.Path = path
+			childOpts.Inputs = subbotLaunch(wf, node, opts.Inputs)
 			childOpts.Fixtures = childFixtures(opts.Fixtures, node)
 			return runPass(ctx, child, childOpts, shell, timeout, bias, depth+1)
 		}
@@ -624,6 +625,66 @@ func launchInputs(wf *ir.Workflow, given map[string]any, bias bool) map[string]a
 		}
 	}
 	return inputs
+}
+
+// subbotLaunch is the launch a subbot node hands its child, as far as the
+// compiled IR states it — the reading runtime.runSubbotNode executes: a child
+// receives its `with:` mappings plus the `_lease_<resource>` instance ids its
+// `needs:` leases hand it while the parent runs, and never the parent's own
+// inputs. The hand-off states the mappings and leaves the lease ids undecided,
+// the same deliberate cost as any mapping decided while the parent runs.
+//
+//   - a mapping the compiler parsed to no reference is a literal, the same on
+//     every launch, and is handed over verbatim;
+//   - a mapping that is exactly one `{{vars.x}}` reference is the parent's
+//     value of x — the launch's value when it supplied one, else the default
+//     the author wrote; a literal default is the value the parent's own seams
+//     read, an env form is handed as written and expanded at the child's
+//     launch, the same value through a different reading;
+//   - every other mapping is decided while the parent runs (an interpolation,
+//     a producer's output), so no value this dry run could hand the child is
+//     one a run would hold, and the mapping is handed over empty: the child's
+//     var stays what nothing before its launch decided, and the pessimistic
+//     reading stands at the child as it does at a top-level launch that
+//     supplied no value.
+func subbotLaunch(wf *ir.Workflow, node string, given map[string]any) map[string]any {
+	sn, ok := wf.Nodes[node].(*ir.SubbotNode)
+	if !ok {
+		return nil
+	}
+	var inputs map[string]any
+	for _, dm := range sn.With {
+		if v, ok := subbotMappingValue(wf, dm, given); ok {
+			if inputs == nil {
+				inputs = map[string]any{}
+			}
+			inputs[dm.Key] = v
+		}
+	}
+	return inputs
+}
+
+// subbotMappingValue is what one `with:` mapping hands the child, where the
+// compiled IR states it. The two stated shapes are read off the mapping's own
+// fields, and a reference whose recorded spelling does not fill the whole
+// mapping falls with every other template on the undecided side — no template
+// is re-parsed here, and a hand-built IR that leaves a reference's spelling
+// empty states nothing either.
+func subbotMappingValue(wf *ir.Workflow, dm *ir.DataMapping, given map[string]any) (any, bool) {
+	switch {
+	case len(dm.Refs) == 0:
+		return dm.Raw, true
+	case len(dm.Refs) == 1 && dm.Refs[0].Kind == ir.RefVars && len(dm.Refs[0].Path) == 1 && dm.Refs[0].Raw == dm.Raw:
+		name := dm.Refs[0].Path[0]
+		if v, ok := given[name]; ok {
+			return v, true
+		}
+		if v := wf.Vars[name]; v != nil && v.HasDefault {
+			return v.Default, true
+		}
+		return nil, false
+	}
+	return nil, false
 }
 
 // loopCrossings resolves the operator's crossing bound: unset is
