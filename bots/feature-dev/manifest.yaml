@@ -1,7 +1,14 @@
 name: feature-dev
 display_name: Featurly
 icon: 🛠️
-version: 2.7.4
+version: 2.7.5
+## 2.7.5 — plan_revise renders the plan's stated risks beside its
+## assumptions: the node inherits no session, so its prompt is the only
+## channel that carries the plan it revises. The page now names the plan
+## reviewer this bundle ships (Kimi), not the gpt pair its siblings
+## declare, and says that `plan_review: auto` counts the claude/gpt pair
+## instead — so `plan_review: on` is how a claude + kimi host gets that
+## review.
 ## 2.7.4 — the supervisor reads the agent's activity as data: its policy carries the
 ## UNTRUSTED INPUT BOUNDARY paragraph, as every acting prompt of a shipped workflow does (#1722)
 ## 2.7.3 — every body it posts on a forge ends with the run that wrote it:

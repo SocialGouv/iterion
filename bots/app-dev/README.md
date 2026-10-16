@@ -114,12 +114,12 @@ straight to the campaign — plan in stride). `plan_review: auto` resolves
 at launch from the run's credentials and gates ONLY the peer review: when
 a SECOND model family is available, the plan is critiqued by a
 cross-family peer (`claw` + `openai/gpt-6-astra` by default) and revised
-by the SAME author session before the campaign builds; otherwise the
-campaign receives the author's plan stamped as unreviewed
-(`plan_provenance`). `plan_review_policy` picks the mid-run
-peer-unavailability behaviour: `skip` (default — the reviewer's
-`action: skip` route: continue unreviewed, loudly stamped) or `wait` (the
-run parks failed_resumable, the usage-window retry resumes it).
+by the AUTHOR before the campaign builds; otherwise the campaign receives
+the author's plan stamped as unreviewed (`plan_provenance`).
+`plan_review_policy` picks the mid-run peer-unavailability behaviour:
+`skip` (default — the reviewer's `action: skip` route: continue
+unreviewed, loudly stamped) or `wait` (the run parks failed_resumable,
+the usage-window retry resumes it).
 
 No workspace precondition here, unlike the other campaign bots: a
 greenfield run starts from an EMPTY directory and `git init`s from

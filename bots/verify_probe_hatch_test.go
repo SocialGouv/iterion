@@ -1024,18 +1024,7 @@ var refutedReuseClaims = []string{
 // copy-paste across this class once already, so the guard is over the class and
 // not over the file that carried it.
 func TestNoPageClaimsEveryEmptyGateIsRefused(t *testing.T) {
-	var pages []string
-	for _, pattern := range []string{"*/README.md", "*/skills/*.md", "*/main.bot", "*/lib/*.bot"} {
-		matched, err := filepath.Glob(pattern)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(matched) == 0 {
-			t.Fatalf("pattern %q matched nothing — the glob is stale", pattern)
-		}
-		pages = append(pages, matched...)
-	}
-	pages = append(pages, filepath.Join("..", "docs", "improvement-ratchet.md"))
+	pages := append(pagesAReaderAndAModelRead(t), filepath.Join("..", "docs", "improvement-ratchet.md"))
 	for _, page := range pages {
 		body, err := os.ReadFile(page)
 		if err != nil {
@@ -1050,10 +1039,6 @@ func TestNoPageClaimsEveryEmptyGateIsRefused(t *testing.T) {
 					page, claim)
 			}
 		}
-	}
-	// A floor, because a scanner that reads nothing passes everything.
-	if len(pages) < 200 {
-		t.Fatalf("scanned %d pages, want >= 200 — the globs no longer cover the class", len(pages))
 	}
 }
 

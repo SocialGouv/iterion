@@ -425,9 +425,13 @@ workflow feature_dev:
 
   plan_review -> plan_gate
 
-  ## Peer served → the plan AUTHOR (same session) challenges the
-  ## critique and integrates what holds; skipped (policy skip + peer
-  ## unavailable) → the unreviewed plan proceeds, loudly.
+  ## Peer served → the plan AUTHOR challenges the critique and
+  ## integrates what holds; skipped (policy skip + peer unavailable) →
+  ## the unreviewed plan proceeds, loudly. `_session_id` and
+  ## `_session_fingerprint` ride this edge inert: plan_revise declares
+  ## no session — C176 refuses one beside its backend-changing Kimi
+  ## fallback — and applySessionContinuity reads the two keys only
+  ## under inherit / inherit_if_available / fork / persist.
   plan_gate -> plan_revise when not skipped with {
     plan: "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",

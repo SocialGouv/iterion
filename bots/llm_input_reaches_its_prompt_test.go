@@ -85,41 +85,20 @@ import (
 // triaged since: per "<bot>/<node>" (or "<bot>/<workflow>/<node>" outside
 // main.bot), the input fields no channel of that node consumes.
 //
-// Triage is per site, and a field is not necessarily a missing render. Three
-// shapes are left here.
-//
-// A value the node would have seen in an INHERITED session, on a backend that
-// keeps one (`plan_revise`, six of the seven bots): make it explicit, because
-// `inherit_if_available` is by its own name the admission that the session may
-// not survive.
-//
-// A value on no screen and in no session: feature-dev's `plan_revise` declares
-// no `session:` at all — deliberately fresh, its Kimi fallback having no
-// cross-backend handoff — so `risks` was on no route, while the node's own
-// comment reads "its structured input contains all plan/review context needed
-// by either route". The #1598 shape verbatim, and the one remedy here is to
-// render it.
-//
-// And graph state a node is mapped and told not to echo (copilot). On `copi`
-// the field cannot simply be removed: `turn_input` is also `seed`'s output and
-// `turn_state`'s input AND output, so a drop raises C034 on the node that
-// reads it and C031 on every edge that maps it — `turn_state` needs its own
-// input schema first. `reflect` carries no such prerequisite: `reflect_in` is
-// its own input schema and no node outputs it, so `clarification_count` waits
-// on the copilot decision alone.
+// Triage is per site, and a field is not necessarily a missing render. One
+// shape is left: graph state a node is mapped and told not to echo (copilot).
+// On `copi` the field cannot simply be removed: `turn_input` is also `seed`'s
+// output and `turn_state`'s input AND output, so a drop raises C034 on the
+// node that reads it and C031 on every edge that maps it — `turn_state` needs
+// its own input schema first. `reflect` carries no such prerequisite:
+// `reflect_in` is its own input schema and no node outputs it, so
+// `clarification_count` waits on the copilot decision alone.
 //
 // The remedy per shape, and the preconditions each one carries, are in
 // docs/agents/bots/input-reaches-the-model.md.
 var unrenderedBaseline = map[string][]string{
-	"app-dev/plan_revise":             {"assumptions", "risks"},
-	"branch-improve-loop/plan_revise": {"assumptions", "risks"},
-	"copilot/copi":                    {"mode", "session_id", "session_fingerprint", "manager_scope_exclusions", "scope_guard_attempt", "actionless_clarification_count", "actionless_clarification_key"},
-	"copilot/reflect":                 {"clarification_count"},
-	"e2e-coverage/plan_revise":        {"assumptions", "risks"},
-	"feature-dev/plan_revise":         {"risks"},
-	"feature-gap-fill/plan_revise":    {"assumptions", "risks"},
-	"test-coverage/plan_revise":       {"assumptions", "risks"},
-	"whole-improve-loop/plan_revise":  {"assumptions", "risks"},
+	"copilot/copi":    {"mode", "session_id", "session_fingerprint", "manager_scope_exclusions", "scope_guard_attempt", "actionless_clarification_count", "actionless_clarification_key"},
+	"copilot/reflect": {"clarification_count"},
 }
 
 // imagesReachModel reports whether a node's `images:` entries are delivered to

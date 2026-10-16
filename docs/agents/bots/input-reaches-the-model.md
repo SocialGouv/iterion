@@ -24,8 +24,9 @@ holds the remaining debt as a two-sided ratchet.
 | already on screen under another reference (`{{vars.x}}`, `{{outputs.p.x}}`) | **drop** the field from the input schema AND every `with` mapping of it | the input schema is this node's **alone**: one that is also another node's `output:` cannot lose a field (C034 on the node that reads it, C031 on every edge that maps it — copilot's `turn_input`), so that node gets its own input schema first |
 | genuinely invisible | render `{{input.x}}` in the node's own prompt | the key **arrives on every route the node is entered by** — a declared field no edge maps never arrives, the schema seeds nothing |
 | per-turn, and the prompt reads `{{vars.x}}` | switch the prompt to `{{input.x}}` | **every** incoming edge maps the key |
+| carried only by an inherited session (`session: inherit_if_available`) | render `{{input.x}}` | the arrival condition of the invisible row — a session is not a second channel: a best-effort session whose backing state is gone degrades to fresh (`applySessionContinuity` marks it droppable, `pkg/backend/model/executor_retry.go` retries without it — lived on `branch-improve-loop/plan_revise`) |
 
-Both renders stand on the same fact: the input is built from the selected
+All three renders stand on the same fact: the input is built from the selected
 edges' `with` mappings (plus, on a loop re-entry, the forward edges the
 back-edge overlays), never from the schema. "Arrives on every route" is not
 "every edge maps it": a bounded back-edge that leaves a key alone lets the
@@ -33,6 +34,19 @@ forward edge's value survive, and the entry node's own floor answers a
 defaulted var with no edge at all. A value that changes per turn is the case
 where every route does owe the key — the third row. `drop` is the only remedy
 with no arrival condition at all — it needs the schema to be this node's alone.
+
+WHICH prompt the render goes in is part of the remedy when the value is
+another model's text. A node's `UNTRUSTED INPUT BOUNDARY` paragraph calls
+the system prompt authoritative, so a peer's critique rendered there
+arrives as mission however carefully the paragraph names the field as data
+— and the paragraph's own guards stop at its lines. Render it in the USER
+prompt; `TestPlanRevisePromptCarriesThePlanAndNamesItAsData` refuses, in
+the seven `plan_revise` system prompts, every value the run produced and
+not an input reference alone: the fields this same resolver sees rendered
+there, and every reference outside an allowlist of the operator's and the
+engine's namespaces (`vars`, `run`, `secrets`) — because the same critique
+is also `{{outputs.plan_review.concerns}}`, the name the `plan_gate` edge
+writes.
 
 The third row is the one that bites. `{{vars.x}}` is the launch value for the
 whole run; a loop-back edge that maps `x` to something fresher (the operator's
@@ -76,63 +90,7 @@ them.
 
 ## Two traps a drop leaves behind
 
-- **Prompt text that names the reference.** A line like "Stay inside
-  `input.workspace_dir`" is prose, not a template: the compiler says nothing,
-  the renderer leaves it alone, and after the drop it names a field the node no
-  longer carries. Reword it to the reference the prompt renders — or, where the
-  instruction needs a value nothing shows (secured-renovacy's `security_audit`
-  decided malware on a pin it was never handed), carry the field and render it.
-  `TestCatalogPromptProseNamesAnInputTheNodeShows` sweeps every catalogue
-  prompt — agent, judge, router and human surfaces — and asks what a channel
-  of that node SHOWS, read through the real renderer, not what its input
-  could hold: a field the ratchet baselines is carried and dead just the
-  same. A human node is judged per surface, because its two surfaces have
-  different readers and each gets the whole input beside its body — the
-  operator reads the instructions and the pause's inbound payload, the
-  stand-in model of an `llm` / `llm_or_human` gate reads the system prompt and
-  the whole input as its user message. Only a review gate's system prompt
-  keeps the strict reading: that companion is handed the change under review
-  instead (`TestAReviewCompanionReadsItsInputThroughItsSystemPromptAlone`).
-  No exemption list. It reads the `input.x` spelling; `vars.x` and
-  `outputs.p.x` in prose go dead the same way, and no guard holds that count
-  — a forked session can carry such a value, so the reading would have to
-  follow session edges.
-- **The schema that empties out.** A node whose input schema loses its last
-  field gets C140, "which has no field — the node's input will always be
-  empty". Delete the schema and the node's `input:` line instead. An edge left
-  with an empty `with { }` raises nothing at all, so remove that block by hand;
-  and `iterion fmt` is what settles the trailing comma a one-key block loses.
-
-A field a node's text reads but **no** incoming edge maps is the mirror
-defect: on every run that read delivers its surface's form of nothing (above).
-The compiler warns
-(C308) and `TestCatalogInputReadsAreMappedByAnIncomingEdge` holds it — the
-entry node aside, whose floor is the launch payload plus the vars that
-declare a DEFAULT, so a read of a defaulted var is answered there and a read
-of an undefaulted one the launch omits delivers that nothing like anywhere
-else (`pkg/runtime/engine_resolve.go`,
-`TestBuildNodeInput_EntryFloorSeedsOnlyDefaultedVars`). `ir.NodeInputKeys`
-answers what a node's input CAN hold, which on the entry node is an upper
-bound: every declared var, because a launch may supply any of them.
-
-Two texts read `input` against something else entirely, so neither C308 nor
-this guard speaks for them — and a `with` mapping there is dead plumbing:
-
-- a **fail `message:`** is rendered at fail time against the RUN's inputs,
-  the launch payload (`failOutcome` → `resolveMapping`): declare the value in
-  `vars:` and write `{{vars.x}}`, which the compiler checks. An
-  `{{input.x}}` there is C149's warning, the run-inputs class;
-- an **`interaction_prompt:`** is the stand-in model's system prompt when the
-  node's own delegate asks questions, and ITS input is the QUESTION map
-  (`ExecuteHumanLLMForInteraction`): `{{input.<question_key>}}` is the
-  spelling that renders there, and the keys exist only at run time, so the
-  compiler says nothing either way.
-
-A human node's `system:`/`model:` outside `interaction: llm`/`llm_or_human`/
-`review` — and its review-gate clauses outside `interaction: review` — are
-dropped by the compiler; that is C313, not a channel to render.
-
-Every guard named here is part of `task check`.
+They are [input-drop-traps.md](input-drop-traps.md).
 
 ## Proving one site
 
