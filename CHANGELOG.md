@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.267.0](https://github.com/SocialGouv/iterion/compare/v3.266.2...v3.267.0) (2026-10-16)
+
+### Features
+
+* **studio,forge:** pin a connection's webhook base and choose the merge-gate posture from the studio ([#2479](https://github.com/SocialGouv/iterion/issues/2479)) ([df0badc](https://github.com/SocialGouv/iterion/commit/df0badca232a90c4a401bd7eb11eda9148862089)), closes [#2445](https://github.com/SocialGouv/iterion/issues/2445), references [#2452](https://github.com/SocialGouv/iterion/issues/2452) [#2475](https://github.com/SocialGouv/iterion/issues/2475)
+
+    <details><summary>why</summary>
+
+    A team admin can now wire a repo of a self-managed forge that refuses the deployment's public host as a hook URL (the PIC GitLab answers 422 "Invalid url given") from the studio alone:
+
+    </details>
+
+### Bug Fixes
+
+* **claw:** the sandbox crossing bounds its wait, reports the runner's stderr and redacts the far side ([#2478](https://github.com/SocialGouv/iterion/issues/2478)) ([cb64806](https://github.com/SocialGouv/iterion/commit/cb6480656931dfd3af131803eb10d444632b0a37)), closes [#2385](https://github.com/SocialGouv/iterion/issues/2385), references [#2456](https://github.com/SocialGouv/iterion/issues/2456) [#2457](https://github.com/SocialGouv/iterion/issues/2457) [#1547](https://github.com/SocialGouv/iterion/issues/1547) [#1945](https://github.com/SocialGouv/iterion/issues/1945) [#2456](https://github.com/SocialGouv/iterion/issues/2456) [#2457](https://github.com/SocialGouv/iterion/issues/2457) [#2458](https://github.com/SocialGouv/iterion/issues/2458)
+
+    <details><summary>why</summary>
+
+    `executeViaSandboxRunner` had three defects on the launcher's side of the crossing. `cmd.Wait` waits for the goroutine copying the runner's stderr, and that copier ends only when EVERY holder of the pipe has closed it — a descendant the sandbox driver's command left behind is such a holder — so an early abort that kills the runner, and the final drain of a node whose result envelope the multiplexer had already read, could park forever with no bound of their own. The runner's stderr, the…
+
+    </details>
+* **runner,ir:** the usage-cap pre-flight walks the run's topology, not the whole graph's ([#2477](https://github.com/SocialGouv/iterion/issues/2477)) ([4afb380](https://github.com/SocialGouv/iterion/commit/4afb380605d3500a341f9f5f816a53ec82c8e133)), references [#1828](https://github.com/SocialGouv/iterion/issues/1828)
+
+    <details><summary>why</summary>
+
+    The pre-flight's two narrowing walks appended every edge of the workflow whatever its `when` said, so a capped route standing on a branch the run's own launch had already excluded parked the run. `review-pr` launched with `mono_family=gpt` takes `topology -> reviewer_gpt` and never the unconditional `topology -> reviewer_claude` beside it, yet an operator cap on a spent Anthropic window refused to start the run, for those claude reviewers.
+
+    </details>
+
 ## [3.266.2](https://github.com/SocialGouv/iterion/compare/v3.266.1...v3.266.2) (2026-10-15)
 
 ### Bug Fixes
