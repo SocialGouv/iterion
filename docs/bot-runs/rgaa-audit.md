@@ -9,6 +9,65 @@ The bilans below v3 are the v1/v2 single-agent auditor, kept as the record
 of why v3 exists. Earlier runs (pre-dedicated-file) are recorded in the
 2026-06 campaign bilans.
 
+## 2026-10-15 — 3.0.3: a retyped citation is folded with its anchor's text, and the studio ledger's one ungroundable citation is restored (#2453)
+
+- Status: **engine-proven, no run**. The node test drives a retyped citation through the real
+  merge, fold, draft and trial on the pinned engine and requires a whole trial. A
+  known-upstream-defect test pins the asymmetry the fix works around (SocialGouv/ultra11y#50).
+- The defect, found by r4: the fold grounds a snippet the adjudicator retyped through its
+  fallback to the evidence anchor, while the trial grounds the stored text as written. One of
+  the 515 citations of r2–r4 was retyped (1.3, a closing backtick), and it degraded r4's trial.
+- The fix: fold_final gives each citation of a conformity (the only ones the trial grounds) that
+  neither copies nor excerpts its anchor the snippet and selector of the anchor it stands on. When several anchors share the line (an
+  element and its child; a capture line holds up to 33), that is the one its transcription is
+  nearest to: fewest edits to an excerpt, then the selector it names, then the anchor it
+  starts. The engine then judges both versions on copies of the audit — the restored text also
+  posed as a recommendation, which the fold grounds literally as the trial does — and a
+  criterion keeps its restored citations only where it accepts both. So the fold's verdict is
+  always the one on the text as the agent wrote it, and only its storage changes.
+  - A recommendation takes the same anchor choice in the merge. Since 3.0.1 it took the anchor
+    it copied, else the first at its line; a retyped one now takes the nearest anchor, and a copy
+    or an excerpt of an anchor stays as written, with the agent's selector. A restored
+    recommendation is not probed: one whose anchor text does not ground still costs its verdict,
+    as it did before (the 30 anchored recommendations of r3–r4 were all copies of their anchor).
+  - The bot reads an agent's verdict as the engine does, trimmed and case-blind: a conformity
+    spelled `c` is folded and tried as C, so it is restored as one, and an uncited `na` is sent
+    back like `NA`.
+  - A finding stays as written. The trial reads a non-conformity from its report row (file,
+    line and selector, no snippet), and no agent finding of r2–r4 carried a selector (0 of
+    90). A finding may also quote an element the harvest did not anchor: in r3, two findings
+    of 3.2 anchored on a capture line quote one 88 edits from the nearest anchor.
+- How the adversarial review (six rounds) shaped it, each draft refuted by execution:
+  - rewriting every citation gave an exact copy another anchor's selector where anchors share
+    one snippet (`css:.sticky` became `css:.fixed` on r2's data). It also matched an excerpt
+    to every container its element sits in, and on a page in decomposed Unicode 5 of the
+    engine's own 36 anchors do not ground (a snippet cut between a letter and its accent).
+    Hence copies and excerpts stay as written;
+  - rewriting every other citation in the merge laundered fabrications: a snippet naming an
+    element that exists nowhere, cited at an anchor's line, became the anchor's text, and the
+    fold accepted what it refuses as written;
+  - gating that rewrite on a copy of the engine's recognition test still changed verdicts both
+    ways, because the fold applies the test to its own anchor (best overlap within ten lines),
+    not to the citation's line. Rather than mirror that too, the engine now judges both
+    versions. On the reviewer's four scenarios, the fold's verdict through the bot equals the
+    engine's on the text as written, and the trial grounds every restored citation. A node test
+    runs eight citations through the real fold, as written and through the bot, and requires the
+    same verdict on each;
+  - a fourth round found that both probes can accept a restored text that does not ground: on a
+    page in decomposed Unicode the anchor's own snippet is cut inside an accent, and the fold
+    still forgives it through another anchor. The trial then refused citations that grounded as
+    written. The restored probe now poses each restored text as a recommendation too.
+- The annex counts the citations restored and names their criteria (the fold row).
+- The committed ledger:
+  - grounded with the engine's own code against today's tree, all 306 source-anchored
+    citations and findings ground except 1.3's at `BackendsTab.tsx:104`. That snippet is now
+    its anchor's (the stray backtick removed);
+  - its 128 citations anchored on page captures are byte-exact copies of anchors r2–r4
+    harvested; grounding them needs a rendered run;
+  - a ledger can still hold a retyped citation, one written before 3.0.3 or one whose restore
+    the engine refused: the replay accepts it through the fold's fallback and every trial
+    refuses it, so such an entry is healed by hand.
+
 ## 2026-10-14 — r3 and r4: the first complete studio audit, its ledger replayed, its trial run (runs 01a13b95-2e46, 01a13bf2-0e79)
 
 - Status: **validated end to end, board publication not exercised** — r3 decided all 106

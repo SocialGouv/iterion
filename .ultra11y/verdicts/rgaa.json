@@ -223,7 +223,7 @@
     {
      "file": "studio/src/views/SettingsDialog/BackendsTab.tsx",
      "line": 104,
-     "snippet": "<span role=\"img\" aria-label={status.available ? \"available\" : \"unavailable\"} className={`mt-1 inline-block w-2 h-2 rounded-full shrink-0`"
+     "snippet": "<span role=\"img\" aria-label={status.available ? \"available\" : \"unavailable\"} className={`mt-1 inline-block w-2 h-2 rounded-full shrink-0"
     },
     {
      "file": "studio/src/components/Runs/conversation/BannerCard.tsx",

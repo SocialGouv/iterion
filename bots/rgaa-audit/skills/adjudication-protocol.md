@@ -63,7 +63,13 @@ it goes in `recommendations[]`, anchored like a citation (below).
 A citation is one of the anchors the engine harvested for THIS criterion:
 copy its `file`, `line` and `snippet` from the evidence file. The bot checks
 that every citation is among those anchors and sends the verdict back
-otherwise, before the engine ever sees it.
+otherwise, before the engine ever sees it. The second reader's trial grounds
+a conformity's citations as stored, with no fallback to the anchor: copy the
+snippet exactly (an excerpt of it is fine). Before the real fold the bot gives
+a conformity's retyped or missing snippet its anchor's own where the engine
+accepts both versions and the restored text grounds; any other snippet is
+folded as written, and one the engine neither finds in the source nor
+recognises as its anchor is refused.
 
 ## Recommendations
 
