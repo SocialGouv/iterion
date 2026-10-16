@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   createAssistantRunWatch: vi.fn(),
   getBot: vi.fn(),
   createBot: vi.fn(),
+  installBot: vi.fn(),
   createRun: vi.fn(),
   resetPipelineTask: vi.fn(),
   createWorkspaceHandoff: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock("@/api/assistantDependencies", () => ({
 vi.mock("@/api/bots", () => ({
   getBot: api.getBot,
   createBot: api.createBot,
+  installBot: api.installBot,
 }));
 vi.mock("@/api/dispatcher", () => ({}));
 vi.mock("@/api/pipelineBoards", () => ({
@@ -378,6 +380,47 @@ describe("assistant action request boundary", () => {
       slug: "expense-approval",
       instructions: "Route expense approval requests.",
     });
+  });
+
+  it("relays the stale catalog of a bot install the host just performed", async () => {
+    api.installBot.mockResolvedValue({
+      name: "willy",
+      source: "https://example.test/bots.git",
+      installed_path: "/host-owned/workspace/.botz/willy",
+      skills: 0,
+      presets: 0,
+      catalog_error:
+        "botregistry: read catalog template /ws/bots/nexie/iterion-bot-catalog-static.md: too many levels of symbolic links",
+    });
+    const validated = validateAssistantActionRequest(
+      request("bot.install", { url: "https://example.test/bots.git" }),
+    );
+
+    await expect(executeAssistantAction(validated)).resolves.toMatchObject({
+      message: expect.stringContaining("iterion bots regen-catalog"),
+    });
+  });
+
+  it("relays the stale catalog of a bot the host just created", async () => {
+    const cause =
+      "botregistry: read catalog template /ws/bots/nexie/iterion-bot-catalog-static.md: too many levels of symbolic links";
+    api.createBot.mockResolvedValue({
+      name: "expense-approval",
+      display_name: "Expense approval",
+      rel_path: "bots/expense-approval",
+      path: "/host-owned/workspace/bots/expense-approval",
+      catalog_error: cause,
+    });
+    const validated = validateAssistantActionRequest(
+      request("bot.create", {
+        slug: "expense-approval",
+        instructions: "Route expense approval requests.",
+      }),
+    );
+
+    const result = await executeAssistantAction(validated);
+    expect(result.message).toContain(cause);
+    expect(result.message).toContain("iterion bots regen-catalog");
   });
 
   it("commits only snapshot-bound declared authoring files and returns an exact host receipt", async () => {

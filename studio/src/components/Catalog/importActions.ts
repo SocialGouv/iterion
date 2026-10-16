@@ -7,6 +7,7 @@ import {
   uploadBotBundle,
   type InstallBotResult,
 } from "@/api/bots";
+import { catalogStaleSuffix } from "@/lib/catalogStale";
 
 export type { InstallBotResult };
 
@@ -35,7 +36,9 @@ export function importBotFromRepo(input: RepoImportInput): Promise<InstallBotRes
   });
 }
 
-/** importSuccessMessage renders the shared success toast copy. */
+/** importSuccessMessage renders the shared success toast copy — including
+ *  the bot-catalog refresh that failed after the import landed, the only
+ *  place the operator can learn their catalog went stale. */
 export function importSuccessMessage(res: InstallBotResult): string {
-  return `Imported ${res.name} (${res.presets} presets, ${res.skills} skills) → ${res.installed_path}`;
+  return `Imported ${res.name} (${res.presets} presets, ${res.skills} skills) → ${res.installed_path}${catalogStaleSuffix(res)}`;
 }

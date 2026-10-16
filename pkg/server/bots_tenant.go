@@ -25,6 +25,13 @@ type botEntryView struct {
 	// deployment-wide override (super-admin-pushed, managed via
 	// /api/admin/bots), "catalog" for a baked one.
 	Origin string `json:"origin"`
+	// CatalogError is the rendered cause of a catalog refresh that failed
+	// after this route's change landed. The rendered table holds one row
+	// per ENABLED bot, so a manifest save or visibility toggle whose
+	// refresh failed leaves the previous set routed until a regeneration
+	// succeeds — the answer to the gesture that made it stale is the one
+	// place the studio can learn that. Empty when the refresh succeeded.
+	CatalogError string `json:"catalog_error,omitempty"`
 }
 
 // mergedBotEntries returns the catalog bots overlaid with the deployment's

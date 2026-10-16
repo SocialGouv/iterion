@@ -11,6 +11,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { Button, Dialog, Input } from "@/components/ui";
 import { groupBotsByCategory } from "@/lib/botTaxonomy";
 import { botVisual } from "@/lib/personas";
+import { catalogToggleToast } from "@/lib/catalogStale";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
@@ -106,9 +107,15 @@ export function BotCatalogDialog({
     const label = b.display_name?.trim() || b.name;
     setBusy(b.name);
     try {
-      await setOverlay(b.name, next);
+      const updated = await setOverlay(b.name, next);
+      // `enabled` decides which rows the dispatcher's table holds, so the
+      // toast carries a refresh that failed — the state it confirms is not
+      // what the table routes on yet.
       addToast(
-        next ? `${label} enabled — exposed to Nexie` : `${label} disabled — hidden from Nexie`,
+        catalogToggleToast(
+          next ? `${label} enabled — exposed to Nexie` : `${label} disabled — hidden from Nexie`,
+          updated,
+        ),
         next ? "success" : "info",
       );
     } catch (e) {

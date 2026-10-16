@@ -139,6 +139,7 @@ var marketplaceInstallCmd = &cobra.Command{
 		p.KV("Path", res.Bot.InstalledPath)
 		p.KV("Installs", fmt.Sprintf("%d", res.Entry.Installs))
 		p.Blank()
+		cli.PrintCatalogWarning(p, res.Bot.CatalogError)
 		p.Line("  Inspect it, then launch:")
 		p.Line("    iterion run %s", res.Bot.InstalledPath)
 		return nil
@@ -152,15 +153,21 @@ var marketplaceUninstallCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		storeDir, _ := cmd.Flags().GetString("store-dir")
 		workdir, _ := cmd.Flags().GetString("workdir")
-		entry, err := cli.MarketplaceUninstall(cmd.Context(), cli.MarketplaceUninstallOptions{
+		res, err := cli.MarketplaceUninstall(cmd.Context(), cli.MarketplaceUninstallOptions{
 			StoreDir: storeDir, Slug: args[0], Workdir: workdir,
 		})
 		if err != nil {
 			return err
 		}
+		entry := res.Entry
 		p := newPrinter()
 		if p.Format == cli.OutputJSON {
-			p.JSON(map[string]any{"kind": marketplace.EffectiveKind(*entry), "entry": entry})
+			payload := map[string]any{"kind": marketplace.EffectiveKind(*entry), "entry": entry}
+			// Only on failure: a refreshed catalog adds nothing to the payload.
+			if res.CatalogError != "" {
+				payload["catalog_error"] = res.CatalogError
+			}
+			p.JSON(payload)
 			return nil
 		}
 		if marketplace.EffectiveKind(*entry) == marketplace.KindPlugin {
@@ -168,6 +175,7 @@ var marketplaceUninstallCmd = &cobra.Command{
 			return nil
 		}
 		p.Line("uninstalled bot %q from the workspace's .botz/", entry.Name)
+		cli.PrintCatalogWarning(p, res.CatalogError)
 		return nil
 	},
 }

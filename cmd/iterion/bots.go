@@ -184,6 +184,7 @@ sandboxing applies as usual). By default bots install under <workdir>/.botz/
 		p.KV("Skills", fmt.Sprintf("%d", res.Skills))
 		p.KV("Presets", fmt.Sprintf("%d", res.Presets))
 		p.Blank()
+		cli.PrintCatalogWarning(p, res.CatalogError)
 		p.Line("  Inspect it, then launch:")
 		p.Line("    iterion run %s", res.InstalledPath)
 		return nil
@@ -196,12 +197,24 @@ var botsSyncCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		workdir, _ := cmd.Flags().GetString("workdir")
+		// An aborted sync still returns what it materialized: those rows and
+		// their stale-catalog cause are owed to the operator before the
+		// error, which cobra prints.
 		results, err := cli.BotsSync(cmd.Context(), workdir)
-		if err != nil {
-			return err
-		}
 		p := newPrinter()
 		if p.Format == cli.OutputJSON {
+			// One document carries both, whatever the outcome: a second
+			// document after the first breaks every parser reading the
+			// stream, so an abort whose rows materialized leaves marked
+			// reported (the diagnosis is the document's "error" field). The
+			// success payload keeps its bare array.
+			if err != nil {
+				if len(results) == 0 {
+					return err
+				}
+				p.JSON(map[string]any{"results": results, "error": err.Error()})
+				return fmt.Errorf("%v: %w", err, cli.ErrReported)
+			}
 			p.JSON(results)
 			return nil
 		}
@@ -212,7 +225,13 @@ var botsSyncCmd = &cobra.Command{
 			}
 			p.Line("%s  %s  %s", state, result.Name, result.BundleSHA256)
 		}
-		return nil
+		// One workspace holds one catalog: every dependency that failed to
+		// refresh it failed the same way, so the warning is printed once per
+		// distinct cause, after the rows it applies to.
+		for _, cause := range cli.DistinctCatalogErrors(results) {
+			cli.PrintCatalogWarning(p, cause)
+		}
+		return err
 	},
 }
 
@@ -244,6 +263,7 @@ the materialized .botz copy. Local Git bundle changes must be committed unless
 		p.KV("Ref", result.Ref)
 		p.KV("SHA-256", result.BundleSHA256)
 		p.KV("Installed", result.InstalledPath)
+		cli.PrintCatalogWarning(p, result.CatalogError)
 		return nil
 	},
 }

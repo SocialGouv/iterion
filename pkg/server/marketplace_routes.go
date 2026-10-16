@@ -44,6 +44,16 @@ type marketplaceInstallResponse struct {
 	Entry   *marketplace.Entry `json:"entry"`
 }
 
+// marketplaceUninstallResponse is what the uninstall endpoint returns: the
+// (unchanged) registry entry, flattened so the body keeps the entry shape
+// the studio reads, plus the catalog refresh that failed after the bundle
+// was deleted — the removal succeeded, and the catalog keeps advertising
+// the bot until a regeneration does.
+type marketplaceUninstallResponse struct {
+	*marketplace.Entry
+	CatalogError string `json:"catalog_error,omitempty"`
+}
+
 // requireMarketplace short-circuits to 404 when the marketplace store
 // isn't wired. The HTTP error code matches the "endpoint not enabled"
 // convention used elsewhere in this server (cleaner than 503 for a
@@ -410,14 +420,15 @@ func (s *Server) handleMarketplaceUninstall(w http.ResponseWriter, r *http.Reque
 	}
 	// The bundle installs under its manifest name (entry.Name), not the
 	// registry slug — Remove deletes <workdir>/.botz/<name>.
-	if err := botinstall.Remove(r.Context(), botinstall.Options{
+	removed, err := botinstall.Remove(r.Context(), botinstall.Options{
 		Name:    entry.Name,
 		Workdir: s.cfg.WorkDir,
-	}); err != nil {
+	})
+	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: uninstall: %v", err)
 		return
 	}
-	s.writeJSONFor(w, r, entry)
+	s.writeJSONFor(w, r, marketplaceUninstallResponse{Entry: entry, CatalogError: removed.CatalogError})
 }
 
 // normalizeTags strips empty/whitespace entries and de-dups so the

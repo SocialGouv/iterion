@@ -264,8 +264,8 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: write manifest: %v", err)
 		return
 	}
-	s.regenCatalog(name, "update")
-	s.respondBot(w, r, name)
+	catalogError := s.regenCatalog(name, "update")
+	s.respondBot(w, r, name, catalogError)
 }
 
 // botOverlayRequest is the wire body for PUT /api/v1/bots/{name}/overlay.
@@ -308,10 +308,10 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: overlay: %v", err)
 		return
 	}
-	s.regenCatalog(name, "overlay")
+	catalogError := s.regenCatalog(name, "overlay")
 	// respondBot re-resolves the entry; an unknown name 404s here (after a
 	// harmless no-op overlay write — ResolveEnabled ignores unknown names).
-	s.respondBot(w, r, name)
+	s.respondBot(w, r, name, catalogError)
 }
 
 // findBot returns the schema-augmented entry for name (exact match), with
@@ -348,11 +348,14 @@ func (s *Server) refuseStoredBotEdit(w http.ResponseWriter, r *http.Request, nam
 // respondBot re-resolves name (post-mutation) and writes it as JSON. It carries
 // the editable/origin fields like list/get/create so a PUT/overlay response
 // doesn't drop them from the studio's cached entry (a tenant bot would otherwise
-// lose its editable flag on an icon/visibility change).
-func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name string) {
+// lose its editable flag on an icon/visibility change), and catalogError —
+// the rendered cause of the refresh that followed the mutation, empty when it
+// succeeded — so the studio's only word on a stale routing table is the
+// answer to the gesture that made it stale.
+func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name, catalogError string) {
 	for _, e := range s.tenantBotEntries(r.Context()) {
 		if e.Name == name {
-			s.writeJSONFor(w, r, botEntryView{EntryWithSchema: e, Editable: true, Origin: "tenant"})
+			s.writeJSONFor(w, r, botEntryView{EntryWithSchema: e, Editable: true, Origin: "tenant", CatalogError: catalogError})
 			return
 		}
 	}
@@ -365,19 +368,26 @@ func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name string)
 		s.httpErrorFor(w, r, http.StatusNotFound, "bots: %q not found", name)
 		return
 	}
-	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: s.entryOrigin(name)})
+	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: s.entryOrigin(name), CatalogError: catalogError})
 }
 
-// regenCatalog refreshes the orchestrator-facing bot catalog after a
-// metadata/overlay change. Best-effort: a failure must not fail the
-// request (the runtime regenerates on Nexie's next run regardless).
-func (s *Server) regenCatalog(name, action string) {
+// regenCatalog refreshes the orchestrator-facing bot catalog after a change
+// to the workspace's bots. Never fatal to the request — the gesture already
+// landed — so it returns the rendered cause (empty when the refresh
+// succeeded or there is no workspace) for the response to carry, and warns
+// on the server log for the operators watching it.
+func (s *Server) regenCatalog(name, action string) string {
 	if s.cfg.WorkDir == "" {
-		return
+		return ""
 	}
-	if _, err := botregistry.RegenerateWhatsNextCatalog(s.cfg.WorkDir); err != nil && s.logger != nil {
+	_, err := botregistry.RegenerateWhatsNextCatalog(s.cfg.WorkDir)
+	if err == nil {
+		return ""
+	}
+	if s.logger != nil {
 		s.logger.Warn("bots: catalog regen after %q %s: %v", name, action, err)
 	}
+	return err.Error()
 }
 
 // botInstallRequest is the wire body for POST /api/v1/bots/install.

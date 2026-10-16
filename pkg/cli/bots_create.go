@@ -111,9 +111,18 @@ func BotsCreate(opts BotsCreateOptions, p *Printer) error {
 	// `iterion bots regen-catalog`). Failing the command here would
 	// contradict the "Bot created" we just printed.
 	catalog, catErr := BotsRegenCatalog(workdir)
+	catalogError := ""
+	if catErr != nil {
+		catalogError = catErr.Error()
+	}
 
 	if p.Format == OutputJSON {
-		p.JSON(res)
+		// Flattened: the scaffold result's own fields, plus the refresh
+		// failure a machine consumer would otherwise never hear about.
+		p.JSON(struct {
+			botscaffold.Result
+			CatalogError string `json:"catalog_error,omitempty"`
+		}{Result: res, CatalogError: catalogError})
 		return nil
 	}
 
@@ -130,11 +139,7 @@ func BotsCreate(opts BotsCreateOptions, p *Printer) error {
 		p.Line("  Catalog refreshed: %s", catalog)
 		p.Blank()
 	}
-	if catErr != nil {
-		p.Line("  ! catalog not refreshed: %v", catErr)
-		p.Line("    (the bundle is valid — rerun `iterion bots regen-catalog`)")
-		p.Blank()
-	}
+	PrintCatalogWarning(p, catalogError)
 	p.Line("  Next steps:")
 	if spec.Shape == "" {
 		p.Line("    1. Write the mission (the `mission` prompt block):")

@@ -9,6 +9,7 @@ import BotIdentity from "@/components/shared/BotIdentity";
 import { Badge, Button, Card, Chip } from "@/components/ui";
 import { EmojiPicker } from "@/components/ui/EmojiPicker";
 import { botVisual } from "@/lib/personas";
+import { catalogToggleToast } from "@/lib/catalogStale";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
 
@@ -26,8 +27,10 @@ export default function IdentityHeader({ entry }: { entry: BotEntryWithSchema })
 
   const onPickIcon = async (emoji: string) => {
     try {
-      await saveBot(entry.name, { icon: emoji });
-      addToast(`Icon updated for ${label}`, "success");
+      const updated = await saveBot(entry.name, { icon: emoji });
+      // An icon save rewrites the manifest, which the catalogue renders from:
+      // the toast carries a refresh that failed.
+      addToast(catalogToggleToast(`Icon updated for ${label}`, updated), "success");
     } catch (e) {
       addToast(e instanceof Error ? e.message : "Failed to save icon", "error");
     }
@@ -36,9 +39,14 @@ export default function IdentityHeader({ entry }: { entry: BotEntryWithSchema })
   const onToggle = async () => {
     setBusy(true);
     try {
-      await setOverlay(entry.name, !enabled);
+      const updated = await setOverlay(entry.name, !enabled);
       addToast(
-        !enabled ? `${label} enabled — exposed to Nexie` : `${label} disabled — hidden from Nexie`,
+        catalogToggleToast(
+          !enabled
+            ? `${label} enabled — exposed to Nexie`
+            : `${label} disabled — hidden from Nexie`,
+          updated,
+        ),
         !enabled ? "success" : "info",
       );
     } catch (e) {
@@ -51,8 +59,11 @@ export default function IdentityHeader({ entry }: { entry: BotEntryWithSchema })
   const onReset = async () => {
     setBusy(true);
     try {
-      await setOverlay(entry.name, null);
-      addToast(`${label} follows its manifest default again`, "info");
+      const updated = await setOverlay(entry.name, null);
+      addToast(
+        catalogToggleToast(`${label} follows its manifest default again`, updated),
+        "info",
+      );
     } catch (e) {
       addToast(e instanceof Error ? e.message : `Failed to reset ${label}`, "error");
     } finally {

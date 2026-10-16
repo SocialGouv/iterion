@@ -21,6 +21,17 @@ var (
 	sha256Pattern         = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
+// ValidName reports whether name is a bot name the workspace can hold: the
+// charset the lockfile keys dependencies on, which is also what a catalogue
+// assignee cell routes on and what an installed directory under .botz/ is
+// named. A name outside it cannot take part in any of those, so installs
+// refuse it rather than materialize an identity nothing can address — and
+// one whose bytes (a newline, a control character) could reach a line of a
+// command's output.
+func ValidName(name string) bool {
+	return dependencyNamePattern.MatchString(name)
+}
+
 // Lock is the committed, project-wide resolution of manifest dependencies.
 type Lock struct {
 	Version      int                   `yaml:"version" json:"version"`
