@@ -190,7 +190,7 @@ func unansweredCause(nodeID, executorType string, noTools, noBackend bool) strin
 	case noBackend:
 		missing, unread = "runtime.EffectiveBackendResolver", "the route it will take cannot be read"
 	}
-	return fmt.Sprintf("node %q counts as writing because executor %s does not implement %s, so %s — implement or forward EffectiveToolNames and EffectiveBackendName on the executor, or mark the node `readonly:`", nodeID, executorType, missing, unread)
+	return fmt.Sprintf("node %q counts as writing because executor %s does not implement %s, so %s — implement or forward the three seams admission reads (EffectiveToolNames, EffectiveBackendName, EffectiveFallbackBackends) on the executor, or mark the node `readonly:`", nodeID, executorType, missing, unread)
 }
 
 // warnExecutorLacksSeams says WHICH executor cannot answer, and which seams it
@@ -214,6 +214,14 @@ func (e *Engine) warnExecutorLacksSeams() {
 		}
 		if _, ok := e.executor.(effectiveBackendResolver); !ok {
 			missing = append(missing, "runtime.EffectiveBackendResolver")
+		}
+		// Said separately, because its silence costs something else: the two
+		// seams above are read at the WORST case, this one at the reading
+		// admission had before it existed. A route the run resolves onto a
+		// backend the declaration bounds is refused, the routes it names
+		// outright are read exactly as they are written.
+		if _, ok := e.executor.(effectiveFallbackResolver); !ok {
+			e.logger.Warn("runtime: executor %T does not implement runtime.EffectiveFallbackResolver — parallel-branch admission cannot resolve a node's `fallbacks:` routes with the run's vars, so a route spelled `{{vars.…}}` is read as a backend nothing resolved and the node counts as possibly writing, and a route the run's `when:` gate deactivates is counted anyway. Implement or forward EffectiveFallbackBackends on the executor; the two executors this module builds implement it, and a wrapper that embeds the NodeExecutor interface inherits none of the three seams", e.executor)
 		}
 		if len(missing) == 0 {
 			return
@@ -294,6 +302,103 @@ type unansweredBackend struct{ executorType string }
 
 func (u unansweredBackend) EffectiveBackendName(ir.Node) string {
 	return "<unknown: " + u.executorType + " does not report the backend it routes to>"
+}
+
+// effectiveFallbackResolver is the package-internal spelling of the seam.
+type effectiveFallbackResolver = EffectiveFallbackResolver
+
+// EffectiveFallbackResolver reports the backends a node's `fallbacks:` routes
+// resolve to, the way DISPATCH resolves them: the run's vars read into each
+// route's `backend:`, the `when:` gates evaluated against those same vars, and
+// a launch-time route materialised onto the node read like an authored one.
+// The node's own route is NOT in the answer — that is EffectiveBackendResolver
+// — and neither is a route that names no backend of its own, which inherits
+// the node's and adds no route to read.
+//
+// A pre-run analysis that keys on a node's routes asks it rather than
+// re-deriving them from the IR, which is wrong in both directions: a route
+// spelled `{{vars.fb}}` is a backend NAME at dispatch and nothing in the IR,
+// and a route the run's vars gate off is in the IR and never in the chain.
+// Dropping a gated route is sound because the gate reads `vars.*` alone (C173)
+// and a run's vars are launch-frozen — resolveVars stacks the declared
+// defaults under the launch values once, at run start and again on resume, and
+// nothing writes them afterwards — while admission is re-decided every time
+// the router dispatches. So the gate the chain evaluates at dispatch is the
+// one admission read. A gate the executor cannot evaluate is dropped for the
+// same reason and not for its value: the executor deactivates that route in
+// the chain dispatch walks, so a route admission does not count is one no run
+// takes — and the compiler refuses a gate that does not parse at all (C173).
+//
+// It is a SEPARATE interface, not a term added to EffectiveBackendResolver:
+// the engine reaches these seams through optional type assertions, so a term
+// added to one would silently stop its implementors from satisfying it and
+// take the whole node to the worst case instead of this one reading.
+//
+// An executor that does not implement it is not read as answering nil, which
+// would mean "no route leaves the node's own backend". Admission then reads
+// every route from the IR, by the spelling its author wrote, and one nothing
+// resolves bounds nothing — the pessimistic side, which refuses rather than
+// admits, and the one a guard takes where it cannot know. The engine says
+// which executor cannot answer, once per engine, at its first admission
+// (warnExecutorLacksSeams).
+//
+// Exported for the same reason as the two seams above: an implementor in
+// another package pins itself against THE interface rather than a structural
+// copy of it.
+type EffectiveFallbackResolver interface {
+	EffectiveFallbackBackends(node ir.Node) []string
+}
+
+// undecidedRouteReporter is the package-internal spelling of the seam.
+type undecidedRouteReporter = UndecidedRouteReporter
+
+// UndecidedRouteReporter is answered by an executor whose answer to the seams
+// above is the PESSIMISTIC reading of where a node runs rather than the route
+// the run takes, because the LAUNCH it answers for does not decide it: the dry
+// run behind `iterion validate --exec` judges a program whose vars a launch
+// still has to supply, and seeds a value of its own for each of them.
+//
+// What it returns is said to the operator, after the reason that names the
+// route (routeReadingClause): what was read pessimistically, and what decides
+// it. A refusal naming only the route would send an author to change a program
+// that is not wrong — the reading is the launch's, not theirs. "" where the
+// launch decides every route of the node; the executors a RUN uses implement
+// none of this, because a run's vars are that run's.
+//
+// Optional, like the three seams above: an executor that does not implement it
+// has its answers read exactly the same way and says nothing about why.
+type UndecidedRouteReporter interface {
+	UndecidedRouteReading(node ir.Node) string
+}
+
+// fallbackRouteNames asks the fallback seam for the backends a node's
+// `fallbacks:` routes resolve to, and reports whether anything answered.
+//
+// The seam is read off the backend resolver's own VALUE, because at every site
+// that asks "what will this run do" that value IS the engine's executor
+// (backendResolver). The readings the engine substitutes for it — a nil
+// resolver for the authored-defaults question, the worst-case stand-in, the
+// per-route probes of the attribution walk — answer no fallback routes either,
+// and each of them wants the IR reading it already had.
+//
+// A name no route takes is dropped: an empty one inherits the node's backend,
+// and an explicit `auto` on a route is a NAME the registry does not have, so
+// the route dies the moment the chain is needed (ir.backendReader.routeName)
+// and widens nothing.
+func fallbackRouteNames(node ir.Node, resolver effectiveBackendResolver) ([]string, bool) {
+	fallbacks, ok := resolver.(effectiveFallbackResolver)
+	if !ok {
+		return nil, false
+	}
+	var out []string
+	for _, b := range fallbacks.EffectiveFallbackBackends(node) {
+		b = strings.TrimSpace(b)
+		if routeIsUnnamed(b) {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out, true
 }
 
 func isMutatingNodeWithBackend(node ir.Node, defaultBackend string, resolver effectiveBackendResolver, surfaces effectiveToolSurfaceResolver) bool {
@@ -544,6 +649,7 @@ func llmToolSurfaceCanWrite(
 var (
 	_ effectiveToolSurfaceResolver = (*model.ClawExecutor)(nil)
 	_ effectiveBackendResolver     = (*model.ClawExecutor)(nil)
+	_ effectiveFallbackResolver    = (*model.ClawExecutor)(nil)
 )
 
 // llmDeclaredSurfaceWriteReason names what makes a node's own DECLARATION, or
@@ -632,7 +738,10 @@ func unrestrictedRouteWriteReason(
 	// readings are decided once, before the run, so it is pessimistic —
 	// writing — rather than read-only and eligible for a shared worktree.
 	if strings.Contains(backend, "{{") {
-		return "backend " + backend + " is unresolved before the run, so no route it may take bounds what the node holds"
+		// The node's OWN field, which the fallback seam does not read: the
+		// clause's reporter half is about this field, its unanswered half is
+		// about routes this arm never reaches.
+		return "backend " + backend + " is unresolved before the run, so no route it may take bounds what the node holds" + undecidedRouteClause(node, resolver)
 	}
 	// A DECLARED-EMPTY `tools: []` reaches exactly the verdict an undeclared
 	// list reaches, and that is deliberate: it is not a proof that the node
@@ -658,8 +767,8 @@ func unrestrictedRouteWriteReason(
 	// (clawCLIRouteWriteReason); the route question below answers for every
 	// claw node this arm does not.
 	if backend == "claw" {
-		if route := fallbackCLIBackendName(node, lookup); route != "" {
-			return clawCLIRouteWriteReason(route, tools)
+		if route := fallbackCLIBackendName(node, resolver, lookup); route != "" {
+			return clawCLIRouteWriteReason(route, tools) + routeReadingClause(node, resolver)
 		}
 	}
 	// A declaration only bounds a route that can be bounded BY it, and two
@@ -697,7 +806,7 @@ func unrestrictedRouteWriteReason(
 	// coming out LOOSER than its absence. Asking twice is how the two arms
 	// drift apart: the first answers for every node the second would.
 	if backend == "claw" || len(tools) > 0 || toolcatalog.ToolsDeclared(tools) {
-		if reason := routeDeclarationIsNoBound(node, backend, authored, tools, lookup, unnamedRoute); reason != "" {
+		if reason := routeDeclarationIsNoBound(node, backend, authored, tools, resolver, lookup, unnamedRoute); reason != "" {
 			return reason
 		}
 	}
@@ -748,15 +857,18 @@ func unrestrictedRouteWriteReason(
 // its `fallbacks:` routes, that runs somewhere a `tools:` declaration does not
 // bound what the node holds — and "" when every route it may take bounds one.
 //
-// A route is read by the spelling its AUTHOR wrote, not only by what that
-// spelling expanded to: the three shapes below answer differently, and
-// collapsing them onto the expansion alone trusts the one route this walk
-// cannot read.
+// The `fallbacks:` routes come from the executor where one answers the
+// fallback seam: it resolves them with the run's vars and drops the ones that
+// run's `when:` gates deactivate, which is the chain dispatch will walk. Where
+// nothing answers, a route is read by the spelling its AUTHOR wrote, not only
+// by what that spelling expanded to: the three shapes below answer
+// differently, and collapsing them onto the expansion alone trusts the one
+// route this walk cannot read.
 //
 // The declared list travels WITH the node onto every route it may take, so it
 // is read against each of them: one route may bound those names and the next
 // one not (declarationIsNoBound).
-func routeDeclarationIsNoBound(node ir.Node, backend, authored string, tools []string, lookup func(string) string, unnamedRoute unnamedRouteReading) string {
+func routeDeclarationIsNoBound(node ir.Node, backend, authored string, tools []string, resolver effectiveBackendResolver, lookup func(string) string, unnamedRoute unnamedRouteReading) string {
 	if unnamedRoute == unnamedRouteIsNoBound && routeIsUnnamed(backend) {
 		return unnamedRouteNoBoundReason(authored, backend)
 	}
@@ -765,6 +877,23 @@ func routeDeclarationIsNoBound(node ir.Node, backend, authored string, tools []s
 	}
 	llm, ok := node.(ir.LLMNode)
 	if !ok {
+		return ""
+	}
+	if routes, answered := fallbackRouteNames(node, resolver); answered {
+		for _, b := range routes {
+			// A span the run's vars do not answer stays as written
+			// (`{{outputs.…}}` names a namespace that does not exist before the
+			// node runs), and it is the same cell as the unread template below:
+			// the route may be any backend, so the reading is pessimistic —
+			// without naming the template as a backend and crediting it with
+			// what it does to the list, which nothing has decided yet.
+			if strings.Contains(b, "{{") {
+				return unresolvedFallbackRouteReason(node, b, resolver)
+			}
+			if clause := declarationNoBoundClause(b, tools); clause != "" {
+				return "a `fallbacks:` route onto " + b + " " + clause + routeReadingClause(node, resolver)
+			}
+		}
 		return ""
 	}
 	for _, fb := range llm.GetFallbacks() {
@@ -782,7 +911,7 @@ func routeDeclarationIsNoBound(node ir.Node, backend, authored string, tools []s
 			// backend and the reading is pessimistic — WITHOUT naming the
 			// template as a backend and crediting it with what it does to the
 			// list, which no executor has decided yet.
-			return "a `fallbacks:` route still spelled as " + raw + " is unresolved before the run, so no backend it may take bounds what the node holds"
+			return unresolvedFallbackRouteReason(node, raw, resolver)
 		case b == "":
 			// A `${VAR}` reference read at an authored default that does not
 			// exist: the route is the host's to decide, which is the same cell
@@ -803,6 +932,85 @@ func routeDeclarationIsNoBound(node ir.Node, backend, authored string, tools []s
 		if clause := declarationNoBoundClause(b, tools); clause != "" {
 			return "a `fallbacks:` route onto " + b + " " + clause
 		}
+	}
+	return ""
+}
+
+// unresolvedFallbackRouteReason words a `fallbacks:` route still spelled as a
+// template when the verdict is taken: either nothing resolved it — no executor
+// answered the fallback seam — or the executor's own reading left it as
+// written, which is what a span over a namespace that does not exist before
+// the node runs resolves to, and what a pre-run reading owes a span the LAUNCH
+// decides. All of those are the same fact for this question: no backend the
+// route may take bounds what the node holds. One wording, so the readings
+// cannot drift apart on the cell they share — and the one that is the
+// executor's to answer says so, because the author's template is not the thing
+// to change there.
+func unresolvedFallbackRouteReason(node ir.Node, route string, resolver effectiveBackendResolver) string {
+	return "a `fallbacks:` route still spelled as " + strings.TrimSpace(route) +
+		" is unresolved before the run, so no backend it may take bounds what the node holds" +
+		routeReadingClause(node, resolver)
+}
+
+// routeReadingClause says, after a reason that names where a node runs, why
+// that is not the route the run takes — and nothing where it is.
+//
+// Two things leave a pre-run reading short of the run, and each is the
+// executor's to report: nothing resolved the node's `fallbacks:` routes,
+// because the executor does not answer the fallback seam at all
+// (unreadRouteClause); or the routing fields were read pessimistically, because
+// the LAUNCH the verdict was taken on does not decide them
+// (undecidedRouteClause). The two cannot hold at once, so one clause carries
+// both and no reason can run the two together.
+//
+// A reason whose subject is NOT a `fallbacks:` route calls the second half
+// alone: the fallback seam decides nothing there, so naming it would name the
+// cause the verdict did not use — and its remedy, followed to the letter,
+// leaves the refusal word for word the same.
+func routeReadingClause(node ir.Node, resolver effectiveBackendResolver) string {
+	if clause := unreadRouteClause(resolver); clause != "" {
+		return clause
+	}
+	return undecidedRouteClause(node, resolver)
+}
+
+// unreadRouteClause names the executor that left a node's `fallbacks:` routes
+// unread, and the method to implement — and nothing where one answered.
+//
+// Only something that is the executor admission runs on is named: this
+// package's own reading stand-ins answer no route either, and printing a Go
+// type the operator does not have would name the wrong thing — the cause the
+// verdict did not use. They answer one seam, never the node work an executor
+// does, so the executor interface is the discriminator and a stand-in added
+// later is silent here by default.
+//
+// The warning says this half too (warnExecutorLacksSeams) and needs a logger,
+// which `runtime.New` does not install — so the refusal carries it, as it does
+// for the two older seams (unansweredCause).
+func unreadRouteClause(resolver effectiveBackendResolver) string {
+	if _, answers := resolver.(effectiveFallbackResolver); answers {
+		return ""
+	}
+	executor, ok := resolver.(NodeExecutor)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf(" (executor %T does not implement runtime.EffectiveFallbackResolver, so nothing resolved it — implement or forward EffectiveFallbackBackends on the executor)", executor)
+}
+
+// undecidedRouteClause says why the executor's answer about where this node
+// runs is the PESSIMISTIC reading rather than the route the run takes, and what
+// ends that reading — which is what the dry run behind `iterion validate
+// --exec` answers for a program whose vars a launch still has to supply
+// (UndecidedRouteReporter). Nothing from an executor that does not report it,
+// and nothing where the launch decides every routing field of the node.
+func undecidedRouteClause(node ir.Node, resolver effectiveBackendResolver) string {
+	reporter, ok := resolver.(undecidedRouteReporter)
+	if !ok {
+		return ""
+	}
+	if why := strings.TrimSpace(reporter.UndecidedRouteReading(node)); why != "" {
+		return " (" + why + ")"
 	}
 	return ""
 }
@@ -990,9 +1198,23 @@ func clawCLIRouteWriteReason(route string, tools []string) string {
 // `auto` apart, any OTHER name no registry has is named here, and credited
 // with a toolset the route will never run: it dies at the same registry, one
 // spelling later.
-func fallbackCLIBackendName(node ir.Node, lookup func(string) string) string {
+//
+// Where an executor answers the fallback seam the routes are ITS resolution:
+// the run's vars read into each `backend:`, and the routes that run's `when:`
+// gates deactivate already dropped. A template the run itself does not resolve
+// is still not a backend, and is still left to routeDeclarationIsNoBound.
+func fallbackCLIBackendName(node ir.Node, resolver effectiveBackendResolver, lookup func(string) string) string {
 	llm, ok := node.(ir.LLMNode)
 	if !ok {
+		return ""
+	}
+	if routes, answered := fallbackRouteNames(node, resolver); answered {
+		for _, b := range routes {
+			if strings.Contains(b, "{{") || b == delegate.BackendClaw {
+				continue
+			}
+			return b
+		}
 		return ""
 	}
 	for _, fb := range llm.GetFallbacks() {
@@ -1194,7 +1416,21 @@ func (e *Engine) branchMutationCauseFrom(backends effectiveBackendResolver, surf
 				if toolIsWorkspaceSafe(t) || declared[toolcatalog.CanonicalToolName(t)] {
 					continue
 				}
-				return fmt.Sprintf("node %q holds %q, which its `tools:` list does not declare", nodeID, t)
+				// The subject is a TOOL, and the surface it sits on is the
+				// EXECUTOR's own answer, taken over the routes that executor
+				// resolved for itself (EffectiveToolNames →
+				// EffectiveToolNamesOnRoutes): the engine's fallback seam
+				// decides nothing about it, so only the reporter half speaks
+				// here — the unread half would name a cause the verdict did
+				// not use, and its remedy, followed to the letter, leaves this
+				// refusal word for word the same.
+				//
+				// The reporter half does belong: an executor answering the
+				// surface from its OWN pessimistic reading of the routes — the
+				// dry run behind `iterion validate --exec` — puts a route's
+				// appends on this surface, and this arm runs FIRST, so a
+				// refusal silent here is silent for the whole cell.
+				return fmt.Sprintf("node %q holds %q, which its `tools:` list does not declare%s", nodeID, t, undecidedRouteClause(node, backends))
 			}
 		}
 		if llm, ok := node.(ir.LLMNode); ok {
@@ -1229,9 +1465,19 @@ func (e *Engine) branchMutationCauseFrom(backends effectiveBackendResolver, surf
 			if !strings.Contains(backend, "{{") && declarationIsNoBound(backend, list) { // the cause of a shared-worktree refusal
 				return fmt.Sprintf("node %q runs on %s, where a `tools:` list does not bound what the node holds", nodeID, backend)
 			}
-			for _, fb := range llm.GetFallbacks() {
-				if b := strings.TrimSpace(ir.ExpandWithDefault(fb.Backend, nil)); !strings.Contains(b, "{{") && declarationIsNoBound(b, list) {
-					return fmt.Sprintf("node %q falls back to %s, where a `tools:` list does not bound what the node holds", nodeID, b)
+			// Read exactly as the classifier read them: the executor's
+			// resolution where it answers the fallback seam — so the cause
+			// names the route the run takes and not the spelling it was
+			// written as — and the IR's own expansion where nothing does.
+			routes, answered := fallbackRouteNames(node, backends)
+			if !answered {
+				for _, fb := range llm.GetFallbacks() {
+					routes = append(routes, strings.TrimSpace(ir.ExpandWithDefault(fb.Backend, nil)))
+				}
+			}
+			for _, b := range routes {
+				if !strings.Contains(b, "{{") && declarationIsNoBound(b, list) {
+					return fmt.Sprintf("node %q falls back to %s, where a `tools:` list does not bound what the node holds%s", nodeID, b, routeReadingClause(node, backends))
 				}
 			}
 			// The arms above name a ROUTE, which is the first thing an author
