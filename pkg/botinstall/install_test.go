@@ -206,14 +206,14 @@ func TestRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Remove resolves dest from opts.Dest, mirroring Install.
-	if err := Remove(context.Background(), Options{Name: "doomed", Dest: dest, Workdir: workdir}); err != nil {
+	if _, err := Remove(context.Background(), Options{Name: "doomed", Dest: dest, Workdir: workdir}); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dest, "doomed")); !os.IsNotExist(err) {
 		t.Errorf("bundle still present after remove: %v", err)
 	}
 	// Removing a non-existent install is an error (404 signal).
-	if err := Remove(context.Background(), Options{Name: "ghost", Dest: dest, Workdir: workdir}); err == nil {
+	if _, err := Remove(context.Background(), Options{Name: "ghost", Dest: dest, Workdir: workdir}); err == nil {
 		t.Error("expected error removing missing install")
 	}
 }

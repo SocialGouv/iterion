@@ -13,6 +13,7 @@ import * as pipelineApi from "@/api/pipelineBoards";
 import * as pluginsApi from "@/api/plugins";
 import * as runsApi from "@/api/runs";
 import * as workspaceHandoffApi from "@/api/workspaceHandoff";
+import { catalogStaleSuffix } from "@/lib/catalogStale";
 import { isPathWithinWorkDir } from "@/lib/launchSource";
 import {
   ASSISTANT_ACTIONS,
@@ -940,7 +941,7 @@ export async function executeAssistantAction(
       const bot = await botsApi.createBot(args as unknown as botsApi.BotCreateSpec);
       const editorPath = bot.rel_path ? `${bot.rel_path}/main.bot` : undefined;
       return {
-        message: `Created bot ${bot.display_name || bot.name}`,
+        message: `Created bot ${bot.display_name || bot.name}${catalogStaleSuffix(bot)}`,
         href: `/editor?file=${encodeURIComponent(editorPath ?? bot.path)}`,
         hrefLabel: "Open bot",
         ...(editorPath
@@ -950,7 +951,11 @@ export async function executeAssistantAction(
     }
     case "bot.install": {
       const installed = await botsApi.installBot(args as unknown as botsApi.InstallBotRequest);
-      return { message: `Installed bot ${installed.name}`, href: `/bots`, hrefLabel: "Open bots" };
+      return {
+        message: `Installed bot ${installed.name}${catalogStaleSuffix(installed)}`,
+        href: `/bots`,
+        hrefLabel: "Open bots",
+      };
     }
     case "plugin.enable":
       await pluginsApi.setPluginEnabled(id("name"), true);

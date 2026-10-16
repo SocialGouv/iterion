@@ -8,6 +8,8 @@ import { Select } from "@/components/ui/Select";
 import { useUIStore } from "@/store/ui";
 import { toastError } from "@/lib/errorHints";
 
+import { uploadedMessage } from "./toastMessages";
+
 const SCOPE_LABELS: Record<MarketplaceScope, string> = {
   public: "Public — anyone can browse",
   instance: "Instance — any signed-in user",
@@ -76,7 +78,7 @@ export function MarketplaceSubmit({
     setUploading(true);
     try {
       const res = await uploadBotBundle(file, { force: true });
-      addToast(`Imported ${res.name} → ${res.installed_path}`, "success");
+      addToast(uploadedMessage(res), "success");
       setExpanded(false);
       await onUploaded?.();
     } catch (err) {

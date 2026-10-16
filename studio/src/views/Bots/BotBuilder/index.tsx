@@ -15,7 +15,7 @@
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 
-import { createBot, type BotEntryWithSchema } from "@/api/bots";
+import { createBot, type BotCreateResult } from "@/api/bots";
 import { botSourceEditorPath } from "@/api/client";
 import TestRunPane from "@/components/Runs/TestRunPane";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
@@ -28,6 +28,7 @@ import { useTabsStore } from "@/store/tabs";
 
 import { botLaunchFile } from "../botPaths";
 import AdvancedCard from "./AdvancedCard";
+import CreatedBotBanner from "./CreatedBotBanner";
 import {
   activeVarRows,
   buildCreateSpec,
@@ -184,8 +185,8 @@ interface BuilderFormProps {
   draft: BuilderDraft;
   setDraft: React.Dispatch<React.SetStateAction<BuilderDraft>>;
   draftSaved: boolean;
-  created: BotEntryWithSchema | null;
-  onCreated: (entry: BotEntryWithSchema) => void;
+  created: BotCreateResult | null;
+  onCreated: (entry: BotCreateResult) => void;
   onBackToTemplates: () => void;
   onGoToBotPage: (slug: string) => void;
 }
@@ -266,22 +267,7 @@ function BuilderForm({
             </span>
           </div>
 
-          {created && (
-            <InlineBanner tone="success" title={`${created.display_name?.trim() || created.name} is live`}>
-              {isCloud ? (
-                <>
-                  Saved to your team&apos;s bot store and visible to the orchestrator catalog. Open
-                  it in the editor to refine it, or head to its page to wire triggers.
-                </>
-              ) : (
-                <>
-                  Scaffolded into <code className="font-mono">bots/{created.name}/</code> and visible
-                  to the orchestrator catalog. Give it a first spin in the test pane, or head to its
-                  page to wire triggers.
-                </>
-              )}
-            </InlineBanner>
-          )}
+          {created && <CreatedBotBanner created={created} isCloud={isCloud} />}
 
           <fieldset disabled={created !== null} className="flex min-w-0 flex-col gap-3">
             <PrimaryFieldsCard draft={draft} patch={patch} slug={slug} slugValid={slugValid} />

@@ -102,8 +102,14 @@ func TestMarketplaceCLI_SubmitInstallUninstall_KindAware(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(pluginDir, "plugin.yaml")); err != nil {
 		t.Fatalf("plugin not installed: %v", err)
 	}
-	if _, err := MarketplaceUninstall(ctx, MarketplaceUninstallOptions{StoreDir: storeDir, Slug: "my-plugin"}); err != nil {
+	uninstalled, err := MarketplaceUninstall(ctx, MarketplaceUninstallOptions{StoreDir: storeDir, Slug: "my-plugin"})
+	if err != nil {
 		t.Fatalf("uninstall plugin: %v", err)
+	}
+	// A plugin lives outside the workspace and owns no catalog row, so its
+	// removal never refreshes a catalog and never reports one.
+	if uninstalled.CatalogError != "" {
+		t.Errorf("plugin uninstall reports a catalog failure it never attempted: %q", uninstalled.CatalogError)
 	}
 	if _, err := os.Stat(pluginDir); !os.IsNotExist(err) {
 		t.Errorf("plugin dir still present: %v", err)

@@ -2,6 +2,8 @@
 // pkg/server/marketplace_routes.go and pkg/marketplace types.
 
 import { apiRequest } from "./client";
+import type { CatalogRefreshed } from "@/lib/catalogStale";
+
 import type { InstallBotResult } from "./bots";
 import type { PluginView } from "./plugins";
 
@@ -167,9 +169,12 @@ export function installMarketplaceBot(
 
 /** uninstallMarketplaceBot removes the entry's bundle from the workspace
  *  (.botz/) and returns the (unchanged) entry so the caller can flip the
- *  card back to "Install". Local-mode only. */
-export function uninstallMarketplaceBot(slug: string): Promise<MarketplaceEntry> {
-  return apiRequest<MarketplaceEntry>(
+ *  card back to "Install", plus the catalog refresh that failed after the
+ *  removal. Local-mode only. */
+export function uninstallMarketplaceBot(
+  slug: string,
+): Promise<MarketplaceEntry & CatalogRefreshed> {
+  return apiRequest<MarketplaceEntry & CatalogRefreshed>(
     `${BASE}/bots/${encodeURIComponent(slug)}/install`,
     { method: "DELETE" },
   );

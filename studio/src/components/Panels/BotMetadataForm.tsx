@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/Button";
 import { EmojiPicker } from "@/components/ui/EmojiPicker";
 import { BOT_CATEGORIES } from "@/lib/botTaxonomy";
 import { botIdentity } from "@/lib/personas";
+import { catalogStaleSuffix } from "@/lib/catalogStale";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
 
@@ -93,6 +94,11 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
+  // The catalog-refresh failure the last save's response carried, as the
+  // shared suffix (empty when the refresh succeeded): the manifest is what
+  // the catalogue renders from, so a failed refresh leaves the table
+  // advertising the edited bot's previous card.
+  const [catalogNote, setCatalogNote] = useState<string | null>(null);
 
   const baseline = useMemo(() => toDraft(bot), [bot]);
   const dirty = useMemo(
@@ -131,12 +137,14 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
     setSaving(true);
     setSaveError(null);
     setSavedFlash(false);
+    setCatalogNote(null);
     try {
-      await saveBot(bot.name, patch);
+      const updated = await saveBot(bot.name, patch);
       settledPatchRef.current = JSON.stringify(patch);
       if (JSON.stringify(toPatch(draftRef.current, baselineRef.current)) === settledPatchRef.current) {
         touchedRef.current = false;
       }
+      setCatalogNote(catalogStaleSuffix(updated) || null);
       setSavedFlash(true);
     } catch (e) {
       settledPatchRef.current = JSON.stringify(patch);
@@ -167,12 +175,19 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
     () => () => {
       const pending = pendingRef.current;
       if (!pending) return;
-      saveBot(bot.name, pending).catch((e) => {
-        addToast(
-          e instanceof Error ? e.message : "Failed to save bot metadata",
-          "error",
-        );
-      });
+      saveBot(bot.name, pending)
+        .then((updated) => {
+          // The component is gone, so the toast is the only channel left
+          // for a refresh that failed behind this save.
+          const note = catalogStaleSuffix(updated);
+          if (note) addToast(`Saved ${bot.name}${note}`, "warning");
+        })
+        .catch((e) => {
+          addToast(
+            e instanceof Error ? e.message : "Failed to save bot metadata",
+            "error",
+          );
+        });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -301,7 +316,9 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
         ) : dirty ? (
           <span className="text-caption text-fg-muted">Autosaving…</span>
         ) : savedFlash ? (
-          <span className="text-caption text-success">Saved</span>
+          <span className="text-caption text-success">
+            Saved{catalogNote && <span className="text-warning">{catalogNote}</span>}
+          </span>
         ) : null}
       </div>
 

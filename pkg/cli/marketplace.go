@@ -57,6 +57,17 @@ type MarketplaceUninstallOptions struct {
 	Workdir  string
 }
 
+// MarketplaceUninstallResult is the outcome of MarketplaceUninstall: the
+// (unchanged) registry entry that was removed, plus the catalog refresh
+// that failed after a bot's bundle was deleted. CatalogError is empty for a
+// plugin entry — plugins live outside the workspace and own no catalog row.
+type MarketplaceUninstallResult struct {
+	Entry *marketplace.Entry
+	// Crosses no wire: the CLI builds its uninstall payload from the entry
+	// and this field itself, the server its own response struct.
+	CatalogError string `json:"-"`
+}
+
 // marketplaceStoreDir resolves the on-disk marketplace store directory
 // from a --store-dir value (default ".iterion"), mirroring the studio's
 // <store-dir>/marketplace layout so the CLI and the studio share one
@@ -209,8 +220,9 @@ func MarketplaceInstall(ctx context.Context, opts MarketplaceInstallOptions) (*M
 // MarketplaceUninstall resolves the slug and removes the installed
 // artifact per its kind: a bot's workspace bundle (botinstall.Remove)
 // or an installed plugin (plugin.Uninstall). The registry entry itself
-// is untouched. Returns the entry so callers can echo what was removed.
-func MarketplaceUninstall(ctx context.Context, opts MarketplaceUninstallOptions) (*marketplace.Entry, error) {
+// is untouched. Returns the entry so callers can echo what was removed,
+// with the catalog refresh failure that followed a bot's removal.
+func MarketplaceUninstall(ctx context.Context, opts MarketplaceUninstallOptions) (*MarketplaceUninstallResult, error) {
 	store, err := openMarketplaceStore(opts.StoreDir)
 	if err != nil {
 		return nil, err
@@ -228,12 +240,13 @@ func MarketplaceUninstall(ctx context.Context, opts MarketplaceUninstallOptions)
 		if err := plugin.Uninstall(entry.Name); err != nil {
 			return nil, err
 		}
-		return entry, nil
+		return &MarketplaceUninstallResult{Entry: entry}, nil
 	}
-	if err := botinstall.Remove(ctx, botinstall.Options{Name: entry.Name, Workdir: opts.Workdir}); err != nil {
+	removed, err := botinstall.Remove(ctx, botinstall.Options{Name: entry.Name, Workdir: opts.Workdir})
+	if err != nil {
 		return nil, err
 	}
-	return entry, nil
+	return &MarketplaceUninstallResult{Entry: entry, CatalogError: removed.CatalogError}, nil
 }
 
 // marketplaceSeedPaths resolves the workspace-relative bundle roots to

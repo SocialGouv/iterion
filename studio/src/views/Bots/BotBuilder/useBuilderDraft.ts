@@ -6,14 +6,14 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { BotEntryWithSchema } from "@/api/bots";
+import type { BotCreateResult } from "@/api/bots";
 import { useBotsStore } from "@/store/bots";
 
 import { DRAFT_KEY, loadDraft, type BuilderDraft } from "./model";
 
 export function useBuilderDraft() {
   const [draft, setDraft] = useState<BuilderDraft>(loadDraft);
-  const [created, setCreated] = useState<BotEntryWithSchema | null>(null);
+  const [created, setCreated] = useState<BotCreateResult | null>(null);
   const [draftSaved, setDraftSaved] = useState(false);
 
   // Auto-save the draft on every change (skip the initial mount and
@@ -40,7 +40,7 @@ export function useBuilderDraft() {
     };
   }, [draft, created]);
 
-  const onCreated = (entry: BotEntryWithSchema) => {
+  const onCreated = (entry: BotCreateResult) => {
     try {
       localStorage.removeItem(DRAFT_KEY);
     } catch {

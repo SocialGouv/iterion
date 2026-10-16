@@ -23,11 +23,22 @@ type SyncResult struct {
 	BundleSHA256  string `json:"bundle_sha256"`
 	InstalledPath string `json:"installed_path"`
 	Changed       bool   `json:"changed"`
+	// CatalogError is the rendered cause of the catalog refresh that failed
+	// after the dependency materialized: the bundle is in place and its
+	// hash verified, but the orchestrator-facing catalog is stale until a
+	// regeneration succeeds. Empty for a dependency already at its pin (no
+	// install, no refresh) and for private staging, which preserves the
+	// pinned catalog bytes by construction.
+	CatalogError string `json:"catalog_error,omitempty"`
 }
 
 // Sync materializes every project-root bots.lock dependency into .botz.
 // Source content is validated and hashed before any existing install is
 // replaced, so a bad ref or stale lock cannot destroy a known-good bundle.
+//
+// A non-nil error comes back with the results collected before it: those
+// dependencies ARE materialized, so their CatalogError is the caller's only
+// word on a workspace catalog the aborted sync left stale.
 func Sync(ctx context.Context, workdir string) ([]SyncResult, error) {
 	if workdir == "" {
 		wd, err := os.Getwd()
@@ -54,7 +65,10 @@ func Sync(ctx context.Context, workdir string) ([]SyncResult, error) {
 	for _, name := range names {
 		result, err := SyncOne(ctx, absWorkdir, name, lock.Dependencies[name])
 		if err != nil {
-			return nil, err
+			// The dependencies synced before this one are materialized, and
+			// one of them may carry a stale catalog: they travel WITH the
+			// error so the caller can report both.
+			return results, err
 		}
 		results = append(results, result)
 	}
@@ -124,7 +138,10 @@ func materializeOne(ctx context.Context, workdir, dest, name string, dep botlock
 	if hashErr != nil || installedHash != dep.BundleSHA256 {
 		return SyncResult{}, fmt.Errorf("bot dependencies: installed %q failed post-install hash verification", name)
 	}
-	return SyncResult{Name: name, BundleSHA256: installedHash, InstalledPath: installed.InstalledPath, Changed: true}, nil
+	return SyncResult{
+		Name: name, BundleSHA256: installedHash, InstalledPath: installed.InstalledPath, Changed: true,
+		CatalogError: installed.CatalogError,
+	}, nil
 }
 
 func resolveLocalSource(workdir, source string) string {

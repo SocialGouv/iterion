@@ -1,6 +1,8 @@
 // Bot registry — REST client. Mirrors pkg/server/bots_routes.go.
 // All paths are relative to the studio's same-origin server.
 
+import type { CatalogRefreshed } from "@/lib/catalogStale";
+
 import { apiRequest } from "./client";
 import type { PresetsBlock, VarsBlock } from "./types";
 
@@ -305,6 +307,13 @@ export interface BotEntryWithSchema extends BotEntry {
    *  override (super-admin-pushed — see /admin/bots), "catalog" for a
    *  baked one. */
   origin?: "tenant" | "platform" | "catalog";
+  /** Rendered cause of the catalog refresh that followed the last metadata
+   *  save or visibility toggle, present only when that refresh failed. The
+   *  table the orchestrator routes on holds one row per ENABLED bot, so a
+   *  toggle whose refresh failed leaves the previous set routed until a
+   *  regeneration succeeds — this is the response's word on it. Absent on
+   *  older servers and on every success. */
+  catalog_error?: string;
 }
 
 /** BotDiscoveryError is one bot source the registry skipped: the bundle
@@ -443,11 +452,18 @@ export async function listBotTemplates(): Promise<BotTemplate[]> {
   return r.templates ?? [];
 }
 
+/** BotCreateResult is what POST /api/v1/bots answers (mirrors
+ *  pkg/server/bots_create.go's botCreateResponse): the discovered entry,
+ *  plus the bot-catalog refresh that failed after the scaffold landed — the
+ *  new bot is on disk and the orchestrator cannot route to it until a
+ *  refresh succeeds. */
+export type BotCreateResult = BotEntryWithSchema & CatalogRefreshed;
+
 /** createBot scaffolds a new bot bundle into the workspace's bots/
  *  directory and returns the discovered entry. Local-mode only (403 in
  *  cloud mode); 409 when the slug already exists. */
-export function createBot(spec: BotCreateSpec): Promise<BotEntryWithSchema> {
-  return apiRequest<BotEntryWithSchema>(BASE, {
+export function createBot(spec: BotCreateSpec): Promise<BotCreateResult> {
+  return apiRequest<BotCreateResult>(BASE, {
     method: "POST",
     body: JSON.stringify(spec),
   });
@@ -468,6 +484,9 @@ export interface InstallBotResult {
   installed_path: string;
   skills: number;
   presets: number;
+  /** Cause of the bot-catalog refresh that failed after the bundle landed;
+   *  absent when the refresh succeeded (see catalogStaleSuffix). */
+  catalog_error?: string;
 }
 
 /** installBot imports a bot bundle from a git URL (or a local path on a

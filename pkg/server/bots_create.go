@@ -69,7 +69,7 @@ func (s *Server) handleBotCreate(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, scaffoldStatus(err), "bots: scaffold: %v", err)
 		return
 	}
-	s.regenCatalog(spec.Slug, "create")
+	catalogError := s.regenCatalog(spec.Slug, "create")
 
 	entry, ok, err := s.findBot(spec.Slug)
 	if err != nil || !ok {
@@ -78,7 +78,18 @@ func (s *Server) handleBotCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.reflectAllowedOrigin(w, r)
-	httpx.WriteJSON(w, http.StatusCreated, entry)
+	httpx.WriteJSON(w, http.StatusCreated, botCreateResponse{EntryWithSchema: entry, CatalogError: catalogError})
+}
+
+// botCreateResponse is what the create endpoint returns: the new bot's
+// discovery entry, flattened so the body keeps the entry shape the studio
+// reads, plus the catalog refresh that failed after the bundle landed. The
+// scaffold succeeded either way; without this field the operator is told the
+// bot is "visible to the orchestrator catalog" while Nexie cannot route to
+// it.
+type botCreateResponse struct {
+	botregistry.EntryWithSchema
+	CatalogError string `json:"catalog_error,omitempty"`
 }
 
 // handleBotCreateCloud is the cloud counterpart of handleBotCreate: it scaffolds

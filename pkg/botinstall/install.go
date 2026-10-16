@@ -19,6 +19,7 @@ import (
 
 	"go.yaml.in/yaml/v2"
 
+	"github.com/SocialGouv/iterion/pkg/botlock"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -45,6 +46,26 @@ type Result struct {
 	InstalledPath string `json:"installed_path"`
 	Skills        int    `json:"skills"`
 	Presets       int    `json:"presets"`
+	// CatalogError is the rendered cause of a catalog refresh that failed
+	// after the bundle landed. The install itself succeeded — the files are
+	// in the workspace — but the orchestrator-facing catalog still
+	// advertises the previous set until a regeneration succeeds, so every
+	// consumer carries this to its user. Empty when the refresh succeeded
+	// or was skipped (Options.SkipCatalog).
+	CatalogError string `json:"catalog_error,omitempty"`
+}
+
+// RemoveResult is the structured outcome of a removal. The bundle is gone
+// whenever Remove returns a nil error — a deletion that fails is an error,
+// never a result — so the only thing to report here is the catalog refresh
+// that followed it. It crosses no wire: each consumer renders the cause in
+// its own shape (the CLI's --json payload, the uninstall response body).
+type RemoveResult struct {
+	// CatalogError is the rendered cause of a catalog refresh that failed
+	// after the bundle was deleted: the removal succeeded, but the catalog
+	// keeps advertising the removed bot until a regeneration succeeds.
+	// Empty when the refresh succeeded.
+	CatalogError string `json:"-"`
 }
 
 // repoBotIndex is the OPTIONAL repo-root convention file (iterion-bots.yaml)
@@ -144,12 +165,18 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	// 6. Refresh Nexie's catalog so the new bot is advertised (best-effort).
+	// 6. Refresh Nexie's catalog so the new bot is advertised. Non-fatal for
+	//    the install — the bundle is already in the workspace and failing
+	//    here would contradict that — but the failure travels on the Result
+	//    so every consumer can show it.
+	catalogError := ""
 	if !opts.SkipCatalog {
-		_, _ = botregistry.RegenerateWhatsNextCatalog(workdir)
+		if _, err := botregistry.RegenerateWhatsNextCatalog(workdir); err != nil {
+			catalogError = err.Error()
+		}
 	}
 
-	res := &Result{Name: name, Source: opts.Source, Ref: ref, InstalledPath: target}
+	res := &Result{Name: name, Source: opts.Source, Ref: ref, InstalledPath: target, CatalogError: catalogError}
 	if installed, derr := bundle.OpenDir(target); derr == nil {
 		if installed.SkillsDir != "" {
 			if ents, _ := os.ReadDir(installed.SkillsDir); ents != nil {
@@ -205,16 +232,35 @@ func InstallFromBotzBytes(ctx context.Context, r io.Reader, opts Options) (*Resu
 // Remove deletes an installed bot bundle (<workdir>/.botz/<name>) and
 // refreshes Nexie's catalog. A missing install is an error so the caller
 // can surface a 404. Mirrors Install's destination resolution.
-func Remove(_ context.Context, opts Options) error {
-	name := strings.TrimSpace(opts.Name)
-	if err := validateInstallName(name); err != nil {
-		return err
+//
+// The directory is resolved from the RAW name — exactly what the caller
+// named, which for both consumers is the store entry's name and for
+// workspaces installed by earlier versions is the manifest's untrimmed
+// name. Normalizing the name here (e.g. trimming it) would strand a bundle
+// whose name has whitespace edges and let a padded variant delete a
+// different bundle than the one named.
+//
+// The name is held to path safety, not to the install-time charset:
+// installed workspaces carry names outside that charset, and a bundle that
+// is installed must stay uninstallable. Anything that could escape
+// <workdir>/.botz/ — blank, "." or "..", a separator — is refused, and
+// every message carrying the name quotes it, so a name from an unvalidated
+// manifest cannot write a line of a caller's output.
+//
+// A non-nil error means the bundle is still installed; a failed catalog
+// refresh — which leaves the removal done and the catalog stale — comes
+// back on the RemoveResult instead, so no caller can read one as the
+// other.
+func Remove(_ context.Context, opts Options) (*RemoveResult, error) {
+	name := opts.Name
+	if err := validateRemoveName(name); err != nil {
+		return nil, err
 	}
 	workdir := opts.Workdir
 	if workdir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		workdir = wd
 	}
@@ -226,19 +272,22 @@ func Remove(_ context.Context, opts Options) error {
 	info, err := os.Stat(target)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("%s is not installed", name)
+			return nil, fmt.Errorf("%q is not installed", name)
 		}
-		return fmt.Errorf("stat %s: %w", target, err)
+		return nil, fmt.Errorf("stat %q: %w", target, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("%s is not a bundle directory", target)
+		return nil, fmt.Errorf("%q is not a bundle directory", target)
 	}
 	if err := os.RemoveAll(target); err != nil {
-		return fmt.Errorf("remove %s: %w", name, err)
+		return nil, fmt.Errorf("remove %q: %w", name, err)
 	}
 	_ = os.Remove(originPath(target))
-	_, _ = botregistry.RegenerateWhatsNextCatalog(workdir)
-	return nil
+	res := &RemoveResult{}
+	if _, err := botregistry.RegenerateWhatsNextCatalog(workdir); err != nil {
+		res.CatalogError = err.Error()
+	}
+	return res, nil
 }
 
 // Fetch resolves opts.Source (a git URL or local path) to a validated bundle
@@ -438,12 +487,34 @@ func formatIndexBots(idx repoBotIndex) string {
 	return b.String()
 }
 
+// validateInstallName holds an install name to the bot-name charset botlock
+// already owns: the name is a routable identity (the catalogue's assignee
+// cell, the lock key a dependency would pin, the directory under .botz/) and
+// a value every installing command prints, so a name outside the charset —
+// one carrying a newline, a separator or a control byte — is refused instead
+// of being handed to any of those.
 func validateInstallName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("install name is empty")
 	}
+	if !botlock.ValidName(name) {
+		return fmt.Errorf("invalid install name %q (letters, digits and . _ - only, starting with a letter or digit)", name)
+	}
+	return nil
+}
+
+// validateRemoveName holds a removal name to path safety only: the target
+// must resolve to one directory under .botz/, which any name without a
+// separator satisfies. The name is taken as given — only a blank one is
+// refused, so a whitespace edge stays part of the name. The install-time
+// charset (validateInstallName) does not apply: installed workspaces carry
+// names outside it, and a bundle that is installed must stay uninstallable.
+func validateRemoveName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("remove name is empty")
+	}
 	if name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
-		return fmt.Errorf("invalid install name %q (no path separators)", name)
+		return fmt.Errorf("invalid remove name %q (no path separators)", name)
 	}
 	return nil
 }

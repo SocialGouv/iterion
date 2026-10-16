@@ -186,6 +186,34 @@ func BotsRegenCatalog(workdir string) (string, error) {
 	return botregistry.RegenerateWhatsNextCatalog(workdir)
 }
 
+// PrintCatalogWarning reports a catalog refresh that failed while the
+// command's own rows are real: what it shows as installed, updated, removed
+// or materialized stays as shown, but the orchestrator-facing catalog still
+// advertises the previous set until a regeneration succeeds. It names the
+// cause (which carries the catalog it could not write) and the command that
+// retries it, and claims nothing about the workspace beyond its rows — an
+// aborted sync leaves a pinned dependency missing, so the parenthetical may
+// not vouch for more than the rows themselves.
+//
+// An empty cause prints nothing: a successful refresh stays silent. It is
+// the human-mode surface — in JSON mode the result's own catalog_error
+// field carries the same fact, so callers print this from their human
+// branch only.
+func PrintCatalogWarning(p *Printer, catalogError string) {
+	cause := strings.TrimSpace(catalogError)
+	if p == nil || cause == "" {
+		return
+	}
+	// The cause is relayed text: it joins one failure per catalog owner
+	// (errors.Join, newline-separated) and embeds the parse error of any
+	// bundle discovery read, so it carries bytes nobody here authored.
+	// terminalText is what the Printer's other relayed-value sites (KV,
+	// Table) apply, so every line of this warning is one this command wrote.
+	p.Line("  ! catalog not refreshed: %s", terminalText(cause, 2000))
+	p.Line("    (rerun `iterion bots regen-catalog` — the catalog keeps advertising the previous set until it succeeds)")
+	p.Blank()
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------

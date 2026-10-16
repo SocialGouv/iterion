@@ -27,6 +27,8 @@ import { Select } from "@/components/ui/Select";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 import { toastError } from "@/lib/errorHints";
+
+import { installedMessage, uninstalledMessage } from "./toastMessages";
 import { useAuth } from "@/auth/AuthContext";
 import { useLocation, useSearch } from "wouter";
 
@@ -267,10 +269,7 @@ export default function MarketplaceView() {
           "success",
         );
       } else if (res.install) {
-        addToast(
-          `${force ? "Updated" : "Installed"} ${res.install.name} → ${res.install.installed_path}`,
-          "success",
-        );
+        addToast(installedMessage(res.install, force), "success");
       } else {
         addToast(`${force ? "Updated" : "Installed"} ${e.name}`, "success");
       }
@@ -290,8 +289,8 @@ export default function MarketplaceView() {
   const onUninstall = async (e: MarketplaceEntry) => {
     setInstalling(e.slug);
     try {
-      await uninstallMarketplaceBot(e.slug);
-      addToast(`Uninstalled ${e.name}`, "success");
+      const removed = await uninstallMarketplaceBot(e.slug);
+      addToast(uninstalledMessage(e.name, removed), "success");
       await queryClient.invalidateQueries({ queryKey: ["marketplace-installed"] });
     } catch (err) {
       toastError(addToast, err, "Uninstall failed");

@@ -26,6 +26,10 @@ type UpdateResult struct {
 	Ref           string `json:"ref"`
 	BundleSHA256  string `json:"bundle_sha256"`
 	InstalledPath string `json:"installed_path"`
+	// CatalogError is the rendered cause of the catalog refresh that failed
+	// after the new pin materialized: the lock and the install are the ones
+	// the operator asked for, the catalog is not refreshed yet.
+	CatalogError string `json:"catalog_error,omitempty"`
 }
 
 // Update resolves one existing dependency, rewrites its pin atomically, and
@@ -46,7 +50,10 @@ func Update(ctx context.Context, opts UpdateOptions) (*UpdateResult, error) {
 		}
 		return nil, err
 	}
-	return &UpdateResult{Name: opts.Name, Ref: prepared.Dependency.Ref, BundleSHA256: prepared.Dependency.BundleSHA256, InstalledPath: synced.InstalledPath}, nil
+	return &UpdateResult{
+		Name: opts.Name, Ref: prepared.Dependency.Ref, BundleSHA256: prepared.Dependency.BundleSHA256,
+		InstalledPath: synced.InstalledPath, CatalogError: synced.CatalogError,
+	}, nil
 }
 
 // PreparedUpdate contains a validated pin without changing the live lock or
