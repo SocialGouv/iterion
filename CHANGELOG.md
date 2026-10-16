@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.268.3](https://github.com/SocialGouv/iterion/compare/v3.268.2...v3.268.3) (2026-10-16)
+
+### Bug Fixes
+
+* **botinstall,bots,server,studio:** a catalog regeneration that fails reaches every consumer's user ([#2496](https://github.com/SocialGouv/iterion/issues/2496)) ([298552c](https://github.com/SocialGouv/iterion/commit/298552c0b27f7b97991a1d4b0038cfad11764676)), closes [#2454](https://github.com/SocialGouv/iterion/issues/2454)
+
+    <details><summary>why</summary>
+
+    botinstall.Install and botinstall.Remove threw the catalog regeneration error away (`_, _ = botregistry.RegenerateWhatsNextCatalog`), so `iterion bots install|sync|update|create`, the marketplace install/uninstall, the server install/upload routes and the studio's dependency sync all reported success while Nexie's catalog could keep advertising a removed bot or miss a new one.
+
+    </details>
+* **dryrun,runtime:** validate --exec decides a node's routes only on a fully specified launch ([#2497](https://github.com/SocialGouv/iterion/issues/2497)) ([6656b3f](https://github.com/SocialGouv/iterion/commit/6656b3fb99adc139116f484fd5e155432c8aba92)), closes [#1778](https://github.com/SocialGouv/iterion/issues/1778) [#1778](https://github.com/SocialGouv/iterion/issues/1778)
+
+    <details><summary>why</summary>
+
+    The dry run invented a value for any declared var the caller did not supply, so its fan-out verdict read routes the launch had not decided: a fallback spelled `{{vars.fb}}` that resolves to `claw` was refused (#1778), a `when:`-gated route was counted where every launch drops it, and a free-form `backend:` read clean on the tool surface while claw's tool appends make the whole verdict.
+
+    </details>
+
 ## [3.268.2](https://github.com/SocialGouv/iterion/compare/v3.268.1...v3.268.2) (2026-10-16)
 
 ### Bug Fixes
