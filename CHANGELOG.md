@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.268.2](https://github.com/SocialGouv/iterion/compare/v3.268.1...v3.268.2) (2026-10-16)
+
+### Bug Fixes
+
+* **rgaa-audit:** a retyped citation is folded with its anchor's text where the engine accepts both versions; the studio ledger's 1.3 citation healed ([#2453](https://github.com/SocialGouv/iterion/issues/2453)) ([#2490](https://github.com/SocialGouv/iterion/issues/2490)) ([2275dc9](https://github.com/SocialGouv/iterion/commit/2275dc95145a1af5f3a938bff58c06df8f03d9c2)), references [SocialGouv/ultra11y#50](https://github.com/SocialGouv/ultra11y/issues/50)
+
+    <details><summary>why</summary>
+
+    ultra11y 5.42.1's fold grounds a conformity's citation literally, then falls back to an evidence anchor it recognises in it; its trial grounds a conformity's citations as stored, with no fallback (SocialGouv/ultra11y#50). A citation the adjudicator retyped therefore lands at the fold and fails every later trial: r4's 1.3 (a closing backtick, 1 of the 515 citations of r2-r4) degraded the studio's trial, and the committed ledger carried it.
+
+    </details>
+
 ## [3.268.1](https://github.com/SocialGouv/iterion/compare/v3.268.0...v3.268.1) (2026-10-16)
 
 ### Bug Fixes
