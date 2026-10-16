@@ -1159,6 +1159,71 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 // early abort at once.
 const clawRunnerWaitDelay = 2 * time.Second
 
+// clawPipeDrainGrace is how long the crossing's owned pipes outlive
+// [exec.Cmd.Wait]. The crossing owns the runner's stdout and stdin pipes (an
+// [os.Pipe] pair each, not [exec.Cmd.StdoutPipe]/[exec.Cmd.StdinPipe]) so
+// that the Wait can run beside the multiplexer's loop: an exec-owned pipe is
+// closed by the Wait — stdout's read end and stdin's write end both as the
+// Wait's last act, on every path; the WaitDelay overrun closes them a second
+// time, mid-Wait, when a descendant holds the copiers — and either close
+// under a multiplexer still using the pipe loses an envelope the runner had
+// already delivered. Wait ends at most clawRunnerWaitDelay after the
+// runner's exit (the stderr copier a descendant holds is what it bounds),
+// and the reaper closes both owned ends one grace later: a read parked on a
+// stdout pipe the runner's descendant holds ends there, instead of parking
+// until the run's cancellation recovers the node.
+//
+// The grace is the trade. A pipe's buffered bytes die with its read end, so
+// an envelope already in a pipe survives only this long past the Wait. What
+// can sit buffered behind a Wait is whatever the runner wrote while the
+// multiplexer was inside an envelope handler — the terminal result, or a
+// tool_call, ask_user, event or session_capture it forwarded mid-stream —
+// and a tool_call or ask_user costs the handler's reply-write too: the
+// multiplexer writes the reply before it reads the next envelope, so a
+// handler that outlasts the grace loses the buffered envelope and lands its
+// reply on the reaper-closed stdin end. A reply-write to a runner still
+// alive is not at risk: a live runner means a Wait that has not returned
+// and a reaper not yet armed. Past the grace that answer is lost, and the
+// dispatch fails with the closed pipe rather than reporting a success it
+// does not have; the grace buys the drain, the bound is what keeps a held
+// pipe from parking the node.
+const clawPipeDrainGrace = 3 * time.Second
+
+// errDrainBoundCut is the multiplexer failure the crossing's own drain bound
+// produced: the reaper closed the owned pipes clawPipeDrainGrace past the
+// Wait while the multiplexer was still running, and the pipe operation
+// failed at that close instead of ending at the runner. The reaper closes
+// both owned ends, so either side of the loop can be the one that hits the
+// close — the parked read of stdout, or the reply-write to stdin the
+// multiplexer sends after a tool_call or ask_user handler, before it reads
+// the next envelope. Whatever the operation, the shape it reports is the
+// same: an envelope the runner had already buffered was destroyed with the
+// closed pipe (a handler outlasted the grace), or the runner died holding
+// the pipe with nothing written in it. Either way the runner's own exit is
+// not the node's failure, so the error is transient ([isDelegateRetryable])
+// and the run recovers by re-running the node. A cancellation never gets
+// here: the wrap is gated on the run's context being live, so a cancelled
+// or timed-out crossing keeps the plain multiplexer error.
+type errDrainBoundCut struct {
+	cause  error
+	stderr string
+}
+
+func (e *errDrainBoundCut) Error() string {
+	// The operation that hit the close names itself: os.File reports
+	// read/write through the *fs.PathError in the cause, and a cause
+	// without one falls back to the operation-neutral word.
+	op := "channel"
+	var pathErr *os.PathError
+	if errors.As(e.cause, &pathErr) {
+		op = pathErr.Op
+	}
+	return fmt.Sprintf("claw backend: the multiplexer's %s ended at the drain bound (clawPipeDrainGrace = %s past the Wait), not at the runner: an answer the runner had already buffered was lost with the closed pipe, or the runner died holding the pipe with no answer written — %v (stderr: %s)",
+		op, clawPipeDrainGrace, e.cause, e.stderr)
+}
+
+func (e *errDrainBoundCut) Unwrap() error { return e.cause }
+
 // redactedFarSide is text produced on the far side of this backend's
 // boundaries — the container's stderr, the runner's structured error, the
 // type and the decode failure of a relayed event, an argument the agent
@@ -1267,11 +1332,11 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	//
 	// KeepStdinOpen tells the docker driver to add `--interactive`
 	// to the docker exec invocation. Without it, the container's
-	// stdin is closed before we get to wire cmd.StdinPipe() below,
-	// the runner reads EOF on its very first envelope read, and
-	// dies with "read pre-task envelope: EOF (exit: exit status 1)"
-	// — the same class of failure the claudesdk Session path hit
-	// before 0ab267c.
+	// stdin is closed before the crossing wires the runner's stdin
+	// pipe below, the runner reads EOF on its very first envelope
+	// read, and dies with "read pre-task envelope: EOF (exit: exit
+	// status 1)" — the same class of failure the claudesdk Session
+	// path hit before 0ab267c.
 	//
 	// Forward provider credentials from the host iterion-desktop
 	// process env into the runner. The runner re-builds its own
@@ -1324,14 +1389,41 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		Env:           runnerEnv,
 	})
 
-	stdinPipe, err := cmd.StdinPipe()
+	// The crossing owns BOTH pipes of the runner's stdio it uses, for the
+	// reason clawPipeDrainGrace documents: an exec-owned pipe (StdinPipe,
+	// StdoutPipe) is closed by the Wait — the stdout read end and the stdin
+	// write end both as the Wait's last act, on every path; the WaitDelay
+	// overrun closes them a second time, mid-Wait, when a descendant holds
+	// the copiers — and either close under a multiplexer still using the
+	// pipe loses an envelope the runner had already delivered.
+	//
+	// Ownership starts with the driver's choice: StdoutPipe/StdinPipe
+	// refused a Cmd that already carried the stream, and the owned pipes
+	// refuse it just as loudly — assigning over it would silently take a
+	// pipe the driver captured for itself. Both refusals run before any
+	// pipe exists, so a refused driver leaves nothing behind to release.
+	if cmd.Stdin != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: stdin pipe: the sandbox driver's Cmd already sets Stdin (%T); the crossing owns the runner's stdin and does not clobber it", cmd.Stdin)
+	}
+	if cmd.Stdout != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: stdout pipe: the sandbox driver's Cmd already sets Stdout (%T); the crossing owns the runner's stdout and does not clobber it", cmd.Stdout)
+	}
+	stdinR, stdinPipe, err := os.Pipe()
 	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: stdin pipe: %w", err)
 	}
-	stdoutPipe, err := cmd.StdoutPipe()
+	cmd.Stdin = stdinR
+	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
+		// The one error path that can strand the stdin pair — and it fires
+		// exactly when descriptors are scarce, the moment a stranded pair
+		// costs the most. Ownership means releasing the ends here too, not
+		// leaving them to the finalizers.
+		_ = stdinR.Close()
+		_ = stdinPipe.Close()
 		return delegate.Result{}, fmt.Errorf("claw backend: stdout pipe: %w", err)
 	}
+	cmd.Stdout = stdoutW
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
@@ -1351,23 +1443,78 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	cmd.WaitDelay = clawRunnerWaitDelay
 
 	if err := cmd.Start(); err != nil {
+		// No reaper exists yet — ownership means releasing the ends here
+		// too, not leaving them to the finalizers.
+		_ = stdinR.Close()
+		_ = stdinPipe.Close()
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
 		return delegate.Result{}, fmt.Errorf("claw backend: spawn runner: %w", err)
 	}
 	defer endSession()
 
-	// Joining the runner is what makes its stderr readable: exec's copier
-	// goroutine owns the buffer until cmd.Wait returns, and Wait joins it on
-	// every path — the WaitDelay overrun closes the pipes and still waits for
-	// the copier (os/exec: awaitGoroutines). So every Wait of this dispatch
-	// goes through here, and the report below reads nothing until one has
-	// returned: an UNWOUND dispatch (a launcher-side tool panicking through
-	// the multiplexer) reaches the defer with no Wait at all, and there is
+	// cmd.Wait runs BESIDE the multiplexer's read now, on this goroutine,
+	// and the dispatch joins it wherever it used to call Wait. An owned pipe
+	// is what makes that safe: exec holds no part of it (no StdoutPipe, no
+	// copier for the stdout), so the Wait closes nothing the multiplexer is
+	// reading and the answer already in the pipe survives it. Joining the
+	// runner is what makes its stderr readable: exec's copier goroutine owns
+	// the buffer until cmd.Wait returns, and Wait joins it on every path —
+	// the WaitDelay overrun closes the pipes and still waits for the copier
+	// (os/exec: awaitGoroutines). So every join of this dispatch goes through
+	// here, and the report below reads nothing until one has returned: an
+	// UNWOUND dispatch (a launcher-side tool panicking through the
+	// multiplexer) reaches the defer with no join at all, and there is
 	// nothing safe to read on that path.
+	joinedCh := make(chan struct{})
+	var joinErr error
+	var pipesReaped atomic.Bool
+	go func() {
+		joinErr = cmd.Wait()
+		close(joinedCh)
+		// The owned ends outlive the Wait by the grace (clawPipeDrainGrace):
+		// a read parked on a stdout pipe the runner's descendant holds ends
+		// here, an envelope buffered behind a slow envelope handler gets its
+		// drain, and the multiplexer's own last reply-write gets to land.
+		// Closing them is the reaper's whole job; a failure leaves the pair
+		// to the finalizers, as any close-after-return does. The flag is set
+		// before the closes and read by the dispatch error path, which names
+		// the pipe operation that ended at this bound instead of reporting
+		// an internal pipe bug.
+		pipesReaped.Store(true)
+		time.Sleep(clawPipeDrainGrace)
+		_ = stdinPipe.Close()
+		_ = stdoutR.Close()
+	}()
 	joined := false
 	wait := func() error {
-		err := cmd.Wait()
+		<-joinedCh
 		joined = true
-		return err
+		return joinErr
+	}
+
+	// The parent's copy of the write end dies here. From this point the
+	// pipe's writers are exactly the runner and whatever it leaves behind:
+	// a runner that exits without its result envelope and holds nothing
+	// ends the multiplexer's read at EOF and takes the clean no-answer
+	// diagnostic, and a descendant still holding the write end keeps the
+	// read parked until the reaper above takes the read end back.
+	if err := stdoutW.Close(); err != nil {
+		_ = cmd.Process.Kill()
+		_ = wait()
+		return delegate.Result{}, fmt.Errorf("claw backend: close the runner's stdout write end: %w", err)
+	}
+
+	// The parent's copy of the read end dies here, for the symmetric reason:
+	// until it does, the launcher is a READER of its own stdin pipe, so a
+	// runner that died before reading its task looks alive to the pipe — the
+	// task envelope buffers into a pipe nobody will read instead of failing
+	// with the broken pipe that aborts the dispatch at the send. Closing it
+	// by hand is the other half of what StdinPipe did for the crossing.
+	if err := stdinR.Close(); err != nil {
+		_ = cmd.Process.Kill()
+		_ = wait()
+		return delegate.Result{}, fmt.Errorf("claw backend: close the runner's stdin read end: %w", err)
 	}
 
 	// The buffer crosses the run's redaction ONCE, for every reader: the
@@ -1431,7 +1578,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// (see [sessionSeed]).
 	seed := b.sessionSeedForCrossing(ctx, task)
 
-	mux := delegate.NewMultiplexer(stdoutPipe, stdinPipe, b.multiplexerHandler(ctx, task, seed))
+	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, b.multiplexerHandler(ctx, task, seed))
 
 	if len(seed.replay) > 0 {
 		if err := mux.Send(delegate.NewSessionReplayEnvelope(seed.replay)); err != nil {
@@ -1517,6 +1664,17 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	runnerError := redactedFarSide(task, ioRes.Error)
 
 	if runErr != nil && !errors.Is(runErr, io.EOF) {
+		// A pipe operation that ended at the reaper's close is this
+		// dispatch's own drain bound acting, not a pipe bug: name the bound
+		// and the operation, and let the retry classify it — but only on a
+		// live context, so a cancelled or timed-out crossing keeps the
+		// plain (terminal) error.
+		if pipesReaped.Load() && ctx.Err() == nil && errors.Is(runErr, os.ErrClosed) {
+			return delegate.Result{}, &errDrainBoundCut{
+				cause:  redactedThrough(task.RedactSecrets, runErr),
+				stderr: runnerStderr(),
+			}
+		}
 		return delegate.Result{}, fmt.Errorf("claw backend: multiplexer: %w (stderr: %s)",
 			redactedThrough(task.RedactSecrets, runErr), runnerStderr())
 	}

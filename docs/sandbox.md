@@ -1031,27 +1031,60 @@ across the channel.
 `executeViaSandboxRunner`, `refuseForwardedCall` and `multiplexerHandler`
 ([pkg/backend/model/claw_backend.go](../pkg/backend/model/claw_backend.go)):
 
-- **`cmd.Wait` is bounded — the read before it is not.** `cmd.Wait` waits for
-  the goroutine copying the runner's stderr, and that copier ends only when
-  every holder of the pipe closes it — a descendant the driver's command left
-  behind is such a holder, so a node whose result envelope has already been
-  read would never return. `cmd.WaitDelay` (2 s, `clawRunnerWaitDelay`, set
-  before `Start` so the context watcher is armed whatever the driver's
-  `Cmd.Cancel`) bounds that drain and every early abort. The bound expiring is
-  not the node's failure: `exec.ErrWaitDelay` on a runner that answered is
-  reported as an abandoned drain, never charged to the node. What no bound
-  covers is the multiplexer's READ of the stdout pipe, before that `Wait`: a
-  runner that dies without writing its result envelope (an in-container OOM
-  kill, a failed `write result envelope`) while a descendant holds the pipe
-  parks the node until something cancels the run — the cancellation closes the
-  pipes `clawRunnerWaitDelay` later and the dispatch returns. Running that
-  `Wait` concurrently with the read is NOT the fix: `Wait` closes this
-  process's end of `StdoutPipe` as its last act (`os/exec`: "it is incorrect
-  to call Wait before all reads from the pipe have completed"), so a host
-  inside a slow envelope handler loses an answer the runner had already
-  written — measured, 3 runs out of 3. Bounding that read means owning the
-  pipe instead of borrowing `StdoutPipe`'s: issue
-  [#2457](https://github.com/SocialGouv/iterion/issues/2457).
+- **The crossing owns the runner's pipes, and both of its waits are
+  bounded.** The launcher holds an `os.Pipe` pair for the runner's stdin and
+  another for its stdout (`cmd.Stdin`/`cmd.Stdout`, the parent's spare ends
+  closed right after `Start`) — not `StdoutPipe`/`StdinPipe`, whose ends
+  `cmd.Wait` closes on its own and whose close under a multiplexer still
+  using the pipe loses an envelope the runner had already delivered
+  (`StdoutPipe`'s own doc forbids the `Wait` before the reads complete). An
+  owned pipe is what makes the safe choreography possible: `cmd.Wait` runs
+  on a goroutine BESIDE the multiplexer's loop, and exec holds no part of
+  the pipes it would close — the answer already in the pipe survives the
+  Wait. `cmd.WaitDelay` (2 s, `clawRunnerWaitDelay`, set before `Start` so
+  the context watcher is armed whatever the driver's `Cmd.Cancel`) bounds
+  that Wait on every path — the aborts and the final drain — and it never
+  shortens a runner still working: the bound expiring is not the node's
+  failure, `exec.ErrWaitDelay` on a runner that answered is reported as an
+  abandoned drain, never charged to the node. The read that `Wait` used to
+  sit BEHIND is bounded by the same choreography: a runner that dies without
+  its result envelope while a descendant holds the pipe ends its parked read
+  when the reaper closes the owned ends `clawPipeDrainGrace` (3 s) after the
+  Wait — a recovery the crossing performs ITSELF, within `WaitDelay + grace`
+  of the runner's exit, where it used to park until the run's cancellation
+  recovered the node. A cancelled crossing is recovered by the same reaper —
+  the kill, then `WaitDelay + grace` — the cancellation closes nothing the
+  crossing owns; the +grace is the price of owning the pipe.
+  What the grace trades: a pipe's buffered bytes die with its read end, so
+  an envelope already in the pipe survives only `clawPipeDrainGrace` past
+  the Wait. What can sit buffered behind a Wait is whatever the runner
+  wrote while the multiplexer was inside an envelope handler — the terminal
+  result, or a tool_call, ask_user, event or session_capture it forwarded
+  mid-stream — and a tool_call or ask_user costs the reply-write too: the
+  multiplexer writes the handler's reply BEFORE it reads the next envelope,
+  so a handler that outlasts the grace loses the buffered envelope and
+  lands its reply on the reaper-closed stdin end. A reply-write to a runner
+  still alive is not at risk: a live runner means a Wait that has not
+  returned and a reaper not yet armed. A runner that exits before the
+  launcher's reply and before the reaper is gone for that reply: a
+  descendant it leaves as a background job takes /dev/null for its stdin,
+  so it holds nothing, and a reply-write to a crossing with no other reader
+  dies of the broken pipe that is the truth about that crossing, not a
+  defect; a foreground child left in the crossing — the driver's own exec
+  client (docker, kubectl) among them — does hold the stdin read end the
+  parent closed at Start, and the reply-write to it lands and is dropped,
+  which is just as harmless. Past the grace that answer
+  is lost, and the dispatch says so: the failure is `errDrainBoundCut`,
+  which names the drain bound — not an internal pipe bug — and the pipe
+  operation that hit the close (the multiplexer's read of stdout, or its
+  reply-write to stdin), keeps the closed-pipe cause and the runner's
+  stderr readable through it, and classifies as transient, so the run
+  recovers by re-running the node. A cancelled or timed-out crossing is
+  gated out of that naming: its context is already done, so the cut keeps
+  the plain multiplexer error and stays terminal. A driver that captures
+  the runner's stdio for itself (`Cmd.Stdout`/`Cmd.Stdin` already set) is
+  refused before any pipe exists, the way `StdoutPipe` refused it, never
+  silently clobbered.
 - **The runner's stderr is reported on every outcome that joined it.** It is
   the container's one channel for a diagnostic that does not fail the node — a
   replay it could not decode, a relayed event too large to ship, a
