@@ -38,6 +38,21 @@ const NodeSessionKillWait = 3 * time.Second
 // constants above, which a test may shorten.
 var sweepGrace, sweepKillWait = NodeSessionGrace, NodeSessionKillWait
 
+// sweepGateWaitSeconds bounds, in seconds, how long a sweep program's scan
+// gate waits for its release before the program fails with an error. It is
+// shorter than a witness's own ceiling, so a held sweep never outlives its
+// test; a test that wants a shorter one sets it.
+var sweepGateWaitSeconds = 20
+
+// sweepScanGateFile, empty in production, is the path a sweep program reports
+// its scans to and waits at: after every scan it appends what the scan found
+// of the session to "<path>.scanned" and waits for "<path>.resume" to exist,
+// before it acts on that scan. It is the seam a test holds a sweep program at,
+// to stage a process that shows between two scans instead of guessing when the
+// window between them opens; sweepScanGate is its counterpart for the sweep
+// that runs here.
+var sweepScanGateFile string
+
 // NodeSessionSettle is the interval between a sweep's scans. A sweep ends on
 // two scans in a row that find nothing of the session alive: a process in the
 // middle of an exec has no readable environment for an instant, and one scan
@@ -178,9 +193,15 @@ func NodeSessionSweepScript(token, sinceFile string) (string, error) {
 	if strings.ContainsAny(sinceFile, "'\n") {
 		return "", fmt.Errorf("node session since file %q: a quote or a newline cannot be embedded", sinceFile)
 	}
+	gateFile := sweepScanGateFile
+	if strings.ContainsAny(gateFile, "'\n\\") {
+		return "", fmt.Errorf("node session scan gate %q: a quote, a backslash or a newline cannot be embedded", gateFile)
+	}
 	return `E='` + NodeSessionEntry(token) + `'
 H='` + sweepLineHead + `'
 SINCE_FILE='` + sinceFile + `'
+GATE='` + gateFile + `'
+GATE_WAIT=` + strconv.Itoa(sweepGateWaitSeconds) + `
 GRACE=` + strconv.Itoa(int(sweepGrace/time.Second)) + `
 KILLWAIT=` + strconv.Itoa(int(sweepKillWait/time.Second)) + `
 SETTLE=` + strconv.FormatFloat(NodeSessionSettle.Seconds(), 'f', -1, 64) + `
@@ -209,6 +230,26 @@ me=
 # value holding a newline cannot forge a line.
 if printf 'a\000' | grep -qzx a 2>/dev/null; then fastz=1; else fastz=; fi
 settle() { sleep "$SETTLE" 2>/dev/null || sleep 1; }
+# gate MEMBERS: with GATE set — a test holding this sweep at the scan it has
+# just finished, never in production — report what the scan found and wait for
+# the test to let the sweep act on it. A gate nobody releases is an error, so
+# that a held sweep is never read as a sweep that found nothing.
+gate() {
+  [ -n "$GATE" ] || return 0
+  printf '%s\n' "$1" >> "$GATE.scanned" 2>/dev/null || {
+    printf '%serror the scan gate at %s is not writable\n' "$H" "$GATE"
+    exit 0
+  }
+  gate_deadline=$(( $(date +%s) + GATE_WAIT ))
+  while [ ! -f "$GATE.resume" ]; do
+    if [ "$(date +%s)" -gt "$gate_deadline" ]; then
+      printf '%serror the scan gate at %s was never released\n' "$H" "$GATE"
+      exit 0
+    fi
+    settle
+  done
+  printf '' > "$GATE.passed"
+}
 # slurp FILE: sets line to the whole of FILE, its lines joined by spaces — a
 # process name may hold a newline, and the fields that follow it are on the
 # last line. Status 1 when FILE cannot be read.
@@ -322,6 +363,7 @@ phase() {
   quiet=0
   while :; do
     scan
+    gate "$members"
     if [ "$members" = ' ' ]; then
       quiet=$((quiet+1))
       [ $quiet -ge 2 ] && return 0

@@ -105,12 +105,13 @@ loop writing `rs.vars` on the loop-edge traversal) — they are simply not on th
 abandoned branch's read path, in either the synctest or the pre-conversion
 shape, so they say nothing about the conversion.
 
-## Two recipes for a bound a scheduler can decide
+## Three recipes for a bound a scheduler can decide
 
 #1471 asks a liveness bound to keep >= 10x headroom over the legitimate
-latency, or to be replaced by a synchronisation point. These two shapes are
-what "replaced" looks like in practice; #2362 and #2447 applied them to the
-last tight bounds of `pkg/runview` and the duration-deadline spend witness.
+latency, or to be replaced by a synchronisation point. These three shapes are
+what "replaced" looks like in practice; #2362 and #2447 applied the first two to
+the last tight bounds of `pkg/runview` and the duration-deadline spend witness,
+#2487 the third to the node-session sweep.
 
 **An in-process lifecycle witness reads VIRTUAL time.** `pkg/runview`'s
 `Manager` is pure in-process state, so every hand-off test that reads a WAIT
@@ -172,3 +173,40 @@ pre-change `TestNodeDeadlineFromDurationBudget` PASSES with
 `context.WithDeadline` removed from `engine_exec.go` — the regression it guards,
 green. Converted, both are green 3/3 under the same load and both go red in
 0.03s on that mutant, where the old witness only reached the harness timeout.
+
+**A witness of a sweep's own cadence is HELD in it.** `pkg/internal/proc`'s
+node-session sweep scans every `NodeSessionSettle` (50 ms) and ends on two scans
+in a row that find nothing, so `TestSweepStopsAProcessThatShowsAfterAnEmptyScan`
+had one settle to start a process and have its exec visible: #2487 measured it
+losing in a merge-queue run that touched no file of the package, reading the
+product as broken (`late (pid 57351) belongs to the session and is still
+running`). Both implementations now carry a scan gate the sweep calls after
+every scan and BEFORE it acts on what the scan found — `sweepScanGate`, a func
+of the members the scan found, for the sweep that runs in-process;
+`sweepScanGateFile`, a path the generated sh program appends each scan to and
+waits at, for the program a sandbox runs. Both are inert by default (nil, and an
+empty `GATE=''` whose `gate()` returns at once), and the program's gate is
+bounded: a gate nobody releases prints an `iterion-node-session error` line, so
+a held sweep is never read as a sweep that found nothing. The witness holds the
+sweep there, asserts from the sweep's OWN view that the held scan found nothing,
+starts `late`, waits until `FindNodeSession` holds it — the entry is readable
+only once the exec is done, which is the fact the window needs — and only then
+releases.
+
+Where the gate sits is what keeps the mutation honest. At the settle instead,
+the mutant that ends on the FIRST empty scan never settles, and the witness
+would redden on a premise timeout rather than on its own assertion. Measured, one
+implementation at a time: `quiet == 2` → `quiet == 1` in `nodesession_linux.go`
+reddens the `go` subtest in ~5s with the queue's own two lines (the seconds are `check`'s wait for a process that never dies, not the sweep's) and leaves the
+`sh` ones green; `[ $quiet -ge 2 ]` → `-ge 1` in `nodeSessionSweepBody` reddens
+both `sh` subtests and leaves `go` green. Green `-count=50`, `-race -count=10`,
+and `-count=20` under two competing jailed runs of the same package.
+
+Three sibling premises of the same witnesses rested on a 200 ms sleep — a leader
+thread that must have exited, a `prctl(PR_SET_DUMPABLE, 0)` that must have run.
+A loaded host does not fail them, it makes them PASS vacuously: the sweep then
+finds an ordinary process and stops it, and the fallback path the witness exists
+for is never exercised. Each is now an `awaitPremise` poll on the fact itself —
+the process-wide `environ` unreadable while a thread's answers; an environment
+nobody of this uid can read while the process still runs — so a slow host costs
+time instead of a verdict, and a premise that never holds fails as itself.

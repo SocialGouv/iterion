@@ -225,6 +225,14 @@ func sameProcess(pid int, start uint64) bool {
 	return ok && st.start == start && running(dir, st)
 }
 
+// sweepScanGate, nil in production, runs after every scan of a sweep in this
+// process — with what the scan found of the session, before the sweep acts on
+// it — and the sweep waits for it to return. It is the seam a test holds a
+// sweep at, to stage a process that shows between two scans instead of
+// guessing when the window between them opens; sweepScanGateFile is its
+// counterpart in the program a sandbox runs.
+var sweepScanGate func(found int)
+
 // SweepNodeSession stops every process of the session token and says what it
 // did. Each scan finds the carriers of the entry, the processes earlier scans
 // found and that are still the same, and every descendant of either; it sends
@@ -253,6 +261,9 @@ func SweepNodeSession(token string, since BootTicks) (SweepReport, error) {
 			}
 			for pid, m := range sc.unreadable {
 				unreadable[pid] = m
+			}
+			if g := sweepScanGate; g != nil {
+				g(len(sc.members))
 			}
 			if len(sc.members) == 0 {
 				quiet++
