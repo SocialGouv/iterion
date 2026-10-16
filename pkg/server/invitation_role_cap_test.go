@@ -310,32 +310,43 @@ func (g orgStandingErrorGate) GetOrgMembership(ctx context.Context, userID, orgI
 
 // A standing that cannot be READ is not a standing: the mint is refused with
 // the store's own error rather than passed through on a membership nobody
-// could see.
+// could see. It holds at both rungs the mirror has, the one the minter
+// reaches included — the read comes before any rank comparison. A role
+// mirrored up to NOTHING (config_editor, ADR-078) owes this CAP no read at
+// all: no standing caps it at the mint, and no sweep takes it for the rank it
+// carries. What it does owe is the confirmation's read once its row has
+// landed, where a standing that is GONE is what the removal's addressed-to
+// half fires at
+// (TestTeamInvitations_aStandingUnreadableAfterTheMintTakesTheInvitationBack).
 func TestTeamInvitations_aStandingThatCannotBeReadRefusesTheMint(t *testing.T) {
-	s := newOrgCredsTestServer(t)
-	seedRacerAsTeamAdmin(t, s)
-	ctx := context.Background()
-	real := s.authStore()
-	s.authSvc.SetStoreForTest(orgStandingErrorGate{Store: real, userID: racerID, orgID: "o1"})
+	for _, role := range []identity.Role{identity.RoleOwner, identity.RoleMember} {
+		t.Run("a "+string(role)+" mint", func(t *testing.T) {
+			s := newOrgCredsTestServer(t)
+			seedRacerAsTeamAdmin(t, s)
+			ctx := context.Background()
+			real := s.authStore()
+			s.authSvc.SetStoreForTest(orgStandingErrorGate{Store: real, userID: racerID, orgID: "o1"})
 
-	selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: racerID})
-	mint := httptest.NewRecorder()
-	s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
-		`{"email":"racer@example.com","role":"owner"}`, "t1", ""))
-	if mint.Code != http.StatusInternalServerError {
-		t.Fatalf("minting while the minter's standing cannot be read: code=%d body=%s, want 500",
-			mint.Code, mint.Body.String())
-	}
-	if body := mint.Body.String(); !strings.Contains(body, "connection reset by peer") {
-		t.Errorf("the 500 does not carry the store's own error: %s", body)
-	}
-	s.authSvc.SetStoreForTest(real)
-	invs, err := real.ListInvitationsByTeam(ctx, "t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(invs) != 0 {
-		t.Fatalf("the refused mint wrote an invitation anyway: %+v", invs)
+			selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: racerID})
+			mint := httptest.NewRecorder()
+			s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
+				`{"email":"racer@example.com","role":"`+string(role)+`"}`, "t1", ""))
+			if mint.Code != http.StatusInternalServerError {
+				t.Fatalf("minting a %s while the minter's standing cannot be read: code=%d body=%s, want 500",
+					role, mint.Code, mint.Body.String())
+			}
+			if body := mint.Body.String(); !strings.Contains(body, "connection reset by peer") {
+				t.Errorf("the 500 does not carry the store's own error: %s", body)
+			}
+			s.authSvc.SetStoreForTest(real)
+			invs, err := real.ListInvitationsByTeam(ctx, "t1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(invs) != 0 {
+				t.Fatalf("the refused mint wrote an invitation anyway: %+v", invs)
+			}
+		})
 	}
 }
 
@@ -968,11 +979,12 @@ func TestOrgInvitations_aStandingThatVanishesAfterTheGateRefusesTheMint(t *testi
 
 // What the cap does NOT reach, measured rather than claimed: a pending
 // invitation carries the role it was minted with, and the mint is the only
-// place the minter's standing is read. An invitation whose creator is
-// off-boarded (or demoted) before it is accepted still mirrors up — the
-// remedy is to revoke it, which the org admin route does, and which the
-// off-boarding cascade already does for the invitations addressed TO a
-// removed member.
+// place the minter's standing is read — the accept reads nothing about its
+// creator, here a standing taken straight out of the store. Which is why the
+// rank is kept in step at the row instead: the roster's own writes revoke the
+// invitations a member minted above the standing they are left with (the role
+// PATCH and the off-boarding cascade), and any pending invitation is revoked
+// by hand through the org route.
 func TestTeamInvitations_aPendingInvitationOutlivesItsCreatorsStanding(t *testing.T) {
 	s := newOrgCredsTestServer(t)
 	ctx := context.Background()
@@ -1040,51 +1052,5 @@ func TestTeamInvitations_aPendingInvitationOutlivesItsCreatorsStanding(t *testin
 	}
 	if got, err := real.GetInvitation(ctx, later.ID); err == nil {
 		t.Errorf("the revoked invitation stands: %+v", got)
-	}
-}
-
-// The same residual through a DEMOTION rather than a removal: the accept reads
-// nothing about the creator, so an invitation minted at org admin still
-// mirrors up once its creator is an ordinary member.
-func TestTeamInvitations_aPendingInvitationOutlivesItsCreatorsDemotion(t *testing.T) {
-	s := newOrgCredsTestServer(t)
-	ctx := context.Background()
-	real := s.authStore()
-	if _, err := real.CreateUser(ctx, identity.User{
-		ID: "newcomer", Email: "newcomer@example.com", Status: identity.UserStatusActive, CreatedAt: time.Now(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	mint := httptest.NewRecorder()
-	s.handleCreateInvitation(mint, teamReq(orgAdminCtx(), "POST", "/api/teams/t1/invitations",
-		`{"email":"newcomer@example.com","role":"admin"}`, "t1", ""))
-	if mint.Code != http.StatusOK {
-		t.Fatalf("an org admin minting an admin invitation: code=%d body=%s", mint.Code, mint.Body.String())
-	}
-	var minted struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(mint.Body.Bytes(), &minted); err != nil || minted.Token == "" {
-		t.Fatalf("the mint answered no token: %v %s", err, mint.Body.String())
-	}
-	// The creator is demoted to a plain member, below the mirror they minted.
-	demote := httptest.NewRecorder()
-	s.handleUpdateOrgMember(demote, teamReq(superAdminCtx(), "PATCH", "/api/orgs/o1/members/orgadmin",
-		`{"role":"member"}`, "o1", "orgadmin"))
-	if demote.Code != http.StatusOK {
-		t.Fatalf("demoting the creator: code=%d body=%s", demote.Code, demote.Body.String())
-	}
-	if om, err := real.GetOrgMembership(ctx, "orgadmin", "o1"); err != nil || om.Role != identity.OrgRoleMember {
-		t.Fatalf("the creator is %+v (%v), want a plain member", om, err)
-	}
-	if _, err := s.authSvc.AcceptInvitationForExistingUser(ctx, "newcomer", minted.Token); err != nil {
-		t.Fatalf("accepting an invitation whose creator was demoted: %v", err)
-	}
-	om, err := real.GetOrgMembership(ctx, "newcomer", "o1")
-	if err != nil {
-		t.Fatalf("the accept wrote no org membership: %v", err)
-	}
-	if om.Role != identity.OrgRoleAdmin {
-		t.Errorf("the accepted admin invitation mirrored up to %q, want %q", om.Role, identity.OrgRoleAdmin)
 	}
 }

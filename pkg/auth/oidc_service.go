@@ -448,6 +448,19 @@ func (s *Service) resolveOrgIDForTeam(ctx context.Context, teamID string) (strin
 // or the allow-list was disabled). matched is the set of tenant IDs the user
 // currently matches. Only github_sso-minted memberships are touched —
 // human-created ones (Source empty / invitation / manual) are never revoked.
+//
+// Each revoke withdraws the premise a mint's own confirmation keeps a
+// self-addressed invitation on — a grant in the team, held by a creator with
+// no org membership row in its org (pkg/server
+// standingAfterMintTakesInvitation) — so the rows kept on the grant go with
+// it, through the sweep the server registers (SetTeamGrantSweep): the one
+// selection the three writes that owe it share. A sweep that fails fails the
+// login, as every other store error on this path does: the row it could not
+// take is a re-entry ticket into the team this revoke just closed.
+//
+// With no sweep registered, a grant is NOT revoked: taking the grant and
+// leaving the rows kept on it is the state this exists to prevent, and a
+// silent half-revoke is not an answer the caller can act on.
 func (s *Service) reconcileGitHubGrants(ctx context.Context, userID string, matched map[string]struct{}, now time.Time) error {
 	memberships, err := s.store.ListMembershipsByUser(ctx, userID)
 	if err != nil {
@@ -460,12 +473,23 @@ func (s *Service) reconcileGitHubGrants(ctx context.Context, userID string, matc
 		if _, ok := matched[m.TeamID]; ok {
 			continue
 		}
+		if s.teamGrantSweep == nil {
+			return fmt.Errorf("auth: no team-grant invitation sweep is registered, so revoking the %s grant of %s would leave the pending invitations kept on it standing (SetTeamGrantSweep)", m.TeamID, userID)
+		}
 		if err := s.store.DeleteMembership(ctx, userID, m.TeamID); err != nil {
 			return err
+		}
+		if err := s.teamGrantSweep(ctx, userID, m.TeamID, MembershipRevokedBySSOReason); err != nil {
+			return fmt.Errorf("auth: sweep the invitations kept on the %s grant of %s, revoked with the github allow-list that granted it: %w", m.TeamID, userID, err)
 		}
 	}
 	return nil
 }
+
+// MembershipRevokedBySSOReason is the audit cause each invitation revoked
+// with a github_sso grant carries, naming the write that withdrew the premise
+// the row rested on.
+const MembershipRevokedBySSOReason = "creator_team_grant_sso_revoked"
 
 // githubGate captures the per-login GitHub team-gating context: whether the
 // flow is a GitHub login, whether any allow-list is configured deployment-wide

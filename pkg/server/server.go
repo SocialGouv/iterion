@@ -1139,5 +1139,6 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// app's AddProjectSilently call on first launch. Best-effort: a
 	// registry I/O failure is logged but never blocks startup.
 	s.registerInitialProject()
+	s.wireTeamGrantSweep()
 	return s
 }

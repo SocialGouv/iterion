@@ -191,13 +191,15 @@ func awaitAuditQuiet(t *testing.T, c *countingAudit, want int64) {
 // auditRows polls the tenant's audit rows — the writes are detached — and
 // returns them keyed by action, giving up at the deadline. The caller asserts
 // on the SET of keys, never on an order: two detached inserts land in either
-// one.
+// one. The page asks for the store's own ceiling: the rows wanted are
+// selected by TARGET, which no Page filter carries, and an unset Limit would
+// serve the 50 newest rows of the whole tenant (audit.ClampLimit).
 func auditRows(t *testing.T, s *Server, tenantID, targetID string, want ...string) map[string]audit.Event {
 	t.Helper()
 	var got map[string]audit.Event
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		evs, err := s.auditStore.ListByTenant(context.Background(), tenantID, audit.Page{})
+		evs, err := s.auditStore.ListByTenant(context.Background(), tenantID, audit.Page{Limit: 500})
 		if err != nil {
 			t.Fatalf("list audit rows of %s: %v", tenantID, err)
 		}
@@ -634,6 +636,8 @@ func TestOrgOffboarding_aFailedSecondSweepNamesWhatMayBeLeft(t *testing.T) {
 	ctx := context.Background()
 
 	real := s.authStore()
+	log := &lockedBuffer{}
+	s.logger = iterlog.New(iterlog.LevelInfo, log)
 	s.authSvc.SetStoreForTest(&sweepErrorGate{Store: real, userID: racerID, failOnCall: 2, grantInWindow: "t1"})
 
 	off := httptest.NewRecorder()
@@ -642,13 +646,28 @@ func TestOrgOffboarding_aFailedSecondSweepNamesWhatMayBeLeft(t *testing.T) {
 		t.Fatalf("off-boarding whose second sweep failed: code=%d body=%s, want 500", off.Code, off.Body.String())
 	}
 	body := off.Body.String()
-	for _, want := range []string{"may still hold a team grant", "re-issue the removal"} {
+	for _, want := range []string{
+		"may still hold a team grant",
+		"re-issue the removal",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the error hides what the unfinished sweep may have left, or what to do (missing %q): %s", want, body)
 		}
 	}
+	// And the grants ALONE: the last sweep runs after this failure and went
+	// through here, so an invitation residue in this body would send an
+	// operator after a row that sweep took. Its own failure has a clause of
+	// its own (lastSweepResidue).
+	if strings.Contains(body, standingMintedInvitation) {
+		t.Errorf("the 500 of a failed grant pass names an invitation residue the last sweep took: %s", body)
+	}
 	if _, err := real.GetOrgMembership(ctx, racerID, "o1"); err == nil {
 		t.Error("the org membership stands despite the 500 — the response must describe what actually happened")
+	}
+	// Said where it survives the caller too, and with both halves: the
+	// detached pass's failure reaches a client that may be gone.
+	if got := log.String(); !strings.Contains(got, "the second sweep of the team access of "+racerID) && !strings.Contains(got, racerID) {
+		t.Errorf("the log of the failed second sweep does not name the member it was about: %s", got)
 	}
 	// The state the error names, asserted: a grant IS standing.
 	if _, err := real.GetMembership(ctx, racerID, "t1"); err != nil {
@@ -1010,7 +1029,18 @@ func TestOrgOffboarding_aReReadThatAnswersOnlyAtItsDeadlineStillTakesTheGrantBac
 		t.Errorf("placement whose re-read timed out: code=%d body=%s, want 500 — a boundary nothing could certify does not hold a grant up", placed.Code, placed.Body.String())
 	}
 	body := placed.Body.String()
-	for _, want := range []string{"could not re-confirm", "the team grant was revoked"} {
+	for _, want := range []string{
+		"could not re-confirm", "the team grant was revoked",
+		// The grant is taken back with the org membership row UNREADABLE,
+		// so the rule that takes the rows kept on it cannot decide and no
+		// sweep runs: the body names the row that may stand, the listing
+		// this caller can read and the act that takes it, as the sibling
+		// exits of the same rule do (sweepInvitationsKeptOnTeamGrant).
+		"may stand on it",
+		"could not read",
+		"GET /api/teams/t1/invitations",
+		"revoked by hand",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the answer does not say the grant went back (missing %q): %s", want, body)
 		}
@@ -2076,7 +2106,7 @@ func TestOrgOffboarding_aMembershipDeleteThatFailsNamesWhatTheSweepTook(t *testi
 		}
 	}
 	body := w.Body.String()
-	for _, want := range []string{"their team grants in this org are revoked", "the pending invitations addressed to them, where their account row named an address", "may or may not be gone", "re-issue the removal"} {
+	for _, want := range []string{"their team grants in this org are revoked", "with the pending invitations they minted here that carry an org role", "those addressed to them, where their account row named an address", "may or may not be gone", "re-issue the removal"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the 500 does not say which state it left (missing %q): %s", want, body)
 		}
@@ -2596,7 +2626,13 @@ func TestOrgOffboarding_anUnreadableInvitationListStopsTheCascade(t *testing.T) 
 		s, real, _ := seed(t)
 		s.authSvc.SetStoreForTest(&invitationListErrorGate{Store: real, teamID: "t1", failOnCall: 2})
 		body := off(t, s).Body.String()
-		wants(t, body, "list team t1 invitations", "may still hold a team grant or a pending invitation", "re-issue the removal")
+		wants(t, body, "list team t1 invitations", "may still hold a team grant in this org", "re-issue the removal")
+		// The last sweep runs after this failure and went through, so the
+		// body names the grants alone: naming the invitation residue too
+		// would send an operator after a row that sweep took.
+		if strings.Contains(body, standingMintedInvitation) {
+			t.Errorf("the 500 of a failed grant pass names an invitation residue the last sweep took: %s", body)
+		}
 		if om, err := real.GetOrgMembership(ctx, racerID, "o1"); err == nil {
 			t.Errorf("the second pass runs once the membership row is gone: %+v", om)
 		}
@@ -2681,6 +2717,7 @@ type subjectReadGate struct {
 
 	mu                     sync.Mutex
 	reads                  int
+	subjectReads           int
 	subjectReadsOnDoneCtx  int
 	subjectReadsNoDeadline int
 	subjectBudgets         []time.Duration
@@ -2713,7 +2750,16 @@ func (g *subjectReadGate) GetUser(ctx context.Context, id string) (identity.User
 	// context, and counting that one would flag the handler's ordinary read.
 	g.mu.Lock()
 	inCompensation := id == g.userID && g.reads >= 2
+	// The compensation reads the account TWICE, in this order: the label
+	// first (grantSubject, for the refusal's subject), then the address the
+	// sweep of the rows kept on the revoked grant selects by
+	// (revokeInvitationsKeptOnTeamGrant). Only the first is the label's, and
+	// only its budget is this test's subject — the sweep is a repair, priced
+	// like the repair it is.
 	if inCompensation {
+		g.subjectReads++
+	}
+	if inCompensation && g.subjectReads == 1 {
 		if dl, ok := ctx.Deadline(); ok {
 			g.subjectBudgets = append(g.subjectBudgets, time.Until(dl))
 		} else {
@@ -3692,7 +3738,7 @@ type secondSweepFailureGate struct {
 
 	mu      sync.Mutex
 	deletes int
-	lists   int
+	placed  bool
 	putCode int
 	putBody string
 }
@@ -3718,19 +3764,22 @@ func (g *secondSweepFailureGate) DeleteOrgMembership(ctx context.Context, userID
 	g.s.handlePutOrgMember(w, teamReq(superAdminCtx(), "PUT", "/api/orgs/o1/members/"+g.userID, `{"role":"member"}`, "o1", g.userID))
 	g.mu.Lock()
 	g.putCode, g.putBody = w.Code, w.Body.String()
+	g.placed = true
 	g.mu.Unlock()
 	return nil
 }
 
+// Every read of t1's invitations ONCE the placement has landed fails — the
+// second sweep's, whichever number of reads the window's own placement made
+// (it reconciles the invitations its subject minted).
 func (g *secondSweepFailureGate) ListInvitationsByTeam(ctx context.Context, teamID string) ([]identity.Invitation, error) {
 	if teamID != "t1" {
 		return g.Store.ListInvitationsByTeam(ctx, teamID)
 	}
 	g.mu.Lock()
-	g.lists++
-	n := g.lists
+	placed := g.placed
 	g.mu.Unlock()
-	if n == 2 {
+	if placed {
 		return nil, errors.New("identity: list invitations by team: connection reset by peer")
 	}
 	return g.Store.ListInvitationsByTeam(ctx, teamID)
@@ -3765,8 +3814,14 @@ func TestOrgOffboarding_aFailedSecondSweepStillTakesTheBoundaryRow(t *testing.T)
 		if putCode != http.StatusOK {
 			t.Fatalf("the placement issued inside the window: code=%d body=%s, want 200 — then this is not the race the test describes", putCode, putBody)
 		}
-		if body := w.Body.String(); !strings.Contains(body, "may still hold a team grant or a pending invitation") {
+		if body := w.Body.String(); !strings.Contains(body, "may still hold a team grant in this org") {
 			t.Errorf("the 500 does not name what the failed sweep may have left: %s", body)
+		}
+		// The invitation residue this body carries is the LAST sweep's own
+		// clause, which failed here too — never the grant pass's words.
+		if body := w.Body.String(); strings.Contains(body, standingMintedInvitation) &&
+			!strings.Contains(body, "the last sweep of their pending invitations failed") {
+			t.Errorf("the 500 names an invitation residue outside the last sweep's own clause: %s", body)
 		}
 		if deletes != 2 {
 			t.Fatalf("want 2 DeleteOrgMembership calls on the target, got %d — then the last delete did not run on this exit", deletes)
@@ -3803,7 +3858,7 @@ func TestOrgOffboarding_aFailedSecondSweepStillTakesTheBoundaryRow(t *testing.T)
 		for _, want := range []string{
 			"re-sweeping their team access failed",
 			"re-deleting their org membership failed too",
-			"may still hold a team grant or a pending invitation",
+			"may still hold a team grant in this org",
 			"they would be an org member again",
 			"re-issue the removal",
 		} {
@@ -3843,13 +3898,13 @@ func TestOrgOffboarding_theBodiesThatReportAFinishedFirstPassCarryItsCondition(t
 		{
 			name:       "the membership row's own delete",
 			failOnCall: 1,
-			says:       "their team grants in this org are revoked (and the pending invitations addressed to them, where their account row named an address)",
+			says:       "their team grants in this org are revoked, with the pending invitations they minted here that carry an org role (and those addressed to them, where their account row named an address)",
 			forbidden:  "their team grants and pending invitations in this org are revoked",
 		},
 		{
 			name:       "the last delete, both sweeps through",
 			failOnCall: 2,
-			says:       "are revoked (with the pending invitations addressed to them, where their account row named an address)",
+			says:       "are revoked, with the pending invitations they minted here that carry an org role (and those addressed to them, where their account row named an address)",
 			forbidden:  "the team access of ghost in org o1 was revoked",
 		},
 	} {

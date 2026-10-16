@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -222,6 +223,15 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.auditTenant(r, teamID, "invitation.created", "invitation", inv.ID, map[string]any{"email": inv.Email, "role": string(inv.Role)})
+	// The cap above was read BEFORE the row landed, and the sweep that
+	// follows a write lowering the minter's own standing only sees the rows
+	// its listing reaches: the confirmation is what covers a mint that
+	// straddles such a write. It runs before the token leaves — by email or
+	// in the response — so an invitation that did not survive it reaches
+	// nobody.
+	if !s.confirmOrgStandingAfterMint(w, r, id, t.OrgID, inv) {
+		return
+	}
 	// When a real mailer is wired, deliver the invitation by email too
 	// (detached — a relay blip must not fail the create). The in-band
 	// token below stays: CLI/SDK flows and operators without SMTP
@@ -374,6 +384,39 @@ func (s *Server) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, mb)
 }
 
+// authGrantSweepActor is the audit actor of the invitation lines the auth
+// service's own grant-revoking writes produce: those writes serve no request,
+// so the subsystem names itself (auditSystem) and the cause of each line says
+// which write it was (auth.MembershipRevokedBySSOReason).
+const authGrantSweepActor = "auth"
+
+// wireTeamGrantSweep registers, on the auth service this server is built on,
+// the sweep its grant-revoking writes owe: whoever withdraws the premise a
+// mint's own confirmation keeps a self-addressed invitation on takes the rows
+// kept on it (auth.TeamGrantSweep). pkg/auth cannot reach the invitation
+// rules or the audit store, and a second selection there would be a second
+// rule to keep in step with this one, so the ONE the HTTP writes use decides
+// for the service too (takeInvitationsKeptOnRevokedTeamGrant).
+//
+// The sweep runs on a context detached from the caller's, on the same budget
+// the HTTP writes give it: the grant is already gone, so a caller that goes
+// away would otherwise leave exactly the row the sweep exists to take.
+func (s *Server) wireTeamGrantSweep() {
+	if s.authSvc == nil {
+		return
+	}
+	s.authSvc.SetTeamGrantSweep(func(ctx context.Context, userID, teamID, reason string) error {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), grantCompensationTimeout)
+		defer cancel()
+		f := s.takeInvitationsKeptOnRevokedTeamGrant(sctx, systemActor(authGrantSweepActor), teamID, userID, reason)
+		if f == nil {
+			return nil
+		}
+		return fmt.Errorf("the team grant of %s in team %s is revoked but %s: %w — %s (listed by GET /api/teams/%s/invitations, revoked by hand)",
+			userID, teamID, f.clause, f.err, f.residue, teamID)
+	})
+}
+
 func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	teamID := r.PathValue("id")
@@ -387,6 +430,20 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditTenant(r, teamID, "member.removed", "member", memberID, nil)
+	// This delete WITHDRAWS the premise the mint's own confirmation keeps a
+	// self-addressed invitation on: the grant in this team, held by a
+	// creator with no org membership row in its org
+	// (standingAfterMintTakesInvitation). Whoever withdraws it takes the
+	// rows kept on it — nothing else measures them again, and what stands
+	// is a re-entry ticket into the team the grant was just taken from.
+	//
+	// It runs AFTER the delete, as the off-boarding cascade's own invitation
+	// selection does: a selection before it reaches no row minted between
+	// the two, which a confirmation would then keep on the grant this
+	// request is about to revoke.
+	if !s.sweepInvitationsKeptOnTeamGrant(w, r, teamID, memberID, "creator_team_grant_removed") {
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

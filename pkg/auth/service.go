@@ -125,7 +125,33 @@ type Service struct {
 	resets    PasswordResetStore
 	mailer    mail.Mailer
 	publicURL string
+	// teamGrantSweep takes the pending invitations kept on a team grant a
+	// write of this service revokes (SetTeamGrantSweep). The selection and
+	// its audit line live in pkg/server, which owns the invitation rules and
+	// the audit store, so this package holds the registered implementation
+	// rather than a second one.
+	teamGrantSweep TeamGrantSweep
 }
+
+// TeamGrantSweep takes the pending invitations kept on userID's grant in
+// teamID — the rows a mint's own confirmation keeps on that grant, which
+// nothing else measures again (pkg/server standingAfterMintTakesInvitation)
+// — under reason as the audit cause of each row taken. It is called by the
+// writes of this service that REVOKE such a grant, right after the grant is
+// gone: whoever withdraws a premise takes what rests on it, and what stands
+// otherwise is a re-entry ticket into the team the grant was taken from.
+//
+// It returns an error when a read it needs or a revocation failed, which its
+// caller answers for: the rows may stand.
+type TeamGrantSweep func(ctx context.Context, userID, teamID, reason string) error
+
+// SetTeamGrantSweep registers the sweep the grant-revoking writes of this
+// service owe (TeamGrantSweep). The server registers its own
+// (revokeInvitationsKeptOnTeamGrant) when it is built on this service, so one
+// implementation decides for every write that owes it; a service with none
+// refuses to revoke a grant rather than leave the rows kept on it standing
+// (reconcileGitHubGrants).
+func (s *Service) SetTeamGrantSweep(sweep TeamGrantSweep) { s.teamGrantSweep = sweep }
 
 // Config wires the Service.
 type Config struct {

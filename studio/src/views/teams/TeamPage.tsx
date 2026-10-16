@@ -297,7 +297,8 @@ function Members({
   const kick = async (userID: string) => {
     const ok = await confirm({
       title: "Remove member?",
-      message: "Remove this member from the team?",
+      message:
+        "Remove this member from the team? Where they hold no membership in the team's organization, the pending invitations they addressed to their own address in this team are revoked with the grant — an invitation link already sent stops working.",
       confirmLabel: "Remove member",
       confirmVariant: "danger",
     });

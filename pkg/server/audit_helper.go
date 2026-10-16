@@ -67,6 +67,33 @@ func (s *Server) auditSystem(tenantID, actorID, action, target, targetID string,
 	})
 }
 
+// auditActor names who an audit line is attributed to: the inbound request a
+// write serves, or a subsystem writing with none. A body shared by an HTTP
+// write and a service hook carries one of these instead of a *http.Request,
+// so both record the SAME line, each under its own actor.
+type auditActor struct {
+	// r is the request the write serves; nil for a subsystem.
+	r *http.Request
+	// system names the subsystem when r is nil, as auditSystem's actorID.
+	system string
+}
+
+// requestActor attributes the lines of a write to the request it serves.
+func requestActor(r *http.Request) auditActor { return auditActor{r: r} }
+
+// systemActor attributes the lines of a write a subsystem makes with no
+// request of its own (id names the subsystem, e.g. "auth").
+func systemActor(id string) auditActor { return auditActor{system: id} }
+
+// auditTenantAs records a tenant-scoped mutation for either actor.
+func (s *Server) auditTenantAs(a auditActor, tenantID, action, target, targetID string, meta map[string]any) {
+	if a.r != nil {
+		s.auditTenant(a.r, tenantID, action, target, targetID, meta)
+		return
+	}
+	s.auditSystem(tenantID, a.system, action, target, targetID, meta)
+}
+
 func (s *Server) auditWrite(r *http.Request, scope audit.Scope, tenantID, action, target, targetID string, meta map[string]any) {
 	if s.auditStore == nil {
 		return

@@ -298,7 +298,8 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
   const kick = async (userID: string) => {
     const ok = await confirm({
       title: "Remove member?",
-      message: "Remove this member from the organization? They lose access to every team in it.",
+      message:
+        "Remove this member from the organization? They lose access to every team in it, and the pending invitations they created in it are revoked, except config_editor ones, which carry no org role. Any pending invitation addressed to the member themselves, in a team of this organization, is revoked too, whoever created it — an invitation link already sent stops working.",
       confirmLabel: "Remove member",
       confirmVariant: "danger",
     });

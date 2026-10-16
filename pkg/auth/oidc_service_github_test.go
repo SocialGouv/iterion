@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,9 +175,23 @@ func TestLoginGitHub_RevokesStaleGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The sweep this reconcile owes, recorded: it takes the rows kept on
+	// each grant it revokes (SetTeamGrantSweep).
+	type swept struct{ userID, teamID, reason string }
+	var sweeps []swept
+	svc.SetTeamGrantSweep(func(_ context.Context, userID, teamID, reason string) error {
+		sweeps = append(sweeps, swept{userID, teamID, reason})
+		return nil
+	})
+
 	// Re-login (returning user) with groups that no longer match acme/eng.
 	if _, err := svc.LoginWithExternal(ctx, githubExt("u3", "other/*"), "ua", "ip"); err != nil {
 		t.Fatalf("relogin: %v", err)
+	}
+	// The revoked grant's rows were swept, under the cause naming the write,
+	// and the human-created membership — never revoked — asked for nothing.
+	if len(sweeps) != 1 || sweeps[0] != (swept{res.User.ID, teamID, MembershipRevokedBySSOReason}) {
+		t.Errorf("the reconcile swept %+v, want exactly the %s grant of %s under %q", sweeps, teamID, res.User.ID, MembershipRevokedBySSOReason)
 	}
 	// The stale github_sso membership is revoked...
 	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); !errors.Is(err, identity.ErrNotFound) {
@@ -206,5 +221,84 @@ func TestLoginGitHub_WildcardGrant(t *testing.T) {
 	}
 	if res.ActiveTeamID != team.ID {
 		t.Errorf("wildcard grant did not admit org member: team=%q", res.ActiveTeamID)
+	}
+}
+
+// A revoke with no sweep registered is NOT a revoke: taking the grant and
+// leaving the pending invitations kept on it standing is the state the sweep
+// exists to prevent, so the reconcile refuses before it deletes anything and
+// the login fails with it — a half-revoke nobody is told about would be a
+// re-entry ticket into the team the grant was taken from.
+func TestLoginGitHub_aRevokeWithNoSweepRegisteredIsRefused(t *testing.T) {
+	svc, teamID := githubFixture(t, identity.RoleMember)
+	ctx := context.Background()
+
+	res, err := svc.LoginWithExternal(ctx, githubExt("u4", "acme/*", "acme/eng"), "ua", "ip")
+	if err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); err != nil {
+		t.Fatalf("the grant the allow-list wrote: %v", err)
+	}
+
+	_, err = svc.LoginWithExternal(ctx, githubExt("u4", "other/*"), "ua", "ip")
+	if err == nil {
+		t.Fatalf("the login that no longer matches answered no error — then the grant was revoked with the rows kept on it unswept")
+	}
+	for _, want := range []string{"no team-grant invitation sweep is registered", teamID, res.User.ID, "SetTeamGrantSweep"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not carry %q: %v", want, err)
+		}
+	}
+	// And nothing was taken: the refusal comes before the delete.
+	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); err != nil {
+		t.Errorf("the grant was revoked anyway (%v) — a refusal after the delete leaves exactly the state it refuses", err)
+	}
+}
+
+// A sweep that fails there fails the login. The reconcile revokes the stale
+// grant BEFORE it sweeps, so a sweep that cannot take the rows kept on that
+// grant leaves them standing on a grant that is gone — the re-entry ticket
+// the seam exists to prevent. The login answers that failure, naming the
+// team, the holder and the sweep's own cause, so the residue is reported
+// rather than left behind a login that looks clean.
+func TestLoginGitHub_aSweepThatFailsTakesTheLoginWithIt(t *testing.T) {
+	svc, teamID := githubFixture(t, identity.RoleMember)
+	ctx := context.Background()
+
+	res, err := svc.LoginWithExternal(ctx, githubExt("u5", "acme/*", "acme/eng"), "ua", "ip")
+	if err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); err != nil {
+		t.Fatalf("the grant the allow-list wrote: %v", err)
+	}
+
+	sweepErr := errors.New("listing this team's invitations failed")
+	calls := 0
+	svc.SetTeamGrantSweep(func(_ context.Context, _, _, _ string) error {
+		calls++
+		return sweepErr
+	})
+
+	_, err = svc.LoginWithExternal(ctx, githubExt("u5", "other/*"), "ua", "ip")
+	if err == nil {
+		t.Fatalf("the login answered no error with the sweep failing — then the rows kept on the revoked grant stand and nobody is told")
+	}
+	if calls != 1 {
+		t.Errorf("the reconcile called the sweep %d times, want 1 — then this is not the failure the test describes", calls)
+	}
+	if !errors.Is(err, sweepErr) {
+		t.Errorf("the login's error does not carry the sweep's own cause: %v", err)
+	}
+	for _, want := range []string{teamID, res.User.ID} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the login's error does not name %q: %v", want, err)
+		}
+	}
+	// The delete precedes the sweep, so the grant is gone: what the failed
+	// login reports is a row kept on a grant that no longer exists.
+	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); !errors.Is(err, identity.ErrNotFound) {
+		t.Errorf("the grant reads %v, want it gone — the reconcile deletes before it sweeps, which is what makes the unswept rows a residue", err)
 	}
 }
