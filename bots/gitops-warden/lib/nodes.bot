@@ -399,7 +399,7 @@ emit({'is_empty': len(files) == 0, 'changed_files': len(files), 'reviewed_sha': 
 ## enforce mode. ADR-124 is the doctrine; this node is its executable
 ## half, driven by bots/gitops_warden_gate_test.go.
 tool publish_verdict:
-  command: `PR_URL={{input.pr_url}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_STATE_URL={{vars.forge_pr_state_url}} MODE={{vars.mode}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} REVIEWERS={{vars.reviewers}} PEER_CONTEXTS={{vars.peer_gate_contexts}} MERGE_METHOD={{vars.merge_method}} REMOVE_BRANCH={{vars.remove_source_branch}} RUN_ID={{run.id}} REVIEWED_SHA={{input.reviewed_sha}} BASE_SHA={{input.base_sha}} DECLARED_HEAD={{input.declared_head_sha}} ROUTE={{input.route}} SENTINEL_REASON={{input.sentinel_reason}} CHANGED_FILES={{input.changed_files}} FILES={{input.files}} DIFF_TOO_LARGE={{input.diff_too_large}} UNPARSEABLE={{input.unparseable}} RENDERED={{input.rendered}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} STALE_LAUNCH={{input.stale_launch}} POLICY_SOURCE={{input.policy_source}} POLICY_SHA={{input.policy_sha}} VERDICT={{input.verdict}} CLASSIFIED_FILES={{input.classified_files}} PLATFORM_FINDINGS={{input.platform_findings}} DOUBTS={{input.doubts}} JUDGE_SUMMARY={{input.summary}} FALLBACK_USED={{input.fallback_used}} python3 -I -c "
+  command: `PR_URL={{input.pr_url}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} PR_STATE_URL={{vars.forge_pr_state_url}} MODE={{vars.mode}} GATE_ENABLED={{vars.gate_enabled}} GATE_CONTEXT={{vars.gate_context}} REVIEWERS={{vars.reviewers}} PEER_CONTEXTS={{vars.peer_gate_contexts}} PEER_WAIT={{vars.peer_gate_wait_seconds}} PEER_POLL={{vars.peer_gate_poll_seconds}} RUN_MAX={{run.max_duration_seconds}} RUN_ELAPSED={{run.elapsed_seconds}} MERGE_METHOD={{vars.merge_method}} REMOVE_BRANCH={{vars.remove_source_branch}} RUN_ID={{run.id}} REVIEWED_SHA={{input.reviewed_sha}} BASE_SHA={{input.base_sha}} DECLARED_HEAD={{input.declared_head_sha}} ROUTE={{input.route}} SENTINEL_REASON={{input.sentinel_reason}} CHANGED_FILES={{input.changed_files}} FILES={{input.files}} DIFF_TOO_LARGE={{input.diff_too_large}} UNPARSEABLE={{input.unparseable}} RENDERED={{input.rendered}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} STALE_LAUNCH={{input.stale_launch}} POLICY_SOURCE={{input.policy_source}} POLICY_SHA={{input.policy_sha}} VERDICT={{input.verdict}} CLASSIFIED_FILES={{input.classified_files}} PLATFORM_FINDINGS={{input.platform_findings}} DOUBTS={{input.doubts}} JUDGE_SUMMARY={{input.summary}} FALLBACK_USED={{input.fallback_used}} python3 -I -c "
 import os, json, urllib.request, urllib.error, urllib.parse
 
 def emit(d):
@@ -546,48 +546,102 @@ reasons_out = chr(10).join(reasons)
 # ── the peer-gate read ──────────────────────────────────────────
 # Before arming, read the head's statuses through the publish grant's
 # read twin: a peer check red on the same head holds the arm — the
-# peer's verdict decides that MR, not this one. Fail-closed: a failed
-# read holds the arm too (an unverified peer is not a green peer).
+# peer's verdict decides that MR, not this one. Fail-closed: an
+# unverified peer is never a green peer. The read POLLS inside an
+# operator-pinned window (PEER_WAIT seconds, PEER_POLL apart), clamped
+# to what the run's own budget leaves (RUN_MAX - RUN_ELAPSED, minus the
+# publish margin) so a long wait never lets the run die unpublished. A
+# peer absent or in flight may still conclude, and a transient read
+# failure (5xx, 408, 429, a malformed answer) may clear — both are
+# retried; a terminal state, a moved head or a permanent read refusal
+# holds at once; an expired window holds with the time actually waited.
 peer_problem = ''
-armed_after_peers = False
 if clean and mode == 'enforce':
+    import time, math
     state_url = envs('PR_STATE_URL')
     tok = envs('PUB_TOKEN')
     pr = envs('PR_URL')
+    def _num(name, dflt):
+        try:
+            v = float(envs(name, str(dflt)) or dflt)
+        except ValueError:
+            return float(dflt)
+        return v if math.isfinite(v) else float(dflt)
+    wait_s = max(0.0, _num('PEER_WAIT', 600))
+    poll_s = _num('PEER_POLL', 20)
+    if poll_s <= 0:
+        poll_s = 20.0  # a non-positive step would spin on the shared forge budget
+    run_max = _num('RUN_MAX', 0)
+    if run_max > 0:
+        # the publish POST (60 s) and the health check must still fit
+        wait_s = min(wait_s, max(0.0, run_max - max(0.0, _num('RUN_ELAPSED', 0)) - 180.0))
+    gate_ctx = envs('GATE_CONTEXT', 'gitops/conformance')
+    rank = {'success': 0, 'pending': 1}
     if not state_url or not tok:
         peer_problem = 'aucun grant de publish forge lié — les gestes ne peuvent pas passer par la surface déterministe'
     else:
-        try:
-            req = urllib.request.Request(state_url + '?pr_url=' + urllib.parse.quote(pr, safe=''), headers={'X-Iterion-Run': tok})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode('utf-8', 'replace'))
-            if data.get('commit_statuses_error'):
-                peer_problem = 'la lecture des statuts des pairs a échoué : ' + str(data.get('commit_statuses_error'))
-            else:
-                peers = [c.strip() for c in envs('PEER_CONTEXTS').split(',') if c.strip()]
-                head_sha = str(data.get('head_sha', ''))
-                # An unverified peer is not a green peer: every pinned peer
-                # must be PRESENT and read success, or the arm is held.
-                # pending / absent / a failed read all hold.
-                if not head_sha:
-                    peer_problem = 'la lecture des pairs ne nommait aucune tête — traité comme un échec de lecture'
-                elif reviewed and not reviewed.startswith(head_sha[:7]) and not head_sha.startswith(reviewed[:7]):
-                    peer_problem = 'la tête a bougé depuis l' + chr(39) + 'inventaire (la lecture miroir nomme une autre révision)'
+        # the gate's own context is never its own peer
+        peers = [c.strip() for c in envs('PEER_CONTEXTS').split(',') if c.strip() and c.strip() != gate_ctx]
+        audited = reviewed.strip().lower()
+        started = time.monotonic()
+        while True:
+            peer_problem = ''
+            retry = False
+            try:
+                req = urllib.request.Request(state_url + '?pr_url=' + urllib.parse.quote(pr, safe=''), headers={'X-Iterion-Run': tok})
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode('utf-8', 'replace'))
+                if not isinstance(data, dict):
+                    peer_problem = 'la lecture des statuts des pairs a renvoyé une réponse illisible'
+                    retry = True
+                elif data.get('commit_statuses_error'):
+                    peer_problem = 'la lecture des statuts des pairs a échoué : ' + str(data.get('commit_statuses_error'))
+                    retry = True
                 else:
-                    states = {}
-                    for st in data.get('commit_statuses', []) or []:
-                        states[str(st.get('context', ''))] = str(st.get('state', ''))
-                    for ctx in peers:
-                        st = states.get(ctx)
-                        if st is None:
-                            peer_problem = 'le gate pair ' + ctx + ' n' + chr(39) + 'a aucun statut sur cette tête — un pair non vérifié n' + chr(39) + 'est pas un pair vert'
-                            break
-                        if st != 'success':
-                            peer_problem = 'le gate pair ' + ctx + ' est ' + st + ' sur cette tête'
-                            break
-                    armed_after_peers = peer_problem == ''
-        except Exception as e:
-            peer_problem = 'la lecture des statuts des pairs a échoué : ' + str(e)
+                    head_sha = str(data.get('head_sha', '')).strip().lower()
+                    if not head_sha:
+                        peer_problem = 'la lecture des pairs ne nommait aucune tête — traité comme un échec de lecture'
+                        retry = True
+                    elif not audited or head_sha != audited:
+                        peer_problem = 'la tête a bougé depuis l' + chr(39) + 'inventaire (la lecture miroir nomme une autre révision)'
+                    else:
+                        # a context listed twice keeps its WORST state: the
+                        # verdict never depends on the order of the list
+                        states = {}
+                        for item in data.get('commit_statuses') or []:
+                            if not isinstance(item, dict):
+                                continue
+                            c = str(item.get('context', ''))
+                            v = str(item.get('state', ''))
+                            if c not in states or rank.get(v, 2) > rank.get(states[c], 2):
+                                states[c] = v
+                        for ctx in peers:
+                            st = states.get(ctx)
+                            if st is None:
+                                peer_problem = 'le gate pair ' + ctx + ' n' + chr(39) + 'a aucun statut sur cette tête — un pair non vérifié n' + chr(39) + 'est pas un pair vert'
+                                retry = True
+                                break
+                            if st == 'pending':
+                                peer_problem = 'le gate pair ' + ctx + ' est pending sur cette tête'
+                                retry = True
+                                break
+                            if st != 'success':
+                                peer_problem = 'le gate pair ' + ctx + ' est ' + st + ' sur cette tête'
+                                break
+            except urllib.error.HTTPError as e:
+                peer_problem = 'la lecture des statuts des pairs a échoué : HTTP ' + str(e.code)
+                retry = e.code >= 500 or e.code in (408, 429)
+            except Exception as e:
+                peer_problem = 'la lecture des statuts des pairs a échoué : ' + str(e)
+                retry = True
+            if not peer_problem:
+                break
+            waited = time.monotonic() - started
+            if not retry or waited + poll_s > wait_s:
+                if retry and wait_s > 0:
+                    peer_problem += ' — fenêtre d' + chr(39) + 'attente écoulée (' + str(round(waited, 1)) + ' s attendues sur ' + str(round(wait_s, 1)) + ' s)'
+                break
+            time.sleep(poll_s)
 
 # ── the comment ─────────────────────────────────────────────────
 def esc(s):

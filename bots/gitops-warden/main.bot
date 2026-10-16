@@ -99,6 +99,16 @@ vars:
   ## through the publish grant's read twin before arming; a red peer holds
   ## the arm (the peer's own verdict decides that MR, not this one).
   peer_gate_contexts: string = "revi/review"
+  ## How long the arm waits for the pinned peers to conclude (seconds),
+  ## and the polling step. A peer absent or still running when the
+  ## verdict lands is waited for, never armed past: success arms, a
+  ## terminal non-success holds at once, an expired window holds. The
+  ## window runs inside the workflow's 30 min budget — keep room for the
+  ## inventory and the judge (the fold also clamps it to the run's
+  ## remaining budget). wait 0 = a single read; the poll step must be
+  ## positive (0 or less falls back to 20 s).
+  peer_gate_wait_seconds: int = 600
+  peer_gate_poll_seconds: int = 20
   ## Classification caps: above either, the fold escalates rather than
   ## guesses — a diff too big to read is a diff nobody certified.
   max_diff_files: int = 150
