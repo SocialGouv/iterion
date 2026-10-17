@@ -97,4 +97,17 @@ What carries no cause, and why:
   refresh. Nothing is dropped (no refresh runs), but the staleness is real and
   no surface mentions it. `bots-localize` cannot reach it: it refuses unless
   the materialized copy already hashes to the pin, and re-pins to that same
-  hash, so the sync returns early.
+  hash, so the sync returns early. It owes no refresh for the localized
+  source either, while discovery claims the consumer bundle: that source
+  lands under the consumer's own subtree (`plugins/<dep>`), which discovery
+  never walks once it has claimed the consumer, so the bundle set the
+  catalogue renders is exactly what it was before. A consumer discovery
+  does not claim — a `manifest.yml` spelling, which the assistant authoring
+  surface opens, or a missing `main.bot` — has its `plugins/<dep>` walked
+  instead: the localized copy claims the dependency's name ahead of the
+  `.botz` materialization, the name routes to the copy, and every catalogue
+  regeneration refuses on the shadowed bundle until the source is fixed or
+  removed, while the localize itself reports success. Whether localize
+  should refuse an unclaimed consumer, or surface the wedged regeneration,
+  is an open question. A localize that landed a directory discovery can see
+  would owe a refresh.
