@@ -14,6 +14,8 @@ For deployment + chart values, start with
 picture, see the [Iterion Cloud overview](cloud-overview.md). For the
 precise REST shapes, see [cloud-rest-api.md](cloud-rest-api.md).
 
+Diagram: [diagrams/data-model-identity.md](diagrams/data-model-identity.md) — the identity data model (orgs, teams, users, memberships).
+
 ---
 
 ## Part 1 — Platform operator (super-admin)
@@ -162,9 +164,14 @@ Two scopes: tenant rows (visible to the org's admins at
 ### 1.6 User admin — force a password rotation
 
 ```bash
-# List users (paginated with ?offset=&limit=; there is no ?email= filter —
-# page through and match client-side, or read a known user by id).
+# List users (paginated with ?offset=&limit=; ?q= narrows the page to the
+# accounts whose email starts with it, plus the one whose id equals it).
 curl "https://iterion.example.com/api/admin/users?limit=200"
+
+# Find one account without paging — a prefix match (case-insensitive), not a
+# substring, so it rides the unique index on `email`. Knowing only the middle
+# of an address still means paging.
+curl "https://iterion.example.com/api/admin/users?q=alice@"
 
 # Force a password change on next login.
 curl -X PATCH https://iterion.example.com/api/admin/users/$USER_ID \

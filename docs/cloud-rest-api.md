@@ -4,6 +4,8 @@
 SDK author, an operator writing curl runbooks. Every endpoint listed
 here exists in [pkg/server/](../pkg/server/), grouped by domain.
 
+Diagram: [diagrams/access-control.md](diagrams/access-control.md) — the access-control matrix (principals, roles, the authorization decision points).
+
 This page is **curated, not exhaustive**: it covers the cloud- and
 team-facing surface, and leaves out the local-studio-only routes
 (`/api/local/*`, `/api/files`, `/api/projects`, `/api/examples`,
@@ -24,10 +26,13 @@ curl .../api/openapi.json       # the same, from a live instance
 curl .../api/routes             # just the method+pattern inventory
 ```
 
-(The `/api/v1/native`, `/api/v1/dispatcher` and `/api/v1/mcp/board` CRUD
-sub-trees register on the *same* mux but bypass the route recorder — they
-are handed the bare `ServeMux` rather than the recording wrapper — so
-they are deliberately absent from that spec. The exception worth knowing:
+(The `/api/v1/native`, `/api/v1/dispatcher`, `/api/v1/mcp/board` and
+`/api/v1/mcp/runs` sub-trees register on the *same* mux but bypass the
+route recorder — they are handed the bare `ServeMux` rather than the recording
+wrapper — so they are deliberately absent from that spec, and so are the three
+run-token forge routes (`POST /api/v1/forge/publish-review`,
+`GET /api/v1/forge/pull-request`, `POST /api/v1/forge/delivery-preflight`).
+The exception worth knowing:
 the forge-facing `/api/v1/native/issues/*` routes and the dependency
 graph go through the recorded path and therefore **do** appear.)
 
@@ -37,15 +42,19 @@ Authentication. Most routes accept any of:
   (rotation). The `__Host-` prefix is dropped — leaving the bare
   `iterion_auth` / `iterion_refresh` — when the deployment cannot meet its
   terms (no TLS, or an explicit cookie domain); a browser would discard the
-  prefixed form there. Both spellings are accepted on read.
+  prefixed form there. A deployment reads only the spelling it sets.
 - **Bearer JWT**: `Authorization: Bearer <access-jwt>` issued by login
   / refresh.
 - **Bearer PAT**: `Authorization: Bearer iap_…` — long-lived personal
   access token; authenticates **as** the issuing user with that user's
   role + super-admin flag
   ([pkg/server/pat_routes.go:identityFromPAT](../pkg/server/pat_routes.go)).
-- **WS query**: `?t=<access-jwt>` for WebSocket clients that can't set
-  headers.
+- **WS ticket**: `?ticket=<t>` on `/api/ws[/…]` and on a run's
+  `browser/cdp` — a single-use, 60-second ticket minted by an authenticated
+  `POST /api/ws/ticket`, which itself accepts a ticket, so a ticket can mint
+  its successor; it is resolved and consumed before any JWT/PAT verification.
+- **WS query**: `?t=<access-jwt>` — or an `iap_` PAT — on `/api/ws` and `/api/ws/*` alone, for a WebSocket client
+  that can set neither header nor cookie.
 
 Where a route says "team member", "team admin" or "super-admin", the
 guard maps to `canViewTeam` / `canManageTeam` / `requireSuperAdmin`.
@@ -71,7 +80,7 @@ JWT layer.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `POST` | `/api/auth/login` | public | Email + password login |
-| `POST` | `/api/auth/refresh` | refresh cookie | Rotate access JWT |
+| `POST` | `/api/auth/refresh` | refresh cookie or `X-Iterion-Refresh` | Rotate access JWT |
 | `POST` | `/api/auth/logout` | public | Drop refresh session + cookies |
 | `POST` | `/api/auth/register` | public (when `signup_mode=open` or with invite) | Create account |
 | `POST` | `/api/auth/password/change` | public (legacy) | First-login password rotation for `pending_password_change` users |
@@ -81,8 +90,8 @@ JWT layer.
 | `GET` | `/api/auth/oidc/{provider}/start` | public | Start OIDC dance |
 | `GET` | `/api/auth/oidc/{provider}/callback` | public | OIDC redirect target |
 | `GET` | `/api/auth/invitations/lookup` | public | Resolve invitation token → email + team |
-| `POST` | `/api/auth/invitations/accept` | member | Accept an invitation while logged in |
-| `GET` | `/api/auth/me` | member | Current user + active team identity |
+| `POST` | `/api/auth/invitations/accept` | session JWT (never a PAT) | Accept an invitation while logged in. The path is public to the middleware, so the handler verifies the cookie or `Bearer` JWT itself — an `iap_…` PAT never resolves here |
+| `GET` | `/api/auth/me` | authenticated (no role) | Current user + active team identity. `/api/auth/*` is tenant-free, so an account with no team at all reads it |
 | `POST` | `/api/auth/me/team/{team_id}` | member | Switch active team |
 | `POST` | `/api/auth/me/org/{org_id}` | member | Switch active org (re-issues the JWT; validates org then team) |
 | `POST` | `/api/me/password` | member | Self-service password change |
@@ -96,7 +105,7 @@ Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/teams` | member | List the caller's teams |
-| `POST` | `/api/teams` | member | Create a team |
+| `POST` | `/api/teams` | org admin | Create a team in the `org_id` the body names, else in the caller's active org (`canManageOrg`) |
 | `GET` | `/api/teams/{id}/members` | team member | List members |
 | `PUT` | `/api/teams/{id}/members/{user_id}` | team admin | Place an account that ALREADY exists, idempotently (`{"role":…}`). Refuses **422** when the user is not yet a member of the team's ORG — that membership is the identity boundary a team grant sits inside, so the order is `PUT /api/orgs/…` first. The membership is re-read AFTER the grant is written — on a context detached from the request, and on both outcomes of that write, since a store that reports an error may have applied it anyway: **409** when a concurrent `DELETE /api/orgs/{id}/members/{user_id}` took it away in between and the grant was revoked — with the pending invitations the holder addressed to their own address in this team, which that grant was the premise of (`invitation.deleted`, reason `creator_team_grant_unwound`), a sweep that fails being named in the same body for a revoke by hand; **500** when the revoke itself failed (the body names the grant that may still stand), or when an ACKNOWLEDGED write's membership cannot be re-confirmed (the grant is revoked too — a boundary nothing can certify does not hold one up). A write that FAILED with the membership unreadable answers that write error and keeps the grant: one store fails both calls, and the grant left standing is the one the member already held |
 | `PATCH` | `/api/teams/{id}/members/{user_id}` | team admin | Change role. A role change WRITES the grant row back, so for a role that HAS a boundary it owes the same guards as the `PUT`: **422** when the user is not (or is no longer) a member of the team's org — an existing grant is refused, never revoked, since that drift is what `orphan_grant` reports — and **409**/**500** at the re-read that follows the write, under the `PUT`'s rule. A role OUTSIDE the ladder (`config_editor`) is mirrored up to no org membership (ADR-078), so writing it reads no boundary when the grant is ALREADY off the ladder too — the state a `config_editor` invitation creates, answered **200** for an account that holds no org membership. Taking a LADDER grant off the ladder still reads the boundary: otherwise the holder of an orphan `admin` grant, who passes the team-admin check on that grant alone, would re-role themselves and keep the grant in one request. The same holder still reaches that grant state in two, by minting an invitation to their own address and accepting it, but only for a role mirrored up to NO org membership: a mint is capped at its minter's own org standing (`POST /api/teams/{id}/invitations`), so that pair of requests no longer re-admits them to the ORG — which is why `orphan_grant` reports a missing org membership for ANY role and `off_ladder` names the sanctioned cause beside it rather than inside it |
@@ -110,12 +119,18 @@ Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 ## Organisations — self-serve (org members, teams, SSO)
 
 The org-admin self-serve mirror of the super-admin org views (two-level
-tenancy, ADR-048). All routes are `requireAuth`; the org role is checked
-in-handler — read routes need org **membership** (`canViewOrg`), mutations
-need org **admin/owner** (`canManageOrg`). Sources:
+tenancy, ADR-048). All routes are `requireAuth` and the Auth column below is
+the per-route truth: mutations need org **admin/owner** (`canManageOrg`) and
+most reads org **membership** (`canViewOrg`), but the invitation list and the
+audit log are reads behind `canManageOrg` — they expose invitees and actor
+emails/IPs — and `PUT …/members/{user_id}` takes the platform super-admin flag
+*before* any org role is consulted. Sources:
 [pkg/server/orgs_routes.go](../pkg/server/orgs_routes.go),
 [pkg/server/org_sso_routes.go](../pkg/server/org_sso_routes.go),
-[pkg/server/org_sso_domain_routes.go](../pkg/server/org_sso_domain_routes.go).
+[pkg/server/org_sso_domain_routes.go](../pkg/server/org_sso_domain_routes.go),
+[pkg/server/team_lifecycle_routes.go](../pkg/server/team_lifecycle_routes.go)
+(`PUT …/members/{user_id}`) and
+[pkg/server/audit_helper.go](../pkg/server/audit_helper.go) (the audit log).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -142,10 +157,12 @@ need org **admin/owner** (`canManageOrg`). Sources:
 
 ## BYOK LLM keys + generic secrets + bindings
 
-User-scoped + team-scoped flavours share the same payload shape. Both
+User-scoped, team-scoped and org-tier (`/api/orgs/{id}/api-keys`,
+`/api/orgs/{id}/oauth/…`) flavours share the same payload shape. All three
 return metadata only — the plaintext is **write-only**.
 
-Revoking takes the same right as creating (`canManageTeam` on both), so an
+Revoking takes the same right as creating (`canManageTeam` on both for a
+team-scoped record, `canManageOrg` for an org-tier one), so an
 org admin cannot be left holding a credential they installed in a team of
 their org and cannot pull back. A **user-scoped** record is exempt: it is
 personal, and only its owner or a super-admin may touch it.
@@ -161,7 +178,7 @@ asymmetry: not listable there, still mutable there.
 |---|---|---|---|
 | `GET` | `/api/teams/{id}/api-keys` | team member | List team's BYOK keys |
 | `POST` | `/api/teams/{id}/api-keys` | team admin | Create |
-| `PATCH` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Toggle default / rename |
+| `PATCH` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Rename, toggle default, ROTATE the sealed secret (same shape gate as create, new `last4` + fingerprint), set `max_concurrent_runs` (0 = uncapped) and replace the `bots` audience — an absent field is left alone, `"bots": []` clears it |
 | `DELETE` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Delete |
 | `GET` | `/api/me/api-keys` | member | List own user-scoped keys |
 | `POST` | `/api/me/api-keys` | member | Create personal key |
@@ -191,7 +208,9 @@ Full semantics in [secrets-reference.md](secrets-reference.md).
 Team-authored bot bundles — the writable, tenant-scoped store the studio
 editor saves into (cloud pods bake the catalog read-only). Each source is a
 multi-file bundle (`main.bot` + `manifest.yaml` + `skills/`…). Edit rights =
-the `config_editor` capability, team admin, or owner (`canEditBots`); if the
+the `config_editor` capability on the team, team admin or owner, an org
+admin/owner of its parent org, or a super-admin (`canEditBots`) — a plain
+viewer or member is not an editor. If the
 server has no bot-source store wired every route returns `501 bot editing is
 not enabled on this server`.
 
@@ -224,11 +243,17 @@ store [pkg/botsource/](../pkg/botsource/botsource.go).
 The team-scoped, **outbound** forge layer behind the studio's repo-first shell
 ([docs/repo-scope.md](repo-scope.md)): connect a forge, hold an OAuth app /
 GitHub App credential, and provision a set of bots onto a repo (webhook + hook
-+ managed secret + bindings). All routes are `requireAuth`; the team role is
-checked in-handler — read routes need team **membership** (`canViewTeam`) and
-most mutations need team **admin/owner** (`canManageTeam`). The GitHub-App
-connection refresh is the deliberate exception: like connection health, it
-requires membership. Sources:
++ managed secret + bindings). All routes are `requireAuth` and the Auth column
+below is the per-route truth: most reads need team **membership**
+(`canViewTeam`) and mutations team **admin/owner** (`canManageTeam`), with
+exceptions both ways — the connection's repo list, the repo-bots preview and an
+integration's hook list are reads behind `canManageTeam`, while the GitHub-App
+connection refresh is a write that takes membership, like connection health.
+The card-scoped `/api/v1/native/issues/*` routes of `board_forge.go` — push,
+list pulls, open a pull, its CI, merge it — take the board family's write rung
+(`boardWriteAuth`): a state-changing call needs the member role in the
+caller's ACTIVE team, a read checks no role, and neither consults the
+card's own team beyond that. Sources:
 [pkg/server/forge_routes.go](../pkg/server/forge_routes.go),
 [forge_refresh_route.go](../pkg/server/forge_refresh_route.go),
 [forge_connect_routes.go](../pkg/server/forge_connect_routes.go),
@@ -245,7 +270,7 @@ requires membership. Sources:
 | `GET` | `/api/teams/{id}/forge/connections/{conn_id}/health` | team member | Connection health / token probe |
 | `POST` | `/api/teams/{id}/forge/connections/{conn_id}/refresh` | team member | GitHub App only: re-probe live installation grants, persist them, and force a fresh token mint |
 | `POST` | `/api/teams/{id}/forge/connections/{conn_id}/avatar` | team admin | Upload the iterion-bot avatar onto the account behind a PAT connection (`{variant?, force?}`); 422 on OAuth (a person), on GitHub (no API — names the App's settings page) and on a token the forge rejects (the connection is marked `revoked`; reconnect first), 409 `needs_force` on an account the forge does not flag as a bot or would not describe at all, 502 when the forge did not answer the identity read or refused the upload. See [brand.md](brand.md) |
-| `GET` | `/api/teams/{id}/forge/connections/{conn_id}/repos` | team member | Repos visible to the connection |
+| `GET` | `/api/teams/{id}/forge/connections/{conn_id}/repos` | team admin | Repos visible to the connection |
 | `GET` | `/api/teams/{id}/forge/repos` | team member | Team's forge-linked repos |
 | `POST` | `/api/teams/{id}/forge/repos` | team admin | Create a repo (opt-in `RepoCreator` capability) |
 | `GET` | `/api/teams/{id}/forge/oauth-apps` | team member | List per-tenant OAuth apps |
@@ -253,13 +278,13 @@ requires membership. Sources:
 | `DELETE` | `/api/teams/{id}/forge/oauth-apps/{app_id}` | team admin | Remove an OAuth app |
 | `POST` | `/api/teams/{id}/forge/oauth-apps/github-manifest` | team admin | Start the GitHub App-manifest auto-create flow |
 | `GET` | `/api/teams/{id}/forge/repo-bots` | team member | List repo→bot provisionings (integrations) |
-| `GET` | `/api/teams/{id}/forge/repo-bots/preview` | team member | Preview what enabling a bot set subscribes to (no forge writes) |
+| `GET` | `/api/teams/{id}/forge/repo-bots/preview` | team admin | Preview what enabling a bot set subscribes to (no forge writes) |
 | `POST` | `/api/teams/{id}/forge/repo-bots` | team admin | Enable bots on a repo (provision webhook + hook + secret + bindings) |
-| `PATCH` | `/api/teams/{id}/forge/repo-bots/{integration_id}` | team admin | Set the exact bot set (replace semantics) |
+| `PATCH` | `/api/teams/{id}/forge/repo-bots/{integration_id}` | team admin | Set the bot set and the repo's operator settings. A PRESENT `bot_ids` replaces the stored set; an ABSENT one keeps it, so a settings-only patch need not echo it; an explicitly empty one is a `400` — `DELETE` removes the integration. In an org that requires provision approval, a patch that widens the repo's automation — adding a bot, turning auto-fix on or sending `schedule_crons`, for example — answers `202 pending_approval` (`409` while another request for the repo is pending) and changes nothing until approved; a caller who manages the org is not parked, nor, under the `shared_credentials` scope, a team that funds its own runs |
 | `DELETE` | `/api/teams/{id}/forge/repo-bots/{integration_id}` | team admin | Disable / deprovision (tears down webhook + hook) |
 | `PATCH` | `/api/teams/{id}/forge/integrations/{iid}` | team admin | Update an integration (incl. `sync_issues_enabled`) |
 | `POST` | `/api/teams/{id}/forge/integrations/{iid}/sync` | team admin | Run the forge→board issue sync now (one-way, forge is source) |
-| `GET` | `/api/teams/{id}/forge/integrations/{iid}/hooks` | team member | List the webhooks on an integration |
+| `GET` | `/api/teams/{id}/forge/integrations/{iid}/hooks` | team admin | List the webhooks on an integration |
 
 The OAuth handshake completes on public callbacks the SPA is redirected to:
 `GET /api/forge/oauth/callback`, `GET /api/forge/github/app/callback`, and
@@ -342,12 +367,19 @@ query parameter to name the account at connect time. The listing exposes
 when it picks a credential (see
 [cloud-llm-credentials.md](cloud-llm-credentials.md#name-the-account-behind-every-credential)).
 
+An owner may hold a CHAIN of credentials per kind — rank 0 the primary, 1 and
+up the fallbacks tried in order — so the completion and the upload, which write a link, and `refresh`, `PATCH`
+and `DELETE`, which address one, take a `?rank=` query parameter. Absent means rank 0, so
+a call meant for a fallback lands on the primary and reports success. The
+listing returns each record's `rank`.
+
 Every route above has a team-scoped mirror at
 `/api/teams/{id}/oauth/…` (`connections`, `{kind}/authorize/start`,
 `{kind}/authorize/complete`, `{kind}/credentials`, `{kind}/refresh`,
 `PATCH {kind}`, and `DELETE {kind}`) for a forfait the whole team draws
-on rather than one operator, and a platform mirror at
-`/api/admin/llm/oauth/…` (super-admin).
+on rather than one operator — `GET connections` takes team **membership**
+(`canViewTeam`), the six mutations team **admin/owner** (`canManageTeam`) —
+and a platform mirror at `/api/admin/llm/oauth/…` (super-admin).
 
 Source: [pkg/server/oauth_routes.go](../pkg/server/oauth_routes.go),
 [pkg/server/oauth_team_routes.go](../pkg/server/oauth_team_routes.go).
@@ -363,8 +395,8 @@ pool — full model in [credential-pool.md](credential-pool.md).
 | `PUT` | `/api/me/pool/{source}/{ref}` | member | Create or update a pledge (ceilings, sharing window, bot allow-list) |
 | `DELETE` | `/api/me/pool/{source}/{ref}` | member | Withdraw a pledge |
 | `GET` | `/api/me/pool/history` | member | The runs your quota served |
-| `GET` | `/api/teams/{id}/pool` | team member | The pool's policy and its donors |
-| `PUT` | `/api/teams/{id}/pool` | team admin | Set the audience policy deciding who may draw |
+| `GET` | `/api/teams/{id}/pool` | team member | The pool's policy. The donor roster rides along only for an org admin/owner (`canManageOrg`) — who lends, and how much they have given, is the contributors' own business |
+| `PUT` | `/api/teams/{id}/pool` | org admin | Set the audience policy deciding who may draw. The pool document is keyed by ORG, so a team admin/owner who is not also an org admin/owner is refused `403` |
 
 Source: [pkg/server/credpool_routes.go](../pkg/server/credpool_routes.go).
 
@@ -380,6 +412,15 @@ Recurring bots, the cloud counterpart of `iterion schedule` —
 | `PATCH` | `/api/teams/{id}/schedules/{sid}` | team admin | Update one |
 | `DELETE` | `/api/teams/{id}/schedules/{sid}` | team admin | Remove one |
 
+A `config_editor` reaches the same schedule store by another door:
+`PATCH /api/teams/{id}/config-editor/shares/{sid}/schedule` edits the cron of
+the oldest schedule tied to its share's (bot, category) — an enabled, non-read-only share, and
+only when such a schedule exists; the schedule's own flag, disabled or not, does not block the
+edit — gated on
+`canEditConfigShares`, which admits a `config_editor` as well as anyone
+`canManageTeam` admits
+([pkg/server/config_editor_routes.go](../pkg/server/config_editor_routes.go)).
+
 Source: [pkg/server/schedules_routes.go](../pkg/server/schedules_routes.go).
 
 ## Triggers (event-driven runs)
@@ -390,14 +431,21 @@ on `server_info.triggers_enabled` —
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/v1/triggers` | member | List subscriptions (team-scoped in cloud) |
+| `GET` | `/api/v1/triggers` | authenticated (no role) | List subscriptions (team-scoped in cloud) |
 | `POST` | `/api/v1/triggers` | member | Create one |
-| `GET` | `/api/v1/triggers/{id}` | member | Read one |
+| `GET` | `/api/v1/triggers/{id}` | authenticated (no role) | Read one |
 | `PUT` | `/api/v1/triggers/{id}` | member | Replace one |
 | `DELETE` | `/api/v1/triggers/{id}` | member | Remove one |
 | `POST` | `/api/v1/triggers/emit` | member | Publish a custom event onto the bus |
-| `GET` | `/api/v1/triggers/health` | member | Evaluator + bus health |
+| `GET` | `/api/v1/triggers/health` | authenticated (no role) | The in-process schedule scheduler's liveness — a local-mode surface: cloud fires schedules through cloudsched, so there it answers `scheduler_running: false` |
 | `POST` | `/api/v1/bots/{name}/triggers/from-invocation` | member | Generate a subscription from a bot manifest's `invocations:` block |
+
+Every state-changing route takes the member rung at the mount
+(`triggerWriteAuth` — the same decision as the board family's write rung), so
+a `viewer` lists subscriptions, reads one, and reads the health but cannot create, replace,
+delete or generate one; `emit` additionally passes the launch gate, which
+enforces the rung a second time. The reads carry `requireAuth`; the
+subscription reads also scope by the request's tenant.
 
 Source: [pkg/server/triggers_routes.go](../pkg/server/triggers_routes.go).
 
@@ -415,6 +463,9 @@ Source: [pkg/server/pat_routes.go](../pkg/server/pat_routes.go).
 
 Spaces are addressed by query params (`?name=`, `?visibility=`, plus
 `?bot=` for `visibility=bot` and `?project=` for project/bot scopes).
+`/api/memory/*` is tenant-scoped, so a credential carrying no active team is
+refused `403` before any `visibility` arm is evaluated — super-admins
+included.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -432,47 +483,54 @@ Full reference: [memory-and-knowledge.md](memory-and-knowledge.md).
 ## Runs surface
 
 Read-only views plus the launch / resume mutations the studio drives.
+On every route that addresses a run by id — `/api/runs/{id}/…` and
+`/api/ws/runs/{id}…` — the class below is the caller's standing in the RUN's
+team (ADR-103), not in their active one: reads take a viewer, actions a member
+— the `browser/cdp` and `shell` GETs count as actions, since they hand the
+caller the run's browser and terminal — and an admin/owner of the team's org
+who is not a member of that team enters as a viewer.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/runs` | member (tenant-scoped) | List runs |
-| `GET` | `/api/runs/global-active` | member | Active runs across the **local** stores on this machine — a desktop-daemon affordance walking `$HOME/.iterion/**`. In cloud mode it returns `{"runs":[]}` unconditionally: the pod's `$HOME` is shared infrastructure, so walking it could leak across tenants. |
+| `GET` | `/api/runs` | authenticated (no role) — another team than the active one, through `?team_id=` or `X-Iterion-Team`, needs `canViewTeam` | List runs |
+| `GET` | `/api/runs/global-active` | authenticated (no role) | Active runs — running, queued, paused or `failed_resumable`; a `running` run quiet past 15 minutes reads as an orphan and is dropped — across the **local** stores on this machine — a desktop-daemon affordance walking the local iterion home. In cloud mode it returns `{"runs":[]}` unconditionally: the pod's `$HOME` is shared infrastructure, so walking it could leak across tenants. |
 | `POST` | `/api/runs` | member | Launch a workflow |
-| `POST` | `/api/runs/preview-cost` | member | Estimate cost before launch |
-| `POST` | `/api/runs/uploads` | member | Upload an attachment |
-| `GET` | `/api/runs/{id}` | member (run tenant) | Run state |
-| `GET` | `/api/runs/{id}/events` | member | Event log |
-| `GET` | `/api/runs/{id}/workflow` | member | Workflow source attached to the run |
-| `GET` | `/api/runs/{id}/artifacts/{node}` | member | Artifact versions for a node |
-| `GET` | `/api/runs/{id}/artifacts/{node}/{version}` | member | One artifact |
-| `GET` | `/api/runs/{id}/files` / `…/files/content` / `…/files/diff` | member | Working-tree views |
-| `GET` | `/api/runs/{id}/commits` etc. | member | Worktree commit history |
-| `GET` | `/api/runs/{id}/attachments/{name}` | member | Download an attachment |
-| `GET` | `/api/runs/{id}/attachments/{name}/url` | member | Pre-signed S3 URL |
+| `POST` | `/api/v1/pipeline-board/tasks/{id}/launch` | member | Launch the bot a pipeline-board task names, bypassing the ready-state ranking — the same `gateLaunch` admission as `POST /api/runs` |
+| `POST` | `/api/runs/preview-cost` | authenticated (no role) | Estimate cost before launch |
+| `POST` | `/api/runs/uploads` | authenticated (no role) | Upload an attachment |
+| `GET` | `/api/runs/{id}` | viewer (run tenant) | Run state |
+| `GET` | `/api/runs/{id}/events` | viewer | Event log |
+| `GET` | `/api/runs/{id}/workflow` | viewer | Workflow source attached to the run |
+| `GET` | `/api/runs/{id}/artifacts/{node}` | viewer | Artifact versions for a node |
+| `GET` | `/api/runs/{id}/artifacts/{node}/{version}` | viewer | One artifact |
+| `GET` | `/api/runs/{id}/files` / `…/files/content` / `…/files/diff` | viewer | Working-tree views |
+| `GET` | `/api/runs/{id}/commits` etc. | viewer | Worktree commit history |
+| `GET` | `/api/runs/{id}/attachments/{name}` | viewer | Download an attachment |
+| `GET` | `/api/runs/{id}/attachments/{name}/url` | viewer | Pre-signed S3 URL |
 | `POST` | `/api/runs/{id}/cancel` | member | Cancel a running run |
 | `POST` | `/api/runs/{id}/pause` | member | Pause |
 | `POST` | `/api/runs/{id}/resume` | member | Resume (re-publishes through the queue) |
 | `POST` | `/api/runs/{id}/fork` | member | Fork at a prior turn |
 | `POST` | `/api/runs/{id}/merge` | member | Land the run's storage branch on a target branch. For a **repo-targeted** run — whose workspace is gone by the time it returns — the server materialises its own clone of the launch ref, runs the same merge pipeline, and pushes the advanced target back to the forge (never force). The merge is persisted as merged only once the forge has it; a refused push records `merge_status=failed`. |
-| `GET` | `/api/runs/{id}/merge/conflicts` | member | Conflicting paths left by a merge attempt |
+| `GET` | `/api/runs/{id}/merge/conflicts` | viewer | Conflicting paths left by a merge attempt |
 | `POST` | `/api/runs/{id}/merge/conflicts/resolve` | member | Resolve one conflicting path with supplied content |
 | `POST` | `/api/runs/{id}/merge/conflicts/resolve-with-agent` | member | Delegate one conflict to the resolver agent (`ITERION_CONFLICT_RESOLVER_MODEL`) |
 | `POST` | `/api/runs/{id}/merge/conflicts/finalize` | member | Commit the resolved merge and continue the pipeline |
 | `POST` | `/api/runs/{id}/merge/conflicts/abort` | member | Abandon the merge; the storage branch is preserved |
 | `POST` | `/api/runs/{id}/commit-and-finalize` | member | Commit pending work and finalise |
 | `POST` | `/api/runs/{id}/rename` | member | Rename a run |
-| `GET` | `/api/runs/{id}/children` | member | Child (subbot) runs |
-| `GET` | `/api/runs/{id}/review/scope` / `…/review/diff` | member | Human-gate review scope and its diff ([review-scope.md](review-scope.md)) |
-| `GET` | `/api/runs/{id}/session-board` | member | Session-board widgets ([session-board.md](session-board.md)) |
-| `GET` | `/api/runs/{id}/interactions/pending` | member | Unanswered `ask_user_async` questions |
-| `GET`/`DELETE` | `/api/runs/{id}/queue-messages`, `…/queue-message/{msgID}` | member | Pending steering messages for the run |
-| `GET` | `/api/runs/{id}/log` | member | Streamed run log |
-| `GET` | `/api/runs/{id}/preview` | member | Preview proxy (SSRF-guarded) |
-| `GET` | `/api/ws/runs/{id}/shell` | member (via `?t=`) | Post-mortem PTY in a preserved worktree ([post-mortem-shell.md](post-mortem-shell.md)) |
-| `GET` | `/api/ws/runs/{id}` | member (via `?t=`) | Live run-console WebSocket |
-| `GET` | `/api/v1/runs/stats` | member | Rolling stats (for the studio) |
-| `GET` | `/api/v1/limits/cost` | member | Cost-cap status |
-| `POST` | `/api/v1/limits/cost/override` | member | Grant or revoke the day's cost-cap override. **Any authenticated member** — the handler performs no role check and records the audit actor as `operator`. |
+| `GET` | `/api/runs/{id}/children` | viewer | Child (subbot) runs |
+| `GET` | `/api/runs/{id}/review/scope` / `…/review/diff` | viewer | Human-gate review scope and its diff ([review-scope.md](review-scope.md)) |
+| `GET` | `/api/runs/{id}/session-board` | viewer | Session-board widgets ([session-board.md](session-board.md)) |
+| `GET` | `/api/runs/{id}/interactions/pending` | viewer | Unanswered `ask_user_async` questions |
+| `GET`/`POST`/`DELETE` | `/api/runs/{id}/queue-messages`, `…/queue-message`, `…/queue-message/{msgID}` | viewer (GET) · member (POST, DELETE) | Pending steering messages for the run |
+| `GET` | `/api/runs/{id}/log` | viewer | Streamed run log |
+| `GET` | `/api/runs/{id}/preview` | viewer | Preview proxy (SSRF-guarded) |
+| `GET` | `/api/ws/runs/{id}/shell` | member | Post-mortem PTY in a preserved worktree — a local-mode operation: cloud answers `403` before the upgrade ([post-mortem-shell.md](post-mortem-shell.md)) |
+| `GET` | `/api/ws/runs/{id}` | viewer | Live run-console WebSocket. The upgrade and `subscribe` are a read; the mutating envelopes (`cancel`, `pause`, `answer`, `queue_message`, `cancel_queued_message`, `bump_loop`, `raise_budget`) take a member on the same connection |
+| `GET` | `/api/v1/runs/stats` | authenticated (no role) — another team than the active one, through `?team_id=` or `X-Iterion-Team`, needs `canViewTeam` | Rolling stats (for the studio) |
+| `GET` | `/api/v1/limits/cost` | authenticated (no role) | Cost-cap status |
+| `POST` | `/api/v1/limits/cost/override` | authenticated (no role) | Grant or revoke the day's cost-cap override. **Any authenticated caller with a team** — the handler performs no role check, and the route sits outside the run-scope prefixes, so the ADR-103 ladder does not apply either: a `viewer` passes. The audit actor is recorded as `operator`. A local-mode feature: cloud stores keep no spend ledger, so there the status reads `enabled: false` and the override answers `409`. |
 
 Source: [pkg/server/runs.go](../pkg/server/runs.go).
 
@@ -480,11 +538,11 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/admin/orgs` | super-admin | List every org |
+| `GET` | `/api/admin/orgs` | super-admin | List orgs — the first 500, unpaginated (no `?offset=` / `?limit=`) |
 | `POST` | `/api/admin/orgs` | super-admin | Create org |
 | `GET` | `/api/admin/orgs/{id}` | super-admin | Read |
 | `PATCH` | `/api/admin/orgs/{id}` | super-admin | Update name / slug / quotas |
-| `DELETE` | `/api/admin/orgs/{id}` | super-admin | Schedule org deletion (reversible until it runs) |
+| `DELETE` | `/api/admin/orgs/{id}` | super-admin | Schedule org deletion — 24h grace, restorable until the sweeper purges it. `409` on the caller's own ACTIVE org: switch org first |
 | `POST` | `/api/admin/orgs/{id}/restore` | super-admin | Cancel a scheduled deletion |
 | `POST` | `/api/admin/orgs/{id}/status` | super-admin | Suspend / read-only / activate |
 | `GET` | `/api/admin/orgs/{id}/usage` | super-admin | Usage snapshot |
@@ -502,7 +560,7 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `GET` | `/api/admin/bots/{slug}` | super-admin | One override incl. its file map |
 | `PUT` | `/api/admin/bots/{slug}` | super-admin | Push/replace an override (`{files, version?}`; compiled before persisting; 413 over the body cap) |
 | `DELETE` | `/api/admin/bots/{slug}` | super-admin | Remove the override (baked catalog serves again) |
-| `PUT/DELETE` | `/api/admin/bots/{slug}/files/{path}` | super-admin | Single-file edit of an override |
+| `PUT/DELETE` | `/api/admin/bots/{slug}/files/{path...}` | super-admin | Single-file edit of an override — `{path...}` is the multi-segment wildcard, so `skills/x/SKILL.md` matches |
 | `POST` | `/api/admin/bots/{slug}/fork` | super-admin | Seed the override from the baked bundle (`{from}`) |
 | `GET/PUT` | `/api/admin/settings/bot-roles` | super-admin | Webhook role→bot bindings (merge semantics; `null` clears a field) |
 | `GET/PUT` | `/api/admin/settings/sandbox` | super-admin | `sandbox: auto` fallback image override |
@@ -510,7 +568,11 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
 [pkg/server/admin_bots_routes.go](../pkg/server/admin_bots_routes.go),
 [pkg/server/platform_settings.go](../pkg/server/platform_settings.go),
-[pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go).
+[pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go); the four user
+rows are registered in [pkg/server/auth_routes.go](../pkg/server/auth_routes.go)
+and handled in [pkg/server/auth_admin.go](../pkg/server/auth_admin.go) +
+[pkg/server/admin_users_routes.go](../pkg/server/admin_users_routes.go), the
+audit row in [pkg/server/audit_helper.go](../pkg/server/audit_helper.go).
 
 ## Server info + health
 
@@ -518,7 +580,7 @@ Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
 |---|---|---|---|
 | `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits |
 | `GET` | `/healthz` | public | Liveness — HTTP listener up |
-| `GET` | `/readyz` | public | Readiness — Mongo + NATS + S3 reachable under 1s deadline |
+| `GET` | `/readyz` | public | Readiness — every dependency the deployment wired (`Config.ReadinessChecks`), pinged concurrently under a per-check deadline (1s by default). A failing CRITICAL check is `503`; a non-critical one is reported `degraded` and still answers `200`. Draining or superseded is `503` without touching a dependency; no checks wired (local mode) is `200` |
 | `GET` | `/metrics` | public on the metrics port (ClusterIP-only by design) | Prometheus scrape |
 
 ## Non-obvious JSON shapes
@@ -594,11 +656,17 @@ Response (plaintext shown once):
 
 ```json
 {
-  "pat":   { "id": "…", "name": "github-actions", "token_last4": "Q9k2", "expires_at": "…", … },
-  "token": "iap_…"
+  "pat":    { "id": "…", "name": "github-actions", "token_last4": "Q9k2", "expires_at": "…", … },
+  "token":  "iap_…",
+  "org_id": "org_…"
 }
 ```
 
 `expires_in_days` is clamped down to `ITERION_PAT_MAX_TTL` when the
-platform sets one. `team_id` is optional; without it the PAT inherits
-the user's default team and re-checks membership at every use.
+platform sets one. `org_id` is the pinned team's parent org, omitted for example when the
+token carries no team or the org could not be resolved. `team_id` is optional
+in form only: without it the mint pins the caller's ACTIVE team, and answers
+`400` when the caller has none — an unpinned token could never authenticate.
+A super-admin keeps unpinned tokens, which resolve to the owner's default team
+at every use, or to no team. Membership and the team's existence are re-checked
+on every call that resolves a team.

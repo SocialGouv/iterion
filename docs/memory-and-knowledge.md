@@ -10,6 +10,8 @@ tree of markdown documents with tenant-isolated visibility scopes. The session-c
 ([bots/whats-next/skills/session-continuity.md](../bots/whats-next/skills/session-continuity.md))
 is the canonical consumer.
 
+Diagram: [diagrams/data-model-knowledge.md](diagrams/data-model-knowledge.md) — the memory, config-share and notification data model.
+
 ## Visibilities and what scopes them
 
 A space is addressed by a `SpaceRef`
@@ -21,13 +23,22 @@ escape the tree.
 
 | Visibility | Shared across | Required qualifiers | Default sub-cap |
 |---|---|---|---|
-| `private` | one run | — | 64 MiB |
+| `private` | one team, under that name — nothing scopes it to a run | — | 64 MiB |
 | `bot` | every run of one bot in one project | `ProjectID` + `BotID` | 256 MiB |
 | `project` | every bot in one project (the cross-bot inbox) | `ProjectID` | 256 MiB |
-| `cross_project` | every project in one org | — | 512 MiB |
+| `cross_project` | every project in one team | — | 512 MiB |
 | `user` | one user across projects | `UserID` | 128 MiB |
-| `org` | every bot / run / project in one org | — | 1 GiB |
-| `global` | the whole iterion instance (read-only catalogue) | — | 0 (not writable through org path) |
+| `org` | every bot / run / project in one team | — | 1 GiB |
+| `global` | the whole iterion instance | — | none (`0` = no sub-cap) |
+
+`private` names a run-scoped scratch space nothing implements: a `SpaceRef`
+carries no run field, the closed enum
+behind `visibility:` accepts only `bot|project|cross_project|user|org|global`
+and reports **C170** otherwise, and the FS adapter answers
+`ErrUnsupportedVisibility` on every document operation, because the visibility has no durable home
+([pkg/memory/fsstore.go](../pkg/memory/fsstore.go)). A REST caller can still
+pass `?visibility=private`, which the cloud store serves as one more
+tenant-wide space.
 
 A space's identity is `v1:<visibility>:<tenant>:<project>:<bot>:<user>:<name>`
 — deterministic; equal refs always produce equal ids
@@ -37,16 +48,24 @@ A space's identity is `v1:<visibility>:<tenant>:<project>:<bot>:<user>:<name>`
 
 Two levels, both enforced at write:
 
-- **Per-org aggregate**: `DefaultOrgAggregateQuota = 1 GiB`. Override
-  per-org via `PATCH /api/admin/orgs/{id}` with
-  `memory_quota_bytes` — the handler propagates the change into the
-  enforced counter via the cloud Mongo memory store's `SetTenantQuota`
+- **Per-team aggregate** (the code's "org aggregate"):
+  `DefaultOrgAggregateQuota = 1 GiB` per team. `PATCH /api/admin/orgs/{id}`
+  with `memory_quota_bytes` writes, best effort, the org's ceiling onto the counter of
+  each team the org has at that moment through the cloud Mongo memory store's `SetTenantQuota`
   capability
   ([pkg/server/admin_orgs_routes.go:tenantMemoryQuotaSetter](../pkg/server/admin_orgs_routes.go)),
-  so the field on `Team` alone is not enough.
+  so a team created later starts at the 1 GiB default, and the field on the
+  org alone is not enough.
 - **Per-visibility sub-caps**: the per-space defaults from the table
-  above. Override via env at process start
-  (`ITERION_MEMORY_QUOTA_ORG_TOTAL`, …).
+  above — a default of `0` (`global`) means *no* sub-cap, never a
+  refusal — and a cloud `global` write, which has no team, meets no
+  aggregate either; only the per-document cap applies. The filesystem adapter reads three env overrides:
+  `ITERION_MEMORY_QUOTA_<VISIBILITY>` (e.g. `ITERION_MEMORY_QUOTA_PROJECT`),
+  `ITERION_MEMORY_QUOTA_ORG_TOTAL` for its aggregate counter (where `0`
+  refuses every write that grows the tree) and
+  `ITERION_MEMORY_MAX_DOC` for the per-document cap (where `0` refuses every
+  non-empty document); the cloud Mongo adapter
+  reads none of them.
 
 `DefaultMaxDocumentSize` caps any one markdown document at 2 MiB
 ([pkg/knowledge/quota.go](../pkg/knowledge/quota.go)).
@@ -307,13 +326,21 @@ Multi-tenant safety lives on three boundaries:
    onto the `SpaceRef`; query params can only override `project`,
    `name`, `bot`, `visibility`. Cross-tenant reads are not expressible.
 2. **Cloud Mongo adapter**: every document carries the full
-   `SpaceRef.ID()` (which includes the tenant); queries are tenant-stamped
-   from the request ctx, and the adapter fail-closes when the ctx
-   carries no tenant.
+   `SpaceRef.ID()` (which includes the tenant) and every query on a space or
+   its documents addresses that id — `{space_id}` for a space's documents, the composite `{_id}`
+   for one of them — so isolation rides the ref, not
+   the ctx tenant filter the rest of the store uses. `validateCloudTenant`
+   fail-closes, before any Mongo I/O, on a non-global ref carrying no
+   tenant ([pkg/store/mongo/memory.go](../pkg/store/mongo/memory.go)).
 3. **Validate path traversal**: `SpaceRef.Validate` rejects `..`, `/`,
    and `\` in every qualifier and the document path
    ([pkg/knowledge/scope.go](../pkg/knowledge/scope.go)).
 
 `visibility=global` is the only space that **deliberately** crosses the
-tenant boundary; writes there are gated on `IsSuperAdmin` and produce
-an audit entry through the admin path.
+tenant boundary; REST writes there are gated on `IsSuperAdmin`
+(`requireMemoryWriteAuth`), while a `claw` node whose `memory:` block sets
+`enabled: true` and `visibility: "global"` (with its `scope:`; `write`
+defaults to true) writes there from a run with no gate, and neither leaves
+an audit row — no memory mutation
+records one, so a super-admin overwrite of the shared catalogue does not
+show up under `/api/orgs/{id}/audit` or `/api/admin/audit`.
