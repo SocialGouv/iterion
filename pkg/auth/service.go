@@ -131,6 +131,12 @@ type Service struct {
 	// the audit store, so this package holds the registered implementation
 	// rather than a second one.
 	teamGrantSweep TeamGrantSweep
+	// teamRankReconcile re-measures, over the pending invitations of userID
+	// in teamID, the mint cap that would bind their creator NOW, after a
+	// write of this service LOWERED their team authority (SetTeamRankReconcile).
+	// Same split as teamGrantSweep: the selection and its audit line live in
+	// pkg/server.
+	teamRankReconcile TeamRankReconcile
 }
 
 // TeamGrantSweep takes the pending invitations kept on userID's grant in
@@ -152,6 +158,26 @@ type TeamGrantSweep func(ctx context.Context, userID, teamID, reason string) err
 // refuses to revoke a grant rather than leave the rows kept on it standing
 // (reconcileGitHubGrants).
 func (s *Service) SetTeamGrantSweep(sweep TeamGrantSweep) { s.teamGrantSweep = sweep }
+
+// TeamRankReconcile re-measures, over the pending invitations of userID in
+// teamID, the mint cap that would bind their creator NOW, after a write of
+// this service LOWERED their team authority to grant — the role the write
+// left on their row, or "" where it took the grant away. It is the minted
+// half of the same rule the kept-on-grant sweep is one half of: whoever
+// lowers a team authority takes the rows its target minted above what that
+// leaves them (pkg/server takeTeamRankInvitations).
+//
+// It returns an error when a read it needs or a revocation failed, which its
+// caller answers for: the rows may stand.
+type TeamRankReconcile func(ctx context.Context, userID, teamID string, grant identity.Role) error
+
+// SetTeamRankReconcile registers the reconcile the authority-lowering writes
+// of this service owe (TeamRankReconcile). The server registers its own
+// (takeTeamRankInvitations) when it is built on this service, so one
+// implementation decides for every write that owes it; a service with none
+// refuses a write that would lower an authority rather than leave the rows
+// minted above what that leaves standing.
+func (s *Service) SetTeamRankReconcile(fn TeamRankReconcile) { s.teamRankReconcile = fn }
 
 // Config wires the Service.
 type Config struct {
@@ -1052,6 +1078,37 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 		InvitedBy: inv.InvitedBy,
 		JoinedAt:  now,
 	}
+	// A lowering write over the acceptee's own authority: an existing grant
+	// in this team at a role ABOVE the one the invitation carries is demoted
+	// by this accept, so the rows they minted above what it leaves them are
+	// re-measured through the seam the server registers, as every lowering
+	// write does. The read that detects it comes before the claim and the
+	// upsert; the reconcile runs after the grant is written, on the value it
+	// left. A raise landing between that read and the write is a lowering it
+	// does not see — the read-once window the roster writes state. A service
+	// with no reconcile registered refuses a lowering accept
+	// before any write, as reconcileGitHubGrants refuses a revoke with no
+	// sweep: a lowering nobody re-measures is the state this exists to
+	// prevent.
+	lowering := false
+	existing, err := s.store.GetMembership(ctx, u.ID, inv.TeamID)
+	switch {
+	case errors.Is(err, identity.ErrNotFound):
+		// A first grant — the accept creates it, it lowers nothing.
+	case err != nil:
+		return identity.Membership{}, err
+	case existing.Role != "" && existing.Role != identity.RoleConfigEditor && !inv.Role.AtLeast(existing.Role):
+		// The acceptee holds a LADDER grant and the role written does not
+		// cover it — the rank falls, off the ladder (config_editor) or to a
+		// lower rung. The sibling cap's own exemptions carry over: a
+		// config_editor grant is off the ladder (ADR-078) and is no rank to
+		// fall FROM, whatever is written over it.
+		lowering = true
+	}
+	if lowering && s.teamRankReconcile == nil {
+		return identity.Membership{}, fmt.Errorf("auth: no team-rank reconcile is registered, so accepting this invitation would lower the %s grant of %s in %s and leave the invitations they minted above it standing (SetTeamRankReconcile)",
+			existing.Role, u.ID, inv.TeamID)
+	}
 	// The invitation is CLAIMED before either access row: it is this
 	// accept's authority and the one write a concurrent off-boarding can
 	// refuse (claimInvitation).
@@ -1065,6 +1122,18 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 	}
 	if err := s.store.UpsertMembership(ctx, mb); err != nil {
 		return identity.Membership{}, err
+	}
+	if lowering {
+		// The demotion is the accept's own act, so its reconcile measures the
+		// value it LEFT (inv.Role) — the same posture as the HTTP writes,
+		// whose sweeps decide from the rows they just wrote — and a reconcile
+		// that fails fails the accept: the rows it could not take are the
+		// invitations the lower grant no longer covers, reported rather than
+		// left behind an answer that looks clean.
+		if err := s.teamRankReconcile(ctx, u.ID, inv.TeamID, inv.Role); err != nil {
+			return identity.Membership{}, fmt.Errorf("auth: accepting this invitation lowered the team role of %s in %s to %s, but taking the invitations they minted above it failed: %w",
+				u.ID, inv.TeamID, inv.Role, err)
+		}
 	}
 	return mb, nil
 }

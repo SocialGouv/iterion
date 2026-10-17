@@ -692,26 +692,34 @@ func TestOrgOffboarding_aFailedSecondSweepNamesWhatMayBeLeft(t *testing.T) {
 // cover each other are two guards nothing tests.
 type recheckErrorGate struct {
 	identity.Store
-	userID, orgID string
-	failRevoke    bool
+	userID, orgID, teamID string
+	failRevoke            bool
 	// gone makes the re-read answer ErrNotFound — a member who WAS removed
 	// — instead of a store blip: the branch that answers 409, and the only
 	// one whose status the failed revoke overrides.
 	gone bool
 
-	mu    sync.Mutex
-	reads int
+	// wrote marks the grant write this scenario is about — the named account
+	// in the named team: the read it cannot serve is the compensation's,
+	// which FOLLOWS that write. Keyed on the write rather than on a read
+	// count — the handler takes reads of the same row before it (the
+	// boundary pre-check, the rank guard), and an ordinal moves with them.
+	wrote atomic.Bool
+}
+
+func (g *recheckErrorGate) UpsertMembership(ctx context.Context, mb identity.Membership) error {
+	err := g.Store.UpsertMembership(ctx, mb)
+	if mb.UserID == g.userID && mb.TeamID == g.teamID {
+		g.wrote.Store(true)
+	}
+	return err
 }
 
 func (g *recheckErrorGate) GetOrgMembership(ctx context.Context, userID, orgID string) (identity.OrgMembership, error) {
 	if userID != g.userID || orgID != g.orgID {
 		return g.Store.GetOrgMembership(ctx, userID, orgID)
 	}
-	g.mu.Lock()
-	g.reads++
-	n := g.reads
-	g.mu.Unlock()
-	if n >= 2 {
+	if g.wrote.Load() {
 		if g.gone {
 			return identity.OrgMembership{}, identity.ErrNotFound
 		}
@@ -738,7 +746,7 @@ func TestOrgOffboarding_anUnconfirmableMembershipTakesTheGrantBack(t *testing.T)
 	ctx := context.Background()
 
 	real := s.authStore()
-	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1"})
+	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"})
 
 	w := httptest.NewRecorder()
 	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
@@ -776,7 +784,7 @@ func TestOrgOffboarding_aFailedRevokeNamesTheGrantItCouldNotTakeBack(t *testing.
 	logs := &lockedBuffer{}
 	s.logger = iterlog.New(iterlog.LevelError, logs)
 	real := s.authStore()
-	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1", failRevoke: true})
+	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1", failRevoke: true})
 
 	w := httptest.NewRecorder()
 	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
@@ -833,7 +841,7 @@ func TestOrgOffboarding_aRevokeWhoseAckWasLostIsNotReportedAsAStandingGrant(t *t
 	logs := &lockedBuffer{}
 	s.logger = iterlog.New(iterlog.LevelError, logs)
 	real := s.authStore()
-	s.authSvc.SetStoreForTest(&lostAckRevokeGate{recheckErrorGate: &recheckErrorGate{Store: real, userID: racerID, orgID: "o1"}})
+	s.authSvc.SetStoreForTest(&lostAckRevokeGate{recheckErrorGate: &recheckErrorGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"}})
 
 	w := httptest.NewRecorder()
 	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
@@ -869,7 +877,7 @@ func TestOrgOffboarding_aRemovedMemberWhoseRevokeFailsAnswers500NotTheConflict(t
 	logs := &lockedBuffer{}
 	s.logger = iterlog.New(iterlog.LevelError, logs)
 	real := s.authStore()
-	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1", gone: true, failRevoke: true})
+	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1", gone: true, failRevoke: true})
 
 	w := httptest.NewRecorder()
 	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
@@ -903,10 +911,21 @@ func TestOrgOffboarding_aRemovedMemberWhoseRevokeFailsAnswers500NotTheConflict(t
 // already spent.
 type slowConfirmGate struct {
 	identity.Store
-	userID, orgID string
+	userID, orgID, teamID string
 
 	mu    sync.Mutex
 	reads int
+
+	// wrote marks the grant write this scenario is about — the named account
+	// in the named team: the read it cannot serve is the compensation's,
+	// which FOLLOWS that write. Keyed on the write rather than on a read
+	// count — the handler takes reads of the same row before it (the
+	// boundary pre-check, the rank guard), and an ordinal moves with them.
+	// It is held under mu with the read count, so one decision reads one
+	// snapshot of both; postWriteReads counts the reads that follow the
+	// write, of which exactly the FIRST is the compensation's.
+	wrote          bool
+	postWriteReads int
 
 	reached chan struct{}
 	release chan struct{}
@@ -925,19 +944,27 @@ func (g *slowConfirmGate) GetOrgMembership(ctx context.Context, userID, orgID st
 	g.mu.Lock()
 	g.reads++
 	n := g.reads
+	wrote := g.wrote
+	if wrote {
+		g.postWriteReads++
+	}
+	postWrite := g.postWriteReads
 	g.mu.Unlock()
-	// Exactly two reads are this scenario's: every later one — the
-	// authorization reads of whatever the test drives next — is served
-	// normally. A gate that slowed them too would block on a request
-	// context that has no deadline at all.
-	switch n {
-	case 1:
+	// Two reads are this scenario's: the placement's pre-check, which is the
+	// FIRST, and the compensation's re-read, which is the first to follow the
+	// WRITE. Every other read — the rank guard's, the authorization reads of
+	// whatever the test drives next, which is how the roster probe at the end
+	// of this scenario reads — is served normally: a gate that slowed them
+	// too would block on a request context that has no deadline at all, and
+	// would count an ordinary read as this scenario's failure.
+	switch {
+	case !wrote && n == 1:
 		// The placement's pre-check: pause it on the value read while the
 		// membership was still live, which is the stale snapshot it acts on.
 		close(g.reached)
 		<-g.release
 		return om, err
-	case 2:
+	case wrote && postWrite == 1:
 		// The compensation's re-read: it cannot answer inside its budget.
 		if _, ok := ctx.Deadline(); !ok {
 			// Waiting on a context with no deadline would hang until the
@@ -950,6 +977,16 @@ func (g *slowConfirmGate) GetOrgMembership(ctx context.Context, userID, orgID st
 		return identity.OrgMembership{}, fmt.Errorf("identity: get org membership: %w", ctx.Err())
 	}
 	return om, err
+}
+
+func (g *slowConfirmGate) UpsertMembership(ctx context.Context, mb identity.Membership) error {
+	err := g.Store.UpsertMembership(ctx, mb)
+	if mb.UserID == g.userID && mb.TeamID == g.teamID {
+		g.mu.Lock()
+		g.wrote = true
+		g.mu.Unlock()
+	}
+	return err
 }
 
 func (g *slowConfirmGate) DeleteMembership(ctx context.Context, userID, teamID string) error {
@@ -986,7 +1023,7 @@ func TestOrgOffboarding_aReReadThatAnswersOnlyAtItsDeadlineStillTakesTheGrantBac
 
 	real := s.authStore()
 	gate := &slowConfirmGate{
-		Store: real, userID: racerID, orgID: "o1",
+		Store: real, userID: racerID, orgID: "o1", teamID: "t1",
 		reached: make(chan struct{}), release: make(chan struct{}),
 	}
 	s.authSvc.SetStoreForTest(gate)
@@ -1485,7 +1522,7 @@ func TestOrgOffboarding_aRoleChangeWithAnUnconfirmableMembershipTakesTheGrantBac
 	}); err != nil {
 		t.Fatal(err)
 	}
-	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1"})
+	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"})
 
 	w := httptest.NewRecorder()
 	s.handleUpdateMember(w, teamReq(orgAdminCtx(), "PATCH", "/api/teams/t1/members/"+racerID, `{"role":"admin"}`, "t1", racerID))
@@ -1815,25 +1852,32 @@ func TestTeamMembers_aFailedWriteInsideALiveMembershipRevokesNothing(t *testing.
 // this is a blip, not an off-boarding.
 type storeBlipGate struct {
 	identity.Store
-	userID, orgID string
+	userID, orgID, teamID string
 
-	reads atomic.Int64
+	// attempted marks the grant write this scenario is about — the named
+	// account in the named team. The write is refused rather than applied, so
+	// what it marks is the ATTEMPT: the incident starts there, and the reads
+	// that follow it are the compensation's.
+	attempted atomic.Bool
 }
 
 func (g *storeBlipGate) UpsertMembership(ctx context.Context, mb identity.Membership) error {
-	if mb.UserID != g.userID {
+	if mb.UserID != g.userID || mb.TeamID != g.teamID {
 		return g.Store.UpsertMembership(ctx, mb)
 	}
+	g.attempted.Store(true)
 	return errors.New("identity: upsert membership: context deadline exceeded")
 }
 
-// The pre-check's read is served — the incident starts with the write — and
-// every read after it fails.
+// The reads BEFORE the write attempt are served — the incident starts with
+// that attempt, which is also what tells them apart from the compensation's
+// read: the handler's own boundary pre-check and rank guard read the same row
+// first.
 func (g *storeBlipGate) GetOrgMembership(ctx context.Context, userID, orgID string) (identity.OrgMembership, error) {
 	if userID != g.userID || orgID != g.orgID {
 		return g.Store.GetOrgMembership(ctx, userID, orgID)
 	}
-	if g.reads.Add(1) > 1 {
+	if g.attempted.Load() {
 		return identity.OrgMembership{}, errors.New("identity: get org membership: context deadline exceeded")
 	}
 	return g.Store.GetOrgMembership(ctx, userID, orgID)
@@ -1860,7 +1904,7 @@ func TestTeamMembers_aRoleChangeCaughtByAStoreBlipKeepsTheGrantItDidNotWrite(t *
 	}); err != nil {
 		t.Fatal(err)
 	}
-	s.authSvc.SetStoreForTest(&storeBlipGate{Store: real, userID: racerID, orgID: "o1"})
+	s.authSvc.SetStoreForTest(&storeBlipGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"})
 
 	w := httptest.NewRecorder()
 	s.handleUpdateMember(w, teamReq(orgAdminCtx(), "PATCH", "/api/teams/t1/members/"+racerID, `{"role":"admin"}`, "t1", racerID))
@@ -1907,7 +1951,7 @@ func TestTeamMembers_aPlacementCaughtByAStoreBlipKeepsTheGrantItDidNotWrite(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	s.authSvc.SetStoreForTest(&storeBlipGate{Store: real, userID: racerID, orgID: "o1"})
+	s.authSvc.SetStoreForTest(&storeBlipGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"})
 
 	w := httptest.NewRecorder()
 	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"admin"}`, "t1", racerID))
@@ -2712,15 +2756,35 @@ func TestOrgOffboarding_anInvitationRevokedUnderTheSweepIsNotAFailure(t *testing
 // request's own context would produce.
 type subjectReadGate struct {
 	identity.Store
-	userID, orgID string
-	gone          bool
+	userID, orgID, teamID string
+	gone                  bool
 
-	mu                     sync.Mutex
-	reads                  int
+	mu sync.Mutex
+
+	// wrote marks the grant write this scenario is about — the named account
+	// in the named team: the read it cannot serve is the compensation's,
+	// which FOLLOWS that write. Keyed on the write rather than on a read
+	// count — the handler takes reads of the same row before it (the boundary
+	// pre-check, the rank guard), and an ordinal moves with them. It is held
+	// under mu with the counters, so one decision reads one snapshot;
+	// postWriteReads counts the reads after that write, of which exactly the
+	// FIRST is the compensation's.
+	wrote                  bool
+	postWriteReads         int
 	subjectReads           int
 	subjectReadsOnDoneCtx  int
 	subjectReadsNoDeadline int
 	subjectBudgets         []time.Duration
+}
+
+func (g *subjectReadGate) UpsertMembership(ctx context.Context, mb identity.Membership) error {
+	err := g.Store.UpsertMembership(ctx, mb)
+	if mb.UserID == g.userID && mb.TeamID == g.teamID {
+		g.mu.Lock()
+		g.wrote = true
+		g.mu.Unlock()
+	}
+	return err
 }
 
 func (g *subjectReadGate) GetOrgMembership(ctx context.Context, userID, orgID string) (identity.OrgMembership, error) {
@@ -2728,10 +2792,16 @@ func (g *subjectReadGate) GetOrgMembership(ctx context.Context, userID, orgID st
 		return g.Store.GetOrgMembership(ctx, userID, orgID)
 	}
 	g.mu.Lock()
-	g.reads++
-	n := g.reads
+	wrote := g.wrote
+	if wrote {
+		g.postWriteReads++
+	}
+	postWrite := g.postWriteReads
 	g.mu.Unlock()
-	if n != 2 {
+	// Every read but the first one after the write is served normally: the
+	// reads before it are the handler's own, and the ones after the
+	// compensation's are whatever the test drives next.
+	if !wrote || postWrite > 1 {
 		return g.Store.GetOrgMembership(ctx, userID, orgID)
 	}
 	if _, ok := ctx.Deadline(); !ok {
@@ -2749,7 +2819,7 @@ func (g *subjectReadGate) GetUser(ctx context.Context, id string) (identity.User
 	// placement loads the user before writing the grant, on the request's own
 	// context, and counting that one would flag the handler's ordinary read.
 	g.mu.Lock()
-	inCompensation := id == g.userID && g.reads >= 2
+	inCompensation := id == g.userID && g.wrote
 	// The compensation reads the account TWICE, in this order: the label
 	// first (grantSubject, for the refusal's subject), then the address the
 	// sweep of the rows kept on the revoked grant selects by
@@ -2808,7 +2878,7 @@ func TestOrgOffboarding_theRefusalNamesItsSubjectOnABudgetOfItsOwn(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			s := newOrgCredsTestServer(t)
 			seedRacer(t, s)
-			gate := &subjectReadGate{Store: s.authStore(), userID: racerID, orgID: "o1", gone: tc.gone}
+			gate := &subjectReadGate{Store: s.authStore(), userID: racerID, orgID: "o1", teamID: "t1", gone: tc.gone}
 			s.authSvc.SetStoreForTest(gate)
 
 			w := httptest.NewRecorder()
@@ -3131,6 +3201,12 @@ func TestOrgOffboarding_anAcceptThatStraddlesTheSweepKeepsNoBoundary(t *testing.
 // role beside it as the sanctioned cause.
 func TestTeamMembers_anOrphanGrantLaunderedThroughItsOwnInvitationStaysOnTheDriftReport(t *testing.T) {
 	s := newOrgCredsTestServer(t)
+	// This fixture attaches the auth service after New, so the seams the
+	// constructor registers in production are registered here: the accept
+	// below is a lowering write (config_editor over an admin grant), and the
+	// reconcile it owes takes nothing — no cap measures the role it writes.
+	s.wireTeamGrantSweep()
+	s.wireTeamRankReconcile()
 	seedOrphanAdminGrant(t, s)
 	ctx := context.Background()
 	self := auth.Identity{UserID: racerID}

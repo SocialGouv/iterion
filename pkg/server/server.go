@@ -1140,5 +1140,6 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// registry I/O failure is logged but never blocks startup.
 	s.registerInitialProject()
 	s.wireTeamGrantSweep()
+	s.wireTeamRankReconcile()
 	return s
 }

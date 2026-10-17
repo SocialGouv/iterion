@@ -52,6 +52,30 @@ export function isDemotion(
   return t < f;
 }
 
+// outranksViewer reports whether a row's role sits ABOVE the viewer's own on
+// a ladder — the write the server refuses, since no roster write reaches a
+// member ranked above its author. Equal rank passes, so the viewer's own row
+// and a peer's are theirs to write; a role the ladder does not carry is
+// treated the way the server treats it, as a rank nothing covers. A viewer
+// with no role of their own is outranked by every rung, so a caller exempt
+// from the ladder (a super-admin, who holds no membership row) must not ask.
+//
+// `config_editor` outranks nothing on the ladder that CARRIES it (rank 0
+// server-side, ADR-078 — orthogonal to viewer<member<admin<owner). The
+// exception is a property of that ladder, not of the string: on the ORG
+// ladder the same value is a role no rung places, which `identity.OrgRole`
+// ranks 0 and `AtLeast` refuses, so it answers like any other unknown.
+export function outranksViewer(
+  rowRole: string,
+  viewerRole: string | null,
+  ladder: readonly string[] = TEAM_ROLES,
+): boolean {
+  if (rowRole === "config_editor" && ladder.includes(rowRole)) return false;
+  const r = ladder.indexOf(rowRole);
+  if (r < 0) return true;
+  return (viewerRole ? ladder.indexOf(viewerRole) : -1) < r;
+}
+
 // needsRoleChangeConfirm names the role edits worth a prompt: any demotion,
 // and anything touching `owner` in either direction. Those are the two that
 // lock someone out or hand over control; a routine promotion is not.
