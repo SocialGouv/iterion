@@ -145,4 +145,62 @@ describe("AddExistingMemberPanel with a server-backed candidate list", () => {
       screen.getByRole("button", { name: "Add to org" }).hasAttribute("disabled"),
     ).toBe(true);
   });
+
+  // `roles` is what the caller may WRITE, which their own standing caps — so
+  // a default role can be absent from it. A <select> whose value matches no
+  // option renders the FIRST one, and the panel would then place an account
+  // at a role the operator never saw.
+  it("adds at the role it displays when the default is not offered", async () => {
+    const onAdd = vi.fn(async () => {});
+    render(
+      <AddExistingMemberPanel
+        title="Add an account that already exists"
+        candidates={[ALICE]}
+        roles={["member", "admin"]}
+        defaultRole="owner"
+        emptyMessage="none"
+        addLabel="Add to org"
+        onAdd={onAdd}
+      />,
+    );
+
+    // The list arrives in ladder order, so the cap the pick ran into is its
+    // last entry — the nearest role below the one asked for, rather than the
+    // least-privileged one, which on the team ladder is a different
+    // capability (config_editor) and not a lower rank at all.
+    const select = screen.getByLabelText("Role") as HTMLSelectElement;
+    expect(select.value).toBe("admin");
+
+    fireEvent.click(screen.getByLabelText("Account"));
+    fireEvent.mouseDown(await screen.findByText("alice@example.org"));
+    fireEvent.click(screen.getByRole("button", { name: "Add to org" }));
+    await waitFor(() => expect(onAdd).toHaveBeenCalledWith("u-alice", "admin"));
+  });
+
+  // The guard's own invariant: with nothing offered, the old fallback
+  // (`roles[0] ?? role`) handed back a role that is NOT in `roles` — which is
+  // the very bug it exists to close.
+  it("adds nothing when no role is offered, and says so", async () => {
+    const onAdd = vi.fn(async () => {});
+    render(
+      <AddExistingMemberPanel
+        title="Add an account that already exists"
+        candidates={[ALICE]}
+        roles={[]}
+        defaultRole="member"
+        emptyMessage="none"
+        addLabel="Add to org"
+        onAdd={onAdd}
+      />,
+    );
+
+    expect((screen.getByLabelText("Role") as HTMLSelectElement).disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText("Account"));
+    fireEvent.mouseDown(await screen.findByText("alice@example.org"));
+    const add = screen.getByRole("button", { name: "Add to org" }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    fireEvent.click(add);
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(screen.getByText(/No role here is yours to grant/)).toBeTruthy();
+  });
 });

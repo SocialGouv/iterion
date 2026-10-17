@@ -259,6 +259,9 @@ func (s *Server) handleUpdateOrgMember(w http.ResponseWriter, r *http.Request) {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
+	if !s.requireRankOverMember(w, r, id, orgID, "", memberID, "", false) {
+		return
+	}
 	mb.Role = role
 	if err := s.authStore().UpsertOrgMembership(r.Context(), mb); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
@@ -275,7 +278,10 @@ func (s *Server) handleUpdateOrgMember(w http.ResponseWriter, r *http.Request) {
 // in orgID above the org role just written for them: the role written is also
 // the standing those invitations were capped at, and one above it would still
 // hand out a rank its creator no longer holds, since the accept reads nothing
-// about them (requireOrgStandingToInvite caps at the mint).
+// about them (requireRankToInvite caps at the mint). Where the standing
+// written falls below admin, the sweep reads the grant they hold in each team
+// and takes the roles above it too — the cap that would bind their minting
+// now measures both (revokeInvitationsAboveOrgStanding).
 //
 // It runs AFTER the write, on a context detached from the request: the
 // standing is already lowered, so a mint racing in is capped by the new one —
@@ -325,6 +331,11 @@ func (s *Server) handleRemoveOrgMember(w http.ResponseWriter, r *http.Request) {
 	memberID := r.PathValue("user_id")
 	if !s.canManageOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "org admin or owner required")
+		return
+	}
+	// Before the cascade below, whose first pass already writes the target's
+	// grants.
+	if !s.requireRankOverMember(w, r, id, orgID, "", memberID, "", false) {
 		return
 	}
 	// Cascade: removing a user from the org also revokes their access to
@@ -688,31 +699,52 @@ func (s *Server) revokeOrgTeamInvitations(ctx context.Context, r *http.Request, 
 }
 
 // revokeInvitationsAboveOrgStanding deletes the pending invitations userID
-// minted in the teams of orgID whose role is mirrored up to an org role above
-// standing — the rank they hold there now. It is what keeps a cap read at the
-// MINT (requireOrgStandingToInvite) from being outlived: the accept reads
-// nothing about an invitation's creator, so one minted at a rank its creator
-// has since lost would still hand that rank out. It covers the rows its
-// listing reaches; a mint whose row lands after that listing is covered by
-// the mint's own confirmation (confirmOrgStandingAfterMint), which is the
-// other half of the pair.
+// minted in the teams of orgID that the cap that would bind their minting NOW
+// refuses: the role mirrored up to an org role above standing — the rank they
+// hold there now — and, where that standing does not carry a team by itself
+// (below admin), the role above their own grant in each team (K.2, the same
+// predicate requireRankToInvite applies at the mint). It is what keeps a cap
+// read at the MINT from being outlived: the accept reads nothing about an
+// invitation's creator, so one minted at a rank its creator has since lost
+// would still hand that rank out. It covers the rows its listing reaches; a
+// mint whose row lands after that listing is covered by the mint's own
+// confirmation (confirmOrgStandingAfterMint), which is the other half of the
+// pair.
 //
 // It reconciles against the standing it is given, not against the one it
 // replaced, so it is idempotent: issued again on a row that already carries
 // that role, it revokes whatever a previous call could not.
+//
+// The grant is read once per team, and only where the standing written is
+// below admin — the one state where the cap measures it at all. A grant that
+// cannot be READ fails the sweep: a selection that cannot be made is not one
+// that found nothing, and the caller answers 500 naming the act to re-issue.
 func (s *Server) revokeInvitationsAboveOrgStanding(ctx context.Context, r *http.Request, orgID, userID string, standing identity.OrgRole) error {
 	teams, err := s.authStore().ListTeamsByOrg(ctx, orgID)
 	if err != nil {
 		return fmt.Errorf("list org teams: %w", err)
 	}
-	return s.revokePendingInvitations(ctx, requestActor(r), teams, "org_member_demoted", func(inv identity.Invitation) bool {
-		// The same predicate the removal answers, at the standing this write
-		// leaves instead of none. A demotion leaves a membership ROW, whose
-		// absence is what the addressed-to half of standingTakesInvitation
-		// fires at, so this sweep needs no address: the invitations addressed
-		// to a member who keeps a row stand, where a removal takes them.
-		return standingTakesInvitation(userID, standing, "", false, inv)
-	})
+	actor := requestActor(r)
+	// A demotion leaves a membership ROW, whose absence is what the
+	// addressed-to half of standingTakesInvitation fires at, so this sweep
+	// needs no address: the invitations addressed to a member who keeps a row
+	// stand, where a removal takes them.
+	for _, t := range teams {
+		grant := identity.Role("")
+		if !standing.AtLeast(identity.OrgRoleAdmin) {
+			g, _, rerr := s.readTeamGrantRole(ctx, userID, t.ID)
+			if rerr != nil {
+				return fmt.Errorf("read the grant of %s in team %s: %w", userID, t.ID, rerr)
+			}
+			grant = g
+		}
+		if err := s.revokePendingInvitations(ctx, actor, []identity.Team{{ID: t.ID}}, "org_member_demoted", func(inv identity.Invitation) bool {
+			return teamRankTakesInvitation(userID, true, standing, grant, inv)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // orgStandingAfterRemoval is the standing a removal leaves its target: no
@@ -776,6 +808,53 @@ func standingGoneTakesAddressedTo(standing identity.OrgRole, addr string, addrKn
 	return standing == orgStandingAfterRemoval && addrKnown && inv.AddressedTo(addr)
 }
 
+// teamRankTakesInvitation reports whether the team authority a write LEAVES
+// its target with refuses, at the mint, a pending invitation inv they minted
+// — the question requireRankToInvite answers for a mint not yet made, asked
+// here of one already standing, from the rows the write just left. It is the
+// team twin of standingTakesInvitation, the one selection every write that
+// LOWERS a team authority makes, and its shape is requireRankToInvite's own:
+//
+//   - K.1 — where the team has a parent org, the role's org MIRROR against
+//     the creator's standing there: a mirror above it hands out a rank the
+//     roster no longer holds them at. A team with no parent org has no
+//     standing for this half to measure, as the mint has none to read;
+//   - K.2 — the minted TEAM role against the creator's grant, where their
+//     authority over the team IS that grant: no parent org, or a standing
+//     below admin. An admin or owner standing carries the team by itself, as
+//     it carried the mint, so a grant under it measures nothing — which is
+//     also why a write that lowers a GRANT alone reconciles nothing for a
+//     creator whose standing is that high: their authority did not drop.
+//
+// A creator with no org row reads as a standing of none, the same sentinel a
+// removal leaves — the cap would refuse their mint now, and the sweep takes
+// what it refused. A role mirrored up to NOTHING (config_editor, ADR-078) is
+// measured by NEITHER half: the caps never measured it, no cap measures it
+// now, and the row stands under every lowering.
+//
+// grant is the role the write left on the creator's row — the value written,
+// or "" where the write took the grant away — and "" measures below every
+// rung, as a grant that is not there does at the mint
+// (readTeamGrantRole). It is the TEAM half of the same sweep the org writes
+// run (revokeInvitationsAboveOrgStanding), which measures this predicate
+// against the standing it was given.
+func teamRankTakesInvitation(ownID string, hasOrg bool, standing identity.OrgRole, grant identity.Role, inv identity.Invitation) bool {
+	if inv.InvitedBy != ownID {
+		return false
+	}
+	want := identity.OrgRoleForTeamRole(inv.Role)
+	if want == "" {
+		return false
+	}
+	if hasOrg && !standing.AtLeast(want) {
+		return true
+	}
+	if hasOrg && standing.AtLeast(identity.OrgRoleAdmin) {
+		return false
+	}
+	return !grant.AtLeast(inv.Role)
+}
+
 // revokeInvitationsKeptOnTeamGrant deletes the pending invitations of teamID
 // that the mint's own confirmation kept on userID's GRANT in it: the ones
 // they addressed to their own address while holding no org membership row in
@@ -833,6 +912,83 @@ func (s *Server) revokeInvitationsKeptOnTeamGrant(ctx context.Context, actor aud
 		return inv.InvitedBy == userID &&
 			standingGoneTakesAddressedTo(orgStandingAfterRemoval, addr, addrKnown, inv)
 	})
+}
+
+// takeTeamRankInvitations sweeps ONE team's pending invitations for the rows
+// the cap that would bind their creator NOW refuses (teamRankTakesInvitation)
+// — what a write that just lowered that creator's team authority owes. It is
+// the team twin of the org writes' sweep (revokeInvitationsAboveOrgStanding),
+// over the one team the write acted in: the creator's standing is read from
+// the row, their grant is the value the caller carries from the write (the
+// role written, or "" where the write took the grant away).
+//
+// A team with no parent org measures K.2 alone, as the mint does there; a
+// team that no longer exists takes nothing, a row of it resolving to no
+// accept. The creator's standing being UNREADABLE fails the sweep — a
+// selection that cannot be made is not one that found nothing — and each
+// caller reports it in the words it owes.
+//
+// The store work runs on ctx, which the caller chooses: a sweep that must
+// outlive the request passes one detached from it. actor names who each audit
+// line is attributed to; reason is the cause of each row taken, the same
+// creator_team_rank_lowered on every lowering write.
+func (s *Server) takeTeamRankInvitations(ctx context.Context, actor auditActor, teamID, userID string, grant identity.Role, reason string) error {
+	t, err := s.authStore().GetTeam(ctx, teamID)
+	switch {
+	case errors.Is(err, identity.ErrNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("resolve the team: %w", err)
+	}
+	var standing identity.OrgRole
+	if t.OrgID != "" {
+		have, _, err := s.readOwnOrgStanding(ctx, userID, t.OrgID)
+		if err != nil {
+			return fmt.Errorf("read the org standing of %s in %s: %w", userID, t.OrgID, err)
+		}
+		standing = have
+	}
+	return s.revokePendingInvitations(ctx, actor, []identity.Team{{ID: teamID}}, reason, func(inv identity.Invitation) bool {
+		return teamRankTakesInvitation(userID, t.OrgID != "", standing, grant, inv)
+	})
+}
+
+// reconcileTeamRankInvitations answers the request and returns false when the
+// sweep a team-authority-lowering write owes could not run: it is what keeps
+// the caps read at the MINT (requireRankToInvite) from being outlived by a
+// row minted inside their own window, the same way the org writes reconcile
+// (reconcileMintedInvitations). The refusal names what stands, the listing
+// that finds it and the act to re-issue — re-issuing the write measures the
+// same cap and finishes the sweep.
+//
+// grant is the role the write left on the member's row (the role written, or
+// "" where it took the grant away): the sweep decides from the rows the write
+// just wrote, not from a re-read a racer could move. act names what the
+// caller did ("role change", "placement", "removal") for the body that asks
+// for it again.
+//
+// It runs on a context DETACHED from the request, on its own budget, as the
+// org writes' does: the authority is already lowered, so a mint racing in is
+// capped by the new one, and a client that goes away here would otherwise
+// leave exactly the invitations this sweep exists to revoke. It is the
+// write's LAST invitation action, where the removal's ordering rules apply:
+// a selection with no write of this request after it is what lets a 204 or a
+// 200 say that no row the rule takes stands behind it.
+func (s *Server) reconcileTeamRankInvitations(w http.ResponseWriter, r *http.Request, teamID, userID string, grant identity.Role, act string) bool {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
+	defer cancel()
+	err := s.takeTeamRankInvitations(cctx, requestActor(r), teamID, userID, grant, "creator_team_rank_lowered")
+	if err == nil {
+		return true
+	}
+	if s.logger != nil {
+		s.logger.Error("team %s: the team role of %s is now %s but revoking the pending invitations they minted above what that covers failed: %v — such an invitation still carries a rank its creator no longer holds; re-issue the %s",
+			teamID, userID, teamGrantName(grant), err, act)
+	}
+	httpError(w, http.StatusInternalServerError,
+		"the team role of %s in team %s is now %s but revoking the pending invitations they minted above what that covers failed: %s — such an invitation still carries a rank its creator no longer holds (listed by GET /api/teams/%s/invitations, revoked by hand); re-issue the %s to finish it",
+		userID, teamID, teamGrantName(grant), err.Error(), teamID, act)
+	return false
 }
 
 // teamGrantSweepFailure names the read the sweep after a revoked grant could
@@ -1085,7 +1241,8 @@ func (s *Server) handleCreateOrgInvitation(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusNotFound, "team not in org")
 		return
 	}
-	if !s.requireOrgStandingToInvite(w, r, id, t.OrgID, role) {
+	ok, grantCapped := s.requireRankToInvite(w, r, id, t.OrgID, teamID, role)
+	if !ok {
 		return
 	}
 	tok, inv, err := s.authSvc.CreateInvitation(r.Context(), teamID, req.Email, role, id.UserID)
@@ -1094,10 +1251,14 @@ func (s *Server) handleCreateOrgInvitation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.auditOrg(r, orgID, "org_invitation.created", "invitation", inv.ID, map[string]any{"email": inv.Email, "role": string(inv.Role)})
-	// The cap read before the row landed, confirmed once it has: the same
-	// pair the team route owes (confirmOrgStandingAfterMint), before the
-	// token leaves by email or in the response.
+	// Each cap read before the row landed, confirmed once it has: the same
+	// pairs the team route owes (confirmOrgStandingAfterMint,
+	// confirmTeamGrantAfterMint), before the token leaves by email or in the
+	// response.
 	if !s.confirmOrgStandingAfterMint(w, r, id, t.OrgID, inv) {
+		return
+	}
+	if !s.confirmTeamGrantAfterMint(w, r, id, grantCapped, inv) {
 		return
 	}
 	if s.authSvc.EmailEnabled() {

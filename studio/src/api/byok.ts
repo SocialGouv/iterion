@@ -330,3 +330,11 @@ export async function removeMember(teamID: string, userID: string): Promise<void
     method: "DELETE",
   });
 }
+
+// deleteTeam removes an empty team (DELETE /api/teams/{id}). The server
+// refuses it over a member the caller's org standing does not cover — the
+// same rank rule the roster writes answer — and the page mirrors that refusal
+// in a disabled control (canDeleteTeam) instead of a 403.
+export async function deleteTeam(teamID: string): Promise<void> {
+  await send(`/teams/${encodeURIComponent(teamID)}`, { method: "DELETE" });
+}

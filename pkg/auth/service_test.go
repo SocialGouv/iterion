@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -636,4 +637,227 @@ type revokedClaimStore struct {
 
 func (s *revokedClaimStore) UpdateInvitation(ctx context.Context, inv identity.Invitation) error {
 	return identity.ErrNotFound
+}
+
+// rankReconcileLog records the team-rank reconciles the service's own
+// lowering writes call, sharing one order with the store writes that precede
+// them (orderStore below appends the grant write to the same log).
+type rankReconcileLog struct {
+	entries []string
+}
+
+func (l *rankReconcileLog) reconcile(_ context.Context, userID, teamID string, grant identity.Role) error {
+	l.entries = append(l.entries, fmt.Sprintf("reconcile %s %s %s", userID, teamID, grant))
+	return nil
+}
+
+// orderStore records the accept's grant write into the shared log.
+type orderStore struct {
+	identity.Store
+	log *rankReconcileLog
+}
+
+func (s *orderStore) UpsertMembership(ctx context.Context, m identity.Membership) error {
+	s.log.entries = append(s.log.entries, "grant")
+	return s.Store.UpsertMembership(ctx, m)
+}
+
+// The logged-in accept is a lowering write when it writes a LOWER team role
+// over the acceptee's existing grant: the membership is read before the
+// upsert, and on a lowering the accept calls the reconcile the server
+// registers (SetTeamRankReconcile) with the value it wrote — after the grant
+// write, as every lowering write's last invitation action. A service with no
+// reconcile registered refuses a lowering accept before any write, as a
+// revoke with no sweep is refused; a reconcile that fails fails the accept,
+// with the grant already written and the invitation claimed — the rows may
+// stand, and the caller is told.
+func TestAcceptInvitation_aLoweringOverAnExistingGrantCallsTheRankReconcile(t *testing.T) {
+	ctx := context.Background()
+	seed := func(t *testing.T) (*Service, identity.Store, *rankReconcileLog, string, identity.User) {
+		t.Helper()
+		svc := newTestService(t, SignupInviteOnly)
+		real := svc.store
+		admin, _, err := svc.CreateUserAndPersonalTeam(ctx, "admin@example.com", "Admin", "correcthorse", true, identity.UserStatusActive)
+		if err != nil {
+			t.Fatalf("bootstrap admin: %v", err)
+		}
+		if _, err := real.CreateOrg(ctx, identity.Org{ID: "o1", Name: "o1", Slug: "o1", CreatedAt: time.Now()}); err != nil {
+			t.Fatalf("create org: %v", err)
+		}
+		if _, err := real.CreateTeam(ctx, identity.Team{ID: "t1", Name: "t1", Slug: "t1", OrgID: "o1", CreatedAt: time.Now()}); err != nil {
+			t.Fatalf("create team: %v", err)
+		}
+		invitee, _, err := svc.CreateUserAndPersonalTeam(ctx, "invitee@example.com", "Invitee", "correcthorse", false, identity.UserStatusActive)
+		if err != nil {
+			t.Fatalf("bootstrap invitee: %v", err)
+		}
+		// The acceptee holds owner in t1 already, and a row they minted above
+		// the role the invitation carries — the outstanding row the lowering
+		// write owes a re-measure of.
+		if err := real.UpsertMembership(ctx, identity.Membership{
+			UserID: invitee.ID, TeamID: "t1", Role: identity.RoleOwner, InvitedBy: admin.ID, JoinedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := svc.CreateInvitation(ctx, "t1", "third@example.com", identity.RoleOwner, invitee.ID); err != nil {
+			t.Fatalf("seeding the outstanding row: %v", err)
+		}
+		tok, _, err := svc.CreateInvitation(ctx, "t1", "invitee@example.com", identity.RoleMember, admin.ID)
+		if err != nil {
+			t.Fatalf("CreateInvitation: %v", err)
+		}
+		return svc, real, &rankReconcileLog{}, tok, invitee
+	}
+
+	t.Run("the lowering calls the reconcile with the value written, after the grant", func(t *testing.T) {
+		svc, real, log, tok, invitee := seed(t)
+		svc.SetStoreForTest(&orderStore{Store: real, log: log})
+		svc.SetTeamRankReconcile(log.reconcile)
+
+		mb, err := svc.AcceptInvitationForExistingUser(ctx, invitee.ID, tok)
+		if err != nil {
+			t.Fatalf("the lowering accept: %v", err)
+		}
+		if mb.Role != identity.RoleMember {
+			t.Fatalf("the accept wrote %s, want member — then this is not the lowering the test describes", mb.Role)
+		}
+		want := "grant,reconcile " + invitee.ID + " t1 member"
+		if got := strings.Join(log.entries, ","); got != want {
+			t.Errorf("the accept logged %q, want %q — the reconcile is the write's last invitation action, on the role it left", got, want)
+		}
+	})
+
+	t.Run("a lowering with no reconcile registered is refused before any write", func(t *testing.T) {
+		svc, real, _, tok, invitee := seed(t)
+		svc.SetStoreForTest(real) // no seam registered, as production's bare service
+
+		if _, err := svc.AcceptInvitationForExistingUser(ctx, invitee.ID, tok); err == nil {
+			t.Fatal("the lowering accept succeeded with no reconcile registered")
+		} else if !strings.Contains(err.Error(), "SetTeamRankReconcile") {
+			t.Errorf("the refusal does not name the seam: %v", err)
+		}
+		// Nothing was written: the grant is as it was, the acceptee holds no
+		// org boundary in the team's org, and the invitation is unclaimed —
+		// the accept can be retried once the service carries the seam.
+		if mb, err := real.GetMembership(ctx, invitee.ID, "t1"); err != nil || mb.Role != identity.RoleOwner {
+			t.Errorf("the refused accept moved the grant: %+v (%v)", mb, err)
+		}
+		if _, err := real.GetOrgMembership(ctx, invitee.ID, "o1"); !errors.Is(err, identity.ErrNotFound) {
+			t.Errorf("the refused accept wrote the org boundary: %v", err)
+		}
+		if inv, err := real.GetInvitationByTokenHash(ctx, hashInvitationToken(tok)); err != nil || inv.AcceptedAt != nil {
+			t.Errorf("the refused accept claimed the invitation: %+v (%v)", inv, err)
+		}
+	})
+
+	t.Run("a reconcile that fails fails the accept", func(t *testing.T) {
+		svc, real, _, tok, invitee := seed(t)
+		reconcileErr := errors.New("listing this team's invitations failed")
+		svc.SetTeamRankReconcile(func(_ context.Context, _, _ string, _ identity.Role) error {
+			return reconcileErr
+		})
+
+		if _, err := svc.AcceptInvitationForExistingUser(ctx, invitee.ID, tok); !errors.Is(err, reconcileErr) {
+			t.Fatalf("the accept answered %v, want the reconcile's own cause", err)
+		}
+		// The demotion IS the accept's own act, so it stands written: what
+		// the failed accept reports is the row minted above a grant that now
+		// reads member — the residue, reported rather than hidden behind a
+		// clean answer.
+		if mb, err := real.GetMembership(ctx, invitee.ID, "t1"); err != nil || mb.Role != identity.RoleMember {
+			t.Errorf("the grant after the failed accept: %+v (%v), want the member it wrote", mb, err)
+		}
+		if inv, err := real.GetInvitationByTokenHash(ctx, hashInvitationToken(tok)); err != nil || inv.AcceptedAt == nil {
+			t.Errorf("the invitation after the failed accept: %+v (%v), want it claimed", inv, err)
+		}
+	})
+}
+
+// What the accept does NOT owe: a raise over the existing grant and an
+// at-rank accept lower nothing and call the reconcile zero times; a register
+// with an invite token CREATES the grant it writes and the personal team it
+// provisions stands untouched.
+func TestAcceptInvitation_aRaiseAnAtRankAndACreationReconcileNothing(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, SignupInviteOnly)
+	real := svc.store
+	admin, _, err := svc.CreateUserAndPersonalTeam(ctx, "admin@example.com", "Admin", "correcthorse", true, identity.UserStatusActive)
+	if err != nil {
+		t.Fatalf("bootstrap admin: %v", err)
+	}
+	if _, err := real.CreateOrg(ctx, identity.Org{ID: "o1", Name: "o1", Slug: "o1", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if _, err := real.CreateTeam(ctx, identity.Team{ID: "t1", Name: "t1", Slug: "t1", OrgID: "o1", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	raiser, _, err := svc.CreateUserAndPersonalTeam(ctx, "raiser@example.com", "Raiser", "correcthorse", false, identity.UserStatusActive)
+	if err != nil {
+		t.Fatalf("bootstrap raiser: %v", err)
+	}
+	if err := real.UpsertMembership(ctx, identity.Membership{
+		UserID: raiser.ID, TeamID: "t1", Role: identity.RoleMember, InvitedBy: admin.ID, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	atrank, _, err := svc.CreateUserAndPersonalTeam(ctx, "atrank@example.com", "AtRank", "correcthorse", false, identity.UserStatusActive)
+	if err != nil {
+		t.Fatalf("bootstrap at-rank: %v", err)
+	}
+	if err := real.UpsertMembership(ctx, identity.Membership{
+		UserID: atrank.ID, TeamID: "t1", Role: identity.RoleAdmin, InvitedBy: admin.ID, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raiseTok, _, err := svc.CreateInvitation(ctx, "t1", "raiser@example.com", identity.RoleAdmin, admin.ID)
+	if err != nil {
+		t.Fatalf("the raise invitation: %v", err)
+	}
+	atTok, _, err := svc.CreateInvitation(ctx, "t1", "atrank@example.com", identity.RoleAdmin, admin.ID)
+	if err != nil {
+		t.Fatalf("the at-rank invitation: %v", err)
+	}
+	offladder, _, err := svc.CreateUserAndPersonalTeam(ctx, "offladder@example.com", "OffLadder", "correcthorse", false, identity.UserStatusActive)
+	if err != nil {
+		t.Fatalf("bootstrap off-ladder: %v", err)
+	}
+	if err := real.UpsertMembership(ctx, identity.Membership{
+		UserID: offladder.ID, TeamID: "t1", Role: identity.RoleConfigEditor, InvitedBy: admin.ID, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	offTok, _, err := svc.CreateInvitation(ctx, "t1", "offladder@example.com", identity.RoleConfigEditor, admin.ID)
+	if err != nil {
+		t.Fatalf("the off-ladder invitation: %v", err)
+	}
+	regTok, _, err := svc.CreateInvitation(ctx, "t1", "newbie@example.com", identity.RoleMember, admin.ID)
+	if err != nil {
+		t.Fatalf("the registration invitation: %v", err)
+	}
+
+	log := &rankReconcileLog{}
+	svc.SetTeamRankReconcile(log.reconcile)
+
+	if _, err := svc.AcceptInvitationForExistingUser(ctx, raiser.ID, raiseTok); err != nil {
+		t.Fatalf("the raise accept: %v", err)
+	}
+	if _, err := svc.AcceptInvitationForExistingUser(ctx, atrank.ID, atTok); err != nil {
+		t.Fatalf("the at-rank accept: %v", err)
+	}
+	// At-rank OFF the ladder: a config_editor grant is no rank to fall from
+	// (ADR-078, the sibling cap's own exemption), so re-accepting the same
+	// off-ladder capability lowers nothing.
+	if _, err := svc.AcceptInvitationForExistingUser(ctx, offladder.ID, offTok); err != nil {
+		t.Fatalf("the off-ladder at-rank accept: %v", err)
+	}
+	res, err := svc.Register(ctx, "newbie@example.com", "correcthorse", "Newbie", regTok, "ua", "ip")
+	if err != nil {
+		t.Fatalf("the register creation: %v", err)
+	}
+	if got := strings.Join(log.entries, ","); got != "" {
+		t.Errorf("the raise, the at-rank accepts and the registration reconciled %q, want nothing — none of them lowers an authority", got)
+	}
+	if _, err := real.GetTeam(ctx, res.User.DefaultTeamID); err != nil {
+		t.Fatalf("the personal team the registration provisions: %v", err)
+	}
 }

@@ -1,6 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useParams, useSearch } from "wouter";
 
@@ -21,6 +21,19 @@ import { AddExistingMemberPanel } from "@/components/shared/AddExistingMemberPan
 import PanelLoading from "@/components/shared/PanelLoading";
 import { RoleSelect } from "@/components/shared/RoleSelect";
 import { ORG_ROLES, confirmOwnerGrant } from "@/lib/roles";
+import {
+  assignableRoles,
+  assignableRolesNote,
+  canManageFromRoster,
+  canWriteMember,
+  invitableRoles,
+  reconcileRole,
+  roleOptions,
+  rosterReadOf,
+  type RosterRead,
+  type ViewerStanding,
+  type WriteScope,
+} from "@/lib/roleAuthority";
 
 import {
   type OrgInvitationView,
@@ -42,6 +55,11 @@ import GovernanceTab from "@/views/orgs/GovernanceTab";
 import SSOTab from "@/views/teams/tabs/SSOTab";
 import UsageTab from "@/views/teams/tabs/UsageTab";
 import AuditTab from "@/views/teams/tabs/AuditTab";
+
+// The roster on this page is the ORG one, so the org ladder alone decides
+// its writes — and a refusal may name the member holding the rank it refused,
+// whom canManageOrg admits.
+const ORG_SCOPE: WriteScope = { kind: "org" };
 
 type Tab = "members" | "teams" | "sso" | "usage" | "audit" | "billing" | "governance";
 
@@ -150,7 +168,9 @@ export default function OrgPage() {
         />
 
         <main>
-          {tab === "members" && <OrgMembers orgID={org.orgID} canManage={canManage} />}
+          {tab === "members" && (
+            <OrgMembers orgID={org.orgID} rankExempt={!!user?.is_super_admin} />
+          )}
           {tab === "teams" && <OrgTeams orgID={org.orgID} canManage={canManage} />}
           {tab === "sso" && <SSOTab teamID={org.orgID} canManage={canManage} />}
           {tab === "usage" && <UsageTab orgID={org.orgID} />}
@@ -163,8 +183,66 @@ export default function OrgPage() {
   );
 }
 
-function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean }) {
+function OrgMembers({
+  orgID,
+  rankExempt,
+}: {
+  orgID: string;
+  // rankExempt is the platform admin, who holds no org row for the ladder
+  // to place them on and reaches every row. It is the one answer about this
+  // viewer the roster cannot give; every other input below is a roster row,
+  // the gate included — the identity tree's "may I manage this org" is not
+  // read here at all.
+  rankExempt: boolean;
+}) {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
+  // The roster is this surface's source of truth twice over: the rows the
+  // ladder compares, and the viewer's own standing — the row the server's
+  // guard reads. It carries no gate of its own, so the gate can read it.
+  const membersQuery = useQuery<OrgMemberView[]>({
+    queryKey: ["org-members", orgID],
+    queryFn: () => listOrgMembers(orgID),
+  });
+  const members = membersQuery.data ?? [];
+  // The standing the server's guard reads is the viewer's own ROSTER row —
+  // the row this table just rendered, refetched by reload() — never the
+  // identity tree, which is loaded once at sign-in and no roster write
+  // rewrites: reading it made a promotion land on controls that stayed dead,
+  // and a self-demotion leave controls the server had started refusing.
+  const myRow = members.find((m) => m.user_id === user?.id);
+  const viewer: ViewerStanding = {
+    platformAdmin: rankExempt,
+    // The row, or no standing at all: this roster is whole, so "it carries no
+    // row for me" is a standing of none — which is what the server's own
+    // readOwnOrgStanding answers there (ErrNotFound is rank 0).
+    orgRole: myRow?.role ?? null,
+    teamRole: null,
+  };
+  // How the roster answered — the rows the ladder reads AND the viewer's own
+  // standing come from this one read, so a read that has not answered renders
+  // no row to decide about; the gate is what it decides, and it fails closed.
+  // Classified by the shared helper: in org scope a refusal and a failure are
+  // one answer here (neither gives a row, so neither arms the gate), and
+  // reading them through the same function is what keeps this page and the
+  // team page from calling the same 403 two different states.
+  const rosterRead: RosterRead = rosterReadOf({
+    present: true,
+    error: membersQuery.error,
+    loaded: membersQuery.data != null,
+  });
+  // The gate the server answers with canManageOrg, from that same row. Read
+  // from the identity tree it keeps all three failures the ladder moved off
+  // it: a promotion the roster already shows renders no control, a
+  // self-demotion it already shows leaves controls the server refuses, and a
+  // roster with no row for the viewer at all arms the invitation form on this
+  // page while every ladder on it refuses every row.
+  const canManage = canManageFromRoster({
+    scope: ORG_SCOPE,
+    platformAdmin: rankExempt,
+    org: { read: rosterRead, role: myRow?.role ?? null },
+    team: { read: "absent", role: null },
+  });
   // The org's teams come from the server, not from the caller's identity
   // tree: an invitation dropdown built from the tree is empty for a
   // super-admin who is not a member — which reads as "this org has no
@@ -180,11 +258,6 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     staleTime: 30_000,
   });
   const orgTeams = orgTeamsQuery.data ?? [];
-  const queryClient = useQueryClient();
-  const membersQuery = useQuery<OrgMemberView[]>({
-    queryKey: ["org-members", orgID],
-    queryFn: () => listOrgMembers(orgID),
-  });
   // Invitations are admin-only server-side — don't fire the doomed request
   // for a plain member (the manual fetch resolved [] in that case).
   const invitationsQuery = useQuery<OrgInvitationView[]>({
@@ -192,13 +265,23 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     queryFn: () => listOrgInvitations(orgID),
     enabled: canManage,
   });
-  const members = membersQuery.data ?? [];
   const invs = invitationsQuery.data ?? [];
+  const offeredRoles = assignableRoles(viewer, ORG_SCOPE);
+  const rolesNote = assignableRolesNote(viewer, ORG_SCOPE);
+  // The roles an invitation minted here may carry, which are capped by a
+  // DIFFERENT rule from a roster write's: an accepted invitation is mirrored
+  // up to OrgRoleForTeamRole of its role, and that mirror must not be above
+  // the minter's own standing (K.1). The cap takes nothing from the ladder of
+  // a viewer this page's gate admits — it reads the same row canManageOrg
+  // reads, so that standing is admin or owner, and the mirror tops out at
+  // admin — and it is applied all the same: the picker then agrees with the
+  // server from the standing itself, not from an argument about the gate.
+  const inviteRoles = invitableRoles(viewer, ORG_SCOPE, ORG_ROLES);
   // Mutation failures share the banner with either fetch error (mutation
   // wins, like the old single slot). They're tagged with their scope so a
   // stale one never outlives an org switch — the manual reload cleared it
   // there.
-  const errScope = `${orgID}:${canManage}`;
+  const errScope = orgID;
   const [mutErrTag, setMutErrTag] = useState<{ scope: string; msg: string } | null>(null);
   const setMutErr = (msg: string | null) =>
     setMutErrTag(msg === null ? null : { scope: errScope, msg });
@@ -212,6 +295,21 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
         : null);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState({ email: "", role: "member", team_id: "" });
+  // What the form will actually send, which is what the select must show.
+  // `null` is a list with nothing in it: unreachable here, since the standing
+  // the gate admits carries the whole ladder — kept because the list is data
+  // and the alternative is an assertion on the value the form submits.
+  const inviteRole = reconcileRole(inviteRoles, draft.role);
+  // The ids of this section's controls and of the texts they name — the
+  // invitation form's three, and one per roster row below. All unique to this
+  // instance: a module constant collides the day a second Members section
+  // shares a page, and `getElementById` resolves the FIRST, so a label would
+  // name the other form's control and a control would describe the other
+  // section's reason.
+  const sectionID = useId();
+  const inviteEmailID = `${sectionID}-org-invite-email`;
+  const inviteRoleID = `${sectionID}-org-invite-role`;
+  const inviteTeamID = `${sectionID}-org-invite-team`;
   // Every invite issued in this session, newest first — tokens appear
   // once server-side, so a second invite must not clobber the first's
   // still-uncopied link.
@@ -247,14 +345,17 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
 
   const invite = async (ev: React.FormEvent) => {
     ev.preventDefault();
+    // Sent at the role the select SHOWS, like the team form: the cap reads
+    // the roster, and a held pick must not outlive what was on screen.
+    if (inviteRole == null) return;
     // Same ladder, same handover, slower door — see TeamPage.invite.
-    if (!(await confirmOwnerGrant(confirm, draft.role))) return;
+    if (!(await confirmOwnerGrant(confirm, inviteRole))) return;
     setBusy(true);
     setMutErr(null);
     try {
       const r = await createOrgInvitation(orgID, {
         email: draft.email,
-        role: draft.role,
+        role: inviteRole,
         team_id: draft.team_id || undefined,
       });
       setIssued((list) => [{ email: draft.email, token: r.token }, ...list]);
@@ -338,7 +439,7 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
           candidates={candidates}
           loading={candidateQuery.isFetching}
           busy={busy}
-          roles={ORG_ROLES}
+          roles={offeredRoles}
           defaultRole="member"
           queryPlaceholder="Search by email prefix, or paste a user id…"
           confirm={confirm}
@@ -369,13 +470,13 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
           <h3 className="font-medium">Invite a member</h3>
           <form onSubmit={invite} className="flex gap-2 items-end">
             <div className="flex-1">
-              <label htmlFor="org-invite-email" className="sr-only">
+              <label htmlFor={inviteEmailID} className="sr-only">
                 Email
               </label>
               <Input
                 size="md"
                 type="email"
-                id="org-invite-email"
+                id={inviteEmailID}
                 placeholder="email@example.com"
                 value={draft.email}
                 onChange={(e) => setDraft({ ...draft, email: e.target.value })}
@@ -383,16 +484,17 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
               />
             </div>
             <div>
-              <label htmlFor="org-invite-role" className="sr-only">
+              <label htmlFor={inviteRoleID} className="sr-only">
                 Role
               </label>
               <Select
                 size="md"
-                id="org-invite-role"
-                value={draft.role}
+                id={inviteRoleID}
+                value={inviteRole ?? ""}
+                disabled={inviteRole == null}
                 onChange={(e) => setDraft({ ...draft, role: e.target.value })}
               >
-                {ORG_ROLES.map((r) => (
+                {inviteRoles.map((r) => (
                   <option key={r} value={r}>
                     {r}
                   </option>
@@ -401,12 +503,12 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
             </div>
             {orgTeams.length > 0 && (
               <div>
-                <label htmlFor="org-invite-team" className="sr-only">
+                <label htmlFor={inviteTeamID} className="sr-only">
                   Team to join
                 </label>
                 <Select
                   size="md"
-                  id="org-invite-team"
+                  id={inviteTeamID}
                   value={draft.team_id}
                   onChange={(e) => setDraft({ ...draft, team_id: e.target.value })}
                   title="The team the invitation joins — accepting it grants the role above in that team. Named none, it joins the org's primary team"
@@ -420,7 +522,12 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
                 </Select>
               </div>
             )}
-            <Button variant="primary" type="submit" loading={busy}>
+            <Button
+              variant="primary"
+              type="submit"
+              loading={busy}
+              disabled={inviteRole == null}
+            >
               Send invite
             </Button>
           </form>
@@ -447,35 +554,68 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
             <Th align="right" srLabel="Actions" />
           </THead>
           <TBody>
-            {members.map((m) => (
-              <Tr key={m.user_id}>
-                <Td>{m.email ?? m.user_id}</Td>
-                <Td>{m.name ?? "—"}</Td>
-                <Td>
-                  {canManage ? (
-                    <RoleSelect
-                      value={m.role}
-                      roles={ORG_ROLES}
-                      ariaLabel={`Org role for ${m.email ?? m.user_id}`}
-                      confirmChangeFrom={m.role}
-                      confirm={confirm}
-                      onChange={(role) => setRole(m.user_id, role as OrgRole)}
-                    />
-                  ) : (
-                    m.role
-                  )}
-                </Td>
-                <Td align="right">
-                  {canManage && (
-                    <Button variant="danger" size="sm" onClick={() => kick(m.user_id)}>
-                      Remove
-                    </Button>
-                  )}
-                </Td>
-              </Tr>
-            ))}
+            {members.map((m) => {
+              const write = canWriteMember(
+                viewer,
+                { orgRole: m.role, teamRole: null },
+                ORG_SCOPE,
+              );
+              // The reason is TEXT in the row, named by both controls it
+              // explains: a disabled control leaves the tab order, so a
+              // `title` on it reaches a mouse and nobody else. Prefixed like
+              // the form's ids, and for the same reason: two Members sections
+              // in one document would otherwise carry this id twice.
+              const reasonID = `${sectionID}-org-member-rank-${m.user_id}`;
+              return (
+                <Tr key={m.user_id}>
+                  <Td>{m.email ?? m.user_id}</Td>
+                  <Td>{m.name ?? "—"}</Td>
+                  <Td>
+                    {canManage ? (
+                      <>
+                        <RoleSelect
+                          value={m.role}
+                          roles={
+                            write.allowed ? roleOptions(offeredRoles, m.role) : [m.role]
+                          }
+                          disabled={!write.allowed}
+                          describedBy={write.allowed ? undefined : reasonID}
+                          ariaLabel={`Org role for ${m.email ?? m.user_id}`}
+                          confirmChangeFrom={m.role}
+                          confirm={confirm}
+                          onChange={(role) => setRole(m.user_id, role as OrgRole)}
+                        />
+                        {write.reason && (
+                          <p id={reasonID} className="text-caption text-fg-subtle mt-1">
+                            {write.reason}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      m.role
+                    )}
+                  </Td>
+                  <Td align="right">
+                    {canManage && (
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        disabled={!write.allowed}
+                        aria-describedby={write.allowed ? undefined : reasonID}
+                        onClick={() => kick(m.user_id)}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </Td>
+                </Tr>
+              );
+            })}
           </TBody>
         </Table>
+        {canManage && rolesNote && (
+          <p className="text-caption text-fg-subtle mt-2">{rolesNote}</p>
+        )}
       </section>
 
       {canManage && (
