@@ -349,7 +349,11 @@ prompt plan_draft_user:
      `exit_gate`, and `brief_targets` on every lot that advances a decided
      target. Write each lot as a block item whose FIRST line is `- id: <id>`
      and whose keys sit at one column — the execution gate edits exactly that
-     shape, and a flow mapping cannot be edited by it.
+     shape, and a flow mapping cannot be edited by it. At the top, declare in
+     `suites:` the repository's own test suites — the unit and integration
+     commands its CI runs — that pass on the tree the programme starts from:
+     the execution gate runs them at every lot's gate, so no lot converges
+     over a test it broke and its own gate did not run.
   2. The `outcomes` file beside it, named in the `plan-contract` skill: what
      the programme OWES, each with the `goal_id` of the brief goal it answers
      and a `check` command that exits 0 if and only if the outcome is met. A
@@ -3374,8 +3378,18 @@ tool contract_lint:
                % (plan_path, (raw.stderr or "")[-600:]))
     try:
         contract = json.loads(raw.stdout)
+        top_pairs = json.loads(raw.stdout, object_pairs_hook=lambda pairs: pairs)
     except ValueError as exc:
         refuse("CONTRACT_REFUSED", "the contract at %s did not convert to JSON: %s" % (plan_path, exc))
+    # A key declared twice at the top keeps whichever copy a reader keeps: the
+    # execution gate refuses such a contract as unreadable.
+    if isinstance(contract, dict) and isinstance(top_pairs, list):
+        top_keys = [k for k, _ in top_pairs]
+        dup_keys = sorted({k for k in top_keys if top_keys.count(k) > 1})
+        if dup_keys:
+            refuse("CONTRACT_REFUSED", "the contract at %s declares %s more than once at its top: "
+                   "two readers of one file may keep different copies of it"
+                   % (plan_path, ", ".join(dup_keys)))
     if not isinstance(contract, dict):
         refuse("CONTRACT_REFUSED", "the contract at %s is a %s at top level; a mapping was required"
                % (plan_path, type(contract).__name__))
@@ -3404,6 +3418,24 @@ tool contract_lint:
                    % (MAX_TIMEOUT, value))
 
     check_timeout("gate_timeout_s", contract.get("gate_timeout_s"))
+
+    # The repository's suites, which the execution bot runs at every lot's
+    # gate, read in exit_gate's shapes: refused here, not after a lot's whole
+    # work has reached a gate that cannot read them.
+    if "suites" in contract:
+        suites = contract.get("suites")
+        cmds = [suites] if isinstance(suites, str) else suites
+        if not isinstance(cmds, list) or not all(isinstance(c, str) for c in cmds):
+            reject("suites", "must be one command as a string, or a list of command strings; got %r"
+                   % (suites,))
+        elif not [c for c in cmds if c.strip()]:
+            reject("suites", "declares no command: remove the key, or name the commands the "
+                   "repository's CI runs")
+        elif any("\n" in c.strip() for c in cmds):
+            reject("suites", "each command must be a single line; put multi-line logic in a "
+                   "script file and invoke it")
+        elif any("\0" in c for c in cmds):
+            reject("suites", "a command holds a NUL byte, which no shell command can carry")
 
     # ── proposals ──────────────────────────────────────────────────────
     proposals = contract.get("proposals") or []
@@ -3578,6 +3610,8 @@ tool contract_lint:
             if any("\n" in c for c in commands):
                 reject(where, "declares a multi-line exit_gate command. Each command must be a "
                               "single line; put multi-line logic in a script file and invoke it.")
+            if any("\0" in c for c in commands):
+                reject(where, "an exit_gate command holds a NUL byte, which no shell command can carry")
             # A WRITING COMFORT, not the guarantee. It names the four shapes a
             # vacuous gate is usually spelled with, and an adversary has an
             # infinite supply of further spellings — which is why the guarantee
@@ -3604,7 +3638,9 @@ tool contract_lint:
             # written, whatever the lot did to the code.
             substantive = [c for c in commands
                            if not (lot.get("crosses_major") and SWEEP_PREDICATE(lot_id).fullmatch(c))]
-            if commands and not any("\n" in c for c in commands):
+            # A gate refused above for its shape is not run: a NUL byte reaches
+            # no shell, and the probe would fail on it instead of judging it.
+            if commands and not any("\n" in c or "\0" in c for c in commands):
                 if not substantive:
                     reject(where, "its gate is its sweep record and nothing else. The record proves a "
                                   "file was written; nothing in the gate decides whether the lot's own "

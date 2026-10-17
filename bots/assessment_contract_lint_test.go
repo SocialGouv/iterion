@@ -165,6 +165,27 @@ func TestAssessmentContractLintAcceptsACompleteContract(t *testing.T) {
 	}
 }
 
+// The repository's suites, declared once for every lot's gate, in either of
+// exit_gate's shapes, leave a complete contract complete.
+func TestAssessmentContractLintAcceptsDeclaredSuites(t *testing.T) {
+	requireAssessmentTools(t, "python3", "git", "yq", "bash")
+	for name, suites := range map[string]string{
+		"a list":   "suites:\n  - \"bash ci/test.sh\"\n  - \"bash ci/it.sh\"\n",
+		"a string": "suites: \"bash ci/test.sh\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			contract := strings.Replace(aGoodContract, "gate_timeout_s: 3600\n", "gate_timeout_s: 3600\n\n"+suites, 1)
+			if contract == aGoodContract {
+				t.Fatal("the mutation did not apply")
+			}
+			out := lintContract(t, contract, goodOutcomes)
+			if !assessmentBool(t, out, "ok") {
+				t.Fatalf("a contract declaring suites as %s was refused: %s", name, assessmentString(t, out, "reason"))
+			}
+		})
+	}
+}
+
 // The failures a per-lot reader cannot see, one test each.
 func TestAssessmentContractLintRefusesWhatOneLotAtATimeCannotSee(t *testing.T) {
 	requireAssessmentTools(t, "python3", "git", "yq", "bash")
@@ -226,6 +247,41 @@ func TestAssessmentContractLintRefusesWhatOneLotAtATimeCannotSee(t *testing.T) {
 			name:     "a wall nobody could honour",
 			contract: strings.Replace(aGoodContract, "gate_timeout_s: 3600", "gate_timeout_s: 999999", 1),
 			wants:    "gate_timeout_s",
+		},
+		{
+			name:     "suites the gate could not read",
+			contract: strings.Replace(aGoodContract, "gate_timeout_s: 3600\n", "gate_timeout_s: 3600\n\nsuites:\n  unit: \"bash ci/test.sh\"\n", 1),
+			wants:    "suites",
+		},
+		{
+			name:     "a multi-line suite command",
+			contract: strings.Replace(aGoodContract, "gate_timeout_s: 3600\n", "gate_timeout_s: 3600\n\nsuites:\n  - |\n    bash ci/test.sh\n    bash ci/it.sh\n", 1),
+			wants:    "suites",
+		},
+		{
+			name:     "suites declared empty",
+			contract: strings.Replace(aGoodContract, "gate_timeout_s: 3600\n", "gate_timeout_s: 3600\n\nsuites:\n", 1),
+			wants:    "suites",
+		},
+		{
+			name:     "suites declared as an empty list",
+			contract: strings.Replace(aGoodContract, "gate_timeout_s: 3600\n", "gate_timeout_s: 3600\n\nsuites: []\n", 1),
+			wants:    "suites",
+		},
+		{
+			name:     "a suite holding a NUL byte",
+			contract: strings.Replace(aGoodContract, "gate_timeout_s: 3600\n", "gate_timeout_s: 3600\n\nsuites:\n  - \"bash ci/test.sh\\0\"\n", 1),
+			wants:    "NUL",
+		},
+		{
+			name:     "an exit_gate command holding a NUL byte",
+			contract: strings.Replace(aGoodContract, `      - "bash ci/build.sh"`, `      - "bash ci/build.sh\0"`, 1),
+			wants:    "NUL",
+		},
+		{
+			name:     "a top-level key declared twice",
+			contract: strings.Replace(aGoodContract, "gate_timeout_s: 3600\n", "gate_timeout_s: 3600\n\nsuites: \"bash ci/test.sh\"\nsuites: \"true\"\n", 1),
+			wants:    "more than once",
 		},
 	}
 
@@ -293,6 +349,7 @@ func TestAssessmentContractLintNeverAcceptsWhatPlanReadRefuses(t *testing.T) {
 		"cycle":               strings.Replace(aGoodContract, "    depends_on: []", `    depends_on: ["L2"]`, 1),
 		"unknown dependency":  strings.Replace(aGoodContract, `depends_on: ["L1"]`, `depends_on: ["L9"]`, 1),
 		"worker-written done": strings.Replace(aGoodContract, "    status: todo\n    rebaseline_allowed: false\n    crosses_major: false", "    status: done\n    rebaseline_allowed: false\n    crosses_major: false", 1),
+		"NUL in a gate":       strings.Replace(aGoodContract, `      - "bash ci/build.sh"`, `      - "bash ci/build.sh\0"`, 1),
 	}
 
 	for name, contract := range corpus {

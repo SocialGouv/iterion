@@ -1,7 +1,13 @@
 name: assessment
 display_name: Assessy
 icon: 🧭
-version: 0.1.2
+version: 0.1.3
+## 0.1.3 — the drafted contract declares, in `suites:`, the repository's own
+## test suites that pass on the starting tree; the execution bot runs them at
+## every lot's gate. The contract lint refuses suites in a shape the gate
+## cannot read (anything but a command string or a list of single-line
+## command strings, a declaration with no command, a NUL byte), a top-level
+## key declared twice, and an exit_gate command holding a NUL byte.
 ## 0.1.2 — the extractors read under the bundle's neutralised git
 ## environment with `core.quotePath=false`;
 ## the measurement profile (now 1.1.0) declares only the canonical exclusion

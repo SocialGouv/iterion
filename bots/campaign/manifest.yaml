@@ -1,7 +1,29 @@
 name: campaign
 display_name: Campy
 icon: 🧭
-version: 0.1.2
+version: 0.1.3
+## 0.1.3 — finalize runs the repository's suites the contract declares
+## (`suites:`, read the way modernize's lot_verify reads them) once on the
+## final tree, reports them in the handoff, and requalifies a blocked lot only
+## when its gate AND the suites are green there. Every command runs under the
+## wall lot_verify gave it — a blocked lot's gate its lot's gate_timeout_s, the
+## oracle and the suites the longest wall of any lot, the steward's rebaseline
+## acts the lot's — instead of a fixed hour; a command past its wall is a red
+## the handoff names, and output that is not UTF-8 is read with replacement
+## characters: both crashed the node, which then wrote no handoff. A plan
+## finalize cannot read is said in the handoff and the notice instead of
+## counting as zero lots; a wall the steward cannot read is an escalation
+## (`refused_unreadable_wall`), and a plan that is not a mapping
+## `plan_unreadable` instead of a crash. finalize judges the committed tree as
+## lot_verify does — the plan read at HEAD; index flags, every untracked file,
+## submodules and replace refs counted — and runs the blocked lots' gates,
+## then the suites, then the oracle, the tree measured again after the suites
+## and HEAD re-read before the oracle — finalize has no next pass — each lot
+## reading a shared run against its own wall, to the millisecond. Ids are held
+## to be keys; the counter-test's writes are restored, green or red; commands
+## run in a process group of their own, killed whole past their wall. The
+## handoff and journal commits take their own files only; the notice and the
+## commit subject carry the suites' verdict.
 ## 0.1.2 — preflight, the steward's observed writes and finalize no longer count
 ## iterion's `.claude/` scaffold as work in flight, and the steward's revert
 ## leaves that tree alone (#1364).

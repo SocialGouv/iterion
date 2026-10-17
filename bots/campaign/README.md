@@ -43,9 +43,11 @@ is over.
    is any lot still eligible, did the plan gain/lose/reshape lots
    (**contract extensions**), which ledger requests are pending.
 3. **steward** — extensions handled under the configured governance;
-   each pending request refused (wrong contract, malformed, dirty tree)
-   or executed under the observed-equals-announced criterion; journal row
-   and escalation log appended **and committed**.
+   each pending request refused (wrong contract, malformed, dirty tree, a
+   wall it cannot read) or executed under the observed-equals-announced
+   criterion, the record and the counter-test under the lot's own
+   `gate_timeout_s`, the counter-test's writes restored after it; journal
+   row and escalation log appended **and committed**.
 4. **escalate** *(when configuration asks)* — a human node. The answer
    edits nothing: an operator who wants to change the programme changes
    the **repository** and commits, exactly as a human supervisor did. The
@@ -54,11 +56,20 @@ is over.
    exhausted, fewer than `stagnation_stop` consecutive still runs, bounded
    by `max_lots` and the workflow budget (whose declined back-edge also
    exits through the handoff).
-6. **finalize** — final counter-test on the committed tree;
-   **requalification** of blocked lots (each distinct gate command played
-   once on the final tree, verdicts projected per lot — a lot blocked
-   mid-programme often blocked on a cause the finished tree has closed);
-   handoff written and committed, **extensions first**.
+6. **finalize** — on the committed tree only (the plan read at HEAD; a
+   working tree that differs from HEAD, index flags included, is reported
+   as not judged): **requalification** of blocked lots (each distinct gate
+   command played once on the final tree, each lot reading the run against
+   its own wall, to the millisecond — a lot blocked mid-programme often
+   blocked on a cause the finished tree has closed; it requalifies only when
+   its gate and the suites are green on a tree measured again after the
+   suites, with HEAD the handoff names), then the repository's `suites` when
+   the contract declares them, then the final counter-test — the suites and
+   the
+   oracle under the longest wall any lot's gate gave them. A command past
+   its wall is a red the handoff names; a plan finalize cannot read is
+   said, never counted as an empty programme. Handoff written and committed,
+   its own files only, **extensions first**.
 7. **handoff_review** — a human closes every campaign, whatever the mode.
 
 ## Configuration (launch-time `--var`)

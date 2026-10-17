@@ -25,13 +25,14 @@ A conjunction, never a score:
 | | |
 |---|---|
 | `gate_passed` | every command in the lot's `exit_gate` exited 0 |
+| `suites_passed` | every command in the contract's `suites` — the repository's own tests, declared once — exited 0, on committed work, once the exit gate passed |
 | `oracle_passed` | the behavioural net replayed green |
 | `refs_untouched` | **not one line** changed under the oracle's reference dir |
 
-Two of three is not "mostly done" — it is a lot that builds and lies, or one
-that behaves and cheated.
+Three of four is not "mostly done" — it is a lot that builds and lies, one
+that broke a test its gate never ran, or one that behaves and cheated.
 
-The third check is the separation of powers, and it is verified in git rather
+The last check is the separation of powers, and it is verified in git rather
 than trusted. A golden master dies by re-baselining: if whoever breaks a
 reference can also rewrite it, green means "someone made it green", which is
 not information. A missing oracle is **not** a pass either — a lot verified
@@ -67,7 +68,7 @@ Who may write which word is part of the contract, and it is enforced in git:
 | word | written by | believed as |
 |---|---|---|
 | `blocked` | the worker, with the reason committed | a STOP — a claim of failure cannot cheat toward green |
-| `done` | the **gate** (`mark_done`, after `gate ∧ oracle ∧ refs` went green), one line in a commit of its own | the programme's "accepted" — a landing has exactly one commit to check for it |
+| `done` | the **gate** (`mark_done`, after `gate ∧ suites ∧ oracle ∧ refs` went green), one line in a commit of its own | the programme's "accepted" — a landing has exactly one commit to check for it |
 
 A `done` the worker wrote is refused by `lot_verify` **before any gate
 command runs** (the revert costs seconds, the gate an hour), because a run
