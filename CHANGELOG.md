@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.269.0](https://github.com/SocialGouv/iterion/compare/v3.268.3...v3.269.0) (2026-10-17)
+
+### Features
+
+* **modernize,assessment,campaign:** a repository's suites run at every lot's gate ([#2494](https://github.com/SocialGouv/iterion/issues/2494)) ([bfce1c5](https://github.com/SocialGouv/iterion/commit/bfce1c5e52a557ece5691fd7a1a7c697b6161434))
+
+    <details><summary>why</summary>
+
+    A lot converged over a test it broke. Its exit_gate — narrow by design — ran no test suite; the behavioural oracle watches served responses, not the repository's tests; nothing in the conjunction ran the unit or integration suites, which ran in the target's CI after the landing, where no gate reads them. Measured on a modernization campaign: a lot moved a deleting route from GET to POST, converged and landed — and the trunk's integration suite went red on a contract test still sending the GET…
+
+    </details>
+
+### Bug Fixes
+
+* **claw:** the crossing owns the runner's pipes, and a held stdout read ends at the drain bound, not the run's cancel ([#2542](https://github.com/SocialGouv/iterion/issues/2542)) ([db8815f](https://github.com/SocialGouv/iterion/commit/db8815f629bfcd6f1ba62891b13d6f0ad360840c)), closes [#2457](https://github.com/SocialGouv/iterion/issues/2457)
+
+    <details><summary>why</summary>
+
+    The launcher read the runner's stdout through StdoutPipe, whose own doc forbids cmd.Wait before the reads complete — exec closes the pipe's read end as the Wait's last act, and a pipe's buffered bytes die with its read end. That left the multiplexer's read unbounded: cmd.WaitDelay (clawRunnerWaitDelay) bounds the Wait, but a runner that died abnormally (an OOM kill, a failed result-envelope write) while a DESCENDANT still held the pipe parked the dispatch until the run's cancellation recovered…
+
+    </details>
+* **server,studio,docs:** no roster write reaches a member ranked above its author ([#2493](https://github.com/SocialGouv/iterion/issues/2493)) ([66d8362](https://github.com/SocialGouv/iterion/commit/66d83626db1cc1fab657bdd4ea572734d40c5006))
+
+    <details><summary>why</summary>
+
+    `requireRankOverMember` (`pkg/server/auth_authz.go`) reads a roster write's two ranks from the membership rows and answers 403 when the target outranks the author: the org roster's `PATCH`/`DELETE` and a team grant's `PATCH`/`DELETE`/`PUT` on `…/members/{user_id}`.
+
+    </details>
+
 ## [3.268.3](https://github.com/SocialGouv/iterion/compare/v3.268.2...v3.268.3) (2026-10-16)
 
 ### Bug Fixes
