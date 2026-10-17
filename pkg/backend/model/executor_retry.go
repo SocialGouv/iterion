@@ -93,6 +93,16 @@ func isDelegateRetryable(err error) bool {
 		// came FROM the provider keeps its historical in-place budget.
 		return !rateLimited.SelfImposed
 	}
+	// The claw crossing's own drain bound cut the multiplexer's read or its
+	// reply-write (errDrainBoundCut, claw_backend.go): the reaper closed the
+	// owned pipes clawPipeDrainGrace past the Wait while the multiplexer
+	// still ran. The runner's exit is not the node's failure — an answer it
+	// buffered was dropped, or it died holding the pipe — and both recover
+	// as a new crossing.
+	var drainCut *errDrainBoundCut
+	if errors.As(err, &drainCut) {
+		return true
+	}
 	// Transient connectivity failure (DNS / TCP / TLS / upstream 5xx) — a
 	// net.Error, a wrapped syscall errno, or a stringified marker bubbled up
 	// from a CLI delegate ("fetch failed", "ECONNRESET", "overloaded"). A
