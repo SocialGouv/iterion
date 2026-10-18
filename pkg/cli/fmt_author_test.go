@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/author"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -425,15 +426,18 @@ func TestFmtToYamlWritesADocumentThatReadsBack(t *testing.T) {
 		t.Fatalf("the document written is not the .bot's program, its float in the reader's digits (%s):\n%s", why, out)
 	}
 	// A .bot that compiles to no workflow — a fragment, the same literals —
-	// is compared declaration by declaration, each literal by its value; and
+	// is compared as re-read, serialised ASTs, each literal by its value; and
 	// a parameter a vendor names `<<` is written as the text, not YAML's
 	// merge key.
 	for path, text := range map[string]string{
 		"r/lib/numbers.bot": "dsl: 2\n\nvars:\n  ratio: float = 01.5\n  n: int = 010\n\nagent a:\n  model: \"m\"\n",
+		"r/lib/profile.bot": "prompt ask:\n  Say yes.\n",
 		// The writer puts `system:` before `user:`: the inline prompts come
 		// back in another order, which says nothing.
-		"r/lib/inline.bot": "dsl: 2\n\nagent a:\n  model: \"m\"\n  user: \"the user's text\"\n  system: \"the system's text\"\n",
-		"r/merge.bot":      "dsl: 2\n\ntool c:\n  action: forgejo.issue.comment\n  connection: \"forge-main\"\n  params:\n    \"<<\": \"x\"\n\nworkflow w:\n  entry: c\n\n  c -> done\n",
+		"r/lib/inline.bot":    "dsl: 2\n\nagent a:\n  model: \"m\"\n  user: \"the user's text\"\n  system: \"the system's text\"\n",
+		"r/lib/import.bot":    "dsl: 2\nimport \"lib/shared.bot\"\n\ntool clean:\n  command: \"rm -rf build\"\n\nprompt ask:\n  Say yes.\n\nschema verdict:\n  ok: bool\n",
+		"r/lib/reordered.bot": "dsl: 2\n\nschema z:\n  ok: bool\n\nschema a:\n  ok: bool\n\nprompt z:\n  Zeta.\n\nprompt a:\n  Alpha.\n\ntool z:\n  command: \"zeta\"\n\ntool a:\n  command: \"alpha\"\n",
+		"r/merge.bot":         "dsl: 2\n\ntool c:\n  action: forgejo.issue.comment\n  connection: \"forge-main\"\n  params:\n    \"<<\": \"x\"\n\nworkflow w:\n  entry: c\n\n  c -> done\n",
 	} {
 		frag := writeBot(t, path, text)
 		if _, err := RunFmt(FmtOptions{Paths: []string{frag}, To: "yaml", Printer: jp}); err != nil {
@@ -475,6 +479,110 @@ func TestFmtToYamlWritesADocumentThatReadsBack(t *testing.T) {
 		if _, err := os.Stat("r/other.bot.yaml"); err == nil {
 			t.Fatal("a document that does not read back as the program was written")
 		}
+	}
+}
+
+// Where no workflow compiles, the rank of prompts and schemas is not a
+// change of the fragment: the compiled program holds them by name. The
+// read-back proof accepts a writer that emits them in another order, and
+// still writes the document it proved.
+func TestFmtToYamlAcceptsAFragmentReadBackWithReorderedDeclarations(t *testing.T) {
+	inTempWorkspace(t)
+	bot := writeBot(t, "r/reordered.bot", "dsl: 2\n\nprompt z:\n  Zeta.\n\nprompt a:\n  Alpha.\n\nschema z:\n  ok: bool\n\nschema a:\n  ok: bool\n")
+	written := "dsl: 2\nschemas:\n  a:\n    ok: bool\n  z:\n    ok: bool\nprompts:\n  a: Alpha.\n  z: Zeta.\n"
+	defer func(w func(*ast.File) ([]byte, error)) { writeDocument = w }(writeDocument)
+	writeDocument = func(*ast.File) ([]byte, error) { return []byte(written), nil }
+	jp, _ := jsonPrinter()
+	if res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
+		t.Fatalf("a reordered fragment was refused: %v %q", err, res.Refused)
+	}
+	if out, err := os.ReadFile(bot + ".yaml"); err != nil || string(out) != written {
+		t.Fatalf("the proved document was not written: %v\n%s", err, out)
+	}
+}
+
+func fmtTwoUsesBot(first, second string) string {
+	use := map[string]string{
+		"one": "use pair as r1 with {\n  label: \"one\",\n}\n\n",
+		"two": "use pair as r2 with {\n  label: \"two\",\n}\n\n",
+	}
+	return "dsl: 2\n\nschema out:\n  ok: bool\n\ngroup pair(label):\n" +
+		"  tool first:\n    command: \"printf '{\\\"ok\\\":true}' # {{params.label}}\"\n    output: out\n" +
+		"  tool second:\n    command: \"printf '{\\\"ok\\\":true}'\"\n    output: out\n" +
+		"  first -> second\n\n" + use[first] + use[second] +
+		"workflow w:\n  entry: r1.first\n  r1.second -> r2.first\n  r2.second -> done\n"
+}
+
+// A declaration order the launcher reads is not a spelling the write proof
+// may normalise. Supervisors land in an ordered IR slice, uses feed ordered
+// edges, and imports decide the order the unit loader merges their fragments.
+// Each mutation is refused before a write, with unit.LoadDir + SameProgram as
+// the premise that the two orders really are two programs.
+func TestFmtToYamlRefusesAFragmentReadBackWhoseOrderChangesTheProgram(t *testing.T) {
+	useOriginal, useWorkflow, _ := strings.Cut(fmtTwoUsesBot("one", "two"), "workflow w:")
+	useReordered, _, _ := strings.Cut(fmtTwoUsesBot("two", "one"), "workflow w:")
+	const supervisorMain = "dsl: 2\nimport \"lib/fragment.bot\"\n\nprompt ask:\n  Work.\n\nprompt pol_a:\n  Policy A.\n\nprompt pol_b:\n  Policy B.\n\nagent hello:\n  model: \"m\"\n  system: ask\n\nworkflow w:\n  entry: hello\n  hello -> done\n"
+	for _, tc := range []struct {
+		name, main, original, reordered, want string
+		extra                                 map[string]string
+	}{
+		{
+			name: "supervisors", main: supervisorMain,
+			original:  "dsl: 2\n\nsupervisor beta:\n  watches: [hello]\n  model: \"m\"\n  system: pol_b\n\nsupervisor alpha:\n  watches: [hello]\n  model: \"m\"\n  system: pol_a\n",
+			reordered: "dsl: 2\n\nsupervisor alpha:\n  watches: [hello]\n  model: \"m\"\n  system: pol_a\n\nsupervisor beta:\n  watches: [hello]\n  model: \"m\"\n  system: pol_b\n",
+			want:      "Supervisors",
+		},
+		{
+			name: "uses", main: "dsl: 2\nimport \"lib/fragment.bot\"\n\nworkflow w:" + useWorkflow,
+			original: useOriginal, reordered: useReordered,
+			want: "edge r1.first -> r1.second differs",
+		},
+		{
+			name: "imports", main: supervisorMain,
+			original:  "dsl: 2\nimport \"a.bot\"\nimport \"z.bot\"\n",
+			reordered: "dsl: 2\nimport \"z.bot\"\nimport \"a.bot\"\n",
+			want:      "Supervisors",
+			extra: map[string]string{
+				"lib/a.bot": "dsl: 2\n\nsupervisor alpha:\n  watches: [hello]\n  model: \"m\"\n  system: pol_a\n",
+				"lib/z.bot": "dsl: 2\n\nsupervisor beta:\n  watches: [hello]\n  model: \"m\"\n  system: pol_b\n",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inTempWorkspace(t)
+			for _, dir := range []string{"original", "reordered"} {
+				writeBot(t, dir+"/main.bot", tc.main)
+				for path, text := range tc.extra {
+					writeBot(t, dir+"/"+path, text)
+				}
+			}
+			fragment := writeBot(t, "original/lib/fragment.bot", tc.original)
+			writeBot(t, "reordered/lib/fragment.bot", tc.reordered)
+			a := ir.Compile(unit.LoadDir("original/main.bot").Merged)
+			b := ir.Compile(unit.LoadDir("reordered/main.bot").Merged)
+			if why := ir.SameProgram(a, b); why == "" || !strings.Contains(why, tc.want) {
+				t.Fatalf("the fixture's orders are not the expected two programs: %q, want a difference naming %q", why, tc.want)
+			}
+
+			reordered := parser.Parse("reordered/lib/fragment.bot", tc.reordered)
+			if diagnosticErrors(reordered.Diagnostics) != "" {
+				t.Fatalf("the reordered fragment does not parse: %v", reordered.Diagnostics)
+			}
+			written, err := author.Write(reordered.File)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func(w func(*ast.File) ([]byte, error)) { writeDocument = w }(writeDocument)
+			writeDocument = func(*ast.File) ([]byte, error) { return written, nil }
+			jp, _ := jsonPrinter()
+			res, conversionErr := RunFmt(FmtOptions{Paths: []string{fragment}, To: "yaml", Printer: jp})
+			if !errors.Is(conversionErr, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "reads back as another program") {
+				t.Fatalf("a semantic reorder was accepted: %v %q", conversionErr, res.Refused)
+			}
+			if _, err := os.Stat(fragment + ".yaml"); err == nil {
+				t.Fatal("a document whose declaration order changes the program was written")
+			}
+		})
 	}
 }
 
