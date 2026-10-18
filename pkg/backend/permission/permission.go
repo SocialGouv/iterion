@@ -13,7 +13,12 @@
 // Rule syntax mirrors Claude Code: a rule is either a bare tool name
 // (`Bash`, matches any use) or a scoped pattern (`Bash(go test:*)`,
 // `Read(./.env)`, `Edit(pkg/**)`, `WebFetch(domain:example.com)`,
-// `mcp__github__get_*`). Because the same Policy drives both backends,
+// `mcp__github__get_*`). A rule may also name a tool CLASS —
+// `class:shell` — which matches every registered built-in the registry
+// tags with the matching capability, present and future: `deny:` bounds
+// the whole class, `ask:` gates it, and `allow:` grants it (widening to
+// future members is the author's choice, warned at authoring). Because
+// the same Policy drives both backends,
 // backend-native tool names reach identical decisions — see
 // [canonicalToolName].
 package permission
@@ -397,7 +402,12 @@ type rule struct {
 	raw    string         // original text, for messages + forwarding
 	tool   string         // canonical tool key, or "*" (any) — literal case
 	toolRe *regexp.Regexp // non-nil when the tool name itself is a glob
-	argRe  *regexp.Regexp // non-nil when the rule scoped an (arg) pattern
+	// class is non-empty when the rule names a tool class (`class:shell`)
+	// instead of a tool spelling. Membership is read from the registry's
+	// capability metadata at match time, so the class covers the members
+	// registered after the rule was written.
+	class string
+	argRe *regexp.Regexp // non-nil when the rule scoped an (arg) pattern
 	// literalArg is true only for a bare, exact argument scope. It is kept
 	// separately from argRe so permission precedence never has to infer
 	// specificity from the rule spelling or regex shape.
@@ -433,6 +443,22 @@ func parseRule(raw string) (rule, error) {
 		return rule{}, fmt.Errorf("missing tool name")
 	}
 
+	// A tool class: `class:shell` matches every registered built-in that
+	// executes model-supplied code — the members present AND the ones a
+	// later registration adds. The class table lives in the registry
+	// (toolcatalog), so no edit here and no workflow change follows a new
+	// member. An unknown class is refused here, naming the known ones: a
+	// typo'd class would otherwise be a rule that matches nothing, read by
+	// its author as a bound.
+	if strings.HasPrefix(strings.ToLower(toolPart), "class:") {
+		name := strings.TrimSpace(toolPart[len("class:"):])
+		if !toolcatalog.IsKnownClass(name) {
+			return rule{}, fmt.Errorf("unknown tool class %q (known classes: %s)", name, strings.Join(toolcatalog.KnownClasses(), ", "))
+		}
+		r.class = strings.ToLower(name)
+		return r, nil
+	}
+
 	// Tool-name globs: `*` (any tool) and a trailing `*` after an
 	// `mcp__server__` prefix (and, defensively, any literal prefix).
 	if strings.Contains(toolPart, "*") {
@@ -458,6 +484,37 @@ func parseRule(raw string) (rule, error) {
 func ValidateRule(raw string) error {
 	_, err := parseRule(raw)
 	return err
+}
+
+// RuleNamesClass reports the tool class a rule names, and whether it names
+// one at all. The compiler's warnings read it to tell a class row (whose
+// widening covers future members) from a spelling row.
+func RuleNamesClass(rawRule string) (string, bool) {
+	r, err := parseRule(rawRule)
+	if err != nil || r.class == "" {
+		return "", false
+	}
+	return r.class, true
+}
+
+// RuleCovers reports whether one rule string bounds the named tool — the
+// question the compiler's class-coverage warning asks for every deny rule
+// against every shell-capable built-in a node can call.
+//
+// Coverage is at the TOOL level: a rule matches the tool's canonical key
+// (spelling row), its class membership (class row) or its name (glob row),
+// whatever (arg) pattern the rule carries. An argument scope is the
+// author's finer contract over that tool — `Bash(git push:*)` bounds bash
+// for one command family — and the warning exists for the coarser hole, a
+// tool NO row names at all. Read as "does any row bound this tool", never
+// "does this row bound every use of the tool".
+func RuleCovers(rawRule, toolName string) bool {
+	r, err := parseRule(rawRule)
+	if err != nil {
+		return false
+	}
+	canon := canonicalToolName(toolName)
+	return r.matchesTool(toolName, canon)
 }
 
 // compileArg compiles the `(content)` part of a rule into one anchored
@@ -510,10 +567,12 @@ func matchScoped(rs []rule, rawName, canon, summary string, literalOnly bool) (r
 }
 
 // matchBareExactTool recognizes a generic ask only when it names this exact
-// canonical tool. A wildcard ask remains a catch-all approval rule.
+// canonical tool. A wildcard ask remains a catch-all approval rule, and so
+// does a class ask: a class spans tools, so its asks are approval gates, never
+// the exact-tool shape a literal allow may supersede.
 func matchBareExactTool(rs []rule, rawName, canon string) (rule, bool) {
 	for _, r := range rs {
-		if r.argRe == nil && r.toolRe == nil && r.tool == canon && r.matchesTool(rawName, canon) {
+		if r.argRe == nil && r.toolRe == nil && r.class == "" && r.tool == canon && r.matchesTool(rawName, canon) {
 			return r, true
 		}
 	}
@@ -541,6 +600,9 @@ func (r rule) matchesSummary(canon, summary string) bool {
 }
 
 func (r rule) matchesTool(rawName, canon string) bool {
+	if r.class != "" {
+		return toolcatalog.ClassContains(r.class, canon)
+	}
 	if r.toolRe != nil {
 		// Glob is matched against the raw name (so `mcp__github__get_*`
 		// works on the FQN form) and the canonical key.

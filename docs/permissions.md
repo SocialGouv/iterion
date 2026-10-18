@@ -217,8 +217,10 @@ defence in depth beside the flag, never in place of it. On claw,
 `todo_write`, then `read_file`/`write_file`/`glob` under `auto_memory:` — so a
 node that declared no tools can end up holding a file writer, which **C270**
 warns about at compile time. A bound that must hold is a `deny:` rule,
-evaluated by the gate — and there too the spelling has to be one the gate
-knows (a rule naming `Bash` does not bound claw's `repl`).
+evaluated by the gate — and when the bound is about what a tool DOES rather
+than which tool it is, the rule names the class: `deny: ["class:shell"]`
+bounds every registered built-in that executes model-supplied code, present
+and future ([tool classes](#tool-classes)).
 
 (Every node also carries `Workflow` and the schedulers on that flag whatever
 its `tools:` says — unrelated to the list. And a tool *outside* the roster is
@@ -277,6 +279,8 @@ Matching semantics (`pkg/backend/permission`):
   `pkg/**`, `*.go` etc. work as gitignore-style globs.
 - **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL.
 - **Tool-name globs**: `*` (any tool) and `mcp__<server>__*`.
+- **Tool classes**: `class:shell` matches by the registry's capability
+  metadata — the member set, not a spelling ([tool classes](#tool-classes)).
 
 **Cross-backend parity.** The same rule gates the matching tool on every
 supported route: a single `Bash(...)` rule covers claude_code's `Bash`,
@@ -293,8 +297,83 @@ one suggests the other: `allow:` widens, so collapsing a narrower intent onto
 a broader tool would grant more than the author wrote. `workspace_grep` is
 therefore not `grep` and `diagnostic_shell` is not `bash` — `bots/copilot`
 allows the first of each pair while denying the second. For the same reason a
-second shell is not a spelling of the first: a rule naming `Bash` does not
-bound claw's `repl`.
+second shell is not a spelling of the first — aliasing `repl` onto `bash`
+would let `allow: ["repl"]` grant the whole shell — the table stays about
+spellings, and what a rule bounds BEYOND one spelling is a class.
+
+### Tool classes
+
+A rule may name a CLASS of tools instead of one tool: `class:shell` in an
+`allow:` / `ask:` / `deny:` row matches every registered built-in that
+executes model-supplied code — today `bash`, claw's `repl` (which runs
+python, node and shell) and `diagnostic_shell` (the bash executor under its
+own approval name). The membership is the registry's own capability
+metadata (`toolcatalog`): the enumeration lives with the tools it describes,
+never in the gate, so a built-in that registers with the capability later is
+a member of every class row already written — no permissions change, no
+workflow edit. "Executes code" means executes code the MODEL supplies: claw's
+`computer_use` and `skill_install` spawn processes too, but on fixed argv
+(xdotool/import, git clone/fetch/reset) — the model supplies coordinates,
+keys and a URL, never a command line — so they are not members, and that is
+the invariant a future member must defend: a built-in that starts taking a
+model-written command line belongs in the class, and one capability row in
+the registry is the whole change. The spelling of a class row normalises
+like a tool spelling: `CLASS:shell`, `class:SHELL` and `class: shell` (any
+case, a space after the colon) all name the same class.
+
+- `deny: ["class:shell"]` bounds the whole class, present and future. This
+  is the row that closes what `deny: ["Bash"]` cannot: a spelling row
+  bounds its canonical tool (`Bash`, `sh` and `run_command` all land on
+  `bash`), and claw's `repl` is a SECOND shell no spelling bounds.
+- `ask: ["class:shell"]` gates the class the same way: every member call
+  pauses for a human, in every mode (an explicit ask precedes the mode
+  default), future members included. The pause is the unsandboxed mechanism:
+  on a sandboxed claw node a policy that can produce an ask refuses the NODE
+  at dispatch (a sandbox has no seam to pause the run for a human), and an
+  unsandboxed headless run stalls at the call until a human answers the
+  approval — an asked tool executes nothing unattended in either shape.
+- `allow: ["class:shell"]` grants the class including future members —
+  `allow:` widens. Accepted, not refused: the row is the author's explicit
+  choice, and a refusal would replace it (**C167** warns instead, and
+  points at `ask:`).
+- A class row composes with an `(arg)` scope (`class:shell(git push:*)`)
+  and coexists with spelling rows without conflict — each rule is matched
+  on its own, and neither narrows the other.
+- A class row that matches no tool a node can call is a no-op there, like
+  `deny: ["Bash"]` on a node that never runs bash: rules are inert where
+  they match nothing, and a workflow-level row may exist for its siblings.
+- An unknown class is refused at authoring (**C154**), naming the known
+  classes.
+
+The bound is workflow-local, and it follows the runs the node itself starts.
+A subbot child is a separate run compiled from its own `.bot`: the parent's
+rows do not flow into it, so a delegation across a subbot boundary needs the
+class row restated in the child bot (the same workflow-local reading every
+permission diagnostic has — **C111**, **C154**, **C135**). A claw subagent
+is the opposite case, the same run: the child conversation the `agent` tool
+spawns inherits the policy the node's own loop is gated by, so a denied or
+asked class bounds the delegation too. Shipped hosts wire no child runner —
+the `agent` tool answers a typed refusal (**C159** names the shape) — so
+that inheritance is wired where the proxy is and takes effect the moment a
+host wires it.
+
+An operator grant outranks every row: approving a pause writes a grant into
+the run's policy, evaluated after a deny rule and before every ask or allow
+row (the ordering section above). The compiler sees workflow text and not
+run state, so a grant is invisible to it — an ask row counts as a bound
+because a human holds every call behind it, and the grant is that human
+answering.
+
+**C167** is the discovery half: when a gated claw node can call a
+shell-capable built-in that its effective deny and ask rows do not bound —
+`deny: ["Bash"]` beside `repl`, the cell this section closes — it names the
+uncovered tools and suggests the class row. An ask row counts as a bound
+(an asked tool pauses for a human in every mode); an allow row counts as
+none. Measured over the shipped corpus — a CI fact, held by
+`TestShippedCorpusStaysSilentOnClassCoverage`, which compiles every shipped
+`.bot` as a unit and fails on the first fire: **0 fires** today, the copilot
+bot asking `diagnostic_shell` and rightly silent among them. C167 also warns
+on an `allow:` row granting a class.
 
 ### Claude Code diagnostic bridge
 
