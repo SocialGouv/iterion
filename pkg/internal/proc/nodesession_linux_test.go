@@ -304,8 +304,20 @@ func (w *nodeWorld) waitPid(name, pidFile string) int {
 	return 0
 }
 
+// awaitSeeded holds the test until every process this world marked is visible
+// to a scan: a foreground seed returns the pid of a launcher whose exec may
+// still be running, and a process carries the entry only once its exec is
+// done. A witness whose premise is that the sweep sees its seeds awaits them
+// here instead of betting on that exec.
+func (w *nodeWorld) awaitSeeded() {
+	w.t.Helper()
+	for name, pid := range w.marked {
+		awaitSessionHolds(w.t, w.token, name, pid)
+	}
+}
+
 // populate starts what a node can leave behind and the controls a sweep must
-// spare.
+// spare, and leaves every marked process visible to a scan.
 func (w *nodeWorld) populate() {
 	mark := []string{w.entry()}
 	// A command the agent ran in the foreground, still running.
@@ -350,6 +362,8 @@ func (w *nodeWorld) populate() {
 	w.controls["entry inside another variable"] = w.sh("entry inside another variable", []string{"OTHER=" + w.entry()}, true, false, `exec sleep 300`)
 	w.controls["entry after a newline"] = w.sh("entry after a newline", []string{"OTHER=value\n" + w.entry()}, true, false, `exec sleep 300`)
 	w.controls["another node"] = w.sh("another node", []string{NodeSessionEntry(NewNodeSessionToken())}, true, false, `exec sleep 300`)
+
+	w.awaitSeeded()
 }
 
 // guardFound stops the test before any signal unless the session found is the
@@ -561,6 +575,7 @@ func TestSweepSignalsBeforeItsDeadline(t *testing.T) {
 			mark := []string{w.entry()}
 			w.marked["plain"] = w.sh("plain", mark, true, false, `exec sleep 300`)
 			w.marked["ignores-term"] = w.sh("ignores-term", mark, true, false, `trap "" TERM; exec sleep 300`)
+			w.awaitSeeded()
 			w.check(s.sweep(t, w))
 		})
 	}
@@ -858,6 +873,7 @@ func TestADeadSweepIsNotReportedAsClean(t *testing.T) {
 func TestSweepDoesNotWaitOnASinceFileThatIsNoFile(t *testing.T) {
 	w := newNodeWorld(t)
 	w.marked["plain"] = w.sh("plain", []string{w.entry()}, true, false, `exec sleep 300`)
+	w.awaitSeeded()
 	fifo := filepath.Join(w.dir, "since")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)

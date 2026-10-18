@@ -210,3 +210,22 @@ for is never exercised. Each is now an `awaitPremise` poll on the fact itself �
 the process-wide `environ` unreadable while a thread's answers; an environment
 nobody of this uid can read while the process still runs — so a slow host costs
 time instead of a verdict, and a premise that never holds fails as itself.
+
+The seeds are the other side of the same wall, and there load FAILS the witness
+instead of passing it vacuously. A foreground seed returns the pid of a launcher
+whose exec may still be running, and a process carries the entry only once its
+exec is done — until then its `/proc/pid/environ` is the test binary's, and a
+scan misses it. `TestSweepStopsTheSessionAndNothingElse/go` bet all of
+`populate()` on those execs and lost in a merge queue that touched no file of
+the package (#2539): the guard refused (`the session misses [respawner …]`),
+which is correct, but read as a product verdict. The world now awaits its seeds:
+`w.awaitSeeded()` holds the test until every marked seed is visible to a scan
+(`awaitSessionHolds`) — from `populate()` itself, and from the two witnesses
+that seed directly (`TestSweepSignalsBeforeItsDeadline`,
+`TestSweepDoesNotWaitOnASinceFileThatIsNoFile`). The controls need no await: a
+sweep can only stop carriers of the entry, so a control a scan does not see yet
+is trivially spared. The refusal stays witnessed: short-circuiting
+`environHolds` in `scanNodeSession`, so seeded carriers are never found, reddens
+the unfixed witnesses on the queue's own line and the fixed ones on the await's
+premise. Green `-count=30`, `-race -count=2`, and `-count=10` under two
+competing jailed runs of the same package.
