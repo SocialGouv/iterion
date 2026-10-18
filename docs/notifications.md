@@ -7,11 +7,13 @@ unless the run's console page is open. Notifications are delivered by
 **Web Push** (RFC 8030 + VAPID) through a service worker, so they arrive
 even when the studio tab is in the background or closed.
 
+Diagram: [Flow — notifications and callbacks: one outcome event, three outbound families](diagrams/flow-notifications-callbacks.md)
+
 Notified events (v1):
 
 | Event | Notification |
 |---|---|
-| `human_input_requested` (run paused on a human form) | "Input needed: *run name*" + a bounded excerpt of the human node's authored `instructions:` text |
+| `human_input_requested` (run paused on a human form) | "Input needed: *run name*" + the paused node's id |
 | `run_finished` | "Run finished: *run name*" |
 | `run_failed` (incl. `failed_resumable`) | "Run failed: *run name*" (+ failing node) |
 | `run_cancelled` | "Run cancelled: *run name*" |
@@ -29,9 +31,7 @@ where the pending form renders.
   of my team" in **Account → Notifications** (persisted server-side,
   `PUT /api/v1/notifications/prefs {"scope":"team"}`).
 
-The notification body never contains resolved run data — only the run
-name, node id, and the workflow author's `instructions:` text (first ~120
-chars).
+The title names the run; the body names the paused or failing node.
 
 ## Architecture
 
@@ -135,8 +135,10 @@ user × browser), `notification_prefs` (per tenant × user scope),
 
 ## REST surface
 
-All cookie-authed under the standard middleware; 404 when the feature is
-off:
+All cookie-authed under the standard middleware. With the feature off
+none of them is registered, and the request falls through to the SPA
+catch-all: `GET …/prefs` answers a JSON 404, the other methods a bare
+405:
 
 | Route | Purpose |
 |---|---|

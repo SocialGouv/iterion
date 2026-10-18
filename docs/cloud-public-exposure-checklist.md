@@ -77,7 +77,7 @@ How to verify: `kubectl get scaledobject -n <ns> -o yaml | grep consumer` shows 
 
 - [ ] **CPU / memory limits** on server + runner pods. Without limits, a runaway claude_code session can OOM the node.
 - [ ] **Per-run budget caps** enforced via the workflow's `budget:` block AND a server-side default override (operator can refuse to launch a run with no budget).
-- [ ] **Per-tenant rate limits** on `/api/runs/launch` and `/api/runs/resume` to prevent a single misconfigured client from saturating the queue.
+- [ ] **Per-tenant launch rate cap set**: `LaunchRatePerMin` on each team, or the platform default `ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN`; 0 leaves launches unlimited. The launch gate already enforces it as a per-team token bucket, on `POST /api/runs`, `POST /api/runs/{id}/resume` and every other launch surface — see [quotas-and-limits.md](quotas-and-limits.md).
 - [ ] **Storage quotas** on the S3 bucket (lifecycle policy on objects > 90 days unless explicitly retained).
 
 ## 9. Backup + recovery

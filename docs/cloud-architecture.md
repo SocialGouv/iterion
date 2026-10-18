@@ -58,6 +58,8 @@ sweeper](cloud-admin-guide.md#17-dlq-triage)).
 
 ## The run lifecycle
 
+Diagram: [Cloud run lifecycle](diagrams/flow-cloud-run-lifecycle.md)
+
 | Status | Meaning |
 |---|---|
 | `queued` | Waiting to start. In cloud mode the run document in Mongo's `runs` collection reads `queued` until something settles it — the engine starting on the runner that claimed it, or a launch rollback or a cancel, for example; locally, the pipeline-concurrency cap parked the launch. |
@@ -66,7 +68,7 @@ sweeper](cloud-admin-guide.md#17-dlq-triage)).
 | `paused_operator` | Operator paused via the studio. Resumable. |
 | `failed_resumable` | Transient failure (LLM rate limit, timeout, runner crash) — the runner Naks and JetStream redelivers for an auto-retry — **or** budget exceeded, which the runner Acks (no auto-redelivery: the same message carries the same spent budget, so it would re-fail instantly). Either way the checkpoint is preserved; `iterion resume` / studio Retry brings it back, and for budget exceeded you raise the cap first (`iterion resume --max-cost-usd/--max-duration …`). |
 | `failed` | Definitive — `FailNode` reached, or first node failed before any checkpoint existed. |
-| `cancelled` | Cancelled **by the operator**. Checkpoint preserved but terminal: a redelivered launch is dropped, so continuing needs an explicit resume (this deliberate anti-resurrection guard is why a runner-shutdown interruption is promoted to `failed_resumable` instead — see "Rolling deploys" below). |
+| `cancelled` | Cancelled by the operator, or by a webhook lane whose subject is gone — the typed `RunEndReason` on the doc says which (`operator`, `pr_closed`, `pr_requeued`, `superseded`). Checkpoint preserved but terminal: a redelivered launch is dropped, so continuing needs an explicit resume (this deliberate anti-resurrection guard is why a runner-shutdown interruption is promoted to `failed_resumable` instead — see "Rolling deploys" below). |
 | `finished` | Terminal success. |
 
 Statuses are pinned in
@@ -76,7 +78,7 @@ Statuses are pinned in
 
 Each cloud run carries its credentials through the queue in a sealed
 envelope so the runner pod gets exactly what it needs and nothing else
-([pkg/secrets/run_secrets.go](../pkg/secrets/run_secrets.go)):
+([pkg/secrets/run_secrets.go](../pkg/secrets/run_secrets.go)).
 
 ```
    server (publisher)                              runner pod
@@ -180,7 +182,9 @@ even claiming the run, or before its first status write. It scans
 every 60s for `queued` past the redelivery window + margin (~2h40 with
 the defaults: the window described below + 10min) or `running > 10min` AND no
 current NATS-KV lease, then CAS-flips matched rows to `failed_resumable`.
-Bumps `iterion_runs_orphan_recovered_total`.
+The `queued` pass is dropped entirely while the shared consumer or any
+enabled pool still reports a backlog — those rows wait for a free runner,
+not for recovery. Bumps `iterion_runs_orphan_recovered_total`.
 
 The same sweeper also polls `DLQDepth()` so
 `iterion_dlq_depth` is kept fresh — that's what the
@@ -332,7 +336,10 @@ The two webhook directions are intentionally separate features:
   final answer to a chat bot without polling, with optional HMAC
   signing via `ITERION_COMPLETION_WEBHOOK_SECRET`.
 
-The runner emits the callback after every terminal status transition,
-firing once. Webhook URLs are SSRF-vetted (loopback / RFC-1918 /
+The runner emits the callback once, when a delivery reaches a final
+disposition — an ack, or a park on the usage-window / DLQ path. A plain
+Nak with redeliveries left fires nothing: JetStream redelivers and the run
+auto-resumes, so one failure would otherwise be announced per delivery.
+Webhook URLs are SSRF-vetted (loopback / RFC-1918 /
 metadata-IP refused by default — see the outbound doc for the
 self-hosted relaxation).

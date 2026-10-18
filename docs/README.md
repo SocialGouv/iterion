@@ -176,6 +176,24 @@ Drawn from the code: the Mongo data model as entity-relationship diagrams and th
 | [diagrams/data-model-automation.md](diagrams/data-model-automation.md) | The trigger spine, the scheduled surfaces, the leases. |
 | [diagrams/data-model-knowledge.md](diagrams/data-model-knowledge.md) | Memory, config shares, notifications. |
 | [diagrams/access-control.md](diagrams/access-control.md) | Principal kinds, roles, the authorization decision points, the gate × principal matrix. |
+| [diagrams/flow-auth-login.md](diagrams/flow-auth-login.md) | Flow — signing in and authenticating a request. |
+| [diagrams/flow-org-team-lifecycle.md](diagrams/flow-org-team-lifecycle.md) | Flow — org and team lifecycle: suspend, soft-delete, purge. |
+| [diagrams/flow-forge-connect-enable-bot.md](diagrams/flow-forge-connect-enable-bot.md) | Flow — connect a forge, enable a bot on a repository. |
+| [diagrams/flow-webhook-to-run.md](diagrams/flow-webhook-to-run.md) | Flow — webhook-to-run: the admission gates, every refusal, and the one chokepoint. |
+| [diagrams/flow-revi-review-merge-gate.md](diagrams/flow-revi-review-merge-gate.md) | Flow — The revi/review merge gate. |
+| [diagrams/flow-cloud-run-lifecycle.md](diagrams/flow-cloud-run-lifecycle.md) | Flow — Cloud run lifecycle. |
+| [diagrams/flow-credential-resolution.md](diagrams/flow-credential-resolution.md) | Flow — Credential resolution — which credential funds a cloud run. |
+| [diagrams/flow-secrets-sealed-bundle.md](diagrams/flow-secrets-sealed-bundle.md) | Flow — the sealed credentials bundle. |
+| [diagrams/flow-config-share.md](diagrams/flow-config-share.md) | Flow — config-share: the mint, the two access paths, the fail-closed write. |
+| [diagrams/flow-triggers-and-schedules.md](diagrams/flow-triggers-and-schedules.md) | Flow — triggers and schedules: five sources, two deliveries, three clocks. |
+| [diagrams/flow-pause-resume-rewind.md](diagrams/flow-pause-resume-rewind.md) | Flow — Pause, resume and rewind. |
+| [diagrams/flow-board-dispatcher.md](diagrams/flow-board-dispatcher.md) | Flow — Board dispatch. |
+| [diagrams/flow-bot-resolution-overrides.md](diagrams/flow-bot-resolution-overrides.md) | Flow — Bot resolution — team row, platform override, baked catalog. |
+| [diagrams/flow-memory-knowledge.md](diagrams/flow-memory-knowledge.md) | Flow — memory and knowledge: four writers, one seam, two adapters. |
+| [diagrams/flow-sandbox-isolation.md](diagrams/flow-sandbox-isolation.md) | Flow — sandbox isolation. |
+| [diagrams/flow-notifications-callbacks.md](diagrams/flow-notifications-callbacks.md) | Flow — notifications and callbacks: one outcome event, three outbound families. |
+| [diagrams/flow-bot-to-running-graph.md](diagrams/flow-bot-to-running-graph.md) | Flow — From a `.bot` to a running graph. |
+| [diagrams/flow-assistant-dock-session-board.md](diagrams/flow-assistant-dock-session-board.md) | Flow — the assistant dock, run watches and the session board. |
 
 ## Point-in-time records
 

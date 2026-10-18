@@ -6,6 +6,8 @@ nothing else in iterion**. It was built for the veille use case — letting the
 design/a11y team edit their own RSS `feeds[]` and `editorial` prompt without a
 GitHub account or studio access — but the primitive is bot-agnostic.
 
+Diagram: [Flow — config-share: the mint, the two access paths, the fail-closed write](diagrams/flow-config-share.md)
+
 ## The shape
 
 A **share** is a grant minted by an operator (team admin) for a `(bot × repo ×
@@ -81,8 +83,8 @@ untrusted party, so isolation is enforced at every layer:
   — a stale write gets a `409` with the fresh projection for a diff, **never** a
   silent overwrite.
 - **Mint guards.** `config_path` is rejected if it traverses (`..`) or targets a
-  protected area (`.git/**`, `.github/**`, `Dockerfile`, `.env*`); `repo_ref`
-  must be explicit; `repo_url` must be a clean `owner/name`. Minting a
+  protected area (`.git/**`, `.github/**`, `.gitlab-ci*`, `Dockerfile`, `.env*`);
+  `repo_ref` must be explicit; `repo_url` must be a clean `owner/name`. Minting a
   category share whose category is **absent from the config file** (a common
   typo — `design` vs the real `design-systems`) is rejected with a clear error
   rather than producing an editor with no fields — a best-effort projected read
@@ -91,9 +93,10 @@ untrusted party, so isolation is enforced at every layer:
   `iterion-share-editor[bot]` author are all server-derived — an edit can't
   retarget the branch or forge attribution.
 - **Uniform failures + audit.** Every auth failure collapses to `401
-  {"error":"invalid_share"}` (the id space isn't probeable). Every call lands a
-  `Delivery` audit row (source IP, UA, before/after SHA, changed paths) — the
-  forensic trail after a token leak. Rotate = immediate cutoff.
+  {"error":"invalid_share"}` (the id space isn't probeable). Every `PATCH` that
+  reaches `ApplyEdit` lands a `Delivery` audit row (source IP, UA, before/after
+  SHA, changed paths) — the forensic trail after a token leak; the two reads
+  write none. Rotate = immediate cutoff.
 - **Isolated SPA client.** The shell-less `/config/:id` view uses its own fetch
   client (`credentials:"omit"`, Bearer-only) — it never touches the studio's
   cookie-carrying `apiRequest` or `/auth/refresh`, so an operator opening the
@@ -119,14 +122,15 @@ Public (self-authenticating; `Authorization: Bearer <iws_ token>`):
 | GET | `/api/config-share/{id}/config` | the file projected to `visible_paths` + blob `sha` |
 | PATCH | `/api/config-share/{id}/config` | body `{patch, sha}` → `{sha, changed}` / `409 {config, sha}` / `400` |
 
-Operator (JWT, `canManageTeam`, audited):
+Operator (JWT) — mint, rotate and delete are `canManageTeam`-gated and audited;
+the two reads are `canViewTeam`-gated:
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/teams/{id}/config-shares` | mint (returns the token + URL once) |
 | GET | `/api/teams/{id}/config-shares` | list |
 | POST | `/api/teams/{id}/config-shares/{sid}/rotate` | re-mint the token |
-| DELETE | `/api/teams/{id}/config-shares/{sid}` | revoke |
+| DELETE | `/api/teams/{id}/config-shares/{sid}` | delete the grant (its delivery rows outlive it, under their 90-day TTL) |
 | GET | `/api/teams/{id}/config-shares/{sid}/deliveries` | audit trail |
 
 The studio surfaces the operator side on a bot's home page (the
@@ -142,6 +146,7 @@ ADR-078 — a real cookie session, `canEditConfigShares`-gated, not a token):
 | PATCH | `/api/teams/{id}/config-editor/shares/{sid}/config` | edit the fields (same allow-list/if-match as the token path) |
 | GET | `/api/teams/{id}/config-editor/shares/{sid}/schedule` | the cadence (cron + next fire) of the share's category schedule, if any |
 | PATCH | `/api/teams/{id}/config-editor/shares/{sid}/schedule` | edit **only** the cron of that category's schedule |
+| GET | `/api/teams/{id}/config-editor/shares/{sid}/runs` | recent runs of the share's `(bot, category)` — status and timestamps only, capped at 8 |
 
 **Cadence.** The recurrence of a category's digest is not repo config — it is a
 first-class schedule in iterion's schedule store (visible in the studio

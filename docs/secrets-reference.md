@@ -18,7 +18,7 @@ Diagram: [diagrams/data-model-credentials.md](diagrams/data-model-credentials.md
 | **BYOK API key** | LLM provider key (Anthropic, OpenAI, …) | team or user | run launch | [pkg/secrets/byok.go](../pkg/secrets/byok.go) |
 | **Generic secret** | arbitrary string (forge PAT, deploy key) | team or user | run launch | [pkg/secrets/generic.go](../pkg/secrets/generic.go) |
 | **Bot-secret binding** | policy that names a generic secret for a bot | team only | run launch | [pkg/secrets/bindings.go](../pkg/secrets/bindings.go) + ADR [018](adr/018-bot-secret-binding-egress-enforcement.md) |
-| **File secret** (`as: file`) | secret materialised on disk in the sandbox | engine | per-node exec | [pkg/secrets/files.go](../pkg/secrets/files.go) ([engine layers](secrets.md)) |
+| **File secret** (`as: file`) | secret materialised on disk in the sandbox, or in the runner pod when the run is unsandboxed | engine | run launch | [pkg/secrets/files.go](../pkg/secrets/files.go) ([engine layers](secrets.md)) |
 | **OAuth-forfait** | Claude Pro / ChatGPT subscription blob | user, team, org tier or platform | run launch | [pkg/secrets/oauth.go](../pkg/secrets/oauth.go) |
 | **Tokens** | bearer credentials (`iwh_` / `iap_` / `iar_`) | varies | every request | [pkg/webhooks/token.go](../pkg/webhooks/token.go) · [pkg/pat/pat.go](../pkg/pat/pat.go) · [pkg/auth/password_reset.go](../pkg/auth/password_reset.go) |
 
@@ -103,11 +103,14 @@ dereference — a binding is shared org automation policy
 
 When the runtime asks for secret `<name>`, iterion picks:
 
-1. **user-scoped secret** of that name (if the launching user has one
+1. **per-run override** — the launch's `SecretOverrides` (a webhook's
+   `secret_overrides`, for instance) pinning `<name>` to a stored secret
+   id; its `SourceScope` reads `webhook-override`;
+2. **user-scoped secret** of that name (if the launching user has one
    — interactive personal opt-in still wins);
-2. **bot binding** mapping `<name>` to a stored team-scoped secret
+3. **bot binding** mapping `<name>` to a stored team-scoped secret
    (the canonical route for unattended / webhook runs);
-3. **team-scoped secret** of that name (existing fallback).
+4. **team-scoped secret** of that name (existing fallback).
 
 Source scope appears on `GenericResolution.SourceScope` so the audit
 trail says exactly which tier won.
@@ -120,17 +123,23 @@ on `RunBundle.GenericSecretHosts`; the runner intersects with the
 workflow's hosts in `model.effectiveSecretHosts`; the egress proxy
 applies the intersection as the live allowlist.
 
-The intersection rule
-([pkg/secrets/bindings.go:IntersectHosts](../pkg/secrets/bindings.go)):
+The effective allowlist
+([pkg/backend/model:effectiveSecretHosts](../pkg/backend/model/secretguard.go),
+over [`IntersectHosts`](../pkg/secrets/bindings.go)):
 
 - both empty → empty (unrestricted)
 - one set, one empty → the set (restriction wins)
-- both set → their intersection
+- both set, overlapping → their intersection
+- both set, disjoint → `[""]`, deny-all (an empty intersection would
+  otherwise read as allow-any)
 
-Example: a `gitlab_pat` secret declared with `hosts:
-["gitlab.example.com"]` and bound with `allowed_hosts:
-["gitlab.example.com/api"]` ends up with `["gitlab.example.com/api"]`
-as its effective egress allowlist for that bot.
+The intersection is literal — byte-identical strings, case and `:port`
+included: a binding host the workflow does not list verbatim — a subdomain
+of one included, and anything carrying a path — drops out of the
+intersection, and a binding left with none is deny-all. A `gitlab_pat`
+declared with `hosts: ["gitlab.example.com"]` therefore binds usefully
+with `allowed_hosts: ["gitlab.example.com"]` and not with
+`["gitlab.example.com/api"]`.
 
 REST surface:
 `/api/teams/{id}/bots/{bot_id}/bindings`
@@ -228,16 +237,18 @@ intended record so a sealed bundle cannot be silently transplanted:
 | `run_secrets.sealed_bundle` | `run_secrets:<tenant_id>/<runner_pool>/<run_id>` (records with a `key_id`; the pool segment is empty for shared-fleet runs) — legacy id-less records keep `run_secrets:<run_id>` |
 
 `ITERION_SECRETS_KEY` — or the `ITERION_SECRETS_KEYS` ring — is required
-at boot in cloud mode (`openssl rand -base64 32` → exactly 32 raw
-bytes). Server pods AND runner pods must agree on it, because the
-runner is the only thing that decrypts the per-run bundle the
-publisher sealed.
+at boot by the cloud SERVER, which refuses to start without key material
+(`openssl rand -base64 32` → exactly 32 raw bytes). It seals and opens the at-rest records; a runner pod needs none
+to open a current (`dek`) bundle but still wants it for the pre-DEK cohorts
+and for its mid-run re-reads (see [Run bundles: no key to
+rotate](#run-bundles-no-key-to-rotate)), and where a deployment mounts it,
+both pods must agree on it.
 
-Upgrade ordering for THIS change: roll the RUNNERS (they learn the
-ring-aware opener) before or atomically with the servers — a
-server-first skew publishes ring-stamped bundles that pre-ring
-runners cannot open, and those runs fail at credential injection
-until the runners catch up.
+Deploy ordering: roll the RUNNERS before or atomically with the servers.
+The wire schema pins it — a consumer refuses a `RunMessage` outside
+`queue.MinSchemaVersion`–`queue.SchemaVersion` at the schema check, so a
+server-first deploy that raises `queue.SchemaVersion` makes every new
+publish bounce.
 
 ### Rotating `ITERION_SECRETS_KEY` — current state
 
@@ -260,13 +271,19 @@ moment the new key takes over.
 ### Run bundles: no key to rotate
 
 Since ADR-123 a run bundle seals under a fresh 32-byte per-run DEK
-that travels in the queue message (`BundleDEK`) — the only places it
-exists are the publishing server and the run's own pool stream, and a
-runner pod holds no platform key material at all. There is nothing to
+that travels in the queue message (`BundleDEK`) — on its pool's stream,
+or on the shared `iterion.queue.runs` for a run with no pool. A parked
+message keeps it on the dead-letter stream (seven days by default), and the
+super-admin dead-letter peek returns that payload with only its vars
+redacted. No platform key material is needed to open a bundle. There is nothing to
 rotate: every bundle already has its own key, and the ring is out of
-the run path. Runner pods need no auth secret; a deployment may keep
-one during the transition window (it opens bundles published before
-the DEK rollout, until the 24 h TTL clears them).
+the run path. Runner pods need no auth secret to open a current bundle;
+a deployment may keep one during the transition window (it opens bundles
+published before the DEK rollout, until the 24 h TTL clears them) — and
+the runner's mid-run re-reads of at-rest records still want one: with no
+sealer the 5-minute file-secret refresh fails every tick and the
+git-credential rotation never starts, so a long run pushes with the
+token it was launched with.
 
 ### Rotating the at-rest key — the ring
 

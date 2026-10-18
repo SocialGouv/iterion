@@ -10,6 +10,8 @@ iterion; forge integrations (`pkg/forge`) hold the admin credential that
 lets iterion call *out* to the forge to register that delivery — and the
 bot-secret binding — in one action.
 
+Diagram: [Flow — connect a forge, enable a bot on a repository](diagrams/flow-forge-connect-enable-bot.md)
+
 ## What it does
 
 In the studio, **Integrations → Repositories** (`/integrations`):
@@ -44,6 +46,78 @@ In the studio, **Integrations → Repositories** (`/integrations`):
 Disable is the inverse, one click: delete the forge hook, the webhook
 config, and the join row (the managed secret survives — it is shared by the
 connection's other repos; it is removed when the connection is deleted).
+
+Both halves drawn from the code — the GitHub App connect, then the enable's
+fixed write order; the step table, the guards that refuse and the collections
+written live on [the flow page](diagrams/flow-forge-connect-enable-bot.md).
+
+```mermaid
+sequenceDiagram
+    participant U as team admin
+    participant ST as studio
+    participant S as server
+    participant G as GitHub
+    participant DB as store
+
+    U->>ST: create a GitHub App
+    ST->>S: POST /forge/oauth-apps/github-manifest
+    S->>DB: put forgePending, one-time, 10 min TTL
+    S-->>ST: post_url, manifest, agent-binding cookie
+    ST->>G: POST settings/apps/new, from the operator browser
+    G->>S: GET /api/forge/github/app-manifest/callback with code and state
+    S->>S: take the state once, constant-time cookie compare
+    S->>G: ConvertManifest with the code
+    G-->>S: app id, slug, client creds, private key issued once
+    S->>DB: forge_oauth_apps create, secret and key sealed
+    U->>S: POST /forge/connections with mode app
+    S->>DB: put forgePending pinning the oauth app id
+    S-->>U: install_url for the App slug
+    U->>G: install the App on the chosen repositories
+    G->>S: GET /api/forge/github/app/callback with installation_id and state
+    S->>S: take the state once, cookie compare, team from the state
+    S->>G: VerifyInstallationOwnership, shared platform App only
+    S->>G: InstallationInfo, what the owner approved
+    S->>G: MintInstallationToken, runtime or watch-only permissions
+    S->>DB: forge_connections create, token sealed, purpose stamped, active
+    S->>DB: audit_events forge.connection.created
+    S-->>U: 302 back to the wizard with the connection id
+```
+
+```mermaid
+sequenceDiagram
+    participant U as team admin
+    participant S as server
+    participant O as orchestrator
+    participant DB as store
+    participant G as forge
+    participant OA as org admin
+
+    U->>S: GET /forge/repo-bots/preview with connection and bots
+    S-->>U: events, scopes, secret names, commands, conflicts, no writes
+    U->>S: POST /forge/repo-bots with connection, repo, bot ids, options
+    S->>DB: read the team and its parent org
+    alt the org requires provision approval
+        S->>DB: forge_provision_approvals create, request verbatim
+        S->>DB: audit_events approval_requested, team and org trails
+        S-->>U: 202 pending_approval, nothing exists forge-side
+        OA->>S: POST /orgs/{id}/provision-approvals/{id}/approve
+        S->>DB: staleness checks on integration, bot set, repo, connection
+    end
+    S->>O: Provision the request
+    O->>DB: connection, integration by tenant and connection and repo, previous config
+    O->>DB: generic_secrets create, admin token re-sealed, egress hosts pinned
+    O->>DB: forge_connections stamp managed_secret_id
+    O->>DB: bot_secret_bindings upsert, one per enabled bot
+    O->>O: command map, bot rules, fresh iwh_ webhook secret
+    O->>DB: webhook_configs create or update, the enforcement half
+    O->>G: upsert the repo hook with inbound URL, secret, native events
+    O->>DB: repo_integrations create or update, the report half
+    O->>G: re-mint the github_app token for the provisioned repo set
+    O->>DB: scheduled_bots replaced for the integration
+    O-->>S: ProvisionResult with integration, webhook, hook, created
+    S->>DB: audit_events forge.integration.provisioned
+    S-->>U: ProvisionResult
+```
 
 ## What a bot declares (`forge:` in its manifest)
 
@@ -118,13 +192,14 @@ PAT connections never refresh.
 ## Configuration (cloud)
 
 The Mongo stores (`forge_connections`, `repo_integrations`,
-`forge_oauth_apps`) and the routes are wired automatically in `iterion
-server` cloud mode. OAuth apps are registered **per team, per provider,
-per instance** at runtime via the `/api/teams/{id}/forge/oauth-apps`
-store — the legacy process-global `ITERION_FORGE_*_OAUTH_*` env map has
-been replaced and is no longer read. A `(tenant, provider, base URL)`
-with no registered app offers only the PAT path; register one (or use the
-GitHub App-manifest flow) to enable OAuth, with no redeploy.
+`forge_oauth_apps`, `forge_provision_approvals`, `forge_board_bindings`) and the
+routes are wired automatically in `iterion server` cloud mode. OAuth apps are
+registered **per team, per provider, per instance** at runtime via the
+`/api/teams/{id}/forge/oauth-apps` store — the legacy process-global
+`ITERION_FORGE_*_OAUTH_*` env map has been replaced and is no longer read.
+A `(tenant, provider, base URL)` with no registered app offers only the PAT
+path; register one (or use the GitHub App-manifest flow) to enable OAuth, with
+no redeploy.
 
 `PublicURL` must be set (the OAuth redirect + the forge hook URL are built
 from it).
@@ -155,10 +230,11 @@ from it).
 
 ## API
 
-All under `/api/teams/{id}/forge/`. Connection/repo mutations require a team
-admin or owner; connection health and GitHub-App grant refresh are available to
-a team member. The OAuth callback is a public IdP redirect target authenticated
-by signed state + an agent-binding cookie:
+All under `/api/teams/{id}/forge/`. Mutations require a team admin or owner, and
+so do the `/repo-bots/preview` and `/connections/{conn_id}/repos` reads; listing
+connections and integrations, connection health and the GitHub-App grant refresh
+are open to a team member. The OAuth callback is a public IdP redirect target
+authenticated by signed state + an agent-binding cookie:
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -172,7 +248,7 @@ by signed state + an agent-binding cookie:
 | GET | `/api/forge/oauth/callback` | **public** OAuth redirect target |
 | GET | `/repo-bots` | list active integrations |
 | GET | `/repo-bots/preview?connection_id=&bots=` | events + scopes + conflicts + the merge-gate posture (`gates_merges`) and the hook base (`hook_base_url`), no writes |
-| POST | `/repo-bots` | enable `{connection_id, repo, bot_ids}` → `ProvisionResult` |
+| POST | `/repo-bots` | enable `{connection_id, repo, bot_ids}` → `ProvisionResult`, or `202 {pending_approval, approval_id}` when the org requires an org admin's approval — nothing is created forge-side until then |
 | PATCH | `/repo-bots/{integration_id}` | update an integration — bot set and/or operator settings |
 | DELETE | `/repo-bots/{integration_id}` | disable |
 
@@ -241,7 +317,14 @@ fine-grained per-repo permissions. Config:
 ITERION_FORGE_GITHUB_APP_ID
 ITERION_FORGE_GITHUB_APP_PRIVATE_KEY_FILE   (PEM; or _PRIVATE_KEY inline)
 ITERION_FORGE_GITHUB_APP_SLUG
+ITERION_FORGE_GITHUB_APP_CLIENT_ID
+ITERION_FORGE_GITHUB_APP_CLIENT_SECRET
 ```
+
+The client credentials are what proves at the install callback that the
+installation belongs to the authorizing user; an install of the **shared
+platform** App without them is refused `412`
+([forge-permissions.md](forge-permissions.md#enabling-the-shared-app--the-non-negotiable-part)).
 
 After changing a GitHub App installation's permissions, run
 `iterion remote forge refresh <connection-id>` (or call the refresh endpoint)

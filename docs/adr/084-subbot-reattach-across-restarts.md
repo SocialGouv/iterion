@@ -92,3 +92,10 @@ make the runner re-use it.**
 - The pipeline-board stopgap ("answering reviews alone won't finish an
   interrupted pipeline") is now largely obsolete — a resumed parent re-attaches
   — though a resume of the parent is still required.
+
+## Status note (2026-10-14)
+
+`ReattachSubbotChild` clears the record and spawns fresh on `failed_resumable`
+too, alongside `failed` and `cancelled`
+([pkg/runview/subbot.go](../../pkg/runview/subbot.go)): a child parked for an
+operator resume is replaced rather than re-attached.

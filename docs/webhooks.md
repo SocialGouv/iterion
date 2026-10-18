@@ -27,6 +27,8 @@ GitHub, Forgejo/Gitea, and a bot-agnostic Generic JSON endpoint
 
 Diagram: [diagrams/data-model-forge-bots.md](diagrams/data-model-forge-bots.md) — the forge and bot data model (connections, repository bindings, the delivery lifecycle).
 
+Diagram: [Flow — webhook-to-run: the admission gates, every refusal, and the one chokepoint](diagrams/flow-webhook-to-run.md)
+
 ## Lifecycle
 
 1. An org admin creates a webhook through the studio (the `Webhooks` tab
@@ -335,7 +337,7 @@ override these.
 
 ### GitHub (`POST /api/webhooks/github/{id}`)
 
-HMAC over the body, header `X-Hub-Signature-256` (`sha256=<hex>`). Three
+HMAC over the body, header `X-Hub-Signature-256` (`sha256=<hex>`). Four
 event paths trigger; ping / push / everything else is silently filtered
 (returns 200 — a 4xx makes GitHub disable the webhook after repeated
 failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
@@ -388,13 +390,14 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   disappearing.
   → PR auto-**review** (Revi / `review-pr`). This lane is **review-only**: a
   PR-open NEVER auto-launches the mutating branch-improve loop (Billy) — see
-  *PR auto-lane: review, not mutate* below. A **draft PR never auto-launches**
-  (the `draft` flag is honoured on every action — the trigger is
-  `ready_for_review`, which clears it). A **fork PR** (head branch in a
-  different repo, or one the payload does not name) is likewise never
-  auto-launched, and the `/command` lanes refuse it too — same-repo only,
-  silently: the fork's work needs a branch in the base repo before any bot
-  runs on it — the anti budget-exhaustion boundary
+  *PR auto-lane: review, not mutate* below. A **draft PR is never auto-reviewed**
+  (`IsReviewable` and `IsSynchronize` both refuse a draft — the trigger is
+  `ready_for_review`, which clears the flag); no other lane reads the flag, so a
+  `/revi` comment or a "Re-request review" click reviews a draft on demand.
+  A **fork PR** (head branch in a different repo, or one the payload does not
+  name) is likewise never auto-launched, and the `/command` lanes refuse it too
+  — same-repo only, silently: the fork's work needs a branch in the base repo
+  before any bot runs on it — the anti budget-exhaustion boundary
   ([pkg/webhooks/prforge/parser.go:IsReviewable](../pkg/webhooks/prforge/parser.go) +
   `SameRepoAsBase` behind `forkGuardRefusal`). A PR opened by iterion's **own forge bot** (another iterion
   bot's PR — see below) is also skipped.
@@ -864,10 +867,11 @@ curl -X POST https://iterion.example.com/api/webhooks/generic/<id> \
   }'
 ```
 
-**Var precedence.** Body vars merge in first; then the webhook's
-configured `LaunchVars` **override** them. The operator is the
-security-critical knob — a malicious caller cannot escalate by renaming
-a key the org-admin has pinned (`handleGenericWebhook` in
+**Var precedence.** Body vars merge in first, then the webhook's configured
+`LaunchVars`, then the repo's `OperatorLaunchVars` — each layer overrides the
+one before, so the operator pin wins last (`applyWebhookVarLayers`). The
+operator is the security-critical knob — a malicious caller cannot escalate by
+renaming a key the org-admin has pinned (`handleGenericWebhook` in
 [pkg/server/webhooks_generic.go](../pkg/server/webhooks_generic.go)).
 
 ## Matching: project + event + author allowlists, bot scope
@@ -1014,6 +1018,105 @@ A launch whose failure is recorded keeps the real key and turns the row
 delivery of the same event re-enters on that row rather than reading as a
 duplicate.
 
+## The path a delivery takes
+
+The middleware authenticates and admits, the provider handler decides whether
+this event deserves a run and for which bots, and one shared launch tail does
+everything that costs something; the step table, every refusal and the
+collections touched live on [the flow page](diagrams/flow-webhook-to-run.md).
+
+```mermaid
+flowchart TD
+%% the auth middleware - webhookAuth, entirely before the handler
+    IN["a forge or CI POSTs to api/webhooks/github, gitlab, forgejo or generic, with the webhook id in the path"] --> JWT["isPublicPath skips the operator JWT gate: this route authenticates itself"]
+    JWT --> CFG{"the webhook_configs row for that URL id, resolved with NO tenant context - the webhook IS the tenant selector"}
+    CFG -- "missing, or the provider does not match" --> E401["401 invalid webhook - one answer for both, so the id space is not probeable"]
+    CFG -- "token mode" --> TOK{"constant-time compare of X-Gitlab-Token or X-Iterion-Webhook-Token against cfg.TokenHash"}
+    TOK -- "mismatch" --> E401T["401 invalid webhook token, with a WARN naming the config and the client IP"]
+    CFG -- "hmac mode: skipped here, the body is the proof" --> EN
+    TOK -- "match" --> EN{"cfg.Enabled"}
+    EN -- "no" --> E410["410 webhook disabled"]
+    EN -- "yes" --> RATE{"per-webhook token bucket, default rate 1.0 and burst 10"}
+    RATE -- "empty" --> E429R["429 with Retry-After - NO delivery row, only the throttled metric"]
+    RATE -- "a token taken" --> QUO{"monthly call CAS in webhook_quotas - the org key, then a per-webhook key when capped"}
+    QUO -- "cap breached" --> E429Q["429 monthly call quota exceeded - NO delivery row either"]
+    QUO -- "the counter is unreadable" --> E500["500 quota check failed"]
+    QUO -- "admitted" --> TEAM{"GetTeam on cfg.TenantID"}
+    TEAM -- "ErrNotFound" --> E403N["403 tenant no longer exists - a webhook outliving its team"]
+    TEAM -- "any other store error" --> E503["503 tenant lookup unavailable - fail CLOSED"]
+    TEAM -- "not CanLaunch" --> E403S["403 org suspended"]
+    TEAM -- "readable and able to launch" --> STAMP["stamp the synthetic principal, RoleMember and KindWebhook, with the config and the loaded team on ctx; write last_used_at detached"]
+%% the provider handler
+    STAMP --> HMAC{"hmac mode: HMAC-SHA256 over the raw body, before any delivery row"}
+    HMAC -- "unreadable body, capped at 5 MiB" --> E400B["400 read body"]
+    HMAC -- "bad signature" --> E401H["401 invalid signature - no delivery row, but the rate token and the monthly count above stay spent"]
+    HMAC -- "verified, or token mode" --> EV{"dispatch on the provider event header, then parse into a provider-agnostic webhookEventMeta - the generic endpoint reads no header and parses its own JSON body"}
+    EV -- "unsupported event" --> FIL1["200 filtered on github and forgejo; gitlab alone answers 400 invalid"]
+    EV -- "unparsable payload" --> E400P["400 invalid"]
+    EV -- "the generic endpoint: no event header at all, its JSON body names the bot, repo, ref and vars" --> GEN{"its own refusals: 200 filtered outside the project allowlist, then 400 bot required and 403 for a bot outside cfg.AllowsBot, both filed invalid"} -- "a named, permitted bot" --> LWT
+    EV -- "a pull request or merge request" --> DEAD{"closed or merged"}
+    DEAD -- "yes - stopping is not launching, so this runs first" --> STOPD["purge the parked row FIRST, then per launched run disarm the armed retry before cancelling it with RunEndReasonPRClosed, then 200 filtered"]
+    DEAD -- "open" --> FORK{"fork guard: the head repo PROVEN equal to the base - after the scope filter on the gitlab merge-request lane"}
+    FORK -- "not proven, an absent head repo included" --> FIL2["200 filtered - no config lifts it on the auto path"]
+    FORK -- "same repo" --> HOLD{"a configured hold label on the subject - after the routing table and the replier gate on the gitlab merge-request lane"}
+    HOLD -- "held" --> FIL3["200 filtered - every auto lane, whatever bot would have run"]
+    HOLD -- "none, or a payload carrying no labels" --> MQ{"a merge-queue action - the github lane only"}
+    MQ -- "dequeued with a healable reason" --> HEAL{"project, author and the brancher role bot all permitted"}
+    HEAL -- "no" --> FIL4["200 filtered - auto-heal not permitted"]
+    HEAL -- "yes" --> HEALT["one target for the brancher role, carrying fix_head_sha and deliberately not head_sha"]
+    MQ -- "enqueued again" --> FIL5["stop the heal runs, then 200 filtered"]
+    MQ -- "neither" --> SCOPE{"reviewable, or a review_on_sync resync, or a review re-request - AND the event, project and author allowlists; first after the closed-subject stop on the gitlab merge-request lane"}
+    SCOPE -- "any one fails" --> FIL6["200 filtered with an empty reason"]
+    SCOPE -- "in scope" --> REPL{"re-request only: the clicker in authorized_repliers, or a collaborator permission at least min_replier_role"}
+    REPL -- "unauthorized, or an authz error, while an automatic lane co-rides" --> DEM["the gesture is DEMOTED - the delivery rides whatever automatic lane still admits it"]
+    REPL -- "unauthorized, and the click was the delivery's only reason" --> FILR["200 filtered, carrying the gate's own reason"]
+    REPL -- "an authz error, and the click was the delivery's only reason" --> LE1["200 launch_error"]
+    REPL -- "authorized" --> SELF
+    DEM --> SELF{"the sender is iterion's own forge identity"}
+    SELF -- "yes, and this is neither a gate resync nor a re-request" --> FIL7["200 filtered - a review command still forces one"]
+    SELF -- "no" --> RULES{"resolveForgeEventBots: a bot rule claims this event and admits the author - the pull request's author on github and forgejo, the event SENDER on the gitlab merge-request lane, which resolves this before the replier gate"}
+    RULES -- "none" --> FIL8["200 filtered, deliberately not 403 - but a config carrying no bot_rules at all skips the author filter and routes to the pinned reviewer-role bot instead"]
+    RULES -- "one or more" --> TGT["one target per rule: a FRESH vars map, layered base then config then rule then the operator pin - config applies only where the rule pins nothing - and its own idempotency key"]
+    TGT --> SYNC{"a synchronize launch, with a quiet window configured"}
+    SYNC -- "no - a human is waiting on an open, a command or a click" --> LWT
+    HEALT --> LWT
+%% the debounce detour - the request leaves entirely
+    SYNC -- "yes" --> DROPT{"drop the targets whose key already names a non-retryable delivery"}
+    DROPT -- "all dropped" --> DUP1["200 duplicate"]
+    DROPT -- "some remain" --> UPS{"Upsert the parked row, keyed tenant, webhook, project and subject, ordered by the FORGE timestamp"}
+    UPS -- "a strictly newer order_key is already parked" --> FIL9["200 filtered out-of-order - and emphatically no supersede"]
+    UPS -- "store error" --> LWT
+    UPS -- "accepted" --> PARK["under an overlap policy resolving to supersede only, cancel this subject's live runs; then 202 deferred - and no delivery row"]
+    PARK --> SWEEP["the 20s sweeper claims due rows under a 2-minute lease, first replica wins"]
+    SWEEP --> NOW{"re-read the config as it stands NOW"}
+    NOW -- "the config is gone" --> DEL1["drop the row"]
+    NOW -- "not Enabled, or review_on_sync cleared" --> DEL2["a filtered row naming why, then drop"]
+    NOW -- "a transient read error" --> KEEP["keep it: the lease lapses and the next sweep retries"]
+    NOW -- "still armed" --> RST["re-stamp the synthetic webhook identity and the mirrored public base; skip a bot no longer in the webhook's scope"]
+    RST --> LWT
+%% the chokepoint
+    GATE["the merge-gate relaunch and auto-fix lanes rebuild a target from stored state, crossing no handler"] --> LWT
+    LWT{"launchWebhookTarget - the chokepoint all five callers cross"}
+    LWT -- "a lane mismatch in either direction, or an untrusted target with no commit pin" --> FIL10["200 filtered, before anything is metered or launched"]
+    LWT -- "the lane is proven" --> RPL{"a delivery row already holds this idempotency key"}
+    RPL -- "any status but launch_error" --> DUP2["200 duplicate, echoing the winner's run id and delivery id"]
+    RPL -- "launch_error: RETRYABLE, so the row is reused" --> SUP
+    RPL -- "unclaimed" --> SUP{"the webhook's overlap policy resolves to supersede - the default, an empty policy, supersedes nothing"}
+    SUP -- "it does: cancel the live runs of THIS project, subject and bot with RunEndReasonSuperseded" --> ADM
+    SUP -- "it does not" --> ADM{"gateLaunch: the member rung, which a webhook principal is exempt from, then suspend, the repo cap, concurrency, the launch bucket, and the monthly CAS that IS the metering"}
+    ADM -- "denied" --> LE2["the denial's own 402, 403 or 429, plus a launch_error row under a RANDOM key so a retry after the reset still launches"]
+    ADM -- "admitted" --> CLM{"claim the row at accepted - Insert, or ClaimFailedRetry on a prior failure"}
+    CLM -- "a duplicate key, or the CAS lost" --> ROLL["roll the metered unit back, then 200 duplicate"]
+    CLM -- "claimed" --> SEED{"seed the hand-offs, then mint the per-run forge publish grant"}
+    SEED -- "another team's grant, or grant capacity exhausted" --> LE3["422 launch_error and a rollback, with the row left retryable"]
+    SEED -- "minted, or withheld from an untrusted workspace" --> RES["resolve the bot - the team's bot_sources row, then the platform row, then the baked catalog - and build the LaunchSpec with the trust and the admitted commit"]
+    RES --> LCH{"runs.Launch"}
+    LCH -- "failed" --> LE4["502 launch_error; the metered slot comes back only when RunMayHaveStarted is false"]
+    LCH -- "a run exists" --> OK["the row flips to launched with its run id, then 202"]
+    OK --> MARK["trusted only: claim the gate and fixer contexts on the forge, so the minutes before the verdict read as running"]
+    MARK --> SPN["publish the launch on the trigger bus, carrying launched_run_id - observational, so the spine's evaluator never relaunches it"]
+```
+
 ## Limits + admission
 
 A delivery passes through these gates in order, each enforced by the
@@ -1026,8 +1129,11 @@ middleware before the provider handler runs
 | Verify token (token-mode only) | bad token | 401 `invalid webhook token` |
 | Config not disabled | `enabled=false` | 410 `webhook disabled` |
 | Per-webhook token-bucket rate (default `rate=1.0, burst=10`) | bucket empty | 429 with `Retry-After` |
-| Per-org monthly call quota (default **10 000**, override `monthly_call_limit`) | quota exhausted | 429 `monthly call quota exceeded` |
-| Org status `active` | suspended / read-only | 403 `org suspended` |
+| Per-org monthly call quota (default **10 000**; `monthly_call_limit` adds a per-webhook cap) | quota exhausted | 429 `monthly call quota exceeded` |
+| The same quota read | the counter is unreadable | 500 `quota check failed` |
+| Org status `active`, from one team lookup | suspended / read-only | 403 `org suspended` |
+| The same team lookup | the team no longer exists | 403 `tenant no longer exists` |
+| The same team lookup | the identity store fails — fail-closed | 503 `tenant lookup unavailable` |
 
 Then the provider handler verifies the body (HMAC for github/forgejo,
 optional HMAC for generic), parses, applies the event/project/bot

@@ -23,16 +23,21 @@ into the engine ctx.
 
 ## 2. Required secrets at boot
 
-Cloud mode refuses to start without two values:
+A server in cloud mode refuses to start without two values:
 
 | Env var | Purpose | How to generate |
 |---|---|---|
 | `ITERION_JWT_SECRET` | HS256 signing key for access JWTs (≥32 bytes) | `openssl rand -base64 48` |
 | `ITERION_SECRETS_KEY` | AES-256-GCM master key for sealing BYOK + OAuth blobs (exactly 32 bytes) | `openssl rand -base64 32` |
 
-Both **server pods AND runner pods** must agree on `ITERION_SECRETS_KEY`
-— without it the runner can't unseal the per-run bundle the publisher
-wrote, and every workflow fails at "fetch run_secrets".
+The server seals BYOK and OAuth blobs with `ITERION_SECRETS_KEY`, and
+seals each per-run bundle under a fresh per-run key that travels in the
+run message instead. Runner pods load their config with the sealer
+optional ([cmd/iterion/runner.go](../cmd/iterion/runner.go)) and need no
+key to open a current bundle, but their mid-run re-reads of at-rest
+records want the server's key: with none, the 5-minute file-secret
+refresh fails every tick and the git-credential and OAuth refreshers
+never start.
 
 The `ITERION_JWT_SECRET` is server-only. Rotating it invalidates every
 issued access token (users get a fresh one via the next refresh
@@ -160,8 +165,12 @@ not. Verify on the deployment, not on the class of proxy.
 
 First-time login behaviour depends on `ITERION_SIGNUP_MODE`:
 
-- `invite_only` (default): the user must hold an invitation token
-  matching their email; first login without one returns 403.
+- `invite_only` (default): a first SSO login by an unknown user is
+  refused — the OIDC paths read no invitation token — and the callback
+  redirects to `/login?sso_error=login_failed`; a GitHub login whose
+  teams match a configured allow-list is admitted whatever the mode.
+  Invitations gate `POST /api/auth/register`, where the token must
+  match the email.
 - `open`: the server auto-provisions a personal team and lets them
   in.
 
@@ -298,7 +307,7 @@ backup.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Studio blank; console shows `/assets/*.js` blocked — as a disallowed MIME type (`text/html`) on replicas without this fix, as a 404 on replicas carrying it | Replicas are serving different builds — `image.tag` is a moving tag and a scale-up pulled a newer one. A mixed fleet shows both symptoms at once | Pin `image.digest` (§4). Confirm first: `kubectl -n <ns> get pods -l app.kubernetes.io/component=server -o custom-columns=NAME:.metadata.name,IMAGEID:.status.containerStatuses[0].imageID` — more than one digest across those pods means this. (`<none>` is a pod still pulling, not a second build) |
-| Server boots fine, every workflow fails at `unseal run_secrets` | Server and runner have different `ITERION_SECRETS_KEY` | Make the secret bundle identical (same envFrom Secret, no per-pod override) |
+| Server boots fine, every workflow fails at `unseal run_secrets` | The sealed record does not open under the per-run key the run message carries — the seal binds the tenant, the runner pool and the run id | Relaunch the run: each bundle is sealed for one run and expires after 24h |
 | `/api/auth/login` returns 401 with no logs | DB connection healthy but `users` collection empty | Set `ITERION_BOOTSTRAP_ADMIN_EMAIL`, restart the server, capture the temp password from logs |
 | OIDC redirect lands on the SPA but immediately bounces back to `/login` | `ITERION_PUBLIC_URL` doesn't match the redirect URI registered with the IdP | Update either side; the URI must equal `${PUBLIC_URL}/api/auth/oidc/<name>/callback` |
 | Anthropic calls fail with `refusing to spend a subscription OAuth token outside the vendor's own CLI` | The runner has `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` and resolved subscription credentials for a `claw` or `pi` node (the pi check can see an uploaded credential even though that upload is not yet a pi auth source) | Keep the guard and configure tenant BYOK / switch to `claude_code`, or deliberately remove the guard after accepting Anthropic's separate extra-usage billing |

@@ -57,8 +57,12 @@ Runnable demo: [examples/async-questions/main.bot](../examples/async-questions/m
 - **`await_answers()`** — all posted questions answered → returns the
   collected answers inline. Any pending → the run pauses
   (`paused_waiting_human`, interaction `Kind: "await"` listing the
-  pending IDs); answering the last question auto-resumes, and the
-  agent's paused tool_use receives the aggregated answers.
+  pending IDs); a resume carrying answers fans them out onto the async
+  records, and the agent's paused tool_use receives the aggregated
+  answers. Answering the last question on a parked run records and
+  queues the answer, then tries to resume the run with no answers, which
+  `validateResumable` refuses for a paused run: the call returns an
+  error with the answer already recorded.
 - **`ask_user`** — the blocking variant stays available for hard stops
   (destructive/irreversible decisions).
 

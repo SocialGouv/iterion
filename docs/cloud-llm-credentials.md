@@ -192,7 +192,9 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   token(s)`.
 - **A run with no credential at all is QUEUED, not refused, by default.**
   The publisher logs one Warn (`no credential resolved for run=… tiers
-  consulted: byok, oauth-forfait, pool, platform`) and the runner falls
+  consulted: byok, oauth-forfait, org, pool, platform`; a team under
+  `llm_fallback: none` gets `byok, oauth-forfait (llm_fallback=none — the
+  shared tiers were not consulted)`) and the runner falls
   back to its pod's ambient env — or fails at the first LLM call, a pod
   and some minutes after the launch was accepted.
   `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL=1` (server env) refuses such a
@@ -559,7 +561,10 @@ and acquires no capacity. Actual materialization, a fresh provider observation
 or a concurrent admission can change the chosen credential. Runner environment
 credentials and workflow secrets remain outside this database observation.
 The selection rules are shared with the real publisher and checked against
-its sealed bundle in tests.
+its sealed bundle in tests, with one divergence: the preview reads the
+team's `llm_fallback` but never its runner-pool mapping, so a pool-mapped
+team whose `llm_fallback` is unset previews org, pool and platform
+candidates its launches do not consult.
 
 ## Activating the cross-model plan review (one credential, nothing else)
 
@@ -571,7 +576,8 @@ test-coverage, e2e-coverage — the authoritative list is
 cross-family reviewer (default `claw` + `openai/gpt-5.6-sol`) critiques
 the plan before the campaign implements. `plan_review: auto` resolves at
 launch from the run's credentials — **on cloud, from what actually seals
-into the run's bundle** (BYOK → oauth-forfait → pool → platform tier),
+into the run's bundle** (BYOK → oauth-forfait → org → pool → platform
+tier),
 so activation is exactly one provisioning step and zero bot config:
 
 ```sh

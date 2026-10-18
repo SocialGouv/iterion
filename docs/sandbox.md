@@ -91,23 +91,34 @@ iterion run review.bot --sandbox=auto
 
 ## How it works
 
+Diagram: [Flow — sandbox isolation](diagrams/flow-sandbox-isolation.md) — the
+four-tier precedence, the driver selection and the whole boot, guard by guard.
+
 ### Lifecycle
 
 ```mermaid
 flowchart TD
-  START(["runStart"])
+  START(["Engine.Run<br/>(admitRun, then startSandbox)"])
   RESOLVE["resolveSandboxSpec<br/>(CLI &gt; workflow &gt; global default)"]
+  SELECT{"selectSandboxDriver<br/>(docker, podman, kubernetes)"}
+  DEGRADE["sandbox_skipped on the run's own stream,<br/>the run proceeds unsandboxed"]
+  REFUSE["the run parks with<br/>SANDBOX_DRIVER_UNAVAILABLE"]
+  MOUNTS["mounts configured, then finalizeMountsForDriver<br/>(drops the host binds this driver cannot honour)"]
+  PROXY["startNetworkProxy<br/>(HTTP CONNECT proxy, bound 0.0.0.0, advertised as host.docker.internal<br/>or the runner pod's IP on kubernetes)"]
   PREPARE["Driver.Prepare<br/>(validate spec, pull image if missing)"]
-  PROXY["startNetworkProxy<br/>(HTTP CONNECT proxy on 127.0.0.1)"]
   DSTART["Driver.Start<br/>(docker run --detach with sleep infinity)"]
   SETSBX["executor.SetSandbox(run)<br/>(engine pushes the handle into the executor)"]
   EXEC["... node executions stream through docker exec ..."]
   CLEANUP["defer cleanup<br/>(Stop + Remove container, Shutdown proxy)"]
 
   START --> RESOLVE
-  RESOLVE --> PREPARE
-  PREPARE --> PROXY
-  PROXY --> DSTART
+  RESOLVE --> SELECT
+  SELECT -- "no container runtime, mode auto" --> DEGRADE
+  SELECT -- "no container runtime, mode inline" --> REFUSE
+  SELECT -- "a driver" --> MOUNTS
+  MOUNTS --> PROXY
+  PROXY --> PREPARE
+  PREPARE --> DSTART
   DSTART --> SETSBX
   SETSBX --> EXEC
   EXEC --> CLEANUP
@@ -347,10 +358,10 @@ container workspace path, every mount that landed,
 ### Network policy
 
 When a sandbox is active **with a non-open network policy**, an
-iterion-managed HTTP CONNECT proxy runs on the host (127.0.0.1,
-ephemeral port). The container receives the proxy URL via standard
-`HTTPS_PROXY` / `HTTP_PROXY` env vars and reaches it via the
-`host.docker.internal` alias.
+iterion-managed HTTP CONNECT proxy runs on the host (ephemeral port).
+The container receives the proxy URL via standard `HTTPS_PROXY` /
+`HTTP_PROXY` env vars and reaches it via the `host.docker.internal`
+alias under the docker driver, the runner pod's IP under kubernetes.
 
 **Default mode is `open`** — no proxy, full egress — except on a
 repo-defined sandbox (mode `auto` with a found `devcontainer.json`)

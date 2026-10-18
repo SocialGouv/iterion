@@ -110,3 +110,17 @@ primitive — plus its server surface and a shell-less studio editor.
   quota.
 
 Reference: [docs/config-share.md](../config-share.md).
+
+## Status note (2026-10-14)
+
+The decision is in the tree: `pkg/configshare`, the three Bearer-only public
+routes, the operator CRUD and the shell-less studio editor all ship
+([pkg/server/config_share_routes.go](../../pkg/server/config_share_routes.go),
+[pkg/server/server_routes.go](../../pkg/server/server_routes.go)).
+
+The audit clause is narrower in the code. Only the write pipeline records a
+`Delivery` row — the four outcomes of `applyShareEditAndRespond` (200, 409, 400,
+502). `GET /meta` and `GET /config` record none, and a `PATCH` whose forge
+client fails to resolve answers `502` before `ApplyEdit`, also without a row
+([pkg/server/config_share_routes.go](../../pkg/server/config_share_routes.go)).
+The uniform `401` holds.

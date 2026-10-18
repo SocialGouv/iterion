@@ -57,8 +57,9 @@ platform overview: [Iterion Cloud overview](../../cloud-overview.md).
 The unifying layer the four trigger families above (schedule, dispatcher
 poll, forge webhooks, `invocations:` DSL) are converging onto: one
 canonical `trigger.Event` envelope, an internal `eventbus.Bus`
-(`InProcBus` local, `NATSBus` on the **separate** `ITERION_EVENTS`
-stream for cloud), and a `trigger.Subscription` registry binding
+(`InProcBus` local, `NATSBus` on the **separate** Core NATS
+subject tree `iterion.events.>` for cloud), and a
+`trigger.Subscription` registry binding
 `(event filter) → (bot launch into a repo/workspace)` — queryable
 **by repo / by bot** (`ListByRepo` / `ListByBot`), stored in-memory
 (local) or Mongo (cloud) like `forge.RepoIntegrationStore`. The per-bot

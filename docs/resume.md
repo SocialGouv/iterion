@@ -9,13 +9,52 @@ checkpoint, not `events.jsonl`, is the authoritative execution state.
 
 | Status | Meaning | Public resume behavior |
 |---|---|---|
-| `paused_waiting_human` | A human node or mid-agent interaction is waiting for answers. | CLI and `POST /api/runs/{id}/resume`; answers are required. |
+| `paused_waiting_human` | A human node, a mid-agent interaction, or a [recovery pause](#recovery-pauses-re-execute-the-node) on a failed node is waiting for answers. | CLI and `POST /api/runs/{id}/resume`; answers are required. |
 | `failed_resumable` | Execution failed after resumable state was captured. | CLI and HTTP resume; the restart node is re-executed. |
 | `cancelled` | The operator interrupted an active run and the checkpoint was preserved. | CLI and HTTP resume; no answers are required. |
-| `paused_operator` | A local Studio soft pause or daily-spend-cap pause. | CLI and HTTP resume through the failure-style path; no answers are required. |
+| `paused_operator` | A Studio soft pause, a daily-spend-cap pause, or a declared budget cap whose `on_exceeded:` policy is `pause`. | CLI and HTTP resume through the failure-style path; no answers are required. |
 | `running` | Execution should still have an owner. | `--force-stale` can promote a provably stale local run after 60 seconds without an event flush. Server startup also reconciles orphans. |
 | `queued` | Cloud queue state. | Internal publisher/runner resume transport; not a user-selected restart state. |
 | `finished`, `failed` | Successful or non-resumable terminal state. | Cannot resume. |
+
+Who parks a run in those states and what brings it back, every edge named with
+the function or the predicate that owns it — the step table, the guards and the
+sources are on [the flow page](diagrams/flow-pause-resume-rewind.md):
+
+```mermaid
+stateDiagram-v2
+%% vocabulary: store.RunStatus
+    running --> paused_waiting_human: "a human node - pauseAtHuman then persistPause"
+    running --> paused_waiting_human: "a mid-step ask_user, a tool-permission ask or an await escalation - pauseForBackendInteraction"
+    running --> paused_waiting_human: "the recovery dispatcher parks a FAILED node - pauseForRecovery, cp.RecoveryPause"
+    running --> paused_waiting_human: "the review gate, the companion verdict and the whole thread on the record - pauseReviewGate"
+    running --> paused_waiting_human: "a parallel branch reaching a human node - pauseBranchAtHuman, its own per-branch interaction id, store.PauseRun directly"
+    running --> paused_operator: "the operator signal - handleOperatorPauseWithCheckpoint"
+    running --> paused_operator: "the daily spend cap - reason cost_cap_daily"
+    running --> paused_operator: "a declared budget on_exceeded pause - reason budget_cap_run"
+    running --> paused_operator: "the budget preflight AFTER the resume claim, on_exceeded pause - pauseSpentBudgetBeforeResume"
+    running --> failed_resumable: "the same preflight under the default policy - finalizeSpentBudgetBeforeResume, code budget_exceeded"
+    running --> failed_resumable: "an interrupted node - the checkpoint is kept"
+    running --> failed: "a reserved fail node, or a failure with no way forward"
+    paused_waiting_human --> paused_waiting_human: "refused BEFORE the claim, status untouched - no answers, SCRATCH_NOT_PORTABLE, a changed source, an incompatible artifact contract, a severed worktree gitdir, a bundle above this engine"
+    paused_waiting_human --> running: "resumeFromPause - answers required by RequiresResumeAnswers, then the claimForResume CAS consumes the pause pointer"
+    paused_operator --> running: "resumeFromFailure - no answers, an operator through CanOperatorResume"
+    failed_resumable --> running: "resumeFromFailure - the one status CanAutoResume admits, so machinery may take this edge"
+    cancelled --> running: "resumeFromFailure - an operator only, never machinery"
+    failed_resumable --> paused_waiting_human: "the answered-gate replay - replayAnsweredGate flips back to the pause path, which then claims from there"
+    cancelled --> paused_waiting_human: "the same replay - a refusal between the flip and the claim leaves the run parked here, pointer consumed"
+    paused_operator --> paused_waiting_human: "the same replay - skipped for a durable mission resume, whose narrowed CAS owns the status"
+    paused_waiting_human --> queued: "the cloud hop - SubmitResume flips the run before it publishes"
+    failed_resumable --> queued: "the same hop - every CanOperatorResume status takes it in cloud mode"
+    queued --> running: "the runner claims THIS attempt - ClaimQueuedRunIfAttempt, and the pause pointer picks the path"
+    queued --> paused_waiting_human: "a resume refused before its claim is released to ResumeSpec.PriorStatus, pending question kept - releaseRefusedResume"
+    queued --> failed_resumable: "the same release when PriorStatus is empty or is not a CanOperatorResume status"
+    rewinding: rewinding - a step of Service.Rewind, which claims the exact document it read by writing cancelled, and not a store.RunStatus value
+    paused_waiting_human --> rewinding: "iterion rewind - a rewindable status and a checkpoint"
+    failed --> rewinding: "failed is rewindable although no resume admits it"
+    rewinding --> paused_operator: "re-anchored - LastRewindAt and ResumeRequiresExplicit stamped under a version-checked save"
+    rewinding --> cancelled: "a workspace revert that fails after the claim leaves the claim's own status, checkpoint intact"
+```
 
 Reaching the reserved `fail` node intentionally produces `failed`. Compile or
 bootstrap errors can happen before a resumable run exists, and a store failure
@@ -745,8 +784,10 @@ Deliberately **not** reset:
   records stay in the timeline, and the `run_rewound` event explains why they
   are about to repeat. Its payload is
   `{from_node, to_node, dropped_nodes, tombstoned_artifacts, orphaned_child_runs,
-  promoted_from, files_reverted, files_ref, files_revert_commit,
-  files_backup_ref, files_skip_reason}`.
+  retired_output_corrections, promoted_from, files_reverted, files_ref,
+  files_revert_commit, files_backup_ref, files_skip_reason, files_restore_scope,
+  files_scope_count, files_overwritten, files_left_in_place,
+  files_overwritten_paths, files_left_in_place_paths, receipt_id}`.
 
 Reset, because carrying them into the replay would be wrong: any pending
 interaction (the rewound run never asked that question) and the backend
@@ -782,6 +823,10 @@ real Resume request may continue. That request carries the normal source hash
 check (`--force` after an edit). A genuine automatic Resume request from a
 separate recovery path is still allowed, but the same hash check prevents it
 from executing an edited workflow without force.
+
+The rewind reaches that park through `cancelled`: it claims the run by writing
+that status on the exact document it read, so a workspace revert that fails
+after the claim leaves the run `cancelled` with its pre-rewind checkpoint.
 
 Rewind resolves "downstream" against the workflow source **as it is now**,
 which is why it performs no hash check — you rewind precisely because you
@@ -1095,7 +1140,7 @@ failure; resume never reconstructs execution state by replaying events.
 | `pkg/runtime/checkpoint.go` | Checkpoint construction and budget restoration. |
 | `pkg/runtime/run_failure.go` | Resumable failure and cancellation paths. |
 | `pkg/runtime/resume.go` | Status dispatch, state/environment restoration, answer handling, and restart execution. |
-| `pkg/runtime/pause.go` | Operator and daily-cap checkpointed pauses. |
+| `pkg/runtime/pause.go` | Operator, daily-cap and budget-cap checkpointed pauses. |
 | `pkg/cli/resume.go` | CLI admission, source reopening, overrides, locking, and stale-run takeover. |
 | `pkg/runview/rewind.go` | In-place rewind: pivot validation, downstream computation, checkpoint mutation, artifact tombstones. |
 | `pkg/runview/rewind_auto.go` | `--auto` targeting: declaration-granular source diff → impacted nodes → earliest pivot. |

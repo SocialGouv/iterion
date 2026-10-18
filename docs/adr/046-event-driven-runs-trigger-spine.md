@@ -290,3 +290,19 @@ Files: removed `pkg/runview/observer_store.go`; `pkg/backend/model/hooks.go`
 (`redactingEmitter.observers` + `NewStoreEventHooks` variadic),
 `pkg/runview/executor.go` (`ExecutorSpec.EventObservers`),
 `pkg/runview/service_launch.go` (raw store + `launchExtras.observers`).
+
+## Status note (2026-10-14)
+
+`NativeBoardEffect.Promote` stamps the card's `Bot` and `BotArgs` only — it
+writes no state, local (`pkg/trigger/board_source.go`) or cloud
+(`pkg/server/trigger_cloud.go`). It relies on the matcher's `subject_states`
+gate having fired on entry, so a board subscription whose matcher pins no
+eligible state promotes a card the dispatcher will not claim.
+
+The bus rides Core NATS, not a stream: `NATSBus` publishes to
+`iterion.events.<source>` and each subscriber consumes the whole tree
+`iterion.events.>` in a queue group named after it. The `ITERION_EVENTS`
+stream constant in `pkg/queue/nats` is declared and never provisioned, and
+the bus stays lossy: the push and operator-alert subscribers sweep the
+store every 2 minutes to recover a missed event, and the schedule-outcome
+handler keeps no such path.

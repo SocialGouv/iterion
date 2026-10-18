@@ -17,7 +17,7 @@ summary plus the gotchas that cost a session each.
 ```
 .bot source → Lexer (indent-sensitive tokens) → Parser (recursive-descent) → AST
   → ir.Compile() → IR Workflow (nodes + edges + schemas + prompts + budget)
-  → Diagnostics from ir.Compile() / ir.Validate() (sparse codes C001–C199 + C2xx: compile errors, reachability, routing, cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), etc.)
+  → Diagnostics from ir.Compile(), whose validation is a pass inside it and not a separate call (sparse codes C001–C313, the C2xx band shared with pkg/bundlelint: compile errors, reachability, routing, cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), etc.)
   → runtime.Engine.Run() → execution with events, budget, and persistence
 ```
 

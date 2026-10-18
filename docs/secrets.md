@@ -4,6 +4,8 @@ Iterion runs agents that can be prompt-injected (the sec-audit bots read
 untrusted repo content), shell out, and read files. Two distinct leak
 surfaces are defended in layers:
 
+Diagram: [Flow — the sealed credentials bundle](diagrams/flow-secrets-sealed-bundle.md).
+
 1. **Exfiltration** — the agent sends a secret off-box.
 2. **Observability leak** — a secret lands in clear in `events.jsonl`,
    artifacts, `run.log`, the studio/board stream, or `report.md`.

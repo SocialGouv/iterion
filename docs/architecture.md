@@ -81,6 +81,8 @@ and claimed by a runner.
 
 ## Compilation pipeline
 
+Diagram: [From a `.bot` to a running graph](diagrams/flow-bot-to-running-graph.md)
+
 1. **Resolve the artifact** — [`pkg/dsl/workflowfile`](../pkg/dsl/workflowfile/)
    accepts `.bot`, while [`pkg/bundle`](../pkg/bundle/) loads `.botz` or a bundle
    directory, resolves adjacent resources, and computes the source identity
@@ -93,9 +95,9 @@ and claimed by a runner.
    executable graph.
 4. **Validate** — structural and semantic passes check reachability, cycles and
    loop fuel, routing, convergence, capabilities, templates, sandbox settings,
-   and backend constraints before execution. DSL diagnostics occupy C001–C199
-   plus the async-interaction band C240–C242; bundle consistency checks occupy
-   C200–C234.
+   and backend constraints before execution. DSL diagnostics run, sparsely,
+   from C001 up to C313; the C2xx space is shared with the bundle consistency
+   checks of [`pkg/bundlelint`](../pkg/bundlelint/).
 
 The compiler returns diagnostics rather than hiding repairs. The authoritative
 catalogue is [references/diagnostics.md](references/diagnostics.md); the language
@@ -160,7 +162,7 @@ It resolves launch overrides and node/workflow defaults, then dispatches to:
 
 - `claw`, the in-process multi-provider client with native Iterion tools;
 - `claude_code`, the recommended external CLI agent for implementation work;
-- the generic CLI-agent seam used by Kimi Code and Grok Build;
+- the generic CLI-agent seam used by Kimi Code, Grok Build, OpenCode and `pi`;
 - the Codex CLI delegate through the pinned Agent SDK.
 
 MCP servers, board capabilities, tool policies, permission checks, secret
@@ -192,7 +194,8 @@ Sandboxing is a separate execution adapter under
 - Bot-local and repository-local Devbox profiles are composed and added to
   `PATH` for every node.
 
-See [sandbox.md](sandbox.md) and [merge-policy.md](merge-policy.md).
+See [sandbox.md](sandbox.md) and
+[agents/engine/worktree-finalization.md](agents/engine/worktree-finalization.md).
 
 ## Persistence and streaming
 

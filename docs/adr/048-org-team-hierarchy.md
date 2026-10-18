@@ -152,3 +152,17 @@ project — no compat shims). Key decisions as they actually landed:
 Deferred follow-ups: precise org-level memory CAS (today the org quota is pushed
 onto each team bucket); current-month usage-doc rename in the migration; a
 Playwright cloud smoke (tsc/eslint/vite + Go suite are green).
+
+## Status note (2026-10-14)
+
+`Team` still carries the whole lifecycle set — `Status`, `SuspendedAt`,
+`SuspendedBy`, `SuspendReason`
+([pkg/identity/types.go](../../pkg/identity/types.go)) — and a team can be
+suspended independently of its org: `POST /api/teams/{id}/status` writes it
+(org admin, owner or super-admin) and the launch gate checks
+`Team.CanLaunch()` before `Org.CanLaunch()`
+([pkg/server/launch_gate.go](../../pkg/server/launch_gate.go)). What is
+org-only is the monthly run/cost + memory budget and the soft-delete
+`PurgeAfter`; `MaxConcurrentRuns` and `LaunchRatePerMin` stay on `Team` as the
+decision says. The team route refuses `pending_deletion` — no sweeper resolves
+it at team level.

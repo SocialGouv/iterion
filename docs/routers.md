@@ -43,8 +43,8 @@ router fix_router:
 `model` pins the wire model; it does not itself pin the executor. With no
 `backend`, normal backend credential detection applies (falling back to the
 in-process `claw` backend); set `backend: "claw"` when a direct provider API call
-is required. `claude_code`, Codex, `pi`, Kimi, and Grok are available as
-delegated CLIs; all but `claude_code` are explicit opt-ins. See
+is required. `claude_code`, Codex, `pi`, Kimi, Grok and OpenCode are available
+as delegated CLIs; all but `claude_code` are explicit opt-ins. See
 [Delegation](delegation.md) for their trade-offs. If `model` is also absent, the
 router uses its built-in fallback model.
 

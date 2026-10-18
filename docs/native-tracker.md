@@ -46,7 +46,9 @@ one record to `events.jsonl`. The event types are:
 
 The dispatcher stamps every issue it processes with `last_run_id`
 (the run that handled it) + `last_workdir` (the worktree path on
-the host) when the run finishes — success, failure, or cancel.
+the host) when the run finishes — success, failure, or cancel. The
+cloud board dispatcher stamps `last_run_id` right after the launch
+instead, so the studio can link the run while it executes.
 The studio's Board view surfaces these as a "Last run" panel on the
 issue modal with a link back to `/runs/<id>` and a
 `vscode://file/<path>` shortcut to open the worktree.

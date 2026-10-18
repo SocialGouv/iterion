@@ -1,10 +1,11 @@
 # BYOK API keys (cloud) — per-org, per-user, per-webhook
 
 How iterion-cloud resolves the LLM provider API keys a run uses. The
-short version: **keys are owned by the org, sealed at rest in Mongo, and
-resolved per-run with a precedence chain** (per-webhook override → user
-default → org default → deployment env fallback). Nothing here is a
-global plaintext secret the agent can read.
+short version: **keys are stored per tenant, sealed at rest in Mongo, and
+resolved per-run with a precedence chain** (per-webhook pin → the user's
+own key → the team-wide key). BYOK is the first of the seven tiers the
+publisher walks. Nothing here is a global plaintext secret the agent can
+read.
 
 This document exists so we don't reverse-engineer the resolver again.
 Every claim is anchored to a file:line; if the code moved, fix the
@@ -12,27 +13,80 @@ anchor in the same change.
 
 ## Mental model
 
+Diagram: [Credential resolution — which credential funds a cloud run](diagrams/flow-credential-resolution.md) — the whole walk, with the steps, guards and collections behind it.
+
 ```mermaid
 flowchart TD
-  resolver["a run's provider key is<br/>the first match in:"]
-  t1["per-webhook override<br/>(Config.KeyOverrides[provider] → key_id)<br/>← highest"]
-  t2["requesting user's default<br/>(ScopeUserID==me, IsDefault)"]
-  t3["requesting user's other key<br/>(ScopeUserID==me)"]
-  t4["org default<br/>(ScopeUserID=='', IsDefault)"]
-  t5["org other key<br/>(ScopeUserID=='')"]
-  t6["deployment env fallback<br/>(ANTHROPIC_API_KEY/… on the pod)<br/>← lowest"]
-  resolver --> t1
-  t1 --> t2
+  entry["a launch or a resume calls Publisher.resolveAndSealCredentials"]
+  policy["resolveRunLLMRoutePolicy already froze pair_order and triggers on the run"]
+  poolmap{"runnerPoolForTeam, team read fresh"}
+  poolstate{"poolRoutes: the registry knows the pool, state active"}
+  refusepool["refused: the pool mapping and its state are known, never guessed"]
+  tenant{"tenant_id set"}
+  nobundle["no bundle: an empty-tenant record would be unsealable by any team"]
+  fb{"llmFallbackForTeam, team read fresh"}
+  refusefb["refused: unreadable store, or an unknown llm_fallback value"]
+  envq{"every LLM route is openai_compatible"}
+  t1["tier 1 BYOK: secrets.Resolve over api_keys, the webhook pin then keyRank 0 to 3"]
+  cand{"per candidate: workload audience, concurrency ceiling, usage window"}
+  probe["forfaitWindowClosed may spend one live usage probe, written to usage_windows - here, and again in tiers 4 and 6"]
+  skipped["passed over, and remembered for tier 7"]
+  slot{"the slot is named by the policy pair order"}
+  unsealed["read, never sealed"]
+  t2["tier 2 Generic: the workflow secrets of a TRUSTED workspace"]
+  refusetrust["refused: an untrusted workspace cannot be given a REQUIRED secret"]
+  t3["tier 3 OAuth forfait: the owner record, then the team shared record"]
+  sharedq{"pool-mapped team, or llm_fallback=none"}
+  t4["tier 4 Org: orgtier credentials the org audience lends this team"]
+  t5["tier 5 Pool: only while no UNPINNED route is funded, holdsDefaultLLMCredential - a pinned-only key does not close it"]
+  t6["tier 6 Platform: the free wire families, and only if the pool did not grant"]
+  t7["tier 7 Restore: a passed-over credential returns to a family no tier served"]
+  door["fallback door: ONE donor-consented grant for a ladder kind the bundle lacks, unless the shared tiers are blocked"]
+  stamp["the ladder, then the stamp: families, fingerprints, funded tiers, reopen time"]
+  refuseq{"what the bundle holds, judged over the run's routes"}
+  refusecred["refused: runview.ErrNoLLMCredential, HTTP 422 NO_LLM_CREDENTIAL"]
+  warn["side effect, not a verdict: one Warn naming the tiers consulted when nothing funds an LLM route"]
+  nothing["no record at all: the runner falls back to its pod env"]
+  seal["seal under a fresh 32-byte per-run DEK, AAD run_secrets tenant/pool/run"]
+  record["a run_secrets record, 24h TTL; the ref AND the DEK ride the RunMessage"]
+  runner["the runner opens it, materializes the OAuth dirs, follows the store records"]
+
+  entry --> policy --> poolmap
+  poolmap -->|"store error"| refusepool
+  poolmap -->|"mapped"| poolstate
+  poolmap -->|"unmapped"| tenant
+  poolstate -->|"unknown, not active, or no registry"| refusepool
+  poolstate --> tenant
+  tenant -->|"empty"| nobundle
+  tenant --> fb
+  fb -->|"error or unknown value"| refusefb
+  fb --> envq
+  envq -->|"yes, env-funded"| t2
+  envq -->|"no"| t1
+  t2 -->|"env-funded: no tier funds an openai_compatible route"| stamp
+  t1 --> cand
+  cand -->|"refused"| skipped
+  cand -->|"usable"| slot
+  slot -->|"unlisted"| unsealed
+  slot -->|"listed"| t2
+  skipped --> t2
+  t2 -->|"untrusted and a secret is required"| refusetrust
   t2 --> t3
-  t3 --> t4
-  t4 --> t5
-  t5 --> t6
+  t3 --> probe --> sharedq
+  sharedq -->|"yes, the shared tiers are not consulted"| t7
+  sharedq -->|"no"| t4
+  t4 --> t5 --> t6 --> t7
+  t7 --> door --> stamp --> warn --> refuseq
+  refuseq -->|"every pinned provider unfunded, under the knob or the sovereign policy"| refusecred
+  refuseq -->|"nothing an LLM route can spend, and no generic secret either"| nothing
+  refuseq -->|"funded, or generic secrets only"| seal
+  seal --> record --> runner
 ```
 
 A run launched by a **webhook** has the synthetic owner `webhook:<id>`
-(no real user), so the user-scoped tiers are empty for it — its chain
-collapses to **per-webhook override → org default → env fallback**.
-That is exactly the "default per org, overridable per webhook" model.
+(no real user), so the user-scoped ranks are empty for it — its chain
+collapses to **per-webhook pin → the team-wide key**: a default per team,
+overridable per webhook.
 
 ## Storage — the `api_keys` Mongo collection
 
@@ -41,7 +95,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | field | meaning |
 |---|---|
 | `_id` | key id (`secrets.NewApiKeyID()`) — what a webhook override references |
-| `tenant_id` | owning org; every store call is tenant-filtered (fail-closed) |
+| `tenant_id` | the tenant the row is stored under: the team, or a reserved sentinel — `orgtier:<org id>` for an org's shared keys, `platform:` for the deployment's. Every store read but `GetOwned` is tenant-filtered (fail-closed) |
 | `scope_team` | the team the key belongs to |
 | `scope_user` | set ⇒ user-scoped (personal); empty ⇒ **org-wide** |
 | `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` ([byok.go:50-63](../pkg/secrets/byok.go#L50)) |
@@ -227,7 +281,8 @@ is the failure `warnRefusedPins` exists to prevent.
 surfaces and neither is the run's own event log:
 
 - the **server log**, one `WARN` per withheld key, naming the run id;
-- the **credential preview** (`GET …/credential-preview`), where the key appears
+- the **credential preview** (`POST /api/teams/{id}/credentials/preview`, the
+  source kind in the body), where the key appears
   with `state: "bot_filtered"` and the reason — the operator-facing answer, and
   the only one reachable without server-log access.
 
@@ -245,13 +300,16 @@ never in doubt.
 
 ## Resolution — `secrets.Resolve`
 
-[pkg/secrets/byok.go:168](../pkg/secrets/byok.go#L168):
+[pkg/secrets/byok.go:373](../pkg/secrets/byok.go#L373):
 
 ```go
-Resolve(ctx, store, teamID, userID string,
+Resolve(ctx, store, teamID, userID, botID string,
         providers []Provider,
         keyOverrides map[Provider]string,   // provider → key_id
-        sealer) (map[Provider]Resolution, error)
+        sealer,
+        usable func(ApiKey) bool,           // skip a key the provider refuses
+        onWithheld func(ApiKey),            // the audience refusals, for the trace
+) (map[Provider]Resolution, error)
 ```
 
 Two passes over the keys visible from `(teamID, userID)`:
@@ -260,27 +318,28 @@ Two passes over the keys visible from `(teamID, userID)`:
    `keyOverrides`, pin that exact key (must be visible + the right
    provider). This is the per-webhook override hook.
 2. **Pass 2 — priority walk.** For any provider not already pinned, take
-   the first key in `keyRank` order ([byok.go:234](../pkg/secrets/byok.go#L234)):
+   the first key in `keyRank` order ([byok.go:469](../pkg/secrets/byok.go#L469)):
 
    | rank | key |
    |---|---|
    | 0 | requesting user's **default** (`scope_user==me && is_default`) |
    | 1 | requesting user's other key |
-   | 2 | org **default** (`scope_user=="" && is_default`) |
-   | 3 | org other key |
+   | 2 | the team's **default** (`scope_user=="" && is_default`) — team-wide, any member picks it up |
+   | 3 | the team's other key |
    | 99 | another user's personal key — **never applies** |
 
-The publisher calls it for `allKnownProviders` ([publisher.go:138](../pkg/server/cloudpublisher/publisher.go#L138)) and seals whatever resolved into the run bundle.
+The publisher calls it for `allKnownProviders` ([publisher.go:469](../pkg/server/cloudpublisher/publisher.go#L469)) and seals what resolved into the run bundle, slot by slot.
 
 ## Where the publisher uses it
 
-[pkg/server/cloudpublisher/publisher.go:167](../pkg/server/cloudpublisher/publisher.go#L167)
-`resolveAndSealCredentials`, step 1 ("BYOK API keys",
-[L189](../pkg/server/cloudpublisher/publisher.go#L189)):
+[pkg/server/cloudpublisher/publisher.go:563](../pkg/server/cloudpublisher/publisher.go#L563)
+`resolveAndSealCredentials`, tier 1 ("BYOK API keys",
+[L711](../pkg/server/cloudpublisher/publisher.go#L711)):
 
 ```go
-resolved, _ := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID,
-                               allKnownProviders, nil /* keyOverrides */, p.sealer)
+resolved, _ := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, audienceBotID,
+                               allKnownProviders, overrides, p.sealer,
+                               p.apiKeyUsable(…), withheld.note)
 for prov, r := range resolved { bundle.APIKeys[prov] = string(r.Plaintext) }
 ```
 
@@ -293,9 +352,11 @@ sealed BYOK map.
 
 > **Env fallback.** When the bundle has *no* key for a provider, the
 > resolved bundle is empty for it and the runner falls back to the pod
-> env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …). That is the *only*
-> role of the deployment-level `iterion-llm` Secret — a fallback for
-> orgs that haven't entered their own keys, **not** the primary path.
+> env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) — the role of the
+> deployment-level `iterion-llm` Secret, a fallback for teams that
+> haven't entered their own keys, **not** the primary path. It is reached
+> only after the platform tier, the DB-backed form of the same fallback
+> (`secrets.PlatformTenantID` keys), left that wire family empty.
 
 ## REST API
 
