@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.270.0](https://github.com/SocialGouv/iterion/compare/v3.269.0...v3.270.0) (2026-10-18)
+
+### Features
+
+* **permission,toolcatalog,ir:** a class rule bounds every shell tool, and a check warns where a deny misses one ([#2557](https://github.com/SocialGouv/iterion/issues/2557)) ([8a2f8ce](https://github.com/SocialGouv/iterion/commit/8a2f8cebe88f90b64946566e162818e28881365a))
+
+    <details><summary>why</summary>
+
+    deny: ["Bash"] never bounded claw's repl — a second shell whose name no alias row can close (allow: widens). Two operator-approved answers ship together, and the enumeration of code-executing tools lives in the REGISTRY, never in the permissions package.
+
+    </details>
+
+### Bug Fixes
+
+* **studio:** every audited form field carries its accessible name ([#2527](https://github.com/SocialGouv/iterion/issues/2527)) ([#2558](https://github.com/SocialGouv/iterion/issues/2558)) ([fc4e942](https://github.com/SocialGouv/iterion/commit/fc4e94209537153f7bf4fa16830f47f17eec5941))
+
+    <details><summary>why</summary>
+
+    The rgaa-audit run of 16/10 filed six RGAA 11.1 occurrences; this fixes all six, and the label-association defect class they share:
+
+    </details>
+
 ## [3.269.0](https://github.com/SocialGouv/iterion/compare/v3.268.3...v3.269.0) (2026-10-17)
 
 ### Features
