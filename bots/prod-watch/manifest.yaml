@@ -120,4 +120,4 @@ launch:
 ## named engine feature. A runner older than this release refuses the
 ## bundle at admission instead of failing mid-run.
 requires:
-  iterion: ">= 3.192.0"
+  iterion: ">= 3.225.0"

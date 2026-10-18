@@ -260,4 +260,4 @@ launch:
 ## release that reads the profile would refuse the header as an unknown
 ## declaration — the floor keeps such a runner from admitting the bundle.
 requires:
-  iterion: ">= 3.141.0"
+  iterion: ">= 3.225.0"

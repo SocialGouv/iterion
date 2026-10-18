@@ -110,20 +110,17 @@ func sweepOne(t *testing.T, src string, body []byte, before *Manifest, beforeKey
 }
 
 // manifestKeySet is the set of top-level keys of a manifest's bytes, read
-// with the same yaml.v3 the writer uses.
+// with the same yaml.v3 the writer uses. Decoding the mapping resolves root
+// merges, so a merged key counts even when its value is empty or null.
 func manifestKeySet(t *testing.T, body []byte) map[string]bool {
 	t.Helper()
-	var doc yamlv3.Node
-	if err := yamlv3.Unmarshal(body, &doc); err != nil {
+	var root map[string]any
+	if err := yamlv3.Unmarshal(body, &root); err != nil {
 		t.Fatalf("key set: %v", err)
 	}
-	out := map[string]bool{}
-	if doc.Kind != yamlv3.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yamlv3.MappingNode {
-		return out
-	}
-	root := doc.Content[0]
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		out[root.Content[i].Value] = true
+	out := make(map[string]bool, len(root))
+	for key := range root {
+		out[key] = true
 	}
 	return out
 }
