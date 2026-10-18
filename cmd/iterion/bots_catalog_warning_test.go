@@ -127,14 +127,31 @@ func TestBotsInstallCmd_WarnsWhenTheCatalogCouldNotBeRefreshed(t *testing.T) {
 }
 
 func TestBotsInstallCmd_SilentWhenTheCatalogRefreshSucceeds(t *testing.T) {
-	workdir := t.TempDir()
+	workdir := filepath.Join(t.TempDir(), "catalog")
 	healthyCatalogOwner(t, workdir)
 	source := t.TempDir()
 	writeCatalogTestBundle(t, source, "newbot")
 
 	out := runBotsCommand(t, botsInstallCmd, map[string]string{"workdir": workdir}, source)
 
-	if strings.Contains(out, "catalog") {
+	out = strings.ReplaceAll(out, source, "<source>")
+	out = strings.ReplaceAll(out, workdir, "<workdir>")
+	if strings.Contains(out, "! catalog not refreshed:") {
+		t.Errorf("a successful refresh must add nothing to the output:\n%s", out)
+	}
+}
+
+func TestBotsInstallCmd_SilentWhenTheCatalogRefreshSucceedsWithNestedSource(t *testing.T) {
+	workdir := filepath.Clean(t.TempDir())
+	healthyCatalogOwner(t, workdir)
+	source := filepath.Join(workdir, "nested", "! catalog not refreshed:")
+	writeCatalogTestBundle(t, source, "newbot")
+
+	out := runBotsCommand(t, botsInstallCmd, map[string]string{"workdir": workdir}, source)
+
+	out = strings.ReplaceAll(out, source, "<source>")
+	out = strings.ReplaceAll(out, workdir, "<workdir>")
+	if strings.Contains(out, "! catalog not refreshed:") {
 		t.Errorf("a successful refresh must add nothing to the output:\n%s", out)
 	}
 }
