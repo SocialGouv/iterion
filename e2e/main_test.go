@@ -30,9 +30,11 @@ import (
 // and run at the cap.
 const e2eParallelCap = 8
 
-// ITERION_E2E_PARALLEL overrides the cap; an explicit `-parallel` on the
-// command line wins over both (the cap only applies when the flag still
-// holds its GOMAXPROCS default, i.e. nobody chose).
+// ITERION_E2E_PARALLEL overrides the cap. TestMain runs before flag.Parse
+// (the testing package documents this contract), so capParallelism always
+// sees the flag at its registered default and caps it; an explicit
+// `-parallel` then wins because the parse inside m.Run overwrites whatever
+// the cap set.
 const e2eParallelEnv = "ITERION_E2E_PARALLEL"
 
 // The suite runs out of the developer's own checkout, so an engine built
@@ -70,8 +72,10 @@ func capParallelism() {
 		}
 		limit = n
 	}
-	// Only when the flag still carries its default: `-parallel N` is an
-	// explicit choice and stays untouched.
+	// Unreachable discrimination today: TestMain runs before flag.Parse, so
+	// the flag is always at its registered default here. The check keeps the
+	// function honest if that ordering ever changes — see the e2eParallelEnv
+	// note.
 	if f.Value.String() != strconv.Itoa(runtime.GOMAXPROCS(0)) {
 		return
 	}
