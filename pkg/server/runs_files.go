@@ -762,7 +762,7 @@ func (s *Server) handleSaveRunFileContent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// #nosec G304 — see rationale above; abs is containment-checked.
-	if err := locks[0].writeEditorFile([]byte(req.Content), false, nil); err != nil {
+	if err := locks[0].writeEditorFile([]byte(req.Content), false, nil, s.logWarn); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "write: %v", err)
 		return
 	}
