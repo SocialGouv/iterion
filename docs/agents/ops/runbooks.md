@@ -33,6 +33,7 @@ in the commands/paths that actually worked.
 
 - [merge-policy](../../merge-policy.md) — the queue, required checks, admin bypass; on "nobody can merge", first try the `CI_SELF_HOSTED=off` repo variable. See also [measuring the queue](../../merge-policy.md#measuring-the-queue) (`task ci:queue-stats`) and [releases and the queue](../../merge-policy.md#releases-and-the-queue).
 - [merge-gate](../../merge-gate.md) — the required check's full life; read when a gate looks stuck or a repair posts nothing.
+- [revi-rollout](../../revi-rollout.md) — binding Revi to GitHub with an App, proving permissions, reviewer requests and delivery → run → review → gate; read before the first same-repo test PR or enabling a required check.
 - [revi-billy-loop](../../revi-billy-loop.md) — the Revi → Billy loop, **paused on this repo** ([why](../workflow/billy.md)); read before a deliberate pass or a re-arm.
 - [auto-maintenance](../../auto-maintenance.md) — dependency loops nobody watches; read before arming `arm_automerge`, or when a loop "is configured" and merges nothing.
 - [Revi's positive/negative audit](../../bot-runs/review-pr.md#2026-09-14--falsifiable-claw--gpt-review-proof-1203) — when a clean review looks suspicious.

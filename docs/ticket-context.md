@@ -80,15 +80,16 @@ every repo of that team could read those tickets if someone set
 boundary, give it its own team (there is an empty `PIC DematAmiante` team
 waiting for exactly that move).
 
-> **Do steps 2 and 3 from the target team.** Until
-> [#997](https://github.com/SocialGouv/iterion/issues/997) lands, a secret or
-> binding created for another team — by path (`/api/teams/<other>/…`) or by
-> `--team` — is written into the tenant of your *active* team instead. It is
-> acknowledged (201), then invisible from both teams, and the run silently
-> finds no credential (the review reports `unverifiable — tracker token file
-> does not exist`). Run `iterion remote teams switch <team>` first, and
-> confirm with a list call from that same team. Measured on prod on
-> 2026-09-08 (see [docs/bot-runs/review-pr.md](bot-runs/review-pr.md)).
+> **Target-team writes are fixed:
+> [#997](https://github.com/SocialGouv/iterion/issues/997) is delivered.** A
+> secret or binding written by path (`/api/teams/<target>/…`) or by `--team
+> <target>` is scoped into that target team, regardless of the caller's active
+> team. `iterion remote teams switch <team>` remains a convenience for an
+> interactive session, not a required workaround. Keep the read-back: list the
+> secret and binding from the target team and confirm its run resolves them.
+> The silent cross-team loss measured on prod on 2026-09-08 is the historical
+> regression now covered by
+> [`pkg/server/team_path_tenant_test.go`](../pkg/server/team_path_tenant_test.go).
 
 ### Limits to know
 

@@ -377,6 +377,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/repo-scope.md`](../repo-scope.md) | Repo-first studio — the repository scope | Cloud-mode studio reads **Org → Repo**: below the organization switcher, | — |
 | [`docs/resume.md`](../resume.md) | ⏯️ Resume paused, failed, and cancelled runs | A run in iterion is durable: it can pause for a human, fail, or be cancelled, | — |
 | [`docs/revi-billy-loop.md`](../revi-billy-loop.md) | Revi → Billy on this repo — PAUSED, and how to run a deliberate pass | When Revi (`bots/review-pr`) reviews a pull request of **this repository** and | — |
+| [`docs/revi-rollout.md`](../revi-rollout.md) | Revi on GitHub — App binding and rollout runbook | Bind `review-pr` (Revi) to one GitHub repository through a team GitHub App | — |
 | [`docs/review-merge-gate.md`](../review-merge-gate.md) | Review-&-merge gate (`interaction: review`) | A **review-&-merge gate** is a human node that walks the operator through | — |
 | [`docs/review-scope.md`](../review-scope.md) | 🔍 What a review gate shows | A human gate approves work. | — |
 | [`docs/reviews/codebase-2026-05-17.md`](../reviews/codebase-2026-05-17.md) | Iterion codebase review — 2026-05-17 | Author: deep review pass on `main` at commit `baa68ab8`. | — |
