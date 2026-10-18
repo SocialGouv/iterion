@@ -285,6 +285,11 @@ func (c *compiler) checkFallbackWhen(w *Workflow, kind, id string, fb Fallback) 
 			kind, id, fallbackLabel(fb), err)
 		return
 	}
+	if hasRootVarsSubscript(astExpr) {
+		c.warnfAt(DiagRootVarsSubscript, id, "",
+			"%s %q: fallback %s when: uses a root vars[...] subscript — the selected variable is not checked against declarations; an absent key reads as false and disables the route (use vars.<name> for a static key)",
+			kind, id, fallbackLabel(fb))
+	}
 	for _, ref := range astExpr.Refs() {
 		if ref.Namespace != "vars" {
 			c.errorfAt(DiagFallbackMalformed, id, "",

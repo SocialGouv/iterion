@@ -194,7 +194,8 @@ func shiftConsequence(site shiftSite, s listDefaultShift) string {
 // collectShiftedVars adds every `vars.<name>` the expression reads that the
 // shift set names. A drilled read — `vars.cfg.enabled`, the canonical way
 // to route on a `json` var — counts: the whole value moved, so every read
-// of it did.
+// of it did. A static root subscript (`vars['cfg']`) names the same read;
+// a computed key stays undecided.
 func collectShiftedVars(ast *expr.AST, shifts map[string]listDefaultShift, into map[string]bool) {
 	if ast == nil {
 		return
@@ -208,6 +209,14 @@ func collectShiftedVars(ast *expr.AST, shifts map[string]listDefaultShift, into 
 			into[path[0]] = true
 		}
 	}
+	walkRootVarsSubscripts(ast, func(index *expr.Snapshot) {
+		if index.Kind != expr.SnapString {
+			return
+		}
+		if _, ok := shifts[index.Str]; ok {
+			into[index.Str] = true
+		}
+	})
 }
 
 // splitShiftedRefs reads a template's parsed refs — a tool body's

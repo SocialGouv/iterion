@@ -29,14 +29,15 @@ const (
 // literal value (the one case where the value matters — enum comparison) is
 // kept in Str. Reintroduce a typed value field if a future check needs it.
 type Snapshot struct {
-	Kind      SnapKind
-	Op        string // operator for SnapUnary ("!"/"-") and SnapBinary ("&&","==","+",…)
-	Func      string // function name for SnapFuncCall
-	Namespace string // path namespace for SnapPath (vars, input, outputs, …)
-	Path      []string
-	Str       string      // string-literal value (SnapString)
-	Keys      []string    // object-literal entry keys (SnapObject), paired with Children
-	Children  []*Snapshot // operands (unary: 1, binary: 2, funccall: N)
+	Kind       SnapKind
+	Op         string // operator for SnapUnary ("!"/"-") and SnapBinary ("&&","==","+",…)
+	Func       string // function name for SnapFuncCall
+	Namespace  string // path namespace for SnapPath (vars, input, outputs, …)
+	Path       []string
+	Str        string      // string-literal value (SnapString)
+	Keys       []string    // object-literal entry keys (SnapObject), paired with Children
+	Children   []*Snapshot // operands (unary: 1, binary: 2, funccall: N)
+	LambdaBody *Snapshot   // map/filter/reduce body, kept out of Children for lambda-unaware consumers
 }
 
 // ToSnapshot returns a read-only mirror of the AST's root node, or nil for a
@@ -87,15 +88,19 @@ func snap(n node) *Snapshot {
 		}
 		return &Snapshot{Kind: SnapObject, Keys: append([]string(nil), t.keys...), Children: kids}
 	case *lambdaCombNode:
-		// The lambda body is deliberately NOT mirrored: it references
-		// lambda-bound parameters that are not real schema refs, so the
-		// conservative static type-walk must not descend into it. Only the
-		// collection (and reduce's init) are external expressions.
+		// Children stays limited to the collection (and reduce's init), so
+		// existing type walks do not descend into lambda-bound parameters.
+		// LambdaBody exposes the body to consumers that opt in.
 		kids := []*Snapshot{snap(t.coll)}
 		if t.init != nil {
 			kids = append(kids, snap(t.init))
 		}
-		return &Snapshot{Kind: SnapLambdaComb, Func: t.name, Children: kids}
+		return &Snapshot{
+			Kind:       SnapLambdaComb,
+			Func:       t.name,
+			Children:   kids,
+			LambdaBody: snap(t.body),
+		}
 	}
 	return nil
 }
