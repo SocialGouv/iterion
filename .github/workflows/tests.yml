@@ -539,8 +539,11 @@ jobs:
     # partition goes through an ASSIGNMENT (`pkgs=$(...)`), never inline
     # `$( )`: inline substitution loses the splitter's exit code, and an
     # empty-shard refusal would degrade into `go test` with no package
-    # arguments. Weights table: the single `bots` package measured 555 s
-    # plain — LPT gives it its own pod instead of one shard eating the floor.
+    # arguments. The weights table carries measured -race package durations;
+    # `bots` is the heaviest row and one sequential test binary — LPT places
+    # it first, nothing beats its wall, and the remaining rows pack the three
+    # shards to near-equal weight; bots' co-packages run concurrently beside
+    # it and finish long before it.
     #
     # -race REQUIRES cgo, so this leg overrides the repo-wide CGO_ENABLED=0;
     # the scale set's image (ci/arc-runner) and ubuntu-latest both ship gcc.

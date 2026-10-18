@@ -1,5 +1,21 @@
 # Weights for scripts/ci/testshards -weights: import-path<TAB>seconds.
-# Seeded from the plain (non-race) CI durations measured 2026-10-04/05; update
-# rows from measured leg durations as the race shards land. Unlisted packages
-# weigh 1, so a stale row only degrades the balance — it never errors.
-github.com/SocialGouv/iterion/bots	555
+# Rows are `ok`-line durations (s) under -race from merge_group run
+# 39133360570 (2026-10-18) — measured under that run's packing (bots solo),
+# so treat them as relative weights, not walls; refresh when the mix drifts.
+# Unlisted packages weigh 1, so a stale or missing row only degrades the
+# balance — it never errors.
+github.com/SocialGouv/iterion/bots	1288
+github.com/SocialGouv/iterion/pkg/backend/model	1051
+github.com/SocialGouv/iterion/e2e	685
+github.com/SocialGouv/iterion/pkg/server	437
+github.com/SocialGouv/iterion/pkg/backend/delegate	412
+github.com/SocialGouv/iterion/internal/fswatch	299
+github.com/SocialGouv/iterion/cmd/iterion	276
+github.com/SocialGouv/iterion/pkg/cli	262
+github.com/SocialGouv/iterion/pkg/assistantmission	208
+github.com/SocialGouv/iterion/pkg/runtime	189
+github.com/SocialGouv/iterion/pkg/runview	179
+github.com/SocialGouv/iterion/pkg/auth	148
+github.com/SocialGouv/iterion/internal/automaintguard	112
+github.com/SocialGouv/iterion/internal/docsguard	106
+github.com/SocialGouv/iterion/pkg/backend/mcp	94
