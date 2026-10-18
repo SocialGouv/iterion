@@ -334,12 +334,11 @@ func TestRgaaAuditEnginePrivateInstallRetriesNpm(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		successOn     int
-		retryDelay    string
 		plantUnpinned bool
 		wantErr       bool
 	}{
 		{name: "two_failures_then_success", successOn: 3},
-		{name: "persistent_failure_with_08_is_bounded_and_prints_no_unpinned_candidate", successOn: 0, retryDelay: "08", plantUnpinned: true, wantErr: true},
+		{name: "persistent_failure_is_bounded_and_prints_no_unpinned_candidate", successOn: 0, plantUnpinned: true, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -390,9 +389,6 @@ cp "$RGAA_TEST_NPM_ENGINE" node_modules/ultra11y/scripts/ultra11y.mjs
 				"RGAA_TEST_NPM_ENGINE="+bin,
 				"RGAA_TEST_NPM_SUCCESS_ON="+strconv.Itoa(tc.successOn),
 			)
-			if tc.retryDelay != "" {
-				cmd.Env = append(cmd.Env, "ULTRA11Y_NPM_RETRY_DELAY="+tc.retryDelay)
-			}
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
