@@ -2,6 +2,7 @@ package bots
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,11 +23,41 @@ type modernizeMarkDoneOut struct {
 	Refused bool   `json:"refused"`
 }
 
+func modernizeAutoMaintenanceEnv() (map[string]string, error) {
+	slot := 0
+	if raw, ok := os.LookupEnv("GIT_CONFIG_COUNT"); ok && raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 || strings.TrimLeft(raw, "0123456789") != "" {
+			return nil, fmt.Errorf("GIT_CONFIG_COUNT=%q is not a non-negative integer", raw)
+		}
+		if n > int(^uint(0)>>1)-2 {
+			return nil, fmt.Errorf("GIT_CONFIG_COUNT=%q leaves no room for two appended entries", raw)
+		}
+		slot = n
+	}
+	maintenanceSlot := strconv.Itoa(slot)
+	gcSlot := strconv.Itoa(slot + 1)
+	return map[string]string{
+		"GIT_CONFIG_COUNT":                    strconv.Itoa(slot + 2),
+		"GIT_CONFIG_KEY_" + maintenanceSlot:   "maintenance.auto",
+		"GIT_CONFIG_VALUE_" + maintenanceSlot: "false",
+		"GIT_CONFIG_KEY_" + gcSlot:            "gc.auto",
+		"GIT_CONFIG_VALUE_" + gcSlot:          "0",
+	}, nil
+}
+
 // modernizeRepo builds a throwaway git repository carrying one committed
 // contract and returns its path, the base commit, and a git runner bound to
 // it. Shared by the mark_done and lot_verify tests.
 func modernizeRepo(t *testing.T, planYAML string) (string, string, func(args ...string) string) {
 	t.Helper()
+	env, err := modernizeAutoMaintenanceEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range env {
+		t.Setenv(key, value)
+	}
 	ws := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
@@ -35,6 +66,8 @@ func modernizeRepo(t *testing.T, planYAML string) (string, string, func(args ...
 	git("init", "-q", "-b", "main")
 	git("config", "user.email", "t@example.com")
 	git("config", "user.name", "t")
+	git("config", "maintenance.auto", "false")
+	git("config", "gc.auto", "0")
 	if err := os.MkdirAll(filepath.Join(ws, ".modernize"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +77,102 @@ func modernizeRepo(t *testing.T, planYAML string) (string, string, func(args ...
 	git("add", ".modernize/plan.yaml")
 	git("commit", "-qm", "contract")
 	return ws, git("rev-parse", "HEAD"), git
+}
+
+func TestModernizeRepoPythonInheritsAutoMaintenanceOff(t *testing.T) {
+	requireModernizeTools(t)
+	t.Setenv("GIT_CONFIG_COUNT", "3")
+	t.Setenv("GIT_CONFIG_KEY_0", "iterion.canary")
+	t.Setenv("GIT_CONFIG_VALUE_0", "alive")
+	t.Setenv("GIT_CONFIG_KEY_1", "maintenance.auto")
+	t.Setenv("GIT_CONFIG_VALUE_1", "true")
+	t.Setenv("GIT_CONFIG_KEY_2", "gc.auto")
+	t.Setenv("GIT_CONFIG_VALUE_2", "1")
+	ws, _, _ := modernizeRepo(t, "version: 1\nlots: []\n")
+	trace := filepath.Join(t.TempDir(), "git.trace")
+	script := `import os
+import subprocess
+import sys
+
+ws, trace = sys.argv[1:3]
+expected_env = {
+    "GIT_CONFIG_COUNT": "5",
+    "GIT_CONFIG_KEY_0": "iterion.canary",
+    "GIT_CONFIG_VALUE_0": "alive",
+    "GIT_CONFIG_KEY_1": "maintenance.auto",
+    "GIT_CONFIG_VALUE_1": "true",
+    "GIT_CONFIG_KEY_2": "gc.auto",
+    "GIT_CONFIG_VALUE_2": "1",
+    "GIT_CONFIG_KEY_3": "maintenance.auto",
+    "GIT_CONFIG_VALUE_3": "false",
+    "GIT_CONFIG_KEY_4": "gc.auto",
+    "GIT_CONFIG_VALUE_4": "0",
+}
+for key, want in expected_env.items():
+    if os.environ.get(key) != want:
+        raise SystemExit(f"{key}: got {os.environ.get(key)!r}, want {want!r}")
+
+def config(key, *scope):
+    return subprocess.check_output(
+        ["git", "-C", ws, "config", *scope, "--get", key], text=True
+    ).strip()
+
+for key, want in (("maintenance.auto", "false"), ("gc.auto", "0")):
+    if config(key) != want:
+        raise SystemExit(f"effective {key}: got {config(key)!r}, want {want!r}")
+    if config(key, "--local") != want:
+        raise SystemExit(f"local {key}: got {config(key, '--local')!r}, want {want!r}")
+if config("iterion.canary") != "alive":
+    raise SystemExit("the pre-existing config entry was overwritten")
+
+with open(os.path.join(ws, "python.txt"), "w", encoding="utf-8") as f:
+    f.write("python\n")
+subprocess.run(["git", "-C", ws, "add", "python.txt"], check=True)
+env = os.environ.copy()
+env["GIT_TRACE"] = trace
+subprocess.run(["git", "-C", ws, "commit", "-qm", "python"], check=True, env=env)
+with open(trace, encoding="utf-8") as f:
+    traced = f.read()
+for command in ("maintenance run --auto", "gc --auto"):
+    if command in traced:
+        raise SystemExit(f"auto-maintenance escaped the fixture: {command}\n{traced}")
+`
+	cmd := exec.Command("python3", "-c", script, ws, trace)
+	cmd.Env = gittest.Env()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("python did not inherit fixture git config: %v\n%s", err, out)
+	}
+}
+
+func TestModernizeAutoMaintenanceEnvAcceptsEmptyCount(t *testing.T) {
+	t.Setenv("GIT_CONFIG_COUNT", "")
+	env, err := modernizeAutoMaintenanceEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"GIT_CONFIG_COUNT":   "2",
+		"GIT_CONFIG_KEY_0":   "maintenance.auto",
+		"GIT_CONFIG_VALUE_0": "false",
+		"GIT_CONFIG_KEY_1":   "gc.auto",
+		"GIT_CONFIG_VALUE_1": "0",
+	} {
+		if env[key] != want {
+			t.Errorf("%s = %q, want %q", key, env[key], want)
+		}
+	}
+}
+
+func TestModernizeAutoMaintenanceEnvRefusesMalformedCount(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	for _, raw := range []string{"-1", "one", strconv.Itoa(maxInt), strconv.Itoa(maxInt - 1)} {
+		t.Run(strconv.Quote(raw), func(t *testing.T) {
+			t.Setenv("GIT_CONFIG_COUNT", raw)
+			if _, err := modernizeAutoMaintenanceEnv(); err == nil {
+				t.Fatalf("GIT_CONFIG_COUNT=%q was accepted", raw)
+			}
+		})
+	}
 }
 
 // modernizeMarkDone runs mark_done as if lot_verify had just judged the tree
