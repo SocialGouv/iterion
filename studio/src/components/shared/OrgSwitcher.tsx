@@ -65,7 +65,7 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
       onOpenChange={setOpen}
       side="bottom"
       align="start"
-      contentClassName="w-[min(20rem,calc(100vw-1rem))] p-2 text-sm"
+      contentClassName="w-[min(20rem,calc(100vw-1rem))] max-h-[var(--radix-popover-content-available-height)] overflow-y-auto p-2 text-sm"
       trigger={
         collapsed ? (
           // Full-width h-8 row to match the collapsed NavRow footprint (which is
