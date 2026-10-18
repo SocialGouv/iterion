@@ -2,10 +2,17 @@ package main
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"regexp"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -218,5 +225,72 @@ func TestMigrateToCloud_MissingRunIsAnError(t *testing.T) {
 	}
 	if err := migrateRun(ctx, src, dst, "run-nope", false, quietLogger()); err == nil {
 		t.Fatal("migrating an unknown run reported success")
+	}
+}
+
+func TestMigrateToCloud_PreflightS3ProbeKeyAndCleanup(t *testing.T) {
+	const bucket = "preflight-bucket"
+	var mu sync.Mutex
+	var putKey, putBody string
+	var cleanupPrefixes []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read S3 probe body: %v", err)
+				http.Error(w, "read failed", http.StatusBadRequest)
+				return
+			}
+			key, ok := strings.CutPrefix(r.URL.Path, "/"+bucket+"/")
+			if !ok {
+				t.Errorf("S3 PUT path = %q, want path-style bucket %q", r.URL.Path, bucket)
+				http.Error(w, "wrong bucket", http.StatusNotFound)
+				return
+			}
+			mu.Lock()
+			putKey, putBody = key, string(body)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2":
+			mu.Lock()
+			cleanupPrefixes = append(cleanupPrefixes, r.URL.Query().Get("prefix"))
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>preflight-bucket</Name><KeyCount>0</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>`)
+		default:
+			t.Errorf("unexpected S3 request: %s %s", r.Method, r.URL.String())
+			http.Error(w, "unexpected request", http.StatusMethodNotAllowed)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := iterconfig.Config{S3: iterconfig.S3Config{
+		Endpoint:        srv.URL,
+		Region:          "us-east-1",
+		Bucket:          bucket,
+		AccessKeyID:     "test-key",
+		SecretAccessKey: "test-secret",
+		UsePathStyle:    true,
+	}}
+	err := preflightCloudTargets(context.Background(), cfg, quietLogger())
+	const wantErr = "mongo connect: store/mongo: URI is required"
+	if err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("preflightCloudTargets error = %v, want %q after the S3 probe", err, wantErr)
+	}
+
+	mu.Lock()
+	gotKey, gotBody := putKey, putBody
+	gotPrefixes := append([]string(nil), cleanupPrefixes...)
+	mu.Unlock()
+	if !regexp.MustCompile(`^artifacts/preflight/preflight-[0-9]+/0\.json$`).MatchString(gotKey) {
+		t.Errorf("S3 probe key = %q, want artifacts/preflight/preflight-<nanos>/0.json", gotKey)
+	}
+	if gotBody != "ok" {
+		t.Errorf("S3 probe body = %q, want %q", gotBody, "ok")
+	}
+	if len(gotPrefixes) != 1 || gotPrefixes[0] != "artifacts/preflight/" {
+		t.Errorf("S3 cleanup prefixes = %v, want [artifacts/preflight/]", gotPrefixes)
 	}
 }

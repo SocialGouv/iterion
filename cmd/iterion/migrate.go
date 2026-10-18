@@ -450,7 +450,7 @@ func preflightCloudTargets(ctx context.Context, cfg iterconfig.Config, logger *i
 		return fmt.Errorf("s3 client: %w", err)
 	}
 	defer func() { _ = bc.Close() }()
-	probeKey := fmt.Sprintf("preflight/%d", time.Now().UnixNano())
+	probeKey := fmt.Sprintf("preflight-%d", time.Now().UnixNano())
 	if err := bc.PutArtifact(ctx, "preflight", probeKey, 0, []byte("ok")); err != nil {
 		return fmt.Errorf("s3 write probe failed (bucket=%q): %w", cfg.S3.Bucket, err)
 	}
