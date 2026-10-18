@@ -125,6 +125,8 @@ export function TextField({ label, value, onChange, placeholder, multiline, rows
         multiline ? (
           refContext ? (
             <RefAwareTextarea
+              id={inputId}
+              aria-describedby={describedBy}
               value={value}
               onChange={onChange}
               placeholder={placeholder}
@@ -143,6 +145,8 @@ export function TextField({ label, value, onChange, placeholder, multiline, rows
           )
         ) : refContext ? (
           <RefAwareInput
+            id={inputId}
+            aria-describedby={describedBy}
             value={value}
             onChange={onChange}
             placeholder={placeholder}
@@ -416,18 +420,21 @@ interface TagListFieldProps {
 export function TagListField({ label, values, onChange, placeholder = "Add...", help, literalValues }: TagListFieldProps) {
   return (
     <FieldRow label={label} help={help}>
-      {/* 512 chars, a truncation: a longer value is cut on commit, with
+      {({ inputId }) => (
+        /* 512 chars, a truncation: a longer value is cut on commit, with
           nothing said. The `literalValues` lists (the permission rules) are
           exempt from it — a cut rule is a different, narrower rule. The
           other lists here hold references (tools, MCP servers, triggers,
-          enum values) written far shorter than the bound. */}
-      <TagInput
-        value={values}
-        onChange={onChange}
-        placeholder={placeholder}
-        maxTagLength={512}
-        literalValues={literalValues}
-      />
+          enum values) written far shorter than the bound. */
+        <TagInput
+          id={inputId}
+          value={values}
+          onChange={onChange}
+          placeholder={placeholder}
+          maxTagLength={512}
+          literalValues={literalValues}
+        />
+      )}
     </FieldRow>
   );
 }

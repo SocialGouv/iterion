@@ -407,6 +407,10 @@ function OtherRow({
   onSelect: () => void;
   onOtherTextChange: (next: string) => void;
 }) {
+  // The "Other" label points at the control it names (RGAA 11.1): without
+  // the htmlFor, neither the choice control nor the free-text field has a
+  // label.
+  const otherId = useId();
   return (
     <div
       className={`flex items-start gap-2 text-body rounded px-2 py-1.5 border ${
@@ -419,6 +423,7 @@ function OtherRow({
       {type === "radio" ? (
         <Radio
           name={name}
+          id={otherId}
           checked={checked}
           disabled={disabled}
           onChange={onSelect}
@@ -427,6 +432,7 @@ function OtherRow({
       ) : (
         <Checkbox
           name={name}
+          id={otherId}
           checked={checked}
           disabled={disabled}
           onChange={onSelect}
@@ -434,10 +440,11 @@ function OtherRow({
         />
       )}
       <div className="flex-1 min-w-0 space-y-1">
-        <label className="text-fg-default cursor-pointer">Other</label>
+        <label htmlFor={otherId} className="text-fg-default cursor-pointer">Other</label>
         <Input
           value={otherText}
           placeholder="Type your own answer…"
+          aria-label="Other answer"
           disabled={disabled || !checked}
           onChange={(e) => onOtherTextChange(e.target.value)}
           onFocus={() => {

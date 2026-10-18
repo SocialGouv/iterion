@@ -450,6 +450,7 @@ export default function LogLinesView({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search log…"
+            aria-label="Search log"
             size="sm"
             leadingIcon={<span className="text-caption">⌕</span>}
           />
