@@ -196,6 +196,7 @@ export default function BrowserPane({
           onKeyDown={onKeyDown}
           onBlur={submitDraft}
           placeholder="Enter URL or wait for the workflow to publish one"
+          aria-label="Browser URL"
           className="flex-1 rounded-md border border-border-default bg-surface-0 px-2 py-1 text-sm font-mono outline-none focus:border-accent"
         />
         {browser.currentUrl && (

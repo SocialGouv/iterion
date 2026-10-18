@@ -115,6 +115,7 @@ function VarFieldRow({
       </label>
       <VarFieldInput
         field={field}
+        id={`bot-arg-${field.name}`}
         value={value}
         onChange={onChange}
         required={required}

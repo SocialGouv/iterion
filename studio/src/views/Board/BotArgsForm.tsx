@@ -134,6 +134,7 @@ export function BotArgsForm({ bot, values, onChange }: Props) {
                 </label>
                 <VarFieldInput
                   field={f}
+                  id={`bot-arg-${f.name}`}
                   value={value}
                   onChange={(v) => setOne(f.name, v)}
                   required={required}
