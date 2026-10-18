@@ -21,7 +21,7 @@ holds the remaining debt as a two-sided ratchet.
 
 | The value is | Remedy | Precondition |
 |---|---|---|
-| already on screen under another reference (`{{vars.x}}`, `{{outputs.p.x}}`) | **drop** the field from the input schema AND every `with` mapping of it | the input schema is this node's **alone**: one that is also another node's `output:` cannot lose a field (C034 on the node that reads it, C031 on every edge that maps it — copilot's `turn_input`), so that node gets its own input schema first |
+| already on screen under another reference (`{{vars.x}}`, `{{outputs.p.x}}`) | **drop** the field from the input schema AND every `with` mapping of it | the input schema is this node's **alone**: one that is also another node's `output:` cannot lose a field (C034 on the node that reads it, C031 on every edge that maps it), so that node gets its own input schema first — what `adr-cartograph/survey_code` did against the differ's `scan_output`, and `copilot/copi` against `turn_input` |
 | genuinely invisible | render `{{input.x}}` in the node's own prompt | the key **arrives on every route the node is entered by** — a declared field no edge maps never arrives, the schema seeds nothing |
 | per-turn, and the prompt reads `{{vars.x}}` | switch the prompt to `{{input.x}}` | **every** incoming edge maps the key |
 | carried only by an inherited session (`session: inherit_if_available`) | render `{{input.x}}` | the arrival condition of the invisible row — a session is not a second channel: a best-effort session whose backing state is gone degrades to fresh (`applySessionContinuity` marks it droppable, `pkg/backend/model/executor_retry.go` retries without it — lived on `branch-improve-loop/plan_revise`) |
@@ -96,11 +96,15 @@ They are [input-drop-traps.md](input-drop-traps.md).
 
 The guard is its own witness, both ways:
 
-1. delete the site's entry from `unrenderedBaseline` and run
-   `go test ./bots/ -run TestLLMInputFieldsReachTheirOwnPrompt`: it must fail
-   naming that exact field;
+1. run `go test ./bots/ -run TestLLMInputFieldsReachTheirOwnPrompt` before
+   the remedy: the baseline holds no entries, so the sweep itself must fail
+   naming that exact field — a dead field reddens on its own, there is no
+   baseline entry to delete first;
 2. apply the remedy: green;
 3. undo the remedy, keeping the baseline shrunk: red again, on that site.
 
-A fix that forgets step 1 fails too — the ratchet's other half refuses a
-baselined field that is no longer dead, so the list can only shrink.
+The only entry a site can carry is one someone re-registered into
+`unrenderedBaseline`; deleting it gives the same red, and a name re-entered
+there fails both ways until a real dead site sits under it — a baselined
+field that is no longer dead is refused like a new one, so the list can only
+shrink.

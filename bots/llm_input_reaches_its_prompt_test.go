@@ -83,23 +83,17 @@ import (
 
 // unrenderedBaseline is the debt #1740 measured, shrunk by every site
 // triaged since: per "<bot>/<node>" (or "<bot>/<workflow>/<node>" outside
-// main.bot), the input fields no channel of that node consumes.
-//
-// Triage is per site, and a field is not necessarily a missing render. One
-// shape is left: graph state a node is mapped and told not to echo (copilot).
-// On `copi` the field cannot simply be removed: `turn_input` is also `seed`'s
-// output and `turn_state`'s input AND output, so a drop raises C034 on the
-// node that reads it and C031 on every edge that maps it — `turn_state` needs
-// its own input schema first. `reflect` carries no such prerequisite:
-// `reflect_in` is its own input schema and no node outputs it, so
-// `clarification_count` waits on the copilot decision alone.
+// main.bot), the input fields no channel of that node consumes. It holds
+// ZERO entries — the catalogue carries no field a channel fails to render.
+// An empty map is not an off switch: the sweep itself reddens the next dead
+// field (a declared field no prompt renders, or an undeclared key an edge
+// maps), and a name re-entered here fails both ways until a real site sits
+// under it — a baselined field that stops being dead is refused like a new
+// one.
 //
 // The remedy per shape, and the preconditions each one carries, are in
 // docs/agents/bots/input-reaches-the-model.md.
-var unrenderedBaseline = map[string][]string{
-	"copilot/copi":    {"mode", "session_id", "session_fingerprint", "manager_scope_exclusions", "scope_guard_attempt", "actionless_clarification_count", "actionless_clarification_key"},
-	"copilot/reflect": {"clarification_count"},
-}
+var unrenderedBaseline = map[string][]string{}
 
 // imagesReachModel reports whether a node's `images:` entries are delivered to
 // a model at all. Only the codex backend forwards them. The route read is the
