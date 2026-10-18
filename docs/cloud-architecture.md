@@ -10,6 +10,8 @@ This page supersedes the old [cloud.md](cloud.md) (now a 20-line front
 door) and complements [cloud-deployment.md](cloud-deployment.md) (the
 operator runbook).
 
+Diagram: [diagrams/README.md](diagrams/README.md) — the data-model pages and the access-control matrix.
+
 ## Control plane vs data plane
 
 ```mermaid
@@ -58,7 +60,7 @@ sweeper](cloud-admin-guide.md#17-dlq-triage)).
 
 | Status | Meaning |
 |---|---|
-| `queued` | Cloud-mode only: the publisher wrote `run.json`, sealed the credentials bundle, published a `RunMessage` onto NATS. No runner has claimed it yet. |
+| `queued` | Waiting to start. In cloud mode the run document in Mongo's `runs` collection reads `queued` until something settles it — the engine starting on the runner that claimed it, or a launch rollback or a cancel, for example; locally, the pipeline-concurrency cap parked the launch. |
 | `running` | A runner pod has claimed the KV lease, opened the bundle, and is executing nodes. Heartbeats refresh the lease ~every 20s. |
 | `paused_waiting_human` | A human node awaits input (`POST /api/runs/{id}/resume` with answers). Resumable. |
 | `paused_operator` | Operator paused via the studio. Resumable. |
@@ -79,29 +81,39 @@ envelope so the runner pod gets exactly what it needs and nothing else
 ```
    server (publisher)                              runner pod
    ──────────────────                              ──────────
-   1. resolve BYOK keys + bindings + OAuth         5. fetch RunSecretsRecord by ref
-      for (tenant, user, bot)                        from Mongo
-   2. assemble RunBundle{                          6. OpenRunBundle with AAD
-        APIKeys, GenericSecrets,                      "run_secrets:<run_id>"
-        GenericSecretHosts, OAuthCredentials      7. inject into engine ctx
-      }                                            8. on terminal status:
-   3. SealRunBundle → sealed_blob                     Delete(ref)
-      (AES-GCM, AAD=run_secrets:<run_id>)
-   4. write RunSecretsRecord{                      Mongo TTL: 24h on the record so
-        _id = NewSecretsRef(),                      an abandoned bundle never
-        sealed_bundle = sealed_blob,                lingers (Resume re-publishes
-        expires_at = now+24h                        and re-resolves).
+   1. walk the credential tiers: BYOK,             5. fetch RunSecretsRecord by ref
+      generic secrets, OAuth, org, pool,              from Mongo
+      platform, restore, then the
+      fallback door
+   2. assemble RunBundle{                          6. build the AES-GCM sealer from
+        APIKeys, GenericSecrets,                      RunMessage.BundleDEK, then
+        GenericSecretHosts, OAuthCredentials, ...     OpenRunBundle under the same AAD
       }
-      then publish RunMessage{ ..., SecretsRef }
+   3. NewRunBundleDEK → a fresh 32-byte            7. inject into engine ctx
+      per-run key, then SealRunBundle →            8. on success or a pause for
+      sealed_bundle (AES-GCM, key_id "dek",           human input: Delete(ref)
+      AAD run_secrets:<tenant_id>/<pool>/<run_id>)
+   4. write RunSecretsRecord{                      Mongo TTL: 24h on the record so
+        _id = NewSecretsRef(),                      a bundle the runner keeps (a failed,
+        key_id = "dek", sealed_bundle,              cancelled or operator-paused run's,
+        expires_at = now+24h, ...                   for example) never lingers (Resume
+      }                                             re-publishes and re-resolves).
+      then publish RunMessage{ ..., SecretsRef,
+      BundleDEK }
 ```
 
-The bundle is opaque to NATS — the queue carries the ref, not the
-payload. A runner without `ITERION_SECRETS_KEY` (or with the wrong key)
-fails at `OpenRunBundle` with `secrets: authentication failed`, the
-runner Nak's, and the message redelivers. Get this wrong on a stable
-deploy and **every** workflow fails at "fetch run_secrets" (see
-[cloud-admin.md
-§11](cloud-admin.md)).
+The sealed payload never reaches NATS — the queue carries the ref and
+the run's own key, the ciphertext stays in Mongo, and opening a current
+bundle needs no platform key on the pod. The AAD binds the bundle to
+its full identity (`run_secrets:<tenant_id>/<pool>/<run_id>`), so a
+record served for another tenant, pool or run cannot open. A `dek`-stamped record whose
+message carries no `BundleDEK` is refused with
+`ErrBundleDEKMissing`, and a key that does not authenticate fails at
+`OpenRunBundle` with `secrets: authentication failed`; either way the
+runner Nak's and the message redelivers. The runner's
+`ITERION_SECRETS_KEY` ring opens only the two older cohorts — a record
+with no key id (sealed under the run-only AAD) or one stamped with a
+ring key id — which the 24h bundle TTL retires.
 
 ## Queue internals
 
@@ -218,31 +230,67 @@ is safe blind.
 
 ## Multitenancy enforcement layers
 
-Four boundaries, each fail-closed:
+Four boundaries:
 
 1. **HTTP middleware** validates the credential and stamps an
-   `auth.Identity{UserID, TeamID, Role, IsSuperAdmin}` on the ctx.
-   JWT, PAT, and webhook auth all converge here
+   `auth.Identity{UserID, Email, OrgID, OrgRole, TeamID, Role,
+   IsSuperAdmin, Kind, JTI, Via}` on the ctx — `OrgRole` is the org tier
+   the claim carries, and `Kind` marks a principal nobody signed in
+   as: `webhook` / `share` (synthetic, which the operator RBAC gates
+   refuse) or `internal` (a daemon of this process, carrying no role to
+   judge). JWT, PAT and the single-use WS ticket converge here; the
+   self-authenticating surfaces are exempt from this gate — among them
+   inbound webhooks and config-share editor links, which mint their own
+   identity, and the per-run `X-Iterion-Run` tokens of the board- and
+   runs-MCP routes and of the forge-publish routes, which mint none
    ([pkg/server/middleware.go](../pkg/server/middleware.go),
-   [pkg/server/middleware_webhook.go](../pkg/server/middleware_webhook.go)).
-2. **Route guards**: `canViewTeam` / `canManageTeam` /
-   `requireSuperAdmin` cross-check the URL's `{id}` against the
-   identity's team and role.
+   [pkg/server/middleware_webhook.go](../pkg/server/middleware_webhook.go),
+   [pkg/server/middleware_configshare.go](../pkg/server/middleware_configshare.go)).
+2. **Route guards**: among them `canViewTeam` / `canManageTeam` /
+   `canViewOrg` / `canManageOrg` / `canEditConfigShares` / `canEditBots`,
+   which refuse a synthetic principal, pass a super-admin, and otherwise
+   cross-check the URL's `{id}` against the principal's team and org
+   memberships — as stored, and for the view and config-editor gates
+   also as its credential carries them
+   ([pkg/server/auth_authz.go](../pkg/server/auth_authz.go));
+   `requireSuperAdmin` fronts the admin routes, and a record's own
+   mutation right goes through `canMutateScopedRecord` behind
+   `canMutateApiKey` / `canMutateGenericSecret` — these are
+   [diagrams/access-control.md](diagrams/access-control.md)'s decision points.
 3. **Store ctx**: `store.WithIdentity(ctx, tenantID, userID)` is
-   re-stamped onto the ctx before every store call so the Mongo
-   adapters filter `tenant_id = ...` automatically — handlers can't
-   forget it.
-4. **Mongo adapter**: every collection (`runs`, `events`,
-   `api_keys`, `generic_secrets`, `bot_secret_bindings`, `audit_events`,
-   `webhook_configs`, `webhook_deliveries`, `org_usage`,
-   `password_resets`, `personal_access_tokens`, `memory_*`) carries `tenant_id` on every
-   row + a compound index that starts with it. Reads without a tenant
-   ctx **fail-close** (`ErrBindingTenantMissing` and friends), not
-   "show everything".
+   re-stamped onto the ctx so the Mongo adapters that read it add
+   `tenant_id = ...` to their filters.
+4. **Mongo adapter**: `runs`, `events`, `api_keys`, `generic_secrets`,
+   `bot_secret_bindings`, `audit_events`, `webhook_configs`,
+   `webhook_deliveries`, `memory_spaces` and `memory_docs` carry a
+   `tenant_id` field that some rows omit — for example a `global`
+   memory space's documents, a platform audit row, or an event
+   appended under a tenant-less context. In `pkg/store/mongo`, `withTenantFilter` panics
+   on a ctx without a tenant unless the caller opts out through
+   `store.WithoutTenantFilter`, and the API-key, binding and
+   generic-secret stores' filters return `ErrApiKeyTenantMissing`,
+   `ErrBindingTenantMissing` and friends: they
+   **fail closed**, not "show everything". The audit,
+   webhook and memory stores read no tenant from the ctx; where they
+   scope by tenant, the caller passes it.
+   A compound index starting with `tenant_id` backs
+   the per-tenant queries, so it exists where the reads are per-tenant
+   and not where a row is reached by another key — `api_keys` and
+   `generic_secrets` index `scope_team` first, a run's children (`interactions`,
+   `user_messages`, `run_gitmeta`, `run_tags`) and `memory_docs` index
+   from their parent's id instead, and `org_usage` keys its
+   (subject, month) in `_id` with no `tenant_id` at all.
+   The credential lookups are the deliberate exception: for example
+   `password_resets` and `personal_access_tokens` hold no `tenant_id`
+   and are read by token hash (a PAT also by its `_id` and its owner's
+   `user_id`) — resolving the bearer is what
+   yields the identity a tenant could be read from — as are the forge
+   stores' reads by `_id`, where
+   the callback resolves the tenant from signed state and the HTTP layer
+   asserts tenant ownership before mutating.
 
-The one deliberate cross-tenant case is `visibility=global` memory: a
-super-admin write produces an audit row through the admin path, and
-the FS adapter / Mongo adapter both treat it as untenanted.
+One deliberate cross-tenant case is `visibility=global` memory: the
+FS adapter / Mongo adapter both treat it as untenanted.
 
 ## Where each metric is emitted
 

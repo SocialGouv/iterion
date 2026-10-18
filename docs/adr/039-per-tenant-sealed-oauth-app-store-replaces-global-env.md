@@ -51,3 +51,7 @@ Cloud could have used a shared OAuth app for all tenants of a provider.
 - **Sealed blobs are record-bound.** AAD `forge_oauth_app:<id>` prevents silent secret swapping across app rows.
 - **The legacy global-env model is no longer the scaling path.** Operators should treat env credentials as insufficient for multi-tenant cloud cardinality.
 - **Rechallenge if auto-provisioning fails operationally.** If tenant-managed app provisioning proves unreliable, a shared operator-managed model may need reconsideration.
+
+## Status note (2026-10-13)
+
+Uniqueness is keyed per owning account and per role, not per host. [`pkg/forge/oauth_app_store.go`](../../pkg/forge/oauth_app_store.go) creates one unique index, `tenant_provider_baseurl_owner_role_unique`, over `(tenant_id, provider, forge_base_url, owner_login, security_read_only)`, and `EnsureSchema` drops the `tenant_provider_baseurl_unique` and `tenant_provider_baseurl_owner_unique` indexes by name first, so a deployment stops enforcing one app per host; `MemoryOAuthAppStore.Create` rejects on the same five fields. A tenant therefore holds one app per owning account and role on a host — a runtime app and a watch-only app can share an owner — with `GetByInstance` collapsing an instance's apps to the oldest non-watch-only one for callers that predate the per-app link. The rest of the decision holds: credentials stay tenant-scoped, `SealedSecret` is omitted from JSON, and the AAD is `forge_oauth_app:<id>`.

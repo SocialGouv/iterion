@@ -236,6 +236,20 @@ const sidebar = [
     ],
   },
   {
+    text: 'Diagrams',
+    collapsed: true,
+    items: [
+      { text: 'Overview, conventions, glossary', link: '/diagrams/README' },
+      { text: 'Data model — identity and tenancy', link: '/diagrams/data-model-identity' },
+      { text: 'Data model — forges, repositories, bots', link: '/diagrams/data-model-forge-bots' },
+      { text: 'Data model — runs', link: '/diagrams/data-model-runs' },
+      { text: 'Data model — credentials, metering, routing', link: '/diagrams/data-model-credentials' },
+      { text: 'Data model — automation surfaces', link: '/diagrams/data-model-automation' },
+      { text: 'Data model — memory, config shares, notifications', link: '/diagrams/data-model-knowledge' },
+      { text: 'Access control', link: '/diagrams/access-control' },
+    ],
+  },
+  {
     text: 'Point-in-time records',
     collapsed: true,
     items: [
