@@ -702,9 +702,11 @@ prompt chat_instructions:
 
 ## ─── Schemas ──────────────────────────────────────────────────────
 
-## Uniform per-turn input. seed fills it from vars on turn 1; the loop
-## edge fills it from the chat answer + Copi's own previous output
-## afterwards. ONE contract for entry and loop alike.
+## The graph's per-turn state register. seed fills it from vars on turn 1;
+## the loop edge fills it from the chat answer + Copi's own previous output
+## afterwards. ONE contract for entry and loop alike. Its consumers are the
+## compute nodes and the downstream edges reading {{outputs.turn_state.*}};
+## Terra itself takes copi_input below, the projection its prompts render.
 schema turn_input:
   operator_message: string
   host_event: json
@@ -745,13 +747,43 @@ schema turn_input:
   actionless_clarification_count: int
   actionless_clarification_key: string
 
+## Terra's own input contract: exactly the per-turn values its prompts
+## render. The rest of turn_input is graph state that travels around it:
+## the session anchors ride the `_session_*` runtime keys, the manager's raw
+## exclusions, the scope-guard attempt and the clarification counters stay
+## on turn_state for the edges that read them, and the router speaks for
+## the guard. The prompt renders the derived union
+## (effective_scope_exclusions), never the manager's raw list.
+schema copi_input:
+  operator_message: string
+  host_event: json
+  context_brief: string
+  conversation_history: json
+  ## Empty on ordinary entry turns. A reviewed reflection plan is supplied
+  ## here only when Terra has to turn it into the next safe action.
+  implementation_plan: string
+  ## Rendered as the plan block's active marker, beside the plan itself.
+  implementation_active: bool
+  ## True only for a new free-text operator message. Host receipts and the
+  ## graph's own continuation are not operator turns.
+  fresh_operator_turn: bool
+  ## Effective policy is the deterministic union used on the current turn.
+  ## Model-emitted tokens may only self-restrict it and never grant a route.
+  effective_scope_exclusions: string[] [enum: "companion_bootstrap", "broad_content_cleanup", "repository_wide_refactor", "architecture_expansion", "new_workstream", "external_system_change", "dependency_addition", "broad_purge"]
+  ## A host-attested active-editor marker retained by the graph while this
+  ## conversation remains active. It is context for Terra only, never an
+  ## authority grant: Studio still checks the session, revision, paths and
+  ## hashes before any proposal applies.
+  authoring_context: string
+
 ## Copi's structured turn output.
 ##   reply          — markdown addressed to the operator, rendered
 ##                    verbatim as Copi's chat message.
 ##   close          — true ONLY on an explicit operator request to end
 ##                    the session. Never on Copi's own initiative.
-##   mode           — the posture for the NEXT turn (echo the current
-##                    one unless the operator asked to switch).
+##   mode           — the posture for the NEXT turn, chosen from the
+##                    operator's request and the conversation; the current
+##                    posture is not delivered as an input.
 ##   context_brief  — the rolling memory. See the prompt contract.
 ##   quick_replies  — 0-4 typed suggested next messages. Each carries a label
 ##                    and message; `navigate_to` is an optional typed Studio
@@ -899,8 +931,6 @@ schema terra_route_out:
   ## fields as strings. Emitted typed, referenced by the edges.
   no_host_event: json
   no_history: json
-  clarification_first: int
-  clarification_repeat: int
   draft_bot: string
   has_draft: bool
   editor_session_id: string
@@ -952,12 +982,10 @@ schema reflection_state:
   manager_scope_exclusions: string[] [enum: "companion_bootstrap", "broad_content_cleanup", "repository_wide_refactor", "architecture_expansion", "new_workstream", "external_system_change", "dependency_addition", "broad_purge"]
   effective_scope_exclusions: string[] [enum: "companion_bootstrap", "broad_content_cleanup", "repository_wide_refactor", "architecture_expansion", "new_workstream", "external_system_change", "dependency_addition", "broad_purge"]
   scope_guard_attempt: bool
-  clarification_count: int
 
 schema reflect_in:
   request: string
   context_brief: string
-  clarification_count: int
 
 schema reflect_out:
   implementation_plan: string
@@ -1154,7 +1182,7 @@ agent copi:
   ## conversation, bounded tools, and permission gate. Claude uses the
   ## configured Anthropic credentials; the primary keeps ChatGPT OAuth.
   backend: "claw"
-  input: turn_input
+  input: copi_input
   output: copi_turn
   ## Studio consumes this versioned output from the run store. Publish
   ## every turn; has_draft decides whether the validation branch is entered.
@@ -1411,8 +1439,9 @@ compute validate_scope_guard:
 
 ## ─── Nodes ────────────────────────────────────────────────────────
 
-## Entry projection: turn 1's fields come from vars so copi has ONE
-## input contract for entry and loop alike. Deterministic, never blocks.
+## Entry projection: turn 1's fields come from vars so the turn_state
+## register holds ONE contract for entry and loop alike. Deterministic,
+## never blocks.
 compute seed:
   input: seed_input
   output: turn_input
@@ -1513,8 +1542,6 @@ compute terra_route:
     host_event: "input.host_event"
     no_host_event: "''"
     no_history: "''"
-    clarification_first: "0"
-    clarification_repeat: "1"
     wait_for_operator: "if(input.scope_guard_blocked, false, (input.host_event != '' and input.host_event.kind == 'assistant-action-invalid' and if(input.host_event.attempt, input.host_event.attempt >= 2, false)) or input.wait_for_operator)"
     ## Prefer the graph-retained value. Copi's field is only a fresh-marker
     ## relay and must not erase a value that the graph already owns.
@@ -1565,9 +1592,6 @@ compute reflection_state:
     manager_scope_exclusions: "tail(input.manager_scope_exclusions, 8)"
     effective_scope_exclusions: "tail(unique(concat(input.manager_scope_exclusions, input.effective_scope_exclusions)), 8)"
     scope_guard_attempt: "input.scope_guard_attempt"
-    ## Entry edges carry a 0/1 flag as a literal string. Normalize it to
-    ## the numeric register retained across judge-loop re-entry.
-    clarification_count: "if(input.clarification_count, 1, 0)"
 
 compute judge_route:
   input: judge_out
@@ -1760,23 +1784,23 @@ workflow copilot:
     actionless_clarification_key: "{{outputs.seed.actionless_clarification_key}}",
   }
 
+  ## Only what copi_input declares, plus the `_session_*` runtime keys:
+  ## the model-facing projection. The graph state — the declared session
+  ## anchors, the manager's raw exclusions, the scope-guard attempt, the
+  ## clarification counters — stays on turn_state for the edges that
+  ## read {{outputs.turn_state.*}}; none of it is echoed by Terra's prompts.
+  ## mode rides the same register though no edge reads it back — Terra
+  ## re-derives the posture from the conversation each turn.
   turn_state -> copi with {
     operator_message: "{{outputs.turn_state.operator_message}}",
     host_event: "{{outputs.turn_state.host_event}}",
     fresh_operator_turn: "{{outputs.turn_state.fresh_operator_turn}}",
     conversation_history: "{{outputs.turn_state.conversation_history}}",
-    mode: "{{outputs.turn_state.mode}}",
     context_brief: "{{outputs.turn_state.context_brief}}",
     implementation_plan: "{{outputs.turn_state.implementation_plan}}",
     authoring_context: "{{outputs.turn_state.authoring_context}}",
     implementation_active: "{{outputs.turn_state.implementation_active}}",
-    session_id: "{{outputs.turn_state.session_id}}",
-    session_fingerprint: "{{outputs.turn_state.session_fingerprint}}",
-    manager_scope_exclusions: "{{outputs.turn_state.manager_scope_exclusions}}",
     effective_scope_exclusions: "{{outputs.turn_state.effective_scope_exclusions}}",
-    scope_guard_attempt: "{{outputs.turn_state.scope_guard_attempt}}",
-    actionless_clarification_count: "{{outputs.turn_state.actionless_clarification_count}}",
-    actionless_clarification_key: "{{outputs.turn_state.actionless_clarification_key}}",
     _session_id: "{{outputs.turn_state.session_id}}",
     _session_fingerprint: "{{outputs.turn_state.session_fingerprint}}",
   }
@@ -1862,7 +1886,6 @@ workflow copilot:
     manager_scope_exclusions: "{{outputs.terra_route.manager_scope_exclusions}}",
     effective_scope_exclusions: "{{outputs.terra_route.effective_scope_exclusions}}",
     scope_guard_attempt: "{{outputs.terra_route.scope_guard_attempt}}",
-    clarification_count: "{{outputs.terra_route.clarification_first}}",
   }
 
   ## A blocker while carrying out a judged plan may re-enter the full Sol →
@@ -1880,7 +1903,6 @@ workflow copilot:
     manager_scope_exclusions: "{{outputs.terra_route.manager_scope_exclusions}}",
     effective_scope_exclusions: "{{outputs.terra_route.effective_scope_exclusions}}",
     scope_guard_attempt: "{{outputs.terra_route.scope_guard_attempt}}",
-    clarification_count: "{{outputs.terra_route.clarification_repeat}}",
   }
 
   ## An execution turn which only restates its already-judged plan is malformed
@@ -1954,7 +1976,6 @@ workflow copilot:
   reflection_state -> reflect with {
     request: "{{outputs.reflection_state.request}}",
     context_brief: "{{outputs.reflection_state.context_brief}}",
-    clarification_count: "{{outputs.reflection_state.clarification_count}}",
   }
 
   reflect -> judge with {

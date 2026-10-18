@@ -55,6 +55,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestCopilot_PermissionPolicy_Behaviour runs the bot's REAL allow/deny
@@ -77,6 +78,25 @@ import (
 //
 // The table below pins both directions: what must be refused, and what
 // must remain reachable for the bot to do its job at all.
+// lastRegisterOutput returns the output map of the LAST node_finished event
+// of nodeID — the settled value of a node a loop or a loop-like conversation
+// re-entered. lastNodeOutput lives in the live-tagged support file.
+func lastRegisterOutput(t *testing.T, events []*store.Event, nodeID string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	for _, e := range events {
+		if e.Type == store.EventNodeFinished && e.NodeID == nodeID {
+			if m, ok := e.Data["output"].(map[string]any); ok {
+				out = m
+			}
+		}
+	}
+	if out == nil {
+		t.Fatalf("%s never finished — no node_finished event holds its output", nodeID)
+	}
+	return out
+}
+
 func TestCopilot_PermissionPolicy_Behaviour(t *testing.T) {
 	wf := compileFixture(t, "copilot/main.bot")
 
@@ -1032,11 +1052,19 @@ func TestCopilot_ChatLoop_SessionAndBriefSurvive(t *testing.T) {
 	if got := secondTurnInput["context_brief"]; got != brief {
 		t.Errorf("turn 2 context_brief = %v, want the brief written on turn 1 — the rolling memory was dropped", got)
 	}
-	if got := secondTurnInput["mode"]; got != "info" {
-		t.Errorf("turn 2 mode = %v, want the mode carried from turn 1", got)
-	}
 	if got := secondTurnInput["_session_id"]; got != "sess-copi-1" {
 		t.Errorf("turn 2 _session_id = %v, want the prior turn's session id", got)
+	}
+	// The posture carries through the graph register (copi's output ->
+	// compose -> turn_state), never as an input field Terra's prompts
+	// render; the register is where a lost carry would be visible.
+	evs, err := s.LoadEvents(context.Background(), "e2e-copi-chat")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	register := lastRegisterOutput(t, evs, "turn_state")
+	if got := register["mode"]; got != "info" {
+		t.Errorf("turn 2 turn_state mode = %v, want the mode carried from turn 1", got)
 	}
 
 	if got := run.Status; got == "" {
@@ -1104,8 +1132,15 @@ func TestCopilot_ColdTurn_BriefSurvivesLostSession(t *testing.T) {
 	if got := secondTurnInput["context_brief"]; got != brief {
 		t.Errorf("turn 2 context_brief = %v, want %q — with no backend session, the brief is the ONLY memory left and losing it makes every cloud turn amnesiac", got, brief)
 	}
-	if got := secondTurnInput["mode"]; got != "debug" {
-		t.Errorf("turn 2 mode = %v, want debug carried across the cold turn", got)
+	// With no backend session the brief is the memory and the register is
+	// the posture: both live in the graph, not in copi's input fields.
+	evs, err := s.LoadEvents(context.Background(), "e2e-copi-cold")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	register := lastRegisterOutput(t, evs, "turn_state")
+	if got := register["mode"]; got != "debug" {
+		t.Errorf("turn 2 turn_state mode = %v, want debug carried across the cold turn", got)
 	}
 }
 
@@ -1638,7 +1673,8 @@ func TestCopilot_RepeatedClarificationIsSuppressed(t *testing.T) {
 	})
 
 	wf.Vars["initial_message"].Default = "Repair the run and keep going."
-	err := runtime.New(wf, tmpStore(t), exec).Run(context.Background(), "e2e-copi-repeated-clarification", nil)
+	s := tmpStore(t)
+	err := runtime.New(wf, s, exec).Run(context.Background(), "e2e-copi-repeated-clarification", nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected the bounded explanation to pause at chat, got %v", err)
 	}
@@ -1648,8 +1684,15 @@ func TestCopilot_RepeatedClarificationIsSuppressed(t *testing.T) {
 	if suppressedInput == nil {
 		t.Fatal("the repeated clarification did not reach Terra before suppression")
 	}
-	if got := fmt.Sprint(suppressedInput["actionless_clarification_count"]); got != "2" {
-		t.Errorf("suppressed Terra input count = %q, want the two prior private passes carried from the handoff", got)
+	// The counter never enters Terra's model-facing input; it travels on
+	// turn_state, and the fourth pass's register is where the carry shows.
+	evs, err := s.LoadEvents(context.Background(), "e2e-copi-repeated-clarification")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	register := lastRegisterOutput(t, evs, "turn_state")
+	if got := fmt.Sprint(register["actionless_clarification_count"]); got != "2" {
+		t.Errorf("suppressed pass turn_state count = %q, want the two prior private passes carried from the handoff", got)
 	}
 }
 

@@ -138,7 +138,6 @@ func Scenarios() []Scenario {
 			},
 			Input: map[string]any{
 				"operator_message": "[page context: run/run-failed]\n<resolved-assistant-context>{\"references\":[{\"reference\":\"run/run-failed\",\"resolved\":true,\"kind\":\"run\",\"run\":{\"id\":\"run-failed\",\"status\":\"failed_resumable\",\"failing_node\":\"seal_experience\",\"error_code\":\"EXECUTION_FAILED\",\"error\":\"candidate artifact missing\"}}]}</resolved-assistant-context>\n\nPourquoi ce run a échoué ?",
-				"mode":             "debug",
 				"context_brief":    "",
 			},
 		},
