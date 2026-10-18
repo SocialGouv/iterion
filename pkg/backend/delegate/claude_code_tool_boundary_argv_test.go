@@ -455,6 +455,38 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 	}
 }
 
+func TestEverySpawnRewritesJSONFieldsForClaudeStrict(t *testing.T) {
+	spawns := spawnArgv(t, Task{
+		NodeID:       "n",
+		OutputSchema: []byte(`{"type":"object","properties":{"payload":{"type":"object","items":{"type":["null","string","object","boolean","array","number"]}},"summary":{"type":"string"}},"required":["payload","summary"]}`),
+	})
+	if len(spawns) < 2 {
+		t.Fatalf("expected the main pass and the formatting pass, got %d spawn(s): %v", len(spawns), spawns)
+	}
+	for i, argv := range spawns {
+		fields := strings.Fields(argv)
+		raw := ""
+		for j, field := range fields {
+			if field == "--json-schema" && j+1 < len(fields) {
+				raw = fields[j+1]
+				break
+			}
+		}
+		if raw == "" {
+			t.Fatalf("spawn #%d has no --json-schema value: %s", i+1, argv)
+		}
+		if strings.Contains(raw, `"type":[`) {
+			t.Errorf("spawn #%d retains a type union rejected by Claude strict mode: %s", i+1, raw)
+		}
+		if !strings.Contains(raw, `"items":{}`) {
+			t.Errorf("spawn #%d did not rewrite the nested JSON field to the empty any schema: %s", i+1, raw)
+		}
+		if !strings.Contains(raw, `"summary":{"type":"string"}`) {
+			t.Errorf("spawn #%d changed the ordinary string field: %s", i+1, raw)
+		}
+	}
+}
+
 func uniq(in []string) []string {
 	seen := map[string]bool{}
 	var out []string

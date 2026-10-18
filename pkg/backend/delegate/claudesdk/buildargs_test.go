@@ -1,6 +1,7 @@
 package claudesdk
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -136,6 +137,272 @@ func TestBuildArgs_DedupesBothToolFlagsKeepingFirstOccurrenceOrder(t *testing.T)
 	}
 	if got := flagValue(args, "--disallowedTools"); got != "Task,Agent,Workflow" {
 		t.Errorf("--disallowedTools = %q, want Task,Agent,Workflow", got)
+	}
+}
+
+func TestBuildArgs_JSONFieldUsesClaudeAnySchema(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		streaming bool
+	}{
+		{name: "main pass", streaming: true},
+		{name: "formatting pass", streaming: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := buildArgs(processConfig{OutputFormat: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"created": map[string]any{
+						"type": []any{"null", "string", "object", "boolean", "array", "number"},
+					},
+					"payload": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"nested": map[string]any{
+								"type": []any{"object", "array", "string", "number", "boolean", "null"},
+							},
+						},
+					},
+					"summary": map[string]any{"type": "string"},
+				},
+				"required":             []any{"created", "summary"},
+				"additionalProperties": false,
+			}}, tc.streaming)
+
+			raw := flagValue(args, "--json-schema")
+			if raw == "" {
+				t.Fatal("--json-schema missing from argv")
+			}
+			var schema struct {
+				Properties map[string]map[string]any `json:"properties"`
+			}
+			if err := json.Unmarshal([]byte(raw), &schema); err != nil {
+				t.Fatalf("unmarshal --json-schema: %v", err)
+			}
+			created, ok := schema.Properties["created"]
+			if !ok {
+				t.Fatalf("created property missing from --json-schema: %s", raw)
+			}
+			if len(created) != 0 {
+				t.Errorf("created schema = %#v, want the empty any schema; argv JSON: %s", created, raw)
+			}
+			payload := schema.Properties["payload"]
+			nestedProperties, _ := payload["properties"].(map[string]any)
+			nested, _ := nestedProperties["nested"].(map[string]any)
+			if len(nested) != 0 {
+				t.Errorf("nested schema = %#v, want the empty any schema; argv JSON: %s", nested, raw)
+			}
+			if got := schema.Properties["summary"]["type"]; got != "string" {
+				t.Errorf("summary type = %v, want string; argv JSON: %s", got, raw)
+			}
+		})
+	}
+}
+
+func TestBuildArgs_JSONFieldSchemaPositions(t *testing.T) {
+	type fixture struct {
+		name   string
+		schema map[string]any
+	}
+	tests := []fixture{{name: "root", schema: anyJSONSchemaFixture()}}
+	for _, key := range []string{
+		"additionalItems", "additionalProperties", "contains", "contentSchema",
+		"else", "extends", "if", "items", "not", "propertyNames", "then",
+		"unevaluatedItems", "unevaluatedProperties",
+	} {
+		tests = append(tests, fixture{name: "value/" + key, schema: map[string]any{key: anyJSONSchemaFixture()}})
+	}
+	for _, key := range []string{
+		"$defs", "definitions", "dependencies", "dependentSchemas", "patternProperties", "properties",
+	} {
+		tests = append(tests, fixture{
+			name:   "map/" + key,
+			schema: map[string]any{key: map[string]any{"nested": anyJSONSchemaFixture()}},
+		})
+	}
+	for _, key := range []string{"allOf", "anyOf", "extends", "items", "oneOf", "prefixItems"} {
+		tests = append(tests, fixture{name: "list/" + key, schema: map[string]any{key: []any{anyJSONSchemaFixture()}}})
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := countTypeUnions(tc.schema); got != 1 {
+				t.Fatalf("fixture contains %d type unions, want 1", got)
+			}
+			raw := outputSchemaArg(t, tc.schema)
+			var decoded any
+			if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+				t.Fatalf("unmarshal --json-schema: %v", err)
+			}
+			if got := countTypeUnions(decoded); got != 0 {
+				t.Errorf("argv schema retains %d type unions: %s", got, raw)
+			}
+		})
+	}
+}
+
+func TestBuildArgs_JSONFieldSchemaValuesAndOtherUnionsUnchanged(t *testing.T) {
+	schema := map[string]any{
+		"enum":              []any{anyJSONSchemaFixture()},
+		"const":             anyJSONSchemaFixture(),
+		"default":           anyJSONSchemaFixture(),
+		"examples":          []any{anyJSONSchemaFixture()},
+		"maximum":           json.Number("9007199254740993"),
+		"required":          []any{"summary"},
+		"dependencies":      map[string]any{"created": []any{"summary"}},
+		"dependentRequired": map[string]any{"created": []any{"summary"}},
+		"properties": map[string]any{
+			"nullable": map[string]any{"type": []any{"string", "null"}},
+			"duplicate": map[string]any{
+				"type": []any{"object", "array", "string", "number", "boolean", "boolean"},
+			},
+		},
+	}
+	before, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw := outputSchemaArg(t, schema); raw != string(before) {
+		t.Errorf("argv schema changed JSON values or a non-any union:\n got %s\nwant %s", raw, before)
+	}
+	after, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("source schema mutated:\n got %s\nwant %s", after, before)
+	}
+}
+
+func TestBuildArgs_JSONFieldSchemaSourceIsNotMutated(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"created": anyJSONSchemaFixture(),
+		},
+	}
+	before, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw := outputSchemaArg(t, schema); raw == string(before) {
+		t.Fatal("fixture was not normalized")
+	}
+	after, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("source schema mutated:\n got %s\nwant %s", after, before)
+	}
+}
+
+func TestBuildArgs_CyclicJSONSchemaDoesNotStackOverflow(t *testing.T) {
+	schema := map[string]any{"type": "object"}
+	schema["properties"] = map[string]any{"self": schema}
+	args := buildArgs(processConfig{OutputFormat: schema}, false)
+	if hasFlag(args, "--json-schema") {
+		t.Error("cyclic schema must keep the existing marshal-error behavior and omit --json-schema")
+	}
+}
+
+func TestBuildArgs_JSONFieldTypeUnionDuplicates(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		types   []any
+		wantAny bool
+	}{
+		{
+			name:    "duplicate with all six types",
+			types:   []any{"object", "object", "array", "string", "number", "boolean", "null"},
+			wantAny: true,
+		},
+		{
+			name:    "duplicate with missing type",
+			types:   []any{"object", "object", "array", "string", "number", "boolean"},
+			wantAny: false,
+		},
+		{
+			name:    "unknown type",
+			types:   []any{"object", "array", "string", "number", "boolean", "null", "bogus"},
+			wantAny: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := outputSchemaArg(t, map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"value": map[string]any{"type": tc.types},
+				},
+			})
+			var schema struct {
+				Properties map[string]map[string]any `json:"properties"`
+			}
+			if err := json.Unmarshal([]byte(raw), &schema); err != nil {
+				t.Fatalf("unmarshal --json-schema: %v", err)
+			}
+			property := schema.Properties["value"]
+			_, hasType := property["type"]
+			if tc.wantAny && len(property) != 0 {
+				t.Errorf("union with duplicates schema = %#v, want the empty any schema: %s", property, raw)
+			}
+			if !tc.wantAny && !hasType {
+				t.Errorf("non-any union was widened to the empty schema: %s", raw)
+			}
+		})
+	}
+}
+
+func TestBuildArgs_DeepDefaultMatchesOriginalJSON(t *testing.T) {
+	var value any = "leaf"
+	for i := 0; i < 10001; i++ {
+		value = []any{value}
+	}
+	schema := map[string]any{"default": value}
+	before, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("baseline marshal: %v", err)
+	}
+	if raw := outputSchemaArg(t, schema); raw != string(before) {
+		t.Errorf("argv JSON differs from the baseline (got %d bytes, want %d)", len(raw), len(before))
+	}
+}
+
+func anyJSONSchemaFixture() map[string]any {
+	return map[string]any{
+		"type": []any{"null", "string", "object", "boolean", "array", "number"},
+	}
+}
+
+func outputSchemaArg(t *testing.T, schema map[string]any) string {
+	t.Helper()
+	args := buildArgs(processConfig{OutputFormat: schema}, false)
+	raw := flagValue(args, "--json-schema")
+	if raw == "" {
+		t.Fatal("--json-schema missing from argv")
+	}
+	return raw
+}
+
+func countTypeUnions(value any) int {
+	switch value := value.(type) {
+	case map[string]any:
+		count := 0
+		if _, ok := value["type"].([]any); ok {
+			count++
+		}
+		for _, nested := range value {
+			count += countTypeUnions(nested)
+		}
+		return count
+	case []any:
+		count := 0
+		for _, nested := range value {
+			count += countTypeUnions(nested)
+		}
+		return count
+	default:
+		return 0
 	}
 }
 

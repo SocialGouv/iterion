@@ -2,12 +2,14 @@ package claudesdk
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -163,7 +165,7 @@ func buildArgs(cfg processConfig, streaming bool) []string {
 	}
 
 	if cfg.OutputFormat != nil {
-		if b, err := json.Marshal(cfg.OutputFormat); err == nil {
+		if b, err := claudeOutputSchema(cfg.OutputFormat); err == nil {
 			args = append(args, "--json-schema", string(b))
 		}
 	}
@@ -195,6 +197,86 @@ func buildArgs(cfg processConfig, streaming bool) []string {
 	}
 
 	return args
+}
+
+// Only schema-valued keywords are walked: enum, const, default and examples
+// contain arbitrary JSON values whose objects must remain untouched.
+var claudeSchemaValueKeys = [...]string{
+	"additionalItems", "additionalProperties", "contains", "contentSchema",
+	"else", "extends", "if", "items", "not", "propertyNames", "then",
+	"unevaluatedItems", "unevaluatedProperties",
+}
+
+var claudeSchemaMapKeys = [...]string{
+	"$defs", "definitions", "dependencies", "dependentSchemas", "patternProperties", "properties",
+}
+
+var claudeSchemaListKeys = [...]string{
+	"allOf", "anyOf", "extends", "items", "oneOf", "prefixItems",
+}
+
+var claudeAnyJSONTypes = [...]string{"object", "array", "string", "number", "boolean", "null"}
+
+func claudeOutputSchema(schema map[string]any) ([]byte, error) {
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var decoded map[string]any
+	if err := decoder.Decode(&decoded); err != nil {
+		return raw, nil
+	}
+	rewriteClaudeSchema(decoded)
+	return json.Marshal(decoded)
+}
+
+func rewriteClaudeSchema(value any) {
+	schema, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	if isAnyJSONType(schema["type"]) {
+		delete(schema, "type")
+	}
+	for _, key := range claudeSchemaValueKeys {
+		rewriteClaudeSchema(schema[key])
+	}
+	for _, key := range claudeSchemaMapKeys {
+		container, ok := schema[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, nested := range container {
+			rewriteClaudeSchema(nested)
+		}
+	}
+	for _, key := range claudeSchemaListKeys {
+		container, ok := schema[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, nested := range container {
+			rewriteClaudeSchema(nested)
+		}
+	}
+}
+
+func isAnyJSONType(value any) bool {
+	types, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	seen := make(map[string]struct{}, len(types))
+	for _, value := range types {
+		typeName, ok := value.(string)
+		if !ok || !slices.Contains(claudeAnyJSONTypes[:], typeName) {
+			return false
+		}
+		seen[typeName] = struct{}{}
+	}
+	return len(seen) == len(claudeAnyJSONTypes)
 }
 
 // buildMCPConfigJSON creates the JSON for --mcp-config from a map of server configs.
