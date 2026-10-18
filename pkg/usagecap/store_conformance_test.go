@@ -14,6 +14,39 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
+func usageFixtureWithinRetention(observed, now time.Time) bool {
+	retention := time.Duration(usageRetentionDays) * 24 * time.Hour
+	return now.Sub(observed) < retention-time.Hour
+}
+
+func assertWithinUsageRetention(t *testing.T, observed time.Time) {
+	t.Helper()
+	retention := time.Duration(usageRetentionDays) * 24 * time.Hour
+	if !usageFixtureWithinRetention(observed, time.Now()) {
+		t.Fatalf("fixture observed at %s is outside the safe usage retention window (age %s, retention %s, margin %s)", observed, time.Since(observed), retention, time.Hour)
+	}
+}
+
+func TestUsageFixtureRetentionBoundary(t *testing.T) {
+	now := time.Now()
+	retention := time.Duration(usageRetentionDays) * 24 * time.Hour
+	for _, c := range []struct {
+		name string
+		age  time.Duration
+		want bool
+	}{
+		{"outside safety margin", retention - time.Hour - time.Second, true},
+		{"at safety margin", retention - time.Hour, false},
+		{"five seconds before expiration", retention - 5*time.Second, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := usageFixtureWithinRetention(now.Add(-c.age), now); got != c.want {
+				t.Fatalf("age %s: within retention = %v, want %v", c.age, got, c.want)
+			}
+		})
+	}
+}
+
 // runStoreConformance is the contract both Store twins must honour, run
 // against the in-process store here and the real Mongo one below. One
 // suite, two backends: a behaviour that only the memory twin exhibits is
@@ -21,7 +54,7 @@ import (
 func runStoreConformance(t *testing.T, st Store) {
 	t.Helper()
 	ctx := context.Background()
-	now := time.Date(2026, 9, 4, 20, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Hour)
 
 	// The same credential metered under three keys: its tenant meter, the
 	// platform meter (a lent or platform-tier credential serves everyone),
@@ -34,6 +67,7 @@ func runStoreConformance(t *testing.T, st Store) {
 
 	rec := func(key string, w Window, util float64, observed time.Time) {
 		t.Helper()
+		assertWithinUsageRetention(t, observed)
 		if err := st.Record(ctx, key, Reading{Window: w, Utilization: util, Status: StatusAllowed,
 			ResetsAt: observed.Add(72 * time.Hour), ObservedAt: observed}); err != nil {
 			t.Fatalf("Record(%s, %s): %v", key, w, err)
@@ -111,11 +145,12 @@ func runStoreConformance(t *testing.T, st Store) {
 func runRefusalStreakConformance(t *testing.T, st Store) {
 	t.Helper()
 	ctx := context.Background()
-	now := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Hour)
 	key := Key("claude_code", TenantScope("team-streak"), "fp-streak")
 
 	refuse := func(w Window, at time.Time) {
 		t.Helper()
+		assertWithinUsageRetention(t, at)
 		if err := st.Record(ctx, key, Reading{Window: w, Status: StatusRejected, ObservedAt: at}); err != nil {
 			t.Fatalf("Record(refusal): %v", err)
 		}
@@ -154,6 +189,7 @@ func runRefusalStreakConformance(t *testing.T, st Store) {
 	}
 	// The credential answering ends the streak — that is what makes the
 	// rest self-healing rather than a one-way lock.
+	assertWithinUsageRetention(t, now.Add(3*time.Hour))
 	if err := st.Record(ctx, key, Reading{
 		Window: WindowAuth, Status: StatusAllowed, ObservedAt: now.Add(3 * time.Hour),
 	}); err != nil {
@@ -174,6 +210,7 @@ func runRefusalStreakConformance(t *testing.T, st Store) {
 	}
 	// A DATED refusal expires at its own reset instant, so it needs no
 	// escalation and carries no streak.
+	assertWithinUsageRetention(t, now.Add(5*time.Hour))
 	if err := st.Record(ctx, key, Reading{
 		Window: WindowSevenDay, Status: StatusRejected,
 		ResetsAt: now.Add(72 * time.Hour), ObservedAt: now.Add(5 * time.Hour),
