@@ -58,7 +58,15 @@ p="$PREFIX/node_modules/ultra11y/scripts/ultra11y.mjs"
 if ! ok "$p"; then
   mkdir -p "$PREFIX"
   cp "$LOCKDIR/package.json" "$LOCKDIR/package-lock.json" "$PREFIX/"
-  (cd "$PREFIX" && npm ci --ignore-scripts --no-audit --no-fund >&2)
+  for attempt in 1 2 3; do
+    if (cd "$PREFIX" && npm ci --ignore-scripts --no-audit --no-fund >&2); then
+      break
+    fi
+    if [ "$attempt" -eq 3 ]; then
+      exit 1
+    fi
+    sleep "$attempt"
+  done
   ok "$p" || { echo "ultra11y-engine.sh: the engine installed from the lockfile at '$p' does not carry the pin (want version '$WANT', size $SIZE, sha256 $SHA)" >&2; exit 1; }
 fi
 realpath_of "$p"; echo
