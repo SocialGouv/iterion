@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.270.1](https://github.com/SocialGouv/iterion/compare/v3.270.0...v3.270.1) (2026-10-18)
+
+### Bug Fixes
+
+* **bots:** copilot reads its own input schema, and the graph state travels around it ([#2562](https://github.com/SocialGouv/iterion/issues/2562)) ([790e385](https://github.com/SocialGouv/iterion/commit/790e385a78e45219b1fb28a2fd2583ca5d26ca5e)), closes [#1740](https://github.com/SocialGouv/iterion/issues/1740), references [#1740](https://github.com/SocialGouv/iterion/issues/1740)
+
+    <details><summary>why</summary>
+
+    copilot's `copi` entry node reused `turn_input` — the graph's per-turn state register, also `seed`'s output and `turn_state`'s input and output — as its LLM input. Seven of its fields are state the graph owns and Terra must never echo: the session anchors, the manager's raw scope exclusions, the scope-guard attempt, the clarification counters and the posture `mode`, whose prompt channel is the derived union (`effective_scope_exclusions`) instead of the manager's raw list. Every one of those…
+
+    </details>
+
 ## [3.270.0](https://github.com/SocialGouv/iterion/compare/v3.269.0...v3.270.0) (2026-10-18)
 
 ### Features
