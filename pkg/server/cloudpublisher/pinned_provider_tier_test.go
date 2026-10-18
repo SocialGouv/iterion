@@ -68,7 +68,7 @@ func platformBundleFor(t *testing.T, provider string, platformKeys, tenantKeys [
 		pub.oauthForfait = oauth
 	}
 	rs := pub.runSecrets.(*secrets.MemoryRunSecretsStore)
-	pinned := derivePinnedProviders(wfPinning(provider), model.ModelOverrides{}, nil)
+	pinned := derivePinnedProviders(model.RouteView{Workflow: wfPinning(provider)})
 	if provider != "" && len(pinned) == 0 {
 		t.Fatalf("inert bench: the walk read no pin from a node pinning %q — it would prove nothing about the exception", provider)
 	}
@@ -168,7 +168,7 @@ func TestDerivePinnedProviders_ReadsChainsAndPrefixes(t *testing.T) {
 		{"nothing", wfPinning(""), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := derivePinnedProviders(tc.node, model.ModelOverrides{}, nil)
+			got := derivePinnedProviders(model.RouteView{Workflow: tc.node})
 			if len(got) != len(tc.wants) {
 				t.Fatalf("derivePinnedProviders = %v, want %v", got, tc.wants)
 			}
@@ -188,7 +188,7 @@ func TestDerivePinnedProviders_ReadsAClawModelPrefix(t *testing.T) {
 		BaseNode:  ir.BaseNode{ID: "review"},
 		LLMFields: ir.LLMFields{Backend: "claw", Model: "moonshot/kimi-k2"},
 	}}}
-	got := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
+	got := derivePinnedProviders(model.RouteView{Workflow: wf})
 	if len(got) != 1 || got[0] != "moonshot" {
 		t.Fatalf("derivePinnedProviders = %v, want [moonshot] — a claw node pins through its model spec", got)
 	}
@@ -209,9 +209,9 @@ func TestPinnedProvider_ResumeReplaysTheLaunchSetNotTheCurrentSource(t *testing.
 	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderMoonshot, "platform-moonshot")
 
 	// What the launch derived and stamped, from a program that pinned nothing.
-	launchSet := derivePinnedProviders(wfPinning(""), model.ModelOverrides{}, nil)
+	launchSet := derivePinnedProviders(model.RouteView{Workflow: wfPinning("")})
 	// What the SAME bot would yield after someone added a moonshot pin.
-	movedSet := derivePinnedProviders(wfPinning("moonshot"), model.ModelOverrides{}, nil)
+	movedSet := derivePinnedProviders(model.RouteView{Workflow: wfPinning("moonshot")})
 	if len(movedSet) == 0 {
 		t.Fatal("inert bench: the moved source yields no pin, so the two inputs do not differ")
 	}
@@ -288,7 +288,7 @@ func TestSubmitResume_FundsFromTheLaunchStampNotTheResumedSource(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LoadRun: %v", err)
 			}
-			wantStamp := derivePinnedProviders(wfPinning(tc.launchPins), model.ModelOverrides{}, nil)
+			wantStamp := derivePinnedProviders(model.RouteView{Workflow: wfPinning(tc.launchPins)})
 			if len(r.PinnedProviders) != len(wantStamp) {
 				t.Fatalf("run.PinnedProviders = %v, want %v — the launch did not freeze its pinned set", r.PinnedProviders, wantStamp)
 			}
@@ -357,10 +357,9 @@ func TestRequireLLMCredential_APinnedKeyFundsTheLaunch(t *testing.T) {
 				requireLLMCredential: true,
 			}
 			wf := wfPinning("moonshot")
-			pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
+			pinned := derivePinnedProviders(model.RouteView{Workflow: wf})
 			ctx := store.WithTenant(context.Background(), "team1")
-			_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "",
-				wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+			_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, pinned, nil)
 			if tc.wantRefused {
 				if !errors.Is(err, runview.ErrNoLLMCredential) {
 					t.Fatalf("err = %v, want ErrNoLLMCredential — an unfunded pin must still be refused", err)
@@ -393,10 +392,9 @@ func TestPinnedProvider_TierStampAndAuditLineNameThePinnedKey(t *testing.T) {
 		logger:     iterlog.New(iterlog.LevelInfo, &buf),
 	}
 	wf := wfPinning("moonshot")
-	pinned := derivePinnedProviders(wf, model.ModelOverrides{}, nil)
+	pinned := derivePinnedProviders(model.RouteView{Workflow: wf})
 	ctx := store.WithTenant(context.Background(), "team1")
-	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "owner1", "", "",
-		wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, pinned, nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, pinned, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -439,8 +437,7 @@ func TestPinnedProvider_AnOrgKeyFundedFirstKeepsItsSlotFromThePlatformTier(t *te
 	p.oauthForfait = oauth
 
 	ctx := store.WithTenant(context.Background(), "team-in")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-1", orgID, "team-in", "webhook:cfg-1", "", "",
-		nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, []string{"moonshot"}, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-1", orgID, "team-in", "webhook:cfg-1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, []string{"moonshot"}, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

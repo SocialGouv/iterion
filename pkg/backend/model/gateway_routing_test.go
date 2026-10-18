@@ -346,7 +346,7 @@ func TestEffectiveProviders_GatewayRouteIsEnvFundedNotUnknown(t *testing.T) {
 	gwOnly := wf(map[string]ir.Node{
 		"gw": gatewayAgent("gw", "claw", "openai_compatible/team/m"),
 	})
-	res := EffectiveProviders(gwOnly, ModelOverrides{}, nil, knownForTest)
+	res := EffectiveProviders(RouteView{Workflow: gwOnly, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if len(res.EnvFunded) != 1 || res.EnvFunded[0] != "openai_compatible" {
 		t.Errorf("EnvFunded = %v, want [openai_compatible]", res.EnvFunded)
 	}
@@ -361,7 +361,7 @@ func TestEffectiveProviders_GatewayRouteIsEnvFundedNotUnknown(t *testing.T) {
 		"gw":     gatewayAgent("gw", "claw", "openai_compatible/team/m"),
 		"vendor": gatewayAgent("vendor", "claw", "anthropic/claude-opus-5"),
 	})
-	res = EffectiveProviders(mixed, ModelOverrides{}, nil, knownForTest)
+	res = EffectiveProviders(RouteView{Workflow: mixed, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if len(res.EnvFunded) != 1 || len(res.Providers) != 1 || res.Providers[0] != "anthropic" {
 		t.Errorf("EnvFunded = %v Providers = %v, want the gateway named apart and the vendor in Providers", res.EnvFunded, res.Providers)
 	}
@@ -369,7 +369,7 @@ func TestEffectiveProviders_GatewayRouteIsEnvFundedNotUnknown(t *testing.T) {
 	vendorOnly := wf(map[string]ir.Node{
 		"vendor": gatewayAgent("vendor", "claw", "anthropic/claude-opus-5"),
 	})
-	res = EffectiveProviders(vendorOnly, ModelOverrides{}, nil, knownForTest)
+	res = EffectiveProviders(RouteView{Workflow: vendorOnly, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if len(res.EnvFunded) != 0 || !res.NarrowSafe {
 		t.Errorf("a vendor-only run: EnvFunded = %v NarrowSafe = %v, want empty and safe", res.EnvFunded, res.NarrowSafe)
 	}

@@ -84,7 +84,12 @@ func (w *Workflow) LaunchVarEdgeFilter(launch map[string]any) EdgeFilter {
 	if w == nil {
 		return nil
 	}
-	view := launchVarsView(w, launch)
+	// The edge filter keeps its OWN probe for what a var's reading may
+	// consult (varReadingConsultsEnv, below), not the view's late set: its
+	// premise is that the answer can MOVE between two readings — which a
+	// coercion failure's raw value answers differently again. The two
+	// questions share launchVarsView and disagree on purpose.
+	view, _ := launchVarsView(w, launch)
 	for name := range view {
 		if w.varReadingConsultsEnv(name, launch) {
 			delete(view, name)
@@ -118,7 +123,7 @@ func (w *Workflow) LaunchVarEdgeFilter(launch map[string]any) EdgeFilter {
 				}
 				continue
 			}
-			holds, decided := decideOnLaunchVars(e.Expression, view)
+			holds, decided := DecideOnLaunchVars(e.Expression, view)
 			switch {
 			case !decided:
 			case holds:
@@ -189,14 +194,24 @@ func (w *Workflow) varReadingConsultsEnv(name string, launch map[string]any) boo
 	return v.HasDefault && consultsAnyEnvName(v.Default, v.Type)
 }
 
-// decideOnLaunchVars evaluates a `when` expression against a launch vars view
-// alone, and reports whether that answer is the engine's: decided only when
-// every reference is a `vars.<name>` the view answers with a value the run
-// reads unchanged, and the evaluation returns without error.
+// DecideOnLaunchVars evaluates a `when` expression against a launch vars
+// view alone, and reports whether that answer is the engine's: decided only
+// when every reference is a `vars.<name>` the view answers with a value the
+// run reads unchanged, and the evaluation returns without error.
 //
 // A predicate referencing nothing is not decided here: it reads no selection
 // this view narrows, and its value is the compiler's business.
-func decideOnLaunchVars(ast *expr.AST, view map[string]any) (holds, decided bool) {
+//
+// Two readers share this one evaluation grammar: the edge filter's
+// caller (this package) and the launch-time routing gate —
+// model.FallbackWhenActive — whose `when:` routes the walk keeps or drops by
+// it. Pass the view WITHOUT its late names: a name whose value the reading
+// process decided is a reference the view cannot answer, and the gate holds
+// what it guards undecided there. (The edge filter cleans its view by its
+// own probe instead — varReadingConsultsEnv, a deliberately different
+// question, which keeps the edge standing on undecided rather than holding
+// anything; see its comment.)
+func DecideOnLaunchVars(ast *expr.AST, view map[string]any) (holds, decided bool) {
 	refs := ast.Refs()
 	if len(refs) == 0 {
 		return false, false

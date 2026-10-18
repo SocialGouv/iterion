@@ -46,6 +46,10 @@ func anthropicWireHints() map[string]bool {
 //   - a model-calling node that exposes no LLMFields (human answering
 //     with a model, subbot, agent-rung recovery), a nil workflow.
 //
+// A `{{vars.*}}` span resolves against the view's vars (RouteView.field) —
+// the run's own reading — and a late name stays as written, undecided,
+// exactly where the guard wants it.
+//
 // PRIMARY routes only. A `fallbacks:` route onto the wire does not arm
 // the guard: the primary can carry the whole run without ever touching
 // it, and the rescue route only fires on a failure the mid-run guard and
@@ -59,8 +63,8 @@ func anthropicWireHints() map[string]bool {
 // provider — answers false. opencode sits with claw and pi rather than with
 // the vendor-bound CLIs: it picks its provider from what the process holds,
 // so an unresolved hint may still land on anthropic.
-func AnthropicWireReachable(wf *ir.Workflow, overrides ModelOverrides) bool {
-	return len(AnthropicWireRoutes(wf, overrides)) > 0
+func AnthropicWireReachable(v RouteView) bool {
+	return len(AnthropicWireRoutes(v)) > 0
 }
 
 // WireRoute is one PRIMARY route of a run that can execute against the
@@ -88,7 +92,13 @@ type WireRoute struct {
 // AnthropicWireRoutes lists the routes that make AnthropicWireReachable answer
 // true — one per node, in node-id order, with what the walk can read of each.
 // A nil workflow yields one unreadable route: the conservative reading.
-func AnthropicWireRoutes(wf *ir.Workflow, overrides ModelOverrides) []WireRoute {
+//
+// The fields are read through the view (RouteView.field): a `{{vars.*}}`
+// span resolves against the run's vars the way dispatch resolves it, and a
+// late name stays as written — undecided, which is the direction this
+// guard answers in.
+func AnthropicWireRoutes(v RouteView) []WireRoute {
+	wf := v.Workflow
 	if wf == nil {
 		return []WireRoute{{}}
 	}
@@ -101,11 +111,14 @@ func AnthropicWireRoutes(wf *ir.Workflow, overrides ModelOverrides) []WireRoute 
 			}
 			continue
 		}
-		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
-		backend := routeBackend(ov.Backend, fields.Backend, wf.DefaultBackend)
+		ov := v.Overrides.ForNode(n.NodeID(), n.NodeKind())
+		backend := routeBackend(v.field(ov.Backend), v.field(fields.Backend), v.field(wf.DefaultBackend))
 		mdl := firstNonEmpty(ov.Model, fields.Model)
-		if routeOnAnthropicWire(backend, ov.Provider, fields.Provider, mdl) {
-			out = append(out, primaryWireRoute(n.NodeID(), backend, ov.Provider, fields.Provider, mdl))
+		ovProv := v.field(ov.Provider)
+		chainProv := v.field(fields.Provider)
+		mdlText := v.field(mdl)
+		if routeOnAnthropicWire(backend, ovProv, chainProv, mdlText) {
+			out = append(out, primaryWireRoute(n.NodeID(), backend, ovProv, chainProv, mdlText))
 		}
 	}
 	slices.SortFunc(out, func(a, b WireRoute) int { return strings.Compare(a.NodeID, b.NodeID) })

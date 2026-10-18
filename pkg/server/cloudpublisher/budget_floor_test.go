@@ -209,7 +209,7 @@ func resolveFloorBundleIn(t *testing.T, p *Publisher, runID, orgID, tenant, botI
 		t.Fatal("resolveFloorBundleIn needs a MemoryRunSecretsStore")
 	}
 	ctx := store.WithTenant(context.Background(), tenant)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenant, "owner1", botID, "", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenant, "owner1", botID, "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

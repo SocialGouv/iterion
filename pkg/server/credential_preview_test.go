@@ -100,8 +100,8 @@ func TestCredentialPreviewWebhookMatchesActualLaunchSourceAndIdentity(t *testing
 		t.Fatalf("configured override drift preview=%+v actual=%+v", pub.preview.Launch.KeyOverrides, pub.launched.KeyOverrides)
 	}
 	known := map[string]bool{"openai": true, "anthropic": true}
-	a := model.EffectiveProviders(pub.previewWF, runview.ModelOverridesFromRun(runview.RunModelOverrides(pub.preview.Launch.ModelOverrides)), nil, known)
-	b := model.EffectiveProviders(pub.launchedWF, runview.ModelOverridesFromRun(runview.RunModelOverrides(pub.launched.ModelOverrides)), nil, known)
+	a := model.EffectiveProviders(model.RouteView{Workflow: pub.previewWF, Overrides: runview.ModelOverridesFromRun(runview.RunModelOverrides(pub.preview.Launch.ModelOverrides))}, known)
+	b := model.EffectiveProviders(model.RouteView{Workflow: pub.launchedWF, Overrides: runview.ModelOverridesFromRun(runview.RunModelOverrides(pub.launched.ModelOverrides))}, known)
 	if !a.NarrowSafe || !reflect.DeepEqual(a.Providers, []string{"anthropic"}) {
 		t.Fatalf("model-bearing oracle did not narrow: %+v", a)
 	}

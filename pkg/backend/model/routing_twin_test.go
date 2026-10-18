@@ -11,13 +11,17 @@ import (
 // var's document with a TWIN of drillTemplatePath (ir.drillVarsView — the
 // layering forbids the import). Twins drift silently: mutating one leaves
 // the other's package green. This table runs one semantic surface through
-// BOTH resolutions — the executor's own resolveRoutingField over the vars
-// resolveVars would store, and the screen's LaunchBackendName over the same
-// declared document — so a drill that changes on either side reddens here.
+// THREE resolutions — the executor's own resolveRoutingField over the vars
+// resolveVars would store, the screen's LaunchBackendName over the same
+// declared document, and the launch view's field reading
+// (RouteViewForLaunch, the pre-flight entry) — so a drill that changes on
+// any side reddens here.
 //
 // wantScreen is the screen's decided backend ("" = undecided OR
 // decided-empty); wantDispatch is the executor's expanded text, the span
-// kept as written wherever the drill finds nothing.
+// kept as written wherever the drill finds nothing. The pre-flight reading
+// shares wantDispatch's column: both resolve the span and keep what the
+// drill misses — where the screen collapses undecided to "".
 func TestVarsDrill_ScreenAndDispatchAgree(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -53,6 +57,13 @@ func TestVarsDrill_ScreenAndDispatchAgree(t *testing.T) {
 			e.vars = map[string]any{"cfg": v}
 			if got := e.resolveRoutingField(field); got != tc.wantDispatch {
 				t.Errorf("dispatch: resolveRoutingField(%s) = %q, want %q", field, got, tc.wantDispatch)
+			}
+			// The pre-flight's reading, through the launch view — the same
+			// declared document, no launch overrides, so the drill decides
+			// wherever dispatch does.
+			view := RouteViewForLaunch[string](w, ModelOverrides{}, nil, nil, nil)
+			if got := view.field(field); got != tc.wantDispatch {
+				t.Errorf("preflight: RouteView.field(%s) = %q, want %q (dispatch's own)", field, got, tc.wantDispatch)
 			}
 		})
 	}

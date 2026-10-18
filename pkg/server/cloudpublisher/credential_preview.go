@@ -37,14 +37,19 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// The same canonicalisation the live walk applies, or the preview would
 	// answer for a spelling the launch never uses.
 	previewBotID := botregistry.NormalizeName(spec.Context.BotID)
+	// The launch view reads the run's vars by provenance, exactly as the
+	// live launch will (the parity doctrine): declared defaults narrow the
+	// gate, launch values only where the spec pins them, a late name leaves
+	// the route undecided (ADR-129 §4).
+	previewView := model.RouteViewForLaunch(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback), spec.Launch.Vars, spec.Launch.TrustedVarNames)
 	// The same derivation the launch stamps on the run document. Derived
 	// fresh here on purpose: a preview describes a launch that has not
 	// happened, so there is no frozen set to replay — it answers for the
 	// program as it reads NOW, which is what the operator is about to run.
-	x.pinned = pinnedProviderSet(derivePinnedProviders(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback)))
+	x.pinned = pinnedProviderSet(derivePinnedProviders(previewView))
 	// Same predicate as the live fill (#2038): an env-funded run acquires no
 	// LLM credential, so the preview shows no candidate and reads no tier.
-	envFunded := wf != nil && model.EffectiveProviders(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback), knownPoolProviders).OnlyEnvFunded()
+	envFunded := wf != nil && model.EffectiveProviders(previewView, knownPoolProviders).OnlyEnvFunded()
 	// The live resolution's own policy snapshot and tier probes (read-only
 	// store reads, like every other stage here) — and the launch's
 	// RESOLVED routing policy whitelists the slots exactly as the launch
@@ -91,7 +96,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 		// will serve.
 		x.policy.runNative = orNative(orNative(x.natives["tenant"], x.natives["org"]), x.natives["platform"])
 	}
-	wants, routes := wantsFor(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback))
+	wants, routes := wantsFor(previewView)
 	for _, w := range wants {
 		x.out.Pool.Wants = append(x.out.Pool.Wants, string(w.Source)+":"+w.Ref)
 	}
@@ -332,7 +337,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// and a policy whose ladder can dispatch a missing kind.
 	if !envFunded && len(x.api)+len(x.oauth) > 0 && !x.poolGranted &&
 		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil && !sovereignPreview {
-		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, wf, buildModelOverrides(spec.Launch.ModelOverrides), doorServesMetadata(x))
+		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, previewView, spec.Launch.Vars, doorServesMetadata(x))
 		if !ok {
 			x.out.Pool.DoorReason = "no_dispatchable_wants"
 		} else {

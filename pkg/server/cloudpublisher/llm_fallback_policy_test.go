@@ -43,8 +43,7 @@ func resolvePolicy(t *testing.T, p *Publisher, src string) error {
 	t.Helper()
 	wf := compileTestSource(t, src)
 	ctx := store.WithTenant(context.Background(), "team1")
-	_, err := p.resolveAndSealCredentials(ctx, "run-pol", "", "team1", "owner1", "", "",
-		wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	_, err := p.resolveAndSealCredentials(ctx, "run-pol", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil)
 	return err
 }
 

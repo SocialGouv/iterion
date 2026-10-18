@@ -392,7 +392,7 @@ func TestWantsFor_HonoursLaunchTimeModelOverrides(t *testing.T) {
 		overrides.SetModel("mutants_adversary", "openai/gpt-5.6-sol")
 		overrides.SetProvider("mutants_adversary", "openai")
 
-		w, _ := wantsFor(wf, overrides, nil)
+		w, _ := wantsFor(model.RouteView{Workflow: wf, Overrides: overrides})
 		got := provs(w)
 		if contains(got, "anthropic") {
 			t.Fatalf("wants still asks for anthropic: %v — the judge-kind override is not reaching wantsFor", got)
@@ -410,7 +410,7 @@ func TestWantsFor_HonoursLaunchTimeModelOverrides(t *testing.T) {
 		overrides.SetProvider("judge", "openai")
 		overrides.SetModel("judge", "openai/gpt-5")
 
-		w, _ := wantsFor(wf, overrides, nil)
+		w, _ := wantsFor(model.RouteView{Workflow: wf, Overrides: overrides})
 		got := provs(w)
 		// The agent still wants anthropic (unchanged), but the judge now
 		// contributes openai — the mixed set the run actually needs.
@@ -420,7 +420,7 @@ func TestWantsFor_HonoursLaunchTimeModelOverrides(t *testing.T) {
 	})
 
 	t.Run("empty overrides → identical to the pre-fix DSL walk", func(t *testing.T) {
-		w, _ := wantsFor(wf, model.ModelOverrides{}, nil)
+		w, _ := wantsFor(model.RouteView{Workflow: wf})
 		got := provs(w)
 		if !contains(got, "anthropic") {
 			t.Fatalf("wants without overrides must still see the DSL pin: got %v", got)
@@ -444,7 +444,7 @@ func TestWantsFor_HonoursLaunchTimeModelOverrides(t *testing.T) {
 				LLMFields: ir.LLMFields{Model: "fake-provider/gpt-x"},
 			},
 		}}
-		got, _ := wantsFor(wfFake, model.ModelOverrides{}, nil)
+		got, _ := wantsFor(model.RouteView{Workflow: wfFake})
 		if len(got) != len(poolWantOrder) {
 			t.Fatalf("unknown-provider pin narrowed wants to %d, want the full %d (fail open)", len(got), len(poolWantOrder))
 		}

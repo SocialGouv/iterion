@@ -46,6 +46,17 @@ type LaunchSpec struct {
 	// compatible context from the launch inputs and persists it on the run.
 	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
 	Vars             map[string]string       // --var-style overrides
+	// TrustedVarNames are the launch var names whose value the OPERATOR
+	// decided, as the lane that built this spec declares them (the CLI's
+	// --var, cfg.OperatorLaunchVars, a schedule's own vars). The launch-time
+	// pre-flights narrow a routing gate through a declared default or one of
+	// these names — never through a lane-filled value, which the webhook
+	// lanes seed from the delivery payload (reviewPRVars, fixerPRVars), and
+	// which would hand the gate a route the payload chose (ADR-129 §4, rule
+	// 2). No lane fills it yet (slice 1): empty means launch values narrow
+	// nothing and only declared defaults do — the conservative half, which
+	// slice 3 completes.
+	TrustedVarNames []string
 	// AllowUnknownInputs is the operator's explicit opt-out of the #1757
 	// input check: an input that names no declared var rides the launch
 	// (warned, never silent) instead of refusing it. The forwarding channel

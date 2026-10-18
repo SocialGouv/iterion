@@ -88,7 +88,7 @@ func TestEnvFundedRun_AcquiresNoLLMCredential(t *testing.T) {
 				platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &fd}, nil),
 			}
 			ctx := store.WithTenant(context.Background(), "team1")
-			res, err := p.resolveAndSealCredentials(ctx, "run-2038", "", "team1", "webhook:cfg-1", "", "", tc.wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-2038", "", "team1", "webhook:cfg-1", "", "", tc.wf, nil, nil, model.RouteView{Workflow: tc.wf}, nil, store.RunTrustDefault, nil, nil)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -146,7 +146,7 @@ func TestEnvFundedRun_RequireLLMCredentialDoesNotRefuse(t *testing.T) {
 		platformAudience: audienceResolver(&platformcfg.PlatformCredentials{}, nil),
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
-	if _, err := p.resolveAndSealCredentials(ctx, "run-2038b", "", "team1", "webhook:cfg-1", "", "", envFundedWorkflow, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil); err != nil {
+	if _, err := p.resolveAndSealCredentials(ctx, "run-2038b", "", "team1", "webhook:cfg-1", "", "", envFundedWorkflow, nil, nil, model.RouteView{Workflow: envFundedWorkflow}, nil, store.RunTrustDefault, nil, nil); err != nil {
 		t.Fatalf("an env-funded run was refused under requireLLMCredential: %v", err)
 	}
 }
@@ -176,7 +176,7 @@ func TestEnvFundedRun_ClosedForfaitIsNotAFailure(t *testing.T) {
 		platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &fd}, nil),
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
-	res, err := p.resolveAndSealCredentials(ctx, "run-2038c", "", "team1", "webhook:cfg-1", "", "", envFundedWorkflow, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-2038c", "", "team1", "webhook:cfg-1", "", "", envFundedWorkflow, nil, nil, model.RouteView{Workflow: envFundedWorkflow}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestCredentialPreviewMatchesTheEnvFundedRun(t *testing.T) {
 	}
 
 	// The live resolution agrees: nothing sealed.
-	res, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), team), "run-2038d", "", team, spec.OwnerID, spec.Context.BotID, "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	res, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), team), "run-2038d", "", team, spec.OwnerID, spec.Context.BotID, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestWantsFor_AnEnvTemplatedRouteFailsOpen(t *testing.T) {
 			Backend: "claw", Provider: "anthropic", Model: "claude-opus-5",
 		}},
 	}}
-	wants, res := wantsFor(wf, model.ModelOverrides{}, nil)
+	wants, res := wantsFor(model.RouteView{Workflow: wf})
 	if res.NarrowSafe {
 		t.Fatal("narrow-safe on an env-templated route: the pool would narrow on it")
 	}
@@ -277,7 +277,7 @@ func TestWantsFor_AnEnvSetTemplatedRouteFailsOpen(t *testing.T) {
 			Backend: "claw", Provider: "anthropic", Model: "claude-opus-5",
 		}},
 	}}
-	wants, res := wantsFor(wf, model.ModelOverrides{}, nil)
+	wants, res := wantsFor(model.RouteView{Workflow: wf})
 	if res.NarrowSafe {
 		t.Fatal("narrow-safe on an env-set templated route: the pool would narrow on it")
 	}

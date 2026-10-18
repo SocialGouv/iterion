@@ -449,15 +449,16 @@ func TestUsageCapPreflight_AResumeFoldsTheRunsStoredInputs(t *testing.T) {
 			}
 		})
 	}
-	// A run with headroom pays no read at all: the walk is only reached when
-	// a route is capped.
+	// A fresh launch pays no read: only a resume publication reads the run
+	// document, and it does so for the wire view itself — a run's routes are
+	// judged on its own launch before the cap is known.
 	rs := &inputStore{run: run(map[string]any{"mono_family": "gpt"})}
 	r := capRunner(capTestPolicy(), usagecap.NewMemStore(), rs)
 	if err := r.usageCapPreflight(ctx, monoTopology(monoFamilyVar("claude")), resume(), iterlog.Nop()); err != nil {
 		t.Fatalf("parked with no cap recorded: %v", err)
 	}
-	if rs.load != 0 {
-		t.Errorf("LoadRun called %d time(s) for an uncapped run, want 0", rs.load)
+	if rs.load != 1 {
+		t.Errorf("LoadRun called %d time(s) for an uncapped resume, want 1 — the wire view reads the stored inputs before the cap is known", rs.load)
 	}
 }
 

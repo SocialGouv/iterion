@@ -216,7 +216,7 @@ func TestPoolLaunchSkipsSharedTiers(t *testing.T) {
 
 	// Pool-stamped: the shared tier is out of the walk.
 	ctx := store.WithTenant(t.Context(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "pool-skip", "", "team1", "webhook:config", "", "honorabilite", nil, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "pool-skip", "", "team1", "webhook:config", "", "honorabilite", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
