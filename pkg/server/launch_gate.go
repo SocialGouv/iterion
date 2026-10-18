@@ -152,9 +152,9 @@ func orValue[T int | float64](team, def T) T {
 }
 
 // launchAdmission is the undo handle for a granted (and metered)
-// launch admission. nil (or an admission with no counter) means
-// nothing was metered — fail-open, super-admin, local mode — and
-// rollback is a no-op. Callers that abandon an admitted launch
+// launch admission. nil means nothing was metered and rollback is a no-op.
+// An admission with no monthly counter can still own a rate token; rollback
+// releases only what was metered. Callers that abandon an admitted launch
 // without creating any run (e.g. the loser of two concurrent
 // duplicate webhook deliveries) call rollback so the monthly run
 // counter stays true.
@@ -341,6 +341,12 @@ func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdm
 		return nil, d
 	}
 	adm, d := s.gateMonthlyCaps(ctx, org, t, floor, subj, now)
+	if d != nil && rateKey != "" {
+		s.authLimiter.refund(rateKey, rateCfg)
+	}
+	if d == nil && adm == nil && rateKey != "" {
+		adm = &launchAdmission{}
+	}
 	if adm != nil && rateKey != "" {
 		adm.rate, adm.rateKey, adm.rateCfg = s.authLimiter, rateKey, rateCfg
 	}

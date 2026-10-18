@@ -284,6 +284,34 @@ func TestGateLaunch_MonthlyUSDReserve(t *testing.T) {
 		}
 	})
 
+	t.Run("a monthly refusal refunds only its rate token", func(t *testing.T) {
+		s := newOrgTestServer(t)
+		counter := orgusage.NewMemoryCounter()
+		s.orgUsage = counter
+		s.authLimiter = newAuthRateLimiter()
+		withFloor(t, s, policy)
+		ctx := seedGate(t, s, gateSpec{id: "t1", orgCostCapUSD: 50, launchRatePerMin: 1})
+		if _, err := counter.AllowRun(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC(), 0, 0); err != nil {
+			t.Fatalf("seed a counted run: %v", err)
+		}
+		if err := counter.AddSpend(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC(), 25, 10, 10, 0); err != nil {
+			t.Fatalf("seed spend: %v", err)
+		}
+		for attempt := 1; attempt <= 2; attempt++ {
+			_, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"})
+			if d == nil || d.reason != denyMonthlyCostCap {
+				t.Fatalf("attempt %d denial = %+v, want %s — the monthly refusal must leave the rate bucket available", attempt, d, denyMonthlyCostCap)
+			}
+		}
+		u, err := counter.Usage(context.Background(), orgusage.OrgSubject("t1"), time.Now().UTC())
+		if err != nil {
+			t.Fatalf("usage: %v", err)
+		}
+		if u.Runs != 1 {
+			t.Errorf("monthly runs = %d, want the pre-existing run only", u.Runs)
+		}
+	})
+
 	t.Run("the reserved bot reaches the whole cap", func(t *testing.T) {
 		s := newOrgTestServer(t)
 		s.orgUsage = orgusage.NewMemoryCounter()
