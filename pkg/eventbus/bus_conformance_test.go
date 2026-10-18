@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -537,16 +538,40 @@ func TestBusSubscribeCancelSharedBudget(t *testing.T) {
 
 // TestBusSubscribeCancelExpiredCtxDoesNotWarnCleanSub is #1477 R6aac0e:
 // when the shared subCancelCtx is already spent (subscribers 2..N after
-// subscriber 1 ate the budget), the worker's s.done and waitCtx.Done()
-// are both ready at the SAME tick, and Go's select picks a random ready
-// arm — a worker that returned instantly gets named in the operator-
-// facing overrun warning ~half the time. The pre-check-s.done fix makes
-// the false positive structurally impossible.
+// subscriber 1 ate the budget), waitCtx.Done() is ready before cancel
+// enters its first select and wins it even though the worker is about to
+// close its done channel — a worker that returned instantly was named in
+// the operator-facing overrun warning ~half the time. The production
+// answer is the post-check: after the budget wait ends on the ctx arm,
+// the cancel path gives done one more overrunPostCheckWindow and warns
+// only if it is still open.
 //
-// The test iterates N times to catch the coin-flip: without the
-// pre-check, this reddens with any probability up to 1 — running N=100
-// makes the false-positive rate observable on any run. Mutation
-// (revert the pre-check): red on flaky N iterations.
+// That window's losing side is goroutine scheduling: the worker must be
+// scheduled after close(stop) to close its done channel, and the nats-
+// async row's cancel path must run the Wait and Unsubscribe goroutines
+// it just spawned, within overrunPostCheckWindow of real time. A loaded
+// runner starves them past it and the warning fires on a clean
+// subscriber — #2499, merge-queue run 38905409853, iter=99, on a PR
+// touching no file of this package. Each iteration of the old witness
+// was a fresh real-clock bet on that window; it now runs every
+// iteration in a synctest bubble instead, where virtual time advances
+// only when every goroutine of the bubble is durably blocked: the
+// goroutines the cancel path just signalled are runnable while the
+// post-check waits, so the window cannot elapse before the channels
+// close and the arbitration is decided by causality on every iteration
+// rather than sampled. The premise is asserted (the caller's ctx really
+// is spent before cancel runs) and the join before the verdict is a
+// synctest.Wait, never a sleep.
+//
+// Mutation: dropping the post-check in favour of an immediate warn, or
+// inverting it to warn when the worker HAS settled, reddens the witness
+// on its own line, in the bubble, on the first iteration. Dropping the
+// warning entirely reddens TestBusSubscribeCancelBoundedForRunawayHandler,
+// whose handler is blocked for real and needs the warning. One thing this
+// witness no longer defends: shrinking overrunPostCheckWindow toward zero
+// goes green here (virtual time holds the window open) — that miscalibration
+// shows up as operator-visible overrun warnings in real shutdowns, not as a
+// red queue; the window's calibration is tuned there, not in this test.
 func TestBusSubscribeCancelExpiredCtxDoesNotWarnCleanSub(t *testing.T) {
 	for _, c := range busCases {
 		if c.name == "nats" {
@@ -557,25 +582,37 @@ func TestBusSubscribeCancelExpiredCtxDoesNotWarnCleanSub(t *testing.T) {
 		}
 		t.Run(c.name, func(t *testing.T) {
 			for iter := 0; iter < 100; iter++ {
-				var buf bytes.Buffer
-				bus, cleanup := c.make(t, newBufLogger(&buf), 50*time.Millisecond)
-				cancel, err := bus.Subscribe("clean", trigger.Matcher{}, func(context.Context, trigger.Event) error {
-					// Handler returns immediately: the worker is done by
-					// the time cancel is called.
-					return nil
+				synctest.Test(t, func(t *testing.T) {
+					var buf bytes.Buffer
+					bus, cleanup := c.make(t, newBufLogger(&buf), 50*time.Millisecond)
+					cancel, err := bus.Subscribe("clean", trigger.Matcher{}, func(context.Context, trigger.Event) error {
+						// Handler returns immediately: the worker is done by
+						// the time cancel is called.
+						return nil
+					})
+					if err != nil {
+						t.Fatalf("Subscribe: %v", err)
+					}
+					// Pre-expire the shared ctx so waitCtx.Done() is ALREADY
+					// ready when cancel enters its select. A deadline in the
+					// past arms no timer; asserted, not assumed — an already-
+					// spent caller ctx is the premise the arbitration reads.
+					expiredCtx, expiredCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+					defer expiredCancel()
+					if expiredCtx.Err() == nil {
+						t.Fatal("premise: the caller ctx is not spent — the witness would sample the arbitration instead of staging it")
+					}
+					cancel(expiredCtx)
+					// The goroutines the cancel path spawned (the worker; the
+					// nats-async row's Wait and Unsubscribe) are gone or
+					// durably blocked before Wait returns, so the Fatal below
+					// can never exit the bubble with one wedged behind it.
+					synctest.Wait()
+					cleanup()
+					if s := buf.String(); strings.Contains(s, "did not return within") || strings.Contains(s, "did not settle within") {
+						t.Fatalf("iter=%d: warning fired on a clean subscriber (expired ctx race won by ctx.Done): %q", iter, s)
+					}
 				})
-				if err != nil {
-					t.Fatalf("Subscribe: %v", err)
-				}
-				// Pre-expire the shared ctx so waitCtx.Done() is ALREADY
-				// ready when cancel enters its select.
-				expiredCtx, expiredCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-				cancel(expiredCtx)
-				expiredCancel()
-				if s := buf.String(); strings.Contains(s, "did not return within") || strings.Contains(s, "did not settle within") {
-					t.Fatalf("iter=%d: warning fired on a clean subscriber (expired ctx race won by ctx.Done): %q", iter, s)
-				}
-				cleanup()
 			}
 		})
 	}
