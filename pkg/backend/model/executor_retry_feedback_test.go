@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -414,5 +415,48 @@ func TestValidateAndRetry_KeepsTheFirstAttemptsSpend(t *testing.T) {
 	// neither report contains the other and the costs add.
 	if got, _ := output["_cost_usd"].(float64); got < 0.92 {
 		t.Errorf("_cost_usd = %v, want ~0.93 — the rejected attempt's $0.90 was dropped", output["_cost_usd"])
+	}
+}
+
+// A backend whose stream died on a provider error hands the CLI's error text
+// to the parser as if it were the answer: wrapped as parse-fallback text,
+// then validated as missing required fields — which sent the reader chasing
+// the output schema while the provider route was the whole story (#2465's
+// publish judge, run 01a144f5). The failure must name the provider error.
+func TestValidateAndRetry_AProviderErrorAsResultIsNamedNotValidated(t *testing.T) {
+	reg := delegate.NewRegistry()
+	reg.Register("test_backend", nil)
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{
+			"out_schema": {
+				Name: "out_schema",
+				Fields: []*ir.SchemaField{
+					{Name: "created", Type: ir.FieldTypeJSON},
+					{Name: "summary", Type: ir.FieldTypeString},
+				},
+			},
+		},
+	}
+	exec := NewClawExecutor(NewRegistry(), wf, WithBackendRegistry(reg))
+	schema := wf.Schemas["out_schema"]
+	result := delegate.Result{
+		Output:        map[string]any{"text": "API Error: Couldn't connect through your proxy (ERR_PROXY_TUNNEL) — the proxy refused the tunnel to api.anthropic.com (request id xr-1)"},
+		ParseFallback: true,
+		BackendName:   "test_backend",
+	}
+	_, err := exec.validateAndRetry(context.Background(),
+		backendFields{id: "answerer", outputSchema: "out_schema"},
+		"test_backend", nil, &delegate.Task{OutputSchema: json.RawMessage("{}")}, result, schema)
+	if err == nil {
+		t.Fatal("a provider error wrapped as the answer validated as structured output")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "the backend produced no structured output") ||
+		!strings.Contains(msg, "ERR_PROXY_TUNNEL") {
+		t.Fatalf("the failure does not name the provider error:\n%s", msg)
+	}
+	if strings.Contains(msg, "missing required field") {
+		t.Fatalf("the failure is still mislabeled as a schema problem:\n%s", msg)
 	}
 }
