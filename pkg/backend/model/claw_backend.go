@@ -601,6 +601,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// resolved policy is evaluated before each tool executes; see
 	// pkg/backend/permission and generation.go's executeToolsDirect.
 	opts.Permission = task.Permission
+	// The same policy rides the context the tool executors receive, so the
+	// subagent runner gates a child conversation with the policy this loop
+	// answers to — a deny row must stop at the delegation, not before it.
+	ctx = WithParentPermission(ctx, task.Permission)
 
 	// Wire the operator-chatbox inbox if the runtime configured one.
 	// Resolved per-call so a backend shared across runs picks up the

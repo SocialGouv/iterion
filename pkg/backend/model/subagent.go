@@ -9,8 +9,28 @@ import (
 	clawhooks "github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
+
+// parentPermissionCtxKey carries the parent loop's tool-permission policy to
+// the tool executors the loop invokes — the subagent runner among them — so
+// a child conversation is gated by the policy the parent answers to.
+type parentPermissionCtxKey struct{}
+
+// WithParentPermission attaches the policy the parent loop evaluates its own
+// tool calls under. The claw backend sets it where it arms its own loop, and
+// NewSubagentRunner reads it off the ctx every tool call already carries.
+func WithParentPermission(ctx context.Context, policy *permission.Policy) context.Context {
+	return context.WithValue(ctx, parentPermissionCtxKey{}, policy)
+}
+
+// ParentPermission returns the policy the parent tool loop runs under, or
+// nil when the caller is not a gated loop.
+func ParentPermission(ctx context.Context) *permission.Policy {
+	policy, _ := ctx.Value(parentPermissionCtxKey{}).(*permission.Policy)
+	return policy
+}
 
 // NewSubagentRunner returns a closure suitable as the executor for
 // the claw `agent` tool. When the LLM dispatches the agent tool, the
@@ -76,6 +96,12 @@ func NewSubagentRunner(
 			Tools:    genTools,
 			MaxSteps: 10,
 			Hooks:    lifecycle,
+			// The child inherits the policy the parent loop answers to: a
+			// deny or ask row over a tool class bounds the calls the child
+			// makes, the same calls the parent could not make itself. A nil
+			// (or off) parent policy leaves the child ungated, exactly like
+			// the parent's own loop.
+			Permission: ParentPermission(ctx),
 		}
 		applyHooks("subagent:"+spec.AgentID, LoopIterationFromContext(ctx), eventHooks, &opts)
 

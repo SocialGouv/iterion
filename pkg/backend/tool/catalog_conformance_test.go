@@ -90,6 +90,18 @@ func TestClawCatalogMatchesRegistry(t *testing.T) {
 		t.Errorf("in pkg/backend/toolcatalog but no longer registered (C135 would wave through a name that fails at dispatch): %s\nremove them from clawBuiltins",
 			strings.Join(sorted(extra), ", "))
 	}
+
+	// The capability metadata the rule classes resolve (`class:shell`) is
+	// guarded on the same terms: a tag on a name nothing registers would put
+	// a phantom tool inside every class row, and an untagged executor would
+	// leave the class — and every deny row built on it — one tool short. The
+	// tag side is a registry decision the reviewer argues from the tool's
+	// behaviour, so only the phantom half is decidable here.
+	for _, tagged := range toolcatalog.CapabilityTaggedBuiltins() {
+		if !registered[tagged] {
+			t.Errorf("toolcatalog tags %q with a capability, but no registrar registers it — the class would cover a tool nothing can call", tagged)
+		}
+	}
 }
 
 // TestInternalMCPShorthandsMatchRegistry guards the second half of the
