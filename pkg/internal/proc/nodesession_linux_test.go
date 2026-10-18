@@ -230,13 +230,14 @@ func grepWithoutZ(t *testing.T) []string {
 // nodeWorld is a set of processes started for one test: those of the session,
 // which a sweep must stop, and controls it must spare.
 type nodeWorld struct {
-	t        *testing.T
-	token    string
-	since    BootTicks
-	dir      string
-	marked   map[string]int // label → pid
-	controls map[string]int
-	children []*exec.Cmd
+	t              *testing.T
+	token          string
+	since          BootTicks
+	dir            string
+	marked         map[string]int // label → pid
+	controls       map[string]int
+	children       []*exec.Cmd
+	afterGuardScan func([]SessionProcess)
 }
 
 func newNodeWorld(t *testing.T) *nodeWorld {
@@ -374,6 +375,9 @@ func (w *nodeWorld) guardFound() {
 	if err != nil {
 		w.t.Fatalf("FindNodeSession: %v", err)
 	}
+	if w.afterGuardScan != nil {
+		w.afterGuardScan(found)
+	}
 	ours := map[int]bool{}
 	for _, pid := range w.marked {
 		ours[pid] = true
@@ -381,7 +385,7 @@ func (w *nodeWorld) guardFound() {
 	got := map[int]bool{}
 	for _, p := range found {
 		got[p.PID] = true
-		if !ours[p.PID] && !descendsFrom(p.PID, ours) {
+		if !ours[p.PID] && unknownProcessIsRunning(p.PID, ours) {
 			w.t.Fatalf("refusing to sweep: the session holds pid %d (%s), which this test did not start", p.PID, p.Name)
 		}
 	}
@@ -409,6 +413,10 @@ func descendsFrom(pid int, ancestors map[int]bool) bool {
 		q = st.ppid
 	}
 	return false
+}
+
+func unknownProcessIsRunning(pid int, ancestors map[int]bool) bool {
+	return !descendsFrom(pid, ancestors) && isRunning(pid)
 }
 
 // check asserts the outcome: every marked process — and the respawner's
@@ -525,9 +533,58 @@ func TestSweepStopsTheSessionAndNothingElse(t *testing.T) {
 			t.Parallel()
 			w := newNodeWorld(t)
 			w.populate()
+			w.awaitSeeded()
 			w.guardFound()
 			w.check(s.sweep(t, w))
 		})
+	}
+}
+
+func TestGuardFoundIgnoresOnlyAnUnknownProcessThatHasLeft(t *testing.T) {
+	w := newNodeWorld(t)
+	w.marked["parent"] = w.sh("parent", []string{w.entry()}, true, false,
+		`sleep 300 & echo $! > "$1.child"; wait; exec sleep 300`)
+	child := w.waitPid("snapshot child", filepath.Join(w.dir, "parent.pid.child"))
+	w.controls["snapshot child"] = child
+	w.awaitSeeded()
+	awaitSessionHolds(t, w.token, "snapshot child", child)
+	staged := false
+	w.afterGuardScan = func(found []SessionProcess) {
+		if !slices.ContainsFunc(found, func(p SessionProcess) bool { return p.PID == child }) {
+			t.Fatalf("child %d was absent from guardFound's snapshot", child)
+		}
+		if err := syscall.Kill(child, syscall.SIGKILL); err != nil {
+			t.Fatal(err)
+		}
+		awaitPremise(t, "the snapshot child was never reaped", func() bool {
+			_, ok := readStat("/proc/" + strconv.Itoa(child))
+			return !ok
+		})
+		staged = true
+	}
+	w.guardFound()
+	if !staged {
+		t.Fatal("guardFound returned without staging the snapshot child")
+	}
+}
+
+func TestGuardFoundRefusesALiveIntruder(t *testing.T) {
+	const helper = "ITERION_TEST_GUARD_FOUND_LIVE_INTRUDER"
+	if os.Getenv(helper) == "1" {
+		w := newNodeWorld(t)
+		intruder := w.sh("intruder", []string{w.entry()}, true, false, `exec sleep 300`)
+		awaitSessionHolds(t, w.token, "intruder", intruder)
+		w.guardFound()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestGuardFoundRefusesALiveIntruder$")
+	cmd.Env = append(os.Environ(), helper+"=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("guardFound accepted a live process this test did not start")
+	}
+	if !strings.Contains(string(out), "which this test did not start") {
+		t.Fatalf("the live-intruder helper failed for another reason: %v\n%s", err, out)
 	}
 }
 
@@ -622,6 +679,7 @@ int main(void) { pthread_t t; pthread_create(&t, 0, run, 0); pthread_exit(0); }
 				_, throughAThread := readEnviron(dir)
 				return throughAThread
 			})
+			w.awaitSeeded()
 			w.check(s.sweep(t, w))
 		})
 	}
@@ -655,6 +713,7 @@ int main(void) { prctl(PR_SET_DUMPABLE, 0, 0, 0, 0); sleep(300); return 0; }
 				"sh", "-c", `"$0" & echo $! > "$1.child"; exec sleep 300`, bin)
 			w.marked["undumpable child"] = w.waitPid("undumpable child", filepath.Join(w.dir, "parent.pid.child"))
 			awaitUndumpable(t, "the undumpable child", w.marked["undumpable child"])
+			w.awaitSeeded()
 			w.check(s.sweep(t, w))
 		})
 		t.Run(s.name+"/alone", func(t *testing.T) {
