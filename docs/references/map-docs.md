@@ -258,7 +258,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/cloud-overview.md`](../cloud-overview.md) | ☁️ Iterion Cloud — the multi-tenant control plane for AI agents | platform engineer about to `helm install`, a tech-lead choosing between | — |
 | [`docs/cloud-public-exposure-checklist.md`](../cloud-public-exposure-checklist.md) | Cloud — public exposure checklist | This page is a pre-flight checklist for **opening an iterion deployment to traffic outside your private network** (i.e., putting it behind… | — |
 | [`docs/cloud-queue-schema-rollout.md`](../cloud-queue-schema-rollout.md) | Queue schema rollout runbook | How to ship a `queue.RunMessage` schema bump (`pkg/queue/types.go`, | — |
-| [`docs/cloud-rest-api.md`](../cloud-rest-api.md) | — | prefixed form there. | — |
+| [`docs/cloud-rest-api.md`](../cloud-rest-api.md) | Cloud REST API reference | SDK author, an operator writing curl runbooks. | — |
 | [`docs/cloud-troubleshooting.md`](../cloud-troubleshooting.md) | Cloud troubleshooting | Symptoms-first reference for operators running iterion in cloud mode (Helm chart, docker-compose, or any setup using Mongo + NATS +… | — |
 | [`docs/cloud-user.md`](../cloud-user.md) | Iterion cloud — user guide | You signed up for an iterion workspace (or got an invite). | — |
 | [`docs/cloud.md`](../cloud.md) | Cloud Mode | Cloud mode runs iterion as a multi-tenant **control plane for AI agents** — the | — |
@@ -332,7 +332,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/install.md`](../install.md) | 🖥️ Install | One Go core, delivered wherever you work — a scriptable CLI, a visual studio, a | — |
 | [`docs/live-e2e-coverage.md`](../live-e2e-coverage.md) | Live e2e coverage + quality/value snapshots | iterion ships an **optional, real-LLM** end-to-end layer that exercises | — |
 | [`docs/mcp-server.md`](../mcp-server.md) | The iterion MCP server — `iterion mcp` | `iterion mcp` serves the **operator-facing MCP server** on stdio: any | — |
-| [`docs/memory-and-knowledge.md`](../memory-and-knowledge.md) | — | `DefaultOrgAggregateQuota = 1 GiB` per team. | — |
+| [`docs/memory-and-knowledge.md`](../memory-and-knowledge.md) | Memory and knowledge spaces | `memory_write` / `memory_list`), org admins enforcing a quota on | — |
 | [`docs/merge-gate.md`](../merge-gate.md) | Merge gate — Revi arbitrates, determinism disposes | Revi (`bots/review-pr`) can post a **deterministic merge-gate status** on a | — |
 | [`docs/merge-policy.md`](../merge-policy.md) | Merge policy — main is protected by a merge queue | `main` is guarded by a GitHub **merge queue** (ruleset "main protected — merge | — |
 | [`docs/models.md`](../models.md) | 🧠 The model registry, and choosing which model runs | Two questions this answers, both of which used to have no answer at all: | — |
