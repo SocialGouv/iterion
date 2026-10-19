@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.270.2](https://github.com/SocialGouv/iterion/compare/v3.270.1...v3.270.2) (2026-10-19)
+
+### Bug Fixes
+
+* **model,delegate:** a provider error captured as the model's result is named, not mislabeled structured-output invalid; claude_code's structured schema is strict-safe ([#2500](https://github.com/SocialGouv/iterion/issues/2500)) ([#2576](https://github.com/SocialGouv/iterion/issues/2576)) ([b8cc9b0](https://github.com/SocialGouv/iterion/commit/b8cc9b0bd080c68fbef02563911f8c9df750aa1d)), closes [#2527](https://github.com/SocialGouv/iterion/issues/2527), references [#2527](https://github.com/SocialGouv/iterion/issues/2527) [#2465](https://github.com/SocialGouv/iterion/issues/2465)
+
+    <details><summary>why</summary>
+
+    The rgaa-audit run of 16/10 filed six RGAA 11.1 occurrences; this fixes all six, and the label-association defect class they share:
+
+    </details>
+
 ## [3.270.1](https://github.com/SocialGouv/iterion/compare/v3.270.0...v3.270.1) (2026-10-18)
 
 ### Bug Fixes
