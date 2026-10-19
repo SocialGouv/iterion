@@ -238,6 +238,12 @@ func (e *ClawExecutor) EffectiveFallbackBackends(node ir.Node) []string {
 // vars.* (C173), so a runtime failure here is exceptional; it deactivates
 // the route WITH a warning rather than failing the node — a broken gate on
 // a fallback must not take down the primary it exists to back up.
+//
+// Its posture is DISPATCH's, not the walk's: a gate the run's vars cannot
+// answer deactivates the route, on the executor's complete reading. The
+// launch-time walk reads the same grammar through FallbackWhenActive, which
+// keeps what it cannot answer — a walk that dropped a provider the run
+// might spend would under-attribute the run's own cost.
 func (e *ClawExecutor) fallbackWhenActive(nodeID string, fb ir.Fallback) bool {
 	if strings.TrimSpace(fb.When) == "" {
 		return true
@@ -257,6 +263,34 @@ func (e *ClawExecutor) fallbackWhenActive(nodeID string, fb ir.Fallback) bool {
 			nodeID, fb.Name, fb.When, err)
 	}
 	return false
+}
+
+// FallbackWhenActive evaluates a route's optional `when:` gate against an
+// explicit vars reading — the launch-time walk's entry to the gate, the
+// grammar `ir.DecideOnLaunchVars` answers. Its posture is the WALK's: a
+// gate the vars cannot answer (a name absent from vars, a late one, a
+// parse or evaluation failure) keeps the route ACTIVE, because the walk
+// exists to attribute spend and must never drop a provider the run might
+// spend. Dispatch's own reading is the method fallbackWhenActive, which
+// deactivates a gate it cannot evaluate WITH a warning — at runtime a
+// broken gate must not take down the primary it backs up. One grammar, two
+// named postures; warn is nil where a derivation has no logger.
+func FallbackWhenActive(vars map[string]any, nodeID string, fb ir.Fallback, warn func(format string, args ...any)) bool {
+	if strings.TrimSpace(fb.When) == "" {
+		return true
+	}
+	ast, err := expr.Parse(fb.When)
+	if err != nil {
+		if warn != nil {
+			warn("[%s] fallback %q: when: %q failed to parse (%v) — route kept active", nodeID, fb.Name, fb.When, err)
+		}
+		return true
+	}
+	holds, decided := ir.DecideOnLaunchVars(ast, vars)
+	if !decided {
+		return true
+	}
+	return holds
 }
 
 // ResolveRoutingField is the reading dispatch takes of a routing field — a
@@ -315,6 +349,41 @@ func (e *ClawExecutor) baselineModel(node ir.Node) string {
 	return e.resolveRoutingField(m)
 }
 
+// resolveRoutingVars resolves a routing field's `{{vars.*}}` spans against
+// an explicit vars reading, the way dispatch resolves the template half of
+// resolveRoutingField. Every other namespace stays as written, and so does
+// a name in late — its value was decided by the reading process's own
+// environment, so a field resolved through it is exactly as opaque as the
+// raw `${…}` the runner would expand with a different environment
+// (ir.LaunchVarsView's late set, ADR-129 §4). The `${…}` pass is
+// deliberately NOT run here: the launch-time walk answers its provenance
+// questions (envDeferred, resolveRouteBackend's fromEnv bit) on the raw
+// spelling, and expanding it here would take this process's environment as
+// the runner's word.
+func resolveRoutingVars(raw string, vars map[string]any, late map[string]bool) string {
+	if vars == nil || !strings.Contains(raw, "{{") {
+		return raw
+	}
+	effective := vars
+	if len(late) > 0 {
+		effective = make(map[string]any, len(vars))
+		for name, v := range vars {
+			if !late[name] {
+				effective[name] = v
+			}
+		}
+	}
+	return (&TemplateResolver{Vars: effective}).Resolve(raw, nil, nil)
+}
+
+// ResolveRoutingFieldWith is the dispatch reading of a routing field —
+// template, then environment, then trim — against an explicit vars reading.
+// It is the one function a launch-time reader uses when it can reproduce
+// the run's vars; the executor's method delegates with its own.
+func ResolveRoutingFieldWith(vars map[string]any, late map[string]bool, raw string) string {
+	return strings.TrimSpace(ir.ExpandEnvWithDefault(resolveRoutingVars(raw, vars, late)))
+}
+
 // resolveRoutingField is the one reading every routing field takes on the
 // dispatch path — a node's `model:`, `backend:` and `provider:`, the same
 // three on each `fallbacks:` route, an llm router's model, a human or review
@@ -333,11 +402,12 @@ func (e *ClawExecutor) baselineModel(node ir.Node) string {
 // the template on purpose: a var's default is where the DSL writes
 // `${MODEL:-anthropic/x}` (examples/clarify), and the executor receives
 // that default as written. The launch-time pre-flights (wire_reach.go,
-// override_fold.go) read the fields without the run's vars: a template
-// there is a hint that defers, like "auto" — never a name.
+// override_fold.go) read the same template half through RouteView.field —
+// the run's vars by provenance, a late name kept as written — and run
+// their own `${…}` posture on top, so a template there is a name when the
+// run's own vars decide it, and a hint that defers when they do not.
 func (e *ClawExecutor) resolveRoutingField(raw string) string {
-	varsOnly := &TemplateResolver{Vars: e.vars}
-	return strings.TrimSpace(ir.ExpandEnvWithDefault(varsOnly.Resolve(raw, nil, nil)))
+	return ResolveRoutingFieldWith(e.vars, nil, raw)
 }
 
 // dedupeChain drops any element that would re-issue the call its

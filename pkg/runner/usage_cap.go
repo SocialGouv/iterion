@@ -441,11 +441,17 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// sailed through (#668). Read under the launch's own overrides, on
 	// PRIMARY routes only — a rescue `fallbacks:` route onto the wire
 	// fires on a failure the mid-run guard already refuses, and cannot
-	// justify refusing the run before it starts. Every uncertainty
-	// answers "reachable". A supervisor the run will spawn is a route too —
-	// one every execution takes (supervisorRouteID).
-	routes := model.AnthropicWireRoutes(wf, modelOverridesFromMsg(msg.ModelOverrides))
-	sups := preflightSupervisors(ctx, wf, msg)
+	// justify refusing the run before it starts; the view's RunFallbacks
+	// stay zero for the same rule, and the walk reads no fallback chain.
+	// Every uncertainty answers "reachable". A supervisor the run will
+	// spawn is a route too — one every execution takes (supervisorRouteID).
+	launchVars, haveLaunch := r.launchReading(ctx, msg, logger)
+	view := model.RouteView{Workflow: wf, Overrides: modelOverridesFromMsg(msg.ModelOverrides)}
+	if haveLaunch {
+		view = model.RouteViewForDispatch(wf, modelOverridesFromMsg(msg.ModelOverrides), nil, launchVars)
+	}
+	routes := model.AnthropicWireRoutes(view)
+	sups := preflightSupervisors(ctx, wf, msg, view.DecidedVars())
 	// The adaptive-routing ladder's escapes (ADR-121 §1): a node whose
 	// PRIMARY rides the capped wire but whose computed ladder carries an
 	// open stage OFF it is not park-forcing — the capped call fails
@@ -474,7 +480,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	if len(capped) == 0 {
 		return nil
 	}
-	d, blocked := parkDecision(wf, capped, r.launchVarEdges(ctx, wf, msg, logger))
+	d, blocked := parkDecision(wf, capped, launchVarEdges(wf, launchVars, haveLaunch))
 	if !blocked {
 		if logger != nil {
 			logger.Info("runner: run %s starts with %d capped route(s) it may avoid — the mid-run guard stops a claude_code call on a hard-capped one if the run takes it", msg.RunID, len(capped))
@@ -661,7 +667,22 @@ type supervisorRoute struct{ id, spec string }
 // default, then the provider the watched nodes run on and the detector, under
 // the run's credentials). One that resolves no model fails every evaluation
 // and spends nothing.
-func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage) []supervisorRoute {
+//
+// vars is view.DecidedVars — the pre-flight's shared reading folded through
+// the dispatch view, minus every name the reading leaves undecided: an
+// engine-supplied consultation, and a late name (a default whose text
+// consults the environment, a coercion failure kept raw — ir.LaunchVarsView's
+// late set). Over the names that remain the reading is spawn's map
+// (engine.ResolveVars — the resolved map SpecsFromWorkflow asks for): a pin
+// over a literal default, a typed launch value or a stored input resolves
+// here the way it resolves at spawn. A pin over an undecided name stays
+// templated here, where model.ParseModelSpec refuses it in supervisorKey:
+// the route meters nothing, and this walk answers "not metered" where the
+// node walks answer "reachable" on an unresolvable reading. Matching spawn
+// on a late name would park, or spare, the run on the reading process's own
+// environment — the answer the view's field reading refuses to stand for
+// the run (ADR-129 §4, rule 1).
+func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage, vars map[string]any) []supervisorRoute {
 	if wf == nil || len(wf.Supervisors) == 0 {
 		return nil
 	}
@@ -669,7 +690,7 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 		return nil
 	}
 	var out []supervisorRoute
-	for i, spec := range supervise.SpecsFromWorkflow(wf, msg.Vars, nil) {
+	for i, spec := range supervise.SpecsFromWorkflow(wf, vars, nil) {
 		// A gateway-watched supervisor with no pin and no env default
 		// resolves the VENDOR family here while its evaluator refuses every
 		// evaluation (supervise.ErrGatewayWatchNeedsPin): metering it under a
@@ -738,38 +759,52 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string
 	return k.keyForSlot(slot), true
 }
 
-// launchVarEdges is the edge filter the park walk reads THIS RUN's topology
-// through: a branch the run's own launch vars exclude is not a branch it may
-// take, so a capped route standing on one parks nothing
-// (ir.Workflow.LaunchVarEdgeFilter decides which transitions qualify).
+// launchReading resolves the launch values the pre-flight's walks read —
+// the wire view (whose DecidedVars the supervisor walk resolves the pins
+// against), the edge filter — once, together: the message's own
+// launch values where it carries them; a resume PUBLICATION's stored inputs
+// otherwise (the attempt it continues resumes from the checkpoint those
+// inputs built); the declared defaults where a fresh launch overrode nothing
+// (nil folds them, the run's own resolution). ok is false only when a
+// resume's inputs cannot be read: every consumer then keeps the undecided
+// answer — a var-less view, the whole-graph walk, pins left templated —
+// never defaults that may not be this run's.
 //
 // What the message carries is not what the message IS: `Resume` is stamped by
 // the runner itself on a REDELIVERED launch (resolveDeliveryPreconditions,
 // queue.Admit's AsResume), which still holds this run's launch vars — the
-// first park's own status flip puts the run in exactly that state. So the vars
-// decide, not the shape: the message's where it has them, and the run
-// document's Inputs otherwise — a resume PUBLICATION carries none, and the
-// attempt it continues resumes from the checkpoint those stored inputs built.
-// Both readings are the same values: nothing writes a run's inputs after its
-// launch persisted them.
-//
-// Without either — no store, or a document that cannot be read — the walk
-// keeps the whole-graph answer: folding the declared defaults alone would
-// speak for a launch that may have overridden them. Reading the document is
-// what makes the retry honour the instant the park promised: a woken resume
-// must walk the same topology the launch did, or it parks again past it.
-func (r *Runner) launchVarEdges(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage, logger *iterlog.Logger) ir.EdgeFilter {
-	if wf == nil || msg == nil {
+// first park's own status flip puts the run in exactly that state. So the
+// vars decide, not the shape: a redelivery reads its own, a publication reads
+// the run document's Inputs. Reading the document is what makes the retry
+// honour the instant the park promised: a woken resume must walk the same
+// topology the launch did, or it parks again past it.
+func (r *Runner) launchReading(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) (map[string]any, bool) {
+	if msg == nil {
+		return nil, false
+	}
+	if len(msg.Vars) > 0 {
+		return msg.Vars, true
+	}
+	if msg.Resume == nil {
+		// A fresh launch overrode nothing: the declared defaults are the
+		// values the run itself resolves.
+		return nil, true
+	}
+	return r.storedLaunchVars(ctx, msg, logger)
+}
+
+// launchVarEdges is the edge filter the park walk reads THIS RUN's topology
+// through: a branch the run's own launch vars exclude is not a branch it may
+// take, so a capped route standing on one parks nothing
+// (ir.Workflow.LaunchVarEdgeFilter decides which transitions qualify).
+// launch is the pre-flight's shared reading (launchReading); !have keeps the
+// whole-graph answer — folding declared defaults would speak for a launch
+// that may have overridden them.
+func launchVarEdges(wf *ir.Workflow, launch map[string]any, have bool) ir.EdgeFilter {
+	if wf == nil || !have {
 		return nil
 	}
-	if len(msg.Vars) == 0 && msg.Resume != nil {
-		inputs, ok := r.storedLaunchVars(ctx, msg, logger)
-		if !ok {
-			return nil
-		}
-		return wf.LaunchVarEdgeFilter(inputs)
-	}
-	return wf.LaunchVarEdgeFilter(msg.Vars)
+	return wf.LaunchVarEdgeFilter(launch)
 }
 
 // storedLaunchVars reads the launch inputs off the run document — the vars a

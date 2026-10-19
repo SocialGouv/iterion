@@ -32,7 +32,7 @@ func TestGLMRouteIsFundedWithTheZAIKey(t *testing.T) {
 				BaseNode:  ir.BaseNode{ID: "n"},
 				LLMFields: ir.LLMFields{Backend: tc.backend, Model: tc.model},
 			}}}
-			res := EffectiveProviders(wf, ModelOverrides{}, nil, map[string]bool{"anthropic": true, "zai": true, "openai": true})
+			res := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, map[string]bool{"anthropic": true, "zai": true, "openai": true})
 			if !slices.Contains(res.Providers, "zai") {
 				t.Errorf("providers = %v, want zai — a GLM route must be funded with the z.ai key", res.Providers)
 			}
@@ -50,7 +50,7 @@ func TestGLMOnAnotherProviderKeepsItsOwnRoute(t *testing.T) {
 		BaseNode:  ir.BaseNode{ID: "n"},
 		LLMFields: ir.LLMFields{Backend: "claw", Model: "openrouter/z-ai/glm-4.6"},
 	}}}
-	res := EffectiveProviders(wf, ModelOverrides{}, nil, map[string]bool{"anthropic": true, "zai": true, "openrouter": true})
+	res := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, map[string]bool{"anthropic": true, "zai": true, "openrouter": true})
 	if !slices.Contains(res.Providers, "openrouter") || slices.Contains(res.Providers, "zai") {
 		t.Errorf("providers = %v, want openrouter alone — an OpenRouter GLM route was funded with the z.ai key", res.Providers)
 	}

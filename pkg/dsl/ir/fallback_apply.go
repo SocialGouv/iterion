@@ -72,7 +72,12 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 	if w == nil || len(routes) == 0 {
 		return nil
 	}
-	run := runBackend.withVars(launchVarsView(w, vars))
+	// The screen reads the WHOLE view, lateness included: its premise is
+	// that this process's answer IS the route (the comment above), so a
+	// name whose text consults the environment is resolved with it — where
+	// a launch-time GATE must hold the late names undecided (ADR-129 §4).
+	view, _ := launchVarsView(w, vars)
+	run := runBackend.withVars(view)
 
 	var refusals []string
 	for _, n := range w.Nodes {
@@ -197,16 +202,32 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 // An override is read as a VALUE, so both launch shapes fold through this one
 // reading: the screen's `--var` text, and the queue message's already-typed
 // `Vars` (LaunchVarEdgeFilter).
-func launchVarsView[V any](w *Workflow, overrides map[string]V) map[string]any {
-	if len(w.Vars) == 0 {
-		return nil
+//
+// The second return is the LATE set — the names whose value the READING
+// process decided, not the run: a text that consults the environment (the
+// same probe the filter below applies, which is also the precise spelling of
+// "the raw text contained `${`" — an indirection or a json leaf consults
+// too), or a coercion failure whose RAW text was kept. A field resolved
+// through a late name is as opaque as the raw `${…}` it came from: the
+// runner will expand it with a different environment, so a launch-time gate
+// must treat it as undecided (ADR-129 §4, rule 1). Nil when nothing is late.
+func launchVarsView[V any](w *Workflow, overrides map[string]V) (map[string]any, map[string]bool) {
+	if w == nil || len(w.Vars) == 0 {
+		return nil, nil
 	}
 	var view map[string]any
+	var late map[string]bool
 	put := func(name string, value any) {
 		if view == nil {
 			view = make(map[string]any, len(w.Vars))
 		}
 		view[name] = value
+	}
+	markLate := func(name string) {
+		if late == nil {
+			late = make(map[string]bool)
+		}
+		late[name] = true
 	}
 	read := func(name string, raw any, vt VarType) {
 		if referencesEngineSuppliedName(raw, vt) {
@@ -220,13 +241,18 @@ func launchVarsView[V any](w *Workflow, overrides map[string]V) map[string]any {
 			// into any non-map. Omitting the var instead read the node as
 			// undecided — or left the declared DEFAULT standing over a
 			// failed override — both screening a backend the run never
-			// resolves.
+			// resolves. The raw value is THIS process's word, so the name
+			// is late.
 			if s, isText := raw.(string); isText {
 				put(name, ExpandWithDefault(s, LookupEnv))
+				markLate(name)
 			}
 			return
 		}
 		put(name, v)
+		if consultsAnyEnvName(raw, vt) {
+			markLate(name)
+		}
 	}
 	for name, v := range w.Vars {
 		if v == nil || !v.HasDefault {
@@ -234,12 +260,65 @@ func launchVarsView[V any](w *Workflow, overrides map[string]V) map[string]any {
 		}
 		read(name, v.Default, v.Type)
 	}
-	for name, s := range overrides {
-		if decl, declared := w.Vars[name]; declared && decl != nil {
-			read(name, s, decl.Type)
-		}
+	for name, s := range DeclaredVarsOnly(w, overrides) {
+		// The override layer is the run's FINAL answer for the name: the
+		// default's entries must not stand under it — read re-puts and
+		// re-marks where the override is readable, and the one corner it
+		// leaves absent is an override whose text consults an
+		// engine-supplied name (in the text itself or a json leaf): the
+		// name stays undecided, never the default's answer. A non-string
+		// override is readable — resolveVarText returns it typed — and is
+		// put as the value it carries.
+		delete(view, name)
+		delete(late, name)
+		read(name, s, w.Vars[name].Type)
 	}
-	return view
+	return view, late
+}
+
+// LaunchVarsView is the vars reading a launch-time reader resolves
+// `{{vars.*}}` routing fields against: the workflow's declared defaults
+// under the launch's declared overrides, resolved the way resolveVars stacks
+// the two layers. It returns that view and the LATE set — the names whose
+// value the reading process's own environment decided (launchVarsView's
+// second return, read there).
+//
+// This is the publisher-side constructor of ADR-129 §4: a reader that gates
+// spend on what a run's routes resolve to reads the run's vars THROUGH this
+// view, and treats a late name exactly as a raw `${…}` — undecided, never
+// env-funded — because the runner expands it with a different environment.
+// A launch override an operator did not pin is late for a second reason
+// (the webhook lanes fill vars from the delivery payload); the gate marks
+// that half (model.RouteViewForLaunch's trusted set), not this reading,
+// whose premise is provenance of the TEXT alone.
+func LaunchVarsView[V any](w *Workflow, overrides map[string]V) (map[string]any, map[string]bool) {
+	return launchVarsView(w, overrides)
+}
+
+// DeclaredVarsOnly returns the launch values that name a var of w —
+// resolveVars' one filter, applied at every reader of a launch's raw
+// values: the executor is seeded with it (runview.BuildExecutor) and the
+// dispatch view resolves routing fields through it (its layering inside
+// launchVarsView). A value naming no var never enters the run — the launch
+// surfaces refuse unknown keys (UnknownInputNames), and the explicit
+// --allow-unknown-inputs opt-out carries them as run INPUTS for subbot
+// {{input.*}} forwarding, not as vars.
+func DeclaredVarsOnly[V any](w *Workflow, vars map[string]V) map[string]any {
+	if w == nil || len(vars) == 0 {
+		return nil
+	}
+	var out map[string]any
+	for name, v := range vars {
+		decl, declared := w.Vars[name]
+		if !declared || decl == nil {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]any, len(vars))
+		}
+		out[name] = v
+	}
+	return out
 }
 
 // EngineSuppliedVarNames are the names the engine's varExpandFn answers
@@ -342,7 +421,8 @@ func probesEnvName(s string, policy expandPolicy, match func(string) bool) bool 
 // pkg/backend/model (routing_twin_test) — its only caller; a host
 // screening a launch belongs on ApplyRunFallback itself.
 func LaunchBackendName(w *Workflow, overrides map[string]string, field string) string {
-	return runBackend.withVars(launchVarsView(w, overrides)).name(field)
+	view, _ := launchVarsView(w, overrides)
+	return runBackend.withVars(view).name(field)
 }
 
 // ParseRunFallbackFlag parses the `--fallback` / launch-row value into a
@@ -422,7 +502,13 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 	if w == nil || len(stages) == 0 {
 		return nil
 	}
-	run := runBackend.withVars(launchVarsView(w, vars))
+	// The screen reads the WHOLE view, lateness included: its premise is
+	// that this process's answer IS the route (the comment on
+	// ApplyRunFallback), so a name whose text consults the environment is
+	// resolved with it — where a launch-time GATE must hold the late names
+	// undecided (ADR-129 §4).
+	view, _ := launchVarsView(w, vars)
+	run := runBackend.withVars(view)
 
 	var refusals []string
 	for _, n := range w.Nodes {

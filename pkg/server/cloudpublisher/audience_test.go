@@ -54,8 +54,7 @@ func audiencePublisher(t *testing.T) (*Publisher, secrets.Sealer, *secrets.Memor
 func resolveWithBot(t *testing.T, p *Publisher, sealer secrets.Sealer, runID, botID string, pins map[string]string) secrets.RunBundle {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, runID, "", "team1", "owner1", botID, "",
-		nil, pins, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, "", "team1", "owner1", botID, "", nil, pins, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -231,8 +230,7 @@ func TestTheAudienceFoldDoesNotReachBotSecretBindings(t *testing.T) {
 	wf := &ir.Workflow{Name: "w", Secrets: map[string]*ir.Secret{"forge_token": {}}}
 
 	ctx := store.WithTenant(context.Background(), "team1")
-	if _, err := p.resolveAndSealCredentials(ctx, "run-binding", "", "team1", "owner1", underscoreBot, "",
-		wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, nil); err != nil {
+	if _, err := p.resolveAndSealCredentials(ctx, "run-binding", "", "team1", "owner1", underscoreBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil); err != nil {
 		t.Fatalf("a binding on a bot named %q stopped resolving — the audience's fold reached a store that matches exactly: %v", underscoreBot, err)
 	}
 }

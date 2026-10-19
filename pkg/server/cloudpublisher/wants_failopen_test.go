@@ -116,7 +116,7 @@ func TestWantsFor_ABRows_FailOpenOnUnresolvedAndNarrowOnResolved(t *testing.T) {
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			got, res := wantsFor(row.wf, model.ModelOverrides{}, nil)
+			got, res := wantsFor(model.RouteView{Workflow: row.wf})
 			if len(got) != row.wantCount {
 				t.Fatalf("wants = %v (%d), want %d — resolution %+v", wantKeys(got), len(got), row.wantCount, res)
 			}
@@ -157,7 +157,7 @@ func TestPoolTier_securedRenovacyShapeIsServedByADonor(t *testing.T) {
 // pool-funded run.
 func TestWantsFor_NodeFallbacksWidenTheWants(t *testing.T) {
 	primaryOnly := &ir.Workflow{Nodes: map[string]ir.Node{"a": node("a", "claw", "openai", "openai/gpt-5.6-sol")}}
-	got, _ := wantsFor(primaryOnly, model.ModelOverrides{}, nil)
+	got, _ := wantsFor(model.RouteView{Workflow: primaryOnly})
 	if hasWant(got, "api_key:anthropic") || hasWant(got, "oauth:claude_code") {
 		t.Fatalf("openai-only run must not ask for anthropic: %v", wantKeys(got))
 	}
@@ -167,7 +167,7 @@ func TestWantsFor_NodeFallbacksWidenTheWants(t *testing.T) {
 		LLMFields: ir.LLMFields{Backend: "claw", Provider: "openai", Model: "openai/gpt-5.6-sol"},
 		Fallbacks: []ir.Fallback{{Name: "rescue", Backend: "claude_code", Provider: "anthropic"}},
 	}}}
-	got, _ = wantsFor(withRescue, model.ModelOverrides{}, nil)
+	got, _ = wantsFor(model.RouteView{Workflow: withRescue})
 	for _, k := range []string{"api_key:openai", "oauth:codex", "api_key:anthropic", "oauth:claude_code"} {
 		if !hasWant(got, k) {
 			t.Errorf("wants %v lack %s — the rescue route's provider was dropped", wantKeys(got), k)

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -93,6 +94,13 @@ type ProviderResolution struct {
 	// backend of its own keeps its provider out, and the zero value claims
 	// nothing. Sorted.
 	ForfaitFirst []string
+	// Pins maps a provider in Providers to the sites that named it — the
+	// node id whose own route resolves to it, `node#name` for an authored
+	// `fallbacks:` route (its index when the author named none),
+	// `run-fallback#<stage>` for the run-level chain, `supervisor:<name>`
+	// for a supervisor. A refusal built on this walk can say which node
+	// pinned what; sorted, deduplicated.
+	Pins map[string][]string
 	// envFundedOnly reports whether every LLM route the walk read resolved
 	// to the openai_compatible gateway — a route whose credential the
 	// RUNNER's environment funds, never the bundle. A route that resolved
@@ -134,14 +142,24 @@ func (r ProviderResolution) OnlyEnvFunded() bool { return r.envFundedOnly }
 // `auto` means unresolved. A provider override collapses the chain; a
 // `provider/model` prefix on the effective model counts as a pin.
 //
-// `known` is the caller's provider vocabulary. A nil `wf` or an empty
+// The routes are read through the view (RouteView): a `{{vars.*}}` span
+// resolves against the run's vars the way dispatch resolves it, a late
+// name stays as written (undecided), and a `fallbacks:` route whose
+// `when:` gate the view answers FALSE leaves the walk — it is not a path
+// the run may take. A gate the view cannot answer keeps the route
+// (FallbackWhenActive's posture): the walk never drops a provider the run
+// might spend.
+//
+// `known` is the caller's provider vocabulary. A nil workflow or an empty
 // `known` yields the zero value (NarrowSafe false), which every caller
 // reads as "fail open".
-func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks []FallbackEntry, known map[string]bool) ProviderResolution {
+func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
+	wf := v.Workflow
 	if wf == nil || len(known) == 0 {
 		return ProviderResolution{}
 	}
-	acc := &providerAccumulator{known: known, providers: map[string]bool{}, unknown: map[string]bool{}, forfaitFirst: map[string]bool{}, narrowSafe: true}
+	acc := &providerAccumulator{known: known, providers: map[string]bool{}, unknown: map[string]bool{}, forfaitFirst: map[string]bool{}, pins: map[string][]string{}, narrowSafe: true, vars: v.Vars, late: v.LateVars}
+	gateVars := v.gateVars()
 	seenAnyLLM := false
 	for _, n := range wf.Nodes {
 		fields, ok := llmFieldsOf(n)
@@ -154,15 +172,16 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 			continue
 		}
 		seenAnyLLM = true
-		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
-		nodeBackend, fromEnv := resolveRouteBackend(ov.Backend, fields.Backend, wf.DefaultBackend)
+		ov := v.Overrides.ForNode(n.NodeID(), n.NodeKind())
+		nodeBackend, fromEnv := resolveRouteBackend(v.field(ov.Backend), v.field(fields.Backend), v.field(wf.DefaultBackend))
 		if fromEnv {
 			// Expanded with this process's env, not the runner's: unknown for
 			// the forfait-first accounting.
 			nodeBackend = ""
 		}
 		acc.backend = nodeBackend
-		acc.resolveNode(n, fields, overrides)
+		acc.site = n.NodeID()
+		acc.resolveNode(n, fields, v.Overrides)
 		// `interaction: llm|llm_or_human` answers the node's questions
 		// with a DIRECT generation on `interaction_model` (falling back
 		// to the node's model) — a second route the node may spend on.
@@ -171,26 +190,34 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		if inf, ok := n.(interface{ GetInteractionFields() *ir.InteractionFields }); ok {
 			if f := inf.GetInteractionFields(); f != nil && (f.Interaction == ir.InteractionLLM || f.Interaction == ir.InteractionLLMOrHuman) {
 				acc.backend = ""
-				acc.resolveDirect(f.InteractionModel, fields.Model)
+				acc.site = n.NodeID() + "#interaction"
+				acc.resolveDirect(v.field(f.InteractionModel), v.field(fields.Model))
 			}
 		}
 		// A `fallbacks:` route (ADR-087) is a path the run may take: a
 		// primary on claw/openai whose rescue is anthropic MUST be able
 		// to spend an anthropic credential, or the route is unreachable.
 		if gf, ok := n.(interface{ GetFallbacks() []ir.Fallback }); ok {
-			for _, fb := range gf.GetFallbacks() {
+			for i, fb := range gf.GetFallbacks() {
 				if fb.Action == ir.FallbackActionSkip {
 					continue // executes nothing
 				}
+				// The `when:` gate joins the reading (ADR-129 §4): a route
+				// the run's own vars deactivate is not a path the run may
+				// take. The view's posture keeps what it cannot answer.
+				if !FallbackWhenActive(gateVars, n.NodeID(), fb, nil) {
+					continue
+				}
 				acc.backend = nodeBackend
+				acc.site = fallbackSite(n.NodeID(), i, fb.Name)
 				if strings.TrimSpace(fb.Backend) != "" {
-					b, fromEnv := resolveRouteBackend("", fb.Backend, "")
+					b, fromEnv := resolveRouteBackend("", v.field(fb.Backend), "")
 					if fromEnv {
 						b = ""
 					}
 					acc.backend = b
 				}
-				acc.resolveRoute(fb.Provider, fb.Model)
+				acc.resolveRoute(v.field(fb.Provider), v.field(fb.Model))
 			}
 		}
 	}
@@ -207,7 +234,8 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 		}
 		seenAnyLLM = true
 		acc.backend = ""
-		acc.resolveDirect(sup.Model, "")
+		acc.site = "supervisor:" + sup.Name
+		acc.resolveDirect(v.field(sup.Model), "")
 	}
 	if !seenAnyLLM {
 		// Nothing spends: nothing to narrow on, and nothing unresolved.
@@ -216,20 +244,32 @@ func EffectiveProviders(wf *ir.Workflow, overrides ModelOverrides, runFallbacks 
 	// The run-level chain (`--fallback` / spec.Fallback / prior.Fallback)
 	// lands on every agent node through ir.ApplyRunFallback — the same
 	// reasoning as an authored route.
-	for _, fb := range runFallbacks {
+	for i, fb := range v.RunFallbacks {
 		if fb.Backend == "" && fb.Model == "" && fb.Provider == "" {
 			continue // ApplyRunFallback drops the empty stage too
 		}
 		// A stage with no backend runs on each node's own; read here, once,
 		// it counts as unknown — the conservative side of ForfaitFirst.
-		b, fromEnv := resolveRouteBackend("", fb.Backend, "")
+		b, fromEnv := resolveRouteBackend("", v.field(fb.Backend), "")
 		if fromEnv {
 			b = ""
 		}
 		acc.backend = b
-		acc.resolveRoute(fb.Provider, fb.Model)
+		acc.site = fmt.Sprintf("%s#%d", ir.RunFallbackName, i)
+		acc.resolveRoute(v.field(fb.Provider), v.field(fb.Model))
 	}
 	return acc.result()
+}
+
+// fallbackSite names the walk site a route was read at — the key a pin is
+// recorded under (ProviderResolution.Pins): the node's id for its own
+// route, `node#name` for an authored `fallbacks:` route, its index when the
+// author named none.
+func fallbackSite(nodeID string, index int, name string) string {
+	if strings.TrimSpace(name) != "" {
+		return nodeID + "#" + name
+	}
+	return fmt.Sprintf("%s#%d", nodeID, index)
 }
 
 // llmFieldsOf returns the LLMFields a node resolves its route from: agent
@@ -256,11 +296,20 @@ type providerAccumulator struct {
 	// envFunded collects the gateway-served prefixes (ProviderResolution.EnvFunded).
 	envFunded map[string]bool
 	// forfaitFirst[p] stays true while every route naming p ran on a
-	// backend declared forfait-first for p; backend is the route being read.
+	// backend that declared forfait-first for p; backend is the route being read.
 	forfaitFirst map[string]bool
 	backend      string
-	narrowSafe   bool
-	wireDefault  map[string]bool
+	// site is where the route being read lives — the key a pin is
+	// recorded under (fallbackSite).
+	site string
+	pins map[string][]string
+	// vars and late are the walk's vars reading (RouteView.Vars/LateVars);
+	// field resolves a routing field against them, and a late name stays
+	// as written exactly as a raw `${…}` would.
+	vars        map[string]any
+	late        map[string]bool
+	narrowSafe  bool
+	wireDefault map[string]bool
 	// envSeen: some route's text defers to an environment or the run's
 	// variables (see envDeferred) — the run is never declared env-funded,
 	// whatever the expansions said.
@@ -292,6 +341,20 @@ func (a *providerAccumulator) result() ProviderResolution {
 		if ok {
 			res.ForfaitFirst = append(res.ForfaitFirst, p)
 		}
+	}
+	for p, sites := range a.pins {
+		if res.Pins == nil {
+			res.Pins = make(map[string][]string, len(a.pins))
+		}
+		sorted := append([]string(nil), sites...)
+		sort.Strings(sorted)
+		deduped := sorted[:0]
+		for i, s := range sorted {
+			if i == 0 || s != sorted[i-1] {
+				deduped = append(deduped, s)
+			}
+		}
+		res.Pins[p] = deduped
 	}
 	sort.Strings(res.Providers)
 	sort.Strings(res.Unknown)
@@ -358,6 +421,14 @@ func (a *providerAccumulator) envDeferred(parts ...string) {
 	}
 }
 
+// field resolves a routing field's `{{vars.*}}` spans against the walk's
+// vars reading — the same reading RouteView.field gives its callers, so
+// the walk and the wire-route readers cannot drift over one templated
+// program.
+func (a *providerAccumulator) field(raw string) string {
+	return resolveRoutingVars(raw, a.vars, a.late)
+}
+
 // resolveNode applies the executor's precedence to one LLM node, in the
 // executor's order: a launch-time provider override collapses the chain;
 // else the DSL `provider:` chain decides — the hint IS the route, and the
@@ -367,17 +438,22 @@ func (a *providerAccumulator) envDeferred(parts ...string) {
 // `provider: "zai"`, the hint overriding the prefix); only a node with no
 // hint at all routes on the prefix of its effective model (override, then
 // DSL), the way claw's registry does. Anything the walk cannot resolve
-// widens.
+// widens. Every field arrives through the walk's vars reading first: a
+// `{{vars.x}}` whose value the run itself decided resolves like the
+// literal it will be at dispatch, a late name stays as written.
 func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, overrides ModelOverrides) {
 	ov := overrides.ForNode(node.NodeID(), node.NodeKind())
 	mdl := ov.Model
 	if mdl == "" {
 		mdl = fields.Model
 	}
-	a.envDeferred(ov.Provider, fields.Provider, mdl)
+	prov := a.field(ov.Provider)
+	chain := a.field(fields.Provider)
+	m := a.field(mdl)
+	a.envDeferred(prov, chain, m)
 	if strings.TrimSpace(ov.Provider) != "" {
-		a.noteWireDefault(ov.Provider, mdl)
-		if a.chainDecides(ov.Provider, mdl) {
+		a.noteWireDefault(prov, m)
+		if a.chainDecides(prov, m) {
 			return
 		}
 		// The override named no resolvable hint ("auto", or a ${VAR} this
@@ -388,17 +464,18 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 		a.narrowSafe = false
 		return
 	}
-	a.noteWireDefault(fields.Provider, mdl)
-	if a.chainDecides(fields.Provider, mdl) {
+	a.noteWireDefault(chain, m)
+	if a.chainDecides(chain, m) {
 		return
 	}
-	a.prefixOrWiden(mdl)
+	a.prefixOrWiden(m)
 }
 
 // resolveRoute is the fallback-route half, with the same precedence: the
 // route's own hint decides; a route without one routes on its model's
 // prefix; one that pins neither inherits whatever the process holds,
-// which the walk cannot name — widen.
+// which the walk cannot name — widen. Provider and model arrive already
+// read through the walk's vars.
 func (a *providerAccumulator) resolveRoute(provider, mdl string) {
 	a.envDeferred(provider, mdl)
 	a.noteWireDefault(provider, mdl)
@@ -545,8 +622,9 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 	a.narrowSafe = false
 }
 
-// hint classifies one provider name. Known → recorded, true. Empty or
-// "auto" → unresolved, false. Anything else → recorded as Unknown, false.
+// hint classifies one provider name. Known → recorded (and pinned to the
+// site being read — ProviderResolution.Pins), true. Empty or "auto" →
+// unresolved, false. Anything else → recorded as Unknown, false.
 func (a *providerAccumulator) hint(raw string) bool {
 	h := strings.ToLower(strings.TrimSpace(ir.ExpandEnvWithDefault(raw)))
 	switch {
@@ -555,6 +633,7 @@ func (a *providerAccumulator) hint(raw string) bool {
 		return false
 	case a.known[h]:
 		a.providers[h] = true
+		a.pin(h)
 		ff, seen := a.forfaitFirst[h]
 		a.forfaitFirst[h] = (!seen || ff) && delegate.ForfaitFirst(a.backend, h)
 		return true
@@ -563,6 +642,21 @@ func (a *providerAccumulator) hint(raw string) bool {
 		a.narrowSafe = false
 		return false
 	}
+}
+
+// pin records WHERE the provider just recorded was named — the site the
+// walk is reading (fallbackSite). Deduplicated; a provider named twice by
+// the same node holds the site once.
+func (a *providerAccumulator) pin(provider string) {
+	if a.site == "" {
+		return
+	}
+	for _, s := range a.pins[provider] {
+		if s == a.site {
+			return
+		}
+	}
+	a.pins[provider] = append(a.pins[provider], a.site)
 }
 
 // chainHints splits a `provider:` field into its lower-cased hints the

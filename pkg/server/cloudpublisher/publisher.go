@@ -560,7 +560,7 @@ var errUntrustedRequiresSecrets = errors.New("untrusted workspace cannot be give
 // bundle. It is a required parameter rather than a field read from somewhere
 // convenient precisely so a future caller cannot omit it: the compiler asks
 // every call site who wrote the code this bundle is about to be handed to.
-func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID, runnerPool string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, modelOverrides model.ModelOverrides, runFallbacks []model.FallbackEntry, trust store.RunTrust, pinnedProviders []string, routePolicy *store.RunLLMRoutePolicy) (credResolution, error) {
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID, runnerPool string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, view model.RouteView, launchVars map[string]string, trust store.RunTrust, pinnedProviders []string, routePolicy *store.RunLLMRoutePolicy) (credResolution, error) {
 	// The launch-frozen pinned set (store.Run.PinnedProviders), passed in
 	// rather than derived here: the resume path must replay the launch's
 	// answer, not re-derive it from a source that may have moved. Only the
@@ -623,8 +623,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// Generic `secrets:` still resolve (their tier below is not skipped).
 	// An env-dependent route counts as UNRESOLVED, never env-funded: ${ROUTE}
 	// may resolve to the gateway on the publisher and to Anthropic on the
-	// runner. Mixed or unresolved runs keep today's behaviour.
-	envFunded := wf != nil && model.EffectiveProviders(wf, modelOverrides, runFallbacks, knownPoolProviders).OnlyEnvFunded()
+	// runner. The same is true, one level up, of a var the publisher's OWN
+	// environment decided (RouteView.LateVars): the walk reads the run's
+	// vars through the view, and a late name leaves the route undecided.
+	envFunded := view.Workflow != nil && model.EffectiveProviders(view, knownPoolProviders).OnlyEnvFunded()
 
 	// Refused-but-only keys, per provider, remembered across the tiers for
 	// the restore step — the api-key twin of skippedForfaits below.
@@ -978,7 +980,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    run therefore never reaches it — by construction, since the fill
 				//    above left the bundle non-empty.
 				if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
-					if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, runFallbacks, bundle.PinnedAPIKeys); grant != nil {
+					if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, bundle.PinnedAPIKeys); grant != nil {
 						// The lent credential goes in the slot its KIND belongs to, so
 						// the runner cannot tell a donation from the tenant's own.
 						switch grant.Source {
@@ -1207,7 +1209,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key stays out: a shared key serves the routes naming it, and another credential holds the wire", runID, prov)
 							continue
 						}
-						if !mayReadWireDefault(wf, modelOverrides, runFallbacks, prov) {
+						if !mayReadWireDefault(view, prov) {
 							p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key stays out: a shared key serves the routes naming it, and no route reads the wire's default", runID, prov)
 							continue
 						}
@@ -1237,7 +1239,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// untouched: this runs only after it declined (res.grant == nil), and
 	// never on an env-funded run or an empty bundle (the pool tier's own
 	// condition — a run with nothing acquires through it, not the door).
-	res.doorGrant = p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, routePolicy, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, apiKeyFPs, policy.sealableSlot)
+	res.doorGrant = p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, apiKeyFPs, policy.sealableSlot)
 
 	// The adaptive-routing ladder (ADR-121 §1, slice 3): the held pairs in
 	// policy order, materialized onto the program through the SAME screen
@@ -1267,8 +1269,8 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			// only, and the composed program is what the derivations below
 			// must see. Advisory like the ladder — the runner's answer is
 			// authoritative.
-			operatorIR := make([]ir.Fallback, 0, len(runFallbacks))
-			for _, fb := range runFallbacks {
+			operatorIR := make([]ir.Fallback, 0, len(view.RunFallbacks))
+			for _, fb := range view.RunFallbacks {
 				operatorIR = append(operatorIR, ir.Fallback{Name: ir.RunFallbackName, Backend: fb.Backend, Model: fb.Model, Provider: fb.Provider})
 			}
 			// The publisher's sandbox reading is the workflow's own block
@@ -1278,22 +1280,26 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			// runner-side: the named asymmetry, said by the runner's
 			// run_fallback_refused event (the authoritative screen).
 			sandboxed := runtime.WorkflowSandboxActive(wf, "", "")
-			if opRefusals := ir.ApplyRunFallback(wf, operatorIR, sandboxed, nil, func(n ir.LLMNode) string {
-				ov := modelOverrides.ForNode(n.NodeID(), n.NodeKind())
+			// The screens read the run's launch vars like the derivations
+			// read the view: one reading of the run, all of it — the
+			// publisher disagreeing with itself over a templated program is
+			// the parity the ADR-129 §4 twin owes (ADR-129 §7).
+			if opRefusals := ir.ApplyRunFallback(wf, operatorIR, sandboxed, launchVars, func(n ir.LLMNode) string {
+				ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 				return ov.Backend
 			}); len(opRefusals) > 0 && p.logger != nil {
 				for _, r := range opRefusals {
 					p.logger.Info("cloudpublisher: %s (run=%s)", r, runID)
 				}
 			}
-			if refusals := ir.ApplyPolicyLadder(wf, stages, sandboxed, nil, func(n ir.LLMNode) string {
-				ov := modelOverrides.ForNode(n.NodeID(), n.NodeKind())
+			if refusals := ir.ApplyPolicyLadder(wf, stages, sandboxed, launchVars, func(n ir.LLMNode) string {
+				ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 				if ov.Model != "" {
 					return ir.ExpandEnvWithDefault(ov.Model)
 				}
 				return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
 			}, func(n ir.LLMNode) string {
-				ov := modelOverrides.ForNode(n.NodeID(), n.NodeKind())
+				ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 				return ov.Backend
 			}, llmroute.ResolveClasses(routePolicy.ModelClasses)); len(refusals) > 0 && p.logger != nil {
 				for _, r := range refusals {
@@ -1347,7 +1353,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// the facade was refused the only credential its model could use.
 	// Unpinned or unresolvable routes keep everything (fail open toward
 	// protection: that run takes whatever the process holds).
-	spend := spendableProviders(wf, modelOverrides, runFallbacks)
+	spend := spendableProviders(view)
 	seen := map[string]bool{}
 	for prov, fp := range apiKeyFPs {
 		if fp != "" && !seen[fp] && spend.spendsKey(bundle, prov) {
@@ -1646,9 +1652,12 @@ func (s spendable) allows(provider string) bool {
 
 // spendableProviders reads the run's resolved routes through the same
 // walk and vocabulary the pool's wants derivation uses (wantsFor), so the
-// two surfaces can never disagree on what a run may spend.
-func spendableProviders(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) spendable {
-	res := model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders)
+// two surfaces can never disagree on what a run may spend. Both read the
+// same RouteView: the run's vars by provenance, so a templated route the
+// launch's declared defaults decide narrows here exactly as it resolves at
+// dispatch (ADR-129 §4).
+func spendableProviders(view model.RouteView) spendable {
+	res := model.EffectiveProviders(view, knownPoolProviders)
 	if !res.NarrowSafe || len(res.Providers) == 0 {
 		return spendable{}
 	}
@@ -1693,8 +1702,8 @@ func pinnedProviderSet(pinned []string) map[string]bool {
 // named by some resolved route; a route the walk cannot read contributes
 // nothing, so the slot it needed stays unfillable and its node is refused
 // by name, which is this feature's safe direction.
-func derivePinnedProviders(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) []string {
-	return model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders).Providers
+func derivePinnedProviders(view model.RouteView) []string {
+	return model.EffectiveProviders(view, knownPoolProviders).Providers
 }
 
 // fillAPIKeySlot puts a resolved key in the bundle and reports whether it
@@ -2818,6 +2827,23 @@ func runFallbackEntriesFromRun(entries []store.RunFallbackEntry) []model.Fallbac
 	return out
 }
 
+// launchVarsAsStrings is the screens' reading of the run document's stored
+// inputs: the texts, kept as the launch wrote them. A stored value that is
+// not a text is dropped — undecided for the screen that would resolve it —
+// the conservative half of what the run document carries.
+func launchVarsAsStrings(inputs map[string]any) map[string]string {
+	if len(inputs) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(inputs))
+	for k, v := range inputs {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
 // knownPoolProviders is the provider vocabulary the wants derivation
 // resolves against — derived from allKnownProviders so the two cannot
 // drift. A hint outside it names a pin the pool cannot serve by name.
@@ -2849,8 +2875,8 @@ var knownPoolProviders = func() map[string]bool {
 // donation it needs. A run whose cross-family reviewer pins openai but
 // whose implementer pins nothing keeps the claude_code forfait in its
 // wants, and a typo in a provider hint costs a Warn, never the pool tier.
-func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry) ([]credpool.Credential, model.ProviderResolution) {
-	res := model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders)
+func wantsFor(view model.RouteView) ([]credpool.Credential, model.ProviderResolution) {
+	res := model.EffectiveProviders(view, knownPoolProviders)
 	if !res.NarrowSafe || len(res.Providers) == 0 {
 		return poolWantOrder, res
 	}
@@ -2870,8 +2896,8 @@ func wantsFor(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []mo
 // mayReadWireDefault reports whether some route of the run may spend prov's
 // slot as the run's DEFAULT credential rather than as a key its hint or spec
 // names — what the restore's last park point is for.
-func mayReadWireDefault(wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry, prov secrets.Provider) bool {
-	return readsWireDefault(model.EffectiveProviders(wf, overrides, runFallbacks, knownPoolProviders), prov)
+func mayReadWireDefault(view model.RouteView, prov secrets.Provider) bool {
+	return readsWireDefault(model.EffectiveProviders(view, knownPoolProviders), prov)
 }
 
 // readsWireDefault is mayReadWireDefault on a resolution already walked (the
@@ -2909,7 +2935,7 @@ func withoutFundedProviders(wants []credpool.Credential, funded func(provider st
 // credential (platform tier) or fail at the LLM call, both worth a line an
 // operator can grep instead of half a day of investigation on a path that
 // decides who pays (#654).
-func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, wf *ir.Workflow, overrides model.ModelOverrides, runFallbacks []model.FallbackEntry, pinned map[secrets.Provider]string) *credpool.Grant {
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, pinned map[secrets.Provider]string) *credpool.Grant {
 	if p.credPool == nil {
 		// No pool at all — a static configuration fact. Debug, not Warn:
 		// pkg/log forwards Warn to the error tracker's breadcrumbs, and a
@@ -2922,7 +2948,7 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 	}
 	// One walk per launch: the wants, the diagnostics and the consulted
 	// line all read the same resolution.
-	wants, res := wantsFor(wf, overrides, runFallbacks)
+	wants, res := wantsFor(view)
 	if len(res.Unknown) > 0 {
 		// A pin nobody knows never narrows the request to nothing: the
 		// walk widened to the full order instead. Name the pin — a typo
@@ -3158,7 +3184,8 @@ func doorServes(bundle secrets.RunBundle) func(_, credential string) bool {
 // before returning — no Policy-flagged fallback exists outside the real
 // ladder block, so the strip restores the program byte-exactly, which is
 // what lets a read-only preview run it.
-func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, wf *ir.Workflow, overrides model.ModelOverrides, serves func(_, credential string) bool) (wants []credpool.Credential, unmapped []string, ok bool) {
+func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, view model.RouteView, launchVars map[string]string, serves func(_, credential string) bool) (wants []credpool.Credential, unmapped []string, ok bool) {
+	wf := view.Workflow
 	var missing []ir.PolicyLadderStage
 	for _, pair := range routePolicy.PairOrder {
 		h, c, err := llmroute.ParsePair(pair)
@@ -3184,14 +3211,14 @@ func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, wf *ir.Workflow, overrid
 	sandboxed := runtime.WorkflowSandboxActive(wf, "", "")
 	landed := map[string]bool{}
 	for _, st := range missing {
-		_ = ir.ApplyPolicyLadder(wf, []ir.PolicyLadderStage{st}, sandboxed, nil, func(n ir.LLMNode) string {
-			ov := overrides.ForNode(n.NodeID(), n.NodeKind())
+		_ = ir.ApplyPolicyLadder(wf, []ir.PolicyLadderStage{st}, sandboxed, launchVars, func(n ir.LLMNode) string {
+			ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 			if ov.Model != "" {
 				return ir.ExpandEnvWithDefault(ov.Model)
 			}
 			return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
 		}, func(n ir.LLMNode) string {
-			ov := overrides.ForNode(n.NodeID(), n.NodeKind())
+			ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 			return ov.Backend
 		}, llmroute.ResolveClasses(routePolicy.ModelClasses))
 		stripped := false
@@ -3253,9 +3280,9 @@ func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, wf *ir.Workflow, overrid
 func (p *Publisher) acquireDoorGrant(
 	ctx context.Context,
 	runID, orgID, tenantID, ownerID, botID string,
-	wf *ir.Workflow,
-	overrides model.ModelOverrides,
+	view model.RouteView,
 	routePolicy *store.RunLLMRoutePolicy,
+	launchVars map[string]string,
 	bundle *secrets.RunBundle,
 	wholeGrant *credpool.Grant,
 	envFunded bool,
@@ -3263,7 +3290,7 @@ func (p *Publisher) acquireDoorGrant(
 	apiKeyFPs map[secrets.Provider]string,
 	sealable func(slot string) bool,
 ) *credpool.Grant {
-	if p.credPool == nil || routePolicy == nil || wf == nil || len(routePolicy.Triggers) == 0 || len(routePolicy.PairOrder) == 0 {
+	if p.credPool == nil || routePolicy == nil || view.Workflow == nil || len(routePolicy.Triggers) == 0 || len(routePolicy.PairOrder) == 0 {
 		return nil
 	}
 	if sharedTiersBlocked {
@@ -3278,7 +3305,7 @@ func (p *Publisher) acquireDoorGrant(
 		return nil
 	}
 
-	wants, unmapped, ok := doorWantsFor(routePolicy, wf, overrides, doorServes(*bundle))
+	wants, unmapped, ok := doorWantsFor(routePolicy, view, launchVars, doorServes(*bundle))
 	if p.logger != nil {
 		for _, slot := range unmapped {
 			p.logger.Info("cloudpublisher: fallback door skips run %s — pair slot %q matches no pool credential kind", runID, slot)
@@ -3516,9 +3543,15 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// before it is persisted: every later resolution of this run (every
 	// resume) replays it from the doc instead of re-reading a source that
 	// may have moved. Same doctrine as the model pins and the fallback
-	// chain above.
-	r.PinnedProviders = derivePinnedProviders(wf, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback))
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, runnerPool, wf, spec.KeyOverrides, spec.SecretOverrides, buildModelOverrides(spec.ModelOverrides), runFallbackEntries(spec.Fallback), spec.Trust, r.PinnedProviders, spec.LLMRoutePolicy)
+	// chain above. The launch view reads the run's vars by provenance
+	// (RouteViewForLaunch): declared defaults narrow the gate, launch
+	// values only where the lane pinned them (spec.TrustedVarNames), a
+	// late name leaves the route undecided (ADR-129 §4).
+	launchOverrides := buildModelOverrides(spec.ModelOverrides)
+	launchFallbacks := runFallbackEntries(spec.Fallback)
+	launchView := model.RouteViewForLaunch(wf, launchOverrides, launchFallbacks, spec.Vars, spec.TrustedVarNames)
+	r.PinnedProviders = derivePinnedProviders(launchView)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, runnerPool, wf, spec.KeyOverrides, spec.SecretOverrides, launchView, spec.Vars, spec.Trust, r.PinnedProviders, spec.LLMRoutePolicy)
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
 	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
 	// sealing the bundle, persisting it — and still returns the grant. Every
@@ -4029,7 +4062,14 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// answer; the windows it consults are volatile and re-resolve). The
 	// ladder recomputes from the re-sealed bundle and rides THIS attempt's
 	// RunMessage; the doc's own Fallback stays the operator's.
-	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy)
+	// The resume reads the run's OWN inputs — the launch persisted them,
+	// and nothing rewrites them — through the launch view, with no trusted
+	// set: the trust question was answered at the launch, and the frozen
+	// pinned set beside it (prior.PinnedProviders) is the launch's answer
+	// replayed. A stored value that is not a text is undecided for the
+	// screens (launchVarsAsStrings keeps texts only).
+	resumeView := model.RouteViewForLaunch(wf, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Inputs, nil)
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy)
 	grant = creds.poolLease()
 	// Armed before the error check — see SubmitLaunch. Runs before the
 	// rollback above (defers unwind in reverse): the grant's own lease is

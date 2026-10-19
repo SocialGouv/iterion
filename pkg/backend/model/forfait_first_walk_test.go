@@ -101,7 +101,7 @@ func TestEffectiveProvidersForfaitFirstIsPositive(t *testing.T) {
 			nil, []string{"anthropic"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			res := EffectiveProviders(tc.wf, ModelOverrides{}, nil, known)
+			res := EffectiveProviders(RouteView{Workflow: tc.wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, known)
 			if !slices.Equal(res.ForfaitFirst, tc.want) {
 				t.Errorf("ForfaitFirst = %v, want %v", res.ForfaitFirst, tc.want)
 			}
@@ -117,7 +117,7 @@ func TestEffectiveProvidersForfaitFirstIsPositive(t *testing.T) {
 		Nodes:       map[string]ir.Node{"a": agent("a", "claude_code", "anthropic", "claude-opus-5-5")},
 		Supervisors: []*ir.Supervisor{{Name: "coach"}},
 	}
-	if res := EffectiveProviders(unpinned, ModelOverrides{}, nil, known); res.NarrowSafe {
+	if res := EffectiveProviders(RouteView{Workflow: unpinned, Overrides: ModelOverrides{}, RunFallbacks: nil}, known); res.NarrowSafe {
 		t.Error("a supervisor with no model of its own left the walk narrow-safe — it spends whatever the runner resolves")
 	}
 }
@@ -169,7 +169,7 @@ func TestEffectiveProvidersAnthropicWireDefaultReads(t *testing.T) {
 				Supervisors: []*ir.Supervisor{{Model: "anthropic/claude-opus-5-5"}},
 			}, nil},
 	} {
-		if got := EffectiveProviders(tc.wf, ModelOverrides{}, nil, known).AnthropicWireDefaultReads; !slices.Equal(got, tc.want) {
+		if got := EffectiveProviders(RouteView{Workflow: tc.wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, known).AnthropicWireDefaultReads; !slices.Equal(got, tc.want) {
 			t.Errorf("%s: AnthropicWireDefaultReads = %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -182,7 +182,7 @@ func TestEffectiveProvidersAnthropicWireDefaultReads(t *testing.T) {
 	}{{"zai", nil}, {"auto", all}} {
 		var ov ModelOverrides
 		ov.SetProvider("a", tc.provider)
-		if got := EffectiveProviders(wf, ov, nil, known).AnthropicWireDefaultReads; !slices.Equal(got, tc.want) {
+		if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ov, RunFallbacks: nil}, known).AnthropicWireDefaultReads; !slices.Equal(got, tc.want) {
 			t.Errorf("override provider %q: AnthropicWireDefaultReads = %v, want %v", tc.provider, got, tc.want)
 		}
 	}

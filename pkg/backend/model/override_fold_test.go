@@ -71,7 +71,7 @@ func TestEffectiveProviders_ProviderChainForms(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": agentWith("a", tc.provider, tc.model)}}
-			got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+			got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 			if got.NarrowSafe != tc.wantNarrow {
 				t.Errorf("NarrowSafe = %v, want %v", got.NarrowSafe, tc.wantNarrow)
 			}
@@ -92,7 +92,7 @@ func TestEffectiveProviders_EnvExpansion(t *testing.T) {
 	// ships on 13 nodes. Read verbatim it is an unknown name.
 	t.Setenv("RESCUE_PROVIDER", "")
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": agentWith("a", "${RESCUE_PROVIDER:-zai}", "")}}
-	got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+	got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if !got.NarrowSafe {
 		t.Fatalf("NarrowSafe = false, want true — a ${VAR:-default} chain resolves to its default; got %+v", got)
 	}
@@ -103,7 +103,7 @@ func TestEffectiveProviders_EnvExpansion(t *testing.T) {
 	// The env may supply the whole chain.
 	t.Setenv("PROVIDERS", "anthropic,openai")
 	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": agentWith("a", "${PROVIDERS}", "")}}
-	got = EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+	got = EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic", "openai"}) {
 		t.Fatalf("env-supplied chain: got %+v, want [anthropic openai] narrow-safe", got)
 	}
@@ -112,7 +112,7 @@ func TestEffectiveProviders_EnvExpansion(t *testing.T) {
 	// takes whatever the process holds, so the walk widens.
 	t.Setenv("ITERION_SEC_AUDIT_PROVIDER_CHAIN", "")
 	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": agentWith("a", "${ITERION_SEC_AUDIT_PROVIDER_CHAIN:-}", "")}}
-	got = EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+	got = EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if got.NarrowSafe || len(got.Providers) != 0 || len(got.Unknown) != 0 {
 		t.Fatalf("empty-by-default chain must widen with nothing named: got %+v", got)
 	}
@@ -126,7 +126,7 @@ func TestEffectiveProviders_MixedResolvedAndUnresolvedWidens(t *testing.T) {
 		"implementer": agentWith("implementer", "", ""),
 		"reviewer":    agentWith("reviewer", "openai", ""),
 	}}
-	got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+	got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if got.NarrowSafe {
 		t.Fatalf("NarrowSafe = true — a mixed unpinned+pinned run must widen; got %+v", got)
 	}
@@ -145,7 +145,7 @@ func TestEffectiveProviders_HonoursOverrides(t *testing.T) {
 	var overrides ModelOverrides
 	overrides.SetProvider("judge", "openai")
 	overrides.SetModel("judge", "openai/gpt-5")
-	got := EffectiveProviders(wf, overrides, nil, knownForTest)
+	got := EffectiveProviders(RouteView{Workflow: wf, Overrides: overrides, RunFallbacks: nil}, knownForTest)
 	if !got.NarrowSafe || !slicesEqual(got.Providers, []string{"openai"}) {
 		t.Fatalf("got %+v, want [openai] narrow-safe", got)
 	}
@@ -153,7 +153,7 @@ func TestEffectiveProviders_HonoursOverrides(t *testing.T) {
 	// A model-only override carries its prefix too.
 	var modelOnly ModelOverrides
 	modelOnly.SetModel("j", "openai/gpt-5")
-	got = EffectiveProviders(wf, modelOnly, nil, knownForTest)
+	got = EffectiveProviders(RouteView{Workflow: wf, Overrides: modelOnly, RunFallbacks: nil}, knownForTest)
 	if !got.NarrowSafe || !slicesEqual(got.Providers, []string{"openai"}) {
 		t.Fatalf("model-only override: got %+v, want [openai] narrow-safe", got)
 	}
@@ -173,7 +173,7 @@ func TestEffectiveProviders_NodeFallbacksContribute(t *testing.T) {
 			},
 		},
 	}}
-	got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+	got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if !got.NarrowSafe {
 		t.Fatalf("NarrowSafe = false, want true (primary, rescue resolve; skip is inert): %+v", got)
 	}
@@ -184,7 +184,7 @@ func TestEffectiveProviders_NodeFallbacksContribute(t *testing.T) {
 	// A route that pins nothing inherits whatever the process holds —
 	// the walk cannot name it, so it widens.
 	wf.Nodes["a"].(*ir.AgentNode).Fallbacks = []ir.Fallback{{Name: "blind", Backend: "claude_code"}}
-	got = EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+	got = EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if got.NarrowSafe {
 		t.Fatalf("a fallback route with no provider must widen: %+v", got)
 	}
@@ -194,12 +194,12 @@ func TestEffectiveProviders_RunLevelFallbackChain(t *testing.T) {
 	// G3: --fallback / spec.Fallback / prior.Fallback add providers the
 	// same way an authored route does.
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": agentWith("a", "openai", "")}}
-	got := EffectiveProviders(wf, ModelOverrides{}, []FallbackEntry{{Backend: "claw", Provider: "anthropic"}}, knownForTest)
+	got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: []FallbackEntry{{Backend: "claw", Provider: "anthropic"}}}, knownForTest)
 	if !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic", "openai"}) {
 		t.Fatalf("got %+v, want [anthropic openai] narrow-safe", got)
 	}
 	// The empty stage ApplyRunFallback drops is dropped here too.
-	got = EffectiveProviders(wf, ModelOverrides{}, []FallbackEntry{{}}, knownForTest)
+	got = EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: []FallbackEntry{{}}}, knownForTest)
 	if !got.NarrowSafe || !slicesEqual(got.Providers, []string{"openai"}) {
 		t.Fatalf("empty stage: got %+v, want [openai] narrow-safe", got)
 	}
@@ -214,7 +214,7 @@ func TestEffectiveProviders_RouterAndHumanNodes(t *testing.T) {
 		"r": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "r"}, RouterMode: ir.RouterLLM, LLMFields: ir.LLMFields{Provider: "anthropic"}},
 		"f": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "f"}, RouterMode: ir.RouterFanOutAll},
 	}}
-	got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+	got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic", "openai"}) {
 		t.Fatalf("llm router: got %+v, want [anthropic openai] narrow-safe", got)
 	}
@@ -222,26 +222,26 @@ func TestEffectiveProviders_RouterAndHumanNodes(t *testing.T) {
 	// A human node answering with a model exposes no LLMFields: it
 	// spends on a provider the walk cannot name, so it widens.
 	wf.Nodes["h"] = &ir.HumanNode{BaseNode: ir.BaseNode{ID: "h"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionLLM}}
-	got = EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+	got = EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if got.NarrowSafe {
 		t.Fatalf("a model-answering human node must widen: %+v", got)
 	}
 	// A plain human node does not.
 	wf.Nodes["h"] = &ir.HumanNode{BaseNode: ir.BaseNode{ID: "h"}}
-	if got = EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe {
+	if got = EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest); !got.NarrowSafe {
 		t.Fatalf("a human-only node must not widen: %+v", got)
 	}
 }
 
 func TestEffectiveProviders_NoLLMNodeAndNilInputs(t *testing.T) {
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"t": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "t"}}}}
-	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || len(got.Providers) != 0 {
+	if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest); !got.NarrowSafe || len(got.Providers) != 0 {
 		t.Fatalf("tool-only workflow: got %+v, want empty and narrow-safe", got)
 	}
-	if got := EffectiveProviders(nil, ModelOverrides{}, nil, knownForTest); got.NarrowSafe {
+	if got := EffectiveProviders(RouteView{Workflow: nil, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest); got.NarrowSafe {
 		t.Fatalf("nil workflow must fail open: %+v", got)
 	}
-	if got := EffectiveProviders(wf, ModelOverrides{}, nil, nil); got.NarrowSafe {
+	if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, nil); got.NarrowSafe {
 		t.Fatalf("empty vocabulary must fail open: %+v", got)
 	}
 }
@@ -302,7 +302,7 @@ func TestEffectiveProviders_HintWinsOverModelPrefix(t *testing.T) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": row.node}}
-			got := EffectiveProviders(wf, row.overrides, nil, knownForTest)
+			got := EffectiveProviders(RouteView{Workflow: wf, Overrides: row.overrides, RunFallbacks: nil}, knownForTest)
 			if !got.NarrowSafe || !slicesEqual(got.Providers, row.want) {
 				t.Fatalf("got %+v, want %v narrow-safe", got, row.want)
 			}
@@ -315,18 +315,18 @@ func TestEffectiveProviders_HintWinsOverModelPrefix(t *testing.T) {
 	var modelOnly ModelOverrides
 	modelOnly.SetModel("a", "anthropic/claude-opus-4-8")
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": nodeOf("claude_code", "zai", "")}}
-	if got := EffectiveProviders(wf, modelOnly, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"zai"}) {
+	if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: modelOnly, RunFallbacks: nil}, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"zai"}) {
 		t.Fatalf("model override over a zai hint: got %+v, want [zai]", got)
 	}
 	// A PROVIDER override does collapse it.
 	var provOv ModelOverrides
 	provOv.SetProvider("a", "anthropic")
-	if got := EffectiveProviders(wf, provOv, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic"}) {
+	if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: provOv, RunFallbacks: nil}, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic"}) {
 		t.Fatalf("provider override over a zai hint: got %+v, want [anthropic]", got)
 	}
 	// No hint at all: the prefix routes (claw's registry).
 	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": nodeOf("claw", "auto", "openai/gpt-5")}}
-	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"openai"}) {
+	if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"openai"}) {
 		t.Fatalf("auto hint + prefix: got %+v, want [openai]", got)
 	}
 	// A fallback route follows the same rule: its hint beats its prefix.
@@ -335,7 +335,7 @@ func TestEffectiveProviders_HintWinsOverModelPrefix(t *testing.T) {
 		LLMFields: ir.LLMFields{Backend: "claude_code", Provider: "anthropic"},
 		Fallbacks: []ir.Fallback{{Name: "rescue", Provider: "zai", Model: "anthropic/glm-5.2"}},
 	}}}
-	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic", "zai"}) {
+	if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic", "zai"}) {
 		t.Fatalf("fallback hint over prefix: got %+v, want [anthropic zai]", got)
 	}
 }
@@ -353,19 +353,19 @@ func TestEffectiveProviders_InteractionModelIsARoute(t *testing.T) {
 		}
 	}
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": node(ir.InteractionLLM, "openai/gpt-5", "")}}
-	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"openai", "zai"}) {
+	if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"openai", "zai"}) {
 		t.Fatalf("interaction_model openai/…: got %+v, want [openai zai]", got)
 	}
 	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": node(ir.InteractionLLMOrHuman, "", "anthropic/claude-opus-4-8")}}
-	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic", "zai"}) {
+	if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"anthropic", "zai"}) {
 		t.Fatalf("interaction falls back to the node model's prefix: got %+v, want [anthropic zai]", got)
 	}
 	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": node(ir.InteractionLLM, "", "")}}
-	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); got.NarrowSafe {
+	if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest); got.NarrowSafe {
 		t.Fatalf("interaction on a bare model spec must widen: got %+v", got)
 	}
 	wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": node(ir.InteractionHuman, "openai/gpt-5", "")}}
-	if got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"zai"}) {
+	if got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest); !got.NarrowSafe || !slicesEqual(got.Providers, []string{"zai"}) {
 		t.Fatalf("a human interaction spends nothing on interaction_model: got %+v, want [zai]", got)
 	}
 }
@@ -379,7 +379,7 @@ func TestEffectiveProviders_InteractionModelIsARoute(t *testing.T) {
 // fields learned to resolve templates.
 func TestEffectiveProviders_TemplatedHintFailsOpen(t *testing.T) {
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": agentWith("a", "{{vars.p}}", "anthropic/claude-opus-5")}}
-	got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+	got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if got.NarrowSafe {
 		t.Fatalf("a templated hint must widen, got %+v", got)
 	}
@@ -445,7 +445,7 @@ func TestEffectiveProviders_OnlyEnvFunded(t *testing.T) {
 				wf = &ir.Workflow{Nodes: map[string]ir.Node{"a": nodeOf("", "", "")}}
 				wf.Nodes["a"] = &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}}
 			}
-			got := EffectiveProviders(wf, ModelOverrides{}, nil, knownForTest)
+			got := EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 			if got.OnlyEnvFunded() != row.want {
 				t.Fatalf("OnlyEnvFunded = %v (providers=%v narrow=%v unknown=%v), want %v",
 					got.OnlyEnvFunded(), got.Providers, got.NarrowSafe, got.Unknown, row.want)
@@ -454,17 +454,17 @@ func TestEffectiveProviders_OnlyEnvFunded(t *testing.T) {
 	}
 	// The gateway route must not widen anything either: narrow-safe, no
 	// unknown name, no provider.
-	got := EffectiveProviders(&ir.Workflow{Nodes: map[string]ir.Node{
+	got := EffectiveProviders(RouteView{Workflow: &ir.Workflow{Nodes: map[string]ir.Node{
 		"a": nodeOf("claw", "", "openai_compatible/team/m"),
-	}}, ModelOverrides{}, nil, knownForTest)
+	}}, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if !got.NarrowSafe || len(got.Providers) != 0 || len(got.Unknown) != 0 {
 		t.Fatalf("an all-gateway walk widened: %+v", got)
 	}
 	// ... and the bare-model spelling widens as an unknown name, the
 	// fail-open the fill reads before the predicate existed.
-	got = EffectiveProviders(&ir.Workflow{Nodes: map[string]ir.Node{
+	got = EffectiveProviders(RouteView{Workflow: &ir.Workflow{Nodes: map[string]ir.Node{
 		"a": nodeOf("claw", "openai_compatible", "claude-opus-5"),
-	}}, ModelOverrides{}, nil, knownForTest)
+	}}, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if got.NarrowSafe || !slices.Contains(got.Unknown, "openai_compatible") {
 		t.Fatalf("a gateway hint over a bare model did not widen: %+v", got)
 	}
@@ -504,7 +504,7 @@ func TestEffectiveProviders_EnvTemplatedRoutesWidenAndAreNeverEnvFunded(t *testi
 			if row.ovProvider != "" {
 				overrides.SetProvider("a", row.ovProvider)
 			}
-			got := EffectiveProviders(wf, overrides, nil, knownForTest)
+			got := EffectiveProviders(RouteView{Workflow: wf, Overrides: overrides, RunFallbacks: nil}, knownForTest)
 			if got.OnlyEnvFunded() != row.wantEnvFunded {
 				t.Errorf("OnlyEnvFunded = %v, want %v", got.OnlyEnvFunded(), row.wantEnvFunded)
 			}

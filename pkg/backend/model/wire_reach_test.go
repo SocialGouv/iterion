@@ -100,7 +100,7 @@ func TestAnthropicWireReachable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := AnthropicWireReachable(tc.wf, ModelOverrides{}); got != tc.want {
+			if got := AnthropicWireReachable(RouteView{Workflow: tc.wf, Overrides: ModelOverrides{}}); got != tc.want {
 				t.Fatalf("AnthropicWireReachable = %v, want %v", got, tc.want)
 			}
 		})
@@ -116,7 +116,7 @@ func TestAnthropicWireReachable_Overrides(t *testing.T) {
 		"oracle_campaign":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "oracle_campaign"}},
 		"mutants_adversary": &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "mutants_adversary"}},
 	}}
-	if !AnthropicWireReachable(wf, ModelOverrides{}) {
+	if !AnthropicWireReachable(RouteView{Workflow: wf, Overrides: ModelOverrides{}}) {
 		t.Fatal("unpinned run must count as on the wire")
 	}
 	var both ModelOverrides
@@ -125,14 +125,14 @@ func TestAnthropicWireReachable_Overrides(t *testing.T) {
 		both.SetModel(sel, "openai/gpt-5.6-sol")
 		both.SetProvider(sel, "openai")
 	}
-	if AnthropicWireReachable(wf, both) {
+	if AnthropicWireReachable(RouteView{Workflow: wf, Overrides: both}) {
 		t.Fatal("both nodes pinned to claw/openai by override: the run cannot touch the wire")
 	}
 	// Pinning the agent only leaves the judge on claude_code.
 	var agentOnly ModelOverrides
 	agentOnly.SetBackend("oracle_campaign", "claw")
 	agentOnly.SetProvider("oracle_campaign", "openai")
-	if !AnthropicWireReachable(wf, agentOnly) {
+	if !AnthropicWireReachable(RouteView{Workflow: wf, Overrides: agentOnly}) {
 		t.Fatal("the judge still resolves to claude_code")
 	}
 }
@@ -155,7 +155,7 @@ func TestAnthropicWireRoutesReadsThePrimaryElement(t *testing.T) {
 		"f-model":    node("f-model", "claw", "", "{{vars.m}}"),
 		"g-off":      node("g-off", "codex", "", "openai/gpt-6"),
 	}}
-	got := AnthropicWireRoutes(wf, ModelOverrides{})
+	got := AnthropicWireRoutes(RouteView{Workflow: wf, Overrides: ModelOverrides{}})
 	want := []WireRoute{
 		{NodeID: "a-dispatch", Backend: "", Hint: "", Model: "claude-opus-5-5", Readable: false},
 		{NodeID: "b-var", Backend: "claude_code", Hint: "{{vars.p}}", Model: "claude-opus-5-5", Readable: false},
@@ -176,13 +176,13 @@ func TestAnthropicWireRoutesReadsThePrimaryElement(t *testing.T) {
 	// A launch-time provider override IS the chain, element and all.
 	var ov ModelOverrides
 	ov.SetProvider("e-chain", "anthropic")
-	for _, r := range AnthropicWireRoutes(wf, ov) {
+	for _, r := range AnthropicWireRoutes(RouteView{Workflow: wf, Overrides: ov}) {
 		if r.NodeID == "e-chain" && (r.Hint != "anthropic" || r.Model != "claude-opus-5-5") {
 			t.Errorf("overridden route = %+v, want the override's hint over the node's model", r)
 		}
 	}
 
-	if got := AnthropicWireRoutes(nil, ModelOverrides{}); len(got) != 1 || got[0].Readable {
+	if got := AnthropicWireRoutes(RouteView{Workflow: nil, Overrides: ModelOverrides{}}); len(got) != 1 || got[0].Readable {
 		t.Errorf("nil workflow routes = %+v, want one unreadable route", got)
 	}
 }

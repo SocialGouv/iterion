@@ -135,7 +135,7 @@ func doorWf() *ir.Workflow {
 func (f *doorFixture) resolve(t *testing.T, runID string, policy *store.RunLLMRoutePolicy, wf *ir.Workflow) (secrets.RunBundle, credResolution) {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.ModelOverrides{}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestDoorWantsFor_restoresTheProgramByteExactly(t *testing.T) {
 	snapshot := make([]ir.Fallback, len(before))
 	copy(snapshot, before)
 
-	wants, unmapped, ok := doorWantsFor(policy, wf, model.ModelOverrides{}, func(_, credential string) bool {
+	wants, unmapped, ok := doorWantsFor(policy, model.RouteView{Workflow: wf}, nil, func(_, credential string) bool {
 		// Both pairs held: NOTHING is missing, the derivation probes
 		// nothing — the trivially-restoring case.
 		return true
@@ -357,7 +357,7 @@ func TestDoorWantsFor_restoresTheProgramByteExactly(t *testing.T) {
 
 	// The PROBING case: zai missing, the rung lands on the node, the strip
 	// restores. The pre-probe snapshot is the same two-rung-free program.
-	wants, _, ok = doorWantsFor(policy, wf, model.ModelOverrides{}, func(_, credential string) bool {
+	wants, _, ok = doorWantsFor(policy, model.RouteView{Workflow: wf}, nil, func(_, credential string) bool {
 		return credential == "anthropic_key"
 	})
 	if !ok || len(wants) != 1 || wants[0] != (credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai"}) {
@@ -407,15 +407,15 @@ func TestAcquireDoorGrant_guards(t *testing.T) {
 	_ = args
 
 	// A whole-bundle grant: the whole-bundle tier's case, never the door's.
-	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", wf, model.ModelOverrides{}, policy, &bundle, &credpool.Grant{}, false, false, map[secrets.Provider]string{}, sealable); g != nil {
+	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, &credpool.Grant{}, false, false, map[secrets.Provider]string{}, sealable); g != nil {
 		t.Fatal("the door fired behind a whole-bundle grant")
 	}
 	// An env-funded run acquires nothing at all (#2038).
-	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", wf, model.ModelOverrides{}, policy, &bundle, nil, true, false, map[secrets.Provider]string{}, sealable); g != nil {
+	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, nil, true, false, map[secrets.Provider]string{}, sealable); g != nil {
 		t.Fatal("the door fired on an env-funded run")
 	}
 	// An empty bundle belongs to the whole-bundle tier.
-	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", wf, model.ModelOverrides{}, policy, &secrets.RunBundle{}, nil, false, false, map[secrets.Provider]string{}, sealable); g != nil {
+	if g := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{}, nil, false, false, map[secrets.Provider]string{}, sealable); g != nil {
 		t.Fatal("the door fired on an empty bundle")
 	}
 }
