@@ -2,12 +2,58 @@
 
 Entity-relationship models of the MongoDB data and the access-control matrix, drawn from the code.
 
-Every diagram page here is a **view** over the code, never a second source of truth: each one names the commit it was verified against, links the Go files it was drawn from, and can be refused by `internal/docsguard` when the tree moves away from it (a collection without an entity, an entity without a collection, a gate its file no longer declares). The prose pages of [`docs/`](../README.md) keep the explanations; these pages keep the shapes.
+Every diagram page here is a **view** over the code, never a second source of truth: each one names the commit it was verified against, and can be refused by `internal/docsguard` when the tree moves away from it (a collection without an entity, an entity without a collection, a gate its file no longer declares). The prose pages of [`docs/`](../README.md) keep the explanations; these pages keep the shapes.
 
 ## Pages
 
+The map of the map — every page below, grouped by family. Numbers match the
+table that follows.
+
+```mermaid
+flowchart LR
+  subgraph DM["Data model — six domains + access control"]
+    direction TB
+    DM1["1 · identity"]
+    DM2["2 · forge-bots"]
+    DM3["3 · runs"]
+    DM4["4 · credentials"]
+    DM5["5 · automation"]
+    DM6["6 · knowledge"]
+    DM7["7 · access-control"]
+  end
+  subgraph ERD["The whole database"]
+    ERD1["8 · complete ERD — every collection, one diagram"]
+  end
+  subgraph FL["Cloud flows"]
+    direction TB
+    F1["9 · auth login"]
+    F2["10 · org & team lifecycle"]
+    F3["11 · forge connect"]
+    F4["12 · webhook-to-run"]
+    F5["13 · revi merge gate"]
+    F6["14 · cloud run lifecycle"]
+    F7["15 · credential resolution"]
+    F8["16 · sealed bundle"]
+    F9["17 · config share"]
+  end
+  subgraph FL2["Engine flows"]
+    direction TB
+    E1["18 · triggers & schedules"]
+    E2["19 · pause / resume / rewind"]
+    E3["20 · board dispatch"]
+    E4["21 · bot resolution"]
+    E5["22 · memory & knowledge"]
+    E6["23 · sandbox isolation"]
+    E7["24 · notifications & callbacks"]
+    E8["25 · bot to running graph"]
+    E9["26 · assistant dock"]
+  end
+  DM7 --- ERD1
+```
+
 | Page | What it draws |
 |---|---|
+| [erd-complete.md](erd-complete.md) | The whole database in ONE diagram: all 79 collections, every relationship, no attributes — the at-a-glance answer to "what relates to what". Drawn from the six data-model pages by construction. |
 | [data-model-identity.md](data-model-identity.md) | Orgs, teams, users and their memberships; invitations; the credentials a person holds (sessions, PATs, reset tokens, SSO state); org-level SSO config; the audit trail. |
 | [data-model-forge-bots.md](data-model-forge-bots.md) | A forge connection, the repositories it binds, the webhooks it provisions and the bots it enables — the worked example *Revi bound to a repository, inside a team*; the inbound delivery lifecycle; the bot-definition tiers (team, platform, baked); the board binding and the provisioning gate. |
 | [data-model-runs.md](data-model-runs.md) | A run and its per-run streams (events, logs, turns, plans, notes, interactions), the run tree (parents, sub-bots, forks) and delegations, assistant supervision; the run status machine. |
