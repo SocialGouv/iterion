@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.270.3](https://github.com/SocialGouv/iterion/compare/v3.270.2...v3.270.3) (2026-10-19)
+
+### Bug Fixes
+
+* **server,runner,model:** the launch-time pre-flights read the run's vars through one RouteView ([#2567](https://github.com/SocialGouv/iterion/issues/2567)) ([de7ab88](https://github.com/SocialGouv/iterion/commit/de7ab881c70043f37a65697aedcc74afa5abeb17)), references [#2006](https://github.com/SocialGouv/iterion/issues/2006) [#2006](https://github.com/SocialGouv/iterion/issues/2006) [#668](https://github.com/SocialGouv/iterion/issues/668)
+
+    <details><summary>why</summary>
+
+    The reviewed draft of 2026-10-12 (drafted as 126; 126 and 128 went to main's accessibility and studio pages since). Slice 1 of #2006 lands it with the RouteView; the number is claimed here so no other page takes it.
+
+    </details>
+
 ## [3.270.2](https://github.com/SocialGouv/iterion/compare/v3.270.1...v3.270.2) (2026-10-19)
 
 ### Bug Fixes
