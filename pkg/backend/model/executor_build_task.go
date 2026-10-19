@@ -815,6 +815,15 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 // counterpart to the existing parse-fallback retry. Type / enum errors
 // stay non-retryable: those are the model returning the *wrong shape*,
 // which a second call from the same model is unlikely to flip.
+// textOf extracts the plain text a parse-fallback result wraps (the wrapped
+// {"text": …} shape); empty when the output carries no text field.
+func textOf(output map[string]any) string {
+	if text, ok := output["text"].(string); ok {
+		return text
+	}
+	return ""
+}
+
 func (e *ClawExecutor) validateAndRetry(
 	ctx context.Context,
 	f backendFields,
@@ -827,6 +836,16 @@ func (e *ClawExecutor) validateAndRetry(
 	err := ValidateOutput(result.Output, schema)
 	if err == nil {
 		return result, nil
+	}
+	// A backend whose stream died on a provider error hands the error text
+	// to the parser as if it were the answer: « API Error: … » wrapped as
+	// plain text (ParseFallback), then validated as missing fields. Name
+	// THAT — the schema was never the problem; the fix is the provider
+	// route. Seen twice mislabeled in the field before this branch
+	// (#2465's publish judge, run 01a144f5, chased as a schema bug).
+	if text := textOf(result.Output); strings.Contains(text, "API Error:") {
+		line := strings.SplitN(strings.TrimSpace(text), "\n", 2)[0]
+		return result, fmt.Errorf("model: %s: the backend produced no structured output — its result is the provider's own error: %s", f.subject(), line)
 	}
 	// Retry-eligible: parse-fallback (LLM returned non-JSON the executor
 	// wrapped in a text field) OR missing-required-field (LLM returned

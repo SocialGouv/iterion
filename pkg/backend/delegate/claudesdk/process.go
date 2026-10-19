@@ -163,7 +163,7 @@ func buildArgs(cfg processConfig, streaming bool) []string {
 	}
 
 	if cfg.OutputFormat != nil {
-		if b, err := json.Marshal(cfg.OutputFormat); err == nil {
+		if b, err := json.Marshal(strictStructuredOutput(cfg.OutputFormat)); err == nil {
 			args = append(args, "--json-schema", string(b))
 		}
 	}
