@@ -1,6 +1,6 @@
 cask "iterion-desktop" do
-  version "3.269.0"
-  sha256 "cd62d31a10f726a0dfaa1a9627990cf5b96981ed1e7a65829782d1d659e5a017"
+  version "3.270.1"
+  sha256 "86afdb3fbddc840dafc22f81d3f2f75855d7d55abece7cddc4a1ef1e007fc9d5"
 
   url "https://github.com/SocialGouv/iterion/releases/download/v#{version}/iterion-desktop-darwin-universal.zip"
   name "Iterion Desktop"
