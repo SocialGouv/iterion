@@ -127,6 +127,16 @@ func Run(opts Options) error {
 			fmt.Fprintf(out, "release-floors: %s\n", detail)
 		}
 	}
+	// A downward realignment can strand a shipped manifest whose
+	// requires.iterion copied the pin's pending number. Only a cut has both
+	// numbers, so only its report names what it left behind — beside the
+	// realignment line, at exit 0: a preview writes nothing and has no
+	// realignment to answer for.
+	if opts.Apply {
+		for _, line := range staleManifestWarnings(root, actions) {
+			fmt.Fprintf(out, "release-floors: %s\n", line)
+		}
+	}
 	return nil
 }
 

@@ -59,8 +59,13 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
   push admission refuses the same bundle with a 409. What neither guard
   covers is a manifest left one release too HIGH after a downward
   realignment: that over-declares (the bundle refuses runners that could
-  read it) and nothing says so, because no arithmetic can tell an intended
-  floor from a stale one.
+  read it), and no arithmetic can tell an intended floor from a stale one.
+  The cut names it instead of deciding: after realigning a pin DOWN
+  (`3.180.0 → 3.179.1`), its report warns on every shipped `bots/*/` and
+  `examples/*/` manifest whose `requires.iterion` still equals the pin's old
+  value — path and value, right under the realignment line — and exits 0; a
+  manifest already lowered, or carrying a deliberate floor, warns nothing,
+  and whether to lower a warned one stays the operator's call.
 - **A refused cut leaves the bump behind.** The hook fails before release-it
   arms its rollback, so `package.json`, `CHANGELOG.md` and
   `charts/iterion/Chart.yaml` stay modified and a second local run reports
