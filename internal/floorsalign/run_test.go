@@ -404,6 +404,126 @@ func TestPreviewWritesNothingAndHoldsTheReleaseTestsRule(t *testing.T) {
 	requireUntouched(t, floorFiles(over), overBefore)
 }
 
+// writeManifest drops a shipped bundle manifest into one of the two
+// collections the cut's stale-floor check walks. An empty iterion writes
+// the manifest with no requires: block at all — the field is opt-in.
+func writeManifest(t *testing.T, root, rel, iterion string) {
+	t.Helper()
+	body := "name: probe\nschema_version: 1\n"
+	if iterion != "" {
+		body += "requires:\n  iterion: \"" + iterion + "\"\n"
+	}
+	writeFile(t, root, rel, body)
+}
+
+// A downward realignment strands the manifests that copied the pin's
+// pending number: the pin drops to the patch being cut, and a manifest
+// still at the next minor refuses runners that can now read its sources.
+// The cut holds both numbers, so its report names each stranded manifest —
+// path and value — beside the realignment line, and still exits 0. A
+// manifest already lowered, one carrying a deliberate floor above the old
+// value, and one with no floor at all are named by neither: the fact a
+// warning states is "still equals the OLD value after the realignment",
+// not "any floor the cut cannot vouch for".
+func TestADownwardRealignmentWarnsOnTheManifestsItStrands(t *testing.T) {
+	root := fixtureRepo(t, "3.180.0", "3.180.0", "3.178.0", "3.179.0")
+	writeManifest(t, root, filepath.Join("bots", "stale", "manifest.yaml"), ">= 3.180.0")
+	writeManifest(t, root, filepath.Join("examples", "stale-demo", "manifest.yaml"), ">= 3.180.0")
+	writeManifest(t, root, filepath.Join("bots", "lowered", "manifest.yaml"), ">= 3.179.1")
+	writeManifest(t, root, filepath.Join("bots", "deliberate", "manifest.yaml"), ">= 3.181.0")
+	writeManifest(t, root, filepath.Join("examples", "floorless", "manifest.yaml"), "")
+	bump(t, root, "3.179.1", "### Features\n\n* **dsl:** the contract syntax, read at last")
+	var out bytes.Buffer
+	if err := Run(Options{Root: root, Apply: true, Floors: fixtureFloors("3.180.0", "3.180.0", "3.178.0", "3.179.0"), Stdout: &out}); err != nil {
+		t.Fatalf("the cut refused: a warning must not fail the release: %v", err)
+	}
+	report := out.String()
+	for _, want := range []string{
+		`warning: bots/stale/manifest.yaml requires.iterion ">= 3.180.0" still names 3.180.0`,
+		`realigned to 3.179.1`,
+		`lower it to ">= 3.179.1"`,
+		`warning: examples/stale-demo/manifest.yaml requires.iterion ">= 3.180.0" still names 3.180.0`,
+	} {
+		if !strings.Contains(report, want) {
+			t.Fatalf("the report lacks %q:\n%s", want, report)
+		}
+	}
+	for _, silent := range []string{"bots/lowered", "bots/deliberate", "examples/floorless"} {
+		if strings.Contains(report, silent) {
+			t.Fatalf("the report names %s, whose floor is not the realigned one:\n%s", silent, report)
+		}
+	}
+	// The warning rides the report NEXT TO the realignment line that
+	// produced the fact.
+	realigned := strings.Index(report, "parser.ContractSince = 3.180.0 → 3.179.1")
+	warned := strings.Index(report, "warning: bots/stale/")
+	if realigned < 0 || warned < realigned {
+		t.Fatalf("the warning does not follow the realignment line it answers:\n%s", report)
+	}
+}
+
+// No shipped manifest still names the realigned value — all lowered, some
+// never carrying a floor — and the report stays silent: a cut whose sweep
+// found nothing says nothing.
+func TestADownwardRealignmentWithNoStaleManifestWarnsNothing(t *testing.T) {
+	root := fixtureRepo(t, "3.180.0", "3.180.0", "3.178.0", "3.179.0")
+	writeManifest(t, root, filepath.Join("bots", "lowered", "manifest.yaml"), ">= 3.179.1")
+	writeManifest(t, root, filepath.Join("examples", "floorless", "manifest.yaml"), "")
+	bump(t, root, "3.179.1", "### Features\n\n* **dsl:** the contract syntax, read at last")
+	var out bytes.Buffer
+	if err := Run(Options{Root: root, Apply: true, Floors: fixtureFloors("3.180.0", "3.180.0", "3.178.0", "3.179.0"), Stdout: &out}); err != nil {
+		t.Fatalf("the cut refused: %v", err)
+	}
+	if strings.Contains(out.String(), "warning:") {
+		t.Fatalf("the report warns with no stale manifest:\n%s", out.String())
+	}
+}
+
+// An upward realignment strands nothing: a manifest whose floor copied the
+// pin's pending number sits BELOW the release being cut, and every runner
+// that reads the bundle is at least that build. The realignment line
+// prints; the warning does not — the direction is the fact the warning
+// answers for.
+func TestAnUpwardRealignmentWarnsNothing(t *testing.T) {
+	root := fixtureRepo(t, "3.180.0", "3.180.0", "3.178.0", "3.179.0")
+	writeManifest(t, root, filepath.Join("bots", "copied", "manifest.yaml"), ">= 3.180.0")
+	bump(t, root, "3.190.0", "### Features\n\n* **dsl:** the contract syntax and the import unit")
+	var out bytes.Buffer
+	if err := Run(Options{Root: root, Apply: true, Floors: fixtureFloors("3.180.0", "3.180.0", "3.178.0", "3.179.0"), Stdout: &out}); err != nil {
+		t.Fatalf("the cut refused: %v", err)
+	}
+	report := out.String()
+	if !strings.Contains(report, "parser.ContractSince = 3.180.0 → 3.190.0") {
+		t.Fatalf("the report does not show the upward realignment this witness needs:\n%s", report)
+	}
+	if strings.Contains(report, "warning:") {
+		t.Fatalf("an upward realignment warned:\n%s", report)
+	}
+}
+
+// A shipped manifest the sweep cannot read is reported, never skipped, and
+// still never fails the release: the check cannot certify what it cannot
+// read, so it says so — in the same report, at the same exit 0.
+func TestAManifestTheSweepCannotReadWarnsAndStillExitsZero(t *testing.T) {
+	root := fixtureRepo(t, "3.180.0", "3.180.0", "3.178.0", "3.179.0")
+	writeManifest(t, root, filepath.Join("bots", "stale", "manifest.yaml"), ">= 3.180.0")
+	writeFile(t, root, filepath.Join("bots", "broken", "manifest.yaml"), "name: [unclosed\n")
+	bump(t, root, "3.179.1", "### Features\n\n* **dsl:** the contract syntax, read at last")
+	var out bytes.Buffer
+	if err := Run(Options{Root: root, Apply: true, Floors: fixtureFloors("3.180.0", "3.180.0", "3.178.0", "3.179.0"), Stdout: &out}); err != nil {
+		t.Fatalf("the cut refused: an unreadable manifest must not fail the release: %v", err)
+	}
+	report := out.String()
+	for _, want := range []string{
+		"warning: bots/broken/manifest.yaml could not be read",
+		`warning: bots/stale/manifest.yaml requires.iterion ">= 3.180.0" still names 3.180.0`,
+	} {
+		if !strings.Contains(report, want) {
+			t.Fatalf("the report lacks %q:\n%s", want, report)
+		}
+	}
+}
+
 // Right after a minor cut the release before the checkout is one minor
 // down; the pending pin main holds is the next minor above the NEWEST
 // release, and the preview must measure from the same place as the test.
