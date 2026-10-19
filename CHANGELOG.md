@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.271.1](https://github.com/SocialGouv/iterion/compare/v3.271.0...v3.271.1) (2026-10-19)
+
+### Bug Fixes
+
+* **rgaa-audit:** the annex and GRID_INCOMPLETE name the page cells left open ([#2449](https://github.com/SocialGouv/iterion/issues/2449)) ([#2581](https://github.com/SocialGouv/iterion/issues/2581)) ([a79eefe](https://github.com/SocialGouv/iterion/commit/a79eefe7edf94d1fc3dcd1e5f58eb34aa45c078a))
+
+    <details><summary>why</summary>
+
+    The engine's completeness check (`check --require-decided=pages`) holds per-page cells open — a criterion the trial pruned can leave a page cell « à évaluer » while the DOCUMENT decides the criterion (r4's 10.7, open on 18 pages) — and final_report used to read only the global undecided list: complete=false, undecided=0, nothing named, and under require_complete a GRID_INCOMPLETE that said « 0 criteria are still undecided ».
+
+    </details>
+
 ## [3.271.0](https://github.com/SocialGouv/iterion/compare/v3.270.3...v3.271.0) (2026-10-19)
 
 ### Features
