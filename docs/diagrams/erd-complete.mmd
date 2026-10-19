@@ -250,3 +250,4 @@ erDiagram
     assistant_missions }o--|| assistant_run_watches : "watch_id"
     runs ||..o{ "S3: artifacts and backend sessions" : "key - the run id sits in its second path segment"
     runs ||--o| "NATS KV: run locks" : "key - the run id; the claiming runner holds one lease per run"
+
