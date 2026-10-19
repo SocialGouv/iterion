@@ -181,5 +181,26 @@ workflow runs unchanged from your laptop to CI to the cloud.
 
 ---
 
+## 📚 The documentation, section by section
+
+Every page is held to the code it describes — starting with the
+[diagrams](diagrams/README.md): the whole system, drawn from the source and
+kept there by a guard — the Mongo data model, the access-control matrix, and
+18 feature flows, one per capability.
+
+<div class="vp-features-lite">
+
+- 📊 **Diagrams** — the [data model](diagrams/data-model-runs.md) (identity, forges & bots, runs, credentials, automation, knowledge), the [access-control matrix](diagrams/access-control.md), and [18 feature flows](diagrams/flow-webhook-to-run.md) — webhooks, credentials, scheduling, dispatch, resume, sandboxes, and more. → [Overview, conventions, glossary](diagrams/README.md)
+- 🧩 **Author .bot workflows** — the [DSL guide](dsl.md), [routers](routers.md), [human gates](human-in-the-loop.md), [backends](backends.md), [memory & knowledge](memory-and-knowledge.md), [secrets](secrets.md), [bundles](bundles.md), [authoring pitfalls](workflow_authoring_pitfalls.md).
+- ⚙️ **Run and operate locally** — [resume](resume.md), the [sandbox](sandbox.md), [scheduling](scheduling.md), the [dispatcher](dispatcher.md), [merge policy](merge-policy.md), [config share](config-share.md), [observability](observability/README.md).
+- 🤖 **Bots & security automation** — the [fleet](examples.md), the [security bots](security-bots.md) and their [distributed](security-bots-distributed.md) and [patcher](security-patcher.md) variants.
+- ☁️ **Cloud control plane** — the [overview](cloud-overview.md) and [architecture](cloud-architecture.md), the [REST API](cloud-rest-api.md), [webhooks](webhooks.md), [BYOK](byok.md), the [admin guide](cloud-admin-guide.md), [deployment](cloud-deployment.md).
+- 🖥️ **Desktop** — the [app](desktop.md), its [architecture](desktop-architecture.md), [build](desktop-build.md) and [distribution](desktop-distribution.md).
+- 🧭 **Reference & history** — the [CLI reference](cli-reference.md), [comparisons](comparisons/), the [ADRs](adr/), [architecture & contribution](architecture.md), the [ratchet](improvement-ratchet.md).
+
+</div>
+
+---
+
 New here? Start with [Why Iterion?](why-iterion.md) for the vision, jump straight
 to [Install](install.md), or [explore the bot fleet](examples.md).

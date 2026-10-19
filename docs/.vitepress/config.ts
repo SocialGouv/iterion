@@ -349,6 +349,7 @@ export default withMermaid(
         },
         { text: 'DSL', link: '/dsl' },
         { text: 'Bots', link: '/examples' },
+        { text: 'Diagrams', link: '/diagrams/README' },
         { text: 'Cloud', link: '/cloud-overview' },
       ],
       sidebar,
