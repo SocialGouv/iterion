@@ -1092,12 +1092,13 @@ func suppressAnthropicWireEnv() map[string]string {
 // normalizeProviderHint folds a routing hint into the form the switches in
 // this file are written in: lower-case, no surrounding space.
 //
-// The hint is operator TEXT and nothing upstream folds it — a bot's
-// `provider:` field is trimmed but never cased (ir.SplitProviderStep), a
-// launch-time override is stored verbatim, and the compiler's unknown-hint
-// diagnostic is a warning. Matching the exact literal therefore let
-// `provider: "Moonshot"` miss every facade branch and fall through to the
-// DEFAULT precedence: another vendor's account, another bill, and no refusal —
+// The hint is operator TEXT and mostly arrives already folded — the
+// executor's chain parse (model.parseProviderChain) lower-cases every
+// step — but the compiler's unknown-hint diagnostic is a warning and a
+// runner binary predating that parse stamps what it carried. Matching the
+// exact literal therefore let `provider: "Moonshot"` miss every facade
+// branch and fall through to the DEFAULT precedence: another vendor's
+// account, another bill, and no refusal —
 // the failure ErrNoFacadeCredential exists to make loud.
 //
 // Folded ONCE at the top of the two functions that take a raw hint — this file

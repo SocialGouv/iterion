@@ -218,7 +218,13 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// after queue admission would leave a paid launch to fail remotely.
 		// Admission and the runner receive the same run-level permission
 		// override, so one authoritative resolution is sufficient.
-		if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
+		//
+		// The policy's override cells fold under the launch's own rows
+		// BEFORE the permission screen — one shared body (foldAndScreen)
+		// for every launch-shaped entry, so the order exists in exactly
+		// one place: a cell folded in after the screen would reach past a
+		// guard the launcher's own override cannot.
+		if err := foldAndScreen(wf, &spec); err != nil {
 			return nil, err
 		}
 		if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
@@ -291,6 +297,19 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 	return append(append([]func(store.Event){}, extra...), s.broker.Publish)
 }
 
+// foldAndScreen folds the resolved routing policy's override cells under
+// the launch's own rows and runs the permission screen on the FOLDED
+// list — one body for every launch-shaped entry (cloud, local,
+// preview), so the fold-before-screen order exists in exactly one place:
+// a cell folded in after the screen would reach past a guard the
+// launcher's own override cannot, and an entry that skipped the fold
+// would show the operator a preview of a launch shape that is not the
+// launch's.
+func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) error {
+	spec.ModelOverrides = EffectiveModelOverrides(spec.ModelOverrides, spec.LLMRoutePolicy)
+	return ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission)
+}
+
 // startInProcess compiles + builds + spawns a run in this process. It is
 // the shared body of an immediate Launch and the scheduler's start of a
 // previously-queued root. precreate controls doc creation: true mints a
@@ -317,7 +336,12 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	rawBudget := RunBudgetOverrides(spec.Budget)
 
 	// Local launch and resume both replay the same persisted override.
-	if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
+	//
+	// The fold runs here too, for the same reason as the cloud path, through
+	// the SAME shared body (foldAndScreen): the permission screen below
+	// must see the policy's cells, and the folded list is what
+	// BuildExecutor executes with and the run doc stamps.
+	if err := foldAndScreen(wf, &spec); err != nil {
 		return nil, err
 	}
 

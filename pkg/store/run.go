@@ -365,6 +365,18 @@ type RunFallbackEntry struct {
 	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
 }
 
+// RunLLMRouteOverride is the wire twin of llmroute.Override on the run
+// snapshot: one resolved per-node override cell-set, per selector. Kept
+// store-local so pkg/store stays importable from pkg/llmroute's own drift
+// tests (they reach pkg/secrets, which reaches pkg/store).
+type RunLLMRouteOverride struct {
+	Selector string `json:"selector" bson:"selector"`
+	Backend  string `json:"backend,omitempty" bson:"backend,omitempty"`
+	Model    string `json:"model,omitempty" bson:"model,omitempty"`
+	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
+	Effort   string `json:"effort,omitempty" bson:"effort,omitempty"`
+}
+
 // RunFallback is the ordered persisted chain. New JSON and BSON documents
 // encode it as an array; both decoders also promote the legacy single-object
 // representation to a one-stage chain.
@@ -550,6 +562,19 @@ type RunLLMRoutePolicy struct {
 	// CrossHarness is the resolved cross-harness posture ("off" once
 	// normalized — the delivery-1 refusal stands under it).
 	CrossHarness string `json:"cross_harness,omitempty" bson:"cross_harness,omitempty"`
+	// Overrides carries the RESOLVED override cells the policy levels
+	// pinned, entry-wise per (selector, field) cell: the provenance half
+	// of "why did this node run claw" — Sources names the level, this
+	// names the cell. The executor never reads it: the launch folded these
+	// cells under the run's model_overrides, and the folded list is what
+	// the run replays. A wire twin of llmroute.Override rather than the
+	// type itself: this package must stay importable from pkg/llmroute's
+	// own drift tests, which reach pkg/secrets → pkg/store.
+	Overrides []RunLLMRouteOverride `json:"overrides,omitempty" bson:"overrides,omitempty"`
+	// Providers is the resolved provider allowlist (the tenant's
+	// credential-routing vocabulary), with its winning level in Sources.
+	// Nil = no level set one.
+	Providers []string `json:"providers,omitempty" bson:"providers,omitempty"`
 	// Sources maps each field name to the layer that won it ("platform",
 	// "env", "default", "platform_ceiling", or "<level>_lock" when a lock
 	// pinned the field to the default).
@@ -970,12 +995,13 @@ type Run struct {
 	// for the worktree finalization's storage branch. Persisted so a
 	// resume creates the same branch name the launch would have.
 	BranchName string `json:"branch_name,omitempty" bson:"branch_name,omitempty"`
-	// ModelOverrides captures launch-time per-node/-group backend+model+
-	// provider pins (studio dropdowns / CLI --model/--backend / HTTP
-	// model_overrides) so the run's Overview can show what it was
-	// launched with. Display-only: the overrides are applied to the
-	// executor at launch, never re-read from here. Empty when none, and
-	// left untouched on resume (resume doesn't re-supply them).
+	// ModelOverrides captures the launch-time per-node/-group backend+model+
+	// provider/effort pins the run EXECUTES with — the launch's own
+	// model_overrides folded under the routing policy's resolved override
+	// cells (the ONE fold, runview.EffectiveModelOverrides). This is the
+	// resume paths' replay source: the publisher's resume and the CLI's
+	// re-read it instead of re-deriving the pins from a policy that may
+	// have changed since, and the studio Overview shows what it says.
 	ModelOverrides []RunModelOverride `json:"model_overrides,omitempty" bson:"model_overrides,omitempty"`
 	// Fallback captures the launch-time run-level fallback chain (CLI
 	// `--fallback` / HTTP `fallback`) — the resume path's replay source,

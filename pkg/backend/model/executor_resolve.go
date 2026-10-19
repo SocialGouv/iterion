@@ -528,20 +528,20 @@ func (e *ClawExecutor) resolveProvider(node ir.Node) string {
 // contains a colon survives intact. A token without a colon keeps the
 // node's `model:` (Model == "").
 //
-// Env expansion runs on the whole field FIRST, then the result is split
-// on commas — so an env var may supply the entire chain
-// (`${PROVIDERS:-anthropic,zai}`) and a `:-default` may itself contain a
-// comma. (Because expansion precedes the colon split, a `${VAR:-x}`
-// default's `:-` is never mistaken for a provider:model separator.)
-// Tokens are trimmed; an explicit "auto" normalises to "" (defer to
-// process-env precedence) but is kept as a chain element; genuinely
-// empty tokens (stray/trailing commas) are dropped; consecutive
-// duplicate steps are collapsed. The chain is never empty: an
-// unset/blank field yields a single auto attempt.
+// Env expansion runs on the whole field FIRST (the run's vars resolved,
+// then the environment), then parseProviderChain splits the result: the
+// same parse a launch-time override goes through, so both spellings of
+// one pin reach dispatch identically.
 func (e *ClawExecutor) resolveProviderChain(node ir.Node) []chainElement {
-	// Launch-time provider override collapses the chain to the chosen hint.
+	// A launch-time provider override (a routing-policy cell or the
+	// launch's own rows) carries the same vocabulary as the node's own
+	// field — a validated cell may name a multi-step chain or a
+	// `provider:model` step — so it is read through the ONE parse below.
+	// Returning the raw string as a single element handed dispatch a
+	// provider name no credential family matches, while the write gate
+	// and the credential preview certified each step of the chain.
 	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Provider != "" {
-		return []chainElement{{Provider: ov.Provider}}
+		return parseProviderChain(e.resolveRoutingField(ov.Provider))
 	}
 	var raw string
 	switch n := node.(type) {
@@ -552,18 +552,32 @@ func (e *ClawExecutor) resolveProviderChain(node ir.Node) []chainElement {
 	case *ir.RouterNode:
 		raw = n.Provider
 	}
-	expanded := e.resolveRoutingField(raw)
+	return parseProviderChain(e.resolveRoutingField(raw))
+}
+
+// parseProviderChain splits a resolved provider field into the ordered
+// chain dispatch walks — the ONE parse of the provider vocabulary, shared
+// by the node's DSL field and every launch-time override so a pin
+// certified at a write surface is walked at dispatch exactly as the
+// validator and the credential preview parsed it. ir.SplitProviderStep is
+// the single source of truth for the `provider:model` element form,
+// shared with the compiler's validateProviders so parse and validation
+// never drift; the hint is folded to its lower-case route form (the form
+// every consumer compares — see delegate.normalizeProviderHint). An
+// explicit "auto" normalises to "" (defer to process-env precedence) but
+// is kept as a chain element; genuinely empty tokens (stray, leading or
+// trailing commas) are dropped; consecutive duplicate steps are
+// collapsed. The chain is never empty: an unset/blank field yields a
+// single auto attempt.
+func parseProviderChain(expanded string) []chainElement {
 	chain := make([]chainElement, 0, 4)
 	for _, part := range strings.Split(expanded, ",") {
 		token := strings.TrimSpace(part)
 		if token == "" {
 			continue // stray, leading or trailing comma
 		}
-		// ir.SplitProviderStep is the single source of truth for the
-		// `provider:model` element form, shared with the compiler's
-		// validateProviders so parse and validation never drift.
 		hint, model, _ := ir.SplitProviderStep(token)
-		step := chainElement{Provider: hint, Model: model}
+		step := chainElement{Provider: strings.ToLower(hint), Model: model}
 		if step.Provider == "auto" {
 			step.Provider = "" // explicit auto → process-env precedence
 		}

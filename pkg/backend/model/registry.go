@@ -22,6 +22,7 @@ import (
 	vertexprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -638,7 +639,7 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	// a typed refusal when NOTHING can fund the route, so the fall-through
 	// can no longer build the unauthenticated client whose every call 401s
 	// (#687's shape) without naming z.ai.
-	if providerName == "anthropic" && providerHintFromContext(ctx) == "anthropic" {
+	if providerName == "anthropic" && HonoursProviderHintValue(delegate.BackendClaw, providerHintFromContext(ctx)) {
 		if !modelServedByZAI(modelID) {
 			return r.resolveAnthropicDirect(ctx, modelID)
 		}

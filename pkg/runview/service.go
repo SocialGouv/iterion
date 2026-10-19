@@ -151,7 +151,20 @@ type LaunchSpec struct {
 	// (studio Launch dropdowns). Each entry targets nodes by selector (node id,
 	// id glob, or kind keyword agent|judge) and wins over the node's DSL
 	// backend:/model:. Empty applies nothing. Composes with ReviewMode. See
-	// model_override.go.
+	// model_override.go. Detached mode (ITERION_RUNS_DETACHED=1) carries
+	// neither this nor the resolved routing policy — both are ignored
+	// there, and the launch logs a warning naming it.
+	//
+	// Precedence, as the fold (EffectiveModelOverrides) implements it: a
+	// launch row wins a policy cell on the SAME selector (the launch's rows
+	// sit after the policy's, and the later rule wins a tie), and a launch
+	// row pinning a field on "*" shadows the policy's cells on that field
+	// outright — the launcher's canonical gesture (a dropdown / bare flag
+	// records "*") must beat a more specific policy selector on score
+	// alone. Residual: a policy cell on a more specific selector than any
+	// launch row pinning the same field still wins on specificity inside
+	// the folded list. Within the launch's own rows, specificity rules as
+	// before.
 	ModelOverrides []ModelOverrideEntry
 	// RoutingPolicy is the launch-frozen outcome contract (validated
 	// and hashed by the HTTP layer); persisted on the run doc and

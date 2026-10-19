@@ -411,6 +411,17 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		s.logger.Warn("runview: backend override %q ignored in detached mode (ITERION_RUNS_DETACHED=1); set ITERION_DEFAULT_BACKEND or workflow `default_backend:` instead", spec.Backend)
 	}
 
+	// The detached runner is driven by `iterion run`, which carries
+	// neither the launch's model_overrides nor the resolved routing
+	// policy: the fold and the permission screen the in-process and cloud
+	// entries share (foldAndScreen) have no detached counterpart, and
+	// nothing is stamped on the run doc. Both launch-time gestures would
+	// otherwise vanish silently — surface them the way the backend
+	// override above is surfaced (ADR-129 §8, the stated local limit).
+	if len(spec.ModelOverrides) > 0 || (spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Overrides) > 0) {
+		s.logger.Warn("runview: model_overrides and routing-policy overrides are ignored in detached mode (ITERION_RUNS_DETACHED=1); run in-process or in cloud mode for launch-time overrides")
+	}
+
 	// Set up the per-run log buffer so live WS subscribers can pick up
 	// the file-based tailer's output. In detached mode we explicitly
 	// skip the file-tee path: the runner subprocess owns run.log on
