@@ -1846,6 +1846,10 @@ tool final_report:
     const c = L.engineJSON(cargs, { cwd: WS });
     const dec = c.json.decided || {};
     const undecided = (dec.undecided || []).map(String);
+    // The per-page cells the engine still holds open (`check
+    // --require-decided=pages`): what the trial pruned can leave a page
+    // cell « à évaluer » while the DOCUMENT decides the criterion.
+    const pageGaps = (dec.pages || []).map((p) => ({ page: String(p.name || p.id), undecided: (p.undecided || []).map(String) }));
     const complete = !!c.json.ok;
     // The coverage annex (French, for the reader of the report).
     const st = (l) => l ? (l.status || "?") : "ignorée";
@@ -1884,6 +1888,7 @@ tool final_report:
     a.push("- Total : " + (p.total || counts.total) + " critères — moteur : " + (p.engine || 0) + ", pages rendues : " + (p.scan || 0) + ", agents : " + (p.agent || 0) + ", déclarés indécidables : " + (p.declared || 0) + ", encore à évaluer : " + undecided.length + ".");
     a.push("- Taux de conformité " + STD.toUpperCase() + " : " + (rate < 0 ? "non calculable" : rate + " %") + (counts.aEvaluer ? " (provisoire : " + counts.aEvaluer + " critère(s) à évaluer comptés au dénominateur)" : "") + " — " + counts.conformes + " conforme(s), " + counts.nc + " non conforme(s), " + counts.fauteDeSujet + " sans sujet.");
     if (undecided.length) { a.push(""); a.push("## Critères encore à évaluer"); a.push(""); for (const id of undecided) a.push("- " + id); }
+    if (pageGaps.length) { a.push(""); a.push("## Grille par page incomplète"); a.push(""); a.push("Cellules encore « à évaluer » par page — le document peut décider le critère, la page reste à juger :"); a.push(""); for (const g of pageGaps) a.push("- " + g.page + " : " + g.undecided.join(", ")); }
     if (rep.json.untestedCriteria && rep.json.untestedCriteria.length) { a.push(""); a.push("## Critères WCAG non testés faute de page rendue"); a.push(""); a.push(rep.json.untestedCriteria.join(", ")); }
     if ({{input.scope_notes}}) { a.push(""); a.push("## Périmètre demandé"); a.push(""); a.push(String({{input.scope_notes}})); }
     const annexPath = path.join(OUT, STD + "-" + date + "-couverture.md");
@@ -1907,7 +1912,7 @@ tool final_report:
     }
     L.layer("report", { status: Object.keys(degraded).length ? "degraded" : "ok", report: reportPath, annex: annexPath, grid: gridPath, undecided: undecided, degraded: degraded });
     Object.assign(base, { grid_path: gridPath, annex_path: annexPath, ledger_path: ledgerOut, complete: complete, undecided: undecided.length, undecided_ids: undecided, degraded: degraded });
-    if ({{input.require_complete}} && !complete) L.refuse("GRID_INCOMPLETE", undecided.length + " criteria are still undecided and require_complete is set: " + undecided.join(", "), base);
+    if ({{input.require_complete}} && !complete) L.refuse("GRID_INCOMPLETE", undecided.length + " criteria are still undecided and require_complete is set: " + (undecided.length ? undecided.join(", ") : "none") + (pageGaps.length ? " ; incomplete page cells: " + pageGaps.map((g) => g.page + " (" + g.undecided.join(", ") + ")").join("; ") : ""), base);
     L.out(Object.assign({ ok: true, fail_code: "", reason: "" }, base));
   language: js
   input: final_input
