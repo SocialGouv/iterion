@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.271.0](https://github.com/SocialGouv/iterion/compare/v3.270.3...v3.271.0) (2026-10-19)
+
+### Features
+
+* **release:** the cut warns on manifests its downward realignment strands ([#2580](https://github.com/SocialGouv/iterion/issues/2580)) ([943ac99](https://github.com/SocialGouv/iterion/commit/943ac99091ed7fdb23eeecd7685382680e606e6f)), closes [#2423](https://github.com/SocialGouv/iterion/issues/2423)
+
+    <details><summary>why</summary>
+
+    A downward realignment is the one move that can strand a shipped bundle: the pin drops from the pending next minor to the patch being cut (3.180.0 -> 3.179.1), and a manifest whose requires.iterion copied the pending number now refuses runners that can read its sources — one release too HIGH, with no guard saying so. C252 and the push admission fire only when a declared floor sits BELOW what the sources need, and no after-the-fact arithmetic can tell an intended floor from a stale one.
+
+    </details>
+
 ## [3.270.3](https://github.com/SocialGouv/iterion/compare/v3.270.2...v3.270.3) (2026-10-19)
 
 ### Bug Fixes
