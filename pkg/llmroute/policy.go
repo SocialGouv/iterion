@@ -25,6 +25,7 @@ package llmroute
 
 import (
 	"fmt"
+	"path"
 	"strings"
 )
 
@@ -73,9 +74,24 @@ const (
 	CredChatGPTForfait = "chatgpt_forfait"
 )
 
-// Harnesses a pair may name. Must stay in sync with the backend names the
+// Harness names a pair, an override cell's backend or a providers
+// allowlist's world may name. Must stay in sync with the backend names the
 // DSL accepts (pkg/dsl/ir validate_fallbacks.go) — that file is the
-// authority; a backend added there joins here.
+// authority; a backend added there joins here. Exported as a slice so the
+// drift tests against the executor side iterate the SAME enumeration
+// instead of a copy of it.
+var Harnesses = []string{
+	HarnessClaudeCode,
+	HarnessClaw,
+	HarnessCodex,
+	HarnessPi,
+	HarnessGrok,
+	HarnessKimi,
+	HarnessOpencode,
+}
+
+// The harness name constants, kept as constants for the call sites that
+// name one harness directly.
 const (
 	HarnessClaudeCode = "claude_code"
 	HarnessClaw       = "claw"
@@ -135,6 +151,24 @@ var DefaultPairOrder = []string{
 	Pair(HarnessClaw, "xai_key"),
 }
 
+// Override is one per-node routing pin: the node selector (an exact node id,
+// an id glob, a kind keyword agent|judge|router, or "*") plus whatever it
+// pins. Empty fields leave that dimension to the lower layers. Every value
+// is a literal — Validate refuses a template, because a pin the launch
+// pre-flights cannot read is a pin the tenancy gate cannot certify.
+type Override struct {
+	Selector string `yaml:"selector" json:"selector" bson:"selector"`
+	Backend  string `yaml:"backend,omitempty" json:"backend,omitempty" bson:"backend,omitempty"`
+	// Model is a model id, verbatim (ADR-122: a gateway model id travels
+	// exactly as written).
+	Model string `yaml:"model,omitempty" json:"model,omitempty" bson:"model,omitempty"`
+	// Provider is a credential-routing hint chain — a literal, never "auto".
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty" bson:"provider,omitempty"`
+	// Effort re-targets reasoning_effort — the one slot no var can reach
+	// (reasoning_effort: resolves ${…} only).
+	Effort string `yaml:"effort,omitempty" json:"effort,omitempty" bson:"effort,omitempty"`
+}
+
 // Policy is the routing contract shared by every level that can own one.
 // Zero value is legal (the defaults); Normalize promotes it to explicit
 // values. All fields are additive on their host schemas — old records,
@@ -191,6 +225,19 @@ type Policy struct {
 	// id too (consumed verbatim; dispatch refuses a bogus one, named).
 	// Nil = unset (inherit / the shipped table).
 	ModelClasses map[string]map[string]string `yaml:"model_classes,omitempty" json:"model_classes,omitempty" bson:"model_classes,omitempty"`
+	// Overrides pins the route of individual NODES — the typed, per-level
+	// twin of the launch's model_overrides. The fold is ENTRY-WISE per
+	// (selector, field) cell (a cell is independent: ForNode resolves per
+	// field), the first setter within the range the locks allow winning
+	// each cell; values are LITERALS (Validate refuses a template), which
+	// is what makes "the launch pre-flights can read this pin" a property
+	// of the type. Nil = unset (inherit / no cells).
+	Overrides []Override `yaml:"overrides,omitempty" json:"overrides,omitempty" bson:"overrides,omitempty"`
+	// Providers is the tenant's provider ALLOWLIST: the credential-routing
+	// providers a run of this level may spend. A route resolving outside it
+	// is not this tenant's spend. Nil = unset (inherit / no allowlist).
+	// Lockable; first-setter-wins like pair_order — a list never merges.
+	Providers []string `yaml:"providers,omitempty" json:"providers,omitempty" bson:"providers,omitempty"`
 	// CrossHarness says whether a computed route may move a node onto a
 	// DIFFERENT HARNESS than it started on (ADR-121 § Delivery 2, the
 	// session contract's third state): "off" (the default) keeps the
@@ -227,6 +274,8 @@ const (
 	FieldStrict           = "strict"
 	FieldModelClasses     = "model_classes"
 	FieldCrossHarness     = "cross_harness"
+	FieldOverrides        = "overrides"
+	FieldProviders        = "providers"
 )
 
 // The cross_harness vocabulary (ADR-121 § Delivery 2).
@@ -238,7 +287,7 @@ const (
 
 // Fields lists the fold's fields — the vocabulary Locks validates against
 // and the provenance map completes.
-var Fields = []string{FieldPairOrder, FieldTriggers, FieldRefusedPinnedKey, FieldStrict, FieldModelClasses, FieldCrossHarness}
+var Fields = []string{FieldPairOrder, FieldTriggers, FieldRefusedPinnedKey, FieldStrict, FieldModelClasses, FieldCrossHarness, FieldOverrides, FieldProviders}
 
 // Normalize returns p with defaults applied. Idempotent; never returns a
 // Policy with a nil PairOrder, Triggers or empty RefusedPinnedKey. Only NIL
@@ -274,11 +323,87 @@ func ValidTrigger(t string) bool {
 }
 
 func validHarness(h string) bool {
-	switch h {
-	case HarnessClaudeCode, HarnessClaw, HarnessCodex, HarnessPi, HarnessGrok, HarnessKimi, HarnessOpencode:
-		return true
+	for _, v := range Harnesses {
+		if v == h {
+			return true
+		}
 	}
 	return false
+}
+
+// ReasoningEfforts is the closed effort vocabulary an override cell may pin.
+// Kept local because pkg/llmroute imports nothing of iterion by design; the
+// drift test against ir.ValidReasoningEfforts lives in projections_test.go
+// (package llmroute_test — the in-package test cannot import ir, which
+// imports llmroute).
+var ReasoningEfforts = []string{"none", "low", "medium", "high", "xhigh", "max", "ultracode"}
+
+// ValidEffort reports whether e belongs to the closed effort vocabulary.
+func ValidEffort(e string) bool {
+	for _, v := range ReasoningEfforts {
+		if v == e {
+			return true
+		}
+	}
+	return false
+}
+
+// The provider names an override hint or a providers allowlist may speak.
+// The <provider>_key slots' wire identifiers (validKeyProvider) plus the
+// gateway, whose credential the runner's environment funds.
+const ProviderOpenAICompatible = "openai_compatible"
+
+// ProviderHints is the closed provider vocabulary of an override's provider
+// chain and of the providers allowlist.
+var ProviderHints = append(append([]string(nil), "anthropic", "openai", "bedrock", "vertex", "azure", "openrouter", "xai", "zai", "moonshot"), ProviderOpenAICompatible)
+
+// ValidProviderHint reports whether p belongs to the provider vocabulary.
+func ValidProviderHint(p string) bool {
+	for _, v := range ProviderHints {
+		if v == p {
+			return true
+		}
+	}
+	return false
+}
+
+// ConsumesProviderHint is the local twin of
+// model.ConsumesProviderHint: how a backend consumes the per-node provider
+// hint. chains=true walks a multi-step chain (claude_code); single=true
+// honours one step and derives the rest from the model prefix (claw); both
+// false = the backend ignores the hint. Kept local for the same import
+// reason as the effort list; the drift test lives in projections_test.go.
+func ConsumesProviderHint(backend string) (chains, single bool) {
+	switch backend {
+	case HarnessClaudeCode:
+		return true, false
+	case HarnessClaw:
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// HonoursProviderHintValue is the local twin of
+// model.HonoursProviderHintValue: whether the backend honours THIS
+// provider value as a pin at its dispatch chokepoint — the value-aware
+// half of ConsumesProviderHint. claude_code walks every step and refuses
+// an unfunded hint loudly at dispatch, so any validated value is
+// honoured; claw acts on the hint at exactly one switch (its registry's
+// force-Anthropic-direct branch, wired to the model twin) and ignores
+// every other value there — the spend then follows the default
+// precedence, the silent misroute a policy pin must not certify. Kept
+// local for the same import reason as the classes; the drift test lives
+// in projections_test.go.
+func HonoursProviderHintValue(backend, provider string) bool {
+	switch backend {
+	case HarnessClaudeCode:
+		return true
+	case HarnessClaw:
+		return strings.ToLower(strings.TrimSpace(provider)) == "anthropic"
+	default:
+		return false
+	}
 }
 
 // validCredential checks the slot against the closed vocabulary. The
@@ -306,6 +431,137 @@ func validKeyProvider(p string) bool {
 		return true
 	}
 	return false
+}
+
+// validateOverrideCells lists the four routing fields an Override may pin,
+// in the order the resolved entries carry them.
+type overrideCell struct {
+	name string
+	get  func(Override) string
+	set  func(*Override, string)
+}
+
+var overrideCells = []overrideCell{
+	{"backend", func(o Override) string { return o.Backend }, func(o *Override, v string) { o.Backend = v }},
+	{"model", func(o Override) string { return o.Model }, func(o *Override, v string) { o.Model = v }},
+	{"provider", func(o Override) string { return o.Provider }, func(o *Override, v string) { o.Provider = v }},
+	{"effort", func(o Override) string { return o.Effort }, func(o *Override, v string) { o.Effort = v }},
+}
+
+// providerHintTokens splits a provider cell into its tokens, keeping the
+// raw hint beside the folded step: the ONE split of the cell, so the
+// shape, case and vocabulary checks read the same parse the executor's
+// dispatch and the credential preview read (split on ",", then the
+// `provider:model` step form, hints folded to lower-case). "auto" and an
+// empty step come back named — they are refused, not skipped: an override
+// exists to PIN.
+type providerHintToken struct {
+	raw      string // the hint as the cell spells it, pre-case-fold
+	step     string // the folded form the vocabulary checks
+	stepRaw  string // the whole step as the cell spells it, `provider:model` form included
+	modelRaw string // the model half, trimmed; empty when absent or blank
+	hasModel bool   // a colon is present: the step carries the provider:model form
+}
+
+func providerHintTokens(raw string) []providerHintToken {
+	var tokens []providerHintToken
+	for _, part := range strings.Split(raw, ",") {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue // stray, leading or trailing comma
+		}
+		hint, model, hasModel := strings.Cut(token, ":")
+		hint = strings.TrimSpace(hint)
+		tokens = append(tokens, providerHintToken{
+			raw:      hint,
+			step:     strings.ToLower(hint),
+			stepRaw:  token,
+			modelRaw: strings.TrimSpace(model),
+			hasModel: hasModel,
+		})
+	}
+	return tokens
+}
+
+// validateOverride checks one entry: the selector's syntax, each pinned
+// value's vocabulary, and that the entry pins SOMETHING — ModelOverrides.add
+// drops an empty entry silently, which at a write surface is a typo that
+// looks like it landed.
+func validateOverride(o Override) error {
+	sel := strings.TrimSpace(o.Selector)
+	if sel == "" {
+		return fmt.Errorf("selector is empty")
+	}
+	if sel != o.Selector {
+		return fmt.Errorf("selector %q carries surrounding whitespace — it would never match a node id", o.Selector)
+	}
+	if strings.ContainsAny(sel, ".$") {
+		return fmt.Errorf("selector %q — a '.' or '$' would poison the provenance key overrides.<selector>.<field>, persisted as a BSON document", sel)
+	}
+	if strings.ContainsAny(sel, "*?[") {
+		if _, err := path.Match(sel, ""); err != nil {
+			return fmt.Errorf("selector %q is not a valid glob: %v", sel, err)
+		}
+	}
+	pinned := 0
+	for _, c := range overrideCells {
+		v := c.get(o)
+		if v == "" {
+			continue
+		}
+		pinned++
+		if strings.Contains(v, "{{") || strings.Contains(v, "${") {
+			return fmt.Errorf("%s %q — an override value is a LITERAL (a template would be unreadable at the launch pre-flights, so the gate could certify nothing); omit the cell to let the lower layers decide", c.name, v)
+		}
+	}
+	if o.Backend != "" && !validHarness(o.Backend) {
+		return fmt.Errorf("backend %q is not a harness (want one of claude_code, claw, codex, pi, grok, kimi, opencode)", o.Backend)
+	}
+	if o.Effort != "" && !ValidEffort(o.Effort) {
+		return fmt.Errorf("effort %q is not in the vocabulary (want one of %s)", o.Effort, strings.Join(ReasoningEfforts, ", "))
+	}
+	if o.Provider != "" {
+		tokens := providerHintTokens(o.Provider)
+		if len(tokens) == 0 {
+			return fmt.Errorf("provider %q names no step", o.Provider)
+		}
+		for _, t := range tokens {
+			if strings.ToLower(t.raw) != t.raw {
+				return fmt.Errorf("provider %q names %q — the provider vocabulary is lower-case; write %q", o.Provider, t.raw, t.step)
+			}
+		}
+		for _, t := range tokens {
+			s := t.step
+			if s == "auto" {
+				return fmt.Errorf("provider %q names \"auto\" — an override pins, it never defers; omit the cell to let the process decide", o.Provider)
+			}
+			if s == "" {
+				return fmt.Errorf("provider %q names an empty step", o.Provider)
+			}
+			if t.hasModel && t.modelRaw == "" {
+				return fmt.Errorf("provider %q names %q — a step with an empty model part is a typo the runtime would trim to the bare hint; write %q", o.Provider, t.stepRaw, t.raw)
+			}
+			if !ValidProviderHint(s) {
+				return fmt.Errorf("provider %q names %q, which is not a known provider (want one of %s)", o.Provider, s, strings.Join(ProviderHints, ", "))
+			}
+			if o.Backend != "" {
+				chains, single := ConsumesProviderHint(o.Backend)
+				if !chains && !single {
+					return fmt.Errorf("provider %q names %q on backend %q — this harness does not consume the provider hint; the gate would certify a pin the harness ignores", o.Provider, s, o.Backend)
+				}
+				if single && !chains && len(tokens) > 1 {
+					return fmt.Errorf("provider %q names %q on backend %q — this harness honours a single-value hint and derives the rest from the model prefix; it does not walk chains", o.Provider, s, o.Backend)
+				}
+				if !HonoursProviderHintValue(o.Backend, s) {
+					return fmt.Errorf("provider %q names %q on backend %q — this harness acts on none of this value at its routing chokepoint, so the gate would certify a pin the harness silently ignores; the spend would follow the default precedence", o.Provider, s, o.Backend)
+				}
+			}
+		}
+	}
+	if pinned == 0 {
+		return fmt.Errorf("selector %q pins nothing — an entry that pins no field would be dropped silently at the fold, so the typo would look like it landed", sel)
+	}
+	return nil
 }
 
 // Validate reports whether p is coherent. Errors are user-facing and name
@@ -378,6 +634,37 @@ func Validate(p Policy) error {
 	case "", CrossHarnessOff, CrossHarnessReuse, CrossHarnessRestart:
 	default:
 		return fmt.Errorf("llmroute: cross_harness %q — want %q, %q or %q", p.CrossHarness, CrossHarnessOff, CrossHarnessReuse, CrossHarnessRestart)
+	}
+	for _, o := range p.Overrides {
+		if err := validateOverride(o); err != nil {
+			return fmt.Errorf("llmroute: overrides: %w", err)
+		}
+	}
+	seenCell := map[string]bool{}
+	for _, o := range p.Overrides {
+		for _, cell := range overrideCells {
+			if cell.get(o) == "" {
+				continue
+			}
+			key := o.Selector + "\x00" + cell.name
+			if seenCell[key] {
+				return fmt.Errorf("llmroute: overrides pins %s.%s twice — the later would silently win", o.Selector, cell.name)
+			}
+			seenCell[key] = true
+		}
+	}
+	if p.Providers != nil && len(p.Providers) == 0 {
+		return fmt.Errorf("llmroute: providers is empty — omit it to inherit (a level that must forbid everything has no run to make; the honest spelling refuses the bot)")
+	}
+	seenProv := map[string]bool{}
+	for _, pr := range p.Providers {
+		if !ValidProviderHint(pr) {
+			return fmt.Errorf("llmroute: providers %q is not a known provider (want one of %s)", pr, strings.Join(ProviderHints, ", "))
+		}
+		if seenProv[pr] {
+			return fmt.Errorf("llmroute: providers names %q twice", pr)
+		}
+		seenProv[pr] = true
 	}
 	for _, f := range p.Locks {
 		if !validField(f) {
@@ -505,6 +792,10 @@ func Resolve(layers ...Layer) (Policy, map[string]string) {
 			out.CrossHarness = l.Policy.CrossHarness
 			src[FieldCrossHarness] = l.Source
 		}
+		if mayAnswer(i, FieldProviders) && out.Providers == nil && len(l.Policy.Providers) > 0 {
+			out.Providers = l.Policy.Providers
+			src[FieldProviders] = l.Source
+		}
 	}
 	// Strict is monotone unless the LAUNCHER layer locked it (ADR-121:
 	// "no level unsets it — only the launcher, for their own run, through
@@ -591,9 +882,70 @@ func Resolve(layers ...Layer) (Policy, map[string]string) {
 	} else if mcCells == 0 {
 		src[FieldModelClasses] = SourceDefault
 	}
+	// overrides folds ENTRY-WISE per (selector, field) cell (the merge rule
+	// is the field's own, stated in the ADR: a cell is independent by
+	// construction — ForNode resolves per field — so merging cells cannot
+	// produce the "reordered prefix" trap that made pair_order replace).
+	// First setter wins PER CELL within the range the locks leave; each
+	// cell's provenance names its level as overrides.<selector>.<field>.
+	// The BLOCK key answers only when no cell spoke — "default", or
+	// "<level>_lock" for a lock that pinned the block without setting
+	// cells; when cells spoke the block key keeps the lock's stamp, the
+	// same convention model_classes follows.
+	type ovCell struct{ selector, field string }
+	cells := map[ovCell]string{}
+	cellSrc := map[ovCell]string{}
+	var selOrder []string
+	selSeen := map[string]bool{}
+	ovCells := 0
+	for i, l := range layers {
+		if !mayAnswer(i, FieldOverrides) {
+			continue
+		}
+		for _, o := range l.Policy.Overrides {
+			for _, cell := range overrideCells {
+				v := cell.get(o)
+				if v == "" {
+					continue
+				}
+				key := ovCell{o.Selector, cell.name}
+				if _, spoken := cells[key]; spoken {
+					continue
+				}
+				cells[key] = v
+				cellSrc[key] = l.Source
+				if !selSeen[o.Selector] {
+					selSeen[o.Selector] = true
+					selOrder = append(selOrder, o.Selector)
+				}
+				ovCells++
+			}
+		}
+	}
+	if len(cells) > 0 {
+		out.Overrides = make([]Override, 0, len(selOrder))
+		for _, sel := range selOrder {
+			var ov Override
+			ov.Selector = sel
+			for _, cell := range overrideCells {
+				if v, ok := cells[ovCell{sel, cell.name}]; ok {
+					cell.set(&ov, v)
+				}
+			}
+			out.Overrides = append(out.Overrides, ov)
+		}
+		for k, s := range cellSrc {
+			src[FieldOverrides+"."+k.selector+"."+k.field] = s
+		}
+	}
+	if _, locked := lockedFrom[FieldOverrides]; locked && ovCells == 0 {
+		src[FieldOverrides] = lockSource[FieldOverrides] + "_lock"
+	} else if ovCells == 0 {
+		src[FieldOverrides] = SourceDefault
+	}
 	out = Normalize(out)
 	for _, f := range Fields {
-		if f == FieldModelClasses {
+		if f == FieldModelClasses || f == FieldOverrides {
 			continue // answered above: per-cell keys, or the block key
 		}
 		if _, ok := src[f]; !ok {

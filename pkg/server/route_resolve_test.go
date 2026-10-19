@@ -445,3 +445,37 @@ func TestResolveRunLLMRoutePolicy_CrossHarnessFlowsToTheSnapshot(t *testing.T) {
 		t.Fatalf("silent cross_harness = %q / %q, want off / default", got.CrossHarness, got.Sources["cross_harness"])
 	}
 }
+
+// The snapshot carries the fold's override cells and the allowlist, with
+// the winning level named per field — the provenance half of "why did this
+// node run claw". The executor never reads these: the launch folds them
+// under the run's model_overrides; this is the run view's record.
+func TestResolveRunLLMRoutePolicy_ProjectsOverridesAndProviders(t *testing.T) {
+	s := routeResolveServer(t, nil)
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "", "", llmroute.Layer{
+		Source: llmroute.SourceWebhook,
+		Policy: llmroute.Policy{
+			Overrides: []llmroute.Override{
+				{Selector: "judge", Backend: llmroute.HarnessClaw, Effort: "low"},
+			},
+			Providers: []string{"openai_compatible"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(got.Overrides) != 1 || got.Overrides[0].Selector != "judge" ||
+		got.Overrides[0].Backend != llmroute.HarnessClaw || got.Overrides[0].Effort != "low" {
+		t.Fatalf("snapshot overrides = %+v, want the folded cell-set", got.Overrides)
+	}
+	if len(got.Providers) != 1 || got.Providers[0] != "openai_compatible" {
+		t.Fatalf("snapshot providers = %v, want the allowlist", got.Providers)
+	}
+	if got.Sources[llmroute.FieldOverrides+".judge.backend"] != llmroute.SourceWebhook ||
+		got.Sources[llmroute.FieldOverrides+".judge.effort"] != llmroute.SourceWebhook {
+		t.Fatalf("cell provenance = %+v, want the webhook level per cell", got.Sources)
+	}
+	if got.Sources[llmroute.FieldProviders] != llmroute.SourceWebhook {
+		t.Fatalf("providers provenance = %q, want webhook", got.Sources[llmroute.FieldProviders])
+	}
+}

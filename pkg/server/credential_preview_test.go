@@ -204,3 +204,92 @@ func TestCredentialPreview_FoldsTheTenantLevels(t *testing.T) {
 		t.Fatalf("resolved policy = %+v, want the team level's order, named team", pub.preview.LLMRoutePolicy)
 	}
 }
+
+// A fold or permission-screen refusal is the preview's DIAGNOSTIC answer —
+// the same error the launch endpoint surfaces as `launch: %v` — so the 422
+// must carry its reason (which cell to clear), not an opaque literal. The
+// preview is where the operator consults before paying for the launch.
+func TestCredentialPreview_RefusalNamesTheReason(t *testing.T) {
+	s, rs := newTeamForkServer(t, &tierPublisher{})
+	// A deny-gated agent turns the policy's codex pin into an UNGATED
+	// crossing: the refusal the fold's permission screen raises at the
+	// runview layer, before any publisher runs.
+	row, err := s.botSources.GetBySlug(store.WithTenant(t.Context(), "t1"), "t1", "probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.Files[botsource.MainBotFile] = "agent TEAMFORK:\n  backend: claw\n  model: \"claude-opus-5\"\n\nworkflow tier_probe:\n  worktree: none\n  entry: TEAMFORK\n  TEAMFORK -> done\n  permission: deny\n"
+	if _, err := s.botSources.Update(store.WithTenant(t.Context(), "t1"), row); err != nil {
+		t.Fatal(err)
+	}
+	pub := &credentialPreviewPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	w := callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe","llm_routing":{"overrides":[{"selector":"TEAMFORK","backend":"codex"}]}}`, auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember})
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("preview = %d %s, want the 422 the screen's refusal maps to", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "UNGATED") {
+		t.Fatalf("the 422 lost the screen's reason: %s (the launch endpoint surfaces the same error as launch: %%v)", w.Body.String())
+	}
+}
+
+// The run-level permission knob the caller will launch with rides the
+// preview's screen: the launch request carries the same field, so a preview
+// that cannot express it refuses a legal "off" launch (the documented
+// escape hatch) and blesses a "deny" launch that refuses. Same table as the
+// launch's own permission-resolution contract, on the preview entry, through
+// the real handler.
+func TestCredentialPreview_ScreensThePermissionTheCallerLaunchesWith(t *testing.T) {
+	s, rs := newTeamForkServer(t, &tierPublisher{})
+	setBot := func(main string) {
+		t.Helper()
+		row, err := s.botSources.GetBySlug(store.WithTenant(t.Context(), "t1"), "t1", "probe")
+		if err != nil {
+			t.Fatal(err)
+		}
+		row.Files[botsource.MainBotFile] = main
+		if _, err := s.botSources.Update(store.WithTenant(t.Context(), "t1"), row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const gated = "agent TEAMFORK:\n  backend: claw\n  model: \"claude-opus-5\"\n\nworkflow tier_probe:\n  worktree: none\n  entry: TEAMFORK\n  TEAMFORK -> done\n  permission: deny\n"
+	const ungated = "agent TEAMFORK:\n  backend: claw\n  model: \"claude-opus-5\"\n\nworkflow tier_probe:\n  worktree: none\n  entry: TEAMFORK\n  TEAMFORK -> done\n"
+	const pin = `"llm_routing":{"overrides":[{"selector":"TEAMFORK","backend":"codex"}]}`
+	id := auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember}
+	pub := &credentialPreviewPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	setBot(gated)
+
+	// Without the knob the screen falls back to the workflow's deny and
+	// refuses the codex pin (the pre-existing behavior, unchanged).
+	w := callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe",`+pin+`}`, id)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "UNGATED") {
+		t.Fatalf("preview without the knob = %d %s, want the 422 UNGATED refusal", w.Code, w.Body.String())
+	}
+
+	// The launch's escape hatch: "off" unlocks the same workflow for the
+	// same pin, and the knob rides the spec the publisher receives.
+	w = callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe","permission":"off",`+pin+`}`, id)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview permission=off = %d %s, want the launch's escape hatch honored", w.Code, w.Body.String())
+	}
+	if pub.preview.Launch.Permission != "off" {
+		t.Fatalf("spec permission = %q, want the run-level knob wired to the screen", pub.preview.Launch.Permission)
+	}
+
+	// The knob also TIGHTENS: a run-level deny refuses the pin on an
+	// ungated workflow, exactly as the launch refuses — the empty effective
+	// permission never refuses, so the field, not its absence, must carry
+	// the mode.
+	setBot(ungated)
+	w = callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe","permission":"deny",`+pin+`}`, id)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "UNGATED") {
+		t.Fatalf("preview permission=deny = %d %s, want the run-level deny refusing the codex pin", w.Code, w.Body.String())
+	}
+
+	// And the ungated workflow without the knob still serves the pin.
+	w = callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe",`+pin+`}`, id)
+	if w.Code != http.StatusOK {
+		t.Fatalf("plain preview = %d %s, want the pin served", w.Code, w.Body.String())
+	}
+}

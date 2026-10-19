@@ -2,6 +2,7 @@ package llmroute
 
 import (
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -543,5 +544,449 @@ func TestResolveCrossHarness(t *testing.T) {
 	}
 	if !CrossHarnessActive(CrossHarnessReuse) || !CrossHarnessActive(CrossHarnessRestart) {
 		t.Fatal("the active postures read inert")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Overrides: the entry-wise per-(selector, field) fold, and the vocabulary
+// the cells must speak (ADR-129 §2, §3).
+// ---------------------------------------------------------------------------
+
+// A cell one level pins and a lower level does not touch survives the lower
+// level; a cell both levels pin goes to the higher level (first setter
+// wins). Cells stay independent — the fold never replaces a level's block
+// wholesale, and the resolved entries keep one entry per selector.
+func TestResolveOverrides_EntryWisePerCell(t *testing.T) {
+	got, src := Resolve(
+		Layer{Source: SourceTeam, Policy: Policy{Overrides: []Override{
+			{Selector: "judge", Backend: HarnessClaw},
+			{Selector: "reviewer_gpt", Model: "team-model"},
+		}}},
+		Layer{Source: "binding", Policy: Policy{Overrides: []Override{
+			{Selector: "reviewer_gpt", Model: "binding-model"},
+		}}},
+	)
+	if len(got.Overrides) != 2 {
+		t.Fatalf("resolved overrides = %+v, want one entry per selector across both levels", got.Overrides)
+	}
+	var judgeBackend, gptModel string
+	for _, o := range got.Overrides {
+		switch o.Selector {
+		case "judge":
+			judgeBackend = o.Backend
+		case "reviewer_gpt":
+			gptModel = o.Model
+		}
+	}
+	if judgeBackend != HarnessClaw {
+		t.Errorf("judge backend = %q, want the team's claw — a cell a lower level leaves alone survives", judgeBackend)
+	}
+	if gptModel != "team-model" {
+		t.Errorf("reviewer_gpt model = %q, want the team's (the first setter wins a shared cell; the cell stays independent of the binding's own cells)", gptModel)
+	}
+	if src[FieldOverrides+".judge.backend"] != SourceTeam {
+		t.Errorf("provenance overrides.judge.backend = %q, want %s", src[FieldOverrides+".judge.backend"], SourceTeam)
+	}
+	if src[FieldOverrides+".reviewer_gpt.model"] != SourceTeam {
+		t.Errorf("shared-cell provenance = %q, want %s (highest level wins)", src[FieldOverrides+".reviewer_gpt.model"], SourceTeam)
+	}
+	// The block key answers only when no cell spoke — when cells spoke it
+	// is omitted, the same convention model_classes follows (a "default"
+	// beside named cells would lie about who decided).
+	if src[FieldOverrides] != "" {
+		t.Errorf("overrides block key = %q, want it omitted while cells spoke", src[FieldOverrides])
+	}
+}
+
+// A lock on the block at level L vetoes every setter ABOVE L: a binding cell
+// under a team lock is dropped, and the provenance says so.
+func TestResolveOverrides_LockVetoesAbove(t *testing.T) {
+	got, src := Resolve(
+		Layer{Source: "binding", Policy: Policy{Overrides: []Override{
+			{Selector: "reviewer_claude", Backend: HarnessCodex},
+		}}},
+		Layer{Source: SourceTeam, Policy: Policy{
+			Overrides: []Override{{Selector: "judge", Backend: HarnessClaw}},
+			Locks:     []string{FieldOverrides},
+		}},
+	)
+	for _, o := range got.Overrides {
+		if o.Selector == "reviewer_claude" {
+			t.Errorf("the binding's cell survived a team lock on the block: %+v", got.Overrides)
+		}
+	}
+	if len(got.Overrides) != 1 || got.Overrides[0].Selector != "judge" {
+		t.Fatalf("resolved overrides = %+v, want only the team's cell", got.Overrides)
+	}
+	// The dropped cell explains itself through the BLOCK key: nothing
+	// answered overrides above the lock, so the provenance names it.
+	if src[FieldOverrides] != SourceTeam+"_lock" {
+		t.Errorf("overrides block provenance under the lock = %q, want %q", src[FieldOverrides], SourceTeam+"_lock")
+	}
+}
+
+// providers is a single list and folds like pair_order: a level REPLACES it,
+// first setter wins, nothing unions - a level must be able to REMOVE a
+// provider a lower level named.
+func TestResolveProviders_FirstSetterWins_NeverMerges(t *testing.T) {
+	got, src := Resolve(
+		Layer{Source: "binding", Policy: Policy{Providers: []string{"zai"}}},
+		Layer{Source: SourceTeam, Policy: Policy{Providers: []string{"openai"}}},
+	)
+	if !reflect.DeepEqual(got.Providers, []string{"zai"}) {
+		t.Fatalf("providers = %v, want the binding's [zai] - the first setter replaces, nothing unions", got.Providers)
+	}
+	if src[FieldProviders] != "binding" {
+		t.Fatalf("providers source = %q, want binding", src[FieldProviders])
+	}
+	// A lock on the block vetoes every setter above it: the binding's list
+	// is dropped and the provenance names the lock.
+	got2, src2 := Resolve(
+		Layer{Source: "binding", Policy: Policy{Providers: []string{"zai"}}},
+		Layer{Source: SourceTeam, Policy: Policy{Locks: []string{FieldProviders}}},
+	)
+	if len(got2.Providers) != 0 {
+		t.Fatalf("providers under a team lock = %v, want empty (the veto holds)", got2.Providers)
+	}
+	if src2[FieldProviders] != SourceTeam+"_lock" {
+		t.Fatalf("providers provenance under a lock = %q, want %q", src2[FieldProviders], SourceTeam+"_lock")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Validate: the vocabulary the cells must speak (ADR-129 §3). A value the
+// fold cannot read refuses the WRITE, naming the field.
+// ---------------------------------------------------------------------------
+
+// An override value is a LITERAL: a template would be unreadable at the
+// launch pre-flights, so the tenancy gate could certify nothing. The ADR's
+// central invariant.
+func TestValidateOverrides_RefusesATemplate(t *testing.T) {
+	err := Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Backend: "{{vars.b}}"},
+	}})
+	if err == nil {
+		t.Fatal("backend template accepted — an override value must be a literal")
+	}
+	if !strings.Contains(err.Error(), "backend") {
+		t.Errorf("refusal %q does not name the field", err)
+	}
+	err = Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Model: "${X}"},
+	}})
+	if err == nil {
+		t.Fatal("model template accepted — an override value must be a literal")
+	}
+	if !strings.Contains(err.Error(), "model") {
+		t.Errorf("refusal %q does not name the field", err)
+	}
+	// The same invariant on the other two value fields.
+	if err := Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Provider: "${P},openai"},
+	}}); err == nil {
+		t.Fatal("provider template accepted")
+	}
+	if err := Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Effort: "{{vars.e}}"},
+	}}); err == nil {
+		t.Fatal("effort template accepted")
+	}
+}
+
+// "auto" defers to whatever the process holds; an override exists to PIN.
+// And a hint the pinned harness does not consume would narrow the gate onto
+// a pin the harness ignores.
+func TestValidateOverrides_RefusesAutoAndAnUnconsumedHint(t *testing.T) {
+	err := Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Provider: "auto"},
+	}})
+	if err == nil {
+		t.Fatal("provider auto accepted — an override pins, it never defers")
+	}
+	if !strings.Contains(err.Error(), "auto") {
+		t.Errorf("refusal %q does not name the value", err)
+	}
+	err = Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Backend: HarnessCodex, Provider: "zai"},
+	}})
+	if err == nil {
+		t.Fatal("a provider hint on codex accepted — codex does not consume the hint")
+	}
+	if !strings.Contains(err.Error(), "codex") {
+		t.Errorf("refusal %q does not name the harness", err)
+	}
+	// claw honours a single-value hint; a multi-step chain is refused.
+	err = Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Backend: HarnessClaw, Provider: "zai,anthropic"},
+	}})
+	if err == nil {
+		t.Fatal("a provider CHAIN on claw accepted — claw derives the rest from the model prefix")
+	}
+	// A single-value hint on claw is the honoured shape.
+	if err := Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Backend: HarnessClaw, Provider: "anthropic"},
+	}}); err != nil {
+		t.Fatalf("single-value hint on claw refused: %v", err)
+	}
+	// A cell with NO backend may carry a provider: the harness the node
+	// runs is unknown, and it may be one that consumes the hint.
+	if err := Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Provider: "zai"},
+	}}); err != nil {
+		t.Fatalf("provider cell without a backend refused: %v", err)
+	}
+}
+
+// The provenance key overrides.<selector>.<field> is persisted as a BSON
+// document: a "." makes the key ambiguous and a "$" makes it a field name
+// Mongo reads as an operator.
+func TestValidateOverrides_RefusesDotOrDollarInASelector(t *testing.T) {
+	for _, sel := range []string{"a.b", "$x"} {
+		err := Validate(Policy{Overrides: []Override{
+			{Selector: sel, Backend: HarnessClaw},
+		}})
+		if err == nil {
+			t.Fatalf("selector %q accepted — the provenance key is a BSON field name", sel)
+		}
+		if !strings.Contains(err.Error(), "selector") {
+			t.Errorf("refusal %q does not name the selector", err)
+		}
+	}
+}
+
+// The rest of the cell vocabulary: harness, effort, the pinning-something
+// floor, duplicate cells, and the providers list.
+func TestValidateOverrides_Vocabulary(t *testing.T) {
+	tests := []struct {
+		name    string
+		policy  Policy
+		wantErr string // substring of the expected refusal, "" = accepted
+	}{
+		{
+			name:    "unknown harness",
+			policy:  Policy{Overrides: []Override{{Selector: "n", Backend: "not-a-harness"}}},
+			wantErr: "backend",
+		},
+		{
+			name:    "unknown effort",
+			policy:  Policy{Overrides: []Override{{Selector: "n", Effort: "maximum"}}},
+			wantErr: "effort",
+		},
+		{
+			name:    "every effort level",
+			policy:  Policy{Overrides: []Override{{Selector: "n", Effort: "none"}, {Selector: "m", Effort: "ultracode"}}},
+			wantErr: "",
+		},
+		{
+			name:    "entry pinning nothing",
+			policy:  Policy{Overrides: []Override{{Selector: "n"}}},
+			wantErr: "pins nothing",
+		},
+		{
+			name:    "empty block inherits",
+			policy:  Policy{},
+			wantErr: "",
+		},
+		{
+			name:    "duplicate cell",
+			policy:  Policy{Overrides: []Override{{Selector: "n", Backend: HarnessClaw}, {Selector: "n", Backend: HarnessCodex}}},
+			wantErr: "twice",
+		},
+		{
+			name:    "same selector different fields",
+			policy:  Policy{Overrides: []Override{{Selector: "n", Backend: HarnessClaw}, {Selector: "n", Model: "openai/gpt-5.5"}}},
+			wantErr: "",
+		},
+		{
+			name:    "duplicate selector with different spellings of nothing",
+			policy:  Policy{Overrides: []Override{{Selector: "n", Backend: HarnessClaw}, {Selector: "n", Effort: "low"}}},
+			wantErr: "",
+		},
+		{
+			name:    "empty providers list",
+			policy:  Policy{Providers: []string{}},
+			wantErr: "providers is empty",
+		},
+		{
+			name:    "unknown provider",
+			policy:  Policy{Providers: []string{"not-a-provider"}},
+			wantErr: "providers",
+		},
+		{
+			name:    "known providers",
+			policy:  Policy{Providers: []string{"zai", "openai_compatible", "anthropic"}},
+			wantErr: "",
+		},
+		{
+			name:    "duplicate provider",
+			policy:  Policy{Providers: []string{"zai", "zai"}},
+			wantErr: "twice",
+		},
+		{
+			name:    "bad glob selector",
+			policy:  Policy{Overrides: []Override{{Selector: "rev[iew", Backend: HarnessClaw}}},
+			wantErr: "selector",
+		},
+		{
+			name:    "kind keyword and star and glob selectors",
+			policy:  Policy{Overrides: []Override{{Selector: "judge", Backend: HarnessClaw}, {Selector: "*", Model: "openai/gpt-5.5"}, {Selector: "rev_*", Effort: "low"}}},
+			wantErr: "",
+		},
+	}
+	for _, tt := range tests {
+		err := Validate(tt.policy)
+		if tt.wantErr == "" {
+			if err != nil {
+				t.Errorf("%s: refused: %v", tt.name, err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("%s: accepted, want a refusal naming %q", tt.name, tt.wantErr)
+			continue
+		}
+		if !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%s: refusal %q does not name %q", tt.name, err, tt.wantErr)
+		}
+	}
+}
+
+// The lock vocabulary accepts the two new fields.
+func TestValidateOverrides_LockVocabulary(t *testing.T) {
+	if err := Validate(Policy{Locks: []string{FieldOverrides, FieldProviders}}); err != nil {
+		t.Fatalf("locks on the new fields refused: %v", err)
+	}
+	if err := Validate(Policy{Locks: []string{"override"}}); err == nil {
+		t.Fatal("a typo'd lock accepted")
+	}
+}
+
+// The model cell has NO vocabulary net below the literal check — a
+// dropped brace form there would land green with a stored template the
+// launch pre-flights cannot read. Backend/effort/provider cells are
+// masked-covered by their own vocabularies; the model cell is the one
+// field where this witness is load-bearing on the `{{` lane.
+func TestValidateOverrides_RefusesABraceTemplateInAModelCell(t *testing.T) {
+	err := Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Model: "{{vars.m}}"},
+	}})
+	if err == nil {
+		t.Fatal("model template accepted — an override value must be a literal")
+	}
+	if !strings.Contains(err.Error(), "model") {
+		t.Errorf("refusal %q does not name the field", err)
+	}
+	if !strings.Contains(err.Error(), "LITERAL") {
+		t.Errorf("refusal %q does not state the literal invariant", err)
+	}
+}
+
+// One case discipline: the provider vocabulary is lower-case, and the
+// gate refuses a mixed-case spelling instead of silently folding it at a
+// later layer (the providers allowlist already refuses it — the cell side
+// must not be the lenient twin).
+func TestValidateOverrides_RefusesAMixedCaseProviderCell(t *testing.T) {
+	for _, cell := range []string{"ZAI", "zai,Anthropic", " Anthropic "} {
+		err := Validate(Policy{Overrides: []Override{
+			{Selector: "judge", Backend: HarnessClaudeCode, Provider: cell},
+		}})
+		if err == nil {
+			t.Fatalf("provider cell %q accepted — the vocabulary is lower-case", cell)
+		}
+		if !strings.Contains(err.Error(), "lower-case") {
+			t.Errorf("refusal %q does not state the case discipline", err)
+		}
+	}
+	// The canonical spelling is accepted.
+	if err := Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Backend: HarnessClaudeCode, Provider: " zai , anthropic "},
+	}}); err != nil {
+		t.Fatalf("lower-case padded cell refused: %v", err)
+	}
+}
+
+// A step's MODEL half is part of the shape the gate judges: `zai:` (a
+// colon with an empty model part) is the spelling the DSL compiler flags
+// as a malformed provider:model element, and the runtime's parse trims it
+// to the bare hint — accepting it here would silently normalize the typo
+// on every surface the cell feeds. The gate names the colon-less
+// spelling. A well-formed per-element model stays accepted.
+func TestValidateOverrides_RefusesAnEmptyModelPartInAStep(t *testing.T) {
+	for _, tc := range []struct{ cell, write string }{
+		{"zai:", "zai"},
+		{"zai:,anthropic", "zai"},
+		{"anthropic: , codex", "anthropic"},
+	} {
+		err := Validate(Policy{Overrides: []Override{
+			{Selector: "judge", Backend: HarnessClaudeCode, Provider: tc.cell},
+		}})
+		if err == nil {
+			t.Fatalf("provider cell %q accepted — an empty model part is a typo the runtime trims to the bare hint", tc.cell)
+		}
+		if !strings.Contains(err.Error(), "empty model part") {
+			t.Errorf("refusal %q does not name the empty model part", err)
+		}
+		if !strings.Contains(err.Error(), `write "`+tc.write+`"`) {
+			t.Errorf("refusal %q does not name the colon-less spelling %q", err, tc.write)
+		}
+	}
+	if err := Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Backend: HarnessClaudeCode, Provider: "zai:glm-5.2"},
+	}}); err != nil {
+		t.Fatalf("well-formed provider:model step refused: %v", err)
+	}
+}
+
+// The value-aware half of the harness gate: a pin the harness would
+// silently ignore at its dispatch chokepoint is refused at the write —
+// the same contract the class gate already enforces for codex, now at
+// the value level for claw (its registry acts only on "anthropic").
+func TestValidateOverrides_RefusesAHintTheHarnessIgnores(t *testing.T) {
+	for _, p := range []string{"zai", "openrouter", "moonshot", "openai"} {
+		err := Validate(Policy{Overrides: []Override{
+			{Selector: "judge", Backend: HarnessClaw, Provider: p},
+		}})
+		if err == nil {
+			t.Fatalf("provider %q on claw accepted — claw's registry honours only the \"anthropic\" hint; this pin would be silently ignored", p)
+		}
+		if !strings.Contains(err.Error(), HarnessClaw) {
+			t.Errorf("refusal %q does not name the harness", err)
+		}
+	}
+	// The honoured shape stays accepted, folded spelling included — the
+	// chain parse at dispatch lower-cases every step, so the gate judges
+	// the value the runtime will see.
+	if err := Validate(Policy{Overrides: []Override{
+		{Selector: "judge", Backend: HarnessClaw, Provider: "anthropic"},
+	}}); err != nil {
+		t.Fatalf("claw/anthropic refused: %v", err)
+	}
+}
+
+// ProviderHints must stay validKeyProvider's names plus the gateway: a
+// provider the credential slots learn (secrets.Provider) is one the
+// overrides and the providers allowlist must be able to pin, and any
+// other name in ProviderHints would promise a route no slot can fund.
+// In-package so the unexported validKeyProvider is read directly.
+func TestProviderHints_MirrorTheKeyProviders(t *testing.T) {
+	want := []string{
+		string(secrets.ProviderAnthropic), string(secrets.ProviderOpenAI), string(secrets.ProviderBedrock),
+		string(secrets.ProviderVertex), string(secrets.ProviderAzure), string(secrets.ProviderOpenRouter),
+		string(secrets.ProviderXAI), string(secrets.ProviderZAI), string(secrets.ProviderMoonshot),
+		ProviderOpenAICompatible,
+	}
+	sort.Strings(want)
+	got := append([]string(nil), ProviderHints...)
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ProviderHints %v != validKeyProvider's names + %q: %v", got, ProviderOpenAICompatible, want)
+	}
+	for _, h := range ProviderHints {
+		if h == ProviderOpenAICompatible {
+			continue // the gateway, whose credential the runner's environment funds
+		}
+		if !validKeyProvider(h) {
+			t.Errorf("ProviderHints names %q, which validKeyProvider refuses", h)
+		}
 	}
 }

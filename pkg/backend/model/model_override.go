@@ -2,9 +2,11 @@ package model
 
 import (
 	"fmt"
+	"math"
 	"path"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -31,6 +33,15 @@ func (o NodeModelOverride) Empty() bool {
 // modelOverrideRule is one selector→override directive, in insertion order.
 type modelOverrideRule struct {
 	selector string
+	// rank is the layer the rule belongs to. Rules MergeOver stamps land
+	// one rank above the base's highest, and ForNode compares
+	// (rank, score) lexicographically: the layer decides BEFORE selector
+	// specificity, so the launcher's least-specific gesture — `--backend
+	// claw` and the studio dropdown both record "*" — still outranks a
+	// more specific rule from a lower layer. The precedence line it makes
+	// true at every selector pair: node DSL field < policy-resolved
+	// overrides < the launch's own model_overrides.
+	rank int
 	NodeModelOverride
 }
 
@@ -46,7 +57,9 @@ type modelOverrideRule struct {
 //   - "*"                      every LLM node (run-level default)
 //
 // For each field (backend/model/provider) the most specific matching rule
-// that sets a non-empty value wins; ties resolve to the later rule. Because
+// that sets a non-empty value wins within a layer; across layers the
+// highest rank wins first (see MergeOver), and ties resolve to the later
+// rule. Because
 // resolution is per-field, `--model 'reviewer_*=X'` and `--backend '*=claw'`
 // compose (the reviewer gets model X on backend claw). Overrides sit at the
 // TOP of the resolution chain — above the node's DSL backend:/model: — because
@@ -107,9 +120,12 @@ func (o ModelOverrides) Rows() []Row {
 	return out
 }
 
-// MergeOver layers o's rules ON TOP of base and returns the result, so a
-// directive in o wins any tie with an equally-specific rule in base while
-// still inheriting the fields base sets and o leaves blank.
+// MergeOver layers o's rules ON TOP of base: every rule of o lands above
+// base's highest rank, so a directive in o wins ANY rule of base — not
+// only an equally-specific one — while still inheriting the fields base
+// sets and o leaves blank. o's own inner order is preserved (each rule is
+// stamped relative to its own rank), so layering the output of an earlier
+// MergeOver keeps its layers stacked.
 //
 // This is what lets a resume keep the model the run was launched with while
 // still honouring a flag the operator typed for this attempt: pass the run's
@@ -123,9 +139,23 @@ func (o ModelOverrides) MergeOver(base ModelOverrides) ModelOverrides {
 	if len(base.rules) == 0 {
 		return o
 	}
+	top := 0
+	for _, r := range base.rules {
+		if r.rank > top {
+			top = r.rank
+		}
+	}
 	merged := ModelOverrides{rules: make([]modelOverrideRule, 0, len(base.rules)+len(o.rules))}
 	merged.rules = append(merged.rules, base.rules...)
-	merged.rules = append(merged.rules, o.rules...)
+	for _, r := range o.rules {
+		// Stamped relative to o's own rank: a single-layer o (every rule
+		// at rank 0) lands at top+1 exactly as before, and a LAYERED o
+		// (the output of an earlier MergeOver) keeps its inner precedence
+		// instead of collapsing onto one rank — where base's most
+		// specific rule would beat it on score alone.
+		r.rank = top + 1 + r.rank
+		merged.rules = append(merged.rules, r)
+	}
 	return merged
 }
 
@@ -139,30 +169,82 @@ func (o *ModelOverrides) add(selector string, ov NodeModelOverride) {
 
 // ForNode resolves the effective override for a node id + kind. Returns an
 // empty override when nothing matches (the caller then keeps the node's DSL
-// values). Resolution is per-field: the most specific matching rule setting a
-// non-empty value for that field wins.
+// values). Resolution is per-field: the (rank, score) pair decides, compared
+// lexicographically — the layer first, then selector specificity within it —
+// with the later rule winning a full tie. A rule of a higher rank therefore
+// beats a more specific rule of a lower one (the precedence line), while
+// rules of the same layer keep the specificity ordering.
 func (o ModelOverrides) ForNode(id string, kind ir.NodeKind) NodeModelOverride {
 	var out NodeModelOverride
-	var bs, ms, ps, es int // best score seen per field
+	type best struct{ rank, score int }
+	// Seeded below every rank: a rule's rank is a layer, and a producer
+	// BELOW the DSL layer stamps -1 — a rule is never dropped for its
+	// layer alone.
+	const neverBeaten = math.MinInt
+	bb, bm, bp, be := best{rank: neverBeaten}, best{rank: neverBeaten}, best{rank: neverBeaten}, best{rank: neverBeaten}
+	takes := func(rank, score int, cur best) bool {
+		return rank > cur.rank || (rank == cur.rank && score >= cur.score)
+	}
 	for _, r := range o.rules {
 		score, ok := selectorScore(r.selector, id, kind)
 		if !ok {
 			continue
 		}
-		if r.Backend != "" && score >= bs {
-			out.Backend, bs = r.Backend, score
+		if r.Backend != "" && takes(r.rank, score, bb) {
+			out.Backend, bb = r.Backend, best{r.rank, score}
 		}
-		if r.Model != "" && score >= ms {
-			out.Model, ms = r.Model, score
+		if r.Model != "" && takes(r.rank, score, bm) {
+			out.Model, bm = r.Model, best{r.rank, score}
 		}
-		if r.Provider != "" && score >= ps {
-			out.Provider, ps = r.Provider, score
+		if r.Provider != "" && takes(r.rank, score, bp) {
+			out.Provider, bp = r.Provider, best{r.rank, score}
 		}
-		if r.Effort != "" && score >= es {
-			out.Effort, es = r.Effort, score
+		if r.Effort != "" && takes(r.rank, score, be) {
+			out.Effort, be = r.Effort, best{r.rank, score}
 		}
 	}
 	return out
+}
+
+// ConsumesProviderHint reports how a backend consumes the per-node provider
+// hint: chains=true walks a multi-step chain (claude_code); single=true
+// honours one step and derives the rest from the model prefix (claw); both
+// false = the backend does not consume the hint (codex, pi, grok, kimi,
+// opencode). The predicate behind providerFallbackEligible's three classes,
+// exported so the routing-policy vocabulary (pkg/llmroute, which imports
+// nothing of iterion) can carry a local twin with a drift test against THIS
+// function instead of against a hope.
+func ConsumesProviderHint(backend string) (chains, single bool) {
+	switch backend {
+	case delegate.BackendClaudeCode:
+		return true, false
+	case delegate.BackendClaw:
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// HonoursProviderHintValue reports whether a backend honours the given
+// provider value as a pin at its dispatch chokepoint — the value-aware
+// half of ConsumesProviderHint. claude_code walks every step of the chain
+// it is given and refuses an unfunded hint loudly at dispatch
+// (facadeHintRefusal), so any validated value is honoured. claw acts on
+// the hint at exactly one switch — the registry's force-Anthropic-direct
+// branch, wired to THIS predicate so the gate and the runtime read one
+// function — and ignores every other value there, letting the spend
+// follow the default precedence: the silent misroute a policy pin must
+// not certify. The routing policy's local twin (pkg/llmroute)
+// drift-tests against this function.
+func HonoursProviderHintValue(backend, provider string) bool {
+	switch backend {
+	case delegate.BackendClaudeCode:
+		return true
+	case delegate.BackendClaw:
+		return strings.ToLower(strings.TrimSpace(provider)) == "anthropic"
+	default:
+		return false
+	}
 }
 
 // selectorScore returns a specificity score (higher = more specific) and

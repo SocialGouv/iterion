@@ -269,3 +269,54 @@ func TestRoutingPolicyRoutes_ClearRacesAConcurrentWrite(t *testing.T) {
 		t.Fatalf("policy after the raced clear = %+v err=%v, want the concurrent editor's", cur, err)
 	}
 }
+
+// The write surfaces decode llmroute.Policy WHOLESALE (DisallowUnknownFields
+// on the shared struct), so a new field needs no per-route change — asserted
+// here with a round-trip: an overrides + providers block through the team
+// PUT comes back verbatim on the GET, and a template is refused at the edge.
+func TestRoutingPolicyRoutes_OverridesAndProvidersRoundTrip(t *testing.T) {
+	s := newOrgTestServer(t)
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	seedRoutingPolicyWorld(t, s)
+
+	teamURL := "/api/teams/team1/routing-policy"
+	body := `{"routing": {"overrides": [
+		{"selector": "judge", "backend": "claw", "effort": "low"},
+		{"selector": "reviewer_gpt", "model": "openai/gpt-5.5"}
+	], "providers": ["openai_compatible"]}}`
+	if w := putRoute(s, asUser("u-teamadmin"), teamURL, body); w.Code != http.StatusOK {
+		t.Fatalf("PUT = %d: %s", w.Code, w.Body.String())
+	}
+	w := getRoute(s, asUser("u-teamadmin"), teamURL)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET = %d", w.Code)
+	}
+	var view routingPolicyView
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatalf("view: %v", err)
+	}
+	if view.Policy == nil || len(view.Policy.Overrides) != 2 {
+		t.Fatalf("policy = %+v, want both cells back verbatim", view.Policy)
+	}
+	if view.Policy.Overrides[0].Selector != "judge" || view.Policy.Overrides[0].Backend != "claw" || view.Policy.Overrides[0].Effort != "low" {
+		t.Fatalf("first cell = %+v, want judge->claw/low", view.Policy.Overrides[0])
+	}
+	if len(view.Policy.Providers) != 1 || view.Policy.Providers[0] != "openai_compatible" {
+		t.Fatalf("providers = %v, want the allowlist back verbatim", view.Policy.Providers)
+	}
+
+	// The vocabulary is enforced at the edge, naming the field.
+	if w = putRoute(s, asUser("u-teamadmin"), teamURL,
+		`{"routing": {"overrides": [{"selector": "judge", "backend": "{{vars.b}}"}]}}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("template backend = %d, want 400", w.Code)
+	}
+	if w = putRoute(s, asUser("u-teamadmin"), teamURL,
+		`{"routing": {"overrides": [{"selector": "a.b", "backend": "claw"}]}}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("dotted selector = %d, want 400", w.Code)
+	}
+	if w = putRoute(s, asUser("u-teamadmin"), teamURL,
+		`{"routing": {"providers": []}}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("empty providers = %d, want 400", w.Code)
+	}
+}

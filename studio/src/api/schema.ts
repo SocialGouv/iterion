@@ -6543,6 +6543,7 @@ export interface components {
         CredentialPreviewRequest: {
             bot_id?: string;
             llm_routing?: components["schemas"]["Policy"];
+            permission?: string;
             source: components["schemas"]["CredentialPreviewSource"];
         };
         CredentialPreviewSource: {
@@ -6846,6 +6847,13 @@ export interface components {
             /** Format: date-time */
             updated_at?: string;
         };
+        Override: {
+            backend?: string;
+            effort?: string;
+            model?: string;
+            provider?: string;
+            selector: string;
+        };
         ParallelCheckpoint: {
             artifact_allocations?: {
                 [key: string]: number;
@@ -6990,7 +6998,9 @@ export interface components {
                     [key: string]: string;
                 };
             };
+            overrides?: components["schemas"]["Override"][];
             pair_order?: string[];
+            providers?: string[];
             refused_pinned_key?: string;
             strict?: boolean;
             triggers?: string[];
@@ -7127,6 +7137,13 @@ export interface components {
             worktree?: boolean;
             worktree_available: boolean;
         };
+        RunLLMRouteOverride: {
+            backend?: string;
+            effort?: string;
+            model?: string;
+            provider?: string;
+            selector: string;
+        };
         RunLLMRoutePolicy: {
             cross_harness?: string;
             model_classes?: {
@@ -7134,7 +7151,9 @@ export interface components {
                     [key: string]: string;
                 };
             };
+            overrides?: components["schemas"]["RunLLMRouteOverride"][];
             pair_order?: string[];
+            providers?: string[];
             refused_pinned_key?: string;
             sources?: {
                 [key: string]: string;

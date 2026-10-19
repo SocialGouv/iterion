@@ -41,6 +41,12 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	}
 	req.BotID = strings.TrimSpace(req.BotID)
 	spec := runview.CredentialPreviewSpec{Context: runview.CredentialPreviewContext{TeamID: teamID, Source: req.Source}, OwnerID: id.UserID}
+	// The run-level permission knob rides to the preview's screen, so it
+	// answers the launch the caller is about to shape — whose request
+	// carries the same field. Unwired, an "off" escape hatch would refuse
+	// a legal launch and an intended "deny" would bless one the launch
+	// refuses.
+	spec.Launch.Permission = strings.TrimSpace(req.Permission)
 	disabled := false
 	switch req.Source.Kind {
 	case "personal":
@@ -138,7 +144,7 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err != nil {
-		httpError(w, http.StatusUnprocessableEntity, "credential preview could not be evaluated")
+		httpError(w, http.StatusUnprocessableEntity, "credential preview could not be evaluated: %v", err)
 		return
 	}
 	if req.Source.Kind == "personal" {

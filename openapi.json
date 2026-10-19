@@ -1088,6 +1088,9 @@
           "llm_routing": {
             "$ref": "#/components/schemas/Policy"
           },
+          "permission": {
+            "type": "string"
+          },
           "source": {
             "$ref": "#/components/schemas/CredentialPreviewSource"
           }
@@ -2101,6 +2104,29 @@
         },
         "type": "object"
       },
+      "Override": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "effort": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
       "ParallelCheckpoint": {
         "properties": {
           "artifact_allocations": {
@@ -2573,7 +2599,19 @@
             },
             "type": "object"
           },
+          "overrides": {
+            "items": {
+              "$ref": "#/components/schemas/Override"
+            },
+            "type": "array"
+          },
           "pair_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "providers": {
             "items": {
               "type": "string"
             },
@@ -3024,6 +3062,29 @@
         ],
         "type": "object"
       },
+      "RunLLMRouteOverride": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "effort": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
       "RunLLMRoutePolicy": {
         "properties": {
           "cross_harness": {
@@ -3038,7 +3099,19 @@
             },
             "type": "object"
           },
+          "overrides": {
+            "items": {
+              "$ref": "#/components/schemas/RunLLMRouteOverride"
+            },
+            "type": "array"
+          },
           "pair_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "providers": {
             "items": {
               "type": "string"
             },

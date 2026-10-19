@@ -104,3 +104,32 @@ func TestAdminPlatformCredentials_RoutingEffectiveDefaults(t *testing.T) {
 		t.Fatalf("pair_order provenance = %q, want default", got)
 	}
 }
+
+// The platform record decodes the shared struct wholesale: an overrides +
+// providers block round-trips verbatim, and a value the fold cannot read
+// refuses the write.
+func TestAdminPlatformCredentials_RoutingOverridesAndProvidersRoundTrip(t *testing.T) {
+	st := platformcfg.NewMemoryStore[platformcfg.PlatformCredentials]()
+	s := New(Config{SkipProjectRegistration: true, PlatformCredentialsSettings: st}, iterlog.New(iterlog.LevelError, nil))
+	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+	put := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PUT", "/api/admin/settings/platform-credentials", strings.NewReader(body)).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminPutPlatformCredentials(w, r)
+		return w
+	}
+	if w := put(`{"routing":{"overrides":[{"selector":"judge","backend":"claw","provider":"anthropic"}],"providers":["zai"]}}`); w.Code != http.StatusOK {
+		t.Fatalf("routing set = %d: %s", w.Code, w.Body.String())
+	}
+	rec, _ := st.Get(context.Background())
+	if rec == nil || rec.Routing == nil || len(rec.Routing.Overrides) != 1 ||
+		rec.Routing.Overrides[0].Selector != "judge" || rec.Routing.Overrides[0].Provider != "anthropic" {
+		t.Fatalf("stored = %+v, want the override cell verbatim", rec)
+	}
+	if len(rec.Routing.Providers) != 1 || rec.Routing.Providers[0] != "zai" {
+		t.Fatalf("stored providers = %+v, want [zai]", rec.Routing.Providers)
+	}
+	if w := put(`{"routing":{"overrides":[{"selector":"judge","model":"${M}"}]}}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("template model = %d, want 400", w.Code)
+	}
+}

@@ -110,6 +110,16 @@ func (s *Server) resolveRunLLMRoutePolicy(ctx context.Context, teamID, botID str
 	}
 	pol = llmroute.Clamp(pol, ceiling, sources)
 
+	overrides := make([]store.RunLLMRouteOverride, 0, len(pol.Overrides))
+	for _, o := range pol.Overrides {
+		overrides = append(overrides, store.RunLLMRouteOverride{
+			Selector: o.Selector,
+			Backend:  o.Backend,
+			Model:    o.Model,
+			Provider: o.Provider,
+			Effort:   o.Effort,
+		})
+	}
 	return &store.RunLLMRoutePolicy{
 		PairOrder:        pol.PairOrder,
 		Triggers:         pol.Triggers,
@@ -117,6 +127,8 @@ func (s *Server) resolveRunLLMRoutePolicy(ctx context.Context, teamID, botID str
 		Strict:           pol.Strict != nil && *pol.Strict,
 		ModelClasses:     pol.ModelClasses,
 		CrossHarness:     pol.CrossHarness,
+		Overrides:        overrides,
+		Providers:        pol.Providers,
 		Sources:          sources,
 	}, nil
 }

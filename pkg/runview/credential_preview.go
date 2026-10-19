@@ -20,6 +20,13 @@ type CredentialPreviewSource struct {
 type CredentialPreviewRequest struct {
 	Source CredentialPreviewSource `json:"source"`
 	BotID  string                  `json:"bot_id,omitempty"`
+	// Permission is the run-level tool-permission-gate mode the caller is
+	// about to launch with ("off"|"ask"|"deny") — the same knob the launch
+	// request carries — so the preview's permission screen answers for
+	// THAT launch. Empty inherits the workflow/node permission: DSL then
+	// ITERION_PERMISSION, exactly as the launch would. See
+	// docs/permissions.md.
+	Permission string `json:"permission,omitempty"`
 	// LLMRouting is the RUN level of the adaptive-routing policy the
 	// caller is about to launch with (ADR-121) — folded as the HEAD
 	// Launcher layer so the preview's whitelist answers the launch the
@@ -117,7 +124,13 @@ type CredentialPreviewSpec struct {
 	// (ADR-121 §1) — resolved by the server exactly as the launch site
 	// would, so the preview's whitelist answers what the launch will seal
 	// (the parity doctrine: fill, restore and preview apply the same
-	// answer). Nil = the launch is unwired; everything is sealable.
+	// answer). Nil is back-filled from the launch shape's own
+	// LLMRoutePolicy before the fold (the top level wins when both are
+	// set), so a producer that resolved the policy onto
+	// Launch.LLMRoutePolicy keeps its fold AND its whitelist and fallback
+	// door — this field and the launch shape leave PreviewCredentials
+	// equal, and every consumer reads one policy. Nil on both = the launch
+	// is unwired; everything is sealable.
 	LLMRoutePolicy *store.RunLLMRoutePolicy
 }
 
@@ -138,7 +151,28 @@ func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreview
 	if err != nil {
 		return CredentialPreview{}, err
 	}
-	if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.Launch.ModelOverrides), spec.Launch.Permission); err != nil {
+	// The resolved policy rides the spec's TOP-LEVEL field — the server
+	// resolves it exactly as the launch site would — while the fold reads
+	// the launch shape's own. The two carriers are normalized HERE, before
+	// any consumer: the top level wins when both are set, and a nil top
+	// level is back-filled from the launch shape, so a producer that
+	// resolved onto the embedded field keeps its fold AND hands the
+	// publisher's slot whitelist and fallback door the same policy — they
+	// read the top level, the launch publisher reads the launch shape. Nil
+	// on both leaves the fold a no-op, an unwired launch.
+	if spec.LLMRoutePolicy != nil {
+		spec.Launch.LLMRoutePolicy = spec.LLMRoutePolicy
+	} else {
+		spec.LLMRoutePolicy = spec.Launch.LLMRoutePolicy
+	}
+	// The SAME fold the launch paths run, before the same permission
+	// screen (ADR-129 §6): PreviewCredentials does not pass through
+	// Service.Launch, so a fold in Launch alone would leave the preview
+	// deriving candidates, pool wants and warnings from the unfolded set —
+	// the operator shown credentials the launch never acquires. One
+	// shared body with the two launch entries (foldAndScreen), so the
+	// order exists in exactly one place.
+	if err := foldAndScreen(wf, &spec.Launch); err != nil {
 		return CredentialPreview{}, err
 	}
 	return p.PreviewCredentials(ctx, spec, wf)
