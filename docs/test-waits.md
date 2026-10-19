@@ -111,7 +111,8 @@ shape, so they say nothing about the conversion.
 latency, or to be replaced by a synchronisation point. These three shapes are
 what "replaced" looks like in practice; #2362 and #2447 applied the first two to
 the last tight bounds of `pkg/runview` and the duration-deadline spend witness,
-#2487 the third to the node-session sweep.
+#2487 the third to the node-session sweep, #2499 the first to `pkg/eventbus`'s
+overrun post-check.
 
 **An in-process lifecycle witness reads VIRTUAL time.** `pkg/runview`'s
 `Manager` is pure in-process state, so every hand-off test that reads a WAIT
@@ -229,3 +230,26 @@ is trivially spared. The refusal stays witnessed: short-circuiting
 the unfixed witnesses on the queue's own line and the fixed ones on the await's
 premise. Green `-count=30`, `-race -count=2`, and `-count=10` under two
 competing jailed runs of the same package.
+
+**A production timer whose losing side is goroutine scheduling is arbitrated in
+a bubble.** `pkg/eventbus`'s cancel path gives a subscriber one
+`overrunPostCheckWindow` (20 ms) after the budget wait ends on an already-spent
+caller ctx before it names the subscriber as an overrun; whether the worker's
+done channel closes inside the window is decided by the scheduler, so
+`TestBusSubscribeCancelExpiredCtxDoesNotWarnCleanSub` was a 100-iteration
+real-clock bet — under merge-queue load it lost at iteration 99 and ejected two
+PRs that touched no file of the package (#2499). The fact cannot be staged the
+way the sweep's is: the worker's settle is CAUSED by the cancel the witness is
+exercising, and the decision point sits inside a `sync.Once` closure that
+cannot be driven stepwise. So the witness moved the arbitration itself into a
+`synctest` bubble: virtual time advances only when every goroutine of the
+bubble is durably blocked, and the goroutines the cancel path just signalled
+are runnable while the post-check waits, so the window cannot elapse before
+done closes — the witness decides the arbitration every iteration instead of
+sampling it. The bubble's one blind spot: shrinking the production window
+toward zero goes green here, since virtual time holds it open — that
+miscalibration surfaces as operator-visible overrun warnings in real
+shutdowns, not as a red queue. Mutants (the warn moved to the settled side of either
+implementation's post-check; the post-check dropped for an immediate warn)
+redden it on its own line at iteration 0.
+
