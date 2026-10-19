@@ -240,6 +240,7 @@ const sidebar = [
     collapsed: true,
     items: [
       { text: 'Overview, conventions, glossary', link: '/diagrams/README' },
+      { text: 'The complete ERD — every collection, one diagram', link: '/diagrams/erd-complete' },
       { text: 'Data model — identity and tenancy', link: '/diagrams/data-model-identity' },
       { text: 'Data model — forges, repositories, bots', link: '/diagrams/data-model-forge-bots' },
       { text: 'Data model — runs', link: '/diagrams/data-model-runs' },
