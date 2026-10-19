@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.272.0](https://github.com/SocialGouv/iterion/compare/v3.271.1...v3.272.0) (2026-10-19)
+
+### Features
+
+* **llmroute,runview,model:** the routing policy carries typed overrides and a provider allowlist, folded once at launch ([#2586](https://github.com/SocialGouv/iterion/issues/2586)) ([36f7b66](https://github.com/SocialGouv/iterion/commit/36f7b6646ac36252d028e01351fa43a86e89a80b)), references [#2006](https://github.com/SocialGouv/iterion/issues/2006)
+
+    <details><summary>why</summary>
+
+    The routing policy could only tune classes of behaviour (model classes, provider triggers); an integration could not pin a specific routing cell, and nothing shared one resolved answer between the launch, the credential preview and the runner. This slice adds llmroute.Policy.Overrides — entry-wise per (selector, field) cells carried with overrides.<selector>.<field> provenance plus the block key — and .Providers, a first-setter-wins, never-merged, lockable allowlist, with their full validation:…
+
+    </details>
+
 ## [3.271.1](https://github.com/SocialGouv/iterion/compare/v3.271.0...v3.271.1) (2026-10-19)
 
 ### Bug Fixes
