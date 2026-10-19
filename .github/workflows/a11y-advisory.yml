@@ -1,0 +1,81 @@
+# The studio's rendered a11y regression net (the rgaa-audit advisory,
+# scripts/a11y-advisory.sh): serve the built studio, audit the sources with
+# the pinned engine, capture the sample pages, replay the committed verdict
+# ledger (.ultra11y/verdicts/rgaa.json) and hold the run to the engine's
+# completeness check. No model in the loop.
+#
+# ADVISORY on purpose: drift fails THIS job, never a merge — the weekly cron
+# is the drumbeat that surfaces it (a green run means the studio still
+# matches the committed ledger).
+name: a11y-advisory
+
+on:
+  schedule:
+    # Mondays 05:00 UTC — before the European workday, after the weekend's
+    # churn has landed.
+    - cron: "0 5 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  advisory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install the pinned ultra11y engine
+        run: |
+          ULTRA11Y_BIN="$(scripts/ultra11y-engine.sh)"
+          echo "ULTRA11Y_BIN=$ULTRA11Y_BIN" >> "$GITHUB_ENV"
+          node "$ULTRA11Y_BIN" --version
+
+      - name: Install the engine's Chromium
+        # The rendered layer (scan --sample) navigates the sample pages with
+        # the Playwright the pinned engine ships.
+        working-directory: "$(dirname "$ULTRA11Y_BIN")/.."
+        run: npx playwright install --with-deps chromium
+
+      - name: Build the iterion binary with the studio SPA embedded
+        # Mirror of test-e2e's build: the vite bundle IS the served SPA.
+        run: |
+          corepack enable
+          cd studio
+          pnpm install --frozen-lockfile --prefer-offline
+          pnpm exec vite build
+          rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
+          cp -r dist/* ../pkg/server/static/
+          cd ..
+          CGO_ENABLED=0 go build -o iterion ./cmd/iterion
+          echo "ITERION_BIN=$PWD/iterion" >> "$GITHUB_ENV"
+
+      - name: Advisory — audit, capture, replay the ledger, check the pages
+        id: advisory
+        continue-on-error: false
+        run: scripts/a11y-advisory.sh
+
+      - name: Upload the advisory artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: a11y-advisory
+          path: |
+            /tmp/tmp.*/audit-latest.json
+            /tmp/tmp.*/replay.json
+            /tmp/tmp.*/check.json
+          if-no-files-found: ignore
+          retention-days: 14
