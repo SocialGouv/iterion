@@ -1,0 +1,161 @@
+name: ARC canary
+
+# Probes runner dispatch on the arc-runners scale set every 30 minutes and
+# reports on itself, docs.yml-style: one open issue while dispatch is stalled,
+# closed again by the first green probe.
+#
+# Why: on the nights of 2026-10-14..18, queue entries and main replays waited
+# 5-8 hours for a runner while the cluster had CPU to spare. The measured
+# mechanism is a ghost registration — the Actions service believes an idle
+# runner exists after its pod is long gone (the listener then reconciles
+# `currentRunnerCount=1` against zero real runners for hours, patchID
+# incrementing every ~50 s), and jobs dispatched to such a phantom wait for
+# the service to give up on it. Upstream tracks the class open (#4307 stuck
+# ephemeral runners on canceled/interrupted jobs, #4027 listener unaware of
+# pending work); the controller here is 0.11.0. Until that is fixed at the
+# root, this probe is the detection layer: a healthy scale set starts this
+# job in seconds, a poisoned one leaves it queued.
+#
+# What red means: the previous period's probe did not start within 25 minutes
+# of creation, took more than 25 minutes from creation to start, or ran and
+# failed. 25 minutes sits above the observed contention p90 for runner wait
+# (~19 minutes on the busiest bursts) so ordinary load does not page, and
+# below the ghost time scale (tens of minutes to hours) so poisoning does.
+# Worst-case detection is therefore ~60-65 minutes after dispatch stops
+# being trustworthy (interval + threshold + the watchdog's head start).
+#
+# The probe deliberately routes with the same lever as the required jobs
+# (`CI_SELF_HOSTED=off` sends it to ubuntu-latest): during a deliberate
+# fallback the canary goes quiet instead of alerting on a state the operator
+# chose. The arc image ships no `gh`, but the probe runs nothing but the
+# runner agent, so this file needs no API calls from the arc side at all —
+# the watchdog, on ubuntu-latest, does the reading.
+
+on:
+  schedule:
+    # Off the :00/:30 marks where every scheduled workflow in the fleet lands.
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ${{ vars.CI_SELF_HOSTED == 'off' && 'ubuntu-latest' || 'arc-runners' }}
+    timeout-minutes: 10
+    steps:
+      - name: Alive
+        run: echo "runner $(hostname) took the probe at $(date -u +%FT%TZ)"
+
+  watchdog:
+    # Independent of `canary` on purpose: a probe that never starts cannot be
+    # waited on (`needs:` would hang this job alongside it). The watchdog
+    # judges the PREVIOUS period's run instead, which has had a full interval
+    # to start.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # A doubled cron would put two watchdogs in flight, both red, both opening
+    # an issue. The later one waits instead of judging the same stall twice.
+    concurrency:
+      group: arc-canary-watchdog
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      LABEL: ci:arc-canary
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Judge the previous probe, alert or resolve
+        run: |
+          set -euo pipefail
+          sleep 300
+
+          # The newest run of this workflow that is not this one. `head_sha`
+          # dedupes nothing here; the workflow id path keeps it scoped.
+          prev=$(gh api "repos/$GH_REPO/actions/workflows/arc-canary.yml/runs?per_page=10" \
+            --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID)][0] | select(. != null) | [.id, .status, (.conclusion // \"-\"), .created_at] | @tsv")
+          if [ -z "$prev" ]; then
+            echo "no previous probe yet — nothing to judge on day one"
+            exit 0
+          fi
+          IFS=$'\t' read -r prev_id prev_status prev_conclusion prev_created <<<"$prev"
+          echo "previous probe: run $prev_id status=$prev_status conclusion=$prev_conclusion created=$prev_created"
+
+          verdict=green
+          detail=""
+          if [ "$prev_status" != "completed" ]; then
+            age=$(( $(date -u +%s) - $(date -u -d "$prev_created" +%s) ))
+            echo "previous probe still $prev_status after ${age}s"
+            if [ "$age" -gt 1500 ]; then
+              verdict=red
+              detail="still '$prev_status' ${age}s after creation — nothing picked it up"
+            fi
+          else
+            job=$(gh api "repos/$GH_REPO/actions/runs/$prev_id/jobs?per_page=100" \
+              --jq '[.jobs[] | select(.name == "canary")][0] | select(. != null) | [.conclusion, .started_at, .created_at] | @tsv')
+            IFS=$'\t' read -r job_conclusion job_started job_created <<<"$job"
+            if [ -z "$job_conclusion" ]; then
+              echo "previous probe carries no canary job — nothing to judge"
+              exit 0
+            fi
+            wait=$(( $(date -u -d "$job_started" +%s) - $(date -u -d "$job_created" +%s) ))
+            echo "probe job: conclusion=$job_conclusion wait=${wait}s"
+            # A human cancelling a probe (doublon de cron, incident being
+            # worked by hand) is not a stall signal.
+            if [ "$job_conclusion" != "success" ] && [ "$job_conclusion" != "cancelled" ]; then
+              verdict=red
+              detail="ran and reported '$job_conclusion' after ${wait}s in queue"
+            elif [ "$wait" -gt 1500 ]; then
+              verdict=red
+              detail="queued ${wait}s before a runner took it"
+            fi
+          fi
+
+          if [ "$verdict" = "green" ]; then
+            # A missing label is the normal before-the-first-alert state, and
+            # an API failure here must not red-flag a healthy probe.
+            existing=$(gh issue list --label "$LABEL" --state open --limit 1 \
+              --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            for n in $existing; do
+              gh issue close "$n" --reason completed \
+                --comment "ARC dispatch is healthy again (previous probe green, judged by ${RUN_URL})."
+              echo "closed #$n"
+            done
+            exit 0
+          fi
+
+          # Red path: an API failure here stops the job rather than silently
+          # duplicating the issue on the next period.
+          existing=$(gh issue list --label "$LABEL" --state open --limit 1 \
+            --json number --jq '.[0].number // empty')
+
+          note=$(printf '%s\n' \
+            "The ARC canary went red at $(date -u +%FT%TZ): the previous probe $detail." \
+            "" \
+            "- Judged by: ${RUN_URL}" \
+            "- Previous probe run: https://github.com/${GH_REPO}/actions/runs/${prev_id}" \
+            "" \
+            "This is the ghost-runner signature: the Actions service holds jobs on" \
+            "registrations whose pods are gone (upstream #4307, #4027; controller" \
+            "0.11.0). The scale set may report idle runners while nothing picks" \
+            "work up. Check the listener's loop" \
+            "(\`kubectl -n arc-systems logs deploy/arc-runners-...-listener\`," \
+            "\`assigned job\` vs \`currentRunnerCount\`) and the ephemeral runners" \
+            "(\`kubectl -n arc-runners get ephemeralrunners\`). The documented" \
+            "fallback lever is \`CI_SELF_HOSTED=off\`; offline registrations can be" \
+            "force-deleted through the org runners API." \
+            "" \
+            "This issue closes itself on the next green probe (~30 minutes).")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$note"
+            echo "commented on #$existing"
+          else
+            gh label create "$LABEL" --color B60205 \
+              --description "ARC runner dispatch is stalled (ghost-runner signature)" >/dev/null 2>&1 || true
+            gh issue create --title "ci: ARC runner dispatch is stalled (canary red)" \
+              --label "$LABEL" --body "$note"
+          fi
