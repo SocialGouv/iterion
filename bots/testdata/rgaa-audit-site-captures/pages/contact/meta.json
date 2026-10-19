@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "id": "contact",
+  "name": "Contact",
+  "url": "http://127.0.0.1:4898/contact.html",
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "runner": "scan",
+  "doctype": "<!DOCTYPE html>"
+}
