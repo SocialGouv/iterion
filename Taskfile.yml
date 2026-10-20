@@ -156,6 +156,42 @@ tasks:
           ./node_modules/.bin/playwright test e2e/specs/assistant-demo.spec.ts \
           --project=chromium --headed --workers=1
 
+  demo:rgaa-audit:
+    desc: Produce an RGAA report for this very studio with one command (real LLM run, ~$20-30; needs an authenticated claude CLI). Writes report FR + page grid + annex + ledger under .rgaa-demo/.
+    cmds:
+      - |
+        set -euo pipefail
+        out="$PWD/.rgaa-demo/$(date -u +%Y-%m-%dT%H%M%S)"
+        mkdir -p "$out" .rgaa-demo/bin .rgaa-demo/home .rgaa-demo/run
+        if curl -sf --max-time 2 -o /dev/null http://127.0.0.1:4899; then
+          echo "task demo:rgaa-audit: port 4899 is already in use (a studio serve or e2e run?) — free it first" >&2
+          exit 1
+        fi
+        echo "== building the studio SPA and the binary"
+        task studio:build
+        task templates:dispatch-bots
+        bin="$PWD/.rgaa-demo/bin/iterion"
+        CGO_ENABLED=0 go build -o "$bin" ./cmd/iterion
+        echo "== resolving the pinned ultra11y engine (installs under ~/.cache/iterion/ultra11y on first use)"
+        engine="$(scripts/ultra11y-engine.sh)"
+        engine_dir="$(dirname "$engine")"
+        echo "== ensuring the chromium build the engine's scan navigates with"
+        (cd "$engine_dir/../.." && [ -x .bin/playwright ] && ./.bin/playwright install chromium) \
+          || (cd "$engine_dir" && npx --no-install playwright install chromium)
+        echo "== launching the run (this spends LLM budget; the run takes ~10-20 min)"
+        env -u ZAI_API_KEY -u ITERION_BACKEND_PREFERENCE \
+          ITERION_HOME="$PWD/.rgaa-demo/home" \
+          "$bin" run bots/rgaa-audit --sandbox none \
+            --store-dir "$PWD/.rgaa-demo/store" --no-interactive \
+            --max-cost-usd "${RGAA_DEMO_BUDGET:-30}" \
+            --var "scope_globs=studio/src/**" --var rendered=required \
+            --var "serve_command=ITERION_BIN='$bin' ITERION_E2E_FIXED_RUN_IDS=1 node studio/e2e/serve.mjs" \
+            --var serve_ready_url=http://127.0.0.1:4899/api/server/info \
+            --var serve_timeout_seconds=180 \
+            --var run_dir="$PWD/.rgaa-demo/run" --var report_dir="$out" \
+            --var "scope_notes=Studio iterion (SPA React 19 / Vite / Tailwind / Radix, hors DSFR), servi localement par studio/e2e/serve.mjs sur un espace de travail seedé ; l'échantillon de 21 pages est déclaré dans .ultra11yrc.json. Les écrans cloud-only (login, admin, teams) sont hors échantillon."
+        echo "== report: $out"
+
   test:goldens:
     desc: Run bot golden replay tests (schema + invariant checks on recorded LLM fixtures; no API keys)
     cmds:
