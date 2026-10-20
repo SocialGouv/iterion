@@ -867,6 +867,7 @@ func (e *Engine) templateContext(ctx context.Context, rs *runState, sc resolveSc
 func (e *Engine) execContext(ctx context.Context, rs *runState, nodeID string) context.Context {
 	ctx = model.WithRunID(ctx, rs.runID)
 	ctx = model.WithNodeID(ctx, nodeID)
+	ctx = model.WithRunnerHomeScope(ctx, model.RunnerHomeScopeForRun(rs.runID))
 	return e.templateContext(ctx, rs, rs.scope())
 }
 

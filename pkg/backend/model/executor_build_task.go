@@ -1227,6 +1227,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		ToolMaxSteps:          f.toolMaxSteps,
 		MaxTokens:             f.maxTokens,
 		WorkDir:               e.workDir,
+		HomeScope:             RunnerHomeScopeFromContext(ctx),
 		ExtraEnv:              append(e.processExtraEnv(), e.treeNoiseEnvAppend(nil)...),
 		ReasoningEffort:       wireEffort(effort),
 		Ultracode:             ultracode,

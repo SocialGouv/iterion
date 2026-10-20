@@ -349,6 +349,41 @@ func RunIDFromContext(ctx context.Context) string {
 	return s
 }
 
+// runnerHomeScopeKey carries the identity of the runner-owned home. Unlike
+// the run/node identity above, a fan-out branch gets one: it scopes files
+// such as todos, not the session stores that deliberately stay branch-blind.
+type runnerHomeScopeKey struct{}
+
+// RunnerHomeScopeForRun names the trunk's runner-home scope.
+func RunnerHomeScopeForRun(runID string) string {
+	if runID == "" {
+		return ""
+	}
+	return "run:" + runID
+}
+
+// RunnerHomeScopeForBranch names one fan-out branch's runner-home scope.
+func RunnerHomeScopeForBranch(runID, branchID string) string {
+	if runID == "" || branchID == "" {
+		return ""
+	}
+	return "run-branch:" + runID + ":" + branchID
+}
+
+// WithRunnerHomeScope returns a derived ctx carrying the runner-home scope.
+func WithRunnerHomeScope(ctx context.Context, scope string) context.Context {
+	if scope == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, runnerHomeScopeKey{}, scope)
+}
+
+// RunnerHomeScopeFromContext returns the scope set by WithRunnerHomeScope.
+func RunnerHomeScopeFromContext(ctx context.Context) string {
+	s, _ := ctx.Value(runnerHomeScopeKey{}).(string)
+	return s
+}
+
 // nodeIDOnlyKey carries the currently-executing node id so the
 // operator-inbox binder can node-scope message delivery (a supervisor
 // that watches one node tags its messages with that node; the drain
