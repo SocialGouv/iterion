@@ -91,13 +91,11 @@ type ExecutorSpec struct {
 	// (runtime.EngineRepoRoot), so the screen resolves the same repository
 	// the engine's own sandbox resolution will.
 	//
-	// Set it wherever the engine's directory is NOT the one above: the cloud
-	// runner hands the engine a per-run clone, a subbot child inherits its
-	// parent's worktree, a resumed run carries its recorded workspace —
-	// while the executor's tool workspace stays the process workspace.
-	// Empty means "the engine receives WorkDir" and the probe reads that
-	// instead, which is what every surface passing one directory to both
-	// does. Both empty means "the engine is given no directory": it then
+	// Set it wherever the engine's directory is NOT the one above, notably a
+	// resumed run's recorded repository precedence. A surface whose engine and
+	// Claw tools share one directory sets both fields to it. Empty means "the
+	// engine receives WorkDir" and the probe reads that instead. Both empty
+	// means "the engine is given no directory": it then
 	// fills its own with the process cwd and roots the run at THAT
 	// directory's repository, which is what sandboxProbeRoot answers.
 	//
@@ -807,9 +805,9 @@ func resolveExecutorWorkspace(workDir string) (string, error) {
 // repository the run executes in. A cwd the OS refuses to name is the one
 // case with no answer, and it is the same "" the engine's own chain ends on.
 //
-// It is deliberately NOT resolveExecutorWorkspace's input: that one is Claw's
-// file-tool root, which several surfaces leave at the process workspace while
-// the engine runs the bot in a per-run clone or an inherited worktree.
+// It is deliberately NOT resolveExecutorWorkspace's input: the probe follows
+// the engine's directory even where that differs from Claw's file-tool root,
+// notably under the resume precedence.
 func (s ExecutorSpec) sandboxProbeRoot() string {
 	if s.SandboxProbeWorkDir != "" {
 		return s.SandboxProbeWorkDir

@@ -51,10 +51,9 @@ func TestExecutorSpecBindsInboxAndAsyncAsk(t *testing.T) {
 
 // A repo-bound cloud run does not execute in the pod's own workspace: it
 // executes in the per-run clone executeRun hands the engine through
-// runtime.WithWorkDir. The executor's WorkDir stays unset there — Claw's file
-// tools keep the pod's workspace — so the fallback screen's sandbox probe has
-// only this spec to learn the run's repository from, and the pod's cwd is a
-// different repository with a different devcontainer.
+// runtime.WithWorkDir. The executor receives the same directory so Claw's
+// relative file tools address that clone, while the fallback screen's sandbox
+// probe resolves its repository instead of the pod's different devcontainer.
 //
 // The screen decides whether an operator's `--fallback codex:…` crossing is
 // taken or refused, and it must decide that about the run that will execute.
@@ -79,11 +78,9 @@ func TestExecutorSpecNamesTheEnginesWorkDirForTheSandboxProbe(t *testing.T) {
 		t.Errorf("the screen would probe the repository at %q; this run executes in %q (the pod's own workspace "+
 			"is %q) — the codex screen must judge the run, not the pod", got, want, podBase)
 	}
-	// The blast radius #2167 would not take: the executor's tool workspace is
-	// NOT moved by answering the probe.
-	if spec.WorkDir != "" {
-		t.Errorf("ExecutorSpec.WorkDir = %q, want empty — it re-roots Claw's file tools (resolveExecutorWorkspace), "+
-			"which the pod leaves at its own workspace", spec.WorkDir)
+	if spec.WorkDir != clone {
+		t.Errorf("ExecutorSpec.WorkDir = %q, want the run clone %q so Claw's relative file tools do not use the pod cwd",
+			spec.WorkDir, clone)
 	}
 }
 

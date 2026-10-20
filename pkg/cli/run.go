@@ -602,9 +602,10 @@ func buildRunExecutor(
 		Workflow: wf,
 		Vars:     opts.Vars,
 		Store:    s,
-		// The engine's root, for the fallback screen's sandbox probe only.
-		// WorkDir stays unset: Claw's file tools keep resolving against the
-		// process workspace, which is where `iterion run` executes.
+		// The engine's root: Claw's relative file tools and the fallback
+		// screen's sandbox probe follow it. Empty keeps the process-cwd
+		// fallback of a top-level `iterion run` unchanged.
+		WorkDir:             engineWorkDir,
 		SandboxProbeWorkDir: engineWorkDir,
 		// Named explicitly rather than left to the Store type-assertion: a
 		// store wrapper that does not forward LoadRun would otherwise

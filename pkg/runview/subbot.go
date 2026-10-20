@@ -154,9 +154,9 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			Ctx:      managedCtx,
 			Workflow: childWf,
 			Store:    s.store,
-			// The child's fallback screen probes the repository of the tree
-			// its engine runs in. WorkDir stays unset: Claw's file tools keep
-			// resolving against the server's workspace, as they did before.
+			// The child's file tools and fallback screen follow the tree its
+			// engine runs in, not the server process's cwd.
+			WorkDir:             childWorkDir,
 			SandboxProbeWorkDir: childWorkDir,
 			// Deliberately NOT claiming to know the tiers: a subbot child
 			// under a sandboxed parent executes in the PARENT's sandbox

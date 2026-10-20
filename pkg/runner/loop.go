@@ -3337,9 +3337,9 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		StoreDir: r.cfg.WorkDir,
 		// The directory the ENGINE is rooted at (its runtime.WithWorkDir):
 		// the per-run clone for a repo-bound run, the pod's base workspace
-		// otherwise — never r.cfg.WorkDir alone. The fallback screen's
-		// sandbox probe reads this run's repository from it; WorkDir stays
-		// unset, so Claw's file tools keep the pod's workspace.
+		// otherwise — never r.cfg.WorkDir alone. Claw's relative file tools
+		// and the fallback screen's sandbox probe both follow that run tree.
+		WorkDir:             workDir,
 		SandboxProbeWorkDir: workDir,
 		BotID:               msg.BotID,
 		// The launch-time decision, carried on the wire. Without it the pod
