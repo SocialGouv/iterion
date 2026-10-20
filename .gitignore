@@ -222,3 +222,6 @@ __pycache__/
 # Captures of the rgaa-audit bot's rendered layer (the ultra11y engine writes them under
 # the audited workspace); the verdict ledger and the undecidable list next to them are committed.
 .ultra11y/pages/
+
+# Local RGAA demo runs (task demo:rgaa-audit)
+.rgaa-demo/
