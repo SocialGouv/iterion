@@ -417,21 +417,25 @@ func WorkdirFromPaths(paths []string) string {
 	return ""
 }
 
-// ResolveBotPath looks up a bot by name across paths and returns the
-// path to its workflow source file (bundle's main.bot or loose .bot).
+// ResolveBotEntry looks up a bot by name across paths and returns the
+// DISCOVERED entry: Name is the catalog's own spelling of the bot, which a
+// tolerated-spelling lookup (`feature_dev` for `feature-dev`) does not
+// preserve. Callers that stamp the resolved name onto a durable record
+// (a run document, a binding, a pledge) take it from here, so every record
+// for one bot carries one spelling.
 // Returns os.ErrNotExist when no bot with that name is found — unless a
 // skipped (malformed) bundle matches by directory name, in which case
 // the load diagnostic explains WHY the bot is unavailable instead of a
 // bare "not found".
-func ResolveBotPath(name string, paths []string) (string, error) {
+func ResolveBotEntry(name string, paths []string) (Entry, error) {
 	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: paths})
 	if err != nil {
-		return "", err
+		return Entry{}, err
 	}
 	// Exact match first (fast, unambiguous).
 	for _, e := range entries {
 		if e.Name == name {
-			return e.MainFile(), nil
+			return e, nil
 		}
 	}
 	// Normalized fallback: tolerate kebab/snake/case differences between
@@ -441,16 +445,28 @@ func ResolveBotPath(name string, paths []string) (string, error) {
 	nn := NormalizeName(name)
 	for _, e := range entries {
 		if NormalizeName(e.Name) == nn {
-			return e.MainFile(), nil
+			return e, nil
 		}
 	}
 	// A malformed bundle has no parseable name, so it can only match by
 	// its directory / file base — enough to turn "bot not found" into the
 	// actual cause on the launch/dispatch path.
 	if d := diagForName(diags, name); d != nil {
-		return "", fmt.Errorf("bot %q is unavailable — its bundle failed to load: %s", name, d.Error)
+		return Entry{}, fmt.Errorf("bot %q is unavailable — its bundle failed to load: %s", name, d.Error)
 	}
-	return "", fmt.Errorf("bot %q not found in %v: %w", name, paths, os.ErrNotExist)
+	return Entry{}, fmt.Errorf("bot %q not found in %v: %w", name, paths, os.ErrNotExist)
+}
+
+// ResolveBotPath looks up a bot by name across paths and returns the
+// path to its workflow source file (bundle's main.bot or loose .bot).
+// ResolveBotEntry is the same lookup with the discovered entry, for callers
+// that also need the canonical name.
+func ResolveBotPath(name string, paths []string) (string, error) {
+	e, err := ResolveBotEntry(name, paths)
+	if err != nil {
+		return "", err
+	}
+	return e.MainFile(), nil
 }
 
 // NormalizeName canonicalises a bot/assignee name for tolerant matching:

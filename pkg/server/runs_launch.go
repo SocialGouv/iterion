@@ -81,6 +81,12 @@ type launchRunRequest struct {
 	// the LaunchSpec so the runner mirrors the bundle's skills. Optional in
 	// cloud: a catalog-shaped FilePath ("bots/<name>/main.bot") is inferred to
 	// the same id.
+	//
+	// It is a LABEL the server resolves, never an identity the launch asserts:
+	// only when the request carries no inline source does the server verify it
+	// against its own tiers and stamp the canonical name it discovered. With
+	// inline source the value is not read as an identity anywhere — the run is
+	// gated, funded, bound and attributed as work naming no bot.
 	BotID string            `json:"bot_id,omitempty"`
 	RunID string            `json:"run_id,omitempty"`
 	Vars  map[string]string `json:"vars,omitempty"`
@@ -360,23 +366,53 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
 		return
 	}
+	if req.Source != "" && strings.TrimSpace(req.BotID) != "" {
+		// An inline source names no bot: the label beside it is ignored, so
+		// say so — a scoped key, a bot binding or a pledge stops applying to
+		// this launch, and the caller should learn why from the log rather
+		// than from a run that lost its funding in silence.
+		s.logger.Warn("launch: bot_id %q ignored beside an inline source — a source launch names no bot", strings.TrimSpace(req.BotID))
+	}
 	// Launch admission: suspend → concurrency → rate → cost cap →
 	// monthly run quota (which also meters). Super-admin bypasses.
 	//
-	// AFTER the decode, because the body is where this surface learns which
-	// bot it is launching, and an empty subject is not neutral: a RESERVED
-	// bot judged as ordinary work faces the ceiling its own reservation
-	// lowered, so the studio's Launch button would be refused on the very
-	// band held for that bot. The body is size-bounded and touches no store,
-	// so nothing but the caller's own payload is parsed before admission —
-	// and a request too malformed to name a bot now costs no metered run
-	// slot either.
+	// The gate's subject is the bot identity the SERVER can stand behind,
+	// never the raw label: it is the request's bot label exactly when this
+	// request sends the handler through the tiered resolution below, which
+	// verifies the label (an id that resolves nowhere refuses the launch)
+	// and refines it to the canonical name it discovered. With inline
+	// source the label is never verified, so the launch is judged as work
+	// naming no bot — naming a reserved bot must not hand arbitrary inline
+	// code the band held for that bot's own work. An empty subject is not
+	// neutral (a RESERVED bot would face the ceiling its own reservation
+	// lowered), which is why the two share one condition instead of the
+	// gate guessing.
+	//
+	// One spelling residual stays, on purpose: the subject is matched
+	// against the reservations EXACTLY (budgetfloor.sameID) while the
+	// resolution below tolerates spellings, so a tolerated spelling of a
+	// reserved bot is judged as other work and faces the very band its own
+	// bot holds — refused, never over-served. Folding the match onto the
+	// resolver's rule is the deliberate NOT-taken alternative: NormalizeName
+	// is many-to-one (my_bot and my-bot are both valid stored bots), so one
+	// reservation would shadow another and a bot could never find its own
+	// specifically-sized band.
+	//
+	// AFTER the decode: the body is size-bounded and touches no store, so
+	// nothing but the caller's own payload is parsed before admission — and
+	// a request too malformed to name a bot costs no metered run slot
+	// either.
 	//
 	// No repository YET: this surface learns which one it targets only after a
 	// connection read and a forge probe, and neither may run in front of the
 	// suspend check. The repo half of the admission is re-run below, on the
 	// line that resolves `repoProjectPath`.
-	adm, d := s.gateLaunch(r.Context(), launchSubject{BotID: strings.TrimSpace(req.BotID)})
+	resolvesBot := req.Source == "" && (strings.TrimSpace(req.BotID) != "" || s.cfg.Mode == "cloud")
+	launchBotLabel := ""
+	if resolvesBot {
+		launchBotLabel = strings.TrimSpace(req.BotID)
+	}
+	adm, d := s.gateLaunch(r.Context(), launchSubject{BotID: launchBotLabel})
 	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		span.SetStatus(codes.Error, "launch denied")
@@ -426,15 +462,39 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// no operator filesystem. Stored bots run their store content inline, with
 	// the materialized bundle merged at compile and the ref stamped for the
 	// runner.
-	botID := strings.TrimSpace(req.BotID)
+	//
+	// botID starts EMPTY and is assigned only from the resolution's result
+	// (launchBot.BotID — the canonical name of the tier that served): the
+	// requester-typed string is a LABEL, and it reaches an identity only
+	// through the server's own resolution. Every bot-scoped read below —
+	// spec.BotID (the run document, the BYOK audience, bot secret bindings,
+	// credpool pledges), the retry and LLM-route manifest layers, and the PR
+	// launch context's per-bot rules — reads this value, so on every path
+	// where resolution did not run they see an empty id and fail closed
+	// (docs/byok.md). Bot-scoped memory keys on the same value through the
+	// executor's own rule (runview.ResolveBotID: the explicit id, then the
+	// bundle's declared name, then a name derived from the bundle path,
+	// finally the workflow's own name), so on those paths it holds a
+	// bundle-derived name — attribution only, never a credential read, and
+	// never the typed label.
+	botID := ""
 	var launchLB *launchBot
 	trustedCatalogPath := ""
-	if req.Source == "" && (botID != "" || s.cfg.Mode == "cloud") {
+	if resolvesBot {
 		id, _ := auth.FromContext(r.Context())
 		lb, lbErr := s.resolveBotTiered(r.Context(), id.TeamID, req.BotID, req.FilePath)
 		if lbErr != nil {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "resolve bot: %v", lbErr)
 			span.SetStatus(codes.Error, "bot resolution failed")
+			return
+		}
+		if lb == nil && launchBotLabel != "" {
+			// The gate judged this label, so the resolution must be the one
+			// place it can die: an id that resolves nowhere would otherwise
+			// launch as unnamed work admitted on a reservation band the
+			// label borrowed.
+			s.httpErrorFor(w, r, http.StatusBadRequest, "bot %q resolves nowhere", launchBotLabel)
+			span.SetStatus(codes.Error, "bot id resolves nowhere")
 			return
 		}
 		if lb != nil {
@@ -444,7 +504,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			if s.cfg.Mode == "cloud" || lb.Origin != "catalog" {
 				req.Source = lb.Source
 			} else {
-				// ResolveBotPath already constrained this absolute path to a
+				// The resolver already constrained this absolute path to a
 				// configured catalog root and read it successfully. Keep the real
 				// file so bundle-relative skills/prompts remain adjacent.
 				trustedCatalogPath = lb.Path
@@ -636,7 +696,9 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// workspace-mounted token. Same composition as the board lane — a launch
 	// from the studio form must gate under the same context a webhook does.
 	if launchID, _ := auth.FromContext(r.Context()); launchID.TeamID != "" {
-		vars, minted, err := s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, req.BotID, req.Vars, r)
+		// The resolved identity, not the typed label: a repo's per-bot launch
+		// rules select on it, and an inline launch names no bot to select by.
+		vars, minted, err := s.applyPRLaunchContext(r.Context(), launchID.TeamID, req.ConnectionID, botID, req.Vars, r)
 		if err != nil {
 			// One table for the whole class (prLaunchContextStatus): an
 			// inadmissible request answers 422, the server's own grant

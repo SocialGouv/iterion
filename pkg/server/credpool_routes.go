@@ -212,15 +212,17 @@ func (s *Server) handlePutMyPledge(w http.ResponseWriter, r *http.Request) {
 	// `credpool.Pledge.servesBot` compares against the launch bot id raw, and
 	// the publisher deliberately hands the pool that raw value (bot secret
 	// bindings read it too, and they match exactly). Folding only the write
-	// edge made a pledge naming a non-canonical stored slug — `my_bot`, which
-	// botsource.ValidSlug admits — stop serving the bot it named, silently,
-	// with the bill moving to another tier. Worse, `pkg/cli/remote_pool.go`
-	// re-sends `current.Bots` on every pledge PUT, so merely toggling
-	// `enabled` would have rewritten a working row into a non-matching one.
+	// edge would make a pledge naming a non-canonical stored slug — `my_bot`,
+	// which botsource.ValidSlug admits — stop serving the bot it named,
+	// silently, with the bill moving to another tier. Worse,
+	// `pkg/cli/remote_pool.go` re-sends `current.Bots` on every pledge PUT, so
+	// merely toggling `enabled` would rewrite a working row into a
+	// non-matching one.
 	//
-	// Folding BOTH edges here is the other legitimate answer, and it is the
-	// one #1368 carries: it needs a canonical bot id at the source rather
-	// than a third private spelling rule.
+	// The pair agrees because the launch id is canonical at the source
+	// (docs/byok.md): the resolver hands back the tier's own spelling, or
+	// nothing. Folding BOTH edges here is the alternative shape, and it only
+	// becomes necessary if a third spelling rule ever appears.
 	p.Limits, p.Window, p.Bots = req.Limits, req.Window, req.Bots
 	p.FallbackUse = req.FallbackUse
 	if req.Enabled != nil {

@@ -53,7 +53,7 @@ flowchart TD
   stored["storedLaunchBot: materialize the file map to a temp dir at 0644, stamp Path, Ref, sourceRowID and the decoded manifest"]
   emptymain["refused: main.bot is empty"]
   shadow["warnIfOverrideShadowsNewerBake: one deduped Warn per shadow - the launch proceeds on the override"]
-  baked{"BAKED tier: botregistry.ResolveBotPath over the configured bot roots"}
+  baked{"BAKED tier: botregistry.ResolveBotEntry over the configured bot roots"}
   absent["not found here: nil, and the caller decides"]
   bakederr["refused: a matching malformed bundle keeps its discovery diagnostic, an unreadable source is an explicit read error"]
   read["read main.bot, then manifest.yaml and manifest.yml"]

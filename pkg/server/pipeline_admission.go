@@ -541,7 +541,7 @@ func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (
 	if lb == nil {
 		// "Nothing resolved" is not always "no such bot": the baked tier
 		// reports an UNREADABLE catalog as an absence — resolveBotTieredRaw
-		// collapses every ResolveBotPath failure into (nil, nil), and one
+		// collapses a not-found ResolveBotEntry into (nil, nil), and one
 		// malformed manifest.yaml anywhere under the discovery roots fails
 		// the whole walk, for every bot. The metadata read crosses the same
 		// catalog and propagates that error, so ask it before answering
@@ -595,9 +595,10 @@ func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (
 		return pipelineBot{}, false, fmt.Errorf(
 			"bot %q resolves to a launchable bundle on the %s tier but no catalog metadata describes it", botID, lb.Origin)
 	}
-	// The catalog tier answers to a tolerated spelling and hands back the
-	// REQUESTED one; the canonical name is the metadata's. Carry it into
-	// the launch too, so the card, the upsert key and the run all agree.
+	// The catalog tier answers with the name discovery found, the same one
+	// the metadata carries; the assignment pins the launch to it so the
+	// card, the upsert key and the run cannot drift from the entry this
+	// decision was made on.
 	lb.BotID = entry.Name
 	return pipelineBot{Name: entry.Name, Enabled: entry.Enabled, Launch: lb}, true, nil
 }
