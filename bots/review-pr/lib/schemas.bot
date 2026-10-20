@@ -219,6 +219,9 @@ schema publish_output:
   comments_posted: int
   ## suggestions_posted: of those, how many carried a ```suggestion block.
   suggestions_posted: int
+  ## body_missing: inline comments landed but the summary body did not.
+  ## Orthogonal to published and fallback: no folded content reached the PR.
+  body_missing: bool
   ## skipped_reason: non-empty when nothing was published (e.g. unknown
   ## forge, CLI not authenticated, zero anchorable findings).
   skipped_reason: string
@@ -234,6 +237,7 @@ schema publish_output:
 
 schema publish_health_input:
   published: bool
+  body_missing: bool
   comments_posted: int
   total_findings: int
   skipped_reason: string
@@ -242,10 +246,10 @@ schema publish_health_input:
   gate_posted: bool
   gate_skipped_reason: string
 
-## Deterministic anti-façade gate: when a publish was requested AND
-## there were findings, at least one inline comment must have landed.
-## degraded=true surfaces a loud banner (the board + report already
-## succeeded, so this informs rather than hard-fails the run).
+## Deterministic anti-façade gate: degraded=true covers findings with no
+## inline comment, a missing review body, or a required gate that did not
+## land. A loud banner informs rather than hard-failing the run: the board
+## and report already succeeded upstream.
 schema publish_health_output:
   degraded: bool
   banner: string

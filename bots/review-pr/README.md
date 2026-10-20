@@ -6,7 +6,8 @@ in 2–3 sentences where possible, without truncating evidence or replacement
 code. The summary shows only ticket gaps and questions that need a maintainer
 decision. Unverifiable ticket context, run telemetry, the reviewed scope, topology
 and fixer instructions stay in the collapsed details. If an anchor is missing
-or stale, the complete finding and replacement remain readable in the summary.
+or stale and the summary note lands, the complete finding and replacement remain
+readable in the summary; a missing summary is reported as degraded instead.
 Editorial brevity does not change severity thresholds, finding caps or gates.
 
 Read-only **code reviewer** with an optional cross-family dual mode. Revi
@@ -240,9 +241,12 @@ iterion run bots/review-pr/main.bot \
   comments the forge actually stored (falling back to a summary-only
   review when inline anchors are rejected — findings are folded into the
   body, never dropped), and a deterministic `publish_health` gate raises
-  a loud banner if findings existed but zero inline comments landed — the
-  board + report still succeed, so fix the forge connection and re-run
-  with the same `pr_url`.
+  a loud banner if findings existed but zero inline comments landed. An
+  HTTP 200 can also carry `body_missing=true` when inline comments landed
+  but the summary note did not: this is `degraded=true`, with an explicit
+  "review body did not land" banner and no claim that rejected anchors were
+  folded. The board + report still succeed, so fix the forge connection and
+  re-run with the same `pr_url`.
 - **Stale-review guard.** The inline findings anchor to `file:line`
   positions computed against the tree the reviewers judged — the worktree
   HEAD `diff_precheck` captured as `reviewed_sha`. `publish_review`

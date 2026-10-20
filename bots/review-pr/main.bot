@@ -116,8 +116,9 @@
 ## dispatches by the connection's provider (GitHub / GitLab /
 ## Forgejo-Gitea) — no forge names in this DSL (universal-bots
 ## doctrine). A deterministic `publish_health` gate flags a no-op /
-## failed publish (findings existed but 0 comments landed) so a façade
-## is never silent. `post_to_board` remains the local sink; both run.
+## failed publish (findings existed but 0 comments landed) or a review
+## body that did not land, so a façade is never silent. `post_to_board`
+## remains the local sink; both run.
 ##
 ## Remaining enhancement (not yet built): auto-resolve base/head from
 ## the PR URL. Today review the LOCAL checkout (base_ref..HEAD) and
@@ -635,6 +636,7 @@ workflow review_pr:
   ## Deterministic anti-façade gate on the publish result, then done.
   publish_review -> publish_health with {
     published: "{{outputs.publish_review.published}}",
+    body_missing: "{{outputs.publish_review.body_missing}}",
     comments_posted: "{{outputs.publish_review.comments_posted}}",
     total_findings: "{{outputs.pr_gate.total_findings}}",
     skipped_reason: "{{outputs.publish_review.skipped_reason}}",
