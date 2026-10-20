@@ -421,10 +421,17 @@ func (s *Server) handlePreviewForgeEnable(w http.ResponseWriter, r *http.Request
 		}
 	}
 	commands := make([]forgePreviewCommand, 0, len(pv.Commands))
-	for cmd, bot := range pv.Commands {
-		commands = append(commands, forgePreviewCommand{Command: cmd, BotID: bot})
+	for _, command := range pv.Commands {
+		commands = append(commands, forgePreviewCommand{Command: command.Command, BotID: command.BotID})
 	}
-	sort.Slice(commands, func(i, j int) bool { return commands[i].Command < commands[j].Command })
+	// The PR's sort carries the BotID tiebreaker: a preview can list the same
+	// command once per bot now that the response exposes Commands' BotID.
+	sort.Slice(commands, func(i, j int) bool {
+		if commands[i].Command == commands[j].Command {
+			return commands[i].BotID < commands[j].BotID
+		}
+		return commands[i].Command < commands[j].Command
+	})
 	ident := forgePreviewIdent{Handle: conn.AccountLogin, Provider: string(conn.Provider), BaseURL: conn.BaseURL()}
 	if conn.MintsProjectBots() {
 		// Not the authorising person: the repo's bot, named once it exists.

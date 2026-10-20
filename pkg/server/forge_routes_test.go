@@ -300,6 +300,48 @@ func TestForgePreview_FlagsBotsWithoutForgeBlock(t *testing.T) {
 	}
 }
 
+func TestForgePreview_KeepsAndSortsComplementaryCommandRoutes(t *testing.T) {
+	s := newForgeTestServer(t)
+	sealed, _ := forge.SealPAT(s.sealer, "c1", "tok")
+	_ = s.forgeConnections.Create(context.Background(), forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "u", SealedPayload: sealed})
+	s.forgeOrchestrator.Invocations = func(_ context.Context, _, botID string) ([]bundle.Invocation, error) {
+		switch botID {
+		case "review-pr":
+			return []bundle.Invocation{
+				{Kind: bundle.InvocationKindCommand, Command: &bundle.InvocationCommand{Name: "revi"}},
+				{Kind: bundle.InvocationKindCommand, Command: &bundle.InvocationCommand{Name: "ask"}},
+			}, nil
+		case "revi-converse":
+			return []bundle.Invocation{{Kind: bundle.InvocationKindCommand, Command: &bundle.InvocationCommand{Name: "revi"}}}, nil
+		default:
+			return nil, nil
+		}
+	}
+
+	w := httptest.NewRecorder()
+	s.handlePreviewForgeEnable(w, forgeReq(superAdminCtx(), "GET", "/api/teams/t1/forge/repo-bots/preview?connection_id=c1&bots=review-pr,revi-converse", "", "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var p forgeEnablePreview
+	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+	want := []forgePreviewCommand{
+		{Command: "ask", BotID: "review-pr"},
+		{Command: "revi", BotID: "revi-converse"},
+		{Command: "revi", BotID: "review-pr"},
+	}
+	if len(p.Commands) != len(want) {
+		t.Fatalf("commands = %+v, want %+v", p.Commands, want)
+	}
+	for i := range want {
+		if p.Commands[i] != want[i] {
+			t.Errorf("commands[%d] = %+v, want %+v", i, p.Commands[i], want[i])
+		}
+	}
+}
+
 // TestListTeamForgeRepos_Aggregator covers the RepoSwitcher data source:
 // integration×connection join, URL derivation, deterministic order, and
 // tenant isolation.

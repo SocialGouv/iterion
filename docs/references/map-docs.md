@@ -336,6 +336,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/improvement-ratchet.md`](../improvement-ratchet.md) | The ratchet | open. | — |
 | [`docs/index.md`](../index.md) | — | A `.bot` is a readable graph. | — |
 | [`docs/install.md`](../install.md) | 🖥️ Install | One Go core, delivered wherever you work — a scriptable CLI, a visual studio, a | — |
+| [`docs/layering.md`](../layering.md) | The layer map — package layers as an executable guard | The package layers are pinned by a test, not by prose: | — |
 | [`docs/live-e2e-coverage.md`](../live-e2e-coverage.md) | Live e2e coverage + quality/value snapshots | iterion ships an **optional, real-LLM** end-to-end layer that exercises | — |
 | [`docs/mcp-server.md`](../mcp-server.md) | The iterion MCP server — `iterion mcp` | `iterion mcp` serves the **operator-facing MCP server** on stdio: any | — |
 | [`docs/memory-and-knowledge.md`](../memory-and-knowledge.md) | Memory and knowledge spaces | `memory_write` / `memory_list`), org admins enforcing a quota on | — |

@@ -2,20 +2,26 @@ package forge
 
 import (
 	"context"
+	"sort"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 )
+
+type EnablePreviewCommand struct {
+	Command string `json:"command"`
+	BotID   string `json:"bot_id"`
+}
 
 // EnablePreview is the read-only projection of what enabling a set of bots on
 // a repo will provision: the webhook events to subscribe to, the slash-command
 // routes the webhook gains, the per-bot forge-token secret binding, the unioned
 // token scopes, and any non-installable bots. Computed without any forge write.
 type EnablePreview struct {
-	Events    []string          // normalized events (forge: blocks ∪ invocations)
-	Commands  map[string]string // command name → bot id
-	Binds     map[string]string // bot id → workflow-secret name (forge_token default)
-	Scopes    map[string]string // unioned token scopes (from forge: blocks)
-	Conflicts []string          // bots that cannot be auto-installed, with a reason
+	Events    []string               // normalized events (forge: blocks ∪ invocations)
+	Commands  []EnablePreviewCommand // command routes, including complementary bots
+	Binds     map[string]string      // bot id → workflow-secret name (forge_token default)
+	Scopes    map[string]string      // unioned token scopes (from forge: blocks)
+	Conflicts []string               // bots that cannot be auto-installed, with a reason
 	// GatesMerges is the merge-gate posture enabling these bots installs: true
 	// when one of them posts a commit status (BotGatesMerges), which is what
 	// makes the repo's merges gateable and forces re-review on every push.
@@ -37,7 +43,7 @@ func PreviewEnable(ctx context.Context, teamID string, botFn BotForgeLookup, inv
 	frByBot := map[string]*bundle.ForgeRequirements{}
 	invByBot := map[string][]bundle.Invocation{}
 	binds := map[string]string{}
-	commands := map[string]string{}
+	commands := []EnablePreviewCommand{}
 	var conflicts []string
 	var reqs []*bundle.ForgeRequirements
 	var provisionable []string
@@ -68,10 +74,16 @@ func PreviewEnable(ctx context.Context, teamID string, botFn BotForgeLookup, inv
 		binds[b] = secret
 		for _, inv := range invs {
 			if inv.Kind == bundle.InvocationKindCommand && inv.Command != nil {
-				commands[inv.Command.Name] = b
+				commands = append(commands, EnablePreviewCommand{Command: inv.Command.Name, BotID: b})
 			}
 		}
 	}
+	sort.Slice(commands, func(i, j int) bool {
+		if commands[i].Command == commands[j].Command {
+			return commands[i].BotID < commands[j].BotID
+		}
+		return commands[i].Command < commands[j].Command
+	})
 
 	return EnablePreview{
 		Events:      unionAllEvents(provisionable, frByBot, invByBot),

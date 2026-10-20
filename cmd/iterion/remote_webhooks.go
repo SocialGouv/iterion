@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
@@ -193,11 +195,68 @@ var remoteForgeRefreshCmd = &cobra.Command{
 	}),
 }
 
+var (
+	remoteForgeRepoBotsConnectionID string
+	remoteForgeRepoBotsBots         string
+)
+
 var remoteForgeRepoBotsCmd = &cobra.Command{
-	Use:   "repo-bots [create|preview|delete <integration-id>]",
+	Use:   "repo-bots [create|preview|update <integration-id>|delete <integration-id>]",
 	Short: "Repo↔bot provisioning (forge integrations)",
 	Args:  cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		preview := len(args) > 0 && args[0] == "preview"
+		dataVerb := len(args) > 0 && (args[0] == "create" || args[0] == "update")
+		if cmd.Flags().Changed("data") && !dataVerb {
+			return fmt.Errorf("--data only applies to `repo-bots create` or `repo-bots update`")
+		}
+		if !preview && (cmd.Flags().Changed("connection-id") || cmd.Flags().Changed("bots")) {
+			return fmt.Errorf("--connection-id and --bots only apply to `repo-bots preview`")
+		}
+		readData := func() ([]byte, error) {
+			if !cmd.Flags().Changed("data") || strings.TrimSpace(remoteForgeData) == "" {
+				return nil, fmt.Errorf("--data is required (request body JSON; literal JSON, @file, or @- for stdin)")
+			}
+			body, err := cli.ReadDataArg(remoteForgeData)
+			if err != nil {
+				return nil, fmt.Errorf("read --data: %w", err)
+			}
+			if len(body) == 0 {
+				return nil, fmt.Errorf("--data is required (request body JSON; literal JSON, @file, or @- for stdin)")
+			}
+			return body, nil
+		}
+		var requestBody []byte
+		var previewConnectionID string
+		var previewBots string
+		switch {
+		case len(args) == 0:
+		case len(args) == 1 && args[0] == "create":
+			body, err := readData()
+			if err != nil {
+				return err
+			}
+			requestBody = body
+		case len(args) == 1 && args[0] == "preview":
+			previewConnectionID = strings.TrimSpace(remoteForgeRepoBotsConnectionID)
+			if previewConnectionID == "" {
+				return fmt.Errorf("--connection-id is required for preview")
+			}
+			previewBots = strings.Join(splitCSV(remoteForgeRepoBotsBots), ",")
+			if previewBots == "" {
+				return fmt.Errorf("--bots is required for preview")
+			}
+		case len(args) == 2 && args[0] == "update":
+			body, err := readData()
+			if err != nil {
+				return err
+			}
+			requestBody = body
+		case len(args) == 2 && args[0] == "delete":
+		default:
+			return fmt.Errorf("usage: repo-bots [create --data @f|preview --connection-id <id> --bots <a,b>|update <id> --data @f|delete <id>]")
+		}
+
 		base, err := teamBase(cmd, c, "/forge/repo-bots")
 		if err != nil {
 			return err
@@ -206,13 +265,18 @@ var remoteForgeRepoBotsCmd = &cobra.Command{
 		case len(args) == 0:
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 		case args[0] == "preview":
-			return cli.RemoteGetPrint(cmd.Context(), c, p, base+"/preview")
+			query := url.Values{}
+			query.Set("connection_id", previewConnectionID)
+			query.Set("bots", previewBots)
+			return cli.RemoteGetPrint(cmd.Context(), c, p, base+"/preview?"+query.Encode())
 		case args[0] == "create":
-			return cli.RemoteSendData(cmd.Context(), c, p, "POST", base, remoteForgeData, "request body JSON")
-		case args[0] == "delete" && len(args) == 2:
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, requestBody)
+		case args[0] == "update":
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", base+"/"+args[1], requestBody)
+		case args[0] == "delete":
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[1], nil)
 		default:
-			return fmt.Errorf("usage: repo-bots [create --data @f|preview|delete <id>]")
+			return fmt.Errorf("usage: repo-bots [create --data @f|preview --connection-id <id> --bots <a,b>|update <id> --data @f|delete <id>]")
 		}
 	}),
 }
@@ -280,6 +344,8 @@ func init() {
 			c.Flags().StringVar(&remoteForgeWebhookBase, "url", "", "webhook-base: scheme+host the forge should deliver to; \"\" clears the pin")
 		}
 	}
+	remoteForgeRepoBotsCmd.Flags().StringVar(&remoteForgeRepoBotsConnectionID, "connection-id", "", "preview: forge connection id")
+	remoteForgeRepoBotsCmd.Flags().StringVar(&remoteForgeRepoBotsBots, "bots", "", "preview: comma-separated bot ids")
 	remoteWebhooksCmd.AddCommand(
 		remoteWebhooksListCmd, remoteWebhooksGetCmd, remoteWebhooksCreateCmd,
 		remoteWebhooksUpdateCmd, remoteWebhooksDeleteCmd, remoteWebhooksRotateCmd, remoteWebhooksDeliveriesCmd,

@@ -165,4 +165,36 @@ describe("BindBotWizard — the Review step names where the hook will be deliver
     expect(screen.queryByText("Will deliver to:")).toBeNull();
     expect(screen.queryByText(/no address/)).toBeNull();
   });
+
+  it("renders complementary routes for one slash-command with distinct React keys", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      previewMock.mockResolvedValue(
+        preview({
+          commands: [
+            { command: "revi", bot_id: "revi-converse" },
+            { command: "revi", bot_id: "review-pr" },
+          ],
+        }),
+      );
+      const { container } = renderWizard();
+
+      expect(await screen.findAllByText("/revi")).toHaveLength(2);
+      const items = Array.from(container.querySelectorAll("li")).filter((item) =>
+        item.textContent?.includes("/revi"),
+      );
+      expect(items.map((item) => item.textContent)).toEqual([
+        "/revi → revi-converse",
+        "/revi → review-pr",
+      ]);
+      const duplicateKeyErrors = errorSpy.mock.calls.filter((call) =>
+        call.some(
+          (arg) => typeof arg === "string" && /same key|unique.*key|duplicate.*key/i.test(arg),
+        ),
+      );
+      expect(duplicateKeyErrors).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });

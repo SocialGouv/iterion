@@ -591,7 +591,7 @@ function PreviewPanel({
         <PreviewSection title={`${wording.noun} slash-commands`}>
           <ul className="space-y-0.5">
             {model.commands.map((c) => (
-              <li key={c.command}>
+              <li key={`${c.command}:${c.botId}`}>
                 <span className="font-mono text-fg-default">/{c.command}</span>
                 <span className="text-fg-muted"> → {c.botId}</span>
               </li>

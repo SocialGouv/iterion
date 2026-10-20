@@ -145,6 +145,7 @@ The pair a model sees before it decides to open the file.
 | `instrument` | `lang-go` | Go reference for the instrument campaign — sentry-go for error tracking (init, recover, flush, mock transport tests), log/slog… |
 | `instrument` | `lang-js` | Node.js / TypeScript reference for the instrument campaign — @sentry/node for error tracking (init order, process handlers,… |
 | `instrument` | `lang-python` | Python reference for the instrument campaign — sentry-sdk for error tracking (init, LoggingIntegration for the… |
+| `instrument` | `metrics` | The metrics family — what "done" means for a /metrics surface (HTTP request count and latency by route and status, process… |
 | `instrument` | `tracing` | Opt-in tracing family for the instrument campaign — Sentry-first transactions/spans, env-tunable sampling with a conservative… |
 | `instrument` | `verify-build` | Detect and run a repository's OWN build + test so a deterministic gate can confirm the tree actually compiles and passes before… |
 | `issue-triage` | `issue-triage` | Triagy's single-shot routing procedure — read one board card, stamp the handler bot + labels, comment the rationale, never move… |
