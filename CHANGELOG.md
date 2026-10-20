@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.273.0](https://github.com/SocialGouv/iterion/compare/v3.272.0...v3.273.0) (2026-10-20)
+
+### Features
+
+* **mdcode:** fence detection reads CommonMark's block phase ([#2587](https://github.com/SocialGouv/iterion/issues/2587)) ([4d76ba7](https://github.com/SocialGouv/iterion/commit/4d76ba7f0770139b9f983a88e0fe34ad50daa17f)), closes [#2395](https://github.com/SocialGouv/iterion/issues/2395), references [#1723](https://github.com/SocialGouv/iterion/issues/1723)
+
+    <details><summary>why</summary>
+
+    The catalogue-fence reading behind FenceScanner was a line-by-line approximation with a stated limit: 123 of the 14 580 adversarial field shapes of the #1723 review still leaked past it through the real generator — every one carrying a fence delimiter four or more columns in, or held by a list marker the line-by-line reading cannot see as a container — and the source gate refused none of them, so guarantee (3), the gate refuses every shape the generator cannot repair, was false. Three candidate…
+
+    </details>
+
 ## [3.272.0](https://github.com/SocialGouv/iterion/compare/v3.271.1...v3.272.0) (2026-10-19)
 
 ### Features
