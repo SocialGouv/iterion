@@ -441,8 +441,9 @@ func TestFenceReadingMatchesTheRenderersOnIndentationAndLineEndings(t *testing.T
 // index, which is the failure that aborts `iterion map gen` on a page whose
 // links are sound.
 //
-// The mutation that reddens this: return indent instead of indent - 3 in
-// containerColumn.
+// The mutation that reddens this: read the item's continuation as
+// indCol == fr.col instead of indCol >= fr.col, so the item ends on its own
+// content line and the fence it holds dies with it.
 func TestAFenceDeepInsideAnItemKeepsItsContentCode(t *testing.T) {
 	const body = "1.  item text\n" +
 		"      ```sh\n" +

@@ -1180,12 +1180,17 @@ func readEntities(root string) (entities []string, pages []string, problems []Pr
 // The fence machine is internal/mdcode's — the one the link checker and the
 // map generator read markdown with. A page that SHOWS an erDiagram inside a
 // ```markdown block, or that opens a fence a stray backtick would confuse, is
-// read the same way by all three or by none. Like them, it does not model an
-// HTML block or a four-column indented code block: a fence inside one is read
-// as drawn although the site draws nothing there. A fence inside a blockquote
-// is read without its quote marks, as the site draws it. It reads mermaid as
-// these pages write it and is no parser of it: a line it takes for one form
-// that mermaid reads as another goes by unrefused.
+// read the same way by all three or by none. Like them, it reads CommonMark's
+// block phase — container columns, the indented code block, the
+// interruption rules — and the shapes it still does not model are the ones
+// that package states (HTML blocks, the setext underline, the GFM table's
+// cells, tab reconstruction): a fence inside an HTML block is read as drawn
+// although the site draws nothing there, and the content of an indented
+// code block is still read as page prose — drawn for this reader although
+// the site draws nothing there. A fence inside a blockquote is read without
+// its quote marks, as the site draws it. It reads mermaid as these pages
+// write it and is no parser of it: a line it takes for one form that
+// mermaid reads as another goes by unrefused.
 func erEntities(md string) (names, unread []string) {
 	var fence mdcode.FenceScanner
 	var body []string
