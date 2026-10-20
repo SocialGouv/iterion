@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.274.0](https://github.com/SocialGouv/iterion/compare/v3.273.0...v3.274.0) (2026-10-20)
+
+### Features
+
+* **dsl,cli:** the YAML remedies key on the reader's structured cause, not its prose ([#2604](https://github.com/SocialGouv/iterion/issues/2604)) ([f98eefb](https://github.com/SocialGouv/iterion/commit/f98eefbeb18ef352ac5cc5da16d59bc7aa0e701d)), closes [#2404](https://github.com/SocialGouv/iterion/issues/2404), references [#1783](https://github.com/SocialGouv/iterion/issues/1783)
+
+    <details><summary>why</summary>
+
+    The YAML remedies answered a reader's refusal by matching its message text. Nine adversarial rounds on #1783's extension found nothing but regressions of that design: one string answered four cause families (`cannot unmarshal` told apart only by the Go type the reading decodes into), a line count the quoted-span strip falsified, a clause scoped to the wrong key, a delimiter-paired span an author's backtick splits — each fix a second structural patch over the same text-matching seam.
+
+    </details>
+* **task:** one command produces the RGAA report — task demo:rgaa-audit ([#2593](https://github.com/SocialGouv/iterion/issues/2593)) ([#2598](https://github.com/SocialGouv/iterion/issues/2598)) ([109c2b8](https://github.com/SocialGouv/iterion/commit/109c2b8937c6a3e35f34d8bc3490781e8abf2b9c)), references [#2587](https://github.com/SocialGouv/iterion/issues/2587)
+
+    <details><summary>why</summary>
+
+    The colleague-facing demo path (#2593): task demo:rgaa-audit builds the studio and the binary, resolves the pin-verified engine, installs the chromium the rendered scan needs, and runs rgaa-audit over this very studio — report FR, page grid, annex and ledger under .rgaa-demo/. The committed ledger keeps unchanged criteria from being re-adjudicated (~$20-30 a run; RGAA_DEMO_BUDGET overrides the ceiling).
+
+    </details>
+
+### Bug Fixes
+
+* **studio:** name every form control the audit left unnamed (RGAA 11.1) ([#2556](https://github.com/SocialGouv/iterion/issues/2556)) ([#2590](https://github.com/SocialGouv/iterion/issues/2590)) ([b92c27b](https://github.com/SocialGouv/iterion/commit/b92c27ba82ac92e95d2e44944ed57075a7fcc86b))
+
+    <details><summary>why</summary>
+
+    Placeholder-only search fields, bare TagInput chips, an sr-only file input, an inline rename input, and the wizard's select/free-text questions all rendered controls whose accessible name was empty — a placeholder is not a label (RGAA 11.1, ticket #2556).
+
+    </details>
+
 ## [3.273.0](https://github.com/SocialGouv/iterion/compare/v3.272.0...v3.273.0) (2026-10-20)
 
 ### Features
