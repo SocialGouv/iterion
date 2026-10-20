@@ -88,12 +88,17 @@ func codeReading(t *testing.T, body string) (lines []string, code []bool) {
 // copy's fence state at the END marker is "open", and the template's prose
 // below reads as code until the next bare delimiter.
 //
-// "Code" is internal/mdcode's reading, which has no block parser behind it.
-// Its limits are stated and measured ONCE, on
-// internal/mdcode.EscapeDanglingFence; a region of any shape listed there
-// satisfies this guard and is open on the page. Named here rather than
-// enumerated: a copy of that list drifts from the statement it copies, and
-// a stale copy is what tells a reader the class is closed.
+// "Code" is internal/mdcode's reading, which is CommonMark's block phase
+// for the fence-relevant subset: the container stack — list items with
+// their content columns, block quotes — the indented code block, the
+// interruption and lazy-continuation rules, behind
+// internal/mdcode.FenceScanner. The shapes it still reads by approximation
+// are stated in that package (HTML blocks, the setext underline, the GFM
+// table's paragraph-state effect, tab reconstruction): a region of
+// any shape the statement lists satisfies this guard and is open on the
+// page. Named there rather than copied here: a copy drifts from the
+// statement it copies, and a stale copy is what tells a reader the class is
+// closed.
 func TestGeneratedCatalogPreservesTheTemplateCodeReading(t *testing.T) {
 	repoRoot, err := filepath.Abs("..")
 	if err != nil {
