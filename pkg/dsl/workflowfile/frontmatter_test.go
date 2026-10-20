@@ -35,3 +35,42 @@ func TestDecodeFrontmatterIsTheOneReading(t *testing.T) {
 		t.Fatal("a capability is an identity")
 	}
 }
+
+// A whole-value block is refused on the type the reading decodes it into:
+// the named struct, so the remedy table keyed on that target names one
+// stable Go type, and the causes the reading returns carry it.
+func TestFrontmatterRefusalNamesItsDecodeTarget(t *testing.T) {
+	_, _, err := DecodeFrontmatter("- a\n")
+	if err == nil {
+		t.Fatal("a list where the block's mapping was expected was read")
+	}
+	causes := YAMLCauses(YAMLv2, err)
+	if len(causes) != 1 || causes[0].Message != YAMLUnmarshalFormat {
+		t.Fatalf("the refusal's causes are %v: one unmarshal cause was expected", causes)
+	}
+	if got, want := causes[0].Target, reflect.TypeOf(frontmatterFields{}).String(); got != want {
+		t.Errorf("the refusal names the decode target %q, not the reading's own type %q", got, want)
+	}
+	if got := causes[0].Line; got != 1 {
+		t.Errorf("the refusal names line %d, not the block's own line 1", got)
+	}
+}
+
+// The causes of a multi-key refusal: one per value the reading could not
+// read, each its own target and its own line, in the reader's order.
+func TestFrontmatterCausesPerValueRefused(t *testing.T) {
+	_, _, err := DecodeFrontmatter("name: [a]\ntriggers: 3\n")
+	if err == nil {
+		t.Fatal("two keys of the wrong shape were read")
+	}
+	causes := YAMLCauses(YAMLv2, err)
+	if len(causes) != 2 {
+		t.Fatalf("the refusal's causes are %v: one per key refused", causes)
+	}
+	if causes[0].Target != "string" || causes[0].Line != 1 {
+		t.Errorf("the first cause is %v: the name refused into string, on the block's line 1", causes[0])
+	}
+	if causes[1].Target != "[]string" || causes[1].Line != 2 {
+		t.Errorf("the second cause is %v: the list key refused into []string, on the block's line 2", causes[1])
+	}
+}

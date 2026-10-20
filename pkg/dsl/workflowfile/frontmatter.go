@@ -40,11 +40,18 @@ var FrontmatterKeys = []string{"name", "description", "triggers", "capabilities"
 // behind. An error is a block the reading does not read, and the caller
 // says what that means for it: no identity for the catalogue, no `catalog:`
 // in the author document, the reason of `fmt --to yaml`'s note.
+// frontmatterFields is the type the reading decodes a block into: the four
+// keys, and every key beside them into a map. Named so the reader's refusal
+// names one stable Go type — `cannot unmarshal … into
+// workflowfile.frontmatterFields` — which the remedy table keys on, where
+// an anonymous struct's rendering moves with its fields.
+type frontmatterFields struct {
+	Frontmatter `yaml:",inline"`
+	Rest        map[string]any `yaml:",inline"`
+}
+
 func DecodeFrontmatter(text string) (fm *Frontmatter, extra []string, err error) {
-	var read struct {
-		Frontmatter `yaml:",inline"`
-		Rest        map[string]any `yaml:",inline"`
-	}
+	var read frontmatterFields
 	if err := yaml.Unmarshal([]byte(text), &read); err != nil {
 		return nil, nil, err
 	}

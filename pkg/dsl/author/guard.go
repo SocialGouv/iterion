@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -13,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // The bounds of a document the converter reads, the twins of the `.bot`
@@ -26,30 +28,12 @@ const (
 	maxNodes        = 1 << 20
 )
 
-// yamlLineRe reads the line number yaml.v3 writes into its own errors
-// ("yaml: line 3: mapping values are not allowed in this context").
+// yamlLineRe reads the line number a reader writes into its own errors
+// ("yaml: line 3: mapping values are not allowed in this context"), where
+// yamlErrorAtLine rewrites it. The numbers a remedy or a line note are
+// keyed on are read where the reading runs (workflowfile.YAMLCause.Line),
+// never back out of these words.
 var yamlLineRe = regexp.MustCompile(`line (\d+):`)
-
-// yamlLineIn is the line number msg names in yaml.v3's own words, 0 where
-// it names none — the one reading of that number, so that no refusal names
-// one line in its text and another in its position (an editor squiggle the
-// author's mistake is not under).
-func yamlLineIn(msg string) int {
-	m := yamlLineRe.FindStringSubmatch(msg)
-	if m == nil {
-		return 0
-	}
-	n, convErr := strconv.Atoi(m[1])
-	if convErr != nil {
-		return 0
-	}
-	return n
-}
-
-// yamlErrorLine is the line yaml.v3 names in err's own words, 0 where it
-// names none: a decode that failed leaves its node unfilled, so the error
-// is the only thing that knows where the refusal belongs.
-func yamlErrorLine(err error) int { return yamlLineIn(err.Error()) }
 
 // yamlErrorAtLine is msg with the line number yaml.v3 writes into its own
 // words set to line, msg itself where it names none: a refusal names one
@@ -125,11 +109,12 @@ func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 		if errors.Is(err, io.EOF) {
 			return nil, []parser.Diagnostic{docDiag(name, 1, 1, "the document is empty: nothing to read")}
 		}
+		cause := workflowfile.YAMLCauses(workflowfile.YAMLv3, err)[0]
 		line := 1
-		if n := yamlErrorLine(err); n > 0 {
-			line = n
+		if cause.Line > 0 {
+			line = cause.Line
 		}
-		return nil, []parser.Diagnostic{docDiag(name, line, 1, "not YAML: "+err.Error()+YAMLRemedy(err.Error()))}
+		return nil, []parser.Diagnostic{docDiag(name, line, 1, "not YAML: "+err.Error()+YAMLRemedy(cause))}
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 		return nil, []parser.Diagnostic{docDiag(name, 1, 1, "the document is empty: nothing to read")}
@@ -140,17 +125,21 @@ func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 		if len(second.Content) > 0 && second.Content[0].Line > 0 {
 			line = second.Content[0].Line
 		}
+		// The cause of the second document's own refusal, where the second
+		// decode failed: its remedy rides the refusal of the second
+		// document as such.
+		var cause workflowfile.YAMLCause
 		if err != nil {
-			if n := yamlErrorLine(err); n > 0 {
-				line = n
+			cause = workflowfile.YAMLCauses(workflowfile.YAMLv3, err)[0]
+			if cause.Line > 0 {
+				line = cause.Line
 			}
 			// yaml.v3 names the line BEFORE the token that opened the
-			// second document (its fail() adds 1 to the 0-based mark for a
-			// scanner error only), which a comment or a blank line between
-			// the two makes a line the author must not touch. For
-			// yamlNoDocumentStart alone the source holds the line its remedy
-			// names, in the order the remedy names them: the `...` that
-			// closed the document, read off the lines between the first
+			// second-document error's cause, which a comment or a blank
+			// line between the two makes a line the author must not touch.
+			// For yamlNoDocumentStart alone the source holds the line its
+			// remedy names, in the order the remedy names them: the `...`
+			// that closed the document, read off the lines between the first
 			// document and the line yaml named; then, where the first
 			// document is a whole value of its own rather than the
 			// `key: value` mapping an author document is — a plain or quoted
@@ -158,7 +147,7 @@ func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 			// value, which the node decode filled holds. Any other message
 			// is the second document's own syntax, whose remedy names that
 			// document's spelling: yaml's line stands.
-			if root := doc.Content[0]; root.Line > 0 && strings.Contains(err.Error(), yamlNoDocumentStart) {
+			if root := doc.Content[0]; root.Line > 0 && cause.Message == yamlNoDocumentStart {
 				valueRoot := root.Kind != yaml.MappingNode || root.Style&yaml.FlowStyle != 0
 				switch end := documentEndLine(src, root.Line, line); {
 				case end > 0:
@@ -173,7 +162,7 @@ func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 		}
 		msg := "one document per file: a second document follows"
 		if err != nil {
-			msg += ", and it is not YAML: " + yamlErrorAtLine(err.Error(), line) + YAMLRemedy(err.Error())
+			msg += ", and it is not YAML: " + yamlErrorAtLine(err.Error(), line) + YAMLRemedy(cause)
 		}
 		return nil, []parser.Diagnostic{docDiag(name, line, 1, msg)}
 	}
@@ -239,45 +228,60 @@ const yamlReadsFromAbove = "the line this refusal names is not always the line t
 // author just read.
 const strayLineSpans = " — a value can span several lines: a plain or quoted value runs on into the lines under it, a `|`/`>` block carries the lines indented under it, a `[…]` or `{…}` runs to its closing bracket, a list carries one line per `- item` and an item runs on into the lines indented under it: delete them all, or move them all under one key, with the lines below that key indented under it"
 
-// yamlRemedies pairs the problem strings yaml.v3's scanner, parser, reader
-// and composer build with the spelling that avoids them: yaml.v3's own
-// message says what it saw, never what to write. Measured on the authoring
-// probe: a shell command holding a `: ` (a jq filter) written unquoted cost
-// a mid-size model four validation rounds, the message repeating itself. A
-// message given for several mistakes names each: the line it reports does
-// not tell them apart (a quoted value that ends early is reported at the
-// start of its mapping).
+// yamlRemedies pairs the problem strings the two vendored YAML readers
+// build with the spelling that avoids them: a reader's own message says
+// what it saw, never what to write. Measured on the authoring probe: a
+// shell command holding a `: ` (a jq filter) written unquoted cost a
+// mid-size model four validation rounds, the message repeating itself. An
+// entry is keyed on the reader's structured cause — which reader raised
+// the refusal, its own message, and the Go type the reading was decoding
+// into where one message serves several causes — so the sentence an author
+// reads is a function of the cause, and a value the reader quotes back
+// into its own message is in none of the key: the causes are read where
+// the reading runs (workflowfile.YAMLCauses), not matched against the
+// words the author is shown.
 var yamlRemedies = []struct {
-	// messages are the yaml.v3 problem strings this remedy answers.
+	// readers are the vendored readers that raise these messages, in the
+	// spellings listed: an entry answers the readers it names, and the
+	// coverage gate walks the constants of the reader that runs.
+	readers []workflowfile.YAMLReader
+	// messages are the readers' own problem strings, spelled as their
+	// sources build them — a constant whole, or the format a quoted value
+	// stands in (the value itself is in none of it).
 	messages []string
-	remedy   string
+	// target scopes the entry to one Go type the reading was decoding
+	// into, where one message serves several causes and that type is what
+	// tells them apart; "" where the message names its cause alone.
+	target string
+	remedy string
 }{
 	{
-		messages: []string{"mapping values are not allowed"},
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
+		messages: []string{"mapping values are not allowed in this context"},
 		remedy:   "a plain value holding a `:` followed by a space or by the end of the line reads as a nested mapping: quote the whole value (a command with a jq filter, an expression, an edge whose with map has a `: `, a text ending in `:`), a `'` inside single quotes written twice (`''`); or a key is indented deeper than the keys beside it: dedent every key that is, to their column — one left behind is refused again; or a line above this one is a plain value where a `key: value` pair was expected (a title, a note): a plain value runs on into the lines below it, so the first `: ` it meets is refused here — delete that line, or write it as `key: value`" + strayLineSpans + "; or a `%YAML`/`%TAG` directive line heads the document, where the author document takes none",
 	},
 	{
-		messages: []string{"cannot start any token"},
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
+		messages: []string{"found character that cannot start any token"},
 		remedy:   "the value starts with a character YAML reserves (`%`, `@`, a backtick): quote the whole value; or a tab indents the line, where YAML takes spaces only",
 	},
 	{
-		messages: []string{"found a tab character"},
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
+		messages: []string{"found a tab character where an indentation space is expected", "found a tab character that violates indentation"},
 		remedy:   "YAML indents with spaces only: replace the tab",
 	},
 	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"did not find expected key", "did not find expected '-' indicator"},
 		remedy:   "a value that starts with `{` or `[` (a `{{…}}` template, a `[WIP]`) is read by YAML as a mapping or a list, and a value with quotes of its own, written plain or inside double quotes, ends where YAML reads its quote as closed (an edge whose with map holds a quoted value): write either whole in single quotes, its double quotes as they are and a `'` inside written twice (`''`); or indentation: the keys of one mapping start at one column, a value's lines are indented under its key, a list's items under theirs; or a `|N`/`>N` indicator claims more spaces than the body has — the digit counts from the key's own indentation, so YAML reads none of the body: write `|` alone and let the body's indentation say it; or a line is a whole value of its own where a `key: value` pair was expected — a `- item` line reads as an item of the document itself, a `|`/`>` block stands where a key belongs: delete that line, or indent it under the key it belongs to" + strayLineSpans,
 	},
 	{
-		// yaml.v3's scanner raises this message for a required simple key
-		// more than 1024 characters long as well. That cause is left
-		// unnamed: no key of the author schema is that long, and quoting
-		// the key does not avoid it — the bound counts characters, quoted
-		// or not, so the only spelling that avoids it is a shorter key.
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"could not find expected ':'"},
 		remedy:   "a key is followed by `: ` (colon, space) and its value; or a `|` or `>` block's body is not indented under its key, which leaves its first line read as a key of its own; or a list's item is written without its `- `, under a key whose other items have one; or this line is a whole value of its own where a `key: value` pair was expected (a title, a note, a line pasted in): delete it, or write it as `key: value`" + strayLineSpans,
 	},
 	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"found unexpected end of stream", "found unexpected document indicator"},
 		remedy:   "a quoted value or a block was left open, or a `---` or `...` line sits inside the document: one document, every quote closed — a `---` and a `...` are read as document indicators where they start a line, so indent it where it belongs to a value",
 	},
@@ -289,7 +293,8 @@ var yamlRemedies = []struct {
 		// witnesses "an alias with no anchor" and "an alias naming no
 		// anchor"). What the document's reader does NOT do is expand the
 		// alias it found, which is the entry below.
-		messages: []string{"did not find expected alphabetic or numeric character", "unknown anchor"},
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
+		messages: []string{"did not find expected alphabetic or numeric character", workflowfile.YAMLUnknownAnchor},
 		remedy:   "`&` opens a YAML anchor and `*` an alias, each named right after its sigil: where the sigil is part of the text (a `[ -f x ] && …` command, a `rm *.tmp`), the value goes whole in single quotes and reads as that text; where an alias was meant, it names an anchor written above it — the author document reads neither, and refuses an anchor and an alias with its own words: a value is written where it is used; a `.bot` frontmatter block resolves both",
 	},
 	{
@@ -302,246 +307,217 @@ var yamlRemedies = []struct {
 		// an anchor written above says nothing to their author: both
 		// documents name their anchor correctly, and the refusal is what
 		// the resolving did with it.
-		messages: []string{"document contains excessive aliasing", "value contains itself"},
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
+		messages: []string{"document contains excessive aliasing", workflowfile.YAMLAnchorSelfRef},
 		remedy:   "a `.bot` frontmatter block resolves its anchors and aliases, and this graph it cannot: an anchor whose value holds its own alias (`x: &a {b: *a}`) is a cycle the resolving has no end to, and a chain of aliases each naming the one above it expands into far more values than the block's own lines — write the keys out where they are used; the author document reads no anchor and no alias, and refuses each with its own words",
 	},
 	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"did not find expected comment or line break"},
 		remedy:   "`|` and `>` take nothing but a comment after them on the key's line: write `|` alone and the text on the lines under it, indented — or, where the `|` is part of the value (a shell pipe), quote the whole value; a `%YAML`/`%TAG` directive line carrying trailing text gives the same message",
 	},
 	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"found an indentation indicator equal to 0"},
 		remedy:   "the digit after `|` or `>` is how many spaces the body is indented by, and YAML counts it from 1: write `|` alone and let the indentation of the lines under the key say it",
 	},
 	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"block sequence entries are not allowed in this context"},
 		remedy:   "a list's items each start a line of their own, indented under their key (`imports:`, then `  - lib/x.bot`): a `- ` on the key's line or following a value is not an item — write the list as `[a, b]` to keep it on one line, or quote the whole value where the `- ` is part of it",
 	},
 	{
-		// `invalid map key: ` is yaml.v2's: a frontmatter block's keys
-		// beyond the four are read into a Go map, where a key that is
-		// itself a list or a mapping has no place.
-		messages: []string{"mapping keys are not allowed in this context", "invalid map key: "},
-		remedy:   "a value starting with `? ` (a question, a `?` flag) reads as YAML's explicit-key indicator: write the whole value in single quotes; and a `? ` key whose text is a list or a mapping is no key at all — write the key as plain text",
+		// The scanner's, raised where a `? ` opens a value: the document
+		// reaches it and the frontmatter block does too (a `? ` value
+		// under one of the four keys).
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
+		messages: []string{"mapping keys are not allowed in this context"},
+		remedy:   "a value starting with `? ` (a question, a `?` flag) reads as YAML's explicit-key indicator: write the whole value in single quotes",
+	},
+	{
+		// The decoder's own, raised where a key that is itself a list or a
+		// mapping is read into a Go map — the frontmatter block's reading
+		// alone reaches it: a nested key beyond the four is read into a Go
+		// map, where a key that is itself a list or a mapping has no
+		// place. The document's reader fills a *yaml.Node, where a key is
+		// a node and guardTree refuses a complex key with its own words.
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2},
+		messages: []string{workflowfile.YAMLMapKeyFormat},
+		remedy:   "a `? ` key whose text is a list or a mapping is no key at all — write the key as plain text",
 	},
 	{
 		// yaml.v2 resolves a merge key while reading a frontmatter block
 		// into the catalog identity's Go fields. The author document's own
 		// reader never resolves one — guardTree refuses `<<` with its own
 		// words — so no author document reaches this message.
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2},
 		messages: []string{"map merge requires map or sequence of maps as the value"},
 		remedy:   "`<<` is YAML's merge key, which takes a mapping or a list of mappings: write the keys out, or quote the whole value where the `<<` is part of it — the author document takes none, and refuses a merge key with its own words; a `.bot` frontmatter block merges the keys in, as keys of its own",
 	},
 	{
-		// The shapes the frontmatter block's reading reads, raised by that
-		// reading alone: it decodes into workflowfile.Frontmatter, where
-		// `name` and `description` are strings and `triggers` and
-		// `capabilities` slices, while the author document's reader fills a
-		// *yaml.Node and converts nothing. ONE message string, four causes:
-		// they differ by the Go type the reading was decoding into — the
-		// whole block where its own top level is not `key: value` lines, a
-		// `string` for a key's name, for a one-line value and for a list's
-		// item, a `[]string` for a list key — and the remedy names all four
-		// rather than keying on that type, which stands behind a value the
-		// reader quotes and which the quoted-value spans can eat. yaml.v2
-		// builds the message inline (decode.go:265), not through an error
-		// constructor, so the problem-string scan cannot read it:
-		// frontmatterWitnesses is what holds this family, one witness per
-		// Go type the reading can be asked to decode a node into.
-		messages: []string{"cannot unmarshal "},
-		remedy:   "a `.bot` frontmatter block is `key: value` lines, and the four keys it carries each take one shape: `name` and `description` one line of text, `triggers` and `capabilities` a list — `[a, b]` on one line, or one `- item` per line under the key, every item one line of text; a value of another shape is not read — a block whose own top level is not `key: value` lines (a line of prose, a `- item` list, a `[…]`, a `|` or `>` block, a bare number, `true`) is one whole value and no key at all: write it as `key: value` (`description: a bot that reviews pull requests`); and a key is plain text, so a `? ` key whose text is a list or a mapping is no key at all — write the key as plain text",
+		// The block's OWN top level: the reading decodes the whole block
+		// into frontmatterFields, so a line that is a whole value of its
+		// own — not a `key: value` line at all — is refused on that type,
+		// and the fix is a key. The other two causes of the same message
+		// are the entries below, told apart by the decode target.
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2},
+		messages: []string{workflowfile.YAMLUnmarshalFormat},
+		target:   "workflowfile.frontmatterFields",
+		remedy:   "a `.bot` frontmatter block is `key: value` lines, and a line that is a whole value of its own (a line of prose, a `- item` list, a `[…]`, a `|` or `>` block, a bare number, `true`) is one whole value and no key at all: write it as `key: value` (`description: a bot that reviews pull requests`)",
 	},
 	{
+		// A key's name, a one-line value, or a list's item: each is read
+		// into a plain string, so a list or a mapping where one is
+		// expected is refused on that type — and a complex key of the
+		// block's own top level, read into the string key of the map that
+		// holds the keys beyond the four, is refused here too.
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2},
+		messages: []string{workflowfile.YAMLUnmarshalFormat},
+		target:   "string",
+		remedy:   "a value a text key takes is one line of text: `name` and `description` one line, and so does every item of `triggers` or `capabilities` — every item one line of text; a value of another shape is not read; and a key is plain text, so a `? ` key whose text is a list or a mapping is no key at all: write the key as plain text",
+	},
+	{
+		// A list key read where its shape is a list: `triggers` and
+		// `capabilities` take `[]string`, so a scalar or a mapping under
+		// one is refused on that type, and the value the tag names under a
+		// list key is refused again here.
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2},
+		messages: []string{workflowfile.YAMLUnmarshalFormat},
+		target:   "[]string",
+		remedy:   "`triggers` and `capabilities` take a list: `[a, b]` on one line, or one `- item` per line under the key, every item one line of text",
+	},
+	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"found unknown escape character", "did not find expected hexdecimal number", "found invalid Unicode character escape code"},
 		remedy:   "inside double quotes a `\\` opens an escape, and few characters may follow it (`\\n`, `\\t`, `\\\\`, `\\xNN`, `\\uNNNN`): write the value in single quotes, where a `\\` stands for itself (a regex `\\d`, a Windows path `C:\\temp`), or double every `\\`",
 	},
 	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"did not find expected ',' or ']'", "did not find expected ',' or '}'"},
 		remedy:   "inside `[…]` and `{…}` a `,` separates the items, and an item holding a `,`, a `]`, a `}`, a `:` or a `?` of its own goes in single quotes: close the `[` or `{` the value opened, add the missing `,`, or drop the brackets — one `- item` per line for a list, one `key: value` line per entry for a mapping",
 	},
 	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"did not find expected node content"},
 		remedy:   "a `- item` line inside a `[…]` is not a list item: either close the `[…]` and separate its items with `,`, or drop the brackets — one `- item` per line for a list, one `key: value` line per entry for a mapping; a `,` with no item before it has no value either; a closing `]` or `}` that opens nothing is no value: delete it and write one, or quote the value it is part of; and a `---` or `...` line ends the document where a value was expected: remove it, or indent it under its key where it belongs to a value",
 	},
 	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"did not find expected whitespace or line break", "did not find expected '!'"},
 		remedy:   "a value starting with `!` reads as a YAML tag and a line starting with `%` as a `%TAG` directive: quote the whole value, or remove the directive line — the author document carries neither",
 	},
 	{
-		// The clause about the block's reading is scoped by the KEY, as
-		// the shape entry is: the reading resolves the tag, and the value
-		// it then holds is taken where the key's own shape fits it —
-		// measured, `name: !!int 3` reads as the name `3` and
-		// `triggers: !!int 3` is refused again, into []string. A clause
-		// telling the author of a list key to write the value the tag
-		// names sent them to that second refusal.
-		//
-		// The last two are yaml.v2's, raised while resolving the tag of a
-		// frontmatter block's value into a Go field. " as a " is the part
-		// of `cannot decode %s `%s` as a %s` that stands in both the
-		// vendored format string and the message it writes, so one entry
-		// answers the literal the problem-string scan reads and the words
-		// an author is shown — the value the reader quotes between the two
-		// is the author's own text, which YAMLRemedy takes out of the match.
-		messages: []string{"did not find the expected '>'", "did not find expected tag URI", "did not find URI escaped octet", "found an incorrect leading UTF-8 octet", "found an incorrect trailing UTF-8 octet", "found undefined tag handle", "!!binary value contains invalid base64 data", " as a "},
-		remedy:   "a value starting with `!` reads as a YAML tag (`!x`, `!!str`, `!<…>`): write it whole in single quotes — a `! grep -q x f` command, a `!` negation — a value's shape decides its type; the author document carries none, and refuses an explicit tag with its own words, while a `.bot` frontmatter block reads the tag: `name` and `description` then take the value the tag names (a `!!binary` value base64, a `!!int` value a number), and so does an item of `triggers` or `capabilities`, whose key itself still takes a list",
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
+		messages: []string{"did not find the expected '>'", "did not find expected tag URI", "did not find URI escaped octet", "found an incorrect leading UTF-8 octet", "found an incorrect trailing UTF-8 octet", "found undefined tag handle"},
+		remedy:   "a value starting with `!` reads as a YAML tag (`!x`, `!!str`, `!<…>`): write it whole in single quotes — a `! grep -q x f` command, a `!` negation — a value's shape decides its type; the author document carries none, and refuses an explicit tag with its own words",
 	},
 	{
+		// The tag RESOLVED: the frontmatter block's reading decodes the
+		// value into its key's Go type, where a tag that names another
+		// shape is refused, and where the bytes a `!!binary` tag names
+		// fail their base64 decoding — the document's reader fills a
+		// *yaml.Node and resolves no tag, refusing an explicit tag with
+		// its own words. The clause about the value the tag names is
+		// scoped by the KEY, as the shape entries are: the value it then
+		// holds is taken where the key's own shape fits it — measured,
+		// `name: !!int 3` reads as the name `3` and `triggers: !!int 3`
+		// is refused again, into []string.
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2},
+		messages: []string{workflowfile.YAMLDecodeFormat, "!!binary value contains invalid base64 data"},
+		remedy:   "a value starting with `!` reads as a YAML tag, and a `.bot` frontmatter block reads the tag: `name` and `description` then take the value the tag names (a `!!binary` value base64, a `!!int` value a number), and so does an item of `triggers` or `capabilities`, whose key itself still takes a list — or write it whole in single quotes; the author document carries none, and refuses an explicit tag with its own words",
+	},
+	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"found unknown directive name", "could not find expected directive name", "found unexpected non-alphabetical character", "did not find expected digit or '.' character", "found extremely long version number", "did not find expected version number", "did not find expected whitespace", "found duplicate %YAML directive", "found duplicate %TAG directive", "found incompatible YAML document"},
 		remedy:   "a line starting with `%` is read as a YAML directive (`%YAML`, `%TAG`), which the author document never needs: remove the line, or — where the text belongs to a value — indent it under its key and quote the value",
 	},
 	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{yamlNoDocumentStart},
 		remedy:   "a document closed before this line and what follows it reads as a second one, which would need its own `---`, where the author document is one: a `...` line closes the document — remove it, or indent it under its key where it belongs to a value; a `%YAML`/`%TAG` directive line with no `---` after it reads the same way, and the author document takes no directive — remove it; a first line that is a whole value of its own rather than a `key: value` pair — a plain value, a line in quotes, a `[…]` or a `{…}`, a `|` or `>` block — is a whole document on its own: delete that line, write it as `key: value`, or unquote it; and the document opens with an indented block of `key: value` lines, which is a document of its own that the first line below it at a shallower column closes: give the whole document one indentation — every key of its top level at one column, each key's own lines moving with it: dedent them all to the shallowest column the document holds, or indent them all to the block's" + strayLineSpans,
 	},
 	{
-		messages: []string{"exceeded max depth of"},
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
+		messages: []string{"exceeded max depth of %d"},
 		remedy:   "the document nests deeper than YAML itself reads (10000 levels of `[`, `{` or indentation): flatten it",
 	},
 	{
+		readers:  []workflowfile.YAMLReader{workflowfile.YAMLv2, workflowfile.YAMLv3},
 		messages: []string{"control characters are not allowed"},
 		remedy:   "the document holds a control character (an ESC from a captured terminal output, a NUL byte): remove it, or write it inside double quotes as an escape (`\\u001b`)",
 	},
 }
 
-// yamlValueSlots are the three places a reader writes an author's own text
-// into its own message, each bounded by the words the format itself writes
-// and never by a delimiter that text can hold: `cannot unmarshal %s%s into
-// %s` (go.yaml.in/yaml/v2/decode.go:265), `cannot decode %s `%s` as a %s`
-// (resolve.go:109) and `invalid map key: %#v` (decode.go:673). Matched
-// against the remedy table, an author's text answers for the message:
-// measured, a `triggers` value spelling ` as a !!` took the tag remedy, a
-// tagged value spelling `mapping values are not allowed` took the colon
-// remedy of a message no reader had raised, and one backtick inside such a
-// value split a span paired delimiter to delimiter — the tail then chose
-// the remedy AND spelled a `line N:` no reader wrote.
+// YAMLRemedy is the remedy of the first entry of yamlRemedies that answers
+// cause — the entry must name cause's reader, its message, and, where the
+// entry is scoped to one decode target, that target — ready to follow the
+// reader's own words; "" when no entry answers. Exported for the other
+// author-facing readings of a YAML error: the frontmatter block of a
+// `.bot`, whose refusals pkg/cli/fmt_author.go reads the causes of
+// (workflowfile.YAMLCauses).
 //
-// A slot runs from the EARLIEST opening left in the message: an author's
-// text stands after an opening, never before one. `cannot unmarshal ` is
-// the one format a refusal collects several of (one yaml.v2 TypeError
-// element per value it cannot read), so its slot ends at the LAST ` into `
-// before the next opening — that opening is 17 characters and the decoder
-// renders at most 10 of a value (decode.go:253-265), so no value can spell
-// a second element and move the bound. The other two are raised by panic,
-// one message per refusal: the first ends at the LAST ` as a ` of the
-// message, what follows it being the tag the reader names, and the second
-// runs to the end, the format writing nothing after the key.
-//
-// The author's text no slot bounds is the name of an anchor
-// (`unknown anchor '%s' referenced`, `anchor '%s' value contains itself`),
-// which holds no space, where every message of the table does
-// (TestNoRemedyMessageIsSpelledByTheTextNoSlotBounds).
-var yamlValueSlots = []struct {
-	// open and close are the reader's own words around the slot; close is
-	// "" where the format writes nothing after the value.
-	open, close string
-	// repeat marks the format a refusal collects several of, whose slot
-	// ends inside its own element.
-	repeat bool
-}{
-	{open: "cannot unmarshal ", close: " into ", repeat: true},
-	{open: "cannot decode ", close: " as a "},
-	{open: "invalid map key: "},
-}
-
-// yamlFirstValueOpening is the slot of yamlValueSlots whose opening stands
-// first in msg at or after from, with the index of that opening; -1 where
-// the rest of msg holds none.
-func yamlFirstValueOpening(msg string, from int) (slot, at int) {
-	slot = -1
-	for i, s := range yamlValueSlots {
-		j := strings.Index(msg[from:], s.open)
-		if j < 0 {
+// The key is the cause, never the prose: an author's own value stands in
+// the words the reader shows them and chooses nothing.
+func YAMLRemedy(cause workflowfile.YAMLCause) string {
+	for _, r := range yamlRemedies {
+		if !slices.Contains(r.readers, cause.Reader) {
 			continue
 		}
-		if j += from; slot < 0 || j < at {
-			slot, at = i, j
+		if r.target != "" && r.target != cause.Target {
+			continue
 		}
-	}
-	return slot, at
-}
-
-// yamlWithoutQuotedValues is msg with every value a reader wrote back into
-// its own message taken out: the ONE reading of a reader's own words, so
-// that no author's text chooses a remedy at one site and a line clause at
-// another. An opening the format's own closing word does not follow is
-// text rather than one of these messages, and is read past, not cut.
-func yamlWithoutQuotedValues(msg string) string {
-	var b strings.Builder
-	cursor := 0
-	for cursor < len(msg) {
-		slot, at := yamlFirstValueOpening(msg, cursor)
-		if slot < 0 {
-			break
-		}
-		s := yamlValueSlots[slot]
-		from := at + len(s.open)
-		to := len(msg)
-		if s.close != "" {
-			rest := msg[from:]
-			if s.repeat {
-				if next := strings.Index(rest, s.open); next >= 0 {
-					rest = rest[:next]
-				}
-			}
-			end := strings.LastIndex(rest, s.close)
-			if end < 0 {
-				b.WriteString(msg[cursor:from])
-				cursor = from
-				continue
-			}
-			to = from + end
-		}
-		b.WriteString(msg[cursor:from])
-		b.WriteString("``")
-		cursor = to
-	}
-	b.WriteString(msg[cursor:])
-	return b.String()
-}
-
-// YAMLRemedy is the remedy of the first entry of yamlRemedies one of whose
-// messages msg holds, ready to follow yaml.v3's own words; "" when no entry
-// answers msg. Exported for the other author-facing readings of a YAML
-// error: the frontmatter block of a `.bot`, which `fmt` reads with the
-// catalog reader's own decoder (yaml.v2 builds the same problem strings).
-//
-// The words that choose the remedy are the reader's own: a value the reader
-// quoted is taken out of the match, never out of what the author is shown.
-func YAMLRemedy(msg string) string {
-	read := yamlWithoutQuotedValues(msg)
-	for _, r := range yamlRemedies {
-		for _, m := range r.messages {
-			if strings.Contains(read, m) {
-				return " — " + yamlPositionNote(read) + r.remedy
-			}
+		if slices.Contains(r.messages, cause.Message) {
+			return " — " + yamlPositionNote(cause) + r.remedy
 		}
 	}
 	return ""
 }
 
+// YAMLRemedies is the remedy of every distinct cause of a refusal, in the
+// order the reader raised them, ready to follow its words: a TypeError
+// collects one element per value the reading could not read, each its own
+// cause and its own sentence. Every sentence but the first is joined
+// without the dash its position note hangs on — that dash is the head of
+// one sentence, not a clause between two. "" when no cause is answered.
+func YAMLRemedies(causes []workflowfile.YAMLCause) string {
+	var out []string
+	for _, c := range causes {
+		r := YAMLRemedy(c)
+		if r == "" || slices.Contains(out, r) {
+			continue
+		}
+		if len(out) > 0 {
+			r = strings.TrimPrefix(r, " — ")
+		}
+		out = append(out, r)
+	}
+	return strings.Join(out, "; ")
+}
+
 // YAMLBlockLineNote is the clause a refusal of a `.bot` frontmatter block
-// owes its reader where the reader named a line of lines, the block's own
-// text as parser.Frontmatter hands it to the reading. That number counts
-// the lines the reading was GIVEN, which are not the file's lines with an
-// offset: a run of blank lines inside the block stands for ONE line of the
-// reading, and a `dsl:` or `import` line written between two of its comment
-// lines for none, so no count from the fence is true of every file — and
-// the fence itself is written `# ---` as often as `## ---`. The note quotes
-// the line instead, which the author reads off their own file; a message
-// naming several quotes each.
+// owes its reader where the reader named a line of the block's own text, as
+// parser.Frontmatter hands it to the reading. That number counts the lines
+// the reading was GIVEN, which are not the file's lines with an offset: a
+// run of blank lines inside the block stands for ONE line of the reading,
+// and a `dsl:` or `import` line written between two of its comment lines
+// for none, so no count from the fence is true of every file — and the
+// fence itself is written `# ---` as often as `## ---`. The note quotes the
+// line instead, which the author reads off their own file; a refusal naming
+// several lines quotes each.
 //
-// "" where the reader named no line of its own, or named one the block does
-// not hold: there is then no line to quote, and a clause hung on a number
-// an author's own text spells would send them to a line nobody named. The
-// numbers are read off the reader's words alone — a value the reader quoted
-// is taken out first, as YAMLRemedy takes it out of its match.
-func YAMLBlockLineNote(msg string, lines []string) string {
+// lines are the numbers the reader named itself, read where the reading
+// runs (workflowfile.YAMLCause.Line) — never out of the words an author
+// reads, where a value the reader quoted back could spell a line nobody
+// wrote. "" where the reader named no line the block holds: there is then
+// no line to quote, and a clause hung on a number an author's own text
+// spells would send them to a line nobody named. A line the block holds
+// blank quotes nothing, as an out-of-range number names nothing — a pair
+// of empty backticks is no text to read off the file.
+func YAMLBlockLineNote(lines []int, block []string) string {
 	seen := map[int]bool{}
 	var named []int
-	for _, m := range yamlLineRe.FindAllStringSubmatch(yamlWithoutQuotedValues(msg), -1) {
-		n, convErr := strconv.Atoi(m[1])
-		if convErr != nil || n < 1 || n > len(lines) || seen[n] {
+	for _, n := range lines {
+		if n < 1 || n > len(block) || seen[n] || strings.TrimSpace(block[n-1]) == "" {
 			continue
 		}
 		seen[n] = true
@@ -551,7 +527,7 @@ func YAMLBlockLineNote(msg string, lines []string) string {
 		return ""
 	}
 	if len(named) == 1 {
-		return ", where the line it names is the block's own, not the file's — `" + lines[named[0]-1] + "`"
+		return ", where the line it names is the block's own, not the file's — `" + block[named[0]-1] + "`"
 	}
 	var b strings.Builder
 	b.WriteString(", where the lines it names are the block's own, not the file's —")
@@ -559,26 +535,25 @@ func YAMLBlockLineNote(msg string, lines []string) string {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString(" line " + strconv.Itoa(n) + " `" + lines[n-1] + "`")
+		b.WriteString(" line " + strconv.Itoa(n) + " `" + block[n-1] + "`")
 	}
 	return b.String()
 }
 
-// yamlPositionNote heads the remedy of msg where the line msg names is not
-// the line of the mistake, "" otherwise. Read per message rather than per
-// remedy entry: two entries answer a yamlContextProblems message beside
-// scanner-raised ones, which do name the line that broke, so a clause
-// carried by the entry would be false for them. The note has a referent
-// only where yaml.v3 wrote a number into msg — a value at the very first
-// line leaves both marks at 0 and the message carries none.
-func yamlPositionNote(msg string) string {
-	if yamlLineIn(msg) == 0 {
+// yamlPositionNote heads the remedy of cause where the line cause's reader
+// named is not the line of the mistake, "" otherwise. Read per message
+// rather than per remedy entry: two entries answer a yamlContextProblems
+// message beside scanner-raised ones, which do name the line that broke, so
+// a clause carried by the entry would be false for them. The note has a
+// referent only where the reader wrote a number into its own message — a
+// mistake at the very first line leaves both marks at 0 and the message
+// carries none.
+func yamlPositionNote(cause workflowfile.YAMLCause) string {
+	if cause.Line == 0 {
 		return ""
 	}
-	for _, p := range yamlContextProblems {
-		if strings.Contains(msg, p) {
-			return yamlReadsFromAbove + "; "
-		}
+	if slices.Contains(yamlContextProblems, cause.Message) {
+		return yamlReadsFromAbove + "; "
 	}
 	return ""
 }

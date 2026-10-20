@@ -1,6 +1,7 @@
 package author
 
 import (
+	"errors"
 	"fmt"
 	goast "go/ast"
 	goparser "go/parser"
@@ -222,8 +223,13 @@ func frontmatterAliasBomb() string {
 var frontmatterWitnesses = map[string]witness{
 	"a merge key in a frontmatter":         {"name: probe\n<<: 3\n", "`<<` is YAML's merge key"},
 	"a merge key taking a list of scalars": {"name: probe\n<<: [1, 2]\n", "write the keys out"},
-	"a !!binary value that is not base64":  {"name: !!binary nope!\n", "reads as a YAML tag"},
-	"a value tagged !!int that is not one": {"name: !!int notanint\n", "write it whole in single quotes"},
+	"a !!binary value that is not base64":  {"name: !!binary nope!\n", "frontmatter block reads the tag"},
+	// … and under a list key, where the sentence owes its author the clause
+	// that names the list the key itself takes: the clause is what tells
+	// this entry's sentence apart, and what the int twin's witness below
+	// rides (TestTheTagClauseIsTrueOfEachOfTheFourKeys measures it).
+	"a !!binary value that is not base64, under a list key": {"name: probe\ntriggers: !!binary nope!\n", "whose key itself still takes a list"},
+	"a value tagged !!int that is not one":                  {"name: !!int notanint\n", "write it whole in single quotes"},
 	// The alias GRAPH, whose two refusals name no sigil written in text
 	// and no alias naming no anchor: both blocks name their anchor
 	// correctly, so the remedy owes them the cause the resolving met.
@@ -304,15 +310,17 @@ var frontmatterWitnesses = map[string]witness{
 
 // frontmatterRefusal is the words a frontmatter block's reading is refused
 // with, composed as pkg/cli/fmt_author.go composes them: DecodeFrontmatter,
-// the error's own text with its whitespace collapsed, then the remedy. "",
-// "" where the block reads.
-func frontmatterRefusal(block string) (read, remedy string) {
+// the error's own text with its whitespace collapsed, then the remedy of
+// every structured cause the reading returns. "" where the block reads.
+func frontmatterRefusal(block string) (read string, causes []workflowfile.YAMLCause, remedies string) {
 	_, _, err := workflowfile.DecodeFrontmatter(block)
 	if err == nil {
-		return "", ""
+		return "", nil, ""
 	}
 	read = strings.Join(strings.Fields(err.Error()), " ")
-	return read, YAMLRemedy(read)
+	causes = workflowfile.YAMLCauses(workflowfile.YAMLv2, err)
+	remedies = YAMLRemedies(causes)
+	return read, causes, remedies
 }
 
 // prescription is one frontmatter block written as a remedy says, and the
@@ -322,11 +330,13 @@ func frontmatterRefusal(block string) (read, remedy string) {
 // than discover in the catalogue.
 type prescription struct {
 	// answers is one message string of the yamlRemedies entry whose remedy
-	// prescribes this block: the link the row owes its clause, so that an
-	// entry a block's reading reaches with nothing written as it says
-	// reddens rather than passing for executed
+	// prescribes this block, and target the decode target that scopes it
+	// where the entry is one of a family keyed on it: the link the row
+	// owes its clause, so that an entry a block's reading reaches with
+	// nothing written as it says reddens rather than passing for executed
 	// (TestEveryFrontmatterRemedyReachedHasAPrescription).
 	answers string
+	target  string
 	block   string
 	want    workflowfile.Frontmatter
 	extra   []string
@@ -343,66 +353,59 @@ var frontmatterPrescriptions = map[string]prescription{
 	"a merge key's keys written out":    {answers: "map merge requires map or sequence of maps as the value", block: "name: probe\nk: 1\n", want: workflowfile.Frontmatter{Name: "probe"}, extra: []string{"k"}},
 	"a merge key quoted inside a value": {answers: "map merge requires map or sequence of maps as the value", block: "name: probe\ndescription: '<<: 3'\n", want: workflowfile.Frontmatter{Name: "probe", Description: "<<: 3"}},
 	"a !!binary value in single quotes": {answers: "!!binary value contains invalid base64 data", block: "name: '!!binary nope!'\n", want: workflowfile.Frontmatter{Name: "!!binary nope!"}},
-	"a tagged value in single quotes":   {answers: " as a ", block: "name: '!!int notanint'\n", want: workflowfile.Frontmatter{Name: "!!int notanint"}},
+	"a tagged value in single quotes":   {answers: workflowfile.YAMLDecodeFormat, block: "name: '!!int notanint'\n", want: workflowfile.Frontmatter{Name: "!!int notanint"}},
 	// The tag entry's OTHER prescription, scoped by the key: the value the
 	// tag names, which `name` and `description` take and an item of a list
 	// key takes too.
 	"a !!binary value the tag names, under a text key": {answers: "!!binary value contains invalid base64 data", block: "name: !!binary aGk=\n", want: workflowfile.Frontmatter{Name: "hi"}},
-	"a !!int value the tag names, under a text key":    {answers: " as a ", block: "description: !!int 3\n", want: workflowfile.Frontmatter{Description: "3"}},
-	"a tagged item of a list key":                      {answers: " as a ", block: "name: probe\ntriggers: [!!int 3]\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"3"}}},
+	"a !!int value the tag names, under a text key":    {answers: workflowfile.YAMLDecodeFormat, block: "description: !!int 3\n", want: workflowfile.Frontmatter{Description: "3"}},
+	"a tagged item of a list key":                      {answers: workflowfile.YAMLDecodeFormat, block: "name: probe\ntriggers: [!!int 3]\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"3"}}},
 	// The alias graph entry's prescription: the keys written out where
 	// they are used, which is what a cycle and an expansion too large both
 	// leave their author.
-	"an anchor's keys written out where they are used": {answers: "value contains itself", block: "name: probe\nx:\n  b: 1\n", want: workflowfile.Frontmatter{Name: "probe"}, extra: []string{"x"}},
+	"an anchor's keys written out where they are used": {answers: workflowfile.YAMLAnchorSelfRef, block: "name: probe\nx:\n  b: 1\n", want: workflowfile.Frontmatter{Name: "probe"}, extra: []string{"x"}},
 	// The two readings of a `*`: the text it is part of, in single quotes,
 	// and the alias of an anchor the block writes above it.
-	"a star quoted whole, as the text it is":  {answers: "unknown anchor", block: "name: probe\ndescription: '*nope'\n", want: workflowfile.Frontmatter{Name: "probe", Description: "*nope"}},
-	"an alias naming an anchor written above": {answers: "unknown anchor", block: "name: &a probe\ndescription: *a\n", want: workflowfile.Frontmatter{Name: "probe", Description: "probe"}},
-	"a complex key written as plain text":     {answers: "invalid map key: ", block: "x:\n  a: 1\n", extra: []string{"x"}},
+	"a star quoted whole, as the text it is":  {answers: workflowfile.YAMLUnknownAnchor, block: "name: probe\ndescription: '*nope'\n", want: workflowfile.Frontmatter{Name: "probe", Description: "*nope"}},
+	"an alias naming an anchor written above": {answers: workflowfile.YAMLUnknownAnchor, block: "name: &a probe\ndescription: *a\n", want: workflowfile.Frontmatter{Name: "probe", Description: "probe"}},
+	"a complex key written as plain text":     {answers: workflowfile.YAMLMapKeyFormat, block: "x:\n  a: 1\n", extra: []string{"x"}},
 	"a flow list closed":                      {answers: "did not find expected ',' or ']'", block: "name: probe\ntriggers: [a,\n b,\n c]\ndescription: d\n", want: workflowfile.Frontmatter{Name: "probe", Description: "d", Triggers: []string{"a", "b", "c"}}},
-	// The shape of each of the four keys, as the shape remedy names them.
-	"a name as one line of text":              {answers: "cannot unmarshal ", block: "name: a probe\n", want: workflowfile.Frontmatter{Name: "a probe"}},
-	"a description as one line of text":       {answers: "cannot unmarshal ", block: "name: probe\ndescription: a line\n", want: workflowfile.Frontmatter{Name: "probe", Description: "a line"}},
-	"triggers as a flow list on one line":     {answers: "cannot unmarshal ", block: "name: probe\ntriggers: [cron, push]\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"cron", "push"}}},
-	"triggers as one item per line":           {answers: "cannot unmarshal ", block: "name: probe\ntriggers:\n  - cron\n  - push\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"cron", "push"}}},
-	"capabilities as a flow list on one line": {answers: "cannot unmarshal ", block: "name: probe\ncapabilities: [shell]\n", want: workflowfile.Frontmatter{Name: "probe", Capabilities: []string{"shell"}}},
-	"capabilities as one item per line":       {answers: "cannot unmarshal ", block: "name: probe\ncapabilities:\n  - shell\n", want: workflowfile.Frontmatter{Name: "probe", Capabilities: []string{"shell"}}},
+	// The shape of each of the four keys, as the shape remedy names them:
+	// one row per decode target the family is keyed on, so the entry a
+	// block reaches is the one whose spelling the row writes.
+	"a name as one line of text":              {answers: workflowfile.YAMLUnmarshalFormat, target: "string", block: "name: a probe\n", want: workflowfile.Frontmatter{Name: "a probe"}},
+	"a description as one line of text":       {answers: workflowfile.YAMLUnmarshalFormat, target: "string", block: "name: probe\ndescription: a line\n", want: workflowfile.Frontmatter{Name: "probe", Description: "a line"}},
+	"triggers as a flow list on one line":     {answers: workflowfile.YAMLUnmarshalFormat, target: "[]string", block: "name: probe\ntriggers: [cron, push]\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"cron", "push"}}},
+	"triggers as one item per line":           {answers: workflowfile.YAMLUnmarshalFormat, target: "[]string", block: "name: probe\ntriggers:\n  - cron\n  - push\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"cron", "push"}}},
+	"capabilities as a flow list on one line": {answers: workflowfile.YAMLUnmarshalFormat, target: "[]string", block: "name: probe\ncapabilities: [shell]\n", want: workflowfile.Frontmatter{Name: "probe", Capabilities: []string{"shell"}}},
+	"capabilities as one item per line":       {answers: workflowfile.YAMLUnmarshalFormat, target: "[]string", block: "name: probe\ncapabilities:\n  - shell\n", want: workflowfile.Frontmatter{Name: "probe", Capabilities: []string{"shell"}}},
 	// The block's own top level, written as `key: value` lines: the prose
 	// the remedy's example names, and a complex key written as plain text
 	// one level up from the nested spelling above.
-	"a line of prose written as a key":                   {answers: "cannot unmarshal ", block: "description: a bot that reviews pull requests\n", want: workflowfile.Frontmatter{Description: "a bot that reviews pull requests"}},
-	"a list block written as the keys it meant":          {answers: "cannot unmarshal ", block: "name: probe\ndescription: d\n", want: workflowfile.Frontmatter{Name: "probe", Description: "d"}},
-	"a top-level complex key written as plain text":      {answers: "cannot unmarshal ", block: "name: probe\na: 1\n", want: workflowfile.Frontmatter{Name: "probe"}, extra: []string{"a"}},
-	"an item of a list written as one line of text":      {answers: "cannot unmarshal ", block: "name: probe\ntriggers:\n  - a b\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"a b"}}},
-	"an item of a flow list written as one line of text": {answers: "cannot unmarshal ", block: "name: probe\ntriggers: [a b]\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"a b"}}},
+	"a line of prose written as a key":                   {answers: workflowfile.YAMLUnmarshalFormat, target: "workflowfile.frontmatterFields", block: "description: a bot that reviews pull requests\n", want: workflowfile.Frontmatter{Description: "a bot that reviews pull requests"}},
+	"a list block written as the keys it meant":          {answers: workflowfile.YAMLUnmarshalFormat, target: "workflowfile.frontmatterFields", block: "name: probe\ndescription: d\n", want: workflowfile.Frontmatter{Name: "probe", Description: "d"}},
+	"a top-level complex key written as plain text":      {answers: workflowfile.YAMLUnmarshalFormat, target: "string", block: "name: probe\na: 1\n", want: workflowfile.Frontmatter{Name: "probe"}, extra: []string{"a"}},
+	"an item of a list written as one line of text":      {answers: workflowfile.YAMLUnmarshalFormat, target: "string", block: "name: probe\ntriggers:\n  - a b\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"a b"}}},
+	"an item of a flow list written as one line of text": {answers: workflowfile.YAMLUnmarshalFormat, target: "string", block: "name: probe\ntriggers: [a b]\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"a b"}}},
 }
 
-// frontmatterUnmarshalTails are the Go types the reading named in its
-// refusal of block: the `into %s` tail of each `cannot unmarshal`, one per
-// line of a yaml.v2 type error. Read after the LAST ` into ` of the line,
-// which a value holding those words of its own cannot move.
-func frontmatterUnmarshalTails(block string) []string {
-	_, _, err := workflowfile.DecodeFrontmatter(block)
-	if err == nil {
-		return nil
+// frontmatterUnmarshalTargetOf is the decode target the reading's cause
+// names for a whole-value block: the reading names it itself, and
+// workflowfile pins the name in its own package.
+func frontmatterBlockTarget() string {
+	_, causes, _ := frontmatterRefusal("- a\n")
+	if len(causes) != 1 || causes[0].Message != workflowfile.YAMLUnmarshalFormat {
+		return ""
 	}
-	var tails []string
-	for _, line := range strings.Split(err.Error(), "\n") {
-		if !strings.Contains(line, "cannot unmarshal ") {
-			continue
-		}
-		if i := strings.LastIndex(line, " into "); i >= 0 {
-			tails = append(tails, strings.TrimSpace(line[i+len(" into "):]))
-		}
-	}
-	return tails
+	return causes[0].Target
 }
 
-// frontmatterUnmarshalTargets are the Go types a node can be decoded into
-// on the way to ty — the tail of yaml.v2's `cannot unmarshal %s into %s`,
-// which is the only thing that tells that family's causes apart. Walked off
-// the type the reading decodes into rather than listed: a fifth key, or a
-// list of something other than text, adds a target here.
+// frontmatterUnmarshalTargets are the decode targets the family's causes
+// name: the leaves of the type the reading decodes a block into, walked off
+// a mirror of it rather than listed — a fifth key, or a list of something
+// other than text, adds a target here. The block's own target is not
+// walked: the reading names it itself (frontmatterBlockTarget), and
+// workflowfile pins the struct's name in its own package.
 //
 // Three rules, each the vendored decoder's own: a struct's keys are read
 // into a plain `string` whatever its fields are named (mappingStruct's
@@ -410,7 +413,11 @@ func frontmatterUnmarshalTails(block string) []string {
 // ever names it, and a `,inline` field is filled from the parent's own
 // mapping — key by key for a map, field by field for a struct — so no node
 // is ever decoded into it whole.
-func frontmatterUnmarshalTargets(ty reflect.Type) []string {
+func frontmatterUnmarshalTargets() []string {
+	var mirror struct {
+		workflowfile.Frontmatter `yaml:",inline"`
+		Rest                     map[string]any `yaml:",inline"`
+	}
 	seen := map[string]bool{}
 	var walk, walkFields func(reflect.Type)
 	walkFields = func(st reflect.Type) {
@@ -443,7 +450,11 @@ func frontmatterUnmarshalTargets(ty reflect.Type) []string {
 			walk(t.Elem())
 		}
 	}
-	walk(ty)
+	walk(reflect.TypeOf(mirror))
+	// The mirror's own type is dropped: it is the type the reading decodes
+	// the whole block into, which the reading names itself
+	// (frontmatterBlockTarget) — the walk returns the leaves alone.
+	delete(seen, reflect.TypeOf(mirror).String())
 	targets := make([]string, 0, len(seen))
 	for t := range seen {
 		targets = append(targets, t)
@@ -452,42 +463,48 @@ func frontmatterUnmarshalTargets(ty reflect.Type) []string {
 	return targets
 }
 
-// `cannot unmarshal ` is ONE message string whose causes differ by the Go
-// type the reading was decoding into, and that type is what a remedy
-// naming one cause leaves the other causes' authors without: the family is
-// held at the class, one witness per type the reading can be asked to
-// decode a node into. A fifth key of another shape, or a list of something
-// other than text, reddens here until a block reaches it.
+// `cannot unmarshal ` is ONE message whose causes differ by the Go type
+// the reading was decoding into, and that type is what a remedy naming one
+// cause leaves the other causes' authors without: the family is keyed on
+// it, one entry per type the reading can be asked to decode a node into,
+// and one witness per type reaches each. A fifth key of another shape, or
+// a list of something other than text, reddens here until a block reaches
+// it.
 //
-// The type walked is checked against the one that RUNS: the reading's own
-// refusal of a block that is not a mapping names it, so a mirror that
-// drifts from workflowfile.DecodeFrontmatter cannot pass for it.
+// The type walked is checked against the one that RUNS twice over: the
+// reading's own refusal of a block that is not a mapping names its decode
+// target — the named struct, which workflowfile pins in its own package —
+// and every target a witness's cause carries is one the walk reaches, so a
+// mirror that drifts from workflowfile.DecodeFrontmatter cannot pass for
+// it.
 func TestEveryGoTypeTheFrontmatterReadingDecodesIntoHasAWitness(t *testing.T) {
-	var mirror struct {
-		workflowfile.Frontmatter `yaml:",inline"`
-		Rest                     map[string]any `yaml:",inline"`
+	root := frontmatterBlockTarget()
+	if root == "" {
+		t.Fatal("the reading refuses no block that is not a mapping with the unmarshal format: the block's own decode target is read off it")
 	}
-	root := reflect.TypeOf(mirror)
-	read, _ := frontmatterRefusal("- a\n")
-	if want := "cannot unmarshal !!seq into " + root.String(); !strings.Contains(read, want) {
-		t.Fatalf("the reading refuses a block that is not a mapping with %q, which does not hold %q: the type walked below is not the type it decodes into", read, want)
+	if root != "workflowfile.frontmatterFields" {
+		t.Errorf("the reading refuses a whole-value block with the decode target %q, not the named struct: the type the family's first entry is keyed on moved", root)
 	}
 	reached := map[string]string{}
 	for name, w := range frontmatterWitnesses {
-		for _, tail := range frontmatterUnmarshalTails(w.src) {
-			reached[tail] = name
+		_, causes, _ := frontmatterRefusal(w.src)
+		for _, c := range causes {
+			if c.Message == workflowfile.YAMLUnmarshalFormat {
+				reached[c.Target] = name
+			}
 		}
 	}
-	for _, target := range frontmatterUnmarshalTargets(root) {
+	targets := append(frontmatterUnmarshalTargets(), root)
+	for _, target := range targets {
 		if reached[target] == "" {
 			t.Errorf("no frontmatter witness is refused with `cannot unmarshal … into %s`: that cause of the family reaches an author with a remedy nothing proves answers it", target)
 		}
 	}
-	// … and no witness names a type the walk does not know: a tail the
+	// … and no witness names a type the walk does not know: a target the
 	// walk misses is a cause the gate above cannot ask for.
-	for tail, name := range reached {
-		if !slices.Contains(frontmatterUnmarshalTargets(root), tail) {
-			t.Errorf("%s is refused with `cannot unmarshal … into %s`, a type the walk of the reading's own type does not reach: the walk is the gate's inventory and it is short", name, tail)
+	for target, name := range reached {
+		if !slices.Contains(targets, target) {
+			t.Errorf("%s is refused with `cannot unmarshal … into %s`, a type the walk of the reading's own type does not reach: the walk is the gate's inventory and it is short", name, target)
 		}
 	}
 }
@@ -512,13 +529,16 @@ func TestAFrontmatterWrittenAsItsRemedySaysReads(t *testing.T) {
 	}
 }
 
-// yamlRemedyOf is the index of the entry whose remedy ends remedy, -1
-// where none does and -2 where several would: the entry a refusal reached,
-// read off the words it carries rather than off a name.
-func yamlRemedyOf(remedy string) int {
+// yamlRemedyOf is the index of the entry that answers cause, read by
+// running the matcher itself, -1 where none does and -2 where several
+// would: the entry a refusal reached, read off the cause rather than off a
+// name.
+func yamlRemedyOf(cause workflowfile.YAMLCause) int {
 	found := -1
 	for i, r := range yamlRemedies {
-		if !strings.HasSuffix(remedy, r.remedy) {
+		if !slices.Contains(r.readers, cause.Reader) ||
+			r.target != "" && r.target != cause.Target ||
+			!slices.Contains(r.messages, cause.Message) {
 			continue
 		}
 		if found >= 0 {
@@ -530,45 +550,44 @@ func yamlRemedyOf(remedy string) int {
 }
 
 // Every entry a frontmatter block's reading reaches has a block written as
-// its remedy says, and every prescription row names the entry it answers:
-// the identity test walks hand-written blocks, so without this link an
-// entry could carry a spelling nothing ever writes. The link is the
-// entry's own message, read against the table — a reworded message
-// reddens here rather than leaving the row answering for nothing.
-//
-// Scope: the frontmatter half. The author document's own prescriptions
-// (remedyPrescriptions) carry no such link, and several entries prescribe
-// no rewrite of a document at all ("flatten it", "remove it"), so the
-// same gate there needs an exclusion table of its own.
+// its remedy says, and every prescription row names the entry it answers —
+// by its message, and by its decode target where the entry is one of a
+// family keyed on it: the identity test walks hand-written blocks, so
+// without this link an entry could carry a spelling nothing ever writes.
+// The link is the entry's own cause key, read against the table — a
+// reworded message or a moved target reddens here rather than leaving the
+// row answering for nothing.
 func TestEveryFrontmatterRemedyReachedHasAPrescription(t *testing.T) {
 	answered := map[int]bool{}
 	for name, p := range frontmatterPrescriptions {
 		at := -1
 		for i, r := range yamlRemedies {
-			if slices.Contains(r.messages, p.answers) {
+			if slices.Contains(r.messages, p.answers) && r.target == p.target {
 				at = i
 				break
 			}
 		}
 		if at < 0 {
-			t.Errorf("%s answers %q, which no entry of yamlRemedies lists: the row prescribes a spelling the table does not say", name, p.answers)
+			t.Errorf("%s answers %q at target %q, which no entry of yamlRemedies is keyed on: the row prescribes a spelling the table does not say", name, p.answers, p.target)
 			continue
 		}
 		answered[at] = true
 	}
 	for name, w := range frontmatterWitnesses {
-		_, remedy := frontmatterRefusal(w.src)
-		if remedy == "" {
+		_, causes, remedies := frontmatterRefusal(w.src)
+		if remedies == "" {
 			// Said by TestEveryFrontmatterYAMLMessageNamesItsRemedy.
 			continue
 		}
-		switch at := yamlRemedyOf(remedy); {
-		case at == -2:
-			t.Errorf("the refusal of %s ends with the remedy of more than one entry: the entry a block reaches cannot be read off its words", name)
-		case at < 0:
-			t.Errorf("the refusal of %s ends with no entry's remedy: %s", name, remedy)
-		case !answered[at]:
-			t.Errorf("%s reaches remedy %d, which no row of frontmatterPrescriptions answers: its spelling is prescribed to an author and written nowhere", name, at)
+		for _, c := range causes {
+			switch at := yamlRemedyOf(c); {
+			case at == -2:
+				t.Errorf("the refusal of %s is answered by more than one entry: the entry a block reaches cannot be read off its cause %v", name, c)
+			case at < 0:
+				t.Errorf("the cause %v of %s is answered by no entry: %s", c, name, remedies)
+			case !answered[at]:
+				t.Errorf("%s reaches remedy %d, which no row of frontmatterPrescriptions answers: its spelling is prescribed to an author and written nowhere", name, at)
+			}
 		}
 	}
 }
@@ -582,7 +601,7 @@ func TestEveryFrontmatterRemedyReachedHasAPrescription(t *testing.T) {
 // times two tag families, each of which the clause sent to that second
 // refusal with the prescription of a value no key would hold.
 func TestTheTagClauseIsTrueOfEachOfTheFourKeys(t *testing.T) {
-	read, remedy := frontmatterRefusal("name: !!int notanint\n")
+	read, _, remedy := frontmatterRefusal("name: !!int notanint\n")
 	if remedy == "" {
 		t.Fatalf("%q reaches the author bare, so no clause of the tag entry is under test", read)
 	}
@@ -616,7 +635,7 @@ func TestTheTagClauseIsTrueOfEachOfTheFourKeys(t *testing.T) {
 	for _, key := range []string{"triggers", "capabilities"} {
 		for _, value := range []string{"!!int 3", "!!binary aGk="} {
 			block := "name: probe\n" + key + ": " + value + "\n"
-			read, remedy := frontmatterRefusal(block)
+			read, _, remedy := frontmatterRefusal(block)
 			switch {
 			case read == "":
 				t.Errorf("`%s: %s` reads, where the clause tells its author the key takes a list", key, value)
@@ -627,13 +646,65 @@ func TestTheTagClauseIsTrueOfEachOfTheFourKeys(t *testing.T) {
 	}
 }
 
+// The sentences of one refusal with several causes compose as sentences:
+// each sentence is built with the dash its position note hangs on, so the
+// join takes the dash off every sentence but the first — a doubled space
+// and a second dash mid-notice read as a clause of their own, and are
+// neither.
+func TestTheSentencesOfAMultiCauseRefusalJoinBare(t *testing.T) {
+	_, causes, remedies := frontmatterRefusal("name: [a]\ntriggers: x\n")
+	if len(causes) != 2 || remedies == "" {
+		t.Fatalf("the block is refused with %d causes (%q): two shape mistakes are the pair the join is read on", len(causes), remedies)
+	}
+	if strings.Contains(remedies, ";  ") {
+		t.Errorf("a doubled space survives between the two sentences: %q", remedies)
+	}
+	if !strings.Contains(remedies, "; `triggers` and `capabilities` take a list") {
+		t.Errorf("the second sentence reaches the author with the first sentence's dash still on it: %q", remedies)
+	}
+	if !strings.HasPrefix(remedies, " — ") {
+		t.Errorf("the first sentence lost the dash head its position note hangs on: %q", remedies)
+	}
+}
+
+// Two causes of the same family answer with one sentence, not two copies
+// of it: the notice names the fix, and saying it twice says it once too
+// often.
+func TestTheSameSentenceAnswersOnce(t *testing.T) {
+	_, causes, remedies := frontmatterRefusal("triggers: x\ncapabilities: y\n")
+	if len(causes) != 2 {
+		t.Fatalf("the block is refused with %d causes: two list keys read as scalars are the pair the dedup is read on", len(causes))
+	}
+	if n := strings.Count(remedies, "take a list"); n != 1 {
+		t.Errorf("the list sentence appears %d times in %q: the same sentence answers once", n, remedies)
+	}
+}
+
+// A line the reader names that the block holds blank quotes nothing: the
+// note exists to hand the author the text they read off their own file, and
+// a pair of empty backticks quotes none. A blank line is skipped as an
+// out-of-range number is, alone or among several.
+func TestABlockLineNoteQuotesNoBlankLine(t *testing.T) {
+	if got := YAMLBlockLineNote([]int{2}, []string{"name: \"unterminated", ""}); got != "" {
+		t.Errorf("the note quotes the block's blank line: %q", got)
+	}
+	mixed := YAMLBlockLineNote([]int{1, 2}, []string{"name: \"unterminated", ""})
+	if want := ", where the line it names is the block's own, not the file's — `name: \"unterminated`"; mixed != want {
+		t.Errorf("the note of a blank line beside a named one is %q, not the one named line alone (%q)", mixed, want)
+	}
+	plural := YAMLBlockLineNote([]int{1, 2, 3}, []string{"a: 1", "", "b: 2"})
+	if want := ", where the lines it names are the block's own, not the file's — line 1 `a: 1`, line 3 `b: 2`"; plural != want {
+		t.Errorf("the note of a blank line among several named ones is %q, not the two named lines alone (%q)", plural, want)
+	}
+}
+
 // Every YAML message the frontmatter block's reading surfaces arrives with
 // the spelling that avoids it. Read through the two calls fmt_author.go
 // makes, in its order: a message this table answers with a reason instead
 // of a remedy reaches an author bare in the notice `fmt --to yaml` prints.
 func TestEveryFrontmatterYAMLMessageNamesItsRemedy(t *testing.T) {
 	for name, w := range frontmatterWitnesses {
-		read, remedy := frontmatterRefusal(w.src)
+		read, _, remedy := frontmatterRefusal(w.src)
 		switch {
 		case read == "":
 			t.Errorf("%s: the frontmatter block reads, so it witnesses no message: %q", name, w.src)
@@ -710,7 +781,7 @@ func TestAConstructOneReadingResolvesIsSaidOfThatReading(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			read, remedy := frontmatterRefusal(tc.refused)
+			read, _, remedy := frontmatterRefusal(tc.refused)
 			if remedy == "" {
 				t.Fatalf("%q reaches the author bare, so no sentence of the entry is under test", read)
 			}
@@ -741,75 +812,122 @@ func TestAConstructOneReadingResolvesIsSaidOfThatReading(t *testing.T) {
 	}
 }
 
-// The author text that reaches the remedy table is bounded by the words
-// the reader's own format writes (yamlValueSlots); what no slot bounds is
-// the name of an anchor, which a reader writes into `unknown anchor '%s'
-// referenced` and `anchor '%s' value contains itself`. That name ends at
-// the first space — measured, `name: &a b probe` reads as the value
-// `b probe`, and `*mapping values are not allowed` names the anchor
-// `mapping` alone — where every message of the table holds a space, and so
-// does the `line N:` the block's line note reads: no anchor name can spell
-// either.
-func TestNoRemedyMessageIsSpelledByTheTextNoSlotBounds(t *testing.T) {
+// The anchor name is the one author text a reader writes into its own
+// message with no slot around it: it ends at the first space — `name: &a b
+// probe` reads as the value `b probe` — so the skeleton the cause carries
+// (`unknown anchor '%s' referenced`, `anchor '%s' value contains itself`)
+// is recognized by its own head and tail alone, and the name inside
+// chooses nothing. The document's reader writes the same message, and the
+// entry its refusal takes is the anchor's: an alias spelling the words of
+// another entry's message takes that other entry's remedy nowhere.
+func TestAnAnchorNameChoosesNothing(t *testing.T) {
 	fm, _, err := workflowfile.DecodeFrontmatter("name: &a b probe\n")
 	switch {
 	case err != nil:
-		t.Fatalf("`name: &a b probe` is refused (%v): an anchor name's bound is no longer the first space, and the messages below are spellable by one", err)
+		t.Fatalf("`name: &a b probe` is refused (%v): an anchor name's bound is no longer the first space, and the formats below are recognizable by their own words alone", err)
 	case fm.Name != "b probe":
 		t.Fatalf("`name: &a b probe` reads as %q, not as the value `b probe`: an anchor name can now hold a space", fm.Name)
 	}
-	read, _ := frontmatterRefusal("name: probe\ndescription: *mapping values are not allowed\n")
+	read, causes, remedies := frontmatterRefusal("name: probe\ndescription: *mapping values are not allowed\n")
 	if want := "unknown anchor 'mapping' referenced"; !strings.Contains(read, want) {
-		t.Errorf("an alias spelling a message of the table is refused with %q, not with %q: the name the reader writes back is no longer bounded by a space", read, want)
+		t.Fatalf("an alias spelling a message of the table is refused with %q, not with %q: the name the reader writes back is no longer bounded by a space", read, want)
 	}
-	for i, r := range yamlRemedies {
-		for _, m := range r.messages {
-			if !strings.Contains(m, " ") {
-				t.Errorf("remedy %d answers %q, which holds no space: an anchor name — the author text no slot of yamlValueSlots bounds — can spell it", i, m)
-			}
-		}
+	if len(causes) != 1 || causes[0].Message != workflowfile.YAMLUnknownAnchor {
+		t.Errorf("the block is refused with the causes %v: an anchor name spelling the words of another entry's message moved the cause off the anchor's own", causes)
 	}
+	if strings.Contains(remedies, "quote the whole value (a command with a jq filter") {
+		t.Errorf("the refusal takes the colon entry's remedy, which the anchor name spelled: %s", remedies)
+	}
+	if at := yamlRemedyOf(causes[0]); at < 0 {
+		t.Errorf("the anchor refusal's cause is answered by no entry: %s", remedies)
+	}
+	// The document's reader writes the same message: the same cause, the
+	// anchor entry's sentence.
+	if ok, got := refusedWith("dsl: 2\nvars: *mapping values are not allowed\nnodes:\n  - agent: a\n    model: m\n", parser.DiagAuthorDocument, "names an anchor written above it"); !ok {
+		t.Errorf("the document's reader no longer refuses an unknown anchor with the anchor entry's remedy:\n%s", got)
+	}
+	// The line regex serves the document site's own position rewrite alone
+	// (yamlErrorAtLine): the note and the remedies are keyed on numbers the
+	// reading names, never on these words.
 	if yamlLineRe.MatchString("line1:") {
-		t.Errorf("%s matches a number with no space before it: an anchor name can then spell a line of the block", yamlLineRe)
+		t.Errorf("%s matches a number with no space before it: a value a reader quotes could then add a line to a message the rewrite touches", yamlLineRe)
 	}
 }
 
-// Every slot of yamlValueSlots is bounded by words a vendored reader
-// really writes: its opening, and the closing word that ends it standing
-// after that opening, in one message string of one of the two readers.
-// A slot keyed on words no reader writes bounds nothing, and a reader that
-// rewords one of the three formats reddens here rather than letting an
-// author's value answer for the message again.
-func TestEveryValueSlotIsAReaderFormat(t *testing.T) {
-	var all []string
+// Every message the remedy table is keyed on is one a vendored reader
+// builds: a constant the reader's source raises, or the format its source
+// quotes a value into, spelled as the scan of that reader's own files
+// reads it. A key no reader builds is a sentence hung on nothing, and a
+// reader that rewords one reddens here rather than leaving an entry
+// answering for a message nobody writes.
+func TestEveryEntryMessageIsABuiltLiteral(t *testing.T) {
+	built := map[workflowfile.YAMLReader]map[string]bool{}
 	for _, mod := range yamlVendorModules {
+		reader := workflowfile.YAMLReader(mod.name)
+		built[reader] = map[string]bool{}
 		for lit := range yamlProblemStrings(t, mod.path) {
-			all = append(all, lit)
+			// The terrors' own line head is the format's first words, not
+			// part of its message: the entries are keyed on the message
+			// after it, as the reading is.
+			built[reader][strings.TrimPrefix(lit, "line %d: ")] = true
 		}
 	}
-	for i, s := range yamlValueSlots {
-		written := false
-		for _, lit := range all {
-			at := strings.Index(lit, s.open)
-			if at < 0 || s.close != "" && !strings.Contains(lit[at+len(s.open):], s.close) {
-				continue
+	for i, r := range yamlRemedies {
+		for _, m := range r.messages {
+			for _, reader := range r.readers {
+				if !built[reader][m] {
+					t.Errorf("remedy %d is keyed on %q, which the vendored %s builds nowhere: the entry's message is not the reader's own", i, m, reader)
+				}
 			}
-			written = true
-			break
-		}
-		if !written {
-			t.Errorf("slot %d bounds a value between %q and %q, which no message of either vendored reader writes that way: the slot bounds nothing", i, s.open, s.close)
 		}
 	}
+}
+
+// No two entries answer one cause: the key is (reader, message, decode
+// target), so a cause has one sentence wherever it reaches an author. The
+// matcher takes the first entry that answers — with exact keys nothing can
+// shadow anything, and a key written twice is a copy that will drift.
+func TestEveryEntryKeyIsItsOwn(t *testing.T) {
+	seen := map[[3]string]int{}
+	for i, r := range yamlRemedies {
+		for _, reader := range r.readers {
+			for _, m := range r.messages {
+				key := [3]string{string(reader), m, r.target}
+				if had, dup := seen[key]; dup {
+					t.Errorf("remedy %d answers %v, which remedy %d is keyed on already: one cause, one sentence", i, key, had)
+				}
+				seen[key] = i
+			}
+		}
+	}
+}
+
+// yamlRefusalEntry is the entry whose remedy the document refusal ends
+// with, -1 where none does and -2 where several would: the entry the
+// document's refusal reached, read off the words it carries. The remedies
+// are pairwise distinct tails, which TestEveryEntryRemedyIsItsOwn holds.
+func yamlRefusalEntry(refusal string) int {
+	found := -1
+	for i, r := range yamlRemedies {
+		if !strings.HasSuffix(refusal, r.remedy) {
+			continue
+		}
+		if found >= 0 {
+			return -2
+		}
+		found = i
+	}
+	return found
 }
 
 // Every YAML message the author path surfaces arrives with the spelling
 // that avoids it, and a message several mistakes produce names each of
-// them: yaml.v3's own words say what the scanner saw, never what to write.
-// No remedy of the table is dead and no message of a remedy unreached:
-// each is one a document above is refused with.
+// them: a reader's own words say what it saw, never what to write. No
+// remedy of the table is dead and no message of a remedy unreached: each is
+// one a document above is refused with, or one the block's reading names
+// as its own cause.
 func TestEveryYAMLMessageNamesTheRemedyOfEachOfItsCauses(t *testing.T) {
-	seen := make([]string, 0, len(yamlWitnesses))
+	reached := map[[2]int]bool{}
 	for name, w := range yamlWitnesses {
 		var refusal string
 		var all []string
@@ -826,32 +944,65 @@ func TestEveryYAMLMessageNamesTheRemedyOfEachOfItsCauses(t *testing.T) {
 			t.Errorf("%s: a document that is not YAML is refused once, got %d:\n%s", name, len(all), strings.Join(all, "\n"))
 		case !strings.Contains(refusal, w.want):
 			t.Errorf("%s: the refusal does not name the remedy %q: %s", name, w.want, refusal)
+		}
+		switch at := yamlRefusalEntry(refusal); {
+		case at == -2:
+			t.Errorf("the refusal of %s ends with the remedy of more than one entry: the entry it reached cannot be read off its words", name)
+		case at < 0:
+			t.Errorf("the refusal of %s ends with no entry's remedy: %s", name, refusal)
 		default:
-			seen = append(seen, refusal)
+			// The refusal's own words carry the message that fired, with a
+			// quoted value where the format's placeholder stands: its head
+			// — the words before the first one — is in the refusal, and no
+			// two messages of one entry share a head.
+			for j, m := range yamlRemedies[at].messages {
+				if head, _, _ := strings.Cut(m, "%"); strings.Contains(refusal, head) {
+					reached[[2]int{at, j}] = true
+				}
+			}
 		}
 	}
 	// The table has two consumers, so its coverage has two witness sets: a
 	// message no author document can raise is reached through the
 	// frontmatter block instead, never left unwitnessed.
-	for _, w := range frontmatterWitnesses {
-		if read, remedy := frontmatterRefusal(w.src); remedy != "" {
-			seen = append(seen, read+remedy)
+	for name, w := range frontmatterWitnesses {
+		_, causes, remedies := frontmatterRefusal(w.src)
+		if causes == nil || remedies == "" {
+			// Said by TestEveryFrontmatterYAMLMessageNamesItsRemedy.
+			continue
+		}
+		for _, c := range causes {
+			switch at := yamlRemedyOf(c); {
+			case at == -2:
+				t.Errorf("the refusal of %s is answered by more than one entry: %s", name, remedies)
+			case at < 0:
+				t.Errorf("the cause %v of %s is answered by no entry: %s", c, name, remedies)
+			default:
+				for j, m := range yamlRemedies[at].messages {
+					if m == c.Message {
+						reached[[2]int{at, j}] = true
+					}
+				}
+			}
 		}
 	}
 	for i, r := range yamlRemedies {
-		for _, m := range r.messages {
-			reached := false
-			for _, msg := range seen {
-				// The remedy ends the refusal; what stands between it and
-				// yaml.v3's own words is the position note, which only the
-				// messages raised with a context mark carry.
-				if strings.Contains(msg, m) && strings.Contains(msg, " — ") && strings.HasSuffix(msg, r.remedy) {
-					reached = true
-					break
-				}
-			}
-			if !reached {
+		for j, m := range r.messages {
+			if !reached[[2]int{i, j}] {
 				t.Errorf("remedy %d answers %q, which no document and no frontmatter block above is refused with", i, m)
+			}
+		}
+	}
+}
+
+// No entry's sentence is another's tail: the entry a refusal reached is
+// read off the words it ends with, and one sentence ending with another's
+// leaves that read ambiguous.
+func TestEveryEntryRemedyIsItsOwn(t *testing.T) {
+	for i, a := range yamlRemedies {
+		for j, b := range yamlRemedies {
+			if i != j && strings.HasSuffix(b.remedy, a.remedy) {
+				t.Errorf("remedy %d ends with remedy %d's sentence: the entry a refusal reached could not be read off its words", j, i)
 			}
 		}
 	}
@@ -1115,104 +1266,136 @@ func TestASecondDocumentThatIsNotYAMLNamesItsRemedy(t *testing.T) {
 	}
 }
 
-// The table is read in order and the first entry whose message the text
-// holds answers it: an entry's message that is a substring of a later
-// entry's would answer in its place (`did not find expected whitespace` of
-// `did not find expected whitespace or line break`).
-func TestTheYAMLRemedyOrderIsUnambiguous(t *testing.T) {
-	for i, early := range yamlRemedies {
-		for j := i + 1; j < len(yamlRemedies); j++ {
-			for _, a := range early.messages {
-				for _, b := range yamlRemedies[j].messages {
-					if strings.Contains(b, a) {
-						t.Errorf("remedy %d answers %q, which hides remedy %d's %q: order them the other way", i, a, j, b)
-					}
-				}
-			}
-		}
-	}
-}
+// The table is read by key, not in order: an entry answers the cause it
+// names and nothing else (TestEveryEntryKeyIsItsOwn), so no message can
+// shadow another and the entries stand in any order.
 
 const (
 	notUTF8First    = "every author-facing reading refuses a source that is not UTF-8 before a decoder reads it: decode's own guard for the document, and the lexer's E006 for a frontmatter block, whose lines a parse has already replaced"
 	streamInvariant = "an invariant of the event stream the parser feeds the composer, not of a document"
 	emitDirection   = "the emit direction: both readings read a document, neither writes one"
-	strictOnly      = "the strict reading alone collects it — yaml.v2 gates its three on d.strict and yaml.v3 on d.uniqueKeys, which only UnmarshalStrict sets, and the fields one on d.knownFields, which only Decoder.KnownFields does: the one reading of a block calls yaml.Unmarshal (workflowfile.DecodeFrontmatter) and the document is read into a *yaml.Node, which has no field and no map. Executed by TestTheBlocksTheStrictOnlyRefusalsNameRead, which reddens where a reading turns strict and these messages start reaching an author bare"
+	// v2StrictOnly is the reason of the three messages yaml.v2 collects:
+	// all three spellings are its own, and it gates each on d.strict.
+	v2StrictOnly = "the strict reading alone collects it — yaml.v2 gates its three on d.strict, which UnmarshalStrict and (*yaml.Decoder).SetStrict set: the one reading of a block calls yaml.Unmarshal (workflowfile.DecodeFrontmatter) and the document is read into a *yaml.Node, which has no field and no map. Executed by TestTheBlocksTheOutOfReachRefusalsNameRead, which reddens where a reading turns strict and these messages start reaching an author bare"
+	// v3DuplicatesByDefault is the reason of the three messages yaml.v3
+	// collects decoding a Go value. Its duplicate keys are not strict at
+	// all — its own newDecoder sets d.uniqueKeys, so plain Unmarshal
+	// refuses a key written twice; the field spelling rides the same flag
+	// but never comes out, the uniqueKeys pass returning before the struct
+	// check that would raise it — and its field not found is gated on
+	// d.knownFields, which only Decoder.KnownFields sets. What keeps all
+	// three from an author is that no author-facing reading decodes into
+	// Go values with yaml.v3: the document is read into a *yaml.Node,
+	// where a duplicate key is kept and guardTree refuses it with its own
+	// words, and the frontmatter block's reading is yaml.v2's. Executed by
+	// TestTheBlocksTheOutOfReachRefusalsNameRead: a plain v3 Unmarshal
+	// refuses a duplicate key, and the message it carries classifies to no
+	// remedy.
+	v3DuplicatesByDefault = "yaml.v3 collects the duplicate-key spelling on PLAIN Unmarshal — its own newDecoder sets d.uniqueKeys, so a key written twice is refused with no strict reading in sight; the field spelling rides the same flag but never comes out, the uniqueKeys pass returning before the struct check that would raise it — and the field not found under Decoder.KnownFields alone; what keeps all three from an author is that no author-facing reading decodes into Go values with it: the document is read into a *yaml.Node, where a duplicate key is kept and guardTree refuses it with its own words, and the frontmatter block's reading is yaml.v2's. Executed by TestTheBlocksTheOutOfReachRefusalsNameRead: a plain v3 Unmarshal refuses a duplicate key, and the message it carries classifies to no remedy"
+	// v3NodeDecodesNoTag is the reason of the messages yaml.v3 raises
+	// decoding a scalar an explicit tag names into a Go value.
+	v3NodeDecodesNoTag = "the document's node tree resolves no scalar into a Go value — an explicit tag is refused by guardTree with its own words before any tag could fail to fit one"
 )
 
 // yamlProblemsOutOfReach are the problem strings of either vendored
 // reader's error constructors no author-facing reading reaches — neither
 // author.decode for the document nor workflowfile.DecodeFrontmatter for a
 // `.bot` frontmatter block, whose message `fmt --to yaml` shows — each with
-// the reason it cannot, for BOTH of them: the escape hatch of the remedy
-// table, where a message listed here carries no remedy on purpose. A reason
-// that holds for one reading and not the other is a silent allowlist: the
-// frontmatter block decodes into a Go struct, so it resolves the tags,
-// aliases and merge keys the document's node tree leaves alone.
-var yamlProblemsOutOfReach = map[string]string{
-	"did not find expected <stream-start>": "the stream start is the first token of every stream the decoder reads",
-	"input error: ":                        "the source is bytes already in memory — a bytes.Reader for the document, the block's own text for a frontmatter — which never fails to read",
+// the reason it cannot. Keyed by reader and problem: a reason is asked of
+// the reader that builds the string, so a reason that holds for one
+// reader's reading alone says so (reader set, the string being both
+// readers'), and the other reader's spelling of the same words is its own
+// row — the frontmatter block decodes into a Go struct, so it resolves the
+// tags, aliases and merge keys the document's node tree leaves alone.
+type yamlProblemKey struct {
+	reader  string // "" where the reason holds for both readers
+	problem string
+}
+
+var yamlProblemsOutOfReach = map[yamlProblemKey]string{
+	{problem: "did not find expected <stream-start>"}: "the stream start is the first token of every stream the decoder reads",
+	{problem: "input error: "}:                        "the source is bytes already in memory — a bytes.Reader for the document, the block's own text for a frontmatter — which never fails to read",
 	// A UTF-16 BOM is not UTF-8 either, so the reader never decodes a
 	// UTF-16 unit on this path.
-	"invalid leading UTF-8 octet":        notUTF8First,
-	"incomplete UTF-8 octet sequence":    notUTF8First,
-	"invalid trailing UTF-8 octet":       notUTF8First,
-	"invalid length of a UTF-8 sequence": notUTF8First,
-	"invalid Unicode character":          notUTF8First,
-	"incomplete UTF-16 character":        notUTF8First,
-	"unexpected low surrogate area":      notUTF8First,
-	"incomplete UTF-16 surrogate pair":   notUTF8First,
-	"expected low surrogate area":        notUTF8First,
+	{problem: "invalid leading UTF-8 octet"}:        notUTF8First,
+	{problem: "incomplete UTF-8 octet sequence"}:    notUTF8First,
+	{problem: "invalid trailing UTF-8 octet"}:       notUTF8First,
+	{problem: "invalid length of a UTF-8 sequence"}: notUTF8First,
+	{problem: "invalid Unicode character"}:          notUTF8First,
+	{problem: "incomplete UTF-16 character"}:        notUTF8First,
+	{problem: "unexpected low surrogate area"}:      notUTF8First,
+	{problem: "incomplete UTF-16 surrogate pair"}:   notUTF8First,
+	{problem: "expected low surrogate area"}:        notUTF8First,
 	// The tags, aliases and merge keys a frontmatter block's reading
 	// resolves ARE reachable, and carry a remedy: the two left here are
 	// the ones neither reading asks for.
-	"cannot decode node with unknown kind %d": "yaml.v3's Node.Decode raises it, which neither reading calls: the document is read as a node tree, a frontmatter block with yaml.v2",
+	{problem: "cannot decode node with unknown kind %d"}: "yaml.v3's Node.Decode raises it, which neither reading calls: the document is read as a node tree, a frontmatter block with yaml.v2",
 	// The messages a decoder COLLECTS rather than raises: one `terrors`
 	// element per value it cannot read. `cannot unmarshal ` is the family
 	// the frontmatter block's reading raises and carries a remedy; the
-	// five below are the strict reading's own.
-	"line %d: key %#v already set in map":                      strictOnly,
-	"line %d: field %s already set in type %s":                 strictOnly,
-	"line %d: field %s not found in type %s":                   strictOnly,
-	"line %d: mapping key %#v already defined at line %d":      strictOnly,
-	"invalid array: want %d elements but got %d":               "neither reading decodes into a Go ARRAY: the document becomes a *yaml.Node and a frontmatter block the four fields of workflowfile.Frontmatter, whose lists are slices",
-	"attempted to go past the end of stream; corrupted value?": streamInvariant,
-	"expected %s event but got %s":                             streamInvariant,
-	"%s%s":                                                     "a format wrapper: the text it carries is the scanner's, the parser's, the reader's own problem or the fallback below",
-	"unknown problem parsing YAML content":                     "the composer's message where the parser left its problem empty: no error constructor of either vendored reader passes an empty problem, which the scan below holds",
-	"duplicated key '":                                         "yaml.v3's spelling, raised where a Go struct's own yaml tags collide: the document is decoded into a *yaml.Node, and the frontmatter block's reader is yaml.v2, which spells it with a capital below",
+	// others are keyed per reader — the two spell their collected messages
+	// differently and gate them differently (yaml.v2 strict-only, yaml.v3
+	// by default), so a reason that holds for one says so.
+	{reader: "yaml.v2", problem: "line %d: key %#v already set in map"}:                 v2StrictOnly,
+	{reader: "yaml.v2", problem: "line %d: field %s already set in type %s"}:            v2StrictOnly,
+	{reader: "yaml.v2", problem: "line %d: field %s not found in type %s"}:              v2StrictOnly,
+	{reader: "yaml.v3", problem: "line %d: mapping key %#v already defined at line %d"}: v3DuplicatesByDefault,
+	{reader: "yaml.v3", problem: "line %d: field %s already set in type %s"}:            v3DuplicatesByDefault,
+	{reader: "yaml.v3", problem: "line %d: field %s not found in type %s"}:              v3DuplicatesByDefault,
+	{problem: "invalid array: want %d elements but got %d"}:                             "neither reading decodes into a Go ARRAY: the document becomes a *yaml.Node and a frontmatter block the four fields of workflowfile.Frontmatter, whose lists are slices",
+	{problem: "attempted to go past the end of stream; corrupted value?"}:               streamInvariant,
+	{problem: "expected %s event but got %s"}:                                           streamInvariant,
+	{problem: "%s%s"}: "a format wrapper: the text it carries is the scanner's, the parser's, the reader's own problem or the fallback below",
+	{problem: "unknown problem parsing YAML content"}: "the composer's message where the parser left its problem empty: no error constructor of either vendored reader passes an empty problem, which the scan below holds",
+	{problem: "duplicated key '"}:                     "yaml.v3's spelling, raised where a Go struct's own yaml tags collide: the document is decoded into a *yaml.Node, and the frontmatter block's reader is yaml.v2, which spells it with a capital below",
 	// The frontmatter block's reader spells the same panic with a capital,
 	// and it does decode into a Go struct (workflowfile.Frontmatter): the
 	// message is about that struct's own tags, which no document changes.
-	"Duplicated key '": "a Go struct whose yaml tags collide, raised while reading the struct rather than the document: the four keys of a frontmatter carry four distinct tags",
+	{problem: "Duplicated key '"}: "a Go struct whose yaml tags collide, raised while reading the struct rather than the document: the four keys of a frontmatter carry four distinct tags",
 	// The emit direction, read so that no error constructor of the package
 	// is a silent allowlist: the author write path encodes (author.Write),
 	// and what an encoder refuses is a program's defect, not a document's
 	// syntax — no remedy of this table answers it.
-	"%s": "a format wrapper of the emit direction: the text it carries is the emitter's own problem",
-	"unknown problem generating YAML content":                              emitDirection,
-	"cannot encode node with unknown kind %d":                              emitDirection,
-	"cannot marshal invalid UTF-8 data as %s":                              emitDirection,
-	"explicitly tagged !!binary data must be base64-encoded":               emitDirection,
-	"anchor value must not be empty":                                       emitDirection,
-	"anchor value must contain alphanumerical characters only":             emitDirection,
-	"alias value must not be empty":                                        emitDirection,
-	"alias value must contain alphanumerical characters only":              emitDirection,
-	"expected STREAM-START":                                                emitDirection,
-	"expected DOCUMENT-START or STREAM-END":                                emitDirection,
-	"expected DOCUMENT-END":                                                emitDirection,
-	"expected nothing after STREAM-END":                                    emitDirection,
-	"expected SCALAR, SEQUENCE-START, MAPPING-START, or ALIAS, but got %v": emitDirection,
-	"incompatible %YAML directive":                                         emitDirection,
-	"duplicate %TAG directive":                                             emitDirection,
-	"neither tag nor implicit flags are specified":                         emitDirection,
-	"tag handle must not be empty":                                         emitDirection,
-	"tag handle must start with '!'":                                       emitDirection,
-	"tag handle must end with '!'":                                         emitDirection,
-	"tag handle must contain alphanumerical characters only":               emitDirection,
-	"tag prefix must not be empty":                                         emitDirection,
-	"tag value must not be empty":                                          emitDirection,
-	"write error: ":                                                        emitDirection,
+	{problem: "%s"}: "a format wrapper of the emit direction: the text it carries is the emitter's own problem",
+	{problem: "unknown problem generating YAML content"}:                              emitDirection,
+	{problem: "cannot encode node with unknown kind %d"}:                              emitDirection,
+	{problem: "cannot marshal invalid UTF-8 data as %s"}:                              emitDirection,
+	{problem: "explicitly tagged !!binary data must be base64-encoded"}:               emitDirection,
+	{problem: "anchor value must not be empty"}:                                       emitDirection,
+	{problem: "anchor value must contain alphanumerical characters only"}:             emitDirection,
+	{problem: "alias value must not be empty"}:                                        emitDirection,
+	{problem: "alias value must contain alphanumerical characters only"}:              emitDirection,
+	{problem: "expected STREAM-START"}:                                                emitDirection,
+	{problem: "expected DOCUMENT-START or STREAM-END"}:                                emitDirection,
+	{problem: "expected DOCUMENT-END"}:                                                emitDirection,
+	{problem: "expected nothing after STREAM-END"}:                                    emitDirection,
+	{problem: "expected SCALAR, SEQUENCE-START, MAPPING-START, or ALIAS, but got %v"}: emitDirection,
+	{problem: "incompatible %YAML directive"}:                                         emitDirection,
+	{problem: "duplicate %TAG directive"}:                                             emitDirection,
+	{problem: "neither tag nor implicit flags are specified"}:                         emitDirection,
+	{problem: "tag handle must not be empty"}:                                         emitDirection,
+	{problem: "tag handle must start with '!'"}:                                       emitDirection,
+	{problem: "tag handle must end with '!'"}:                                         emitDirection,
+	{problem: "tag handle must contain alphanumerical characters only"}:               emitDirection,
+	{problem: "tag prefix must not be empty"}:                                         emitDirection,
+	{problem: "tag value must not be empty"}:                                          emitDirection,
+	{problem: "write error: "}:                                                        emitDirection,
+
+	// The Go-value refusals, built by BOTH readers and reached by the
+	// frontmatter block's reading alone: the document's is decoded into a
+	// *yaml.Node, where a value fills the node whatever it is — no Go
+	// type, no such refusal — and guardTree refuses the constructs with
+	// its own words instead. Their remedies are the block's entries, keyed
+	// on the decode targets of its reading.
+	{reader: "yaml.v3", problem: "line %d: cannot unmarshal %s%s into %s"}:                  "the document is decoded into a *yaml.Node, which any node fills: the reading collects no unmarshal errors, and the targets these remedies are keyed on are the frontmatter block's own Go types",
+	{reader: "yaml.v3", problem: "cannot decode %s `%s` as a %s"}:                           v3NodeDecodesNoTag,
+	{reader: "yaml.v3", problem: "invalid map key: %#v"}:                                    "the document is decoded into a *yaml.Node, where a key is a node and none is invalid — guardTree refuses a key that is not a plain word with its own words",
+	{reader: "yaml.v3", problem: "map merge requires map or sequence of maps as the value"}: "the document's node tree resolves no merge key — guardTree refuses `<<` with its own words",
+	// yaml.v3 raises the base64 failure decoding a scalar the !!binary tag
+	// names into Go bytes: the document's node tree gets nowhere near it,
+	// and the frontmatter block's reader is yaml.v2, whose spelling of the
+	// same words carries the block entry's remedy.
+	{reader: "yaml.v3", problem: "!!binary value contains invalid base64 data"}: v3NodeDecodesNoTag,
 }
 
 // yamlProblemArg is the index of the problem argument of every error
@@ -1484,56 +1667,93 @@ func yamlProblemStrings(t *testing.T, mod []string) map[string]string {
 
 // Every problem string either vendored YAML reader builds through one of
 // its error constructors — or assigns to a problem field or message — is
-// answered: a remedy in yamlRemedies, or a reason in
-// yamlProblemsOutOfReach that holds for BOTH author-facing readings. A bump
-// of the author document's reader or of the frontmatter block's that adds
-// or rewords a message fails here instead of letting it reach an author
-// bare. What this test cannot see is a reason gone stale because a reading
-// changed rather than a reader: frontmatterWitnesses above is what holds
-// that side, one block per message the second reading really raises.
+// answered BY THE READER THAT BUILDS IT: a remedy in yamlRemedies of that
+// reader, or a reason in yamlProblemsOutOfReach that holds for that
+// reader's reading. The constants of the reader that runs are walked — an
+// entry of one reader cannot cover the other's spelling of the same words,
+// and a bump of either that adds or rewords a message fails here instead of
+// letting it reach an author bare. What this test cannot see is a reason
+// gone stale because a reading changed rather than a reader:
+// frontmatterWitnesses above is what holds that side, one block per message
+// the second reading really raises.
 func TestEveryYAMLProblemStringHasARemedyOrAReason(t *testing.T) {
-	anyModule := map[string]bool{}
+	built := map[workflowfile.YAMLReader]map[string]bool{}
 	for _, mod := range yamlVendorModules {
+		reader := workflowfile.YAMLReader(mod.name)
 		found := yamlProblemStrings(t, mod.path)
+		built[reader] = map[string]bool{}
+		for lit := range found {
+			built[reader][lit] = true
+		}
 		// Said, not fatal: a reach that moved must not hide the message the
 		// move left without a remedy.
 		if len(found) != mod.count {
 			t.Errorf("the scan reads %d problem strings off the vendored %s, not %d: its reach moved — read the table against the vendored source before writing the new number", len(found), mod.name, mod.count)
 		}
 		for lit, from := range found {
-			anyModule[lit] = true
 			if lit == "" {
 				t.Errorf("%s of %s builds an empty problem: the composer's own message takes its place, which is listed as out of reach", from, mod.name)
 				continue
 			}
-			remedy := YAMLRemedy(lit)
-			reason, listed := yamlProblemsOutOfReach[lit]
+			// The cause the reading of this reader carries for the literal:
+			// the terrors' own line head off, and — where the family is
+			// keyed on the decode target — one question per target the
+			// frontmatter reading decodes into, the block's own included.
+			causes := workflowfile.YAMLCauses(reader, errors.New(strings.TrimPrefix(lit, "line %d: ")))
+			targets := []string{""}
+			if len(causes) == 1 && causes[0].Message == workflowfile.YAMLUnmarshalFormat {
+				targets = append(frontmatterUnmarshalTargets(), frontmatterBlockTarget())
+			}
+			answered := ""
+			for _, target := range targets {
+				causes[0].Target = target
+				if r := YAMLRemedy(causes[0]); r != "" {
+					answered = r
+					break
+				}
+			}
+			reason := ""
+			listed := false
+			for _, r := range []string{string(reader), ""} {
+				if got, ok := yamlProblemsOutOfReach[yamlProblemKey{reader: r, problem: lit}]; ok {
+					reason, listed = got, true
+					break
+				}
+			}
 			switch {
-			case remedy != "" && listed:
+			case answered != "" && listed:
 				t.Errorf("%s of %s builds %q, which has a remedy and the reason %q: it is one or the other", from, mod.name, lit, reason)
-			case remedy == "" && !listed:
+			case answered == "" && !listed:
 				t.Errorf("%s of %s builds %q, which reaches the author bare: add its remedy to yamlRemedies, or its reason to yamlProblemsOutOfReach", from, mod.name, lit)
 			}
 		}
 	}
-	// A reason is stale where NEITHER reader builds the string it names: the
-	// two spell a few of their own messages differently, and a reason that
-	// holds for one holds for the other's spelling.
-	for lit := range yamlProblemsOutOfReach {
-		if !anyModule[lit] {
-			t.Errorf("yamlProblemsOutOfReach names %q, which no error constructor of either vendored YAML reader builds", lit)
+	// A reason is stale where no reader the reason holds for builds the
+	// string it names: the two spell a few of their own messages
+	// differently, so a reason without a reader is asked of the union —
+	// either reader builds it — and one with a reader of that one alone.
+	for key := range yamlProblemsOutOfReach {
+		ok := built[workflowfile.YAMLv3][key.problem] || built[workflowfile.YAMLv2][key.problem]
+		if key.reader != "" {
+			ok = built[workflowfile.YAMLReader(key.reader)][key.problem]
+		}
+		if !ok {
+			t.Errorf("yamlProblemsOutOfReach names %q for the reader %q, which builds it nowhere", key.problem, key.reader)
 		}
 	}
 }
 
-// The reason the decoder's strict-only messages carry is EXECUTED, not
-// argued: a block each of them would refuse READS today, because the one
-// reading calls yaml.Unmarshal and the document is read into a *yaml.Node.
-// A reading turned strict — the natural way to make a block refuse a key
-// the four do not name — reddens here, where the reason in
-// yamlProblemsOutOfReach would otherwise go stale in silence and those
-// messages would reach an author bare.
-func TestTheBlocksTheStrictOnlyRefusalsNameRead(t *testing.T) {
+// The reasons the decoder's duplicate-key and unknown-field messages carry
+// are EXECUTED, not argued. yaml.v2's three are strict-only, and the one
+// reading calls yaml.Unmarshal while the document is read into a
+// *yaml.Node: a block each of them would refuse READS today, and a reading
+// turned strict reddens here, where the reason in yamlProblemsOutOfReach
+// would otherwise go stale in silence. yaml.v3's duplicates are the other
+// way round — its decoder refuses them on PLAIN Unmarshal — so what keeps
+// the message from an author is the absence of any author-facing reading
+// that decodes into Go values with yaml.v3; that half is executed the same
+// way: the refusal exists, and it classifies to no remedy.
+func TestTheBlocksTheOutOfReachRefusalsNameRead(t *testing.T) {
 	for name, block := range map[string]string{
 		"a key of the four written twice":     "name: probe\nname: twice\n",
 		"a key beyond the four written twice": "name: probe\nk: 1\nk: 2\n",
@@ -1549,6 +1769,26 @@ func TestTheBlocksTheStrictOnlyRefusalsNameRead(t *testing.T) {
 	var node yaml.Node
 	if err := yaml.Unmarshal([]byte("dsl: 2\ndsl: 3\n"), &node); err != nil {
 		t.Errorf("the document's reading refuses a key written twice (%v): it no longer fills a *yaml.Node, and the decoder's strict-only messages can reach an author", err)
+	}
+	// The yaml.v3 half: plain Unmarshal refuses a duplicate key BY DEFAULT
+	// — not a strict reading — and the message it collects quotes the
+	// author's key back and classifies to no remedy. A reading that starts
+	// decoding Go values with yaml.v3 reaches an author with it and must
+	// key a remedy there.
+	var v3map map[string]string
+	err := yaml.Unmarshal([]byte("name: a\nname: b\n"), &v3map)
+	switch {
+	case err == nil:
+		t.Fatalf("plain yaml.v3 Unmarshal reads a key written twice: the duplicates its decoder collects by default moved, and the reason yamlProblemsOutOfReach carries for them is stale")
+	case !strings.Contains(err.Error(), `already defined at line 1`):
+		t.Fatalf("plain yaml.v3 Unmarshal refuses a duplicate key with %q, not with the collected message the out-of-reach row names", err)
+	}
+	causes := workflowfile.YAMLCauses(workflowfile.YAMLv3, err)
+	if len(causes) != 1 || causes[0].Message != `mapping key "name" already defined at line 1` {
+		t.Fatalf("the refusal classifies to %v, not to the message the reader collected with the author's key in it", causes)
+	}
+	if r := YAMLRemedy(causes[0]); r != "" {
+		t.Errorf("the duplicate-key refusal of plain yaml.v3 Unmarshal answers a remedy, which the out-of-reach row says cannot reach an author: %s", r)
 	}
 }
 
@@ -1710,70 +1950,102 @@ func stringLiteral(e goast.Expr) (string, bool) {
 	return "", false
 }
 
+// documentPrescription is one author document written as a remedy says,
+// and the entry whose remedy prescribes it.
+type documentPrescription struct {
+	// answers is one message string of the yamlRemedies entry whose remedy
+	// prescribes this document: the link the row owes its clause, so that
+	// an entry a document's refusal reaches with nothing written as it
+	// says reddens rather than passing for executed
+	// (TestEveryDocumentRemedyReachedHasAPrescription).
+	answers string
+	src     string
+}
+
 // remedyPrescriptions holds one document per spelling the table prescribes,
 // written as it says. The prescriptions that delete a stray line all leave
 // the same document — the one that reads on its own — so they share one
 // row: every other row carries a document of its own.
-var remedyPrescriptions = map[string]string{
-	"a command in single quotes":                cmdDoc(`command: 'jq -r .a: .b'`),
-	"a regex in single quotes":                  cmdDoc(`command: '^\d+$'`),
-	"a Windows path in single quotes":           cmdDoc(`command: 'C:\temp\x'`),
-	"a command holding two ampersands":          cmdDoc(`command: '[ -f x ] && echo y'`),
-	"a value starting with a bang":              cmdDoc(`command: '! grep -q x f'`),
-	"a value starting with a percent":           cmdDoc(`command: '%s'`),
-	"a value starting with a question mark":     "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    user: '? what now'\n",
-	"an escape for a control character":         cmdDoc(`command: "a\u001bb"`),
-	"an edge in single quotes":                  edgeDoc(`'a -> done with { x: "{{outputs.a.y}}" }'`),
-	"a flow list with its commas":               "dsl: 2\nworkflow:\n  name: w\n  edges: [\"a -> done\", \"b -> done\"]\n",
-	"a block body indented under its key":       promptDoc("|\n      x"),
-	"a list with one item per line":             "dsl: 2\nimports:\n  - lib/x.bot\n",
-	"a list in one flow line":                   "dsl: 2\nimports: [lib/x.bot, lib/y.bot]\n",
-	"a glob in single quotes":                   cmdDoc(`command: 'rm *.tmp'`),
-	"a shell pipe in single quotes":             cmdDoc(`command: 'grep x f | wc -l'`),
-	"a list whose every item carries its dash":  "dsl: 2\nimports:\n  - lib/a.bot\n  - lib/b.bot\n",
-	"a flow list closed":                        "dsl: 2\nimports: [\"lib/a.bot\", \"lib/b.bot\"]\n",
-	"a flow mapping closed, with its commas":    "dsl: 2\nvars: {a: string, b: string}\n",
-	"a mapping with one key: value line a line": "dsl: 2\nvars:\n  a: string\n  b: string\n",
-	"a closing bracket quoted in a value":       cmdDoc(`command: ']'`),
-	"a document indicator indented in a value":  cmdDoc("command: \"a\n    ...\n    b\""),
+var remedyPrescriptions = map[string]documentPrescription{
+	"a command in single quotes":                {answers: "mapping values are not allowed in this context", src: cmdDoc(`command: 'jq -r .a: .b'`)},
+	"a regex in single quotes":                  {answers: "found unknown escape character", src: cmdDoc(`command: '^\d+$'`)},
+	"a Windows path in single quotes":           {answers: "found unknown escape character", src: cmdDoc(`command: 'C:\temp\x'`)},
+	"a command holding two ampersands":          {answers: "did not find expected alphabetic or numeric character", src: cmdDoc(`command: '[ -f x ] && echo y'`)},
+	"a value starting with a bang":              {answers: "did not find the expected '>'", src: cmdDoc(`command: '! grep -q x f'`)},
+	"a value starting with a percent":           {answers: "found character that cannot start any token", src: cmdDoc(`command: '%s'`)},
+	"a value starting with a question mark":     {answers: "mapping keys are not allowed in this context", src: "dsl: 2\nnodes:\n  - agent: a\n    model: m\n    user: '? what now'\n"},
+	"an escape for a control character":         {answers: "control characters are not allowed", src: cmdDoc(`command: "a\u001bb"`)},
+	"an edge in single quotes":                  {answers: "did not find expected key", src: edgeDoc(`'a -> done with { x: "{{outputs.a.y}}" }'`)},
+	"a flow list with its commas":               {answers: "did not find expected ',' or ']'", src: "dsl: 2\nworkflow:\n  name: w\n  edges: [\"a -> done\", \"b -> done\"]\n"},
+	"a block body indented under its key":       {answers: "found an indentation indicator equal to 0", src: promptDoc("|\n      x")},
+	"a list with one item per line":             {answers: "block sequence entries are not allowed in this context", src: "dsl: 2\nimports:\n  - lib/x.bot\n"},
+	"a list in one flow line":                   {answers: "block sequence entries are not allowed in this context", src: "dsl: 2\nimports: [lib/x.bot, lib/y.bot]\n"},
+	"a glob in single quotes":                   {answers: "did not find expected alphabetic or numeric character", src: cmdDoc(`command: 'rm *.tmp'`)},
+	"a shell pipe in single quotes":             {answers: "did not find expected comment or line break", src: cmdDoc(`command: 'grep x f | wc -l'`)},
+	"a list whose every item carries its dash":  {answers: "could not find expected ':'", src: "dsl: 2\nimports:\n  - lib/a.bot\n  - lib/b.bot\n"},
+	"a flow list closed":                        {answers: "did not find expected ',' or ']'", src: "dsl: 2\nimports: [\"lib/a.bot\", \"lib/b.bot\"]\n"},
+	"a flow mapping closed, with its commas":    {answers: "did not find expected ',' or '}'", src: "dsl: 2\nvars: {a: string, b: string}\n"},
+	"a mapping with one key: value line a line": {answers: "did not find expected ',' or '}'", src: "dsl: 2\nvars:\n  a: string\n  b: string\n"},
+	"a closing bracket quoted in a value":       {answers: "did not find expected node content", src: cmdDoc(`command: ']'`)},
+	"a document indicator indented in a value":  {answers: "found unexpected document indicator", src: cmdDoc("command: \"a\n    ...\n    b\"")},
+	"a tagged value in single quotes":           {answers: "did not find expected '!'", src: cmdDoc(`command: '!foo"x'`)},
+	"a duplicate directive removed":             {answers: "found duplicate %YAML directive", src: "%YAML 1.1\n---\ndsl: 2\n"},
+	"a tab replaced with the indent spaces":     {answers: "found a tab character where an indentation space is expected", src: promptDoc("|\n    x")},
 	// The document a stray line deleted leaves: the prescription of every
 	// clause that names one — a title above the first key, a `- item` or a
 	// `|`/`>` block between two keys or as the first line, a `[…]` first
 	// line, a first key quoted whole and unquoted again.
-	"a document with no ... line":                   readsAloneHead + readsAloneBody,
-	"a stray block moved under its key":             readsAloneHead + "prompts:\n  p: |\n    a title\n" + readsAloneBody,
-	"a stray list item moved under its key":         readsAloneHead + "imports:\n  - lib/a.bot\n" + readsAloneBody,
-	"a first-line block moved under its key":        "prompts:\n  p: |\n    a title\n" + readsAloneHead + readsAloneBody,
-	"a first-line flow list moved under its key":    "imports: [lib/a.bot, lib/b.bot]\n" + readsAloneHead + readsAloneBody,
-	"a first key written with its colon":            "dsl: 2\n# a note\nimports:\n  - lib/x.bot\n",
-	"a block body indented as its indicator claims": promptDoc("|9\n           x"),
+	"a document with no ... line":                   {answers: yamlNoDocumentStart, src: readsAloneHead + readsAloneBody},
+	"a stray block moved under its key":             {answers: "did not find expected key", src: readsAloneHead + "prompts:\n  p: |\n    a title\n" + readsAloneBody},
+	"a stray list item moved under its key":         {answers: "did not find expected '-' indicator", src: readsAloneHead + "imports:\n  - lib/a.bot\n" + readsAloneBody},
+	"a first-line block moved under its key":        {answers: yamlNoDocumentStart, src: "prompts:\n  p: |\n    a title\n" + readsAloneHead + readsAloneBody},
+	"a first-line flow list moved under its key":    {answers: yamlNoDocumentStart, src: "imports: [lib/a.bot, lib/b.bot]\n" + readsAloneHead + readsAloneBody},
+	"a first key written with its colon":            {answers: "could not find expected ':'", src: "dsl: 2\n# a note\nimports:\n  - lib/x.bot\n"},
+	"a block body indented as its indicator claims": {answers: "did not find expected key", src: promptDoc("|9\n           x")},
 	// The lines a multi-line stray spans, moved under one key: the clause
 	// prescribes the move with the lines below the key indented under it,
 	// one spelling per shape. Written flat, each of them is refused with
 	// the message the author just read.
-	"a two-line title moved under one key":      readsAloneHead + "prompts:\n  p: my first\n    bot\n" + readsAloneBody,
-	"a two-line quoted value moved under a key": readsAloneHead + "prompts:\n  p: \"my first\n    bot\"\n" + readsAloneBody,
-	"a broken flow list moved under its key":    readsAloneHead + "imports: [lib/a.bot,\n  lib/b.bot]\n" + readsAloneBody,
-	"a two-item list moved under its key":       readsAloneHead + "imports:\n  - lib/a.bot\n  - lib/b.bot\n" + readsAloneBody,
+	"a two-line title moved under one key":      {answers: "could not find expected ':'", src: readsAloneHead + "prompts:\n  p: my first\n    bot\n" + readsAloneBody},
+	"a two-line quoted value moved under a key": {answers: "could not find expected ':'", src: readsAloneHead + "prompts:\n  p: \"my first\n    bot\"\n" + readsAloneBody},
+	"a broken flow list moved under its key":    {answers: "mapping values are not allowed in this context", src: readsAloneHead + "imports: [lib/a.bot,\n  lib/b.bot]\n" + readsAloneBody},
+	"a two-item list moved under its key":       {answers: "did not find expected key", src: readsAloneHead + "imports:\n  - lib/a.bot\n  - lib/b.bot\n" + readsAloneBody},
 	// Every key indented deeper than the keys beside it, dedented to their
 	// column: one left behind is refused with the same message.
-	"two keys indented deeper, both dedented": "dsl: 2\nimports:\n  - lib/x.bot\nvars:\n  a: string\n",
+	"two keys indented deeper, both dedented": {answers: "mapping values are not allowed in this context", src: "dsl: 2\nimports:\n  - lib/x.bot\nvars:\n  a: string\n"},
 	// The two spellings that give a document opening with an indented block
 	// one indentation: the block dedented to the shallower column, and the
 	// lines below it indented to the block's.
-	"an indented first block dedented whole":         "dsl: 2\nimports:\n  - lib/x.bot\nnodes:\n  - agent: a\n    model: m\n",
-	"the lines below an indented block indented too": "  dsl: 2\n  imports:\n    - lib/x.bot\n  nodes:\n    - agent: a\n      model: m\n",
+	"an indented first block dedented whole":         {answers: yamlNoDocumentStart, src: "dsl: 2\nimports:\n  - lib/x.bot\nnodes:\n  - agent: a\n    model: m\n"},
+	"the lines below an indented block indented too": {answers: yamlNoDocumentStart, src: "  dsl: 2\n  imports:\n    - lib/x.bot\n  nodes:\n    - agent: a\n      model: m\n"},
 	// The same two spellings on a head carrying THREE indentations, where
 	// the column of the line that closed the block is neither of them.
-	"a three-indentation head dedented to one column": "dsl: 2\nimports:\n   - lib/a.bot\nnodes:\n  - agent: a\n    model: m\n",
-	"a three-indentation head indented to one column": "    dsl: 2\n    imports:\n     - lib/a.bot\n    nodes:\n      - agent: a\n        model: m\n",
+	"a three-indentation head dedented to one column": {answers: yamlNoDocumentStart, src: "dsl: 2\nimports:\n   - lib/a.bot\nnodes:\n  - agent: a\n    model: m\n"},
+	"a three-indentation head indented to one column": {answers: yamlNoDocumentStart, src: "    dsl: 2\n    imports:\n     - lib/a.bot\n    nodes:\n      - agent: a\n        model: m\n"},
+}
+
+// yamlDocumentRemedyWithoutPrescription are the entries the author
+// document's refusals reach whose remedy prescribes no rewrite of a
+// document that one row can carry, each with the reason: the exclusion
+// table of TestEveryDocumentRemedyReachedHasAPrescription, where an entry
+// answered by no row must be said rather than passed over in silence.
+var yamlDocumentRemedyWithoutPrescription = map[yamlEntryKey]string{
+	{message: "exceeded max depth of %d"}: "the construct is the document's own size — the remedy names the flattening, and no one document is its spelling: any document the author meant reads, and none of them is THE flattened one",
+}
+
+// yamlEntryKey names one entry of yamlRemedies the way the rows above do:
+// by one of its messages, and by the decode target that scopes it where
+// the entry is one of a family keyed on it.
+type yamlEntryKey struct {
+	message string
+	target  string
 }
 
 // A document written as its remedy says reads: the spelling each one
 // prescribes is one the author path accepts.
 func TestADocumentWrittenAsItsRemedySaysReads(t *testing.T) {
-	for name, src := range remedyPrescriptions {
-		if res := Parse("x.bot.yaml", []byte(src)); res.HasErrors() {
+	for name, p := range remedyPrescriptions {
+		if res := Parse("x.bot.yaml", []byte(p.src)); res.HasErrors() {
 			t.Errorf("%s does not read: %v", name, res.Diagnostics)
 		}
 	}
@@ -1786,18 +2058,140 @@ func TestADocumentWrittenAsItsRemedySaysReads(t *testing.T) {
 func TestEveryPrescribedDocumentIsItsOwn(t *testing.T) {
 	first := make(map[string]string, len(remedyPrescriptions))
 	for _, name := range sortedKeys(remedyPrescriptions) {
-		src := remedyPrescriptions[name]
-		if had, dup := first[src]; dup {
+		if had, dup := first[remedyPrescriptions[name].src]; dup {
 			t.Errorf("%q carries the document %q already carries: one of the two proves nothing the other does not", name, had)
 			continue
 		}
-		first[src] = name
+		first[remedyPrescriptions[name].src] = name
+	}
+}
+
+// The note is keyed on the lines the reading named: the block's own text
+// may spell any number of `line N:` without the note quoting one of them —
+// the numbers come from the TypeError the reading returned
+// (workflowfile.YAMLCause.Line), never from the words an author reads.
+func TestTheBlockLineNoteTakesTheReaderLines(t *testing.T) {
+	block := []string{"name: probe", "description: \"line 2: x\"", "triggers: 3"}
+	if got, want := YAMLBlockLineNote([]int{3}, block), ", where the line it names is the block's own, not the file's — `triggers: 3`"; got != want {
+		t.Errorf("the note named %q, not the line the reading gave: %q", got, want)
+	}
+	if got, want := YAMLBlockLineNote([]int{1, 3}, block), ", where the lines it names are the block's own, not the file's — line 1 `name: probe`, line 3 `triggers: 3`"; got != want {
+		t.Errorf("the note named %q, not the lines the reading gave: %q", got, want)
+	}
+	for _, lines := range [][]int{nil, {}, {9}, {0}, {2, 2, 3}} {
+		named := map[int]bool{}
+		for _, n := range lines {
+			if n >= 1 && n <= len(block) {
+				named[n] = true
+			}
+		}
+		got := YAMLBlockLineNote(lines, block)
+		switch len(named) {
+		case 0:
+			if got != "" {
+				t.Errorf("the note answered %q where the reading named no line the block holds: a clause hung on a number nobody named", got)
+			}
+		case 1:
+			if !strings.Contains(got, "the line it names is the block's own") || strings.Contains(got, "line 2") && !named[2] {
+				t.Errorf("the note answered %q for the lines %v: one line, quoted once", got, lines)
+			}
+		default:
+			if !strings.Contains(got, "the lines it names are the block's own") {
+				t.Errorf("the note answered %q for the lines %v: one clause per named line", got, lines)
+			}
+		}
+	}
+}
+
+// The sentence the family prints is a function of the decode target: a
+// value refused into one type is told the shape that type takes, and no
+// other cause's prescription — the four causes used to share one sentence
+// naming all of them, which sent the author of one to the fix of another.
+func TestTheUnmarshalRemedyIsAFunctionOfTheDecodeTarget(t *testing.T) {
+	const (
+		textKey  = "a value a text key takes is one line of text"
+		listKey  = "`triggers` and `capabilities` take a list"
+		blockKey = "a `.bot` frontmatter block is `key: value` lines"
+	)
+	for name, tc := range map[string]struct {
+		block, says, notSays string
+	}{
+		"a name that is a list":           {block: "name: [a, b]\n", says: textKey, notSays: listKey},
+		"triggers that is a string":       {block: "name: probe\ntriggers: cron\n", says: listKey, notSays: textKey},
+		"a block that is a line of prose": {block: "A bot that reviews pull requests\n", says: blockKey, notSays: listKey},
+	} {
+		read, _, remedies := frontmatterRefusal(tc.block)
+		switch {
+		case remedies == "":
+			t.Errorf("%s: %q reaches the author bare", name, read)
+		case !strings.Contains(remedies, tc.says):
+			t.Errorf("%s: the refusal does not name the shape its decode target takes (%q): %s%s", name, tc.says, read, remedies)
+		case strings.Contains(remedies, tc.notSays):
+			t.Errorf("%s: the refusal names the prescription of another decode target: %s%s", name, read, remedies)
+		}
+	}
+}
+
+// The author-document half of the prescription link: every entry a
+// document's refusal reaches has a document written as its remedy says, or
+// is one whose remedy prescribes no rewrite of a document at all and says
+// so in yamlDocumentRemedyWithoutPrescription. The identity test walks
+// hand-written documents, so without this link an entry could carry a
+// spelling nothing ever writes.
+func TestEveryDocumentRemedyReachedHasAPrescription(t *testing.T) {
+	answered := map[int]bool{}
+	for name, p := range remedyPrescriptions {
+		at := -1
+		for i, r := range yamlRemedies {
+			if slices.Contains(r.messages, p.answers) && r.target == "" {
+				at = i
+				break
+			}
+		}
+		if at < 0 {
+			t.Errorf("%s answers %q, which no entry of yamlRemedies lists unscoped: the row prescribes a spelling the table does not say", name, p.answers)
+			continue
+		}
+		answered[at] = true
+	}
+	excluded := map[int]string{}
+	for key, reason := range yamlDocumentRemedyWithoutPrescription {
+		found := false
+		for i, r := range yamlRemedies {
+			if slices.Contains(r.messages, key.message) && r.target == key.target {
+				excluded[i] = reason
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the exclusion table names %q, which no entry of yamlRemedies is keyed on: it excludes nothing", key.message)
+		}
+	}
+	for name, w := range yamlWitnesses {
+		var refusal string
+		for _, d := range Parse("x.bot.yaml", []byte(w.src)).Diagnostics {
+			if refusal == "" && d.Code == parser.DiagAuthorDocument && d.Severity == parser.SeverityError {
+				refusal = d.Message
+			}
+		}
+		if refusal == "" {
+			// Said by TestEveryYAMLMessageNamesTheRemedyOfEachOfItsCauses.
+			continue
+		}
+		switch at := yamlRefusalEntry(refusal); {
+		case at == -2:
+			t.Errorf("the refusal of %s ends with the remedy of more than one entry: the entry it reached cannot be read off its words", name)
+		case at < 0:
+			t.Errorf("the refusal of %s ends with no entry's remedy: %s", name, refusal)
+		case !answered[at] && excluded[at] == "":
+			t.Errorf("%s reaches remedy %d, which no row of remedyPrescriptions prescribes and no exclusion accounts for: its spelling is prescribed to an author and written nowhere — answer it with a document, or say why no document carries it (%s)", name, at, yamlRemedies[at].remedy)
+		}
 	}
 }
 
 // sortedKeys is m's keys in order: a duplicate is reported against the
 // same row at every run.
-func sortedKeys(m map[string]string) []string {
+func sortedKeys[T any](m map[string]T) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
