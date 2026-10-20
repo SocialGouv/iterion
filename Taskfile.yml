@@ -184,6 +184,7 @@ tasks:
           "$bin" run bots/rgaa-audit --sandbox none \
             --store-dir "$PWD/.rgaa-demo/store" --no-interactive \
             --max-cost-usd "${RGAA_DEMO_BUDGET:-30}" \
+            --max-tokens "${RGAA_DEMO_TOKENS:-5000000}" \
             --var "scope_globs=studio/src/**" --var rendered=required \
             --var "serve_command=ITERION_BIN='$bin' ITERION_E2E_FIXED_RUN_IDS=1 node studio/e2e/serve.mjs" \
             --var serve_ready_url=http://127.0.0.1:4899/api/server/info \
