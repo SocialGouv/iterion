@@ -327,7 +327,19 @@ func TestTheReleaseHookWiresTheAligner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(src), "'before:git:beforeRelease': ['go run ./cmd/release-floors --apply']") {
+	// The slot is an array since the mdcode golden joined it (#2600): what
+	// matters here is that the aligner still runs INSIDE it, after the slot
+	// opens — not that it is the slot's only tenant — and that it runs
+	// AFTER the golden's regeneration: the aligner is the hook that MOVES
+	// pins, so a failing hook ahead of it must abort the cut with the pins
+	// still where HEAD left them.
+	slot := strings.Index(string(src), "'before:git:beforeRelease'")
+	aligner := strings.Index(string(src), "'go run ./cmd/release-floors --apply'")
+	if slot < 0 || aligner < 0 || aligner < slot {
 		t.Fatal(".release-it.mjs no longer runs `go run ./cmd/release-floors --apply` from before:git:beforeRelease — the pins realign by hand again, or the aligner judges notes that are not rendered yet")
+	}
+	mdcode := strings.Index(string(src), "'MDCODE_UPDATE_GOLDEN=1 go test ./internal/mdcode/")
+	if mdcode < 0 || mdcode > aligner {
+		t.Fatal(".release-it.mjs no longer regenerates the mdcode golden BEFORE the aligner in before:git:beforeRelease — an mdcode failure would abort the cut with the pins already moved")
 	}
 }
