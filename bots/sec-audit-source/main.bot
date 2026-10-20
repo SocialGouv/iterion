@@ -89,7 +89,8 @@ vars:
   ## Overflow guard. gosec/semgrep can emit thousands of findings on a
   ## large repo; triage reads the scanner JSON and overflows the model
   ## context. cap_findings keeps at most this many findings per scanner
-  ## file (severity-sorted, bulky per-finding fields trimmed) and surfaces
+  ## file (severity-sorted; bulky fields trimmed except for deepsec, whose
+  ## metadata and full descriptions survive both transports) and surfaces
   ## the truncation explicitly. Raise it for exhaustive small-repo runs;
   ## lower it on a tighter-context model.
   findings_cap_per_file: int = 50
@@ -127,7 +128,9 @@ vars:
   ## The bot writes one JSON per scanned file to skip the (expensive)
   ## revalidate phase on unchanged files in subsequent runs.
   records_dir: string = "${PROJECT_DIR}/.sec-audit/files"
-  scanner_version: string = "sec-audit-source@0.1.0"
+  ## 0.1.11 invalidates verdicts cached from deepsec exports whose metadata
+  ## had been stripped before triage.
+  scanner_version: string = "sec-audit-source@0.1.11"
   records_ttl_days: int = 30
   ## Programmatic matchers directory (Cap. 2); see
   ## skills/programmatic-matchers.md. Operators drop executable
@@ -458,9 +461,10 @@ prompt triage_system:
     when no programmatic matchers are dropped at
     `.sec-audit/matchers/`.
   - deepsec_scan: present when the operator enabled the deepsec scan.
-    When non-empty, read deepsec_scan.json_paths.deepsec via read_file
-    and map each finding to a candidate per the table in
-    skills/scanner-deepsec.md.
+    When non-empty, map each finding from the deepsec group in
+    `findings_budget.inline` when transport (a) below is selected; otherwise
+    read deepsec_scan.json_paths.deepsec via read_file. In both cases, apply
+    the candidate mapping in skills/scanner-deepsec.md.
     Empty ("") when deepsec was disabled or degraded — skip silently.
   - file_filter: when non-empty, a comma-separated list of
     relative file paths. Skip every candidate whose `file` is NOT
@@ -504,8 +508,10 @@ prompt triage_system:
   1. Obtain the raw scanner findings. There are TWO transports; take the
      first that yields anything:
      a. `findings_budget.inline` — when non-empty it CARRIES the findings
-        themselves, already severity-sorted and trimmed, as a list of
-        {file, array, findings}. Use it and do not open json_paths. This is
+        themselves, already severity-sorted and capped, as a list of
+        {file, array, findings}. Non-deepsec groups are trimmed; the deepsec
+        group retains its metadata and full descriptions. Use it and do not
+        open json_paths. This is
         the transport used when you run on a backend that shares no
         filesystem with the scanners. `findings_budget.deepsec_harvest`
         names the deep-scan export this pass published, or says that none
@@ -561,8 +567,9 @@ prompt triage_user:
   Scanner findings budget (deterministic cap_findings step):
   {{input.findings_budget}}
   If `truncated` is true, the raw scanner JSON was capped to the top
-  `per_file_cap` findings per file (severity-sorted, bulky fields trimmed)
-  so it fits the context window. Triage what is present; coverage for this
+  `per_file_cap` findings per file (severity-sorted; bulky fields trimmed
+  except for deepsec, whose metadata and descriptions stay intact) so it fits
+  the context window. Triage what is present; coverage for this
   run is bounded to the kept set — report_card will surface the cap.
 
   Generic scan: {{input.generic_scan}}
@@ -1850,8 +1857,8 @@ schema triage_input:
   project_context: string
   ## Enhancement 4 — deepsec scanner envelope. Carries json_paths.deepsec
   ## pointing at the exported JSON when vars.enable_deepsec=true; an empty
-  ## object otherwise. Triage reads the file via read_file and maps
-  ## fields per skills/scanner-deepsec.md.
+  ## object otherwise. Triage maps findings from findings_budget.inline
+  ## or this file via read_file, per skills/scanner-deepsec.md.
   deepsec_scan: json
 
 schema shard_plan_output:
@@ -3370,7 +3377,8 @@ print(json.dumps({
 
 ## run_deepsec_scanner — runs deepsec headlessly from the target
 ## workspace and emits a scanner_output envelope whose json_paths.deepsec
-## points at vars.deepsec_out. ALWAYS exits 0 so a missing binary /
+## points at the per-run export derived from vars.deepsec_out, under
+## deepsec-out-<run.id>/. ALWAYS exits 0 so a missing binary /
 ## stale Node / partial-step failure NEVER fails the run; the envelope
 ## carries an errors[] tail instead.
 ##
@@ -4120,10 +4128,9 @@ printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s
 ## Beside the triage path in DATA, on it in CONTROL — the distinction sets the
 ## blast radius, so read it before editing the body below.
 ##
-## In data it is beside: scan_join keeps referencing run_deepsec_scanner, so
-## the banked findings are NOT copied into the triage prompt (the whole point
-## of json_paths is that triage reads the file itself). This node exists for
-## the operator reading a run that died later.
+## In data it is beside: scan_join keeps referencing run_deepsec_scanner, not
+## this bank. Triage independently reads json_paths or receives cap_findings'
+## inline copy; the bank exists for the operator reading a run that died later.
 ##
 ## In control it is ON the path — the edges route the run through it
 ## (run_deepsec_scanner -> bank_deepsec_findings -> scan_join). So a non-zero
@@ -4492,13 +4499,16 @@ if generic_present < min_generic:
 ## detect_tech/triage failure on iterion-sized trees). This deterministic
 ## step rewrites every scanner JSON in the pass's own scan subdirectory
 ## in place:
-## severity-sorts each findings array, keeps the top findings_cap_per_file,
-## drops bulky per-finding fields (matched code, dataflow traces, metadata)
-## and truncates long strings — preserving the scanner's NATIVE shape so
-## triage parses it unchanged. Each capped file is stamped
-## `_iterion_truncated`; the aggregate budget (raw vs kept vs capped) is
-## emitted so triage surfaces the truncation in the report. Security signal
-## is bounded, never silently dropped.
+## severity-sorts each findings array and keeps the top findings_cap_per_file.
+## Non-deepsec findings drop bulky fields and truncate long strings. The one
+## deepsec export is identified by the inode of the path published in
+## DEEPSEC_PATHS and keeps its metadata and full descriptions on disk and
+## inline; basename, realpath spelling and
+## container shape never confer that exception. Every scanner keeps its NATIVE
+## container shape. Capped dict files are stamped `_iterion_truncated`; bare
+## arrays stay arrays, with the same raw/kept/capped accounts carried by the
+## aggregate budget so triage surfaces the truncation. Security signal is
+## bounded, never silently dropped.
 tool cap_findings:
   command: `SCAN_DIR={{input.scan_dir}} CAP={{vars.findings_cap_per_file}} INLINE_MAX={{vars.triage_inline_max_bytes}} DEEPSEC_PATHS={{input.deepsec_paths}} DEEPSEC_OUT={{vars.deepsec_out}} python3 -I -c "
 import os, json, glob
@@ -4518,7 +4528,7 @@ if inline_max < 0:
     inline_max = 0
 
 FINDING_KEYS = ['results', 'Issues', 'findings', 'matches', 'vulnerabilities', 'Vulns', 'alerts']
-SEV = {'critical': 5, 'blocker': 5, 'high': 4, 'error': 4, 'major': 4, 'medium': 3, 'warning': 3, 'moderate': 3, 'minor': 2, 'low': 2, 'info': 1, 'note': 1, 'unknown': 0}
+SEV = {'critical': 5, 'blocker': 5, 'high': 4, 'high_bug': 4, 'error': 4, 'major': 4, 'medium': 3, 'bug': 3, 'warning': 3, 'moderate': 3, 'minor': 2, 'low': 2, 'info': 1, 'note': 1, 'unknown': 0}
 BULKY = {'lines', 'dataflow_trace', 'dataflowTrace', 'metadata', 'code', 'snippet', 'fix', 'fix_regex', 'fingerprint', 'context', 'sca_info', 'rendered_fix', 'raw_json'}
 MAXSTR = 300
 
@@ -4580,12 +4590,23 @@ if isinstance(_ds_paths, dict):
     _p = _ds_paths.get('deepsec')
     if isinstance(_p, str) and _p:
         _ds_path = _p
+# Only the published path's inode opts a file into deepsec's intact-field
+# transport. Neither a deepsec.json basename nor a bare-array shape does.
+def _file_identity(path):
+    try:
+        st = os.stat(path)
+        return (st.st_dev, st.st_ino)
+    except OSError:
+        return ('missing', os.path.realpath(path))
+
+_ds_identity = _file_identity(_ds_path) if _ds_path else None
 _ds_slot_name = os.path.basename(os.environ.get('DEEPSEC_OUT', '').strip().rstrip('/'))
 deepsec_harvest = 'none: the deep scanner published no export path on this pass (disabled, refused, or output dropped as unusable); the shared slot under scan_dir is never read'
 
 per_scanner = []
 harvest = []
 total_raw = total_kept = total_capped = 0
+_ds_n = _ds_raw = 0
 # Merge the top-level glob (minus the shared-slot name) with the per-run
 # deepsec path and sort the whole list by BASENAME. Appending last would
 # place deepsec at the tail of the harvest loop; the inline budget breaks
@@ -4593,19 +4614,21 @@ total_raw = total_kept = total_capped = 0
 # layer that fills the budget would reach 'inline' with zero deepsec items
 # -- the exact gap the harvest exists to close on non-sandboxed backends
 # (revi R6ee3b1). Sorting by basename keeps the deep scan INTERLEAVED with
-# the other scanners -- the letter d sorts between custom.json and
-# gitleaks.json -- so the budget cuts across a mixed harvest rather than a
-# partition. An override that points json_paths.deepsec at a top-level
-# file the glob already yielded is deduped below by realpath, so the
-# producer's path is processed at most once.
+# the other scanners under whatever filename the producer publishes, so the
+# budget cuts across a mixed harvest rather than a partition. Every glob
+# entry is keyed by inode identity, so a symlink or hardlink and its target
+# are one document; assigning the deepsec key last makes the producer's
+# published spelling win that slot and keeps its accounts on the published path.
 # (No backticks in this comment: they would close the DSL command block.)
-_files = [p for p in glob.glob(os.path.join(scan_dir, '*.json')) if not _ds_slot_name or os.path.basename(p) != _ds_slot_name]
-# The producer's path joins the harvest once, even if an override made it a
-# top-level file the glob already yielded (realpath compare: same file, one
-# entry) -- processing it twice would double-count its findings in every
-# account the envelope carries.
-if _ds_path and os.path.realpath(_ds_path) not in {os.path.realpath(p) for p in _files}:
-    _files.append(_ds_path)
+_files_by_identity = {}
+_files_by_realpath = _files_by_identity
+for p in glob.glob(os.path.join(scan_dir, '*.json')):
+    if _ds_slot_name and os.path.basename(p) == _ds_slot_name:
+        continue
+    _files_by_identity.setdefault(_file_identity(p), p)
+if _ds_identity is not None:
+    _files_by_identity[_ds_identity] = _ds_path
+_files = list(_files_by_identity.values())
 _files.sort(key=lambda p: os.path.basename(p))
 for jf in _files:
     try:
@@ -4613,34 +4636,33 @@ for jf in _files:
             data = json.load(fh)
     except (OSError, ValueError):
         continue
+    is_deepsec = _ds_identity is not None and _file_identity(jf) == _ds_identity
     if isinstance(data, list):
-        # An ARRAY-shaped export -- deepsec writes one (JSON.stringify of a
-        # findings array) -- carries no findings KEY, so the dict branch
-        # below never sees it. Skipping a document by its SHAPE would drop
-        # the deepest scanner from the payload with no signal at all, so it
-        # is harvested here under the same contract as the dict branch: the
-        # cap can thin it, and when it does the file is REWRITTEN in place,
-        # bare-array shape preserved -- both transports (the inline envelope
-        # and a triage opening the json_paths file directly, which is the
-        # default when the inline budget is 0) must see, and report, the
-        # SAME body. Envelope and disk disagreeing in either direction --
-        # completeness reported over vanished findings, or a thinning
-        # announced over a full file -- is the defect class this node exists
-        # to make impossible (revi R58b272).
+        # An ARRAY-shaped export carries no findings KEY, so the dict branch
+        # below never sees it. The cap can thin it, and when it does the file
+        # is REWRITTEN in place, bare-array shape preserved -- both transports
+        # (the inline envelope and a triage opening the json_paths file
+        # directly, which is the default when the inline budget is 0) must
+        # see, and report, the SAME body. The container shape never selects
+        # deepsec's no-trim policy; the producer inode identity above does.
         if not data:
             continue
         raw = len(data)
-        kept = [trim(x) for x in sorted(data, key=sev_rank, reverse=True)[:cap]]
+        kept = sorted(data, key=sev_rank, reverse=True)[:cap]
+        if not is_deepsec:
+            kept = [trim(x) for x in kept]
         capped = raw - len(kept)
+        if is_deepsec:
+            _ds_raw = raw
+            _ds_n = len(kept)
         total_raw += raw
         total_kept += len(kept)
         total_capped += capped
         per_scanner.append({'file': os.path.basename(jf), 'array': '', 'raw': raw, 'kept': len(kept), 'capped': capped})
         harvest.append({'file': os.path.basename(jf), 'array': '', 'findings': kept})
         if capped > 0:
-            # The deep bank read its own copy earlier in the graph
-            # (bank_deepsec_findings -> scan_join), so capping in place
-            # cannot starve it.
+            # The deep bank read its own copy earlier in the graph, so an
+            # in-place deepsec cap cannot starve it.
             try:
                 with open(jf, 'w', encoding='utf-8') as fh:
                     json.dump(kept, fh)
@@ -4660,7 +4682,10 @@ for jf in _files:
     arr = sorted(arr, key=sev_rank, reverse=True)
     kept = arr[:cap]
     capped = raw - len(kept)
-    data[key] = [trim(x) for x in kept]
+    data[key] = kept if is_deepsec else [trim(x) for x in kept]
+    if is_deepsec:
+        _ds_raw = raw
+        _ds_n = len(kept)
     if capped > 0:
         data['_iterion_truncated'] = {'raw': raw, 'kept': len(kept), 'capped': capped, 'cap': cap, 'order': 'severity-desc'}
     try:
@@ -4674,14 +4699,6 @@ for jf in _files:
     harvest.append({'file': os.path.basename(jf), 'array': key, 'findings': data[key]})
 
 if _ds_path:
-    _ds_n = 0
-    _ds_raw = 0
-    for g in harvest:
-        if g['file'] == os.path.basename(_ds_path):
-            _ds_n = len(g['findings'])
-    for p in per_scanner:
-        if p['file'] == os.path.basename(_ds_path):
-            _ds_raw = p['raw']
     if _ds_n:
         if _ds_raw > _ds_n:
             deepsec_harvest = 'published: ' + _ds_path + ' (' + str(_ds_n) + ' of ' + str(_ds_raw) + ' findings harvested; the per-file cap dropped ' + str(_ds_raw - _ds_n) + ' -- narrow scope or raise findings_cap_per_file and re-run)'
@@ -4781,6 +4798,27 @@ def content_hash(abs_path):
     except (OSError, IOError):
         return None
 
+def scanner_version_tuple(value):
+    version = str(value).rsplit('@', 1)[-1].strip()
+    if version[:1] in ('v', 'V'):
+        version = version[1:]
+    parts = version.split('.')
+    if not parts or any(p == '' or not p.isascii() or not p.isdigit() for p in parts):
+        return None
+    nums = [int(p) for p in parts]
+    while len(nums) < 3:
+        nums.append(0)
+    return tuple(nums)
+
+def scanner_version_older(record_version, current_version):
+    if record_version == current_version:
+        return False
+    record_tuple = scanner_version_tuple(record_version)
+    current_tuple = scanner_version_tuple(current_version)
+    if record_tuple is None or current_tuple is None:
+        return True
+    return record_tuple < current_tuple
+
 # Compute current content_hash for every file referenced in candidates
 files_seen = {}
 for c in candidates:
@@ -4805,7 +4843,7 @@ for rel, cur_hash in files_seen.items():
         file_hit[rel] = None; continue
     if not latest or latest.get('content_hash') != cur_hash:
         file_hit[rel] = None; continue
-    if latest.get('scanner_version','') < scanner_v:
+    if scanner_version_older(latest.get('scanner_version',''), scanner_v):
         file_hit[rel] = None; continue
     try:
         analysed = datetime.datetime.fromisoformat(latest.get('analysed_at','').replace('Z',''))

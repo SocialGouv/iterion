@@ -1,7 +1,15 @@
 name: sec-audit-source
 display_name: Seki
 icon: 🛡️
-version: 0.1.10
+version: 0.1.11
+## 0.1.11 — ingest the real deepsec 2.3.9 export: root
+## title/description/severity/labels, metadata.* locations, and recommendation
+## sections inside description. cap_findings recognizes only the inode of
+## the path published in DEEPSEC_PATHS, ranks HIGH_BUG/BUG, and preserves deepsec
+## metadata and long descriptions inline and on disk while retaining its
+## sort+cap and every other scanner's trim. scanner_version moves to 0.1.11
+## and file-record comparisons read numeric versions after @, so verdicts
+## produced from metadata-stripped findings (including 0.1.9) are not replayed.
 ## 0.1.10 — the triage prompt describes when `deepsec_scan` arrives by what
 ## the operator enabled, not by a var the node never shows the model.
 ## 0.1.8 — `${BUNDLE_SKILLS_DIR}` is constrained absolute at launch and
@@ -88,10 +96,17 @@ description: |
   trivy fs for filesystem misconfig, semgrep --config=auto), triages
   the raw output with an LLM against a finding taxonomy, confronts
   candidates against `.sec-audit/fp-known.yaml` to suppress
-  curated false positives, revalidates surviving candidates with a
-  two-phase judge (anti-façade), then writes findings to the iterion
-  native kanban board (one issue per finding, labelled by severity +
-  type) and exports a markdown summary.
+  curated false positives, revalidates surviving candidates through three
+  independent disprove voters and a deterministic majority, then writes
+  findings to the iterion native kanban board (one issue per finding,
+  labelled by severity + type) and exports a markdown summary.
+
+  Optional deepsec 2.3.9 ingestion preserves ordered labels, nested
+  metadata (including the OwnerSummary object) and full preamble /
+  Finding / Recommendation descriptions through severity sorting and
+  capping, on both inline and file transports. It requires the deepsec
+  CLI on PATH plus Node 22+; deepsec_root only points at an optional
+  reference clone for diagnostics.
 
   Cross-run memory: false positives confirmed by the operator (or by
   the revalidate judge after explicit human reasoning) are written
@@ -101,7 +116,8 @@ description: |
 
   Per-language extensibility: ships JS/TS, Go, Python and a
   language-agnostic baseline. Add a language by dropping a
-  `skills/lang-<id>.md` and an entry in the `lang_scan` router.
+  `skills/lang-<id>.md` with its `iterion:scanners` block; no
+  `lang_scan` router or DSL edit is needed.
 when_to_use: |
   Use for a READ-ONLY security audit of the source itself (injection,
   SSRF, IDOR, broken auth, hardcoded secrets, crypto misuse,

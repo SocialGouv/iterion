@@ -1,0 +1,94 @@
+[
+  {
+    "title": "[LOW] Verbose authentication error reveals account existence",
+    "description": "**File:** `src/auth/login.ts` (lines 42, 43, 44)\n**Project:** prj_deepsec_fixture\n**Severity:** LOW  •  **Confidence:** medium  •  **Slug:** `user-enumeration`\n\n## Finding\nThe login route returns different responses when an account is missing and when its password is incorrect. An unauthenticated client can use this distinction to enumerate registered email addresses before attempting credential stuffing. The missing-account branch returns ACCOUNT_NOT_FOUND while the wrong-password branch returns INVALID_CREDENTIALS; both responses are observable without rate limiting at the API boundary.\n\n## Recommendation\nReturn one generic authentication failure for both branches, keep the detailed reason in server-side logs, and apply the same response timing and throttling policy to every login attempt.",
+    "severity": "LOW",
+    "labels": ["security", "project:prj_deepsec_fixture", "severity:LOW", "slug:user-enumeration", "confidence:medium", "missing-owner"],
+    "metadata": {
+      "filePath": "src/auth/login.ts",
+      "lineNumbers": [42, 43, 44],
+      "vulnSlug": "user-enumeration",
+      "confidence": "medium",
+      "runId": "deepsec-2.3.9-fixture-run",
+      "projectId": "prj_deepsec_fixture",
+      "severity": "LOW",
+      "discoveredAt": "2026-10-18T09:41:17.204Z",
+      "owners": {
+        "teams": [],
+        "oncall": [],
+        "managers": [],
+        "contributors": [],
+        "recentCommitters": []
+      }
+    }
+  },
+  {
+    "title": "[HIGH_BUG] SQL injection through interpolated order parameter",
+    "description": "**File:** `src/admin/report.ts` (lines 18, 19, 20, 21)\n**Project:** prj_deepsec_fixture\n**Severity:** HIGH_BUG  •  **Confidence:** high  •  **Slug:** `sql-injection`\n\n## Finding\nThe user-controlled order query parameter is concatenated into the SQL statement used by the administrative report endpoint. Although the values selected by the report are parameterized, the ORDER BY fragment is not, so a crafted expression can alter the query executed by the database account. req.query.order reaches the reportQuery template without an allowlist and the resulting string is passed to db.query with no parser restricting it to a column name and direction.\n\n## Recommendation\nMap the accepted sort keys to constant SQL fragments, reject every other value, and keep user input out of the statement text. Add a regression case containing a quoted expression and a stacked-statement attempt.",
+    "severity": "HIGH_BUG",
+    "labels": ["security", "project:prj_deepsec_fixture", "severity:HIGH_BUG", "slug:sql-injection", "confidence:high", "missing-owner"],
+    "metadata": {
+      "filePath": "src/admin/report.ts",
+      "lineNumbers": [18, 19, 20, 21],
+      "vulnSlug": "sql-injection",
+      "confidence": "high",
+      "runId": "deepsec-2.3.9-fixture-run",
+      "projectId": "prj_deepsec_fixture",
+      "severity": "HIGH_BUG",
+      "discoveredAt": "2026-10-18T09:41:17.204Z",
+      "owners": {
+        "teams": [],
+        "oncall": [],
+        "managers": [],
+        "contributors": [],
+        "recentCommitters": []
+      }
+    }
+  },
+  {
+    "title": "[BUG] Download path can escape the export directory",
+    "description": "**File:** `src/documents/download.ts` (lines 27, 28, 29)\n**Project:** prj_deepsec_fixture\n**Severity:** BUG  •  **Confidence:** high  •  **Slug:** `path-traversal`\n\n## Finding\nThe document download handler joins the export root with a filename supplied by the request and then reads the result. Path separators and parent-directory segments are preserved, allowing an authenticated user to traverse outside the export directory and retrieve files readable by the service account. The handler calls path.join(exportRoot, req.params.name) and passes the resulting path to fs.readFile without checking the resolved path against the resolved export root.\n\n## Recommendation\nResolve both paths, require the candidate to remain beneath the export root, reject absolute paths and traversal segments, and preferably look up a server-generated download identifier instead of accepting a filesystem path from the client.",
+    "severity": "BUG",
+    "labels": ["security", "project:prj_deepsec_fixture", "severity:BUG", "slug:path-traversal", "confidence:high", "missing-owner"],
+    "metadata": {
+      "filePath": "src/documents/download.ts",
+      "lineNumbers": [27, 28, 29],
+      "vulnSlug": "path-traversal",
+      "confidence": "high",
+      "runId": "deepsec-2.3.9-fixture-run",
+      "projectId": "prj_deepsec_fixture",
+      "severity": "BUG",
+      "discoveredAt": "2026-10-18T09:41:17.204Z",
+      "owners": {
+        "teams": [],
+        "oncall": [],
+        "managers": [],
+        "contributors": [],
+        "recentCommitters": []
+      }
+    }
+  },
+  {
+    "title": "[HIGH] JWT verification accepts a hard-coded signing secret",
+    "description": "**File:** `src/auth/token.ts` (lines 7, 8, 9, 10, 11)\n**Project:** prj_deepsec_fixture\n**Severity:** HIGH  •  **Confidence:** high  •  **Slug:** `hardcoded-secret`\n\n## Finding\nThe API falls back to a repository-wide constant when the JWT_SECRET environment variable is absent. Every deployment using that fallback shares a signing key known to anyone who can read the source, so forged tokens can be given arbitrary subject and role claims and will pass the normal verification middleware. The token verifier selects process.env.JWT_SECRET || DEFAULT_JWT_SECRET and DEFAULT_JWT_SECRET is a string literal committed beside the authentication module.\n\n## Recommendation\nRemove the fallback and fail startup when the secret is absent. Load a high-entropy value from the deployment secret store, rotate tokens signed with the committed value, and add a startup test proving that an empty configuration is refused.",
+    "severity": "HIGH",
+    "labels": ["security", "project:prj_deepsec_fixture", "severity:HIGH", "slug:hardcoded-secret", "confidence:high", "missing-owner"],
+    "metadata": {
+      "filePath": "src/auth/token.ts",
+      "lineNumbers": [7, 8, 9, 10, 11],
+      "vulnSlug": "hardcoded-secret",
+      "confidence": "high",
+      "runId": "deepsec-2.3.9-fixture-run",
+      "projectId": "prj_deepsec_fixture",
+      "severity": "HIGH",
+      "discoveredAt": "2026-10-18T09:41:17.204Z",
+      "owners": {
+        "teams": [],
+        "oncall": [],
+        "managers": [],
+        "contributors": [],
+        "recentCommitters": []
+      }
+    }
+  }
+]
