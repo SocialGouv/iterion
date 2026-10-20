@@ -104,3 +104,37 @@ func TestRunnerSubbotWritesIntoTheLentWorkspace(t *testing.T) {
 		t.Errorf("subbot write_file created in the pod cwd: %v", err)
 	}
 }
+
+func TestRunnerBuildExecutorCreatesAMissingWorkspace(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	podBase := gittest.SourceRepo(t)
+	t.Chdir(podBase)
+
+	// A run with no repository to clone keeps the runner's base WorkDir,
+	// which nothing materializes before the executor is built — the
+	// cloud-e2e pod died on exactly that stat.
+	missing := filepath.Join(t.TempDir(), "not-yet-created")
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop(), WorkDir: podBase, SandboxOverride: "none"}}
+	msg := &queue.RunMessage{RunID: "run-missing-workspace", WorkflowName: "wf"}
+	exec, _, err := r.buildExecutor(context.Background(), msg, &ir.Workflow{Name: "wf"}, missing, iterlog.Nop(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeExecutor(exec)
+
+	if _, err := os.Stat(missing); err != nil {
+		t.Fatalf("the run workspace was not materialized: %v", err)
+	}
+	_, err = exec.Execute(context.Background(), &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "write"}, Command: "write_file",
+	}, map[string]any{"path": "created.txt", "content": "in the fresh workspace\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(missing, "created.txt")); err != nil {
+		t.Errorf("write_file did not land in the materialized workspace: %v", err)
+	}
+}

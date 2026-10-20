@@ -3284,6 +3284,15 @@ func envPositiveFloat(key string) (float64, bool) {
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
 func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
+	// runview.BuildExecutor stats this directory to root Claw's file tools,
+	// while the engine only creates a missing workspace lazily on its first
+	// write — a run with no repository to clone keeps the pod's base
+	// WorkDir, which nothing else materializes before this point.
+	if workDir != "" {
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			return nil, nil, fmt.Errorf("runner: create run workspace %s: %w", workDir, err)
+		}
+	}
 	spec, usage, err := r.executorSpec(ctx, msg, wf, workDir, logger, hookObservers)
 	if err != nil {
 		return nil, nil, err
