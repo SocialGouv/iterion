@@ -387,11 +387,18 @@ func frontmatterNotices(path string, f *ast.File, carries bool) []string {
 			// their file does not hold.
 			why = "the frontmatter block is not closed (no second `# ---`/`## ---` line)"
 		case err != nil:
-			// The reading's own words, and the spelling that avoids them
-			// where the author document's table answers that message:
-			// a frontmatter is YAML the same author writes.
+			// The reading's own words, and the remedy of its structured
+			// cause where the author document's table answers it: a
+			// frontmatter is YAML the same author writes.
 			read := strings.Join(strings.Fields(err.Error()), " ")
-			why = "the frontmatter is not YAML the catalog reader reads" + author.YAMLBlockLineNote(read, block.Lines) + " (" + read + author.YAMLRemedy(read) + ")"
+			causes := workflowfile.YAMLCauses(workflowfile.YAMLv2, err)
+			var named []int
+			for _, c := range causes {
+				if c.Line > 0 {
+					named = append(named, c.Line)
+				}
+			}
+			why = "the frontmatter is not YAML the catalog reader reads" + author.YAMLBlockLineNote(named, block.Lines) + " (" + read + author.YAMLRemedies(causes) + ")"
 		case ident.Empty():
 			why = "the frontmatter carries none of the four keys of `catalog:` (" + strings.Join(workflowfile.FrontmatterKeys, ", ") + ")"
 		}

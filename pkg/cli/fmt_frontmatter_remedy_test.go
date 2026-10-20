@@ -24,7 +24,10 @@ func TestAFrontmatterRefusalNoticeCarriesItsRemedy(t *testing.T) {
 		"a !!binary value that is not base64": {
 			"## ---\n## name: !!binary nope!\n## ---\n",
 			"!!binary value contains invalid base64 data",
-			"reads as a YAML tag",
+			// The clause the block entry's sentence alone carries: the
+			// witness of the sentence's family, not of any phrase two tag
+			// entries share.
+			"frontmatter block reads the tag",
 		},
 		"a value tagged !!int that is not one": {
 			"## ---\n## name: !!int notanint\n## ---\n",
@@ -179,6 +182,9 @@ func TestAFrontmatterRefusalSaysWhichLinesItsNumberCounts(t *testing.T) {
 		// `cannot decode` reader truncates to — it truncates nothing.
 		"a complex key whose text names a line of the block":         {head: "## ---\n## x:\n##   ? [\"a\\\"line 4: b\"]\n##   : 1\n## k5: v5\n## ---\n"},
 		"a value whose text names a line of the block at any length": {head: "## ---\n## name: !!int \"a`line 5: a tail of any length, the reader truncates nothing\"\n## k3: v3\n## k4: v4\n## k5: v5\n## k6: v6\n## ---\n"},
+		// A line the reading names that the block holds blank: there is no
+		// text to quote, and a pair of empty backticks is not a clause.
+		"a refusal naming a blank line": {head: "## ---\n## name: \"unterminated\n##\n## ---\n", forbid: []string{"— ``"}},
 		// A forged number BESIDE one the reader really wrote: the notice
 		// owes the author the reader's line and no other, so a value
 		// naming a second line of the block must not add a quote.
@@ -187,6 +193,15 @@ func TestAFrontmatterRefusalSaysWhichLinesItsNumberCounts(t *testing.T) {
 			fileLines:  []int{3},
 			blockLines: []int{2},
 			texts:      []string{"triggers: \"a`line 9:\""},
+		},
+		// A forged number EQUAL to the one the reader really wrote: the
+		// value's own text naming line 2 adds no second quote of it — the
+		// notice owes one clause per line the reading named.
+		"a value whose text names the reader's own line": {
+			head:       "## ---\n## name: probe\n## triggers: \"line 2: x\"\n## ---\n",
+			fileLines:  []int{3},
+			blockLines: []int{2},
+			texts:      []string{"triggers: \"line 2: x\""},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
