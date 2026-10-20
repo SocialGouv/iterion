@@ -16,9 +16,39 @@
 // renderer shows for a stray backtick and why Mask must not swallow the rest
 // of the line when it meets one.
 //
-// Not modelled: the indented (four-space) code block. Every caller reads
-// either a single line of prose or a page whose code is fenced, and no link
-// in this repository's corpus sits in an indented block.
+// Not modelled: the CONTENT of the indented (four-space) code block. A
+// delimiter indented four or more columns past its container opens no fence
+// — the block phase below reads the indented code block, and the fence state
+// answers to it — but the block's own lines are still read as prose here:
+// every caller reads either a single line of prose or a page whose code is
+// fenced, and no link in this repository's corpus sits in an indented
+// block.
+//
+// Four further shapes the block phase reads by APPROXIMATION, named here
+// where the old line-by-line fence carried its one greppable limit, so a
+// reader can grep for the class and not find it closed:
+//
+//   - An HTML block is not modelled: a line that opens one (a comment, a
+//     tag alone on its line) neither interrupts nor holds a fence, so a
+//     delimiter inside the block reads as a fence opener here where a
+//     renderer reads HTML through the block's closer.
+//   - A setext underline is read where the leaf reads it: under an open
+//     paragraph it closes the paragraph and opens nothing (a heading);
+//     read as a container's lazy continuation, the run stays paragraph
+//     text where a renderer makes it the underline. A `---` keeps the
+//     thematic-break reading it also has, which cuts the container.
+//   - The GFM table is modelled for its paragraph-state effect alone — a
+//     delimiter row makes the rows it caps non-paragraph, so a marker
+//     below the rows opens an item paragraph text would refuse. The
+//     table's cells are nobody's here.
+//   - A tab advances the column to the next multiple of four wherever
+//     indentation defines structure; the partial-tab reconstruction
+//     CommonMark makes at a container boundary — the spaces its expansion
+//     leaves inside the content — is not rebuilt.
+//
+// Measured against pandoc 3.1.3 (gfm) as the oracle, the approximations
+// hold where they claim to on every shape probed; the committed corpus
+// carries none of the shapes (the golden would name the file).
 //
 // A LINE ends at a line feed, a carriage return, or a carriage return and a
 // line feed — CommonMark's rule, and the rule the renderer that serves these
@@ -41,32 +71,6 @@ var (
 	// language — so Mask uses the scanner below and this stays for the line
 	// scanners that TRANSFORM a span's text rather than mask it.
 	spanRe = regexp.MustCompile("`+[^`]*`+")
-	// fenceRe matches a line that OPENS a fenced code block, including one a
-	// container has pushed off column 0: a blockquote, a list item, or a
-	// blockquote carrying a list. A delimiter rule that stopped at column 0
-	// could not see such an opener at all, and everything below a `>   ```md`
-	// or a `- ``` ` line read as prose.
-	//
-	// Indentation is not bounded here: `mdcode` does not model the indented
-	// code block that four columns would otherwise mean.
-	//
-	// STATED LIMIT: accepting a list marker with no block parser behind it
-	// means a fence can be opened where CommonMark starts no container at all
-	// — `2) ``` ` interrupting a paragraph, where only `1.` may — and kept
-	// open past the container's end. Greppable here rather than silent.
-	fenceRe = regexp.MustCompile("^\\s*(?:>\\s?)*\\s*(?:(?:[-*+]|[0-9]{1,9}[.)])[ \\t]+)?(`{3,}|~{3,})")
-	// fenceCloseRe is the same rule WITHOUT the list marker. A marker opens a
-	// new list item whose first block is the fence, so it can only introduce
-	// an OPENER; a closing fence takes nothing but spaces and quote markers
-	// before it. Reading `+ ``` ` inside an open block as its closer ends the
-	// block on a line CommonMark keeps inside it — and that shape is written
-	// in this org's own tree, a ```markdown block showing a ```diff block.
-	fenceCloseRe = regexp.MustCompile("^\\s*(?:>\\s?)*\\s*(`{3,}|~{3,})")
-	// itemRe matches a line that OPENS a list item: the blockquote and
-	// indentation prefix, the bullet or ordered marker, and the whitespace
-	// run after it (empty at the end of the line). What the three groups
-	// measure is the item's content column — see itemOpener.
-	itemRe = regexp.MustCompile(`^([ \t]*(?:>[ \t]?)*[ \t]*)((?:[-*+]|[0-9]{1,9}[.)]))([ \t]*)`)
 )
 
 // SpanPattern returns the one-regexp approximation of a code span. Prefer
@@ -146,28 +150,6 @@ func Spans(line string) [][2]int {
 	return spans
 }
 
-// fenceMarker returns the fenced-block delimiter a line carries, or "".
-//
-// A backtick fence's info string may not itself contain a backtick: "```go
-// `x`" is a PARAGRAPH, not a fence. Reading one as an opener costs the whole
-// rest of the page, because no later line closes it.
-//
-// Unexported, and taking its pattern as a parameter rather than reading a
-// package var: WHICH pattern applies depends on whether a block is open, and
-// an exported helper answering with only one of them would invite a caller to
-// decide a close with the opener's rule — the defect that cost a round.
-func fenceMarker(line string, re *regexp.Regexp) string {
-	m := re.FindStringSubmatch(line)
-	if m == nil {
-		return ""
-	}
-	marker := m[1]
-	if marker[0] == '`' && strings.ContainsRune(line[strings.Index(line, marker)+len(marker):], '`') {
-		return ""
-	}
-	return marker
-}
-
 // frontMatterEnd matches the delimiter of a YAML front-matter block.
 var frontMatterEnd = regexp.MustCompile(`^(---|\.\.\.)\s*$`)
 
@@ -188,6 +170,13 @@ type FrontMatterScanner struct {
 
 // Skip reports whether the line belongs to the front matter — its delimiters
 // included — and advances the scanner.
+//
+// It lives beside FenceScanner because it answers the other half of the same
+// question — where a page's prose begins — and because the two consumers that
+// disagreed about it published the disagreement: six rows of the committed
+// docs map carried `title: ` and `layout: home` as the page's opening
+// sentence, because one scanner skipped front matter and the other had never
+// heard of it.
 func (f *FrontMatterScanner) Skip(line string) bool {
 	if !f.seenFirst {
 		f.seenFirst = true
@@ -208,7 +197,39 @@ func (f *FrontMatterScanner) Skip(line string) bool {
 	return true
 }
 
+// blockFrame is one container on the stack.
+type blockFrame struct {
+	kind frameKind
+	// col is the frame's content column, counted from the start of the
+	// line: where the frame's own blocks begin, and the reach a later line
+	// needs to still be inside it.
+	col int
+	// empty marks a list item that opened with nothing after its marker.
+	// Such an item begins with a blank line, and CommonMark lets a list
+	// item begin with at most one: the blank line after it ends it, where
+	// a blank line ends no other frame.
+	empty bool
+}
+
+type frameKind uint8
+
+const (
+	quoteFrame frameKind = iota
+	itemFrame
+)
+
 // FenceScanner tracks fenced code blocks across the lines of one document.
+//
+// It is CommonMark's BLOCK PHASE for the constructs that decide where a
+// fence begins and ends: a stack of containers advanced line by line —
+// block quotes and list items, each carrying the column its own content
+// starts at — over one open leaf, which is a paragraph, a fenced code
+// block, an indented code block or a GFM table. Every verdict this package
+// reports is the leaf's: a delimiter opens a fence where the leaf phase
+// reads one, and a block a container holds ends where its container does.
+// The shapes read by approximation are named in the package doc — HTML
+// blocks, the setext underline, the GFM table's paragraph-state effect,
+// tab reconstruction — not carried silently.
 //
 // A fence rule has TWO halves — which lines are delimiters, and which
 // delimiter closes which fence — and copying one half is worse than copying
@@ -221,46 +242,40 @@ func (f *FrontMatterScanner) Skip(line string) bool {
 //
 // A block a CONTAINER holds ends where its container does: a list item's
 // fence is closed by the end of the item, a blockquote's by the end of the
-// quote — fenced content is not paragraph continuation text, so a line less
-// indented than the container's content column is outside it. A scanner
-// blind to that pairs an opener the renderer holds inside a container with a
-// delimiter BELOW the container, calls the text balanced, and leaves the
-// page the second delimiter opens — the phantom fence — to everything after
-// it.
+// quote — fenced content is not paragraph continuation text, so a line the
+// containers cannot continue is outside it. A scanner blind to that pairs an
+// opener the renderer holds inside a container with a delimiter BELOW the
+// container, calls the text balanced, and leaves the page the second
+// delimiter opens — the phantom fence — to everything after it.
 //
 // The zero value is ready: a document starts outside a fence.
 type FenceScanner struct {
-	open  bool
-	char  byte
-	n     int
-	quote int
-	// hold is the content column of the container holding the open block: a
-	// non-blank line indented less than it is outside the container, which
-	// closes the block. A LIST MARKER on the opener's own line gives it
-	// exactly; a list item OPEN from an earlier line gives it too (item
-	// below); an opener four or more columns in bounds it, since a fence
-	// takes at most three columns past its container; it is 0 for an opener
-	// that needs no container, where the rule is the delimiters' alone.
-	hold int
-	// item is the content column of the innermost list item open at the line
-	// just read, 0 for none, and itemQuote the blockquote depth it was opened
-	// at. A content column is at least 2 — a marker and its space — so 0 is
-	// no item, and the zero value is a document inside no container.
-	//
-	// It is kept because a fence's container is usually NOT on the fence's
-	// own line: an author writes the example indented under the bullet that
-	// introduces it, and the item is what the renderer closes the block
-	// with. Tracked across lines, not read off the delimiter, and only while
-	// no block is open: a line inside a fenced block is content and opens no
-	// container.
-	item      int
-	itemQuote int
-	// paraAbove says a paragraph may be open on the line above the one being
-	// read: a non-blank line outside a fenced block leaves one, where a
-	// blank line, a fence delimiter and the start of the text leave none. It
-	// is what tells itemOpener whether a marker CommonMark forbids from
-	// interrupting a paragraph starts a list item where it sits.
-	paraAbove bool
+	// frames is the container stack, outermost first: the block quotes and
+	// list items the lines so far have opened and not ended. A frame ends
+	// at the first line that fails to continue it, and every block it held
+	// ends with it.
+	frames []blockFrame
+	// The one open leaf below the innermost frame. fenceOpen is the fenced
+	// code block, with the character and length its closer must match.
+	// codeOpen, paraOpen and tableOpen are the indented code block, the
+	// paragraph and the GFM table — the three states a delimiter's fate
+	// hangs on. A fence's content parses for its closer alone, so the
+	// other three are false whenever fenceOpen is true, and at most one
+	// leaf is open at a time.
+	fenceOpen bool
+	fenceChar byte
+	fenceLen  int
+	codeOpen  bool
+	paraOpen  bool
+	tableOpen bool
+	// pipeAbove and cellsAbove are the header-row candidate a GFM table
+	// opens on: whether the line just read carried an unescaped pipe, and
+	// how many cells it cuts into. The table is modelled for what it does
+	// to FENCE MEMBERSHIP alone — its rows are not paragraph text, so a
+	// marker below the rows opens an item where paragraph text would
+	// refuse it — and for nothing else.
+	pipeAbove  bool
+	cellsAbove int
 	// Where the open block was opened — the delimiter's offset in its line,
 	// and the delimiter — so a caller repairing a dangling opener reads them
 	// off the scanner that found it. openedOn says the line just read is
@@ -274,215 +289,455 @@ type FenceScanner struct {
 
 // Open reports whether the scanner is currently inside a fenced block — the
 // state left by the lines already fed to Code, before the next one is read.
-func (f *FenceScanner) Open() bool { return f.open }
+func (f *FenceScanner) Open() bool { return f.fenceOpen }
 
 // Code reports whether the line is code — a fence delimiter, or a line inside
 // a fenced block — and advances the scanner. A delimiter is code too: it is
 // not prose, and no user of this type has ever wanted it.
+//
+// The line is read the way CommonMark reads it, in the phase's own order:
+// the blank line that ends no container, then the frames the line still
+// continues, then the containers it may open below them, then the leaf.
 func (f *FenceScanner) Code(line string) bool {
 	f.openedOn = false
-	// The container holding the block ends before this line, so the block
-	// ends with it — and the line is read again from the closed state, where
-	// a delimiter on it OPENS a block instead of closing one no renderer
-	// kept open.
-	if f.open && f.containerEnded(line) {
-		f.open = false
+	if blankLine(line) {
+		// A blank line ends no frame — a quote and a list item both carry
+		// on over one. The three line-adjacent leaves end: their content
+		// is the lines above, and this line is after them. A fenced block
+		// is not line-adjacent — the blank is its content, and the block
+		// carries on.
+		f.paraOpen, f.codeOpen, f.tableOpen = false, false, false
+		f.pipeAbove, f.cellsAbove = false, 0
+		// A list item that opened EMPTY is the one frame a blank line
+		// ends: CommonMark lets a list item begin with at most one blank
+		// line.
+		if n := len(f.frames); n > 0 && f.frames[n-1].empty {
+			f.cut(n - 1)
+		}
+		return f.fenceOpen
 	}
-	// Outside a block the line can open, continue or end a list item, which
-	// is the container the next opener will be held by.
-	if !f.open {
-		f.trackItem(line)
+	// MATCH: continue every frame the line still sits inside, outermost
+	// first. A quote continues where at most three columns past its content
+	// column a `>` stands; an item where the content reaches its content
+	// column. The first frame the line cannot continue ends, with every
+	// frame inside it — unless the paragraph it holds continues LAZILY.
+	pos, col, depth := 0, 0, 0
+	for depth < len(f.frames) {
+		fr := f.frames[depth]
+		ind, indCol := skipIndent(line, pos, col)
+		matched := false
+		switch fr.kind {
+		case quoteFrame:
+			matched = indCol-col <= 3 && ind < len(line) && line[ind] == '>'
+			if matched {
+				pos, col = ind+1, indCol+1
+				if pos < len(line) && line[pos] == ' ' {
+					pos, col = pos+1, col+1
+				}
+			}
+		case itemFrame:
+			matched = indCol >= fr.col
+			if matched {
+				pos, col = ind, indCol
+				// The item has taken a line: it no longer begins with a
+				// blank line, so no blank line ends it any more — the
+				// at-most-one-blank rule ends only an item that has
+				// received nothing yet.
+				f.frames[depth].empty = false
+			}
+		}
+		if matched {
+			depth++
+			continue
+		}
+		// The frame ends here — unless the paragraph it holds continues
+		// LAZILY: a line that would start no block of its own is that
+		// paragraph's next line, and the frames it lives in survive a line
+		// that carries none of their markers.
+		if f.paraOpen && !f.interrupts(line, ind, indCol) {
+			f.paraText(line[ind:])
+			return f.fenceOpen
+		}
+		f.cut(depth)
+		break
 	}
-	// An open block is closed by a bare delimiter only: a list marker starts
-	// a new item, which is content inside the block, never its closer.
-	re := fenceRe
-	if f.open {
-		re = fenceCloseRe
-	}
-	marker := fenceMarker(line, re)
-	if marker == "" {
-		return f.open
-	}
-	// A delimiter behind a LIST MARKER opens a block only where that marker
-	// opens an ITEM. `2) ``` ` under a prose line opens neither: both
-	// renderers read the whole line as paragraph text (only a list starting
-	// at 1 may interrupt a paragraph), and a reading that took it for an
-	// opener would pair it with the page's REAL opener below and call the
-	// text balanced. Which is fenceRe's own stated limit, answered where the
-	// line's context is known.
-	if !f.open && fenceMarker(line, fenceCloseRe) != marker {
-		if _, _, ok := itemOpener(line, f.paraAbove); !ok {
-			return false // paragraph text, as trackItem has just recorded
+	// OPEN: below the matched frames the line may open containers of its
+	// own — never inside a fenced block, whose content is read for its
+	// closer alone.
+	if !f.fenceOpen {
+		for {
+			ind, indCol := skipIndent(line, pos, col)
+			if ind >= len(line) || indCol-col > 3 {
+				pos, col = ind, indCol
+				break
+			}
+			pos, col = ind, indCol
+			if line[pos] == '>' {
+				pos, col = pos+1, col+1
+				if pos < len(line) && line[pos] == ' ' {
+					pos, col = pos+1, col+1
+				}
+				f.paraOpen = false
+				f.frames = append(f.frames, blockFrame{kind: quoteFrame, col: col})
+				continue
+			}
+			// A thematic break carries the same marker a list item would
+			// (`- - -`) and opens no item: CommonMark reads the break, and
+			// the leaf below reads it as the block it is.
+			if thematicBreak(line[pos:]) {
+				break
+			}
+			fr, next, nextCol, ok := listItemFrame(line[pos:], col, f.paraOpen)
+			if !ok {
+				break
+			}
+			f.paraOpen = false
+			f.frames = append(f.frames, fr)
+			pos, col = pos+next, nextCol
 		}
 	}
-	// A delimiter line is no paragraph text, and neither is the block it
-	// opens: the line below it starts a block of its own.
-	f.paraAbove = false
-	quote, indent := fencePrefix(line, marker)
-	if !f.open {
-		f.open, f.char, f.n, f.quote = true, marker[0], len(marker), quote
-		f.hold = f.containerColumn(line, marker, indent)
-		f.at, f.delim, f.openedOn = strings.Index(line, marker), marker, true
-		return true
-	}
-	// A fence closes only on a run of the SAME character, at least as long as
-	// the one that opened it, with nothing after it, at the SAME blockquote
-	// depth and no more than three columns past its CONTAINER's content
-	// column — CommonMark's own measure. Anything else is content, and the
-	// delimiter of a block a page is SHOWING is content by exactly this
-	// rule: `> ``` ` closing a block opened at depth 0 is a quote of a
-	// closer, not a closer.
-	rest := strings.TrimSpace(line[strings.Index(line, marker)+len(marker):])
-	if quote == f.quote && indent <= f.hold+3 &&
-		marker[0] == f.char && len(marker) >= f.n && rest == "" {
-		f.open = false
-	}
-	return true
+	return f.leaf(line, pos, col)
 }
 
-// containerEnded reports whether the line sits outside the container that
-// holds the open block: fewer blockquote markers than the opener carried, or
-// content starting before the container's content column.
-//
-// A blank line ends no container — a list item and a blockquote both carry on
-// over one — and a line further in is content: a fenced block takes
-// everything until its closer, so the only thing that can end it early is
-// losing the container it was opened in. A blockquote marker BEYOND the
-// opener's depth is content where it is indented into the container and
-// outside it where it is not, which is why depth alone cannot answer: a
-// `> ``` ` at column 0 is content inside a column-0 block and the end of a
-// list item whose content column is two.
-func (f *FenceScanner) containerEnded(line string) bool {
-	quote, indent, blank := lineColumns(line, f.quote)
-	if blank {
+// cut ends every frame from depth on. A leaf lives only inside the whole
+// chain it was opened under, so every one of them ends with the frames: the
+// fenced block a container held, the paragraph, the indented code block, the
+// table.
+func (f *FenceScanner) cut(depth int) {
+	f.frames = f.frames[:depth]
+	f.fenceOpen, f.codeOpen, f.paraOpen, f.tableOpen = false, false, false, false
+	f.pipeAbove, f.cellsAbove = false, 0
+}
+
+// interrupts reports whether the line, read from the position the failed
+// frame would have matched at, would start a block of its own — one of the
+// starts CommonMark lets interrupt a paragraph, and so not text that can be
+// folded into the paragraph above as its lazy continuation. Measured with
+// the file's own renderer as the oracle, the starts are: a blockquote, a
+// fenced code block, an ATX heading, a thematic break, a GFM table's
+// delimiter row, and a list item whose marker may interrupt.
+func (f *FenceScanner) interrupts(line string, pos, col int) bool {
+	ind, indCol := skipIndent(line, pos, col)
+	if ind >= len(line) || indCol-col >= 4 {
+		return false // indented code, or the line's end: continuation text either way
+	}
+	rest := line[ind:]
+	if rest[0] == '>' {
+		return true
+	}
+	if run, after := fenceRun(rest); run != "" {
+		// The same info-string rule the opener answers to: a backtick run
+		// whose info string carries a backtick is paragraph text.
+		return run[0] != '`' || !strings.ContainsRune(after, '`')
+	}
+	if isATXHeading(rest) || thematicBreak(rest) {
+		return true
+	}
+	if isDelimiterRow(rest) && f.pipeAbove && pipeCells(rest) == f.cellsAbove {
+		return true
+	}
+	_, _, _, ok := listItemFrame(rest, indCol, true)
+	return ok
+}
+
+// paraText records the line as paragraph text — a lazy continuation reads it
+// here too — and keeps the header-row candidate it leaves: a GFM table opens
+// on the line below only where this line carried an unescaped pipe and cut
+// into as many cells as the delimiter row below it.
+func (f *FenceScanner) paraText(rest string) {
+	f.paraOpen = true
+	f.pipeAbove = hasUnescapedPipe(rest)
+	f.cellsAbove = pipeCells(rest)
+}
+
+// leaf reads the line's own block below the container stack, from the text
+// the frames and the ≤3 columns of further indentation have left, and
+// returns whether the line is code.
+func (f *FenceScanner) leaf(line string, pos, col int) bool {
+	base := 0
+	if n := len(f.frames); n > 0 {
+		base = f.frames[n-1].col
+	}
+	pos, col = skipIndent(line, pos, col)
+	rest := line[pos:]
+	rel := col - base
+	// A line inside a fenced block is its content, and the one exception is
+	// the fence's own closer: a run of the SAME character, at least as long
+	// as the one that opened it, with nothing but spaces after it, at most
+	// three columns past the frame the fence was opened in. Anything else is
+	// content — including the delimiter of a block the page is SHOWING, and
+	// any marker a container would have read.
+	if f.fenceOpen {
+		if rel <= 3 {
+			if run, after := fenceRun(rest); run != "" && run[0] == f.fenceChar &&
+				len(run) >= f.fenceLen && blankLine(after) {
+				f.fenceOpen = false
+				f.pipeAbove, f.cellsAbove = false, 0
+				return true
+			}
+		}
+		f.pipeAbove, f.cellsAbove = false, 0
+		return true
+	}
+	// The line ends the line-adjacent leaves wherever its own text runs
+	// out: paragraph, indented code and table have no lines but the ones
+	// above it.
+	if blankLine(rest) {
+		f.paraOpen, f.codeOpen, f.tableOpen = false, false, false
+		f.pipeAbove, f.cellsAbove = false, 0
 		return false
 	}
-	if quote < f.quote {
-		return true
+	// Four or more columns past the container's content column is an
+	// INDENTED CODE BLOCK: no fence delimiter is read there at all, which is
+	// the arm that keeps a deep delimiter from opening a block the page
+	// never shows. It cannot interrupt a paragraph — under one, the line is
+	// that paragraph's continuation text.
+	if rel >= 4 {
+		if f.paraOpen {
+			f.paraText(rest)
+			return false
+		}
+		f.codeOpen = true
+		f.paraOpen, f.tableOpen = false, false
+		f.pipeAbove, f.cellsAbove = false, 0
+		return false
 	}
-	return indent < f.hold
+	f.codeOpen = false
+	// Block starts, in the order CommonMark reads them.
+	if run, after := fenceRun(rest); run != "" {
+		if run[0] != '`' || !strings.ContainsRune(after, '`') {
+			f.fenceOpen, f.fenceChar, f.fenceLen = true, run[0], len(run)
+			f.at, f.delim, f.openedOn = pos, run, true
+			f.paraOpen, f.tableOpen, f.pipeAbove, f.cellsAbove = false, false, false, 0
+			return true
+		}
+		// fall through: a backtick fence whose info string carries a
+		// backtick is a paragraph, not a fence
+	}
+	if isATXHeading(rest) || thematicBreak(rest) ||
+		(f.paraOpen && isSetextUnderline(rest)) {
+		f.paraOpen, f.tableOpen = false, false
+		f.pipeAbove, f.cellsAbove = false, 0
+		return false
+	}
+	if f.tableOpen {
+		// A table row: cells, not paragraph text, so a marker below the
+		// rows opens an item where paragraph text would refuse it.
+		f.pipeAbove, f.cellsAbove = hasUnescapedPipe(rest), pipeCells(rest)
+		return false
+	}
+	if isDelimiterRow(rest) && f.pipeAbove && pipeCells(rest) == f.cellsAbove {
+		// The delimiter row of a GFM table, under a line that could be its
+		// header: the table interrupts the paragraph above it.
+		f.tableOpen = true
+		f.paraOpen = false
+		return false
+	}
+	f.paraText(rest)
+	return false
 }
 
-// containerColumn returns the content column of the container holding a fence
-// opened on this line, which is where the block ends if the container does.
-//
-// A LIST MARKER on the opener's own line IS that container, and the column
-// its delimiter sits at is the item's content column. Next, the list item
-// tracked from the lines ABOVE: an opener indented into an item open since an
-// earlier line is held by that item, which is how an author writes a fenced
-// example — indented under the bullet that introduces it — and the closing
-// delimiter at the bullet's own column then ends the item and the block with
-// it, as both renderers do.
-//
-// Otherwise there is no container to read — but CommonMark gives a fence at
-// most three columns past its container's content column, so an opener four
-// or more columns in is held by one that indents at least that far less. An
-// opener within three columns of its line's start, inside no item, needs no
-// container at all, and 0 leaves the rule to the delimiters.
-func (f *FenceScanner) containerColumn(line, marker string, indent int) int {
-	if fenceMarker(line, fenceCloseRe) != marker {
-		return indent
+// skipIndent returns the text past the spaces and tabs that follow pos,
+// carrying col along: a tab takes the cursor to the next multiple of four
+// columns, wherever indentation defines block structure.
+func skipIndent(s string, pos, col int) (int, int) {
+	for pos < len(s) {
+		switch s[pos] {
+		case ' ':
+			pos++
+			col++
+		case '\t':
+			col = advance(col, '\t')
+			pos++
+		default:
+			return pos, col
+		}
 	}
-	if indent > 3 {
-		return indent - 3
-	}
-	if f.item > 0 {
-		return f.item
-	}
-	return 0
+	return pos, col
 }
 
-// trackItem advances the innermost open list item over one line read outside
-// a fenced block: the item ends where a non-blank line is indented less than
-// its content column or carries fewer blockquote markers, and a line opening
-// an item of its own becomes the innermost one.
-//
-// A blank line ends no item, as it ends no other container. Only the
-// INNERMOST item is kept: it is the one whose end closes a block opened
-// inside it, and an enclosing item's column is lower, so an opener held by
-// the outer one is held at least as long by this reading.
-//
-// The blockquote depth is part of the item, and the reset is what keeps the
-// item's column in the SAME frame as a later opener's indentation: both are
-// measured past the innermost quote marker, so an item surviving to a line
-// is an item at that line's depth. containerColumn therefore reads the
-// column with no depth test of its own.
-func (f *FenceScanner) trackItem(line string) {
-	quote, indent, blank := lineColumns(line, f.itemQuote)
-	if blank {
-		f.paraAbove = false
-		return
-	}
-	if quote < f.itemQuote || indent < f.item {
-		f.item, f.itemQuote = 0, 0
-	}
-	if q, content, ok := itemOpener(line, f.paraAbove); ok {
-		f.item, f.itemQuote = content, q
-	}
-	f.paraAbove = true
+// blankLine reports whether the text is spaces and tabs only — CommonMark's
+// blank line, the one that ends no container.
+func blankLine(s string) bool {
+	return strings.TrimLeft(s, " \t") == ""
 }
 
-// itemOpener reads a line that OPENS a list item and returns the blockquote
-// depth it opens at and the item's content column — where the item's own
-// blocks start, and so the column a later line must reach to still be inside
-// it.
+// fenceRun returns the fenced-block delimiter the text opens with — a run of
+// at least three backticks or tildes — and what follows it, or ("", s) when
+// the text starts with none.
+func fenceRun(s string) (string, string) {
+	if s == "" || (s[0] != '`' && s[0] != '~') {
+		return "", s
+	}
+	i := 1
+	for i < len(s) && s[i] == s[0] {
+		i++
+	}
+	if i < 3 {
+		return "", s
+	}
+	return s[:i], s[i:]
+}
+
+// listItemFrame reads a list item opening at the text's first byte and
+// returns the frame it opens — kind and content column — beside the
+// position the item's own content starts at, or ok=false where no item
+// opens: a marker glued to a word, an ordered marker outside
+// [0-9]{1,9}[.)], or a marker that cannot interrupt the open paragraph (an
+// empty item, or an ordered one not starting at 1).
 //
-// CommonMark puts that column one space past the marker, or at the first
-// non-space byte when one to four spaces follow it; five or more make the
-// item's first block an indented code block starting one column past the
-// marker. A marker with nothing but spaces after it opens an empty item,
-// also one column past.
-//
-// A thematic break is not an item: `* * *` and `- - -` carry a marker and a
-// space, and a reading that opened an item there would hold a later fence at
-// a column no container has.
-//
-// ok only where the marker CERTAINLY opens one. A bullet and an ordered
-// marker starting at 1, both with content, do wherever they sit: CommonMark
-// lets exactly those interrupt a paragraph. Any other marker — an ordered
-// one starting elsewhere, or one with nothing after it — opens a list only
-// where no paragraph is open above it, which paraAbove answers.
+// CommonMark puts the content column one space past the marker, or at the
+// first non-space byte when one to four spaces follow it; five or more make
+// the item's first block an indented code block starting one column past
+// the marker, and the column the frame carries is that one column past. A
+// marker with nothing but spaces after it opens an empty item, also one
+// column past.
 //
 // Reading an item the page does not have is the one error this must not
 // make: the repair then lands on the author's CLOSER and leaves the real
 // opener live, a phantom fence of the generator's own making. Measured on
 // both renderers: under a prose line, `2) a step` is paragraph text and a
-// lone `-` is a setext heading, where after a blank line both open a list.
-func itemOpener(line string, paraAbove bool) (quote, content int, ok bool) {
-	m := itemRe.FindStringSubmatchIndex(line)
-	if m == nil || thematicBreak(line) {
-		return 0, 0, false
-	}
-	if mk := line[m[4]:m[5]]; paraAbove &&
-		(m[7] == len(line) || (mk[0] >= '0' && mk[0] <= '9' && strings.TrimLeft(mk[:len(mk)-1], "0") != "1")) {
-		return 0, 0, false
-	}
-	quote, indent := prefixColumns(line[m[2]:m[3]])
-	col := indent + m[5] - m[4]
-	gap := 0
-	for i := m[6]; i < m[7]; i++ {
-		gap = advance(col+gap, line[i]) - col
-	}
-	switch {
-	case m[7] == len(line):
-		// Nothing but the marker and spaces: an empty item.
-		return quote, col + 1, true
-	case gap == 0:
-		// A marker takes a space or the end of the line; `-x` is a word.
-		return 0, 0, false
-	case gap <= 4:
-		return quote, col + gap, true
+// lone `-` is a setext underline, where after a blank line both open a
+// list.
+func listItemFrame(s string, col int, paraOpen bool) (fr blockFrame, next, nextCol int, ok bool) {
+	marker := 0
+	ordered := false
+	switch s[0] {
+	case '-', '+', '*':
+		marker = 1
 	default:
-		return quote, col + 1, true
+		for marker < len(s) && marker < 9 && s[marker] >= '0' && s[marker] <= '9' {
+			marker++
+		}
+		if marker == 0 || marker >= len(s) || (s[marker] != '.' && s[marker] != ')') {
+			return blockFrame{}, 0, 0, false
+		}
+		marker++
+		ordered = true
 	}
+	end := col + marker
+	pos, after := skipIndent(s, marker, end)
+	switch {
+	case pos >= len(s):
+		// Nothing after the marker: an empty item.
+		if paraOpen {
+			return blockFrame{}, 0, 0, false
+		}
+		return blockFrame{kind: itemFrame, col: end + 1, empty: true}, pos, after, true
+	case after == end:
+		return blockFrame{}, 0, 0, false // the marker takes a space or the line's end; `-x` is a word
+	case paraOpen && ordered && !startsAtOne(s[:marker-1]):
+		return blockFrame{}, 0, 0, false
+	}
+	content := after
+	if after-end > 4 {
+		content = end + 1
+	}
+	return blockFrame{kind: itemFrame, col: content}, pos, after, true
+}
+
+// startsAtOne reports whether an ordered marker's digits read as the number
+// 1 — the only start CommonMark lets interrupt a paragraph.
+func startsAtOne(digits string) bool {
+	return strings.TrimLeft(digits, "0") == "1"
+}
+
+// isATXHeading reports whether the text opens an ATX heading: one to six
+// `#`, then the line's end or a space.
+func isATXHeading(s string) bool {
+	n := 0
+	for n < len(s) && s[n] == '#' {
+		n++
+	}
+	return n > 0 && n <= 6 && (n == len(s) || s[n] == ' ' || s[n] == '\t')
+}
+
+// isSetextUnderline reports whether the text is a setext heading's
+// underline: a run of `=` or a run of `-`, with nothing but trailing
+// spaces or tabs. Under an open paragraph it closes it — the heading it
+// makes opens nothing, and the paragraph's marker rules stop applying
+// below it; under no paragraph the run is paragraph text, which is why
+// only the leaf reads it. A `---` is at the same time the thematic break
+// it also is, and reads as one whether or not a paragraph stands above.
+func isSetextUnderline(s string) bool {
+	t := strings.TrimRight(s, " \t")
+	if t == "" || (t[0] != '=' && t[0] != '-') {
+		return false
+	}
+	for i := 1; i < len(t); i++ {
+		if t[i] != t[0] {
+			return false
+		}
+	}
+	return true
+}
+
+// tableDelimRow matches the delimiter row of a GFM table: cells of hyphens
+// and colons cut by pipes, the outer pipes optional.
+var tableDelimRow = regexp.MustCompile(`^\|?(?:[ \t]*:?-+:?[ \t]*\|)*[ \t]*:?-+:?[ \t]*\|?$`)
+
+// isDelimiterRow reports whether the text is a GFM table's delimiter row.
+func isDelimiterRow(s string) bool { return tableDelimRow.MatchString(s) }
+
+// hasUnescapedPipe reports whether the text carries a pipe no backslash
+// escapes — the mark a GFM table's header row carries.
+func hasUnescapedPipe(s string) bool {
+	slashes := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' {
+			slashes++
+			continue
+		}
+		if s[i] == '|' && slashes%2 == 0 {
+			return true
+		}
+		slashes = 0
+	}
+	return false
+}
+
+// pipeCells counts the cells the text cuts into on its unescaped pipes, with
+// an outer pipe on either end counting for nothing — the measure a delimiter
+// row must match against the line above it.
+func pipeCells(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	pipes, slashes, first, last := 0, 0, -1, -1
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' {
+			slashes++
+			continue
+		}
+		if s[i] == '|' && slashes%2 == 0 {
+			if first < 0 {
+				first = i
+			}
+			last = i
+			pipes++
+		}
+		slashes = 0
+	}
+	cells := pipes + 1
+	if first == 0 {
+		cells--
+	}
+	if last == len(s)-1 {
+		cells--
+	}
+	return cells
 }
 
 // thematicBreak reports whether the line is a run of three or more of the
-// same `-`, `*` or `_`, spaces apart — the form a list marker and a space
-// also match.
+// same `-`, `*` or `_`, spaces or tabs apart — and nothing else: a `>`
+// cannot stand inside a break, so `- - > -` is a list in a list in a quote
+// and only the text BELOW the container markers can be a break at all. The
+// frames hand it that text — a leading `>` never reaches here — which is
+// why the run it reads is checked whole.
 func thematicBreak(line string) bool {
 	trimmed := strings.Map(func(r rune) rune {
-		if r == ' ' || r == '\t' || r == '>' {
+		if r == ' ' || r == '\t' {
 			return -1
 		}
 		return r
@@ -496,85 +751,6 @@ func thematicBreak(line string) bool {
 		}
 	}
 	return trimmed[0] == '-' || trimmed[0] == '*' || trimmed[0] == '_'
-}
-
-// fencePrefix reads the blockquote depth and the indentation out of what
-// fenceMarker's pattern consumed before the marker.
-//
-// Everything before the marker counts as indentation, a LIST MARKER
-// included: the marker is the container, and the column its delimiter sits
-// at is the content column of the item it opens.
-func fencePrefix(line, marker string) (quote, indent int) {
-	return prefixColumns(line[:strings.Index(line, marker)])
-}
-
-// lineColumns reads the same two numbers for a line carrying no delimiter —
-// how many of the blockquote markers it opens with (never more than depth,
-// which is the depth the answer is wanted in) and the column its content
-// starts at — and reports a line that is nothing but that prefix as blank.
-//
-// A LIST MARKER is content here, where fencePrefix counts it as indentation:
-// a `- ` on a line of its own starts an item at the column the marker sits
-// at, which is what decides whether the line is inside the container that
-// started one above it. So is a blockquote marker past depth.
-func lineColumns(line string, depth int) (quote, indent int, blank bool) {
-	col, base, i := 0, 0, 0
-	for i < len(line) {
-		switch {
-		case line[i] == ' ' || line[i] == '\t':
-			col = advance(col, line[i])
-			i++
-		case line[i] == '>' && quote < depth:
-			quote++
-			col++
-			i++
-			// The marker eats one space of what follows it.
-			if i < len(line) && line[i] == ' ' {
-				col++
-				i++
-			}
-			base = col
-		default:
-			return quote, col - base, false
-		}
-	}
-	return quote, col - base, true
-}
-
-// prefixColumns walks what a delimiter pattern consumed before its marker —
-// spaces, tabs, blockquote markers, a list marker — and returns the
-// blockquote depth and the columns between the innermost marker's content
-// column and the end of the prefix.
-//
-// Indentation is a number of COLUMNS, not of bytes: wherever indentation
-// defines block structure, CommonMark gives a tab the width that takes it to
-// the next multiple of four, and both renderers of these files do. Counted in
-// bytes a tab measures one, so a tab-indented delimiter came out three columns
-// INSIDE the window that closes a block — it closed a fence that stays open
-// for a renderer, which is the phantom fence this package exists to prevent.
-//
-// The columns run from the START of the line, and what they are measured
-// AGAINST is the innermost blockquote's content column — marker and its one
-// space. The two together are what makes `> \t``` ` land two columns past the
-// quote's content column while `\t``` ` lands four past the page's, which is
-// the difference between closing a block and being its content (measured on
-// both renderers).
-func prefixColumns(pre string) (quote, indent int) {
-	col, base := 0, 0
-	for i := 0; i < len(pre); i++ {
-		if pre[i] == '>' {
-			quote++
-			col++
-			if i+1 < len(pre) && pre[i+1] == ' ' {
-				col++
-				i++
-			}
-			base = col
-			continue
-		}
-		col = advance(col, pre[i])
-	}
-	return quote, col - base
 }
 
 // advance returns the column a prefix byte moves the cursor to: a tab goes to
@@ -687,23 +863,27 @@ func MaskDocument(md string) string {
 // literal text for a renderer, and the bytes Mask blanks are the escape's
 // own: the width-1 runs it leaves pair among themselves, and the odd one
 // out finds no partner, because a line carrying another backtick is no
-// backtick opener at all (fenceMarker's info-string rule) and a tilde
-// opener leaves no backtick behind.
+// backtick opener at all (the info-string rule) and a tilde opener leaves
+// no backtick behind.
 //
 // Escaping one opener can promote a line the open block held as CONTENT
-// into an opener of its own, so the scan repeats — resuming at the line
-// AFTER the escape, because escaping a dangling opener leaves every line up
-// to it balanced: a dangling opener is the last one opened, and an escaped
-// line opens nothing (the opener rule admits only spaces, blockquote and
-// list markers before the run).
+// into an opener of its own, so the scan repeats. The repeat carries the
+// container state the escape point left open and re-reads from the opener
+// line itself, now escaped: a delimiter that sat invisible because the
+// dangling block swallowed it — four columns in, or inside a list item —
+// opens a block of its own once the block above it is gone, and a rescan
+// that started past the escape with a fresh scanner would read it as the
+// indented text it no longer is. Escaped lines open nothing — the opener
+// rule admits only spaces, blockquote and list markers before the run — so
+// every escape moves the resumption strictly forward and the walk
+// terminates.
 //
 // Cost, since the text is a third party's and a caller may escape it at
 // every start: one pass over the lines per DANGLING opener — text that
-// closes what it opens is read twice, and a wrap accident costs one more
-// read each. A text whose every line opens a block it never closes is
-// therefore quadratic in its lines; measured at 20 000 such lines, 35 s.
-// Bounding the passes is not the answer — stopping early would hand the
-// document the very dangling fence this exists to remove.
+// closes what it opens is read once, and a wrap accident costs one more
+// read of everything below its opener. Bounding the passes is not the
+// answer — stopping early would hand the document the very dangling fence
+// this exists to remove.
 //
 // The text comes back with its line endings normalised to line feeds. The
 // promise is about a RENDERER's reading, and the renderer that serves these
@@ -716,68 +896,47 @@ func MaskDocument(md string) string {
 // read as the break the author wrote, and the result is a text whose lines
 // are the same for the embedder, for Mask and for the page.
 //
-// CONSERVATIVE, deliberately: an opener a CONTAINER holds is neutralised
-// too, though both renderers close such a block with its container and it
-// swallows nothing of a document spliced after it at column 0 — measured on
-// GitHub's /markdown API and pandoc 3.1.3 for a list item, a blockquote and
-// a six-column delimiter, with the catalogue's own continuation under them.
-// A caller is free to INDENT what it splices (renderCatalogCard does, under
-// "Use when") and this function is not told, so the choice is to spend a
-// backslash on a sound text rather than leak a fence into an indented one.
-//
-// STATED LIMIT: "leaves no block open" is FenceScanner's reading, and that
-// reading has no BLOCK PHASE. Three questions CommonMark answers there
-// decide where a fence begins, and each one has a shape that leaks here:
-//
-//   - are four columns an indented code block? A delimiter FOUR or more
-//     columns in carries no marker to read a container off, so
-//     containerColumn bounds one three columns less. A renderer opens no
-//     fence there at all, which makes the later delimiter two or three
-//     columns in — the one this reading pairs with it — the page's real
-//     opener, and everything below it code.
-//   - does this marker open a list ITEM where it sits? fenceRe accepts
-//     `2) ``` ` as an opener where only a list starting at 1 may interrupt
-//     a paragraph, and the page reads that line as paragraph text. The
-//     mirror image is refused rather than guessed: itemOpener tracks an
-//     item only where the marker certainly opens one, because an item read
-//     where the page has none makes this function escape the author's
-//     CLOSER and leave the real opener live.
-//   - does this line continue the paragraph above it? An item paragraph
-//     LAZILY continued at column 0 ends the item for trackItem where
-//     CommonMark keeps it open, and a line that is no paragraph at all (a
-//     heading, a table row) is read as one, so an uncertain marker under it
-//     opens no item here where the page opens one.
-//
-// Measured against the renderer, over 14580 generated field shapes rendered
-// by pandoc 3.1.3 gfm with a sentinel line spliced after the escaped text:
-// 123 leak, EVERY one of them carrying a delimiter four or more columns
-// in — nothing outside the first question, which is what that corpus
-// exercises (it opens no container above the fence). The third question's
-// shapes were measured one by one, on pandoc 3.1.3 AND GitHub's /markdown
-// API, which agree.
-//
-// Against the corpus it serves: 0 of 42 shipped manifest fields and 0 of
-// 679 tracked .md outside vendor/ are read differently by this reading and
-// two deliberately stricter ones, and no line of those 679 files or of the
-// 196 tracked yaml carries a delimiter four columns in, or a delimiter a
-// list marker holds, at all.
-//
-// Closing a question takes the block phase itself — a container stack
-// advanced line by line, carrying CommonMark's interruption and lazy
-// continuation rules. One more regular-expression spelling of the guess
-// buys the next shape, not the class, so the limit is stated.
+// The repair lands where the BLOCK PHASE says the dangling opener is: the
+// FenceScanner behind this function reads the container stack — block
+// quotes, list items with their content columns, the indented code block,
+// the interruption and lazy-continuation rules — so a delimiter the page
+// reads as paragraph text is never the repair's target, and the column-0
+// delimiter a renderer really opens is never missed. Measured against
+// pandoc 3.1.3 (gfm) as the oracle over the 14 580-shape adversarial corpus
+// of the catalogue-fence review, run through the real generator: every shape
+// the generator used to leak is now repaired, and none of the legitimate
+// balanced shapes is rewritten — the numbers and the shapes live in
+// TestBlockPhaseClosesTheResidualClass and in the corpus sweep of the
+// ticket's review.
 func EscapeDanglingFence(md string) string {
 	lines := Lines(md)
-	for from := 0; from < len(lines); {
-		at, marker, delim := danglingFenceOpener(lines[from:])
-		if at < 0 {
-			break
+	var f FenceScanner
+	// at is the last opener still live, with the delimiter read off the
+	// scanner, and before it the scanner state that line started from —
+	// the state the re-read resumes from once the line is escaped.
+	at, marker, delim := -1, -1, ""
+	var before, atBefore FenceScanner
+	for i := 0; i < len(lines); i++ {
+		before = f
+		f.Code(lines[i])
+		switch {
+		case f.openedOn:
+			at, marker, delim = i, f.at, f.delim
+			atBefore = before
+		case !f.Open():
+			at, marker, delim = -1, -1, ""
 		}
-		at += from
+		if i+1 < len(lines) || !f.fenceOpen || at < 0 {
+			continue
+		}
 		lines[at] = lines[at][:marker] +
 			strings.Repeat(`\`+delim[:1], len(delim)) +
 			lines[at][marker+len(delim):]
-		from = at + 1
+		f = atBefore
+		// the escaped line is re-read — it opens nothing now, the text
+		// below it still may; i-1 because the loop's own increment follows
+		i = at - 1
+		at, marker, delim = -1, -1, ""
 	}
 	return strings.Join(lines, "\n")
 }
@@ -808,15 +967,16 @@ func Inline(s string) string {
 // renderers of these files (GitHub's /markdown API and pandoc 3.1.3 gfm):
 // `| Revi | the reviewer | ` + "`rev`" + ` | verify |` in a three-column
 // table shows "the reviewer" under the second heading and drops "verify"
-// altogether; the escaped form shows the pipe, in a span as well as in prose.
+// altogether; the escaped form shows the pipe, in a span as well as in
+// prose.
 //
 // A pipe the TEXT already escapes is left alone, which is the rule the row's
 // own reader applies: a pipe is a separator when the run of backslashes
 // before it is even. Escaping it again writes `\\|` — an escaped backslash
-// followed by a LIVE separator — and that breaks the very cell this repairs:
-// measured on pandoc 3.1.3 gfm, `Revi \| the reviewer` escaped twice gains a
-// column and drops the row's last cell, where the author's own `\|` keeps
-// its three and renders the pipe.
+// followed by a LIVE separator — and that breaks the very cell this
+// repairs: measured on pandoc 3.1.3 gfm, `Revi \| the reviewer` escaped
+// twice gains a column and drops the row's last cell, where the author's own
+// `\|` keeps its three and renders the pipe.
 //
 // The repair is lossless — the cell renders what the text means, a pipe for
 // `\|` in prose and in a code span alike — so a value legitimately carrying
@@ -849,6 +1009,10 @@ func Cell(s string) string {
 //
 // A CommonMark fence does not nest — at most one block is open at a time —
 // so there is at most one dangling opener, and it is the last one opened.
+//
+// This fresh full scan is the contract the repair answers to; the walk
+// inside EscapeDanglingFence must find the same opener, and the witnesses
+// re-read the repaired text through it to prove the repair complete.
 func danglingFenceOpener(lines []string) (line, marker int, delim string) {
 	line, marker = -1, -1
 	var fence FenceScanner
@@ -860,9 +1024,9 @@ func danglingFenceOpener(lines []string) (line, marker int, delim string) {
 			// the block its container held and open one of its own, and
 			// Open is true on both sides of such a line. Comparing Open
 			// before and after would see no change there and go on blaming
-			// the opener the container already closed — one escape too many,
-			// written into the author's words, and the real opener left
-			// live.
+			// the opener the container already closed — one escape too
+			// many, written into the author's words, and the real opener
+			// left live.
 			line, marker, delim = i, fence.at, fence.delim
 		case !fence.Open():
 			line, marker, delim = -1, -1, ""
@@ -880,9 +1044,9 @@ func danglingFenceOpener(lines []string) (line, marker int, delim string) {
 // It is what a caller that TRUNCATES prose owes every scanner downstream. A
 // cut lands where a byte bound falls, and one landing between a span's two
 // runs leaves half a span: the renderers then show a stray backtick, and
-// every reader of this package sees the quoted text as prose — so a link form
-// the page only quoted is read as a link, refused, and the generator that was
-// cutting the sentence fails on a page whose links are sound.
+// every reader of this package sees the quoted text as prose — so a link
+// form the page only quoted is read as a link, refused, and the generator
+// that was cutting the sentence fails on a page whose links are sound.
 //
 // Closing rather than cutting, because cutting loses text: a cut at the first
 // backtick of a 60-byte ADR status leaves an EMPTY cell, and a cut mid-cell
@@ -927,8 +1091,8 @@ func CloseDanglingSpan(s string) string {
 			return s[:i]
 		}
 		// A separator when the text already ends in backticks: appended
-		// directly, the closing run would MERGE with the trailing one into a
-		// single wider run, which closes nothing.
+		// directly, the closing run would MERGE with the trailing one into
+		// a single wider run, which closes nothing.
 		sep := ""
 		if s[len(s)-1] == '`' {
 			sep = " "
