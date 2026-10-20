@@ -1278,7 +1278,7 @@ type farSideForLog struct {
 
 func (f farSideForLog) String() string { return redactedFarSide(f.task, f.text) }
 
-const clawRunnerHomeRoot = "/tmp/iterion-scratch/.claw-runner-home"
+const clawRunnerHomePrefix = "/tmp/iterion-scratch/claw-runner-home-"
 
 // clawRunnerHome scopes runner-owned state to the run or fan-out branch,
 // never to the shared project scratch or to one node. HomeScope is the
@@ -1306,7 +1306,7 @@ func clawRunnerHome(ctx context.Context, task delegate.Task) string {
 		}
 	}
 	sum := sha256.Sum256([]byte(kind + "\x00" + identity))
-	return clawRunnerHomeRoot + "/" + hex.EncodeToString(sum[:])
+	return clawRunnerHomePrefix + hex.EncodeToString(sum[:])
 }
 
 // executeViaSandboxRunner forwards the task to the iterion-claw-runner

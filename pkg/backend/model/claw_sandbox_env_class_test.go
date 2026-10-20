@@ -198,7 +198,7 @@ var envWrites = map[string]string{
 	"ITERION_ENGINE_BIN":             whyToolEnv,
 }
 
-const runnerHomeRootForTest = "/tmp/iterion-scratch/.claw-runner-home"
+const runnerHomePrefixForTest = "/tmp/iterion-scratch/claw-runner-home-"
 
 func TestExecuteViaSandboxRunner_RunnerHomeIsScopedToTheRun(t *testing.T) {
 	operatorEnv(t)
@@ -392,11 +392,11 @@ func assertRunnerHomeShape(t *testing.T, home, hostHome, workDir string) {
 	if home == "/tmp/iterion-scratch" {
 		t.Error("the runner HOME is the project scratch itself — every run of the project shares it")
 	}
-	if !strings.HasPrefix(home, runnerHomeRootForTest+"/") {
-		t.Errorf("the runner HOME = %q, want a per-run directory under %q", home, runnerHomeRootForTest)
+	if !strings.HasPrefix(home, runnerHomePrefixForTest) {
+		t.Errorf("the runner HOME = %q, want a top-level per-run directory with prefix %q", home, runnerHomePrefixForTest)
 		return
 	}
-	digest := strings.TrimPrefix(home, runnerHomeRootForTest+"/")
+	digest := strings.TrimPrefix(home, runnerHomePrefixForTest)
 	if len(digest) != 64 || strings.Trim(digest, "0123456789abcdef") != "" {
 		t.Errorf("the runner HOME leaf = %q, want a SHA-256 hex digest", digest)
 	}
