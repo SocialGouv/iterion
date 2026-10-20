@@ -10,9 +10,8 @@
 // next drafts stop landing, and nothing says so.
 //
 // The second describe replays that end to end over the real EditorTabHost,
-// within one mount of it — which is what this hook can be held to. Whether a
-// draft tab still follows after the editor route has been left and come back
-// belongs to EditorTabHost (#1789, #1791), not here.
+// including the host remount caused by leaving the editor for the launch and
+// coming back (#1790, #1791).
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -199,6 +198,32 @@ describe("a draft tab the operator launched", () => {
 
     draftApi.findDraftBotSource.mockResolvedValue(DRAFT_V2);
     await turnLanded("run-c");
+    await waitFor(() => expect(sourceOf(id)).toBe(DRAFT_V2));
+  });
+
+  it("follows the conversation after the whole editor host remounts around a launch", async () => {
+    draftApi.findDraftBotSource.mockResolvedValue(DRAFT_V1);
+    const id = useTabsStore.getState().openTab("editor", { draft: "run-d" }, "Draft");
+    useTabsStore.getState().setActive(id);
+    const { rerender } = render(mount(id, "run-d", false));
+    await waitFor(() => expect(sourceOf(id)).toBe(DRAFT_V1));
+
+    // Leaving /editor for /runs/new unmounts the host, not the tab's store.
+    rerender(
+      <QueryClientProvider client={qc}>
+        <LaunchDocStoreProvider>
+          <Launch />
+        </LaunchDocStoreProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(launched()).toBe(`${DRAFT_V1}# rendered\n`));
+
+    rerender(mount(id, "run-d", false));
+    await waitFor(() =>
+      expect(qc.getQueryState(editorDraftKey("run-d"))?.fetchStatus).toBe("idle"),
+    );
+    draftApi.findDraftBotSource.mockResolvedValue(DRAFT_V2);
+    await turnLanded("run-d");
     await waitFor(() => expect(sourceOf(id)).toBe(DRAFT_V2));
   });
 });
