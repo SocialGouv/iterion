@@ -23,6 +23,7 @@ export interface OpenedFileTargetStore {
   setUnit: (u: UnitInfo | null) => void;
   markSaved: () => void;
   markReplaced: () => void;
+  resetHistory: () => void;
 }
 
 /**
@@ -60,4 +61,5 @@ export function applyOpenedFile(result: OpenedFile, store: OpenedFileTargetStore
   store.setCurrentSource(result.source);
   store.setUnit(result.unit ?? null);
   store.markSaved();
+  store.resetHistory();
 }

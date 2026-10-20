@@ -225,6 +225,24 @@ describe("useDocumentSaveAs", () => {
     expect(store.getState()._replaced).toBe(at + 1);
   });
 
+  it("keeps undo history when Save As binds a new name", async () => {
+    const store = documentStore();
+    store.setState({ currentFilePath: "bots/demo/main.bot" });
+    store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "edited" }] });
+    const history = store.getState()._history;
+    const previous = history[history.length - 1];
+    const at = store.getState()._replaced;
+    render(<Harness store={store} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Save As" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+    await waitFor(() => expect(store.getState().currentFilePath).toBe("main.bot"));
+
+    expect(store.getState()._replaced).toBe(at + 1);
+    expect(store.getState()._history).toBe(history);
+    store.getState().undo();
+    expect(store.getState().document).toBe(previous);
+  });
+
   it("is refused while an Open is still loading in the tab", async () => {
     // One replacement at a time: the Open is the author's latest request
     // for this tab.

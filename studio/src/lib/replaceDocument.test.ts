@@ -30,7 +30,87 @@ function openStore() {
 const applyPath = (answer: string, s: { setCurrentFilePath: (p: string) => void }) =>
   s.setCurrentFilePath(answer);
 
+function storeWithUndoAndRedo() {
+  const store = openStore();
+  store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "edited" }] });
+  store.getState().undo();
+  return store;
+}
+
 afterEach(() => useUIStore.setState({ toasts: [] }));
+
+describe("replacement undo history", () => {
+  it("starts fresh after a synchronous replacement", () => {
+    const store = storeWithUndoAndRedo();
+    replaceDocumentNow(store, (s) => {
+      s.setDocument(createEmptyDocument());
+      s.setCurrentFilePath(null);
+    });
+
+    expect(store.getState()._history).toEqual([]);
+    expect(store.getState()._future).toEqual([]);
+    const blank = store.getState().document;
+    store.getState().undo();
+    expect(store.getState().document).toBe(blank);
+  });
+
+  it("starts fresh after an async replacement", async () => {
+    const store = storeWithUndoAndRedo();
+    expect(await replaceDocument(store, "b.bot", async () => "bots/b.bot", applyPath)).toBe("applied");
+
+    expect(store.getState()._history).toEqual([]);
+    expect(store.getState()._future).toEqual([]);
+  });
+
+  it("keeps the history when an answer is refused", async () => {
+    const store = storeWithUndoAndRedo();
+    const load = deferred<string>();
+    const askedHistory = store.getState()._history;
+    const askedFuture = store.getState()._future;
+    const outcome = replaceDocument(store, "b.bot", () => load.promise, applyPath);
+    expect(store.getState()._history).toBe(askedHistory);
+    expect(store.getState()._future).toBe(askedFuture);
+
+    store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "typed meanwhile" }] });
+    const history = store.getState()._history;
+    const future = store.getState()._future;
+    load.resolve("bots/b.bot");
+    expect(await outcome).toBe("refused");
+    expect(store.getState()._history).toBe(history);
+    expect(store.getState()._future).toBe(future);
+  });
+
+  it("keeps the history when a load fails", async () => {
+    const store = storeWithUndoAndRedo();
+    const load = deferred<string>();
+    const history = store.getState()._history;
+    const future = store.getState()._future;
+    const outcome = replaceDocument(store, "b.bot", () => load.promise, applyPath);
+    load.reject(new Error("404: not found"));
+
+    await expect(outcome).rejects.toThrow("404");
+    expect(store.getState()._history).toBe(history);
+    expect(store.getState()._future).toBe(future);
+  });
+
+  it("keeps edits made after the winning replacement when an older answer is superseded", async () => {
+    const store = storeWithUndoAndRedo();
+    const first = deferred<string>();
+    const second = deferred<string>();
+    const older = replaceDocument(store, "b.bot", () => first.promise, applyPath);
+    const newer = replaceDocument(store, "c.bot", () => second.promise, applyPath);
+    second.resolve("bots/c.bot");
+    expect(await newer).toBe("applied");
+
+    store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "edited after C" }] });
+    const history = store.getState()._history;
+    const future = store.getState()._future;
+    first.resolve("bots/b.bot");
+    expect(await older).toBe("superseded");
+    expect(store.getState()._history).toBe(history);
+    expect(store.getState()._future).toBe(future);
+  });
+});
 
 describe("replaceDocument", () => {
   it("applies an answer when nothing moved while it loaded", async () => {

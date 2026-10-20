@@ -98,4 +98,20 @@ describe("applyOpenedFile", () => {
     );
     expect(store.getState().salvaged).toBe(false);
   });
+
+  it("does not undo from B into the edited A it replaced", () => {
+    const store = createDocumentStore();
+    const a = { ...document, comments: [{ text: "A" }] };
+    applyOpenedFile({ source: "A\n", document: a, diagnostics: [], path: "a.bot" }, store.getState());
+    store.getState().setDocument({ ...a, comments: [{ text: "A modified" }] });
+
+    const b = { ...document, comments: [{ text: "B" }] };
+    applyOpenedFile({ source: "B\n", document: b, diagnostics: [], path: "b.bot" }, store.getState());
+
+    expect(store.getState()._history).toEqual([]);
+    expect(store.getState()._future).toEqual([]);
+    const openedB = store.getState().document;
+    store.getState().undo();
+    expect(store.getState().document).toBe(openedB);
+  });
 });
