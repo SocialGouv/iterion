@@ -7,7 +7,7 @@ import AttachmentFieldInput from "./AttachmentFieldInput";
 afterEach(cleanup);
 
 describe("AttachmentFieldInput", () => {
-  it("names its file input — the sr-only control has no visible label to lean on (RGAA 11.1)", () => {
+  it("names its file input after the field — a constant name would collide across fields (RGAA 11.1)", () => {
     render(
       <AttachmentFieldInput
         field={{ name: "logo", type: "image" }}
@@ -16,6 +16,12 @@ describe("AttachmentFieldInput", () => {
         serverLimits={null}
       />,
     );
-    expect(screen.getByLabelText("Upload logo")).toBeTruthy();
+    // The dropzone (role=button) carries the same name; only the INPUT's own
+    // aria-label names the file control itself, so assert on it directly —
+    // getByLabelText alone would match the dropzone and pass either way.
+    const input = screen.getByLabelText("Upload logo", {
+      selector: "input",
+    }) as HTMLInputElement;
+    expect(input.getAttribute("aria-label")).toBe("Upload logo");
   });
 });
