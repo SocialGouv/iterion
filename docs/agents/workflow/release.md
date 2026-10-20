@@ -67,10 +67,11 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
   manifest already lowered, or carrying a deliberate floor, warns nothing,
   and whether to lower a warned one stays the operator's call.
 - **A refused cut leaves the bump behind.** The hook fails before release-it
-  arms its rollback, so `package.json`, `CHANGELOG.md` and
-  `charts/iterion/Chart.yaml` stay modified and a second local run reports
+  arms its rollback, so `package.json`, `CHANGELOG.md`,
+  `charts/iterion/Chart.yaml` and `internal/mdcode/testdata/committed-reading.txt`
+  stay modified and a second local run reports
   "Working dir must be clean". Restore them
-  (`git checkout -- package.json CHANGELOG.md charts/iterion/Chart.yaml`)
+  (`git checkout -- package.json CHANGELOG.md charts/iterion/Chart.yaml internal/mdcode/testdata/committed-reading.txt`)
   before retrying. CI is unaffected: `version.yml` runs on a fresh checkout
   and nothing was committed or pushed.
 - **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
@@ -83,7 +84,14 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
   ([releases and the queue](../../merge-policy.md#releases-and-the-queue)).
   release-it writes the new section into [CHANGELOG.md](../../../CHANGELOG.md) as part of the
   release commit itself (`infile` + `git add . --update`), so the file cannot drift
-  from the tags — never hand-edit it. It holds the **current major only**; earlier
+  from the tags — never hand-edit it. The same hook slot regenerates
+  internal/mdcode's committed-corpus golden FIRST, before the aligner moves any
+  pin, because the cut rewrites two files that golden pins (CHANGELOG.md here,
+  `charts/iterion/Chart.yaml` in `after:bump`) — the regeneration runs with
+  `-v` so its stderr announcement reaches the release log (cmd/go swallows a
+  passing package's output without it), and a `git diff --stat` line right
+  after logs the golden's move: without it every release would reopen the
+  corpus red. It holds the **current major only**; earlier
   ones are archived under [docs/changelog/](../../changelog) because GitHub stops
   rendering markdown past 512 KB. Each entry carries a collapsed `why` excerpt taken
   from the commit body — the rendering lives in
