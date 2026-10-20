@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.275.0](https://github.com/SocialGouv/iterion/compare/v3.274.0...v3.275.0) (2026-10-20)
+
+### Features
+
+* **task:** the demo task ships its token ceiling — RGAA_DEMO_TOKENS, 5M ([#2593](https://github.com/SocialGouv/iterion/issues/2593)) ([#2612](https://github.com/SocialGouv/iterion/issues/2612)) ([52d7c1f](https://github.com/SocialGouv/iterion/commit/52d7c1fab682338dfe484f0fa71b7e1a4eb9b50b))
+
+    <details><summary>why</summary>
+
+    The first real end-to-end run hit the bot's 3M TOKEN ceiling at 91% (2 729 032), in merge_refutations — a full run's wall is the token budget, not dollars. The task now ships --max-tokens 5M (RGAA_DEMO_TOKENS overrides), the colleague doc carries the resume line that finished the run for real, and the bot bilan records the path: egress-killed sandbox run (0 $), sandbox-off run, resume, FINISHED at 42% provisional with report integrity ok.
+
+    </details>
+
+### Bug Fixes
+
+* **server,botregistry,cli:** a launch's bot identity is the server's resolution, never the requester's label ([#2613](https://github.com/SocialGouv/iterion/issues/2613)) ([08a07d3](https://github.com/SocialGouv/iterion/commit/08a07d39a5ea18a93c37d8b8740cbe4cec4234bd)), closes [#1368](https://github.com/SocialGouv/iterion/issues/1368), references [#1363](https://github.com/SocialGouv/iterion/issues/1363) [#2607](https://github.com/SocialGouv/iterion/issues/2607)
+
+    <details><summary>why</summary>
+
+    handleLaunchRun seeded botID from strings.TrimSpace(req.BotID) and kept that value whenever the launch carried an inline source, so the requester-typed string — matching no catalog entry — flowed into spec.BotID and from there into three credential reads that treated it as an identity: the BYOK workload audience (secrets.Resolve), bot secret bindings (secrets.ResolveGenericWithBindings) and credpool pledges (credpool.Request.BotID → Pledge.AvailableForLaunch). A caller able to POST /api/runs…
+
+    </details>
+
 ## [3.274.0](https://github.com/SocialGouv/iterion/compare/v3.273.0...v3.274.0) (2026-10-20)
 
 ### Features
