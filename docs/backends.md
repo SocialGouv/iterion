@@ -352,7 +352,7 @@ or the workflow, with a run override (`--ambient-context`, launch
 | backend | `none` | `workspace` (default) | `operator` | `all` |
 |---|---|---|---|---|
 | `claude_code` | `project` + every memory file excluded | `project` + the memory files above the root excluded | `user,project` + the repository's memory excluded | `user,project` |
-| `claw` | no project-instructions block | claw-code-go's loader: walk stopped at the root, user scope off, `.claude/rules` on | the walk above the root + the user scope | everything |
+| `claw` | no project-instructions block | claw-code-go's loader: walk stopped at the root, user scope off, `.claude/rules` on, plus `AGENTS.md` where no `CLAUDE.md` shadows it | the walk above the root + the user scope | everything, the repository's `AGENTS.md` included |
 | `pi` | `--no-context-files` | `--no-context-files` + iterion supplies the allowed files, rendered in pi's own shape | the same, operator files | pi's native loading |
 | `codex` | `project_doc_max_bytes=0` + a per-run `CODEX_HOME` without its `AGENTS.md` | the same home | `project_doc_max_bytes=0` | unchanged |
 | `kimi` | refused (C187) | a home without its `AGENTS.md` (`KIMI_CODE_HOME` overlay) — refused when declared, warned when defaulted, if `~/.agents/AGENTS.md` exists | refused (C187) | kimi's native loading |
@@ -381,7 +381,11 @@ against the real tool with planted markers and an invalid key (no cost):
   outside the repository in headless mode, and claw-code-go's loader (used
   by `claw`) enforces the same for the workspace scope, symlinks included —
   a pull request's `CLAUDE.md` cannot read `@/proc/self/environ` or
-  `@~/.ssh/id_rsa` into the prompt.
+  `@~/.ssh/id_rsa` into the prompt. The `AGENTS.md` files the ADR-119
+  fallback adds to `claw` are held to the same boundary under the workspace
+  scope: one that is itself a link out of the repository is not loaded
+  there, and under `all` the fallback follows the walk's unconfined scope,
+  as the ADR-119 amendment states.
 
 The structured-output pass of a `claude_code` node follows its policy too;
 before ADR-119 it passed no `--setting-sources` at all, and so loaded every

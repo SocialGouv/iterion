@@ -63,9 +63,9 @@ short by construction" held while someone watched it — it grew to 17 KB.
   work-tracking contract). Smaller change, but Codex still reads the router by
   hand, and Claude still sees `AGENTS.md` only when it decides to open it.
 - **Claude Code path-scoped rules** (`.claude/rules/` with `paths:`). Lazily
-  loaded and precise, but Claude-only — Codex, pi and the claw backend never
-  see them, which breaks the claw ↔ claude_code parity this repository holds —
-  and `.claude/` is gitignored here.
+  loaded and precise, but Claude-only — Codex and pi never see them, which
+  breaks the parity this repository holds across harnesses — and `.claude/`
+  is gitignored here.
 - **A generated index only** (`docs/references/map-docs.md`). It lists every
   page and its opening line, but cannot say *when* to read a page, which is
   the whole value of an agent index. It stays the twin, not the router.
