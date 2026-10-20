@@ -23,7 +23,6 @@ jobs:
   advisory:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,9 +45,9 @@ jobs:
 
       - name: Install the engine's Chromium
         # The rendered layer (scan --sample) navigates the sample pages with
-        # the Playwright the pinned engine ships.
-        working-directory: "$(dirname "$ULTRA11Y_BIN")/.."
-        run: npx playwright install --with-deps chromium
+        # the Playwright the pinned engine ships. working-directory gets no
+        # shell expansion: the cd lives in the run.
+        run: cd "$(dirname "$ULTRA11Y_BIN")/.." && npx playwright install --with-deps chromium
 
       - name: Build the iterion binary with the studio SPA embedded
         # Mirror of test-e2e's build: the vite bundle IS the served SPA.
@@ -76,6 +75,8 @@ jobs:
           path: |
             /tmp/tmp.*/audit-latest.json
             /tmp/tmp.*/replay.json
+            /tmp/tmp.*/replay/audit-latest.json
             /tmp/tmp.*/check.json
+            /tmp/tmp.*/*.err
           if-no-files-found: ignore
           retention-days: 14
