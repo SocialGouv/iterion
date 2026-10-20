@@ -39,6 +39,7 @@ import { botLaunchFile } from "@/views/Bots/botPaths";
 import { bindBotPath } from "@/views/integrations/wizard/bindModel";
 import { formatNextFire } from "@/views/Triggers/scheduleModel";
 import TriggerList from "@/views/Triggers/TriggerList";
+import RepoRoutingSection from "@/views/RepoDetail/RepoRoutingSection";
 
 import {
   integrationForRepo,
@@ -482,6 +483,18 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
             </div>
           </div>
         </Card>
+      )}
+
+      {/* Routing policy (ADR-129): the repo's binding-level routing block,
+          edited through the same shared strict-JSON editor as the org and
+          team levels. Present only when the repo is integrated. */}
+      {integration != null && (
+        <RepoRoutingSection
+          teamID={teamID}
+          integration={integration}
+          canManage={canManage}
+          onSaved={reload}
+        />
       )}
 
       {/* Schedules */}

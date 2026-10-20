@@ -143,7 +143,7 @@ func TestSyncSchedules_CreatesAndIsIdempotent(t *testing.T) {
 		},
 	}
 	ctx := context.Background()
-	if err := o.syncSchedules(ctx, "t1", "ri-1", "https://github.com/org/app.git", invByBot, nil, "u1"); err != nil {
+	if err := o.syncSchedules(ctx, "t1", "ri-1", "https://github.com/org/app.git", invByBot, nil, "u1", nil); err != nil {
 		t.Fatalf("syncSchedules: %v", err)
 	}
 	rows, _ := mem.ListByIntegration(ctx, "t1", "ri-1")
@@ -158,7 +158,7 @@ func TestSyncSchedules_CreatesAndIsIdempotent(t *testing.T) {
 	}
 
 	// Re-sync replaces, doesn't duplicate.
-	if err := o.syncSchedules(ctx, "t1", "ri-1", "https://github.com/org/app.git", invByBot, nil, "u1"); err != nil {
+	if err := o.syncSchedules(ctx, "t1", "ri-1", "https://github.com/org/app.git", invByBot, nil, "u1", nil); err != nil {
 		t.Fatal(err)
 	}
 	rows2, _ := mem.ListByIntegration(ctx, "t1", "ri-1")
@@ -180,7 +180,7 @@ func TestSyncSchedules_CronOverride(t *testing.T) {
 		"sec-audit-source": {{Kind: bundle.InvocationKindSchedule, Schedule: &bundle.InvocationSchedule{SuggestedCron: "0 2 * * 1"}}},
 	}
 	ctx := context.Background()
-	if err := o.syncSchedules(ctx, "t1", "ri-1", "https://github.com/org/app.git", invByBot, map[string]string{"sec-audit-source": "30 9 * * *"}, "u1"); err != nil {
+	if err := o.syncSchedules(ctx, "t1", "ri-1", "https://github.com/org/app.git", invByBot, map[string]string{"sec-audit-source": "30 9 * * *"}, "u1", nil); err != nil {
 		t.Fatal(err)
 	}
 	rows, _ := mem.ListByIntegration(ctx, "t1", "ri-1")
@@ -209,7 +209,7 @@ func TestSyncSchedules_ReprovisionKeepsOperatorRow(t *testing.T) {
 		"docs-refresh": {{Kind: bundle.InvocationKindSchedule, Schedule: &bundle.InvocationSchedule{SuggestedCron: "0 3 * * *"}}},
 	}
 	ctx := context.Background()
-	if err := o.syncSchedules(ctx, "t1", "ri-1", repo, inv, map[string]string{"docs-refresh": "0 4 * * 1"}, "u1"); err != nil {
+	if err := o.syncSchedules(ctx, "t1", "ri-1", repo, inv, map[string]string{"docs-refresh": "0 4 * * 1"}, "u1", nil); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
 	rows, _ := mem.ListByIntegration(ctx, "t1", "ri-1")
@@ -231,7 +231,7 @@ func TestSyncSchedules_ReprovisionKeepsOperatorRow(t *testing.T) {
 	// Re-provision with no explicit cron; the manifest meanwhile gained a
 	// default for a key the operator already set and one brand-new key.
 	inv["docs-refresh"][0].Schedule.DefaultVars = map[string]string{"mode": "full", "scope_notes": "weekly"}
-	if err := o.syncSchedules(ctx, "t1", "ri-1", repo, inv, nil, "u1"); err != nil {
+	if err := o.syncSchedules(ctx, "t1", "ri-1", repo, inv, nil, "u1", nil); err != nil {
 		t.Fatalf("re-sync: %v", err)
 	}
 	rows, _ = mem.ListByIntegration(ctx, "t1", "ri-1")

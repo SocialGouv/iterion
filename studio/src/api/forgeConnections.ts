@@ -47,6 +47,11 @@ export interface ForgeIntegration {
    *  posture); any other key round-trips through updateForgeRepoBots
    *  unmodified. */
   launch_vars?: Record<string, string>;
+  /** The repo's routing policy (pkg/llmroute, ADR-129) — the binding
+   *  level for every run this integration launches, webhook and schedule
+   *  alike. Hand-typed: the repo-bots routes carry no request/response
+   *  schema in openapi.json, so this field regenerates nothing. */
+  routing?: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -184,6 +189,10 @@ export interface ForgeProvisionResult {
   pending_approval?: boolean;
   approval_id?: string;
   detail?: string;
+  // The blast-radius screen's output on a direct write: what the write
+  // landed but could not gate (a WARN, not a refusal). Empty on a parked
+  // request — the screen runs on the paths that write.
+  warnings?: string[];
 }
 
 // ForgeOAuthApp is a per-tenant, per-instance OAuth application's credentials
@@ -347,12 +356,19 @@ export async function enableForgeRepoBots(
 // server-side (forge.RepoIntegration.LaunchVars is not merged on PATCH) —
 // callers that want to change one key must spread the integration's
 // current launch_vars first (see RepoDetail's review tier and merge gate).
+//
+// routing, when passed, is the repo's routing policy (ADR-129): an object
+// REPLACES the stored block wholesale, null CLEARS it, UNDEFINED omits the
+// field so the stored block stands — the server's three-way rule. Every
+// write is validated server-side (locks refused, literal values only) and
+// parks on an org that requires provisioning approval.
 export async function updateForgeRepoBots(
   teamID: string,
   integrationID: string,
   botIDs: string[] | undefined,
   scheduleCrons?: Record<string, string>,
   launchVars?: Record<string, string>,
+  routing?: Record<string, unknown> | null,
 ): Promise<ForgeProvisionResult> {
   return request(`/teams/${teamID}/forge/repo-bots/${integrationID}`, {
     method: "PATCH",
@@ -363,6 +379,7 @@ export async function updateForgeRepoBots(
       schedule_crons:
         scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
       launch_vars: launchVars,
+      routing,
     }),
   });
 }

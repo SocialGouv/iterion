@@ -55,14 +55,22 @@ func (s *Server) githubAppConfig() forgegithub.AppConfig {
 // ---- factories (provider dispatch) ----
 
 // forgeBotForge resolves a bot's manifest forge: block for the orchestrator,
-// on the tier the provisioned webhook's launches will resolve.
+// on the tier the provisioned webhook's launches will resolve. A bot the
+// catalog does not have is the degenerate case of "declares neither a forge:
+// block nor a forge/command invocation" — the same static fact, so it rides
+// the same ErrBotNotProvisionable sentinel (a parked provision record naming
+// such a bot is a deterministic dead end the approval arm consumes). Both
+// tiers are read strictly (forgeBotEntry): a lookup failure — a store blip, a
+// bundle whose metadata will not materialize — is a fact about the STORE, not
+// the recorded bot set, so it stays a bare error and the record pending for a
+// healed retry.
 func (s *Server) forgeBotForge(ctx context.Context, teamID, botID string) (*bundle.ForgeRequirements, error) {
-	entry, ok, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
+	entry, ok, err := s.forgeBotEntry(ctx, teamID, botID)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("bot %q not found", botID)
+		return nil, fmt.Errorf("%w: bot %q is not in the bot catalog", forge.ErrBotNotProvisionable, botID)
 	}
 	return entry.Forge, nil
 }
@@ -70,14 +78,15 @@ func (s *Server) forgeBotForge(ctx context.Context, teamID, botID string) (*bund
 // forgeBotInvocations resolves a bot's manifest invocations for the
 // orchestrator's command-map build (already the EffectiveInvocations set —
 // explicit block, else synthetic from a legacy forge: block), on the tier the
-// provisioned webhook's launches will resolve.
+// provisioned webhook's launches will resolve. Same catalog-miss class as
+// forgeBotForge, through the same strict read (forgeBotEntry).
 func (s *Server) forgeBotInvocations(ctx context.Context, teamID, botID string) ([]bundle.Invocation, error) {
-	entry, ok, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
+	entry, ok, err := s.forgeBotEntry(ctx, teamID, botID)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("bot %q not found", botID)
+		return nil, fmt.Errorf("%w: bot %q is not in the bot catalog", forge.ErrBotNotProvisionable, botID)
 	}
 	return entry.Invocations, nil
 }

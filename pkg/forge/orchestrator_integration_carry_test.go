@@ -28,6 +28,7 @@ var provisionerOwnedIntegrationFields = map[string]string{
 	"HookURL":              "where the forge should deliver — the provisioner decides it",
 	"ManagedSecretID":      "the provisioner's own record",
 	"LaunchVars":           "operator override, explicitly re-resolved (nil request = keep)",
+	"Routing":              "operator override, explicitly re-resolved (a RoutingSet request replaces or clears; a silent one adopts the stored block — ADR-129)",
 	"Overlap":              "operator override, explicitly re-resolved",
 	"HoldLabels":           "operator override, explicitly re-resolved",
 	"LabelAllowlist":       "operator override, explicitly re-resolved",

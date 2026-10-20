@@ -670,6 +670,41 @@ func (s *Server) storedBotEntry(ctx context.Context, tenantID, slug string) (bot
 		"bot source %s/%s: metadata could not be materialized — discovery describes the row with nothing (no manifest.yaml alongside more than one workflow, or a manifest this build cannot parse)", tenantID, bs.Slug)
 }
 
+// forgeBotEntry is the one catalog read both provisioning lookups share, on
+// the tier the provisioned webhook's launches will resolve. The team tier is
+// read STRICTLY (storedBotEntry — the same one-row read the launch resolver's
+// team arm and pipelineAdmission's chokepoint admit): a store failure or a
+// bundle whose metadata will not materialize is an error naming the row, so
+// the caller keeps it bare and transient — a provision replay stays pending
+// for a healed retry — never the tier's absence, which would send the
+// approve arm the catalog-miss sentinel and consume a recoverable record.
+// A genuine team-tier absence falls to the platform+baked floor
+// (effectiveFindByName). The floor's platform half is a cache that serves
+// its LAST-KNOWN set on a failed refresh, so a floor miss cannot tell an
+// outage (or a cross-replica write not yet listed) from absence: it probes
+// the platform tier live and strictly, the same way the team tier was read,
+// before the miss may count as absence. Only a miss both tiers answered
+// live is the catalog-miss sentinel.
+func (s *Server) forgeBotEntry(ctx context.Context, teamID, botID string) (botregistry.EntryWithSchema, bool, error) {
+	if teamID != "" && s.botSources != nil && strings.TrimSpace(botID) != "" {
+		entry, found, err := s.storedBotEntry(ctx, teamID, botID)
+		switch {
+		case err != nil:
+			return botregistry.EntryWithSchema{}, false, err
+		case found:
+			return entry, true, nil
+		}
+	}
+	entry, found, err := s.effectiveFindByName(botID)
+	if err != nil || found {
+		return entry, found, err
+	}
+	if s.botSources != nil && strings.TrimSpace(botID) != "" {
+		return s.storedBotEntry(ctx, botsource.PlatformTenantID, botID)
+	}
+	return botregistry.EntryWithSchema{}, false, nil
+}
+
 // effectiveFindByName returns the effective (platform-overlaid) entry for a
 // bot name: an exact match first, then the NormalizeName-folded spelling
 // (review_pr → review-pr), because the launcher accepts both and a run's

@@ -153,6 +153,14 @@ Three rules, each paid for:
   agree. Never *remove* it.
 - **`arm_automerge: "false"` until the end.** Steps 5 to 7 exist to earn it.
 
+The same PATCH carries the repo's routing block when the pinning recipe
+below it needs one (`"routing": {...}` — ADR-129):
+[cloud-llm-credentials.md § The binding level](cloud-llm-credentials.md#the-binding-level--a-repo-pins-its-own-slots)
+has the vocabulary, the write-role table and the two rules that bite
+(the `*`-cell warning at save time; absent keeps / null clears / an
+object replaces). On an org that requires provisioning approval, a
+spoken routing block parks the PATCH like any other expansion.
+
 Then **re-read** the integration and the webhook config. A write you did not
 read back is a write you are hoping about.
 

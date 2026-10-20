@@ -747,12 +747,16 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	spec := runview.LaunchSpec{
-		FilePath:           absPath,
-		Source:             req.Source,
-		BotID:              botID,
-		SourceRef:          runSource,
-		RunID:              req.RunID,
-		Vars:               req.Vars,
+		FilePath:  absPath,
+		Source:    req.Source,
+		BotID:     botID,
+		SourceRef: runSource,
+		RunID:     req.RunID,
+		Vars:      req.Vars,
+		// The manual launch's vars are the launcher's own (the CLI's --var,
+		// the studio launch form) — the operator layer ADR-129 §4 rule 2
+		// lets narrow the routing gate.
+		TrustedVarNames:    trustedVarNames(req.Vars),
 		Preset:             req.Preset,
 		AllowUnknownInputs: req.AllowUnknownInputs,
 		Timeout:            timeout,

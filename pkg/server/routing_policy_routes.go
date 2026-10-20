@@ -179,18 +179,19 @@ func (s *Server) putRoutingPolicy(w http.ResponseWriter, r *http.Request, scope,
 			return
 		}
 	} else {
-		var policy llmroute.Policy
-		dec := json.NewDecoder(bytes.NewReader(req.Routing))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&policy); err != nil {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "routing: %v", err)
+		// The org/team levels hold the lock primitive, so their posture is
+		// routingLocksAllowed — the ONE decoder does the strictness, the
+		// validation and the three-way rule for every write surface.
+		policy, spoke, rerr := decodeRoutingBlock(req.Routing, routingLocksAllowed)
+		if rerr != nil {
+			s.httpErrorFor(w, r, rerr.status, "%s", rerr.err.Error())
 			return
 		}
-		if err := llmroute.Validate(policy); err != nil {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "routing: %v", err)
+		if !spoke || policy == nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "routing is required (an object to replace, null to clear)")
 			return
 		}
-		rec := platformcfg.RoutingPolicyRecord{Policy: &policy, UpdatedBy: s.requestUserID(r)}
+		rec := platformcfg.RoutingPolicyRecord{Policy: policy, UpdatedBy: s.requestUserID(r)}
 		if cas, ok := st.(platformcfg.CASStore[platformcfg.RoutingPolicyRecord]); ok {
 			wrote, err := cas.PutIfUnchanged(r.Context(), rec, prevUpdatedAt)
 			if err != nil {

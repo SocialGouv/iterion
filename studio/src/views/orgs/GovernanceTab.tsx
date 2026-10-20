@@ -231,20 +231,92 @@ export default function GovernanceTab({
 
 // approvalExtras summarises the automation switches the approval would
 // replay verbatim — what the admin is REALLY approving beyond the bot
-// list. Empty string when the request carries none.
+// list, including the shapes that RETARGET the record: a replace request
+// makes the listed bots the exact set (the dropped ones are disabled),
+// and launch_vars_replace makes the spoken map the whole set of pins.
+// Empty string when the request carries none.
 function approvalExtras(a: ProvisionApproval): string {
   const parts: string[] = [];
-  if (a.auto_fix) parts.push("zero-touch auto-fix ON");
-  if (a.hold_labels && a.hold_labels.length > 0)
-    parts.push(`hold labels: ${a.hold_labels.join(", ")}`);
-  if (a.label_allowlist && a.label_allowlist.length > 0)
-    parts.push(`label allowlist: ${a.label_allowlist.join(", ")}`);
-  if (a.launch_vars && Object.keys(a.launch_vars).length > 0)
+  if (a.replace) {
+    const kept = new Set(a.bot_ids);
+    const dropped = (a.base_bot_ids ?? []).filter((b) => !kept.has(b));
     parts.push(
-      `launch vars: ${Object.entries(a.launch_vars)
-        .map(([k, v]) => `${k}=${v}`)
-        .join(", ")}`,
+      dropped.length > 0
+        ? `replaces the bot set — disables: ${dropped.join(", ")}`
+        : "replaces the bot set (the listed bots become the exact set)",
     );
+  }
+  // The spoken-empty gestures. Spoken-ness has two witnesses on this wire:
+  // the Set fact (records parked since the flags shipped) and the field
+  // itself — null means silent, an empty-but-present value IS the gesture
+  // (a legacy record parked before the flags carried the empty value and
+  // no fact). Either witness renders the gesture the approval executes.
+  if (a.auto_fix === true) parts.push("zero-touch auto-fix ON");
+  else if (a.auto_fix === false) parts.push("zero-touch auto-fix OFF");
+  const holdEmpty = (a.hold_labels ?? []).length === 0;
+  if (holdEmpty && (a.hold_labels_set || a.hold_labels != null)) {
+    // The whole-pause lift re-arms exactly the labels the base recorded —
+    // name them when the base is on the record, the partial branch's
+    // rationale: the bare claim reads as the whole story.
+    const lifted = a.base_hold_labels ?? [];
+    parts.push(
+      "hold labels: lifts the automation pause" +
+        (lifted.length > 0 ? ` — lifts: ${lifted.join(", ")}` : ""),
+    );
+  } else if (a.hold_labels && a.hold_labels.length > 0) {
+    // A base recorded means the change acts on a stored set: name what it
+    // lifts — a partial lift parks precisely because of the label it
+    // removes from the pause, and the destination list alone reads as the
+    // whole story. Absent base (new repo, empty stored set): nothing can
+    // be lifted, so no delta claim.
+    const spoken = a.hold_labels;
+    const lifted = (a.base_hold_labels ?? []).filter((l) => !spoken.includes(l));
+    parts.push(
+      `hold labels: ${spoken.join(", ")}` +
+        (lifted.length > 0 ? ` — lifts: ${lifted.join(", ")}` : ""),
+    );
+  }
+  const allowEmpty = (a.label_allowlist ?? []).length === 0;
+  if (allowEmpty && (a.label_allowlist_set || a.label_allowlist != null)) {
+    // Same delta rule as the pause lift: the widen re-arms exactly the
+    // stored allowlist.
+    const widened = a.base_label_allowlist ?? [];
+    parts.push(
+      "label allowlist: widens dispatch to any label" +
+        (widened.length > 0 ? ` — widens to: ${widened.join(", ")}` : ""),
+    );
+  } else if (a.label_allowlist && a.label_allowlist.length > 0) {
+    const widened = a.label_allowlist.filter((l) => !(a.base_label_allowlist ?? []).includes(l));
+    parts.push(
+      `label allowlist: ${a.label_allowlist.join(", ")}` +
+        (widened.length > 0 ? ` — widens to: ${widened.join(", ")}` : ""),
+    );
+  }
+  const mapSpoken = a.launch_vars_set || a.launch_vars != null;
+  const mapEmpty = Object.keys(a.launch_vars ?? {}).length === 0;
+  if (mapSpoken && mapEmpty) {
+    // A spoken empty map IS the whole-map clear — replace flag or not,
+    // Set fact or legacy empty-but-present value.
+    parts.push("launch vars: replaces the whole map — clears every existing pin");
+  } else if (a.launch_vars) {
+    // The map the replay applies, whatever parked the record: replace
+    // makes the spoken map the whole set of pins, a legacy (flagless)
+    // map applies exactly the same way.
+    parts.push(
+      a.launch_vars_replace
+        ? `launch vars replace the whole map: ${Object.entries(a.launch_vars)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(", ")}`
+        : `launch vars: ${Object.entries(a.launch_vars)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(", ")}`,
+    );
+  } else if (a.launch_vars_replace) {
+    // Replace acknowledged with NO map on the wire (null or absent): the
+    // server treats the record as silent and keeps the stored pins — say
+    // that, not a clear.
+    parts.push("launch vars: replace requested but no map spoken — the stored pins stay");
+  }
   if (a.schedule_crons && Object.keys(a.schedule_crons).length > 0)
     parts.push(
       `schedules: ${Object.entries(a.schedule_crons)
@@ -252,7 +324,44 @@ function approvalExtras(a: ProvisionApproval): string {
         .join(", ")}`,
     );
   if (a.overlap) parts.push(`overlap: ${a.overlap}`);
+  const routing = routingSummary(a);
+  if (routing) parts.push(routing);
   return parts.join(" · ");
+}
+
+// routingSummary renders the routing block a parked request speaks about —
+// the payload this gate exists to arbitrate — as one line: the pin(s) it
+// applies (selector → backend[/model][/provider], with the effort slot
+// when the pin carries one) followed by every non-override cell verbatim
+// (the providers allowlist, strict, pair_order, triggers, model_classes,
+// cross_harness, refused_pinned_key — whatever the block carries), or
+// CLEARED when the request wipes a previously approved block. "" when the
+// request says nothing about routing (routing_set absent).
+function routingSummary(a: ProvisionApproval): string {
+  if (!a.routing_set) return "";
+  if (!a.routing) return "routing: CLEARED";
+  const routing = a.routing as Record<string, unknown>;
+  const ov = routing.overrides;
+  if (Array.isArray(ov) && ov.length > 0) {
+    const pins = ov.map((o) => {
+      const rec = (o ?? {}) as Record<string, unknown>;
+      const sel = typeof rec.selector === "string" ? rec.selector : "?";
+      const target =
+        [rec.backend, rec.model, rec.provider]
+          .filter((v): v is string => typeof v === "string")
+          .join("/") || "?";
+      const effort =
+        typeof rec.effort === "string" && rec.effort !== ""
+          ? ` (effort: ${rec.effort})`
+          : "";
+      return `${sel} → ${target}${effort}`;
+    });
+    const rest = { ...routing };
+    delete rest.overrides;
+    const extra = Object.keys(rest).length > 0 ? `, ${JSON.stringify(rest)}` : "";
+    return `routing: ${pins.join(", ")}${extra}`;
+  }
+  return `routing: ${JSON.stringify(a.routing)}`;
 }
 
 function TeamCapsRow({

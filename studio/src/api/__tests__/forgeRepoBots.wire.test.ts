@@ -55,3 +55,32 @@ describe("updateForgeRepoBots — the bot set on the wire", () => {
     expect(calls[0]?.body).toEqual({ bot_ids: ["review-pr"] });
   });
 });
+
+describe("updateForgeRepoBots — routing on the wire", () => {
+  // The server's three-way rule reads the FIELD's presence, not its value
+  // shape alone: absent keeps the stored block, null clears it, an object
+  // replaces it wholesale. JSON.stringify drops undefined keys and KEEPS
+  // null ones — exactly the mapping the rule needs, and exactly what a
+  // body-cleaning refactor would silently break, so it is witnessed here
+  // where the server's PATCH tests cannot see.
+  it("omits routing entirely when the caller says nothing (keep)", async () => {
+    await updateForgeRepoBots("t1", "i1", undefined);
+
+    expect(Object.keys(calls[0]?.body ?? {})).not.toContain("routing");
+  });
+
+  it("sends routing: null when the caller clears the block", async () => {
+    await updateForgeRepoBots("t1", "i1", undefined, undefined, undefined, null);
+
+    expect(Object.keys(calls[0]?.body ?? {})).toContain("routing");
+    expect(calls[0]?.body).toEqual({ routing: null });
+  });
+
+  it("sends the parsed object when the caller replaces the block", async () => {
+    await updateForgeRepoBots("t1", "i1", undefined, undefined, undefined, {
+      providers: ["anthropic"],
+    });
+
+    expect(calls[0]?.body).toEqual({ routing: { providers: ["anthropic"] } });
+  });
+});

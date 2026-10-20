@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +12,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -80,6 +84,15 @@ type forgeEnableReq struct {
 	// implementer (e.g. ["implement"]); nil keeps the current set
 	// (forge.RepoIntegration.LabelAllowlist).
 	LabelAllowlist []string `json:"label_allowlist,omitempty"`
+
+	// Routing is the repo's routing policy (pkg/llmroute, ADR-129) — the
+	// binding level for every launch this integration makes. ABSENT leaves
+	// the stored block untouched (an enable that adds one bot must not drop
+	// the repo's pin), `null` clears it, an object replaces it wholesale —
+	// decoded strictly through the ONE routing decoder; locks are refused
+	// (the binding level holds no lock primitive) and the block is
+	// validated before anything is written.
+	Routing json.RawMessage `json:"routing,omitempty"`
 }
 
 func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +108,15 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	if strings.TrimSpace(req.ConnectionID) == "" || strings.TrimSpace(req.Repo) == "" || len(req.BotIDs) == 0 {
 		httpError(w, http.StatusBadRequest, "connection_id, repo and bot_ids are required")
+		return
+	}
+	// The routing block decodes at the edge, through the ONE decoder: a
+	// typo must refuse here, before anything is provisioned or parked, so
+	// what the operator (or the org, at approve time) sees is a validated
+	// block. Absent keeps the stored one; null clears; an object replaces.
+	routing, routingSpoke, rerr := decodeRoutingBlock(req.Routing, routingLocksRefused)
+	if rerr != nil {
+		httpError(w, rerr.status, "%s", rerr.err.Error())
 		return
 	}
 	// Assert the connection belongs to this team before we provision.
@@ -124,16 +146,18 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		req.Repo = strings.TrimSpace(req.Repo)
 		// This endpoint is ALSO the add-bots path for an already-connected
 		// repo (Provision merges when the integration exists). Record which
-		// case this request is — id + bot-set snapshot — or the approve-time
+		// case this request is — id + bot set snapshot — or the approve-time
 		// staleness check would mistake an add-bots request for a new-repo
 		// one and refuse it forever. A store error here fails closed like
 		// the gate itself; only a clean not-found means "new repo".
 		integrationID, baseBots := "", []string(nil)
+		baseHolds, baseAllow := []string(nil), []string(nil)
 		if s.forgeIntegrations != nil {
 			ri, ierr := s.forgeIntegrations.GetByConnRepo(store.WithTenant(r.Context(), teamID), teamID, req.ConnectionID, req.Repo)
 			switch {
 			case ierr == nil:
 				integrationID, baseBots = ri.ID, ri.BotIDs
+				baseHolds, baseAllow = ri.HoldLabels, ri.LabelAllowlist
 			case errors.Is(ierr, forge.ErrIntegrationNotFound):
 				// genuinely new repo
 			default:
@@ -141,7 +165,7 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 				return
 			}
 		}
-		s.parkProvisionRequest(w, r, id, orgID, teamID, req, integrationID, false, baseBots)
+		s.parkProvisionRequest(w, r, id, orgID, teamID, req, integrationID, false, baseBots, baseHolds, baseAllow, routing, routingSpoke)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -157,16 +181,16 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		AutoFix:           req.AutoFixOnGateFailure,
 		HoldLabels:        req.HoldLabels,
 		LabelAllowlist:    req.LabelAllowlist,
+		Routing:           routing,
+		RoutingSet:        routingSpoke,
 		ActorID:           id.UserID,
 	})
 	if err != nil {
 		s.writeForgeProvisionError(w, err)
 		return
 	}
-	s.auditTenant(r, teamID, "forge.integration.provisioned", "forge_integration", res.IntegrationID, map[string]any{
-		"repo": req.Repo, "bots": res.BotIDs, "connection_id": req.ConnectionID,
-	})
-	writeJSON(w, res)
+	s.writeProvisionResult(w, r, teamID, "forge.integration.provisioned", res, s.routingBlastRadiusWarnings(ctx, teamID, res.BotIDs, routing),
+		map[string]any{"repo": req.Repo, "bots": res.BotIDs, "connection_id": req.ConnectionID})
 }
 
 // forgeUpdateReq sets an integration's EXACT bot set when bot_ids is present
@@ -209,6 +233,12 @@ type forgeUpdateReq struct {
 	// implementer (e.g. ["implement"]); nil keeps the current set
 	// (forge.RepoIntegration.LabelAllowlist).
 	LabelAllowlist []string `json:"label_allowlist,omitempty"`
+
+	// Routing is the repo's routing policy (pkg/llmroute, ADR-129); the
+	// same three-way rule as the enable request (absent keeps, null
+	// clears, an object replaces), through the ONE routing decoder with
+	// locks refused at the binding level.
+	Routing json.RawMessage `json:"routing,omitempty"`
 }
 
 func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +267,13 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusBadRequest, "bot_ids must be non-empty — use DELETE to remove the integration entirely")
 		return
 	}
+	// The routing block, decoded at the edge like the enable path — the ONE
+	// decoder, the binding surface's lock posture.
+	routing, routingSpoke, rerr := decodeRoutingBlock(req.Routing, routingLocksRefused)
+	if rerr != nil {
+		httpError(w, rerr.status, "%s", rerr.err.Error())
+		return
+	}
 	// Org ex-ante validation: only an update EXPANDING the automated
 	// surface needs the org's approval — removals and tightenings go
 	// through directly (see expandsProvisionSurface). A store error FAILS
@@ -258,7 +295,8 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 			AutoFixOnGateFailure: req.AutoFixOnGateFailure,
 			HoldLabels:           req.HoldLabels,
 			LabelAllowlist:       req.LabelAllowlist,
-		}, ri.ID, true, ri.BotIDs)
+			Routing:              req.Routing,
+		}, ri.ID, true, ri.BotIDs, ri.HoldLabels, ri.LabelAllowlist, routing, routingSpoke)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -274,6 +312,8 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		AutoFix:           req.AutoFixOnGateFailure,
 		HoldLabels:        req.HoldLabels,
 		LabelAllowlist:    req.LabelAllowlist,
+		Routing:           routing,
+		RoutingSet:        routingSpoke,
 		ActorID:           id.UserID,
 		Replace:           true,
 	})
@@ -281,10 +321,9 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		s.writeForgeProvisionError(w, err)
 		return
 	}
-	s.auditTenant(r, teamID, "forge.integration.bots_updated", "forge_integration", res.IntegrationID, map[string]any{
-		"repo": ri.RepoFullName, "bots": res.BotIDs,
-	})
-	writeJSON(w, res)
+	s.writeProvisionResult(w, r, teamID, "forge.integration.bots_updated", res,
+		s.routingBlastRadiusWarnings(ctx, teamID, res.BotIDs, routing),
+		map[string]any{"repo": ri.RepoFullName, "bots": res.BotIDs})
 }
 
 func (s *Server) handleDisableForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -591,8 +630,19 @@ func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool 
 	// Any schedule change arms (or re-arms) unattended recurring launches.
 	// The stored cadence lives in the scheduler, not on the integration, so
 	// a tightening cannot be told apart here — park every non-empty set
-	// (fail toward approval, never past it).
+	// (fail toward approval, by the predicate's own doctrine).
 	if len(req.ScheduleCrons) > 0 {
+		return true
+	}
+	// A routing block (ADR-129): a per-repo provider/model/effort pin moves
+	// the repo's unattended spend — the binding level outranks the team and
+	// org records in the launch fold — and this predicate cannot tell a
+	// tightening (a `providers:` narrowing, a `null` clear) from a
+	// widening (an `overrides:` cell onto a pricier backend) at that
+	// surface. The ScheduleCrons precedent above: park every SPOKEN block,
+	// null included. Absent keeps going direct — enabling one more bot
+	// must not demand the org's approval for a pin nobody touched.
+	if len(req.Routing) > 0 {
 		return true
 	}
 	// Overlap: "allow" is the only unbounded concurrency policy (skip and
@@ -657,4 +707,70 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// writeProvisionResult audits and answers a provisioning write. warnings is
+// the blast-radius screen's output (a WARN is not a refusal — the write
+// landed and the response carries what it could not gate); an empty list
+// answers the bare result, byte-identical to the pre-screening response.
+func (s *Server) writeProvisionResult(w http.ResponseWriter, r *http.Request, teamID, auditAction string, res forge.ProvisionResult, warnings []string, auditMeta map[string]any) {
+	s.auditTenant(r, teamID, auditAction, "forge_integration", res.IntegrationID, auditMeta)
+	if len(warnings) > 0 {
+		writeJSON(w, struct {
+			forge.ProvisionResult
+			Warnings []string `json:"warnings,omitempty"`
+		}{ProvisionResult: res, Warnings: warnings})
+		return
+	}
+	writeJSON(w, res)
+}
+
+// routingBlastRadiusWarnings screens a submitted routing block against the
+// manifests of the bots ENABLED on the integration, naming every bot and
+// node whose effective ask-rules the overridden backend could not gate.
+// The write surface cannot see the blast radius of a `*` cell on its own —
+// the block applies to every bot the webhook fans out to, and the launch
+// refusal (runview.ValidateModelOverridePermissions, folded AFTER these
+// cells at service_launch.go) is the only thing that would tell the
+// operator, one failed delivery at a time. So the surface screens and
+// WARNS (C1xx posture, philosophy §1: warn rather than reject). NOT an
+// enforcement: a bot enabled after the write is never screened here, and
+// a more specific cell below the binding (the bot's manifest, the run
+// layer) can still win where this screen saw a crossing.
+func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, botIDs []string, block *llmroute.Policy) []string {
+	if block == nil || len(block.Overrides) == 0 {
+		return nil
+	}
+	snapshot := &store.RunLLMRoutePolicy{}
+	for _, o := range block.Overrides {
+		snapshot.Overrides = append(snapshot.Overrides, store.RunLLMRouteOverride{
+			Selector: o.Selector, Backend: o.Backend, Model: o.Model, Provider: o.Provider, Effort: o.Effort,
+		})
+	}
+	var warnings []string
+	for _, botID := range botIDs {
+		lb, err := s.resolveBotSource(ctx, teamID, botID)
+		if err != nil {
+			// An unresolvable bot cannot be screened — say so rather than
+			// answer a silent all-clear: the launch refusal is the
+			// enforcement, and this warning tells the operator which bot
+			// the screen could not judge.
+			warnings = append(warnings, fmt.Sprintf("routing: bot %q could not be resolved for the blast-radius screen (%v); its launches are screened at launch time only", botID, err))
+			continue
+		}
+		// The screen owns what resolution materialized, exactly like the
+		// launch lanes that defer lb.Cleanup(): a stored bot's bundle lives
+		// in a temp dir, and a screen that skips the collection leaks one
+		// directory per screened bot per spoken routing write.
+		reasons, serr := runview.ScreenPolicyOverrides(lb.Path, lb.Source, lb.BundleDir, snapshot)
+		lb.Cleanup()
+		if serr != nil {
+			warnings = append(warnings, fmt.Sprintf("routing: bot %q could not be screened (%v); its launches are screened at launch time only", botID, serr))
+			continue
+		}
+		for _, reason := range reasons {
+			warnings = append(warnings, fmt.Sprintf("routing: bot %q: %s", botID, reason))
+		}
+	}
+	return warnings
 }

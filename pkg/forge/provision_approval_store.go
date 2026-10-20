@@ -13,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
 
 // ProvisionApproval is a repo-bot provisioning request parked for an ORG
@@ -41,17 +42,54 @@ type ProvisionApproval struct {
 	// diverged: replaying the recorded request over a changed integration
 	// could silently resurrect a bot the team removed meanwhile.
 	BaseBotIDs []string `bson:"base_bot_ids,omitempty" json:"base_bot_ids,omitempty"`
+	// BaseHoldLabels / BaseLabelAllowlist snapshot the integration's two
+	// operator sets at park time, the BaseBotIDs precedent: a PARTIAL
+	// hold-label lift or allowlist widening parks precisely because it
+	// re-arms automation, and the approver's card can only name WHAT the
+	// change lifts or widens against the set the integration held. Absent
+	// on the wire means no delta is possible — a new repo (nothing
+	// stored), or a stored set the predicate never lifts or widens from.
+	BaseHoldLabels     []string `bson:"base_hold_labels,omitempty" json:"base_hold_labels,omitempty"`
+	BaseLabelAllowlist []string `bson:"base_label_allowlist,omitempty" json:"base_label_allowlist,omitempty"`
 
 	// The optional per-repo settings of the original request, replayed
 	// verbatim on approval (forgeEnableReq semantics: nil leaves stored
-	// values untouched).
+	// values untouched). The three SPOKEN-EMPTY fields — an empty
+	// launch_vars beside LaunchVarsReplace is the whole-map clear, an
+	// empty hold_labels lifts the pause, an empty label_allowlist widens
+	// dispatch — carry no bson omitempty: an omitted empty would decode
+	// back as nil and approve would replay a silent request where the org
+	// approved a gesture. Their json tags carry no omitempty either: a nil
+	// field marshals null (silent — no map spoken) and an empty non-nil
+	// one marshals {} (spoken — the gesture the approval will execute),
+	// so a legacy record parked before the Set flags shipped is still
+	// readable as what it is on the org wire.
 	ScheduleCrons     map[string]string `bson:"schedule_crons,omitempty" json:"schedule_crons,omitempty"`
-	LaunchVars        map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
+	LaunchVars        map[string]string `bson:"launch_vars" json:"launch_vars"`
 	LaunchVarsReplace bool              `bson:"launch_vars_replace,omitempty" json:"launch_vars_replace,omitempty"`
 	Overlap           string            `bson:"overlap,omitempty" json:"overlap,omitempty"`
 	AutoFix           *bool             `bson:"auto_fix,omitempty" json:"auto_fix,omitempty"`
-	HoldLabels        []string          `bson:"hold_labels,omitempty" json:"hold_labels,omitempty"`
-	LabelAllowlist    []string          `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
+	HoldLabels        []string          `bson:"hold_labels" json:"hold_labels"`
+	LabelAllowlist    []string          `bson:"label_allowlist" json:"label_allowlist"`
+	// The three Set flags carry the SPOKEN fact the fields' json omitempty
+	// cannot: the request body NAMED launch_vars / hold_labels /
+	// label_allowlist, whatever it held. A spoken-empty gesture — the map
+	// clear, the pause lift, the dispatch widen — parks and executes on
+	// approval while its empty value collapses to an absent key on the
+	// org wire, so the approver's card needs this fact to render the
+	// gesture it is deciding on (the RoutingSet precedent). Absent/false
+	// means the request was silent about the field — leave-the-stored-
+	// value-alone, the same replay a nil field gives.
+	LaunchVarsSet     bool `bson:"launch_vars_set,omitempty" json:"launch_vars_set,omitempty"`
+	HoldLabelsSet     bool `bson:"hold_labels_set,omitempty" json:"hold_labels_set,omitempty"`
+	LabelAllowlistSet bool `bson:"label_allowlist_set,omitempty" json:"label_allowlist_set,omitempty"`
+	// Routing replays the request's routing block (ADR-129): RoutingSet
+	// false leaves the stored block untouched on approve; true with a nil
+	// policy clears it, true with a policy replaces it — the exact
+	// three-way rule the direct path applies, so what the org approved is
+	// what lands.
+	Routing    *llmroute.Policy `bson:"routing,omitempty" json:"routing,omitempty"`
+	RoutingSet bool             `bson:"routing_set,omitempty" json:"routing_set,omitempty"`
 
 	RequestedBy string    `bson:"requested_by" json:"requested_by"`
 	CreatedAt   time.Time `bson:"created_at" json:"created_at"`

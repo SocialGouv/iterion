@@ -86,6 +86,11 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		spec.OwnerID = "webhook:" + cfg.ID
 		spec.Launch.KeyOverrides = cfg.KeyOverrides
 		spec.Launch.Vars = applyWebhookVarLayers(map[string]string{}, cfg)
+		// The launch trusts the config's OPERATOR layer for the routing
+		// pre-flights (webhooks_gitlab.go's webhook lane); the preview
+		// answers for the same launch, so it trusts the same names — a
+		// var-derived cell the launch narrows must not preview as undecided.
+		spec.Launch.TrustedVarNames = trustedVarNames(cfg.OperatorLaunchVars)
 		disabled = !cfg.Enabled
 	default:
 		httpError(w, http.StatusBadRequest, "source.kind must be personal or webhook")
