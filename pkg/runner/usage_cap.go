@@ -446,9 +446,10 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// Every uncertainty answers "reachable". A supervisor the run will
 	// spawn is a route too — one every execution takes (supervisorRouteID).
 	launchVars, haveLaunch := r.launchReading(ctx, msg, logger)
-	view := model.RouteView{Workflow: wf, Overrides: modelOverridesFromMsg(msg.ModelOverrides)}
+	view := model.RouteView{Workflow: wf, Overrides: modelOverridesFromMsg(msg.ModelOverrides), AllowedProviders: msg.LLMProviders}
 	if haveLaunch {
 		view = model.RouteViewForDispatch(wf, modelOverridesFromMsg(msg.ModelOverrides), nil, launchVars)
+		view.AllowedProviders = msg.LLMProviders
 	}
 	routes := model.AnthropicWireRoutes(view)
 	sups := preflightSupervisors(ctx, wf, msg, view.DecidedVars())

@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 
@@ -177,7 +178,7 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 		el.On = resolveTriggers(fb.On)
 		chain = append(chain, el)
 	}
-	return dedupeChain(chain, e.resolveBackendName(node), e.baselineModel(node))
+	return dedupeChain(e.dropForbidden(node, chain), e.resolveBackendName(node), e.baselineModel(node))
 }
 
 // EffectiveFallbackBackends reports the backends a node's `fallbacks:` routes
@@ -503,8 +504,17 @@ func sameRoute(a, b chainElement) bool {
 //     shape with MOONSHOT_BASE_URL + ANTHROPIC_AUTH_TOKEN=$MOONSHOT_API_KEY).
 //   - "openai" — for claw/OpenAI-compat: force OPENAI_API_KEY direct.
 //   - "auto" / "" — current process-env-driven precedence.
-func (e *ClawExecutor) resolveProvider(node ir.Node) string {
-	return e.resolveProviderChain(node)[0].Provider
+func (e *ClawExecutor) resolveProvider(node ir.Node) (string, error) {
+	chain := e.resolveProviderChain(node)
+	if len(chain) == 0 {
+		// The allowlist dropped every element: there is no route to name,
+		// and "" IS the defer-to-process spelling — returning it would read
+		// "every route refused" as "no preference, proceed". The refusal
+		// travels; the dispatch sites refuse the same way.
+		return "", fmt.Errorf("node %q: every route resolves outside this run's provider allowlist (%s): %w",
+			node.NodeID(), ProviderAllowlistNames(e.allowedProviders), ErrProviderOutsideAllowlist)
+	}
+	return chain[0].Provider, nil
 }
 
 // resolveProviderChain resolves the per-node `provider:` field into an
@@ -541,7 +551,7 @@ func (e *ClawExecutor) resolveProviderChain(node ir.Node) []chainElement {
 	// provider name no credential family matches, while the write gate
 	// and the credential preview certified each step of the chain.
 	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Provider != "" {
-		return parseProviderChain(e.resolveRoutingField(ov.Provider))
+		return e.dropForbidden(node, parseProviderChain(e.resolveRoutingField(ov.Provider)))
 	}
 	var raw string
 	switch n := node.(type) {
@@ -552,7 +562,49 @@ func (e *ClawExecutor) resolveProviderChain(node ir.Node) []chainElement {
 	case *ir.RouterNode:
 		raw = n.Provider
 	}
-	return parseProviderChain(e.resolveRoutingField(raw))
+	return e.dropForbidden(node, parseProviderChain(e.resolveRoutingField(raw)))
+}
+
+// dropForbidden drops every chain element whose resolved provider is
+// outside the run's allowlist (ADR-129 §5, the dispatch half): the launch
+// pruned the route, and the chain must not burn a retry budget re-arming
+// it. An element naming no provider ("") is kept only when nothing else
+// names one either: the model the element carries — or the node baseline
+// it inherits at build — is the route the build resolves, so the SAME
+// reading the walk runs decides the keep (a GLM id on the anthropic wire
+// spends z.ai's credential — RouteProviderHint mints that hint at build —
+// and a `provider/` prefix names its own). What survives is the true
+// defer-to-process element: no provider, and no model-implied one. The
+// chain may come back EMPTY — every live dispatch site refuses an empty
+// chain (dispatchWithObservability, and dispatchChain beneath them)
+// rather than silently re-filling it with a defer-to-process element,
+// which would spend a forbidden provider in silence.
+func (e *ClawExecutor) dropForbidden(node ir.Node, chain []chainElement) []chainElement {
+	if e.allowedProviders == nil {
+		return chain
+	}
+	base := e.baselineModel(node)
+	out := make([]chainElement, 0, len(chain))
+	dropped := false
+	for _, el := range chain {
+		p := strings.ToLower(strings.TrimSpace(el.Provider))
+		if p == "" {
+			m := el.Model
+			if m == "" {
+				m = base
+			}
+			p = providerOfModelSpec(m)
+		}
+		if p != "" && !e.allowedProviders[p] {
+			dropped = true
+			continue
+		}
+		out = append(out, el)
+	}
+	if !dropped {
+		return chain
+	}
+	return out
 }
 
 // parseProviderChain splits a resolved provider field into the ordered

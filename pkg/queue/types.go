@@ -155,7 +155,14 @@ import (
 // material. Runner-first rollout: a pre-v24 runner refuses a v24
 // message at the schema check instead of failing later at credential
 // injection with a bundle it cannot open.
-const SchemaVersion = 24
+// v=25 (2026-10-19): LLMProviders (ADR-129 §5) — the run's FROZEN provider
+// allowlist, stamped from the launch's resolved routing policy and replayed
+// from the run doc on resume. Breaking by the additive-field rule, same
+// direction as v=23's RunnerPool: a stale runner that dropped the field
+// would dispatch every route the tenant forbids — the leak the list exists
+// to make impossible — so it must reject the message at the schema check.
+// Server-first rollout; MinSchemaVersion unchanged.
+const SchemaVersion = 25
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -265,6 +272,14 @@ type RunMessage struct {
 	// conservative-on-ignore direction (no RunMessage version bump: a
 	// lost capability, never a wrong execution).
 	FallbackModelClasses map[string]map[string]string `json:"fallback_model_classes,omitempty"`
+	// LLMProviders is the run's FROZEN provider allowlist (ADR-129 §5) —
+	// the launch's resolved routing policy's `providers` list, replayed
+	// from the run doc on every resume, never re-resolved. The claiming
+	// runner drops every dispatch chain element whose resolved provider is
+	// outside it, so a rescue route the tenant forbids burns no retry
+	// budget on a call it may not spend. Nil/empty = no allowlist (a run
+	// launched before the field, or a tenant that set none).
+	LLMProviders []string `json:"llm_providers,omitempty"`
 	// AutoMemory is the launch-time auto-memory (MEMORY.md) override — the
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.

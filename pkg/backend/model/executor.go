@@ -80,9 +80,16 @@ type ClawExecutor struct {
 	// so a run can re-target the bot without editing the .bot. Empty applies
 	// nothing (backward-compatible). See model_override.go.
 	modelOverrides ModelOverrides
-	wfCompaction   *ir.Compaction
-	wfCapabilities []string // workflow-level default host capabilities (nil = none)
-	wfSkills       []string // workflow-level default skill-library references (nil = none)
+	// allowedProviders is the run's provider allowlist (ADR-129 §5) the
+	// dispatch enforces: a chain element whose resolved provider is outside
+	// it is dropped before dispatch, so a forbidden rescue route burns no
+	// retry budget on a call the tenant does not allow. Nil = no allowlist
+	// (the pre-allowlist walk of every chain). Set from the run's FROZEN
+	// routing policy (queue.RunMessage.LLMProviders).
+	allowedProviders map[string]bool
+	wfCompaction     *ir.Compaction
+	wfCapabilities   []string // workflow-level default host capabilities (nil = none)
+	wfSkills         []string // workflow-level default skill-library references (nil = none)
 	// wfMCP is the workflow's own `mcp:` block. A server it names is one the
 	// BOT asked for, and PrepareWorkflow folds it into every node's active
 	// set while leaving the node's own MCP config nil — so without this, the
@@ -579,6 +586,14 @@ func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
 // dropped the operator's model choice once; being able to assert it survived
 // is what keeps that from coming back.
 func (e *ClawExecutor) ModelOverrides() ModelOverrides { return e.modelOverrides }
+
+// WithAllowedProviders sets the run's provider allowlist (ADR-129 §5) the
+// dispatch enforces: a chain element whose resolved provider is outside it
+// is dropped before dispatch, so a forbidden rescue route burns no retry
+// budget on a call the tenant does not allow. Empty/nil = no allowlist.
+func WithAllowedProviders(providers []string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.allowedProviders = AllowedProviderSet(providers) }
+}
 
 // WithCompressOverride sets the run-level compression override (CLI --compress
 // / studio Launch toggle): on|ultra|off, or "" for "unset, defer to DSL/env".

@@ -101,6 +101,31 @@ type ProviderResolution struct {
 	// for a supervisor. A refusal built on this walk can say which node
 	// pinned what; sorted, deduplicated.
 	Pins map[string][]string
+	// Forbidden maps a provider OUTSIDE the view's allowlist
+	// (RouteView.AllowedProviders, ADR-129 §5) to the sites that named it —
+	// the same site keys as Pins. A forbidden provider is excluded from
+	// Providers and Pins: no credential is sealed for it and no unfunded
+	// refusal names it. Populated only when an allowlist is in force;
+	// sorted, deduplicated.
+	Forbidden map[string][]string
+	// ForbiddenPrimary holds the subset of Forbidden named by a PRIMARY
+	// route — the node's own chain, an interaction generation, a supervisor
+	// — that no allowed provider served. This is the launch refusal
+	// (ErrProviderOutsideAllowlist): there is no way to serve that node
+	// inside the allowlist, and "refused, never re-routed" is the contract.
+	// A rescue route outside the list lands in Forbidden alone and is
+	// pruned, never refused. Populated only when an allowlist is in force;
+	// sorted, deduplicated.
+	ForbiddenPrimary map[string][]string
+	// Unreadable lists the routes the walk could not read while an
+	// allowlist was in force — a `{{vars.*}}` or empty-`${…}` field, a
+	// prefix-less model, a hint outside the vocabulary, a model-calling
+	// node that exposes no LLM fields. Under an allowlist, readability is
+	// compulsory: every entry is a launch refusal
+	// (ErrRouteUnreadableUnderAllowlist), because a lock that cannot be
+	// checked must not pass. Empty without an allowlist (the walk's
+	// posture there is the pre-allowlist widen). Sorted by site, field.
+	Unreadable []UnreadableRoute
 	// envFundedOnly reports whether every LLM route the walk read resolved
 	// to the openai_compatible gateway — a route whose credential the
 	// RUNNER's environment funds, never the bundle. A route that resolved
@@ -158,7 +183,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 	if wf == nil || len(known) == 0 {
 		return ProviderResolution{}
 	}
-	acc := &providerAccumulator{known: known, providers: map[string]bool{}, unknown: map[string]bool{}, forfaitFirst: map[string]bool{}, pins: map[string][]string{}, narrowSafe: true, vars: v.Vars, late: v.LateVars}
+	acc := &providerAccumulator{known: known, providers: map[string]bool{}, unknown: map[string]bool{}, forfaitFirst: map[string]bool{}, pins: map[string][]string{}, narrowSafe: true, vars: v.Vars, late: v.LateVars, allowed: AllowedProviderSet(v.AllowedProviders)}
 	gateVars := v.gateVars()
 	seenAnyLLM := false
 	for _, n := range wf.Nodes {
@@ -168,6 +193,8 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 				// Spends, but exposes nothing to resolve.
 				seenAnyLLM = true
 				acc.narrowSafe = false
+				acc.site = n.NodeID()
+				acc.unreadableAt(fieldlessSite, "")
 			}
 			continue
 		}
@@ -314,6 +341,30 @@ type providerAccumulator struct {
 	// variables (see envDeferred) — the run is never declared env-funded,
 	// whatever the expansions said.
 	envSeen bool
+	// allowed is the allowlist in force (RouteView.AllowedProviders);
+	// nil/empty = none, and every branch below records exactly as before.
+	allowed          map[string]bool
+	forbidden        map[string][]string
+	forbiddenPrimary map[string][]string
+	unreadable       []UnreadableRoute
+	// route is the route being read (beginRoute/endRoute): its outside
+	// hints, whether an allowed one served, and the wire-default reads it
+	// may commit.
+	route *routeRead
+}
+
+// routeRead is one route mid-read: the site it lives at, whether it is a
+// PRIMARY (the node's own chain, an interaction generation, a supervisor —
+// the class an outside provider refuses the launch for), the providers it
+// named outside the allowlist, whether any allowed one served it, and the
+// wire-default reads it staged (committed at endRoute only if the route
+// survives — a pruned route never runs, so it reads no default).
+type routeRead struct {
+	site    string
+	primary bool
+	outside []string
+	inside  bool
+	wire    []string
 }
 
 func (a *providerAccumulator) result() ProviderResolution {
@@ -355,6 +406,11 @@ func (a *providerAccumulator) result() ProviderResolution {
 			}
 		}
 		res.Pins[p] = deduped
+	}
+	if len(a.allowed) > 0 {
+		res.Forbidden = sortedDedupSites(a.forbidden)
+		res.ForbiddenPrimary = sortedDedupSites(a.forbiddenPrimary)
+		res.Unreadable = sortDedupUnreadable(a.unreadable)
 	}
 	sort.Strings(res.Providers)
 	sort.Strings(res.Unknown)
@@ -404,21 +460,102 @@ func resolveRouteBackend(override, node, wfDefault string) (backend string, from
 // {{vars.…}} reference resolves at dispatch: unresolved, widen. Either way
 // the walk is never declared env-funded on an env-deferring route — what the
 // runner expands it to is not this process's word.
-func (a *providerAccumulator) envDeferred(parts ...string) {
+func (a *providerAccumulator) envDeferred(field string, parts ...string) {
 	for _, part := range parts {
 		if strings.Contains(part, "{{") {
 			a.envSeen = true
 			a.narrowSafe = false
+			a.unreadableAt(field, part)
 			return
 		}
 		if strings.Contains(part, "${") {
 			a.envSeen = true
 			if strings.TrimSpace(ir.ExpandEnvWithDefault(part)) == "" {
 				a.narrowSafe = false
+				a.unreadableAt(field, part)
 			}
 			return
 		}
 	}
+}
+
+// beginRoute opens the route being read (resolveNode: primary,
+// resolveRoute: rescue, resolveDirect: primary) — the site and class every
+// outside hint and unreadable field is recorded under.
+func (a *providerAccumulator) beginRoute(primary bool) {
+	a.route = &routeRead{site: a.site, primary: primary}
+}
+
+// endRoute closes the route being read. A PRIMARY route that named outside
+// providers and no allowed one is unservable: its providers land in
+// forbiddenPrimary, the launch refusal (ADR-129 §5: refused, never
+// re-routed). The route's staged wire-default reads commit only if it
+// survives — an allowlisted route that named only outside providers never
+// runs, so it reads no default — and only the slots the allowlist admits:
+// a slot outside the list is spent by no route of this run.
+func (a *providerAccumulator) endRoute() {
+	r := a.route
+	a.route = nil
+	if r == nil {
+		return
+	}
+	if r.primary && len(a.allowed) > 0 && !r.inside && len(r.outside) > 0 {
+		if a.forbiddenPrimary == nil {
+			a.forbiddenPrimary = map[string][]string{}
+		}
+		for _, p := range r.outside {
+			a.forbiddenPrimary[p] = appendSite(a.forbiddenPrimary[p], r.site)
+		}
+	}
+	if len(a.allowed) == 0 || r.inside || len(r.outside) == 0 {
+		for _, slot := range r.wire {
+			// A slot the allowlist excludes is spent by no route of this
+			// run — the dispatch filter drops its elements and the seal
+			// gate seals nothing for it — so it reads no default either.
+			if len(a.allowed) > 0 && !a.allowed[slot] {
+				continue
+			}
+			if a.wireDefault == nil {
+				a.wireDefault = map[string]bool{}
+			}
+			a.wireDefault[slot] = true
+		}
+	}
+}
+
+// unreadableAt records a route the walk cannot read while an allowlist is
+// in force (ADR-129 §5: under a list, readability is compulsory — every
+// entry is a launch refusal). Without an allowlist the walk only widens,
+// exactly as before.
+func (a *providerAccumulator) unreadableAt(field, raw string) {
+	if len(a.allowed) == 0 {
+		return
+	}
+	a.unreadable = append(a.unreadable, UnreadableRoute{Site: a.site, Field: field, Hint: raw})
+}
+
+// forbid records a route whose resolved provider is OUTSIDE the allowlist:
+// excluded from Providers and Pins — no credential is sealed for it, no
+// unfunded refusal names it — and named in Forbidden with its site. A
+// decided (pruned) route widens nothing.
+func (a *providerAccumulator) forbid(provider string) {
+	if a.forbidden == nil {
+		a.forbidden = map[string][]string{}
+	}
+	a.forbidden[provider] = appendSite(a.forbidden[provider], a.site)
+	if a.route != nil {
+		a.route.outside = append(a.route.outside, provider)
+	}
+}
+
+// appendSite appends a site once (the Pins dedupe, shared).
+func appendSite(sites []string, site string) []string {
+	for _, s := range sites {
+		if s == site {
+			return sites
+		}
+	}
+	return append(sites, site)
 }
 
 // field resolves a routing field's `{{vars.*}}` spans against the walk's
@@ -442,6 +579,8 @@ func (a *providerAccumulator) field(raw string) string {
 // `{{vars.x}}` whose value the run itself decided resolves like the
 // literal it will be at dispatch, a late name stays as written.
 func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, overrides ModelOverrides) {
+	a.beginRoute(true)
+	defer a.endRoute()
 	ov := overrides.ForNode(node.NodeID(), node.NodeKind())
 	mdl := ov.Model
 	if mdl == "" {
@@ -450,7 +589,9 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	prov := a.field(ov.Provider)
 	chain := a.field(fields.Provider)
 	m := a.field(mdl)
-	a.envDeferred(prov, chain, m)
+	a.envDeferred("provider", prov)
+	a.envDeferred("provider", chain)
+	a.envDeferred("model", m)
 	if strings.TrimSpace(ov.Provider) != "" {
 		a.noteWireDefault(prov, m)
 		if a.chainDecides(prov, m) {
@@ -462,6 +603,7 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 		// classification existed. Falling through would let the node's own
 		// chain narrow an answer the override deferred.
 		a.narrowSafe = false
+		a.unreadableAt("provider", prov)
 		return
 	}
 	a.noteWireDefault(chain, m)
@@ -477,7 +619,10 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 // which the walk cannot name — widen. Provider and model arrive already
 // read through the walk's vars.
 func (a *providerAccumulator) resolveRoute(provider, mdl string) {
-	a.envDeferred(provider, mdl)
+	a.beginRoute(false)
+	defer a.endRoute()
+	a.envDeferred("provider", provider)
+	a.envDeferred("model", mdl)
 	a.noteWireDefault(provider, mdl)
 	if a.chainDecides(provider, mdl) {
 		return
@@ -489,11 +634,13 @@ func (a *providerAccumulator) resolveRoute(provider, mdl string) {
 // no hint applies there, the model spec alone routes — its own prefix,
 // or the node model's when it is empty.
 func (a *providerAccumulator) resolveDirect(interactionModel, nodeModel string) {
+	a.beginRoute(true)
+	defer a.endRoute()
 	mdl := interactionModel
 	if strings.TrimSpace(mdl) == "" {
 		mdl = nodeModel
 	}
-	a.envDeferred(mdl, nodeModel)
+	a.envDeferred("model", mdl, nodeModel)
 	a.prefixOrWiden(mdl)
 }
 
@@ -509,12 +656,10 @@ func (a *providerAccumulator) noteWireDefault(chain, mdl string) {
 	m := strings.TrimSpace(ir.ExpandEnvWithDefault(mdl))
 	glm := GLMOnAnthropicWire(m)
 	read := func(slots ...string) {
-		if a.wireDefault == nil {
-			a.wireDefault = map[string]bool{}
+		if a.route == nil {
+			return
 		}
-		for _, slot := range slots {
-			a.wireDefault[slot] = true
-		}
+		a.route.wire = append(a.route.wire, slots...)
 	}
 	claudeCode := func() {
 		hints, unresolved := chainHints(chain)
@@ -566,9 +711,19 @@ func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
 	}
 	if unresolved {
 		a.narrowSafe = false
+		a.unreadableAt("provider", raw)
 	}
 	for _, h := range hints {
 		if h == modelroute.OpenAICompatible && rawGatewayPrefix(mdl) {
+			if len(a.allowed) > 0 && !a.allowed[modelroute.OpenAICompatible] {
+				a.forbid(modelroute.OpenAICompatible)
+			} else if a.route != nil {
+				// The gateway step is an allowed server: it marks the route
+				// servable inside the list, the same way hint() does for a
+				// vendor step — a mixed chain refuses only when NO step
+				// inside the list holds.
+				a.route.inside = true
+			}
 			continue
 		}
 		a.hint(h)
@@ -606,7 +761,13 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 			// it is what OnlyEnvFunded is true OF. An env-TEMPLATED model
 			// may expand to the gateway here and to a vendor on the runner,
 			// so it widens (envDeferred covers the empty expansion; this
-			// branch covers the resolved one).
+			// branch covers the resolved one). Under an allowlist the
+			// gateway is a provider like any other: outside the list, the
+			// route is pruned.
+			if len(a.allowed) > 0 && !a.allowed[modelroute.OpenAICompatible] {
+				a.forbid(modelroute.OpenAICompatible)
+				return
+			}
 			if a.envFunded == nil {
 				a.envFunded = map[string]bool{}
 			}
@@ -619,7 +780,13 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 		a.hint(p)
 		return
 	}
+	// A spec that names nothing — no provider hint, no prefix, no GLM
+	// family — is the prefix-less model class the readability contract
+	// names: the walk cannot say what the route spends, and under an
+	// allowlist a lock that cannot be checked must not pass (the run would
+	// ride whatever the serving pod's ambient precedence funds).
 	a.narrowSafe = false
+	a.unreadableAt("model", mdl)
 }
 
 // hint classifies one provider name. Known → recorded (and pinned to the
@@ -632,14 +799,22 @@ func (a *providerAccumulator) hint(raw string) bool {
 		a.narrowSafe = false
 		return false
 	case a.known[h]:
+		if len(a.allowed) > 0 && !a.allowed[h] {
+			a.forbid(h)
+			return true
+		}
 		a.providers[h] = true
 		a.pin(h)
 		ff, seen := a.forfaitFirst[h]
 		a.forfaitFirst[h] = (!seen || ff) && delegate.ForfaitFirst(a.backend, h)
+		if a.route != nil {
+			a.route.inside = true
+		}
 		return true
 	default:
 		a.unknown[h] = true
 		a.narrowSafe = false
+		a.unreadableAt("provider", h)
 		return false
 	}
 }
@@ -709,4 +884,18 @@ func providerFromModelPrefix(model string) string {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(prov))
+}
+
+// providerOfModelSpec names the provider a model spec spends — the walk's
+// own reading (prefixOrWiden): a GLM id on the anthropic wire spends
+// z.ai's credential whatever prefix carried it, a `provider/` prefix names
+// its provider, and a bare non-GLM id names none ("") — the caller decides
+// its posture. The one reading shared by the walk and the dispatch-side
+// allowlist decisions, so the two never drift over one spec.
+func providerOfModelSpec(spec string) string {
+	m := ir.ExpandEnvWithDefault(spec)
+	if GLMOnAnthropicWire(m) {
+		return string(secrets.ProviderZAI)
+	}
+	return providerFromModelPrefix(m)
 }

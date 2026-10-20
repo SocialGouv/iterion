@@ -173,6 +173,13 @@ type ExecutorSpec struct {
 	// wraps the store emitter so the neutral event types buffer for the
 	// crossings to seal. Off constructs nothing.
 	LLMRouteCrossHarness string
+	// LLMProviders is the run's FROZEN provider allowlist (ADR-129 §5) —
+	// the launch's resolved `providers` list, replayed from the run doc on
+	// every resume. The executor drops every dispatch chain element whose
+	// resolved provider is outside it (model.WithAllowedProviders), so a
+	// rescue route the tenant forbids burns no retry budget on a call it
+	// may not spend. Nil/empty = no allowlist.
+	LLMProviders []string
 	// SandboxOverride and SandboxDefault are the deployment tiers the
 	// runtime resolves the run's sandbox mode from (CLI-strength
 	// ITERION_SANDBOX_OVERRIDE / --sandbox, and the
@@ -554,6 +561,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithBackendRegistry(backendReg),
 		model.WithRetryPolicy(retryPolicy),
 		model.WithLLMRouteTriggers(spec.LLMRouteTriggers),
+		model.WithAllowedProviders(spec.LLMProviders),
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(toolReg),
 		model.WithLogger(spec.Logger),

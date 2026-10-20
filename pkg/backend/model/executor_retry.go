@@ -1005,7 +1005,17 @@ func (e *ClawExecutor) dispatchChain(
 	build elementBuilder,
 ) (chainOutcome, error) {
 	if len(chain) == 0 {
-		chain = []chainElement{{}}
+		// Refused here too, at the choke point every dispatch path crosses:
+		// the allowlist may have dropped every element, or the caller built
+		// none — re-filling either with a defer-to-process element would
+		// spend a forbidden provider in silence. The wrapper above refuses
+		// first on the live paths; this guard keeps a future direct caller
+		// from re-opening the leak.
+		if e.allowedProviders != nil {
+			return chainOutcome{}, fmt.Errorf("model: node %q: every route resolves outside this run's provider allowlist (%s) — refused, never re-routed: %w",
+				nodeID, ProviderAllowlistNames(e.allowedProviders), ErrProviderOutsideAllowlist)
+		}
+		return chainOutcome{}, fmt.Errorf("model: node %q: empty dispatch chain — refused, never re-filled with a defer-to-process element", nodeID)
 	}
 
 	var (

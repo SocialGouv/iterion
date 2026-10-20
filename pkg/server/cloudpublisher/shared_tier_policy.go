@@ -110,6 +110,50 @@ func wantForSlot(slot string) (credpool.Credential, bool) {
 	return credpool.Credential{}, false
 }
 
+// providerOfSlot is the provider hint whose credential the policy slot
+// seals — the inverse of slotOfProvider/slotOfKind, built from the same
+// vocabularies (allKnownProviders, the forfait kinds' providers). "" for a
+// slot no provider maps to.
+func providerOfSlot(slot string) string {
+	if prov, ok := strings.CutSuffix(slot, "_key"); ok {
+		for _, known := range allKnownProviders {
+			if secrets.Provider(prov) == known {
+				return string(known)
+			}
+		}
+	}
+	switch slot {
+	case llmroute.CredClaudeForfait:
+		return string(secrets.ProviderAnthropic)
+	case llmroute.CredChatGPTForfait:
+		return string(secrets.ProviderOpenAI)
+	}
+	return ""
+}
+
+// withProviderAllowlist returns the policy with the tenant's provider
+// allowlist (ADR-129 §5) joined to the seal gate: a slot whose provider the
+// list excludes is sealed by NO tier, and a slot no provider maps to is
+// not provably inside the list — refused, the same posture wantForSlot's
+// refusal keeps. The walk pruned the provider, so no channel funds it.
+func (pol sharedTierPolicy) withProviderAllowlist(allowed map[string]bool) sharedTierPolicy {
+	if allowed == nil {
+		return pol
+	}
+	inner := pol.slotSealable
+	pol.slotSealable = func(slot string) bool {
+		prov := providerOfSlot(slot)
+		if prov == "" || !allowed[prov] {
+			return false
+		}
+		if inner == nil {
+			return true
+		}
+		return inner(slot)
+	}
+	return pol
+}
+
 // withSlotWhitelist returns the policy with the whitelist set. The one
 // construction site for the gate: a nil admits everything (today's
 // behavior for an unwired launch).
