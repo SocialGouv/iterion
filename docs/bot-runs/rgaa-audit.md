@@ -9,6 +9,31 @@ The bilans below v3 are the v1/v2 single-agent auditor, kept as the record
 of why v3 exists. Earlier runs (pre-dedicated-file) are recorded in the
 2026-06 campaign bilans.
 
+## 2026-10-20 — the demo path proven: `task demo:rgaa-audit`, one real run, one resume (#2593)
+
+The colleague-facing one-command path landed (#2598): build, pinned
+engine, chromium, the run — and with it the first REAL run of the bot
+end to end outside a hand-held session. What it took, in order:
+
+- Run 1 (inside a session sandbox): every adjudication batch died at
+  0 tokens on a proxy-tunnel refusal (the same egress trap as #2500) —
+  the report still came out from the replayed ledger alone, integrity
+  gate on. Cost: 0 $.
+- Run 2 (sandbox off): the agents lived; the run then died at **91% of
+  the bot's 3M token ceiling** (2 729 032) in `merge_refutations` — a
+  full run's wall is the TOKEN budget, not dollars.
+- The documented resume line (with `--max-tokens` raised) finished it:
+  **FINISHED, 42% provisional (32 C / 39 NC / 30 NA / 5 open), decided
+  101/106, adjudication ok (32 verdicts, zero lost batches), counter-
+  reading applied, report integrity ok** — report, page grid, coverage
+  annex and ledger under `.rgaa-demo/<ts>/`.
+
+`RGAA_DEMO_TOKENS` (default 5M) now ships the ceiling with the task.
+Found on the way and ticketed: the axe net cannot see unnamed controls
+(#2591), and the mdcode corpus walk reads local gitignored dirs, so a
+demo run makes `task test` red (#2606). Merged alongside: the RGAA 11.1
+label sweep (#2590, 17 fixes).
+
 ## 2026-10-15 — 3.0.3: a retyped citation is folded with its anchor's text, and the studio ledger's one ungroundable citation is restored (#2453)
 
 - Status: **engine-proven, no run**. The node test drives a retyped citation through the real

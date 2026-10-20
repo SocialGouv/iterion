@@ -66,7 +66,15 @@ edits to `studio/src` are part of what gets judged.
   (`RGAA_DEMO_BUDGET=80` or `--max-cost-usd 80`).
 - `iterion resume --run-id <id> --store-dir .rgaa-demo/store …` resumes
   an interrupted run (add `--loop-budget-guard off` if the guard trips
-  on the resumed budget).
+  on the resumed budget). The measured ceiling of a full run is the
+  bot's TOKEN budget, not dollars: the default 3M ran out at 91% before
+  the counter-reading — the task ships `--max-tokens` 5M
+  (`RGAA_DEMO_TOKENS` overrides), and a resume that worked for real:
+
+  ```sh
+  .rgaa-demo/bin/iterion resume --run-id <id> --store-dir .rgaa-demo/store \
+    --max-tokens 4500000 --max-cost-usd 40 --loop-budget-guard off
+  ```
 
 ## Limits
 
