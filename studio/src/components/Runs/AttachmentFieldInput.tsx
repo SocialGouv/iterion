@@ -107,6 +107,7 @@ export default function AttachmentFieldInput({
           type="file"
           accept={accept}
           className="sr-only"
+          aria-label={`Upload `}
           onChange={(e) => acceptFile(e.target.files?.[0] ?? null)}
         />
       </div>

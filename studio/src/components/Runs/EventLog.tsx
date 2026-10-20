@@ -154,6 +154,7 @@ export default function EventLog({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search events…"
+            aria-label="Search events"
             size="sm"
             leadingIcon={<span className="text-caption">⌕</span>}
           />

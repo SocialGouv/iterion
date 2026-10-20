@@ -229,6 +229,7 @@ export default function FilePicker({ open, onOpenChange, onPick }: FilePickerPro
         <Input
           autoFocus
           placeholder="Search files..."
+          aria-label="Search files"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           leadingIcon={<MagnifyingGlassIcon />}

@@ -16,6 +16,10 @@ interface Props {
   value: string | string[] | undefined;
   onChange: (next: string | string[]) => void;
   disabled?: boolean;
+  /** id for the primary control of kinds that have one (select, free_text): the
+   *  caller's visible <label htmlFor> points here (RGAA 11.1). Kinds rendered
+   *  as grouped rows name each row instead. */
+  inputId?: string;
 }
 
 export default function QuestionInput({
@@ -23,6 +27,7 @@ export default function QuestionInput({
   value,
   onChange,
   disabled = false,
+  inputId,
 }: Props) {
   switch (question.kind) {
     case "radio":
@@ -50,6 +55,7 @@ export default function QuestionInput({
           value={typeof value === "string" ? value : ""}
           onChange={onChange}
           disabled={disabled}
+          inputId={inputId}
         />
       );
     case "free_text":
@@ -59,6 +65,7 @@ export default function QuestionInput({
           value={typeof value === "string" ? value : ""}
           onChange={onChange}
           disabled={disabled}
+          inputId={inputId}
         />
       );
     case "file":
@@ -274,14 +281,17 @@ function SelectInput({
   value,
   onChange,
   disabled,
+  inputId,
 }: {
   question: Extract<FormQuestion, { kind: "select" }>;
   value: string;
   onChange: (next: string) => void;
   disabled: boolean;
+  inputId?: string;
 }) {
   return (
     <Select
+      id={inputId}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       disabled={disabled}
@@ -307,16 +317,19 @@ function FreeTextInput({
   value,
   onChange,
   disabled,
+  inputId,
 }: {
   question: Extract<FormQuestion, { kind: "free_text" }>;
   value: string;
   onChange: (next: string) => void;
   disabled: boolean;
+  inputId?: string;
 }) {
   const rows = question.rows ?? 3;
   if (rows <= 1) {
     return (
       <Input
+        id={inputId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={question.placeholder}
@@ -326,6 +339,7 @@ function FreeTextInput({
   }
   return (
     <Textarea
+      id={inputId}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={question.placeholder}

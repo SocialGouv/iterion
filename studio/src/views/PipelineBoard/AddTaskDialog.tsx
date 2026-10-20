@@ -498,8 +498,11 @@ function AddTaskDialogContent({
               </label>
 
               <div>
-                <div className="mb-1 text-xs text-fg-muted">Labels</div>
+                <label htmlFor="add-task-labels" className="mb-1 block text-xs text-fg-muted">
+                  Labels
+                </label>
                 <TagInput
+                  id="add-task-labels"
                   value={labels}
                   onChange={setLabels}
                   placeholder="Add label…"

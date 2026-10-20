@@ -52,11 +52,15 @@ export default function RunTagsRow({ runId }: { runId: string }) {
 
   return (
     <div className="flex items-start gap-2 text-micro text-fg-subtle">
-      <span className="mt-1.5 shrink-0 uppercase tracking-wide text-[0.65rem]">
+      <label
+        htmlFor="run-tags-input"
+        className="mt-1.5 shrink-0 uppercase tracking-wide text-[0.65rem]"
+      >
         Tags
-      </span>
+      </label>
       <div className="min-w-0 flex-1">
         <TagInput
+          id="run-tags-input"
           value={tags}
           onChange={onChange}
           placeholder="Add tag (release, flaky, customer-x…)"

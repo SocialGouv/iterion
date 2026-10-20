@@ -46,6 +46,7 @@ export function EventsTab({ events }: { events: RunEvent[] }) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search events…"
+          aria-label="Search events"
           size="sm"
           leadingIcon={<span className="text-caption">⌕</span>}
         />

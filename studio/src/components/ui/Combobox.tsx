@@ -220,6 +220,7 @@ export function Combobox<T = string>({
               type="text"
               value={query}
               placeholder={placeholder}
+              aria-label={placeholder}
               onChange={(e) => {
                 setQuery(e.target.value);
                 setFocusIdx(emptyLabel != null ? -1 : 0);
