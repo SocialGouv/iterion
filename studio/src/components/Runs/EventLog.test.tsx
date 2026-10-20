@@ -85,3 +85,10 @@ describe("EventLog persisted filters", () => {
     expect(input.value).toBe("");
   });
 });
+
+describe("EventLog search field name", () => {
+  it("names its search field — a placeholder alone is not a label (RGAA 11.1)", () => {
+    renderEventLog(null);
+    expect(screen.getByRole("textbox", { name: "Search events" })).toBeTruthy();
+  });
+});

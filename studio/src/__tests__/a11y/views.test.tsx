@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { ReactNode } from "react";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, beforeAll, describe, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import { Route, Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -12,6 +12,9 @@ import { memoryLocation } from "wouter/memory-location";
 // stores have defaults; no network). Canvas (xyflow) + WS-driven views
 // stay manual / Playwright.
 
+import EventLog from "@/components/Runs/EventLog";
+import { EventsTab } from "@/components/Runs/detail/EventsTab";
+import LibraryPanel from "@/components/Library/LibraryPanel";
 import AppearanceTab from "@/views/SettingsDialog/AppearanceTab";
 import AboutTab from "@/views/SettingsDialog/AboutTab";
 import AuditTab from "@/views/teams/tabs/AuditTab";
@@ -22,6 +25,18 @@ import { setupMatchMedia, expectNoViolations } from "./axeHelpers";
 
 // jsdom lacks matchMedia; the theme store + a few hooks read it on mount.
 setupMatchMedia();
+
+beforeAll(() => {
+  // EventLog's list is a Virtuoso window; jsdom lacks ResizeObserver.
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+});
 
 function mount(node: ReactNode): HTMLElement {
   // Wrap in <main> so single-panel surfaces sit in a landmark (axe's
@@ -95,5 +110,27 @@ describe("a11y / composed surfaces", () => {
       ),
       "RunViewLoadError",
     );
+  });
+
+  it("Runs · EventLog — the console toolbar, axe smoke", async () => {
+    await expectNoViolations(
+      mount(
+        <EventLog
+          events={[]}
+          selectedExecutionId={null}
+          followTail={false}
+          onToggleFollow={() => {}}
+        />,
+      ),
+      "EventLog",
+    );
+  });
+
+  it("Runs · EventsTab — the detail tab toolbar, axe smoke", async () => {
+    await expectNoViolations(mount(<EventsTab events={[]} />), "EventsTab");
+  });
+
+  it("Library · LibraryPanel — the side panel, axe smoke", async () => {
+    await expectNoViolations(mount(<LibraryPanel />), "LibraryPanel");
   });
 });

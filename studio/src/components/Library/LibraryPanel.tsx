@@ -128,6 +128,7 @@ function ExpandedPanel({ onCollapse }: { onCollapse: () => void }) {
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search library..."
+          aria-label="Search library"
         />
       </div>
 

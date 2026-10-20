@@ -115,8 +115,13 @@ export function TicketTab({
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Labels">
-          <TagInput value={labels} onChange={setLabels} placeholder="urgent, infra…" />
+        <Field label="Labels" htmlFor="ticket-labels">
+          <TagInput
+            id="ticket-labels"
+            value={labels}
+            onChange={setLabels}
+            placeholder="urgent, infra…"
+          />
         </Field>
         <Field label="Assignee">
           <Combobox

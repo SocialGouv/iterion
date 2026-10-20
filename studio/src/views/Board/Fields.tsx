@@ -286,7 +286,7 @@ function FieldsViewInner() {
   );
 }
 
-function FieldDialog({
+export function FieldDialog({
   mode,
   field,
   existingNames,
@@ -373,8 +373,15 @@ function FieldDialog({
         </label>
         {type === "enum" && (
           <div className="space-y-1">
-            <span className="text-micro text-fg-muted">Enum values</span>
-            <TagInput value={enumValues} onChange={setEnumValues} placeholder="add a value…" />
+            <label htmlFor="field-enum-values" className="text-micro text-fg-muted">
+              Enum values
+            </label>
+            <TagInput
+              id="field-enum-values"
+              value={enumValues}
+              onChange={setEnumValues}
+              placeholder="add a value…"
+            />
             {enumInvalid && (
               <span className="text-micro text-danger-fg">
                 An enum field needs at least one value.

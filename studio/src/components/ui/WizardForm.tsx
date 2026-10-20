@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
@@ -38,6 +38,13 @@ export interface WizardFormProps {
 // default "auto" mode it paginates one question per step, with a
 // Claude-Code-style stepper (progress dots, Back/Next/Submit, atomic
 // submit on the last step).
+// A question whose kind renders one primary control (select, free_text) takes
+// its accessible name from the visible label above it; kinds rendered as
+// grouped rows (radio, checkbox) are named per row instead.
+function questionControlId(uid: string, q: FormQuestion): string | undefined {
+  return q.kind === "select" || q.kind === "free_text" ? `${uid}-${q.id}` : undefined;
+}
+
 export function WizardForm({
   spec,
   onSubmit,
@@ -50,6 +57,7 @@ export function WizardForm({
   const [answers, setAnswers] = useState<FormAnswer>(initial);
   const [step, setStep] = useState(0);
   const [visited, setVisited] = useState<Set<number>>(() => new Set([0]));
+  const uid = useId();
 
   // Reset internal state when the spec identity changes (new pause).
   useEffect(() => {
@@ -195,7 +203,7 @@ export function WizardForm({
 
       <div className="space-y-1">
         <div className="space-y-0.5">
-          <label className="text-body font-medium text-fg-default">
+          <label htmlFor={questionControlId(uid, current)} className="text-body font-medium text-fg-default">
             {current.label}
             {isRequiredQuestion(current) && (
               <span className="ml-1 text-danger-fg" aria-hidden="true">
@@ -209,6 +217,7 @@ export function WizardForm({
         </div>
         <QuestionInput
           question={current}
+          inputId={questionControlId(uid, current)}
           value={answers[current.id]}
           onChange={(v) => setOne(current.id, v)}
           disabled={busy}
@@ -321,6 +330,7 @@ function FlatForm({
   submitLabel,
   hideSubmit,
 }: FlatFormProps) {
+  const uid = useId();
   const valid = isFormValid(spec, answers);
   return (
     <div
@@ -335,7 +345,7 @@ function FlatForm({
           <div key={q.id} className={single ? "" : "space-y-1"}>
             {!single && (
               <div className="space-y-0.5">
-                <label className="text-body font-medium text-fg-default">
+                <label htmlFor={questionControlId(uid, q)} className="text-body font-medium text-fg-default">
                   {q.label}
                   {isRequiredQuestion(q) && (
                     <span className="ml-1 text-danger-fg" aria-hidden="true">
@@ -350,6 +360,7 @@ function FlatForm({
             )}
             <QuestionInput
               question={q}
+              inputId={questionControlId(uid, q)}
               value={answers[q.id]}
               onChange={(v) => onAnswerChange(q.id, v)}
               disabled={busy}

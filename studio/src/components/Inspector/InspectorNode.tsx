@@ -198,6 +198,7 @@ function NodeHeader({
         {editing ? (
           <input
             autoFocus
+            aria-label="Rename node"
             className="w-full bg-surface-2 border border-accent rounded px-1.5 py-0.5 text-sm text-fg-default outline-none"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}

@@ -82,3 +82,16 @@ describe("Combobox", () => {
     expect(onChange).toHaveBeenCalledWith("");
   });
 });
+
+  it("names its filter field from the placeholder (RGAA 11.1)", () => {
+    render(
+      <Combobox
+        value=""
+        options={[{ value: "a", label: "Alpha" }]}
+        placeholder="Search bots…"
+        onChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.getByRole("textbox", { name: "Search bots…" })).toBeTruthy();
+  });

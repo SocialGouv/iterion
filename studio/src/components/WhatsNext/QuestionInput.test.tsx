@@ -33,4 +33,42 @@ describe("QuestionInput", () => {
       screen.getByRole("textbox", { name: "Other answer" }),
     ).toBeTruthy();
   });
+
+  it("puts inputId on the select it renders (RGAA 11.1)", () => {
+    render(
+      <QuestionInput
+        question={{
+          id: "env",
+          label: "Target environment",
+          kind: "select",
+          required: false,
+          options: [
+            { label: "Prod", value: "prod" },
+            { label: "Staging", value: "staging" },
+          ],
+        }}
+        value={""}
+        onChange={vi.fn()}
+        inputId="q-env"
+      />,
+    );
+    expect((screen.getByRole("combobox") as HTMLSelectElement).id).toBe("q-env");
+  });
+
+  it("puts inputId on the free-text field it renders (RGAA 11.1)", () => {
+    render(
+      <QuestionInput
+        question={{
+          id: "notes",
+          label: "Operator notes",
+          kind: "free_text",
+          required: false,
+        }}
+        value={""}
+        onChange={vi.fn()}
+        inputId="q-notes"
+      />,
+    );
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).id).toBe("q-notes");
+  });
 });
