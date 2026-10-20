@@ -7,7 +7,9 @@ import (
 
 // A pledge's bot audience is matched EXACTLY, against the launch bot id as the
 // launch path carries it. Both edges of this credential agree on that: the
-// route stores what the donor sent, and servesBot compares it verbatim.
+// route stores what the donor sent, and servesBot compares it verbatim. The
+// pair holds because the launch id arrives canonical (or empty) — the
+// resolver hands back the tier's own spelling, never a private variant.
 //
 // The regression this pins was shipped and caught at the merge gate: the write
 // route was made to canonicalise (`my_bot` -> `my-bot`) while this comparison
@@ -17,8 +19,8 @@ import (
 // working row into a non-matching one.
 //
 // If a future change folds one edge, this reddens. Folding BOTH is legitimate —
-// it is what #1368 carries — and then this test is the one to update, together
-// with the route, in a single change.
+// and then this test is the one to update, together with the route, in a
+// single change.
 func TestAPledgeServesTheBotIDExactlyAsLaunched(t *testing.T) {
 	now := time.Now().UTC()
 	pledge := func(bots ...string) Pledge {

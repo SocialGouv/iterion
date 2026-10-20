@@ -154,7 +154,7 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 		return nil, nil
 	}
 	// The catalog tier tolerates spelling variants (feature_dev /
-	// Feature-Dev / "feature dev" → feature-dev; ResolveBotPath normalizes
+	// Feature-Dev / "feature dev" → feature-dev; ResolveBotEntry normalizes
 	// internally), and board cards / trigger subscriptions rely on it. The
 	// PLATFORM tier (here) and the TEAM tier (teamBotRow) must tolerate the
 	// same set, or a stored bot is silently bypassed for every non-canonical
@@ -200,7 +200,7 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 	if !captured {
 		paths = s.effectivePaths()
 	}
-	path, err := botregistry.ResolveBotPath(slug, paths)
+	entry, err := botregistry.ResolveBotEntry(slug, paths)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil // unknown id = not found here, the caller decides
@@ -209,6 +209,7 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 		// diagnostic so studio/webhook launches explain why it is unavailable.
 		return nil, err
 	}
+	path := entry.MainFile()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		// The id RESOLVED but its source cannot be read — a real error, not
@@ -222,7 +223,14 @@ func (s *Server) resolveBotTieredRaw(ctx context.Context, teamID, botID, filePat
 	if err != nil {
 		return nil, fmt.Errorf("read bot %q manifest: %w", slug, err)
 	}
-	return &launchBot{BotID: slug, Origin: "catalog", Path: path, Source: string(b), Manifest: m}, nil
+	// The discovered name, not the requested spelling: the stored tiers hand
+	// back the row's canonical slug, so the catalog tier must answer with the
+	// same kind of value or the identical launch carries one id with a team
+	// fork and another without. Run documents, bot-scoped memory, board
+	// attribution, secret bindings, pledges and the BYOK audience all key on
+	// it (docs/byok.md: a credential's write edge and its read edge must
+	// agree — fold both, or fold neither).
+	return &launchBot{BotID: entry.Name, Origin: "catalog", Path: path, Source: string(b), Manifest: m}, nil
 }
 
 // teamBotRow finds teamID's OWN botsource row for a bot id, tolerating the

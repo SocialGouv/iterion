@@ -255,14 +255,12 @@ type ApiKey struct {
 // requester uploaded is exactly that shape. Same rule, and same reason, as
 // credpool.Pledge.AvailableForLaunch.
 //
-// What this is NOT: an authorisation boundary. The bot id reaching it is a
-// label the launch request asserts — the server only derives it from its own
-// catalogue when the request did not carry inline source (pkg/server/
-// runs_launch.go). So the audience expresses OPERATOR INTENT against the
-// workloads a deployment actually runs; it does not withstand a caller who
-// crafts an API request naming someone else's bot. Two features already trust
-// that same string (bot secret bindings and credpool pledges); making it an
-// identity is one change at the launch chokepoint, tracked separately.
+// What this is NOT: an authorisation boundary. It expresses OPERATOR INTENT
+// over which of a deployment's workloads a key funds, on the bot id the
+// launch path resolved — a value the server derived from its own tiers, or
+// no id at all when the request carried inline source (pkg/server/
+// runs_launch.go). A caller naming another team's bot therefore reaches
+// nothing of theirs: audience matching sits inside a tenant's own key set.
 func (k ApiKey) ServesBotForLaunch(botID string) bool {
 	if len(k.Bots) == 0 {
 		return true

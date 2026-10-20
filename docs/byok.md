@@ -205,38 +205,71 @@ on every pledge PUT, merely toggling `enabled` would have rewritten a working
 row into a non-matching one. A stored bot may legitimately be named `my_bot`
 (`botsource.ValidSlug` admits `_`), so neither case is hypothetical.
 
-Folding the pledge's two edges together is the other legitimate answer; it needs
-a canonical bot id at the source rather than a third private spelling rule, and
-that is #1368.
+Folding the pledge's two edges together is the other legitimate answer; what
+keeps the raw/raw pairs honest today is that the launch carries a canonical id
+at the source — the resolver hands back the tier's own spelling, or nothing
+when the request carried inline `source` (`pkg/server/runs_launch.go`, bot
+resolution in `pkg/server/bot_resolver.go`).
 
 One residual of the fold this file does keep, narrow and known: `my-bot` and
 `my_bot` are distinct stored bots (`botsource` uniqueness is `(tenant_id, slug)`,
 exact) that collapse to one **audience** entry, so a key scoped to either funds
 both. Both belong to the same team, so it widens a team's key to that team's own
-other bot. Same root, same ticket.
+other bot. The collapse lives in the audience's own canonicalisation
+(`NormalizeName` is many-to-one), not in where the launch id comes from — it
+survives the canonical-at-source fix by design.
+
+The canonical id also narrows what older rows can match, two ways, both
+fail-closed:
+
+- **A fork stored under another spelling of the catalog name launches under
+  the row's own slug.** The team tier hands back `bs.Slug` — `probe_bot` —
+  while the identical launch without the fork carries the catalog's
+  `probe-bot`. Bindings, pledges, bot-scoped memory and attribution keyed to
+  the catalog spelling do not follow the fork's row (only the audience is
+  immune: `NormalizeName` folds many-to-one). Folding across tiers would be
+  the third spelling rule the doctrine rejects, so the serving tier's own
+  name is the decided semantics.
+- **A row keyed to a tolerated spelling of a catalog-only bot must be
+  re-keyed.** A bot secret binding or a pledge `bots:` entry authored as
+  `probe_bot` used to match because the launch carried whatever the caller
+  typed; the launch now carries the discovered `probe-bot`, and the exact
+  match finds nothing — the required secret stops resolving, the pledge
+  stops being spent. Re-key the row to the discovered name. The studio
+  writes canonical ids; the exposure is manual API/CLI configurations, and
+  the direction is fail-closed (funding withdraws, nothing leaks).
 
 ### What this is NOT: an authorisation boundary
 
 `bots` expresses **operator intent** — it keeps a team's own workloads off a key
-meant for one of them. It does not withstand a caller who crafts an API request.
-The server derives the bot id from its own catalogue only when the request did
-not carry inline `source`; with `source` set, `bot_id` travels as the requester
-typed it (`pkg/server/runs_launch.go`). Two features already trust that same
-string — bot secret bindings and `credpool.Pledge.Bots` — so making it an
-identity is one change at the launch chokepoint, tracked separately rather than
-patched here in a third place.
+meant for one of them. It is not a permission, and it does not need to
+withstand a forged request: the bot id reaching it is one the server resolved
+from its own tiers, or no id at all when the request carried inline `source`
+(`pkg/server/runs_launch.go` — the label a caller types is never read as an
+identity). The audience, the bot secret bindings and `credpool.Pledge.Bots`
+all read that same resolved-or-empty value.
 
 Read it as a budget and blast-radius control, not as a permission.
 
+One population sits outside that sentence: runs launched by a server
+predating the split can carry a requester-typed id in their stored document,
+and every resume re-draws the credentials under that stored label
+(`pkg/server/cloudpublisher` re-runs the resolution with the doc's
+`bot_id`). No launch still mints one — every spec builder writes
+resolved-or-empty — so the population only shrinks: let it age out, or scrub
+the stored id on the document (a startup scrub is the doctrinal answer and
+does not exist yet).
+
 **The practical consequence, before you scope a key.** A launch that names no
-bot is refused by any non-empty audience — and today the studio's main launch
-form uploads the bundle's bytes as inline `source` without a `bot_id`
-(`studio/src/components/Runs/launchView/useLaunchSubmit.ts`). So scoping a key
-makes it invisible to those launches, whatever bot they run, and the wire is
-filled by the org tier, the pool or the platform key instead. The log says so on
-every affected run (see the withholding line below), which is how you will find
-it; the durable fix is #1368. Until then, scope keys on teams whose runs are
-launched by `bot_id` — webhooks, triggers, schedules and the CLI all are.
+bot is refused by any non-empty audience — and the studio's main launch form
+uploads the bundle's bytes as inline `source` without a `bot_id`
+(`studio/src/components/Runs/launchView/useLaunchSubmit.ts`), so that is the
+designed shape of a studio launch. Scoping a key makes it invisible to those
+launches, whatever bot they run, and the wire is filled by the org tier, the
+pool or the platform key instead. Scope keys on teams whose runs are launched
+by `bot_id` — webhooks, triggers, schedules, and the CLI's `--bot` form (a
+CLI file launch names no bot: the CLI refuses `--bot` beside a workflow
+file, so its file runs are unnamed work on the server too).
 
 An audience narrows WHICH key serves, never whether the walk continues: the
 next key of that provider, then the next tier, still get their turn.

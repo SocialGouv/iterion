@@ -182,6 +182,13 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 	if opts.FilePath == "" && opts.BotID == "" {
 		return fmt.Errorf("a workflow file or --bot <catalog id> is required")
 	}
+	if opts.FilePath != "" && opts.BotID != "" {
+		// A launch carrying a file ships it as inline source, and the server
+		// resolves no bot for an inline source: sending --bot beside it would
+		// silently launch unnamed work — no scoped key, binding, pledge or
+		// bot-scoped memory would apply.
+		return fmt.Errorf("--bot and a workflow file are mutually exclusive: a file launch names no bot — drop --bot, or drop the file to launch the catalog bot")
+	}
 	req := map[string]any{}
 	if opts.FilePath != "" {
 		src, err := prepareUnit(opts.FilePath)
