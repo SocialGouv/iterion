@@ -329,6 +329,103 @@ func TestRgaaAuditEngineMatchesPin(t *testing.T) {
 	})
 }
 
+func TestRgaaAuditEnginePrivateInstallRetriesNpm(t *testing.T) {
+	bin, pin := rgaaResolveEngine(t)
+	for _, tc := range []struct {
+		name          string
+		successOn     int
+		plantUnpinned bool
+		wantErr       bool
+	}{
+		{name: "two_failures_then_success", successOn: 3},
+		{name: "persistent_failure_is_bounded_and_prints_no_unpinned_candidate", successOn: 0, plantUnpinned: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fakeBin := filepath.Join(dir, "bin")
+			if err := os.Mkdir(fakeBin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			calls := filepath.Join(dir, "npm-calls")
+			if err := os.WriteFile(calls, []byte("0\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fakeNpm := `#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = root ]; then exit 0; fi
+if [ "${1:-}" != ci ]; then
+  echo "unexpected npm command: $*" >&2
+  exit 2
+fi
+read -r calls < "$RGAA_TEST_NPM_CALLS"
+calls=$((calls + 1))
+echo "$calls" > "$RGAA_TEST_NPM_CALLS"
+if [ "$calls" -ne "$RGAA_TEST_NPM_SUCCESS_ON" ]; then
+  echo "npm error code ECONNRESET" >&2
+  exit 1
+fi
+mkdir -p node_modules/ultra11y/scripts
+cp "$RGAA_TEST_NPM_ENGINE" node_modules/ultra11y/scripts/ultra11y.mjs
+`
+			if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(fakeNpm), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			home := filepath.Join(dir, "home")
+			installed := filepath.Join(home, pin.Version, "node_modules", "ultra11y", "scripts", "ultra11y.mjs")
+			if tc.plantUnpinned {
+				if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(installed, []byte("not the pinned engine\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("bash", filepath.Join("..", "scripts", "ultra11y-engine.sh"))
+			cmd.Env = append(os.Environ(),
+				"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"ULTRA11Y_BIN=",
+				"ULTRA11Y_HOME="+home,
+				"RGAA_TEST_NPM_CALLS="+calls,
+				"RGAA_TEST_NPM_ENGINE="+bin,
+				"RGAA_TEST_NPM_SUCCESS_ON="+strconv.Itoa(tc.successOn),
+			)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			err := cmd.Run()
+			if tc.wantErr && err == nil {
+				t.Fatalf("persistent npm failure succeeded: stdout %q, stderr %q", stdout.String(), stderr.String())
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("private install did not recover from two npm failures: %v\n%s", err, stderr.String())
+			}
+			if tc.wantErr && stdout.Len() != 0 {
+				t.Fatalf("failed private install printed a candidate: %q", stdout.String())
+			}
+			raw, readErr := os.ReadFile(calls)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			got, convErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if convErr != nil {
+				t.Fatal(convErr)
+			}
+			if got != 3 {
+				t.Fatalf("npm ci ran %d times, want exactly 3 attempts", got)
+			}
+			if !tc.wantErr {
+				want, evalErr := filepath.EvalSymlinks(installed)
+				if evalErr != nil {
+					t.Fatal(evalErr)
+				}
+				if stdout.String() != want+"\n" {
+					t.Fatalf("resolver printed %q, want the installed pinned engine %q", stdout.String(), want)
+				}
+			}
+		})
+	}
+}
+
 // engineRun runs one engine command with a bounded timeout and returns the
 // exit code, stdout and stderr. The exit code comes from the process, never
 // from a pipe.
