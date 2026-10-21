@@ -185,8 +185,10 @@ type ProjectBotSpec struct {
 	AccessLevel int
 	// Scopes are the forge-native scopes of the token.
 	Scopes []string
-	// ExpiresAt is the requested expiry; zero lets the forge apply its
-	// default — on GitLab the instance's maximum lifetime.
+	// ExpiresAt is the requested expiry; zero asks for the forge's ceiling
+	// (GitLab: 365 days). Either way the GitLab client follows a refused date
+	// with shorter ladder steps until the instance or group policy accepts
+	// one — found by asking, never assumed (gitlab.MintProjectBot).
 	ExpiresAt time.Time
 }
 
