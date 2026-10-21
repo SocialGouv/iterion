@@ -75,6 +75,10 @@ type ReviewResult struct {
 	// the review body, "partial" when only some inline comments landed
 	// (the rest folded into the summary).
 	Fallback string
+	// BodyMissing reports a partial success where inline comments landed but
+	// the summary body did not. It is orthogonal to Fallback: folded comments
+	// cannot be claimed to have reached the reader when this is true.
+	BodyMissing bool `json:"body_missing,omitempty"`
 }
 
 // ReviewClient is the optional PR-review capability: posting a review with

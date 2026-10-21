@@ -54,7 +54,7 @@ func TestGitLabCreatePullReview_DiscussionsAndNote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.CommentsPosted != 2 || res.SuggestionsPosted != 1 || !res.Verified || res.Fallback != "" {
+	if res.CommentsPosted != 2 || res.SuggestionsPosted != 1 || !res.Verified || res.Fallback != "" || res.BodyMissing {
 		t.Fatalf("unexpected result: %+v", res)
 	}
 	if res.URL != "https://gitlab.example/grp/proj/-/merge_requests/9" {
@@ -70,6 +70,71 @@ func TestGitLabCreatePullReview_DiscussionsAndNote(t *testing.T) {
 	// GitLab multi-line suggestion fence extends N lines below the anchor.
 	if !strings.Contains(discussions[0]["body"].(string), "```suggestion:-0+2\nx := 1\n```") {
 		t.Fatalf("gitlab suggestion fence wrong: %v", discussions[0]["body"])
+	}
+}
+
+func TestGitLabCreatePullReview_SummaryNoteFailureIsBodyMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		noteStatus   int
+		rejectAnchor bool
+	}{
+		{name: "note 403", noteStatus: http.StatusForbidden},
+		{name: "note 429", noteStatus: http.StatusTooManyRequests},
+		{name: "rejected anchor and note", noteStatus: http.StatusForbidden, rejectAnchor: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fastReadBack(t)
+			mux := http.NewServeMux()
+			serveMR(mux, "/api/v4/projects/g%2Fp/merge_requests/44")
+			var stored []map[string]any
+			creates := 0
+			mux.HandleFunc("POST /api/v4/projects/g%2Fp/merge_requests/44/discussions", func(w http.ResponseWriter, r *http.Request) {
+				creates++
+				if tc.rejectAnchor && creates == 1 {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"message":{"line_code":["can't be blank"]}}`))
+					return
+				}
+				storeDiscussion(w, r, &stored)
+			})
+			noteCalls := 0
+			mux.HandleFunc("POST /api/v4/projects/g%2Fp/merge_requests/44/notes", func(w http.ResponseWriter, r *http.Request) {
+				noteCalls++
+				if tc.noteStatus == http.StatusTooManyRequests {
+					w.Header().Set("Retry-After", "30")
+				}
+				w.WriteHeader(tc.noteStatus)
+			})
+			serveDiscussionsReadBack(mux, "/api/v4/projects/g%2Fp/merge_requests/44/discussions", &stored, 0)
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			c := &AdminClient{HTTP: srv.Client(), BaseURL: srv.URL, Token: "t"}
+			res, err := c.CreatePullReview(context.Background(), "g/p", 44, forge.NewReview{Body: "summary", Comments: []forge.ReviewComment{
+				{Path: "a.go", Line: 1, Body: "first"},
+				{Path: "b.go", Line: 2, Body: "second"},
+			}})
+			if err != nil {
+				t.Fatalf("anchored comments landed, so the refused note stays a partial success: %v", err)
+			}
+			wantPosted := 2
+			if tc.rejectAnchor {
+				wantPosted = 1
+			}
+			if !res.BodyMissing {
+				t.Errorf("the summary note was refused but BodyMissing is false; result = %+v", res)
+			}
+			if res.CommentsPosted != wantPosted || !res.Verified || res.Fallback != "partial" {
+				t.Errorf("counts, verification and fallback must keep their existing meaning; result = %+v, want posted = %d", res, wantPosted)
+			}
+			if noteCalls != 1 {
+				t.Errorf("a refused summary note must not be retried, calls = %d", noteCalls)
+			}
+			if tc.rejectAnchor && (len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0], "400")) {
+				t.Errorf("the rejected anchor keeps its diagnostic, got %v", res.Diagnostics)
+			}
+		})
 	}
 }
 
@@ -112,7 +177,7 @@ func TestGitLabCreatePullReview_PartialFoldsFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.CommentsPosted != 1 || res.Fallback != "partial" {
+	if res.CommentsPosted != 1 || res.Fallback != "partial" || res.BodyMissing {
 		t.Fatalf("unexpected result: %+v", res)
 	}
 	if !strings.Contains(noteBody, "gone.go:1") {

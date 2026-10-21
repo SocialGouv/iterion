@@ -89,8 +89,11 @@ func TestForgePublishReview_HappyPath(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Published || resp.Provider != "github" || resp.CommentsPosted != 2 || resp.SuggestionsPosted != 1 || !resp.Verified {
+	if !resp.Published || resp.Provider != "github" || resp.CommentsPosted != 2 || resp.SuggestionsPosted != 1 || !resp.Verified || resp.BodyMissing {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if strings.Contains(w.Body.String(), "body_missing") {
+		t.Fatalf("a clean publish must omit the zero-value body_missing: %s", w.Body.String())
 	}
 	if fake.calls != 1 || fake.repo != "o/r" || fake.number != 42 {
 		t.Fatalf("forge client called wrong: calls=%d repo=%q number=%d", fake.calls, fake.repo, fake.number)
@@ -100,6 +103,31 @@ func TestForgePublishReview_HappyPath(t *testing.T) {
 	}
 	if fake.in.Body != "review summary" {
 		t.Fatalf("summary not mapped: %q", fake.in.Body)
+	}
+}
+
+func TestForgePublishReview_BodyMissingReachesHTTP200(t *testing.T) {
+	s, fake := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	fake.res = forge.ReviewResult{
+		URL: "https://gitlab.example/o/r/-/merge_requests/42", CommentsPosted: 1, Verified: true,
+		Fallback: "partial", BodyMissing: true,
+	}
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", validPublishBody))
+	if w.Code != http.StatusOK {
+		t.Fatalf("a partial publish stays HTTP 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp publishReviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Published || !resp.BodyMissing || resp.CommentsPosted != 1 || resp.Fallback != "partial" {
+		t.Fatalf("the orthogonal body-missing signal must survive transport: %+v", resp)
+	}
+	if !strings.Contains(w.Body.String(), `"body_missing":true`) {
+		t.Fatalf("HTTP 200 body lacks body_missing=true: %s", w.Body.String())
 	}
 }
 

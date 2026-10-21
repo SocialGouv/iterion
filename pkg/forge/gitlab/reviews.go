@@ -208,7 +208,7 @@ func (c *AdminClient) CreatePullReview(ctx context.Context, repo string, number 
 		return forge.ReviewResult{Diagnostics: diags}, statusErr("create merge request summary note", ncode)
 	}
 
-	res := forge.ReviewResult{URL: mr.WebURL, CommentsPosted: posted, SuggestionsPosted: suggestions, Verified: verified, Diagnostics: diags}
+	res := forge.ReviewResult{URL: mr.WebURL, CommentsPosted: posted, SuggestionsPosted: suggestions, Verified: verified, Diagnostics: diags, BodyMissing: !noteOK}
 	if len(failed) > 0 || !noteOK {
 		res.Fallback = "partial"
 		if posted == 0 {

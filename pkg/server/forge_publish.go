@@ -494,6 +494,8 @@ type publishReviewResponse struct {
 	Verified bool `json:"verified"`
 	// Fallback is "" | "summary" | "partial" (see forge.ReviewResult).
 	Fallback string `json:"fallback,omitempty"`
+	// BodyMissing reports a partial success whose summary note did not land.
+	BodyMissing bool `json:"body_missing,omitempty"`
 	// Gate* report the merge-gate commit-status outcome. GatePosted is false
 	// when no gate was requested OR posting failed (GateError then explains).
 	// A gate failure never fails the publish — the review already landed.
@@ -737,6 +739,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		SuggestionsPosted: res.SuggestionsPosted,
 		Verified:          res.Verified,
 		Fallback:          res.Fallback,
+		BodyMissing:       res.BodyMissing,
 		InlineDiagnostics: res.Diagnostics,
 		DroppedComments:   droppedComments,
 		GatePosted:        gate.posted,
