@@ -32,12 +32,23 @@ type execClientRun struct {
 	//             and exits 0 with nothing on stdout: the signature of a
 	//             stream lost behind kubectl (exit 0, an empty result, the
 	//             command still running);
-	//   "lies"  — it waits for the command, then exits 0 whatever its status.
+	//   "lies"  — it waits for the command, then exits 0 whatever its status;
+	//   "truncates" — it waits for the command, and hands it only the first
+	//             120,000 bytes of its stdin: a stdin stream cut short.
 	client string
 	dir    string
 	// running is a file the command writes once it runs: a lost stream
 	// ends only once the command provably runs.
 	running string
+	// sweepFails makes every other exec — the sweep — fail, as an exec path
+	// still down after the loss of a stream would.
+	sweepFails bool
+	// sweeps counts the other execs the engine ran: its sweeps.
+	sweeps int
+	// clients, when set, is the client of each successive tool command —
+	// a postcondition, then a recipe, then a postcondition — before client.
+	clients []string
+	next    int
 }
 
 func (f *execClientRun) Driver() string { return "fake-exec-client" }
@@ -45,14 +56,29 @@ func (f *execClientRun) Driver() string { return "fake-exec-client" }
 func (f *execClientRun) Command(ctx context.Context, argv []string, opts sandbox.ExecOpts) *osexec.Cmd {
 	if len(argv) < 4 || argv[0] != "sh" || argv[3] != "iterion-tool" {
 		// The sweep, or any other exec: it runs in the "container" itself.
+		f.sweeps++
+		if f.sweepFails {
+			return osexec.CommandContext(ctx, "sh", "-c", "echo 'error: unable to upgrade connection' >&2; exit 1")
+		}
 		c := osexec.CommandContext(ctx, argv[0], argv[1:]...)
 		c.Dir = f.dir
 		return c
 	}
+	client := f.client
+	if f.next < len(f.clients) {
+		client = f.clients[f.next]
+		f.next++
+	}
 	var standIn string
-	switch f.client {
+	switch client {
+	case "unstartable":
+		return osexec.CommandContext(ctx, filepath.Join(f.dir, "no-such-exec-client"))
 	case "waits":
-		standIn = `setsid -w "$@" & wait $!`
+		// A background job of a non-interactive sh reads /dev/null: the
+		// client's stdin is handed to it explicitly, through fd 3.
+		standIn = `exec 3<&0; setsid -w "$@" <&3 3<&- & exec 3<&-; wait $!`
+	case "truncates":
+		standIn = `head -c 120000 | "$@"`
 	case "lost":
 		standIn = `setsid "$@" >/dev/null 2>&1 </dev/null &
 i=0; while [ ! -s ` + shellQuoteForTest(f.running) + ` ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i+1)); done
@@ -60,7 +86,7 @@ echo 'exec session ended' >&2; exit 0`
 	case "lies":
 		standIn = `"$@"; exit 0`
 	default:
-		panic("unknown client " + f.client)
+		panic("unknown client " + client)
 	}
 	c := osexec.CommandContext(ctx, "sh", append([]string{"-c", standIn, "exec-client"}, argv...)...)
 	c.Dir = f.dir
@@ -228,15 +254,24 @@ func TestSandboxedToolNodeCancelStopsTheCommand(t *testing.T) {
 	assertGrandchildStopped(t, heart)
 }
 
-// Every tool node command the sandbox runs is built by sandboxToolCommand, so
-// none runs without its completion: a builder that called the sandbox itself
-// would be a sandboxed command whose end nothing proves.
+// Every call into a sandbox run's exec seam in this package is one of the
+// listed sites, each for its reason: a tool node's command is built by
+// sandboxToolCommand alone, so none runs without its completion. Any other
+// value's Command or Exec — a run passed around, an alias of e.sandbox, a
+// method value — is a new site, and a new site is a review question, not a
+// silent route around the proof.
 func TestSandboxToolCommandIsTheOnlyRouteIntoTheSandbox(t *testing.T) {
+	allowed := map[string]string{
+		"sandboxToolCommand.Command":      "tool nodes: proven by their completion line",
+		"executeViaSandboxRunner.Command": "an agent node's claw runner: ended by its ADR-127 session sweep",
+		"removeHostCodexForfaitCopy.Exec": "housekeeping: removes a credential copy, decides no node's verdict",
+		"scriptRecipe.Exec":               "best-effort removal of the script's in-sandbox copy",
+	}
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sites []string
+	seen := map[string]bool{}
 	fset := token.NewFileSet()
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
@@ -246,28 +281,327 @@ func TestSandboxToolCommandIsTheOnlyRouteIntoTheSandbox(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
+		imports := map[string]bool{}
+		for _, imp := range f.Imports {
+			path := strings.Trim(imp.Path.Value, `"`)
+			local := path[strings.LastIndex(path, "/")+1:]
+			if imp.Name != nil {
+				local = imp.Name.Name
+			}
+			imports[local] = true
+		}
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
+				var sel *ast.SelectorExpr
+				switch n := n.(type) {
+				case *ast.CallExpr:
+					// A call of a value's Command or Exec method.
+					sel, _ = n.Fun.(*ast.SelectorExpr)
+				case *ast.SelectorExpr:
+					// Any reference to e.sandbox's methods, a method value
+					// included: `f := e.sandbox.Command` is a route too.
+					if inner, ok := n.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "sandbox" {
+						sel = n
+					}
+				}
+				if sel == nil || (sel.Sel.Name != "Command" && sel.Sel.Name != "Exec") {
 					return true
 				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "Command" {
-					return true
+				if id, ok := sel.X.(*ast.Ident); ok && imports[id.Name] {
+					return true // a package function, exec.Command and the like
 				}
-				if inner, ok := sel.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "sandbox" {
-					sites = append(sites, fset.Position(call.Pos()).String()+" in "+fn.Name.Name)
+				site := fn.Name.Name + "." + sel.Sel.Name
+				if _, ok := allowed[site]; !ok {
+					t.Errorf("%s: %s is a call into an exec seam outside the listed sites", fset.Position(sel.Pos()), site)
 				}
+				seen[site] = true
 				return true
 			})
 		}
 	}
-	if len(sites) != 1 || !strings.HasSuffix(sites[0], " in sandboxToolCommand") {
-		t.Fatalf("the sandbox's Command is called outside sandboxToolCommand: %v", sites)
+	for site := range allowed {
+		if !seen[site] {
+			t.Errorf("listed site %s is gone: the list must say what the package does", site)
+		}
 	}
+}
+
+// A recipe's own group idioms keep their meaning: the command leads its
+// group, as an exec'd command does, and its `kill 0` does not end the
+// wrapper that reports its end.
+func TestSandboxedToolNodeKillZeroInTheRecipe(t *testing.T) {
+	e, _ := sandboxedToolExecutor(t, "waits")
+	out, err := e.Execute(context.Background(), &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "cleans-up"},
+		Command:  `sleep 30 & trap "" TERM; kill 0; sleep 0.2; echo '{"verdict":"pass"}'`,
+	}, map[string]any{})
+	if err != nil {
+		t.Fatalf("a recipe that ends its own group failed: %v", err)
+	}
+	if out["verdict"] != "pass" {
+		t.Fatalf("the recipe's output did not come back: %v", out)
+	}
+}
+
+// hostRun is a sandbox driver that runs commands on the engine's own host,
+// as the noop driver does; it records the argv it is handed.
+type hostRun struct {
+	execClientRun
+	argvs [][]string
+}
+
+func (h *hostRun) HostExecutesCommands() bool { return true }
+
+func (h *hostRun) Command(ctx context.Context, argv []string, opts sandbox.ExecOpts) *osexec.Cmd {
+	h.argvs = append(h.argvs, append([]string(nil), argv...))
+	c := osexec.CommandContext(ctx, argv[0], argv[1:]...)
+	c.Dir = h.dir
+	return c
+}
+
+var _ sandbox.HostRun = (*hostRun)(nil)
+
+// A driver that runs the command on this host hands back the process itself:
+// the command runs as it is, unwrapped, and its status is its own.
+func TestSandboxedToolNodeOnTheHostRunsTheCommandAsItIs(t *testing.T) {
+	dir := t.TempDir()
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	host := &hostRun{execClientRun: execClientRun{dir: dir}}
+	e.SetSandbox(host)
+	out, err := e.Execute(context.Background(), &ir.ToolNode{BaseNode: ir.BaseNode{ID: "host"}, Command: `printf '{"verdict":"pass"}'`}, map[string]any{})
+	if err != nil || out["verdict"] != "pass" {
+		t.Fatalf("a host command failed: %v, %v", err, out)
+	}
+	if len(host.argvs) != 1 || host.argvs[0][0] != "bash" || host.argvs[0][1] != "-c" {
+		t.Fatalf("the host driver was handed %v, not the command itself", host.argvs)
+	}
+}
+
+// A cancel that lands after the client reported success leaves the line to
+// decide: no line, or a line with another status, is no success.
+func TestSettleJudgesTheLineAfterACancel(t *testing.T) {
+	e, _ := sandboxedToolExecutor(t, "waits")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// wrapped runs script under c's protocol here and returns its stdout,
+	// completion line included.
+	wrapped := func(c *sandbox.Completion, script string) []byte {
+		argv := c.Wrap([]string{"sh", "-c", script})
+		out, _ := osexec.Command(argv[0], argv[1:]...).Output()
+		return out
+	}
+
+	c := sandbox.NewCompletion("t")
+	if _, err := e.settleSandboxedRun(ctx, "n", c, []byte("partial"), nil); err == nil || !errors.Is(err, context.Canceled) || errors.Is(err, sandbox.ErrExecStatusUnknown) {
+		t.Fatalf("no line after a cancel: %v, want the cancel's error", err)
+	}
+
+	c = sandbox.NewCompletion("t")
+	if _, err := e.settleSandboxedRun(ctx, "n", c, wrapped(c, "printf partial; exit 3"), nil); err == nil || !strings.Contains(err.Error(), "exited 3") {
+		t.Fatalf("a line saying 3 after a cancel: %v, want the command's status", err)
+	}
+
+	c = sandbox.NewCompletion("t")
+	clean, err := e.settleSandboxedRun(ctx, "n", c, wrapped(c, "printf done"), nil)
+	if err != nil || string(clean) != "done" {
+		t.Fatalf("a command that ended with 0 before the cancel: %q, %v", clean, err)
+	}
+}
+
+// A recipe streamed to the container whose stream is cut short fails: a
+// prefix of it never runs as if it were the whole.
+func TestSandboxedToolNodeTruncatedStreamedRecipeFails(t *testing.T) {
+	recipe := ": " + strings.Repeat("x", 150_000) + "\nexit 3\n"
+	e, _ := sandboxedToolExecutor(t, "truncates")
+	out, err := e.Execute(context.Background(), &ir.ToolNode{BaseNode: ir.BaseNode{ID: "big"}, Command: recipe}, map[string]any{})
+	if err == nil {
+		t.Fatalf("a recipe cut at 120,000 of its %d bytes succeeded: %v", len(recipe), out)
+	}
+
+	// Whole, the same streamed recipe runs to its own end.
+	e, _ = sandboxedToolExecutor(t, "waits")
+	out, err = e.Execute(context.Background(), &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "big-ok"},
+		Command:  ": " + strings.Repeat("x", 150_000) + "\necho '{\"verdict\":\"pass\"}'\n",
+	}, map[string]any{})
+	if err != nil || out["verdict"] != "pass" {
+		t.Fatalf("a whole streamed recipe did not run: %v, %v", err, out)
+	}
+	_, err = e.Execute(context.Background(), &ir.ToolNode{BaseNode: ir.BaseNode{ID: "big-fails"}, Command: recipe}, map[string]any{})
+	if err == nil || errors.Is(err, sandbox.ErrExecStatusUnknown) {
+		t.Fatalf("a whole streamed recipe ending in exit 3: %v, want its own status", err)
+	}
+}
+
+// A proven end sweeps nothing: a command may leave a service running for the
+// nodes after it, and it keeps running.
+func TestSandboxedToolNodeProvenEndSweepsNothing(t *testing.T) {
+	e, heart := sandboxedToolExecutor(t, "waits")
+	out, err := e.Execute(context.Background(), &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "starts-a-service"},
+		Command: `( i=0; while [ "$i" -lt 30 ]; do printf 't\n' >> ` + shellQuoteForTest(heart) + `; i=$((i+1)); sleep 0.1; done ) >/dev/null 2>&1 &
+echo '{"verdict":"pass"}'`,
+	}, map[string]any{})
+	if err != nil || out["verdict"] != "pass" {
+		t.Fatalf("a command that started a service failed: %v, %v", err, out)
+	}
+	waitForHeartbeat(t, heart)
+	before := fileSize(t, heart)
+	time.Sleep(600 * time.Millisecond)
+	if after := fileSize(t, heart); after <= before {
+		t.Fatalf("the service a proven command left was stopped: heartbeat %d -> %d bytes", before, after)
+	}
+	waitHeartbeatStill(t, heart)
+}
+
+// waitHeartbeatStill waits for a bounded heartbeat loop to end on its own, so
+// that the test's temp dir is not removed under it.
+func waitHeartbeatStill(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		before := fileSize(t, path)
+		time.Sleep(300 * time.Millisecond)
+		if fileSize(t, path) == before {
+			return
+		}
+	}
+	t.Fatalf("the heartbeat at %s never stopped", path)
+}
+
+// An unknown end whose sweep could not finish is an ambiguous effect: the
+// command may still be running, and the runtime must not start a second copy
+// beside it. A sweep that finished leaves an ordinary failure.
+func TestSandboxedToolNodeUnknownEndWithAFailedSweepIsAmbiguous(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		sweepFails bool
+		ambiguous  bool
+	}{
+		{"the sweep failed", true, true},
+		{"the sweep finished", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requireSetsid(t)
+			dir := t.TempDir()
+			heart := filepath.Join(dir, "heartbeat")
+			e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+			e.SetSandbox(&execClientRun{client: "lost", dir: dir, running: heart, sweepFails: tc.sweepFails})
+			// A short heartbeat: when the sweep fails nothing stops it, and it
+			// ends on its own before the temp dir goes.
+			_, err := e.Execute(context.Background(), &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "gate"},
+				Command:  `i=0; while [ "$i" -lt 15 ]; do printf 't\n' >> ` + shellQuoteForTest(heart) + `; i=$((i+1)); sleep 0.1; done`,
+			}, map[string]any{})
+			var unknown *sandbox.ExecStatusUnknownError
+			if !errors.As(err, &unknown) {
+				t.Fatalf("a lost stream did not fail on its unknown end: %v", err)
+			}
+			if unknown.AmbiguousEffect() != tc.ambiguous {
+				t.Fatalf("ambiguous = %v, want %v: %v", unknown.AmbiguousEffect(), tc.ambiguous, err)
+			}
+			if tc.sweepFails && strings.Contains(err.Error(), "found nothing left running") {
+				t.Fatalf("a sweep that could not run claims it found nothing: %v", err)
+			}
+			waitHeartbeatStill(t, heart)
+		})
+	}
+}
+
+// A Verified Action stops on an ambiguous end of its recipe: the recipe may
+// still be running, and its postcondition cannot judge a world it may still
+// be changing — a met postcondition beside a running recipe is no success.
+func TestVerifiedToolNodeStopsOnAnAmbiguousRecipeEnd(t *testing.T) {
+	requireSetsid(t)
+	dir := t.TempDir()
+	heart := filepath.Join(dir, "heartbeat")
+	marker := filepath.Join(dir, "applied.marker")
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	// The first postcondition runs through a healthy client, unmet; the
+	// recipe's stream is then lost while the sweep's exec path is down; a
+	// postcondition after it would be met.
+	e.SetSandbox(&execClientRun{dir: dir, running: heart, sweepFails: true, clients: []string{"waits", "lost", "waits"}})
+	out, err := e.Execute(context.Background(), &ir.ToolNode{
+		BaseNode:      ir.BaseNode{ID: "applies"},
+		Command:       `touch ` + shellQuoteForTest(marker) + `; i=0; while [ "$i" -lt 15 ]; do printf 't\n' >> ` + shellQuoteForTest(heart) + `; i=$((i+1)); sleep 0.1; done`,
+		Postcondition: `test -f ` + shellQuoteForTest(marker),
+	}, map[string]any{})
+	if err == nil {
+		t.Fatalf("a met postcondition beside a recipe that may still be running was a success: %v", out)
+	}
+	if !ambiguousEnd(err) {
+		t.Fatalf("the ladder failed, but not on the recipe's ambiguous end: %v", err)
+	}
+	waitHeartbeatStill(t, heart)
+}
+
+// A client that never started ran nothing in the container: its own error is
+// the failure, and there is no session to sweep.
+func TestSandboxedToolNodeClientThatNeverStartedSweepsNothing(t *testing.T) {
+	dir := t.TempDir()
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	run := &execClientRun{client: "unstartable", dir: dir}
+	e.SetSandbox(run)
+	_, err := e.Execute(context.Background(), &ir.ToolNode{BaseNode: ir.BaseNode{ID: "n"}, Command: "echo started"}, map[string]any{})
+	if err == nil {
+		t.Fatal("a client that never started succeeded")
+	}
+	if !strings.Contains(err.Error(), "no-such-exec-client") {
+		t.Fatalf("the failure is not the client's own start failure — the command did not reach the sandbox: %v", err)
+	}
+	if errors.Is(err, sandbox.ErrExecStatusUnknown) {
+		t.Fatalf("a client that never started was reported as an unproven end: %v", err)
+	}
+	if run.sweeps != 0 {
+		t.Fatalf("%d sweep(s) for a command that never ran", run.sweeps)
+	}
+}
+
+// A cancel that lands after a proven end sweeps nothing: the command ended,
+// and what it left running is legitimately its own.
+func TestSandboxedToolNodeCancelAfterAProvenEndSweepsNothing(t *testing.T) {
+	dir := t.TempDir()
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	run := &execClientRun{client: "waits", dir: dir}
+	e.SetSandbox(run)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c := sandbox.NewCompletion("t")
+	argv := c.Wrap([]string{"sh", "-c", "printf done"})
+	stdout, _ := osexec.Command(argv[0], argv[1:]...).Output()
+	clean, err := e.settleSandboxedRun(ctx, "n", c, stdout, nil)
+	if err != nil || string(clean) != "done" {
+		t.Fatalf("a proven end before the cancel: %q, %v", clean, err)
+	}
+	if run.sweeps != 0 {
+		t.Fatalf("%d sweep(s) after a proven end", run.sweeps)
+	}
+}
+
+// A postcondition whose own end is ambiguous is a failure, not a "not met":
+// the recipe it would let run must not start beside a check that may still
+// be running.
+func TestVerifiedToolNodeStopsOnAnAmbiguousPostcondition(t *testing.T) {
+	requireSetsid(t)
+	dir := t.TempDir()
+	heart := filepath.Join(dir, "heartbeat")
+	ran := filepath.Join(dir, "recipe.ran")
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	e.SetSandbox(&execClientRun{client: "waits", dir: dir, running: heart, sweepFails: true, clients: []string{"lost"}})
+	_, err := e.Execute(context.Background(), &ir.ToolNode{
+		BaseNode:      ir.BaseNode{ID: "checks"},
+		Command:       `touch ` + shellQuoteForTest(ran),
+		Postcondition: `i=0; while [ "$i" -lt 15 ]; do printf 't\n' >> ` + shellQuoteForTest(heart) + `; i=$((i+1)); sleep 0.1; done; false`,
+	}, map[string]any{})
+	if !ambiguousEnd(err) {
+		t.Fatalf("a postcondition whose end is ambiguous did not stop the ladder: %v", err)
+	}
+	if _, serr := os.Stat(ran); serr == nil {
+		t.Fatal("the recipe ran beside a postcondition that may still be running")
+	}
+	waitHeartbeatStill(t, heart)
 }

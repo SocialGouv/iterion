@@ -397,7 +397,9 @@ func (e *ClawExecutor) runToolNodeCore(
 	// CombinedOutput() conflated the two and poisoned the parse.
 	stdoutBytes, stderrStr, runErr := runWithSeparateStreams(tc.cmd)
 	duration := time.Since(start)
-	if tc.completion != nil {
+	// A client that never started ran nothing in the container: its own
+	// error is the whole story, and there is no session to sweep.
+	if tc.completion != nil && tc.cmd.Process != nil {
 		stdoutBytes, runErr = e.settleSandboxedRun(ctx, node.ID, tc.completion, stdoutBytes, runErr)
 	}
 	outputStr := string(stdoutBytes)
@@ -828,8 +830,14 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 // sandboxToolCommand routes a tool node's argv through the sandbox under a
 // completion (sandbox.Completion): the exec client's exit status is not proof
 // that the command ended, the command's own completion line is. Every tool
-// node command the sandbox runs is built here, so none runs unproven.
+// node command the sandbox runs is built here, so none runs unproven. A
+// driver that runs commands on the engine's own host hands back the process
+// itself: its exit status is the command's own, there is no stream to lose,
+// and the command runs as it is.
 func (e *ClawExecutor) sandboxToolCommand(ctx context.Context, argv []string, opts sandbox.ExecOpts) toolCommand {
+	if hr, ok := e.sandbox.(sandbox.HostRun); ok && hr.HostExecutesCommands() {
+		return toolCommand{cmd: e.sandbox.Command(ctx, argv, opts)}
+	}
 	completion := sandbox.NewCompletion("tool")
 	env := make(map[string]string, len(opts.Env)+1)
 	maps.Copy(env, opts.Env)
@@ -842,40 +850,43 @@ func (e *ClawExecutor) sandboxToolCommand(ctx context.Context, argv []string, op
 // settleSandboxedRun judges a command the sandbox ran by its completion line,
 // not by the exec client's status alone, and returns stdout without the line:
 //   - the line found: the command ended, and it succeeded only if the client
-//     and the line both say so;
-//   - the line missing on a live node: the exec session ended before the
-//     command did, or its end never arrived — whatever stdout holds, the run
-//     fails with sandbox.ErrExecStatusUnknown, never as a success carrying a
-//     partial output;
-//   - the line missing, or the node's context done: the command's session is
-//     swept, so that what it left running cannot outlive the node and keep
-//     writing to a workspace the next node works in.
+//     and the line both say so. A proven end sweeps nothing: a command may
+//     leave a service running for the nodes after it;
+//   - the line missing: the exec session ended before the command did, or its
+//     end never arrived. The command's session is swept, so that what it left
+//     running cannot outlive the node and keep writing to a workspace the next
+//     node works in, and the run fails with a sandbox.ExecStatusUnknownError —
+//     never as a success carrying a partial output. A sweep that could not
+//     finish makes it an ambiguous effect: no automatic retry starts a second
+//     copy beside a command that may still be running.
 //
-// A cancelled node keeps its own error: the cancel explains a missing line.
+// A cancelled node keeps its own error — the cancel explains a missing line —
+// unless its sweep could not finish: the command may then outlive the cancel,
+// and the error says so the same way. A cancel that lands after the client
+// reported success leaves the line to decide.
 func (e *ClawExecutor) settleSandboxedRun(ctx context.Context, nodeID string, completion *sandbox.Completion, stdout []byte, runErr error) ([]byte, error) {
 	clean, status, ended := completion.Settle(stdout)
-	if ctx.Err() != nil {
-		e.logToolSweep(nodeID, "the node ended before its command", completion)
+	if ended {
+		if status != 0 && runErr == nil {
+			runErr = fmt.Errorf("sandbox: the command exited %d but its exec client reported success", status)
+		}
 		return clean, runErr
 	}
-	if !ended {
-		report, sweepErr := completion.Sweep(e.sandbox)
-		return stdout, errors.Join(runErr, fmt.Errorf("%w — %s", sandbox.ErrExecStatusUnknown, describeToolSweep(report, sweepErr)))
-	}
-	if status != 0 && runErr == nil {
-		runErr = fmt.Errorf("sandbox: the command exited %d but its exec client reported success", status)
-	}
-	return clean, runErr
-}
-
-// logToolSweep sweeps a sandboxed command's session and says in the run log
-// what it stopped and what it could not do.
-func (e *ClawExecutor) logToolSweep(nodeID, why string, completion *sandbox.Completion) {
 	report, sweepErr := completion.Sweep(e.sandbox)
-	if len(report.Stopped) == 0 && sweepErr == nil {
-		return
+	unknown := &sandbox.ExecStatusUnknownError{Swept: sweepErr == nil, Detail: describeToolSweep(report, sweepErr)}
+	if ctx.Err() == nil {
+		return stdout, errors.Join(runErr, unknown)
 	}
-	e.logger.Warn("tool node %q: %s — %s", nodeID, why, describeToolSweep(report, sweepErr))
+	if len(report.Stopped) > 0 || sweepErr != nil {
+		e.logger.Warn("tool node %q: the node ended before its command — %s", nodeID, unknown.Detail)
+	}
+	if runErr == nil {
+		runErr = fmt.Errorf("the node ended before its command's end was proven: %w", ctx.Err())
+	}
+	if unknown.AmbiguousEffect() {
+		return stdout, errors.Join(runErr, unknown)
+	}
+	return stdout, runErr
 }
 
 // describeToolSweep says what a tool command's sweep stopped and what it
@@ -884,11 +895,11 @@ func describeToolSweep(report proc.SweepReport, sweepErr error) string {
 	var parts []string
 	if labels := report.Labels(); len(labels) > 0 {
 		parts = append(parts, "the sweep stopped "+strings.Join(labels, "; "))
-	} else {
+	} else if sweepErr == nil {
 		parts = append(parts, "the sweep found nothing left running")
 	}
 	if sweepErr != nil {
-		parts = append(parts, "the sweep could not do everything: "+sweepErr.Error())
+		parts = append(parts, "the sweep could not finish, the command may still be running: "+sweepErr.Error())
 	}
 	return strings.Join(parts, "; ")
 }
@@ -967,6 +978,14 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	}
 	env = e.withRunEnv(env)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+		if stdin != nil {
+			// Streamed to the container, the program travels as one brace
+			// group: bash parses a group whole before it runs any of it, so a
+			// stream cut short is a syntax error, never a prefix that runs and
+			// exits 0 — a completion line proves the program's end, not that
+			// all of the program arrived.
+			stdin = strings.NewReader("{\n" + resolved + "\n}\n")
+		}
 		return e.sandboxToolCommand(ctx, args, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(env), Stdin: stdin})
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)

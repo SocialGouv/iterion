@@ -222,37 +222,70 @@ client, and nothing in the pod.
 7. **A command the sandbox runs for a tool node proves its end.** Every such
    command — a recipe, a script, a postcondition, a self-repair — is built by
    one function (`sandboxToolCommand`), which wraps it in a POSIX sh program
-   (`sandbox.Completion`). The command runs as the program's child, in a node
-   session of its own: the session's variable is in the exec's own
-   environment, so the wrapper is of the session too. Once the command has
-   exited, the wrapper prints on stdout one line holding a random nonce and the
-   command's exit status, then exits with that status. The line goes to stdout,
-   after everything the command wrote there: only the bytes of one stream
-   arrive in order, so the line also proves that the command's whole stdout
-   arrived. The engine reads the line back out of stdout before anything else
-   sees it; the output a node gets is byte for byte the command's.
-   - The line found: the command ended. The node succeeds only if the client
-     and the line both say 0.
-   - The line missing on a live node: the command's end is unknown, and the
-     node fails with `sandbox.ErrExecStatusUnknown` — never a success carrying
-     a partial output. A postcondition whose end is unknown is not met.
-   - The line missing, or the node cancelled: the command's session is swept
+   (`sandbox.Completion`). A driver that runs commands on the engine's own host
+   (`noop`) hands back the process itself — its exit status is the command's
+   own, there is no stream to lose — and the command runs as it is.
+   - **The command keeps what an exec'd command has.** It runs as the
+     program's child, leading its own session and process group (`setsid`,
+     where the container has it): its own `kill 0` or `kill -- -$$` reaches its
+     processes, not the wrapper. The wrapper runs without job control, so
+     `setsid` never forks; it outlives a HUP, INT or TERM sent to it (a handler,
+     not an ignore: the command keeps the default dispositions). The session's
+     variable is in the exec's own environment, so the wrapper is of the
+     session too.
+   - **The line.** Once the command has exited, the wrapper prints on stdout
+     one line holding a random nonce and the command's exit status — retried
+     while a stdout the command left non-blocking is full — then exits with
+     that status. The line goes to stdout, after everything the command wrote
+     there: only the bytes of one stream arrive in order, so the line also
+     proves that the command's whole stdout arrived. The engine reads the line
+     back out of stdout before anything else sees it; the output a node gets
+     is byte for byte the command's.
+   - **The line found:** the command ended. The node succeeds only if the
+     client and the line both say 0.
+   - **The line missing:** the command's end is unknown. Its session is swept
      in the container — decision 2's sweep, one short exec on a context of its
-     own — and the failure, or the run log on a cancel, names what it stopped
-     and what it could not do. A cancelled node keeps the error of its cancel.
+     own — and the node fails with a `sandbox.ExecStatusUnknownError` naming
+     what the sweep stopped and what it could not do; never a success carrying
+     a partial output.
+   - **A sweep that could not finish** — the exec path still down after the
+     loss, a survivor of the KILL — leaves the command possibly running: the
+     error is an ambiguous effect (`runtime.AmbiguousEffect`), which recovery
+     never retries, so no second copy of the command starts beside the first.
+     A Verified Action stops on it too: no postcondition judges a world its
+     recipe may still be changing, and a postcondition whose own end is
+     ambiguous is a failure, not a "not met".
+   - **A cancel:** a cancelled node's command, its end unproven, has its session
+     swept, and the node keeps the error of its cancel — joined with the
+     ambiguous effect when the sweep could not finish. A cancel that lands
+     after the client reported success leaves the line to decide. A client
+     that never started ran nothing and sweeps nothing.
+   - **The input proves its end too.** A recipe over 100 KB is streamed to the
+     container as one brace group, which bash parses whole before it runs any
+     of it: a stream cut short is a syntax error, not a prefix that runs and
+     exits 0. A script's body, pushed into a copy-based sandbox, is written
+     only once its received size is the size sent (`WriteFileExec`): a stream
+     cut short leaves no file, never a prefix.
 8. **A tool node that backgrounds work and exits 0 stays legitimate:** a
-   proven end sweeps nothing.
+   proven end sweeps nothing, on a cancel too.
 
 ### Consequences
 
 - A gate whose exec session is lost fails loudly instead of reporting an empty
-  success: the run stops where the cause is, and the command it started cannot
-  keep writing to a workspace another node works in.
-- A cancelled sandboxed tool node ends its processes, as on the host.
-- Cost: one `sh` per sandboxed tool command; one exec per unproven end or
-  cancel.
-- Residual: the engine's other execs into the sandbox — the workspace
-  checkpoints (`git add -A` and the commit), the scratch bank, the capture of
-  the workspace head, the git fixups — still take the client's status for the
-  command's end. They share the transport and the false success. Closing them
-  takes the same completion at the drivers' exec.
+  success, and the command it started is stopped — or, when it cannot be, the
+  run stops for a human rather than start a second copy beside it.
+- A cancelled sandboxed tool node ends its processes, as a host tool node's
+  group is killed on cancel.
+- Cost: one `sh` per sandboxed tool command; one exec per command whose end is
+  unproven.
+- Residuals:
+  - the engine's other execs into the sandbox — the workspace checkpoints
+    (`git add -A` and the commit), the scratch bank, the capture of the
+    workspace head, the git fixups — still take the client's status for the
+    command's end. They share the transport and the false success. Closing
+    them takes the same completion at the drivers' exec;
+  - a KILL sent to the wrapper itself (`pkill -9 -f iterion` from a recipe)
+    ends it before its line: the node fails on an unknown end;
+  - a proven end with a non-zero status sweeps nothing: what the command left
+    running before it failed — a background writer after an OOM kill — runs on
+    until the run's container goes, as a host tool node's leftovers do.

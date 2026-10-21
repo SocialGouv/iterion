@@ -1711,11 +1711,13 @@ Architecture:
   kubelet or container runtime restart — ends the session with status 0 and
   the output that had arrived, while the command keeps running in the pod.
   Every command the sandbox runs for a tool node (recipe, script,
-  postcondition, self-repair — on every driver) therefore prints a
-  completion line on stdout after its own output: a random nonce and its exit
-  status. The engine strips the line and judges by it. A missing line fails
-  the node with `ErrExecStatusUnknown` and sweeps the command's node session
-  in the pod; so does a cancel
+  postcondition, self-repair; in a container) therefore runs in its own
+  session and prints a completion line on stdout after its own output: a
+  random nonce and its exit status. The engine strips the line and judges by
+  it. A missing line fails the node with `ExecStatusUnknownError` and sweeps
+  the command's node session in the pod; when that sweep cannot finish, the
+  failure is an ambiguous effect that recovery never retries. A cancel sweeps
+  a command whose end is unproven and keeps the cancel's error
   ([ADR-127 amendment](adr/127-an-agent-nodes-processes-end-with-the-node.md#amendment-2026-10-21--a-sandboxed-tool-node-proves-its-end)).
 - Workspace is provided by an `emptyDir` volume mounted at
   `/workspace`, populated at pod start (V2) by tar-streaming the run's

@@ -32,6 +32,30 @@ import (
 // unknown.
 var ErrExecStatusUnknown = errors.New("sandbox: the command's end was never proven: its exec session ended without the command's completion line")
 
+// ExecStatusUnknownError is ErrExecStatusUnknown for one command, with what
+// the sweep that followed did. When the sweep could not finish, the command
+// may still be running and writing where the next attempt would work: its
+// effect is undecided, and it says so through the runtime's AmbiguousEffect
+// seam, which refuses every automatic retry — a retry would start a second
+// copy of the command beside the first.
+type ExecStatusUnknownError struct {
+	// Swept is true when the sweep finished and stopped every process of the
+	// command's session it found.
+	Swept bool
+	// Detail says what the sweep stopped and what it could not do.
+	Detail string
+}
+
+func (e *ExecStatusUnknownError) Error() string {
+	return ErrExecStatusUnknown.Error() + " — " + e.Detail
+}
+
+func (e *ExecStatusUnknownError) Unwrap() error { return ErrExecStatusUnknown }
+
+// AmbiguousEffect implements the runtime's AmbiguousEffect interface: true
+// when the sweep could not finish, so the command may still be running.
+func (e *ExecStatusUnknownError) AmbiguousEffect() bool { return !e.Swept }
+
 // completionLabel is the $0 of the wrapper shell: the name a process listing
 // shows for it.
 const completionLabel = "iterion-tool"
@@ -95,13 +119,29 @@ func (c *Completion) sinceFile() string {
 // with argv's status. The argv stays out of the wrapper's text: it follows as
 // the program's positional parameters, so nothing in it is ever parsed as
 // shell.
+//
+// The command keeps what an exec'd command has: it leads its own session and
+// process group (setsid, where the container has it), so its own group
+// idioms — `kill 0`, `kill -- -$$`, a trap that ends its jobs — reach its
+// processes and not the wrapper. The wrapper runs without job control, so its
+// child is never a group leader and setsid needs no fork: setsid forks and
+// returns 0 at once only when called as a group leader. The wrapper outlives a
+// HUP, INT or TERM sent to it — a handler, not an ignore, so the command keeps
+// the default dispositions — and reports the command's end all the same. The
+// line is retried while stdout is full: a command may leave it non-blocking,
+// and a write that short is atomic, so a retry never doubles it.
 func (c *Completion) Wrap(argv []string) []string {
 	since := shellquote.Quote(c.sinceFile())
-	script := "[ -f " + since + " ] || { read -r up _ < /proc/uptime && echo \"${up%.*}${up#*.}\" > " + since + "; } 2>/dev/null\n" +
-		"\"$@\"\n" +
+	script := "set +m\n" +
+		"trap : HUP INT TERM\n" +
+		"[ -f " + since + " ] || { read -r up _ < /proc/uptime && echo \"${up%.*}${up#*.}\" > " + since + "; } 2>/dev/null\n" +
+		"if command -v setsid >/dev/null 2>&1; then setsid \"$@\"; else \"$@\"; fi\n" +
 		"rc=$?\n" +
 		"rm -f " + since + "\n" +
-		"printf '\\n%s %s\\n' " + shellquote.Quote(c.nonce) + " \"$rc\"\n" +
+		"n=0\n" +
+		"until printf '\\n%s %s\\n' " + shellquote.Quote(c.nonce) + " \"$rc\" 2>/dev/null; do\n" +
+		"  n=$((n+1)); [ \"$n\" -ge 100 ] && break; sleep 0.1 2>/dev/null\n" +
+		"done\n" +
 		"exit \"$rc\""
 	return append([]string{"sh", "-c", script, completionLabel}, argv...)
 }
