@@ -11,12 +11,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/brand"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	forgegitlab "github.com/SocialGouv/iterion/pkg/forge/gitlab"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -145,6 +147,50 @@ func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forg
 		return nil, err
 	}
 	return s.forgeAdminForToken(conn.Provider, conn.BaseURL(), token)
+}
+
+// forgeWriterFor is the client every server-mediated forge WRITE on
+// (conn, repo) posts with — review notes, commit statuses, approvals,
+// reviewer sets, verdict and pause comments. On a connection that posts as
+// per-repository bots it is the repository's MINTED bot, opened from the
+// integration's own secret: the identity the webhook's BotLogin names and
+// the actor guard recognises. Everywhere else it is the connection's own
+// credential, exactly as before. Admin work — hooks, repository lists, the
+// mint itself — keeps forgeAdminFor: the grant.
+//
+// The one chokepoint, so a lane that posts cannot post as the person whose
+// grant bootstrapped the connection: that person would then be the author
+// of every review the guard must skip, and no longer a reviewable author.
+func (s *Server) forgeWriterFor(ctx context.Context, conn forge.Connection, repo string) (forge.Admin, error) {
+	if !conn.MintsProjectBots() {
+		return s.forgeAdminFor(ctx, conn)
+	}
+	if s.forgeIntegrations == nil || s.genericSecrets == nil || s.sealer == nil {
+		return nil, fmt.Errorf("forge: connection %s posts as per-repository bots but the integration or secret store is not wired", conn.ID)
+	}
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		return nil, fmt.Errorf("%w: connection %s posts as per-repository bots and this write names no repository", forge.ErrRepoNotEnabled, conn.ID)
+	}
+	tctx := store.WithTenant(ctx, conn.TenantID)
+	ri, err := s.forgeIntegrations.GetByConnRepo(tctx, conn.TenantID, conn.ID, repo)
+	switch {
+	case errors.Is(err, forge.ErrIntegrationNotFound):
+		return nil, fmt.Errorf("%w: %s on connection %s — its bot is minted when the repository is enabled", forge.ErrRepoNotEnabled, repo, conn.ID)
+	case err != nil:
+		return nil, fmt.Errorf("forge: resolve the integration of %s on connection %s: %w", repo, conn.ID, err)
+	case ri.ProjectBot == nil || ri.ManagedSecretID == "":
+		return nil, fmt.Errorf("%w: %s on connection %s carries no minted bot — re-run the enable, which mints it", forge.ErrRepoNotEnabled, repo, conn.ID)
+	}
+	gs, err := s.genericSecrets.Get(tctx, ri.ManagedSecretID)
+	if err != nil {
+		return nil, fmt.Errorf("forge: load the project bot secret of %s: %w", repo, err)
+	}
+	raw, err := secrets.OpenGenericSecret(s.sealer, gs.ID, gs.SealedSecret)
+	if err != nil {
+		return nil, fmt.Errorf("forge: open the project bot secret of %s: %w", repo, err)
+	}
+	return s.forgeAdminForToken(conn.Provider, conn.BaseURL(), string(raw))
 }
 
 // cachedForgeAppClient is one connection's GitHub-App client with the
@@ -472,24 +518,64 @@ func (s *Server) githubAppConfigFromRecord(app forge.ForgeOAuthApp) (forgegithub
 	return forgegithub.AppConfig{AppID: appID, PrivateKeyPEM: pem, AppSlug: app.AppSlug}, true
 }
 
-// forgeOAuthAppFor builds a provider's OAuth client for a (tenant, provider,
-// instance) from the per-tenant OAuth-app store, or (nil,false) when no app is
-// registered for that instance or its sealed secret can't be opened. baseURL
-// is canonicalised so a connection's BaseURL() and a stored app key match.
-func (s *Server) forgeOAuthAppFor(ctx context.Context, tenantID string, provider forge.Provider, baseURL string) (forge.OAuthExchanger, bool) {
+// forgeOAuthAppRecordFor resolves the OAuth app a (tenant, provider, instance)
+// connects through: the team's own app for that instance, else the PLATFORM
+// app registered once for every team (secrets.PlatformTenantID) — one GitLab
+// application of the instance's owning group serves every team of the
+// deployment, with no per-team paste of its secret. (zero, false) when
+// neither exists or the store is unwired. baseURL is canonicalised so a
+// connection's BaseURL() and a stored app key match.
+func (s *Server) forgeOAuthAppRecordFor(ctx context.Context, tenantID string, provider forge.Provider, baseURL string) (forge.ForgeOAuthApp, bool) {
 	if s.forgeOAuthApps == nil {
-		return nil, false
+		return forge.ForgeOAuthApp{}, false
 	}
 	base := forge.CanonicalBaseURL(provider, baseURL)
-	app, err := s.forgeOAuthApps.GetByInstance(ctx, tenantID, provider, base)
-	if err != nil {
-		return nil, false
+	for _, owner := range []string{tenantID, secrets.PlatformTenantID} {
+		if owner == "" {
+			continue
+		}
+		app, err := s.forgeOAuthApps.GetByInstance(store.WithTenant(ctx, owner), owner, provider, base)
+		if err == nil {
+			app.Platform = owner == secrets.PlatformTenantID
+			return app, true
+		}
 	}
+	return forge.ForgeOAuthApp{}, false
+}
+
+// forgeOAuthAppRecordByID resolves an app a connection or a pending flow
+// pinned by id — the tenant's own or the platform's, never another team's.
+// The three answers are kept apart because callers act on them differently:
+// found; definitely absent (deleted, or another team's — ok=false, no
+// error); unreadable (a store blip — the error). A blip must never read as
+// "no such app", or a caller falls back to another app and signs with the
+// wrong client.
+func (s *Server) forgeOAuthAppRecordByID(ctx context.Context, tenantID, appID string) (forge.ForgeOAuthApp, bool, error) {
+	if s.forgeOAuthApps == nil || appID == "" {
+		return forge.ForgeOAuthApp{}, false, nil
+	}
+	app, err := s.forgeOAuthApps.Get(ctx, appID)
+	switch {
+	case errors.Is(err, forge.ErrOAuthAppNotFound):
+		return forge.ForgeOAuthApp{}, false, nil
+	case err != nil:
+		return forge.ForgeOAuthApp{}, false, fmt.Errorf("forge: oauth app %s is unreadable: %w", appID, err)
+	case app.TenantID != tenantID && app.TenantID != secrets.PlatformTenantID:
+		return forge.ForgeOAuthApp{}, false, nil
+	}
+	app.Platform = app.TenantID == secrets.PlatformTenantID
+	return app, true, nil
+}
+
+// forgeOAuthClientFromRecord builds the provider's OAuth client from an app
+// record, or (nil, false) when its sealed secret cannot be opened.
+func (s *Server) forgeOAuthClientFromRecord(app forge.ForgeOAuthApp) (forge.OAuthExchanger, bool) {
 	secret, err := forge.OpenOAuthAppSecret(s.sealer, app.ID, app.SealedSecret)
 	if err != nil {
 		return nil, false
 	}
-	switch provider {
+	base := forge.CanonicalBaseURL(app.Provider, app.ForgeBaseURL)
+	switch app.Provider {
 	case forge.ProviderGitLab:
 		return &forgegitlab.OAuthApp{HTTP: s.forgeHTTPClient(), BaseURL: base, ClientID: app.ClientID, ClientSecret: secret}, true
 	case forge.ProviderGitHub:
@@ -499,6 +585,53 @@ func (s *Server) forgeOAuthAppFor(ctx context.Context, tenantID string, provider
 	default:
 		return nil, false
 	}
+}
+
+// forgeOAuthAppFor builds a provider's OAuth client for a (tenant, provider,
+// instance) — the team's app, else the platform's — or (nil,false) when no
+// app is registered for that instance or its sealed secret can't be opened.
+func (s *Server) forgeOAuthAppFor(ctx context.Context, tenantID string, provider forge.Provider, baseURL string) (forge.OAuthExchanger, bool) {
+	app, ok := s.forgeOAuthAppRecordFor(ctx, tenantID, provider, baseURL)
+	if !ok {
+		return nil, false
+	}
+	return s.forgeOAuthClientFromRecord(app)
+}
+
+// forgeOAuthAppForConnection is the OAuth client of the app a connection was
+// made through. A connection that records its app resolves by id ONLY: a
+// refresh signed with another app's client is refused by the forge and would
+// mark a healthy connection needs_reauth, so an unreadable or vanished record
+// yields no client for this tick (with a line saying why) rather than the
+// instance's app — the rule githubAppConfigForConnection applies to App keys.
+// A connection that predates the pin resolves the instance's app as before.
+func (s *Server) forgeOAuthAppForConnection(ctx context.Context, conn forge.Connection) (forge.OAuthExchanger, bool) {
+	if conn.OAuthAppID == "" {
+		return s.forgeOAuthAppFor(ctx, conn.TenantID, conn.Provider, conn.BaseURL())
+	}
+	app, ok, err := s.forgeOAuthAppRecordByID(ctx, conn.TenantID, conn.OAuthAppID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("forge: connection %s: %v — no OAuth client until the record reads again", conn.ID, err)
+		}
+		return nil, false
+	}
+	if !ok {
+		if s.logger != nil {
+			s.logger.Warn("forge: connection %s names oauth app %s, which no longer exists for its team — reconnect through a registered app", conn.ID, conn.OAuthAppID)
+		}
+		return nil, false
+	}
+	return s.forgeOAuthClientFromRecord(app)
+}
+
+// projectBotAvatar is the face a freshly minted project bot gets: the plain
+// iterion-bot mascot, unless the deployment opted out of rebranding.
+func (s *Server) projectBotAvatar() []byte {
+	if s.cfg.DisableForgeBrandAvatar {
+		return nil
+	}
+	return brand.BotAvatar(brand.VariantPlain)
 }
 
 func (s *Server) forgeOAuthRedirectURI() string {
@@ -814,7 +947,7 @@ func (s *Server) forgeRefresherFor(conn forge.Connection) forge.TokenRefresher {
 	if conn.Kind != forge.KindOAuthApp {
 		return nil
 	}
-	app, ok := s.forgeOAuthAppFor(context.Background(), conn.TenantID, conn.Provider, conn.BaseURL())
+	app, ok := s.forgeOAuthAppForConnection(context.Background(), conn)
 	if !ok {
 		return nil
 	}

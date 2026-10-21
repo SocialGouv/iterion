@@ -127,11 +127,11 @@ type forgeIssueCommenter interface {
 // gateClientFor: a provider that cannot comment yields (nil, nil) rather
 // than an error, because "this forge has no comment API wired" is not a
 // failure of the run.
-func (s *Server) issueCommenterFor(ctx context.Context, conn forge.Connection) (forgeIssueCommenter, error) {
+func (s *Server) issueCommenterFor(ctx context.Context, conn forge.Connection, repo string) (forgeIssueCommenter, error) {
 	if s.forgeIssueCommenterFor != nil {
 		return s.forgeIssueCommenterFor(ctx, conn)
 	}
-	admin, err := s.forgeAdminFor(ctx, conn)
+	admin, err := s.forgeWriterFor(ctx, conn, repo)
 	if err != nil {
 		return nil, err
 	}

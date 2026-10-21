@@ -300,6 +300,15 @@ func routeSchemas() map[string]routeOp {
 		},
 
 		"POST /api/teams/{id}/forge/oauth-apps": {request: forgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
+		// Platform forge OAuth apps (super-admin): the deployment's own
+		// registrations, inherited by every team's connect flow.
+		"GET /api/admin/forge/oauth-apps": {
+			response: struct {
+				Apps []forge.ForgeOAuthApp `json:"apps"`
+			}{},
+		},
+		"POST /api/admin/forge/oauth-apps":            {request: adminForgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
+		"DELETE /api/admin/forge/oauth-apps/{app_id}": {},
 		"POST /api/teams/{id}/forge/oauth-apps/github-manifest": {
 			request: forgeOAuthAppReq{},
 			response: struct {

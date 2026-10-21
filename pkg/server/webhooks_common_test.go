@@ -59,6 +59,39 @@ func TestIterionBotIdentity_OneSetForBothGuards(t *testing.T) {
 	}
 }
 
+// A webhook whose forge token is a minted per-repository bot names that bot
+// (Config.BotLogin), and BOTH halves of the identity read it in place of the
+// connection's account: the person whose OAuth grant bootstrapped the
+// connection stays a reviewable author, and the bot's own echoes are
+// recognised.
+func TestIterionBotIdentity_ProjectBotLoginReplacesTheConnectionAccount(t *testing.T) {
+	s := newWebhookTestServer(t)
+	conns := forge.NewMemoryConnectionStore()
+	conn := forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitLab, Kind: forge.KindOAuthApp,
+		AccountLogin: "alice", BotIdentity: forge.BotIdentityProjectToken}
+	if err := conns.Create(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+	s.forgeConnections = conns
+	cfg := webhooks.Config{ID: "w1", TenantID: "t1", Provider: webhooks.ProviderGitLab, ProvisionedBy: "forge:c1", BotLogin: "project_7_bot_abc"}
+	for login, isBot := range map[string]bool{"alice": false, "project_7_bot_abc": true, "bob": false} {
+		asAuthor := s.realIterionBotAuthor(context.Background(), cfg, login)
+		asReviewTarget := s.realIterionBotReviewRequest(context.Background(), cfg, func(l string) bool { return l == login })
+		if asAuthor != isBot || asReviewTarget != isBot {
+			t.Errorf("%s: author=%v reviewTarget=%v want both %v", login, asAuthor, asReviewTarget, isBot)
+		}
+	}
+	// With no minted bot on the webhook, the connection's account is the bot
+	// as before — the legacy PAT path is untouched.
+	cfg.BotLogin = ""
+	if !s.realIterionBotAuthor(context.Background(), cfg, "alice") {
+		t.Error("without BotLogin the connection's login must stay the identity")
+	}
+	if got := iterionBotLogins(cfg, conn); len(got) != 1 || got[0] != "alice" {
+		t.Errorf("iterionBotLogins = %v", got)
+	}
+}
+
 // End-to-end shape of the asymmetry's worst case, with a REAL connection
 // store and no seams: on a GitHub OAuth connection to a human maintainer's
 // account, a collaborator clicking "Request review → that maintainer" is an

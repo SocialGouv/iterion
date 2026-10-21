@@ -402,7 +402,7 @@ func (s *Server) resolveApproveWritePath(ctx context.Context, cfg webhooks.Confi
 	conn, connOK := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, projectPath)
 	var connErr error
 	if connOK {
-		gc, err := s.gateClientFor(ctx, conn)
+		gc, err := s.gateClientFor(ctx, conn, projectPath)
 		if err == nil && gc != nil {
 			// The write needs the statuses permission — the one an App
 			// client's token can lack while every read still works.
@@ -545,7 +545,7 @@ func (s *Server) postApproveReply(ctx context.Context, cfg webhooks.Config, prov
 // is already on the delivery audit; a comment failure on top of it must not
 // compound the confusion, so it is logged at Debug and never surfaced.
 func (s *Server) postApproveRejection(ctx context.Context, conn forge.Connection, repo string, number int, body string) error {
-	commenter, err := s.issueCommenterFor(ctx, conn)
+	commenter, err := s.issueCommenterFor(ctx, conn, repo)
 	if err == nil && commenter == nil {
 		err = fmt.Errorf("provider %s has no comment capability", conn.Provider)
 	}

@@ -18,6 +18,8 @@ import CronField from "@/components/shared/CronField";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
+
+import { ProjectBotIdentity } from "./ProjectBotIdentity";
 import { Radio } from "@/components/ui/Radio";
 import { Select } from "@/components/ui/Select";
 import { hookBaseProblem, hookDeliveryAddress } from "@/lib/hookBase";
@@ -415,9 +417,14 @@ export function EnableRepoPanel({
                   ))}
                 </div>
               )}
-              {preview.identity.handle && (
+              {(preview.identity.handle || preview.identity.project_bot) && (
                 <div>
-                  <span className="text-fg-muted">Will post as:</span> @{preview.identity.handle}
+                  <span className="text-fg-muted">Will post as:</span>{" "}
+                  {preview.identity.project_bot ? (
+                    <ProjectBotIdentity handle={preview.identity.handle} />
+                  ) : (
+                    <>@{preview.identity.handle}</>
+                  )}
                 </div>
               )}
               {announcedBase !== undefined && (

@@ -60,6 +60,13 @@ type forgeTeamRepo struct {
 	// read a bot" are different facts, and the second one must not be served
 	// as the first.
 	GatesMerges *bool `json:"gates_merges,omitempty"`
+	// BotLogin names the per-repository bot this repo's reviews are posted
+	// by, when iterion minted one (forge.RepoIntegration.ProjectBot); its
+	// token's expiry and the last rotation refusal travel with it so the
+	// operator reads a bot about to go dark before it does.
+	BotLogin          string     `json:"bot_login,omitempty"`
+	BotTokenExpiresAt *time.Time `json:"bot_token_expires_at,omitempty"`
+	BotRotationError  string     `json:"bot_rotation_error,omitempty"`
 }
 
 // gatesMergesResolver answers the merge-gate posture of a bot set over two
@@ -159,6 +166,9 @@ func (s *Server) handleListTeamForgeRepos(w http.ResponseWriter, r *http.Request
 			}
 			if row.BotIDs == nil {
 				row.BotIDs = []string{}
+			}
+			if pb := it.ProjectBot; pb != nil {
+				row.BotLogin, row.BotTokenExpiresAt, row.BotRotationError = pb.Login, pb.ExpiresAt, pb.RotationError
 			}
 			if c, ok := byConn[it.ConnectionID]; ok {
 				row.ConnectionStatus = string(c.Status)

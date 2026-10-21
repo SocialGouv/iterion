@@ -789,6 +789,9 @@
           "avatar_error": {
             "type": "string"
           },
+          "bot_identity": {
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -1679,6 +1682,9 @@
           "owner_login": {
             "type": "string"
           },
+          "platform": {
+            "type": "boolean"
+          },
           "provider": {
             "type": "string"
           },
@@ -1702,6 +1708,9 @@
           },
           "updated_at": {
             "format": "date-time",
+            "type": "string"
+          },
+          "webhook_base_url": {
             "type": "string"
           }
         },
@@ -3778,6 +3787,31 @@
         },
         "type": "object"
       },
+      "adminForgeOAuthAppReq": {
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret": {
+            "type": "string"
+          },
+          "forge_base_url": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "webhook_base_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "client_id",
+          "client_secret"
+        ],
+        "type": "object"
+      },
       "adminUpdateUserReq": {
         "properties": {
           "is_super_admin": {
@@ -4454,6 +4488,9 @@
       },
       "forgeConnectReq": {
         "properties": {
+          "bot_identity": {
+            "type": "string"
+          },
           "display_name": {
             "type": "string"
           },
@@ -4659,6 +4696,9 @@
           },
           "security_read_only": {
             "type": "boolean"
+          },
+          "webhook_base_url": {
+            "type": "string"
           }
         },
         "required": [
@@ -4673,6 +4713,16 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "bot_login": {
+            "type": "string"
+          },
+          "bot_rotation_error": {
+            "type": "string"
+          },
+          "bot_token_expires_at": {
+            "format": "date-time",
+            "type": "string"
           },
           "clone_url": {
             "type": "string"
@@ -5858,6 +5908,91 @@
           "admin"
         ]
       }
+    },
+    "/api/admin/forge/oauth-apps": {
+      "get": {
+        "operationId": "getAdminForgeOauthApps",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "apps": {
+                      "items": {
+                        "$ref": "#/components/schemas/ForgeOAuthApp"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "apps"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/forge/oauth-apps",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "postAdminForgeOauthApps",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/adminForgeOAuthAppReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForgeOAuthApp"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/admin/forge/oauth-apps",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/forge/oauth-apps/{app_id}": {
+      "delete": {
+        "operationId": "deleteAdminForgeOauthAppsByAppId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/admin/forge/oauth-apps/{app_id}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "app_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/admin/llm/api-keys": {
       "get": {

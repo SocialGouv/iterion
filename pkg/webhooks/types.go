@@ -208,6 +208,17 @@ type Config struct {
 	// knew would launch on the bot's own echo.
 	ReviewRequestLogins []string `bson:"review_request_logins,omitempty" json:"review_request_logins,omitempty"`
 
+	// BotLogin is the forge login the webhook's pinned forge token posts as,
+	// when that is NOT the connection's own account: the per-repository bot
+	// user iterion minted for this repo (forge.RepoIntegration.ProjectBot).
+	// Provisioner-owned — stamped from the integration on every Provision,
+	// never PATCHed — and read by the actor guard (iterionBotLogins) in place
+	// of the connection's login, so the person whose OAuth grant bootstrapped
+	// the connection keeps their own merge requests reviewed while the bot's
+	// own echoes are still recognised. Empty on every webhook whose token is
+	// the connection's.
+	BotLogin string `bson:"bot_login,omitempty" json:"bot_login,omitempty"`
+
 	// ReviewOnSync, when true, re-runs the review bot on a PR "synchronize"
 	// (a push to the PR head), not only on opened/reopened. OFF by default
 	// (a push is normally on-demand re-review — see prforge.IsReviewable, kept

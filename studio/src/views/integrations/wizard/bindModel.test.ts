@@ -168,6 +168,7 @@ describe("buildBindPreviewModel", () => {
       handle: "iterion-bot",
       provider: "github",
       baseUrl: "https://github.com",
+      projectBot: false,
     });
     expect(m!.hasConflicts).toBe(false);
     // Binding provisions the repo, so the review step owes the address the
@@ -226,6 +227,27 @@ describe("buildBindPreviewModel", () => {
     expect(m!.commands).toEqual([]);
     expect(m!.secrets).toEqual([]);
     expect(m!.identity).toBeNull();
+  });
+
+  it("keeps a project-bot identity with no handle yet: the bot is announced, not nobody", () => {
+    const m = buildBindPreviewModel(
+      {
+        events_normalized: [],
+        forge_native_events: [],
+        scopes: {},
+        secrets: [],
+        identity: { handle: "", provider: "gitlab", base_url: "https://pic.example", project_bot: true },
+        gates_merges: false,
+        conflicts: [],
+      } as unknown as ForgeEnablePreview,
+      null,
+    );
+    expect(m!.identity).toEqual({
+      handle: "",
+      provider: "gitlab",
+      baseUrl: "https://pic.example",
+      projectBot: true,
+    });
     // Null, not "": a server that reported no base said nothing about the
     // address, and the review step says nothing in turn.
     expect(m!.hookBaseUrl).toBeNull();

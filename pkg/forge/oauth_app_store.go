@@ -77,6 +77,17 @@ type ForgeOAuthApp struct {
 	// connection born from this App is a PurposeSecurityRead connection, on
 	// the first org and on the tenth.
 	SecurityReadOnly bool `bson:"security_read_only,omitempty" json:"security_read_only,omitempty"`
+	// WebhookBaseURL is the hook base every connection created through this
+	// app inherits when it pins none (Connection.WebhookBaseURL): the one
+	// place an instance-wide fact — "this forge only delivers to these hosts"
+	// — is said once, by whoever registered the app, instead of once per
+	// connection by whoever happens to connect. Canonical scheme+host, no
+	// trailing slash. Empty = the deployment's public URL, as always.
+	WebhookBaseURL string `bson:"webhook_base_url,omitempty" json:"webhook_base_url,omitempty"`
+	// Platform is a computed view flag (never persisted): the app is
+	// registered by the deployment for every team (its TenantID is the
+	// platform sentinel), so a team listing shows it, read-only.
+	Platform bool `bson:"-" json:"platform,omitempty"`
 	// Installable is a computed view flag (never persisted): true when the App
 	// holds a private key, so the UI can offer the "Install" (github_app) action.
 	Installable bool `bson:"-" json:"installable,omitempty"`

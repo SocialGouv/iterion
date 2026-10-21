@@ -306,14 +306,24 @@ func (s *Server) ListenAndServe() error {
 			SecurityMinter: s.forgeSecurityTokenMinter,
 			Lead:           forgeRefreshLead,
 		}
+		// One sweep renews both credential families: the connections' own
+		// tokens, then the per-repository bots whose expiry falls within the
+		// rotation lead — the same ticker, since each sweep is one cheap
+		// expiry query when nothing is due.
+		sweep := func(ctx context.Context) {
+			if _, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
+				s.logger.Warn("forge token refresh: %v", err)
+			}
+			if _, err := s.forgeOrchestrator.RotateDueProjectBots(ctx, 0); err != nil && s.logger != nil {
+				s.logger.Warn("forge project bot rotation: %v", err)
+			}
+		}
 		s.goUntilShutdown("server.forgeTokenRefresh", func(ctx context.Context) {
 			// Boot sweep: a rolling deploy re-phases the ticker below onto the
 			// new pod's start time, so a token that was about to be refreshed by
 			// the old replica's next tick could otherwise sit dying until this
 			// replica's first tick, up to a full period away.
-			if _, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
-				s.logger.Warn("forge token refresh: %v", err)
-			}
+			sweep(ctx)
 			t := time.NewTicker(forgeRefreshTick)
 			defer t.Stop()
 			for {
@@ -321,9 +331,7 @@ func (s *Server) ListenAndServe() error {
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					if _, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
-						s.logger.Warn("forge token refresh: %v", err)
-					}
+					sweep(ctx)
 				}
 			}
 		})

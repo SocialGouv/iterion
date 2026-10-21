@@ -382,6 +382,11 @@ type forgePreviewIdent struct {
 	Handle   string `json:"handle"`
 	Provider string `json:"provider"`
 	BaseURL  string `json:"base_url"`
+	// ProjectBot is true when the connection posts as a per-repository bot
+	// iterion mints at enable: Handle is then the minted bot's login when the
+	// repo already has one, and empty before the first enable — the studio
+	// says "a dedicated project bot" rather than naming nobody.
+	ProjectBot bool `json:"project_bot,omitempty"`
 }
 
 // handlePreviewForgeEnable computes exactly what enabling a set of bots on a
@@ -420,17 +425,35 @@ func (s *Server) handlePreviewForgeEnable(w http.ResponseWriter, r *http.Request
 		commands = append(commands, forgePreviewCommand{Command: cmd, BotID: bot})
 	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].Command < commands[j].Command })
+	ident := forgePreviewIdent{Handle: conn.AccountLogin, Provider: string(conn.Provider), BaseURL: conn.BaseURL()}
+	if conn.MintsProjectBots() {
+		// Not the authorising person: the repo's bot, named once it exists.
+		ident.ProjectBot, ident.Handle = true, ""
+		if repo := strings.TrimSpace(r.URL.Query().Get("repo")); repo != "" && s.forgeIntegrations != nil {
+			if ri, err := s.forgeIntegrations.GetByConnRepo(store.WithTenant(r.Context(), teamID), teamID, conn.ID, repo); err == nil && ri.ProjectBot != nil {
+				ident.Handle = ri.ProjectBot.Login
+			}
+		}
+	}
 	writeJSON(w, forgeEnablePreview{
 		EventsNormalized:  pv.Events,
 		ForgeNativeEvents: forge.ToNativeEvents(conn.Provider, pv.Events),
 		Scopes:            pv.Scopes,
 		Secrets:           binds,
 		Commands:          commands,
-		Identity:          forgePreviewIdent{Handle: conn.AccountLogin, Provider: string(conn.Provider), BaseURL: conn.BaseURL()},
+		Identity:          ident,
 		Conflicts:         pv.Conflicts,
 		GatesMerges:       pv.GatesMerges,
 		HookBaseURL:       s.forgeOrchestrator.HookBaseURL(conn),
 	})
+}
+
+// projectBotNotPermittedDetail is the operator's reading of a refused mint:
+// the forge's own words first, then the two settings that produce them.
+func projectBotNotPermittedDetail(err error) string {
+	return err.Error() + " — the authorising account must hold the Maintainer role on the project, and project access tokens must be allowed on it" +
+		" (GitLab: the group's Settings → General → Permissions and group features → Project access tokens);" +
+		" otherwise connect the repository with a project access token created by hand (the personal-token method)"
 }
 
 // hookPinGesture names where an operator pins a connection's webhook base:
@@ -552,6 +575,18 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 		// iterion's own stores diverged mid-write; the message carries the
 		// converge-on-rerun remedy. Not the forge's fault, so not a 502.
 		httpError(w, http.StatusInternalServerError, "%v", err)
+	case errors.Is(err, forge.ErrProjectBotNotPermitted):
+		// The forge refused to mint the repo's bot for the authorising
+		// account. GitLab answers one 400 for two causes, so both remedies
+		// are named; its own message rides along and says which.
+		writeJSONStatus(w, http.StatusForbidden, map[string]any{
+			"error":  "project_bot_not_permitted",
+			"detail": projectBotNotPermittedDetail(err),
+		})
+	case errors.Is(err, forge.ErrProjectBotUnsupported):
+		// A configuration contradiction (a project-bot connection on a client
+		// that cannot mint one), not a forge answer: the operator reconnects.
+		httpError(w, http.StatusUnprocessableEntity, "%v — reconnect the forge without the project-bot identity", err)
 	case errors.Is(err, forge.ErrForbidden):
 		writeJSONStatus(w, http.StatusForbidden, map[string]any{
 			"error":  "insufficient_scope",

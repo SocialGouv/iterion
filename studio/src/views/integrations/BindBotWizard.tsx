@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { ProjectBotIdentity } from "@/views/teams/tabs/integrations/ProjectBotIdentity";
 import { Spinner } from "@/components/ui/Spinner";
 import { useAuth } from "@/auth/AuthContext";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
@@ -622,8 +623,12 @@ function PreviewPanel({
 
       {model.identity && (
         <PreviewSection title="Will post as">
-          <span className="text-fg-default">@{model.identity.handle}</span>
-          {model.identity.baseUrl && (
+          {model.identity.projectBot ? (
+            <ProjectBotIdentity handle={model.identity.handle} />
+          ) : (
+            <span className="text-fg-default">@{model.identity.handle}</span>
+          )}
+          {model.identity.baseUrl && !(model.identity.projectBot && !model.identity.handle) && (
             <span className="text-fg-muted"> on {model.identity.baseUrl}</span>
           )}
         </PreviewSection>

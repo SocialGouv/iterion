@@ -27,6 +27,7 @@ var provisionerOwnedIntegrationFields = map[string]string{
 	"HookID":               "returned by the forge",
 	"HookURL":              "where the forge should deliver — the provisioner decides it",
 	"ManagedSecretID":      "the provisioner's own record",
+	"ProjectBot":           "the provisioner's own record: minted by the first enable on a project-bot connection and carried from the existing row on every rebuild there; absent by construction on every other connection",
 	"LaunchVars":           "operator override, explicitly re-resolved (nil request = keep)",
 	"Routing":              "operator override, explicitly re-resolved (a RoutingSet request replaces or clears; a silent one adopts the stored block — ADR-129)",
 	"Overlap":              "operator override, explicitly re-resolved",

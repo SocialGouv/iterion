@@ -956,6 +956,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			Invocations:     s.forgeBotInvocations,
 			Schedules:       cfg.ScheduledBots,
 			AdminFor:        s.forgeAdminFor,
+			AdminForToken:   s.forgeAdminForToken,
+			BotAvatar:       s.projectBotAvatar(),
 			GitHubAppMinter: s.forgeAppMinter,
 			PublicURL:       cfg.PublicURL,
 		}

@@ -31,11 +31,11 @@ type forgeMergeOps struct {
 // mergeOpsFor resolves a connection's gesture capabilities. The
 // forgeMergeOpsFor field is a test seam; nil uses the real admin client,
 // capability-asserted like every other publish-side resolver.
-func (s *Server) mergeOpsFor(ctx context.Context, conn forge.Connection) (forgeMergeOps, error) {
+func (s *Server) mergeOpsFor(ctx context.Context, conn forge.Connection, repo string) (forgeMergeOps, error) {
 	if s.forgeMergeOpsFor != nil {
 		return s.forgeMergeOpsFor(ctx, conn)
 	}
-	admin, err := s.forgeAdminFor(ctx, conn)
+	admin, err := s.forgeWriterFor(ctx, conn, repo)
 	if err != nil {
 		return forgeMergeOps{}, err
 	}
@@ -159,7 +159,7 @@ func (s *Server) applyPublishVerdict(ctx context.Context, conn forge.Connection,
 	// that window must not collect an approval (or an arming) addressed to
 	// the never-audited revision. One extra read per verdict-carrying
 	// publish; both providers' arms keep their own sha pin under it.
-	gc, gerr := s.gateClientFor(ctx, conn)
+	gc, gerr := s.gateClientFor(ctx, conn, grant.Repo)
 	if gerr != nil {
 		out.Refused = "head re-read: " + gerr.Error()
 		return out
@@ -221,7 +221,7 @@ func (s *Server) applyPublishVerdict(ctx context.Context, conn forge.Connection,
 		s.logWarn("forge verdict: %s %s#%d: verbs refused: %s", conn.Provider, grant.Repo, number, out.Refused)
 		return out
 	}
-	ops, err := s.mergeOpsFor(ctx, conn)
+	ops, err := s.mergeOpsFor(ctx, conn, grant.Repo)
 	if err != nil {
 		out.Refused = "merge-gesture client: " + err.Error()
 		return out

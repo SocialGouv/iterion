@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -79,6 +80,13 @@ type forgeOAuthAppReq struct {
 	// here, an existing App has to be edited on GitHub by hand and the new
 	// grant re-approved by an org owner.
 	AllowProjectBoard bool `json:"allow_project_board,omitempty"`
+	// WebhookBaseURL (manual and auto modes) is the hook base every
+	// connection made through this app inherits unless it pins its own — for
+	// an instance that only delivers to allowlisted hosts
+	// (forge.ForgeOAuthApp.WebhookBaseURL). Validated like the connection's
+	// own pin: absolute http(s), host only. The GitHub manifest flow takes
+	// none: GitHub delivers anywhere.
+	WebhookBaseURL string `json:"webhook_base_url,omitempty"`
 }
 
 func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +101,19 @@ func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusInternalServerError, "list oauth apps: %v", err)
 		return
 	}
+	// The platform's apps serve this team too: listed read-only so the
+	// connect wizard offers OAuth on the instances they cover.
+	platform, err := s.listPlatformForgeOAuthApps(r.Context())
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "list platform oauth apps: %v", err)
+		return
+	}
+	// Platform rows are the deployment's, shown to the team read-only: who
+	// registered them is a platform fact a team viewer has no business with.
+	for i := range platform {
+		platform[i].CreatedBy = ""
+	}
+	apps = append(apps, platform...)
 	for i := range apps {
 		// Installable = a manifest-created GitHub App whose private key we hold,
 		// so it can be INSTALLED (least-privilege github_app), not only OAuth-used.
@@ -132,7 +153,12 @@ func (s *Server) handleRegisterForgeOAuthApp(w http.ResponseWriter, r *http.Requ
 			httpError(w, http.StatusBadRequest, "client_id and client_secret are required for mode=manual")
 			return
 		}
-		app, err := s.createForgeOAuthApp(r, teamID, id.UserID, provider, req.ForgeBaseURL, clientID, clientSecret, "", false, mode, githubAppFacts{})
+		webhookBase, err := canonicalWebhookBaseURL(req.WebhookBaseURL)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		app, err := s.createForgeOAuthApp(r, teamID, id.UserID, provider, req.ForgeBaseURL, clientID, clientSecret, "", false, mode, githubAppFacts{WebhookBaseURL: webhookBase})
 		if err != nil {
 			s.writeForgeOAuthAppError(w, err)
 			return
@@ -180,6 +206,12 @@ func (s *Server) autoCreateForgeOAuthApp(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
+	// The hook base is a fact about the instance, whatever created the app.
+	webhookBase, err := canonicalWebhookBaseURL(req.WebhookBaseURL)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
 	prov, err := s.forgeOAuthAppProvisioner(provider, baseURL, adminToken)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "%v", err)
@@ -195,7 +227,7 @@ func (s *Server) autoCreateForgeOAuthApp(w http.ResponseWriter, r *http.Request,
 		s.writeForgeOAuthAppError(w, err)
 		return
 	}
-	app, err := s.createForgeOAuthApp(r, teamID, userID, provider, baseURL, creds.ClientID, creds.ClientSecret, creds.ProviderAppID, true, mode, githubAppFacts{})
+	app, err := s.createForgeOAuthApp(r, teamID, userID, provider, baseURL, creds.ClientID, creds.ClientSecret, creds.ProviderAppID, true, mode, githubAppFacts{WebhookBaseURL: webhookBase})
 	if err != nil {
 		s.writeForgeOAuthAppError(w, err)
 		return
@@ -226,7 +258,7 @@ func (s *Server) handleDeleteForgeOAuthApp(w http.ResponseWriter, r *http.Reques
 		return
 	} else if len(used) > 0 {
 		httpError(w, http.StatusConflict,
-			"%d connection(s) still use this GitHub App (%s) — remove them first, then delete the app",
+			"%d connection(s) still authenticate through this app (%s) — remove them first, then delete the app",
 			len(used), strings.Join(used, ", "))
 		return
 	}
@@ -268,7 +300,12 @@ func (s *Server) connectionsUsingOAuthApp(ctx context.Context, teamID, appID str
 // They travel together (a manifest conversion produces all of them at once, and
 // every non-GitHub mode leaves all of them empty), so they are one parameter
 // rather than four positional strings.
+// githubAppFacts carries what a GitHub-manifest creation learned about the
+// App, plus the one registration-time fact every provider may carry: the
+// hook base its connections inherit.
 type githubAppFacts struct {
+	// WebhookBaseURL is forge.ForgeOAuthApp.WebhookBaseURL, already canonical.
+	WebhookBaseURL string
 	// ManageURL deep-links the App's settings page for operator cleanup.
 	ManageURL string
 	// Slug is the github.com/apps/<slug> segment used to build the install URL.
@@ -311,16 +348,23 @@ func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, pro
 		ClientID: clientID, SealedSecret: sealed, RedirectURI: s.forgeOAuthRedirectURI(),
 		ProviderAppID: providerAppID, AutoCreated: autoCreated, AppManageURL: appManageURL,
 		AppSlug: appSlug, SealedPrivateKey: sealedKey, OwnerLogin: gh.OwnerLogin,
-		SecurityReadOnly: gh.SecurityReadOnly,
-		CreatedBy:        userID, CreatedAt: now, UpdatedAt: now,
+		SecurityReadOnly: gh.SecurityReadOnly, WebhookBaseURL: gh.WebhookBaseURL,
+		CreatedBy: userID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.forgeOAuthApps.Create(store.WithTenant(r.Context(), teamID), app); err != nil {
 		return forge.ForgeOAuthApp{}, err
 	}
-	s.auditTenant(r, teamID, "forge.oauth_app.created", "forge_oauth_app", appID, map[string]any{
+	meta := map[string]any{
 		"provider": provider, "mode": mode, "instance": baseURL, "auto_created": autoCreated,
-	})
+		"webhook_base_url": gh.WebhookBaseURL,
+	}
+	if teamID == secrets.PlatformTenantID {
+		s.auditPlatform(r, teamID, "forge.oauth_app.created", "forge_oauth_app", appID, meta)
+	} else {
+		s.auditTenant(r, teamID, "forge.oauth_app.created", "forge_oauth_app", appID, meta)
+	}
 	app.SealedSecret = nil
+	app.Platform = teamID == secrets.PlatformTenantID
 	return app, nil
 }
 

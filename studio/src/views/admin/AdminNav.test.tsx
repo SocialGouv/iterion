@@ -49,6 +49,7 @@ const HREFS: Record<string, string> = {
   Organizations: "/studio/admin/orgs",
   Users: "/studio/admin/users",
   "LLM credentials": "/studio/admin/llm-credentials",
+  "Forge OAuth apps": "/studio/admin/forge-apps",
   "Usage caps": "/studio/admin/settings/usage-caps",
   "Bot roles": "/studio/admin/settings/bot-roles",
   Sandbox: "/studio/admin/settings/sandbox",

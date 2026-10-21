@@ -130,6 +130,27 @@ func (s *Server) handleCommitAndFinalize(w http.ResponseWriter, r *http.Request)
 	s.writeJSONFor(w, r, res)
 }
 
+// forgeProjectBotIntegrationBySecret finds the integration whose minted bot
+// a forge_token secret belongs to. Nothing indexes secrets by owner, and
+// nothing needs to: a tenant's integrations are few, and this runs once per
+// merge. A listing that fails is an error, not an absence: the caller's host
+// check hangs on the answer, and a blip must not wave the token through.
+func (s *Server) forgeProjectBotIntegrationBySecret(ctx context.Context, tenantID, secID string) (forge.RepoIntegration, bool, error) {
+	if s.forgeIntegrations == nil || secID == "" {
+		return forge.RepoIntegration{}, false, nil
+	}
+	ints, err := s.forgeIntegrations.ListByTenant(ctx, tenantID)
+	if err != nil {
+		return forge.RepoIntegration{}, false, err
+	}
+	for _, ri := range ints {
+		if ri.ProjectBot != nil && ri.ManagedSecretID == secID {
+			return ri, true, nil
+		}
+	}
+	return forge.RepoIntegration{}, false, nil
+}
+
 // forgeTokenForRun is the runview.ForgeTokenResolver for repo-targeted
 // merges: it opens the managed forge secret the launch pinned on the run
 // (SecretOverrides["forge_token"]), re-minting it first when it belongs to
@@ -172,6 +193,26 @@ func (s *Server) forgeTokenForRun(ctx context.Context, r *store.Run) (string, er
 			break
 		}
 	}
+	// A per-repository bot's secret is the integration's, not a connection's:
+	// its connection is read through the integration, and there is nothing
+	// to re-mint — the rotation worker keeps that token live.
+	projectBot := false
+	if conn == nil {
+		ri, ok, lerr := s.forgeProjectBotIntegrationBySecret(tctx, r.TenantID, secID)
+		if lerr != nil {
+			// Same rule as the connection listing above: a failure here would
+			// skip the host check and open the token on a drifted run doc.
+			return "", fmt.Errorf("list forge integrations for the merge of %s: %w", r.ID, lerr)
+		}
+		if ok {
+			for i := range conns {
+				if conns[i].ID == ri.ConnectionID {
+					conn, projectBot = &conns[i], true
+					break
+				}
+			}
+		}
+	}
 	if conn == nil {
 		// The pinned secret can outlive its connection (forge re-linked
 		// since launch) and the stored token may still be live, so this
@@ -190,7 +231,9 @@ func (s *Server) forgeTokenForRun(ctx context.Context, r *store.Run) (string, er
 		}
 		// Best-effort: a mint failure keeps the stored token,
 		// which may still be live within its hour.
-		_, _ = o.EnsureManagedSecret(tctx, conn, "merge")
+		if !projectBot {
+			_, _ = o.EnsureManagedSecret(tctx, conn, "merge")
+		}
 	}
 	gs, err := o.Secrets.Get(tctx, secID)
 	if err != nil {

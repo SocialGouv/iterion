@@ -39,6 +39,7 @@ export const ADMIN_SECTIONS = [
     label: "Platform",
     items: [
       { path: "/llm-credentials", label: "LLM credentials" },
+      { path: "/forge-apps", label: "Forge OAuth apps" },
       { path: "/settings/usage-caps", label: "Usage caps" },
       { path: "/settings/bot-roles", label: "Bot roles" },
       { path: "/settings/sandbox", label: "Sandbox" },

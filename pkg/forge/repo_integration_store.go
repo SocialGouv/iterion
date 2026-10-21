@@ -37,6 +37,16 @@ type RepoIntegration struct {
 	// API (useless without the master key, but no reason to surface it).
 	ManagedSecretID string `bson:"managed_secret_id,omitempty" json:"-"`
 
+	// ProjectBot is the per-repository bot credential iterion minted for this
+	// integration, on a connection whose BotIdentity is
+	// BotIdentityProjectToken: the GitLab project access token whose bot user
+	// every review is posted under. Nil on every other integration. When set,
+	// ManagedSecretID is this integration's OWN generic secret (the minted
+	// token), not the connection's: the provisioner pins it on the webhook,
+	// the rotation worker rewrites it, and deprovision revokes the token and
+	// deletes the secret with the row.
+	ProjectBot *ProjectBot `bson:"project_bot,omitempty" json:"project_bot,omitempty"`
+
 	// LaunchVars are the operator's per-repo overrides for every run this
 	// integration launches, layered LAST (after the bots' own manifest vars),
 	// and re-applied on every Provision. Provisioning rewrites the whole
@@ -115,6 +125,37 @@ type RepoIntegration struct {
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
 
+// ProjectBot records a minted per-repository bot credential: enough to rotate
+// it (TokenID, ExpiresAt), to recognise it (Login — what the actor guard reads
+// off the webhook config as BotLogin), and to say what last happened to it.
+type ProjectBot struct {
+	// TokenID is the forge-side id of the access token.
+	TokenID string `bson:"token_id" json:"token_id"`
+	// Login is the bot user's username (GitLab: project_<id>_bot_<hex>).
+	Login string `bson:"login" json:"login"`
+	// UserID is the bot user's id on the forge.
+	UserID string `bson:"user_id,omitempty" json:"user_id,omitempty"`
+	// Name is the token's name and the bot's display name (ProjectBotName).
+	Name string `bson:"name,omitempty" json:"name,omitempty"`
+	// ExpiresAt is the token's expiry in the CLEAR, so the rotation worker
+	// lists due bots without opening a secret. Nil = the forge set none, and
+	// the bot is never due.
+	ExpiresAt *time.Time `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
+	// MintedAt dates the credential; with ExpiresAt it is the lifetime the
+	// forge granted, which a rotation asks for again.
+	MintedAt time.Time `bson:"minted_at" json:"minted_at"`
+	// RotatedAt is the last successful rotation; nil = never rotated.
+	RotatedAt *time.Time `bson:"rotated_at,omitempty" json:"rotated_at,omitempty"`
+	// RotationError is the forge's refusal of the last rotation attempt, kept
+	// so the operator reads why a bot is about to expire; cleared by the next
+	// successful rotation.
+	RotationError string `bson:"rotation_error,omitempty" json:"rotation_error,omitempty"`
+	// AvatarAppliedAt is when the iterion-bot avatar was set on the bot user,
+	// AvatarError the forge's refusal when it was not. Neither blocks anything.
+	AvatarAppliedAt *time.Time `bson:"avatar_applied_at,omitempty" json:"avatar_applied_at,omitempty"`
+	AvatarError     string     `bson:"avatar_error,omitempty" json:"avatar_error,omitempty"`
+}
+
 // RepoIntegrationStore persists repo integrations. GetByConnRepo backs the
 // orchestrator's race-safe find-or-create; ListByWebhook backs the
 // webhook-delete "in use by integration" guard.
@@ -146,6 +187,11 @@ type RepoIntegrationStore interface {
 	// repo slug — the per-webhook board projection's filter, pushed down to the
 	// query so a webhook doesn't scan every tenant's integrations.
 	ListSyncEnabledForRepo(ctx context.Context, repo string) ([]RepoIntegration, error)
+	// ListProjectBotsExpiringBefore returns every integration (across all
+	// tenants) whose minted project bot expires at or before t — the rotation
+	// worker's sweep. An integration with no bot, or a bot the forge gave no
+	// expiry, is never due.
+	ListProjectBotsExpiringBefore(ctx context.Context, t time.Time) ([]RepoIntegration, error)
 }
 
 // ---- in-memory store (tests / local) ----
@@ -244,6 +290,12 @@ func (m *MemoryRepoIntegrationStore) ListSyncEnabledForRepo(_ context.Context, r
 	}), nil
 }
 
+func (m *MemoryRepoIntegrationStore) ListProjectBotsExpiringBefore(_ context.Context, t time.Time) ([]RepoIntegration, error) {
+	return m.filter(func(ri RepoIntegration) bool {
+		return ri.ProjectBot != nil && ri.ProjectBot.ExpiresAt != nil && !ri.ProjectBot.ExpiresAt.After(t)
+	}), nil
+}
+
 func (m *MemoryRepoIntegrationStore) ListByWebhook(_ context.Context, tenantID, webhookID string) ([]RepoIntegration, error) {
 	return m.filter(func(ri RepoIntegration) bool {
 		return ri.TenantID == tenantID && ri.WebhookID == webhookID
@@ -279,6 +331,10 @@ func (s *MongoRepoIntegrationStore) EnsureSchema(ctx context.Context) error {
 	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "connection_id", Value: 1}, {Key: "repo_full_name", Value: 1}}, Options: options.Index().SetUnique(true).SetName("tenant_conn_repo_unique")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "webhook_id", Value: 1}}, Options: options.Index().SetName("tenant_webhook")},
+		// The rotation sweep's key: only integrations carrying a minted bot
+		// with an expiry are indexed (sparse), so the sweep never scans the
+		// rows that can never be due.
+		{Keys: bson.D{{Key: "project_bot.expires_at", Value: 1}}, Options: options.Index().SetSparse(true).SetName("project_bot_expiry")},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("forge: ensure repo_integrations indexes: %w", err)
@@ -332,6 +388,14 @@ func (s *MongoRepoIntegrationStore) ListSyncEnabled(ctx context.Context) ([]Repo
 
 func (s *MongoRepoIntegrationStore) ListSyncEnabledForRepo(ctx context.Context, repo string) ([]RepoIntegration, error) {
 	return s.find(ctx, bson.M{"sync_issues_enabled": true, "repo_full_name": repo})
+}
+
+func (s *MongoRepoIntegrationStore) ListProjectBotsExpiringBefore(ctx context.Context, t time.Time) ([]RepoIntegration, error) {
+	// A missing project_bot.expires_at never matches $lte, so integrations
+	// with no bot — or a bot with no expiry — are excluded by the query itself.
+	return mongoutil.FindAllSorted[RepoIntegration](ctx, s.coll,
+		bson.M{"project_bot.expires_at": bson.M{"$lte": t}}, "project_bot.expires_at",
+		"forge: list expiring project bots", "forge: decode expiring project bots")
 }
 
 func (s *MongoRepoIntegrationStore) find(ctx context.Context, filter bson.M) ([]RepoIntegration, error) {

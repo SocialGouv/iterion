@@ -11,6 +11,7 @@ import {
   connectForge,
 } from "@/api/forgeConnections";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { errorMessage } from "@/lib/errorHints";
 import {
@@ -50,6 +51,10 @@ export default function NonGitHubAuthorize({
   }, [oauthApps, provider, baseURL]);
 
   const [busy, setBusy] = useState(false);
+  // GitLab: the OAuth grant is the ADMIN credential; what bots post as is a
+  // per-repository bot iterion mints at enable (the recommended default), or
+  // the authorising account itself.
+  const [projectBot, setProjectBot] = useState(true);
 
   const kickOffOAuth = async () => {
     setBusy(true);
@@ -58,6 +63,7 @@ export default function NonGitHubAuthorize({
         provider,
         mode: "oauth",
         forge_base_url: baseURL.trim() || undefined,
+        bot_identity: provider === "gitlab" && projectBot ? "project_token" : undefined,
         next: RETURN_PATH,
       });
       if (res.authorize_url) {
@@ -91,6 +97,14 @@ export default function NonGitHubAuthorize({
             Authorize the OAuth app registered for this instance. You'll be
             redirected to {label} and back here.
           </p>
+          {provider === "gitlab" && (
+            <Checkbox
+              label="Post as a dedicated project bot (recommended)"
+              help="iterion creates a project access token on each repository you enable: its bot user (iterion-bot) posts the reviews, so your own merge requests stay reviewable. Unchecked, bots post as your account."
+              checked={projectBot}
+              onChange={(e) => setProjectBot(e.target.checked)}
+            />
+          )}
           <div>
             <Button
               variant="primary"

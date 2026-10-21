@@ -98,7 +98,7 @@ func (s *Server) markGateInFlight(ctx context.Context, teamID, botID string, var
 	if !ok {
 		return
 	}
-	gc, err := s.gateClientFor(ctx, conn)
+	gc, err := s.gateClientFor(ctx, conn, repo)
 	if err != nil || gc == nil {
 		if s.logger != nil && err != nil {
 			s.logger.Warn("forge gate: cannot claim %s on %s@%s for run %s: %v — the check stays absent while the review runs",

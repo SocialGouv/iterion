@@ -674,8 +674,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "repo unreachable by connection")
 			return
 		}
-		secID, err := s.forgeOrchestrator.EnsureManagedSecret(store.WithTenant(r.Context(), conn.TenantID), &conn, id.UserID)
+		secID, err := s.forgeOrchestrator.ManagedSecretFor(store.WithTenant(r.Context(), conn.TenantID), &conn, repoProjectPath, id.UserID)
 		if err != nil {
+			// A repository with no minted bot is the operator's state, not
+			// the forge's: 409, with the enable as the remedy.
+			if errors.Is(err, forge.ErrRepoNotEnabled) {
+				s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
+				span.SetStatus(codes.Error, "repo not enabled")
+				return
+			}
 			s.httpErrorFor(w, r, http.StatusBadGateway, "forge token for the clone: %v", err)
 			span.SetStatus(codes.Error, "managed secret")
 			return

@@ -183,7 +183,7 @@ func (s *Server) prforgeReplierAPIFor(ctx context.Context, cfg webhooks.Config, 
 	host := hostOfURL(baseURL)
 	connRefusal := ""
 	if conn, ok := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, projectPath); ok {
-		admin, err := s.forgeAdminFor(ctx, conn)
+		admin, err := s.forgeWriterFor(ctx, conn, projectPath)
 		if err == nil {
 			err = preflightForgeClient(ctx, admin)
 		}
