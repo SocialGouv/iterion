@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.277.0](https://github.com/SocialGouv/iterion/compare/v3.276.0...v3.277.0) (2026-10-21)
+
+### Features
+
+* **forge,cloudsched,server,studio:** the integration record carries the routing policy, and every projection reads it ([#2615](https://github.com/SocialGouv/iterion/issues/2615)) ([92faa49](https://github.com/SocialGouv/iterion/commit/92faa496ef2ffbdc207ecf980a3330ea5aad85c5)), references [#2006](https://github.com/SocialGouv/iterion/issues/2006) [#2006](https://github.com/SocialGouv/iterion/issues/2006) [#2607](https://github.com/SocialGouv/iterion/issues/2607)
+
+    <details><summary>why</summary>
+
+    Slice 3 of 6 (#2006, ADR-129): `RepoIntegration.Routing` lands beside LaunchVars and reaches every projection — webhook config, integration record, scheduled rows (with a RoutingFromIntegration provenance flag so an operator's row-level block and the integration's projection stay distinct), the park echo, the org-approval apply path, the credential preview's trusted-var narrowing, and a repo-scoped studio editor that renders parked saves and blast-radius warnings.
+
+    </details>
+* **llmroute,model,cloudpublisher,runner:** the tenant's provider allowlist holds at the gate and at dispatch ([#2605](https://github.com/SocialGouv/iterion/issues/2605)) ([1d41c59](https://github.com/SocialGouv/iterion/commit/1d41c59ddef1c74c36eeb0f2bd34ae05fe0d025f)), references [#2006](https://github.com/SocialGouv/iterion/issues/2006) [#2006](https://github.com/SocialGouv/iterion/issues/2006)
+
+    <details><summary>why</summary>
+
+    Slices 1-2 of the revi routing arc (#2006) stored the tenant's `providers:` allowlist and folded it into the launch view, but nothing enforced it: a launch still resolved rescue routes, sealed credentials and armed dispatch chains for providers the tenant forbids. This change makes a non-empty list an enforcement question at the walk (ADR-129 §5).
+
+    </details>
+
+### Bug Fixes
+
+* **studio:** drafts track their provenance, reloads reload the right file ([#2614](https://github.com/SocialGouv/iterion/issues/2614)) ([c1bbbda](https://github.com/SocialGouv/iterion/commit/c1bbbdab85d19ec8073dabd67cc204b2570db6af)), closes [#1790](https://github.com/SocialGouv/iterion/issues/1790) [#1791](https://github.com/SocialGouv/iterion/issues/1791)
+
+    <details><summary>why</summary>
+
+    Draft tabs now record which document they were opened from via a WeakMap on the DocumentStore: a reload of the underlying file reloads the drafts that actually came from it, not every open draft. The Source buffer is only discarded once the install was accepted, and the reload banner offers "Load it" through the confirm hook. Manual loads go through replaceDocument with race guards so a stale read cannot clobber a newer buffer.
+
+    </details>
+
 ## [3.276.0](https://github.com/SocialGouv/iterion/compare/v3.275.0...v3.276.0) (2026-10-20)
 
 ### Features
