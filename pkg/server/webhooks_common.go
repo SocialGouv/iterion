@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -137,6 +138,28 @@ func applyWebhookVarLayers(vars map[string]string, cfg webhooks.Config) map[stri
 	mergeVarsInto(vars, cfg.LaunchVars)
 	mergeVarsInto(vars, cfg.OperatorLaunchVars)
 	return vars
+}
+
+// trustedVarNames lists the launch-var names whose value the OPERATOR
+// decided — the set a lane declares on its LaunchSpec so the launch
+// pre-flights may narrow a routing gate through those names (ADR-129 §4,
+// rule 2). Sorted: a set, not a sequence. The lanes that fill it are the
+// ones whose vars are operator-owned (the webhook config's operator
+// layer, a schedule row's vars, the CLI's --var); the delivery-seeded
+// lanes (reviewPRVars, fixerPRVars, the fork lane, board dispatch,
+// pipeline admission) leave it empty — a payload-written name must leave
+// a routing field undecided at the gate, never certify the payload's
+// route.
+func trustedVarNames(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // suppressedByHoldLabel applies the bot-agnostic hold-label veto shared by

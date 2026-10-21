@@ -89,6 +89,14 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 		err: forge.ErrProvisionDiverged, wantStatus: 0,
 		why: "iterion's own two-store settings write diverged — the provisioning route answers 500 with the converge-on-rerun remedy",
 	},
+	"forge.ErrProvisionDivergedRetry": {
+		err: forge.ErrProvisionDivergedRetry, wantStatus: 0,
+		why: "the retry-convergent flavors of ErrProvisionDiverged, carried BESIDE it — the approval arm spares them (the retry lands), the provisioning route's 500 mapping is unchanged",
+	},
+	"forge.ErrBotNotProvisionable": {
+		err: forge.ErrBotNotProvisionable, wantStatus: 0,
+		why: "a static property of the recorded bot set refused before any forge call — the provisioning route's 502 default, the approval arm consumes the dead-end record",
+	},
 
 	// Forge-answered 404s that stay out of the class because their own
 	// caller classifies them. Moving one in is a behaviour change to own.

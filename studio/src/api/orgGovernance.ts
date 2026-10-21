@@ -16,13 +16,52 @@ export interface ProvisionApproval {
   repo_full_name: string;
   bot_ids: string[];
   integration_id?: string;
+  /** Replace semantics: on approval the requested bots become the EXACT
+   *  bot set of the (existing) integration — the bots the set held that
+   *  bot_ids drops are disabled (webhook + schedules torn down). */
   replace?: boolean;
+  /** Snapshots the integration's live bot set at park time (update
+   *  requests only): with replace, the names it holds that bot_ids drops
+   *  are what the approval disables. Hand-typed: this route carries no
+   *  openapi schema. */
+  base_bot_ids?: string[];
+  /** Snapshots of the integration's two operator sets at park time (the
+   *  base_bot_ids precedent): a PARTIAL hold-label lift or an allowlist
+   *  widening parks precisely because it re-arms automation, and the card
+   *  names what the change lifts or widens against these. Absent means no
+   *  delta is possible (new repo, or a stored set nothing can be lifted
+   *  from). Hand-typed: this route carries no openapi schema. */
+  base_hold_labels?: string[];
+  base_label_allowlist?: string[];
   schedule_crons?: Record<string, string>;
+  /** The spoken launch_vars map — null = the request was silent, an
+   *  empty-but-present {} IS the whole-map clear (a legacy record parked
+   *  before the Set flags shipped carries the empty value and no fact). */
   launch_vars?: Record<string, string>;
+  /** The spoken launch_vars map REPLACES the stored one wholesale instead
+   *  of merging — an empty map is a clear of every pin. */
+  launch_vars_replace?: boolean;
   overlap?: string;
   auto_fix?: boolean;
+  /** null = the request was silent about the pause; [] = the lift the
+   *  approval executes. */
   hold_labels?: string[];
+  /** null = the request was silent about dispatch; [] = the widening. */
   label_allowlist?: string[];
+  /** The three Set facts mark that the request body NAMED launch_vars /
+   *  hold_labels / label_allowlist: the fields' own empty values collapse
+   *  to absent keys on this wire, so a spoken-empty gesture (the map
+   *  clear, the pause lift, the dispatch widen) is only visible through
+   *  them. Absent = the request was silent — the stored value stays. */
+  launch_vars_set?: boolean;
+  hold_labels_set?: boolean;
+  label_allowlist_set?: boolean;
+  /** The routing block the request speaks about (pkg/llmroute, ADR-129) —
+   *  the payload this gate exists to arbitrate. routing_set marks that the
+   *  request SPOKE: a policy present REPLACES the stored block, one absent
+   *  CLEARS it. Hand-typed: this route carries no openapi schema. */
+  routing?: Record<string, unknown> | null;
+  routing_set?: boolean;
   requested_by: string;
   created_at: string;
 }

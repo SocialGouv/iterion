@@ -12,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
 
 // RepoIntegration is the join row recording what the orchestrator
@@ -45,6 +46,16 @@ type RepoIntegration struct {
 	// this repo's merge gate: with several bots able to post it, the repo has
 	// exactly one required check and each bot fills it for the PRs it owns.
 	LaunchVars map[string]string `bson:"launch_vars,omitempty" json:"launch_vars,omitempty"`
+
+	// Routing is the operator's per-repo routing policy (pkg/llmroute,
+	// ADR-129): the binding level for every launch this integration's
+	// webhook and schedules make. It lives here, like LaunchVars, because
+	// Provision rebuilds the whole webhook config from the manifests — a
+	// pin set only on the config was silently lost at the next enable —
+	// and every projection of this record (the webhook copy, the scheduled
+	// rows, the verify pass, the org-approval park/apply) is rebuilt from
+	// it. Nil = the level says nothing.
+	Routing *llmroute.Policy `bson:"routing,omitempty" json:"routing,omitempty"`
 
 	// HoldLabels is the operator's bot-agnostic pause: a pull request or issue
 	// carrying one of these labels vetoes EVERY auto-launch on this repo. It

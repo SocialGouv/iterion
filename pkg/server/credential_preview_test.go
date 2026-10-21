@@ -99,6 +99,12 @@ func TestCredentialPreviewWebhookMatchesActualLaunchSourceAndIdentity(t *testing
 	if !reflect.DeepEqual(pub.preview.Launch.KeyOverrides, pub.launched.KeyOverrides) || !reflect.DeepEqual(pub.preview.Launch.Vars, pub.launched.Vars) {
 		t.Fatalf("configured override drift preview=%+v actual=%+v", pub.preview.Launch.KeyOverrides, pub.launched.KeyOverrides)
 	}
+	// The trusted names ride too: the launch narrows a routing gate through
+	// the operator layer's names, so a preview that trusts none of them
+	// answers "undecided" for a cell the launch resolves and applies.
+	if !reflect.DeepEqual(pub.preview.Launch.TrustedVarNames, pub.launched.TrustedVarNames) {
+		t.Fatalf("trusted-var drift preview=%v launch=%v — the preview must trust the operator layer the launch trusts", pub.preview.Launch.TrustedVarNames, pub.launched.TrustedVarNames)
+	}
 	known := map[string]bool{"openai": true, "anthropic": true}
 	a := model.EffectiveProviders(model.RouteView{Workflow: pub.previewWF, Overrides: runview.ModelOverridesFromRun(runview.RunModelOverrides(pub.preview.Launch.ModelOverrides))}, known)
 	b := model.EffectiveProviders(model.RouteView{Workflow: pub.launchedWF, Overrides: runview.ModelOverridesFromRun(runview.RunModelOverrides(pub.launched.ModelOverrides))}, known)

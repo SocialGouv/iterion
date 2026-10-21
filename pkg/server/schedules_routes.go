@@ -1,11 +1,9 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -92,31 +90,13 @@ type updateScheduleReq struct {
 	Routing json.RawMessage `json:"routing,omitempty"`
 }
 
-// decodeScheduleRouting is the ONE decoder of a schedule request's routing
-// block: absent (empty RawMessage) → nil, nil (leave untouched); "null" →
-// nil with the empty marker the caller reads for the clear; an object →
-// decoded with DisallowUnknownFields (a camelCase typo must refuse, not
-// silently store a no-op block), validated, and its LOCKS refused — the
-// binding level does not hold the lock primitive (ADR-121: the author's
-// manifest and the platform record do; a schedule lock would launder
-// unset past the author).
-func decodeScheduleRouting(raw json.RawMessage) (*llmroute.Policy, *routingRequestError) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil, nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	var block llmroute.Policy
-	if err := dec.Decode(&block); err != nil {
-		return nil, &routingRequestError{http.StatusBadRequest, fmt.Errorf("routing: %w", err)}
-	}
-	if len(block.Locks) > 0 {
-		return nil, &routingRequestError{http.StatusUnprocessableEntity, fmt.Errorf("routing.locks: the binding level does not hold the lock primitive — the author's manifest and the platform record do (locks: %s)", strings.Join(block.Locks, ", "))}
-	}
-	if err := llmroute.Validate(block); err != nil {
-		return nil, &routingRequestError{http.StatusBadRequest, err}
-	}
-	return &block, nil
+// decodeScheduleRouting decodes a schedule request's routing block through
+// the ONE routing decoder (routing_decode.go) under the binding surface's
+// lock posture: the binding level does not hold the lock primitive
+// (ADR-121 — the author's manifest and the platform record do; a schedule
+// lock would launder unset past the author).
+func decodeScheduleRouting(raw json.RawMessage) (*llmroute.Policy, bool, *routingRequestError) {
+	return decodeRoutingBlock(raw, routingLocksRefused)
 }
 
 type routingRequestError struct {
@@ -222,7 +202,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	routing, routeErr := decodeScheduleRouting(req.Routing)
+	routing, _, routeErr := decodeScheduleRouting(req.Routing)
 	if routeErr != nil {
 		httpError(w, routeErr.status, "%s", routeErr.err.Error())
 		return
@@ -391,12 +371,12 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	// Routing: absent leaves the stored block (edit dialogs mirror the row
 	// back), null clears, an object replaces wholesale — decoded strictly
 	// and validated before it lands.
-	patchRouting, routeErr := decodeScheduleRouting(req.Routing)
+	patchRouting, routingSpoke, routeErr := decodeScheduleRouting(req.Routing)
 	if routeErr != nil {
 		httpError(w, routeErr.status, "%s", routeErr.err.Error())
 		return
 	}
-	clearRouting := patchRouting == nil && len(req.Routing) > 0
+	clearRouting := patchRouting == nil && routingSpoke
 	// Same merge-then-validate for the retry policy: a patch touching one
 	// retry field must not be able to leave the row incoherent.
 	mergedRetry := cur.RetryPolicy()

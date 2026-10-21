@@ -73,7 +73,7 @@ func TestBotResolutionSweep_NoLiteralTeamlessResolution(t *testing.T) {
 	// Only a LITERAL "" is decidable statically; a variable that happens to
 	// be empty at run time is the caller's own contract to keep.
 	teamless := regexp.MustCompile(
-		`(?:resolveBot(?:Source|Tiered(?:Raw)?)?|resolvePipelineBot|launchTicketNow|resolveRunRetryPolicy|handoffConsumersFor|botVarDefault|botManifestFor|effectiveFindByNameForTeam|effectiveEntriesFor(?:Team)?|botExistsForTeam|botConfigShareSpec|boardRouteForLabel|cmdDiscoveryFor|entryOriginFor|teamHandoffProducers|forgeBot(?:Forge|Invocations))\([^,]+,\s*""`)
+		`(?:resolveBot(?:Source|Tiered(?:Raw)?)?|resolvePipelineBot|launchTicketNow|resolveRunRetryPolicy|handoffConsumersFor|botVarDefault|botManifestFor|effectiveFindByNameForTeam|effectiveEntriesFor(?:Team)?|botExistsForTeam|botConfigShareSpec|boardRouteForLabel|cmdDiscoveryFor|entryOriginFor|teamHandoffProducers|forgeBot(?:Entry|Forge|Invocations))\([^,]+,\s*""`)
 	sweepServerFiles(t, func(name, body string) {
 		if !teamless.MatchString(body) {
 			return

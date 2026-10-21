@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,11 @@ type mockGitLab struct {
 	nextHookID  int
 	createBody  map[string]any
 	deletedHook int
+	// hookWriteStatus, when non-zero, is the status every hook WRITE
+	// (create POST, update PUT) answers — the forge-down switch a
+	// transient-failure witness needs. Zero keeps the success path every
+	// other test rides.
+	hookWriteStatus int
 }
 
 func newMockGitLab() *mockGitLab { return &mockGitLab{hooks: map[int]map[string]any{}} }
@@ -49,8 +55,15 @@ func (m *mockGitLab) server() *httptest.Server {
 		case http.MethodGet:
 			_ = json.NewEncoder(w).Encode([]map[string]any{}) // GetHook probe: none yet
 		case http.MethodPost:
+			if m.hookWriteStatus != 0 {
+				w.WriteHeader(m.hookWriteStatus)
+				return
+			}
 			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
+			if derr := json.NewDecoder(r.Body).Decode(&body); derr != nil || body == nil {
+				http.Error(w, "mock gitlab: the hook POST body must decode to a JSON object", http.StatusBadRequest)
+				return
+			}
 			m.createBody = body
 			m.nextHookID++
 			body["id"] = m.nextHookID
@@ -65,7 +78,34 @@ func (m *mockGitLab) server() *httptest.Server {
 			m.hooks = map[int]map[string]any{}
 			m.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
+			return
 		}
+		// The update PUT: a forge-down switch answers it, the success path
+		// echoes the hook — UpdateHook decodes the response body, so an
+		// empty 200 is a decode error at the client, not a zero handle.
+		// The same lock guards every hooks mutation (POST and DELETE take
+		// it too), and a body that decodes to nothing has no map to take
+		// the echoed id, so it is a 400; a path whose id does not parse is
+		// a 404, not a hook stored under id 0.
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.hookWriteStatus != 0 {
+			w.WriteHeader(m.hookWriteStatus)
+			return
+		}
+		var body map[string]any
+		if derr := json.NewDecoder(r.Body).Decode(&body); derr != nil || body == nil {
+			http.Error(w, "mock gitlab: the hook PUT body must decode to a JSON object", http.StatusBadRequest)
+			return
+		}
+		id, aerr := strconv.Atoi(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:])
+		if aerr != nil {
+			http.NotFound(w, r)
+			return
+		}
+		body["id"] = id
+		m.hooks[id] = body
+		_ = json.NewEncoder(w).Encode(body)
 	})
 	return httptest.NewServer(mux)
 }

@@ -61,6 +61,8 @@ import (
 //	  forge.ErrProvisionApprovalNotFound   0
 //	  forge.ErrLaunchVarsDrop              0  the provisioning route answers 400 itself
 //	  forge.ErrProvisionDiverged           0  the provisioning route answers 500 itself
+//	  forge.ErrProvisionDivergedRetry      0  rides beside ErrProvisionDiverged; the approval arm spares it
+//	  forge.ErrBotNotProvisionable         0  the approval arm consumes the dead-end record
 //
 //	OUTSIDE it, and never sent at all — the one 0 the caller never sees
 //	  forge.ErrLocalPreflight              0 here; writeForgeUpstreamError reads it through isIterionFault and answers 500

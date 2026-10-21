@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.276.0](https://github.com/SocialGouv/iterion/compare/v3.275.0...v3.276.0) (2026-10-20)
+
+### Features
+
+* **backend:** claw nodes read the repository's AGENTS.md ([#2616](https://github.com/SocialGouv/iterion/issues/2616)) ([1821f43](https://github.com/SocialGouv/iterion/commit/1821f430a20a0ca51587aef6dfe2debe545534df)), closes [#2078](https://github.com/SocialGouv/iterion/issues/2078)
+
+    <details><summary>why</summary>
+
+    A claw node received no project instruction file while claude_code, codex and pi all read one — the parity doctrine asks for a capability to be wired or typed-refused, and the operator arbitrated for wiring it: claw now receives the repository's instruction root the way claude code does.
+
+    </details>
+
 ## [3.275.0](https://github.com/SocialGouv/iterion/compare/v3.274.0...v3.275.0) (2026-10-20)
 
 ### Features

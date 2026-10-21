@@ -1367,12 +1367,17 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 		// launches, and this warn-and-proceed keeps every scheduled bot
 		// launchable whether or not it declares each key.
 		AllowUnknownInputs: true,
-		FilePath:           path,
-		Source:             source,
-		BotID:              sb.BotID,
-		Vars:               sb.Vars,
-		RepoURL:            sb.RepoURL,
-		RepoRef:            sb.RepoRef,
+		// The schedule row's vars are the operator's own (the row is
+		// edited by team admins, its defaults come from the bot manifest,
+		// and no delivery payload ever writes here) — exactly the layer
+		// ADR-129 §4 rule 2 lets narrow the routing gate.
+		TrustedVarNames: trustedVarNames(sb.Vars),
+		FilePath:        path,
+		Source:          source,
+		BotID:           sb.BotID,
+		Vars:            sb.Vars,
+		RepoURL:         sb.RepoURL,
+		RepoRef:         sb.RepoRef,
 		// Resolved by the caller across the schedule row, the bot manifest
 		// and the machine default — the schedule is the layer an operator
 		// reaches for when one bot's cadence needs different retry limits
@@ -1429,6 +1434,12 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 		RepoURL:     repoURL,
 		RepoRef:     repoRef,
 		ProjectPath: projectPath,
+		// Only the config's OPERATOR layer narrows the routing gate: the
+		// lane itself seeds vars from the delivery payload (reviewPRVars,
+		// fixerPRVars, the fork lane), and a payload-written name must
+		// leave a routing field undecided at the gate, never certify the
+		// payload's choice (ADR-129 §4 rule 2 — the O6 witness).
+		TrustedVarNames: trustedVarNames(cfg.OperatorLaunchVars),
 		// This lane injects server-computed keys blindly (forge_publish_*,
 		// canonical PR vars — the contract forge_publish.go documents), so
 		// the #1757 unknown-input refusal does not apply to it: a launched

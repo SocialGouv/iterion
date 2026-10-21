@@ -137,7 +137,7 @@ The two origins:
 | backend | `none` | `workspace` | `operator` | `all` |
 |---|---|---|---|---|
 | `claude_code` | `--setting-sources project` + `claudeMdExcludes: ["**"]` | `project` + `claudeMdExcludes` of every ancestor above the root (`<a>/CLAUDE.md`, `<a>/CLAUDE.local.md`, `<a>/.claude/**`) | `user,project` + `claudeMdExcludes: ["<root>/**"]` | `user,project` |
-| `claw` | no project-instructions section | claw-code-go's project instructions with the walk stopped at the root, user memory off, `.claude/rules` on | user memory and the ancestors above the root | both |
+| `claw` | no project-instructions section | claw-code-go's project instructions with the walk stopped at the root, user memory off, `.claude/rules` on, plus `AGENTS.md` in the directories the workspace covers and no `CLAUDE.md` shadows ([amendment 2026-10-20](#amendment-2026-10-20--claw-names-agentsmd-too)) | user memory and the ancestors above the root | both, the repository's `AGENTS.md` included |
 | `pi` | `--no-context-files` | `--no-context-files` + the engine-resolved workspace files, appended to the system prompt with pi's own per-directory precedence | the same with the operator files (agent dir and ancestors) | both |
 | `codex` | `project_doc_max_bytes=0` + a per-run `CODEX_HOME` without `AGENTS.md` | per-run `CODEX_HOME` without `AGENTS.md` | `project_doc_max_bytes=0` | unchanged |
 | `opencode`, `kimi`, `grok` | not enforced: diagnostic C185 — superseded per cell by the [amendment](#amendment-2026-10-12--opencode-kimi-and-grok-measured-translated-or-refused) | | | |
@@ -153,7 +153,12 @@ The two origins:
 
   A conditional rule only applies while the agent works on files that match
   its `paths:` globs. A static system prompt cannot express that, so claw
-  skips conditional rules; this is the one recorded divergence.
+  skips conditional rules; the divergence stays on this record.
+- **`claw` and `AGENTS.md`.** The loader reads CLAUDE.md files alone, so the
+  repository's `AGENTS.md` joins in a second pass, iterion-side
+  (`pkg/backend/model/claw_ambient.go`), under the shadow, boundary and
+  bound rules the [amendment](#amendment-2026-10-20--claw-names-agentsmd-too)
+  records.
 - **`codex`.** `project_doc_max_bytes` is merged into the same configuration
   map as `web_search`. The per-run `CODEX_HOME` mirrors the operator's
   entries (`auth.json`, `config.toml` …) by symlink, minus `AGENTS.md` and
@@ -261,3 +266,66 @@ runs a node on kimi, opencode or grok no longer compiles with a warning: it
 is refused until the node declares a policy its backend applies or moves to
 an enforcing backend — the fail-closed direction, since those values exist to
 keep a pull request's or an operator's instructions out of a bot.
+
+## Amendment (2026-10-20) — claw names AGENTS.md too
+
+The 2026-10-20 arbitrage names both roots of a repository's instructions for
+claw: "claw loads CLAUDE.md and AGENTS.md automatically, like claude code"
+(jo). The walk above serves the first; claw-code-go's loader reads CLAUDE.md
+files alone, so the second joins in a second pass, iterion-side
+(`pkg/backend/model/claw_ambient.go`), under claude code's shadow rule: a
+directory's `AGENTS.md` loads only where no `CLAUDE.md` of the walk's
+candidate set (`CLAUDE.md`, `.claude/CLAUDE.md`) shadows it. Shadowing, not
+a content comparison, decides: where a directory's `CLAUDE.md` imports the
+`AGENTS.md` beside it, the import already pulled the file in and the
+fallback must stay out — a repository whose subdirectory `CLAUDE.md` imports
+a parent `AGENTS.md` while the parent carries no `CLAUDE.md` of its own
+still loads that file twice, the edge a presence-based fallback carries
+(whether the CLI shares it is unmeasured). The shadow rule itself is
+measured on the session root alone (ADR-120): the per-directory form the
+fallback generalizes is iterion's reading, and the CLI's own walk-up shape
+is unmeasured.
+
+The fallback reads under the walk's own confinement. Where the walk bounds
+its workspace scope — the `workspace` policy, at the repository root — an
+`AGENTS.md` that is itself a link resolving outside the boundary is not
+loaded, and a `CLAUDE.md` link out of it shadows nothing: the loader's
+refusal of workspace files that leave the repository, one discipline for the
+block's two halves, so a pull request's `AGENTS.md` cannot read
+`~/.ssh/id_rsa` into the prompt any more than its `CLAUDE.md` can. Under
+`all`, where the walk runs unconfined, the fallback is unconfined with it.
+
+The fallback renders in the walk's own section shape (a heading naming the
+file and its path; a frontmatter block stripped the way the walk's parser
+strips it), root-most first among its own parts, under the block's one
+stated byte bound (`clawAmbientMaxBytes`): the fallback receives what the
+walk leaves of it, truncated from the end the way the loader truncates its
+own sections, so the whole block — the walk's output and the fallback's
+files together — stays within the bound, to the width of a truncation
+notice plus one part separator, the loader's own overshoot. At the block
+level its parts
+follow the walk's whole output: a parent's `AGENTS.md` renders after a
+child's `CLAUDE.md`, most-general-first holding within each pass, not
+across them. The body is injected import-free — `@path` references reach
+the node as text, where the same file as `CLAUDE.md` expands them — a
+divergence the parity inventory must not paper over; teaching the loader's
+expansion machinery `AGENTS.md` is the claw-code-go follow-up (its
+`.works/` worktree, then `scripts/bump-claw.sh`). The parts join the walk's
+output with the loader's own part separator, so the block reads as one body
+whatever loaded.
+
+It rides the workspace origin only, `all` included. An operator-level
+`AGENTS.md` stays unloaded: claude code's reading of one is a behaviour
+iterion has not measured, and the rule stands that honoured is earned by a
+measurement. The operator's memory still reaches the node through
+`~/.claude/CLAUDE.md` and `~/.claude/rules`, which the walk already serves.
+
+Measured by the capturing-backend tests of `claw_ambient_test.go`, which run
+the real `Execute` path at no live cost: an `AGENTS.md`-only repository
+reaches a claw node under `workspace` and `all`; a subdirectory's
+`AGENTS.md` rides the walk-up after the root's files; a shadowing `CLAUDE.md`
+keeps the fallback out; an imported `AGENTS.md` loads exactly once;
+`none`/`operator` keep the repository's files, this one included, out; an
+`AGENTS.md` linked out of the repository stays out under `workspace` while a
+link inside it and `all`'s unconfined scope load; and the block stays within
+its stated bound when both halves are heavy.

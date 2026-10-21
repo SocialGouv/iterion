@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -50,6 +51,22 @@ var ErrLaunchVarsDrop = errors.New("forge: launch_vars would drop pinned key(s)"
 // converges — Provision is idempotent, and the enforcement half is written
 // first so the report never certifies settings that are not in force.
 var ErrProvisionDiverged = errors.New("forge: provision wrote only one of the two operator-settings stores")
+
+// ErrProvisionDivergedRetry refines ErrProvisionDiverged: the divergence was
+// caused by a TRANSIENT store failure (a mid-write two-store failure, a
+// read-back blip or mismatch after the writes landed), so a retry of the SAME
+// request converges. Carried BESIDE ErrProvisionDiverged (errors.Is matches
+// both) so callers that only need the divergence fact keep working, while a
+// caller deciding whether to CONSUME a record on the refusal can spare the
+// retry-convergent flavors — their remedy is the retry itself.
+var ErrProvisionDivergedRetry = errors.New("forge: provision divergence is retry-convergent")
+
+// ErrBotNotProvisionable marks a refusal that is a STATIC property of the
+// recorded bot set: a bot that declares neither a forge: block nor a
+// forge/command invocation (or a set that yields no forge events to subscribe
+// to) can never be auto-provisioned. No retry changes the answer — only a
+// re-submission naming different bots does.
+var ErrBotNotProvisionable = errors.New("forge: bot set cannot be auto-provisioned")
 
 // Orchestrator turns "enable bot(s) X on repo Y of connection C" into the
 // concrete trio — an iterion webhooks.Config, a forge-side hook, and a
@@ -196,6 +213,17 @@ type ProvisionRequest struct {
 	// Overlap is the operator's concurrency policy for this repo's webhook
 	// (pkg/schedgate vocabulary). Empty leaves the stored one untouched.
 	Overlap string
+	// Routing is the per-repo routing policy (pkg/llmroute, ADR-129), the
+	// binding level for every launch this integration makes. With
+	// RoutingSet=false the request says nothing about routing and the
+	// stored block stands (enabling one more bot must not drop it). With
+	// RoutingSet=true the request SPOKE: a non-nil policy REPLACES the
+	// stored block wholesale, a nil one clears it (the HTTP `null`) — the
+	// schedule's three-way rule, so a whole-block write can never be read
+	// as a per-cell edit.
+	Routing *llmroute.Policy
+	// RoutingSet marks that the request spoke about routing at all.
+	RoutingSet bool
 	// Replace makes BotIDs the EXACT desired set instead of a union with the
 	// existing integration's bots — the per-bot unbind path. The webhook
 	// events, command map and schedules reconcile down accordingly. Removing
@@ -416,6 +444,30 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		operatorAutoFix = *req.AutoFix
 	}
 
+	// Routing resolves like the launch vars, with the same two-store read
+	// and the same refusal shape: the request first; a silent request reads
+	// BOTH stores — the integration AND the config that still enforces the
+	// repo's pin — and a diverged pair is REFUSED, never resolved (a silent
+	// re-provision cannot tell a deliberate drop from a stale store; the
+	// explicit echo is the request itself). A spoken block replaces or
+	// clears (the schedule's three-way rule); `desiredRouting` stays the
+	// pre-normalization value until the write sites collapse an
+	// explicitly-empty block to nil, because the webhook carry keys on
+	// nil-vs-set to tell a spoken clear from a silent keep.
+	var desiredRouting *llmroute.Policy
+	if req.RoutingSet {
+		desiredRouting = req.Routing
+	} else if hasExisting {
+		if hasPrevCfg && !policiesEqualRouting(existing.Routing, prevCfg.Routing) {
+			return ProvisionResult{}, fmt.Errorf("%w: routing diverges between the integration and the webhook config — a silent re-provision cannot tell a deliberate drop from a stale store; re-run with an explicit routing block (or null to clear): provisioning converges",
+				ErrProvisionDiverged)
+		}
+		desiredRouting = existing.Routing
+		if desiredRouting == nil && hasPrevCfg {
+			desiredRouting = prevCfg.Routing
+		}
+	}
+
 	// Resolve every bot's forge requirements (its optional forge: block for
 	// credentials/scopes) AND its invocations (the typed routing contract).
 	// A bot is auto-provisionable when it has a forge: block OR a
@@ -436,7 +488,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			}
 		}
 		if fr == nil && !hasForgeReachableInvocation(invs) {
-			return ProvisionResult{}, fmt.Errorf("forge: bot %q declares neither a forge: block nor a forge/command invocation; cannot auto-provision", b)
+			return ProvisionResult{}, fmt.Errorf("%w: bot %q declares neither a forge: block nor a forge/command invocation; cannot auto-provision", ErrBotNotProvisionable, b)
 		}
 		frByBot[b] = fr
 		invByBot[b] = invs
@@ -444,7 +496,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	eventsNormalized := unionAllEvents(desiredBots, frByBot, invByBot)
 	nativeEvents := ToNativeEvents(conn.Provider, eventsNormalized)
 	if len(nativeEvents) == 0 {
-		return ProvisionResult{}, fmt.Errorf("forge: bots %v declare no forge events to subscribe to", desiredBots)
+		return ProvisionResult{}, fmt.Errorf("%w: bots %v declare no forge events to subscribe to", ErrBotNotProvisionable, desiredBots)
 	}
 
 	// The address the forge SHOULD be calling, which is not a property of the
@@ -484,12 +536,14 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		// from an API whose enforcement surface still filters.
 		changed := !maps.Equal(operatorVars, existing.LaunchVars) || operatorOverlap != existing.Overlap ||
 			operatorAutoFix != existing.AutoFixOnGateFailure || !slices.Equal(operatorHold, existing.HoldLabels) ||
-			!slices.Equal(operatorLabels, existing.LabelAllowlist)
+			!slices.Equal(operatorLabels, existing.LabelAllowlist) ||
+			!policiesEqualRouting(desiredRouting, existing.Routing)
 		if hasPrevCfg {
 			changed = changed || !slices.Equal(operatorLabels, prevCfg.LabelAllowlist) ||
 				!slices.Equal(operatorHold, prevCfg.HoldLabels) ||
 				operatorOverlap != prevCfg.Overlap ||
-				!maps.Equal(operatorVars, prevCfg.OperatorLaunchVars)
+				!maps.Equal(operatorVars, prevCfg.OperatorLaunchVars) ||
+				!policiesEqualRouting(desiredRouting, prevCfg.Routing)
 		}
 		if changed {
 			// The config is the enforcement half, so it cannot be skipped:
@@ -513,6 +567,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			cfg.Overlap = operatorOverlap
 			cfg.HoldLabels = operatorHold
 			cfg.LabelAllowlist = operatorLabels
+			cfg.Routing = nilIfEmptyRouting(desiredRouting)
 			cfg.UpdatedAt = o.clock()
 			if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: update webhook operator settings: %w", uerr)
@@ -522,9 +577,10 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			existing.HoldLabels = operatorHold
 			existing.LabelAllowlist = operatorLabels
 			existing.AutoFixOnGateFailure = operatorAutoFix
+			existing.Routing = nilIfEmptyRouting(desiredRouting)
 			existing.UpdatedAt = o.clock()
 			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
-				return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but the integration update failed: %v — re-run the same request, provisioning converges", ErrProvisionDiverged, uerr)
+				return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but the integration update failed: %v — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, uerr, ErrProvisionDivergedRetry)
 			}
 			if verr := o.verifyOperatorSettings(ctx, existing, cfg); verr != nil {
 				return ProvisionResult{}, verr
@@ -542,8 +598,17 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		// An explicit cron override is a schedule mutation even when the
 		// bot/event set is unchanged — without this, re-enabling with a new
 		// cadence would be silently ignored by the idempotent short-circuit.
-		if len(req.ScheduleCrons) > 0 {
-			if err := o.syncSchedules(ctx, req.TenantID, existing.ID, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID); err != nil {
+		// So is a changed operator override: the write above landed the new
+		// routing block (a replace or a clear) on the config and the record,
+		// and the scheduled row is the only layer a scheduled launch
+		// resolves — a sync that waited for the next cron gesture would
+		// leave the nightly enforcing the pin the record just replaced or
+		// cleared. Untouched rows survive the rebuild: the carry below
+		// re-establishes each row's operator-owned tuning — its cadence
+		// (cron or keepalive) with the stored next fire, vars, pause state,
+		// overlap/guard, retry, stale-after, ref and routing.
+		if changed || len(req.ScheduleCrons) > 0 {
+			if err := o.syncSchedules(ctx, req.TenantID, existing.ID, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting)); err != nil {
 				return ProvisionResult{}, err
 			}
 		}
@@ -695,6 +760,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		OperatorLaunchVars: nilIfEmpty(maps.Clone(operatorVars)),
 		Overlap:            operatorOverlap,
 		HoldLabels:         operatorHold,
+		Routing:            desiredRouting,
 		SecretOverrides:    secretOverrides,
 		MinReplierRole:     minRole,
 		CommandMap:         commandMap,
@@ -718,11 +784,17 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			cfg.CreatedBy = prevCfg.CreatedBy
 			carryOperatorWebhookSettings(&cfg, prevCfg)
 		}
+		// The carry filled Routing only when the request said nothing; an
+		// explicitly-empty block (a spoken clear) must stay empty in the
+		// store, so the collapse to nil happens HERE, after the carry had
+		// its say and before the write.
+		cfg.Routing = nilIfEmptyRouting(cfg.Routing)
 		cfg.RotatedAt = &now
 		if err := o.Webhooks.Update(ctx, cfg); err != nil {
 			return ProvisionResult{}, fmt.Errorf("forge: update webhook config: %w", err)
 		}
 	} else {
+		cfg.Routing = nilIfEmptyRouting(cfg.Routing)
 		if err := o.Webhooks.Create(ctx, cfg); err != nil {
 			return ProvisionResult{}, fmt.Errorf("forge: create webhook config: %w", err)
 		}
@@ -776,6 +848,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		HoldLabels:           operatorHold,
 		LabelAllowlist:       operatorLabels,
 		AutoFixOnGateFailure: operatorAutoFix,
+		Routing:              nilIfEmptyRouting(desiredRouting),
 		CreatedBy:            req.ActorID,
 		CreatedAt:            now,
 		UpdatedAt:            now,
@@ -803,7 +876,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			// already carries the new settings (above), the report half
 			// failed. Typed so the route can say so; re-running the same
 			// request converges.
-			return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but the integration update failed: %v — re-run the same request, provisioning converges", ErrProvisionDiverged, err)
+			return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but the integration update failed: %v — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, err, ErrProvisionDivergedRetry)
 		}
 	} else {
 		ri.ID = o.id()
@@ -821,7 +894,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// Materialise cloud schedules for the enabled bots' schedule invocations.
 	// The repo clone URL rides along so a stateful scheduled bot gets a git
 	// workspace (#219) — without it the run lands in the pod's bare WorkDir.
-	if err := o.syncSchedules(ctx, req.TenantID, ri.ID, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID); err != nil {
+	if err := o.syncSchedules(ctx, req.TenantID, ri.ID, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting)); err != nil {
 		return ProvisionResult{}, err
 	}
 
@@ -1153,20 +1226,36 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 // targets it), the operator's vars merged OVER the manifest's default_vars
 // (a bot whose scheduled behaviour hinges on a var — `open_mr`, `mode` —
 // must not silently revert to its defaults), the last fire, the pause
-// state, the overlap/guard policy and a customised cron.
+// state, the overlap/guard policy, a customised cron — or the keepalive
+// interval — carried as a unit with its stored next-fire instant (the
+// ticker advances it between fires; recomputing an unchanged cadence
+// would silently postpone the row past the slot it is due for), the
+// keepalive silence cutoff and the pinned checkout ref.
 // No-op when no schedule store is wired.
-func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string) error {
+func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string, integRouting *llmroute.Policy) error {
 	if o.Schedules == nil {
 		return nil
 	}
-	// Snapshot the rows we're about to replace, queued per bot in creation
-	// order so a bot with several schedule invocations keeps each row's
-	// tuning positionally.
+	// Snapshot the rows we're about to replace, grouped per bot and ordered
+	// deterministically (creation time, then id) so the pairing below never
+	// depends on the store's listing order — the memory store iterates a
+	// map and Mongo's ListByIntegration is unsorted, and rows of one batch
+	// share a creation instant, so no store ordering recovers which row
+	// served which invocation.
 	priorByBot := map[string][]cloudsched.ScheduledBot{}
 	if prior, err := o.Schedules.ListByIntegration(ctx, tenantID, integrationID); err == nil {
 		for _, row := range prior {
 			priorByBot[row.BotID] = append(priorByBot[row.BotID], row)
 		}
+	}
+	for bot, q := range priorByBot {
+		sort.Slice(q, func(i, j int) bool {
+			if !q[i].CreatedAt.Equal(q[j].CreatedAt) {
+				return q[i].CreatedAt.Before(q[j].CreatedAt)
+			}
+			return q[i].ID < q[j].ID
+		})
+		priorByBot[bot] = q
 	}
 	if err := o.Schedules.DeleteByIntegration(ctx, tenantID, integrationID); err != nil {
 		return fmt.Errorf("forge: clear schedules: %w", err)
@@ -1178,10 +1267,20 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 				continue
 			}
 			// Operator's chosen cron overrides the manifest suggested_cron.
-			cron := strings.TrimSpace(inv.Schedule.SuggestedCron)
+			// The suggestion is kept beside the resolved cron: it is the
+			// invocation's lane identity, and the carry below pairs on it
+			// first — a dialog cron rewrites EVERY invocation's resolved
+			// cron, so once it is spoken the resolved value no longer
+			// distinguishes the lanes.
+			suggested := strings.TrimSpace(inv.Schedule.SuggestedCron)
+			cron := suggested
 			if ov := strings.TrimSpace(crons[bot]); ov != "" {
 				cron = ov
 			}
+			// A row carried with its own cadence keeps its stored next-fire
+			// instant (the carry below); only a fresh or re-cadenced row
+			// computes one.
+			carriedNextFire := false
 			sb := cloudsched.ScheduledBot{
 				ID:                o.id(),
 				TenantID:          tenantID,
@@ -1194,13 +1293,22 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 				CreatedAt:         now,
 				UpdatedAt:         now,
 			}
-			if q := priorByBot[bot]; len(q) > 0 {
-				prev := q[0]
-				priorByBot[bot] = q[1:]
-				// Explicit enable-dialog cron wins; otherwise the row the
-				// operator may have edited does.
-				if strings.TrimSpace(crons[bot]) == "" && strings.TrimSpace(prev.Cron) != "" {
+			if prev, ok := takePriorRow(priorByBot, bot, suggested, cron); ok {
+				// Cadence: an explicit enable-dialog cron replaces the row's
+				// cadence wholesale (a keepalive interval included);
+				// otherwise the row's own cadence — the schedule PATCH's
+				// cron, or a keepalive interval — stands, carried as a unit
+				// (exactly one of cron/interval_seconds), so a keepalive row
+				// does not come out of the rebuild as the manifest's cron.
+				if strings.TrimSpace(crons[bot]) != "" {
+					sb.IntervalSeconds = 0
+				} else if strings.TrimSpace(prev.Cron) != "" || prev.IntervalSeconds > 0 {
 					sb.Cron = prev.Cron
+					sb.IntervalSeconds = prev.IntervalSeconds
+					if !prev.NextFireAt.IsZero() {
+						sb.NextFireAt = prev.NextFireAt
+						carriedNextFire = true
+					}
 				}
 				sb.ID = prev.ID
 				sb.Vars = mergeScheduleVars(inv.Schedule.DefaultVars, prev.Vars)
@@ -1211,23 +1319,107 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 				sb.Guard = prev.Guard
 				sb.GuardTimeout = prev.GuardTimeout
 				sb.GuardVar = prev.GuardVar
+				// Retry policy: the same carry class as the overlap/guard
+				// tuning — a row the operator tuned through the schedule
+				// PATCH must not reset to the manifest on the next
+				// `bots enable`.
+				sb.RetryUsageWindow = prev.RetryUsageWindow
+				sb.RetryMaxAttempts = prev.RetryMaxAttempts
+				sb.RetryMaxWait = prev.RetryMaxWait
+				sb.RetryJitter = prev.RetryJitter
+				// Keepalive silence cutoff and checkout ref: the same carry
+				// class — row state the schedule PATCH writes and the
+				// rebuild cannot re-derive.
+				sb.StaleAfter = prev.StaleAfter
+				sb.RepoRef = prev.RepoRef
+				// The row's OWN routing block (the schedule PATCH's voice,
+				// more specific than the integration's) survives the
+				// rebuild; a block the PROJECTION wrote does not — it is a
+				// copy of the integration's level, and the level it came
+				// from must keep speaking through it (clear and replace
+				// alike). RoutingFromIntegration is that provenance; the
+				// projection below fills every row whose block is absent or
+				// projected, and never an operator's.
+				sb.Routing = prev.Routing
+				sb.RoutingFromIntegration = prev.RoutingFromIntegration
 				sb.CreatedBy = prev.CreatedBy
 				sb.CreatedAt = prev.CreatedAt
 			}
-			if sb.Cron == "" {
-				continue // no cron (no suggestion, no override) → can't fire
+			// The scheduled row is the ONLY layer a scheduled launch
+			// resolves (webhooks_gitlab.go resolves the row and nothing
+			// else), so a pinned integration must reach its scheduled bots
+			// through the literal: a repo that pins `* → backend: claw`
+			// pins docs-refresh's nightly too, not just its webhook runs.
+			// A projected row (or an unpinned one) follows the level it
+			// came from — a clear and a replace alike; an operator's own
+			// row block is the more specific voice and stands.
+			if sb.Routing == nil || sb.RoutingFromIntegration {
+				sb.Routing = nilIfEmptyRouting(integRouting)
+				sb.RoutingFromIntegration = sb.Routing != nil
 			}
-			next, err := cloudsched.NextFire(sb.Cron, now)
-			if err != nil {
-				return fmt.Errorf("forge: schedule for %q: %w", bot, err)
+			if !carriedNextFire {
+				// No cadence (no suggestion, no override, nothing carried)
+				// → can't fire; a keepalive row (interval, no cron) can.
+				if sb.Cron == "" && sb.IntervalSeconds <= 0 {
+					continue
+				}
+				// A fresh or re-cadenced row computes its first instant; a
+				// carried one keeps the stored one — the ticker's ClaimTick
+				// advances it between fires (an instant the store's Update
+				// also takes verbatim), so recomputing an UNCHANGED cadence
+				// would silently skip the slot the row is due for. Same rule
+				// the store's own Update applies: recompute when the cadence
+				// changed, keep it otherwise.
+				next, err := cloudsched.NextFireForBot(sb, now)
+				if err != nil {
+					return fmt.Errorf("forge: schedule for %q: %w", bot, err)
+				}
+				sb.NextFireAt = next
 			}
-			sb.NextFireAt = next
 			if err := o.Schedules.Create(ctx, sb); err != nil {
 				return fmt.Errorf("forge: create schedule for %q: %w", bot, err)
 			}
 		}
 	}
 	return nil
+}
+
+// takePriorRow pops the prior row a rebuilt schedule invocation inherits
+// its operator tuning from: the queued row whose own cron equals the
+// invocation's SUGGESTED cron when one is queued — the manifest's lane
+// identity, which an enable-dialog cron cannot rewrite (the dialog
+// override applies to every invocation of the bot, so the RESOLVED cron
+// stops distinguishing the lanes the moment it is spoken, and when the
+// dialog cron equals one row's stored cron the scan would hand that row
+// to the first invocation) — then the resolved cron, then the first
+// remaining row in the queue's deterministic order. ok is false when the
+// bot has no queued row left. A row carries the cron its invocation
+// resolved to when syncSchedules built it, until a schedule PATCH or an
+// enable-dialog cron rewrites it; rows whose stored cadence matches no
+// suggestion and no resolved cron fall to the remainder, as do
+// invocations sharing a cadence — the store holds no further witness of
+// which row served which.
+func takePriorRow(priorByBot map[string][]cloudsched.ScheduledBot, bot, suggested, cron string) (cloudsched.ScheduledBot, bool) {
+	q := priorByBot[bot]
+	if len(q) == 0 {
+		return cloudsched.ScheduledBot{}, false
+	}
+	if suggested != "" {
+		for i, row := range q {
+			if row.Cron == suggested {
+				priorByBot[bot] = append(slices.Clone(q[:i]), q[i+1:]...)
+				return row, true
+			}
+		}
+	}
+	for i, row := range q {
+		if row.Cron == cron {
+			priorByBot[bot] = append(slices.Clone(q[:i]), q[i+1:]...)
+			return row, true
+		}
+	}
+	priorByBot[bot] = q[1:]
+	return q[0], true
 }
 
 // mergeScheduleVars lays the operator's vars over the manifest's
@@ -1416,10 +1608,14 @@ func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
 	cfg.RetryMaxAttempts = prev.RetryMaxAttempts
 	cfg.RetryMaxWait = prev.RetryMaxWait
 	cfg.RetryJitter = prev.RetryJitter
-	// Routing rides the same carry as retry: the provision literal replaces
-	// the whole document, and a re-provision must not silently drop the
-	// stored routing block (ADR-121) any more than the retry fields.
-	cfg.Routing = prev.Routing
+	// Routing is deliberately NOT carried: the provision literal already
+	// carries the request's resolved block in every voice — a silent request
+	// arrives with the resolution's adopted value (the integration's block,
+	// falling back to prev's), a spoken block arrives as spoken. A nil
+	// literal is therefore a SPOKEN clear (or a repo that never pinned), and
+	// filling it from prev here would resurrect a pin the operator just
+	// removed on the enforcement half while the record reports it cleared
+	// (ADR-121/ADR-129).
 	// The liveness stamp is written by MarkUsed with a $set; the rebuild
 	// REPLACES the whole document, so without this every re-provision erases
 	// "when did this webhook last receive anything" — the one field an
@@ -1891,28 +2087,32 @@ func webhookRoleRank(role string) int {
 // write and refuses to certify a divergence: an Update can report success and
 // still lose to a concurrent writer, and a caller reading only the integration
 // would then certify a configuration the webhook does not enforce. Any
-// mismatch is ErrProvisionDiverged — re-running the same request converges.
+// mismatch is ErrProvisionDiverged — re-running the same request converges,
+// which is why every wrap here also carries ErrProvisionDivergedRetry: the
+// divergence is discovered after the writes, so the retry IS the remedy.
 func (o *Orchestrator) verifyOperatorSettings(ctx context.Context, wantInteg RepoIntegration, wantCfg webhooks.Config) error {
 	integ, err := o.Integrations.Get(ctx, wantInteg.ID)
 	if err != nil {
-		return fmt.Errorf("%w: read the integration back: %v — re-run the same request, provisioning converges", ErrProvisionDiverged, err)
+		return fmt.Errorf("%w: read the integration back: %v — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, err, ErrProvisionDivergedRetry)
 	}
 	cfg, err := o.Webhooks.Get(ctx, wantCfg.ID)
 	if err != nil {
-		return fmt.Errorf("%w: read the webhook config back: %v — re-run the same request, provisioning converges", ErrProvisionDiverged, err)
+		return fmt.Errorf("%w: read the webhook config back: %v — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, err, ErrProvisionDivergedRetry)
 	}
 	switch {
 	case !maps.Equal(integ.LaunchVars, wantInteg.LaunchVars),
 		integ.Overlap != wantInteg.Overlap,
 		integ.AutoFixOnGateFailure != wantInteg.AutoFixOnGateFailure,
 		!slices.Equal(integ.HoldLabels, wantInteg.HoldLabels),
-		!slices.Equal(integ.LabelAllowlist, wantInteg.LabelAllowlist):
-		return fmt.Errorf("%w: the integration does not read back what was written — re-run the same request, provisioning converges", ErrProvisionDiverged)
+		!slices.Equal(integ.LabelAllowlist, wantInteg.LabelAllowlist),
+		!policiesEqualRouting(integ.Routing, wantInteg.Routing):
+		return fmt.Errorf("%w: the integration does not read back what was written — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, ErrProvisionDivergedRetry)
 	case !maps.Equal(cfg.OperatorLaunchVars, wantCfg.OperatorLaunchVars),
 		cfg.Overlap != wantCfg.Overlap,
 		!slices.Equal(cfg.HoldLabels, wantCfg.HoldLabels),
-		!slices.Equal(cfg.LabelAllowlist, wantCfg.LabelAllowlist):
-		return fmt.Errorf("%w: the webhook config does not read back what was written — re-run the same request, provisioning converges", ErrProvisionDiverged)
+		!slices.Equal(cfg.LabelAllowlist, wantCfg.LabelAllowlist),
+		!policiesEqualRouting(cfg.Routing, wantCfg.Routing):
+		return fmt.Errorf("%w: the webhook config does not read back what was written — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, ErrProvisionDivergedRetry)
 	}
 	return nil
 }
@@ -1948,4 +2148,26 @@ func nilIfEmpty(m map[string]string) map[string]string {
 		return nil
 	}
 	return m
+}
+
+// nilIfEmptyRouting collapses an explicitly-empty routing block to nil —
+// the schedule rows' and the integration record's stored shape for "the
+// level says nothing". A spoken clear arrives as a non-nil empty policy
+// (the JSON `null` mapped to a typed nil at the HTTP edge reads as
+// RoutingSet=true, Routing=nil, so the empty shape comes from a record
+// that predates the collapse); storing it as nil keeps every reader's
+// `nil = unset` honest and every GET's `routing: null` truthful.
+func nilIfEmptyRouting(p *llmroute.Policy) *llmroute.Policy {
+	if p == nil || reflect.DeepEqual(*p, llmroute.Policy{}) {
+		return nil
+	}
+	return p
+}
+
+// policiesEqualRouting compares two routing blocks as VALUES with the
+// nil/empty collapse above — the comparison every two-store read of the
+// block makes (the divergence refusal, the idempotent changed-check and
+// verifyOperatorSettings).
+func policiesEqualRouting(a, b *llmroute.Policy) bool {
+	return reflect.DeepEqual(nilIfEmptyRouting(a), nilIfEmptyRouting(b))
 }
