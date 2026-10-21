@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -321,7 +322,7 @@ func (e *ClawExecutor) executeToolNodeCommon(
 	node *ir.ToolNode,
 	toolName, failVerb string,
 	resolve func() string,
-	buildCmd func(resolved string) (cmd *exec.Cmd, cleanup func(), err error),
+	buildCmd func(resolved string) (cmd toolCommand, cleanup func(), err error),
 ) (map[string]any, error) {
 	res, setupErr := e.runToolNodeCore(ctx, node, toolName, resolve, buildCmd)
 	if setupErr != nil {
@@ -347,6 +348,15 @@ type recipeResult struct {
 	runErr   error
 }
 
+// toolCommand is a tool node's command as runToolNodeCore runs it: the
+// process to start and, when the sandbox runs it, the completion its stdout
+// must carry (sandbox.Completion) — nil on the host, where the exit status is
+// the process's own.
+type toolCommand struct {
+	cmd        *exec.Cmd
+	completion *sandbox.Completion
+}
+
 // runToolNodeCore is the shared recipe-execution skeleton: policy check,
 // resolve, build the *exec.Cmd, emit the started/finish hooks, run with
 // separated streams, and parse the JSON-or-text output. It returns the
@@ -360,7 +370,7 @@ func (e *ClawExecutor) runToolNodeCore(
 	node *ir.ToolNode,
 	toolName string,
 	resolve func() string,
-	buildCmd func(resolved string) (cmd *exec.Cmd, cleanup func(), err error),
+	buildCmd func(resolved string) (cmd toolCommand, cleanup func(), err error),
 ) (recipeResult, error) {
 	if err := e.checkToolNodePolicy(ctx, node, toolName, toolName, toolName); err != nil {
 		return recipeResult{}, err
@@ -368,7 +378,7 @@ func (e *ClawExecutor) runToolNodeCore(
 
 	resolved := resolve()
 
-	cmd, cleanup, err := buildCmd(resolved)
+	tc, cleanup, err := buildCmd(resolved)
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -385,9 +395,12 @@ func (e *ClawExecutor) runToolNodeCore(
 	// `[detached HEAD ...]` line, a `script: js` body's console.error)
 	// without that prose breaking the JSON parse downstream.
 	// CombinedOutput() conflated the two and poisoned the parse.
-	stdoutBytes, stderrStr, runErr := runWithSeparateStreams(cmd)
-	outputStr := string(stdoutBytes)
+	stdoutBytes, stderrStr, runErr := runWithSeparateStreams(tc.cmd)
 	duration := time.Since(start)
+	if tc.completion != nil {
+		stdoutBytes, runErr = e.settleSandboxedRun(ctx, node.ID, tc.completion, stdoutBytes, runErr)
+	}
+	outputStr := string(stdoutBytes)
 
 	e.emitToolNodeFinish(node.ID, toolName, resolved, outputStr, stderrStr, duration, runErr)
 
@@ -412,7 +425,7 @@ func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNo
 // node, factored out of executeToolNodeShell so both the standard path
 // and the Verified Action ladder share one source of truth for how a
 // shell recipe is resolved and built.
-func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (*exec.Cmd, func(), error)) {
+func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (toolCommand, func(), error)) {
 	return func() string {
 			// Expand environment variables FIRST, on the author-controlled
 			// command template only. Doing this AFTER resolveCommandTemplate
@@ -451,7 +464,7 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			}
 			return resolved
 		},
-		func(resolved string) (*exec.Cmd, func(), error) {
+		func(resolved string) (toolCommand, func(), error) {
 			// Materialise secret placeholders into the command actually
 			// executed via env-var indirection, not by inlining the raw
 			// value into the command string: `resolved` (placeholder
@@ -588,7 +601,7 @@ func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolN
 // scriptRecipe returns the resolve + buildCmd closures for a script tool
 // node, factored out of executeToolNodeScript so the standard path and
 // the Verified Action ladder share one source of truth.
-func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (*exec.Cmd, func(), error)) {
+func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (toolCommand, func(), error)) {
 	return func() string {
 			// Same env-then-substitution ordering as executeToolNodeShell:
 			// only the author-controlled `${NAME}` braces are env-expanded so
@@ -605,10 +618,10 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			td := TemplateDataFromContext(ctx)
 			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard)
 		},
-		func(resolved string) (*exec.Cmd, func(), error) {
+		func(resolved string) (toolCommand, func(), error) {
 			interp, ext := scriptInterpreter(node.Language)
 			if len(interp) == 0 {
-				return nil, nil, fmt.Errorf("model: tool node %q: unsupported language %q", node.ID, node.Language)
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: unsupported language %q", node.ID, node.Language)
 			}
 			// The script file must be reachable from where the interpreter
 			// runs. Out of the judged tree whenever a place exists that both
@@ -629,12 +642,12 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			scriptDir, inWorkspace := scriptScratchDir(wd, e.sharedStateDir, e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut), copyBased)
 			if !inWorkspace {
 				if merr := os.MkdirAll(scriptDir, 0o755); merr != nil {
-					return nil, nil, fmt.Errorf("model: tool node %q: create script scratch dir: %w", node.ID, merr)
+					return toolCommand{}, nil, fmt.Errorf("model: tool node %q: create script scratch dir: %w", node.ID, merr)
 				}
 			}
 			tmpFile, err := os.CreateTemp(scriptDir, ".iterion-script-*"+ext)
 			if err != nil {
-				return nil, nil, fmt.Errorf("model: tool node %q: create temp script: %w", node.ID, err)
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: create temp script: %w", node.ID, err)
 			}
 			tmpPath := tmpFile.Name()
 			cleanup := func() { _ = os.Remove(tmpPath) }
@@ -645,11 +658,11 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			if _, werr := tmpFile.WriteString(body); werr != nil {
 				_ = tmpFile.Close()
 				cleanup()
-				return nil, nil, fmt.Errorf("model: tool node %q: write temp script: %w", node.ID, werr)
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: write temp script: %w", node.ID, werr)
 			}
 			if cerr := tmpFile.Close(); cerr != nil {
 				cleanup()
-				return nil, nil, fmt.Errorf("model: tool node %q: close temp script: %w", node.ID, cerr)
+				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: close temp script: %w", node.ID, cerr)
 			}
 			base := filepath.Base(tmpPath)
 			// Out of the workspace, the interpreter is handed the absolute
@@ -667,7 +680,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 				if refresher, ok := e.sandbox.(sandbox.WorkspaceFileRefresher); ok {
 					if rerr := refresher.RefreshWorkspaceFile(ctx, base, []byte(body)); rerr != nil {
 						cleanup()
-						return nil, nil, fmt.Errorf("model: tool node %q: write script into sandbox: %w", node.ID, rerr)
+						return toolCommand{}, nil, fmt.Errorf("model: tool node %q: write script into sandbox: %w", node.ID, rerr)
 					}
 					hostCleanup := cleanup
 					sb := e.sandbox
@@ -768,14 +781,14 @@ func (e *ClawExecutor) withEngineBinaryEnv(env map[string]string) map[string]str
 	return env
 }
 
-// toolNodeScriptCommand returns a configured *exec.Cmd that invokes the
-// interpreter argv (scriptInterpreter) on the script temp file. Mirrors
-// toolNodeCommand for the script-mode path: sandbox-routed if a sandbox
-// is active and the node has not opted out.
-func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string) *exec.Cmd {
+// toolNodeScriptCommand returns the command that invokes the interpreter
+// argv (scriptInterpreter) on the script temp file. Mirrors toolNodeCommand
+// for the script-mode path: sandbox-routed if a sandbox is active and the
+// node has not opted out.
+func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string) toolCommand {
 	argv := append(append([]string{}, interpreter...), script)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, argv, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(e.withRunEnv(nil))})
+		return e.sandboxToolCommand(ctx, argv, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(e.withRunEnv(nil))})
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A script body backgrounds jobs as freely as a shell recipe does, so
@@ -809,7 +822,75 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}
-	return cmd
+	return toolCommand{cmd: cmd}
+}
+
+// sandboxToolCommand routes a tool node's argv through the sandbox under a
+// completion (sandbox.Completion): the exec client's exit status is not proof
+// that the command ended, the command's own completion line is. Every tool
+// node command the sandbox runs is built here, so none runs unproven.
+func (e *ClawExecutor) sandboxToolCommand(ctx context.Context, argv []string, opts sandbox.ExecOpts) toolCommand {
+	completion := sandbox.NewCompletion("tool")
+	env := make(map[string]string, len(opts.Env)+1)
+	maps.Copy(env, opts.Env)
+	key, value := completion.SessionEnv()
+	env[key] = value
+	opts.Env = env
+	return toolCommand{cmd: e.sandbox.Command(ctx, completion.Wrap(argv), opts), completion: completion}
+}
+
+// settleSandboxedRun judges a command the sandbox ran by its completion line,
+// not by the exec client's status alone, and returns stdout without the line:
+//   - the line found: the command ended, and it succeeded only if the client
+//     and the line both say so;
+//   - the line missing on a live node: the exec session ended before the
+//     command did, or its end never arrived — whatever stdout holds, the run
+//     fails with sandbox.ErrExecStatusUnknown, never as a success carrying a
+//     partial output;
+//   - the line missing, or the node's context done: the command's session is
+//     swept, so that what it left running cannot outlive the node and keep
+//     writing to a workspace the next node works in.
+//
+// A cancelled node keeps its own error: the cancel explains a missing line.
+func (e *ClawExecutor) settleSandboxedRun(ctx context.Context, nodeID string, completion *sandbox.Completion, stdout []byte, runErr error) ([]byte, error) {
+	clean, status, ended := completion.Settle(stdout)
+	if ctx.Err() != nil {
+		e.logToolSweep(nodeID, "the node ended before its command", completion)
+		return clean, runErr
+	}
+	if !ended {
+		report, sweepErr := completion.Sweep(e.sandbox)
+		return stdout, errors.Join(runErr, fmt.Errorf("%w — %s", sandbox.ErrExecStatusUnknown, describeToolSweep(report, sweepErr)))
+	}
+	if status != 0 && runErr == nil {
+		runErr = fmt.Errorf("sandbox: the command exited %d but its exec client reported success", status)
+	}
+	return clean, runErr
+}
+
+// logToolSweep sweeps a sandboxed command's session and says in the run log
+// what it stopped and what it could not do.
+func (e *ClawExecutor) logToolSweep(nodeID, why string, completion *sandbox.Completion) {
+	report, sweepErr := completion.Sweep(e.sandbox)
+	if len(report.Stopped) == 0 && sweepErr == nil {
+		return
+	}
+	e.logger.Warn("tool node %q: %s — %s", nodeID, why, describeToolSweep(report, sweepErr))
+}
+
+// describeToolSweep says what a tool command's sweep stopped and what it
+// could not do.
+func describeToolSweep(report proc.SweepReport, sweepErr error) string {
+	var parts []string
+	if labels := report.Labels(); len(labels) > 0 {
+		parts = append(parts, "the sweep stopped "+strings.Join(labels, "; "))
+	} else {
+		parts = append(parts, "the sweep found nothing left running")
+	}
+	if sweepErr != nil {
+		parts = append(parts, "the sweep could not do everything: "+sweepErr.Error())
+	}
+	return strings.Join(parts, "; ")
 }
 
 // treeNoiseEnvAppend returns the ITERION_TREE_NOISE entry to append to a
@@ -870,7 +951,7 @@ func (e *ClawExecutor) treeNoiseEnvAppend(nodeEnv map[string]string) []string {
 // bash is genuinely absent (extremely minimal containers), the recipe
 // author should either install bash via post_create or rewrite the
 // tool body in POSIX shell.
-func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env map[string]string) *exec.Cmd {
+func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env map[string]string) toolCommand {
 	// A command template may contain a host-attested editor document. Passing
 	// that complete shell program as one argv element hits Linux's per-argument
 	// limit before bash starts (the Studio editor allows 160 KiB). Mirror the
@@ -886,7 +967,7 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	}
 	env = e.withRunEnv(env)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, args, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(env), Stdin: stdin})
+		return e.sandboxToolCommand(ctx, args, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(env), Stdin: stdin})
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	// A tool node's lifetime is the node's. `bash -c` routinely backgrounds
@@ -924,7 +1005,7 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}
-	return cmd
+	return toolCommand{cmd: cmd}
 }
 
 // nodeOptOut classifies the kind of node being inspected for sandbox

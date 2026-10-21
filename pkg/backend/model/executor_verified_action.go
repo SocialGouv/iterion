@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
@@ -196,7 +195,7 @@ func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode,
 
 func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, input map[string]any) (met bool, output map[string]any, err error) {
 	resolve := func() string { return e.postconditionBody(ctx, node, input) }
-	buildCmd := func(resolved string) (*exec.Cmd, func(), error) {
+	buildCmd := func(resolved string) (toolCommand, func(), error) {
 		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
 		return e.toolNodeCommand(ctx, materialized, env), nil, nil
 	}
@@ -269,7 +268,7 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 	// Run the corrected command deterministically as a shell command. The
 	// resolved (placeholder-form) command is what hooks/events persist.
 	resolve := func() string { return corrected }
-	buildCmd := func(resolved string) (*exec.Cmd, func(), error) {
+	buildCmd := func(resolved string) (toolCommand, func(), error) {
 		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
 		return e.toolNodeCommand(ctx, materialized, env), nil, nil
 	}

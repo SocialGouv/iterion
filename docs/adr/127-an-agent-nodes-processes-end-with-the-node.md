@@ -1,6 +1,6 @@
 # ADR-127 — An agent node's processes end with the node
 
-- **Status**: Accepted
+- **Status**: Accepted · **amended 2026-10-21** (see [Amendment](#amendment-2026-10-21--a-sandboxed-tool-node-proves-its-end))
 - **Date**: 2026-10-14
 - **Applies to**: every agent node, whatever its backend — the delegated CLIs
   (`claude_code` and its formatting pass, `codex`, `cliagent` and the backends
@@ -189,6 +189,70 @@ such — not a leak that happens to work.
     of the uid, and outlives the node with a line in the log.
 - A tool node's own leftovers are out of scope: a deterministic node that
   backgrounds work and exits 0 is legitimate, and its group is killed on
-  cancel only.
+  cancel only. In a sandbox this held only from the amendment on: see
+  [Amendment (2026-10-21)](#amendment-2026-10-21--a-sandboxed-tool-node-proves-its-end).
 - Cost: in a sandbox, one exec per delegation end, next to the existing CLI
   kill; elsewhere, two `/proc` scans 50 ms apart when the node left nothing.
+
+## Amendment (2026-10-21) — a sandboxed tool node proves its end
+
+The consequence above — a tool node's group "is killed on cancel only" — held
+on the host and not in a sandbox, and the sandbox hid a worse defect behind it.
+
+Measured on a modernization campaign's net rite. The gate node is a tool node
+whose script boots the target's world and applies mutants for two to three and
+a half hours, printing its report only at the end. It finished 52 minutes in,
+with an empty result and no error. Its script was still running in the pod: it
+went on applying mutants to the workspace while the agent node the workflow
+looped into worked there — a mutant was applied in `src/` when that agent
+started; the agent noticed it and stopped the script. The same node, run again
+in the same run, took 2 h 07 and reported normally.
+
+The mechanism, in the code. In a sandbox, a tool node's verdict was the exit
+status of the local exec client — `kubectl exec`, `docker exec`. client-go
+reads an error stream that closed without a status as success, so a stream lost
+behind the client (the API server's WebSocket-to-SPDY translator and the
+kubelet leg behind it, a kubelet or container runtime restart) ends the client
+with status 0 and whatever output had arrived. The engine parsed that output —
+`{result: ""}` for an empty stdout — and the node succeeded. A cancel killed the
+client, and nothing in the pod.
+
+### Decision
+
+7. **A command the sandbox runs for a tool node proves its end.** Every such
+   command — a recipe, a script, a postcondition, a self-repair — is built by
+   one function (`sandboxToolCommand`), which wraps it in a POSIX sh program
+   (`sandbox.Completion`). The command runs as the program's child, in a node
+   session of its own: the session's variable is in the exec's own
+   environment, so the wrapper is of the session too. Once the command has
+   exited, the wrapper prints on stdout one line holding a random nonce and the
+   command's exit status, then exits with that status. The line goes to stdout,
+   after everything the command wrote there: only the bytes of one stream
+   arrive in order, so the line also proves that the command's whole stdout
+   arrived. The engine reads the line back out of stdout before anything else
+   sees it; the output a node gets is byte for byte the command's.
+   - The line found: the command ended. The node succeeds only if the client
+     and the line both say 0.
+   - The line missing on a live node: the command's end is unknown, and the
+     node fails with `sandbox.ErrExecStatusUnknown` — never a success carrying
+     a partial output. A postcondition whose end is unknown is not met.
+   - The line missing, or the node cancelled: the command's session is swept
+     in the container — decision 2's sweep, one short exec on a context of its
+     own — and the failure, or the run log on a cancel, names what it stopped
+     and what it could not do. A cancelled node keeps the error of its cancel.
+8. **A tool node that backgrounds work and exits 0 stays legitimate:** a
+   proven end sweeps nothing.
+
+### Consequences
+
+- A gate whose exec session is lost fails loudly instead of reporting an empty
+  success: the run stops where the cause is, and the command it started cannot
+  keep writing to a workspace another node works in.
+- A cancelled sandboxed tool node ends its processes, as on the host.
+- Cost: one `sh` per sandboxed tool command; one exec per unproven end or
+  cancel.
+- Residual: the engine's other execs into the sandbox — the workspace
+  checkpoints (`git add -A` and the commit), the scratch bank, the capture of
+  the workspace head, the git fixups — still take the client's status for the
+  command's end. They share the transport and the false success. Closing them
+  takes the same completion at the drivers' exec.
