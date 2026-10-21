@@ -367,9 +367,13 @@ func TestProdWatch_SentryCapWindowOpensOnceAndNotForAReminder(t *testing.T) {
 	}
 	st := h.state(t)
 	rec := st["incidents"].(map[string]any)["sentry:171"].(map[string]any)
+	lastSeen, err := time.Parse(time.RFC3339, fmt.Sprint(rec["sentry_last_seen"]))
+	if err != nil {
+		t.Fatalf("setup: parse sentry_last_seen: %v", err)
+	}
 	rec["last_notified"] = time.Now().Add(-25 * time.Hour).UTC().Format(time.RFC3339)
 	h.setState(t, st)
-	h.sentry.edit("171", func(i *pwSentryIssue) { i.LastSeen = time.Now(); i.Count = 2 })
+	h.sentry.edit("171", func(i *pwSentryIssue) { i.LastSeen = lastSeen.Add(time.Second); i.Count = 2 })
 	o = sentryTick(t, h, wf)
 	if got := sentryAlerts(o); !eqStrings(got, []string{"reminder:CAP-171:medium"}) {
 		t.Fatalf("setup: want a reminder posted alone, got %v", got)
