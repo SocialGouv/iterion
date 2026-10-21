@@ -288,6 +288,7 @@ func execNeverReached(err error, stderr []byte) bool {
 	msg := strings.ToLower(string(stderr))
 	for _, needle := range []string{
 		"unable to connect to the server",
+		"was refused - did you specify the right host or port",
 		"unable to upgrade connection",
 		"dial tcp",
 		"connection refused",

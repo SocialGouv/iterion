@@ -493,6 +493,11 @@ func classifiesBranchErr(err error) bool {
 // launders a typed code into EXECUTION_FAILED nor decides, by finishing
 // first or last, what the run's end carries.
 func stoppedBranch(err error) bool {
+	// An undecided effect is never a branch that merely stopped, whatever it
+	// wraps: what it may have done must reach the join's classification.
+	if IsAmbiguousEffect(err) {
+		return false
+	}
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrRunCancelled)
 }
 

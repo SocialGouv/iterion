@@ -187,3 +187,12 @@ func TestSweepEndsWithinItsBudget(t *testing.T) {
 		t.Fatal("a sweep cut by its budget proved the command stopped")
 	}
 }
+
+// kubectl's own word for an API server that refused the connection is an
+// exec that never reached the container: the sweep is tried again.
+func TestSweepRetriesWhenKubectlsServerRefusedTheConnection(t *testing.T) {
+	refused := &scriptedRun{steps: []string{"echo 'The connection to the server 10.0.0.1:6443 was refused - did you specify the right host or port?' >&2; exit 1"}}
+	if o := NewCompletion("t").Sweep(refused, 10*time.Second); !o.Stopped() || refused.attempts != 2 {
+		t.Fatalf("a refused API server: attempts=%d stopped=%v (%v), want a second, settling attempt", refused.attempts, o.Stopped(), o.Err)
+	}
+}

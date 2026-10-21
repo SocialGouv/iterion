@@ -20,15 +20,15 @@ func (e *Engine) failRun(ctx context.Context, runID, nodeID, reason string) erro
 	return e.failRunWithCode(ctx, runID, nodeID, reason, ErrCodeExecutionFailed, "")
 }
 
-// persistCtx is the context a run's failure is written on: the run's own
-// or — once it is done, a cancel, a drain or a deadline having landed with the
-// failure — a detached one, bounded, keeping its values (tenant identity) and
-// not its cancellation. A store that honours a done context would refuse the
-// write: the run would stay `running`, and the runner would redeliver a run
-// whose failure was never recorded — an undecided effect, which keeps its
-// own code past a cancel, included.
-func persistCtx(ctx context.Context) (context.Context, context.CancelFunc) {
-	if ctx.Err() == nil {
+// persistCtx is the context a run's failure is written on: the run's own —
+// or, for an undecided effect once that context is done, a detached one,
+// bounded, keeping its values (tenant identity) and not its cancellation. An
+// undecided effect keeps its own code past a cancel, and a store that honours
+// a done context would refuse it: the run would stay `running`, and the runner
+// would redeliver it. Any other failure on a done context keeps the cancel's
+// own handling — the status the publisher wrote, the drain's redelivery.
+func persistCtx(ctx context.Context, err error) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil || !IsAmbiguousEffect(err) {
 		return ctx, func() {}
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -45,10 +45,22 @@ func recordedCode(rtErr *RuntimeError, err error) ErrorCode {
 	return rtErr.Code
 }
 
+// unpersisted is what a failure whose status write failed returns: the store
+// error alone, so the caller knows the failure was not recorded — and, for an
+// undecided effect, the runtime error beside it, whose code keeps a caller
+// from re-driving the run.
+func unpersisted(rtErr *RuntimeError, nodeID, message string, storeErr error) error {
+	err := fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, message, storeErr)
+	if rtErr.Code == ErrCodeAmbiguousEffect {
+		return errors.Join(rtErr, err)
+	}
+	return err
+}
+
 // failRunErr marks a run as failed, preserving a structured error if present.
 // Store/event errors are propagated so callers know whether the failure was persisted.
 func (e *Engine) failRunErr(ctx context.Context, runID, nodeID string, origErr error) error {
-	ctx, cancel := persistCtx(ctx)
+	ctx, cancel := persistCtx(ctx, origErr)
 	defer cancel()
 	var rtErr *RuntimeError
 	if errors.As(origErr, &rtErr) {
@@ -56,7 +68,7 @@ func (e *Engine) failRunErr(ctx context.Context, runID, nodeID string, origErr e
 		remedy := RemedyOf(rtErr)
 		if storeErr := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailed, remedy.Annotate(rtErr.Message), rtErr.Code); storeErr != nil {
 			e.logger.Error("failed to persist run failure status: %v", storeErr)
-			return errors.Join(rtErr, fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, rtErr.Message, storeErr))
+			return unpersisted(rtErr, nodeID, rtErr.Message, storeErr)
 		}
 		data := map[string]any{
 			"error": rtErr.Message,
@@ -78,7 +90,7 @@ func (e *Engine) failRunErr(ctx context.Context, runID, nodeID string, origErr e
 // If the store update fails, the store error is returned instead of the runtime
 // error so callers know the failure state was not persisted.
 func (e *Engine) failRunWithCode(ctx context.Context, runID, nodeID, reason string, code ErrorCode, hint string) error {
-	ctx, cancel := persistCtx(ctx)
+	ctx, cancel := persistCtx(ctx, nil)
 	defer cancel()
 	rtErr := &RuntimeError{
 		Code:    code,
@@ -89,7 +101,7 @@ func (e *Engine) failRunWithCode(ctx context.Context, runID, nodeID, reason stri
 	remedy := RemedyOf(rtErr)
 	if storeErr := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailed, remedy.Annotate(reason), code); storeErr != nil {
 		e.logger.Error("failed to persist run failure status: %v", storeErr)
-		return errors.Join(rtErr, fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, reason, storeErr))
+		return unpersisted(rtErr, nodeID, reason, storeErr)
 	}
 	data := map[string]any{
 		"error": reason,
@@ -297,7 +309,7 @@ func (e *Engine) failRunWithCheckpoint(rs *runState, nodeID, reason string) erro
 func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr error) error {
 	var rtErr *RuntimeError
 	if errors.As(origErr, &rtErr) {
-		ctx, cancel := persistCtx(rs.ctx)
+		ctx, cancel := persistCtx(rs.ctx, origErr)
 		defer cancel()
 		rtErr.Code = recordedCode(rtErr, origErr)
 		// Only on this branch: the fallthrough below goes through

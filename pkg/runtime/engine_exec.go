@@ -536,7 +536,7 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// operator gesture — "give it another hour" — silently did nothing
 		// while a raise to 12h worked. A grant whose effect turns on an
 		// undisclosed 11% line is not a grant.
-		if errors.Is(execErr, context.DeadlineExceeded) &&
+		if errors.Is(execErr, context.DeadlineExceeded) && !IsAmbiguousEffect(execErr) &&
 			!budgetDeadline.IsZero() && !time.Now().Before(budgetDeadline) {
 			// Steering is drained BEFORE this verdict, because this return
 			// never reaches the node boundary where the other drain sits. A

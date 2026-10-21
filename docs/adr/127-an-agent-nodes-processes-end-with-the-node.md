@@ -247,21 +247,25 @@ client, and nothing in the pod.
      tried again, backing off: the exec path a stream was lost on is often
      down a little longer than the stream. Any other unfinished attempt is
      final: it may have signalled processes no later scan can find again. The
-     whole sweep ends within three minutes — ten seconds on a cancel. The node
-     fails with a
-     `sandbox.ExecStatusUnknownError` saying what the sweep stopped and what it
-     could not do; never a success carrying a partial output.
+     whole sweep ends within three minutes — ten seconds on a cancel — and
+     two seconds past that at most, for a killed client something still holds
+     the output of. The node fails with a `sandbox.ExecStatusUnknownError`
+     saying what the sweep stopped and what it could not do; never a success
+     carrying a partial output.
    - **An end the sweep could not settle** — its program never ran to its end
      within its budget, or something it signalled survived its KILL — leaves
      the command possibly running: the error is an ambiguous effect
      (`runtime.AmbiguousEffect`). A process of the uid no one can read is named
      and settles nothing either way. An ambiguous effect is recorded as
-     `AMBIGUOUS_EFFECT` whatever a wrapper made of it (a subbot boundary, the
-     catch-all default), recorded even when it lands with a cancel (the store
-     write is detached from the done context), never retried by recovery, never
-     auto-resumed — the retry sweeper disarms a stale armed retry on it — never
-     redelivered by the runner, and a `best_effort` join stops on it as
-     `wait_all` does.
+     `AMBIGUOUS_EFFECT` above the code a wrapper of the same process gave it
+     (a subbot boundary, the catch-all default) and above a budget deadline
+     that landed with it; its status write is detached from a done context —
+     a cancel, a drain — so that a store does not refuse it, while any other
+     failure that lands with a cancel is left to the cancel's own handling
+     (the status the publisher wrote, the drain's redelivery). Recovery never
+     retries it, the runner and the CLI read it as terminal, the retry sweeper
+     disarms a stale armed retry on it, and a join stops on it, `best_effort`
+     as `wait_all`. The residuals list where this does not hold yet.
    - **A Verified Action** stops on an ambiguous end of its recipe, of a
      self-repair or of its postcondition; a recipe whose end was unknown but
      settled lends it no output — the postcondition judges, and only its
@@ -284,12 +288,29 @@ client, and nothing in the pod.
 
 - A gate whose exec session is lost fails loudly, and the command it started
   is stopped — or, when it cannot be, the run stops for a human, recorded as
-  such, rather than start a second copy beside it.
+  such, rather than start a second copy beside it, save on the paths the
+  residuals list.
 - A cancelled sandboxed tool node ends its processes, as a host tool node's
   group is killed on cancel.
 - Cost: one `sh` per sandboxed tool command; for an unknown end, one exec per
   sweep attempt; one line on the writer's stdout.
 - Residuals:
+  - a fan-out drops an undecided branch in two cases: the parent's own cancel,
+    drain or deadline ends the fan-out before it reads its branches' results
+    (the fan-out, the per-item fan-out, a router's `multi`), and a `wait_all`
+    sibling's failure cancels a branch whose sweep outlasts the branch cancel
+    grace (five seconds, where a cancelled sweep may take its ten). The run
+    then records the other failure, which the runner and the CLI may resume;
+  - a subbot child read back from its record — one that paused at a human
+    gate, was resumed and then ended undecided — reaches its parent as plain
+    text: the parent records `EXECUTION_FAILED`, and recovery may run a fresh
+    child. The runner's, the CLI's and the dispatcher's subbot waits rebuild
+    the child's error the same way;
+  - an operator cancel in the cloud: the publisher writes `cancelled` before
+    the engine sees the cancel, and the resumable failure write skips a
+    cancelled run, so the run's record says `CANCELLED` while its events say
+    `AMBIGUOUS_EFFECT`. Nothing resumes a cancelled run on its own; a human
+    reading the record alone does not see the undecided effect;
   - the engine's other execs into the sandbox — the workspace checkpoints
     (`git add -A` and the commit), the scratch bank, the capture of the
     workspace head, the git fixups — still take the client's status for the
