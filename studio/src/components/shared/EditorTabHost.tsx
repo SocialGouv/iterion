@@ -16,8 +16,11 @@ import MainSpinner from "@/components/shared/MainSpinner";
 import {
   DocumentStoreProvider,
   getOrCreateDocumentStore,
+  stampEditor,
+  stampHolds,
   useDocumentStore,
   type DocumentState,
+  type DocumentStore,
   type SourceBuffer,
 } from "@/store/document";
 import {
@@ -30,15 +33,17 @@ import { useQuery } from "@tanstack/react-query";
 
 import { findDraftBotSource } from "@/api/runs/artifacts";
 import { editorDraftKey } from "@/hooks/useDraftBot";
+import { useConfirm } from "@/hooks/useConfirm";
 import { applyOpenedFile } from "@/lib/openedFile";
 import { applyParsedSource } from "@/lib/salvage";
+import { replaceDocument } from "@/lib/replaceDocument";
 import { isDefaultTabLabel, useTabsStore } from "@/store/tabs";
 import { useDropEditorTab } from "@/hooks/useDropEditorTab";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
 import { botDisplayLabel } from "@/lib/botLabel";
 import { toastError } from "@/lib/errorHints";
-import { Button, EmptyState } from "@/components/ui";
+import { Button, EmptyState, InlineBanner } from "@/components/ui";
 
 const EditorView = lazy(() => import("@/components/EditorView"));
 
@@ -48,6 +53,52 @@ type LoadState = "ready" | "loading" | "error";
 // open draft tab. Generous on purpose: this exists for the case where nothing
 // is around to invalidate, not for the normal path.
 const DRAFT_FALLBACK_REFETCH_MS = 30000;
+
+interface DraftProvenance {
+  applied: string | null;
+  installed: { generation: number; sourceBuffer: SourceBuffer | null } | null;
+}
+
+// The store outlives this host when /editor and /runs/new swap routes. Keying
+// the provenance by store keeps it across those remounts without retaining a
+// closed tab after the registry releases its store.
+const draftProvenances = new WeakMap<DocumentStore, DraftProvenance>();
+const DRAFT_LOAD_ABANDONED = Symbol("draft load abandoned");
+
+type ParsedDraft = Awaited<ReturnType<typeof parseSource>>;
+
+function draftProvenanceFor(store: DocumentStore): DraftProvenance {
+  let provenance = draftProvenances.get(store);
+  if (!provenance) {
+    provenance = { applied: null, installed: null };
+    draftProvenances.set(store, provenance);
+  }
+  return provenance;
+}
+
+function draftIsTheirs(st: DocumentState, provenance: DraftProvenance): boolean {
+  if (st.currentSource !== null && st.currentSource !== provenance.applied) return true;
+  const installed = provenance.installed;
+  return !!installed && (st._generation !== installed.generation || st.sourceBuffer !== installed.sourceBuffer);
+}
+
+function installDraft(
+  store: DocumentStore,
+  st: DocumentState,
+  provenance: DraftProvenance,
+  source: string,
+  parsed: ParsedDraft,
+): void {
+  // Document and verdict together: a draft whose source does not parse whole
+  // is a salvage, and writing it back would drop what the parser could not read.
+  applyParsedSource(parsed, st);
+  st.setSourceBuffer(null);
+  st.setCurrentSource(source);
+  st.setDiagnostics(parsed.diagnostics);
+  provenance.applied = source;
+  const after = store.getState();
+  provenance.installed = { generation: after._generation, sourceBuffer: after.sourceBuffer };
+}
 
 interface Props {
   tabId: string;
@@ -182,26 +233,80 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
     retry: false,
   });
 
-  const appliedRef = useRef<string | null>(null);
-  // What the last hydration INSTALLED: the generation it left the document
-  // at, and the Source buffer as it was. The canvas is the author's once
-  // either moved — a canvas edit moves the generation and not
-  // `currentSource`, which is why comparing the source alone let a later
-  // draft replace canvas edits.
-  const installedRef = useRef<{ generation: number; source: SourceBuffer | null } | null>(null);
+  const provenance = useMemo(() => draftProvenanceFor(docStore), [docStore]);
+  const [blockedDraft, setBlockedDraft] = useState<string | null>(null);
+  // A lookup failure after a remount is transient too: the store's provenance
+  // still says this tab has an installed draft.
+  const installedHere = useRef(provenance.installed !== null);
+  const { confirm, dismiss, dialog: draftDialog } = useConfirm();
+  useEffect(() => dismiss, [dismiss]);
+
   // An explicit replacement the author asked for (an Open still loading)
   // wins: a draft landing first would get its answer refused for edits
   // nobody made. The draft waits, and is looked at again once it ends.
   // Read from `docStore` itself: this host sits ABOVE the provider it
   // renders, so the context hook would answer for another store.
   const replacementPending = useStore(docStore, (s) => s._pendingIntent !== null);
+
+  const loadBlockedDraft = useCallback(async () => {
+    const source = blockedDraft;
+    if (!source) return;
+    const atClick = docStore.getState();
+    const asked = stampEditor(atClick);
+    const sourceAtClick = atClick.currentSource;
+    const accepted = await confirm({
+      title: "Load the latest draft?",
+      message: "This replaces the current document and any unsaved edits in this tab with the latest draft from the conversation.",
+      confirmLabel: "Load draft",
+      confirmVariant: "danger",
+    });
+    if (!accepted) return;
+
+    // The question was about the work at click time: an edit or a replacement
+    // under the dialog abandons this load before a new intent can supersede it.
+    const now = docStore.getState();
+    const holds = stampHolds(asked, now);
+    if (
+      !holds.path ||
+      !holds.generation ||
+      !holds.intent ||
+      !holds.replaced ||
+      !holds.source ||
+      now.currentSource !== sourceAtClick
+    ) {
+      return;
+    }
+    const assertSourceUnchanged = () => {
+      if (docStore.getState().currentSource !== sourceAtClick) throw DRAFT_LOAD_ABANDONED;
+    };
+    try {
+      const outcome = await replaceDocument(
+        docStore,
+        "the latest conversation draft",
+        async (signal) => {
+          const parsed = await parseSource(source, { signal });
+          assertSourceUnchanged();
+          return parsed;
+        },
+        (parsed, st) => {
+          installDraft(docStore, st, provenance, source, parsed);
+          installedHere.current = true;
+        },
+      );
+      if (outcome === "applied") setBlockedDraft(null);
+    } catch (err) {
+      if (err === DRAFT_LOAD_ABANDONED) return;
+      toastIfOnScreen(err, "Load draft failed");
+    }
+  }, [blockedDraft, confirm, docStore, provenance, toastIfOnScreen]);
+
   useEffect(() => {
     if (!draft || file) return;
     const source = draftQuery.data;
 
     if (draftQuery.isPending) return;
     if (draftQuery.isError) {
-      if (appliedRef.current !== null) return; // keep a canvas already in use
+      if (installedHere.current) return;
       setLoadState("error");
       const err = draftQuery.error;
       setLoadError(err instanceof Error ? err.message : String(err));
@@ -211,7 +316,7 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
     if (!source) {
       // Only the FIRST look is an error. A later read that finds nothing is
       // transient, not a reason to blank a canvas already in use.
-      if (appliedRef.current !== null) return;
+      if (installedHere.current) return;
       const missing = new Error(
         "That conversation has no .bot draft to open — ask the assistant to draft one first.",
       );
@@ -220,19 +325,21 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
       toastIfOnScreen(missing, "Open draft failed");
       return;
     }
-    if (source === appliedRef.current) return;
+    if (source === provenance.applied) {
+      setBlockedDraft(null);
+      return;
+    }
 
     // Never clobber the operator. We own the buffer only while it still holds
     // exactly what we last put there; the moment they edit it — the source,
     // the canvas, or the Source view's text — it is theirs, and a new draft
     // waits for them to ask for it.
-    const theirs = (st: DocumentState) => {
-      if (st.currentSource !== null && st.currentSource !== appliedRef.current) return true;
-      const installed = installedRef.current;
-      return !!installed && (st._generation !== installed.generation || st.sourceBuffer !== installed.source);
-    };
-    if (replacementPending || theirs(docStore.getState())) return;
+    if (replacementPending || draftIsTheirs(docStore.getState(), provenance)) {
+      setBlockedDraft(source);
+      return;
+    }
 
+    setBlockedDraft(null);
     let cancelled = false;
     void parseSource(source)
       .then((parsed) => {
@@ -240,24 +347,20 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
         const st2 = docStore.getState();
         // They started editing while we were parsing, or asked for another
         // document.
-        if (st2._pendingIntent !== null || theirs(st2)) return;
+        if (st2._pendingIntent !== null || draftIsTheirs(st2, provenance)) {
+          setBlockedDraft(source);
+          return;
+        }
         // A replacement: a Save As still writing the previous draft does
         // not bind its name to this one.
         st2.markReplaced();
-        // Document and verdict together: a draft whose source does not parse
-        // whole is a salvage, and writing it back would drop what the parser
-        // could not read.
-        applyParsedSource(parsed, st2);
-        st2.setCurrentSource(source);
-        st2.setDiagnostics(parsed.diagnostics);
-        appliedRef.current = source;
-        const after = docStore.getState();
-        installedRef.current = { generation: after._generation, source: after.sourceBuffer };
+        installDraft(docStore, st2, provenance, source, parsed);
+        installedHere.current = true;
         setLoadState("ready");
       })
       .catch((err) => {
         if (cancelled) return;
-        if (appliedRef.current !== null) return;
+        if (installedHere.current) return;
         setLoadState("error");
         setLoadError(err instanceof Error ? err.message : String(err));
         toastIfOnScreen(err, "Open draft failed");
@@ -269,6 +372,7 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
     draft,
     file,
     docStore,
+    provenance,
     replacementPending,
     toastIfOnScreen,
     draftQuery.data,
@@ -318,12 +422,30 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
       />
     );
   } else {
-    body = <EditorView active={isActive} />;
+    body = (
+      <>
+        {blockedDraft && draft && !file && (
+          <InlineBanner
+            tone="info"
+            title="A newer draft is available"
+            action={
+              <Button variant="secondary" size="sm" onClick={() => void loadBlockedDraft()}>
+                Load it
+              </Button>
+            }
+          >
+            The conversation has a newer draft. This canvas has been left untouched.
+          </InlineBanner>
+        )}
+        <EditorView active={isActive} />
+      </>
+    );
   }
 
   return (
     <DocumentStoreProvider store={docStore}>
       <SelectionStoreProvider store={selStore}>
+        {draftDialog}
         <TabBindingSync tabId={tabId} />
         <ErrorBoundary area="Editor view" resetKey={tabId}>
           <Suspense fallback={<MainSpinner />}>{body}</Suspense>

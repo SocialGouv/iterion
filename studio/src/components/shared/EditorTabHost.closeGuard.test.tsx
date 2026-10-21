@@ -2,9 +2,7 @@
 //
 // Closing an editor tab disposes its document store. Every close control
 // asks first when that store holds unsaved work — including the one on the
-// card a tab shows when its document fails to load: a draft tab shown again
-// after its draft stopped being readable still holds what the author was
-// editing.
+// card a tab shows when its document fails to load.
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,18 +42,12 @@ function host(tabId: string, params: { file?: string; draft?: string }) {
 const tabExists = (id: string) => useTabsStore.getState().tabs.some((t) => t.id === id);
 
 describe("the failed-load card's Close tab", () => {
-  it("asks before disposing a draft the author was editing, and waits for the answer", async () => {
-    findDraftBotSource.mockResolvedValue("v1");
-    const id = useTabsStore.getState().openTab("editor", { draft: "run-g" }, "Draft");
-    const first = host(id, { draft: "run-g" });
+  it("asks before disposing work already held when the first load fails, and waits for the answer", async () => {
+    const id = useTabsStore.getState().openTab("editor", { file: "bots/gone.bot" }, "gone.bot");
     const store = getOrCreateDocumentStore(id);
-    await waitFor(() => expect(store.getState().currentSource).toBe("v1"));
     store.getState().addComment({ text: "the author's edit" });
-    first.unmount();
+    host(id, { file: "bots/gone.bot" });
 
-    // Shown again, and the draft can no longer be read.
-    findDraftBotSource.mockRejectedValue(new Error("the run was pruned"));
-    host(id, { draft: "run-g" });
     fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
     expect(await screen.findByText("Discard unsaved changes?")).toBeTruthy();
     expect(tabExists(id)).toBe(true);
