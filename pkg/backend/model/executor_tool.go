@@ -2,6 +2,7 @@ package model
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -827,6 +829,19 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 	return toolCommand{cmd: cmd}
 }
 
+// streamedRecipeRunner runs a recipe streamed on its stdin once all of it has
+// arrived ($1 is its size): the recipe lands in a temp file, refused unless
+// its size is $1, and runs as `bash /dev/fd/3` with the file already unlinked
+// — bash reads a file the way it reads `bash -s`, and exec keeps the recipe in
+// the process that leads its session and group.
+const streamedRecipeRunner = `t=$(mktemp) || exit 125
+cat > "$t" || { rm -f "$t"; exit 125; }
+n=$(( $(wc -c < "$t") ))
+[ "$n" -eq "$1" ] || { rm -f "$t"; echo "iterion: the recipe arrived cut short: $n of $1 bytes" >&2; exit 125; }
+exec 3< "$t"
+rm -f "$t"
+exec bash /dev/fd/3`
+
 // sandboxToolCommand routes a tool node's argv through the sandbox under a
 // completion (sandbox.Completion): the exec client's exit status is not proof
 // that the command ended, the command's own completion line is. Every tool
@@ -857,8 +872,10 @@ func (e *ClawExecutor) sandboxToolCommand(ctx context.Context, argv []string, op
 //     running cannot outlive the node and keep writing to a workspace the next
 //     node works in, and the run fails with a sandbox.ExecStatusUnknownError —
 //     never as a success carrying a partial output. A sweep that could not
-//     finish makes it an ambiguous effect: no automatic retry starts a second
-//     copy beside a command that may still be running.
+//     prove the command stopped — it never ran to its end within its budget,
+//     or something it signalled survived — makes it an ambiguous effect: no
+//     automatic retry starts a second copy beside a command that may still
+//     be running.
 //
 // A cancelled node keeps its own error — the cancel explains a missing line —
 // unless its sweep could not finish: the command may then outlive the cancel,
@@ -872,12 +889,16 @@ func (e *ClawExecutor) settleSandboxedRun(ctx context.Context, nodeID string, co
 		}
 		return clean, runErr
 	}
-	report, sweepErr := completion.Sweep(e.sandbox)
-	unknown := &sandbox.ExecStatusUnknownError{Swept: sweepErr == nil, Detail: describeToolSweep(report, sweepErr)}
+	budget := cmp.Or(e.sweepBudget, toolSweepBudget)
+	if ctx.Err() != nil {
+		budget = cmp.Or(e.sweepBudgetOnCancel, toolSweepBudgetOnCancel)
+	}
+	outcome := completion.Sweep(e.sandbox, budget)
+	unknown := &sandbox.ExecStatusUnknownError{Swept: outcome.Stopped(), Detail: describeToolSweep(outcome)}
 	if ctx.Err() == nil {
 		return stdout, errors.Join(runErr, unknown)
 	}
-	if len(report.Stopped) > 0 || sweepErr != nil {
+	if len(outcome.Report.Stopped) > 0 || outcome.Err != nil {
 		e.logger.Warn("tool node %q: the node ended before its command — %s", nodeID, unknown.Detail)
 	}
 	if runErr == nil {
@@ -889,17 +910,29 @@ func (e *ClawExecutor) settleSandboxedRun(ctx context.Context, nodeID string, co
 	return stdout, runErr
 }
 
+// toolSweepBudget bounds the retries of a sweep after a live node's command
+// went unproven — about what recovery spends retrying a network outage
+// before it gives up: an exec path down that long leaves the command's state
+// to a human. A cancelled node's run is ending: its sweep is tried briefly.
+const (
+	toolSweepBudget         = 3 * time.Minute
+	toolSweepBudgetOnCancel = 10 * time.Second
+)
+
 // describeToolSweep says what a tool command's sweep stopped and what it
 // could not do.
-func describeToolSweep(report proc.SweepReport, sweepErr error) string {
+func describeToolSweep(o sandbox.SweepOutcome) string {
 	var parts []string
-	if labels := report.Labels(); len(labels) > 0 {
+	if labels := o.Report.Labels(); len(labels) > 0 {
 		parts = append(parts, "the sweep stopped "+strings.Join(labels, "; "))
-	} else if sweepErr == nil {
+	} else if o.Ran {
 		parts = append(parts, "the sweep found nothing left running")
 	}
-	if sweepErr != nil {
-		parts = append(parts, "the sweep could not finish, the command may still be running: "+sweepErr.Error())
+	switch {
+	case !o.Stopped():
+		parts = append(parts, "the sweep could not prove the command stopped, it may still be running: "+fmt.Sprint(o.Err))
+	case o.Err != nil:
+		parts = append(parts, "the sweep could not account for everything: "+o.Err.Error())
 	}
 	return strings.Join(parts, "; ")
 }
@@ -979,12 +1012,12 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	env = e.withRunEnv(env)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
 		if stdin != nil {
-			// Streamed to the container, the program travels as one brace
-			// group: bash parses a group whole before it runs any of it, so a
-			// stream cut short is a syntax error, never a prefix that runs and
-			// exits 0 — a completion line proves the program's end, not that
-			// all of the program arrived.
-			stdin = strings.NewReader("{\n" + resolved + "\n}\n")
+			// Streamed to the container, the program is written to a file and
+			// run only once the file's size is the size sent: a stream cut short
+			// exits 125 naming what arrived, never a prefix that runs and exits
+			// 0 — a completion line proves the program's end, not that all of
+			// it arrived. Run as a file, it means what `bash -s` makes of it.
+			args = []string{"bash", "-c", streamedRecipeRunner, "iterion-recipe", strconv.Itoa(len(resolved))}
 		}
 		return e.sandboxToolCommand(ctx, args, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(env), Stdin: stdin})
 	}

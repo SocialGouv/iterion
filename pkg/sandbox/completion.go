@@ -39,8 +39,8 @@ var ErrExecStatusUnknown = errors.New("sandbox: the command's end was never prov
 // seam, which refuses every automatic retry — a retry would start a second
 // copy of the command beside the first.
 type ExecStatusUnknownError struct {
-	// Swept is true when the sweep finished and stopped every process of the
-	// command's session it found.
+	// Swept is true when the sweep proved the command stopped
+	// (SweepOutcome.Stopped).
 	Swept bool
 	// Detail says what the sweep stopped and what it could not do.
 	Detail string
@@ -53,7 +53,8 @@ func (e *ExecStatusUnknownError) Error() string {
 func (e *ExecStatusUnknownError) Unwrap() error { return ErrExecStatusUnknown }
 
 // AmbiguousEffect implements the runtime's AmbiguousEffect interface: true
-// when the sweep could not finish, so the command may still be running.
+// when the sweep could not prove the command stopped — it never ran to its
+// end, or something it signalled survived — so the command may still run.
 func (e *ExecStatusUnknownError) AmbiguousEffect() bool { return !e.Swept }
 
 // completionLabel is the $0 of the wrapper shell: the name a process listing
@@ -123,20 +124,25 @@ func (c *Completion) sinceFile() string {
 // The command keeps what an exec'd command has: it leads its own session and
 // process group (setsid, where the container has it), so its own group
 // idioms — `kill 0`, `kill -- -$$`, a trap that ends its jobs — reach its
-// processes and not the wrapper. The wrapper runs without job control, so its
-// child is never a group leader and setsid needs no fork: setsid forks and
-// returns 0 at once only when called as a group leader. The wrapper outlives a
-// HUP, INT or TERM sent to it — a handler, not an ignore, so the command keeps
-// the default dispositions — and reports the command's end all the same. The
-// line is retried while stdout is full: a command may leave it non-blocking,
-// and a write that short is atomic, so a retry never doubles it.
+// processes and not the wrapper. setsid forks, and returns 0 at once, only
+// when called as a group leader: the wrapper turns job control off first, and
+// errexit with it — both can come from the environment (SHELLOPTS, read by a
+// bash that is sh), and either would let setsid fork or end the wrapper before
+// its line. A status above 255 (a shell reporting a death by signal as 256 + n
+// or more) is brought back into range. The wrapper outlives a HUP, INT or TERM
+// sent to it — a handler, not an ignore, so the command keeps the default
+// dispositions — and reports the command's end all the same. The line is
+// retried while stdout is full: a command may leave it non-blocking, and a
+// write that short is atomic, so a retry never doubles it.
 func (c *Completion) Wrap(argv []string) []string {
 	since := shellquote.Quote(c.sinceFile())
-	script := "set +m\n" +
+	script := "set +e\n" +
+		"set +m\n" +
 		"trap : HUP INT TERM\n" +
 		"[ -f " + since + " ] || { read -r up _ < /proc/uptime && echo \"${up%.*}${up#*.}\" > " + since + "; } 2>/dev/null\n" +
 		"if command -v setsid >/dev/null 2>&1; then setsid \"$@\"; else \"$@\"; fi\n" +
 		"rc=$?\n" +
+		"[ \"$rc\" -gt 255 ] && rc=$((rc % 256))\n" +
 		"rm -f " + since + "\n" +
 		"n=0\n" +
 		"until printf '\\n%s %s\\n' " + shellquote.Quote(c.nonce) + " \"$rc\" 2>/dev/null; do\n" +
@@ -180,22 +186,57 @@ func (c *Completion) Settle(stdout []byte) (clean []byte, status int, ended bool
 	return clean, status, true
 }
 
+// SweepOutcome is what a sweep of a command's session did.
+type SweepOutcome struct {
+	Report proc.SweepReport
+	// Ran is true when the sweep's program ran to its end in the container
+	// and reported every process of the session it found.
+	Ran bool
+	// Err is what the sweep could not do: its exec, a program that died on
+	// its way, a survivor of the KILL, a process no one can read.
+	Err error
+}
+
+// Stopped reports whether the sweep proves the command no longer runs: its
+// program ran to its end and nothing it signalled survived. A process whose
+// environment no one can read is named in Err but proves nothing either way:
+// the sweep kills on evidence only, and an unreadable process of the uid —
+// another exec's ssh-agent — is no evidence that the command lives on.
+func (o SweepOutcome) Stopped() bool { return o.Ran && len(o.Report.Survivors) == 0 }
+
 // Sweep stops, in the container, every process of the command's session —
 // the wrapper, the command, what it started, whatever detached from it — the
-// way ADR-127 ends an agent's: one short exec on a context of its own, so it
-// still runs when the command's context is gone. It removes the file that
-// dated the session. The report names what it stopped; the error, what it
-// could not do — an exec that failed, a program that died on its way, a
-// survivor of the KILL.
-func (c *Completion) Sweep(run Run) (proc.SweepReport, error) {
+// way ADR-127 ends an agent's, through short execs on contexts of their own,
+// so it still runs when the command's context is gone. It removes the file
+// that dated the session. A sweep whose exec fails, or whose program does not
+// reach its end, is tried again, backing off, until budget is spent: the exec
+// path a stream was lost on is often down a little longer than the stream,
+// and a sweep that never ran leaves the command's state unknown.
+func (c *Completion) Sweep(run Run, budget time.Duration) SweepOutcome {
 	since := c.sinceFile()
 	sweep, err := proc.NodeSessionSweepScript(c.mark, since)
 	if err != nil {
-		return proc.SweepReport{}, fmt.Errorf("the processes of session %s cannot be swept: %w", c.mark, err)
+		return SweepOutcome{Err: fmt.Errorf("the processes of session %s cannot be swept: %w", c.mark, err)}
 	}
 	// A subshell: the program's own exit must not skip the rm, and its
 	// status — a program killed on its way — is the exec's.
 	script := "(\n" + sweep + ")\nrc=$?\nrm -f " + shellquote.Quote(since) + "\nexit $rc"
+	start := time.Now()
+	wait := time.Second
+	for attempt := 1; ; attempt++ {
+		o := c.sweepOnce(run, script)
+		if o.Ran || time.Since(start)+wait > budget {
+			if !o.Ran && attempt > 1 {
+				o.Err = fmt.Errorf("%d attempts over %s: %w", attempt, time.Since(start).Round(time.Second), o.Err)
+			}
+			return o
+		}
+		time.Sleep(wait)
+		wait = min(2*wait, 30*time.Second)
+	}
+}
+
+func (c *Completion) sweepOnce(run Run, script string) SweepOutcome {
 	// The sweep's TERM and KILL phases are bounded, each running one scan
 	// of the container's /proc past its bound, which a crowded container
 	// makes long.
@@ -206,5 +247,5 @@ func (c *Completion) Sweep(run Run) (proc.SweepReport, error) {
 	if runErr != nil {
 		perr = errors.Join(perr, fmt.Errorf("the exec that sweeps session %s failed: %w", c.mark, runErr))
 	}
-	return report, errors.Join(perr, report.Problems())
+	return SweepOutcome{Report: report, Ran: perr == nil, Err: errors.Join(perr, report.Problems())}
 }

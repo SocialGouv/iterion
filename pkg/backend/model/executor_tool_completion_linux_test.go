@@ -41,8 +41,10 @@ type execClientRun struct {
 	// ends only once the command provably runs.
 	running string
 	// sweepFails makes every other exec — the sweep — fail, as an exec path
-	// still down after the loss of a stream would.
-	sweepFails bool
+	// still down after the loss of a stream would; sweepFailures fails only
+	// the first ones, as a short outage would.
+	sweepFails    bool
+	sweepFailures int
 	// sweeps counts the other execs the engine ran: its sweeps.
 	sweeps int
 	// clients, when set, is the client of each successive tool command —
@@ -57,7 +59,7 @@ func (f *execClientRun) Command(ctx context.Context, argv []string, opts sandbox
 	if len(argv) < 4 || argv[0] != "sh" || argv[3] != "iterion-tool" {
 		// The sweep, or any other exec: it runs in the "container" itself.
 		f.sweeps++
-		if f.sweepFails {
+		if f.sweepFails || f.sweeps <= f.sweepFailures {
 			return osexec.CommandContext(ctx, "sh", "-c", "echo 'error: unable to upgrade connection' >&2; exit 1")
 		}
 		c := osexec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -490,6 +492,7 @@ func TestSandboxedToolNodeUnknownEndWithAFailedSweepIsAmbiguous(t *testing.T) {
 			dir := t.TempDir()
 			heart := filepath.Join(dir, "heartbeat")
 			e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+			e.sweepBudget = 200 * time.Millisecond
 			e.SetSandbox(&execClientRun{client: "lost", dir: dir, running: heart, sweepFails: tc.sweepFails})
 			// A short heartbeat: when the sweep fails nothing stops it, and it
 			// ends on its own before the temp dir goes.
@@ -521,6 +524,7 @@ func TestVerifiedToolNodeStopsOnAnAmbiguousRecipeEnd(t *testing.T) {
 	heart := filepath.Join(dir, "heartbeat")
 	marker := filepath.Join(dir, "applied.marker")
 	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	e.sweepBudget = 200 * time.Millisecond
 	// The first postcondition runs through a healthy client, unmet; the
 	// recipe's stream is then lost while the sweep's exec path is down; a
 	// postcondition after it would be met.
@@ -591,6 +595,7 @@ func TestVerifiedToolNodeStopsOnAnAmbiguousPostcondition(t *testing.T) {
 	heart := filepath.Join(dir, "heartbeat")
 	ran := filepath.Join(dir, "recipe.ran")
 	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	e.sweepBudget = 200 * time.Millisecond
 	e.SetSandbox(&execClientRun{client: "waits", dir: dir, running: heart, sweepFails: true, clients: []string{"lost"}})
 	_, err := e.Execute(context.Background(), &ir.ToolNode{
 		BaseNode:      ir.BaseNode{ID: "checks"},
@@ -604,4 +609,49 @@ func TestVerifiedToolNodeStopsOnAnAmbiguousPostcondition(t *testing.T) {
 		t.Fatal("the recipe ran beside a postcondition that may still be running")
 	}
 	waitHeartbeatStill(t, heart)
+}
+
+// A sweep whose exec path is down a little longer than the stream is tried
+// again: once it runs and stops the command, the end is an ordinary failure,
+// which recovery may retry — never a run parked for a human because the first
+// attempt fell in the same outage as the stream.
+func TestSandboxedToolNodeSweepOutlivesAShortOutage(t *testing.T) {
+	requireSetsid(t)
+	dir := t.TempDir()
+	heart := filepath.Join(dir, "heartbeat")
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	e.sweepBudget = 10 * time.Second
+	run := &execClientRun{client: "lost", dir: dir, running: heart, sweepFailures: 1}
+	e.SetSandbox(run)
+	_, err := e.Execute(context.Background(), &ir.ToolNode{BaseNode: ir.BaseNode{ID: "gate"}, Command: grandchildRecipe(heart)}, map[string]any{})
+	var unknown *sandbox.ExecStatusUnknownError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("a lost stream did not fail on its unknown end: %v", err)
+	}
+	if unknown.AmbiguousEffect() {
+		t.Fatalf("a sweep that ran on its second attempt still left the end ambiguous: %v", err)
+	}
+	if run.sweeps < 2 {
+		t.Fatalf("the sweep was tried %d time(s), want a second attempt after the first failed", run.sweeps)
+	}
+	assertGrandchildStopped(t, heart)
+}
+
+// A recipe streamed to the container means what `bash -s` makes of it — an
+// unterminated heredoc runs to the end of the file, as bash reads one — and
+// it keeps leading its own session, as an exec'd command does.
+func TestSandboxedToolNodeStreamedRecipeMeansWhatBashMakesOfIt(t *testing.T) {
+	e, _ := sandboxedToolExecutor(t, "waits")
+	out, err := e.Execute(context.Background(), &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "big"},
+		Command: ": " + strings.Repeat("x", 150_000) + "\n" +
+			`read -r pid comm state ppid pgrp sid rest < /proc/self/stat; [ "$pid" = "$sid" ] || echo NOT-LEADER` + "\n" +
+			"cat <<EOF\nhello",
+	}, map[string]any{})
+	if err != nil {
+		t.Fatalf("a streamed recipe bash runs failed: %v", err)
+	}
+	if got, _ := out["result"].(string); !strings.Contains(got, "hello") || strings.Contains(got, "NOT-LEADER") {
+		t.Fatalf("the streamed recipe's output: %q, want its heredoc and its own session", got)
+	}
 }

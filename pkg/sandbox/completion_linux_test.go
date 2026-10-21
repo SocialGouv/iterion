@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -112,5 +113,47 @@ func TestCompletionRetriesALineOnAFullStdout(t *testing.T) {
 	}
 	if status != 0 || len(clean) != 65536 || strings.Trim(string(clean), "x") != "" {
 		t.Fatalf("status %d, %d bytes of output: want 0 and the helper's 65536 bytes", status, len(clean))
+	}
+}
+
+// bashAsSh returns a directory whose `sh` is bash — the shell of images whose
+// /bin/sh is bash, which reads SHELLOPTS from the environment — and a PATH
+// that finds it first.
+func bashAsSh(t *testing.T) (sh, path string) {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("bash is missing: %v", err)
+		}
+		t.Skipf("bash is missing: %v", err)
+	}
+	dir := t.TempDir()
+	sh = filepath.Join(dir, "sh")
+	if err := os.Symlink(bash, sh); err != nil {
+		t.Fatal(err)
+	}
+	return sh, dir + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
+// Shell options the environment hands a bash that is sh keep the command's
+// own status: errexit would end the wrapper on the failing command before its
+// line, and job control would make setsid fork and return 0 at once.
+func TestCompletionSurvivesInheritedShellOptions(t *testing.T) {
+	requireSetsid(t)
+	for _, opts := range []string{"errexit", "monitor"} {
+		t.Run(opts, func(t *testing.T) {
+			sh, path := bashAsSh(t)
+			c := NewCompletion("t")
+			wrapped := c.Wrap([]string{"sh", "-c", "sleep 0.2; exit 5"})
+			cmd := exec.Command(sh, wrapped[1:]...)
+			key, value := c.SessionEnv()
+			cmd.Env = append(os.Environ(), key+"="+value, "PATH="+path, "SHELLOPTS="+opts)
+			out, _ := cmd.Output()
+			_, status, ended := c.Settle(out)
+			if !ended || status != 5 {
+				t.Fatalf("SHELLOPTS=%s: ended=%v status=%d, want the command's own 5 (%q)", opts, ended, status, out)
+			}
+		})
 	}
 }

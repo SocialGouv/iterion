@@ -333,6 +333,15 @@ func (r *childPathRun) Exec(ctx context.Context, argv []string, opts sandbox.Exe
 	return r.Run.Exec(ctx, r.command(argv), opts)
 }
 func (r *childPathRun) Cleanup(context.Context) error { return nil } // borrowed handle
+
+// HostExecutesCommands forwards the inner run's answer (sandbox.HostRun): the
+// decorator only puts a directory first on PATH, and where a command runs is
+// still the inner run's.
+func (r *childPathRun) HostExecutesCommands() bool {
+	hr, ok := r.Run.(sandbox.HostRun)
+	return ok && hr.HostExecutesCommands()
+}
+
 // Preserve the capability tested by script staging and delegate state mirroring.
 type childCopyPathRun struct {
 	*childPathRun

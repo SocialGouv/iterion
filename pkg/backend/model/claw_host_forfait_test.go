@@ -140,14 +140,15 @@ func (s *deliverySandbox) Exec(ctx context.Context, cmd []string, opts sandbox.E
 	}
 	run := exec.CommandContext(ctx, "sh", append([]string{"-c", cmd[2], "sh", filepath.Join(s.root, cmd[4])}, cmd[5:]...)...)
 	run.Stdin = opts.Stdin
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	run.Stdout = &stdout
 	run.Stderr = &stderr
 	err := run.Run()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
-		return sandbox.ExecResult{ExitCode: exit.ExitCode(), Stderr: stderr.Bytes()}, nil
+		return sandbox.ExecResult{ExitCode: exit.ExitCode(), Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, nil
 	}
-	return sandbox.ExecResult{Stderr: stderr.Bytes()}, err
+	return sandbox.ExecResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, err
 }
 
 func (s *deliverySandbox) Cleanup(context.Context) error { return nil }

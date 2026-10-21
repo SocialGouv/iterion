@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // runWrapped runs c.Wrap(argv) here, with the session variable in the
@@ -116,5 +118,27 @@ func TestCompletionsAreDistinct(t *testing.T) {
 	kb, _ := b.SessionEnv()
 	if ka == kb {
 		t.Fatalf("two completions share a session variable: %s", ka)
+	}
+}
+
+// The command is stopped only when the sweep ran to its end and nothing it
+// signalled survived; a process no one can read is named, and proves nothing
+// either way.
+func TestSweepOutcomeStoppedOnlyOnEvidence(t *testing.T) {
+	p := []proc.SessionProcess{{PID: 7, Name: "x"}}
+	for _, tc := range []struct {
+		name string
+		o    SweepOutcome
+		want bool
+	}{
+		{"ran, stopped the session", SweepOutcome{Ran: true, Report: proc.SweepReport{Stopped: p}}, true},
+		{"ran, found nothing", SweepOutcome{Ran: true}, true},
+		{"ran, an unreadable process of the uid", SweepOutcome{Ran: true, Report: proc.SweepReport{Unreadable: p}}, true},
+		{"ran, a survivor of the KILL", SweepOutcome{Ran: true, Report: proc.SweepReport{Survivors: p}}, false},
+		{"never ran", SweepOutcome{}, false},
+	} {
+		if got := tc.o.Stopped(); got != tc.want {
+			t.Errorf("%s: Stopped() = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
