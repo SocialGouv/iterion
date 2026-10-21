@@ -94,7 +94,8 @@ func TestCampaignStewardActsUnderTheLotsWall(t *testing.T) {
 		}
 	})
 	t.Run("past the lot's wall, the record failed and says it timed out", func(t *testing.T) {
-		items, ledger := campaignSteward(t, plan("", "    gate_timeout_s: 1\n"), verify)
+		pastWall := "#!/bin/sh\nif [ \"$1\" = --record ]; then exec sleep infinity; fi\nexit 0\n"
+		items, ledger := campaignSteward(t, plan("", "    gate_timeout_s: 1\n"), pastWall)
 		if len(items) != 1 || items[0]["type"] != "record_failed" ||
 			!strings.Contains(items[0]["detail"].(string), "timed out after 1s") {
 			t.Fatalf("items %v", items)
