@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.277.3](https://github.com/SocialGouv/iterion/compare/v3.277.2...v3.277.3) (2026-10-21)
+
+### Bug Fixes
+
+* scope sandbox runner homes by run branch ([#2599](https://github.com/SocialGouv/iterion/issues/2599)) ([047859f](https://github.com/SocialGouv/iterion/commit/047859f25074cf94286d23ad08ab28b5811b4014))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 3 local (announced 3, ceiling 5) Adversarial-Model: kimi-code
+
+    </details>
+
 ## [3.277.2](https://github.com/SocialGouv/iterion/compare/v3.277.1...v3.277.2) (2026-10-21)
 
 ### Bug Fixes
