@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 func saveWorkflowRequest(t *testing.T, s *Server, path, name string, createOnly bool) *httptest.ResponseRecorder {
@@ -56,6 +57,80 @@ func TestSaveFileCreateOnlyCreatesNewWorkflow(t *testing.T) {
 	}
 	if got, want := response.ConfirmedDiskPath, filepath.Join(workdir, "reviewed.bot"); got != want {
 		t.Fatalf("confirmed_disk_path = %q, want %q", got, want)
+	}
+	control := filepath.Join(workdir, ".iterion", "authoring")
+	entries, err := os.ReadDir(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locks := 0
+	for _, entry := range entries {
+		switch {
+		case strings.HasSuffix(entry.Name(), ".record"):
+			t.Fatalf("a successful create-only save retained %s", entry.Name())
+		case strings.HasSuffix(entry.Name(), ".lock"):
+			locks++
+		}
+	}
+	if locks != 1 {
+		t.Fatalf("persistent lock count = %d, want 1 (entries: %+v)", locks, entries)
+	}
+	ignore, err := os.ReadFile(filepath.Join(control, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(ignore) != "*\n" {
+		t.Fatalf("persistent exclusion = %q, want %q", ignore, "*\n")
+	}
+}
+
+func TestSaveFileCreateOnlyCleanupFailureKeepsRecordAndWarns(t *testing.T) {
+	workdir := t.TempDir()
+	var logs bytes.Buffer
+	s := &Server{cfg: Config{WorkDir: workdir}, logger: iterlog.New(iterlog.LevelWarn, &logs)}
+	cleanupFailure := errors.New("injected cleanup failure")
+	fired := false
+	authoringStepHook = func(stage string) error {
+		if stage == "complete" {
+			fired = true
+			return cleanupFailure
+		}
+		return nil
+	}
+	t.Cleanup(func() { authoringStepHook = nil })
+
+	rec := saveWorkflowRequest(t, s, "reviewed.bot", "reviewed", true)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s; cleanup must not fail a published save", rec.Code, rec.Body.String())
+	}
+	data, err := os.ReadFile(filepath.Join(workdir, "reviewed.bot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("workflow reviewed:")) {
+		t.Fatalf("cleanup failure changed the published source = %q", data)
+	}
+	control := filepath.Join(workdir, ".iterion", "authoring")
+	records, err := filepath.Glob(filepath.Join(control, "*.record"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("record count = %d, want the failed cleanup to retain one (entries: %+v)", len(records), records)
+	}
+	journal, err := os.ReadFile(records[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(journal, []byte(`"stage"`)) {
+		t.Fatalf("retained record is not a journal: %q", journal)
+	}
+	if !fired {
+		t.Fatal("the create-only save never completed its transaction")
+	}
+	if warning := logs.String(); !strings.Contains(warning, "keeps its record") || !strings.Contains(warning, cleanupFailure.Error()) {
+		t.Fatalf("cleanup warning = %q, want the retained record and injected failure", warning)
 	}
 }
 

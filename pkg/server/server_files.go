@@ -815,7 +815,7 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		ignore = s.watcher.IgnorePath
 	}
 	s.stateMu.RUnlock()
-	writeErr := locks[0].writeEditorFile([]byte(source), req.CreateOnly, ignore)
+	writeErr := locks[0].writeEditorFile([]byte(source), req.CreateOnly, ignore, s.logWarn)
 	if req.CreateOnly && errors.Is(writeErr, fs.ErrExist) {
 		httpError(w, http.StatusConflict, "file already exists")
 		return

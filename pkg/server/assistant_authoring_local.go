@@ -607,7 +607,7 @@ func closeAuthoringLocalLocks(locks []*authoringLocalLock) {
 	}
 }
 
-func (l *authoringLocalLock) writeEditorFile(content []byte, createOnly bool, ignore func(string)) error {
+func (l *authoringLocalLock) writeEditorFile(content []byte, createOnly bool, ignore func(string), warnf func(string, ...any)) error {
 	if err := l.verify(); err != nil {
 		return err
 	}
@@ -627,6 +627,9 @@ func (l *authoringLocalLock) writeEditorFile(content []byte, createOnly bool, ig
 		}
 		if err != nil {
 			return fmt.Errorf("create file: %w; recovery record: %s", errors.Join(err, tx.rollback()), tx.recovery().Record)
+		}
+		if err := tx.complete(); err != nil && warnf != nil {
+			warnf("authoring: a finished write of %s keeps its record: %v", l.path, err)
 		}
 		return nil
 	}
@@ -869,6 +872,11 @@ func (tx *authoringLocalTransaction) rollback() error {
 func (tx *authoringLocalTransaction) complete() error {
 	if !tx.published {
 		return errors.New("authoring: complete called on a transaction that did not publish")
+	}
+	if tx.beforeStep != nil {
+		if err := tx.beforeStep("complete"); err != nil {
+			return err
+		}
 	}
 	l := tx.lock
 	var errs []error
