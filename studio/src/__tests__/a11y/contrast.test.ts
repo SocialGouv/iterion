@@ -61,6 +61,7 @@ const THEMES = {
     // (white label on it), `accentText` is the brighter link/icon colour.
     accent: "#4f46e5",
     accentText: "#818cf8",
+    focusRing: "#818cf8",
     onAccent: "#ffffff",
     severity: {
       danger: { soft: "#dc2626", softA: 0.18, fg: "#fecaca" },
@@ -75,6 +76,7 @@ const THEMES = {
     fg: { default: "#111827", muted: "#374151", subtle: "#6b7280" },
     accent: "#4f46e5",
     accentText: "#4f46e5",
+    focusRing: "#4f46e5",
     onAccent: "#ffffff",
     severity: {
       danger: { soft: "#b91c1c", softA: 0.1, fg: "#7f1d1d" },
@@ -153,6 +155,17 @@ for (const [themeName, t] of Object.entries(THEMES)) {
       it(`accent-text on surface-${s} ≥ ${AA_TEXT}`, () => {
         const ratio = contrast(hexToRgb(t.accentText), hexToRgb(t.surface[s]));
         expect(ratio).toBeGreaterThanOrEqual(AA_TEXT);
+      });
+    }
+
+    // Keyboard-focus indicator (WCAG 1.4.11 non-text contrast / RGAA
+    // 3.3): the :focus-visible outline colour must hold 3:1 against
+    // the surfaces the ring is drawn over. surface-3 stays out for
+    // the same reason as fg-subtle above (transient hover lift).
+    for (const s of [0, 1, 2] as const) {
+      it(`focus-ring on surface-${s} ≥ ${AA_LARGE}`, () => {
+        const ratio = contrast(hexToRgb(t.focusRing), hexToRgb(t.surface[s]));
+        expect(ratio).toBeGreaterThanOrEqual(AA_LARGE);
       });
     }
   });
