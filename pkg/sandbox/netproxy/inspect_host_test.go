@@ -29,6 +29,7 @@ func TestARequestNamingAnotherHostThanItsTunnelIsRefused(t *testing.T) {
 	ph := g.Secrets()[0].Placeholder
 	var mu sync.Mutex
 	var dialed, received, blocked []string
+	reported := make(chan struct{}, 3)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		received = append(received, r.Host+" "+r.Header.Get("Authorization"))
@@ -43,7 +44,7 @@ func TestARequestNamingAnotherHostThanItsTunnelIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pol, err := netproxy.Compile(netproxy.ModeAllowlist, []string{"api.github.com"})
+	pol, err := netproxy.Compile(netproxy.ModeAllowlist, []string{"api.github.com", "github.com", "uploads.github.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +54,7 @@ func TestARequestNamingAnotherHostThanItsTunnelIsRefused(t *testing.T) {
 			mu.Lock()
 			blocked = append(blocked, host+": "+reason)
 			mu.Unlock()
+			reported <- struct{}{}
 		},
 		Dial: func(_ context.Context, network, a string) (net.Conn, error) {
 			mu.Lock()
@@ -73,9 +75,8 @@ func TestARequestNamingAnotherHostThanItsTunnelIsRefused(t *testing.T) {
 	})
 	clientPool := x509.NewCertPool()
 	clientPool.AppendCertsFromPEM(ca.CertPEM())
-	// inTunnel opens a CONNECT tunnel to api.github.com:443 and sends one raw
-	// request through it.
-	inTunnel := func(requestLine, host string) int {
+	// inTunnel opens a CONNECT tunnel to tunnel:443 and sends one raw request.
+	inTunnel := func(tunnel, requestLine, host string) int {
 		t.Helper()
 		conn, err := net.Dial("tcp", prx.Addr().String())
 		if err != nil {
@@ -83,14 +84,15 @@ func TestARequestNamingAnotherHostThanItsTunnelIsRefused(t *testing.T) {
 		}
 		defer conn.Close()
 		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-		if _, err := conn.Write([]byte("CONNECT api.github.com:443 HTTP/1.1\r\nHost: api.github.com:443\r\n\r\n")); err != nil {
+		target := tunnel + ":443"
+		if _, err := conn.Write([]byte("CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n")); err != nil {
 			t.Fatal(err)
 		}
 		br := bufio.NewReader(conn)
 		if resp, err := http.ReadResponse(br, nil); err != nil || resp.StatusCode != http.StatusOK {
 			t.Fatalf("CONNECT: %v %v", resp, err)
 		}
-		tc := tls.Client(&readerConn{Conn: conn, r: br}, &tls.Config{RootCAs: clientPool, ServerName: "api.github.com"})
+		tc := tls.Client(&readerConn{Conn: conn, r: br}, &tls.Config{RootCAs: clientPool, ServerName: tunnel})
 		if err := tc.Handshake(); err != nil {
 			t.Fatal(err)
 		}
@@ -98,40 +100,61 @@ func TestARequestNamingAnotherHostThanItsTunnelIsRefused(t *testing.T) {
 		if _, err := tc.Write([]byte(req)); err != nil {
 			t.Fatal(err)
 		}
-		resp, err := http.ReadResponse(bufio.NewReader(tc), nil)
+		tr := bufio.NewReader(tc)
+		resp, err := http.ReadResponse(tr, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
+		if _, err := tr.ReadByte(); err != io.EOF {
+			t.Fatalf("read after the response body: %v, want EOF", err)
+		}
 		return resp.StatusCode
 	}
 
-	for _, c := range []struct{ line, host string }{
-		{"POST /collect HTTP/1.1", "evil.example.org"},
-		{"POST https://evil.example.org/collect HTTP/1.1", "api.github.com"},
-		{"POST /collect HTTP/1.1", "api.github.com:8443"},
+	for i, c := range []struct{ tunnel, line, host string }{
+		{"api.github.com", "POST /collect HTTP/1.1", "evil.example.org"},
+		{"github.com", "POST https://evil.example.org/collect HTTP/1.1", "github.com"},
+		{"uploads.github.com", "POST /collect HTTP/1.1", "uploads.github.com:8443"},
 	} {
-		if code := inTunnel(c.line, c.host); code != http.StatusMisdirectedRequest {
+		if code := inTunnel(c.tunnel, c.line, c.host); code != http.StatusMisdirectedRequest {
 			t.Errorf("%s, Host %s: status %d, want 421", c.line, c.host, code)
+		}
+		select {
+		case <-reported:
+		case <-time.After(10 * time.Second):
+			t.Fatal("OnBlocked was not invoked for the refused request")
+		}
+		mu.Lock()
+		reports := len(blocked)
+		mu.Unlock()
+		if reports != i+1 {
+			t.Fatalf("network_blocked reports after refusal %d = %d, want %d", i+1, reports, i+1)
+		}
+		mu.Lock()
+		report := blocked[i]
+		mu.Unlock()
+		if !strings.HasPrefix(report, c.tunnel+": ") {
+			t.Fatalf("network_blocked report after refusal %d = %q, want tunnel %q", i+1, report, c.tunnel)
 		}
 	}
 	mu.Lock()
 	if len(dialed) != 0 || len(received) != 0 {
 		t.Errorf("a refused request reached an upstream: dialed %v, received %v", dialed, received)
 	}
-	if len(blocked) != 3 || !strings.Contains(blocked[0], "differs from the CONNECT target") {
-		t.Errorf("network_blocked reports = %v, want one per refusal", blocked)
-	}
 	mu.Unlock()
 
 	for _, host := range []string{"api.github.com", "API.GitHub.com:443"} {
-		if code := inTunnel("POST /repos/o/r/dispatches HTTP/1.1", host); code != http.StatusOK {
+		if code := inTunnel("api.github.com", "POST /repos/o/r/dispatches HTTP/1.1", host); code != http.StatusOK {
 			t.Errorf("Host %s: status %d, want 200", host, code)
 		}
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	if len(blocked) != 3 || !strings.Contains(blocked[0], "differs from the CONNECT target") {
+		t.Errorf("network_blocked reports = %v, want one per refusal", blocked)
+	}
 	if len(dialed) != 2 || dialed[0] != "api.github.com:443" || dialed[1] != "api.github.com:443" {
 		t.Errorf("dialed %v, want the tunnel's target twice", dialed)
 	}
