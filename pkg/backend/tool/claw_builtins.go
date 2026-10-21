@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	clawlsp "github.com/SocialGouv/claw-code-go/pkg/api/lsp"
@@ -51,9 +52,10 @@ func BashExtraEnvFromContext(ctx context.Context) []string {
 // that declare e.g. `tools: [read_file, write_file, bash]` in their .bot
 // fixture.
 //
-// Workspace is forwarded to the bash tool for command validation; pass an
-// empty string to skip workspace-based validation. Pass an empty string
-// when registering on a registry that may be reused across workspaces.
+// Workspace anchors relative file and search paths and the bash tool's
+// execution and command validation. Empty preserves the process-cwd fallback
+// and skips workspace-based bash validation; use it for a registry that may
+// be reused across workspaces.
 //
 // The set is intentionally curated — these are the seven workflow-grade
 // tools that map cleanly onto file IO, shell, search, and HTTP fetch.
@@ -84,17 +86,38 @@ func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv [
 		{tool: workspaceReadFileTool(), exec: func(_ context.Context, input map[string]any) (string, error) {
 			return executeWorkspaceReadFile(input, workspace)
 		}},
-		{tool: clawtools.WriteFileTool(), exec: clawtools.ExecuteWriteFile},
+		{tool: clawtools.WriteFileTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
+			return clawtools.ExecuteWriteFile(ctx, clawWorkspaceFileInput(input, workspace, "path"))
+		}},
 		{tool: workspaceGlobTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
 			return executeWorkspaceGlob(ctx, input, workspace)
 		}},
 		{tool: clawtools.GrepTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
 			return executeWorkspaceGrep(ctx, input, workspace)
 		}},
-		{tool: clawtools.FileEditTool(), exec: clawtools.ExecuteFileEdit},
+		{tool: clawtools.FileEditTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
+			return clawtools.ExecuteFileEdit(ctx, clawWorkspaceFileInput(input, workspace, "file_path"))
+		}},
 		{tool: clawtools.WebFetchTool(), exec: clawtools.ExecuteWebFetch},
 		{tool: clawtools.BashTool(), exec: bashExec},
 	})
+}
+
+// clawWorkspaceFileInput rebases a relative model-supplied path without
+// changing absolute-path or empty-workspace behaviour. The copy keeps the raw
+// input untouched for the permission and audit boundary; this is not a
+// containment check.
+func clawWorkspaceFileInput(input map[string]any, workspace, pathKey string) map[string]any {
+	path, ok := input[pathKey].(string)
+	if workspace == "" || !ok || path == "" || filepath.IsAbs(path) {
+		return input
+	}
+	executionInput := make(map[string]any, len(input))
+	for key, value := range input {
+		executionInput[key] = value
+	}
+	executionInput[pathKey] = filepath.Join(workspace, path)
+	return executionInput
 }
 
 // RegisterClawWorkspaceDiagnostics adds Copi's two deliberately separate

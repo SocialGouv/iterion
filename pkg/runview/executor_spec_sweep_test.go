@@ -170,10 +170,9 @@ func TestEveryExecutorConstructionAnswersTheSandboxQuestion(t *testing.T) {
 // binary's — and the screen then judges a repository the run never touches.
 //
 // WorkDir answers it wherever the engine receives that same directory (the
-// studio launch and resume, the dispatcher). The surfaces whose engine workDir
-// is NOT the executor's tool workspace — the runner's per-run clone, a subbot
-// child's inherited parent worktree, the CLI's resumed run — answer with
-// SandboxProbeWorkDir, which nothing else reads.
+// launch surfaces, the runner, non-isolated subbots and the dispatcher). A
+// surface whose engine root differs from the tool workspace, notably resume,
+// answers with SandboxProbeWorkDir, which nothing else reads.
 //
 // Like its two siblings, this guard asserts the site ANSWERED; whether the
 // directory it named is the one its engine receives is the site's own claim.

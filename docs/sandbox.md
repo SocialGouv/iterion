@@ -974,6 +974,13 @@ sandbox is active, iterion forwards each claw call to a hidden
 LLM's tool calls (Bash, file edits) execute inside the sandbox
 boundary instead of escaping to the host.
 
+Relative `read_file`, `write_file` and `file_edit` paths follow the run's
+effective workspace even without a sandbox: a runner's per-run clone or a
+non-isolated subbot's inherited tree, not the launcher's process cwd.
+`write_file` and `file_edit` rebase only relative paths; absolute paths keep
+their existing behaviour, and this adds no confinement. A top-level `iterion
+run` with no explicit engine workspace keeps its process-cwd fallback.
+
 **Container requirement**: the container image must ship the
 `iterion` binary on PATH. The production Dockerfile installs it; for
 local sandboxes built from third-party images you can mount the host

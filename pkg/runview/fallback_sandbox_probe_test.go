@@ -176,19 +176,17 @@ func TestTheSandboxProbeTakesItsRootFromTheSpecsProbeRoot(t *testing.T) {
 		if !strings.Contains(arg, "sandboxProbeRoot()") || strings.Contains(arg, "spec.WorkDir") {
 			t.Errorf("call %d of %d resolves its repository root from %s — every RunWillBeSandboxed call here "+
 				"must read spec.sandboxProbeRoot(), which answers with the directory the ENGINE receives. "+
-				"spec.WorkDir alone is the executor's tool workspace: the runner, the CLI subbot child and the "+
-				"studio subbot child leave it empty while handing the engine a per-run clone or the parent's "+
-				"worktree, so the screen would judge the process cwd's repository instead of the run's.",
+				"spec.WorkDir alone is the executor's tool workspace and can differ from that directory, "+
+				"notably under the resume precedence.",
 				i+1, len(args), arg)
 		}
 	}
 }
 
-// The probe's root is the repository of the directory the ENGINE is given, and
-// that directory is not always the executor's: the cloud runner's per-run
-// clone, a subbot child's inherited parent worktree and a resumed run's
-// recorded workspace all travel in SandboxProbeWorkDir while WorkDir stays the
-// process workspace Claw's file tools resolve against.
+// The probe's root is the repository of the directory the ENGINE is given,
+// which can differ from the executor's tool workspace: a resumed run keeps its
+// recorded repository precedence in SandboxProbeWorkDir while WorkDir remains
+// the file-tool root.
 func TestSandboxProbeRootIsTheDirectoryTheEngineReceives(t *testing.T) {
 	repo := gittest.SourceRepo(t)
 	worktree := filepath.Join(t.TempDir(), "run-wt")
