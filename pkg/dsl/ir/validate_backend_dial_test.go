@@ -1096,3 +1096,45 @@ func TestLaunchVarsView_CoercionFallbackReadsTheOverlay(t *testing.T) {
 		t.Errorf("view[b] = %#v, want \"claw\" — dispatch's coercion fallback expands through the overlay", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// #2428 — the fall-through rule is a CLOSED set
+// ---------------------------------------------------------------------------
+
+// BackendFallsThrough is the one spelling of dispatch's step 1, read by three
+// packages at once: the executor's own resolution, the compiler's source
+// reading of a node's route, and the pre-run tool-surface readings in
+// pkg/runtime. A word admitted into it therefore moves where a node RUNS and
+// what two pre-run analyses claim about it in the same change — the catalogue's
+// prompt-injection boundary would credit such a node with the workflow
+// default's bound while the registry resolves it as a backend by that name.
+//
+// So the set is pinned closed, by membership and not by agreement: a test that
+// only tied this predicate to the executor's resolution certifies that the two
+// read the same rule, never WHICH rule — both sides call this function.
+func TestBackendFallsThroughIsAClosedSet(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want bool
+		why  string
+	}{
+		{"", true, "an absent field leaves the route to the next step of the chain"},
+		{"   ", true, "whitespace names no backend either — the predicate trims"},
+		{"auto", true, "the explicit `auto` is the one WORD that falls through"},
+		{" auto ", true, "and it falls through however it is spaced"},
+		{"claw", false, "a name decides the route, even the chain's own last resort"},
+		{"claude_code", false, "a name decides the route"},
+		{"codex", false, "a name decides the route"},
+		{"pi", false, "a name decides the route"},
+		{"AUTO", false, "the registry resolves backend names exactly, so dispatch hands `AUTO` on as a name nothing answers"},
+		{"auto_backend", false, "a name that merely starts with `auto` is a name"},
+		{"default", false, "no second word means `auto`: a workflow spelling it names a backend the registry has not"},
+		{"none", false, "likewise `none` — the sandbox mode's word is not a route's"},
+		{"${BACKEND}", false, "the predicate answers for a field a reading already RESOLVED; a caller that passes a reference asks the wrong question"},
+		{"{{vars.b}}", false, "a template is resolved against the run's vars before this is asked"},
+	} {
+		if got := BackendFallsThrough(c.in); got != c.want {
+			t.Errorf("BackendFallsThrough(%q) = %v, want %v: %s", c.in, got, c.want, c.why)
+		}
+	}
+}

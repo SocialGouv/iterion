@@ -1848,6 +1848,15 @@ func fallbacksReachClaw(fbs []ir.Fallback) bool {
 // plan-time reading does not have: it MAY be claw, and the union this
 // helper feeds errs on the side of the mount — an unused read-only bind
 // costs nothing, a missing binary kills the node.
+//
+// The explicit `auto` is NOT read as claw here. It names no route and leaves
+// it to the next step of the chain (ir.BackendFallsThrough), which the
+// resolver arm of the union answers for — the backend dispatch resolves, which
+// is what the bind and the `sandbox_claw_routed_via_runner` event are decided
+// on (docs/sandbox.md). Folding it onto claw on the FIELD would mount the host
+// binary over the one the runner image bakes at the same path for a run whose
+// `default_backend:` names claude_code or codex, where the chain never reaches
+// claw.
 func backendIsClaw(name string) bool {
 	expanded := strings.ToLower(ir.ExpandEnvWithDefault(name))
 	if strings.Contains(expanded, "{{") {

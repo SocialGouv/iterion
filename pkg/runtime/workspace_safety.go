@@ -499,10 +499,23 @@ func ToolSurfaceCanWrite(node ir.Node, defaultBackend string, lookup func(string
 // `--disallowedTools` over a closed native roster iterion does not own. A
 // `fallbacks:` route onto one of those puts the node in whatever its primary
 // backend bounds — a pre-run reading is pessimistic over the whole chain. A
-// route no name resolves is read the same way — the compiled-in detection
-// order's first choice is claude_code (pkg/backend/detect) — and that is the
-// ONE cell where this question and shared-worktree admission differ, because
-// being wrong costs them different things (see unnamedRouteReading).
+// `backend:` that falls through — absent, or the explicit `auto`
+// (ir.BackendFallsThrough) — is read on the route the workflow's
+// `default_backend:` names, the way dispatch resolves it, so under
+// `default_backend: claw` such a node is bounded by its own `tools:` list. A
+// route NEITHER field names is read as one that bounds nothing — the
+// compiled-in detection order's first choice is claude_code
+// (pkg/backend/detect).
+//
+// Every route this reading cannot NAME is where this question and
+// shared-worktree admission part, because being wrong there costs them
+// different things (see unnamedRouteReading). Three shapes reach that cell and
+// the flag governs all three: a route neither field names, a `backend:`
+// reference nothing answers — whatever the `default_backend:` says, since at
+// dispatch the host answers that spelling first — and a `fallbacks:` entry
+// spelled as such a reference. They are counted cell by cell, and their
+// wording checked against the fact, in
+// TestTheFlagPartsTheTwoQuestionsOnEveryRouteThisReadingCannotName.
 //
 // `readonly:` is deliberately NOT consulted. The codex and pi delegates
 // enforce it as a sandbox mode; claude_code never reads it and runs under
@@ -525,18 +538,31 @@ func ToolSurfaceWriteReason(node ir.Node, defaultBackend string, lookup func(str
 	return ""
 }
 
-// unnamedRouteReading is what a classification makes of a route no name
-// resolves — `backend: ""` or `backend: auto`, which dispatch resolves from the
-// host's own preference order.
+// unnamedRouteReading is what a classification makes of a route NOTHING here
+// resolves. A `backend:` that falls through (ir.BackendFallsThrough) under a
+// workflow `default_backend:` that names one is read on that route, as dispatch
+// reads it, and never reaches this question; what does reach it is every route
+// this reading cannot name, in three shapes:
 //
-// The two questions this file answers about a node read the same facts and
-// differ on that one cell, because being wrong there costs them different
-// things. For the catalog's prompt-injection contract the cost is one paragraph
-// in a system prompt, against a detection order whose first choice
+//   - a route neither field names — both fall through, so the host's own
+//     preference order decides it (unnamedRouteDispatchClause);
+//   - a `backend:` reference nothing answers, which has not left its route to
+//     the workflow default at all: at dispatch the host answers that spelling
+//     first (unresolvedReferenceClause, worded at the one site that holds the
+//     fact — unrestrictedRouteWriteReason's head);
+//   - a `fallbacks:` entry of that same spelling, the one route in the chain
+//     this walk cannot read.
+//
+// The two questions this file answers about a node read the same facts and part
+// on those three, because being wrong there costs them different things. For
+// the catalog's prompt-injection contract the cost is one paragraph in a system
+// prompt, against a detection order whose first choice
 // (pkg/backend/detect.DefaultPreferenceOrder) is claude_code, a route no
 // `tools:` list bounds — so the route is read as unbounded. For shared-worktree
-// admission the cost is a fan-out refused that would have been safe, so an
-// unnamed route is left unread and the node is classified on what it declares.
+// admission the cost is a fan-out refused that would have been safe, so a route
+// nothing here names is left unread and the node is classified on what it
+// declares. The cells are counted, and each one's clause checked against the
+// fact, in TestTheFlagPartsTheTwoQuestionsOnEveryRouteThisReadingCannotName.
 //
 // It is therefore a parameter of the QUESTION, passed by each entry point, and
 // never derived from what the engine's executor happens to implement: keyed on
@@ -554,11 +580,15 @@ const (
 	unnamedRouteUnread unnamedRouteReading = false
 )
 
-// routeIsUnnamed reports whether a backend field names no route — the two
-// spellings dispatch resolves from the host: absent, and the explicit `auto`.
+// routeIsUnnamed reports whether a backend field names no route and leaves it
+// to the next step of the chain: absent, and the explicit `auto`.
+//
+// The rule is DISPATCH's and lives in one place (ir.BackendFallsThrough,
+// resolveBackendName's step 1): a second spelling of it here reads `auto` as a
+// route the host decides, while the run has already resolved it through the
+// workflow's `default_backend:` (#2428).
 func routeIsUnnamed(backend string) bool {
-	b := strings.TrimSpace(backend)
-	return b == "" || b == "auto"
+	return ir.BackendFallsThrough(backend)
 }
 
 // llmToolSurfaceCanWrite is the readonly-free agent/judge classification for
@@ -683,6 +713,78 @@ func llmDeclaredSurfaceWriteReason(
 	return unrestrictedRouteWriteReason(node, fields, tools, defaultBackend, resolver, lookup, unnamedRoute)
 }
 
+// routeThisReadingAnswersFor is the ONE route reading a pre-run analysis of a
+// node takes, and the spelling a message quotes for it: the node's own
+// `backend:` as this reading resolves it, the workflow's `default_backend:`
+// wherever that field falls through, and the executor's own resolution
+// wherever one answers — the route the run takes, which overrides both.
+//
+// Both readers of a node's route in this file go through it — the
+// classification below, and the refusal's own reporter
+// (Engine.branchMutationCauseFrom) — so a cause can never name a route the
+// verdict did not use, and dispatch's precedence has no second spelling here
+// to drift from (#2428).
+//
+// `authored` is the spelling that produced `backend`, carried alongside it for
+// the message: a route read at an authored default that does not exist
+// resolves to nothing, and quoting `backend ""` at an author who wrote
+// `${ITERION_BACKEND}` sends them looking for a field they did not leave
+// blank.
+//
+// `unresolvedReference` marks the one fall-through the workflow default does
+// not get credit for. A `backend:` that NAMES a reference and resolves to
+// nothing here has not left the route to that default: at dispatch the same
+// spelling is read against the host's environment FIRST and any name it
+// answers wins, `default_backend:` answering only on a host that names none
+// (model.ClawExecutor.resolveBackendName, steps 1-2). So the route is the
+// host's to decide — the cell a `fallbacks:` route of this spelling already
+// reaches, and the reading the compiler's own mirror of that precedence takes
+// (ir.backendReader.effective substitutes the workflow default for an ABSENT
+// or `auto` field, never for a reference it cannot answer). Reading it as the
+// workflow default would trust exactly the route this walk cannot read: a
+// `${VAR}` under `default_backend: claw` would be credited with claw's bound
+// while the host may name claude_code. What each question makes of that cell
+// is the caller's, and the flag is how it is handed one.
+func routeThisReadingAnswersFor(
+	node ir.Node,
+	field, defaultBackend string,
+	resolver effectiveBackendResolver,
+	lookup func(string) string,
+) (backend, authored string, unresolvedReference bool) {
+	authored = strings.TrimSpace(field)
+	backend = strings.TrimSpace(ir.ExpandWithDefault(field, lookup))
+	unresolvedReference = backend == "" && authored != ""
+	// Every other field that names no route leaves it to the workflow's
+	// `default_backend:`, which is read exactly as the node's own was. WHICH
+	// spellings those are is dispatch's rule, asked of it: an absent field and
+	// the explicit `auto` (ir.BackendFallsThrough).
+	//
+	// The default's own spelling becomes the authored one where it HAS one: it
+	// is the field that decides the route from there, and the message names
+	// what the author can act on. Where it has none, what the node's field
+	// RESOLVED to is quoted instead: an author who wrote `auto` must not be
+	// shown a `backend ""` they never left blank, and one who dialled
+	// `${VAR:-auto}` must not be sent after a reference this reading ANSWERED
+	// — the route left over there is the host's detection order, not an
+	// unanswered name. A reference nothing answers keeps its own spelling,
+	// since that route is the host's and not the default's.
+	if routeIsUnnamed(backend) {
+		switch d := strings.TrimSpace(defaultBackend); {
+		case d != "" && !unresolvedReference:
+			authored = d
+		case backend != "":
+			authored = backend
+		}
+		backend = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, lookup))
+	}
+	if resolver != nil {
+		if effective := strings.TrimSpace(resolver.EffectiveBackendName(node)); effective != "" {
+			backend, authored, unresolvedReference = effective, effective, false
+		}
+	}
+	return backend, authored, unresolvedReference
+}
+
 // unrestrictedRouteWriteReason names what the node's ROUTE leaves unbounded —
 // the arms that hold whatever the declared list says, because the route cannot
 // enforce it or resolves too late to be read.
@@ -695,43 +797,19 @@ func unrestrictedRouteWriteReason(
 	lookup func(string) string,
 	unnamedRoute unnamedRouteReading,
 ) string {
-	// `authored` is the spelling that produced `backend`, carried alongside it
-	// for the message: a route read at an authored default that does not exist
-	// resolves to nothing, and quoting `backend ""` at an author who wrote
-	// `${ITERION_BACKEND}` sends them looking for a field they did not leave
-	// blank.
-	authored := strings.TrimSpace(fields.Backend)
-	backend := strings.TrimSpace(ir.ExpandWithDefault(fields.Backend, lookup))
-	// A `backend:` that NAMES a reference and resolves to nothing here has not
-	// left the route to the workflow default: at dispatch that same spelling is
-	// read against the host's environment FIRST and any name it answers wins,
-	// `default_backend:` answering only on a host that names none
-	// (model.ClawExecutor.resolveBackendName, steps 1-2). So the route is the
-	// host's to decide — the cell a `fallbacks:` route of this spelling already
-	// reaches, and the reading the compiler's own mirror of that precedence
-	// takes (ir.backendReader.effective substitutes the workflow default for an
-	// ABSENT or `auto` field, never for a reference it cannot answer). Reading
-	// it as the workflow default would trust exactly the route this walk cannot
-	// read: a `${VAR}` under `default_backend: claw` would be credited with
-	// claw's bound while the host may name claude_code.
-	unresolvedReference := backend == "" && authored != ""
-	if backend == "" {
-		if authored == "" {
-			authored = strings.TrimSpace(defaultBackend)
-		}
-		backend = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, lookup))
-	}
-	if resolver != nil {
-		if effective := strings.TrimSpace(resolver.EffectiveBackendName(node)); effective != "" {
-			backend, authored, unresolvedReference = effective, effective, false
-		}
-	}
+	backend, authored, unresolvedReference := routeThisReadingAnswersFor(node, fields.Backend, defaultBackend, resolver, lookup)
 	// Answered before any arm below reads `backend`, which this spelling did
 	// not name. What a pre-run reading of a route nothing here resolves is
 	// worth is the caller's question (see unnamedRouteReading), and it is the
 	// one the `fallbacks:` walk asks for the same spelling.
+	//
+	// The clause is worded HERE, at the one site that holds the fact: a
+	// reference this reading cannot answer left nothing to the detection
+	// order, and nothing downstream can tell that cell from a route the
+	// author left to dispatch under a `default_backend:` whose own spelling
+	// happens to carry a `$` (unnamedRouteNoBoundReason says so).
 	if unresolvedReference && unnamedRoute == unnamedRouteIsNoBound {
-		return unnamedRouteNoBoundReason(authored, "")
+		return "backend " + authored + " " + unresolvedReferenceClause
 	}
 	// A `{{vars.…}}` backend the resolver did not read (a nil resolver, a
 	// stub) may be claw with a CLI route or a CLI backend outright: both
@@ -792,8 +870,9 @@ func unrestrictedRouteWriteReason(
 	// is ever reached — is how an author says otherwise.
 	//
 	// Whether an UNNAMED backend joins them is the caller's question to answer
-	// (see unnamedRouteReading): nothing here resolves `backend: ""`, so what a
-	// pre-run reading of it is worth depends on what being wrong costs.
+	// (see unnamedRouteReading): a route neither the node's field nor the
+	// workflow default names is one nothing here resolves, so what a pre-run
+	// reading of it is worth depends on what being wrong costs.
 	//
 	// A DECLARED-EMPTY list is covered as well as a named one: reading the
 	// stricter declaration as safer than the looser one would invert the guard.
@@ -1085,22 +1164,44 @@ func declarationNoBoundClause(backend string, tools []string) string {
 // the run may put any backend there, including one a declared list bounds.
 const unresolvedReferenceClause = "is read at its authored default, which names no route, so nothing here bounds what the node holds"
 
+// unnamedRouteDispatchClause words the other half: a route BOTH fields left to
+// dispatch, which the host's own preference order resolves. The two clauses are
+// the whole vocabulary of the unnamedRouteIsNoBound reading of a route, and
+// which one a cell gets is the FACT of which field left it unnamed — never the
+// `$` in the spelling the message quotes (unnamedRouteNoBoundReason).
+const unnamedRouteDispatchClause = "resolves at dispatch, where the compiled-in detection order's first choice is claude_code, which does not bound what the node holds (#1652)"
+
 // unnamedRouteNoBoundReason words the unnamedRouteIsNoBound reading of a route
-// dispatch resolves, naming the spelling the AUTHOR wrote rather than what it
+// LEFT TO DISPATCH, naming the spelling the AUTHOR wrote rather than what it
 // expanded to.
 //
-// Two shapes reach it and they are not the same fact. A route left to dispatch
-// (`backend:` absent, or `auto`) is resolved from the host's preference order,
-// whose COMPILED-IN first choice (detect.DefaultPreferenceOrder) is
-// claude_code — a host that sets ITERION_BACKEND_PREFERENCE, or that has no
-// claude_code CLI at all, resolves it elsewhere, so the compiled-in order is
-// the most a pre-run reading may state. A route written as a `${VAR}`
-// reference that resolves to nothing named no route at all.
+// One fact reaches it: `backend:` falls through (absent, or `auto`) and the
+// workflow's `default_backend:` names no route either, so the host's own
+// preference order decides the route. Its COMPILED-IN first choice
+// (detect.DefaultPreferenceOrder) is claude_code — a host that sets
+// ITERION_BACKEND_PREFERENCE, or that has no claude_code CLI at all, resolves
+// it elsewhere, so the compiled-in order is the most a pre-run reading may
+// state.
+//
+// Where the expansion names nothing, the field that produced it is quoted
+// instead: an author who wrote `auto` must not be sent after a `backend ""`
+// they never left blank, and one whose `default_backend:` is a reference
+// nothing answers is pointed at that field (routeThisReadingAnswersFor carries
+// the spelling).
+//
+// A `backend:` REFERENCE this reading cannot answer is a different fact and
+// never reaches here: unrestrictedRouteWriteReason answers it first, with
+// unresolvedReferenceClause, because nothing was left to the detection order
+// there — the host answers that spelling before `default_backend:` does.
+// Telling the two apart by the `$` in the spelling about to be quoted cannot
+// work: after the fall-through that spelling is the WORKFLOW DEFAULT's, whose
+// `$`-ness says nothing about which field left the route unnamed.
 func unnamedRouteNoBoundReason(authored, backend string) string {
-	if spelling := strings.TrimSpace(authored); spelling != "" && strings.TrimSpace(backend) == "" {
-		return "backend " + spelling + " " + unresolvedReferenceClause
+	spelling, resolved := strings.TrimSpace(authored), strings.TrimSpace(backend)
+	if spelling != "" && resolved == "" {
+		resolved = spelling
 	}
-	return fmt.Sprintf("backend %q resolves at dispatch, where the compiled-in detection order's first choice is claude_code, which does not bound what the node holds (#1652)", strings.TrimSpace(backend))
+	return fmt.Sprintf("backend %q %s", resolved, unnamedRouteDispatchClause)
 }
 
 // edgeMayEscalateEffort reports whether any edge INTO this node may hand it
@@ -1434,18 +1535,15 @@ func (e *Engine) branchMutationCauseFrom(backends effectiveBackendResolver, surf
 			}
 		}
 		if llm, ok := node.(ir.LLMNode); ok {
-			// Read exactly as the classifier read it, expansion included: a
-			// message quoting `${VAR:-claw}` as if it were a backend, and
-			// blaming a rule the verdict never used, is worse than no message.
-			backend := strings.TrimSpace(ir.ExpandWithDefault(llm.GetLLMFields().Backend, nil))
-			if backend == "" {
-				backend = strings.TrimSpace(ir.ExpandWithDefault(e.workflow.DefaultBackend, nil))
-			}
-			if backends != nil {
-				if eff := strings.TrimSpace(backends.EffectiveBackendName(node)); eff != "" {
-					backend = eff
-				}
-			}
+			// Read through the walk the classifier read it through, expansion
+			// and fall-through included: a message quoting `${VAR:-claw}` as
+			// if it were a backend, and blaming a rule the verdict never used,
+			// is worse than no message. The reading is the classifier's own
+			// (routeThisReadingAnswersFor) rather than a copy of it, so the
+			// two cannot answer different routes for the same node — admission
+			// reads a field against the process environment, which is the
+			// lookup passed here.
+			backend, _, _ := routeThisReadingAnswersFor(node, llm.GetLLMFields().Backend, e.workflow.DefaultBackend, backends, nil)
 			// A route still spelled as a template was read pessimistically
 			// because nothing resolved it; naming it as a backend would be
 			// the wrong reason, so it is left to the bare node below.

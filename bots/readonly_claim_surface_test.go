@@ -511,9 +511,14 @@ func TestEveryDroppedReadonlyCommentStatesWhatWentWithTheFlag(t *testing.T) {
 
 // resolvedBackend reads a node's backend at its authored default, falling back
 // to the workflow's, so the classification does not depend on the host.
+//
+// WHICH spellings fall through is dispatch's rule, asked of it
+// (ir.BackendFallsThrough): a node left on `backend: auto` runs where
+// `default_backend:` says, so a classification that read `auto` as the route
+// would judge this catalogue on a route no run takes.
 func resolvedBackend(llm ir.LLMNode, defaultBackend string) string {
 	b := strings.TrimSpace(ir.ExpandWithDefault(llm.GetLLMFields().Backend, authoredDefaults))
-	if b == "" {
+	if ir.BackendFallsThrough(b) {
 		b = strings.TrimSpace(ir.ExpandWithDefault(defaultBackend, authoredDefaults))
 	}
 	return b

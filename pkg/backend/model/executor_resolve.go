@@ -18,6 +18,9 @@ import (
 //  1. node.Backend (set on AgentNode/JudgeNode/RouterNode); supports
 //     ${VAR}/${VAR:-default} env-var expansion so workflows can pick
 //     a backend per environment (e.g. `backend: "${RESCUE_BACKEND:-claude_code}"`).
+//     A field that resolves to nothing, and the explicit `auto`, fall through
+//     to step 2 — one rule (ir.BackendFallsThrough), shared with the pre-run
+//     readings that must answer for the route this one takes.
 //  2. workflow-level default (e.defaultBackend, from `default_backend:` or
 //     IR Preferences.BackendOrder[0])
 //  3. ITERION_DEFAULT_BACKEND env var (legacy explicit override)
@@ -43,7 +46,7 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 		backend = n.Backend
 	}
 	backend = e.resolveRoutingField(backend)
-	if backend != "" && backend != "auto" {
+	if !ir.BackendFallsThrough(backend) {
 		return backend
 	}
 	// The workflow's `default_backend:` is a routing field like a node's:

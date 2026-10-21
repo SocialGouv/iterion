@@ -28,6 +28,12 @@ func TestBackendIsClaw(t *testing.T) {
 		{"claw", true},
 		{"CLAW", true}, // ToLower normalised
 		{"Claw", true},
+		// An explicit `auto` names no route: where such a node runs is the
+		// chain's answer, and the union reads it from the resolver arm
+		// (resolverRoutesToClaw), never from this field — see
+		// TestContainsClawNode_ReadsAnAutoNodeOnTheRouteDispatchResolves.
+		{"auto", false},
+		{"AUTO", false},
 		{"claude_code", false},
 		{"codex", false},
 		{"openai", false},

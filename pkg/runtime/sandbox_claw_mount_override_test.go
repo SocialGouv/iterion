@@ -126,3 +126,56 @@ func hasIterionBinaryMount(mounts []string) bool {
 	}
 	return false
 }
+
+// A node left on `backend: auto` is read on the route DISPATCH resolves, which
+// is what docs/sandbox.md says decides the bind and the
+// `sandbox_claw_routed_via_runner` event: the workflow's `default_backend:`
+// answers step 2 of model.ClawExecutor.resolveBackendName, so such a node under
+// a CLI default reaches no claw node at all.
+//
+// Reading `auto` as claw on the FIELD instead would bind the HOST's iterion
+// read-only over the path the runner image bakes the binary at
+// (sandbox.EngineBinaryContainerPath, handed to every sandboxed tool node as
+// ITERION_ENGINE_BIN) for a run that never routes to claw — a non-static host
+// build then dies in-container with `exec: /usr/local/bin/iterion: no such file
+// or directory` (docs/agents/workflow/dogfood.md), and the event would claim a
+// routing no node of the run takes.
+func TestContainsClawNode_ReadsAnAutoNodeOnTheRouteDispatchResolves(t *testing.T) {
+	for _, tc := range []struct {
+		dflt string
+		want bool
+		why  string
+	}{
+		{
+			dflt: "claude_code",
+			want: false,
+			why:  "dispatch routes the node onto claude_code, which runs no claw runner inside the container",
+		},
+		{
+			dflt: "codex",
+			want: false,
+			why:  "dispatch routes the node onto codex, which runs no claw runner inside the container",
+		},
+		{
+			dflt: "claw",
+			want: true,
+			why:  "dispatch routes the node onto claw, which execs `iterion __claw-runner` inside the container and needs the binary",
+		},
+	} {
+		t.Run("default_backend "+tc.dflt, func(t *testing.T) {
+			wf := &ir.Workflow{DefaultBackend: tc.dflt, Nodes: map[string]ir.Node{
+				"implement": &ir.AgentNode{
+					BaseNode:  ir.BaseNode{ID: "implement"},
+					LLMFields: ir.LLMFields{Backend: "auto"},
+				},
+			}}
+			resolver := model.NewClawExecutor(model.NewRegistry(), wf)
+			if got := resolver.EffectiveBackendName(wf.Nodes["implement"]); got != tc.dflt {
+				t.Fatalf("dispatch resolves the node onto %q, want %q: the reading below would answer for a route no run takes", got, tc.dflt)
+			}
+			if got := containsClawNode(wf, resolver); got != tc.want {
+				t.Errorf("containsClawNode = %v, want %v: %s", got, tc.want, tc.why)
+			}
+		})
+	}
+}

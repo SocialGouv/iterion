@@ -182,11 +182,16 @@ func toolSurfaceGridRows(t *testing.T) []toolSurfaceGridRow {
 	}
 	cells := toolSurfaceGridCells()
 	rows := make([]toolSurfaceGridRow, 0, len(cells))
+	// The lookup each verdict is read with is its question's, from the one
+	// place the pairing is declared (lookupOf): the catalogue guard resolves a
+	// backend at its authored default, and admission's entry point passes no
+	// lookup at all, which reads the process environment this function pins.
+	boundary := lookupOf(t, unnamedRouteIsNoBound)
 	for _, c := range cells {
 		rows = append(rows, toolSurfaceGridRow{
 			cell:      c,
 			key:       c.String(),
-			canWrite:  ToolSurfaceCanWrite(c.node(), c.dflt, authoredDefaults),
+			canWrite:  ToolSurfaceCanWrite(c.node(), c.dflt, boundary),
 			admission: isMutatingNodeCtx(c.node(), c.dflt, nil, nil, false),
 		})
 	}
