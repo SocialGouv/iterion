@@ -115,7 +115,7 @@ func TestPreviewMatchesActualAdmissionWithoutOpeningOrWriting(t *testing.T) {
 				}
 				expired := h.now
 				k.ExpiresAt = &expired
-				if err := h.apiKeys.Update(ctx, k); err != nil {
+				if err := h.apiKeys.Replace(ctx, k); err != nil {
 					t.Fatal(err)
 				}
 				req.Wants = []Credential{{Source: SourceAPIKey, Ref: "anthropic"}}

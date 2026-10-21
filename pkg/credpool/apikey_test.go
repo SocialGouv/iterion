@@ -104,7 +104,7 @@ func TestAcquire_refusesAKeyThatIsNotTheDonorsOwn(t *testing.T) {
 		t.Fatalf("get key: %v", err)
 	}
 	k.ScopeUserID = ""
-	if err := h.apiKeys.Update(ctx, k); err != nil {
+	if err := h.apiKeys.Replace(ctx, k); err != nil {
 		t.Fatalf("update key: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestAcquire_refusesAKeyWhoseProviderNoLongerMatches(t *testing.T) {
 	_, keyID := h.donorKey(t, "alice", "anthropic", Limits{MaxUSDPerDay: 5})
 	k, _ := h.apiKeys.Get(ctx, keyID)
 	k.Provider = secrets.ProviderOpenAI
-	if err := h.apiKeys.Update(ctx, k); err != nil {
+	if err := h.apiKeys.Replace(ctx, k); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if _, err := h.broker.Acquire(ctx, h.wantKey("run-1", "anthropic")); !errors.Is(err, ErrNoDonor) {
@@ -140,7 +140,7 @@ func TestAcquire_refusesAnExpiredKey(t *testing.T) {
 	k, _ := h.apiKeys.Get(ctx, keyID)
 	past := h.now.Add(-time.Hour)
 	k.ExpiresAt = &past
-	if err := h.apiKeys.Update(ctx, k); err != nil {
+	if err := h.apiKeys.Replace(ctx, k); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if _, err := h.broker.Acquire(ctx, h.wantKey("run-1", "anthropic")); !errors.Is(err, ErrNoDonor) {

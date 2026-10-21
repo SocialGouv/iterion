@@ -23,7 +23,7 @@ type harness struct {
 	leases  *MemoryLeaseStore
 	ledger  *MemoryLedger
 	oauth   *secrets.MemoryOAuthStore
-	apiKeys secrets.ApiKeyStore
+	apiKeys *secrets.MemoryApiKeyStore
 	sealer  secrets.Sealer
 	now     time.Time
 }

@@ -178,11 +178,11 @@ asymmetry: not listable there, still mutable there.
 |---|---|---|---|
 | `GET` | `/api/teams/{id}/api-keys` | team member | List team's BYOK keys |
 | `POST` | `/api/teams/{id}/api-keys` | team admin | Create |
-| `PATCH` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Rename, toggle default, ROTATE the sealed secret (same shape gate as create, new `last4` + fingerprint), set `max_concurrent_runs` (0 = uncapped) and replace the `bots` audience — an absent field is left alone, `"bots": []` clears it |
+| `PATCH` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Rename, toggle default, ROTATE the sealed secret (same shape gate as create, new `last4` + fingerprint), set `max_concurrent_runs` (0 = uncapped) and replace the `bots` audience — an absent field is left alone, `"bots": []` clears it. The write is a `$set` of the named fields only, never a replace of the row. A row whose `provider` this server build does not know (written by a newer server during a rolling update, or left by a rollback) is refused with `409`, audited as `refused`: update it from a current server, or delete it |
 | `DELETE` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Delete |
 | `GET` | `/api/me/api-keys` | member | List own user-scoped keys |
 | `POST` | `/api/me/api-keys` | member | Create personal key |
-| `PATCH` | `/api/me/api-keys/{key_id}` | per record scope | Update |
+| `PATCH` | `/api/me/api-keys/{key_id}` | per record scope | Update — same write semantics and `409` on a row from a newer build as the team route |
 | `DELETE` | `/api/me/api-keys/{key_id}` | per record scope | Delete |
 | `GET` | `/api/teams/{id}/secrets` | team member | List team's generic secrets |
 | `POST` | `/api/teams/{id}/secrets` | team admin | Create |

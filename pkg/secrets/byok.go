@@ -291,7 +291,14 @@ type ApiKeyStore interface {
 	// user-scoped to ownerUserID, which is strictly narrower than an id
 	// lookup, and is the only thing the pool ever lends.
 	GetOwned(ctx context.Context, id, ownerUserID string) (ApiKey, error)
-	Update(ctx context.Context, k ApiKey) error
+	// Patch writes ONLY the fields the patch names and returns the row as
+	// stored afterwards. There is deliberately no whole-document writer:
+	// a replace carries back whatever a stale read holds (an is_default a
+	// concurrent ClearDefault just lowered, a last_used_at the runner just
+	// bumped) and drops every column this build does not know — the
+	// field a newer server wrote on the same row during a rolling update
+	// or a rollback. A patch that names nothing is a read.
+	Patch(ctx context.Context, id string, p ApiKeyPatch) (ApiKey, error)
 	Delete(ctx context.Context, id string) error
 	// ListByTeam returns every key visible from teamID — i.e. team-
 	// scoped keys plus the requesting user's user-scoped keys. The
@@ -586,7 +593,130 @@ func (m *MemoryApiKeyStore) GetOwned(_ context.Context, id, ownerUserID string) 
 	return k, nil
 }
 
-func (m *MemoryApiKeyStore) Update(ctx context.Context, k ApiKey) error {
+// ApiKeyPatch names the fields an update may change. A nil field is left
+// alone; a non-nil field is written as given, zero values included — so
+// `Bots: &[]string{}` clears the audience and `MaxConcurrentRuns: &zero`
+// uncaps the key, the distinction a struct marshalled with omitempty
+// tags cannot make.
+type ApiKeyPatch struct {
+	Name              *string
+	IsDefault         *bool
+	MaxConcurrentRuns *int
+	Bots              *[]string
+	// Secret rotates the sealed value. Its three derived fields travel
+	// together: a sealed blob with a stale last4 or fingerprint would
+	// name a credential that no longer exists.
+	Secret *ApiKeySecretPatch
+}
+
+// ApiKeySecretPatch is the sealed secret with its derived identity.
+type ApiKeySecretPatch struct {
+	Sealed      []byte
+	Last4       string
+	Fingerprint string
+}
+
+// ErrApiKeyPatchInvalid refuses a patch that cannot be written as one
+// consistent row: a rotation missing one of its three fields would leave
+// a sealed blob that no fingerprint names, or a fingerprint over a blob
+// that cannot be opened.
+var ErrApiKeyPatchInvalid = errors.New("secrets: api key patch invalid")
+
+// IsEmpty reports whether the patch names no field at all. It reads the
+// $set body rather than a second hand-kept list of the fields.
+func (p ApiKeyPatch) IsEmpty() bool {
+	return len(p.setDoc()) == 0
+}
+
+// validate refuses a rotation that is not whole. Both twins call it before
+// writing, so an incomplete triplet never reaches either store.
+func (p ApiKeyPatch) validate() error {
+	if p.Secret != nil && (len(p.Secret.Sealed) == 0 || p.Secret.Last4 == "" || p.Secret.Fingerprint == "") {
+		return fmt.Errorf("%w: a rotation carries the sealed value, its last4 and its fingerprint together", ErrApiKeyPatchInvalid)
+	}
+	return nil
+}
+
+// applyTo writes the named fields onto k for the memory twin. applyTo and
+// setDoc enumerate the same fields: TestApiKeyPatch_EveryFieldReachesBothWriters
+// walks the struct and refuses a field one of them does not write.
+func (p ApiKeyPatch) applyTo(k *ApiKey) {
+	if p.Name != nil {
+		k.Name = *p.Name
+	}
+	if p.IsDefault != nil {
+		k.IsDefault = *p.IsDefault
+	}
+	if p.MaxConcurrentRuns != nil {
+		k.MaxConcurrentRuns = *p.MaxConcurrentRuns
+	}
+	if p.Bots != nil {
+		k.Bots = append([]string(nil), (*p.Bots)...)
+	}
+	if p.Secret != nil {
+		k.SealedSecret = append([]byte(nil), p.Secret.Sealed...)
+		k.Last4 = p.Secret.Last4
+		k.Fingerprint = p.Secret.Fingerprint
+	}
+}
+
+// setDoc is the Mongo $set body for the named fields. bots is written as
+// an array even when empty, so a cleared audience reads back as "every
+// bot" rather than as the absent field a nil would leave behind.
+func (p ApiKeyPatch) setDoc() bson.M {
+	set := bson.M{}
+	if p.Name != nil {
+		set["name"] = *p.Name
+	}
+	if p.IsDefault != nil {
+		set["is_default"] = *p.IsDefault
+	}
+	if p.MaxConcurrentRuns != nil {
+		set["max_concurrent_runs"] = *p.MaxConcurrentRuns
+	}
+	if p.Bots != nil {
+		bots := *p.Bots
+		if bots == nil {
+			bots = []string{}
+		}
+		set["bots"] = bots
+	}
+	if p.Secret != nil {
+		set["sealed_secret"] = p.Secret.Sealed
+		set["last4"] = p.Secret.Last4
+		set["fingerprint"] = p.Secret.Fingerprint
+	}
+	return set
+}
+
+func (m *MemoryApiKeyStore) Patch(ctx context.Context, id string, p ApiKeyPatch) (ApiKey, error) {
+	if err := p.validate(); err != nil {
+		return ApiKey{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.keys[id]
+	if !ok || !visibleToTenant(ctx, cur.TenantID) {
+		return ApiKey{}, ErrApiKeyNotFound
+	}
+	// The Mongo twin's Patch refuses a context that carries no tenant. A
+	// tenant-stamped row must be as unreachable here from a bare context,
+	// or a handler that drops the scoped context passes every memory test
+	// and fails in production. Rows with no tenant stay writable from any
+	// context: that is what the bare-context fixtures need.
+	if _, scoped := store.TenantFromContext(ctx); !scoped && cur.TenantID != "" {
+		return ApiKey{}, ErrApiKeyTenantMissing
+	}
+	p.applyTo(&cur)
+	m.keys[id] = cur
+	return cur, nil
+}
+
+// Replace overwrites a row wholesale. It exists on the memory twin ONLY,
+// for test fixtures that need to move a field no patch names (a key's
+// scope, provider or expiry changing behind a pledge's back); the Mongo
+// store has no such writer, by design — see ApiKeyStore.Patch.
+func (m *MemoryApiKeyStore) Replace(ctx context.Context, k ApiKey) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.keys[k.ID]
@@ -765,15 +895,33 @@ func (s *MongoApiKeyStore) GetOwned(ctx context.Context, id, ownerUserID string)
 		ErrApiKeyNotFound, "secrets: get owned api key")
 }
 
-func (s *MongoApiKeyStore) Update(ctx context.Context, k ApiKey) error {
-	tenantID, ok := store.TenantFromContext(ctx)
-	if !ok || tenantID == "" {
-		return ErrApiKeyTenantMissing
+// Patch is one $set of the named fields, matched by both _id AND
+// tenant_id so a tenant can never rewrite another tenant's row by
+// guessing an id. Never a replace: the row may carry fields this build
+// does not know (written by a newer server beside it in a rolling update,
+// or left behind by a rollback), and the caller's copy may be stale on
+// the fields it does not name — both must survive untouched.
+func (s *MongoApiKeyStore) Patch(ctx context.Context, id string, p ApiKeyPatch) (ApiKey, error) {
+	if err := p.validate(); err != nil {
+		return ApiKey{}, err
 	}
-	// Match by both _id AND tenant_id so a tenant can never overwrite
-	// another tenant's row by guessing an id.
-	k.TenantID = tenantID
-	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": k.ID, "tenant_id": tenantID}, k, nil, ErrApiKeyNotFound, "secrets: update api key")
+	filter, err := withApiKeyTenantFilter(ctx, bson.M{"_id": id})
+	if err != nil {
+		return ApiKey{}, err
+	}
+	if p.IsEmpty() {
+		return mongoutil.FindOne[ApiKey](ctx, s.coll, filter, ErrApiKeyNotFound, "secrets: patch api key")
+	}
+	var out ApiKey
+	err = s.coll.FindOneAndUpdate(ctx, filter, bson.M{"$set": p.setDoc()},
+		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return ApiKey{}, ErrApiKeyNotFound
+	}
+	if err != nil {
+		return ApiKey{}, fmt.Errorf("secrets: patch api key: %w", err)
+	}
+	return out, nil
 }
 
 func (s *MongoApiKeyStore) Delete(ctx context.Context, id string) error {

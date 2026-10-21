@@ -445,14 +445,30 @@ func (s *Server) handleUpdateApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 		httpError(w, http.StatusForbidden, "cannot mutate this key")
 		return
 	}
+	// A row whose provider this build does not know was written by a newer
+	// server (a rolling update, or the one this pod was rolled back from).
+	// Its provider-specific columns are invisible to this struct, and the
+	// shape rule for its secret is unknown here (ValidateAPIKeyShape would
+	// fall back to the bearer-token rule), so a rotate from here could store
+	// a value the provider never accepts. Refuse the mutation outright;
+	// deleting the row stays possible from any build.
+	if !key.Provider.Valid() {
+		s.logger.Warn("byok: team=%s key=%q provider=%s update REFUSED: provider unknown to this server build", key.ScopeTeamID, key.ID, key.Provider)
+		s.auditApiKey(r, key.ScopeTeamID, "refused", key.ID, map[string]any{"provider": string(key.Provider), "field": "provider", "reason": "unknown to this server build"})
+		httpError(w, http.StatusConflict, "key %s names provider %q, which this server build does not know — update it from a current server, or delete it", key.ID, key.Provider)
+		return
+	}
 	var req updateApiKeyReq
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Name != nil {
-		key.Name = *req.Name
-	}
-	if req.Secret != nil && *req.Secret != "" {
+	// Only the fields the request names reach the store: the copy read
+	// above is already stale on everything else (a ClearDefault or a
+	// MarkUsed may have landed in between), and the row may carry columns
+	// this build does not know.
+	patch := secrets.ApiKeyPatch{Name: req.Name, IsDefault: req.IsDefault}
+	rotated := req.Secret != nil && *req.Secret != ""
+	if rotated {
 		// Same ingestion gate as create — a rotate that pastes a transcript
 		// is exactly as bad as a create that pastes one, and the runtime
 		// error is identical (401 on every call). Refuse it here.
@@ -465,19 +481,18 @@ func (s *Server) handleUpdateApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 			httpError(w, http.StatusInternalServerError, "seal: %v", err)
 			return
 		}
-		key.SealedSecret = sealed
-		key.Last4 = secrets.Last4(*req.Secret)
-		key.Fingerprint = secrets.FingerprintSHA256(*req.Secret)
+		patch.Secret = &secrets.ApiKeySecretPatch{
+			Sealed:      sealed,
+			Last4:       secrets.Last4(*req.Secret),
+			Fingerprint: secrets.FingerprintSHA256(*req.Secret),
+		}
 	}
 	if req.MaxConcurrentRuns != nil {
 		if *req.MaxConcurrentRuns < 0 {
 			httpError(w, http.StatusBadRequest, "max_concurrent_runs must be >= 0 (0 = uncapped)")
 			return
 		}
-		key.MaxConcurrentRuns = *req.MaxConcurrentRuns
-	}
-	if req.IsDefault != nil {
-		key.IsDefault = *req.IsDefault
+		patch.MaxConcurrentRuns = req.MaxConcurrentRuns
 	}
 	if req.Bots != nil {
 		bots, berr := normalizeBotAudience(*req.Bots)
@@ -485,20 +500,28 @@ func (s *Server) handleUpdateApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 			httpError(w, http.StatusBadRequest, "%s", berr.Error())
 			return
 		}
-		key.Bots = bots
+		patch.Bots = &bots
 	}
-	if err := s.apiKeys.Update(ctx, key); err != nil {
+	updated, err := s.apiKeys.Patch(ctx, key.ID, patch)
+	if err != nil {
+		if errors.Is(err, secrets.ErrApiKeyNotFound) {
+			httpError(w, http.StatusNotFound, "key not found")
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	if key.IsDefault {
-		if err := s.apiKeys.ClearDefault(ctx, key.ScopeTeamID, key.ScopeUserID, key.Provider, key.ID); err != nil {
+	// Only a request that PROMOTES this key clears the others: a rename of
+	// the current default must not race a concurrent promotion of another
+	// key and erase it (updated is already stale by the time it is read).
+	if req.IsDefault != nil && *req.IsDefault && updated.IsDefault {
+		if err := s.apiKeys.ClearDefault(ctx, updated.ScopeTeamID, updated.ScopeUserID, updated.Provider, updated.ID); err != nil {
 			httpError(w, http.StatusInternalServerError, "key updated but clearing previous default failed: %v", err)
 			return
 		}
 	}
-	s.auditApiKey(r, key.ScopeTeamID, "updated", key.ID, map[string]any{"name": key.Name, "rotated": req.Secret != nil})
-	writeJSON(w, s.toApiKeyView(r.Context(), key))
+	s.auditApiKey(r, updated.ScopeTeamID, "updated", updated.ID, map[string]any{"name": updated.Name, "rotated": rotated})
+	writeJSON(w, s.toApiKeyView(r.Context(), updated))
 }
 
 func (s *Server) handleDeleteApiKey(w http.ResponseWriter, r *http.Request) {
