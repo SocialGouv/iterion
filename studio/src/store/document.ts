@@ -249,6 +249,7 @@ export interface DocumentState {
 
 
   // Undo/redo
+  resetHistory: () => void;
   undo: () => void;
   redo: () => void;
   canUndo: () => boolean;
@@ -495,6 +496,7 @@ export function createDocumentStore() {
   },
 
   // Undo/redo
+  resetHistory: () => set({ _history: [], _future: [] }),
   undo: () => set((s) => {
     if (s._history.length === 0 || !s.document) return s;
     const history = [...s._history];

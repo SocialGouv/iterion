@@ -103,6 +103,21 @@ describe("an open draft tab follows its conversation", () => {
     expect(sourceOf(id)).toBe("v1");
   });
 
+  it("starts a fresh undo history when installing the first draft", async () => {
+    findDraftBotSource.mockResolvedValue("v1");
+    const id = useTabsStore.getState().openTab("editor", { draft: "run-history" }, "Draft");
+    const store = getOrCreateDocumentStore(id);
+    store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "previous" }] });
+    mount(id, "run-history");
+    await settle();
+
+    expect(store.getState()._history).toEqual([]);
+    expect(store.getState()._future).toEqual([]);
+    const installed = store.getState().document;
+    store.getState().undo();
+    expect(store.getState().document).toBe(installed);
+  });
+
   it("picks up the NEXT turn's draft without a reload", async () => {
     findDraftBotSource.mockResolvedValue("v1");
     const id = useTabsStore.getState().openTab("editor", { draft: "run-2" }, "Draft");

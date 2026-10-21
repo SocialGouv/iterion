@@ -79,6 +79,7 @@ export async function replaceDocument<T>(
     }
     now.markReplaced();
     apply(answer, store.getState());
+    store.getState().resetHistory();
     return "applied";
   } catch (err) {
     if (!stampHolds(asked, store.getState()).intent) return "superseded";
@@ -99,6 +100,7 @@ export function replaceDocumentNow(store: DocumentStore, apply: (state: Document
   try {
     store.getState().markReplaced();
     apply(store.getState());
+    store.getState().resetHistory();
   } finally {
     store.getState().endReplace(intent);
   }

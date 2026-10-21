@@ -95,6 +95,9 @@ function installDraft(
   st.setSourceBuffer(null);
   st.setCurrentSource(source);
   st.setDiagnostics(parsed.diagnostics);
+  // A document that replaces another severs the undo chain: undoing past
+  // the install would restore the PREVIOUS document under the new name.
+  st.resetHistory();
   provenance.applied = source;
   const after = store.getState();
   provenance.installed = { generation: after._generation, sourceBuffer: after.sourceBuffer };
