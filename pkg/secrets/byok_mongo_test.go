@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
@@ -247,5 +248,110 @@ func TestMongoApiKey_MarkFingerprintUsed(t *testing.T) {
 	}
 	if k3.LastUsedAt != nil {
 		t.Errorf("k3.last_used_at = %v, want nil (its fingerprint was untouched)", k3.LastUsedAt)
+	}
+}
+
+// The row may carry columns this build does not know — a newer server in
+// the same rolling update, or the one this pod was rolled back from, wrote
+// them — and the caller's copy is stale on everything it does not name. A
+// patch is one $set of the named fields: the unknown columns and the
+// sealed blob survive byte for byte, the named clears persist as writes,
+// and last_used_at (the runner's field) is never touched.
+func TestMongoApiKey_PatchKeepsTheColumnsThisBuildDoesNotKnow(t *testing.T) {
+	s, ctx := mongoKeyStore(t)
+	tctx := store.WithTenant(ctx, "team-a")
+	used := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	raw := bson.M{
+		"_id": "key-gw", "tenant_id": "team-a", "scope_team": "team-a",
+		"provider": "openai_compatible", "name": "pliage",
+		"base_url":      "https://gateway.example.test",
+		"future_field":  "kept",
+		"sealed_secret": []byte("sealed-under-newer-rules"),
+		"is_default":    true, "bots": []string{"review-pr"}, "max_concurrent_runs": 3,
+		"created_at": used, "last_used_at": used,
+	}
+	if _, err := s.coll.InsertOne(ctx, raw); err != nil {
+		t.Fatalf("insert raw row: %v", err)
+	}
+
+	name, off, zero := "renamed", false, 0
+	got, err := s.Patch(tctx, "key-gw", ApiKeyPatch{Name: &name, IsDefault: &off, MaxConcurrentRuns: &zero, Bots: &[]string{}})
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	if got.Name != "renamed" || got.IsDefault || got.MaxConcurrentRuns != 0 || len(got.Bots) != 0 {
+		t.Fatalf("named fields did not land: %+v", got)
+	}
+
+	var back bson.M
+	if err := s.coll.FindOne(ctx, bson.M{"_id": "key-gw"}).Decode(&back); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if back["base_url"] != "https://gateway.example.test" || back["future_field"] != "kept" {
+		t.Fatalf("a column this build does not know was dropped: %v", back)
+	}
+	if sealed, _ := back["sealed_secret"].(bson.Binary); string(sealed.Data) != "sealed-under-newer-rules" {
+		t.Fatalf("the sealed blob moved: %v", back["sealed_secret"])
+	}
+	if back["name"] != "renamed" || back["is_default"] != false || back["max_concurrent_runs"] != int32(0) {
+		t.Fatalf("the clears did not persist as writes: %v", back)
+	}
+	if bots, _ := back["bots"].(bson.A); len(bots) != 0 {
+		t.Fatalf("bots was not cleared to an empty array: %v", back["bots"])
+	}
+	if lu, _ := back["last_used_at"].(bson.DateTime); lu.Time().UTC() != used {
+		t.Fatalf("last_used_at is the runner's field and must not move: %v", back["last_used_at"])
+	}
+
+	// Tenancy: the same patch from another tenant finds nothing.
+	if _, err := s.Patch(store.WithTenant(ctx, "team-b"), "key-gw", ApiKeyPatch{Name: &name}); !errors.Is(err, ErrApiKeyNotFound) {
+		t.Fatalf("patch from another tenant = %v, want ErrApiKeyNotFound", err)
+	}
+	// And a tenant-less context is refused outright by Patch.
+	if _, err := s.Patch(ctx, "key-gw", ApiKeyPatch{Name: &name}); !errors.Is(err, ErrApiKeyTenantMissing) {
+		t.Fatalf("tenant-less patch = %v, want ErrApiKeyTenantMissing", err)
+	}
+}
+
+// Every field a patch names lands on the REAL store in the setting
+// direction too, one field per step, re-read through Get rather than
+// trusted from the returned value — the witness that holds setDoc to the
+// field list applyTo keeps for the memory twin.
+func TestMongoApiKey_PatchSetsEachNamedField(t *testing.T) {
+	s, ctx := mongoKeyStore(t)
+	tctx := store.WithTenant(ctx, "team-a")
+	if err := s.Create(tctx, ApiKey{ID: "k", ScopeTeamID: "team-a", Provider: ProviderAnthropic, Name: "n",
+		SealedSecret: []byte("s1"), Last4: "1111", Fingerprint: "fp1"}); err != nil {
+		t.Fatal(err)
+	}
+	name, on, seven := "renamed", true, 7
+	steps := []struct {
+		p     ApiKeyPatch
+		check func(ApiKey) bool
+	}{
+		{ApiKeyPatch{Name: &name}, func(k ApiKey) bool { return k.Name == "renamed" }},
+		{ApiKeyPatch{IsDefault: &on}, func(k ApiKey) bool { return k.IsDefault }},
+		{ApiKeyPatch{MaxConcurrentRuns: &seven}, func(k ApiKey) bool { return k.MaxConcurrentRuns == 7 }},
+		{ApiKeyPatch{Bots: &[]string{"review-pr"}}, func(k ApiKey) bool { return len(k.Bots) == 1 && k.Bots[0] == "review-pr" }},
+		{ApiKeyPatch{Secret: &ApiKeySecretPatch{Sealed: []byte("s2"), Last4: "2222", Fingerprint: "fp2"}},
+			func(k ApiKey) bool {
+				return string(k.SealedSecret) == "s2" && k.Last4 == "2222" && k.Fingerprint == "fp2"
+			}},
+	}
+	for i, st := range steps {
+		if _, err := s.Patch(tctx, "k", st.p); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+		back, err := s.Get(tctx, "k")
+		if err != nil || !st.check(back) {
+			t.Fatalf("step %d did not land on the real store: %+v (%v)", i, back, err)
+		}
+	}
+	// An incomplete rotation never reaches the store.
+	if _, err := s.Patch(tctx, "k", ApiKeyPatch{Secret: &ApiKeySecretPatch{Sealed: []byte("s3")}}); !errors.Is(err, ErrApiKeyPatchInvalid) {
+		t.Fatalf("incomplete rotation = %v, want ErrApiKeyPatchInvalid", err)
+	}
+	if back, _ := s.Get(tctx, "k"); string(back.SealedSecret) != "s2" || back.Fingerprint != "fp2" {
+		t.Fatalf("the refused rotation landed anyway: %+v", back)
 	}
 }

@@ -244,12 +244,16 @@ rule for the value's shape (token / JSON / PEM), with `--kind` to name it and
 
 A refusal answers `400` with the reason, and leaves a trace an operator can
 find after the fact: a `Warn` in the server log and an audit event naming the
-field and the reason — never the value. Nothing is stored on a refusal. Which
+field and the reason — never the value. Nothing is stored on a refusal. The
+same `refused` event, with `field: provider`, follows a `409` on an update: the
+row names a provider this server build does not know (it was written by a
+newer server), so the update is refused and the row left untouched. Which
 log the event lands in follows the credential's owner:
 
 | Owner | Action | Readable by |
 | --- | --- | --- |
-| Team / org credential | `byok.refused`, `oauth.org.refused` | the team's admins (`/api/teams/{id}/audit`) |
+| Team or personal credential | `byok.refused`, `oauth.org.refused` | the team's admins (`/api/teams/{id}/audit`) |
+| Org-tier credential | `org.llm_key.refused`, `org.llm_oauth.refused` | the org's admins (`/api/orgs/{id}/audit`) |
 | Platform fallback | `platform.llm_key.refused`, `platform.llm_oauth.refused` | super-admins (`/api/admin/audit`) |
 | **Personal (`/me`)** | `byok.refused`, `oauth.personal.refused` | the admins of the **caller's active team** |
 
@@ -920,6 +924,8 @@ iterion remote admin llm api-keys                      # list (metadata only)
 iterion remote admin llm api-keys create --provider anthropic --name prod \
   --from-file ~/anthropic.key
 iterion remote admin llm api-keys rotate <key-id> --from-env NEW_KEY
+# 409 "names provider … which this server build does not know": the row was
+# written by a newer server — rotate it from that server, or delete it.
 iterion remote admin llm api-keys delete <key-id>
 
 # Forfait blobs (claude_code credentials.json / codex auth.json):

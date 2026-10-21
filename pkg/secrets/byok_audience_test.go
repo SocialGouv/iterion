@@ -7,9 +7,9 @@ import "testing"
 func mkAudienceKey(t *testing.T, st *MemoryApiKeyStore, sealer Sealer, name string, bots []string) ApiKey {
 	t.Helper()
 	k := mkKey(t, st, sealer, "t", "", ProviderAnthropic, name, "secret-"+name, false)
-	k.Bots = bots
-	if err := st.Update(t.Context(), k); err != nil {
-		t.Fatalf("update %s: %v", name, err)
+	k, err := st.Patch(t.Context(), k.ID, ApiKeyPatch{Bots: &bots})
+	if err != nil {
+		t.Fatalf("patch %s: %v", name, err)
 	}
 	return k
 }
@@ -186,9 +186,8 @@ func TestAnAudienceSurvivesTheStore(t *testing.T) {
 	}
 	// And clearing it is expressible — an audience one can set but never lift
 	// is a key an operator has to delete and recreate.
-	back.Bots = nil
-	if err := st.Update(t.Context(), back); err != nil {
-		t.Fatalf("update: %v", err)
+	if _, err := st.Patch(t.Context(), back.ID, ApiKeyPatch{Bots: &[]string{}}); err != nil {
+		t.Fatalf("patch: %v", err)
 	}
 	cleared, err := st.Get(t.Context(), scoped.ID)
 	if err != nil {

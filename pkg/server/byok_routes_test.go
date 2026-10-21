@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,13 @@ import (
 // filters reads by.
 type tenantSpyKeyStore struct {
 	secrets.ApiKeyStore
-	createTenant string
+	createTenant  string
+	clearDefaults int
+}
+
+func (s *tenantSpyKeyStore) ClearDefault(ctx context.Context, teamID, userID string, provider secrets.Provider, exceptID string) error {
+	s.clearDefaults++
+	return s.ApiKeyStore.ClearDefault(ctx, teamID, userID, provider, exceptID)
 }
 
 func (s *tenantSpyKeyStore) Create(ctx context.Context, k secrets.ApiKey) error {
@@ -274,5 +281,159 @@ func TestApiKeyTenantCtx_ExplicitScopeBeatsThePath(t *testing.T) {
 	}
 	if got == "org-1" {
 		t.Fatal("the raw org id reached the store scope — no api-key row is stamped with it")
+	}
+}
+
+// A row whose provider this build does not know was written by a newer
+// server — beside this pod in a rolling update, or the one it was rolled
+// back from. The shape rule for its secret is unknown here and its
+// provider-specific columns are invisible to this struct, so every mutation
+// is refused (409, audited, logged) and the row is left byte for byte as
+// it was; deleting it stays possible from any build.
+func TestUpdateApiKey_RefusesARowFromANewerBuild(t *testing.T) {
+	srv, spy, logs, auditStore := byokServer(t)
+	ctx := store.WithTenant(context.Background(), "team-a")
+	row := secrets.ApiKey{ID: "key-future", ScopeTeamID: "team-a", Provider: secrets.Provider("x-future"), Name: "from-tomorrow", SealedSecret: []byte("sealed-elsewhere"), Fingerprint: "fp-future"}
+	if err := spy.Create(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	call := func(method, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "/api/teams/team-a/api-keys/key-future", strings.NewReader(body))
+		r.SetPathValue("id", "team-a")
+		r.SetPathValue("key_id", "key-future")
+		rctx := auth.WithIdentity(r.Context(), auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"})
+		r = r.WithContext(store.WithTenant(rctx, "team-a"))
+		w := httptest.NewRecorder()
+		if method == "DELETE" {
+			srv.handleDeleteApiKey(w, r)
+		} else {
+			srv.handleUpdateApiKey(w, r)
+		}
+		return w
+	}
+	before, err := spy.Get(ctx, "key-future")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{`{"name":"renamed"}`, `{"secret":"sk-rotated-value"}`, `{"is_default":true}`, `{"bots":["review-pr"]}`, `{"max_concurrent_runs":0}`, `{}`} {
+		if w := call("PATCH", body); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "x-future") {
+			t.Fatalf("PATCH %s = %d body=%s, want 409 naming the provider", body, w.Code, w.Body.String())
+		}
+	}
+	back, err := spy.Get(ctx, "key-future")
+	if err != nil || !reflect.DeepEqual(back, before) {
+		t.Fatalf("a refused update touched the row:\n got %+v\nwant %+v (%v)", back, before, err)
+	}
+	if l := logs.String(); !strings.Contains(l, "update REFUSED") || !strings.Contains(l, "provider=x-future") {
+		t.Fatalf("want a Warn naming the provider; got:\n%s", l)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		events, err := auditStore.ListByTenant(context.Background(), "team-a", audit.Page{Limit: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, e := range events {
+			if e.Action == "byok.refused" && e.Meta["provider"] == "x-future" && e.Meta["field"] == "provider" {
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no byok.refused audit event naming the provider; got %+v", events)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if w := call("DELETE", ""); w.Code != http.StatusNoContent {
+		t.Fatalf("DELETE = %d body=%s, want 204 — a row from a newer build must stay deletable", w.Code, w.Body.String())
+	}
+	if _, err := spy.Get(ctx, "key-future"); err == nil {
+		t.Fatal("the row survived its deletion")
+	}
+}
+
+// Only a request that PROMOTES a key clears the other defaults. A rename of
+// the current default used to call ClearDefault too — on the stale row it
+// had read — and could erase a promotion that landed in between.
+func TestUpdateApiKey_OnlyAPromotionClearsTheOtherDefaults(t *testing.T) {
+	srv, spy, _, _ := byokServer(t)
+	if w := createTeamKey(t, srv, `{"provider":"anthropic","name":"current","secret":"sk-ant-current","is_default":true}`); w.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	ctx := store.WithTenant(context.Background(), "team-a")
+	keys, _ := spy.ListByTeam(ctx, "team-a", "")
+	patch := func(id, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PATCH", "/api/teams/team-a/api-keys/"+id, strings.NewReader(body))
+		r.SetPathValue("id", "team-a")
+		r.SetPathValue("key_id", id)
+		rctx := auth.WithIdentity(r.Context(), auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"})
+		r = r.WithContext(store.WithTenant(rctx, "team-a"))
+		w := httptest.NewRecorder()
+		srv.handleUpdateApiKey(w, r)
+		return w
+	}
+	spy.clearDefaults = 0
+	if w := patch(keys[0].ID, `{"name":"still the default"}`); w.Code != http.StatusOK {
+		t.Fatalf("rename: %d %s", w.Code, w.Body.String())
+	}
+	if spy.clearDefaults != 0 {
+		t.Fatalf("a rename of the default called ClearDefault %d time(s); it must not touch the other keys", spy.clearDefaults)
+	}
+	if w := patch(keys[0].ID, `{"is_default":true}`); w.Code != http.StatusOK {
+		t.Fatalf("promote: %d %s", w.Code, w.Body.String())
+	}
+	if spy.clearDefaults != 1 {
+		t.Fatalf("a promotion must clear the other defaults exactly once; got %d", spy.clearDefaults)
+	}
+}
+
+// A promotion lowers the other default of ITS tuple — (team, user,
+// provider) — and nothing else: a second team default that slipped in is
+// lowered, the personal default of the same provider is untouched, and a
+// personal promotion leaves the team default alone. Read back from the
+// store, not from the response (the view is built before the clear).
+func TestUpdateApiKey_APromotionLowersOnlyItsTupleOtherDefault(t *testing.T) {
+	srv, spy, _, _ := byokServer(t)
+	ctx := store.WithTenant(context.Background(), "team-a")
+	seed := func(id, user string, def bool) {
+		t.Helper()
+		if err := spy.Create(ctx, secrets.ApiKey{ID: id, ScopeTeamID: "team-a", ScopeUserID: user, Provider: secrets.ProviderOpenAI, Name: id, SealedSecret: []byte("sealed-" + id), IsDefault: def}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("A", "", true)
+	seed("B", "", true) // a second team default that slipped in
+	seed("P1", "u1", true)
+	seed("P2", "u1", false)
+	promote := func(id string, who auth.Identity) {
+		t.Helper()
+		r := httptest.NewRequest("PATCH", "/api/teams/team-a/api-keys/"+id, strings.NewReader(`{"is_default":true}`))
+		r.SetPathValue("id", "team-a")
+		r.SetPathValue("key_id", id)
+		r = r.WithContext(store.WithTenant(auth.WithIdentity(r.Context(), who), "team-a"))
+		w := httptest.NewRecorder()
+		srv.handleUpdateApiKey(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("promote %s: %d %s", id, w.Code, w.Body.String())
+		}
+	}
+	isDefault := func(id string) bool {
+		t.Helper()
+		k, err := spy.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return k.IsDefault
+	}
+	promote("A", auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"})
+	if !isDefault("A") || isDefault("B") || !isDefault("P1") {
+		t.Fatalf("team promotion: A=%v B=%v P1=%v, want A and P1 only", isDefault("A"), isDefault("B"), isDefault("P1"))
+	}
+	promote("P2", auth.Identity{UserID: "u1", TeamID: "team-a"})
+	if !isDefault("P2") || isDefault("P1") || !isDefault("A") {
+		t.Fatalf("personal promotion: P2=%v P1=%v A=%v, want P2 and A", isDefault("P2"), isDefault("P1"), isDefault("A"))
 	}
 }

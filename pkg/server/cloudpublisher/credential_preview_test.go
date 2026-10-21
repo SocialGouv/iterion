@@ -386,8 +386,8 @@ func TestCredentialPreviewCapacityDoesNotHideKnownWindow(t *testing.T) {
 			seedKeyFP(t, f.pub.apiKeys, f.sealer, poolTeam, secrets.ProviderAnthropic, "sk-own-key", "fp-key")
 			keys, _ := f.pub.apiKeys.ListByTeam(t.Context(), poolTeam, "")
 			k := keys[0]
-			k.MaxConcurrentRuns = 1
-			if err := f.pub.apiKeys.Update(t.Context(), k); err != nil {
+			one := 1
+			if _, err := f.pub.apiKeys.Patch(t.Context(), k.ID, secrets.ApiKeyPatch{MaxConcurrentRuns: &one}); err != nil {
 				t.Fatal(err)
 			}
 			count := previewCountStore{n: 1}
