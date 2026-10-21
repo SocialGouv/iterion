@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.278.0](https://github.com/SocialGouv/iterion/compare/v3.277.3...v3.278.0) (2026-10-21)
+
+### Features
+
+* **forge,server,studio:** a GitLab OAuth bootstrap mints a project bot per repository ([#2649](https://github.com/SocialGouv/iterion/issues/2649)) ([36b397e](https://github.com/SocialGouv/iterion/commit/36b397e384aadf782852afaad8349b08a8a87adf)), closes [#2630](https://github.com/SocialGouv/iterion/issues/2630)
+
+    <details><summary>why</summary>
+
+    Connecting a GitLab repository took three manual steps where GitHub takes one, because an OAuth grant acts as the person who authorised it: a connection made with it posts as that person and, through the bot-author guard, stops auto-reviewing that person's own merge requests. This makes OAuth the bootstrap and a project access token minted by iterion the durable bot identity.
+
+    </details>
+
+### Bug Fixes
+
+* preserve spend on oversized claw results ([#2601](https://github.com/SocialGouv/iterion/issues/2601)) ([8a33f6c](https://github.com/SocialGouv/iterion/commit/8a33f6cd7dedcbb0050873826ff01796225302b2))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 3 local (announced 3, ceiling 5) Adversarial-Model: kimi-code
+
+    </details>
+
 ## [3.277.3](https://github.com/SocialGouv/iterion/compare/v3.277.2...v3.277.3) (2026-10-21)
 
 ### Bug Fixes
