@@ -27,21 +27,14 @@ export default {
     // written the infile yet, so the aligner would judge notes that do not
     // exist on disk.
     //
-    // The mdcode golden runs in the same slot for the same reason: the cut
-    // rewrites CHANGELOG.md and charts/iterion/Chart.yaml, both pinned by
-    // internal/mdcode's committed-corpus golden, so the golden regenerates
-    // here and lands inside the release commit too — otherwise every
-    // release reopens the red the golden exists to make deliberate (#2600).
-    // It runs FIRST: the regeneration moves no pin, so its failure aborts
-    // the cut with the floors still where HEAD left them. -v because cmd/go
-    // swallows a PASSING package's output without it, and the rewrite's
-    // stderr announcement must reach the release log; the last line adds
-    // the golden's diff stat to that log.
-    'before:git:beforeRelease': [
-      'MDCODE_UPDATE_GOLDEN=1 go test ./internal/mdcode/ -run TestTheCommittedCorpusKeepsItsReading -count=1 -v',
-      'go run ./cmd/release-floors --apply',
-      'git diff --stat -- internal/mdcode/testdata/committed-reading.txt'
-    ]
+    // The corpus reading runs second, over the same staging slot: the cut
+    // edits CHANGELOG.md and the chart, both pinned by internal/mdcode's
+    // committed-reading golden, so the golden re-pins them in this same
+    // commit — last, after every other writer of the slot, so it pins the
+    // bytes the commit ships. --cut re-pins only what the cut itself edited
+    // and aborts it on any other drift: an unattended commit never pins a
+    // reading change nobody reviewed.
+    'before:git:beforeRelease': ['go run ./cmd/release-floors --apply', 'go run ./cmd/corpus-reading --cut']
   },
   plugins: {
     '@release-it/conventional-changelog': {

@@ -3,6 +3,7 @@ package floorsalign
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -327,19 +328,45 @@ func TestTheReleaseHookWiresTheAligner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The slot is an array since the mdcode golden joined it (#2600): what
-	// matters here is that the aligner still runs INSIDE it, after the slot
-	// opens — not that it is the slot's only tenant — and that it runs
-	// AFTER the golden's regeneration: the aligner is the hook that MOVES
-	// pins, so a failing hook ahead of it must abort the cut with the pins
-	// still where HEAD left them.
-	slot := strings.Index(string(src), "'before:git:beforeRelease'")
-	aligner := strings.Index(string(src), "'go run ./cmd/release-floors --apply'")
-	if slot < 0 || aligner < 0 || aligner < slot {
+	hook, err := ReleaseHook(src, "before:git:beforeRelease")
+	if err != nil || !slices.Contains(hook, "go run ./cmd/release-floors --apply") {
 		t.Fatal(".release-it.mjs no longer runs `go run ./cmd/release-floors --apply` from before:git:beforeRelease — the pins realign by hand again, or the aligner judges notes that are not rendered yet")
 	}
-	mdcode := strings.Index(string(src), "'MDCODE_UPDATE_GOLDEN=1 go test ./internal/mdcode/")
-	if mdcode < 0 || mdcode > aligner {
-		t.Fatal(".release-it.mjs no longer regenerates the mdcode golden BEFORE the aligner in before:git:beforeRelease — an mdcode failure would abort the cut with the pins already moved")
+}
+
+// A hook line kept in a comment runs nothing, and a slot wired twice runs one
+// of the two lists: neither may read as wired.
+func TestReleaseHook_ReadsOnlyTheLiveList(t *testing.T) {
+	const slot = "before:git:beforeRelease"
+	wired := map[string][]string{
+		"one line":           []string{"go run ./a", "go run ./b"},
+		"multi-line":         []string{"go run ./a", "go run ./b"},
+		"double-quoted":      []string{"go run ./a", "go run ./b"},
+		"comment chars text": []string{"rm -f /tmp/x/*.log", "echo */ok"},
+		"trailing comment":   []string{"go run ./a"},
+	}
+	sources := map[string]string{
+		"one line":           "hooks: {\n  'before:git:beforeRelease': ['go run ./a', 'go run ./b']\n}\n",
+		"multi-line":         "hooks: {\n  'before:git:beforeRelease': [\n    'go run ./a',\n    'go run ./b'\n  ]\n}\n",
+		"double-quoted":      "hooks: {\n  \"before:git:beforeRelease\": [\"go run ./a\", \"go run ./b\"]\n}\n",
+		"comment chars text": "hooks: {\n  'before:git:beforeRelease': ['rm -f /tmp/x/*.log', 'echo */ok']\n}\n",
+		"trailing comment":   "hooks: {\n  'before:git:beforeRelease': [\n    'go run ./a', // 'go run ./b'\n  ]\n}\n",
+	}
+	for name, src := range sources {
+		got, err := ReleaseHook([]byte(src), slot)
+		if err != nil || !slices.Equal(got, wired[name]) {
+			t.Errorf("%s: got %q, %v; want %q", name, got, err, wired[name])
+		}
+	}
+	dead := map[string]string{
+		"line comment":     "hooks: {\n  // 'before:git:beforeRelease': ['go run ./a'],\n}\n",
+		"block comment":    "hooks: {\n  /* 'before:git:beforeRelease': ['go run ./b'] */\n}\n",
+		"after a live key": "hooks: {\n  'after:bump': ['bash x.sh'], // 'before:git:beforeRelease': ['go run ./a']\n}\n",
+		"wired twice":      "'before:git:beforeRelease': ['go run ./a'],\n'before:git:beforeRelease': ['go run ./b']\n",
+	}
+	for name, src := range dead {
+		if got, err := ReleaseHook([]byte(src), slot); err == nil {
+			t.Errorf("%s: a slot release-it does not run read as wired: %q", name, got)
+		}
 	}
 }

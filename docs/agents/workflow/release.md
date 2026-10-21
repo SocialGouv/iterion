@@ -74,6 +74,17 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
   (`git checkout -- package.json CHANGELOG.md charts/iterion/Chart.yaml internal/mdcode/testdata/committed-reading.txt`)
   before retrying. CI is unaffected: `version.yml` runs on a fresh checkout
   and nothing was committed or pushed.
+- **The cut pins its own corpus edits.** internal/mdcode's committed-reading
+  golden pins every tracked `.md`, `.yaml` and `.yml`, and the cut edits
+  `CHANGELOG.md` and the chart, so the same slot then runs
+  `go run ./cmd/corpus-reading --cut`
+  ([internal/corpusreading](../../../internal/corpusreading)): it re-pins
+  exactly the files the cut edited, in the release commit. Any other drift —
+  a pinned file main changed without its golden line, even one the cut also
+  edits — refuses the cut and names the paths. Land that golden through a
+  reviewed change (`task corpus:reading -- --write`, then review the moved
+  lines) and cut again. A change that edits a pinned file carries its golden
+  update in its own diff the same way.
 - **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
 - **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
 - **version.yml** — conventional changelog via release-it, version from `package.json`.
