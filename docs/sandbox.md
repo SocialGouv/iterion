@@ -1443,7 +1443,24 @@ across the channel.
     `EnvelopeWriter` **refuses** an over-cap line at the source with a
     typed error naming the envelope type: a writer that forgot to clamp
     fails where it is, instead of killing the peer's reader with a
-    payload it can only report the size of.
+    payload it can only report the size of. A terminal claw `result` gets
+    one last-resort write, only on `ErrEnvelopeLineTooLong`: the runner
+    emits a small replacement preserving `Tokens`, `BackendName` and the
+    other scalar metadata, with `Output` reduced to `_tokens`, `_cost_usd`,
+    `_model` and `_usage_unreported_calls`. The replacement is checked
+    against the same cap after assembly; unbounded `SessionID` /
+    `SessionFingerprint` values are then replaced by bounded markers naming
+    their size, and `_model` is the next and last accounting value degraded.
+    Business output and `Stderr` stay behind; `Error` keeps the original
+    refusal first, with its actual size and the cap, and joins the backend
+    error. One no larger than 4 KiB crosses whole for the launcher's secret
+    guard to redact; a larger one becomes `<omitted N-byte backend error>`
+    in the result and the runner's log, never a raw prefix a pre-redaction
+    cut could split. The runner still exits with the channel refusal, so
+    the launcher books the spend and fails the node. `PendingConversation`
+    and `PendingToolUseID` are
+    both removed too: an over-cap pause is a failure, never a pause without
+    the state its resume would need.
   - **A turn's conversation crosses whole or not at all.** The snapshot a
     fork replays is relayed up to 2 MiB (a full 200k-token context, with
     room under the line cap); a larger one is left out and the turn

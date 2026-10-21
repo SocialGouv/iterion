@@ -229,8 +229,10 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		return emitFatal(dispatcher, stderr, marshalErr)
 	}
 	if writeErr := dispatcher.write(resultEnv); writeErr != nil {
-		// Already losing the channel — best-effort stderr report.
 		fmt.Fprintf(stderr, "iterion-claw-runner: write result envelope: %v\n", writeErr)
+		if errors.Is(writeErr, delegate.ErrEnvelopeLineTooLong) {
+			emitOversizedResultFallback(dispatcher, stderr, ioRes, writeErr)
+		}
 		return writeErr
 	}
 	if err != nil {
@@ -238,6 +240,116 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		return err
 	}
 	return nil
+}
+
+const (
+	oversizedResultBackendErrorBytes = 4096
+	oversizedResultScalarBytes       = 4096
+)
+
+func emitOversizedResultFallback(dispatcher *proxyDispatcher, stderr io.Writer, result delegate.IOResult, writeErr error) {
+	if result.Error != "" {
+		fmt.Fprintf(stderr, "iterion-claw-runner: backend error: %s\n",
+			boundedOversizedResultBackendError(result.Error))
+	}
+	fallbackEnv, fallbackErr := delegate.NewResultEnvelope(oversizedResultFallback(result, writeErr))
+	if fallbackErr != nil {
+		fmt.Fprintf(stderr, "iterion-claw-runner: marshal fallback result envelope: %v\n", fallbackErr)
+	} else if fallbackWriteErr := dispatcher.write(fallbackEnv); fallbackWriteErr != nil {
+		fmt.Fprintf(stderr, "iterion-claw-runner: write fallback result envelope: %v\n", fallbackWriteErr)
+	}
+}
+
+// oversizedResultFallback keeps the account and scalar provenance of a result
+// whose bulk cannot cross. A pause without its conversation is not resumable,
+// so its markers and resume state stay behind with the business output.
+func oversizedResultFallback(result delegate.IOResult, writeErr error) delegate.IOResult {
+	fallback := result
+	fallback.Output = nil
+	if value, ok := result.Output["_tokens"]; ok && oversizedResultAccountingNumber(value) {
+		fallback.Output = map[string]any{"_tokens": value}
+	}
+	if value, ok := result.Output["_cost_usd"]; ok && oversizedResultAccountingNumber(value) {
+		if fallback.Output == nil {
+			fallback.Output = make(map[string]any, 4)
+		}
+		fallback.Output["_cost_usd"] = value
+	}
+	if value, ok := result.Output["_model"].(string); ok {
+		if fallback.Output == nil {
+			fallback.Output = make(map[string]any, 4)
+		}
+		fallback.Output["_model"] = value
+	}
+	if value, ok := result.Output["_usage_unreported_calls"]; ok && oversizedResultAccountingNumber(value) {
+		if fallback.Output == nil {
+			fallback.Output = make(map[string]any, 4)
+		}
+		fallback.Output["_usage_unreported_calls"] = value
+	}
+	fallback.Stderr = ""
+	fallback.PendingConversation = nil
+	fallback.PendingToolUseID = ""
+	fallback.Error = oversizedResultError(result.Error, writeErr)
+	return boundOversizedResultFallback(fallback)
+}
+
+func oversizedResultAccountingNumber(value any) bool {
+	switch value.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
+		return true
+	default:
+		return false
+	}
+}
+
+func oversizedResultError(backendError string, writeErr error) string {
+	if backendError == "" {
+		return writeErr.Error()
+	}
+	return errors.Join(writeErr,
+		fmt.Errorf("backend error: %s", boundedOversizedResultBackendError(backendError))).Error()
+}
+
+func boundedOversizedResultBackendError(backendError string) string {
+	if len(backendError) <= oversizedResultBackendErrorBytes {
+		return backendError
+	}
+	return omittedOversizedResultField("backend error", len(backendError))
+}
+
+func boundOversizedResultFallback(fallback delegate.IOResult) delegate.IOResult {
+	if oversizedResultFits(fallback) {
+		return fallback
+	}
+	if len(fallback.SessionID) > oversizedResultScalarBytes {
+		fallback.SessionID = omittedOversizedResultField("session_id", len(fallback.SessionID))
+	}
+	if len(fallback.SessionFingerprint) > oversizedResultScalarBytes {
+		fallback.SessionFingerprint = omittedOversizedResultField("session_fingerprint", len(fallback.SessionFingerprint))
+	}
+	if model, ok := fallback.Output["_model"].(string); ok && len(model) > oversizedResultScalarBytes {
+		fallback.Output["_model"] = omittedOversizedResultField("model", len(model))
+	}
+	if oversizedResultFits(fallback) {
+		return fallback
+	}
+	fallback.SessionID = ""
+	fallback.SessionFingerprint = ""
+	delete(fallback.Output, "_model")
+	if len(fallback.Output) == 0 {
+		fallback.Output = nil
+	}
+	return fallback
+}
+
+func oversizedResultFits(result delegate.IOResult) bool {
+	env, err := delegate.NewResultEnvelope(result)
+	return err == nil && delegate.CheckEnvelopeLine(env) == nil
+}
+
+func omittedOversizedResultField(name string, size int) string {
+	return fmt.Sprintf("<omitted %d-byte %s>", size, name)
 }
 
 // relayEventHooks builds the event hooks the runner installs on its claw
