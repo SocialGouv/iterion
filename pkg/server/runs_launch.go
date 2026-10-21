@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -412,6 +413,19 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if resolvesBot {
 		launchBotLabel = strings.TrimSpace(req.BotID)
 	}
+	// No typed id: in CLOUD a catalog-shaped path still names a bot —
+	// admission reserves THAT band rather than the anonymous one, and the
+	// re-admission below swaps the reservation if resolution lands on a
+	// spelling variant. Local mode never infers: no resolution runs there to
+	// verify the label, so a catalog-shaped WorkDir file must not borrow a
+	// reserved band while publishing no identity.
+	inferredAdmission := false
+	if launchBotLabel == "" && req.Source == "" && s.cfg.Mode == "cloud" {
+		if inferred := inferCatalogBotID(req.FilePath); inferred != "" && inferred == botregistry.NormalizeName(inferred) {
+			launchBotLabel = inferred
+			inferredAdmission = true
+		}
+	}
 	adm, d := s.gateLaunch(r.Context(), launchSubject{BotID: launchBotLabel})
 	if d != nil {
 		s.writeLaunchDenial(w, r, d)
@@ -509,6 +523,18 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 				// file so bundle-relative skills/prompts remain adjacent.
 				trustedCatalogPath = lb.Path
 			}
+		}
+	}
+	// A canonical path can resolve to a stored spelling variant. Re-admit that
+	// real identity instead of publishing it under the inferred reservation.
+	if inferredAdmission && launchLB != nil && botID != launchBotLabel {
+		adm.rollback(s.logger)
+		adm = nil
+		adm, d = s.gateLaunch(r.Context(), launchSubject{BotID: botID})
+		if d != nil {
+			s.writeLaunchDenial(w, r, d)
+			span.SetStatus(codes.Error, "launch denied")
+			return
 		}
 	}
 	// Anything that is not a resolvable bot still requires inline Source in

@@ -262,6 +262,40 @@ func TestGateLaunch_FailOpenOnCounterError(t *testing.T) {
 	}
 }
 
+func TestGateLaunch_FailOpenAdmissionRollbackRefundsOnlyRate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		counter orgusage.Counter
+	}{
+		{name: "no monthly counter"},
+		{name: "monthly counter error", counter: erroringCounter{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newOrgTestServer(t)
+			s.orgUsage = tc.counter
+			limiter := newAuthRateLimiter()
+			fixed := time.Now()
+			limiter.now = func() time.Time { return fixed }
+			s.authLimiter = limiter
+			ctx := seedGate(t, s, gateSpec{id: "t1", launchRatePerMin: 1})
+			adm, d := s.gateLaunch(ctx, launchSubject{})
+			if d != nil {
+				t.Fatalf("fail-open launch denied: %+v", d)
+			}
+			if adm == nil || adm.counter != nil || adm.rateKey == "" {
+				t.Fatalf("admission = %+v, want a rate-only undo handle", adm)
+			}
+			adm.rollback(nil)
+			limiter.mu.Lock()
+			tokens := limiter.buckets["orglaunch:t1"].tokens
+			limiter.mu.Unlock()
+			if tokens != 1 {
+				t.Errorf("tokens = %v, want exactly 1 after one rate-only rollback", tokens)
+			}
+		})
+	}
+}
+
 // TestGateLaunch_OrgBudgetSumsAcrossTeams is the core ADR-048 claim: the
 // monthly run quota is org-level, so two teams in the same org draw down
 // one shared budget. With org quota = 1, team A's launch succeeds and
