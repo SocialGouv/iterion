@@ -1328,6 +1328,11 @@ tasks:
     cmds:
       - go run ./cmd/release-floors {{.CLI_ARGS}}
 
+  corpus:reading:
+    desc: "Check the committed-reading golden internal/mdcode's witness pins over every tracked .md, .yaml and .yml; `task corpus:reading -- --write` rewrites it — a change that edits a pinned file carries the update, and the release cut runs `cmd/corpus-reading --cut` from release-it's before:git:beforeRelease hook, re-pinning only its own edits"
+    cmds:
+      - go run ./cmd/corpus-reading {{.CLI_ARGS}}
+
   ci:queue-stats:
     desc: "Measure main's merge queue over a window — enqueue→merge latency, merges that skipped the queue, queue builds a direct push discarded, failing tests (read-only, needs gh; e.g. `task ci:queue-stats -- --since 2026-09-22 --until 2026-09-28`)"
     cmds:

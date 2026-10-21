@@ -9,6 +9,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 |---|---|---|
 | `bots` | exposes the productised bot recipes shipped with iterion (the named team — Featurly, Billy, Willy, …) as an embed.FS so the binary can run them… | — |
 | `ci/arc-runner/smoke` | — | — |
+| `cmd/corpus-reading` | Command corpus-reading checks, or rewrites, the committed corpus reading internal/mdcode's witness pins. | — |
 | `cmd/iterion` | Command iterion is the CLI for the iterion workflow engine. | — |
 | `cmd/iterion-desktop` | the Iterion Desktop binary. | — |
 | `cmd/iterion-live-status` | Command iterion-live-status is the entry point behind `task test:live:status`. | — |
@@ -28,6 +29,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `examples/mcp_test_server` | Tiny MCP stdio server used by the live tests. | — |
 | `internal/automaintguard` | holds the acceptance witness of scripts/auto-maintenance-check.sh — the preflight that decides whether a repository's dependency loop is safe to… | — |
 | `internal/ciguard` | holds tests that keep this repository's CI configuration honest from inside the test suite, where a required check can see them. | — |
+| `internal/corpusreading` | reads the committed corpus the way internal/mdcode's four first-party readers do — every tracked .md, .yaml and .yml outside the skipped trees,… | — |
 | `internal/docsguard` | holds tests that keep this repository's documentation honest from inside the test suite, where a required check can see them. | `FS` |
 | `internal/envtrust` | tells apart the environment iterion INHERITED from the part a project `.env` filled in. | — |
 | `internal/floorsalign` | realigns the syntax-floor pins at the release cut. | — |

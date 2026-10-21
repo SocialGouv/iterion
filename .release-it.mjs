@@ -26,7 +26,15 @@ export default {
     // (#1154). At after:bump the conventional-changelog plugin has not
     // written the infile yet, so the aligner would judge notes that do not
     // exist on disk.
-    'before:git:beforeRelease': ['go run ./cmd/release-floors --apply']
+    //
+    // The corpus reading runs second, over the same staging slot: the cut
+    // edits CHANGELOG.md and the chart, both pinned by internal/mdcode's
+    // committed-reading golden, so the golden re-pins them in this same
+    // commit — last, after every other writer of the slot, so it pins the
+    // bytes the commit ships. --cut re-pins only what the cut itself edited
+    // and aborts it on any other drift: an unattended commit never pins a
+    // reading change nobody reviewed.
+    'before:git:beforeRelease': ['go run ./cmd/release-floors --apply', 'go run ./cmd/corpus-reading --cut']
   },
   plugins: {
     '@release-it/conventional-changelog': {

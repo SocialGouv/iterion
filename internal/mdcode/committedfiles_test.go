@@ -1,13 +1,14 @@
-package mdcode
+package mdcode_test
 
 import (
-	"crypto/sha256"
-	"fmt"
-	"io/fs"
+	"bytes"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/corpusreading"
 )
 
 // The four first-party readers of this package — the catalogue generator
@@ -18,80 +19,40 @@ import (
 // change to the reading must be decided on the corpus the readers serve.
 // This is that witness: every tracked .md, .yaml and .yml outside vendor/,
 // hashed under the reading — the docs and ADRs, and the bots' own skills,
-// presets and manifest.yaml under bots/. The dispatcher catalogue's sync
-// output (pkg/cli/templates/dispatch_bots/) is gitignored build output
-// spliced from bots/ at build time, so the walk skips it like vendor/: a
-// build run before the test must not change what the corpus pins.
+// presets and manifest.yaml under bots/. The walk is internal/corpusreading's,
+// the one the release cut and `task corpus:reading` write the golden with:
+// it reads only what the index carries, so a build or a local draft run
+// before the test does not change what the corpus pins.
 //
-// The golden must not move here on its own: a moved hash means the four
-// readers changed verdict on a committed file, and the review decides
-// whether that is the change's point or its regression. A walk that finds
-// too few files is a green gate over an unread tree — the floor is the
-// walk's own count at the time of writing, well under the tracked total.
+// The golden moves deliberately, never on its own: a moved hash means the
+// readers' verdict on a committed file changed, and the review decides
+// whether that is the change's point or its regression. A change that edits a
+// pinned file carries the golden update in its own diff (`task
+// corpus:reading -- --write`, then review the moved lines); the release
+// commit rewrites it itself for the CHANGELOG.md and chart edits it ships. A
+// walk that finds too few files is a green gate over an unread tree — the
+// floor is the walk's own count at the time of writing, well under the
+// tracked total.
 func TestTheCommittedCorpusKeepsItsReading(t *testing.T) {
-	golden, err := os.ReadFile("testdata/committed-reading.txt")
-	if err != nil {
-		t.Fatalf("read the golden: %v", err)
-	}
-	want := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(golden)), "\n") {
-		parts := strings.Fields(line)
-		if len(parts) != 3 {
-			t.Fatalf("golden line %q is not two hashes and a path", line)
-		}
-		want[parts[2]] = parts[0] + " " + parts[1]
-	}
+	want := readGolden(t)
 	if len(want) < 800 {
 		t.Fatalf("only %d file(s) in the golden — the walk is not reaching the tree", len(want))
 	}
+	entries, err := corpusreading.Read(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("read the corpus: %v", err)
+	}
 	var md, yaml int
-	root := "../.."
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	for _, e := range entries {
+		if got := e.Reading(); want[e.Path] != got {
+			t.Errorf("%s reads differently now (mask+code %s, golden %s) — the block phase changed a committed verdict; if that is the change's point, rewrite the golden deliberately: task corpus:reading -- --write", e.Path, got, want[e.Path])
 		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", "vendor", "node_modules", ".repos", ".works", ".claude", ".iterion", "testdata", "dispatch_bots":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		switch filepath.Ext(path) {
-		case ".md", ".yaml", ".yml":
-		default:
-			return nil
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		var f FenceScanner
-		var code []byte
-		for _, line := range Lines(string(body)) {
-			if f.Code(line) {
-				code = append(code, '1')
-			} else {
-				code = append(code, '0')
-			}
-		}
-		mh := sha256.Sum256([]byte(Mask(string(body))))
-		ch := sha256.Sum256(code)
-		got := fmt.Sprintf("%x %x", mh, ch)
-		if want[path] != got {
-			t.Errorf("%s reads differently now (mask+code %s, golden %s) — the block phase changed a committed verdict; if that is the change's point, rewrite the golden deliberately", path, got, want[path])
-		}
-		delete(want, path)
-		switch filepath.Ext(path) {
-		case ".md":
+		delete(want, e.Path)
+		if path.Ext(e.Path) == ".md" {
 			md++
-		default:
+		} else {
 			yaml++
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	if len(want) > 0 {
 		t.Errorf("%d golden file(s) the walk no longer reaches; first: %s", len(want), keys(want))
@@ -99,6 +60,49 @@ func TestTheCommittedCorpusKeepsItsReading(t *testing.T) {
 	if md < 600 || yaml < 100 {
 		t.Errorf("the walk found %d .md and %d .yaml — the corpus is not what the golden was written from", md, yaml)
 	}
+}
+
+// The release cut rewrites the golden over the whole corpus, so the bytes
+// the generator writes for an unchanged corpus must be the committed bytes:
+// otherwise every cut would also reorder or reformat the lines of files it
+// never touched, and the release commit would stop saying which pins it moved.
+func TestTheGoldenIsWhatTheGeneratorWrites(t *testing.T) {
+	committed, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(corpusreading.Golden)))
+	if err != nil {
+		t.Fatalf("read the golden: %v", err)
+	}
+	entries, err := corpusreading.Read(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("read the corpus: %v", err)
+	}
+	if written := corpusreading.Format(entries); !bytes.Equal(written, committed) {
+		w, c := strings.Split(string(written), "\n"), strings.Split(string(committed), "\n")
+		i := 0
+		for i < len(w) && i < len(c) && w[i] == c[i] {
+			i++
+		}
+		var wl, cl string
+		if i < len(w) {
+			wl = w[i]
+		}
+		if i < len(c) {
+			cl = c[i]
+		}
+		t.Fatalf("the generator's golden differs from the committed one at line %d:\n  writes: %q\n  golden: %q\nrewrite it with `task corpus:reading -- --write` so a cut's commit moves only the lines of the files it edits", i+1, wl, cl)
+	}
+}
+
+func readGolden(t *testing.T) map[string]string {
+	t.Helper()
+	golden, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(corpusreading.Golden)))
+	if err != nil {
+		t.Fatalf("read the golden: %v", err)
+	}
+	want, err := corpusreading.Parse(golden)
+	if err != nil {
+		t.Fatalf("parse the golden: %v", err)
+	}
+	return want
 }
 
 func keys(m map[string]string) string {
