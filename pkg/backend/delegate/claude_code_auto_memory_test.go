@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -221,7 +222,8 @@ func TestWriteSystemPromptFile_CarriesTheAutoMemorySection(t *testing.T) {
 // look at "the pi credential" — and the memoised guard repeated it on every
 // node of the run.
 func TestPrepareStateRoot_ErrorsNameTheirCaller(t *testing.T) {
-	work := t.TempDir()
+	tmpRoot := filepath.Clean(t.TempDir())
+	work := filepath.Join(tmpRoot, "pipe")
 	// A symlinked ANCESTOR: the component walk, not the leaf check.
 	if err := os.MkdirAll(filepath.Join(work, "real"), 0o755); err != nil {
 		t.Fatal(err)
@@ -236,10 +238,21 @@ func TestPrepareStateRoot_ErrorsNameTheirCaller(t *testing.T) {
 	if err == nil {
 		t.Fatal("a symlinked ancestor inside the checkout must be refused")
 	}
-	if strings.Contains(err.Error(), "pi") {
+	piWord := regexp.MustCompile(`\bpi\b`)
+	message := strings.ReplaceAll(err.Error(), tmpRoot, "<tmp>")
+	if piWord.MatchString(message) {
 		t.Errorf("an auto-memory refusal points the operator at pi: %v", err)
 	}
 	if !strings.Contains(err.Error(), "MEMORY.md") {
 		t.Errorf("the refusal does not say what would have been written: %v", err)
+	}
+	piErr := PrepareStateRoot(Task{WorkDir: work}, root, StateInCheckout,
+		"pi backend", "the pi credential", nil)
+	if piErr == nil {
+		t.Fatal("a pi refusal must be produced")
+	}
+	piMessage := strings.ReplaceAll(piErr.Error(), tmpRoot, "<tmp>")
+	if !piWord.MatchString(piMessage) {
+		t.Fatalf("the word guard must match a pi refusal: %v", piErr)
 	}
 }
