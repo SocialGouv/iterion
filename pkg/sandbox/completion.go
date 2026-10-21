@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -209,10 +210,15 @@ func (o SweepOutcome) Stopped() bool { return o.Ran && len(o.Report.Survivors) =
 // the wrapper, the command, what it started, whatever detached from it — the
 // way ADR-127 ends an agent's, through short execs on contexts of their own,
 // so it still runs when the command's context is gone. It removes the file
-// that dated the session. A sweep whose exec fails, or whose program does not
-// reach its end, is tried again, backing off, until budget is spent: the exec
-// path a stream was lost on is often down a little longer than the stream,
-// and a sweep that never ran leaves the command's state unknown.
+// that dated the session.
+//
+// An attempt whose exec never reached the container — its client could not
+// connect, or could not open the stream — signalled nothing, and is tried
+// again, backing off: the exec path a stream was lost on is often down a
+// little longer than the stream. Any other unfinished attempt is final: its
+// program may have signalled processes before it was cut — a child already
+// orphaned by the TERM to its parent — that no later scan can find again. The
+// whole sweep, attempts and pauses, ends within budget.
 func (c *Completion) Sweep(run Run, budget time.Duration) SweepOutcome {
 	since := c.sinceFile()
 	sweep, err := proc.NodeSessionSweepScript(c.mark, since)
@@ -222,13 +228,13 @@ func (c *Completion) Sweep(run Run, budget time.Duration) SweepOutcome {
 	// A subshell: the program's own exit must not skip the rm, and its
 	// status — a program killed on its way — is the exec's.
 	script := "(\n" + sweep + ")\nrc=$?\nrm -f " + shellquote.Quote(since) + "\nexit $rc"
-	start := time.Now()
+	deadline := time.Now().Add(budget)
 	wait := time.Second
 	for attempt := 1; ; attempt++ {
-		o := c.sweepOnce(run, script)
-		if o.Ran || time.Since(start)+wait > budget {
+		o, reached := c.sweepOnce(run, script, deadline)
+		if o.Ran || reached || time.Until(deadline) <= wait {
 			if !o.Ran && attempt > 1 {
-				o.Err = fmt.Errorf("%d attempts over %s: %w", attempt, time.Since(start).Round(time.Second), o.Err)
+				o.Err = fmt.Errorf("%d attempts: %w", attempt, o.Err)
 			}
 			return o
 		}
@@ -237,21 +243,69 @@ func (c *Completion) Sweep(run Run, budget time.Duration) SweepOutcome {
 	}
 }
 
-func (c *Completion) sweepOnce(run Run, script string) SweepOutcome {
+// sweepOnce runs one attempt of the sweep, bounded by deadline and by the
+// sweep's own bound, and reports whether its exec reached the container.
+func (c *Completion) sweepOnce(run Run, script string, deadline time.Time) (SweepOutcome, bool) {
 	// The sweep's TERM and KILL phases are bounded, each running one scan
 	// of the container's /proc past its bound, which a crowded container
 	// makes long.
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), minTime(deadline, time.Now().Add(60*time.Second)))
 	defer cancel()
-	out, runErr := run.Command(ctx, []string{"sh", "-c", script}, ExecOpts{}).Output()
+	cmd := run.Command(ctx, []string{"sh", "-c", script}, ExecOpts{})
+	// A client killed at the deadline is not waited for past it, whatever
+	// still holds its output: the budget bounds the sweep on every driver.
+	if cmd.WaitDelay == 0 {
+		cmd.WaitDelay = 2 * time.Second
+	}
+	out, runErr := cmd.Output()
 	report, perr := proc.ParseNodeSessionSweep(string(out))
+	reached := true
 	if runErr != nil {
 		why := runErr.Error()
 		var exit *exec.ExitError
-		if errors.As(runErr, &exit) && len(bytes.TrimSpace(exit.Stderr)) > 0 {
-			why += ": " + string(bytes.TrimSpace(exit.Stderr))
+		var stderr []byte
+		if errors.As(runErr, &exit) {
+			stderr = bytes.TrimSpace(exit.Stderr)
+			if len(stderr) > 0 {
+				why += ": " + string(stderr)
+			}
 		}
+		reached = len(out) > 0 || !execNeverReached(runErr, stderr)
 		perr = errors.Join(perr, fmt.Errorf("the exec that sweeps session %s failed: %s", c.mark, why))
 	}
-	return SweepOutcome{Report: report, Ran: perr == nil, Err: errors.Join(perr, report.Problems())}
+	return SweepOutcome{Report: report, Ran: perr == nil, Err: errors.Join(perr, report.Problems())}, reached
+}
+
+// execNeverReached reports whether an exec's failure says its request never
+// reached the container: the client could not start, could not connect to the
+// API server or the container runtime, or could not open the exec's stream.
+// Anything else may have run part of the command, and counts as reached.
+func execNeverReached(err error, stderr []byte) bool {
+	var pathErr *fs.PathError
+	if errors.Is(err, exec.ErrNotFound) || errors.As(err, &pathErr) {
+		return true
+	}
+	msg := strings.ToLower(string(stderr))
+	for _, needle := range []string{
+		"unable to connect to the server",
+		"unable to upgrade connection",
+		"dial tcp",
+		"connection refused",
+		"no such host",
+		"tls handshake timeout",
+		"cannot connect to the docker daemon",
+		"error during connect",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }

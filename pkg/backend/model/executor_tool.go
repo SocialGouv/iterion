@@ -830,17 +830,20 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 }
 
 // streamedRecipeRunner runs a recipe streamed on its stdin once all of it has
-// arrived ($1 is its size): the recipe lands in a temp file, refused unless
-// its size is $1, and runs as `bash /dev/fd/3` with the file already unlinked
-// — bash reads a file the way it reads `bash -s`, and exec keeps the recipe in
-// the process that leads its session and group.
-const streamedRecipeRunner = `t=$(mktemp) || exit 125
+// arrived ($1 is its size): the recipe lands in a private temp file, refused
+// unless its size is $1, and runs as `bash -s` reading that file, already
+// unlinked — the recipe means what `bash -s` makes of it, a `read` in it
+// reading its next lines included, and exec keeps it in the process that
+// leads its session and group. Without mktemp, the file is created
+// exclusively under a name of its own.
+const streamedRecipeRunner = `umask 077
+t=$(mktemp 2>/dev/null) || { t="${TMPDIR:-/tmp}/iterion-recipe.$$"; (set -C; : > "$t") 2>/dev/null || exit 125; }
 cat > "$t" || { rm -f "$t"; exit 125; }
 n=$(( $(wc -c < "$t") ))
 [ "$n" -eq "$1" ] || { rm -f "$t"; echo "iterion: the recipe arrived cut short: $n of $1 bytes" >&2; exit 125; }
 exec 3< "$t"
 rm -f "$t"
-exec bash /dev/fd/3`
+exec bash -s <&3 3<&-`
 
 // sandboxToolCommand routes a tool node's argv through the sandbox under a
 // completion (sandbox.Completion): the exec client's exit status is not proof

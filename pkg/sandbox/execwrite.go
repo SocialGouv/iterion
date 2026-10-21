@@ -18,7 +18,9 @@ import (
 // created parent dirs (0700) and the temp file (0600) owner-only; the
 // final mv is atomic so a concurrent reader never sees a torn write, and
 // each writer has a temp file of its own, so two writers of one path never
-// mix. $2 is the content's length: a stdin stream cut short leaves no file at
+// mix, and a signal that ends the writer takes its temp file with it. A
+// destination that is a directory is refused: mv would put the file inside
+// it. $2 is the content's length: a stdin stream cut short leaves no file at
 // all, never a prefix of the content in place of the whole. The writer's last
 // line proves the write: the exec client's status alone proves nothing.
 const writeFileScript = `set -e
@@ -27,9 +29,11 @@ d=$(dirname "$1")
 mkdir -p "$d"
 t="$1.tmp.$$"
 trap 'rm -f "$t"' EXIT
+trap 'rm -f "$t"; exit 1' HUP INT TERM
 cat > "$t"
 n=$(( $(wc -c < "$t") ))
 [ "$n" -eq "$2" ] || { echo "received $n of $2 bytes" >&2; exit 1; }
+[ ! -d "$1" ] || { echo "$1 is a directory" >&2; exit 1; }
 mv "$t" "$1"
 echo "` + writeFileDone + ` $n"`
 

@@ -129,7 +129,7 @@ func (s *deliverySandbox) Exec(ctx context.Context, cmd []string, opts sandbox.E
 	}
 	if s.failWrite && opts.Stdin != nil {
 		// A write that stopped half-way: its temp file is left behind.
-		partial := filepath.Join(s.root, cmd[4]) + ".tmp"
+		partial := filepath.Join(s.root, cmd[4]) + ".tmp.4242"
 		if err := os.MkdirAll(filepath.Dir(partial), 0o700); err != nil {
 			return sandbox.ExecResult{}, err
 		}

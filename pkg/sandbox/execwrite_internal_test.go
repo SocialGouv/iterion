@@ -11,7 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // The writer refuses when it cannot tell the size it received from the size
@@ -86,5 +88,102 @@ func TestWriteFileExec_AWriteWithoutItsProofFails(t *testing.T) {
 	err := WriteFileExec(context.Background(), noProofRun{}, "/tmp/x", []byte("payload"))
 	if err == nil || !errors.Is(err, ErrExecStatusUnknown) {
 		t.Fatalf("a write without its proof: %v, want an unproven end", err)
+	}
+}
+
+// A destination that is a directory is refused: mv would put the file inside
+// it, and the writer would prove a write that never reached its path.
+func TestWriteFileScriptRefusesADirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "creds")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", writeFileScript, "sh", dir, "10")
+	cmd.Stdin = strings.NewReader("credential")
+	out, err := cmd.Output()
+	if err == nil || strings.Contains(string(out), writeFileDone) {
+		t.Fatalf("a directory destination was written and proven: %v, %q", err, out)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("the refused write left %d file(s) in the directory", len(entries))
+	}
+}
+
+// A signal that ends the writer takes its temp file with it.
+func TestWriteFileScriptTakesItsTempFileOnTERM(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "f")
+	cmd := exec.Command("sh", "-c", writeFileScript, "sh", target, "100")
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.Write([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
+	// The temp file exists once cat has opened it.
+	for i := 0; i < 100; i++ {
+		if m, _ := filepath.Glob(target + ".tmp.*"); len(m) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	// The shell runs its trap once its foreground cat is done: the stream's
+	// end, as a dead exec client's stream ends.
+	in.Close()
+	_ = cmd.Wait()
+	if m, _ := filepath.Glob(target + ".tmp.*"); len(m) > 0 {
+		t.Fatalf("a TERM left the writer's temp file behind: %v", m)
+	}
+}
+
+// scriptedRun answers each sweep exec with the next script of steps, then
+// with the real sweep program, run here.
+type scriptedRun struct {
+	steps    []string
+	attempts int
+}
+
+func (r *scriptedRun) Driver() string { return "scripted" }
+func (r *scriptedRun) Command(ctx context.Context, argv []string, _ ExecOpts) *exec.Cmd {
+	r.attempts++
+	if r.attempts <= len(r.steps) {
+		return exec.CommandContext(ctx, "sh", "-c", r.steps[r.attempts-1])
+	}
+	return exec.CommandContext(ctx, argv[0], argv[1:]...)
+}
+func (r *scriptedRun) Exec(context.Context, []string, ExecOpts) (ExecResult, error) {
+	return ExecResult{}, nil
+}
+func (r *scriptedRun) Cleanup(context.Context) error { return nil }
+
+// Only an exec that never reached the container is tried again: it signalled
+// nothing. One that reached it and was cut may have, and its sweep is final.
+func TestSweepRetriesOnlyAnExecThatNeverReachedTheContainer(t *testing.T) {
+	never := &scriptedRun{steps: []string{"echo 'Unable to connect to the server: dial tcp 10.0.0.1:443: i/o timeout' >&2; exit 1"}}
+	if o := NewCompletion("t").Sweep(never, 10*time.Second); !o.Stopped() || never.attempts != 2 {
+		t.Fatalf("an exec that never reached the container: attempts=%d stopped=%v (%v), want a second, settling attempt", never.attempts, o.Stopped(), o.Err)
+	}
+	cut := &scriptedRun{steps: []string{"echo 'error: stream reset by peer' >&2; exit 1"}}
+	if o := NewCompletion("t").Sweep(cut, 10*time.Second); o.Stopped() || cut.attempts != 1 {
+		t.Fatalf("an exec cut after reaching the container: attempts=%d stopped=%v, want one attempt and an unsettled end", cut.attempts, o.Stopped())
+	}
+}
+
+// The whole sweep ends within its budget, however long one attempt would take.
+func TestSweepEndsWithinItsBudget(t *testing.T) {
+	hangs := &scriptedRun{steps: []string{"sleep 30"}}
+	start := time.Now()
+	o := NewCompletion("t").Sweep(hangs, time.Second)
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("a sweep with a budget of 1s took %s", took)
+	}
+	if o.Stopped() {
+		t.Fatal("a sweep cut by its budget proved the command stopped")
 	}
 }

@@ -53,6 +53,8 @@ type execClientRun struct {
 	next    int
 	// tools counts the tool commands the engine handed the container.
 	tools int
+	// path, when set, is the container's PATH for the tool commands.
+	path string
 }
 
 func (f *execClientRun) Driver() string { return "fake-exec-client" }
@@ -104,6 +106,9 @@ echo 'exec session ended' >&2; exit 0`
 	c.Env = os.Environ()
 	for k, v := range opts.Env {
 		c.Env = append(c.Env, k+"="+v)
+	}
+	if f.path != "" {
+		c.Env = append(c.Env, "PATH="+f.path)
 	}
 	c.Stdin = opts.Stdin
 	// The kubernetes driver's own bound: a cancelled client is not waited
@@ -786,4 +791,43 @@ func TestVerifiedToolNodeCancelledDuringItsPostconditionEndsWithItsCancel(t *tes
 		t.Fatal("the cancelled Verified Action did not return")
 	}
 	assertGrandchildStopped(t, heart)
+}
+
+// A streamed recipe that reads its stdin reads its own next lines, as under
+// `bash -s`: the line it reads is data, never a command.
+func TestSandboxedToolNodeStreamedRecipeReadsItsNextLines(t *testing.T) {
+	e, _ := sandboxedToolExecutor(t, "waits")
+	out, err := e.Execute(context.Background(), &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "big"},
+		Command:  ": " + strings.Repeat("x", 150_000) + "\nread -r value\nexit 3\nprintf 'value=%s' \"$value\"\n",
+	}, map[string]any{})
+	if err != nil {
+		t.Fatalf("the line a streamed recipe read ran as a command: %v", err)
+	}
+	if got, _ := out["result"].(string); got != "value=exit 3" {
+		t.Fatalf("the streamed recipe's read: %q, want its next line as data", got)
+	}
+}
+
+// A container without mktemp still runs a streamed recipe.
+func TestSandboxedToolNodeStreamedRecipeWithoutMktemp(t *testing.T) {
+	e, _ := sandboxedToolExecutor(t, "waits")
+	bin := t.TempDir()
+	for _, tool := range []string{"sh", "bash", "setsid", "cat", "wc", "rm", "sleep"} {
+		p, err := osexec.LookPath(tool)
+		if err != nil {
+			t.Fatalf("%s is missing: %v", tool, err)
+		}
+		if err := os.Symlink(p, filepath.Join(bin, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.sandbox.(*execClientRun).path = bin
+	out, err := e.Execute(context.Background(), &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "big"},
+		Command:  ": " + strings.Repeat("x", 150_000) + "\nprintf healthy\n",
+	}, map[string]any{})
+	if err != nil || out["result"] != "healthy" {
+		t.Fatalf("a streamed recipe in a container without mktemp: %v, %v", err, out)
+	}
 }

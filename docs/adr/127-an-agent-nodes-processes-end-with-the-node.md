@@ -242,10 +242,13 @@ client, and nothing in the pod.
    - **The line found:** the command ended; the node succeeds only if the
      client and the line both say 0. A proven end sweeps nothing.
    - **The line missing:** the end is unknown. The command's session is swept
-     in the container (decision 2's sweep), and a sweep whose exec fails or
-     whose program does not reach its end is tried again, backing off, for up
-     to three minutes — ten seconds on a cancel: the exec path a stream was lost
-     on is often down a little longer than the stream. The node fails with a
+     in the container (decision 2's sweep). A sweep whose exec never reached
+     the container — its client could not connect or open the stream — is
+     tried again, backing off: the exec path a stream was lost on is often
+     down a little longer than the stream. Any other unfinished attempt is
+     final: it may have signalled processes no later scan can find again. The
+     whole sweep ends within three minutes — ten seconds on a cancel. The node
+     fails with a
      `sandbox.ExecStatusUnknownError` saying what the sweep stopped and what it
      could not do; never a success carrying a partial output.
    - **An end the sweep could not settle** — its program never ran to its end
@@ -256,20 +259,24 @@ client, and nothing in the pod.
      `AMBIGUOUS_EFFECT` whatever a wrapper made of it (a subbot boundary, the
      catch-all default), recorded even when it lands with a cancel (the store
      write is detached from the done context), never retried by recovery, never
-     auto-resumed, never redelivered by the runner, and a `best_effort` join
-     stops on it as `wait_all` does.
+     auto-resumed — the retry sweeper disarms a stale armed retry on it — never
+     redelivered by the runner, and a `best_effort` join stops on it as
+     `wait_all` does.
    - **A Verified Action** stops on an ambiguous end of its recipe, of a
      self-repair or of its postcondition; a recipe whose end was unknown but
      settled lends it no output — the postcondition judges, and only its
      output travels; a cancel ends the node with its cancel, never with a
      `best_effort` success.
    - **The input proves its end too.** A recipe over 100 KB is streamed to a
-     temp file in the container, run only once its size is the size sent, as
-     `exec bash /dev/fd/3` — what `bash -s` makes of it, a cut stream refused.
+     private temp file in the container, run only once its size is the size
+     sent, as `bash -s` reading that file — what `bash -s` makes of it, a `read`
+     in it reading its next lines included; a cut stream is refused.
      A file `WriteFileExec` writes into the sandbox (a script's body pushed
      into a copy-based sandbox, a credential) is put in place only once its
-     received size is the size sent, by a writer of its own, which then says
-     so on stdout — and the write is a success only when it said so.
+     received size is the size sent, by a writer of its own that refuses a
+     directory as its destination and removes its temp file when a signal ends
+     it, and which then says so on stdout — the write is a success only when it
+     said so.
 8. **A tool node that backgrounds work and exits 0 stays legitimate:** a
    proven end sweeps nothing, on a cancel too.
 
