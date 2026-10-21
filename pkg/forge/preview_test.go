@@ -25,7 +25,7 @@ func TestPreviewEnable_CommandOnlyBotNotConflict(t *testing.T) {
 	if len(pv.Conflicts) != 0 {
 		t.Fatalf("command-only bot must NOT be a conflict, got %v", pv.Conflicts)
 	}
-	if pv.Commands["featurly"] != "feature-dev" {
+	if len(pv.Commands) != 1 || pv.Commands[0] != (EnablePreviewCommand{Command: "featurly", BotID: "feature-dev"}) {
 		t.Errorf("commands: %v", pv.Commands)
 	}
 	// pull_request (review-pr forge) + pull_request_comment (featurly command).
@@ -87,5 +87,24 @@ func TestPreviewEnable_NoForgeNoInvocationIsConflict(t *testing.T) {
 	)
 	if len(pv.Conflicts) != 1 {
 		t.Errorf("a bot with neither forge: nor an invocation should conflict, got %v", pv.Conflicts)
+	}
+}
+
+func TestPreviewEnable_KeepsComplementaryCommandRoutes(t *testing.T) {
+	pv := PreviewEnable(context.Background(), "t1", testBotLookup, invLookup(map[string][]bundle.Invocation{
+		"review-pr":     {cmdInv("revi", "direct", "", "when_args_empty")},
+		"revi-converse": {cmdInv("revi", "direct", "converse_question", "when_args_present")},
+	}), []string{"review-pr", "revi-converse"})
+	want := []EnablePreviewCommand{
+		{Command: "revi", BotID: "revi-converse"},
+		{Command: "revi", BotID: "review-pr"},
+	}
+	if len(pv.Commands) != len(want) {
+		t.Fatalf("commands = %v, want %v", pv.Commands, want)
+	}
+	for i := range want {
+		if pv.Commands[i] != want[i] {
+			t.Errorf("commands[%d] = %+v, want %+v", i, pv.Commands[i], want[i])
+		}
 	}
 }

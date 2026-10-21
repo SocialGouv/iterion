@@ -52,17 +52,14 @@ gh api user --jq .login          # expected: devthejo
 iterion remote status            # instance + account (it does NOT print a team)
 
 # 1. Read the integration. The bare form takes NO argument and resolves the
-#    active team itself — which is how you learn the team id, since nothing
-#    above prints one. Note `tenant_id` (= <team-id>), `id`, and the COMPLETE
-#    `bot_ids` list.
+#    active team itself. Note the integration's `id`.
 iterion remote forge repo-bots --json
 
-# 2. Flip the lane. `bot_ids` is REQUIRED and must be complete (omitting it
-#    is a 400, not "keep as is"); `auto_fix_on_gate_failure` omitted means
-#    "leave the current choice alone", so it has to be written explicitly.
-iterion remote api PATCH /api/teams/<team-id>/forge/repo-bots/<integration-id> \
-  --data '{"bot_ids":[<complete list read back at step 1>],
-           "auto_fix_on_gate_failure":true}'
+# 2. Flip the lane. `auto_fix_on_gate_failure` omitted means "leave the
+#    current choice alone", so it has to be written explicitly. `bot_ids` is
+#    optional: absent keeps the stored set, while a present list replaces it.
+iterion remote forge repo-bots update <integration-id> \
+  --data '{"auto_fix_on_gate_failure":true}'
 #    A `202` carrying `pending_approval: true` is NOT a failure and NOT a
 #    success: turning the lane ON is an automation EXPANSION, so an org that
 #    requires provisioning approval parks it for an admin and applies nothing
@@ -73,13 +70,12 @@ iterion remote api PATCH /api/teams/<team-id>/forge/repo-bots/<integration-id> \
 iterion remote forge repo-bots --json
 ```
 
-The typed CLI has no update verb: `iterion remote forge repo-bots` offers
-`preview | create | delete`, and lists with no argument at all
-([../../cmd/iterion/remote_webhooks.go](../../../cmd/iterion/remote_webhooks.go) —
-`list` is not a verb, it falls through to the usage error),
-so the PATCH goes through the `remote api` escape hatch. The server route is
-`PATCH /api/teams/{id}/forge/repo-bots/{integration_id}`
-([../../pkg/server/forge_provisioning_routes.go](../../../pkg/server/forge_provisioning_routes.go)).
+The typed CLI offers `preview | create | update | delete`, and lists with no
+argument at all ([../../cmd/iterion/remote_webhooks.go](../../../cmd/iterion/remote_webhooks.go) —
+`list` is not a verb, it falls through to the usage error). `update` sends the
+payload unchanged to `PATCH /api/teams/{id}/forge/repo-bots/{integration_id}`
+([../../pkg/server/forge_provisioning_routes.go](../../../pkg/server/forge_provisioning_routes.go));
+a settings-only payload such as `launch_vars` need not echo `bot_ids`.
 
 Setting `false` in that same payload is how the lane is turned off — but the
 two directions **do not read back the same way**, so the symmetry stops at the

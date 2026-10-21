@@ -54,10 +54,10 @@ a red gate launches the fixer by itself,
 the shared credential with nobody typing a command. Re-arming it, and the
 `repo-bots` PATCH that does it, is in
 [agents/workflow/billy.md#billy-is-paused](agents/workflow/billy.md#billy-is-paused). One
-gotcha when flipping the flag either way: the `repo-bots` PATCH requires the
-FULL `bot_ids` list in the payload (omitting it is a 400, not "keep as is"),
-and an omitted `auto_fix_on_gate_failure` means "leave the current choice
-alone" — it has to be written explicitly.
+gotcha when flipping the flag either way: `repo-bots update` keeps the stored
+set when `bot_ids` is absent, while a present list replaces the whole set (an
+explicitly empty one is a 400), and an omitted `auto_fix_on_gate_failure` means
+"leave the current choice alone" — it has to be written explicitly.
 
 **Corollary, whatever the lane is set to**: before hand-fixing a red or ejected
 PR, check no fixer run is already in flight on it — a manual push while the
