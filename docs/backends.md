@@ -1251,6 +1251,53 @@ host's own resolution (`ITERION_OPENAI_COMPATIBLE_RESOLVED`), which answers
 before the container's local sources — the image's snapshot can be older
 than the host's, and the two never disagree across the IPC.
 
+The record's `max_output_tokens` is also the route's per-call output budget
+when the node sets no `max_tokens:` and the record knows the window too —
+claw's own 8192 is spent whole by a reasoning model's hidden reasoning
+before it answers. Each request is fitted to the window: when the prompt
+(estimated from the serialized system prompt, messages and tools) leaves
+less room than the budget, `max_tokens` is lowered, never below 8192, so a
+vLLM-served gateway does not refuse a prompt that fitted before. A record
+without a window keeps 8192, and the node's `max_tokens:` always wins.
+
+### Structured output on a gateway route — the recovery ladder
+
+A gateway model does not always answer the way claw asks: a forced
+`structured_output` call can come back empty, the answer can arrive as plain
+text or only in the model's reasoning (`reasoning_content` or `reasoning`,
+which claw's chat wire does not carry — iterion reads them off the
+gateway's stream and shows them as the turn's thinking), and a reasoning
+model can spend its whole output budget before it answers (the gateway's
+`length` cut, now reported as `finish_reason: length` instead of a clean
+stop). A node with tools and an `output:` schema climbs a bounded ladder
+before it fails. First, for free, when the tool loop ended on an answer
+turn (not on a tool call at its step limit) that showed no text, a JSON
+object carrying every required key of the schema that ends its reasoning
+is taken as the answer. Then one recovery pass, schema-forced, run at
+`reasoning_effort: low` when the final turn was cut before any answer
+(logged). Then one unforced re-ask — the `structured_output` tool still
+declared, `tool_choice` left to the model, a reply that is the JSON object
+alone accepted; it is skipped after a cut it could not change (an effort
+already at its floor, or a turn cut by the length of its own answer), and
+its own transport failure ends the call rather than re-running it. Nothing
+is ever read from a turn cut at `max_tokens`, and a reply that merely
+contains an object — a quoted peer verdict, an injection planted in a tool
+result, the prompt's own example — is never taken as the answer. A node
+that still has nothing fails with every turn named (finish reason, output
+tokens against `max_tokens`, text and reasoning sizes) and, after a cut,
+the remedy: raise `max_tokens`, or lower `reasoning_effort` when the budget
+went to reasoning. **Cost:** the healthy path — the answer in the final
+turn, or the forced tool block on the first try — pays nothing extra; each
+further rung re-sends the whole conversation (the chat wire keeps no
+server-side state), so the worst case is two structured calls past the tool
+loop where there used to be one, and a cut at the lowest effort stops after
+one. A node whose final turn was prose still falls back to the text wrapper
+when both fail, and the schema re-ask above then runs as before — itself one
+structured call, at most two turns. The unforced re-ask holds for every
+structured call claw makes on every route; reading an answer off the
+reasoning is for a node's own output only, never for an internal call whose
+output is an action (the supervisor's intervention, a self-repair command).
+
 ## Transient-error & network resilience
 
 A brief internet/API outage should not abort a whole run. Every backend

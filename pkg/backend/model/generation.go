@@ -280,6 +280,7 @@ func buildStepResult(step int, agg *aggregatedResponse) StepResult {
 		FinishReason: mapStopReason(agg.stopReason),
 		Usage:        agg.usage,
 		Thinking:     agg.thinkingText,
+		MaxTokens:    agg.maxTokens,
 	}
 }
 
@@ -522,6 +523,23 @@ func assistantToolUseMessage(text string, toolUses []toolUseBlock) api.Message {
 // GenerateObjectDirect generates structured output by injecting a synthetic tool
 // with the given schema and forcing the model to call it. The tool_use input
 // is parsed as the result object of type T.
+//
+// A model that does not answer through the forced tool gets one more chance,
+// never more (#2651). First, for free, the turn it did make is read
+// (harvestStructured): a reply that IS the JSON object, or — when the caller
+// allows it (AnswerFromReasoning) — an object ending the reasoning of a turn
+// that showed no text; nothing is read from a turn cut at max_tokens, and a
+// reply that merely contains an object is never taken for the answer. Then
+// ONE unforced re-ask: the synthetic tool stays declared, nothing forces it,
+// and the model may call it or reply with the JSON object alone — the shape
+// a gateway model that ignores, or cannot honour, a named tool_choice still
+// answers in. After a forced turn cut at max_tokens the re-ask runs at a
+// lowered reasoning effort, and it is skipped when the effort cannot go
+// lower or the turn was cut by the length of its own answer: either way it
+// would be the request just cut, minus the tool force. A failure of the
+// re-ask's own request ends the call, final. Every exit past the first
+// request returns the usage of every turn it paid for; a call that never
+// got an answer fails with a *StructuredOutputError naming each turn.
 func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts GenerationOptions) (*ObjectResult[T], error) {
 	schemaName := opts.SchemaName
 	if schemaName == "" {
@@ -574,95 +592,185 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 		messages = append(messages, api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: fmt.Sprintf("Return the requested structured result by calling the %q tool with arguments matching its schema. Do not replace the tool call with prose or a JSON text block.", schemaName)}}})
 	}
 
-	// Build a request-only opts overlay: zero out Tools so buildRequest only
-	// includes the synthetic tool via extraTools.
-	reqOpts := opts
-	reqOpts.Tools = nil
-
-	req, err := buildRequest(reqOpts, messages, []api.Tool{syntheticTool}, toolChoice)
-	if err != nil {
-		return nil, err
-	}
-
-	fireOnRequest(opts, len(messages))
-
-	// partial is the best-effort result the error paths BELOW the request
-	// return beside their error — the same contract GenerateTextDirect's
-	// result() has, and for the same reason: the provider billed the call,
-	// and this is the only place that figure exists. Consult `err` first;
-	// Object is the zero value and only TotalUsage is meaningful.
+	// partial is the best-effort result the error paths BELOW the first
+	// request return beside their error — the same contract
+	// GenerateTextDirect's result() has, and for the same reason: the
+	// provider billed every turn made, and this is the only place that
+	// figure exists. Consult `err` first; Object is the zero value and only
+	// TotalUsage is meaningful.
 	//
 	// The exits it serves are the expensive ones — a stream that died
-	// mid-answer, a truncated tool_use, JSON the model malformed. Returning
-	// a bare nil there made a fully-billed structured call indistinguishable
-	// from one that never left the process.
-	partial := func(u Usage) *ObjectResult[T] {
-		var zero T
-		return &ObjectResult[T]{Object: zero, TotalUsage: u}
-	}
-
-	agg, err := callAndAggregate(ctx, client, req, opts)
-	if err != nil {
-		// The stream never opened — nothing was served, nothing is owed.
-		return nil, err
-	}
-	if agg.err != nil {
-		return partial(agg.usage), agg.err
-	}
-
+	// mid-answer, a truncated tool_use, JSON the model malformed, a re-ask
+	// that answered no better. Returning a bare nil there made a
+	// fully-billed structured call indistinguishable from one that never
+	// left the process.
 	var totalUsage Usage
-	accumulateUsage(&totalUsage, agg.usage)
-	finishReason := mapStopReason(agg.stopReason)
-
-	stepResult := StepResult{
-		Number:       1,
-		Text:         agg.text,
-		ToolCalls:    toolCallsFromBlocks(agg.toolUses),
-		FinishReason: finishReason,
-		Usage:        agg.usage,
-		Thinking:     agg.thinkingText,
+	var steps []StepResult
+	partial := func() *ObjectResult[T] {
+		var zero T
+		return &ObjectResult[T]{Object: zero, TotalUsage: totalUsage}
 	}
 
-	if opts.OnStepFinish != nil {
-		opts.OnStepFinish(stepResult)
+	// turn makes one structured request. A turn is anchored like a text
+	// turn: OnStepFinish and a TurnCheckpoint each (capturing only in
+	// GenerateTextDirect once left every `output:`-bearing node — most of
+	// them in iterion — without a timeline and impossible to fork).
+	// served is false when the stream never opened: nothing was billed.
+	turn := func(o GenerationOptions, msgs []api.Message, tc *api.ToolChoice, number int) (agg *aggregatedResponse, step StepResult, served bool, err error) {
+		reqOpts := o
+		// Request-only overlay: buildRequest then carries the synthetic tool
+		// alone, through extraTools.
+		reqOpts.Tools = nil
+		req, err := buildRequest(reqOpts, msgs, []api.Tool{syntheticTool}, tc)
+		if err != nil {
+			return nil, StepResult{}, false, err
+		}
+		fireOnRequest(o, len(msgs))
+		agg, err = callAndAggregate(ctx, client, req, o)
+		if err != nil {
+			return nil, StepResult{}, false, err
+		}
+		accumulateUsage(&totalUsage, agg.usage)
+		if agg.err != nil {
+			return agg, StepResult{}, true, agg.err
+		}
+		step = StepResult{
+			Number:       number,
+			Text:         agg.text,
+			ToolCalls:    toolCallsFromBlocks(agg.toolUses),
+			FinishReason: mapStopReason(agg.stopReason),
+			Usage:        agg.usage,
+			Thinking:     agg.thinkingText,
+			MaxTokens:    agg.maxTokens,
+		}
+		steps = append(steps, step)
+		if o.OnStepFinish != nil {
+			o.OnStepFinish(step)
+		}
+		captureFinalTurn(o, msgs, number, step)
+		return agg, step, true, nil
 	}
-	// A structured call is ONE turn, and it anchors the timeline and the
-	// Fork API exactly like a text turn does. Capturing only in
-	// GenerateTextDirect left every `output:`-bearing node — which is most
-	// of them in iterion — without a single TurnCheckpoint, so such a run
-	// showed an empty timeline and could not be forked at all.
-	captureFinalTurn(opts, messages, 1, stepResult)
 
-	// Find the synthetic tool_use block.
-	for _, tu := range agg.toolUses {
-		if tu.Name == schemaName {
-			if tu.PartialJSON == "" {
-				return partial(totalUsage), fmt.Errorf("parse structured output: model returned tool_use %q with empty input (stream may have been interrupted before content_block_stop)", schemaName)
-			}
-			var obj T
-			if err := json.Unmarshal([]byte(tu.PartialJSON), &obj); err != nil {
-				// Cap the raw payload in the error so a 5 MB
-				// truncated JSON doesn't flood logs.
-				raw := tu.PartialJSON
-				if len(raw) > 500 {
-					raw = raw[:500] + "…"
-				}
-				return partial(totalUsage), fmt.Errorf("parse structured output: %w (raw: %s)", err, raw)
-			}
-			conversation := append([]api.Message(nil), messages...)
-			conversation = append(conversation, api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: tu.PartialJSON}}})
-			return &ObjectResult[T]{
-				Object:       obj,
-				Text:         agg.text,
-				Steps:        []StepResult{stepResult},
-				TotalUsage:   totalUsage,
-				FinishReason: finishReason,
-				Messages:     conversation,
-			}, nil
+	// answer is the success shape: the object, and the replay-safe
+	// conversation with the answer stored as assistant JSON text (never an
+	// unmatched synthetic tool_use block).
+	answer := func(obj T, raw string, msgs []api.Message, agg *aggregatedResponse, step StepResult, recovered string) *ObjectResult[T] {
+		conversation := append([]api.Message(nil), msgs...)
+		conversation = append(conversation, api.Message{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: raw}}})
+		return &ObjectResult[T]{
+			Object:       obj,
+			Text:         agg.text,
+			Steps:        steps,
+			TotalUsage:   totalUsage,
+			FinishReason: step.FinishReason,
+			Messages:     conversation,
+			Recovered:    recovered,
 		}
 	}
 
-	return partial(totalUsage), fmt.Errorf("model did not produce a %q tool_use block", schemaName)
+	// read takes a turn's answer: the synthetic tool block, else a JSON
+	// object the turn carried outside it. blockProblem says why a block
+	// that is there could not be used ("" when there is none).
+	read := func(agg *aggregatedResponse, step StepResult) (obj T, raw string, recovered string, ok bool, blockProblem string) {
+		for _, tu := range agg.toolUses {
+			if tu.Name != schemaName {
+				continue
+			}
+			if tu.PartialJSON == "" {
+				blockProblem = "tool block with empty input"
+				continue
+			}
+			if err := json.Unmarshal([]byte(tu.PartialJSON), &obj); err != nil {
+				// Cap the raw payload so a 5 MB truncated JSON doesn't flood
+				// logs.
+				head := tu.PartialJSON
+				if len(head) > 500 {
+					head = head[:500] + "…"
+				}
+				blockProblem = fmt.Sprintf("tool block with malformed JSON: %v (raw: %s)", err, head)
+				continue
+			}
+			return obj, tu.PartialJSON, "", true, ""
+		}
+		harvested, source := harvestStructured(opts.ExplicitSchema, agg.text, agg.thinkingText, step.FinishReason == FinishLength, opts.AnswerFromReasoning)
+		if harvested != nil && json.Unmarshal(harvested, &obj) == nil {
+			return obj, string(harvested), source, true, blockProblem
+		}
+		var zero T
+		return zero, "", "", false, blockProblem
+	}
+
+	describe := func(label string, o GenerationOptions, agg *aggregatedResponse, step StepResult, blockProblem string) StructuredAttempt {
+		return StructuredAttempt{
+			Label:        label,
+			Effort:       reasoningEffortOf(o),
+			Finish:       step.FinishReason,
+			OutputTokens: agg.usage.OutputTokens,
+			MaxTokens:    stepMaxTokens(step, o),
+			TextLen:      len(strings.TrimSpace(agg.text)),
+			ReasoningLen: len(agg.thinkingText),
+			ToolBlock:    blockProblem,
+			Reasoned:     spentOnReasoning(step),
+		}
+	}
+
+	firstLabel := "forced " + schemaName
+	if toolChoice == nil {
+		firstLabel = schemaName + " (instructed, not forced)"
+	}
+	agg, step, served, err := turn(opts, messages, toolChoice, 1)
+	if err != nil {
+		if !served {
+			// The stream never opened — nothing was served, nothing is owed.
+			return nil, err
+		}
+		return partial(), err
+	}
+	obj, raw, recovered, ok, problem := read(agg, step)
+	if ok {
+		return answer(obj, raw, messages, agg, step, recovered), nil
+	}
+	failure := &StructuredOutputError{
+		Schema:   schemaName,
+		Attempts: []StructuredAttempt{describe(firstLabel, opts, agg, step, problem)},
+	}
+
+	// The one re-ask. After a cut it must change what spent the budget —
+	// the effort — or it would be the cut request minus the tool force; a
+	// turn cut by the length of its own answer has no effort to give back.
+	reaskOpts := opts
+	if step.FinishReason == FinishLength {
+		skip := ""
+		lowered, _, canLower := effortAfterCut(opts)
+		switch {
+		case !spentOnReasoning(step):
+			skip = "the turn above was cut by the length of its own answer, which a lower reasoning effort cannot shorten"
+		case !canLower:
+			skip = "the turn above was cut at max_tokens and reasoning_effort cannot go lower, so the same request would be cut the same way"
+		}
+		if skip != "" {
+			failure.Attempts = append(failure.Attempts, StructuredAttempt{Label: "unforced re-ask", Skipped: skip})
+			return partial(), failure
+		}
+		reaskOpts = lowered
+	}
+	reaskMessages := withTrailingUserText(messages, unforcedReaskInstruction(schemaName))
+	agg2, step2, _, err2 := turn(reaskOpts, reaskMessages, nil, 2)
+	if err2 != nil {
+		if isContextEnd(err2) && ctx.Err() != nil {
+			// The run's own cancellation or deadline stays what it is.
+			return partial(), fmt.Errorf("structured output re-ask: %w", err2)
+		}
+		failure.Attempts = append(failure.Attempts, StructuredAttempt{Label: "unforced re-ask", Effort: reasoningEffortOf(reaskOpts), CallError: callFailureKind(err2)})
+		failure.Cause = err2
+		return partial(), failure
+	}
+	obj, raw, _, ok, problem = read(agg2, step2)
+	if ok {
+		return answer(obj, raw, reaskMessages, agg2, step2, recoveredFromUnforced), nil
+	}
+	failure.Attempts = append(failure.Attempts, describe("unforced re-ask", reaskOpts, agg2, step2, problem))
+	return partial(), failure
 }
 
 // clawRawTools: the claw tools whose result shows what the workspace holds —

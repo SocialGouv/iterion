@@ -94,4 +94,10 @@ type ObjectResult[T any] struct {
 	// Messages is the replay-safe conversation. Structured output is stored
 	// as assistant JSON text (not an unmatched synthetic tool_use block).
 	Messages []api.Message
+
+	// Recovered names where the object came from when it was not the
+	// synthetic tool block of the first turn: "text" or "reasoning" (a JSON
+	// object that turn carried outside the tool), "unforced" (the one
+	// unforced re-ask). Empty on the healthy path.
+	Recovered string
 }

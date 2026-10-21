@@ -25,7 +25,7 @@ const UserAgent = ""
 // stream usage requested (the gateway's usage account reaches PR-2's meter),
 // the model id verbatim (the gateway id is whatever the gateway serves — no
 // prefix stripping, no alias substitution), no ambient identity overrides,
-// and a guarded transport.
+// and a guarded transport whose responses a ReasoningCapture can observe.
 func NewClient(cfg Config, modelID string, strict bool) (api.APIClient, error) {
 	// Cheap syntax validation ONLY — no DNS here. The full Validate (which
 	// resolves the host) runs at the dispatch seams (the element builder,
@@ -42,7 +42,9 @@ func NewClient(cfg Config, modelID string, strict bool) (api.APIClient, error) {
 		return nil, err
 	}
 	hc := &http.Client{
-		Transport:     transport,
+		// The observer lets a caller read what claw's chat translator drops
+		// (the reasoning, the raw finish_reason) — see ReasoningCapture.
+		Transport:     observingTransport{next: transport},
 		CheckRedirect: redirectRefusedPolicy,
 	}
 	client, err := openaiprovider.New().NewClient(api.ProviderConfig{

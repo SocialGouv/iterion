@@ -93,3 +93,19 @@ func stampGatewaySpec(output map[string]any, resolved compatgw.Resolved) map[str
 	}
 	return output
 }
+
+// gatewayOutputBudget is a gateway route's max_tokens when the node sets
+// none: the model's own max output from the catalog. claw's 8192 default is
+// smaller than what a reasoning model behind a gateway can spend on hidden
+// reasoning before it answers (#2651: final turn and recovery both out=8192
+// of 8192, text empty, on a model the catalog serves 16384 for). It is
+// raised only when the catalog also knows the window: the request is then
+// fitted to it (GenerationOptions.MaxTokensWindow, buildRequest), so a large
+// prompt never overflows the window by the budget's own size. 0 — claw's
+// default — otherwise.
+func gatewayOutputBudget(resolved compatgw.Resolved) int {
+	if !resolved.Known() || resolved.Spec.MaxOutputTokens <= 0 || resolved.Spec.ContextWindow <= 0 {
+		return 0
+	}
+	return resolved.Spec.MaxOutputTokens
+}

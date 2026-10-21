@@ -527,8 +527,9 @@ func (b *meteredUnparseableBackend) Execute(_ context.Context, _ delegate.Task) 
 //
 // A router's schema failure is re-asked once like an agent's, so the bill the
 // run must book is TWO served generations; the prose case also pays the
-// last-resort extraction, a direct claw call — scripted here on a provider of
-// its own, so the test never reaches the host's credentials.
+// last-resort extraction, a direct claw structured call (its forced turn and
+// its one unforced re-ask) — scripted here on a provider of its own, so the
+// test never reaches the host's credentials.
 func TestPostDispatchRouterValidationFailureStillBooksItsSpend(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "metered_invalid_router",
@@ -561,11 +562,11 @@ func TestPostDispatchRouterValidationFailureStillBooksItsSpend(t *testing.T) {
 		name    string
 		backend delegate.Backend
 		// tokens the run must book: two served generations, plus the
-		// extraction's own 250 on the prose case.
+		// extraction's own two turns of 250 on the prose case.
 		tokens int
 	}{
 		{"schema invalid", &meteredInvalidBackend{}, 44_000},
-		{"unparseable after the text wrapper", &meteredUnparseableBackend{}, 44_250},
+		{"unparseable after the text wrapper", &meteredUnparseableBackend{}, 44_500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := delegate.NewRegistry()
@@ -776,10 +777,11 @@ func TestFailedHumanLLMHalfBooksItsSpendBeforeThePause(t *testing.T) {
 	}
 }
 
-// proseOnlyClient answers a STRUCTURED request with plain prose and no
-// tool_use block — the shape a model produces when it ignores the schema, and
-// one of the three post-aggregate failures of GenerateObjectDirect. The stream
-// completes and reports its usage first, so the tokens below are billed.
+// proseOnlyClient answers every STRUCTURED request with plain prose and no
+// tool_use block — the shape a model produces when it ignores the schema, so
+// GenerateObjectDirect's forced turn and its one unforced re-ask both fail.
+// Each stream completes and reports its usage first, so the tokens below are
+// billed.
 type proseOnlyClient struct {
 	mu    sync.Mutex
 	calls int
@@ -840,8 +842,9 @@ func TestFailedHumanLLMHalfBooksItsSpendInProduction(t *testing.T) {
 		map[string]any{"summary": "complex change"}); !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("expected the human half to take over, got %v", err)
 	}
-	if client.calls != 1 {
-		t.Fatalf("expected exactly one generation, got %d", client.calls)
+	// The forced turn and its one unforced re-ask (#2651), both billed.
+	if client.calls != 2 {
+		t.Fatalf("expected the forced generation and its re-ask, got %d", client.calls)
 	}
 
 	r, err := st.LoadRun(context.Background(), "run-human-llm-production")
@@ -851,8 +854,8 @@ func TestFailedHumanLLMHalfBooksItsSpendInProduction(t *testing.T) {
 	if r.Checkpoint == nil {
 		t.Fatal("no checkpoint to read the budget from")
 	}
-	if r.Checkpoint.BudgetTokensUsed != 6_000 {
-		t.Fatalf("the failed generation's tokens never reached the run: %d (0 means the seam is still inert)", r.Checkpoint.BudgetTokensUsed)
+	if r.Checkpoint.BudgetTokensUsed != 12_000 {
+		t.Fatalf("the failed generations' tokens never reached the run: %d, want both turns' 12000 (0 means the seam is still inert)", r.Checkpoint.BudgetTokensUsed)
 	}
 	if r.Checkpoint.BudgetCostUSD <= 0 {
 		t.Fatalf("the failed generation's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
@@ -989,8 +992,9 @@ func TestFailedInteractionLLMBooksItsSpend(t *testing.T) {
 			if err := eng.Run(context.Background(), runID, map[string]any{"task": "pick one"}); err == nil {
 				t.Fatal("the run was supposed to fail on the interaction LLM")
 			}
-			if client.calls != 1 {
-				t.Fatalf("expected exactly one auto-answer generation, got %d", client.calls)
+			// The forced turn and its one unforced re-ask (#2651).
+			if client.calls != 2 {
+				t.Fatalf("expected the auto-answer generation and its re-ask, got %d", client.calls)
 			}
 
 			r, err := st.LoadRun(context.Background(), runID)
@@ -1000,8 +1004,8 @@ func TestFailedInteractionLLMBooksItsSpend(t *testing.T) {
 			if r.Checkpoint == nil {
 				t.Fatal("no checkpoint to read the budget from")
 			}
-			if r.Checkpoint.BudgetTokensUsed != 6_000 {
-				t.Fatalf("the failed auto-answer's tokens never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+			if r.Checkpoint.BudgetTokensUsed != 12_000 {
+				t.Fatalf("the failed auto-answer's tokens never reached the run: %d, want both turns' 12000", r.Checkpoint.BudgetTokensUsed)
 			}
 			if r.Checkpoint.BudgetCostUSD <= 0 {
 				t.Fatalf("the failed auto-answer's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)

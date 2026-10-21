@@ -89,6 +89,7 @@ type aggregatedResponse struct {
 	stopReason   string
 	thinkingText string // concatenated extended-thinking content (all thinking blocks)
 	thinkingMs   int    // wall-clock spent inside thinking blocks (start→stop)
+	maxTokens    int    // the max_tokens the request carried (set by callAndAggregate)
 	err          error
 }
 

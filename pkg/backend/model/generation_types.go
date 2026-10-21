@@ -69,6 +69,10 @@ type StepResult struct {
 	// Thinking is the extended-thinking (reasoning) text produced during
 	// this step; empty when the step produced no thinking.
 	Thinking string
+
+	// MaxTokens is the max_tokens the step's request carried — what a
+	// FinishLength step was cut at.
+	MaxTokens int
 }
 
 // TurnCaptureInfo is the payload of the OnTurnCapture hook fired by

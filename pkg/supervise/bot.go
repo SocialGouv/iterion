@@ -277,12 +277,18 @@ func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, E
 	}
 	res, err := model.GenerateObjectDirect[Decision](ctx, e.client, opts)
 	if err != nil {
+		// A failed evaluation was billed for every turn it made, and the
+		// coordinator books the usage returned beside the error.
+		var spent EvalUsage
+		if res != nil {
+			spent = EvalUsage{InputTokens: res.TotalUsage.InputTokens, OutputTokens: res.TotalUsage.OutputTokens}
+		}
 		// Name the model that failed: a supervisor's model can come from a DSL
 		// pin, an env override, the supervised nodes' provider or the host
 		// detector, and an auth error says nothing about which of those was
 		// taken. Reading "anthropic: API error 401" with no spec is what made a
 		// dead pacer look like a provider outage rather than a resolution bug.
-		return nil, EvalUsage{}, fmt.Errorf("supervise: evaluation call (model %s): %w", e.modelSpec, err)
+		return nil, spent, fmt.Errorf("supervise: evaluation call (model %s): %w", e.modelSpec, err)
 	}
 	usage := EvalUsage{
 		InputTokens:  res.TotalUsage.InputTokens,
