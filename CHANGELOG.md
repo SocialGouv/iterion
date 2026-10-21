@@ -3,6 +3,49 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.279.0](https://github.com/SocialGouv/iterion/compare/v3.278.0...v3.279.0) (2026-10-21)
+
+### Features
+
+* **dsl,bots:** C188 — a braced env read the engine answers before the shell (slice 1 of [#1522](https://github.com/SocialGouv/iterion/issues/1522)) ([#2656](https://github.com/SocialGouv/iterion/issues/2656)) ([9808cd7](https://github.com/SocialGouv/iterion/commit/9808cd78a7c50acd22d5057442987ca44e42e692))
+
+    <details><summary>why</summary>
+
+    The record for #1522, landed verbatim from the reviewed design (e2-expand-env-hatch at 5c9a8408f): the env_expansion property, the C188 lint where the engine's answering defeats an assignment, and the validate --exec truth duty. The docs map row is regenerated (task map:gen).
+
+    </details>
+
+### Bug Fixes
+
+* complete create-only authoring transactions ([#2569](https://github.com/SocialGouv/iterion/issues/2569)) ([1cd0d12](https://github.com/SocialGouv/iterion/commit/1cd0d12cf2594747f71c831f709595f4b67c663f))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 1 local (announced 3, ceiling 5) Adversarial-Model: kimi-code
+
+    </details>
+* keep long organization menus reachable ([#2560](https://github.com/SocialGouv/iterion/issues/2560)) ([a44e02a](https://github.com/SocialGouv/iterion/commit/a44e02a9f8f32f0b1d600d17bdedcdc2f7de1706))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 1 local (announced 3, ceiling 5) Adversarial-Model: kimi-code
+
+    </details>
+* **secrets,server:** api-key updates patch the named fields and refuse rows from a newer build ([#2652](https://github.com/SocialGouv/iterion/issues/2652)) ([a02086c](https://github.com/SocialGouv/iterion/commit/a02086cff3327ca35d2029943bcddffdbab88477)), references [#2005](https://github.com/SocialGouv/iterion/issues/2005) [#2005](https://github.com/SocialGouv/iterion/issues/2005)
+
+    <details><summary>why</summary>
+
+    An api-key update replaced the whole Mongo document with the handler's copy of the row. Two things that copy cannot hold were lost on every PATCH: the columns this server build does not know (what a newer server writes on the same row during a rolling update, or leaves behind after a rollback — the gateway credential of #2005 adds the first such column), and the current value of the fields the request did not name (an is_default a concurrent ClearDefault had just lowered, the last_used_at the…
+
+    </details>
+* use a valid artifact node for cloud preflight ([#2559](https://github.com/SocialGouv/iterion/issues/2559)) ([f9eeaa8](https://github.com/SocialGouv/iterion/commit/f9eeaa875d77d4358e081c9dfe3625bc2c3daff7))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 1 local (announced 3, ceiling 5) Adversarial-Model: kimi-code
+
+    </details>
+
 ## [3.278.0](https://github.com/SocialGouv/iterion/compare/v3.277.3...v3.278.0) (2026-10-21)
 
 ### Features
