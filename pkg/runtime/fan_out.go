@@ -301,6 +301,12 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 }
 
 func pausedBranchError(results []*branchResult) error {
+	// An undecided branch outranks a sibling's pause: the pause's answer
+	// would run the branch again beside a command that may still be running,
+	// so the join's classification stops the run on it instead.
+	if firstAmbiguousBranchErr(results) != nil {
+		return nil
+	}
 	for _, result := range results {
 		if result != nil && errors.Is(result.err, ErrRunPaused) {
 			return ErrRunPaused

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -232,5 +234,122 @@ func TestAnUndecidedCheckpointedFailureOnADoneContextIsRecorded(t *testing.T) {
 	}
 	if r.Status != store.RunStatusFailedResumable || r.FailureCode != ErrCodeAmbiguousEffect {
 		t.Fatalf("recorded %s / %q, want failed_resumable / %q with its checkpoint", r.Status, r.FailureCode, ErrCodeAmbiguousEffect)
+	}
+}
+
+// pauseSiblingExecutor runs a fan-out whose branch "tool" ends undecided once
+// the fan-out cancels it, and whose branch "barrier" lets the sibling gate
+// pause only after "tool" started.
+type pauseSiblingExecutor struct {
+	*stubExecutor
+	started chan struct{}
+	once    sync.Once
+}
+
+func (x *pauseSiblingExecutor) Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
+	switch node.NodeID() {
+	case "tool":
+		x.once.Do(func() { close(x.started) })
+		<-ctx.Done()
+		return nil, fmt.Errorf("model: tool node %q: shell command failed: %w", "tool", errors.Join(
+			fmt.Errorf("the node ended before its command's end was proven: %w", ctx.Err()),
+			&sandbox.ExecStatusUnknownError{Swept: false, Detail: "the sweep could not finish"}))
+	case "barrier":
+		select {
+		case <-x.started:
+		case <-time.After(10 * time.Second):
+			return nil, errors.New("the tool branch never started")
+		}
+	}
+	return x.stubExecutor.Execute(ctx, node, input)
+}
+
+// A sibling's human pause does not drop an undecided branch: the run stops on
+// it, rather than pause for an answer that would run the branch again.
+func TestASiblingsPauseDoesNotDropAnUndecidedBranch(t *testing.T) {
+	for _, await := range []ir.AwaitMode{ir.AwaitWaitAll, ir.AwaitBestEffort} {
+		t.Run(await.String(), func(t *testing.T) {
+			wf := &ir.Workflow{
+				Name:  "pause_sibling",
+				Entry: "entry",
+				Nodes: map[string]ir.Node{
+					"entry":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+					"fan":     &ir.RouterNode{BaseNode: ir.BaseNode{ID: "fan"}, RouterMode: ir.RouterFanOutAll},
+					"tool":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tool"}},
+					"barrier": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "barrier"}},
+					"gate":    &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}},
+					"b":       &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+					"merge":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "merge"}, AwaitMode: await},
+					"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+				},
+				Edges: []*ir.Edge{
+					{From: "entry", To: "fan"},
+					{From: "fan", To: "tool"},
+					{From: "fan", To: "barrier"},
+					{From: "barrier", To: "gate"},
+					{From: "gate", To: "b", Condition: "approved"},
+					{From: "tool", To: "merge"},
+					{From: "b", To: "merge"},
+					{From: "merge", To: "done"},
+				},
+				Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{}, Vars: map[string]*ir.Var{},
+				Loops: map[string]*ir.Loop{}, Foreaches: map[string]*ir.Foreach{},
+			}
+			x := &pauseSiblingExecutor{stubExecutor: newStubExecutor(), started: make(chan struct{})}
+			s := tmpStore(t)
+			_ = New(wf, s, x).Run(context.Background(), "r", nil)
+			r, err := s.LoadRun(context.Background(), "r")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Status == store.RunStatusPausedWaitingHuman || r.FailureCode != ErrCodeAmbiguousEffect {
+				t.Fatalf("a sibling's pause over an undecided branch: recorded %s / %q, want the run stopped on %q", r.Status, r.FailureCode, ErrCodeAmbiguousEffect)
+			}
+		})
+	}
+}
+
+// A raise posted while a node ran is applied, recorded and acknowledged when
+// the node ends undecided at the budget deadline, as on any end there.
+func TestARaiseIsDrainedWhenAnUndecidedEndMeetsTheBudgetDeadline(t *testing.T) {
+	wf := oneNodeWorkflow(&ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}})
+	wf.Budget = &ir.Budget{MaxDuration: "300ms"}
+	ch := make(chan *OverrideMsg, 1)
+	raise := NewRaiseBudgetOverride(ir.BudgetOverrides{MaxDuration: "1h"}, "operator")
+	x := ctxNodeExecutor{stubExecutor: newStubExecutor(), a: func(ctx context.Context) (map[string]any, error) {
+		ch <- raise
+		<-ctx.Done()
+		return nil, fmt.Errorf("model: tool node %q: shell command failed: %w", "a", errors.Join(
+			fmt.Errorf("the node ended before its command's end was proven: %w", ctx.Err()),
+			&sandbox.ExecStatusUnknownError{Swept: false, Detail: "the sweep could not finish"}))
+	}}
+	s := tmpStore(t)
+	_ = New(wf, s, x, WithOverrideChannel(ch)).Run(context.Background(), "r", nil)
+	if _, err := raise.Await(context.Background(), 200*time.Millisecond); err != nil {
+		t.Fatalf("the raise posted during the node was never applied: %v", err)
+	}
+	r, err := s.LoadRun(context.Background(), "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.BudgetRaises == nil || r.FailureCode != ErrCodeAmbiguousEffect {
+		t.Fatalf("recorded %s / %q with raises %v, want %q and the raise recorded", r.Status, r.FailureCode, r.BudgetRaises, ErrCodeAmbiguousEffect)
+	}
+}
+
+// A branch's event carries the code the run records for its end: an
+// undecided effect, whatever wraps it — a stop, a wrapper's code.
+func TestABranchEventCarriesTheUndecidedCode(t *testing.T) {
+	undecided := &sandbox.ExecStatusUnknownError{Swept: false}
+	for name, err := range map[string]error{
+		"wrapping a cancel":    errors.Join(fmt.Errorf("ended: %w", context.Canceled), undecided),
+		"behind a typed error": &RuntimeError{Code: ErrCodeExecutionFailed, Message: "subbot child failed", Cause: undecided},
+	} {
+		if got := errorCode(err); got != string(store.FailureAmbiguousEffect) {
+			t.Errorf("%s: branch code %q, want %q", name, got, store.FailureAmbiguousEffect)
+		}
+	}
+	if got := errorCode(fmt.Errorf("ended: %w", context.Canceled)); got != string(store.FailureCancelled) {
+		t.Errorf("a stopped branch: code %q, want %q", got, store.FailureCancelled)
 	}
 }

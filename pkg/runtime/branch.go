@@ -727,6 +727,11 @@ func (e *Engine) emitBranchFinishedDefer(ctx context.Context, runID, branchID, s
 // without parsing (PR #1491 review Rdabb2b: the branch classifier
 // equals the trunk's ceilingOf).
 func errorCode(err error) string {
+	// The code the run records for such an end (recordedCode): an undecided
+	// effect outranks a wrapper's code and a stop.
+	if IsAmbiguousEffect(err) {
+		return string(store.FailureAmbiguousEffect)
+	}
 	var rt *RuntimeError
 	if errors.As(err, &rt) && rt != nil && rt.Code != "" {
 		return string(rt.Code)

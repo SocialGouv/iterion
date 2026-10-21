@@ -536,7 +536,7 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// operator gesture — "give it another hour" — silently did nothing
 		// while a raise to 12h worked. A grant whose effect turns on an
 		// undisclosed 11% line is not a grant.
-		if errors.Is(execErr, context.DeadlineExceeded) && !IsAmbiguousEffect(execErr) &&
+		if errors.Is(execErr, context.DeadlineExceeded) &&
 			!budgetDeadline.IsZero() && !time.Now().Before(budgetDeadline) {
 			// Steering is drained BEFORE this verdict, because this return
 			// never reaches the node boundary where the other drain sits. A
@@ -553,8 +553,11 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 			// the cap as it now stands? — so any raise that buys real room
 			// lets the expiry fall through to ordinary recovery dispatch,
 			// instead of a budget stop naming a limit that no longer exists.
+			//
+			// An undecided end is not a budget stop even then: a raised cap
+			// would resume it beside a command that may still be running.
 			e.drainOverrides(rs)
-			if rem, bounded := rs.budget.RemainingDuration(); bounded && rem <= 0 {
+			if rem, bounded := rs.budget.RemainingDuration(); bounded && rem <= 0 && !IsAmbiguousEffect(execErr) {
 				used, limit, _ := rs.budget.DurationStatus()
 				e.recordFailedNodeSpend(rs, currentNodeID, output)
 				return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{

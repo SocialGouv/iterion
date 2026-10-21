@@ -479,7 +479,7 @@ d98471b4c8a2b945370343dc980d0515952c352b7f3274013eb9c662b0b1cb9a bd03ac1428f0ea8
 3812d5f7f15fdf43876fb786e8feee02cf03a34358974f0f2186a619b8156bb6 6e47dc4bfc7fe81cf19ec7dd8e8d8a7d67df7d489280e7746a0b49e9d4ac5ed5 ../../docs/adr/124-gating-bot-merge-gestures.md
 cf0c6188fb6f12236615fca7c59d02dae89c13a438961e5b69972739d7ec5c16 e00ae66eb2e15c25e8dd629b2428604ee27625fcf85e8b3f3608cca863829a7c ../../docs/adr/125-a-lots-contract-is-a-directory-judged-on-what-lands.md
 86012343c8a81a0eb98da2b90d9dc392b358e919fb822b0d443c674e1821bb8f 1b5657046f5af843c2675f1ad4115ebc8e6955ac50ab9738219de29cb62f8d6a ../../docs/adr/126-accessibility-audits-delegate-the-judgement-to-the-ultra11y-engine.md
-184ed9ae1dc047722e23c1fdea9f73aa1c676392ea7eec94f925f2dd27eaa36a 45ccfc45e1241e9e7352883eeeac2b27dd3df062b981f806fe086c17512097a6 ../../docs/adr/127-an-agent-nodes-processes-end-with-the-node.md
+b69afd67c9da32056c203f0b540564de1f0189b876470d5d78e27364bc6b5426 f37ff7325b1eef2afa86cc945c3505ffb0dbf821144e1e87d561b95e89ed2943 ../../docs/adr/127-an-agent-nodes-processes-end-with-the-node.md
 1cb9991b0fd0dee235adc55b54c80c1c0dae32b6c7c3b702a4b527f60a4772ff 6ee936d68d9683c600f9c3b68dce32064369eb36f089f8f0fea29b3b05a65287 ../../docs/adr/128-a-repositorys-suites-run-at-every-lots-gate.md
 86861c6e8bae910866a826a6742e5cebd53aac18ac144c39934c42189915674f 56e0c7bff164353e3f092d1d62ed947db7a88940d3a29d389ff3c56e4f4e0cc9 ../../docs/adr/129-per-integration-typed-routing-overrides.md
 32fc3c42b1f26916f17bde3733bfcb6906e76193159fb6265196b57ae9b865cf 205b2ebd9fb04e4d4d97118ee4e67494935fbff6af92397c3e7620483887db5b ../../docs/adr/130-env-expansion-opt-out-for-tool-bodies.md

@@ -265,7 +265,8 @@ client, and nothing in the pod.
      (the status the publisher wrote, the drain's redelivery). Recovery never
      retries it, the runner and the CLI read it as terminal, the retry sweeper
      disarms a stale armed retry on it, and a join stops on it, `best_effort`
-     as `wait_all`. The residuals list where this does not hold yet.
+     as `wait_all`, a sibling's human pause included. The residuals list
+     where this does not hold yet.
    - **A Verified Action** stops on an ambiguous end of its recipe, of a
      self-repair or of its postcondition; a recipe whose end was unknown but
      settled lends it no output — the postcondition judges, and only its
@@ -297,10 +298,13 @@ client, and nothing in the pod.
 - Residuals:
   - a fan-out drops an undecided branch in two cases: the parent's own cancel,
     drain or deadline ends the fan-out before it reads its branches' results
-    (the fan-out, the per-item fan-out, a router's `multi`), and a `wait_all`
-    sibling's failure cancels a branch whose sweep outlasts the branch cancel
-    grace (five seconds, where a cancelled sweep may take its ten). The run
-    then records the other failure, which the runner and the CLI may resume;
+    (the fan-out, the per-item fan-out, a router's `multi`); and any cancel
+    the fan-out sends its branches — a `wait_all` sibling's failure, a budget
+    refusal in any await mode, a sibling's human pause — abandons a branch
+    whose sweep outlasts the branch cancel grace (five seconds, where a
+    cancelled sweep may take its ten, and two more for its client). The run
+    then records the other end — a failure, a budget wall, a pause — which a
+    resume, a raised cap or an answer re-drives;
   - a subbot child read back from its record — one that paused at a human
     gate, was resumed and then ended undecided — reaches its parent as plain
     text: the parent records `EXECUTION_FAILED`, and recovery may run a fresh
