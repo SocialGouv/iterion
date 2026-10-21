@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
@@ -9,6 +10,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -82,5 +84,60 @@ func TestExecutorSpecNamesTheEnginesWorkDirForTheSandboxProbe(t *testing.T) {
 	if spec.WorkDir != "" {
 		t.Errorf("ExecutorSpec.WorkDir = %q, want empty — it re-roots Claw's file tools (resolveExecutorWorkspace), "+
 			"which the pod leaves at its own workspace", spec.WorkDir)
+	}
+}
+
+// The wire's runner half (ADR-129 §5, queue v=25): the run's FROZEN
+// provider allowlist rides the message into the pod's executor spec, and
+// the executor built from that spec drops every dispatch chain element
+// resolving outside the list — the claiming runner enforces what the
+// launch froze. Mutants: the stamp dropped from executorSpec → the spec
+// assertion reds; the list dropped from runview.BuildExecutor → the
+// chain assertion reds.
+func TestExecutorSpecThreadsTheProvidersAllowlist(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+	msg := &queue.RunMessage{RunID: "run-allow", WorkflowName: "wf", LLMProviders: []string{"anthropic"}}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"draft": &ir.AgentNode{
+			BaseNode: ir.BaseNode{ID: "draft"},
+			LLMFields: ir.LLMFields{
+				Backend: "claude_code",
+				Model:   "anthropic/claude-opus-5",
+			},
+			Fallbacks: []ir.Fallback{{Name: "rescue", Backend: "codex", Provider: "zai"}},
+		},
+	}}
+	spec, _, err := r.executorSpec(context.Background(), msg, wf, "", iterlog.Nop(), nil)
+	if err != nil {
+		t.Fatalf("executorSpec: %v", err)
+	}
+	if !slices.Equal(spec.LLMProviders, msg.LLMProviders) {
+		t.Fatalf("ExecutorSpec.LLMProviders = %v, want the run's frozen list — the pod's filter rides this seam", spec.LLMProviders)
+	}
+	ex, err := runview.BuildExecutor(spec)
+	if err != nil {
+		t.Fatalf("BuildExecutor: %v", err)
+	}
+	if got := ex.EffectiveFallbackBackends(wf.Nodes["draft"]); len(got) != 0 {
+		t.Errorf("EffectiveFallbackBackends = %v, want empty — the zai rescue resolves outside the run's allowlist and the chain drops it", got)
+	}
+
+	// The class twin: no list on the message, the same rescue is in the
+	// answer — the drop is the allowlist's doing.
+	msg2 := &queue.RunMessage{RunID: "run-plain", WorkflowName: "wf"}
+	spec2, _, err := r.executorSpec(context.Background(), msg2, wf, "", iterlog.Nop(), nil)
+	if err != nil {
+		t.Fatalf("executorSpec (no list): %v", err)
+	}
+	ex2, err := runview.BuildExecutor(spec2)
+	if err != nil {
+		t.Fatalf("BuildExecutor (no list): %v", err)
+	}
+	if got := ex2.EffectiveFallbackBackends(wf.Nodes["draft"]); !slices.Contains(got, "codex") {
+		t.Errorf("no-allowlist backends = %v, want codex — the drop must be the allowlist's doing, not a re-shape of the chain", got)
 	}
 }

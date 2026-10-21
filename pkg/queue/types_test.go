@@ -264,8 +264,11 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// exists to fall through.
 	// v=24 carries BundleDEK (#2029, ADR-123): dropped, a runner without
 	// platform keys cannot open the run's credentials.
-	if SchemaVersion != 24 {
-		t.Errorf("SchemaVersion = %d, want 24 (bump intentionally)", SchemaVersion)
+	// v=25 carries LLMProviders (ADR-129 §5): dropped, a stale runner
+	// dispatches every route the tenant's allowlist forbids — the leak the
+	// list exists to make impossible.
+	if SchemaVersion != 25 {
+		t.Errorf("SchemaVersion = %d, want 25 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
@@ -495,8 +498,8 @@ func TestRunMessage_PermissionSurvivesTheWire(t *testing.T) {
 // team's pool). Red when the Validate check, the Envelope mirror or the
 // bump is reverted.
 func TestRunMessage_RunnerPoolWireContract(t *testing.T) {
-	if SchemaVersion != 24 {
-		t.Fatalf("SchemaVersion = %d, want 24 (the BundleDEK bump)", SchemaVersion)
+	if SchemaVersion != 25 {
+		t.Fatalf("SchemaVersion = %d, want 25 (the LLMProviders bump)", SchemaVersion)
 	}
 	base := RunMessage{
 		V:            SchemaVersion,

@@ -199,7 +199,10 @@ func TestResolveBackend_EnvVarDefaultExpansion(t *testing.T) {
 func TestResolveProvider_NodeExplicit(t *testing.T) {
 	resetEnvForResolve(t)
 	e := newExecutorForResolveTest("")
-	got := e.resolveProvider(nodeWithBackendProvider("claude_code", "anthropic"))
+	got, err := e.resolveProvider(nodeWithBackendProvider("claude_code", "anthropic"))
+	if err != nil {
+		t.Fatalf("resolveProvider: %v", err)
+	}
 	if got != "anthropic" {
 		t.Fatalf("got %q, want anthropic", got)
 	}
@@ -209,7 +212,10 @@ func TestResolveProvider_EnvVarExpansion(t *testing.T) {
 	resetEnvForResolve(t)
 	t.Setenv("RESCUE_PROVIDER", "anthropic")
 	e := newExecutorForResolveTest("")
-	got := e.resolveProvider(nodeWithBackendProvider("claude_code", "${RESCUE_PROVIDER:-zai}"))
+	got, err := e.resolveProvider(nodeWithBackendProvider("claude_code", "${RESCUE_PROVIDER:-zai}"))
+	if err != nil {
+		t.Fatalf("resolveProvider: %v", err)
+	}
 	if got != "anthropic" {
 		t.Fatalf("got %q, want anthropic (env-expanded)", got)
 	}
@@ -219,7 +225,10 @@ func TestResolveProvider_EnvVarDefaultExpansion(t *testing.T) {
 	resetEnvForResolve(t)
 	// RESCUE_PROVIDER unset → default "zai" wins.
 	e := newExecutorForResolveTest("")
-	got := e.resolveProvider(nodeWithBackendProvider("claude_code", "${RESCUE_PROVIDER:-zai}"))
+	got, err := e.resolveProvider(nodeWithBackendProvider("claude_code", "${RESCUE_PROVIDER:-zai}"))
+	if err != nil {
+		t.Fatalf("resolveProvider: %v", err)
+	}
 	if got != "zai" {
 		t.Fatalf("got %q, want zai (env default)", got)
 	}
@@ -228,7 +237,10 @@ func TestResolveProvider_EnvVarDefaultExpansion(t *testing.T) {
 func TestResolveProvider_AutoNormalizesToEmpty(t *testing.T) {
 	resetEnvForResolve(t)
 	e := newExecutorForResolveTest("")
-	got := e.resolveProvider(nodeWithBackendProvider("claude_code", "auto"))
+	got, err := e.resolveProvider(nodeWithBackendProvider("claude_code", "auto"))
+	if err != nil {
+		t.Fatalf("resolveProvider: %v", err)
+	}
 	if got != "" {
 		t.Fatalf("got %q, want '' (auto → blank lets cred resolver fall to its default precedence)", got)
 	}
@@ -237,7 +249,10 @@ func TestResolveProvider_AutoNormalizesToEmpty(t *testing.T) {
 func TestResolveProvider_EmptyWhenUnset(t *testing.T) {
 	resetEnvForResolve(t)
 	e := newExecutorForResolveTest("")
-	got := e.resolveProvider(&ir.AgentNode{})
+	got, err := e.resolveProvider(&ir.AgentNode{})
+	if err != nil {
+		t.Fatalf("resolveProvider: %v", err)
+	}
 	if got != "" {
 		t.Fatalf("got %q, want '' for unset Provider", got)
 	}
@@ -297,7 +312,7 @@ func TestResolveProviderChain(t *testing.T) {
 				t.Fatalf("resolveProviderChain(%q) = %v, want %v", tc.provider, got, tc.want)
 			}
 			// resolveProvider must equal the head provider of the chain (back-compat).
-			if head := e.resolveProvider(nodeWithBackendProvider("claude_code", tc.provider)); head != tc.want[0].Provider {
+			if head, err := e.resolveProvider(nodeWithBackendProvider("claude_code", tc.provider)); err != nil || head != tc.want[0].Provider {
 				t.Errorf("resolveProvider(%q) = %q, want head %q", tc.provider, head, tc.want[0].Provider)
 			}
 		})

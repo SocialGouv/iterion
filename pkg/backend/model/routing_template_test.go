@@ -41,8 +41,8 @@ func TestRoutingFieldsResolveVarsTemplates(t *testing.T) {
 	if got := e.resolveBackendName(node); got != "claw" {
 		t.Errorf("resolveBackendName = %q, want claw", got)
 	}
-	if got := e.resolveProvider(node); got != "zai" {
-		t.Errorf("resolveProvider = %q, want zai", got)
+	if got, err := e.resolveProvider(node); err != nil || got != "zai" {
+		t.Errorf("resolveProvider = (%q, %v), want zai, nil", got, err)
 	}
 	var alt *chainElement
 	for i := range e.resolveChain(node) {

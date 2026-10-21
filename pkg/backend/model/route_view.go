@@ -24,6 +24,16 @@ type RouteView struct {
 	RunFallbacks []FallbackEntry
 	Vars         map[string]any
 	LateVars     map[string]bool
+	// AllowedProviders is the tenant's provider allowlist (ADR-129 §5) the
+	// walk enforces when non-empty: a route resolving to a provider outside
+	// it is excluded from the resolution's Providers and recorded in
+	// Forbidden (with its site), and a route the walk cannot read is
+	// recorded in Unreadable — under an allowlist, readability is
+	// compulsory. Nil/empty is exactly the pre-allowlist walk: every route
+	// records, nothing is refused. The launch and resume threads it from
+	// the run's FROZEN routing policy (store.RunLLMRoutePolicy.Providers),
+	// never from a re-resolution.
+	AllowedProviders []string
 }
 
 // RouteViewForLaunch is the publisher-side reading: the workflow's declared

@@ -566,6 +566,35 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// answer, not re-derive it from a source that may have moved. Only the
 	// SHARED tiers read it — a tenant's own keys are never gated on a wire
 	// family, so nothing about this reaches them.
+	// ADR-129 §5, the gate half: the run's FROZEN allowlist (the launch's
+	// resolved policy here, the run doc's replay on a resume) is checked on
+	// the walk every derivation below reads. A primary route with no
+	// allowed route left refuses the launch naming node, provider and the
+	// level that set the list; a rescue outside the list is pruned from the
+	// set every fill and refusal reads; a route the list cannot check
+	// refuses. Before the sealing-config early return: tenancy outranks
+	// whether this deployment seals at all.
+	allowed := model.AllowedProviderSet(policyProviders(routePolicy))
+	if allowed != nil {
+		view.AllowedProviders = policyProviders(routePolicy)
+		if view.Workflow != nil {
+			walk := model.EffectiveProviders(view, knownPoolProviders)
+			if u := model.FirstUnreadable(walk); u != nil {
+				return credResolution{}, &model.RouteUnreadableError{Site: u.Site, Field: u.Field, Hint: u.Hint}
+			}
+			if site, prov, ok := model.FirstForbiddenPrimary(walk); ok {
+				return credResolution{}, &model.ProviderOutsideError{Site: site, Provider: prov, Level: routePolicy.Sources[llmroute.FieldProviders]}
+			}
+			// A pruned rescue is not a refusal: the launch proceeds without
+			// its second server, and the tenant's own statement took it away
+			// — the launch says so, naming every provider and its sites, so
+			// the prune has an artifact the operator can read (ADR-129 §5).
+			for _, prov := range sortedForbiddenProviders(walk.Forbidden) {
+				p.logger.Info("cloudpublisher: provider %q outside this run's providers allowlist (%s) — route(s) at %s pruned; no credential is sealed for it and no unfunded refusal names it",
+					prov, model.ProviderAllowlistNames(allowed), strings.Join(walk.Forbidden[prov], ", "))
+			}
+		}
+	}
 	pinnedSet := pinnedProviderSet(pinnedProviders)
 	if p.runSecrets == nil || p.sealer == nil {
 		return credResolution{}, nil
@@ -654,6 +683,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// nil (an unwired launch) admits everything: today's behavior.
 	if routePolicy != nil {
 		policy = policy.withSlotWhitelist(routePolicy.PairOrder)
+	}
+	// ADR-129 §5: the allowlist bounds what any tier may seal — the pruned
+	// provider is funded by no channel (the nil-allowed gate admits
+	// everything, as before).
+	if allowed != nil {
+		policy = policy.withProviderAllowlist(allowed)
 	}
 	// The probes stay unread for an env-funded run: no tier is consulted.
 	var tenantNative, orgNative, platformNative *tierNative
@@ -1256,7 +1291,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		// ladder at all. (The wire's On would otherwise round-trip empty
 		// into the chain DEFAULT set — the ceiling's forbidden triggers
 		// armed, the slice-3 review's M4.)
-		held := llmroute.HeldPairs(routePolicy.PairOrder, doorServes(bundle))
+		held := llmroute.HeldPairs(allowlistedPairs(routePolicy.PairOrder, allowed), doorServes(bundle))
 		if len(held) > 0 {
 			stages := make([]ir.PolicyLadderStage, 0, len(held))
 			for _, pair := range held {
@@ -2855,6 +2890,47 @@ var knownPoolProviders = func() map[string]bool {
 	return m
 }()
 
+// policyProviders is the run's frozen allowlist (ADR-129 §5) exactly as
+// the launch stamped it: nil when the launch carried no routing policy or
+// the policy named no providers list — no allowlist is in force.
+func policyProviders(policy *store.RunLLMRoutePolicy) []string {
+	if policy == nil {
+		return nil
+	}
+	return policy.Providers
+}
+
+// sortedForbiddenProviders renders a walk's Forbidden map in a
+// deterministic order — the pruned providers by name — so a launch log and
+// a preview never depend on map iteration for what they name.
+func sortedForbiddenProviders(forbidden map[string][]string) []string {
+	out := make([]string, 0, len(forbidden))
+	for p := range forbidden {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// allowlistedPairs drops the policy pairs whose credential slot names a
+// provider the tenant's allowlist excludes (ADR-129 §5): a pair outside it
+// never becomes a ladder rung and the door never asks a donor for it — the
+// walk pruned the provider, so the ladder must not re-arm it through the
+// back door. Nil allowed keeps every pair; an unparseable pair is kept and
+// dropped downstream, as before.
+func allowlistedPairs(pairs []string, allowed map[string]bool) []string {
+	if allowed == nil {
+		return pairs
+	}
+	out := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		if _, c, err := llmroute.ParsePair(pair); err != nil || allowed[providerOfSlot(c)] {
+			out = append(out, pair)
+		}
+	}
+	return out
+}
+
 // wantsFor narrows the pool request to donations a run can actually spend,
 // and returns the resolution it narrowed on for the log lines.
 //
@@ -3186,10 +3262,14 @@ func doorServes(bundle secrets.RunBundle) func(_, credential string) bool {
 // what lets a read-only preview run it.
 func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, view model.RouteView, launchVars map[string]string, serves func(_, credential string) bool) (wants []credpool.Credential, unmapped []string, ok bool) {
 	wf := view.Workflow
+	// The tenant's allowlist (ADR-129 §5) bounds the door like every other
+	// builder of rescue routes: a pair whose credential the list excludes
+	// is never probed, never asked of a donor, never sealed.
+	allowed := model.AllowedProviderSet(view.AllowedProviders)
 	var missing []ir.PolicyLadderStage
 	for _, pair := range routePolicy.PairOrder {
 		h, c, err := llmroute.ParsePair(pair)
-		if err != nil || serves(h, c) {
+		if err != nil || serves(h, c) || (allowed != nil && !allowed[providerOfSlot(c)]) {
 			continue
 		}
 		// The probe runs the SAME screen the real ladder block runs —
@@ -3244,7 +3324,7 @@ func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, view model.RouteView, la
 	seen := map[string]bool{}
 	for _, pair := range routePolicy.PairOrder {
 		_, c, err := llmroute.ParsePair(pair)
-		if err != nil || !landed[c] || seen[c] {
+		if err != nil || !landed[c] || seen[c] || (allowed != nil && !allowed[providerOfSlot(c)]) {
 			continue
 		}
 		w, mapped := wantForSlot(c)
@@ -3550,6 +3630,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	launchOverrides := buildModelOverrides(spec.ModelOverrides)
 	launchFallbacks := runFallbackEntries(spec.Fallback)
 	launchView := model.RouteViewForLaunch(wf, launchOverrides, launchFallbacks, spec.Vars, spec.TrustedVarNames)
+	// The allowlist rides the view the stamp reads: a pruned rescue provider
+	// is not this run's spend, so the launch-frozen stamp names only the
+	// routes the tenant allows (ADR-129 §5). resolveAndSealCredentials
+	// re-derives it from the same frozen policy for its own walks.
+	launchView.AllowedProviders = policyProviders(spec.LLMRoutePolicy)
 	r.PinnedProviders = derivePinnedProviders(launchView)
 	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, runnerPool, wf, spec.KeyOverrides, spec.SecretOverrides, launchView, spec.Vars, spec.Trust, r.PinnedProviders, spec.LLMRoutePolicy)
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
@@ -3739,6 +3824,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// the ladder from its re-sealed bundle under the frozen policy).
 		Fallback:             append(queueFallbackOf(spec.Fallback), creds.Ladder...),
 		FallbackModelClasses: creds.ModelClasses,
+		// The frozen allowlist rides the wire (ADR-129 §5, queue v=25): the
+		// claiming runner drops every dispatch chain element resolving
+		// outside it — a forbidden rescue burns no retry budget on the pod.
+		LLMProviders: policyProviders(spec.LLMRoutePolicy),
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		// The deferred choke point above flips the row to failed.
@@ -4174,6 +4263,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// publication that must still carry the rescue chain.
 		Fallback:             append(queueFallbackFromRun(prior.Fallback), creds.Ladder...),
 		FallbackModelClasses: creds.ModelClasses,
+		// Replayed from the run doc's FROZEN policy (ADR-129 §5): the resume
+		// never re-resolves the allowlist — a level's list that moved since
+		// the launch does not retroactively govern a running run.
+		LLMProviders: policyProviders(prior.LLMRoutePolicy),
 		// Carry the prior run's tenant onto the resume publication so
 		// the runner re-acquires the lease in the right scope. We trust
 		// the loaded prior doc rather than ctx: a super-admin resuming

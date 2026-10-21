@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -42,6 +43,11 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// gate, launch values only where the spec pins them, a late name leaves
 	// the route undecided (ADR-129 §4).
 	previewView := model.RouteViewForLaunch(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback), spec.Launch.Vars, spec.Launch.TrustedVarNames)
+	// The same allowlist the live launch will enforce (the parity doctrine):
+	// the preview's pinned set, pool wants and candidates read the PRUNED
+	// set, so it never shows a credential for a provider the tenant forbids
+	// (ADR-129 §5).
+	previewView.AllowedProviders = policyProviders(spec.LLMRoutePolicy)
 	// The same derivation the launch stamps on the run document. Derived
 	// fresh here on purpose: a preview describes a launch that has not
 	// happened, so there is no frozen set to replay — it answers for the
@@ -58,6 +64,14 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	x.policy = p.sharedTierPolicyFor(ctx)
 	if spec.LLMRoutePolicy != nil {
 		x.policy = x.policy.withSlotWhitelist(spec.LLMRoutePolicy.PairOrder)
+		// The tenant's provider allowlist joins the same gate the live walk
+		// runs (the parity doctrine): a slot whose provider the list excludes
+		// is sealed by NO tier, so no candidate names a credential the live
+		// launch would refuse to acquire (ADR-129 §5).
+		if allowed := model.AllowedProviderSet(policyProviders(spec.LLMRoutePolicy)); allowed != nil {
+			x.policy = x.policy.withProviderAllowlist(allowed)
+			x.allowed = allowed
+		}
 	}
 	// The team's credential-fallback policy, the same fresh read the launch
 	// applies — UNCONDITIONALLY, like the launch: a failed or invalid read
@@ -102,6 +116,25 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	}
 	if !routes.NarrowSafe {
 		x.out.Warnings = append(x.out.Warnings, "Some model routes are unresolved; the live resolver uses the full pool preference order.")
+	}
+	// The allowlist's refusals are the live launch's, observed here (the
+	// preview never refuses): a primary outside the list, or a route the
+	// list cannot check, refuses that launch by name (ADR-129 §5).
+	if site, prov, ok := model.FirstForbiddenPrimary(routes); ok {
+		level := ""
+		if spec.LLMRoutePolicy != nil {
+			level = spec.LLMRoutePolicy.Sources[llmroute.FieldProviders]
+		}
+		x.out.Warnings = append(x.out.Warnings, fmt.Sprintf("The live launch refuses: node %s pins provider %q outside the providers allowlist (set by the %s level) — refused, never re-routed.", site, prov, level))
+	}
+	if u := model.FirstUnreadable(routes); u != nil {
+		x.out.Warnings = append(x.out.Warnings, fmt.Sprintf("The live launch refuses: route %s cannot be checked against the providers allowlist (%s unreadable); resolve the field or launch without the providers list.", u.Site, u.Field))
+	}
+	// A rescue outside the list is PRUNED, not refused — the launch proceeds
+	// without it, so the preview names what the tenant's own statement took
+	// away: the second server this run will not have (ADR-129 §5).
+	for _, prov := range sortedForbiddenProviders(routes.Forbidden) {
+		x.out.Warnings = append(x.out.Warnings, fmt.Sprintf("The live launch prunes the %s route at %s: provider %q is outside the providers allowlist — no credential is acquired for it.", prov, strings.Join(routes.Forbidden[prov], ", "), prov))
 	}
 	var err error
 	if envFunded {
@@ -411,6 +444,11 @@ type credentialPreview struct {
 	// and its per-tier "holds an Anthropic-native credential" probe.
 	policy  sharedTierPolicy
 	natives map[string]*tierNative
+	// allowed is the run's provider allowlist (ADR-129 §5) as the policy's
+	// joined gate holds it: kept beside the policy so a candidate's
+	// exclusion reason can name the gate that actually excluded it — the
+	// allowlist refusing the slot's provider, or the routing pair order.
+	allowed map[string]bool
 	// floorHeld are the candidates a budget-floor reservation passed over:
 	// usable, but spoken for by another workload. The live restore never
 	// hands one back (skipTracker.floorHeld), so the preview's must not either.
@@ -427,11 +465,32 @@ func (x *credentialPreview) add(c runview.CredentialPreviewCandidate) int {
 	return len(x.out.Candidates) - 1
 }
 
+// exclusionReason names the gate that excluded a credential slot: the
+// tenant's providers allowlist when it refuses the slot's provider (or the
+// slot maps to no provider — not provably inside the list), the launch's
+// routing pair order otherwise. The operator reads the knob that actually
+// holds the slot out.
+func (x *credentialPreview) exclusionReason(slot string) string {
+	if x.allowed != nil {
+		if prov := providerOfSlot(slot); prov == "" || !x.allowed[prov] {
+			return " Outside this launch's providers allowlist — the live launch seals no credential for it."
+		}
+	}
+	return " Outside the launch's routing pair order — the live launch seals no credential for it."
+}
+
 // seal is the preview's twin of the live key fill: the tenant stage seals
 // every winner as the default; a shared stage skips a provider an earlier
 // stage holds, then asks sealDecision with the preview's own view of the
 // wire.
 func (x *credentialPreview) seal(tier string, provider secrets.Provider, byWire bool) sealOutcome {
+	// The launch's own gates bound every tier the preview walks (the parity
+	// doctrine): a slot the routing policy's whitelist or the tenant's
+	// provider allowlist excludes is sealed by no tier — the same predicate
+	// the live key fill consults before it seals.
+	if !x.policy.sealableSlot(slotOfProvider(provider)) {
+		return sealNone
+	}
 	if !byWire {
 		return sealDefault
 	}
@@ -544,6 +603,8 @@ func (x *credentialPreview) apiStage(tier, tenant, owner, meter, botID string, p
 			_, heldRoute := x.pinnedAPI[k.Provider]
 			switch {
 			case !active:
+			case !x.policy.sealableSlot(slotOfProvider(k.Provider)):
+				c.Reason += x.exclusionReason(slotOfProvider(k.Provider))
 			case byWire && (heldDefault || heldRoute):
 				c.Reason += " An earlier credential already funds " + string(k.Provider) + "."
 			case isFacadeProvider(k.Provider) && !x.taken(string(k.Provider)):
@@ -618,15 +679,23 @@ func (x *credentialPreview) oauthStage(tier, owner, meter string, byWire, active
 			c.AccountGroup = group
 		}
 		closed, floorHeld := x.windows(x.ctx, &c, usageBackendForKind(rec.Kind), meter, rec.Fingerprint, true)
-		if !active || byWire && x.taken(kind) {
+		// The launch's gates bound this tier like every other: a forfait
+		// whose provider the allowlist excludes is sealed by no tier, so the
+		// candidate says so instead of predicting a credential the live
+		// launch refuses to acquire.
+		gated := !x.policy.sealableSlot(slotOfKind(kind))
+		if !active || gated || byWire && x.taken(kind) {
 			c.Selection = "not_consulted"
 			c.Reason += " This tier is bypassed for this wire in the current launch."
+			if gated {
+				c.Reason += x.exclusionReason(slotOfKind(kind))
+			}
 		}
 		i := x.add(c)
 		if floorHeld {
 			x.floorHeld[i] = true
 		}
-		if !active {
+		if !active || gated {
 			continue
 		}
 		if _, ok := x.oauth[kind]; ok {

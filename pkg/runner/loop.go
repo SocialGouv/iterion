@@ -3375,6 +3375,10 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		LLMRouteTriggers:     llmRouteTriggers(msg),
 		LLMRouteClasses:      llmRouteClasses(msg),
 		LLMRouteCrossHarness: llmRouteCrossHarness(msg),
+		// The run's frozen provider allowlist (ADR-129 §5): the dispatch
+		// drops every chain element resolving outside it, so a rescue route
+		// the tenant forbids burns no retry budget. Nil = no allowlist.
+		LLMProviders: msg.LLMProviders,
 		// The same deployment default the engine resolves sandbox modes
 		// against — the fallback screen refuses codex stages on nodes
 		// that will run sandboxed, and sandboxed-or-not is this value's

@@ -379,6 +379,16 @@ func (e *ClawExecutor) dispatchWithObservability(
 	build elementBuilder,
 	sess *nodeBuildSession,
 ) (chainOutcome, error) {
+	if len(chain) == 0 {
+		// The allowlist dropped every element: there is no route to serve
+		// this node with, and re-filling the chain with a defer-to-process
+		// element would spend a forbidden provider in silence. Refused
+		// before the lifecycle opens — nothing started, nothing spent — and
+		// typed, so a consumer can match the tenancy class the launch half
+		// returns.
+		return chainOutcome{}, fmt.Errorf("%s %q: every route resolves outside this run's provider allowlist (%s) — refused, never re-routed: %w",
+			errPrefix, nodeID, ProviderAllowlistNames(e.allowedProviders), ErrProviderOutsideAllowlist)
+	}
 	if e.hooks.OnDelegateStarted != nil {
 		e.hooks.OnDelegateStarted(nodeID, DelegateInfo{
 			BackendName:   backendName,
@@ -953,6 +963,29 @@ func (e *ClawExecutor) validateAndRetry(
 	return retryResult, nil
 }
 
+// allowlistedDetectorPick vets the HOST's model pick against the run's
+// provider allowlist (ADR-129 §5): the detector reads the pod, a source no
+// chain element carried — the same vendor-call class the gateway skip in
+// extractStructuredViaClaw refuses, one provider further out. An empty
+// spec resolves to "" (the caller's own no-provider path); a spec the list
+// cannot check, or that names a provider outside it, returns the typed
+// refusal and the caller skips or fails with the truth.
+func (e *ClawExecutor) allowlistedDetectorPick(nodeID, spec string) (string, error) {
+	if e.allowedProviders == nil || spec == "" {
+		return spec, nil
+	}
+	prov := providerOfModelSpec(spec)
+	if e.allowedProviders[prov] {
+		return spec, nil
+	}
+	if prov == "" {
+		return "", fmt.Errorf("node %q: the detected model %q names no provider — unchecked under this run's provider allowlist (%s): %w",
+			nodeID, spec, ProviderAllowlistNames(e.allowedProviders), ErrRouteUnreadableUnderAllowlist)
+	}
+	return "", fmt.Errorf("node %q: the detected model %q spends provider %q, outside this run's provider allowlist (%s): %w",
+		nodeID, spec, prov, ProviderAllowlistNames(e.allowedProviders), ErrProviderOutsideAllowlist)
+}
+
 // extractStructuredViaClaw is the last-resort structured-output recovery. When
 // a backend finished with free-form text but no schema-valid JSON (the
 // steady-state failure for claude_code under the Anthropic OAuth forfait, which
@@ -1003,6 +1036,13 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	modelSpec := e.detectorSuggestedModel()
 	if modelSpec == "" {
 		e.logger.Warn("[%s] structured-output recovery skipped: no claw provider detected", nodeID)
+		return delegate.Result{}, delegate.Result{}, false
+	}
+	modelSpec, err := e.allowlistedDetectorPick(nodeID, modelSpec)
+	if err != nil {
+		// The node has already failed — the original error surfaces; the
+		// recovery just does not add a spend the list forbids.
+		e.logger.Warn("[%s] structured-output recovery skipped: %v", nodeID, err)
 		return delegate.Result{}, delegate.Result{}, false
 	}
 	client, err := e.registry.Resolve(modelSpec)
@@ -1140,7 +1180,11 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		resolvedModel = ov.Model
 	}
 	if resolvedModel == "" && backendName == delegate.BackendClaw {
-		resolvedModel = e.detectorSuggestedModel()
+		picked, err := e.allowlistedDetectorPick(f.id, e.detectorSuggestedModel())
+		if err != nil {
+			return delegate.Task{}, err
+		}
+		resolvedModel = picked
 	}
 
 	effectiveCaps := f.capabilities
