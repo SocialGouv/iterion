@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.277.1](https://github.com/SocialGouv/iterion/compare/v3.277.0...v3.277.1) (2026-10-21)
+
+### Bug Fixes
+
+* report missing GitLab review bodies ([#2595](https://github.com/SocialGouv/iterion/issues/2595)) ([b017fb7](https://github.com/SocialGouv/iterion/commit/b017fb7f0472b0fb95eed7cf94b9279a2c52e91e))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 2 local (announced 6, ceiling 20) Adversarial-Model: kimi-code
+
+    </details>
+* root Claw file tools at the run workspace ([#2597](https://github.com/SocialGouv/iterion/issues/2597)) ([8ab5777](https://github.com/SocialGouv/iterion/commit/8ab57773a94cff555fc8f6a0dd41296e0a268118))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 1 local (announced 6, ceiling 20) Adversarial-Model: kimi-code
+
+    </details>
+
 ## [3.277.0](https://github.com/SocialGouv/iterion/compare/v3.276.0...v3.277.0) (2026-10-21)
 
 ### Features
