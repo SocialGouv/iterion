@@ -861,6 +861,7 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	// run/node identity, which keys per-run-per-node state that a replayed
 	// node id would make sibling items share (see execContext).
 	execCtx := e.templateContext(ctx, rs, branchScope)
+	execCtx = model.WithRunnerHomeScope(execCtx, model.RunnerHomeScopeForBranch(runID, branchID))
 	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
 	output, err := e.executeWithResources(execCtx, node, nodeInput)

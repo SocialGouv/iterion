@@ -118,6 +118,33 @@ func TestScanScratchSkipsDotEntries(t *testing.T) {
 	}
 }
 
+func TestSweepScratchReclaimsAStaleRunnerHome(t *testing.T) {
+	now := time.Now()
+	oldHome := "claw-runner-home-" + strings.Repeat("a", 64)
+	freshHome := "claw-runner-home-" + strings.Repeat("b", 64)
+	root := mkScratch(t, map[string]time.Duration{
+		oldHome:   30 * 24 * time.Hour,
+		freshHome: 0,
+		".state":  30 * 24 * time.Hour,
+	}, now)
+
+	swept, _, err := SweepScratch(root, DefaultScratchRetention, now, false)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(swept) != 1 || swept[0].Name != oldHome {
+		t.Fatalf("swept %v, want only the stale runner HOME", names(swept))
+	}
+	if _, err := os.Stat(filepath.Join(root, oldHome)); !os.IsNotExist(err) {
+		t.Errorf("the stale runner HOME survived: %v", err)
+	}
+	for _, keep := range []string{freshHome, ".state"} {
+		if _, err := os.Stat(filepath.Join(root, keep)); err != nil {
+			t.Errorf("%s was deleted: %v", keep, err)
+		}
+	}
+}
+
 func TestSweepScratchDryRunDeletesNothing(t *testing.T) {
 	now := time.Now()
 	root := mkScratch(t, map[string]time.Duration{"old": 30 * 24 * time.Hour}, now)

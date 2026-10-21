@@ -1033,6 +1033,26 @@ a URL on the host's loopback (`127.0.0.1`, `localhost`) names the
 container itself there, and under `network: allowlist` its host must be
 allowed.
 
+The one exception to that container-env inheritance is the runner's `HOME`:
+the launcher sets it to a per-run
+`/tmp/iterion-scratch/claw-runner-home-<sha256(home scope)>` on the hidden
+runner's exec alone, rather than `task.WorkDir`. The engine-owned scope is
+`run:<runID>` on the trunk and `run-branch:<runID>:<branchID>` inside fan-out
+branches, deliberately independent from the run/node session identity that
+branches do not carry: every node of one run or item shares the home, while
+concurrent items do not share their todos. A library caller with no scope or
+run ID falls back to the task's deterministic run-store identity (then its
+workspace identity). Each home is a top-level entry with no leading dot, so
+ordinary scratch retention reclaims it individually and one fresh sibling does
+not shield the stale ones. The sweep keeps its existing semantics: this change
+neither introduces nor fixes the general remove/recreate race of scratch
+cleanup. The existing
+`${PROJECT_SCRATCH_DIR}` location keeps that tree outside the checkout and
+independent of the host's `HOME` without making it project-shared state.
+Explicit forfait config homes (`CODEX_HOME` and
+`CLAUDE_CONFIG_DIR`) keep their own paths and precedence; `HOME` does not
+replace them.
+
 **V2-1+ wire format**: bidirectional NDJSON envelopes between
 launcher and runner (see `pkg/backend/delegate/envelope.go`). Each
 line is one envelope of typed payload (`task`, `tool_call`,

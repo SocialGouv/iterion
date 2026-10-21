@@ -581,6 +581,12 @@ type Task struct {
 	// WorkDir is the working directory for the CLI subprocess.
 	WorkDir string
 
+	// HomeScope is the engine-owned identity of the runner's HOME: run-scoped
+	// on the trunk, branch-scoped inside fan-out. It deliberately stays
+	// independent from the session identity, which fan-out branches do not
+	// carry. Launcher-side only; it is not part of the sandbox IPC task.
+	HomeScope string
+
 	// ExtraEnv is a list of KEY=value process-environment additions for
 	// every subprocess this task spawns on the HOST — delegate CLI
 	// spawns (claude_code, kimi/grok) and the claw bash builtin. The

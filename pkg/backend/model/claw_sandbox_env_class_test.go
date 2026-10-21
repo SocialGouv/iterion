@@ -11,6 +11,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"hash/fnv"
 	"io"
 	"os"
 	"os/exec"
@@ -22,6 +23,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // The in-container claw runner (`iterion __claw-runner`) is this same binary:
@@ -192,6 +196,210 @@ var envWrites = map[string]string{
 	"HOOK_MESSAGE_COUNT":             whyHookEnv,
 	"ITERION_ARTIFACT_FILES_DIR":     whyToolEnv,
 	"ITERION_ENGINE_BIN":             whyToolEnv,
+}
+
+const runnerHomePrefixForTest = "/tmp/iterion-scratch/claw-runner-home-"
+
+func TestExecuteViaSandboxRunner_RunnerHomeIsScopedToTheRun(t *testing.T) {
+	operatorEnv(t)
+	hostHome := t.TempDir()
+	workDir := t.TempDir()
+	t.Setenv("HOME", hostHome)
+
+	home := dispatchRunnerHome(t, "", "n", workDir, "")
+	assertRunnerHomeShape(t, home, hostHome, workDir)
+}
+
+func TestExecuteViaSandboxRunner_RunnerHomeSeparatesRunsNotNodes(t *testing.T) {
+	operatorEnv(t)
+	workDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+
+	homeAFirstNode := dispatchRunnerHome(t, "run-a", "node-a", workDir, "")
+	homeASecondNode := dispatchRunnerHome(t, "run-a", "node-b", workDir, "")
+	homeB := dispatchRunnerHome(t, "run-b", "node-a", workDir, "")
+	if homeAFirstNode != homeASecondNode {
+		t.Errorf("two nodes of run-a got HOME %q and %q — a todo written by one is invisible to the other", homeAFirstNode, homeASecondNode)
+	}
+	if homeAFirstNode == homeB {
+		t.Errorf("run-a and run-b share HOME %q over the same workdir — their todo sessions collide", homeAFirstNode)
+	}
+
+	todoPath := func(home string) string {
+		fingerprint := fnv.New64a()
+		_, _ = fingerprint.Write([]byte(workDir))
+		return home + "/.claw-code/todos/" + fmt.Sprintf("%016x", fingerprint.Sum64()) + ".json"
+	}
+	if todoPath(homeAFirstNode) != todoPath(homeASecondNode) {
+		t.Error("two nodes of run-a resolve different todo files")
+	}
+	if todoPath(homeAFirstNode) == todoPath(homeB) {
+		t.Errorf("run-a and run-b resolve the same todo file %q", todoPath(homeAFirstNode))
+	}
+}
+
+func TestExecuteViaSandboxRunner_RunnerHomeHonorsHomeScope(t *testing.T) {
+	operatorEnv(t)
+	workDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	trunkScope := RunnerHomeScopeForRun("run-a")
+	branchAScope := RunnerHomeScopeForBranch("run-a", "branch_dispatch_0")
+	branchBScope := RunnerHomeScopeForBranch("run-a", "branch_dispatch_1")
+
+	trunkHome := dispatchRunnerHomeForTask(t, context.Background(), delegate.Task{
+		NodeID: "entry", Model: "openai/gpt-6", WorkDir: workDir, HomeScope: trunkScope,
+	})
+	branchAFirstNode := dispatchRunnerHomeForTask(t, context.Background(), delegate.Task{
+		NodeID: "handle", Model: "openai/gpt-6", WorkDir: workDir, HomeScope: branchAScope,
+	})
+	branchASecondNode := dispatchRunnerHomeForTask(t, context.Background(), delegate.Task{
+		NodeID: "review", Model: "openai/gpt-6", WorkDir: workDir, HomeScope: branchAScope,
+	})
+	branchB := dispatchRunnerHomeForTask(t, context.Background(), delegate.Task{
+		NodeID: "handle", Model: "openai/gpt-6", WorkDir: workDir, HomeScope: branchBScope,
+	})
+
+	if branchAFirstNode != branchASecondNode {
+		t.Errorf("two nodes of one fan-out item got HOME %q and %q", branchAFirstNode, branchASecondNode)
+	}
+	if trunkHome == branchAFirstNode {
+		t.Errorf("the trunk and fan-out branch A share HOME %q", trunkHome)
+	}
+	if branchAFirstNode == branchB {
+		t.Errorf("fan-out items A and B share HOME %q", branchAFirstNode)
+	}
+	assertRunnerHomeShape(t, trunkHome, os.Getenv("HOME"), workDir)
+	assertRunnerHomeShape(t, branchAFirstNode, os.Getenv("HOME"), workDir)
+	assertRunnerHomeShape(t, branchB, os.Getenv("HOME"), workDir)
+}
+
+func TestClawRunnerHome_RunAndFallbackIdentitiesCannotCollide(t *testing.T) {
+	task := delegate.Task{RunStoreDir: "run-store", StoreDir: "store", WorkDir: "work"}
+	fallbackIdentity := strings.Join([]string{task.RunStoreDir, task.StoreDir, task.WorkDir}, "\x00")
+	runHome := clawRunnerHome(WithRunID(context.Background(), fallbackIdentity), delegate.Task{})
+	fallbackHome := clawRunnerHome(context.Background(), task)
+	if runHome == fallbackHome {
+		t.Fatalf("a run ID spelling the whole fallback identity collides with it at %q", runHome)
+	}
+}
+
+func TestExecuteViaSandboxRunner_RunnerHomeFallbackIsUniqueAndDeterministic(t *testing.T) {
+	operatorEnv(t)
+	workDir := t.TempDir()
+	storeA := filepath.Join(t.TempDir(), "runs", "a")
+	storeB := filepath.Join(t.TempDir(), "runs", "b")
+	t.Setenv("HOME", t.TempDir())
+
+	fallbackA := dispatchRunnerHome(t, "", "node-a", workDir, storeA)
+	if got := dispatchRunnerHome(t, "", "node-a", workDir, storeA); got != fallbackA {
+		t.Errorf("the no-RunID fallback changed between identical dispatches: %q then %q", fallbackA, got)
+	}
+	if got := dispatchRunnerHome(t, "", "node-b", workDir, storeA); got != fallbackA {
+		t.Errorf("the no-RunID fallback is node-scoped: node-b got %q, run store A got %q", got, fallbackA)
+	}
+	if got := dispatchRunnerHome(t, "", "node-a", workDir, storeB); got == fallbackA {
+		t.Errorf("run stores A and B share the fallback HOME %q", got)
+	}
+}
+
+func TestExecuteViaSandboxRunner_RunnerHomePreservesForfaitHomes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		model      string
+		configHome string
+		wantConfig string
+		creds      func(*testing.T) secrets.Credentials
+	}{
+		{
+			name: "CODEX_HOME", model: "openai/gpt-6",
+			configHome: "CODEX_HOME", wantConfig: secrets.CodexSandboxConfigDir,
+			creds: func(t *testing.T) secrets.Credentials {
+				return secrets.Credentials{OAuthCredentialFiles: map[string]string{
+					string(secrets.OAuthKindCodex): writeCodexAuth(t),
+				}}
+			},
+		},
+		{
+			name: "CLAUDE_CONFIG_DIR", model: "anthropic/claude-haiku-4-5",
+			configHome: "CLAUDE_CONFIG_DIR", wantConfig: secrets.ClaudeCodeSandboxConfigDir,
+			creds: func(t *testing.T) secrets.Credentials {
+				return secrets.Credentials{OAuthCredentialFiles: map[string]string{
+					string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t),
+				}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			operatorEnv(t)
+			t.Setenv("HOME", t.TempDir())
+			for _, name := range []string{
+				"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ZAI_API_KEY",
+				"OPENAI_API_KEY", "OPENAI_BASE_URL", "ITERION_OPENAI_USE_OAUTH",
+			} {
+				t.Setenv(name, "")
+			}
+			ctx := secrets.WithCredentials(context.Background(), tc.creds(t))
+			env := runnerEnvOf(t, ctx, newDeliverySandbox(t), tc.model)
+
+			if got := env[tc.configHome]; got != tc.wantConfig {
+				t.Errorf("%s = %q, want the explicit forfait home %q", tc.configHome, got, tc.wantConfig)
+			}
+			assertRunnerHomeShape(t, env["HOME"], os.Getenv("HOME"), "")
+		})
+	}
+}
+
+func dispatchRunnerHome(t *testing.T, runID, nodeID, workDir, runStoreDir string) string {
+	t.Helper()
+	ctx := context.Background()
+	if runID != "" {
+		ctx = WithRunID(ctx, runID)
+	}
+	return dispatchRunnerHomeForTask(t, ctx, delegate.Task{
+		NodeID: nodeID, Model: "openai/gpt-6", WorkDir: workDir, RunStoreDir: runStoreDir,
+	})
+}
+
+func dispatchRunnerHomeForTask(t *testing.T, ctx context.Context, task delegate.Task) string {
+	t.Helper()
+	box := newDeliverySandbox(t)
+	task.Sandbox = box
+	_, dispatchErr := newTestClawBackend().executeViaSandboxRunner(ctx, task)
+	if len(box.runEnvs) != 1 {
+		t.Fatalf("the dispatch started %d runners, want one (dispatch error: %v)", len(box.runEnvs), dispatchErr)
+	}
+	home, present := box.runEnvs[0]["HOME"]
+	if !present {
+		t.Fatalf("the runner env has no HOME (dispatch error: %v)", dispatchErr)
+	}
+	return home
+}
+
+func assertRunnerHomeShape(t *testing.T, home, hostHome, workDir string) {
+	t.Helper()
+	if home == "" {
+		t.Error("the runner HOME is empty")
+	}
+	if home == "/" {
+		t.Error("the runner HOME is the container root")
+	}
+	if home == hostHome {
+		t.Errorf("the runner HOME = %q, the host HOME — the host's state leaks into the sandbox", home)
+	}
+	if workDir != "" && home == workDir {
+		t.Errorf("the runner HOME = %q, the task workdir — runner state would pollute the checkout", home)
+	}
+	if home == "/tmp/iterion-scratch" {
+		t.Error("the runner HOME is the project scratch itself — every run of the project shares it")
+	}
+	if !strings.HasPrefix(home, runnerHomePrefixForTest) {
+		t.Errorf("the runner HOME = %q, want a top-level per-run directory with prefix %q", home, runnerHomePrefixForTest)
+		return
+	}
+	digest := strings.TrimPrefix(home, runnerHomePrefixForTest)
+	if len(digest) != 64 || strings.Trim(digest, "0123456789abcdef") != "" {
+		t.Errorf("the runner HOME leaf = %q, want a SHA-256 hex digest", digest)
+	}
 }
 
 // crossingSpellings: where this package spells a name that crosses other than

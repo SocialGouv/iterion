@@ -3,6 +3,8 @@ package model
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1276,6 +1278,37 @@ type farSideForLog struct {
 
 func (f farSideForLog) String() string { return redactedFarSide(f.task, f.text) }
 
+const clawRunnerHomePrefix = "/tmp/iterion-scratch/claw-runner-home-"
+
+// clawRunnerHome scopes runner-owned state to the run or fan-out branch,
+// never to the shared project scratch or to one node. HomeScope is the
+// engine's dedicated identity; the run store is the deterministic fallback
+// for a library dispatch whose context carries neither scope nor run ID.
+func clawRunnerHome(ctx context.Context, task delegate.Task) string {
+	identity, kind := task.HomeScope, "scope"
+	if identity == "" {
+		identity = RunnerHomeScopeFromContext(ctx)
+	}
+	if identity == "" {
+		identity, kind = RunIDFromContext(ctx), "run"
+	}
+	if identity == "" {
+		kind = "fallback"
+		var parts []string
+		for _, part := range []string{task.RunStoreDir, task.StoreDir, task.WorkDir} {
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+		identity = strings.Join(parts, "\x00")
+		if identity == "" {
+			identity = "unwired"
+		}
+	}
+	sum := sha256.Sum256([]byte(kind + "\x00" + identity))
+	return clawRunnerHomePrefix + hex.EncodeToString(sum[:])
+}
+
 // executeViaSandboxRunner forwards the task to the iterion-claw-runner
 // sub-process inside the sandbox container.
 //
@@ -1354,6 +1387,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	if err != nil {
 		return delegate.Result{}, err
 	}
+	runnerEnv["HOME"] = clawRunnerHome(ctx, task)
 	// A policy-isolated sandbox only lets egress through the run's network
 	// proxy — and the gateway client (openai_compatible/*) NEVER trusts an
 	// ambient HTTPS_PROXY by design: it dials direct unless the engine
