@@ -637,6 +637,171 @@ Alternative: produce JSON via `printf '{"count":%d,"done":false}\n' N`.
 `printf` is POSIX, has no brace expansion semantics, and reads as
 intent-first.
 
+### The engine answers `${NAME}` before bash does
+
+A tool body is rewritten by the engine before any shell sees it:
+`expandBracedEnv` (`pkg/backend/model/executor_tool.go`) expands
+`${NAME:-default}` unconditionally and `${NAME}` whenever `lookupToolEnv`
+answers the name — an `ITERION_*` name from the bot-var overlay first, any
+name from the ENGINE process when its process-env policy exposes it (a cloud
+server and runner install `platformcfg.CloudProcessEnvPolicy`, which refuses
+a credential-shaped name or a platform secret unless
+`ITERION_CLOUD_ENV_PASSTHROUGH` lists it, so there a plain `${TOKEN}`
+reaches bash verbatim while `${TOKEN:-none}` still resolves — to the default)
+— on `command:`, on every `script:` language (`js` and
+`py` included), and on `postcondition:`. A value the body sets itself cannot
+win that race: wherever the engine answers the form, it is resolved before any
+shell starts, and this body's assignment happens later, inside that shell. A
+comment or a single-quoted span is no shelter — the expansion is quote-blind
+and rewrites both. The other side of the same coin is sound and common: where
+the braced read IS the assignment's own operand (`PATH="${PATH}:/opt/bin"`,
+`RUN_ID="${RUN_ID:-none}"`), the ambient value is the read's whole point and
+nothing is defeated — which is why C188 names only a read the body assigns
+BEFORE, in a command of its own: a command reads its own text before it
+assigns — bash expands a command's words and redirections before its prefix
+assignments take effect, and a declaration utility's operands, a `for`'s
+word list and a `read`'s redirection before they assign — so a `for`'s word
+list (`for ARCH in ${ARCH:-amd64}`) and a `read`'s redirection target
+(`read -r CFG < "${CFG}"`) read the ambient value as plainly as a right-hand
+side does. The bare rewrite must not be applied to any of them: it would turn
+`RUN_ID="${RUN_ID:-none}"` into an empty string, and
+`[ -z "$ARCH" ] && ARCH=amd64 arm64` sets ARCH to nothing and runs `arm64` as
+a command (`arm64: command not found`, status 127) — a multi-word default
+spelled as a statement needs its quotes. An assignment-only command is the
+exception, twice: it performs its assignments left to right, each seeing the
+previous one, so in `A=1 B="${A}"` the read answers 1; and under bash it
+assigns before its own redirections, so `OUT=new >"f.${OUT}"` creates
+`f.new` (dash expands the redirection first, and creates `f.` plus the
+inherited value). The engine defeats both reads — documented misses of C188
+(below).
+
+The production witness is the run-id guard of `bots/sec-audit-source`
+(#1522): it read `${RUN_ID:-}`, the engine resolved it to `""` (RUN_ID is
+not in the engine process), and the guard refused every production
+deep-scan pass from 16/09 to 21/09 while every harness test stayed green —
+the harness substitutes `{{…}}` refs plainly and never had the engine rule.
+Repaired per-bot by #1473 (read the variable bare: `$RUN_ID`); the C188
+warning now names the shape at authoring time, and
+`bots/catalog_braced_env_test.go` holds every shipped workflow at zero of
+them — it compiles each one and reports the warning itself.
+
+The same expansion mangles text an author meant verbatim, because a form's
+segment ends at the FIRST `}`: in `${FOO:-{{input.x}}}` the engine reads
+`FOO:-{{input.x` as the form and leaves `}}` behind it. Unset, the leftovers
+recompose the ref and the shape works by accident (`{{input.x}}`); set, the
+body receives `<value>}}` — two braces the author never wrote. Nothing
+reaches past a segment's own first `}`, so a later `{{…}}` is untouched
+(`cmd ${FOO:-a}{{input.y}}` yields `cmd a{{input.y}}`). `bots/golden-master` carries
+the rule in its own body in capitals for exactly this reason: no `${...}`
+anywhere in its emitted shell; every default is spelled as
+`[ -z "$VAR" ] && VAR="…"`. Inside a `js` template literal the hazard
+inverts — `${count}` is the language's interpolation, and only the
+C-identifier test of `looksLikeEnvRef` plus the name being unset keeps the
+engine from eating it; a name the engine process happens to carry
+(`${HOME}` in a script) is answered from that process.
+
+Rules that keep a body readable as what executes:
+
+- Read a value the body sets itself bare (`$NAME`), never braced — inside
+  double quotes `$NAME` expands to the same one word `${NAME}` did. Twice,
+  the braces carry more than themselves and the bare rewrite alone breaks the
+  body: an identifier byte right after the `}` joins a bare name
+  (`"${COUNT}_items"` prints `7_items`, `"$COUNT_items"` prints nothing — it
+  names the variable `COUNT_items`), so close the word yourself
+  (`"$COUNT"_items`); and a `:-` default goes away with the braces, so spell
+  it as a statement the shell runs (`[ -z "$VAR" ] && VAR="…"` — quoted, or a
+  multi-word default runs its tail as a command).
+- Keep the deliberate dials braced: `${ITERION_DISPATCHER_PORT:-4891}`
+  resolves through the bot-var overlay (ADR-093) precisely because the body
+  never assigns that name — the C188 check stays silent on it by
+  construction.
+- There is no opt-out from the expansion yet: ADR-130 records the
+  `env_expansion` property as the answer, but it does not parse today. Until
+  it lands, keep a body that means `${…}` as text free of braced forms, and
+  spell a default the shell computes — `[ -z "$VAR" ] && VAR="…"`, the shape
+  golden-master's own rule names — rather than working around the engine in
+  the text.
+
+#### What C188 promises, and what it leaves out
+
+Precision over recall: C188 is meant to fire only where the body's
+assignment, once it runs, persists to the braced read in bash, and only on a
+form the engine answers before any shell runs. A lint that misses is
+acceptable; a warning on a correct line is not. So the scanner leaves out
+every spelling it recognises of an assignment bash keeps out of the read's
+reach — the spellings it does not recognise are its known limits, below:
+
+- a prefix assignment or a command modifier's operand — `HOME=/tmp/x git …`,
+  `HOME=/tmp/x \git …`, `GIT_DIR=… env | …`, `env GIT_DIR=… cmd` and
+  `IFS=, read …` set the name in that command's environment alone, and
+  `command X=1` runs a command named `X=1` (under bash: sh keeps a prefix
+  before a special builtin, a documented miss below);
+- an assignment inside a subshell, a `$( … )` or a backquoted substitution
+  (`( export X=1 )`, `OUT=$(X=1; …)`, `` OUT=`X=1; …` ``), in a command a
+  lone `&` sends to the background (`X=1 &`, `export X=1 &`,
+  `cmd && X=1 &`), and a `read` that is a pipeline element
+  (`cmd | read -r X` runs in a subshell — bash without `lastpipe`, and sh);
+- `local`, `declare` and `typeset`, which make the name local inside a
+  function, where the scanner has no function scope (`export` and
+  `readonly` write the global, and count — unless the function made the
+  name `local` first, a known limit);
+- a bare `export NAME` or `readonly NAME`, which assigns nothing, and an
+  operand past a flag carrying `f` (`export -f X=1`), which names a function;
+- a `NAME=value` word past the command's verb, which is an operand
+  (`make COMMIT=abc`, `"$MAKE" PREFIX=/opt`, `for kv in FOO=1`,
+  `echo $(date) A=1`);
+- a `for NAME do` or `for NAME;` without a word list: it iterates the
+  positional parameters, and a tool body runs without any, so the loop never
+  runs.
+
+The documented misses are real defeats C188 leaves unreported, because
+reporting them would take a deeper model of bash, or would fire on correct
+bodies of the same spelling: a name assigned and read inside one `$( … )`;
+a quoted `"$( … )"` or backquoted right-hand side whose inner text holds a
+blank or a separator (`X="$(cmd "a b")"`, read later); a right-hand side a
+quote or an escape continues past a substitution's `)` (`X=$(pwd)"/sub"`,
+`X=$(pwd)\/sub`); a later assignment of the same assignment-only command
+(`A=1 B="${A}"`), and that command's own redirection, which bash performs
+after the assignments (`OUT=new >"f.${OUT}"` creates `f.new`; dash expands
+the redirection first); a prefix before a substitution that expands to no
+word (`X=1 $(true)` keeps X); a function's own braced read of its `local`, a
+top-level `declare NAME=value`, a `typeset -g`; an assignment-only command
+carrying a redirection (`X=$(cmd) 2>/dev/null`); the first statement on a
+one-line function's brace line (`f() { X=1; …`); an `export` operand after a
+command substitution (`export A=$(cmd) B=2`); an unquoted `&` inside a
+parameter expansion (`X=${Y//&/and}`), read as a `&` that backgrounds; a
+`for NAME do` over positional parameters the body set itself
+(`set -- a b`), and a `for NAME` whose `in` starts the next line; a read a
+later loop iteration would answer (a `${X}` above `X=1` in a `for`); a name
+set through `let`, `printf -v`, `mapfile`, `select` or `((NAME=…))`; a read
+inside a comment, a single-quoted span or a heredoc body; and, in a
+`script:` run by sh, a prefix before a special builtin, which dash (like
+`bash --posix`) keeps and bash does not (`X=1 :`, `X=1 export Q=2`,
+`X=1 eval …`, `X=1 exec`).
+
+Known limits — C188 still fires where the assignment never reaches the read
+but the scanner cannot see it, and the finding is wrong there. The scanner
+keeps no function scope, no pipeline or background scope for a compound
+command or an and-list, and a flat model of nesting and quotes, so it
+records these assignments where they are written, not where they run:
+
+- a function's assignment read between the definition and the first call
+  (`setup() { export X=1; }`, then `${X:-unset}`, then `setup`);
+- a name a pipeline element sets, read after it
+  (`cmd | while read -r L; do …; done`, `{ X=1; } | cmd`);
+- a name a backgrounded compound command or and-list sets, read after it
+  (`{ X=1; } &`, `for X in a b; do …; done &`, `X=1 && cmd &`) — a simple
+  `X=1 &` stays silent;
+- an `export` of a name the function made `local` first
+  (`f() { local X; export X=1; }` exports the local);
+- an extglob pattern in a case inside a substitution
+  (`$(case $v in @(a|b)) X=1;; esac)`), whose `)` the scanner takes for the
+  pattern's own, and a `)` inside a quoted substitution nested in another
+  (`$(MSG="$(printf ")")"; X=1)`): both close the outer substitution early,
+  so the assignment after them counts as the body's;
+- in a `script:` run by sh, `X=1 &>file`: bash reads `&>` as a redirection,
+  dash as `&` then `>file`, which backgrounds the assignment.
+
 ### Never pass LLM-generated values into a command via the raw `{{!ref}}` form
 
 A tool `command:` resolves `{{input.x}}` / `{{vars.x}}` through

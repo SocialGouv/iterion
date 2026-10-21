@@ -104,6 +104,10 @@ const (
 	DiagAmbientContextNotEnforced DiagCode = "C185" // an explicit ambient_context a backend has not been measured against — grok's workspace and all (warning)
 	DiagAmbientContextRefused     DiagCode = "C187" // a declared ambient_context a backend loads past, whatever iterion passes it — refused at dispatch too (error)
 
+	// Braced-env body lint (ADR-130). C188 comes from the free C184-C189
+	// band, after the C184/C185/C187 ambient family.
+	DiagBracedEnvDefeatsAssignment DiagCode = "C188" // a shell-bound tool body reads a name braced after assigning it — the engine answers the read before any shell runs (warning)
+
 	// Loop back-edge affordability guard diagnostics.
 	DiagInvalidLoopBudgetGuard DiagCode = "C133" // loop_budget_guard: value not one of on|off (error)
 

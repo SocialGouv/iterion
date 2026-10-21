@@ -116,11 +116,21 @@ func lineOfOffset(s string, off int) (int, string) {
 //
 // The invariant this pins: no command block of this bot carries a braced
 // env reference at all — with a default (expanded unconditionally) or
-// without (expanded whenever the engine env carries the name, a second
-// source for a value the command sets itself). Bare $NAME references pass
+// without (expanded whenever the engine env carries the name and its
+// process-env policy exposes it, a second source for a value the command
+// sets itself). Bare $NAME references pass
 // through to bash untouched. The deepsec harness mirrors the engine rule
 // too (expandEngineBracedEnv in sec_audit_deepsec_coverage_test.go), so a
 // regression reddens in the behavioural tests as well.
+//
+// This is deliberately STRICTER than the catalogue-wide rule: the general
+// check (the C188 warning in pkg/dsl/ir, floored at zero findings over the
+// shipped bots by catalog_braced_env_test.go) fires only where a body both
+// ASSIGNS a name and reads it back braced — a read of a name the body never
+// assigns is the documented ADR-093 dial (PORT=${ITERION_DISPATCHER_PORT:
+// -4891}) and is correct. This bot forbids EVERY braced form, assigned or
+// not: a deep-scan harness must not depend on the engine process carrying
+// any name at all, so its bodies hand bash exactly what was written.
 func TestSecAuditCommandBlocksCarryNoBracedEnvReference(t *testing.T) {
 	data, err := os.ReadFile("sec-audit-source/main.bot")
 	if err != nil {

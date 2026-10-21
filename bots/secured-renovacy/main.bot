@@ -4035,7 +4035,7 @@ tool batch_commit:
     # iterion-sandbox-slim's toolchain.
     COUNT=$(printf '%s' "$PATCHES" | jq 'length' 2>/dev/null || echo '?')
     BODY=$(printf '%s' "$PATCHES" | jq -r '.[] | "- \(.name // "?") \(.current // "?") -> \(.target // "?")"' 2>/dev/null || true)
-    SUBJECT="chore(deps): batch update ${COUNT} patch upgrades"
+    SUBJECT="chore(deps): batch update $COUNT patch upgrades"
 
     # Cache-exclusion pathspecs (see commit_changes for rationale): keep
     # any stray toolchain cache OUT of the staged set, regardless of
@@ -4468,7 +4468,7 @@ tool family_commit:
     AUDIT={{input.audit_summary}}
     COUNT=$(printf '%s' "$MEMBERS" | jq 'length' 2>/dev/null || echo '?')
     BODY=$(printf '%s' "$MEMBERS" | jq -r '.[] | "- \(.name // "?") \(.current // "?") -> \(.target // "?")"' 2>/dev/null || true)
-    SUBJECT="chore(deps): update ${FAMILY}/* family (${COUNT} packages)"
+    SUBJECT="chore(deps): update $FAMILY/* family ($COUNT packages)"
     # Cache-exclusion pathspecs (see commit_changes for rationale).
     git add -A -- ':/' $ITERION_TREE_NOISE >&2
     # Belt-and-suspenders (Revi review finding): git add -A respects .gitignore, so
