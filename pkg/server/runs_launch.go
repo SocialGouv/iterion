@@ -413,11 +413,14 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if resolvesBot {
 		launchBotLabel = strings.TrimSpace(req.BotID)
 	}
-	// No typed id: a catalog-shaped path still names a bot — admission
-	// reserves THAT band rather than the anonymous one, and the re-admission
-	// below swaps the reservation if resolution lands on a spelling variant.
+	// No typed id: in CLOUD a catalog-shaped path still names a bot —
+	// admission reserves THAT band rather than the anonymous one, and the
+	// re-admission below swaps the reservation if resolution lands on a
+	// spelling variant. Local mode never infers: no resolution runs there to
+	// verify the label, so a catalog-shaped WorkDir file must not borrow a
+	// reserved band while publishing no identity.
 	inferredAdmission := false
-	if launchBotLabel == "" && req.Source == "" {
+	if launchBotLabel == "" && req.Source == "" && s.cfg.Mode == "cloud" {
 		if inferred := inferCatalogBotID(req.FilePath); inferred != "" && inferred == botregistry.NormalizeName(inferred) {
 			launchBotLabel = inferred
 			inferredAdmission = true

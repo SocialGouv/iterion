@@ -161,7 +161,7 @@ func TestHandleLaunchRun_InlineSourceDoesNotInheritCatalogReservation(t *testing
 	}
 }
 
-func TestHandleLaunchRun_PreservesExplicitBotID(t *testing.T) {
+func TestHandleLaunchRun_ExplicitBotIDPublishesTheResolvedName(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		reserved bool
@@ -191,14 +191,16 @@ func TestHandleLaunchRun_PreservesExplicitBotID(t *testing.T) {
 			if rec.Code != http.StatusAccepted {
 				t.Fatalf("status = %d, want 202 for the exact explicit bot_id: %s", rec.Code, rec.Body.String())
 			}
-			if got := pub.only(t).BotID; got != "feature_dev" {
-				t.Errorf("LaunchSpec BotID = %q, want the explicit bot_id preserved", got)
+			// The typed string is a label: the run publishes the resolution's
+			// canonical answer, not the label (#2613).
+			if got := pub.only(t).BotID; got != "feature-dev" {
+				t.Errorf("LaunchSpec BotID = %q, want the resolved canonical name", got)
 			}
 		})
 	}
 }
 
-func TestHandleLaunchRun_PreservesExplicitBotIDWithInlineSource(t *testing.T) {
+func TestHandleLaunchRun_ExplicitBotIDBesideAnInlineSourceNamesNoBot(t *testing.T) {
 	s, pub, ctx := newLaunchIdentityTestServer(t, "cloud", gateSpec{id: "t1"})
 	rec := launchIdentityRequest(t, s, ctx, map[string]string{
 		"bot_id": "feature_dev", "file_path": "inline.bot", "source": boardGateProbeBot,
@@ -206,8 +208,10 @@ func TestHandleLaunchRun_PreservesExplicitBotIDWithInlineSource(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202: %s", rec.Code, rec.Body.String())
 	}
-	if got := pub.only(t).BotID; got != "feature_dev" {
-		t.Errorf("LaunchSpec BotID = %q, want the explicit bot_id preserved with inline source", got)
+	// A source launch names no bot: the gate refuses to judge inline work
+	// under a named band, and nothing stamps an identity on the run.
+	if got := pub.only(t).BotID; got != "" {
+		t.Errorf("LaunchSpec BotID = %q, want no identity beside an inline source", got)
 	}
 }
 
