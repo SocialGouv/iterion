@@ -130,8 +130,11 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagInvalidAmbientContext:     {"Invalid ambient_context value", "Use `none`, `workspace`, `operator` or `all`, or drop the field to inherit (default `workspace`)."},
 	DiagAmbientContextNotEnforced: {"ambient_context not enforced on this backend", "Run the node on `claude_code`, `claw`, `codex` or `pi`, or drop `ambient_context:` — what grok loads for this policy has not been measured, so it keeps its own instruction-file conventions (ADR-119)."},
 	DiagAmbientContextRefused:     {"ambient_context refused on this backend", "Declare a policy the backend applies (`all` or `workspace` on kimi, `all` on opencode), drop the value to let the backend apply the default as far as it can, or run the node on `claude_code`, `claw`, `codex` or `pi` — the backend loads, whatever iterion passes it, instruction files this policy excludes, and the engine refuses the node at dispatch (ADR-119)."},
-	DiagInvalidLoopBudgetGuard:    {"Invalid loop_budget_guard value", "Use `on` or `off`, or drop the field to inherit."},
-	DiagInvalidRepoDevbox:         {"Invalid repo_devbox value", "Use `on` or `off`, or drop the field to inherit."},
+
+	// Braced-env body lint (ADR-130).
+	DiagBracedEnvDefeatsAssignment: {"Braced env read defeats the body's own assignment", "Read the variable bare ($NAME) where the braces carry nothing else — the body assigns it before the read, so the shell answers with the value this body just set, inside double quotes included. Where an identifier byte follows the brace, close the word instead (\"$NAME\"_items): a bare $NAME would take that byte into the name and read another variable. Where the form carries a :- default, spell the fallback as a statement the shell runs ([ -z \"$NAME\" ] && NAME=\"…\", quoted — an unquoted multi-word default runs its tail as a command): a bare read drops the default. The diagnostic says which of the three the body needs."},
+	DiagInvalidLoopBudgetGuard:     {"Invalid loop_budget_guard value", "Use `on` or `off`, or drop the field to inherit."},
+	DiagInvalidRepoDevbox:          {"Invalid repo_devbox value", "Use `on` or `off`, or drop the field to inherit."},
 
 	DiagInvalidWorkspaceCheckpoint: {"Invalid workspace_checkpoint value", "Use `on` or `off`, or drop the field to inherit. The default is `on`, so a typo keeps pushing the run's tree to the repository it was pointed at."},
 

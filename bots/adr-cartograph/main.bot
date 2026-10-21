@@ -896,7 +896,7 @@ print(json.dumps({
 ## `ready` so the dispatcher does not re-pick it. No-op when
 ## vars.issue_id is empty (manual CLI runs).
 tool mark_issue_for_review:
-  command: "if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=${ID#native:}; PORT=${ITERION_DISPATCHER_PORT:-4891}; curl -sS -X POST -H \"Content-Type: application/json\" -d '{\"to\":\"review\"}' \"http://localhost:${PORT}/api/v1/native/issues/${ID_SHORT}/transition\" 2>&1 | head -c 1000 || true; else echo '{\"skipped\":\"no issue_id\"}'; fi"
+  command: "if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=${ID#native:}; PORT=${ITERION_DISPATCHER_PORT:-4891}; curl -sS -X POST -H \"Content-Type: application/json\" -d '{\"to\":\"review\"}' \"http://localhost:$PORT/api/v1/native/issues/$ID_SHORT/transition\" 2>&1 | head -c 1000 || true; else echo '{\"skipped\":\"no issue_id\"}'; fi"
   output: mark_issue_output
 
 ## detect_changes: deterministic guard between converged review

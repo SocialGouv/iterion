@@ -444,6 +444,22 @@ func TestTreeNoiseScannerRound4Probes(t *testing.T) {
 		// …and a real heredoc inside a command substitution still works.
 		"heredoc inside $( ) is still consumed": {
 			"  command: |\n    OUT=$(cat <<EOF\n    \"$ITERION_TREE_NOISE\"\n    EOF\n    )\n    git add -A -- ':/' $ITERION_TREE_NOISE", 0},
+		// A HERESTRING has no body: its second `<` is not a `<<` whose
+		// delimiter is the next word, so nothing after it is data.
+		"a herestring opens no heredoc": {
+			"  command: |\n    cat <<< hi\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		"a herestring whose word is a quoted var opens no heredoc": {
+			"  command: |\n    cat <<< \"$V\"\n    git add -A -- ':/' \"$ITERION_TREE_NOISE\"", 1},
+		// …and its own word is the command's stdin, never an argv word:
+		// bash does not word-split a herestring (`X="a  b"; cat <<< $X`
+		// prints `a  b`), so neither clause of the collapse applies.
+		"a herestring's own quoted word is stdin, not argv": {
+			"  command: |\n    cat <<< \"$ITERION_TREE_NOISE\"", 0},
+		"a herestring feeding tr": {
+			"  command: |\n    tr ' ' '\\n' <<< \"$ITERION_TREE_NOISE\"", 0},
+		// The operand is ONE word: an argv word after it still collapses.
+		"an argv word after the herestring operand still fires": {
+			"  command: |\n    git add -A -- <<< \"$IN\" \"$ITERION_TREE_NOISE\"", 1},
 		// MEDIUM 1 — the case word never word-splits.
 		"m1: a case word": {
 			"  command: |\n    case \"$ITERION_TREE_NOISE\" in\n      \"\") exit 1 ;;\n    esac", 0},
