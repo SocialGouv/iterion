@@ -16,12 +16,12 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
-// maxHandoffRunsScanned bounds the reverse scan for the most recent review run
-// on a PR. Run ids are UUIDv7 and ListRuns returns them created-at ascending on
-// both backends, so scanning from the newest end and stopping at the first match
-// finds the latest review after loading only a few runs in the common case; the
-// cap keeps a pathological store (a PR never reviewed) from a full-table scan on
-// this manual, best-effort path.
+// maxHandoffRunsScanned bounds the reverse walk for the most recent review run
+// on a PR. ListRunsForPR returns this PR's runs created-at ascending on both
+// backends, so walking from the newest end and stopping at the first run that
+// renders finds the latest review after loading only a few runs in the common
+// case; the cap keeps a pathological PR (hundreds of runs, none readable) from
+// loading them all on this best-effort path.
 const maxHandoffRunsScanned = 400
 
 // maxHandoffChars caps the rendered prior-review text injected into the
@@ -81,7 +81,7 @@ func (s *Server) stampHandoffs(ctx context.Context, cfg webhooks.Config, botID s
 		}
 		// Always claim the key, even on a miss. Two lanes call this (the command
 		// dispatch and the launch tail, since neither covers every path), and a
-		// miss leaves a full reverse scan of the run store to be repeated by the
+		// miss leaves the PR's runs to be listed and walked again by the
 		// second. An empty value is what the bot would have defaulted to anyway.
 		vars[want.Var] = s.findHandoff(ctx, cfg, want.Kind, q)
 	}
@@ -112,10 +112,10 @@ func (s *Server) handoffConsumersFor(ctx context.Context, teamID, botID string) 
 	return out
 }
 
-// realWebhookHandoff is the production findHandoff: scan the run store (newest
-// first) for the latest run of a bot PRODUCING this kind whose pr_url input
-// matches this PR and whose payload is readable, then render it through that
-// producer's own declared node names.
+// realWebhookHandoff is the production findHandoff: walk this PR's runs
+// (newest first) for the latest run of a bot PRODUCING this kind whose
+// payload is readable, then render it through that producer's own declared
+// node names.
 func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, kind bundle.HandoffKind, q handoffQuery) string {
 	if s.runs == nil || strings.TrimSpace(q.PRURL) == "" {
 		return ""
@@ -130,12 +130,18 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 		return ""
 	}
 	ctx = store.WithTenant(ctx, cfg.TenantID)
-	ids, err := rs.ListRuns(ctx)
+	// The runs launched for THIS pull request, not every run of the tenant:
+	// this resolution runs once per webhook launch of a hand-off-consuming
+	// bot, and listing the tenant's runs here read every one of them and
+	// sorted them in memory, per launch (#2636). The store's match is exact
+	// on the stored pr_url input (store.RunStore.ListRunsForPR); runTargetsPR
+	// below re-checks each candidate.
+	ids, err := rs.ListRunsForPR(ctx, strings.TrimSpace(q.PRURL))
 	if err != nil || len(ids) == 0 {
 		return ""
 	}
-	// ListRuns is created-at ascending on both backends; walk from the newest
-	// end and stop at the first matching run for this PR that RENDERS.
+	// ListRunsForPR is created-at ascending on both backends; walk from the
+	// newest end and stop at the first matching run for this PR that RENDERS.
 	//
 	// "Renders" is the usability test, deliberately in place of a run-status
 	// filter: the artifact is the truth. A review still in flight has not

@@ -48,6 +48,21 @@ type RunStore interface {
 	// A successful save advances r.CASVersion. ErrRunConflict means another
 	// writer won; reload and reapply the edit rather than retrying the copy.
 	SaveRun(ctx context.Context, r *Run) error
+	// ListRuns returns every run id in the store, oldest first. It is a
+	// FULL SCAN on every backend — its cost follows the size of the store,
+	// not the size of the answer (on Mongo: a collection scan and an
+	// in-memory sort, seconds of mongod CPU at ten thousand runs) — so it
+	// serves operator-driven one-offs (inspect, migrate, bench), boot-time
+	// rebuilds, and the rare request path that has no indexed question yet.
+	// A periodic worker does not run it on its tick: it asks the store the
+	// question it has (ListRunsBySourceIssue, ListDeliverableWatchers, …),
+	// which an index answers; the two workers that still reach it do so on
+	// a LOCAL store only — the orphan reconcile, which lists only with lock
+	// authority, and pipeline admission, memoized and only while a ticket is
+	// stuck. Ten replicas re-reading ten thousand run documents every twenty
+	// seconds is what breaking that rule cost in production (#2636);
+	// pkg/store's ListRuns caller ledger (listruns_callers_test.go) names
+	// every caller with the reason its walk is acceptable.
 	ListRuns(ctx context.Context) ([]string, error)
 
 	// Run-tree reverse queries (T4b, refs #125). Both project run ids
@@ -69,6 +84,32 @@ type RunStore interface {
 	// ascending, empty slice (no error) when nothing matches or
 	// scheduleID is empty.
 	ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error)
+
+	// ListDeliverableWatchers returns every run carrying at least one
+	// watched card (Run.WatchedIssueIDs non-empty) in a status a message
+	// can be delivered to (WatchDeliverableStatuses) — the runs an issue
+	// transition or an assistant sweep fans out to. Same projection
+	// contract as the other reverse queries: ids only, created_at
+	// ascending, empty slice (no error) when nothing matches. On the Mongo
+	// backend a partial index over the runs that watch a card serves it, so
+	// a sweep reads the live watchers alone — never every live run, never
+	// the store (#2636); the filesystem backend scans, as it does for every
+	// indexed question.
+	ListDeliverableWatchers(ctx context.Context) ([]string, error)
+
+	// ListRunsForPR returns every run whose `pr_url` input equals prURL —
+	// the runs a forge webhook launched for one pull request, which the
+	// hand-off between a reviewer bot and its fixer walks newest-first.
+	// Same projection contract as the other reverse queries: ids only,
+	// created_at ascending, empty slice (no error) when nothing matches or
+	// prURL is empty. The match is EXACT on the stored input: a run a forge
+	// webhook launched carries the forge's canonical URL, which is what the
+	// forge sends again on the next event; a run launched by hand (studio,
+	// API, CLI, board, the generic webhook) carries whatever pr_url its
+	// caller typed, and is found only by that same string. Indexed on the
+	// Mongo backend (#2636: this walk used to list every run of the tenant
+	// once per webhook launch of a bot that consumes a hand-off).
+	ListRunsForPR(ctx context.Context, prURL string) ([]string, error)
 
 	// Credential-concurrency meter (secrets.ApiKey.MaxConcurrentRuns).
 	//

@@ -800,6 +800,9 @@ type Service struct {
 	// reconcileStopOnce so double-teardown is safe.
 	reconcileStop     chan struct{}
 	reconcileStopOnce sync.Once
+	// reconcileNoAuthorityOnce says once per process why the orphan scan is
+	// skipped on a store without a cross-process lock (reconcileOrphans).
+	reconcileNoAuthorityOnce sync.Once
 	// reconcileCancel interrupts the scan that goroutine may be running
 	// right now; reconcileDone is closed when it has returned. Signalling
 	// reconcileStop alone only stops the NEXT tick — the scan already in

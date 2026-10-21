@@ -92,6 +92,8 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("SubbotChildren", func(t *testing.T) { testSubbotChildren(t, factory(t)) })
 	t.Run("NodesServed", func(t *testing.T) { testNodesServed(t, factory(t)) })
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
+	t.Run("DeliverableWatchers", func(t *testing.T) { testDeliverableWatchers(t, factory(t)) })
+	t.Run("RunsForPR", func(t *testing.T) { testRunsForPR(t, factory(t)) })
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("CredFingerprintMeter", func(t *testing.T) { testCredFingerprintMeter(t, factory(t)) })
 	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
@@ -1864,6 +1866,165 @@ func testNodesServed(t *testing.T, s store.RunStore) {
 	}
 	if err := s.RecordNodeServed(ctx, "no-such-run", "n", first); err == nil {
 		t.Error("unknown run returned no error")
+	}
+}
+
+// testDeliverableWatchers pins ListDeliverableWatchers (#2636): the runs
+// carrying at least one watched card AND in a status a notification can be
+// delivered to (store.WatchDeliverableStatuses), created_at ascending, and
+// nothing else — not a run that never watched, not one whose list is empty,
+// not one that finished or is still queued. The sweeps that used to walk the
+// whole store ask this instead, so an answer missing a watcher is a
+// notification that never arrives, and one carrying a non-watcher is the
+// whole-store cost creeping back: WatchedIssueIDs is never cleared when a
+// run ends, so without the status predicate the answer would grow with
+// every assistant that ever watched.
+func testDeliverableWatchers(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	// save creates a run, stamps its watched cards and a controlled
+	// CreatedAt through SaveRun (ordering must be deterministic across
+	// backends), then drives it to status through the status writer — the
+	// production path, which the FS and Mongo backends implement apart.
+	save := func(id string, watched []string, createdAt time.Time, status store.RunStatus) {
+		if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.WatchedIssueIDs = watched
+		r.CreatedAt = createdAt
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+		if err := s.UpdateRunStatus(ctx, id, status, ""); err != nil {
+			t.Fatalf("UpdateRunStatus %s → %s: %v", id, status, err)
+		}
+	}
+	base := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	// Saved out of created_at order on purpose: the answer must re-sort.
+	save("w_late", []string{"native:card-B"}, base.Add(4*time.Minute), store.RunStatusRunning)
+	save("plain", nil, base.Add(1*time.Minute), store.RunStatusRunning)
+	save("w_early", []string{"native:card-A", "native:card-B"}, base.Add(2*time.Minute), store.RunStatusRunning)
+	save("w_paused", []string{"native:card-A"}, base.Add(3*time.Minute), store.RunStatusPausedWaitingHuman)
+	save("emptied", []string{}, base.Add(5*time.Minute), store.RunStatusRunning)
+	save("w_queued", []string{"native:card-A"}, base.Add(6*time.Minute), store.RunStatusQueued)
+	save("w_done", []string{"native:card-A"}, base.Add(7*time.Minute), store.RunStatusFinished)
+
+	got, err := s.ListDeliverableWatchers(ctx)
+	if err != nil {
+		t.Fatalf("ListDeliverableWatchers: %v", err)
+	}
+	if want := []string{"w_early", "w_paused", "w_late"}; !sameOrderedSlice(got, want) {
+		t.Errorf("ListDeliverableWatchers = %v, want %v (running or paused-for-human watchers only, created_at ascending)", got, want)
+	}
+
+	// A watcher that drops its last card leaves the answer.
+	r, err := s.LoadRun(ctx, "w_late")
+	if err != nil {
+		t.Fatalf("LoadRun w_late: %v", err)
+	}
+	r.WatchedIssueIDs = nil
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun w_late: %v", err)
+	}
+	got, err = s.ListDeliverableWatchers(ctx)
+	if err != nil {
+		t.Fatalf("ListDeliverableWatchers after unwatch: %v", err)
+	}
+	if want := []string{"w_early", "w_paused"}; !sameOrderedSlice(got, want) {
+		t.Errorf("ListDeliverableWatchers after unwatch = %v, want %v", got, want)
+	}
+
+	// A watcher that ends leaves the answer the moment its status moves.
+	if err := s.UpdateRunStatus(ctx, "w_paused", store.RunStatusFinished, ""); err != nil {
+		t.Fatalf("UpdateRunStatus w_paused → finished: %v", err)
+	}
+	got, err = s.ListDeliverableWatchers(ctx)
+	if err != nil {
+		t.Fatalf("ListDeliverableWatchers after finish: %v", err)
+	}
+	if want := []string{"w_early"}; !sameOrderedSlice(got, want) {
+		t.Errorf("ListDeliverableWatchers after w_paused finished = %v, want %v — a finished watcher consumes nothing", got, want)
+	}
+
+	// The in-place mutators are the production path: a run starts watching
+	// through AddWatchedIssues and stops through RemoveWatchedIssues — and
+	// the remove is a set subtraction that may leave an EMPTY list on the
+	// document rather than no list at all. Emptied is "watches nothing".
+	if _, err := s.AddWatchedIssues(ctx, "plain", []string{"native:card-C"}); err != nil {
+		t.Fatalf("AddWatchedIssues plain: %v", err)
+	}
+	got, err = s.ListDeliverableWatchers(ctx)
+	if err != nil {
+		t.Fatalf("ListDeliverableWatchers after AddWatchedIssues: %v", err)
+	}
+	if want := []string{"plain", "w_early"}; !sameOrderedSlice(got, want) {
+		t.Errorf("ListDeliverableWatchers after AddWatchedIssues = %v, want %v", got, want)
+	}
+	if _, err := s.RemoveWatchedIssues(ctx, "plain", []string{"native:card-C"}); err != nil {
+		t.Fatalf("RemoveWatchedIssues plain: %v", err)
+	}
+	got, err = s.ListDeliverableWatchers(ctx)
+	if err != nil {
+		t.Fatalf("ListDeliverableWatchers after RemoveWatchedIssues: %v", err)
+	}
+	if want := []string{"w_early"}; !sameOrderedSlice(got, want) {
+		t.Errorf("ListDeliverableWatchers after RemoveWatchedIssues emptied the list = %v, want %v — an emptied list is not a watcher", got, want)
+	}
+}
+
+// testRunsForPR pins ListRunsForPR (#2636): the runs whose `pr_url` input is
+// this pull request's URL, created_at ascending, and nothing else — not a
+// run launched for another PR, not one with no pr_url input, nor a URL that
+// differs by a trailing slash or by case only (the match is exact on the
+// stored input: the forge's canonical URL on both sides for a forge-launched
+// run, the caller's own string otherwise). The reviewer→fixer hand-off walks
+// this answer newest-first; it used to walk every run of the tenant.
+func testRunsForPR(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	save := func(id string, inputs map[string]any, createdAt time.Time) {
+		if _, err := s.CreateRun(ctx, id, "review-pr", inputs); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.CreatedAt = createdAt
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	const pr = "https://forge.example/group/repo/-/merge_requests/7"
+	base := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	save("pr7_late", map[string]any{"pr_url": pr, "sha": "b"}, base.Add(3*time.Minute))
+	save("manual", map[string]any{"sha": "c"}, base.Add(1*time.Minute))
+	save("pr7_early", map[string]any{"pr_url": pr, "sha": "a"}, base.Add(2*time.Minute))
+	save("pr8", map[string]any{"pr_url": "https://forge.example/group/repo/-/merge_requests/8"}, base.Add(4*time.Minute))
+	save("pr7_slash", map[string]any{"pr_url": "https://forge.example/group/repo/-/merge_requests/7/"}, base.Add(5*time.Minute))
+	save("pr7_case", map[string]any{"pr_url": "https://forge.example/Group/Repo/-/merge_requests/7"}, base.Add(6*time.Minute))
+
+	got, err := s.ListRunsForPR(ctx, pr)
+	if err != nil {
+		t.Fatalf("ListRunsForPR: %v", err)
+	}
+	if want := []string{"pr7_early", "pr7_late"}; !sameOrderedSlice(got, want) {
+		t.Errorf("ListRunsForPR = %v, want %v (this PR's runs only, created_at ascending)", got, want)
+	}
+	for _, q := range []string{"https://forge.example/group/repo/-/merge_requests/9", ""} {
+		got, err = s.ListRunsForPR(ctx, q)
+		if err != nil {
+			t.Fatalf("ListRunsForPR(%q): %v", q, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("ListRunsForPR(%q) = %v, want empty", q, got)
+		}
 	}
 }
 

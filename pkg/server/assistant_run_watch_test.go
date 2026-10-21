@@ -65,6 +65,8 @@ func TestAssistantWatchHeartbeatUsesInjectedClock(t *testing.T) {
 	start := time.Date(2026, 9, 4, 21, 0, 0, 0, time.UTC)
 	fake := clock.NewFakeClock(start)
 	c := &assistantWatchCoordinator{clock: fake}
+	// Staleness is judged on the holder of the sweep's lease only (#2636).
+	c.setElected(true)
 	c.markSweepStarted(start.Add(-time.Second))
 	c.markSweepCompleted(start.Add(-time.Second/2), time.Second)
 	if got := c.heartbeat(); got.Stale {

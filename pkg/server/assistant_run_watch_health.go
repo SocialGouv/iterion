@@ -30,7 +30,15 @@ type assistantWatchHealthResponse struct {
 }
 
 type assistantWatchCoordinatorHealth struct {
-	Present              bool       `json:"present"`
+	Present bool `json:"present"`
+	// Elected says whether THIS replica holds the sweep's lease. The sweep
+	// runs on one replica at a time (#2636), so a replica that answers
+	// `elected: false` owes no sweep: its last-sweep fields are the ones it
+	// recorded in its last term, if any, and Stale is false for it. Stale
+	// without Elected has two other sources: no coordinator at all
+	// (Present false), or a coordinator whose project moved under the
+	// request (a local project switch between the capture and the read).
+	Elected              bool       `json:"elected"`
 	LastSweepStartedAt   *time.Time `json:"last_sweep_started_at,omitempty"`
 	LastSweepCompletedAt *time.Time `json:"last_sweep_completed_at,omitempty"`
 	LastSweepDurationMS  int64      `json:"last_sweep_duration_ms,omitempty"`
@@ -191,7 +199,7 @@ func (s *Server) handleAssistantWatchHealth(w http.ResponseWriter, r *http.Reque
 }
 
 func projectAssistantWatchHeartbeat(h assistantWatchHeartbeat) assistantWatchCoordinatorHealth {
-	out := assistantWatchCoordinatorHealth{Present: h.Present, Stale: h.Stale}
+	out := assistantWatchCoordinatorHealth{Present: h.Present, Elected: h.Elected, Stale: h.Stale}
 	if !h.StartedAt.IsZero() {
 		at := h.StartedAt
 		out.LastSweepStartedAt = &at

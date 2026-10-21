@@ -277,7 +277,17 @@ assistant relation plus one deduplicated episode per actionable outcome.
 The shared event bus and successful watch requests wake one coordinator worker;
 bursts coalesce into one pending sweep. The same cycle-safe tree sweep runs at
 startup and periodically, re-reading active watches, descendants and persisted
-run status because the bus is lossy by design. Shutdown cancels that worker and
+run status because the bus is lossy by design. The sweep runs on one replica at
+a time — the holder of the `assistant-watch-sweep` lease
+([ADR-117](adr/117-server-side-leader-lease-for-idempotent-nets.md)); a replica
+that is not elected still serves every watch request, and a wake-up it queues is
+consumed when its next term starts, the holder's own tick covering the gap. A
+pass asks the store for the runs that watch a card and can still consume a
+message (`ListDeliverableWatchers`: running or paused for a human, an indexed
+question) rather than for every run, so its cost follows the number of live
+watchers, never the size of the store nor its history (#2636). The watch-health
+route reports `elected` next to the last-sweep fields; only the holder can be
+`stale`, a replica that holds no lease owes no sweep. Shutdown cancels that worker and
 bounds its final join after HTTP draining. On a local project switch, an active
 sweep keeps its original project; queued work belongs to the selected project,
 and the old project's persisted watches resume when that project is selected
