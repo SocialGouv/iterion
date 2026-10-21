@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.277.2](https://github.com/SocialGouv/iterion/compare/v3.277.1...v3.277.2) (2026-10-21)
+
+### Bug Fixes
+
+* reset undo history after replacing a document ([#2611](https://github.com/SocialGouv/iterion/issues/2611)) ([576abfe](https://github.com/SocialGouv/iterion/commit/576abfe5176915666b63c266a9f256f26e4aba9e))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 1 local (announced 3, ceiling 5) Adversarial-Model: kimi-code
+
+    </details>
+
 ## [3.277.1](https://github.com/SocialGouv/iterion/compare/v3.277.0...v3.277.1) (2026-10-21)
 
 ### Bug Fixes
