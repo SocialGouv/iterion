@@ -239,8 +239,12 @@ describe("source discipline", () => {
     // tier (text-fg-muted / text-fg-subtle); an inactive control or row is
     // `disabled:opacity-60` / `data-[disabled]:opacity-60` with the
     // matching attribute — prefixed by a state, so exempt here and explicit
-    // in the DOM. `opacity-0 group-hover:opacity-100` reveals end at 100.
-    const re = /(?<![\w:-])(hover:)?opacity-[1-9]0\b|(?<![\w:-])text-(fg|accent|danger|warning|success|info|live|persona|node)[\w-]*\/\d+\b/;
+    // in the DOM. Every step of the scale dims (opacity-5 … opacity-95) and
+    // so does an arbitrary value (`opacity-[.6]`, `opacity-(--x)`); only
+    // `opacity-0` (a reveal that ends at `group-hover:opacity-100`) and 100
+    // are not a dimming.
+    const re =
+      /(?<![\w:-])(hover:)?opacity-(?:[1-9]\d?|\[[^\]]*\]|\([^)]*\))(?![\w-])|(?<![\w:-])text-(fg|accent|danger|warning|success|info|live|persona|node)[\w-]*\/(?:\d+|\[[^\]]*\])(?![\w-])/;
     const hits = jsxClassed()
       .filter((e) => isIntrinsic(e.tag) && (re.test(e.classes) || e.styleOpacity !== undefined))
       .map((e) => hit(e));
