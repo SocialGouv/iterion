@@ -164,7 +164,7 @@ export default function RunsPanel({ runs, loading, error, scope }: Props) {
             {otherRunning.length > 0 && (
               <li
                 aria-hidden="true"
-                className="px-4 py-1.5 bg-surface-2 text-caption font-semibold uppercase tracking-wider text-fg-subtle"
+                className="px-4 py-1.5 bg-surface-2 text-caption font-semibold uppercase tracking-wider text-fg-muted"
               >
                 In other locations
               </li>

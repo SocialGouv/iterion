@@ -46,7 +46,7 @@ export default function AuxiliaryNode({ data, selected }: NodeProps) {
         <span className="font-medium text-xs text-fg-default truncate max-w-[90px]" title={label}>{label}</span>
         {badge && (
           <span
-            className="text-[8px] px-1 rounded-full text-fg-default/80"
+            className="text-[8px] px-1 rounded-full text-fg-default"
             style={{ background: softColor(color, 27) }}
           >
             {badge}

@@ -79,7 +79,7 @@ export function BackendBadge({
         <span className="truncate">
           {effective}
           {isImplicit && (
-            <span className="ml-0.5 text-fg-subtle/70 text-[8px]">
+            <span className="ml-0.5 text-fg-subtle text-[8px]">
               {usingDetect ? "·auto" : "·default"}
             </span>
           )}

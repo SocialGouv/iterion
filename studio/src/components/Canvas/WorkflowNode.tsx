@@ -170,14 +170,15 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
 
   return (
     <div
-      className={`relative rounded-xl border-2 px-4 py-2 min-w-[140px] text-center shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow ${isTerminal || isStart ? "opacity-80" : ""}`}
+      className={`relative rounded-xl border-2 px-4 py-2 min-w-[140px] text-center shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow`}
       style={{
         borderColor,
         background: softColor(color, 10),
         boxShadow: glow,
-        // Display-only child of an expanded subbot: dimmed + desaturated so
-        // it reads as "not part of the edited bot".
-        ...(external && { opacity: 0.75, filter: "saturate(0.7)" }),
+        // Display-only child of an expanded subbot: desaturated so it reads
+        // as "not part of the edited bot" (never dimmed — the label's
+        // contrast would drop with it).
+        ...(external && { filter: "saturate(0.7)" }),
       }}
       title={external ? `Part of ${subbotSource || "a subbot"} — open the file to edit` : undefined}
     >

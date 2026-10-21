@@ -173,7 +173,7 @@ export function ConnectForm({
           </label>
         )}
         <label
-          className={`flex items-center gap-1 ${oauthAvailable ? "" : "opacity-50"}`}
+          className={`flex items-center gap-1 ${oauthAvailable ? "" : "text-fg-subtle"}`}
           title={
             oauthAvailable
               ? ""

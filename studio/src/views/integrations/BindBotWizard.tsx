@@ -386,9 +386,9 @@ function BotStep({
                   onClick={() => !bound && onPick(b.name)}
                   disabled={bound}
                   className={[
-                    "w-full text-left rounded-[var(--radius-lg)] border p-3 transition-colors",
+                    "w-full text-left rounded-[var(--radius-lg)] border p-3 transition-colors disabled:opacity-60",
                     bound
-                      ? "border-border-default bg-surface-1 opacity-60 cursor-not-allowed"
+                      ? "border-border-default bg-surface-1 cursor-not-allowed"
                       : "border-border-default bg-surface-1 hover:border-border-strong cursor-pointer",
                   ].join(" ")}
                 >

@@ -411,7 +411,7 @@ function IterationPip({
       className={`flex items-center justify-center text-[9px] font-mono rounded ${
         selected
           ? "ring-1 ring-fg-default scale-110"
-          : "opacity-70 hover:opacity-100"
+          : "saturate-50 hover:saturate-100"
       }`}
       style={{
         backgroundColor: softColor(palette, 20),

@@ -21,7 +21,7 @@ export default function TrackerErrorBanner({
   return (
     <InlineBanner tone="warning" title="Tracker error" suffix={`(${tracker})`}>
       <div className="font-mono break-words">{message}</div>
-      {guidance && <div className="mt-0.5 opacity-80">{guidance}</div>}
+      {guidance && <div className="mt-0.5">{guidance}</div>}
     </InlineBanner>
   );
 }

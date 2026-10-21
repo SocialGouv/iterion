@@ -197,7 +197,7 @@ export default function BrowserPane({
           onBlur={submitDraft}
           placeholder="Enter URL or wait for the workflow to publish one"
           aria-label="Browser URL"
-          className="flex-1 rounded-md border border-border-default bg-surface-0 px-2 py-1 text-sm font-mono outline-none focus:border-accent"
+          className="flex-1 rounded-md border border-border-control bg-surface-0 px-2 py-1 text-sm font-mono outline-none focus:border-accent"
         />
         {browser.currentUrl && (
           <Tooltip content="Open in a new tab — useful when the target site forbids embedding">

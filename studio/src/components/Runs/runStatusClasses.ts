@@ -78,7 +78,7 @@ const PAUSED_OPERATOR: StatusClasses = {
 };
 
 // Neutral (unvisited/skipped/cancelled/queued) cards use border-strong in
-// light mode: border-default is gray-200 on a near-white fill, invisible
+// light mode: border-border-default is gray-200 on a near-white fill, invisible
 // at overview zoom (the audit's "pale gray nodes on white").
 const CANCELLED: StatusClasses = {
   bg: "bg-surface-2",

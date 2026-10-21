@@ -177,7 +177,7 @@ export default function NodeContextMenu({
               <input
                 ref={inputRef}
                 aria-label="Group name"
-                className="flex-1 bg-surface-0 border border-border-strong rounded px-2 py-1 text-xs text-fg-default placeholder:text-fg-subtle"
+                className="flex-1 bg-surface-0 border border-border-control rounded px-2 py-1 text-xs text-fg-default placeholder:text-fg-subtle"
                 placeholder="Group name..."
                 value={groupName}
                 onChange={(e) => setGroupName(e.target.value)}

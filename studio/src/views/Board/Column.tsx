@@ -45,7 +45,7 @@ interface ColumnProps {
   activeLabels: Set<string>;
   onCancelRun: (issueID: string) => void;
   onOpenRun: (runId: string) => void;
-  // dimmed: tells the column to render at reduced opacity. Used when the
+  // dimmed: tells the column to render desaturated (grayscale). Used when the
   // dispatcher is paused so eligible columns visually fade — the cards
   // are still draggable, but the user gets a clear "nothing will pick
   // these up" signal.
@@ -101,7 +101,7 @@ export function Column({
         dragOver
           ? "border-accent bg-accent-soft/30 ring-2 ring-accent/40"
           : "border-border-default bg-surface-1"
-      } flex flex-col ${fadeForPause ? "opacity-60" : ""}`}
+      } flex flex-col ${fadeForPause ? "grayscale" : ""}`}
       style={{ borderTopColor: color, borderTopWidth: 3 }}
       onDragOver={(e) => {
         e.preventDefault();

@@ -36,7 +36,7 @@ export default function MCPServersEditor() {
         <button
           type="button"
           onClick={handleAdd}
-          className="text-xs px-2 py-1 rounded bg-accent/20 text-accent-text hover:bg-accent/30"
+          className="text-xs px-2 py-1 rounded bg-accent-soft text-accent-text hover:ring-1 hover:ring-accent"
         >
           + Add server
         </button>

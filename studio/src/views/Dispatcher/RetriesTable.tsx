@@ -106,7 +106,7 @@ export default function RetriesTable({
                     {dueLabel || relTime(r.due_at)}
                   </span>
                 </Td>
-                <Td className="text-danger-fg/80 truncate max-w-[24rem]">
+                <Td className="text-danger-fg truncate max-w-[24rem]">
                   {r.error}
                 </Td>
               </Tr>

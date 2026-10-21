@@ -45,7 +45,7 @@ export default function QueueDepthBar({ counts }: Props) {
           <span
             key={cell.status}
             className={`inline-flex items-center gap-1 ${
-              n > 0 ? cell.textClass : "text-fg-subtle/50"
+              n > 0 ? cell.textClass : "text-fg-subtle"
             }`}
             title={`${n} ${cell.label}`}
           >

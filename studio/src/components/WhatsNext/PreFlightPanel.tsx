@@ -86,7 +86,7 @@ function TerminalOutcome({
       >
         <div className="space-y-2">
           {error && (
-            <code className="block whitespace-pre-wrap break-words font-mono text-micro opacity-90">
+            <code className="block whitespace-pre-wrap break-words font-mono text-micro">
               {error}
             </code>
           )}

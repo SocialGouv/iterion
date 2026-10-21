@@ -27,7 +27,7 @@ export function PublicTopBar() {
       <button
         type="button"
         onClick={() => navigate("/")}
-        className="flex items-center gap-2.5 rounded text-fg-default hover:opacity-80 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+        className="flex items-center gap-2.5 rounded text-fg-default hover:bg-surface-2 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
         aria-label="Back to home"
       >
         <BrandMark className="h-7 w-7" />

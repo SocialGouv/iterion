@@ -40,8 +40,8 @@ export default function DiagnosticBadge({
   // every warning makes the studio feel anxious.
   const colorClass =
     sev === "error"
-      ? "bg-danger text-fg-onAccent border-danger animate-pulse"
-      : "bg-warning text-fg-onAccent border-warning";
+      ? "bg-danger-solid text-fg-onAccent border-danger-solid animate-pulse"
+      : "bg-warning-solid text-fg-onAccent border-warning-solid";
   const Icon = sev === "error" ? CrossCircledIcon : ExclamationTriangleIcon;
 
   return (

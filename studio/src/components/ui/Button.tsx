@@ -25,9 +25,9 @@ const variantClass: Record<ButtonVariant, string> = {
   ghost:
     "bg-transparent text-fg-muted hover:bg-surface-2 hover:text-fg-default disabled:text-fg-subtle",
   danger:
-    "bg-danger text-fg-onAccent hover:opacity-90 disabled:bg-surface-2 disabled:text-fg-subtle",
+    "bg-danger-solid text-fg-onAccent hover:brightness-95 disabled:bg-surface-2 disabled:text-fg-subtle",
   success:
-    "bg-success text-fg-onAccent hover:opacity-90 disabled:bg-surface-2 disabled:text-fg-subtle",
+    "bg-success-solid text-fg-onAccent hover:brightness-95 disabled:bg-surface-2 disabled:text-fg-subtle",
 };
 
 const sizeClass: Record<ButtonSize, string> = {

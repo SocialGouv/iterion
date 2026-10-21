@@ -64,7 +64,7 @@ export function MarkdownPreview({
           rows={rows}
           placeholder={placeholder}
           onChange={(e) => onChange(e.target.value)}
-          className={`w-full bg-surface-1 text-fg-default rounded-md border border-border-strong outline-none focus:border-accent focus:ring-1 focus:ring-accent px-2 py-1.5 text-xs font-mono resize-y ${editorClassName}`.trim()}
+          className={`w-full bg-surface-1 text-fg-default rounded-md border border-border-control outline-none focus:border-accent focus:ring-1 focus:ring-accent px-2 py-1.5 text-xs font-mono resize-y ${editorClassName}`.trim()}
         />
       ) : (
         <div className="w-full min-h-[6rem] bg-surface-1 text-fg-default rounded-md border border-border-default px-2 py-1.5 text-xs font-mono whitespace-pre-wrap">

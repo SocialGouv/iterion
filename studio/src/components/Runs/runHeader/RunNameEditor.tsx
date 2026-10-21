@@ -40,7 +40,7 @@ export default function RunNameEditor({
         }
       }}
       onBlur={() => onSubmit(value)}
-      className="font-medium text-sm bg-surface-2 border border-accent/60 rounded px-1.5 py-0.5 min-w-[16rem] max-w-md focus:outline-none focus:border-accent"
+      className="font-medium text-sm bg-surface-2 border border-border-control rounded px-1.5 py-0.5 min-w-[16rem] max-w-md focus:outline-none focus:border-accent"
       maxLength={200}
       aria-label="Rename run"
     />

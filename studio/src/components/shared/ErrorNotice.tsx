@@ -46,15 +46,15 @@ export function ErrorNotice({
       }
       className={className}
     >
-      {hint?.hint && <div className="mt-0.5 opacity-90">{hint.hint}</div>}
+      {hint?.hint && <div className="mt-0.5">{hint.hint}</div>}
       {/* When a hint matched, the raw error isn't in the headline —
           keep it recoverable but out of the way. */}
       {hint && (
         <details className="mt-1">
-          <summary className="cursor-pointer opacity-70 hover:opacity-100">
+          <summary className="cursor-pointer hover:underline">
             Details
           </summary>
-          <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-micro opacity-90">
+          <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-micro">
             {raw}
           </pre>
         </details>

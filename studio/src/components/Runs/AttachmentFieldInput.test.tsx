@@ -24,4 +24,32 @@ describe("AttachmentFieldInput", () => {
     }) as HTMLInputElement;
     expect(input.getAttribute("aria-label")).toBe("Upload logo");
   });
+
+  it("marks a disabled dropzone for assistive tech and for its dimmed style (aria-disabled + data-disabled)", () => {
+    // The dimming is `data-[disabled]:opacity-60`, bound to the attribute:
+    // a static opacity-60 would dim the text's contrast on an enabled zone
+    // too (RGAA 3.2), and a colour-only change left the state imperceptible.
+    render(
+      <AttachmentFieldInput
+        field={{ name: "logo", type: "image" }}
+        value={null}
+        onChange={vi.fn()}
+        serverLimits={null}
+        disabled
+      />,
+    );
+    const zone = screen.getByRole("button", { name: "Upload logo" });
+    expect(zone.getAttribute("aria-disabled")).toBe("true");
+    expect(zone.hasAttribute("data-disabled")).toBe(true);
+    expect(zone.className).toMatch(/(^|\s)data-\[disabled\]:opacity-60(\s|$)/);
+  });
+
+  it("carries neither disabled attribute when enabled", () => {
+    render(
+      <AttachmentFieldInput field={{ name: "logo", type: "image" }} value={null} onChange={vi.fn()} serverLimits={null} />,
+    );
+    const zone = screen.getByRole("button", { name: "Upload logo" });
+    expect(zone.hasAttribute("aria-disabled")).toBe(false);
+    expect(zone.hasAttribute("data-disabled")).toBe(false);
+  });
 });

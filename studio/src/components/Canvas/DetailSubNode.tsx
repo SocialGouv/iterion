@@ -71,7 +71,7 @@ export default function DetailSubNode({ data, selected }: NodeProps) {
         <span className="font-medium text-xs text-fg-default truncate max-w-[120px]">{label}</span>
         {badge && (
           <span
-            className="text-[8px] px-1.5 py-0.5 rounded-full text-fg-default/80"
+            className="text-[8px] px-1.5 py-0.5 rounded-full text-fg-default"
             style={{ background: softColor(color, 27) }}
           >
             {badge}

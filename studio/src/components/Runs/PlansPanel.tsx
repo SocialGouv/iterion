@@ -61,7 +61,7 @@ export default function PlansPanel({ runId }: { runId: string | null }) {
     return (
       <div className="h-full flex flex-col items-center justify-center text-fg-subtle px-4 text-center gap-1 text-xs">
         <div>No plans captured for this run.</div>
-        <div className="opacity-70">
+        <div>
           Agents that maintain a task list (via <code>TodoWrite</code> /{" "}
           <code>todo_write</code>) have each plan snapshot recorded here.
         </div>
@@ -77,7 +77,7 @@ export default function PlansPanel({ runId }: { runId: string | null }) {
         <span>
           {plans.length} plan{plans.length === 1 ? "" : "s"}
         </span>
-        <span className="opacity-70">newest first</span>
+        <span>newest first</span>
       </div>
       <div className="flex-1 overflow-auto px-3 py-3 flex flex-col gap-3">
         {ordered.map((p) => (

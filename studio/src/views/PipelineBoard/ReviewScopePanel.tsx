@@ -148,7 +148,7 @@ export function ReviewScopePanel({ runId, live, pauseKey }: Props) {
       <details className="group rounded-md border border-border-default bg-surface-1 open:bg-surface-1">
         <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 text-caption select-none [&::-webkit-details-marker]:hidden">
           <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-fg-subtle transition-transform group-open:rotate-90" />
-          <span className="font-medium text-fg">
+          <span className="font-medium text-fg-default">
             Changed since the previous review
           </span>
           <span className="text-fg-subtle">
@@ -207,7 +207,7 @@ export function ReviewScopePanel({ runId, live, pauseKey }: Props) {
                             {kind}
                           </span>
                         ) : null}
-                        <span className="truncate font-mono text-fg">{f.path}</span>
+                        <span className="truncate font-mono text-fg-default">{f.path}</span>
                         {f.uncaptured ? (
                           <span
                             className="shrink-0 text-fg-subtle"

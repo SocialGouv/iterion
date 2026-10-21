@@ -53,7 +53,7 @@ export default function VeilleBanner({
   isRunning = false,
 }: VeilleBannerProps) {
   return (
-    <div className="border-t border-default bg-subtle px-3 py-2">
+    <div className="border-t border-border-default bg-subtle px-3 py-2">
       <div className="flex items-center gap-2">
         {isRunning ? (
           <Loader2
@@ -83,7 +83,7 @@ export default function VeilleBanner({
         </p>
         <button
           type="button"
-          className="shrink-0 rounded border border-default px-2 py-1 text-caption hover:bg-default disabled:opacity-50"
+          className="shrink-0 rounded border border-border-default px-2 py-1 text-caption hover:bg-default disabled:opacity-50"
           disabled={busy}
           onClick={onStop}
         >

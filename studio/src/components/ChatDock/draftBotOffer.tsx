@@ -39,7 +39,7 @@ export function DraftBotOffer({
     <div className="mt-3 border-t border-border-subtle pt-2.5">
       <Link
         href={`/editor?draft=${encodeURIComponent(runId)}`}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-label font-medium text-accent-contrast hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-accent-emphasis"
+        className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-label font-medium text-fg-onAccent hover:brightness-110"
       >
         <Pencil2Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
         Open this draft in the editor

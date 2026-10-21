@@ -212,7 +212,7 @@ export default function ModelOverridesSection({
         <span>{open ? "▾" : "▸"}</span>
         <span>Model &amp; backend per node</span>
         {setCount > 0 && (
-          <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-caption text-accent-fg">
+          <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-caption text-accent-text">
             {setCount} overridden
           </span>
         )}

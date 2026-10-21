@@ -91,7 +91,7 @@ export default function ToastContainer() {
             )}
             <button
               type="button"
-              className="ml-1 opacity-60 hover:opacity-100 text-xs focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-current rounded"
+              className="ml-1 text-xs rounded hover:bg-scrim-soft focus-visible:ring-1 focus-visible:ring-current"
               onClick={() => removeToast(toast.id)}
               aria-label="Dismiss notification"
               title="Dismiss"

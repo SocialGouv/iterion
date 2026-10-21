@@ -344,7 +344,7 @@ function AssistantBubble({
   return (
     <div className="flex items-start gap-2">
       <span
-        className="mt-1 px-2 py-0.5 rounded-full bg-accent-soft text-accent-fg text-caption font-bold flex items-center justify-center shrink-0"
+        className="mt-1 px-2 py-0.5 rounded-full bg-accent-soft text-accent-text text-caption font-bold flex items-center justify-center shrink-0"
         aria-hidden="true"
       >
         {/* The correspondent's persona (manifest display_name). The dock

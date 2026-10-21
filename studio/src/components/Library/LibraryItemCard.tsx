@@ -61,7 +61,7 @@ export default function LibraryItemCard({ item, onAdd }: Props) {
             {item.tags.slice(0, 3).map((tag) => (
               <span
                 key={tag}
-                className="text-caption px-1 py-0 rounded bg-surface-2 text-fg-subtle"
+                className="text-caption px-1 py-0 rounded bg-surface-2 text-fg-muted"
               >
                 {tag}
               </span>

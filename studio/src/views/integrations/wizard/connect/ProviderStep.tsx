@@ -71,11 +71,11 @@ export default function ProviderStep({
               disabled={disabled}
               aria-pressed={active}
               className={[
-                "text-left rounded-[var(--radius-lg)] border p-3 transition-colors",
+                "text-left rounded-[var(--radius-lg)] border p-3 transition-colors disabled:opacity-60",
                 active
                   ? "border-accent bg-accent-soft"
                   : "border-border-default bg-surface-1 hover:border-border-strong",
-                disabled ? "opacity-60 cursor-not-allowed" : "cursor-pointer",
+                disabled ? "cursor-not-allowed" : "cursor-pointer",
               ].join(" ")}
             >
               <div className="flex items-center gap-2">

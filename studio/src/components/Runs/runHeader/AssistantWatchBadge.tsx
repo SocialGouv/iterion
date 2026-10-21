@@ -36,7 +36,7 @@ export default function AssistantWatchBadge({ runId }: { runId: string }) {
         Assistant watch
         <button
           type="button"
-          className="ml-0.5 opacity-70 hover:opacity-100"
+          className="ml-0.5 rounded hover:text-fg-default"
           aria-label="Stop assistant watch"
           disabled={stop.isPending}
           onClick={() => stop.mutate(watch.id)}

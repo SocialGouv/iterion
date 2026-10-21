@@ -118,7 +118,7 @@ export default function DeploymentRow({
             <span className={`px-1.5 py-0.5 rounded ${chip.className}`}>
               {chip.label}
               {reasons.length > 0 && (
-                <span className="ml-1 font-normal opacity-90">
+                <span className="ml-1 font-normal">
                   — {reasons.join(" · ")}
                 </span>
               )}

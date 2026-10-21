@@ -137,7 +137,7 @@ export function IssueCard({
         <div className="mt-0.5 flex items-center gap-2 text-caption text-fg-subtle flex-wrap">
           {pinnedFields.map(([k, v]) => (
             <span key={k} className="flex items-center gap-1">
-              <span className="font-mono opacity-70">{k}:</span>
+              <span className="font-mono">{k}:</span>
               <span className="text-fg-default">{String(v)}</span>
             </span>
           ))}
@@ -186,7 +186,7 @@ export function IssueCard({
         </div>
       )}
       <div className="mt-1 flex items-center gap-2 text-caption text-fg-muted flex-wrap">
-        <code className="opacity-70">{shortID(iss.id)}</code>
+        <code className="text-fg-subtle">{shortID(iss.id)}</code>
         {iss.bot && (
           <Badge
             variant="accent"
@@ -219,7 +219,7 @@ export function IssueCard({
                 e.stopPropagation();
                 onOpenRun(lastRunId);
               }}
-              className="font-mono text-info hover:underline opacity-80"
+              className="font-mono text-info hover:underline"
               title={
                 live
                   ? `Open the live run on this issue (run ${lastRunId})`
@@ -279,10 +279,10 @@ export function IssueCard({
           >
             ● {running.attempt && running.attempt > 0 ? "resuming" : "running"}
             {running.attempt && running.attempt > 0 ? (
-              <span className="ml-1 text-warning-fg/90">#{running.attempt + 1}</span>
+              <span className="ml-1 text-warning-fg">#{running.attempt + 1}</span>
             ) : null}
             {running.last_event_name && (
-              <span className="ml-1 text-success-fg/70">— {running.last_event_name}</span>
+              <span className="ml-1 text-success-fg">— {running.last_event_name}</span>
             )}
           </button>
           <button
@@ -310,7 +310,7 @@ export function IssueCard({
         >
           ⏳ retrying (attempt {retrying.attempt})
           {retrying.error && (
-            <span className="ml-1 text-warning-fg/80 truncate">— {retrying.error}</span>
+            <span className="ml-1 text-warning-fg truncate">— {retrying.error}</span>
           )}
         </button>
       )}
@@ -333,7 +333,7 @@ export function IssueCard({
           title={`The dispatcher refuses to run this issue: ${skip.reason}. Fix the bot in the issue editor or add it to assignee_workflows.`}
         >
           ⚠ won&apos;t dispatch
-          <span className="ml-1 text-danger-fg/80 truncate">— {skip.reason}</span>
+          <span className="ml-1 text-danger-fg truncate">— {skip.reason}</span>
         </button>
       )}
     </div>

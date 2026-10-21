@@ -40,7 +40,7 @@ export function RepositoryField({
           <GitBranch className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden="true" />
           <span className="text-fg-default font-medium">{synced.repo}</span>
           {synced.number > 0 && (
-            <span className="font-mono opacity-70">#{synced.number}</span>
+            <span className="font-mono text-fg-subtle">#{synced.number}</span>
           )}
           <span className="ml-auto text-fg-subtle italic">
             synced from {synced.provider}

@@ -107,8 +107,8 @@ export function EffortBar({ level, live, muted, supported, className, title }: P
     : `reasoning_effort: ${level}`;
   return (
     <span
-      className={`inline-flex items-center gap-1 text-[9px] leading-none ${tone.text} ${
-        muted ? "opacity-60 italic" : ""
+      className={`inline-flex items-center gap-1 text-[9px] leading-none ${
+        muted ? "italic text-fg-muted" : tone.text
       } ${className ?? ""}`}
       title={title ?? defaultTitle}
     >

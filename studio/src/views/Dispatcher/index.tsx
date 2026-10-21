@@ -411,7 +411,7 @@ function DispatchSkipsTable({
     <section className="rounded border border-danger/40 bg-danger-soft">
       <header className="px-4 py-2 border-b border-danger/30 text-sm font-semibold text-danger-fg flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span>⚠ Won&apos;t dispatch ({rows.length})</span>
-        <span className="text-micro font-normal text-danger-fg/70">
+        <span className="text-micro font-normal text-danger-fg">
           eligible issues the dispatcher refuses to claim — fix the{" "}
           <code>bot</code> in the issue editor or add it to{" "}
           <code>assignee_workflows</code>
@@ -440,7 +440,7 @@ function DispatchSkipsTable({
               <Td className="font-mono">
                 {s.bot ? s.bot : <span className="text-fg-subtle">—</span>}
               </Td>
-              <Td className="text-danger-fg/80">{s.reason}</Td>
+              <Td className="text-danger-fg">{s.reason}</Td>
             </Tr>
           ))}
         </TBody>

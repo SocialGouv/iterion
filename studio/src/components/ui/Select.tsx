@@ -19,7 +19,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
 ) {
   const ringClass = error
     ? "border-danger focus:border-danger focus:ring-1 focus:ring-danger"
-    : "border-border-strong focus:border-accent focus:ring-1 focus:ring-accent";
+    : "border-border-control focus:border-accent focus:ring-1 focus:ring-accent";
   const base =
     "bg-surface-1 text-fg-default rounded-md border outline-none transition-colors appearance-none disabled:opacity-60 disabled:cursor-not-allowed";
   const widthClass = fit ? "" : "w-full";

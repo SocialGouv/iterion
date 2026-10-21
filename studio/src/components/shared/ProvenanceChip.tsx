@@ -6,7 +6,7 @@ export default function ProvenanceChip({ file }: { file: string }) {
   return (
     <div className="px-3 py-1 border-b border-border-default shrink-0">
       <span
-        className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-micro text-fg-subtle"
+        className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-micro text-fg-muted"
         title="Declared in this file of the bot. Edits save back to it; the editor does not move a declaration between files."
         data-testid="provenance-chip"
       >

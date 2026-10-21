@@ -41,13 +41,24 @@
   /* Foreground tones */
   --color-fg-default: #ffffff;
   --color-fg-muted: #d1d5db;   /* matches gray-300 */
-  --color-fg-subtle: #9ca3af;  /* matches gray-400 */
+  /* fg-subtle holds AA (4.5:1) on surfaces 0-2 — small subtle labels live
+   * on chips and popovers too — and 3:1 on the surface-3 hover lift.
+   * gray-400 missed surface-2 (4.06:1); one step lighter. */
+  --color-fg-subtle: #a6adb8;
   --color-fg-onAccent: #ffffff;
 
   /* Borders */
   --color-border-default: #374151; /* matches gray-700 */
   --color-border-strong: #4b5563;  /* matches gray-600 */
   --color-border-subtle: #1f2937;
+  /* The boundary of a form control (input, textarea, select,
+   * checkbox, radio, tag input, combobox trigger). Decoupled from
+   * `border-strong` the way `accent-text` is from `accent`: chrome
+   * keeps its hairlines, a control's edge is held ≥ 3:1 against
+   * surfaces 0-2 in both themes (WCAG 1.4.11 / RGAA 3.3) by
+   * __tests__/a11y/contrast.test.ts — controls sit on surface-2
+   * drawers and cards too, where gray-500 was 2.1:1 on dark. */
+  --color-border-control: #868e9b;
 
   /* Accent (interactive primary) — periwinkle/indigo identity (2026-06-21).
    * Decoupled: --color-accent is the button/brand BACKGROUND (white text on it
@@ -57,7 +68,7 @@
   --color-accent-hover: #4338ca;    /* indigo-700 */
   --color-accent-soft: rgba(79, 70, 229, 0.16);
   --color-accent-fg: #ffffff;
-  --color-accent-text: #818cf8;     /* indigo-400 — accent text/links (AA on dark) */
+  --color-accent-text: #a5b4fc;     /* indigo-300 — accent text/links: AA on surfaces 0-2 and on accent-soft (indigo-400 was 3.5:1 on surface-2) */
 
   /* Keyboard-focus indicator (the :focus-visible outline and the
    * react-flow counter-rules below). Held ≥ 3:1 on surfaces 0-2 in
@@ -68,16 +79,27 @@
   --color-focus-ring: #818cf8;
 
   /* Severity */
-  --color-danger: #dc2626;          /* red-600 */
+  /* Each severity is two tokens, the way accent / accent-text are. The
+   * plain `<sev>` is the text, icon and border colour (`text-danger`,
+   * `border-warning`): AA on surfaces 0-1 and ≥ 3:1 on surface-2 in both
+   * themes (the -600 reds and cyans read 3.0-4.0:1 on surface-1).
+   * `<sev>-solid` is the background a white label sits on
+   * (`bg-danger-solid text-fg-onAccent`), AA in both themes. The -soft
+   * tint and the -fg colour written on it are unchanged. */
+  --color-danger: #f87171;          /* red-400 — text/icon/border */
+  --color-danger-solid: #dc2626;    /* red-600 — white label 4.8:1 */
   --color-danger-soft: rgba(220, 38, 38, 0.18);
   --color-danger-fg: #fecaca;
-  --color-warning: #d97706;         /* amber-600 */
+  --color-warning: #f59e0b;         /* amber-500 */
+  --color-warning-solid: #b45309;   /* amber-700 — white label 5.0:1 (amber-600 was 3.2) */
   --color-warning-soft: rgba(217, 119, 6, 0.18);
   --color-warning-fg: #fde68a;
-  --color-success: #16a34a;         /* green-600 */
+  --color-success: #22c55e;         /* green-500 */
+  --color-success-solid: #15803d;   /* green-700 — white label 5.0:1 (green-600 was 3.3) */
   --color-success-soft: rgba(22, 163, 74, 0.18);
   --color-success-fg: #bbf7d0;
-  --color-info: #0891b2;            /* cyan-600 */
+  --color-info: #06b6d4;            /* cyan-500 */
+  --color-info-solid: #0e7490;      /* cyan-700 — white label 5.4:1 (cyan-600 was 3.7) */
   --color-info-soft: rgba(8, 145, 178, 0.18);
   --color-info-fg: #a5f3fc;
 
@@ -233,27 +255,32 @@
   --color-surface-3: #4b5563;
   --color-fg-default: #ffffff;
   --color-fg-muted: #d1d5db;
-  --color-fg-subtle: #9ca3af;
+  --color-fg-subtle: #a6adb8;
   --color-fg-onAccent: #ffffff;
   --color-border-default: #374151;
   --color-border-strong: #4b5563;
   --color-border-subtle: #1f2937;
+  --color-border-control: #868e9b;
   --color-accent: #4f46e5;
   --color-accent-hover: #4338ca;
   --color-accent-soft: rgba(79, 70, 229, 0.16);
   --color-accent-fg: #ffffff;
-  --color-accent-text: #818cf8;
+  --color-accent-text: #a5b4fc;
   --color-focus-ring: #818cf8;
-  --color-danger: #dc2626;
+  --color-danger: #f87171;
+  --color-danger-solid: #dc2626;
   --color-danger-soft: rgba(220, 38, 38, 0.18);
   --color-danger-fg: #fecaca;
-  --color-warning: #d97706;
+  --color-warning: #f59e0b;
+  --color-warning-solid: #b45309;
   --color-warning-soft: rgba(217, 119, 6, 0.18);
   --color-warning-fg: #fde68a;
-  --color-success: #16a34a;
+  --color-success: #22c55e;
+  --color-success-solid: #15803d;
   --color-success-soft: rgba(22, 163, 74, 0.18);
   --color-success-fg: #bbf7d0;
-  --color-info: #0891b2;
+  --color-info: #06b6d4;
+  --color-info-solid: #0e7490;
   --color-info-soft: rgba(8, 145, 178, 0.18);
   --color-info-fg: #a5f3fc;
   --color-live: #22d3ee;
@@ -292,11 +319,12 @@
   --color-surface-3: #e5e7eb; /* gray-200 */
   --color-fg-default: #111827;
   --color-fg-muted: #374151;
-  --color-fg-subtle: #6b7280;
+  --color-fg-subtle: #667080; /* gray-500 missed surface-2 (4.39:1); one step darker */
   --color-fg-onAccent: #ffffff;
   --color-border-default: #e5e7eb;
   --color-border-strong: #d1d5db;
   --color-border-subtle: #f3f4f6;
+  --color-border-control: #6b7280;
   --color-accent: #4f46e5;
   --color-accent-hover: #4338ca;
   --color-accent-soft: rgba(79, 70, 229, 0.12);
@@ -304,15 +332,19 @@
   --color-accent-text: #4f46e5;
   --color-focus-ring: #4f46e5;
   --color-danger: #b91c1c;
+  --color-danger-solid: #b91c1c;
   --color-danger-soft: rgba(185, 28, 28, 0.10);
   --color-danger-fg: #7f1d1d;
   --color-warning: #b45309;
+  --color-warning-solid: #b45309;
   --color-warning-soft: rgba(180, 83, 9, 0.10);
   --color-warning-fg: #78350f;
   --color-success: #15803d;
+  --color-success-solid: #15803d;
   --color-success-soft: rgba(21, 128, 61, 0.10);
   --color-success-fg: #14532d;
   --color-info: #0e7490;
+  --color-info-solid: #0e7490;
   --color-info-soft: rgba(14, 116, 144, 0.10);
   --color-info-fg: #164e63;
   --color-live: #0891b2;

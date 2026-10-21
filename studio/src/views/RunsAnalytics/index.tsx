@@ -368,8 +368,7 @@ function DurationChart({ workflows, colors }: DurationChartProps) {
                 className="absolute inset-y-0 left-0"
                 style={{
                   width: `${p95Pct}%`,
-                  background: colors[w.workflow] ?? "var(--color-fg-subtle)",
-                  opacity: 0.45,
+                  background: `color-mix(in srgb, ${colors[w.workflow] ?? "var(--color-fg-subtle)"} 45%, transparent)`,
                 }}
               />
               <div

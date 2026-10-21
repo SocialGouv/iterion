@@ -540,7 +540,7 @@ export default function LogLinesView({
             >
               Levels
               {activeLevels.size > 0 && (
-                <span className="font-mono text-[9px] px-1 rounded bg-accent/20 text-accent-fg">
+                <span className="font-mono text-[9px] px-1 rounded bg-accent text-fg-onAccent">
                   {activeLevels.size}
                 </span>
               )}

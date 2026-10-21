@@ -140,7 +140,7 @@ function ExpandedPanel({ onCollapse }: { onCollapse: () => void }) {
             onClick={() => setActiveCategory(value)}
             className={`text-caption px-2 py-0.5 rounded-full border transition-colors ${
               activeCategory === value
-                ? "bg-accent/20 border-accent text-accent-text"
+                ? "bg-accent-soft border-accent text-accent-text"
                 : "bg-surface-1 border-border-strong text-fg-subtle hover:border-border-strong"
             }`}
           >

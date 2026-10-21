@@ -76,7 +76,7 @@ function ColumnAppearance({
             className={`h-6 w-6 rounded-full border-2 ${
               color === "" ? "border-accent ring-2 ring-accent/40" : "border-border-default"
             }`}
-            style={{ backgroundColor: effectiveAuto, opacity: 0.5 }}
+            style={{ backgroundColor: `color-mix(in srgb, ${effectiveAuto} 50%, transparent)` }}
             aria-label="Automatic color"
           />
           {BOARD_PALETTE.map((p) => (
