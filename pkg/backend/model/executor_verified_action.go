@@ -80,6 +80,14 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 	if ambiguousEnd(res.runErr) {
 		return nil, res.runErr
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if errors.Is(res.runErr, sandbox.ErrExecStatusUnknown) {
+		// A recipe whose end was never proven left a partial output: the
+		// postcondition judges the effect, and only its output travels.
+		res.output = nil
+	}
 	if res.runErr != nil {
 		// The ladder judges the recipe by its postcondition, not by this
 		// error — but the error is still what happened, so it is recorded.
@@ -109,6 +117,12 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 				}
 				if ambiguousEnd(repairRes.runErr) {
 					return nil, repairRes.runErr
+				}
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if errors.Is(repairRes.runErr, sandbox.ErrExecStatusUnknown) {
+					repairRes.output = nil
 				}
 				lastRung = "self_repair"
 				met, pcOut, pcErr = e.runPostcondition(ctx, node, input)
@@ -143,7 +157,11 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 		}
 	}
 
-	// Rung 5 — policy.
+	// Rung 5 — policy. A cancelled node ends with its cancel, never with a
+	// best_effort success built on what the cancel cut short.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if policy == ir.PolicyBestEffort {
 		e.logVA(node.ID, "postcondition unmet after recipe; policy: best_effort → warn + continue")
 		out := e.verifiedOutput(res.output, nil, lastRung, false, policy)

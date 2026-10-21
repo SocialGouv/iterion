@@ -308,8 +308,13 @@ func usageWindowEvidence(execErr error) (resetAt time.Time, source string, ok bo
 	return time.Time{}, "", false
 }
 
-// runtimeCodeOf extracts the RuntimeError code from an error chain, or "".
+// runtimeCodeOf extracts the RuntimeError code from an error chain, or "". An
+// undecided effect anywhere in the chain is the code, whatever a wrapper said:
+// redelivering it may duplicate the effect.
 func runtimeCodeOf(err error) runtime.ErrorCode {
+	if runtime.IsAmbiguousEffect(err) {
+		return runtime.ErrCodeAmbiguousEffect
+	}
 	var rtErr *runtime.RuntimeError
 	if errors.As(err, &rtErr) && rtErr != nil {
 		return rtErr.Code

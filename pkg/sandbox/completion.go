@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -245,7 +246,12 @@ func (c *Completion) sweepOnce(run Run, script string) SweepOutcome {
 	out, runErr := run.Command(ctx, []string{"sh", "-c", script}, ExecOpts{}).Output()
 	report, perr := proc.ParseNodeSessionSweep(string(out))
 	if runErr != nil {
-		perr = errors.Join(perr, fmt.Errorf("the exec that sweeps session %s failed: %w", c.mark, runErr))
+		why := runErr.Error()
+		var exit *exec.ExitError
+		if errors.As(runErr, &exit) && len(bytes.TrimSpace(exit.Stderr)) > 0 {
+			why += ": " + string(bytes.TrimSpace(exit.Stderr))
+		}
+		perr = errors.Join(perr, fmt.Errorf("the exec that sweeps session %s failed: %s", c.mark, why))
 	}
 	return SweepOutcome{Report: report, Ran: perr == nil, Err: errors.Join(perr, report.Problems())}
 }

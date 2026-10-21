@@ -51,6 +51,8 @@ type execClientRun struct {
 	// a postcondition, then a recipe, then a postcondition — before client.
 	clients []string
 	next    int
+	// tools counts the tool commands the engine handed the container.
+	tools int
 }
 
 func (f *execClientRun) Driver() string { return "fake-exec-client" }
@@ -66,6 +68,7 @@ func (f *execClientRun) Command(ctx context.Context, argv []string, opts sandbox
 		c.Dir = f.dir
 		return c
 	}
+	f.tools++
 	client := f.client
 	if f.next < len(f.clients) {
 		client = f.clients[f.next]
@@ -81,6 +84,11 @@ func (f *execClientRun) Command(ctx context.Context, argv []string, opts sandbox
 		standIn = `exec 3<&0; setsid -w "$@" <&3 3<&- & exec 3<&-; wait $!`
 	case "truncates":
 		standIn = `head -c 120000 | "$@"`
+	case "cuts":
+		// The stream is lost once the command's first output has arrived.
+		cut := shellQuoteForTest(filepath.Join(f.dir, "cut.out"))
+		standIn = `setsid "$@" >` + cut + ` 2>&1 </dev/null &
+until [ -s ` + cut + ` ]; do sleep 0.05; done; sleep 0.1; cat ` + cut + `; exit 0`
 	case "lost":
 		standIn = `setsid "$@" >/dev/null 2>&1 </dev/null &
 i=0; while [ ! -s ` + shellQuoteForTest(f.running) + ` ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i+1)); done
@@ -510,6 +518,9 @@ func TestSandboxedToolNodeUnknownEndWithAFailedSweepIsAmbiguous(t *testing.T) {
 			if tc.sweepFails && strings.Contains(err.Error(), "found nothing left running") {
 				t.Fatalf("a sweep that could not run claims it found nothing: %v", err)
 			}
+			if tc.sweepFails && !strings.Contains(err.Error(), "unable to upgrade connection") {
+				t.Fatalf("the sweep's failure does not say why its exec failed: %v", err)
+			}
 			waitHeartbeatStill(t, heart)
 		})
 	}
@@ -654,4 +665,125 @@ func TestSandboxedToolNodeStreamedRecipeMeansWhatBashMakesOfIt(t *testing.T) {
 	if got, _ := out["result"].(string); !strings.Contains(got, "hello") || strings.Contains(got, "NOT-LEADER") {
 		t.Fatalf("the streamed recipe's output: %q, want its heredoc and its own session", got)
 	}
+}
+
+// A Verified Action whose recipe's end was never proven succeeds on its
+// postcondition alone: the partial output the recipe left is not its result.
+func TestVerifiedToolNodeDropsThePartialOutputOfAnUnprovenRecipe(t *testing.T) {
+	requireSetsid(t)
+	dir := t.TempDir()
+	heart := filepath.Join(dir, "heartbeat")
+	marker := filepath.Join(dir, "applied.marker")
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	e.SetSandbox(&execClientRun{dir: dir, running: heart, clients: []string{"waits", "cuts", "waits"}})
+	out, err := e.Execute(context.Background(), &ir.ToolNode{
+		BaseNode:      ir.BaseNode{ID: "applies"},
+		Command:       `touch ` + shellQuoteForTest(marker) + `; echo '{"verdict":"pass"}'; i=0; while [ "$i" -lt 15 ]; do printf 't\n' >> ` + shellQuoteForTest(heart) + `; i=$((i+1)); sleep 0.1; done`,
+		Postcondition: `test -f ` + shellQuoteForTest(marker),
+	}, map[string]any{})
+	if err != nil {
+		t.Fatalf("a met postcondition after a swept recipe: %v", err)
+	}
+	if _, ok := out["verdict"]; ok {
+		t.Fatalf("the partial output of a recipe whose end was never proven travelled: %v", out)
+	}
+	waitHeartbeatStill(t, heart)
+}
+
+// A cancelled Verified Action ends with its cancel — never with a best_effort
+// success built on what the cancel cut short.
+func TestVerifiedToolNodeCancelledEndsWithItsCancel(t *testing.T) {
+	e, heart := sandboxedToolExecutor(t, "waits")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.Execute(ctx, &ir.ToolNode{
+			BaseNode:      ir.BaseNode{ID: "va"},
+			Command:       grandchildRecipe(heart),
+			Postcondition: `test -f /nonexistent/never`,
+			Policy:        ir.PolicyBestEffort,
+		}, map[string]any{})
+		done <- err
+	}()
+	waitForHeartbeat(t, heart)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a cancelled best_effort Verified Action succeeded")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the cancelled Verified Action did not return")
+	}
+	assertGrandchildStopped(t, heart)
+}
+
+// A cancel during the recipe runs nothing after it: no postcondition, no
+// recovery rung starts on a context that is gone.
+func TestVerifiedToolNodeRunsNothingAfterACancel(t *testing.T) {
+	requireSetsid(t)
+	dir := t.TempDir()
+	heart := filepath.Join(dir, "heartbeat")
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	run := &execClientRun{client: "waits", dir: dir}
+	e.SetSandbox(run)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.Execute(ctx, &ir.ToolNode{
+			BaseNode:      ir.BaseNode{ID: "va"},
+			Command:       grandchildRecipe(heart),
+			Postcondition: `test -f /nonexistent/never`,
+			Policy:        ir.PolicyBestEffort,
+		}, map[string]any{})
+		done <- err
+	}()
+	waitForHeartbeat(t, heart)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the cancelled Verified Action did not return")
+	}
+	if run.tools != 2 {
+		t.Fatalf("%d tool commands, want 2 (the first postcondition, the recipe): a rung ran after the cancel", run.tools)
+	}
+	assertGrandchildStopped(t, heart)
+}
+
+// A cancel during the postcondition that follows the recipe ends the node with
+// its cancel, not with a best_effort success.
+func TestVerifiedToolNodeCancelledDuringItsPostconditionEndsWithItsCancel(t *testing.T) {
+	requireSetsid(t)
+	dir := t.TempDir()
+	heart := filepath.Join(dir, "heartbeat")
+	marker := filepath.Join(dir, "recipe.done")
+	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
+	e.SetSandbox(&execClientRun{client: "waits", dir: dir})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.Execute(ctx, &ir.ToolNode{
+			BaseNode: ir.BaseNode{ID: "va"},
+			Command:  `touch ` + shellQuoteForTest(marker),
+			// Unmet at once before the recipe; long, then unmet, after it.
+			Postcondition: `if [ -f ` + shellQuoteForTest(marker) + ` ]; then ` + grandchildRecipe(heart) + `; fi; false`,
+			Policy:        ir.PolicyBestEffort,
+		}, map[string]any{})
+		done <- err
+	}()
+	waitForHeartbeat(t, heart)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a Verified Action cancelled during its postcondition succeeded under best_effort")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the cancelled Verified Action did not return")
+	}
+	assertGrandchildStopped(t, heart)
 }
