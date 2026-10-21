@@ -125,15 +125,22 @@ export function OAuthAppsSection({
               <div className="min-w-0">
                 <div className="font-medium">
                   {a.provider} · {a.forge_base_url ?? "—"}
-                  <span className="ml-2 rounded bg-surface-2 px-1 text-caption text-fg-subtle">
-                    {a.auto_created ? "auto" : "manual"}
+                  <span
+                    className="ml-2 rounded bg-surface-2 px-1 text-caption text-fg-subtle"
+                    title={
+                      a.platform
+                        ? "Registered by the platform for every team — managed in the admin console"
+                        : undefined
+                    }
+                  >
+                    {a.platform ? "platform" : a.auto_created ? "auto" : "manual"}
                   </span>
                 </div>
                 <div className="text-caption text-fg-muted font-mono truncate">
                   client_id: {a.client_id}
                 </div>
               </div>
-              {canManage && (
+              {canManage && !a.platform && (
                 <div className="flex shrink-0 items-center gap-2">
                   {a.logo_upload_url && (
                     <a

@@ -101,7 +101,7 @@ func (s *Server) handleForgePullRequest(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusBadRequest, "pr_url host %q is not on the connection's forge host", host)
 		return
 	}
-	gc, err := s.gateClientFor(r.Context(), conn)
+	gc, err := s.gateClientFor(r.Context(), conn, repo)
 	if err != nil {
 		// Resolving the client touches no network: forgeAdminFor constructs
 		// and caches the App client (its tokens are minted later, on use) or

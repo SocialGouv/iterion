@@ -429,8 +429,17 @@ func iterionBotLogins(cfg webhooks.Config, conn forge.Connection) []string {
 	if conn.AppSlug != "" {
 		logins = append(logins, conn.AppSlug+"[bot]")
 	}
-	if cfg.Provider == webhooks.ProviderGitLab && conn.AccountLogin != "" {
-		logins = append(logins, conn.AccountLogin)
+	if cfg.Provider == webhooks.ProviderGitLab {
+		switch {
+		case cfg.BotLogin != "":
+			// The repo's own minted bot posts here, not the connection's
+			// account: the person whose OAuth grant bootstrapped the
+			// connection must stay a reviewable author, and the bot's own
+			// echoes must still be recognised.
+			logins = append(logins, cfg.BotLogin)
+		case conn.AccountLogin != "":
+			logins = append(logins, conn.AccountLogin)
+		}
 	}
 	return logins
 }

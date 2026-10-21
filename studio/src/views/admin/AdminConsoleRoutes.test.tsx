@@ -15,6 +15,9 @@ vi.mock("@/views/admin/PlatformLlmCredsPage", () => ({
   default: () => <div>page:/llm-credentials</div>,
 }));
 vi.mock("@/views/admin/PlatformBotsPage", () => ({ default: () => <div>page:/bots</div> }));
+vi.mock("@/views/admin/PlatformForgeAppsPage", () => ({
+  default: () => <div>page:/forge-apps</div>,
+}));
 vi.mock("@/views/admin/settings/UsageCapsPage", () => ({
   default: () => <div>page:/settings/usage-caps</div>,
 }));

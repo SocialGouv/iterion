@@ -1,6 +1,9 @@
 package forge
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Admin is the per-provider outbound client the orchestrator drives. One
 // implementation per (provider, auth-kind) — gitlab OAuth/PAT, github App,
@@ -171,4 +174,62 @@ type AvatarSetter interface {
 // a read failure must never authorize replacing the current image.
 type AvatarReader interface {
 	CurrentAvatar(ctx context.Context) (avatarURL string, present bool, err error)
+}
+
+// ProjectBotSpec describes the per-repository bot credential to mint.
+type ProjectBotSpec struct {
+	// Name is the token's name and the bot user's display name.
+	Name string
+	// AccessLevel is the forge-native role the bot gets on the repository
+	// (GitLab: 40 = Maintainer, the floor for hooks and commit statuses).
+	AccessLevel int
+	// Scopes are the forge-native scopes of the token.
+	Scopes []string
+	// ExpiresAt is the requested expiry; zero lets the forge apply its
+	// default — on GitLab the instance's maximum lifetime.
+	ExpiresAt time.Time
+}
+
+// ProjectBotCredential is a minted (or rotated) per-repository bot credential.
+type ProjectBotCredential struct {
+	// TokenID is the forge-side id of the token: rotate and revoke address it.
+	TokenID string
+	// Token is the plaintext, held in memory only until it is sealed.
+	Token string
+	// UserID is the bot user the token authenticates as.
+	UserID string
+	// ExpiresAt is the forge's expiry for the token; zero = none.
+	ExpiresAt   time.Time
+	Scopes      []string
+	AccessLevel int
+}
+
+// ProjectBotMinter mints, rotates and revokes a PER-REPOSITORY bot credential
+// with the connection's ADMIN grant: on GitLab a project access token, whose
+// bot user is the identity every review the repo gets is posted under. An
+// optional capability, like AvatarSetter: the GitLab client implements it;
+// GitHub has Apps instead and Forgejo has no project-token API, so neither
+// does, and a connection asking for one there is refused with
+// ErrProjectBotUnsupported. Mint returns ErrProjectBotNotPermitted when the
+// grant cannot mint on this repository.
+type ProjectBotMinter interface {
+	MintProjectBot(ctx context.Context, repo string, spec ProjectBotSpec) (ProjectBotCredential, error)
+	// RotateProjectBot replaces the token through the admin grant; the forge
+	// revokes the old token the moment the new one exists.
+	RotateProjectBot(ctx context.Context, repo, tokenID string, expiresAt time.Time) (ProjectBotCredential, error)
+	// RevokeProjectBot revokes the token (on GitLab its bot user leaves the
+	// project with it). A token already gone answers an ErrNotFound-class
+	// error, which callers read as done.
+	RevokeProjectBot(ctx context.Context, repo, tokenID string) error
+}
+
+// SelfRotator is what a client built with the MINTED token can do about that
+// token itself, with no admin grant in the loop: rotate it (GitLab's
+// access_tokens/self/rotate, scope api) and revoke it. The rotation worker
+// prefers this path — the OAuth grant that minted the bot may be long gone
+// while the bot keeps working — and falls back to the admin grant only when
+// the token is already dead (ErrUnauthorized).
+type SelfRotator interface {
+	RotateSelf(ctx context.Context, repo string, expiresAt time.Time) (ProjectBotCredential, error)
+	RevokeSelf(ctx context.Context) error
 }

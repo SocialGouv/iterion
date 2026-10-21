@@ -626,7 +626,7 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	rc, err := s.reviewClientFor(r.Context(), conn)
+	rc, err := s.reviewClientFor(r.Context(), conn, grant.Repo)
 	if err != nil {
 		httpError(w, http.StatusBadGateway, "forge client: %v", err)
 		return
@@ -838,7 +838,7 @@ func (s *Server) selfAssignReviewer(ctx context.Context, conn forge.Connection, 
 	if s.forgeReviewerAssignerFor != nil {
 		ra = s.forgeReviewerAssignerFor(ctx, conn)
 	} else {
-		admin, err := s.forgeAdminFor(ctx, conn)
+		admin, err := s.forgeWriterFor(ctx, conn, repo)
 		if err != nil {
 			if s.logger != nil {
 				s.logger.Warn("forge publish: %s %s#%d: cannot resolve admin client for reviewer self-assign: %v", conn.Provider, repo, number, err)
@@ -896,7 +896,7 @@ func (s *Server) withdrawReviewRequests(ctx context.Context, conn forge.Connecti
 	if s.forgeReviewRequestWithdrawerFor != nil {
 		rw = s.forgeReviewRequestWithdrawerFor(ctx, conn)
 	} else {
-		admin, err := s.forgeAdminFor(ctx, conn)
+		admin, err := s.forgeWriterFor(ctx, conn, grant.Repo)
 		if err != nil {
 			s.logWarn("forge publish: %s %s#%d: cannot resolve admin client to withdraw the review request: %v",
 				conn.Provider, grant.Repo, number, err)
@@ -963,11 +963,11 @@ func (s *Server) armedReviewRequestLogins(ctx context.Context, grant ForgePublis
 // gateClientFor resolves a connection's forgeGateClient. The forgeGateClientFor
 // field is a test seam; nil uses the real admin client. Returns (nil, nil) when
 // the provider has no commit-status capability.
-func (s *Server) gateClientFor(ctx context.Context, conn forge.Connection) (forgeGateClient, error) {
+func (s *Server) gateClientFor(ctx context.Context, conn forge.Connection, repo string) (forgeGateClient, error) {
 	if s.forgeGateClientFor != nil {
 		return s.forgeGateClientFor(ctx, conn)
 	}
-	admin, err := s.forgeAdminFor(ctx, conn)
+	admin, err := s.forgeWriterFor(ctx, conn, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -1120,7 +1120,7 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 	if out.context == "" {
 		out.context = defaultGateContext
 	}
-	gc, err := s.gateClientFor(ctx, conn)
+	gc, err := s.gateClientFor(ctx, conn, repo)
 	if err != nil {
 		out.errText = "gate client: " + err.Error()
 		out.noteRateLimit(err)
@@ -1307,11 +1307,11 @@ func (s *Server) postApproveGateStatus(ctx context.Context, conn forge.Connectio
 // reviewClientFor resolves a connection's forge.ReviewClient. The
 // forgeReviewClientFor field is a test seam; nil uses the real admin client.
 // Returns (nil, nil) when the provider has no review capability.
-func (s *Server) reviewClientFor(ctx context.Context, conn forge.Connection) (forge.ReviewClient, error) {
+func (s *Server) reviewClientFor(ctx context.Context, conn forge.Connection, repo string) (forge.ReviewClient, error) {
 	if s.forgeReviewClientFor != nil {
 		return s.forgeReviewClientFor(ctx, conn)
 	}
-	admin, err := s.forgeAdminFor(ctx, conn)
+	admin, err := s.forgeWriterFor(ctx, conn, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -1714,7 +1714,7 @@ func (s *Server) prLaunchForkGuard(ctx context.Context, teamID, preferredConnID,
 		}
 		return forge.Connection{}, false, nil
 	}
-	gc, err := s.gateClientFor(ctx, conn)
+	gc, err := s.gateClientFor(ctx, conn, repo)
 	if err != nil {
 		return conn, false, fmt.Errorf("fork guard: %s: cannot read the pull request through connection %s: %w", prURL, conn.ID, err)
 	}

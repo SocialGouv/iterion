@@ -39,6 +39,7 @@ export function RegisterOAuthAppForm({
   const [connectionID, setConnectionID] = useState("");
   const [clientID, setClientID] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  const [webhookBase, setWebhookBase] = useState("");
   const [githubOrg, setGithubOrg] = useState("");
   const [orgIsCustom, setOrgIsCustom] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -86,6 +87,7 @@ export function RegisterOAuthAppForm({
       if (mode === "manual") {
         input.client_id = clientID.trim();
         input.client_secret = clientSecret.trim();
+        input.webhook_base_url = webhookBase.trim() || undefined;
       } else if (mode === "auto") {
         input.admin_token = adminToken.trim();
       } else {
@@ -96,6 +98,7 @@ export function RegisterOAuthAppForm({
       setConnectionID("");
       setClientID("");
       setClientSecret("");
+      setWebhookBase("");
       setBaseURL("");
       setShow(false);
       onRegistered();
@@ -372,6 +375,19 @@ export function RegisterOAuthAppForm({
               value={clientSecret}
               onChange={(e) => setClientSecret(e.target.value)}
               autoComplete="new-password"
+            />
+          </div>
+          <div>
+            <label htmlFor="oauth-webhook-base" className="sr-only">
+              Webhook base URL
+            </label>
+            <Input
+              size="md"
+              id="oauth-webhook-base"
+              placeholder="Webhook base URL (optional — a host this forge is allowed to deliver to; inherited by every connection made through the app)"
+              value={webhookBase}
+              onChange={(e) => setWebhookBase(e.target.value)}
+              autoComplete="off"
             />
           </div>
           <p className="text-caption text-fg-muted">

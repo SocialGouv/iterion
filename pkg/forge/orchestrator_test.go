@@ -25,6 +25,9 @@ type fakeAdmin struct {
 	deletes    int
 	gets       int
 	lastSecret string
+	// createErr, when set, is what CreateHook answers — a forge refusing the
+	// hook address, for the paths that must undo what they did before it.
+	createErr error
 }
 
 func newFakeAdmin() *fakeAdmin {
@@ -50,6 +53,9 @@ func (f *fakeAdmin) GetHook(_ context.Context, repo, url string) (*HookHandle, e
 }
 
 func (f *fakeAdmin) CreateHook(_ context.Context, repo string, spec HookSpec) (HookHandle, error) {
+	if f.createErr != nil {
+		return HookHandle{}, f.createErr
+	}
 	f.creates++
 	f.nextID++
 	f.lastSecret = spec.Secret

@@ -112,7 +112,7 @@ func (s *Server) gateNoticeTarget(ctx context.Context, run *store.Run, what stri
 		s.gateNoticeDebug(run, what, "its connection points at %q, not %q", hostOfURL(conn.BaseURL()), host)
 		return gateNoticeTarget{}, false
 	}
-	commenter, err := s.issueCommenterFor(ctx, conn)
+	commenter, err := s.issueCommenterFor(ctx, conn, grant.Repo)
 	if err != nil || commenter == nil {
 		s.gateNoticeDebug(run, what, "no comment client for %s: %v", conn.Provider, err)
 		return gateNoticeTarget{}, false

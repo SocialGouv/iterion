@@ -251,7 +251,7 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	if connHost := hostOfURL(conn.BaseURL()); connHost == "" || !strings.EqualFold(connHost, host) {
 		return nil
 	}
-	gc, err := s.gateClientFor(ctx, conn)
+	gc, err := s.gateClientFor(ctx, conn, grant.Repo)
 	if err != nil || gc == nil {
 		return nil
 	}
@@ -512,7 +512,7 @@ func gateStatusOn(ctx context.Context, gc forgeGateClient, repo, sha, ctxName st
 // the caller must not collapse the two: this is a veto, and a veto that cannot
 // be evaluated has not been cleared.
 func (s *Server) pullRequestHoldLabel(ctx context.Context, conn forge.Connection, repo string, number int, holds []string) (string, error) {
-	admin, err := s.forgeAdminFor(ctx, conn)
+	admin, err := s.forgeWriterFor(ctx, conn, repo)
 	if err != nil {
 		return "", err
 	}

@@ -8,6 +8,7 @@ import {
 } from "@/api/forgeConnections";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { Radio } from "@/components/ui/Radio";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -30,6 +31,9 @@ export function ConnectForm({
   const [mode, setMode] = useState<"oauth" | "pat" | "app">("oauth");
   const [pat, setPat] = useState("");
   const [busy, setBusy] = useState(false);
+  // GitLab OAuth: bots post as a per-repository bot iterion mints at enable
+  // (the recommended default), or as the authorising account itself.
+  const [projectBot, setProjectBot] = useState(true);
   // Once the user picks a mode explicitly, stop auto-steering it.
   const modeTouched = useRef(false);
 
@@ -86,6 +90,8 @@ export function ConnectForm({
         mode,
         forge_base_url: baseURL.trim() || undefined,
         pat: mode === "pat" ? pat : undefined,
+        bot_identity:
+          provider === "gitlab" && mode === "oauth" && projectBot ? "project_token" : undefined,
         next: window.location.pathname,
       });
       // full-page round-trip for OAuth / App install.
@@ -189,6 +195,15 @@ export function ConnectForm({
           Paste a token
         </label>
       </div>
+
+      {provider === "gitlab" && mode === "oauth" && (
+        <Checkbox
+          label="Post as a dedicated project bot (recommended)"
+          help="iterion creates a project access token on each repository you enable: its bot user (iterion-bot) posts the reviews, so your own merge requests stay reviewable. Unchecked, bots post as your account."
+          checked={projectBot}
+          onChange={(e) => setProjectBot(e.target.checked)}
+        />
+      )}
 
       {provider === "github" && githubAppConfigured && mode === "app" && (
         <p className="text-caption text-fg-muted">

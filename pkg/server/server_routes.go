@@ -344,6 +344,10 @@ func (s *Server) routes() {
 	// (api-keys need the BYOK store, oauth the forfait store).
 	s.registerAdminLLMRoutes()
 
+	// Platform forge OAuth apps (super-admin): one registration of a forge
+	// instance's application serves every team's connect flow.
+	s.registerAdminForgeRoutes()
+
 	// Platform runtime settings (super-admin): the DB-backed form of the
 	// operational env vars — first family: the usage-cap percentages.
 	s.registerAdminSettingsRoutes()

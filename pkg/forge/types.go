@@ -62,6 +62,22 @@ const (
 	KindPAT Kind = "pat"
 )
 
+// BotIdentity values — what identity a connection's bots POST as. Empty keeps
+// the historical behaviour: the connected account itself. See
+// Connection.BotIdentity.
+const (
+	// BotIdentityConnection is the zero value: bots post as the account the
+	// connection authenticated as (the pasted token's bot user, the OAuth
+	// user, the App).
+	BotIdentityConnection = ""
+	// BotIdentityProjectToken makes iterion mint one project access token per
+	// enabled repository and hand bots THAT token: they post as the
+	// repository's own bot user, never as the person whose OAuth grant
+	// bootstrapped the connection. GitLab OAuth connections only — the one
+	// forge with a per-project bot API and no App equivalent.
+	BotIdentityProjectToken = "project_token"
+)
+
 // AccountKind values — what the account behind a credential IS on the forge.
 // Identity.Kind carries one at connect time and Connection.AccountKind keeps it.
 const (
@@ -110,6 +126,14 @@ const (
 // IsSecurityReadOnly reports whether this connection exists only to mint the
 // org-wide Dependabot-alerts token and must never be used for runtime work.
 func (c Connection) IsSecurityReadOnly() bool { return c.Purpose == PurposeSecurityRead }
+
+// MintsProjectBots reports whether enabling a repository on this connection
+// mints a per-repository bot credential instead of handing bots the
+// connection's own token. GitLab-only: the per-project access-token API has
+// no twin on the other forges.
+func (c Connection) MintsProjectBots() bool {
+	return c.Provider == ProviderGitLab && c.BotIdentity == BotIdentityProjectToken
+}
 
 // Connection is a team's authenticated link to one forge account. The
 // admin token material lives sealed on SealedPayload (AAD bound to ID);
@@ -176,6 +200,14 @@ type Connection struct {
 	// back to the legacy per-instance lookup, which is unambiguous for them
 	// precisely because the old unique index allowed only one app per host.
 	OAuthAppID string `bson:"oauth_app_id,omitempty" json:"oauth_app_id,omitempty"`
+	// BotIdentity is what this connection's bots post as (the BotIdentity*
+	// constants). BotIdentityProjectToken is stamped at connect on a GitLab
+	// OAuth connection: the OAuth grant stays the ADMIN credential (list
+	// repos, create hooks, mint), and every enabled repository gets its own
+	// minted project access token as the runtime forge token
+	// (RepoIntegration.ProjectBot). Empty on every connection that predates
+	// the field, which keeps the connected account as the posting identity.
+	BotIdentity string `bson:"bot_identity,omitempty" json:"bot_identity,omitempty"`
 	// GrantedPermissions is the permission set the installation's owner
 	// actually APPROVED, captured at install and refreshed by the health
 	// probe. A minted token must ask only for permissions that exist, or the
@@ -399,4 +431,20 @@ var (
 	// then report a third party as broken. Callers in pkg/server ask
 	// isIterionFault, which reads this sentinel and answers 500.
 	ErrLocalPreflight = errors.New("forge: the request never left iterion")
+	// ErrProjectBotNotPermitted is a forge's refusal to MINT a per-repository
+	// bot credential for the connected account: on GitLab a 400 on
+	// POST /projects/:id/access_tokens, whose message names a cause the
+	// status does not distinguish — the account is below Maintainer on the
+	// project, or project access tokens are switched off on the group or the
+	// instance. The route answers it with both remedies.
+	ErrProjectBotNotPermitted = errors.New("forge: the connected account cannot mint a project bot here")
+	// ErrProjectBotUnsupported is a connection that asks for a per-repository
+	// bot on a forge whose client cannot mint one: a configuration
+	// contradiction, not a forge answer.
+	ErrProjectBotUnsupported = errors.New("forge: this forge client cannot mint a project bot")
+	// ErrRepoNotEnabled is a repo-targeted launch on a connection that posts
+	// as per-repository bots, for a repository that has none: the bot is
+	// minted when the repository is enabled, and nothing else can stand in
+	// for it.
+	ErrRepoNotEnabled = errors.New("forge: repository not enabled on this connection")
 )

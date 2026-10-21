@@ -133,6 +133,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/forge/oauth-apps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/forge/oauth-apps */
+        get: operations["getAdminForgeOauthApps"];
+        put?: never;
+        /** POST /api/admin/forge/oauth-apps */
+        post: operations["postAdminForgeOauthApps"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/forge/oauth-apps/{app_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/admin/forge/oauth-apps/{app_id} */
+        delete: operations["deleteAdminForgeOauthAppsByAppId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/llm/api-keys": {
         parameters: {
             query?: never;
@@ -6459,6 +6496,7 @@ export interface components {
             /** Format: date-time */
             avatar_applied_at?: string;
             avatar_error?: string;
+            bot_identity?: string;
             /** Format: date-time */
             created_at: string;
             created_by: string;
@@ -6714,6 +6752,7 @@ export interface components {
             installable?: boolean;
             logo_upload_url?: string;
             owner_login?: string;
+            platform?: boolean;
             provider: string;
             provider_app_id?: string;
             redirect_uri?: string;
@@ -6722,6 +6761,7 @@ export interface components {
             tenant_id: string;
             /** Format: date-time */
             updated_at: string;
+            webhook_base_url?: string;
         };
         GiveUp: {
             /** Format: date-time */
@@ -7357,6 +7397,13 @@ export interface components {
             mode?: string;
             workspace_id?: string;
         };
+        adminForgeOAuthAppReq: {
+            client_id: string;
+            client_secret: string;
+            forge_base_url?: string;
+            provider: string;
+            webhook_base_url?: string;
+        };
         adminUpdateUserReq: {
             is_super_admin?: boolean;
             name?: string;
@@ -7554,6 +7601,7 @@ export interface components {
             connection?: components["schemas"]["Connection"];
         };
         forgeConnectReq: {
+            bot_identity?: string;
             display_name?: string;
             forge_base_url?: string;
             mode: string;
@@ -7616,9 +7664,14 @@ export interface components {
             next?: string;
             provider: string;
             security_read_only?: boolean;
+            webhook_base_url?: string;
         };
         forgeTeamRepo: {
             bot_ids: string[];
+            bot_login?: string;
+            bot_rotation_error?: string;
+            /** Format: date-time */
+            bot_token_expires_at?: string;
             clone_url?: string;
             connection_id: string;
             connection_status?: string;
@@ -8107,6 +8160,72 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["credentialUsageListView"];
                 };
+            };
+        };
+    };
+    getAdminForgeOauthApps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        apps: components["schemas"]["ForgeOAuthApp"][];
+                    };
+                };
+            };
+        };
+    };
+    postAdminForgeOauthApps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["adminForgeOAuthAppReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForgeOAuthApp"];
+                };
+            };
+        };
+    };
+    deleteAdminForgeOauthAppsByAppId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

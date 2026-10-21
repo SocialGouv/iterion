@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -32,6 +33,12 @@ type forgeConnectReq struct {
 	// several (one per owning org). Empty keeps the legacy behaviour: the
 	// team's single app for that host.
 	OAuthAppID string `json:"oauth_app_id,omitempty"`
+	// BotIdentity (mode=oauth, GitLab only) is what the connection's bots
+	// post as: "project_token" makes iterion mint one project access token
+	// per enabled repository — its bot user posts the reviews, the OAuth
+	// grant only administers — while empty keeps the authorising account as
+	// the posting identity. See forge.Connection.BotIdentity.
+	BotIdentity string `json:"bot_identity,omitempty"`
 }
 
 type forgeConnectResp struct {
@@ -58,7 +65,12 @@ func (s *Server) handleConnectForge(w http.ResponseWriter, r *http.Request) {
 	}
 	baseURL := canonicalForgeBaseURL(req.ForgeBaseURL, provider)
 
-	switch strings.ToLower(strings.TrimSpace(req.Mode)) {
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if strings.TrimSpace(req.BotIdentity) != "" && mode != "oauth" && mode != "" {
+		httpError(w, http.StatusBadRequest, "bot_identity applies to mode=oauth: a pasted token already IS the identity bots post as")
+		return
+	}
+	switch mode {
 	case "pat":
 		s.connectForgePAT(w, r, teamID, id.UserID, provider, baseURL, req)
 	case "oauth", "":
@@ -189,10 +201,37 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 	writeJSON(w, forgeConnectResp{Connection: &conn})
 }
 
+// forgeBotIdentityFor validates a connect request's posting identity: empty
+// keeps the connected account; project_token is GitLab's per-repository bot
+// and exists nowhere else (GitHub has Apps, Forgejo no project-token API).
+func forgeBotIdentityFor(provider forge.Provider, raw string) (string, error) {
+	switch strings.TrimSpace(raw) {
+	case forge.BotIdentityConnection:
+		return forge.BotIdentityConnection, nil
+	case forge.BotIdentityProjectToken:
+		if provider != forge.ProviderGitLab {
+			return "", fmt.Errorf("bot_identity=%s is GitLab-only (a project access token per repository); on %s use a GitHub App, or OAuth/PAT as the account itself", forge.BotIdentityProjectToken, provider)
+		}
+		return forge.BotIdentityProjectToken, nil
+	default:
+		return "", fmt.Errorf("unknown bot_identity %q (empty, or %q)", raw, forge.BotIdentityProjectToken)
+	}
+}
+
 func (s *Server) connectForgeOAuth(w http.ResponseWriter, r *http.Request, teamID, userID string, provider forge.Provider, baseURL string, req forgeConnectReq) {
-	app, ok := s.forgeOAuthAppFor(r.Context(), teamID, provider, baseURL)
+	botIdentity, err := forgeBotIdentityFor(provider, req.BotIdentity)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	record, ok := s.forgeOAuthAppRecordFor(r.Context(), teamID, provider, baseURL)
 	if !ok {
 		httpError(w, http.StatusBadRequest, "no OAuth app is registered for %s on this instance — register one in Integrations → OAuth apps, or paste a personal access token (mode=pat)", provider)
+		return
+	}
+	app, ok := s.forgeOAuthClientFromRecord(record)
+	if !ok {
+		httpError(w, http.StatusInternalServerError, "the OAuth app registered for %s on this instance cannot be opened — re-register it", provider)
 		return
 	}
 	state, verifier, challenge, err := oidc.GenerateStateAndPKCE()
@@ -208,7 +247,8 @@ func (s *Server) connectForgeOAuth(w http.ResponseWriter, r *http.Request, teamI
 	if err := s.forgeStates.put(forgePending{
 		State: state, CodeVerifier: verifier, Provider: provider, ForgeBaseURL: baseURL,
 		TenantID: teamID, UserID: userID, AgentBinding: binding,
-		NextURL: safeNext(req.Next), IssuedAt: time.Now().UTC(),
+		NextURL: safeNext(req.Next), OAuthAppID: record.ID, BotIdentity: botIdentity,
+		IssuedAt: time.Now().UTC(),
 	}); err != nil {
 		if s.logger != nil {
 			s.logger.Error("forge connect: %v", err)
@@ -251,9 +291,32 @@ func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	app, ok := s.forgeOAuthAppFor(r.Context(), pending.TenantID, pending.Provider, pending.ForgeBaseURL)
+	// The app the flow STARTED with, pinned in the signed state, and only
+	// that one: the code about to be exchanged was issued against its
+	// client, so another app's secret cannot redeem it. A flow started
+	// before the pin existed resolves the instance's app as before.
+	var record forge.ForgeOAuthApp
+	if pending.OAuthAppID != "" {
+		var rerr error
+		record, ok, rerr = s.forgeOAuthAppRecordByID(r.Context(), pending.TenantID, pending.OAuthAppID)
+		if rerr != nil {
+			httpError(w, http.StatusBadGateway, "could not read the OAuth app this flow started with: %v — retry the connect", rerr)
+			return
+		}
+		if !ok {
+			httpError(w, http.StatusBadRequest, "the OAuth app this flow started with is no longer registered — start the connect again")
+			return
+		}
+	} else {
+		record, ok = s.forgeOAuthAppRecordFor(r.Context(), pending.TenantID, pending.Provider, pending.ForgeBaseURL)
+		if !ok {
+			httpError(w, http.StatusBadRequest, "oauth app no longer registered for %s", pending.Provider)
+			return
+		}
+	}
+	app, ok := s.forgeOAuthClientFromRecord(record)
 	if !ok {
-		httpError(w, http.StatusBadRequest, "oauth app no longer registered for %s", pending.Provider)
+		httpError(w, http.StatusInternalServerError, "the OAuth app this flow started with cannot be opened — re-register it and reconnect")
 		return
 	}
 	tok, err := app.Exchange(r.Context(), code, s.forgeOAuthRedirectURI(), pending.CodeVerifier)
@@ -282,7 +345,15 @@ func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request
 		ID: connID, TenantID: pending.TenantID, Provider: pending.Provider, Kind: forge.KindOAuthApp,
 		DisplayName: ident.Login, ForgeBaseURL: pending.ForgeBaseURL,
 		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace, AccountKind: ident.Kind,
-		Status: forge.StatusActive, SealedPayload: sealed, Scopes: tok.Scopes,
+		// The app is pinned so the refresher signs with the client it was
+		// authorised against, and the posting identity the operator chose
+		// at connect is the one thing nothing recomputes later.
+		OAuthAppID: record.ID, BotIdentity: pending.BotIdentity,
+		// The app's default hook base: an instance that only delivers to
+		// allowlisted hosts is a fact about the instance, said once by
+		// whoever registered the app, inherited by every connection.
+		WebhookBaseURL: record.WebhookBaseURL,
+		Status:         forge.StatusActive, SealedPayload: sealed, Scopes: tok.Scopes,
 		CreatedBy: pending.UserID, CreatedAt: now, UpdatedAt: now,
 	}
 	if !tok.ExpiresAt.IsZero() {
@@ -293,7 +364,10 @@ func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusInternalServerError, "persist connection: %v", err)
 		return
 	}
-	s.auditTenant(r, pending.TenantID, "forge.connection.created", "forge_connection", connID, map[string]any{"provider": pending.Provider, "kind": "oauth_app"})
+	s.auditTenant(r, pending.TenantID, "forge.connection.created", "forge_connection", connID, map[string]any{
+		"provider": pending.Provider, "kind": "oauth_app", "oauth_app_id": record.ID,
+		"bot_identity": pending.BotIdentity, "webhook_base_url": conn.WebhookBaseURL,
+	})
 	target := pending.NextURL
 	if target == "" {
 		target = deeplink.Path("/teams/" + pending.TenantID)

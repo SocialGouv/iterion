@@ -497,7 +497,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if connHost := hostOfURL(conn.BaseURL()); connHost == "" || !strings.EqualFold(connHost, host) {
 		return abstain("its connection points at %q, not %q", hostOfURL(conn.BaseURL()), host)
 	}
-	gc, err := s.gateClientFor(ctx, conn)
+	gc, err := s.gateClientFor(ctx, conn, repo)
 	if err != nil {
 		return abstain("the forge client for %s is unreachable: %v", repo, err)
 	}

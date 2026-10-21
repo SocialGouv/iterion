@@ -116,7 +116,9 @@ export interface BindPreviewModel {
    *  by that name (never flagged when the secret list is unknown). */
   secrets: Array<{ botId: string; secret: string; missing: boolean }>;
   hasMissingSecrets: boolean;
-  identity: { handle: string; provider: string; baseUrl: string } | null;
+  /** Who the bots post as; `projectBot` = a per-repository bot iterion mints
+   *  at enable, whose `handle` is empty until the first enable. */
+  identity: { handle: string; provider: string; baseUrl: string; projectBot: boolean } | null;
   /** The base the hook URL will be built from (the connection's pin, else the
    *  deployment's public URL), as the server reported it: the empty string is
    *  an answer — no public URL — and null means the server reported none. */
@@ -152,13 +154,15 @@ export function buildBindPreviewModel(
     secret: s.secret,
     missing: knownSecretNames !== null && !knownSecretNames.includes(s.secret),
   }));
-  const identity = preview.identity?.handle
-    ? {
-        handle: preview.identity.handle,
-        provider: preview.identity.provider ?? "",
-        baseUrl: preview.identity.base_url ?? "",
-      }
-    : null;
+  const identity =
+    preview.identity?.handle || preview.identity?.project_bot
+      ? {
+          handle: preview.identity.handle ?? "",
+          provider: preview.identity.provider ?? "",
+          baseUrl: preview.identity.base_url ?? "",
+          projectBot: preview.identity.project_bot === true,
+        }
+      : null;
   const conflicts = preview.conflicts ?? [];
   return {
     events,

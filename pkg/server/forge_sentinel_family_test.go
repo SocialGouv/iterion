@@ -85,6 +85,18 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 		err: forge.ErrLaunchVarsDrop, wantStatus: 0,
 		why: "a partial launch_vars write refused before any forge call — the provisioning route answers 400, naming the pins to echo",
 	},
+	"forge.ErrProjectBotNotPermitted": {
+		err: forge.ErrProjectBotNotPermitted, wantStatus: 0,
+		why: "a forge-answered 400 to a project-bot mint — the provisioning route answers 403 project_bot_not_permitted itself, naming both remedies",
+	},
+	"forge.ErrProjectBotUnsupported": {
+		err: forge.ErrProjectBotUnsupported, wantStatus: 0,
+		why: "a configuration contradiction (a project-bot connection on a client that cannot mint one), never a forge answer — the provisioning route answers 422",
+	},
+	"forge.ErrRepoNotEnabled": {
+		err: forge.ErrRepoNotEnabled, wantStatus: 0,
+		why: "iterion's own state (the repo has no minted bot) — the launch route answers 409 with the enable as the remedy",
+	},
 	"forge.ErrProvisionDiverged": {
 		err: forge.ErrProvisionDiverged, wantStatus: 0,
 		why: "iterion's own two-store settings write diverged — the provisioning route answers 500 with the converge-on-rerun remedy",

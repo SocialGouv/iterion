@@ -40,7 +40,11 @@ type forgePending struct {
 	// Valkey backend marshals this struct wholesale, so an exported field is
 	// enough.
 	SecurityReadOnly bool
-	IssuedAt         time.Time
+	// BotIdentity carries the connect request's choice of posting identity
+	// (forge.BotIdentity* constants) to the OAuth callback, the only place
+	// that can stamp it on the created Connection.
+	BotIdentity string
+	IssuedAt    time.Time
 }
 
 // forgeStateBackend stores forgePending CSRF state keyed by State, with a

@@ -432,6 +432,24 @@ function RepoRow({
             {integration.repo_full_name}
           </Link>{" "}
           <span className="text-fg-muted">· {integration.bot_ids.join(", ")}</span>
+          {integration.project_bot?.login && (
+            <span
+              className="text-fg-muted"
+              title="This repository's reviews are posted by a bot iterion created on it"
+            >
+              {" "}
+              · posts as <span className="font-mono">@{integration.project_bot.login}</span>
+              {integration.project_bot.expires_at && (
+                <> · token expires {formatDate(integration.project_bot.expires_at)}</>
+              )}
+              {integration.project_bot.rotation_error && (
+                <span className="text-warning-fg">
+                  {" "}
+                  — token rotation failed: {integration.project_bot.rotation_error}
+                </span>
+              )}
+            </span>
+          )}
         </span>
         {canManage && (
           <span className="flex shrink-0 items-center gap-1.5">

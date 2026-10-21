@@ -111,6 +111,15 @@ type Orchestrator struct {
 	// nil (oauth/pat, or no github app configured) → no-op. Injected by the
 	// server so the orchestrator stays free of the github package + App key.
 	GitHubAppMinter func(ctx context.Context, conn Connection) (RefreshedToken, error)
+	// AdminForToken builds a client authenticated with a bare token — the
+	// MINTED project-bot token, for the calls only the bot itself makes (its
+	// own identity, its own avatar, rotating and revoking itself). nil
+	// refuses every project-bot connection with ErrProjectBotUnsupported.
+	AdminForToken func(provider Provider, baseURL, token string) (Admin, error)
+	// BotAvatar is the PNG set on a freshly minted project bot's account —
+	// the iterion-bot face on every identity iterion operates. nil = no
+	// rebrand. Best-effort: a refusal lands on ProjectBot.AvatarError.
+	BotAvatar []byte
 	// LogWarn, when set, reports a non-blocking anomaly (the only current one:
 	// a security-read withdrawal that could not run while disconnecting).
 	// Injected like the other seams so the package stays logger-free; nil
@@ -239,6 +248,9 @@ type ProvisionResult struct {
 	HookID          string   `json:"hook_id"`
 	ManagedSecretID string   `json:"-"`
 	BotIDs          []string `json:"bot_ids"`
+	// BotLogin is the forge login the repo's bots post as when iterion minted
+	// it (a project bot); empty when they post as the connection's account.
+	BotLogin string `json:"bot_login,omitempty"`
 	// Created is false when the call was a fully idempotent no-op (the repo
 	// already had exactly these bots + events enabled).
 	Created bool `json:"created"`
@@ -518,9 +530,13 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// no-ops when the binding already matches).
 	if hasExisting && equalStringSet(existing.BotIDs, desiredBots) && equalStringSet(existing.EventsNormalized, eventsNormalized) &&
 		existing.HookURL == desiredHookURL {
-		for _, b := range desiredBots {
-			if err := o.ensureBotBinding(ctx, req.TenantID, b, frByBot[b].SecretName(), existing.ManagedSecretID); err != nil {
-				return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", frByBot[b].SecretName(), b, err)
+		// A project-bot repo has no team binding to backfill: its token is
+		// its own (see the binding step of the rebuild path).
+		if !conn.MintsProjectBots() {
+			for _, b := range desiredBots {
+				if err := o.ensureBotBinding(ctx, req.TenantID, b, frByBot[b].SecretName(), existing.ManagedSecretID); err != nil {
+					return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", frByBot[b].SecretName(), b, err)
+				}
 			}
 		}
 		// A changed operator override is a real mutation even when the bot set
@@ -618,13 +634,39 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			HookID:          existing.HookID,
 			ManagedSecretID: existing.ManagedSecretID,
 			BotIDs:          existing.BotIDs,
+			BotLogin:        projectBotLogin(existing.ProjectBot),
 			Created:         false,
 		}, nil
 	}
 
-	managedSecretID, err := o.ensureManagedSecret(ctx, &conn, req.ActorID)
-	if err != nil {
-		return ProvisionResult{}, err
+	// The runtime forge token: the connection's managed secret, shared by
+	// every repo of the connection — or, on a connection that posts as
+	// per-repository bots, THIS repo's own minted credential, reused from
+	// the existing row and minted now otherwise. A mint that nothing commits
+	// is undone on the way out: the token revoked, the secret deleted.
+	var projectBot *ProjectBot
+	var managedSecretID string
+	committed := false
+	if conn.MintsProjectBots() {
+		if hasExisting && existing.ProjectBot != nil && existing.ManagedSecretID != "" {
+			projectBot, managedSecretID = existing.ProjectBot, existing.ManagedSecretID
+		} else {
+			pb, secID, err := o.mintProjectBot(ctx, conn, req.RepoFullName, req.ActorID)
+			if err != nil {
+				return ProvisionResult{}, err
+			}
+			projectBot, managedSecretID = pb, secID
+			defer func() {
+				if !committed {
+					o.undoProjectBot(ctx, conn, req.RepoFullName, pb, secID)
+				}
+			}()
+		}
+	} else {
+		managedSecretID, err = o.ensureManagedSecret(ctx, &conn, req.ActorID)
+		if err != nil {
+			return ProvisionResult{}, err
+		}
 	}
 
 	// Per-webhook secret override pinning the connection's managed forge
@@ -679,8 +721,17 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		// authenticate its push/PR. A binding failure is surfaced (not masked):
 		// without it those runs silently can't open their PR, exactly the
 		// failure this closes.
-		if err := o.ensureBotBinding(ctx, req.TenantID, b, secretName, managedSecretID); err != nil {
-			return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", secretName, b, err)
+		//
+		// Not for a per-repository bot: a binding is keyed (tenant, bot,
+		// secret name) and therefore team-global, and a token minted for ONE
+		// repository cannot be the team's one answer for the bot — it would
+		// push the next repo's run at the wrong project. The webhook override
+		// above is that repo's only pin; a launch resolving by binding alone
+		// finds no token rather than another repository's.
+		if projectBot == nil {
+			if err := o.ensureBotBinding(ctx, req.TenantID, b, secretName, managedSecretID); err != nil {
+				return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", secretName, b, err)
+			}
 		}
 	}
 
@@ -764,6 +815,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		SecretOverrides:    secretOverrides,
 		MinReplierRole:     minRole,
 		CommandMap:         commandMap,
+		BotLogin:           projectBotLogin(projectBot),
 		ProvisionedBy:      "forge:" + conn.ID,
 		CreatedBy:          req.ActorID,
 		CreatedAt:          now,
@@ -843,6 +895,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		HookID:               hookID,
 		HookURL:              hookURL,
 		ManagedSecretID:      managedSecretID,
+		ProjectBot:           projectBot,
 		LaunchVars:           nilIfEmpty(maps.Clone(operatorVars)),
 		Overlap:              operatorOverlap,
 		HoldLabels:           operatorHold,
@@ -885,6 +938,8 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			return ProvisionResult{}, fmt.Errorf("forge: record integration: %w", err)
 		}
 	}
+	// The row is written: a minted bot is now recorded, and stays.
+	committed = true
 
 	// github_app: narrow the runtime forge token to the now-current provisioned
 	// repo set (least-privilege). Best-effort — see narrowGitHubAppSecret; runs
@@ -904,6 +959,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		HookID:          hookID,
 		ManagedSecretID: managedSecretID,
 		BotIDs:          desiredBots,
+		BotLogin:        projectBotLogin(projectBot),
 		Created:         !hasExisting,
 	}, nil
 }
@@ -1184,9 +1240,11 @@ func (o *Orchestrator) ensureManagedSecret(ctx context.Context, conn *Connection
 }
 
 // Deprovision removes one repo integration: the forge hook (best-effort —
-// a 404 is success), the iterion webhook config, and the join row. The
-// connection's managed secret survives (it is connection-level, shared
-// across that connection's other repos).
+// a 404 is success), the minted project bot when the repo has one (its token
+// revoked on the forge, its secret deleted — both are this repo's alone), the
+// iterion webhook config, and the join row. The connection's managed secret
+// survives (it is connection-level, shared across that connection's other
+// repos).
 func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID string) error {
 	ri, err := o.Integrations.Get(ctx, integrationID)
 	if err != nil {
@@ -1201,6 +1259,19 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 				if derr := admin.DeleteHook(ctx, ri.RepoFullName, ri.HookID); derr != nil && !errors.Is(derr, ErrHookNotFound) {
 					return fmt.Errorf("forge: delete forge hook: %w", derr)
 				}
+			}
+		}
+	}
+	if ri.ProjectBot != nil {
+		// Revoke BEFORE deleting the secret: the self-revoke path needs the
+		// token, and a bot left alive on the forge with no secret to reach it
+		// is the orphan this exists to prevent.
+		if rerr := o.revokeProjectBot(ctx, ri); rerr != nil {
+			return fmt.Errorf("forge: revoke project bot @%s on %s: %w", ri.ProjectBot.Login, ri.RepoFullName, rerr)
+		}
+		if ri.ManagedSecretID != "" {
+			if derr := o.Secrets.Delete(ctx, ri.ManagedSecretID); derr != nil && !errors.Is(derr, secrets.ErrGenericSecretNotFound) {
+				return fmt.Errorf("forge: delete project bot secret: %w", derr)
 			}
 		}
 	}

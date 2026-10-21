@@ -66,7 +66,11 @@ is an administrative act on the forge's side — Admin area → Settings →
 Network → Outbound requests. A deployment that serves two names, or that is
 migrating between them, then has one connection that cannot follow.
 
-`Connection.WebhookBaseURL` pins the base for **that connection only**:
+`Connection.WebhookBaseURL` pins the base for **that connection only** — and
+an OAuth app registered with a `webhook_base_url` hands that base to every
+connection made through it, so an instance-wide fact is said once by whoever
+registered the application (a platform app covers every team;
+[forge-integrations.md](forge-integrations.md#platform-oauth-apps)):
 
 ```sh
 iterion remote forge connections webhook-base <conn-id> \

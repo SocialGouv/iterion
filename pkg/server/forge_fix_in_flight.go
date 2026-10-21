@@ -205,7 +205,7 @@ func (s *Server) fixStatusClientFor(ctx context.Context, teamID, prURL string) (
 	if !ok {
 		return nil, "", false
 	}
-	gc, err := s.gateClientFor(ctx, conn)
+	gc, err := s.gateClientFor(ctx, conn, repo)
 	if err != nil || gc == nil {
 		return nil, "", false
 	}

@@ -20,7 +20,10 @@ In the studio, **Integrations → Repositories** (`/integrations`):
    paste a personal access token (the fallback, and the only path for
    self-hosted instances with no registrable OAuth app). iterion validates
    the token (`GET /user`), reads the identity, and stores the credential
-   **sealed**.
+   **sealed**. On **GitLab**, the OAuth path offers *Post as a dedicated
+   project bot* (on by default): the OAuth grant stays the admin credential,
+   and every repository enabled afterwards gets its own bot — see
+   [GitLab: OAuth as the bootstrap, a project bot per repository](#gitlab-oauth-as-the-bootstrap-a-project-bot-per-repository).
 2. **Enable a repo** — pick a repo the credential can administer, check the
    forge-capable bots (each shows the events it subscribes to + its manifest
    rationale), pick the **`Merge gate`** posture when one of them gates
@@ -189,6 +192,81 @@ PAT connections never refresh.
 > least-privilege, and GitHub vs GitLab vs Forgejo are documented in
 > **[forge-permissions.md](forge-permissions.md)**.
 
+## GitLab: OAuth as the bootstrap, a project bot per repository
+
+GitLab has no GitHub-App equivalent: an OAuth grant acts as the person who
+authorised it, so a connection made with it would post reviews as that
+person and — through the bot-author guard, which treats the connection's own
+account as iterion's identity — stop auto-reviewing that person's own merge
+requests. The alternative, a hand-made project access token per repository
+(name, expiry, Maintainer, `api`), is the three-step path this one replaces.
+
+A GitLab OAuth connection made with `bot_identity: "project_token"` (the
+wizard's *Post as a dedicated project bot*, `forge.Connection.BotIdentity`)
+keeps the OAuth grant as the **admin** credential — list repositories, create
+hooks, mint — and gives every enabled repository its **own** identity:
+
+- **Enable mints the bot.** `Provision` calls
+  `POST /projects/:id/access_tokens` with the grant (name `iterion-bot`, role
+  Maintainer, scope `api`, expiry left to the instance's maximum), reads the
+  bot user's login with the minted token, seals the token as the
+  integration's **own** managed `forge_token` secret (never the connection's,
+  which is shared by every repo), gives the bot the iterion-bot avatar, and
+  records the bot on the integration (`project_bot`: login, token id, expiry).
+  The webhook config carries the login as `bot_login`, which the actor guard
+  reads in place of the connection's account: the authorising person stays a
+  reviewable author, the bot's own echoes are still recognised. A mint that
+  nothing records — a hook the forge refuses after it — is revoked on the
+  way out.
+- **Rotation.** The same ticker as the OAuth refresh sweeps integrations
+  whose bot expires within fourteen days and rotates the token **as the bot
+  itself** (`POST /projects/:id/access_tokens/self/rotate`, asking for the
+  lifetime the forge granted at mint — the bare default would be one week);
+  a token already dead is rotated through the admin grant instead. The secret
+  is rewritten first, the row second: a crash in between leaves a row that is
+  still due and a secret that works. A refusal is recorded on the integration
+  (`project_bot.rotation_error`, shown on the Integrations tab) and retried
+  each tick; a bot inside the first half of its lifetime is never rotated, so
+  an instance whose maximum lifetime is shorter than the lead cannot churn.
+- **Disable revokes.** Deprovision revokes the token (as the bot first, then
+  through the grant) and deletes the integration's secret with the row.
+- **Refusals are typed.** A mint GitLab refuses — the account below
+  Maintainer on the project, or project access tokens switched off on the
+  group or instance; GitLab answers both with one 400 — comes back as
+  `403 project_bot_not_permitted` carrying GitLab's own message and both
+  remedies; the pasted-token path stays available.
+- **Launches.** A repo-targeted launch (studio, scheduler) pins the
+  repository's own secret, and is refused with 409 for a repository that has
+  no minted bot yet: the bot is minted by the enable, nothing else can stand
+  in for it. The board lane (a promoted card launching a bot) resolves its
+  forge token by the team-wide bot binding, which a per-repository token
+  cannot be, so on such a repository it finds no token rather than another
+  repository's — making that lane repository-aware is a follow-up.
+
+The existing `pat` path (a token the operator created by hand) is unchanged,
+and a GitLab OAuth connection made without the option keeps posting as the
+authorising account, as before.
+
+### Platform OAuth apps
+
+OAuth apps are registered per team, per provider, per instance — except
+when one application has to serve every team: a self-managed GitLab whose
+applications are created at group level by its administrators, say. A
+super-admin registers it **once**, under the platform (studio: **Admin →
+Forge OAuth apps**, `/admin/forge-apps`; API: `POST /api/admin/forge/oauth-apps`
+with `client_id`, `client_secret`, `forge_base_url` and, optionally,
+`webhook_base_url`), and every team's connect wizard offers *Continue with
+OAuth* on that instance. The connect flow and the token refresher resolve
+the team's own app for the instance first, then the platform's; a team's
+listing shows platform apps read-only (`platform: true`). Deleting a platform
+app is refused while a connection of any team still authenticates through it.
+
+An app's `webhook_base_url` is the hook base every connection made through
+it inherits unless it pins its own — the one place an instance-wide fact
+("this forge only delivers to these hosts") is said once, by whoever
+registered the application, instead of once per connection
+([webhooks.md](webhooks.md#when-a-forge-cannot-reach-the-deployments-public-url)).
+
 ## Configuration (cloud)
 
 The Mongo stores (`forge_connections`, `repo_integrations`,
@@ -294,7 +372,7 @@ a procedure, not just a PATCH — see [merge-gate.md](merge-gate.md#switch-gate)
 
 | Provider | Mode(s) | Status |
 |---|---|---|
-| GitLab | OAuth · PAT | live ([pkg/forge/gitlab](../pkg/forge/gitlab)) |
+| GitLab | OAuth **+ project bot** · OAuth · PAT | live ([pkg/forge/gitlab](../pkg/forge/gitlab)) |
 | GitHub | OAuth App · PAT · **GitHub App** | live ([pkg/forge/github](../pkg/forge/github)) |
 | Forgejo / Gitea | OAuth · PAT¹ | live ([pkg/forge/forgejo](../pkg/forge/forgejo)) |
 

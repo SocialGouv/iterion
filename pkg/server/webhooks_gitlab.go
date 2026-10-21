@@ -820,7 +820,7 @@ func (s *Server) gitlabGateClientFor(ctx context.Context, cfg webhooks.Config, b
 	host := hostOfURL(baseURL)
 	connRefusal := ""
 	if conn, ok := s.forgeConnectionForPR(ctx, cfg.TenantID, "", host, projectPath); ok {
-		gc, err := s.gateClientFor(ctx, conn)
+		gc, err := s.gateClientFor(ctx, conn, projectPath)
 		if err == nil && gc != nil && len(need) > 0 {
 			err = preflightForgeClient(ctx, gc, need...)
 		}
@@ -1348,7 +1348,7 @@ func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.Sche
 	if err != nil {
 		return nil, fmt.Errorf("schedule %s: resolve forge connection %s: %w", sb.ID, integ.ConnectionID, err)
 	}
-	secID, err := s.forgeOrchestrator.EnsureManagedSecret(store.WithTenant(ctx, conn.TenantID), &conn, "scheduler:"+sb.BotID)
+	secID, err := s.forgeOrchestrator.ManagedSecretFor(store.WithTenant(ctx, conn.TenantID), &conn, integ.RepoFullName, "scheduler:"+sb.BotID)
 	if err != nil {
 		return nil, fmt.Errorf("schedule %s: forge token for the clone: %w", sb.ID, err)
 	}
@@ -1498,11 +1498,11 @@ type gitlabPullCommenter interface {
 // field is a test seam; nil uses the real admin client. A connection whose
 // provider is not GitLab (or whose client cannot serve) yields (nil, nil) —
 // "this connection has no MR-comment capability" is not an error.
-func (s *Server) gitlabPullCommenterFor(ctx context.Context, conn forge.Connection) (gitlabPullCommenter, error) {
+func (s *Server) gitlabPullCommenterFor(ctx context.Context, conn forge.Connection, repo string) (gitlabPullCommenter, error) {
 	if s.forgeGitlabPullCommenterFor != nil {
 		return s.forgeGitlabPullCommenterFor(ctx, conn)
 	}
-	admin, err := s.forgeAdminFor(ctx, conn)
+	admin, err := s.forgeWriterFor(ctx, conn, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -1781,7 +1781,7 @@ func (s *Server) postGitLabApproveReply(ctx context.Context, cfg webhooks.Config
 		}
 	}
 	if connOK {
-		if pc, err := s.gitlabPullCommenterFor(ctx, conn); err == nil && pc != nil {
+		if pc, err := s.gitlabPullCommenterFor(ctx, conn, p.ProjectPath); err == nil && pc != nil {
 			if _, err := pc.CommentPullRequest(ctx, p.ProjectPath, int(p.MRIID), body); err == nil {
 				return
 			}

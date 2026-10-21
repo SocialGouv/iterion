@@ -52,6 +52,17 @@ export interface ForgeIntegration {
    *  alike. Hand-typed: the repo-bots routes carry no request/response
    *  schema in openapi.json, so this field regenerates nothing. */
   routing?: Record<string, unknown> | null;
+  /** The per-repository bot iterion minted for this repo (a GitLab project
+   *  access token) on a connection that posts as project bots: its login,
+   *  its token's expiry and the last rotation refusal. Absent otherwise. */
+  project_bot?: {
+    login: string;
+    token_id?: string;
+    expires_at?: string;
+    rotated_at?: string;
+    rotation_error?: string;
+    avatar_error?: string;
+  } | null;
   created_at: string;
 }
 
@@ -73,6 +84,13 @@ export interface ForgeTeamRepo {
    *  OMITTED when the server could not resolve one of the row's bots: that
    *  is "unknown", never "no gate". */
   gates_merges?: boolean;
+  /** The per-repository bot this repo's reviews are posted by, when iterion
+   *  minted one (a GitLab project access token) — with its token's expiry
+   *  and the last rotation refusal. Absent on a repo posting as its
+   *  connection's account. */
+  bot_login?: string;
+  bot_token_expires_at?: string;
+  bot_rotation_error?: string;
 }
 
 /** Stable identity of a connected repo across connections. */
@@ -160,7 +178,10 @@ export interface ForgeEnablePreview {
   secrets: Array<{ bot_id: string; secret: string }>;
   /** Slash-commands the enabled bots add to the webhook (command → bot). */
   commands?: Array<{ command: string; bot_id: string }>;
-  identity: { handle: string; provider: string; base_url: string };
+  /** Who the bots post as. `project_bot` marks a connection that posts as a
+   *  per-repository bot iterion mints at enable: `handle` is then that bot's
+   *  login once it exists, and empty before the first enable. */
+  identity: { handle: string; provider: string; base_url: string; project_bot?: boolean };
   /** True when a provisionable selected bot declares the `statuses` forge
    *  scope — the server's own anyBotGatesMerges predicate, the one that
    *  forces review_on_sync. The merge-gate posture is a choice only then. */
@@ -214,6 +235,9 @@ export interface RegisterForgeOAuthAppInput {
   client_secret?: string;
   admin_token?: string;
   connection_id?: string;
+  /** mode=manual: the hook base every connection made through this app
+   *  inherits — for a forge that only delivers to allowlisted hosts. */
+  webhook_base_url?: string;
 }
 
 export interface ConnectForgeInput {
@@ -229,6 +253,12 @@ export interface ConnectForgeInput {
    * several (one per owning org). Omitted = the team's single App for the host.
    */
   oauth_app_id?: string;
+  /**
+   * mode=oauth, GitLab only: "project_token" makes iterion mint one project
+   * access token per enabled repository — its bot user posts the reviews,
+   * the OAuth grant only administers. Omitted = bots post as the account.
+   */
+  bot_identity?: "project_token";
 }
 
 export interface ConnectForgeResult {
@@ -460,6 +490,37 @@ export async function registerForgeOAuthApp(
 
 export async function deleteForgeOAuthApp(teamID: string, appID: string): Promise<void> {
   await request<void>(`/teams/${teamID}/forge/oauth-apps/${appID}`, { method: "DELETE" });
+}
+
+// Platform forge OAuth apps (super-admin): one registration of a forge
+// instance's application serves every team's connect flow; a team listing
+// carries them with `platform: true`. Mirrors admin_forge_routes.go.
+export interface PlatformForgeOAuthAppInput {
+  provider: ForgeProvider;
+  forge_base_url?: string;
+  client_id: string;
+  client_secret: string;
+  webhook_base_url?: string;
+}
+
+export async function listPlatformForgeOAuthApps(): Promise<ForgeOAuthApp[]> {
+  const r = await request<{ apps: ForgeOAuthApp[] }>("/admin/forge/oauth-apps");
+  return r.apps ?? [];
+}
+
+export async function registerPlatformForgeOAuthApp(
+  input: PlatformForgeOAuthAppInput,
+): Promise<ForgeOAuthApp> {
+  return request<ForgeOAuthApp>("/admin/forge/oauth-apps", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deletePlatformForgeOAuthApp(appID: string): Promise<void> {
+  await request<void>(`/admin/forge/oauth-apps/${encodeURIComponent(appID)}`, {
+    method: "DELETE",
+  });
 }
 
 export interface GitHubManifestStart {

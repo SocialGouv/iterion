@@ -12,6 +12,7 @@ const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
 const AuditAdminPage = lazy(() => import("@/views/admin/AuditAdminPage"));
 const DLQAdminPage = lazy(() => import("@/views/admin/DLQAdminPage"));
 const PlatformLlmCredsPage = lazy(() => import("@/views/admin/PlatformLlmCredsPage"));
+const PlatformForgeAppsPage = lazy(() => import("@/views/admin/PlatformForgeAppsPage"));
 const PlatformBotsPage = lazy(() => import("@/views/admin/PlatformBotsPage"));
 const UsageCapsPage = lazy(() => import("@/views/admin/settings/UsageCapsPage"));
 const CredentialSpendPage = lazy(() => import("@/views/admin/spend/CredentialSpendPage"));
@@ -30,6 +31,7 @@ const PAGES = {
   "/orgs": OrgsAdminPage,
   "/users": UsersAdminPage,
   "/llm-credentials": PlatformLlmCredsPage,
+  "/forge-apps": PlatformForgeAppsPage,
   "/settings/usage-caps": UsageCapsPage,
   "/settings/bot-roles": BotRolesPage,
   "/settings/sandbox": SandboxPage,

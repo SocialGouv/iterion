@@ -10,6 +10,7 @@ import {
   connectForge,
 } from "@/api/forgeConnections";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Textarea } from "@/components/ui/Textarea";
 import { errorMessage } from "@/lib/errorHints";
 import {
@@ -50,6 +51,11 @@ export default function PatFallback({
   const open = bare || expanded;
   const [busy, setBusy] = useState(false);
   const [pat, setPat] = useState("");
+  // GitLab OAuth: bots post as a per-repository bot iterion mints at enable
+  // (the recommended default), or as the authorising account itself. The
+  // same choice the primary authorize step offers — a connection's identity
+  // is stamped at connect and never recomputed, so no OAuth entry may skip it.
+  const [projectBot, setProjectBot] = useState(true);
 
   const oauthAvailable = useMemo(() => {
     return oauthApps.some(
@@ -68,6 +74,8 @@ export default function PatFallback({
         mode,
         forge_base_url: baseURL.trim() || undefined,
         pat: mode === "pat" ? pat.trim() : undefined,
+        bot_identity:
+          provider === "gitlab" && mode === "oauth" && projectBot ? "project_token" : undefined,
         next: RETURN_PATH,
       });
       if (res.authorize_url) {
@@ -108,6 +116,15 @@ export default function PatFallback({
                 Authorize the OAuth app registered for this instance. You'll
                 be redirected to {provider} and back here.
               </p>
+              {provider === "gitlab" && (
+                <Checkbox
+                  className="mb-2"
+                  label="Post as a dedicated project bot (recommended)"
+                  help="iterion creates a project access token on each repository you enable: its bot user (iterion-bot) posts the reviews, so your own merge requests stay reviewable. Unchecked, bots post as your account."
+                  checked={projectBot}
+                  onChange={(e) => setProjectBot(e.target.checked)}
+                />
+              )}
               <Button
                 variant="secondary"
                 size="sm"

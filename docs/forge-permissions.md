@@ -68,6 +68,7 @@ stored token.)
 | Connection kind | Token | Acts on the forge as | Repo rights = |
 |---|---|---|---|
 | `oauth_app` | OAuth user access token (refreshable) | **the user who authorized** the OAuth app | that user's repo permissions |
+| `oauth_app` + `bot_identity: project_token` (GitLab) | OAuth grant = admin credential; a **project access token iterion mints per enabled repository** = what bots post with | **the repository's own bot user** (`project_<id>_bot_…`, named iterion-bot) | Maintainer on that repository only ([forge-integrations.md](forge-integrations.md#gitlab-oauth-as-the-bootstrap-a-project-bot-per-repository)) |
 | `github_app` | Installation token (minted ~1h, GitHub only) | **the GitHub App** (a bot identity) | the App's manifest permissions (narrow, least-privilege) |
 | `pat` | Personal access token (static) | **the PAT owner** (a person or a service account) | the PAT's scopes |
 
@@ -168,13 +169,16 @@ identity — via the common `forge.Admin` abstraction (ADR-049,
 |---|---|---|---|
 | `oauth_app` (acts as the authorizing user) | ✅ | ✅ | ✅ |
 | `pat` (acts as the token owner) | ✅ | ✅ | ✅ |
-| `github_app` (acts as a scoped App/bot) | ✅ | ✅ (best path on a self-hosted instance: a project/group access token used as a `pat`) | — (no App concept; same — use a bot-account PAT) |
+| `github_app` (acts as a scoped App/bot) | ✅ | ✅ as a **project bot**: an OAuth connection with `bot_identity: project_token` mints a project access token per enabled repository (or a hand-made project/group token used as a `pat`) | — (no App concept; same — use a bot-account PAT) |
 | auth header | `Bearer` | `Bearer` | `token` (Gitea scheme) |
 
 So the **only** real difference is that the narrow “bot identity” path is a
-first-class **GitHub App** on GitHub, whereas on GitLab/Forgejo you approximate
-least-privilege with a **scoped service-account / project token** connected as a
-`pat`. Clients: [pkg/forge/gitlab/client.go](../pkg/forge/gitlab/client.go),
+first-class **GitHub App** on GitHub, whereas on GitLab iterion mints a
+**project access token per repository** behind an OAuth bootstrap (or you
+connect a scoped service-account / project token as a `pat`), and on Forgejo
+you approximate least-privilege with a bot-account PAT. Clients:
+[pkg/forge/gitlab/client.go](../pkg/forge/gitlab/client.go),
+[pkg/forge/gitlab/access_tokens.go](../pkg/forge/gitlab/access_tokens.go),
 [pkg/forge/forgejo/client.go](../pkg/forge/forgejo/client.go).
 
 ## The face on the connection — the iterion-bot avatar

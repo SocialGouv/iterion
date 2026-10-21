@@ -162,7 +162,7 @@ func (s *Server) fileGateEscalation(ctx context.Context, e gateEscalation) bool 
 // team board, which the people waiting on THIS merge may never open (a card
 // alone sat unseen for 7 days while a security PR stayed blocked).
 func (s *Server) commentGateEscalationOnPR(ctx context.Context, e gateEscalation) {
-	rc, err := s.reviewClientFor(ctx, e.conn)
+	rc, err := s.reviewClientFor(ctx, e.conn, e.repo)
 	if err != nil {
 		s.logWarn("%s: no review client for %s (%v) — escalation stays board-only", e.lane, e.repo, err)
 		return

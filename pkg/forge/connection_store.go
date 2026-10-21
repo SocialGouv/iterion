@@ -29,6 +29,11 @@ type ConnectionStore interface {
 	// expires at or before t (cross-tenant; the refresh worker's scan).
 	// KindPAT connections never expire and are excluded.
 	ExpiringBefore(ctx context.Context, t time.Time) ([]Connection, error)
+	// ListByOAuthApp returns every connection (cross-tenant) that names the
+	// OAuth app — the guard that keeps an app in use from being deleted: a
+	// platform app serves connections of many teams, and deleting it would
+	// silently end every one of their token refreshes.
+	ListByOAuthApp(ctx context.Context, appID string) ([]Connection, error)
 }
 
 // ---- in-memory store (tests / local) ----
@@ -85,6 +90,19 @@ func (m *MemoryConnectionStore) ListByTenant(_ context.Context, tenantID string)
 	var out []Connection
 	for _, c := range m.conns {
 		if c.TenantID == tenantID {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemoryConnectionStore) ListByOAuthApp(_ context.Context, appID string) ([]Connection, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []Connection
+	for _, c := range m.conns {
+		if appID != "" && c.OAuthAppID == appID {
 			out = append(out, c)
 		}
 	}
@@ -153,6 +171,15 @@ func (s *MongoConnectionStore) Delete(ctx context.Context, id string) error {
 func (s *MongoConnectionStore) ListByTenant(ctx context.Context, tenantID string) ([]Connection, error) {
 	return mongoutil.FindAllSorted[Connection](ctx, s.coll, bson.M{"tenant_id": tenantID}, "created_at",
 		"forge: list connections", "forge: decode connections")
+}
+
+func (s *MongoConnectionStore) ListByOAuthApp(ctx context.Context, appID string) ([]Connection, error) {
+	if appID == "" {
+		// An empty id would match every connection that predates the field.
+		return nil, nil
+	}
+	return mongoutil.FindAllSorted[Connection](ctx, s.coll, bson.M{"oauth_app_id": appID}, "created_at",
+		"forge: list connections by oauth app", "forge: decode connections by oauth app")
 }
 
 func (s *MongoConnectionStore) ExpiringBefore(ctx context.Context, t time.Time) ([]Connection, error) {
