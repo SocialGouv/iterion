@@ -122,7 +122,9 @@ func (s *deliverySandbox) Exec(ctx context.Context, cmd []string, opts sandbox.E
 	s.mu.Lock()
 	s.execs = append(s.execs, slices.Clone(cmd))
 	s.mu.Unlock()
-	if len(cmd) != 5 || cmd[0] != "sh" || cmd[1] != "-c" || cmd[3] != "sh" || !path.IsAbs(cmd[4]) || path.Clean(cmd[4]) != cmd[4] || cmd[4] == "/" {
+	// The writer's and the removal's shape: `sh -c <script> sh <path>`, the
+	// writer adding the size it sends.
+	if len(cmd) < 5 || len(cmd) > 6 || cmd[0] != "sh" || cmd[1] != "-c" || cmd[3] != "sh" || !path.IsAbs(cmd[4]) || path.Clean(cmd[4]) != cmd[4] || cmd[4] == "/" {
 		return sandbox.ExecResult{ExitCode: 127, Stderr: []byte("deliverySandbox: unexpected exec")}, nil
 	}
 	if s.failWrite && opts.Stdin != nil {
@@ -136,7 +138,7 @@ func (s *deliverySandbox) Exec(ctx context.Context, cmd []string, opts sandbox.E
 		}
 		return sandbox.ExecResult{ExitCode: 1, Stderr: []byte("no space left on device")}, nil
 	}
-	run := exec.CommandContext(ctx, "sh", "-c", cmd[2], "sh", filepath.Join(s.root, cmd[4]))
+	run := exec.CommandContext(ctx, "sh", append([]string{"-c", cmd[2], "sh", filepath.Join(s.root, cmd[4])}, cmd[5:]...)...)
 	run.Stdin = opts.Stdin
 	var stderr bytes.Buffer
 	run.Stderr = &stderr

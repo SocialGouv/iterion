@@ -17,7 +17,12 @@ import (
 // unmetSandboxRun is fakeSandboxRun whose every command exits 1.
 type unmetSandboxRun struct{ fakeSandboxRun }
 
-func (unmetSandboxRun) Command(ctx context.Context, _ []string, _ sandbox.ExecOpts) *osexec.Cmd {
+func (unmetSandboxRun) Command(ctx context.Context, argv []string, _ sandbox.ExecOpts) *osexec.Cmd {
+	// A tool command arrives under its completion wrapper: the container runs
+	// the wrapper, whose command — whatever it was — exits 1.
+	if len(argv) > 4 && argv[0] == "sh" && argv[1] == "-c" && argv[3] == "iterion-tool" {
+		return osexec.CommandContext(ctx, argv[0], argv[1], argv[2], argv[3], "false")
+	}
 	return osexec.CommandContext(ctx, "false")
 }
 
