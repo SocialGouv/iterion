@@ -866,10 +866,43 @@ exists for them, so they always come back.
 
 Every launch snapshots the resolved policy on the run document
 (`llm_route_policy`, with each field's provenance) — "why did this run
-route this way" is answerable without replaying the launch. The bot
-(`routing:` manifest block), the bot binding and the run-level launch
-fields join this fold in the next slices, below the platform level, which
-can lock a field against all of them.
+route this way" is answerable without replaying the launch.
+
+### The binding level — a repo pins its own slots
+
+Below the platform level and above the run, a forge integration carries
+its own routing block (`routing` on the repo-bots API, ADR-129): the
+operator's per-repo pin over every launch the integration makes — webhook
+deliveries and scheduled fires alike. The block is typed
+(`overrides` cells per node selector, a `providers` allowlist; values are
+literals), validated at the write surface (an unknown field, a templated
+value or an out-of-vocabulary entry is a 400 naming it), and `locks` are
+refused there — the binding level holds no lock primitive, the author's
+manifest and the platform record do.
+
+Write roles, one row per level that can carry a block:
+
+| level | record | who may write it |
+|---|---|---|
+| binding (integration) | `forge.RepoIntegration.Routing` | team admin/owner; parked for org approval where the org gates provisioning |
+| bot | `manifest.yaml` `routing:` | `config_editor` or team admin (ADR-078) |
+| team / org | the routing-policy records | `canManageTeam` / `canManageOrg` |
+| platform | the settings record | super-admin |
+
+Two behaviours are worth knowing before saving one:
+
+- **A `*` cell is repo-wide, and the save says so.** The write surface
+  screens the block against the bots enabled on the integration and
+  WARNS, naming the bot and the node whose ask-rules the overridden
+  backend could not gate — the launch itself refuses such a run, one
+  failed delivery at a time, so the warning is what saves the operator
+  from discovering it in production.
+- **The three-way rule.** Absent keeps the stored block (an enable that
+  adds one bot never drops the pin), `null` clears it, an object replaces
+  it wholesale — the schedule rows' rule. Where the org requires
+  provisioning approval, every SPOKEN block parks, null included: the
+  predicate cannot tell a `providers:` narrowing from a widening onto a
+  pricier backend, so it fails toward approval.
 
 ## Platform credentials — rotate the deployment's fallback without a redeploy
 

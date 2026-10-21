@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -372,17 +371,16 @@ func (s *Server) handleAdminPutPlatformCredentials(w http.ResponseWriter, r *htt
 		}
 	}
 	if len(patch.Routing) > 0 {
-		if string(patch.Routing) == "null" {
-			rec.Routing = nil
-		} else {
-			var routing llmroute.Policy
-			dec := json.NewDecoder(bytes.NewReader(patch.Routing))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(&routing); err != nil {
-				s.httpErrorFor(w, r, http.StatusBadRequest, "routing: %v", err)
-				return
-			}
-			rec.Routing = &routing
+		// The platform level holds the lock primitive, so its posture is
+		// routingLocksAllowed — the ONE decoder does the strictness, the
+		// validation and the three-way rule for every write surface.
+		routing, spoke, rerr := decodeRoutingBlock(patch.Routing, routingLocksAllowed)
+		if rerr != nil {
+			s.httpErrorFor(w, r, rerr.status, "%s", rerr.err.Error())
+			return
+		}
+		if spoke {
+			rec.Routing = routing
 		}
 	}
 	if err := rec.Validate(); err != nil {

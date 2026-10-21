@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
 
 // newApprovalTestServer builds the forge test server with the approval
@@ -544,5 +546,64 @@ func TestOrgTeamCaps_Update(t *testing.T) {
 	s.handleUpdateOrgTeamCaps(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("negative caps should 400: code=%d", w.Code)
+	}
+}
+
+// TestParkedProvision_ReplaysTheRoutingBlock: an org-gated team enables a
+// bot AND sets a routing block in one call — what the enable dialog does.
+// The parked record must carry the block and the approval must replay it
+// verbatim: without it the org approves a request whose routing half is
+// silently dropped at apply time.
+func TestParkedProvision_ReplaysTheRoutingBlock(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	block := &llmroute.Policy{Overrides: []llmroute.Override{{Selector: "judge", Backend: "claw"}}}
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(teamAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots",
+		`{"connection_id":"`+connID+`","repo":"group/api","bot_ids":["review-pr"],"routing":`+string(mustJSON(t, block))+`}`, "t1"))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("enable should park: code=%d body=%s", w.Code, w.Body.String())
+	}
+	approvalID := approvalIDFrom(t, w)
+
+	// The parked record carries the block, so the approver sees what they
+	// are approving.
+	var parked forge.ProvisionApproval
+	a, err := s.provisionApprovals.Get(context.Background(), approvalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked = a
+	if !parked.RoutingSet || !reflect.DeepEqual(parked.Routing, block) {
+		t.Fatalf("the parked record lost the routing block: set=%v routing=%+v, want the request's block", parked.RoutingSet, parked.Routing)
+	}
+
+	// Approve → the block lands on BOTH records.
+	w = httptest.NewRecorder()
+	req := orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/provision-approvals/"+approvalID+"/approve", "", "o1")
+	req.SetPathValue("approval_id", approvalID)
+	s.handleApproveProvision(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("approve: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var res forge.ProvisionResult
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil || res.IntegrationID == "" {
+		t.Fatalf("approve result: %s (%v)", w.Body.String(), err)
+	}
+	integ, err := s.forgeIntegrations.Get(context.Background(), res.IntegrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := s.webhookConfigs.Get(context.Background(), res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(integ.Routing, block) {
+		t.Errorf("the approved block never reached the integration record: %+v", integ.Routing)
+	}
+	if !reflect.DeepEqual(cfg.Routing, block) {
+		t.Errorf("the approved block never reached the webhook config: %+v — the enforcement half certifies nothing", cfg.Routing)
 	}
 }

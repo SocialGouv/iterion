@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -129,29 +130,49 @@ func (s *Server) teamFundsItsOwnRuns(ctx context.Context, teamID string) (bool, 
 }
 
 // parkProvisionRequest records the pending request and answers the team
-// admin with 202 + the approval id. The caller has already validated the
-// request exactly as the direct path would. baseBotIDs snapshots the
-// integration's live bot set for update requests (nil for new repos).
-func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, req forgeEnableReq, integrationID string, replace bool, baseBotIDs []string) {
+// admin with 202 + the approval id. The routing block is validated at the
+// edge exactly as the direct path would refuse it; a block the decoder
+// refused never reaches a park. The launch-vars admissibility check is
+// NOT replayed here — a recorded request the stores refuse
+// deterministically is consumed at approve with its reason
+// (forge.provision.approval_refused), never left squatting in the queue
+// as an unapprovable record. baseBotIDs / baseHoldLabels /
+// baseLabelAllowlist snapshot the integration's live sets for update
+// requests (nil for new repos) so the approver's card can render what the
+// change replaces, lifts or widens. routing + routingSpoke replay the
+// request's three-way voice (absent keeps / null clears / object
+// replaces): the parked record stores both facts, so the approval applies
+// what the org actually saw. The same for the spoken-empty switches: the
+// three Set flags record that the body NAMED launch_vars / hold_labels /
+// label_allowlist, the fact the empty value itself cannot carry across
+// the json wire the approver's card reads.
+func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, req forgeEnableReq, integrationID string, replace bool, baseBotIDs, baseHoldLabels, baseLabelAllowlist []string, routing *llmroute.Policy, routingSpoke bool) {
 	a := forge.ProvisionApproval{
-		ID:                uuid.NewString(),
-		OrgID:             orgID,
-		TenantID:          teamID,
-		ConnectionID:      req.ConnectionID,
-		RepoFullName:      req.Repo,
-		BotIDs:            req.BotIDs,
-		IntegrationID:     integrationID,
-		Replace:           replace,
-		BaseBotIDs:        baseBotIDs,
-		ScheduleCrons:     req.ScheduleCrons,
-		LaunchVars:        req.LaunchVars,
-		LaunchVarsReplace: req.LaunchVarsReplace,
-		Overlap:           req.Overlap,
-		AutoFix:           req.AutoFixOnGateFailure,
-		HoldLabels:        req.HoldLabels,
-		LabelAllowlist:    req.LabelAllowlist,
-		RequestedBy:       id.UserID,
-		CreatedAt:         time.Now().UTC(),
+		ID:                 uuid.NewString(),
+		OrgID:              orgID,
+		TenantID:           teamID,
+		ConnectionID:       req.ConnectionID,
+		RepoFullName:       req.Repo,
+		BotIDs:             req.BotIDs,
+		IntegrationID:      integrationID,
+		Replace:            replace,
+		BaseBotIDs:         baseBotIDs,
+		BaseHoldLabels:     baseHoldLabels,
+		BaseLabelAllowlist: baseLabelAllowlist,
+		ScheduleCrons:      req.ScheduleCrons,
+		LaunchVars:         req.LaunchVars,
+		LaunchVarsReplace:  req.LaunchVarsReplace,
+		LaunchVarsSet:      req.LaunchVars != nil,
+		Overlap:            req.Overlap,
+		AutoFix:            req.AutoFixOnGateFailure,
+		HoldLabels:         req.HoldLabels,
+		HoldLabelsSet:      req.HoldLabels != nil,
+		LabelAllowlist:     req.LabelAllowlist,
+		LabelAllowlistSet:  req.LabelAllowlist != nil,
+		Routing:            routing,
+		RoutingSet:         routingSpoke,
+		RequestedBy:        id.UserID,
+		CreatedAt:          time.Now().UTC(),
 	}
 	if err := s.provisionApprovals.Create(r.Context(), a); err != nil {
 		httpError(w, http.StatusConflict, "%s", err.Error())
@@ -305,12 +326,48 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 		AutoFix:           a.AutoFix,
 		HoldLabels:        a.HoldLabels,
 		LabelAllowlist:    a.LabelAllowlist,
+		Routing:           a.Routing,
+		RoutingSet:        a.RoutingSet,
 		ActorID:           id.UserID,
 		Replace:           a.Replace,
 	})
 	if err != nil {
-		// The request stays pending: a transient forge failure must not
-		// silently consume the approval — the admin retries or rejects.
+		// A DETERMINISTIC refusal: the recorded request is inadmissible, and
+		// NO retry of this record can land it — the launch-vars drop names
+		// pins whose only remedy is an echo the record cannot amend itself
+		// with, the auto-provision refusal is a static property of the
+		// recorded bot set, and the diverged-stores detections resolve only
+		// by the explicit gesture a RE-SUBMISSION carries. The baseline those
+		// refusals read is store state, so it can move between replays — but
+		// only by another actor's write, and the re-submission is then the
+		// remedy too. Consuming the record — the reject path's delete, with
+		// the reason on both audit trails — keeps the queue free of records
+		// only their requester can fix. The stay-pending below remains for
+		// everything a retry CAN land: the transient failures (forge down,
+		// hook refused, token rejected) AND the retry-convergent divergence
+		// flavors, whose remedy text — re-run the same request — is exactly
+		// what consuming the record would destroy.
+		if deterministicProvisionRefusal(err) {
+			if derr := s.provisionApprovals.Delete(r.Context(), a.ID); derr != nil && !errors.Is(derr, forge.ErrProvisionApprovalNotFound) {
+				// The record stays: say so, instead of a 409 claiming a
+				// removal that did not happen.
+				s.logWarn("forge: provision approval %s refused deterministically but not deleted: %v", a.ID, derr)
+				httpError(w, http.StatusConflict,
+					"this request cannot land as recorded: %v — the refusal is deterministic, but the record could not be removed from the queue (%v): reject it instead", err, derr)
+				return
+			}
+			s.auditOrg(r, orgID, "forge.provision.approval_refused", "provision_approval", a.ID, map[string]any{
+				"repo": a.RepoFullName, "team_id": a.TenantID, "requested_by": a.RequestedBy, "reason": err.Error(),
+			})
+			s.auditTenant(r, a.TenantID, "forge.provision.approval_refused", "provision_approval", a.ID, map[string]any{
+				"repo": a.RepoFullName, "reason": err.Error(),
+			})
+			httpError(w, http.StatusConflict,
+				"this request cannot land as recorded: %v — it has been removed from the queue; the team must re-submit it with the remedy the refusal names", err)
+			return
+		}
+		// The request stays pending: a retryable failure must not silently
+		// consume the approval — the admin retries or rejects.
 		s.writeForgeProvisionError(w, err)
 		return
 	}
@@ -324,6 +381,23 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 		"repo": a.RepoFullName, "bots": res.BotIDs, "connection_id": a.ConnectionID, "approved_by": id.UserID,
 	})
 	writeJSON(w, res)
+}
+
+// deterministicProvisionRefusal reports whether a Provision refusal is one a
+// replay of the SAME record can never satisfy, so approving it can only
+// consume the record (the arm's class) rather than leave it pending for a
+// retry that never lands: the launch-vars drop names pins whose remedy is an
+// echo the record cannot amend itself with, the auto-provision refusal is a
+// static property of the recorded bot set, and the pre-write divergence
+// detections resolve only by the explicit gesture a RE-SUBMISSION carries.
+// The RETRY-CONVERGENT divergence flavors (a mid-write two-store failure, a
+// read-back blip after the writes landed) are excluded: their remedy is the
+// retry itself, which consuming the record would destroy.
+func deterministicProvisionRefusal(err error) bool {
+	if errors.Is(err, forge.ErrLaunchVarsDrop) || errors.Is(err, forge.ErrBotNotProvisionable) {
+		return true
+	}
+	return errors.Is(err, forge.ErrProvisionDiverged) && !errors.Is(err, forge.ErrProvisionDivergedRetry)
 }
 
 // equalStringSets compares two string slices as SETS (order-insensitive,

@@ -126,6 +126,12 @@ func (s *Server) registerBoardForgeRoutes() {
 // per-repo sync toggle + manual sync (team-scoped)
 // ---------------------------------------------------------------------------
 
+// patchIntegrationReq is deliberately a ONE-FIELD request: the sync toggle
+// is this endpoint's whole surface. `routing` is NOT a field here — the
+// repo-bots PATCH owns the routing block (the one strict decoder, the
+// org-approval gate, the blast-radius screen), and a body carrying it is
+// silently dropped, the same documented absence as webhookConfigReq's. A
+// handler that starts decoding routing here would bypass that gate.
 type patchIntegrationReq struct {
 	SyncIssuesEnabled *bool `json:"sync_issues_enabled,omitempty"`
 }

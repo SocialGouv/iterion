@@ -446,6 +446,18 @@ API is functional). Covered by `TestResolve_OverrideWins`
 `TestGitLabWebhook_HappyPath` threading assertion
 ([pkg/server/webhooks_gitlab_test.go](../pkg/server/webhooks_gitlab_test.go)).
 
+**The routing sibling of the key pin.** BYOK answers WHICH key a provider
+spends; the integration's routing block (ADR-129, `routing` on the
+repo-bots API — [cloud-llm-credentials.md](cloud-llm-credentials.md#the-binding-level--a-repo-pins-its-own-slots))
+answers WHETHER that provider is in bounds at all: a per-repo
+`providers:` allowlist refuses (or prunes) every route resolving outside
+the tenant's own credential, and `overrides:` cells pin individual
+nodes — a reviewer slot, a judge — onto the harness and gateway model of
+the repo's choosing. A repo holding only its own OpenAI-compatible
+gateway pins `providers: [openai_compatible]` plus the per-node cells,
+and no run of that repo can spend a shared key the tenant never named.
+Both fields live on the integration record, so both survive re-provisioning.
+
 ## Multiple webhooks per bot — already supported
 
 The webhook spine keys configs by `_id`, not by bot; nothing stops N

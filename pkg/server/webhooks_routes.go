@@ -39,6 +39,13 @@ func (s *Server) registerWebhookRoutes() {
 }
 
 type webhookConfigReq struct {
+	// No `routing` field, deliberately (ADR-129): a MANAGED config's
+	// routing block is provisioner-owned — the forge integration record is
+	// the durable carrier, and Provision rebuilds this document from it on
+	// every enable, so a PATCH-written block would be a silent
+	// write-here-lost-at-next-enable. The write surface is the repo-bots
+	// API (forge_provisioning_routes.go). An UNMANAGED config's block is a
+	// separate decision nobody has asked for yet.
 	Name                *string  `json:"name,omitempty"`
 	Provider            *string  `json:"provider,omitempty"`
 	SignMode            *string  `json:"sign_mode,omitempty"`

@@ -64,6 +64,14 @@ type ScheduledBot struct {
 	// UNLOCKED field of the shipped bot's `routing:` manifest block, and
 	// the author's lock is what stops it. nil = the level says nothing.
 	Routing *llmroute.Policy `bson:"routing,omitempty" json:"routing,omitempty"`
+	// RoutingFromIntegration marks the row's block as the PROJECTION of the
+	// owning integration's own block (pkg/forge syncSchedules), not an
+	// operator's choice made through the schedule PATCH. The projection
+	// must follow every later integration write — a clear and a replace
+	// alike — so a row whose block is merely a copy cannot shadow the level
+	// it came from; an operator's block (the flag false) is the more
+	// specific voice and survives until the operator speaks again.
+	RoutingFromIntegration bool `bson:"routing_from_integration,omitempty" json:"routing_from_integration,omitempty"`
 
 	// NextFireAt is the next UTC instant this schedule is due. The ticker
 	// CAS-advances it the moment it claims a tick, so a second replica racing
@@ -263,9 +271,11 @@ func applySchedulePatch(sb *ScheduledBot, patch SchedulePatch) {
 	}
 	if patch.ClearRouting {
 		sb.Routing = nil
+		sb.RoutingFromIntegration = false
 	}
 	if patch.Routing != nil {
 		sb.Routing = patch.Routing
+		sb.RoutingFromIntegration = false
 	}
 	if patch.RetryUsageWindow != nil {
 		sb.RetryUsageWindow = *patch.RetryUsageWindow
