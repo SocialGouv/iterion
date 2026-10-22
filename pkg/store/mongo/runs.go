@@ -795,6 +795,16 @@ type NotifiableRunRef struct {
 	Checkpoint struct {
 		InteractionID string `bson:"interaction_id"`
 	} `bson:"checkpoint"`
+	// RetryState carries the three fields store.UsageParkWall reads, so the
+	// sweep can derive a usage park's wall-keyed episode without loading the
+	// run — the whole point of this projection.
+	RetryState *store.RunRetryState `bson:"retry_state"`
+}
+
+// UsageParkWall is the provider wall this row is parked on, zero when it is
+// not parked on one.
+func (r NotifiableRunRef) UsageParkWall() time.Time {
+	return store.UsageParkWall(store.RunStatus(r.Status), r.RetryState)
 }
 
 // ListNotifiableRuns returns one page of the runs the usernotify
@@ -829,7 +839,10 @@ func (s *Store) ListNotifiableRuns(ctx context.Context, since, before time.Time,
 	cur, err := s.runs.Find(ctx,
 		withTenantFilter(ctx, filter),
 		options.Find().
-			SetProjection(bson.M{"_id": 1, "status": 1, "updated_at": 1, "checkpoint.interaction_id": 1}).
+			SetProjection(bson.M{
+				"_id": 1, "status": 1, "updated_at": 1, "checkpoint.interaction_id": 1,
+				retryPath("retry_after"): 1, retryPath("reason"): 1, retryPath("wall"): 1,
+			}).
 			SetSort(bson.M{"updated_at": -1}).
 			SetLimit(int64(limit)))
 	if err != nil {

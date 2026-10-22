@@ -1634,7 +1634,10 @@ func (s *Server) stopHealRunForRequeuedPR(ctx context.Context, cfg webhooks.Conf
 	// Disarm before cancelling, like the closed-PR stop: a retry left armed
 	// would resume the very run we just stopped.
 	if retries := store.AsRunRetryStore(s.cfg.Store); retries != nil {
-		if aerr := retries.AbandonRunRetry(ctx, d.RunID, prRequeuedRunReason.Message()); aerr != nil && s.logger != nil {
+		// Unconditional (the zero instant): the cause is the run's own
+		// future — the pull request was re-queued — so whatever instant the
+		// row holds, there is nothing left to wake.
+		if _, aerr := retries.AbandonRunRetry(ctx, d.RunID, prRequeuedRunReason.Message(), time.Time{}); aerr != nil && s.logger != nil {
 			s.logger.Debug("webhooks: could not disarm the retry of heal run %s on a re-queued PR: %v", d.RunID, aerr)
 		}
 	}
@@ -1736,7 +1739,9 @@ func (s *Server) stopRunsForDeadPR(ctx context.Context, cfg webhooks.Config, met
 		// leaves the promise standing, and the sweeper would resume the
 		// run we just cancelled.
 		if retries != nil {
-			if aerr := retries.AbandonRunRetry(ctx, d.RunID, prClosedRunReason.Message()); aerr != nil && s.logger != nil {
+			// Unconditional, for the re-queue path's reason: a closed pull
+			// request leaves nothing for any instant to wake.
+			if _, aerr := retries.AbandonRunRetry(ctx, d.RunID, prClosedRunReason.Message(), time.Time{}); aerr != nil && s.logger != nil {
 				s.logger.Debug("webhooks: could not disarm the retry of run %s on a closed PR: %v", d.RunID, aerr)
 			}
 		}

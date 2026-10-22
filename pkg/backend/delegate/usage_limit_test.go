@@ -127,6 +127,67 @@ func TestClassifyRateLimit(t *testing.T) {
 	}
 }
 
+// TestClassifyRateLimit_TheDurationShapeIsResolvedAgainstTheMomentItIsRead
+// pins what the typed error's ResetAt IS for the window-duration shape, in
+// BOTH of its forms — the one the regex models alone and the one every
+// capture in the tree shows for the facade that prints the sentence:
+//
+//   - instant-less ("… for 5 hour. Your limit will reset later."): the
+//     ResetAt is this classifier's own resolution of a duration against the
+//     clock it was holding. It moves with the reading, which is what lets a
+//     consumer re-reading the text tell the shape from a date.
+//   - with the instant rendered INTO the text ("… will reset at
+//     2026-05-13 07:38:08"): the ResetAt is the text's own frozen instant.
+//     Re-reading the text a second apart sees the SAME value — the shape a
+//     consumer cannot catch by re-reading, which is why the parser is asked
+//     for the provenance instead (ParseResetHintDated).
+func TestClassifyRateLimit_TheDurationShapeIsResolvedAgainstTheMomentItIsRead(t *testing.T) {
+	t0 := time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC)
+	const instantLess = "API Error: Request rejected (429) · Usage limit reached for 5 hour. Your limit will reset later."
+	captured := "Usage limit reached for 5 hour. Your limit will reset at 2026-05-13 07:38:08"
+
+	kind, _, first := classifyRateLimit(instantLess, t0)
+	if kind != RateLimitKindUsageWindow {
+		t.Fatalf("kind = %q, want %q", kind, RateLimitKindUsageWindow)
+	}
+	_, _, later := classifyRateLimit(instantLess, t0.Add(time.Hour))
+	if later.Sub(first) != time.Hour {
+		t.Fatalf("the instant-less refusal read an hour later resolved to %s against %s (delta %s), want an hour later: a duration carries no date, and a reader told otherwise counts one provider window as a new wall per reading",
+			later.Format(time.RFC3339), first.Format(time.RFC3339), later.Sub(first))
+	}
+	if _, ok := ParseResetHint(instantLess, t0); !ok {
+		t.Fatalf("ParseResetHint no longer answers on %q — the runner asks it this exact question about this exact text", instantLess)
+	}
+
+	// The captured form freezes its instant into the words: the same text
+	// read an hour apart answers the SAME instant, so a re-reading consumer
+	// cannot see what the producer resolved it from. The provenance ask
+	// (ParseResetHintDated) is what answers it instead — read at the moment
+	// the text was rendered for, an absolute within the tolerance of
+	// now+the stated duration IS that duration's rendering and answers
+	// not-dated; read much later (an aged rendering, still travelling through
+	// a queue or a retry) the same text answers dated, which is the honest
+	// answer: the instant is then a frozen fact about the window, not this
+	// reading's recomputation.
+	kind, _, _ = classifyRateLimit(captured, t0)
+	if kind != RateLimitKindUsageWindow {
+		t.Fatalf("kind = %q, want %q", kind, RateLimitKindUsageWindow)
+	}
+	_, _, frozen := classifyRateLimit(captured, t0)
+	_, _, stillFrozen := classifyRateLimit(captured, t0.Add(time.Hour))
+	if !frozen.Equal(stillFrozen) {
+		t.Fatalf("the captured refusal's ResetAt moved between readings (%s -> %s): the text freezes its instant, and the reader that calls the provenance from a re-reading counts a frozen-in-text rendering as the provider's own date",
+			frozen.Format(time.RFC3339), stillFrozen.Format(time.RFC3339))
+	}
+	renderedFor := time.Date(2026, 5, 13, 2, 38, 8, 0, time.UTC) // the instant's own now+5h
+	if _, dated, ok := ParseResetHintDated(captured, renderedFor); !ok || dated {
+		t.Fatalf("ParseResetHintDated read at the moment it was rendered for = dated=%v, want the duration's own rendering: not dated", dated)
+	}
+	if _, dated, ok := ParseResetHintDated(captured, t0); !ok || !dated {
+		t.Fatalf("ParseResetHintDated on the aged text = dated=%v, want dated: an instant hours from now+duration is a frozen fact, and the row is told so", dated)
+	}
+}
+
 // TestIsRateLimitMessage_RelayedAPIErrorLength pins the two sides of the
 // prefix-anchored acceptance: the real fair-usage relay (~330 chars, over
 // the one-liner cap) must be seen, and an agent essay that merely embeds
@@ -216,6 +277,101 @@ func TestParseResetHint_DatedShape(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := parseResetHint(tt.text, tt.now); !got.Equal(tt.want) {
 				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseResetHintDated pins the provenance the parser answers alongside
+// the instant: dated=false is the pair of shapes whose instant is a function
+// of the moment of reading, dated=true everything else.
+func TestParseResetHintDated(t *testing.T) {
+	t0 := time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		text      string
+		now       time.Time
+		wantAt    time.Time
+		wantDated bool
+		wantOK    bool
+	}{
+		{
+			name:      "window duration alone is the reading's own resolution",
+			text:      "usage limit reached for 5 hour. your limit will reset later",
+			now:       t0,
+			wantAt:    t0.Add(5 * time.Hour),
+			wantDated: false,
+			wantOK:    true,
+		},
+		{
+			// The zai facade's captured sentence, refused at the window's
+			// start: the instant is the duration's own rendering.
+			name:      "a rendered absolute beside its duration is that duration, not a date",
+			text:      "usage limit reached for 5 hour. your limit will reset at 2026-07-17 19:00:07",
+			now:       t0,
+			wantAt:    time.Date(2026, 7, 17, 19, 0, 7, 0, time.UTC),
+			wantDated: false,
+			wantOK:    true,
+		},
+		{
+			// The same sentence, refused mid-window: what remains of the
+			// window is strictly less than the duration it states, so the
+			// instant is the provider's own date.
+			name:      "a rendered-shape instant far from now+duration is the provider's date",
+			text:      "usage limit reached for 5 hour. your limit will reset at 2026-07-20 14:00:00",
+			now:       t0,
+			wantAt:    time.Date(2026, 7, 20, 14, 0, 0, 0, time.UTC),
+			wantDated: true,
+			wantOK:    true,
+		},
+		{
+			// The weekly/monthly wall's capture: an absolute with no duration
+			// beside it. Nothing recomputes it.
+			name:      "an absolute alone is the provider's own date",
+			text:      "weekly/monthly limit exhausted. your limit will reset at 2026-07-19 18:14:59",
+			now:       t0,
+			wantAt:    time.Date(2026, 7, 19, 18, 14, 59, 0, time.UTC),
+			wantDated: true,
+			wantOK:    true,
+		},
+		{
+			name:      "a month-name shape is anchored on a calendar field",
+			text:      "you've hit your weekly limit · resets jul 28, 9pm (utc)",
+			now:       t0,
+			wantAt:    time.Date(2026, 7, 28, 21, 0, 0, 0, time.UTC),
+			wantDated: true,
+			wantOK:    true,
+		},
+		{
+			name:      "a bare clock is anchored on the calendar too",
+			text:      "you've hit your limit · resets 3pm",
+			now:       t0,
+			wantAt:    time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC),
+			wantDated: true,
+			wantOK:    true,
+		},
+		{
+			name:      "no hint answers nothing",
+			text:      "quota exhausted, no further detail",
+			now:       t0,
+			wantDated: true,
+			wantOK:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			at, dated, ok := ParseResetHintDated(tt.text, tt.now)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if dated != tt.wantDated {
+				t.Fatalf("dated = %v, want %v", dated, tt.wantDated)
+			}
+			if !at.Equal(tt.wantAt) {
+				t.Fatalf("at = %s, want %s", at.Format(time.RFC3339), tt.wantAt.Format(time.RFC3339))
 			}
 		})
 	}

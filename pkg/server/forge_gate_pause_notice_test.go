@@ -173,7 +173,7 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 		// What the charged park leaves on the row: the ledger cleared and the
 		// attempt spent, with retry_after still the announced instant
 		// (pkg/runner.armUsageWindowRetry, pinned by
-		// TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndReopensTheWaitsProbeLedger).
+		// TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndKeepsTheWallsProbeLedger).
 		run.RetryState.ProbeCount, run.RetryState.Attempts = 0, run.RetryState.Attempts+1
 		s.noticeGatePausedForRetry(context.Background(), run)
 		if len(c.bodies) != 2 {

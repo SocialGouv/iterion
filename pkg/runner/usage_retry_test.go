@@ -33,6 +33,142 @@ func weeklyWindowErr(resetAt time.Time) error {
 	}
 }
 
+// windowDurationDetail is the INSTANT-LESS form of the window-duration
+// refusal shape (pkg/backend/delegate.resetWindowRe): a duration and no date
+// at all. The form is the regex's synthetic one — every capture in the tree
+// of the facade that prints this sentence renders an absolute instant beside
+// the duration (facadeWindowDetail) — and it stays here because the parser
+// must answer it too: a provider may print the duration alone, and the
+// decision may not depend on which form arrived.
+// delegate.ParseResetHint resolves the duration against the moment it is
+// read, so every reading of ONE provider window answers a different instant —
+// which is what makes the shape one no per-wall bound can see.
+const windowDurationDetail = "Usage limit reached for 5 hour. Your limit will reset later."
+
+// windowDurationErr carries that refusal as TEXT only: what a host reports
+// when the typed error did not survive the hop
+// (delegate.UsageWindowInFlattenedError).
+func windowDurationErr() error {
+	return &runtime.RuntimeError{
+		Code:    runtime.ErrCodeUsageLimitBlocked,
+		Message: `node "synthesize" execution failed: rate_limited (claude_code): ` + windowDurationDetail,
+	}
+}
+
+// facadeWindowDetail is the same refusal the way EVERY capture in the tree
+// words it (pkg/backend/delegate/claude_code_ratelimit_test.go:77,
+// facade_weekly_wall_test.go:64, usage_limit_test.go:109,
+// pkg/runtime/recovery/recovery_test.go:180, CHANGELOG): the duration AND an
+// absolute instant the facade resolved when it printed. Whether that instant
+// is the duration's own rendering (recomputed per refusal) or the window's
+// own anchoring is not visible in one text — which is exactly why
+// delegate.ParseResetHintDated answers the question from the pair of facts.
+func facadeWindowDetail(at time.Time) string {
+	return fmt.Sprintf("Usage limit reached for 5 hour. Your limit will reset at %s",
+		at.UTC().Format("2006-01-02 15:04:05"))
+}
+
+// facadeWindowErr carries the captured shape as TEXT only, its instant
+// rendered at the moment the refusal is read — the facade that recomputes
+// the duration against its own clock at every refusal.
+func facadeWindowErr(now time.Time) error {
+	return &runtime.RuntimeError{
+		Code:    runtime.ErrCodeUsageLimitBlocked,
+		Message: `node "synthesize" execution failed: rate_limited (claude_code): ` + facadeWindowDetail(now.Add(5*time.Hour)),
+	}
+}
+
+// facadeWindowTypedErr carries the SAME refusal the way the claude_code
+// backend delivers it: the typed error whose ResetAt is the text's own
+// absolute instant (classifyRateLimit reads resetAbsRe first), so the typed
+// value and the words agree — which is what makes the parser's single ask
+// about the words sufficient.
+func facadeWindowTypedErr(now time.Time) error {
+	detail := facadeWindowDetail(now.Add(5 * time.Hour))
+	at, ok := delegate.ParseResetHint(detail, now)
+	if !ok {
+		panic("fixture: the captured facade shape no longer parses — delegate.ParseResetHint moved")
+	}
+	return &runtime.RuntimeError{
+		Code:    runtime.ErrCodeUsageLimitBlocked,
+		Message: `node "synthesize" execution failed: rate_limited (claude_code): ` + detail,
+		Cause: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Detail:   detail,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  at,
+		},
+	}
+}
+
+// facadeWindowErrAt is the captured shape with the instant the text renders
+// INDEPENDENT of the reading — the window-anchored facade, whose refusal
+// mid-window names the wall with the time that REMAINS of it.
+func facadeWindowErrAt(now, resetsAt time.Time) error {
+	return &runtime.RuntimeError{
+		Code:    runtime.ErrCodeUsageLimitBlocked,
+		Message: `node "synthesize" execution failed: rate_limited (claude_code): ` + facadeWindowDetail(resetsAt),
+	}
+}
+
+// weeklyWallCaptureErr is the multi-day wall's capture
+// (pkg/backend/delegate/facade_weekly_wall_test.go:16): an absolute instant
+// and NO window duration in the sentence — the provider's own date, with
+// nothing in the text that recomputes it.
+func weeklyWallCaptureErr(now time.Time) error {
+	return &runtime.RuntimeError{
+		Code: runtime.ErrCodeUsageLimitBlocked,
+		Message: `node "synthesize" execution failed: rate_limited (claude_code): [1310][Weekly/Monthly Limit Exhausted. Your limit will reset at ` +
+			now.Add(48*time.Hour).UTC().Format("2006-01-02 15:04:05") + `][20260922194425aaaa]`,
+	}
+}
+
+// typedWindowDurationErr carries the SAME refusal the way the claude_code
+// backend actually delivers it: classifyRateLimit resolves the duration
+// against the moment it reads the text and stores THAT instant in the typed
+// error's ResetAt (pkg/backend/delegate/claude_code_stream.go,
+// claude_code.go), and the engine wraps the typed cause rather than flattening
+// it (pkg/runtime.RuntimeError.Cause).
+//
+// The frozen field is the trap this fixture exists for: it does not move when
+// the same provider window is read again, so a reader that asks only the typed
+// value cannot tell this shape from a date the provider named.
+// delegate.ParseResetHint is called here for the same reason production calls
+// it — a fixture that spelled out the instant would stop being the producer's
+// shape the day the parser changed.
+func typedWindowDurationErr(now time.Time) error {
+	at, ok := delegate.ParseResetHint(windowDurationDetail, now)
+	if !ok {
+		panic("fixture: the window-duration shape no longer parses — delegate.ParseResetHint moved")
+	}
+	return &runtime.RuntimeError{
+		Code:    runtime.ErrCodeUsageLimitBlocked,
+		Message: `node "synthesize" execution failed: rate_limited (claude_code): ` + windowDurationDetail,
+		Cause: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Detail:   windowDurationDetail,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  at,
+		},
+	}
+}
+
+// selfImposedCapErr is the refusal iterion RAISES rather than receives: the
+// operator's own usage cap firing below the provider's wall
+// (pkg/runner/usage_cap.go, pkg/backend/model/executor.go). Its instant comes
+// from the cap's own window rather than from any parser, and
+// pkg/usagecap.Decision renders it into the reason text — which is what keeps
+// it DATED for a reader that asks the refusal's words.
+func selfImposedCapErr(resetsAt time.Time) error {
+	return &delegate.ErrRateLimited{
+		Provider:    delegate.BackendClaudeCode,
+		Detail:      fmt.Sprintf("usage cap: 7d window at 100%% ≥ 90%% (forfait, block), resets %s (not started)", resetsAt.UTC().Format(time.RFC3339)),
+		Kind:        delegate.RateLimitKindUsageWindow,
+		ResetAt:     resetsAt,
+		SelfImposed: true,
+	}
+}
+
 // blindUsageWindowErr is a real usage window whose end nothing parses — the
 // case where there is no authoritative instant at all.
 func blindUsageWindowErr() error {
@@ -87,6 +223,8 @@ func TestUsageWindowRetryAt(t *testing.T) {
 			// The classified-but-flattened case: no typed cause left, but the
 			// message still holds the notice. This is the fallback that keeps
 			// the feature working on a host whose error plumbing lost the type.
+			// The wake carries the come-back pad (typed and flattened parks of
+			// one window wake at the same instant); the wall keeps the raw one.
 			name: "code only, instant recovered from the message",
 			err: &runtime.RuntimeError{
 				Code:    runtime.ErrCodeUsageLimitBlocked,
@@ -94,7 +232,7 @@ func TestUsageWindowRetryAt(t *testing.T) {
 			},
 			pol:        noJitter(retrypolicy.Policy{}),
 			wantOK:     true,
-			wantAt:     reset,
+			wantAt:     reset.Add(time.Minute),
 			wantSource: "runtime_code+parsed_text",
 		},
 		{
@@ -318,13 +456,20 @@ type cancelAwareStore struct {
 	run          *store.Run
 	armed        bool
 	armedAt      time.Time
+	armedWall    time.Time
 	calls        int
 	blockCircuit bool
 	successes    int
 
-	probeRearmed   bool
-	probeRearmedAt time.Time
-	probeRearmErr  error
+	// scheduleErr models the store refusing the PAID arming with an error:
+	// the arming lands nothing, the caller naks, and JetStream redelivers
+	// against a row no write has touched.
+	scheduleErr error
+
+	probeRearmed     bool
+	probeRearmedAt   time.Time
+	probeRearmedWall time.Time
+	probeRearmErr    error
 	// probeRearmErrOnce models a TRANSIENT store blip: the first re-arm
 	// fails, the next one lands. A fake that fails forever cannot tell a
 	// path that gives up from one that tries again.
@@ -338,6 +483,7 @@ type cancelAwareStore struct {
 	// abandoned keeps the settlement reasons: a fake that swallows them
 	// cannot witness a run retired days before the instant it waits on.
 	abandoned       []string
+	abandonRefused  int
 	circuitFailures int
 
 	events []store.Event
@@ -351,9 +497,12 @@ func (c *cancelAwareStore) LoadRun(ctx context.Context, _ string) (*store.Run, e
 	return c.run, nil
 }
 
-func (c *cancelAwareStore) ScheduleRunRetry(ctx context.Context, _ string, at time.Time, _, _ string, maxAttempts int) (bool, int, error) {
+func (c *cancelAwareStore) ScheduleRunRetry(ctx context.Context, _ string, at, wall time.Time, _, _ string, maxAttempts int) (bool, int, error) {
 	if err := ctx.Err(); err != nil {
 		return false, 0, err
+	}
+	if c.scheduleErr != nil {
+		return false, 0, c.scheduleErr
 	}
 	// The attempt budget is in the real store's FILTER, so a fake that arms
 	// unconditionally is kinder than production and hides every
@@ -361,12 +510,23 @@ func (c *cancelAwareStore) ScheduleRunRetry(ctx context.Context, _ string, at ti
 	if spent := c.spentAttempts(); maxAttempts > 0 && spent >= maxAttempts {
 		return false, 0, nil
 	}
-	c.armed, c.armedAt = true, at
-	// A PAID arming is a new wait, so the real store's $unset drops the whole
-	// probe ledger (TestRunRetryProbe_APaidArmingResetsTheLedger). A fake that
-	// kept it would hide what the pull request's pause notice reads.
+	c.armed, c.armedAt, c.armedWall = true, at, wall
+	// The marker is consumed by every arming; the probe BUDGET follows the
+	// wall and the PACE stays on the row, exactly as the real store's $cond
+	// does — a fake that always cleared the budget would hide the ceiling
+	// this change bounds, one that never did would hide the notice the next
+	// wall owes, and one that cleared the pace would hide the unbounded
+	// pulling a moved wall used to earn.
 	if c.run != nil && c.run.RetryState != nil {
-		c.run.RetryState.ProbeFrom, c.run.RetryState.ProbeCount, c.run.RetryState.LastProbeAt = nil, 0, nil
+		moved := !wall.IsZero() && c.run.RetryState.Wall != nil && !c.run.RetryState.Wall.Equal(wall)
+		c.run.RetryState.ProbeFrom = nil
+		if !wall.IsZero() {
+			w := wall
+			c.run.RetryState.Wall = &w
+		}
+		if moved {
+			c.run.RetryState.ProbeCount = 0
+		}
 	}
 	return true, c.spentAttempts() + 1, nil
 }
@@ -384,7 +544,7 @@ func (c *cancelAwareStore) PullRunRetry(ctx context.Context, _ string, _, _ time
 
 // RearmProbedRunRetry models the store's CAS on the probe marker: no marker,
 // no free re-arm.
-func (c *cancelAwareStore) RearmProbedRunRetry(ctx context.Context, _ string, at time.Time) (bool, error) {
+func (c *cancelAwareStore) RearmProbedRunRetry(ctx context.Context, _ string, at, wall time.Time) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -399,7 +559,15 @@ func (c *cancelAwareStore) RearmProbedRunRetry(ctx context.Context, _ string, at
 		return false, nil
 	}
 	c.run.RetryState.ProbeFrom = nil
-	c.probeRearmed, c.probeRearmedAt = true, at
+	if !wall.IsZero() {
+		w := wall
+		moved := c.run.RetryState.Wall != nil && !c.run.RetryState.Wall.Equal(w)
+		c.run.RetryState.Wall = &w
+		if moved {
+			c.run.RetryState.ProbeCount = 0
+		}
+	}
+	c.probeRearmed, c.probeRearmedAt, c.probeRearmedWall = true, at, wall
 	return true, nil
 }
 
@@ -413,9 +581,18 @@ func (c *cancelAwareStore) ClaimRunRetry(ctx context.Context, _ string, _ time.T
 
 func (c *cancelAwareStore) ClearRunRetry(ctx context.Context, _ string) error { return ctx.Err() }
 
-func (c *cancelAwareStore) AbandonRunRetry(ctx context.Context, _, reason string) error {
+func (c *cancelAwareStore) AbandonRunRetry(ctx context.Context, _, reason string, expectedAfter time.Time) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
+	}
+	// The real store conditions on the armed instant the caller read: a row a
+	// sweep tick moved in between is not this caller's to retire.
+	if !expectedAfter.IsZero() {
+		st := c.run.RetryState
+		if st == nil || st.RetryAfter == nil || !st.RetryAfter.Equal(expectedAfter) {
+			c.abandonRefused++
+			return false, nil
+		}
 	}
 	c.abandoned = append(c.abandoned, reason)
 	// Model the real store: the abandon $unsets both the armed instant and
@@ -424,19 +601,23 @@ func (c *cancelAwareStore) AbandonRunRetry(ctx context.Context, _, reason string
 	if c.run != nil && c.run.RetryState != nil {
 		c.run.RetryState.RetryAfter, c.run.RetryState.ProbeFrom = nil, nil
 	}
-	return nil
+	return true, nil
 }
 
-func (c *cancelAwareStore) RecordRetryFailure(ctx context.Context, _, _ string, _ time.Time, _ int, _ time.Duration) (*store.RetryCircuitState, error) {
+func (c *cancelAwareStore) RecordRetryFailure(context.Context, string, string, time.Time, int, time.Duration) (*store.RetryCircuitState, error) {
 	c.circuitFailures++
+	return nil, nil
+}
+
+// RetryCircuitOpen models the read that moves the wake behind an already
+// open breaker. blockCircuit models a HUNG circuit store here rather than on
+// the record: the record now runs after the arming has landed, so a slow
+// circuit store can only delay the arming through the read.
+func (c *cancelAwareStore) RetryCircuitOpen(ctx context.Context, _ string, _ time.Time) (*store.RetryCircuitState, error) {
 	if c.blockCircuit {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	return nil, nil
-}
-
-func (c *cancelAwareStore) RetryCircuitOpen(context.Context, string, time.Time) (*store.RetryCircuitState, error) {
 	return nil, nil
 }
 

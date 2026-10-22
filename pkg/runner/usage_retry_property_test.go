@@ -36,6 +36,20 @@ type probeWorld struct {
 	r     *Runner
 	reg   *metrics.Registry
 	runID string
+
+	// redatedParks counts the re-dating parks this sequence has driven, and
+	// redatedShape is the delivery the last of them used: the refusal that
+	// re-dates itself arrives as flattened text, as the typed error the
+	// claude_code backend builds, and as the shape the tree CAPTURES for the
+	// facade that prints the sentence — the duration with its rendering
+	// rendered INTO the text (facadeWindowErr). The three reach the decision
+	// by different evidence paths (delegate.UsageWindowInFlattenedError, the
+	// typed ResetAt its producer froze, and the text's own absolute), and a
+	// guard that closes only one leaves the class open on the path production
+	// takes, so the sequences alternate and the coverage check below demands
+	// all three.
+	redatedParks int
+	redatedShape int
 }
 
 const (
@@ -105,6 +119,17 @@ func (w *probeWorld) apply(step retryprobetest.Step, now time.Time) bool {
 		w.r.armUsageWindowRetry(ctx, weeklyWindowErr(step.At), w.runID, step.Spend, quiet)
 	case retryprobetest.StepParkBlind, retryprobetest.StepParkAfterWorkBlind:
 		w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), w.runID, step.Spend, quiet)
+	case retryprobetest.StepParkRedated:
+		w.redatedParks++
+		w.redatedShape = w.redatedParks % 3
+		refusal := windowDurationErr()
+		switch w.redatedShape {
+		case 1:
+			refusal = typedWindowDurationErr(now)
+		case 2:
+			refusal = facadeWindowErr(now)
+		}
+		w.r.armUsageWindowRetry(ctx, refusal, w.runID, step.Spend, quiet)
 	case retryprobetest.StepSkippedSooner:
 		at := now.Add(45 * time.Minute)
 		w.st.Mutate(func(r *store.Run) { r.SkippedCredReopensAt = &at })
@@ -203,6 +228,7 @@ func runnerProbeSteps() []retryprobetest.StepKind {
 	return []retryprobetest.StepKind{
 		retryprobetest.StepParkDated,
 		retryprobetest.StepParkBlind,
+		retryprobetest.StepParkRedated,
 		retryprobetest.StepParkAfterWorkDated,
 		retryprobetest.StepParkAfterWorkBlind,
 		retryprobetest.StepSkippedSooner,
@@ -222,7 +248,11 @@ func runnerProbeSteps() []retryprobetest.StepKind {
 func runRunnerSequence(t *testing.T, seq []retryprobetest.Step, seen map[string]int) []string {
 	t.Helper()
 	w := newProbeWorld()
-	ledger := &retryprobetest.Ledger{MaxAttempts: probePropertyMaxAttempts}
+	ledger := &retryprobetest.Ledger{
+		MaxAttempts: probePropertyMaxAttempts,
+		ProbeBudget: probePropertyProbeBudget,
+		ProbeFloor:  probePropertyFloor,
+	}
 	var bad []string
 	for _, step := range seq {
 		now := time.Now().UTC()
@@ -237,7 +267,7 @@ func runRunnerSequence(t *testing.T, seq []retryprobetest.Step, seen map[string]
 			continue
 		}
 		after := w.snapshot(t)
-		note(seen, step, before, after, now, w.st)
+		note(seen, step, before, after, now, w)
 		bad = append(bad, ledger.Observe(step, before, after, now)...)
 		if len(bad) > 0 {
 			return bad
@@ -249,11 +279,24 @@ func runRunnerSequence(t *testing.T, seq []retryprobetest.Step, seen map[string]
 // note records which STATES the sequences actually reached. A property whose
 // generator never produces the interleaving it exists for is a decoration,
 // and nothing else in the suite would say so.
-func note(seen map[string]int, step retryprobetest.Step, before, after retryprobetest.Snapshot, now time.Time, st *retryprobetest.Store) {
+func note(seen map[string]int, step retryprobetest.Step, before, after retryprobetest.Snapshot, now time.Time, w *probeWorld) {
 	if seen == nil {
 		return
 	}
+	st := w.st
 	seen["step:"+string(step.Kind)]++
+	if step.Kind == retryprobetest.StepParkRedated && before.Row != nil &&
+		before.Row.Wall != nil && before.Row.Wall.After(now) {
+		seen["park re-dating its window on a row that holds a wall"]++
+		switch w.redatedShape {
+		case 0:
+			seen["park re-dating its window on a row that holds a wall, as flattened text"]++
+		case 1:
+			seen["park re-dating its window on a row that holds a wall, TYPED"]++
+		case 2:
+			seen["park re-dating its window on a row that holds a wall, the captured facade rendering"]++
+		}
+	}
 	switch {
 	case step.IsPark() && before.LiveMarker(now):
 		seen["park on a live probe marker"]++
@@ -324,6 +367,14 @@ func TestProbeGuarantee_TheRunnersArmingKeepsItOverRandomSequences(t *testing.T)
 		"paid arming refused",
 		"probe ledger open",
 		"row resumed after its own instant arrived",
+		// The re-dating refusal class, and the state that makes it the one
+		// no per-wall bound can see: a park of it on a row that is already
+		// on a wall — in ALL THREE of the deliveries production sends it in.
+		"step:" + string(retryprobetest.StepParkRedated),
+		"park re-dating its window on a row that holds a wall",
+		"park re-dating its window on a row that holds a wall, TYPED",
+		"park re-dating its window on a row that holds a wall, as flattened text",
+		"park re-dating its window on a row that holds a wall, the captured facade rendering",
 		"step:" + string(retryprobetest.StepProbePull),
 		"step:" + string(retryprobetest.StepResumeClear),
 		"step:" + string(retryprobetest.StepAgeMarker),

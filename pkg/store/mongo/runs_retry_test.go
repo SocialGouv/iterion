@@ -83,7 +83,7 @@ func TestRunRetry_ArmsFirstAttemptWithNoPriorState(t *testing.T) {
 	seedFailedResumable(t, s, "run-first-arm")
 
 	at := time.Now().UTC().Add(30 * time.Hour).Truncate(time.Millisecond)
-	scheduled, attempt, err := s.ScheduleRunRetry(ctx, "run-first-arm", at, "usage_window", "USAGE_LIMIT_BLOCKED", 5)
+	scheduled, attempt, err := s.ScheduleRunRetry(ctx, "run-first-arm", at, at, "usage_window", "USAGE_LIMIT_BLOCKED", 5)
 	if err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestRunRetry_AttemptsAreMonotonicAndBounded(t *testing.T) {
 
 	at := time.Now().UTC().Add(time.Hour)
 	for i := 1; i <= 2; i++ {
-		scheduled, attempt, err := s.ScheduleRunRetry(ctx, "run-bounded", at, "usage_window", "USAGE_LIMIT_BLOCKED", 2)
+		scheduled, attempt, err := s.ScheduleRunRetry(ctx, "run-bounded", at, at, "usage_window", "USAGE_LIMIT_BLOCKED", 2)
 		if err != nil {
 			t.Fatalf("arm %d: %v", i, err)
 		}
@@ -133,7 +133,7 @@ func TestRunRetry_AttemptsAreMonotonicAndBounded(t *testing.T) {
 		}
 	}
 	// Budget spent: the third arming must refuse, and must not be an error.
-	scheduled, _, err := s.ScheduleRunRetry(ctx, "run-bounded", at, "usage_window", "USAGE_LIMIT_BLOCKED", 2)
+	scheduled, _, err := s.ScheduleRunRetry(ctx, "run-bounded", at, at, "usage_window", "USAGE_LIMIT_BLOCKED", 2)
 	if err != nil {
 		t.Fatalf("arm past budget returned an error: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestRunRetry_RefusesWhenNotResumable(t *testing.T) {
 		t.Fatalf("UpdateRunStatus: %v", err)
 	}
 
-	scheduled, _, err := s.ScheduleRunRetry(ctx, "run-resumed-by-hand", time.Now().UTC().Add(time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", 5)
+	scheduled, _, err := s.ScheduleRunRetry(ctx, "run-resumed-by-hand", time.Now().UTC().Add(time.Hour), time.Now().UTC().Add(time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", 5)
 	if err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestRunRetry_ClaimIsExclusive(t *testing.T) {
 	seedFailedResumable(t, s, "run-claim")
 
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond) // already due
-	if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-claim", at, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil || !scheduled {
+	if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-claim", at, at, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil || !scheduled {
 		t.Fatalf("arm: scheduled=%v err=%v", scheduled, err)
 	}
 
@@ -229,7 +229,7 @@ func TestRunRetry_ClearDisarmsAfterAResume(t *testing.T) {
 	seedFailedResumable(t, s, "run-clear")
 
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-clear", at, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-clear", at, at, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("arm: %v", err)
 	}
 	if won, err := s.ClaimRunRetry(ctx, "run-clear", at); err != nil || !won {
@@ -267,7 +267,7 @@ func TestRunRetry_StrandedClaimRecoversAfterTheLease(t *testing.T) {
 	seedFailedResumable(t, s, "run-stranded")
 
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-stranded", at, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-stranded", at, at, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("arm: %v", err)
 	}
 	if won, err := s.ClaimRunRetry(ctx, "run-stranded", at); err != nil || !won {
@@ -300,10 +300,10 @@ func TestRunRetry_ClaimRejectsStaleExpectation(t *testing.T) {
 
 	stale := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	fresh := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-stale-claim", stale, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-stale-claim", stale, stale, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("arm stale: %v", err)
 	}
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-stale-claim", fresh, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-stale-claim", fresh, fresh, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("re-arm fresh: %v", err)
 	}
 
@@ -333,7 +333,7 @@ func TestRunRetry_ListDueOrdersAndFilters(t *testing.T) {
 
 	arm := func(id string, at time.Time) {
 		t.Helper()
-		if scheduled, _, err := s.ScheduleRunRetry(ctx, id, at, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil || !scheduled {
+		if scheduled, _, err := s.ScheduleRunRetry(ctx, id, at, at, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil || !scheduled {
 			t.Fatalf("arm %s: scheduled=%v err=%v", id, scheduled, err)
 		}
 	}
@@ -373,11 +373,11 @@ func TestRunRetry_AbandonDisarmsAndExplains(t *testing.T) {
 	s := retryTestStore(t)
 	ctx := retryCtx()
 	seedFailedResumable(t, s, "run-abandon")
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-abandon", time.Now().UTC().Add(-time.Minute), "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-abandon", time.Now().UTC().Add(-time.Minute), time.Now().UTC().Add(-time.Minute), "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("arm: %v", err)
 	}
 
-	if err := s.AbandonRunRetry(ctx, "run-abandon", "auto-retry abandoned: monthly run quota reached"); err != nil {
+	if _, err := s.AbandonRunRetry(ctx, "run-abandon", "auto-retry abandoned: monthly run quota reached", time.Time{}); err != nil {
 		t.Fatalf("AbandonRunRetry: %v", err)
 	}
 	r, err := s.LoadRun(ctx, "run-abandon")
@@ -430,7 +430,7 @@ func TestRunRetry_ContinuationFollowsTheRetryLifecycle(t *testing.T) {
 		t.Fatalf("pre-arm continuation = %q, want unknown", r.ContinuationState)
 	}
 
-	armed, _, err := s.ScheduleRunRetry(ctx, runID, time.Now().Add(time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", 3)
+	armed, _, err := s.ScheduleRunRetry(ctx, runID, time.Now().Add(time.Hour), time.Now().Add(time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", 3)
 	if err != nil || !armed {
 		t.Fatalf("ScheduleRunRetry = (%t, %v), want (true, nil)", armed, err)
 	}
@@ -443,7 +443,7 @@ func TestRunRetry_ContinuationFollowsTheRetryLifecycle(t *testing.T) {
 		t.Fatalf("post-arm seq = %d, want 1", r.OutcomeSeq)
 	}
 
-	if err := s.AbandonRunRetry(ctx, runID, "attempts exhausted"); err != nil {
+	if _, err := s.AbandonRunRetry(ctx, runID, "attempts exhausted", time.Time{}); err != nil {
 		t.Fatalf("AbandonRunRetry: %v", err)
 	}
 	r := load()
@@ -481,8 +481,7 @@ func TestRunRetry_SpentAttemptsAreReadableFromTheRunDocument(t *testing.T) {
 				t.Fatalf("re-fail before arm %d: %v", want, err)
 			}
 		}
-		scheduled, attempt, err := s.ScheduleRunRetry(ctx, runID,
-			time.Now().UTC().Add(time.Duration(want)*time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", budget)
+		scheduled, attempt, err := s.ScheduleRunRetry(ctx, runID, time.Now().UTC().Add(time.Duration(want)*time.Hour), time.Now().UTC().Add(time.Duration(want)*time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", budget)
 		if err != nil {
 			t.Fatalf("arm %d: %v", want, err)
 		}
@@ -504,7 +503,7 @@ func TestRunRetry_SpentAttemptsAreReadableFromTheRunDocument(t *testing.T) {
 
 	// And the count the run doc carries is exactly the one that closes the
 	// budget: the arming past it refuses.
-	if scheduled, _, err := s.ScheduleRunRetry(ctx, runID, time.Now().UTC().Add(time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", budget); err != nil {
+	if scheduled, _, err := s.ScheduleRunRetry(ctx, runID, time.Now().UTC().Add(time.Hour), time.Now().UTC().Add(time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", budget); err != nil {
 		t.Fatalf("arm past budget: %v", err)
 	} else if scheduled {
 		t.Errorf("scheduled = true with %d attempts already spent against a budget of %d", budget, budget)

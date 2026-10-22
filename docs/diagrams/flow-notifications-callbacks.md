@@ -20,7 +20,7 @@ flowchart TD
 %% the spine
     PAUSE["the engine reaches a human node: doPause writes the interaction, emits human_input_requested then run_paused, and saves the checkpoint with the paused status in one write"] --> BUILD
     TERM["the run terminates: finished, failed, failed_resumable or cancelled"] --> BUILD
-    BUILD["trigger.BuildRunOutcome re-reads the run: the persisted status overrides the body-error kind, failed and failed_resumable both map to run.failed, and the episode id folds the run id, the pending interaction or the status, and updated_at to the second"] --> FIRE
+    BUILD["trigger.BuildRunOutcome re-reads the run: the persisted status overrides the body-error kind, failed and failed_resumable both map to run.failed, and the episode id folds the run id, the pending interaction or the status, and updated_at to the second - except a run parked on a provider usage window, whose episode folds the WALL the row is waiting on, because every piece of retry bookkeeping moves updated_at while nothing new has happened"] --> FIRE
     FIRE{"the two emitters"}
     FIRE -- "in process, after the run body" --> CB1
     FIRE -- "a cloud runner pod, on a FINAL delivery disposition only - an ack or a park" --> CB1
@@ -58,7 +58,7 @@ flowchart TD
     CLASS -- "failed_resumable" --> PARK["run_parked: a retry armed with an ETA, a retry stopped, or no retry armed and an operator resume needed"]
     CLASS -- "failed" --> HARD["run_failed with a 200-character error excerpt and the typed failure code"]
     PARK --> OCL
-    HARD --> OCL{"TryMark the ops-prefixed episode key - a parked run keys on status, attempts and failure class, so the retry bookkeeping that rewrites the row every sweep-minute does not spam"}
+    HARD --> OCL{"TryMark the ops-prefixed episode key - a usage park keys on the provider wall, every other parked run on status, attempts and failure class, so the retry bookkeeping that rewrites the row every sweep-minute does not spam"}
     OCL -- "lost" --> STAMP["stamp the transition marker ONLY when WasDelivered is true - certifying a pending claim would race its Unmark and silence a parked-no-retry alert forever"]
     OCL -- "won" --> OFAN{"the deployment webhook and the errtrack sink - only the sinks that can report failure decide the verdict"}
     OFAN -- "every error-reporting sink failed" --> OUN["Unmark, warn, and return nil - the 2-minute operator-alert sweep retries"]
@@ -136,7 +136,7 @@ stateDiagram-v2
 | server, runner | fire the completion callback, then publish the outcome event — the runner only on a final delivery disposition | `FireForRun`, `emitRunOutcome`, `fireOutcomeEvent` |
 | engine | re-reads the run, overrides the kind with the persisted status, mints the per-episode id | `BuildRunOutcome`, `RunOutcomeEventID` |
 | server | subscribes the two consumers on the spine, and starts both sweeps | `startUserNotify`, `startOperatorAlerts`, `Attach` |
-| server | maps the event to a kind, vetoes a standby pause, claims the episode | `kindFor`, `hasActiveVeille`, `TryMark` |
+| server | maps the event to a kind (a usage park gets its own, read from the wall the event carries), vetoes a standby pause, claims the episode | `kindFor`, `usageParkWall`, `hasActiveVeille`, `TryMark` |
 | server, store | resolves recipients as the owner union the team-wide opt-ins, renders, deep-links | `build`, `ListTeamWide`, `render`, `deeplink.Run` |
 | provider | lists the recipients' subscriptions in one query and pushes in bounded parallel, pruning a dead endpoint | `Deliver`, `ListForUsers`, `push`, `Prune` |
 | store | settles the episode: confirmed on one success, released when every sink failed | `MarkDelivered`, `Unmark` |

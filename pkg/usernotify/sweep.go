@@ -18,13 +18,31 @@ import (
 // episodes are skipped in one indexed read).
 
 // RunRef identifies one run the sweep should re-examine, carrying just
-// enough (status + pending interaction + updated_at) to derive the episode
-// key without loading the run, and to keyset-paginate.
+// enough (status + pending interaction + updated_at, and the provider wall a
+// usage park waits on) to derive the episode key without loading the run, and
+// to keyset-paginate.
 type RunRef struct {
 	ID            string
 	Status        string
 	InteractionID string
 	UpdatedAt     time.Time
+	// UsageWall is store.UsageParkWall for this row, zero for every run that
+	// is not parked on a provider usage window. It travels in the listing
+	// because the episode of such a park IS the wall: a sweep that derived
+	// the per-transition key instead would check a claim nobody ever writes
+	// and load every parked run on every pass, while the bus path claimed the
+	// wall-keyed one.
+	UsageWall time.Time
+}
+
+// Episode is the notification episode this listing row belongs to — the same
+// key trigger.BuildRunOutcome mints from the run document, derived here from
+// the listing alone.
+func (r RunRef) Episode() string {
+	if !r.UsageWall.IsZero() {
+		return trigger.RunUsageParkEventID(r.ID, r.UsageWall)
+	}
+	return trigger.RunOutcomeEventID(r.ID, r.Status, r.InteractionID, r.UpdatedAt)
 }
 
 // ListNotifiableRuns returns one page of runs to (re-)examine: every run
@@ -116,7 +134,7 @@ func (sw *Sweeper) sweepRefs(fctx context.Context, refs []RunRef) {
 		// which are re-listed forever) is already claimed, so this turns
 		// up-to-500 run loads per pass into a handful.
 		if sw.dispatcher.sent != nil {
-			key := trigger.RunOutcomeEventID(ref.ID, ref.Status, ref.InteractionID, ref.UpdatedAt)
+			key := ref.Episode()
 			claimed, cErr := sw.dispatcher.sent.IsMarked(fctx, key)
 			if cErr != nil {
 				sw.logger.Warn("usernotify: sweep claim pre-check for run %s: %v", ref.ID, cErr)

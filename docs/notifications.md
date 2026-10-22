@@ -17,9 +17,33 @@ Notified events (v1):
 | `run_finished` | "Run finished: *run name*" |
 | `run_failed` (incl. `failed_resumable`) | "Run failed: *run name*" (+ failing node) |
 | `run_cancelled` | "Run cancelled: *run name*" |
+| `usage_window_parked` (parked on a provider quota window, retry armed) | "Run paused on a usage window: *run name*" + the instant it resumes at |
 
 An **operator soft-pause** (`paused_operator`, no pending interaction)
 deliberately does not notify — the operator initiated it.
+
+A run parked on a provider usage window is **not** a failure, and its episode
+is not a transition. It arrives as `run_failed` (that is the status the engine
+wrote), and the fact that tells the two apart is the **wall** the row is
+waiting on — the instant the provider announced, persisted on the retry row
+(`RunRetryState.Wall`) and carried on the event as `usage_park_wall`. The
+episode id is the run plus that wall, so the claim that already dedups the bus
+against the reconciliation sweep also dedups every re-park of one window: the
+park that opens it, the sweeper's pull-forward probe, the free re-arm that
+follows each probe's refusal, and a charged park that re-states the same
+instant are one episode. A wall the provider **moves** is news and notifies
+again, and a run whose retry budget is spent has nothing armed — no wall — so
+it notifies as the failure it has become.
+
+The wall identifies the episode; the message names the instant the row is
+armed for (`usage_park_resumes_at` on the event). They are not the same: the
+arming takes the earlier of the wall and the reopening of a credential the
+launch's resolution passed over, so a run can come back three hours from now
+while the wall it is parked on is Monday's.
+
+Measured before that: one weekly wall pushed about twenty-five "Run failed"
+messages in a day per parked run (the probe ships armed with a budget of 24),
+every one of them wrong about what had happened.
 
 Clicking the notification focuses (or opens) the studio on `/runs/<id>`,
 where the pending form renders.

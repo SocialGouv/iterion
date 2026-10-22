@@ -118,6 +118,7 @@ func copyRetryState(r *store.Run) *store.RunRetryState {
 	out.ClaimedAt = copyInstant(r.RetryState.ClaimedAt)
 	out.ProbeFrom = copyInstant(r.RetryState.ProbeFrom)
 	out.LastProbeAt = copyInstant(r.RetryState.LastProbeAt)
+	out.Wall = copyInstant(r.RetryState.Wall)
 	return &out
 }
 
@@ -180,10 +181,21 @@ func (s *Store) AppendEvent(_ context.Context, _ string, ev store.Event) (*store
 	return &ev, nil
 }
 
+// wallMoves mirrors the $cond of mongo.Store's two armings: an arming MOVES
+// the wall when the row stores one and the instant this arming carries is a
+// different one. A row with no stored wall (the shape armed before the field
+// existed) answers FALSE — the budget it carries is the budget of the wait it
+// is already on. Only consulted for an arming that carries a wall at all.
+func (s *Store) wallMoves(wall time.Time) bool {
+	st := s.run.RetryState
+	return st != nil && st.Wall != nil && !sameInstant(st.Wall, wall)
+}
+
 // ScheduleRunRetry mirrors mongo.Store.ScheduleRunRetry: the attempt budget
-// and the status are in the FILTER, the paid arming resets the probe ledger,
-// and attempts is incremented by the same write.
-func (s *Store) ScheduleRunRetry(_ context.Context, _ string, at time.Time, reason, code string, maxAttempts int) (bool, int, error) {
+// and the status are in the FILTER, attempts is incremented by the same write,
+// the marker is consumed, and the probe ledger survives an arming that
+// re-states the wall the row is already on.
+func (s *Store) ScheduleRunRetry(_ context.Context, _ string, at, wall time.Time, reason, code string, maxAttempts int) (bool, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ScheduleErr != nil {
@@ -197,6 +209,7 @@ func (s *Store) ScheduleRunRetry(_ context.Context, _ string, at time.Time, reas
 		s.RefusedArmings++
 		return false, 0, nil
 	}
+	moved := s.wallMoves(wall)
 	st := s.state()
 	now := bsonTime(time.Now())
 	st.RetryAfter = bsonPtr(at)
@@ -204,12 +217,20 @@ func (s *Store) ScheduleRunRetry(_ context.Context, _ string, at time.Time, reas
 	st.Reason, st.Code = reason, code
 	st.LastError = ""
 	st.ClaimedAt = nil
-	// A PAID arming is a new wait: the probe ledger starts over — including
-	// the arming that merely restored the announced instant, which arms the
-	// same wait (store.ProbeMarkerTTL states what that costs).
-	st.ProbeFrom, st.ProbeCount, st.LastProbeAt = nil, 0, nil
+	st.ProbeFrom = nil
+	// A zero wall says this arming brought no news about the provider's
+	// window, so the row keeps its wall AND that wall's budget; otherwise only
+	// an arming that MOVES the wall starts the budget over. last_probe_at
+	// paces the ROW and no arming touches it (mongo.probeCountForWall).
+	if !wall.IsZero() {
+		st.Wall = bsonPtr(wall)
+		if moved {
+			st.ProbeCount = 0
+		}
+	}
 	st.Attempts++
 	s.run.ContinuationState = store.ContinuationRetryArmed
+	s.run.UpdatedAt = now
 	s.PaidArmings++
 	return true, st.Attempts, nil
 }
@@ -229,6 +250,7 @@ func (s *Store) DelayRunRetry(_ context.Context, _ string, expectedAfter, delaye
 		st.ScheduledAt = bsonPtr(expectedAfter)
 	}
 	st.ClaimedAt = nil
+	s.run.UpdatedAt = bsonTime(time.Now())
 	s.Delays++
 	return true, nil
 }
@@ -258,16 +280,18 @@ func (s *Store) PullRunRetry(_ context.Context, _ string, expectedAfter, probeAt
 	st.ProbeFrom = bsonPtr(expectedAfter)
 	st.LastProbeAt = &now
 	st.ProbeCount++
+	s.run.UpdatedAt = now
 	s.Pulls++
 	return true, nil
 }
 
 // RearmProbedRunRetry mirrors mongo.Store.RearmProbedRunRetry: the marker's
 // PRESENCE and the status are the filter, attempts is untouched (neither the
-// counter nor a budget check), probe_count and last_probe_at survive — a
-// ledger a probe's own re-arming could reset would bound nothing — and the
-// marker is consumed.
-func (s *Store) RearmProbedRunRetry(_ context.Context, _ string, at time.Time) (bool, error) {
+// counter nor a budget check), and the marker is consumed. A zero `wall`
+// leaves the row's own wall and its budget alone — a budget a probe's own
+// re-arming could reset would bound nothing; a wall of its own follows the
+// charged arming's rule. The pace is the row's and survives either way.
+func (s *Store) RearmProbedRunRetry(_ context.Context, _ string, at, wall time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.RearmErr != nil {
@@ -281,10 +305,18 @@ func (s *Store) RearmProbedRunRetry(_ context.Context, _ string, at time.Time) (
 	if st == nil || s.run.Status != store.RunStatusFailedResumable || st.ProbeFrom == nil {
 		return false, nil
 	}
+	moved := s.wallMoves(wall)
 	st.RetryAfter = bsonPtr(at)
 	st.ProbeFrom = nil
 	st.ClaimedAt = nil
+	if !wall.IsZero() {
+		st.Wall = bsonPtr(wall)
+		if moved {
+			st.ProbeCount = 0
+		}
+	}
 	s.run.ContinuationState = store.ContinuationRetryArmed
+	s.run.UpdatedAt = bsonTime(time.Now())
 	s.FreeRearms++
 	return true, nil
 }
@@ -304,6 +336,7 @@ func (s *Store) ClaimRunRetry(_ context.Context, _ string, expectedAfter time.Ti
 		return false, nil
 	}
 	st.ClaimedAt = &now
+	s.run.UpdatedAt = now
 	s.Claims++
 	return true, nil
 }
@@ -319,19 +352,27 @@ func (s *Store) ClearRunRetry(_ context.Context, _ string) error {
 	if st := s.run.RetryState; st != nil {
 		st.RetryAfter, st.ClaimedAt = nil, nil
 	}
+	s.run.UpdatedAt = bsonTime(time.Now())
 	s.Clears++
 	return nil
 }
 
 // AbandonRunRetry mirrors mongo.Store.AbandonRunRetry: not conditioned on
-// status, records the reason, drops retry_after AND the marker, and declares
-// the continuation final — which is what makes settling a probed row
-// irreversible.
-func (s *Store) AbandonRunRetry(_ context.Context, _, reason string) error {
+// status, conditioned on the armed instant the caller read when it passes one,
+// records the reason, drops retry_after AND the marker, and declares the
+// continuation final — which is what makes settling a probed row
+// irreversible, and the CAS worth having.
+func (s *Store) AbandonRunRetry(_ context.Context, _, reason string, expectedAfter time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.AbandonErr != nil {
-		return s.AbandonErr
+		return false, s.AbandonErr
+	}
+	if !expectedAfter.IsZero() {
+		st := s.run.RetryState
+		if st == nil || !sameInstant(st.RetryAfter, expectedAfter) {
+			return false, nil
+		}
 	}
 	// $set on retry_state.last_error creates the embedded document when it
 	// is absent, so this is the one operation here that materialises it.
@@ -339,8 +380,9 @@ func (s *Store) AbandonRunRetry(_ context.Context, _, reason string) error {
 	st.LastError = reason
 	st.RetryAfter, st.ProbeFrom = nil, nil
 	s.run.ContinuationState = store.ContinuationFinal
+	s.run.UpdatedAt = bsonTime(time.Now())
 	s.Abandons = append(s.Abandons, reason)
-	return nil
+	return true, nil
 }
 
 // RecordRetryFailure is the shared circuit's write. The state stays nil (no
@@ -405,7 +447,7 @@ func (s *Store) ProbeRows(now time.Time, floor time.Duration, maxProbes, limit i
 	switch {
 	case s.run.Status != store.RunStatusFailedResumable, st == nil, st.RetryAfter == nil:
 		return nil
-	case st.Reason != "usage_window":
+	case st.Reason != store.RetryReasonUsageWindow:
 		return nil
 	case !st.RetryAfter.After(at.Add(floor)):
 		return nil

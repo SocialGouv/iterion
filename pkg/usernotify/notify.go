@@ -20,6 +20,12 @@ const (
 	KindRunFinished         Kind = "run_finished"
 	KindRunFailed           Kind = "run_failed"
 	KindRunCancelled        Kind = "run_cancelled"
+	// KindUsageWindowParked is a run WAITING on a provider usage window, not
+	// one that failed. Its own kind because the two call for opposite things
+	// from the person reading: a failure wants them to look, a park wants
+	// them to know the run is coming back and when. Said as a failure, once
+	// per park, it taught them to ignore the channel.
+	KindUsageWindowParked Kind = "usage_window_parked"
 )
 
 // Notification is one user-facing notification, already resolved to its

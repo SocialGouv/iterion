@@ -30,7 +30,7 @@ func TestRunRetryProbe_SeesWhatTheDueScanStructurallyCannot(t *testing.T) {
 
 	now := time.Now().UTC()
 	announced := now.Add(4 * 24 * time.Hour).Truncate(time.Millisecond)
-	if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-parked", announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil || !scheduled {
+	if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-parked", announced, announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil || !scheduled {
 		t.Fatalf("ScheduleRunRetry = (%v, %v)", scheduled, err)
 	}
 
@@ -65,7 +65,7 @@ func TestRunRetryProbe_PullSpendsNoAttemptAndKeepsTheAnnouncedInstant(t *testing
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	announced := now.Add(4 * 24 * time.Hour).Truncate(time.Millisecond)
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-pull", announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-pull", announced, announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
 	armed, err := s.LoadRun(ctx, "run-pull")
@@ -124,7 +124,7 @@ func TestRunRetryProbe_PullIsACASAndRefusesASecondMarker(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	announced := now.Add(4 * 24 * time.Hour).Truncate(time.Millisecond)
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-cas", announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-cas", announced, announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
 
@@ -160,13 +160,13 @@ func TestRunRetryProbe_FloorAndBudgetBoundTheScan(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
 	seedFailedResumable(t, s, "run-soon")
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-soon", now.Add(20*time.Minute), "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-soon", now.Add(20*time.Minute), now.Add(20*time.Minute), "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
 
 	seedFailedResumable(t, s, "run-far")
 	far := now.Add(4 * 24 * time.Hour).Truncate(time.Millisecond)
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-far", far, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-far", far, far, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
 
@@ -183,7 +183,7 @@ func TestRunRetryProbe_FloorAndBudgetBoundTheScan(t *testing.T) {
 	if pulled, err := s.PullRunRetry(ctx, "run-far", far, now); err != nil || !pulled {
 		t.Fatalf("PullRunRetry = (%v, %v)", pulled, err)
 	}
-	if rearmed, err := s.RearmProbedRunRetry(ctx, "run-far", far); err != nil || !rearmed {
+	if rearmed, err := s.RearmProbedRunRetry(ctx, "run-far", far, time.Time{}); err != nil || !rearmed {
 		t.Fatalf("RearmProbedRunRetry = (%v, %v)", rearmed, err)
 	}
 	probes, err = s.ListRunsForRetryProbe(store.WithoutTenantFilter(ctx), now, probeFloor, 24, 10)
@@ -212,7 +212,7 @@ func TestRunRetryProbe_FloorAndBudgetBoundTheScan(t *testing.T) {
 	// Budget 0 is the kill switch, and it must not fall through to "every
 	// never-probed row" (which the absent-field branch of the filter would).
 	seedFailedResumable(t, s, "run-virgin")
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-virgin", far, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-virgin", far, far, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
 	probes, err = s.ListRunsForRetryProbe(store.WithoutTenantFilter(ctx), later, probeFloor, 0, 10)
@@ -232,7 +232,7 @@ func TestRunRetryProbe_ScanIsScopedToUsageWindowWaits(t *testing.T) {
 	ctx := retryCtx()
 	seedFailedResumable(t, s, "run-other")
 	now := time.Now().UTC()
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-other", now.Add(48*time.Hour), "some_other_reason", "SOMETHING_ELSE", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-other", now.Add(48*time.Hour), now.Add(48*time.Hour), "some_other_reason", "SOMETHING_ELSE", 5); err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
 	probes, err := s.ListRunsForRetryProbe(store.WithoutTenantFilter(ctx), now, probeFloor, 24, 10)
@@ -256,11 +256,11 @@ func TestRunRetryProbe_RearmKeepsTheAttemptsAndConsumesTheMarker(t *testing.T) {
 	announced := now.Add(4 * 24 * time.Hour).Truncate(time.Millisecond)
 	// Spend the whole budget: two armings of a two-attempt policy.
 	for i := 0; i < 2; i++ {
-		if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-rearm", announced, "usage_window", "USAGE_LIMIT_BLOCKED", 2); err != nil || !scheduled {
+		if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-rearm", announced, announced, "usage_window", "USAGE_LIMIT_BLOCKED", 2); err != nil || !scheduled {
 			t.Fatalf("ScheduleRunRetry %d = (%v, %v)", i, scheduled, err)
 		}
 	}
-	if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-rearm", announced, "usage_window", "USAGE_LIMIT_BLOCKED", 2); err != nil || scheduled {
+	if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-rearm", announced, announced, "usage_window", "USAGE_LIMIT_BLOCKED", 2); err != nil || scheduled {
 		t.Fatalf("a third paid arming = (%v, %v), want refused — the fixture needs the budget spent", scheduled, err)
 	}
 	if pulled, err := s.PullRunRetry(ctx, "run-rearm", announced, now); err != nil || !pulled {
@@ -268,7 +268,7 @@ func TestRunRetryProbe_RearmKeepsTheAttemptsAndConsumesTheMarker(t *testing.T) {
 	}
 
 	fresh := announced.Add(2 * time.Hour).Truncate(time.Millisecond)
-	rearmed, err := s.RearmProbedRunRetry(ctx, "run-rearm", fresh)
+	rearmed, err := s.RearmProbedRunRetry(ctx, "run-rearm", fresh, time.Time{})
 	if err != nil || !rearmed {
 		t.Fatalf("RearmProbedRunRetry = (%v, %v), want (true, nil) with the budget spent", rearmed, err)
 	}
@@ -292,30 +292,34 @@ func TestRunRetryProbe_RearmKeepsTheAttemptsAndConsumesTheMarker(t *testing.T) {
 	if got.ContinuationState != store.ContinuationRetryArmed {
 		t.Errorf("continuation_state = %q, want retry_armed", got.ContinuationState)
 	}
-	if rearmed, err := s.RearmProbedRunRetry(ctx, "run-rearm", fresh); err != nil || rearmed {
+	if rearmed, err := s.RearmProbedRunRetry(ctx, "run-rearm", fresh, time.Time{}); err != nil || rearmed {
 		t.Fatalf("a second free re-arm = (%v, %v), want (false, nil): the marker is consumed", rearmed, err)
 	}
 }
 
-// A PAID arming resets the probe ledger: the budget is per wait, and a paid
-// arming normally opens a new one. (A probe's own re-arming must NOT — see
-// above.) It resets it even when the instant armed is the SAME announced one —
-// as here — which is why the bound on one wait is max_attempts × budget:
-// store.ProbeMarkerTTL states that cost.
-func TestRunRetryProbe_APaidArmingResetsTheLedger(t *testing.T) {
+// The probe ledger belongs to the WALL, not to the arming: a charged park that
+// re-states the instant the row is already waiting for keeps the budget and
+// the pace, and only an arming that MOVES the wall starts them over. Clearing
+// them on every charged park priced one provider window at
+// max_attempts × budget (120 pods and 5 metered launches at the shipped
+// defaults, against 24 and 0 by design).
+//
+// The marker is a different fact and goes either way: every arming consumes
+// it, which is what makes the park that follows the next probe charged.
+func TestRunRetryProbe_TheProbeLedgerBelongsToTheWall(t *testing.T) {
 	s := retryTestStore(t)
 	ctx := retryCtx()
 	seedFailedResumable(t, s, "run-ledger")
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	announced := now.Add(4 * 24 * time.Hour).Truncate(time.Millisecond)
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-ledger", announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-ledger", announced, announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
 	if pulled, err := s.PullRunRetry(ctx, "run-ledger", announced, now); err != nil || !pulled {
 		t.Fatalf("PullRunRetry = (%v, %v)", pulled, err)
 	}
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-ledger", announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-ledger", announced, announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("paid arming after a probe: %v", err)
 	}
 	got, err := s.LoadRun(ctx, "run-ledger")
@@ -326,8 +330,36 @@ func TestRunRetryProbe_APaidArmingResetsTheLedger(t *testing.T) {
 	if rs.Attempts != 2 {
 		t.Errorf("attempts = %d, want 2", rs.Attempts)
 	}
-	if rs.ProbeFrom != nil || rs.ProbeCount != 0 || rs.LastProbeAt != nil {
-		t.Errorf("probe ledger = %+v, want cleared by a paid arming: the budget is per armed wait", rs)
+	if rs.ProbeFrom != nil {
+		t.Errorf("probe_from = %s, want the marker consumed by the arming", rs.ProbeFrom)
+	}
+	if rs.ProbeCount != 1 || rs.LastProbeAt == nil {
+		t.Errorf("probe ledger = probe_count %d / last_probe_at set %v, want the wall's own ledger kept (1, true): a charged park that re-stated the same instant armed the wait the row was already on",
+			rs.ProbeCount, rs.LastProbeAt != nil)
+	}
+	if rs.Wall == nil || !rs.Wall.Equal(announced) {
+		t.Errorf("wall = %v, want the announced %s", rs.Wall, announced)
+	}
+
+	// And the complement: a wall the provider MOVED is a new wait, probed
+	// afresh — otherwise a run would sit out a window nothing may probe.
+	moved := now.Add(7 * 24 * time.Hour).Truncate(time.Millisecond)
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-ledger", moved, moved, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+		t.Fatalf("arming on a moved wall: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "run-ledger"); err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if rs = got.RetryState; rs.ProbeCount != 0 {
+		t.Errorf("a moved wall inherited the previous one's budget: probe_count %d", rs.ProbeCount)
+	}
+	// The PACE is the row's and the moved wall does not take it: an arming
+	// that cleared it made the row probe-eligible on the sweeper's next pass
+	// (the scan reads an absent stamp as "never probed") instead of one floor
+	// later, so a refusal re-dating its window on every reading was pulled
+	// once per sweep tick, charged nothing and bounded by nothing.
+	if rs.LastProbeAt == nil {
+		t.Error("the arming that moved the wall dropped last_probe_at: the row is eligible again on the next sweeper pass, not one floor later")
 	}
 }
 
@@ -343,7 +375,7 @@ func TestRunRetryProbe_TheMarkerSurvivesTheResumesClear(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	announced := now.Add(4 * 24 * time.Hour).Truncate(time.Millisecond)
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-clear", announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-clear", announced, announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
 	if pulled, err := s.PullRunRetry(ctx, "run-clear", announced, now); err != nil || !pulled {
@@ -378,13 +410,13 @@ func TestRunRetryProbe_AbandonDropsTheMarker(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	announced := now.Add(4 * 24 * time.Hour).Truncate(time.Millisecond)
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-abandon-probe", announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-abandon-probe", announced, announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
 	if pulled, err := s.PullRunRetry(ctx, "run-abandon-probe", announced, now); err != nil || !pulled {
 		t.Fatalf("PullRunRetry = (%v, %v)", pulled, err)
 	}
-	if err := s.AbandonRunRetry(ctx, "run-abandon-probe", "auto-retry abandoned: the bot is gone"); err != nil {
+	if _, err := s.AbandonRunRetry(ctx, "run-abandon-probe", "auto-retry abandoned: the bot is gone", time.Time{}); err != nil {
 		t.Fatalf("AbandonRunRetry: %v", err)
 	}
 	got, err := s.LoadRun(ctx, "run-abandon-probe")
@@ -394,7 +426,7 @@ func TestRunRetryProbe_AbandonDropsTheMarker(t *testing.T) {
 	if got.RetryState.ProbeFrom != nil {
 		t.Fatalf("probe_from = %v after an abandon, want cleared", got.RetryState.ProbeFrom)
 	}
-	if rearmed, err := s.RearmProbedRunRetry(ctx, "run-abandon-probe", announced); err != nil || rearmed {
+	if rearmed, err := s.RearmProbedRunRetry(ctx, "run-abandon-probe", announced, time.Time{}); err != nil || rearmed {
 		t.Fatalf("RearmProbedRunRetry on an abandoned row = (%v, %v), want (false, nil)", rearmed, err)
 	}
 }
@@ -408,7 +440,7 @@ func TestRunRetryProbe_RearmRefusesARunThatIsNoLongerResumable(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	announced := now.Add(4 * 24 * time.Hour).Truncate(time.Millisecond)
-	if _, _, err := s.ScheduleRunRetry(ctx, "run-resumed-probe", announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
+	if _, _, err := s.ScheduleRunRetry(ctx, "run-resumed-probe", announced, announced, "usage_window", "USAGE_LIMIT_BLOCKED", 5); err != nil {
 		t.Fatalf("ScheduleRunRetry: %v", err)
 	}
 	if pulled, err := s.PullRunRetry(ctx, "run-resumed-probe", announced, now); err != nil || !pulled {
@@ -417,7 +449,7 @@ func TestRunRetryProbe_RearmRefusesARunThatIsNoLongerResumable(t *testing.T) {
 	if err := s.UpdateRunStatus(ctx, "run-resumed-probe", store.RunStatusRunning, ""); err != nil {
 		t.Fatalf("UpdateRunStatus: %v", err)
 	}
-	if rearmed, err := s.RearmProbedRunRetry(ctx, "run-resumed-probe", announced); err != nil || rearmed {
+	if rearmed, err := s.RearmProbedRunRetry(ctx, "run-resumed-probe", announced, time.Time{}); err != nil || rearmed {
 		t.Fatalf("RearmProbedRunRetry on a running run = (%v, %v), want (false, nil)", rearmed, err)
 	}
 	if pulled, err := s.PullRunRetry(ctx, "run-resumed-probe", now, now.Add(time.Minute)); err != nil || pulled {

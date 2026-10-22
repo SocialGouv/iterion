@@ -46,11 +46,29 @@ only passive: a bounded hourly probe pulls a parked run forward to let the
 usage preflight answer early, free of its attempt budget and of the monthly
 run quota while that resume follows its pull inside the marker's TTL (one
 hour). Past that hour the pull is nobody's probe any more: the resume is
-metered like any launch and the park it causes charges an attempt, so one wait
-can cost up to `max_attempts` of each
+metered like any launch and the park it causes charges an attempt — up to
+`max_attempts` of each per run — while the probes stay bounded by the budget,
+because the budget belongs to the **wall** and not to the arming
 ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)
 — `ITERION_RETRY_PROBE_FLOOR`, `ITERION_RETRY_PROBE_BUDGET`, `0` to disarm).
 The direct path remains `iterion remote runs resume --usage-blocked`.
+
+That wall is the unit of a usage park for the four readers that key on it: the
+run owner's notification, the operator's incident, the pause notice on the
+pull request a parked run gates and the probe budget. One provider window
+produces one notification and one incident however many times the run re-parks
+on it ([notifications.md](notifications.md)); the pull request hears the park
+that OPENED the wall and every wall the provider MOVES, and a park on a wall
+no probe ever pulled (one closer than the probe floor, or a deployment with
+`ITERION_RETRY_PROBE_BUDGET=0`) can still comment once per charged park — at
+most `max_attempts` of them, the behaviour that shipped before the wall
+existed.
+
+One observer of a usage park does NOT key on the wall: the run-completion
+callback a launch may ask for (`callback_url`, `pkg/notify`) POSTs
+`failed_resumable` once per park, because its predicate is the terminal-status
+set and a parked run is in it. An API consumer polling or listening there sees
+one delivery per park and per probe re-park.
 
 ## Configuration
 

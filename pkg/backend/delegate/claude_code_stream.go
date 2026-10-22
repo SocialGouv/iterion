@@ -1657,6 +1657,15 @@ var monthNames = map[string]time.Month{
 // instant it would then wait on.
 const resetDateTrustWindow = 45 * 24 * time.Hour
 
+// renderedInstantTolerance bounds how far an absolute instant may sit from
+// now+duration and still be that duration's rendering. It only has to cover
+// the distance between the producer's clock and the reading's — message
+// latency plus second-granularity truncation — while the misclassification it
+// can cause (a genuinely dated instant within the tolerance of now+duration,
+// which is a refusal at the very start of the window it names) costs nothing:
+// the row keeps the wall it already holds, and that wall is the same instant.
+const renderedInstantTolerance = time.Minute
+
 // ParseResetHint extracts the reset instant from a provider usage-window
 // notice, reporting whether anything parsed. Exported so a host that only
 // has the flattened error text (rather than the typed *ErrRateLimited) can
@@ -1666,10 +1675,47 @@ func ParseResetHint(text string, now time.Time) (time.Time, bool) {
 	return at, !at.IsZero()
 }
 
+// ParseResetHintDated answers ParseResetHint's question and one more: did the
+// text DATE its instant — anchor it outside the moment of reading — or is the
+// instant something this text re-computes every time it is read? Exported for
+// the same reason as ParseResetHint: the reader that keys a wall, a
+// notification episode and a probe budget on the instant needs the
+// provenance, not just the value, and the parser is the only witness of which
+// pattern matched.
+//
+// dated=false covers exactly two shapes, both now-relative by construction
+// rather than by enumeration:
+//   - the window-duration shape alone ("reached for 5 hour"): the returned
+//     instant is now+N, a function of the reading;
+//   - an absolute instant rendered INTO a text that also states the duration,
+//     within renderedInstantTolerance of now+that duration: the producer
+//     resolved the duration against its own clock and printed the result (the
+//     zai facade's "Usage limit reached for 5 hour. Your limit will reset at
+//     2026-05-13 07:38:08"). Two refusals of one window carry two different
+//     instants that way, and neither is news about where the wall is.
+//
+// Everything else stays dated: a month-name or bare-clock shape is anchored
+// on a calendar field, and an absolute instant that stands WITHOUT a duration
+// beside it, or far from now+duration, is the provider's own word — a
+// mid-window refusal of a real dated wall reads T - now as what REMAINS of
+// the window, strictly less than the duration it also states.
+func ParseResetHintDated(text string, now time.Time) (at time.Time, dated bool, ok bool) {
+	at, dated = parseResetHintDated(strings.ToLower(text), now)
+	return at, dated, !at.IsZero()
+}
+
 // parseResetHint extracts the next reset instant from a usage-window
 // notice, interpreting bare clock times as the NEXT occurrence (UTC —
 // the forfait notices print UTC). Zero when nothing parses.
 func parseResetHint(lower string, now time.Time) time.Time {
+	at, _ := parseResetHintDated(lower, now)
+	return at
+}
+
+// parseResetHintDated is parseResetHint with the provenance of the match:
+// dated=false when the returned instant is a function of the moment of
+// reading. Zero with ok irrelevant when nothing parses.
+func parseResetHintDated(lower string, now time.Time) (time.Time, bool) {
 	nowUTC := now.UTC()
 	// An absolute instant is unambiguous: take it verbatim, with no
 	// plausibility window. A value already in the past is a legitimate
@@ -1685,18 +1731,19 @@ func parseResetHint(lower string, now time.Time) time.Time {
 			second, _ = strconv.Atoi(m[6])
 		}
 		if month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59 && second <= 59 {
-			return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC)
+			at := time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC)
+			return at, !renderedByDuration(at, lower, nowUTC)
 		}
-		return time.Time{}
+		return time.Time{}, true
 	}
 	if m := resetDateRe.FindStringSubmatch(lower); m != nil {
 		if month, ok := monthNames[m[1][:3]]; ok {
 			day, _ := strconv.Atoi(m[2])
 			hour, minute, ok := clockTo24h(m[3], m[4], m[5])
 			if ok && day >= 1 && day <= 31 {
-				return inferResetYear(month, day, hour, minute, nowUTC)
+				return inferResetYear(month, day, hour, minute, nowUTC), true
 			}
-			return time.Time{}
+			return time.Time{}, true
 		}
 		// A leading word that is not a month means this is not the dated
 		// shape; fall through to the bare-clock pattern below.
@@ -1704,21 +1751,42 @@ func parseResetHint(lower string, now time.Time) time.Time {
 	if m := resetClockRe.FindStringSubmatch(lower); m != nil {
 		hour, minute, ok := clockTo24h(m[1], m[2], m[3])
 		if !ok {
-			return time.Time{}
+			return time.Time{}, true
 		}
 		at := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), hour, minute, 0, 0, time.UTC)
 		if !at.After(nowUTC) {
 			at = at.Add(24 * time.Hour)
 		}
-		return at
+		return at, true
 	}
 	if m := resetWindowRe.FindStringSubmatch(lower); m != nil {
 		hours, _ := strconv.Atoi(m[1])
 		if hours > 0 {
-			return nowUTC.Add(time.Duration(hours) * time.Hour)
+			return nowUTC.Add(time.Duration(hours) * time.Hour), false
 		}
 	}
-	return time.Time{}
+	return time.Time{}, true
+}
+
+// renderedByDuration reports that an absolute instant parsed out of this text
+// is the window duration's own rendering — the text states BOTH the duration
+// and an instant that sits within renderedInstantTolerance of
+// now+duration, which only the producer's own resolution of that duration
+// against its clock produces.
+func renderedByDuration(abs time.Time, lower string, now time.Time) bool {
+	m := resetWindowRe.FindStringSubmatch(lower)
+	if m == nil {
+		return false
+	}
+	hours, err := strconv.Atoi(m[1])
+	if err != nil || hours <= 0 {
+		return false
+	}
+	delta := abs.Sub(now.Add(time.Duration(hours) * time.Hour))
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= renderedInstantTolerance
 }
 
 // clockTo24h converts a matched clock triple (hour, optional minute,

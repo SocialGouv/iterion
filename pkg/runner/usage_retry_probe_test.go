@@ -31,15 +31,36 @@ const (
 	spentTokens  = true
 )
 
+// probeResult reads one labelled series of the probe counter.
+func probeResult(t *testing.T, reg *metrics.Registry, result string) float64 {
+	t.Helper()
+	c, err := reg.RunsRetryProbes.GetMetricWithLabelValues(result)
+	if err != nil {
+		t.Fatalf("probe counter for result %q: %v", result, err)
+	}
+	return counterValue(t, c)
+}
+
 func probedRunDoc(id string, announced time.Time, attempts int) *store.Run {
 	probedAt := time.Now().UTC()
 	return &store.Run{
-		ID:          id,
-		Status:      store.RunStatusFailedResumable,
-		RetryPolicy: &store.RunRetryPolicy{UsageWindow: "resume", MaxAttempts: 5, MaxWait: "192h", Jitter: "0s"},
+		ID:     id,
+		Status: store.RunStatusFailedResumable,
+		// retrycoord keys the shared circuit on the workflow hash; a fixture
+		// without one never reaches the circuit path, and the witnesses that
+		// count what a park feeds it count nothing.
+		WorkflowHash: "wf-hash-" + id,
+		RetryPolicy:  &store.RunRetryPolicy{UsageWindow: "resume", MaxAttempts: 5, MaxWait: "192h", Jitter: "0s"},
 		RetryState: &store.RunRetryState{
 			RetryAfter: &probedAt,
 			ProbeFrom:  &announced,
+			// The wall the park that opened this wait wrote: the probe's
+			// pull moves retry_after and the marker, never the wall, so a
+			// pulled row carries both. A fixture without it models the
+			// LEGACY shape (armed before the field existed), where every
+			// reader keyed on the wall behaves differently — that shape has
+			// its own witnesses.
+			Wall:       &announced,
 			ProbeCount: 3,
 			// The pull's own stamp, written in the same update as the
 			// marker: a fixture without it models a row no pull produces,
@@ -56,12 +77,27 @@ func probedRunDoc(id string, announced time.Time, attempts int) *store.Run {
 func TestArmUsageWindowRetry_AReFailureAfterAProbeSpendsNoAttempt(t *testing.T) {
 	wall := time.Now().UTC().Add(4 * 24 * time.Hour)
 	st := &cancelAwareStore{run: probedRunDoc("run-2247", wall, 2)}
-	r := &Runner{cfg: Config{Store: st}}
+	reg := metrics.New()
+	r := &Runner{cfg: Config{Store: st, Metrics: reg}}
 
 	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 
 	if got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
+	}
+	// This park IS the probe's answer, and the only disposition a pod can
+	// report: the preflight refused again, so the pull found the window
+	// exactly where the provider said it was. An operator weighing the
+	// pass's pods against its hits reads the three results against each
+	// other, so a probe that observed something and counted nothing makes
+	// every wasted pod look useful.
+	if v := probeResult(t, reg, metrics.RetryProbeStillBlocked); v != 1 {
+		t.Errorf("iterion_runs_retry_probes_total{result=%s} = %v, want 1", metrics.RetryProbeStillBlocked, v)
+	}
+	for _, other := range []string{metrics.RetryProbePulled, metrics.RetryProbeStoodDown} {
+		if v := probeResult(t, reg, other); v != 0 {
+			t.Errorf("iterion_runs_retry_probes_total{result=%s} = %v, want 0 — the runner observes neither the pull nor the stand-down", other, v)
+		}
 	}
 	if !st.probeRearmed {
 		t.Fatal("the probed re-failure did not take the free re-arming — hourly probes against a four-day reset spend the whole attempt budget in five hours")
@@ -538,11 +574,12 @@ func TestArmUsageWindowRetry_ASpentProbeBudgetCostsTheSkippedCredentialTheRestOf
 
 // The marker's payment answer expires with the PULL, so a park whose pull is
 // older than store.ProbeMarkerTTL is charged an attempt — the mild error that
-// constant names. What it costs besides the attempt, and what makes the
-// per-wait bound max_attempts × budget: the paid arming clears the probe
-// ledger and its pace, while the instant it arms is the SAME announced one
-// restoreAnnouncedInstant just put back, so the wait is probed afresh.
-func TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndReopensTheWaitsProbeLedger(t *testing.T) {
+// constant names. And that is ALL it costs: the instant it arms is the SAME
+// announced one restoreAnnouncedInstant just put back, so it brings no news
+// about the wall, keeps that wall's probe ledger and its pace, and buys the
+// window no second budget. The charged parks of one wall are bounded by
+// max_attempts; its probes stay bounded by the budget.
+func TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndKeepsTheWallsProbeLedger(t *testing.T) {
 	ctx := context.Background()
 	quiet := iterlog.New(iterlog.LevelError, io.Discard)
 	w := newProbeWorld()
@@ -589,25 +626,27 @@ func TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndReopensTheWaitsProbeLed
 		t.Fatalf("armed for %v, want the announced instant %s put back: the WALL does not expire with the pull",
 			row.RetryAfter, want.Format(time.RFC3339))
 	}
-	// The cost store.ProbeMarkerTTL and docs/scheduling.md state: the same
-	// wait, with a fresh budget and no pace holding it.
-	if row.ProbeCount != 0 || row.LastProbeAt != nil {
-		t.Fatalf("after the charged park: probe_count=%d last_probe_at=%v, want 0 and none — the paid arming clears the ledger of the wait it re-arms",
-			row.ProbeCount, row.LastProbeAt)
+	// The ledger belongs to the WALL, and this park re-stated the wall the row
+	// was already on: the budget and the pace survive it.
+	if row.ProbeCount != probePropertyProbeBudget || row.LastProbeAt == nil {
+		t.Fatalf("after the charged park: probe_count=%d last_probe_at=%v, want the wall's own ledger kept at %d with its pace — a charged park that re-states the wall must buy the window no second budget",
+			row.ProbeCount, row.LastProbeAt, probePropertyProbeBudget)
 	}
-	if got := w.st.ProbeRows(time.Now().UTC().Add(time.Minute), probePropertyFloor, probePropertyProbeBudget, 2); len(got) != 1 {
-		t.Fatalf("the probe scan listed %d row(s) a minute after the charged park, want 1: a wait whose ledger stood at %d/%d is back to 0/%d, which is why one wait costs up to max_attempts × budget probes",
-			len(got), probePropertyProbeBudget, probePropertyProbeBudget, probePropertyProbeBudget)
+	// And so the ceiling on this wall is the budget, reached here: no pass
+	// lists it again, and the run sleeps to the instant the provider named.
+	if got := w.st.ProbeRows(time.Now().UTC().Add(time.Minute), probePropertyFloor, probePropertyProbeBudget, 2); len(got) != 0 {
+		t.Fatalf("the probe scan listed %d row(s) after the charged park, want 0: this wall has spent its %d probes, and a wait handed a fresh budget per charged park costs max_attempts × budget pods",
+			len(got), probePropertyProbeBudget)
 	}
 }
 
-// Another paid arming that re-arms the SAME wait: the store refuses the free
-// re-arm, and the fall-through restores the announced instant and clears the
-// ledger exactly like the stale-marker park above. What makes an arming paid
-// differs; what a restoring one does to the wait does not — the rule over
+// Another paid arming that re-arms the SAME wall: the store refuses the free
+// re-arm, and the fall-through restores the announced instant and keeps that
+// wall's ledger exactly like the stale-marker park above. What makes an arming
+// paid differs; what a restoring one does to the wall does not — the rule over
 // every shape is derived in
 // TestArmUsageWindowRetry_ThePaidArmingsThatRestoreTheAnnouncedInstant.
-func TestArmUsageWindowRetry_ARefusedFreeReArmAlsoReopensTheWaitsProbeLedger(t *testing.T) {
+func TestArmUsageWindowRetry_ARefusedFreeReArmAlsoKeepsTheWallsProbeLedger(t *testing.T) {
 	ctx := context.Background()
 	quiet := iterlog.New(iterlog.LevelError, io.Discard)
 	w := newProbeWorld()
@@ -642,8 +681,8 @@ func TestArmUsageWindowRetry_ARefusedFreeReArmAlsoReopensTheWaitsProbeLedger(t *
 		t.Fatalf("armed for %v, want the announced instant %s rather than the one-hour guess the blind refusal named",
 			row.RetryAfter, want.Format(time.RFC3339))
 	}
-	if row.ProbeCount != 0 || row.LastProbeAt != nil {
-		t.Fatalf("after the fall-through: probe_count=%d last_probe_at=%v, want 0 and none — the same wait, probed afresh",
+	if row.ProbeCount != 1 || row.LastProbeAt == nil {
+		t.Fatalf("after the fall-through: probe_count=%d last_probe_at=%v, want the wall's ledger kept at 1 with its pace — the same wall, said again",
 			row.ProbeCount, row.LastProbeAt)
 	}
 }
@@ -988,8 +1027,17 @@ func TestArmUsageWindowRetry_ABlindReFailureKeepsTheWallWhoeverPays(t *testing.T
 	if st.circuitFailures != 1 {
 		t.Errorf("shared circuit records = %d, want 1", st.circuitFailures)
 	}
-	if run.RetryState.ProbeCount != 0 {
-		t.Errorf("probe_count = %d after a paid arming, want 0: the pull request's pause notice stands down while it is set", run.RetryState.ProbeCount)
+	// The ledger belongs to the WALL, and this park re-stated the wall the row
+	// was already on: it keeps the budget and the pace, so the pull request
+	// hears nothing new and the next probe of this window is still this
+	// window's.
+	if run.RetryState.ProbeCount != 3 {
+		t.Errorf("probe_count = %d after a charged park that restored the same wall, want the wall's own ledger kept at 3: a budget that restarts here prices one window at max_attempts × budget",
+			run.RetryState.ProbeCount)
+	}
+	if st.armedWall != (time.Time{}) {
+		t.Errorf("the arming carried wall %s, want the zero time: a park whose refusal named no instant of its own brings no news about where the wall is",
+			st.armedWall.Format(time.RFC3339))
 	}
 }
 
@@ -1133,9 +1181,12 @@ func TestArmUsageWindowRetry_AMarkerFromAProbeThatNeverParkedPaysItsOwnWay(t *te
 // one-hour guess, and the announced instant beats it however old the pull is.
 // Taking the guess instead is the disease, not the cure — a row armed inside
 // the probe floor is not probe-eligible, so the next park is another guess,
-// and five of them retire the run days before its window reopens. The row
-// below is armed on the wall AND probe-eligible at once, because the paid
-// arming reset the ledger the pace reads.
+// and five of them retire the run days before its window reopens.
+//
+// The row below is armed on the wall with that wall's ledger intact, which is
+// the bound the budget states: this one has spent its probes, so no pass lists
+// it again and the run sleeps to the announced instant. What the paid arming
+// buys is the WALL, never a second budget on it.
 func TestArmUsageWindowRetry_AStaleProbePullKeepsTheAnnouncedWallOverAGuess(t *testing.T) {
 	ctx := context.Background()
 	quiet := iterlog.New(iterlog.LevelError, io.Discard)
@@ -1163,14 +1214,19 @@ func TestArmUsageWindowRetry_AStaleProbePullKeepsTheAnnouncedWallOverAGuess(t *t
 	if row.Attempts != 2 {
 		t.Errorf("attempts = %d, want 2: the park is nobody's probe and pays for itself", row.Attempts)
 	}
-	if row.ProbeCount != 0 || row.ProbeFrom != nil || row.LastProbeAt != nil {
-		t.Errorf("the paid arming left the probe ledger open: probe_count=%d probe_from=%v last_probe_at=%v", row.ProbeCount, row.ProbeFrom, row.LastProbeAt)
+	if row.ProbeFrom != nil {
+		t.Errorf("the arming left the probe MARKER on the row (%v): the next park would take the free treatment on a wall nobody is probing", row.ProbeFrom)
 	}
-	// And so the observation costs one sweep tick, not the week: the ledger
-	// the paid arming reset is exactly what the scan's pace and budget read.
-	if rows := w.st.ProbeRows(now.Add(time.Minute), probePropertyFloor, probePropertyProbeBudget, 2); len(rows) != 1 {
-		t.Fatalf("the probe scan listed %d row(s), want 1: a row armed on its announced wall must be pullable at the next tick, or keeping the wall would cost the whole week",
-			len(rows))
+	if row.ProbeCount != 3 || row.LastProbeAt == nil {
+		t.Errorf("the paid arming reopened the wall's ledger: probe_count=%d last_probe_at=%v, want it kept at 3 with its pace",
+			row.ProbeCount, row.LastProbeAt)
+	}
+	// And so the bound is the budget, stated: this wall has spent its probes,
+	// so no pass lists the row again and the run waits out the instant the
+	// provider named.
+	if rows := w.st.ProbeRows(now.Add(time.Minute), probePropertyFloor, probePropertyProbeBudget, 2); len(rows) != 0 {
+		t.Fatalf("the probe scan listed %d row(s), want 0: a wall whose %d probes are spent must stop being probed, or a charged park would hand it a fresh budget every attempt",
+			len(rows), probePropertyProbeBudget)
 	}
 }
 
@@ -1328,12 +1384,15 @@ func TestArmUsageWindowRetry_ThePaidArmingsThatRestoreTheAnnouncedInstant(t *tes
 			}
 			// The rule, on every shape that reaches it.
 			if row.Attempts != before.Attempts+1 {
-				t.Errorf("attempts %d -> %d, want exactly one more: ScheduleRunRetry is the only operation in the module that clears the probe ledger and it cannot match without charging, which is what makes max_attempts × budget a ceiling rather than an observation",
+				t.Errorf("attempts %d -> %d, want exactly one more: every one of these shapes is a CHARGED park, and max_attempts is what bounds them",
 					before.Attempts, row.Attempts)
 			}
-			if row.ProbeCount != 0 || row.LastProbeAt != nil || row.ProbeFrom != nil {
-				t.Errorf("after the restoring park: probe_count=%d last_probe_at=%v probe_from=%v, want the ledger closed — the same wait, probed afresh and audible on the pull request again",
-					row.ProbeCount, row.LastProbeAt, row.ProbeFrom)
+			if row.ProbeFrom != nil {
+				t.Errorf("after the restoring park the marker survives (%v): the next park would take the free treatment on a wall nobody is probing", row.ProbeFrom)
+			}
+			if row.ProbeCount != before.ProbeCount || (before.LastProbeAt != nil) != (row.LastProbeAt != nil) {
+				t.Errorf("after the restoring park: probe_count %d -> %d, pace set %v -> %v, want the wall's ledger kept — a park that re-states the instant the pull request already heard buys that window no second budget and says nothing new on it",
+					before.ProbeCount, row.ProbeCount, before.LastProbeAt != nil, row.LastProbeAt != nil)
 			}
 		})
 	}
