@@ -344,6 +344,9 @@ type Server struct {
 	// gateSweepTick overrides the merge-gate sweep cadence (test seam — an
 	// election test cannot wait a minute per pass). Zero → the configured one.
 	gateSweepTick time.Duration
+	// assistantWatchLeasePace overrides the pace of the assistant run-watch
+	// sweep's lease (test seam, same reason). Zero → the sweep interval.
+	assistantWatchLeasePace time.Duration
 	// gateSweep is the operator-configured sweep cadence
 	// (gateSweepSettingsFromEnv), resolved once in New.
 	gateSweep gateSweepSettings

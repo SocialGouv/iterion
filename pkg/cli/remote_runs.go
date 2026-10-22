@@ -388,7 +388,10 @@ func RemoteRunsFollow(ctx context.Context, c *RemoteClient, p *Printer, id strin
 }
 
 type remoteWatchHealthCoordinator struct {
-	Present              bool       `json:"present"`
+	Present bool `json:"present"`
+	// Elected: the answering replica holds the sweep's lease; the sweep runs
+	// on one replica at a time, and only the holder can be stale.
+	Elected              bool       `json:"elected"`
 	LastSweepStartedAt   *time.Time `json:"last_sweep_started_at,omitempty"`
 	LastSweepCompletedAt *time.Time `json:"last_sweep_completed_at,omitempty"`
 	LastSweepDurationMS  int64      `json:"last_sweep_duration_ms,omitempty"`
@@ -500,7 +503,7 @@ func printRemoteWatchHealth(p *Printer, health remoteWatchHealth, heartbeat bool
 	}
 	p.KV("Run", health.RunID)
 	p.KV("Target", health.TargetStatus)
-	p.KV("Coordinator", fmt.Sprintf("present=%t stale=%t", health.Coordinator.Present, health.Coordinator.Stale))
+	p.KV("Coordinator", fmt.Sprintf("present=%t elected=%t stale=%t", health.Coordinator.Present, health.Coordinator.Elected, health.Coordinator.Stale))
 	if health.Coordinator.LastSweepCompletedAt != nil {
 		p.KV("Last sweep", FormatTime(*health.Coordinator.LastSweepCompletedAt))
 	}

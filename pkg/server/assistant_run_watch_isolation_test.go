@@ -78,6 +78,18 @@ func (s *tenantWatchRunStore) ListChildRuns(ctx context.Context, parent string) 
 	return s.filter(ctx, ids), err
 }
 
+// ListDeliverableWatchers is the sweep's candidate enumeration (#2636): like
+// ListRuns before it, it is the one listing a global sweep may run
+// privileged, and a tenant-scoped (event) call is filtered like the others.
+func (s *tenantWatchRunStore) ListDeliverableWatchers(ctx context.Context) ([]string, error) {
+	ids, err := s.RunStore.ListDeliverableWatchers(ctx)
+	if store.IsWithoutTenantFilter(ctx) {
+		s.privilegedLists++
+		return ids, err
+	}
+	return s.filter(ctx, ids), err
+}
+
 func (s *tenantWatchRunStore) AppendEvent(ctx context.Context, id string, ev store.Event) (*store.Event, error) {
 	if _, err := s.LoadRun(ctx, id); err != nil {
 		return nil, err
@@ -175,7 +187,12 @@ func TestAssistantWatchCloudTenantIsolation(t *testing.T) {
 					t.Fatalf("deliveries: %v", deliveries)
 				}
 			}
-			if strict.privilegedLists != 1 || strict.privilegedLoads != 5 {
+			// One privileged listing (the deliverable watchers, #2636) and one
+			// privileged load per candidate it names: the two tenants'
+			// assistants and the malformed one — never the targets, which
+			// watch nothing and are reached tenant-scoped through the
+			// reverse query.
+			if strict.privilegedLists != 1 || strict.privilegedLoads != 3 {
 				t.Fatalf("discovery calls: %d lists, %d loads", strict.privilegedLists, strict.privilegedLoads)
 			}
 		})

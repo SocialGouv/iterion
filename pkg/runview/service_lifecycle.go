@@ -182,6 +182,18 @@ func (s *Service) reconcileOrphans(parent context.Context) {
 	// reap entirely: a genuinely dead runner is recovered by the NATS
 	// lease expiring + JetStream redelivery, not by the server.
 	canReap := s.store.Capabilities().CrossProcessLock
+	if !canReap {
+		// Nothing below acts without liveness authority — no reap, and no
+		// finalize recovery either (the runner pod owns the worktree). Listing
+		// and loading every run to then skip each one was the cloud server's
+		// single largest Mongo load: ten replicas, every minute, the whole
+		// collection (#2636). Said once per process, so an operator looking
+		// for the reaper finds why it is not here.
+		s.reconcileNoAuthorityOnce.Do(func() {
+			s.logger.Info("runview: reconcile: the store has no cross-process lock, so this process cannot tell a live run from an orphan — the periodic orphan scan is skipped (a dead runner's run is recovered by the queue sweeper, which probes the NATS lease, and by JetStream redelivery, not by this scan)")
+		})
+		return
+	}
 	ids, err := s.store.ListRuns(ctx)
 	if err != nil {
 		s.logger.Warn("runview: reconcile: list runs: %v", err)

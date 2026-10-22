@@ -15,14 +15,19 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// countingRunStore counts the whole-store passes. ListRuns is the honest
-// proxy for the cost the reconciliation sweep imposes: it is the one call
-// whose price scales with the size of the store rather than with the number
-// of live veilles.
+// countingRunStore counts the store passes. ListRuns is the one call whose
+// price scales with the size of the store rather than with the number of
+// live veilles, so the sweep owes ZERO of them (#2636): the pass it makes
+// asks for the watchers (ListDeliverableWatchers), an indexed question whose
+// price follows the answer.
 type countingRunStore struct {
 	store.RunStore
-	listRuns atomic.Int64
-	loadRun  atomic.Int64
+	listRuns     atomic.Int64
+	listWatching atomic.Int64
+	loadRun      atomic.Int64
+	// loadProjected counts the reads that went through the listing
+	// projection (store.RunListingStore) instead of the whole document.
+	loadProjected atomic.Int64
 }
 
 func (c *countingRunStore) ListRuns(ctx context.Context) ([]string, error) {
@@ -30,9 +35,25 @@ func (c *countingRunStore) ListRuns(ctx context.Context) ([]string, error) {
 	return c.RunStore.ListRuns(ctx)
 }
 
+func (c *countingRunStore) ListDeliverableWatchers(ctx context.Context) ([]string, error) {
+	c.listWatching.Add(1)
+	return c.RunStore.ListDeliverableWatchers(ctx)
+}
+
 func (c *countingRunStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 	c.loadRun.Add(1)
 	return c.RunStore.LoadRun(ctx, id)
+}
+
+// LoadRunForListing makes the counting store a RunListingStore, so a path
+// that asks for the projection is seen asking for it.
+func (c *countingRunStore) LoadRunForListing(ctx context.Context, id string) (*store.Run, error) {
+	c.loadProjected.Add(1)
+	lister := store.AsRunListingStore(c.RunStore)
+	if lister == nil {
+		return c.RunStore.LoadRun(ctx, id)
+	}
+	return lister.LoadRunForListing(ctx, id)
 }
 
 func newCountingArmFixture(t *testing.T) (*armFixture, *countingRunStore) {
@@ -88,11 +109,15 @@ func TestReconcileArmedWatchesMakesOneStorePassWhateverTheTargetCount(t *testing
 	}
 
 	counting.listRuns.Store(0)
+	counting.listWatching.Store(0)
 	counting.loadRun.Store(0)
 	f.coord.reconcileArmedWatches(ctx)
 
-	if got := counting.listRuns.Load(); got != 1 {
-		t.Fatalf("reconcileArmedWatches made %d whole-store passes over %d targets, want exactly 1", got, targets)
+	if got := counting.listRuns.Load(); got != 0 {
+		t.Fatalf("reconcileArmedWatches listed the whole store %d times over %d targets, want 0 — the sweep asks for the watchers, never for every run (#2636)", got, targets)
+	}
+	if got := counting.listWatching.Load(); got != 1 {
+		t.Fatalf("reconcileArmedWatches asked for the watchers %d times over %d targets, want exactly 1", got, targets)
 	}
 
 	// And it still did the work: every terminal target the watched card
@@ -106,6 +131,43 @@ func TestReconcileArmedWatchesMakesOneStorePassWhateverTheTargetCount(t *testing
 		if len(watches) != 1 || watches[0].AssistantRunID != assistant.ID {
 			t.Fatalf("%s got %d watches (%+v), want 1 pointing at %s", id, len(watches), watches, assistant.ID)
 		}
+	}
+}
+
+// The watchers a sweep discovers are read through the listing projection,
+// never whole: a watcher is used for its identity, cards, status and bot,
+// and its recorded workflow source — hundreds of kilobytes for a real bot —
+// is the one field no consumer of the sweep reads. A fleet of many live
+// watchers then costs their headers per pass, not their sources (#2636, the
+// gate's own question on the ticket's "projected loads" criterion).
+func TestListIssueWatchersReadsTheProjection(t *testing.T) {
+	ctx := context.Background()
+	f, counting := newCountingArmFixture(t)
+	const issueID = "native:card"
+	const watchers = 3
+	for i := range watchers {
+		f.assistant(t, fmt.Sprintf("run-assistant-%d", i), issueID)
+	}
+
+	counting.loadRun.Store(0)
+	counting.loadProjected.Store(0)
+	got, err := f.coord.listIssueWatchers(ctx)
+	if err != nil {
+		t.Fatalf("listIssueWatchers: %v", err)
+	}
+	if len(got) != watchers {
+		t.Fatalf("listIssueWatchers returned %d watchers, want %d", len(got), watchers)
+	}
+	for _, w := range got {
+		if !w.SourceOmitted {
+			t.Fatalf("watcher %s came back with its recorded source — the sweep must read the projection", w.ID)
+		}
+	}
+	if n := counting.loadRun.Load(); n != 0 {
+		t.Fatalf("listIssueWatchers loaded %d whole documents, want 0 — the projection exists for this read", n)
+	}
+	if n := counting.loadProjected.Load(); n < watchers {
+		t.Fatalf("listIssueWatchers made %d projected reads for %d watchers, want at least one each", n, watchers)
 	}
 }
 

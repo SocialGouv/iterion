@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/clock"
+	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runwatch"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -42,6 +43,10 @@ const (
 	// stall. If progress resumed immediately, alert.Manager has time to append
 	// the matching stall_recovered event and the sweep remains quiet.
 	assistantWatchStallSettleDelay = assistantWatchSweepInterval
+	// assistantWatchLeaseTTLFactor sizes the sweep's lease in sweep intervals:
+	// the slack a live holder has to renew (TTL/3 between renewals) against
+	// the time a dead one keeps the sweep down (TTL+Retry at most).
+	assistantWatchLeaseTTLFactor = 3
 )
 
 type assistantWatchCoordinator struct {
@@ -55,6 +60,7 @@ type assistantWatchCoordinator struct {
 	worker               string
 	clock                clock.Clock
 	healthMu             sync.RWMutex
+	elected              bool // this replica holds the sweep's lease (runElectedAssistantWatchSweep)
 	lastSweepStartedAt   time.Time
 	lastSweepCompletedAt time.Time
 	lastSweepDuration    time.Duration
@@ -179,6 +185,7 @@ func (c *assistantWatchCoordinator) markSweepCompleted(at time.Time, duration ti
 
 type assistantWatchHeartbeat struct {
 	Present     bool
+	Elected     bool
 	StartedAt   time.Time
 	CompletedAt time.Time
 	Duration    time.Duration
@@ -196,13 +203,20 @@ func (c *assistantWatchCoordinator) heartbeat() assistantWatchHeartbeat {
 		c = root
 	}
 	c.healthMu.RLock()
+	elected := c.elected
 	started, completed, duration := c.lastSweepStartedAt, c.lastSweepCompletedAt, c.lastSweepDuration
 	c.healthMu.RUnlock()
+	// Stale judges the sweep this replica OWES: a replica that does not hold
+	// the lease owes none, and reporting it stale would mark (N-1)/N of the
+	// fleet's health answers red for a sweep another replica is running.
+	if !elected {
+		return assistantWatchHeartbeat{Present: true, Elected: false, StartedAt: started, CompletedAt: completed, Duration: duration}
+	}
 	if completed.IsZero() {
-		return assistantWatchHeartbeat{Present: true, StartedAt: started, CompletedAt: completed, Duration: duration, Stale: true}
+		return assistantWatchHeartbeat{Present: true, Elected: true, StartedAt: started, CompletedAt: completed, Duration: duration, Stale: true}
 	}
 	return assistantWatchHeartbeat{
-		Present: true, StartedAt: started, CompletedAt: completed, Duration: duration,
+		Present: true, Elected: true, StartedAt: started, CompletedAt: completed, Duration: duration,
 		Stale: c.now().Sub(completed) > 3*assistantWatchSweepInterval,
 	}
 }
@@ -220,7 +234,7 @@ func (c *assistantWatchCoordinator) resume(ctx context.Context, spec runview.Res
 }
 
 func (s *Server) startAssistantRunWatches() {
-	if s.runs == nil || s.assistantWatches == nil || s.assistantWatch != nil {
+	if !s.assistantWatchStarts() || s.assistantWatch != nil {
 		return
 	}
 	ctx, cancelWorker := context.WithCancel(context.Background())
@@ -251,8 +265,77 @@ func (s *Server) startAssistantRunWatches() {
 	}
 	go func() {
 		defer close(done)
-		c.sweepLoop(ctx, s.shutdown)
+		s.runElectedAssistantWatchSweep(ctx, c)
 	}()
+}
+
+// runElectedAssistantWatchSweep campaigns for the sweep's lease and runs the
+// sweep loop for as long as this replica holds it. One replica sweeps: a
+// pass lists the watchers, loads each one, walks its targets and delivers
+// the due episodes — all of it idempotent, so N replicas doing it was only
+// ever N times the cost (#2636), and the lease is what turns N into one. A
+// replica that is not elected still serves every request and still queues
+// its own wake-up on a nudge; that wake is consumed when its next term
+// starts, and the holder's own tick covers the gap meanwhile.
+//
+// Without a usable lease store nothing sweeps, and the refusal is logged:
+// a silent skip would be the invisible outage — veilles armed by nobody,
+// episodes delivered by nobody, with nothing anywhere naming the worker
+// that never ran.
+func (s *Server) runElectedAssistantWatchSweep(ctx context.Context, c *assistantWatchCoordinator) {
+	campaign, endCampaign := context.WithCancel(ctx)
+	defer endCampaign()
+	err := lease.Run(campaign, s.leases, s.assistantWatchLeaseSpec(), func(term context.Context) {
+		c.setElected(true)
+		defer c.setElected(false)
+		c.sweepLoop(term, s.shutdown)
+		// A term the shutdown signal ended ends the campaign too: the loop
+		// used to return for good on that signal, and re-campaigning here
+		// would sweep once per retry until the process exits.
+		select {
+		case <-s.shutdown:
+			endCampaign()
+		default:
+		}
+	})
+	if err != nil {
+		s.logWarn("assistant run watch sweep NOT started: %v — no replica arms, observes or delivers the assistant's veilles until the lease store is wired", err)
+	}
+}
+
+// assistantWatchLeaseSpec is the sweep's lease, paced by the sweep interval:
+// the holder renews every TTL/3, a candidate retries every interval, and a
+// holder that dies is replaced within TTL+Retry — a few intervals without a
+// sweep, which the episodes' own retry schedule absorbs. The pace is a test
+// seam (assistantWatchLeasePace); a server runs at the sweep interval.
+func (s *Server) assistantWatchLeaseSpec() lease.Spec {
+	pace := s.assistantWatchLeasePace
+	if pace <= 0 {
+		pace = assistantWatchSweepInterval
+	}
+	return lease.Spec{
+		Name:  leaseAssistantWatchSweep,
+		Owner: s.replicaID,
+		TTL:   assistantWatchLeaseTTLFactor * pace,
+		Retry: pace,
+		Info:  s.infof,
+		Warn:  s.warnf,
+	}
+}
+
+// setElected records whether this replica currently holds the sweep's lease,
+// for the health route (heartbeat). It lands on the root coordinator, so a
+// caller holding an operation snapshot writes the field the heartbeat reads
+// — without the generation guard the project-scoped writers carry: the lease
+// is the replica's, not the project's, and a project switch must not drop
+// the write.
+func (c *assistantWatchCoordinator) setElected(elected bool) {
+	if c.origin != nil {
+		c = c.origin
+	}
+	c.healthMu.Lock()
+	c.elected = elected
+	c.healthMu.Unlock()
 }
 
 func (c *assistantWatchCoordinator) sweepLoop(ctx context.Context, shutdown <-chan struct{}) {
@@ -1708,9 +1791,13 @@ func (c *assistantWatchCoordinator) armWatchesForTarget(ctx context.Context, tar
 }
 
 // listIssueWatchers loads the runs that carry at least one watched card and
-// can still be delivered to. It is the ONLY full-store pass either arming
-// path needs: a sweep builds it once and hands it to every target, instead
-// of re-listing and re-loading every run in the store per target.
+// can still be delivered to. It is the ONLY store pass either arming path
+// needs: a sweep builds it once and hands it to every target, instead of
+// re-listing and re-loading every run in the store per target — and the pass
+// asks the store for the watchers (ListDeliverableWatchers, indexed), never
+// for every run: ten replicas re-reading ten thousand run documents every
+// twenty seconds to find no watcher at all is what the whole-store walk
+// cost in production (#2636).
 func (c *assistantWatchCoordinator) listIssueWatchers(ctx context.Context) ([]*store.Run, error) {
 	c = c.snapshot()
 	ctx = c.withBotPaths(ctx)
@@ -1722,16 +1809,27 @@ func (c *assistantWatchCoordinator) listIssueWatchers(ctx context.Context) ([]*s
 	if c.server.cfg.Mode == "cloud" && !scoped {
 		discovery = store.WithoutTenantFilter(ctx)
 	}
-	ids, err := rs.ListRuns(discovery)
+	ids, err := rs.ListDeliverableWatchers(discovery)
 	if err != nil {
 		return nil, err
+	}
+	// A watcher is read for its identity, its cards, its status and its bot
+	// — never for its recorded workflow source, the heaviest field on the
+	// document — so a store that can project hands the record back without
+	// it (store.RunListingStore). Both reads below go through it: the
+	// privileged discovery and the tenant-scoped revalidation. A fleet of
+	// many live watchers then costs their headers per pass, not their
+	// sources.
+	load := rs.LoadRun
+	if lister := store.AsRunListingStore(rs); lister != nil {
+		load = lister.LoadRunForListing
 	}
 	watchers := make([]*store.Run, 0, 8)
 	for _, runID := range ids {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		candidate, err := rs.LoadRun(discovery, runID)
+		candidate, err := load(discovery, runID)
 		if err != nil || candidate == nil || len(candidate.WatchedIssueIDs) == 0 {
 			continue
 		}
@@ -1744,7 +1842,7 @@ func (c *assistantWatchCoordinator) listIssueWatchers(ctx context.Context) ([]*s
 		if discovery != ctx {
 			// Privilege never escapes discovery: revalidate the candidate using
 			// its tenant before capability checks or any execution/write.
-			watcher, err = rs.LoadRun(rctx, runID)
+			watcher, err = load(rctx, runID)
 			if err != nil || watcher == nil || watcher.TenantID != candidate.TenantID {
 				continue
 			}

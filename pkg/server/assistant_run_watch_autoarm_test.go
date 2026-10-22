@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/lease"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runwatch"
@@ -44,7 +45,10 @@ func newArmFixture(t *testing.T, hostEventCapable bool) *armFixture {
 	if err := ws.EnsureSchema(context.Background()); err != nil {
 		t.Fatalf("EnsureSchema: %v", err)
 	}
-	srv := &Server{runs: svc, assistantWatches: ws, logger: iterlog.New(iterlog.LevelError, os.Stderr)}
+	// One process, so an in-memory lease store elects it: the sweep worker
+	// campaigns for its lease before it sweeps (#2636), and a fixture with no
+	// store would be the refused-loudly case, not a working coordinator.
+	srv := &Server{runs: svc, assistantWatches: ws, logger: iterlog.New(iterlog.LevelError, os.Stderr), leases: lease.NewMemoryStore(), replicaID: "test-replica"}
 	srv.cfg.Bots.Paths = []string{botsRoot}
 	// A project switch (swapWorkDir → restartAssistantMissions) spawns the
 	// mission sweep on a Background-derived ctx that only Shutdown or an

@@ -90,10 +90,14 @@ func (wc *watchCoordinator) fanOut(evt native.Event) {
 	to, _ := evt.Payload["to"].(string)
 
 	rs := wc.runs.RunStore()
-	ids, err := rs.ListRuns(ctx)
+	// The runs that watch SOMETHING, not every run in the store: the walk
+	// below keeps only those watching this issue, and asking the store for
+	// the candidates is what keeps a transition's cost at the number of
+	// watchers rather than the size of the store (#2636).
+	ids, err := rs.ListDeliverableWatchers(ctx)
 	if err != nil {
 		if wc.logger != nil {
-			wc.logger.Warn("server: watch fan-out list runs: %v", err)
+			wc.logger.Warn("server: watch fan-out list watching runs: %v", err)
 		}
 		return
 	}
@@ -152,11 +156,10 @@ func (wc *watchCoordinator) Close() {
 // watchDeliverable reports whether a run in this status will consume a
 // queued message soon (running drains mid-loop; paused drains on resume).
 // Terminal runs are skipped — a queued message would never be read.
+//
+// The set lives in the store (store.WatchDeliverableStatuses): the store's
+// ListDeliverableWatchers answers with exactly these statuses, so the check
+// here and the query there can never disagree.
 func watchDeliverable(status store.RunStatus) bool {
-	switch status {
-	case store.RunStatusRunning, store.RunStatusPausedWaitingHuman:
-		return true
-	default:
-		return false
-	}
+	return status.WatchDeliverable()
 }

@@ -125,6 +125,32 @@ func (s RunStatus) IsPaused() bool {
 	return s == RunStatusPausedWaitingHuman || s == RunStatusPausedOperator
 }
 
+// watchDeliverableStatuses are the statuses in which a run will consume a
+// queued message soon — running drains between turns, paused-for-human
+// drains on resume — i.e. the runs a watched-card transition or an assistant
+// veille can be delivered to. One list, read by the store queries
+// (ListDeliverableWatchers) and by the server's deliverability check, so the
+// two can never disagree on who gets a notification.
+var watchDeliverableStatuses = []RunStatus{RunStatusRunning, RunStatusPausedWaitingHuman}
+
+// WatchDeliverableStatuses returns the statuses a watched-card notification
+// can be delivered to, as a fresh slice: a store query embeds it in its
+// filter, and no caller may re-point that filter for the whole process.
+func WatchDeliverableStatuses() []RunStatus {
+	return append([]RunStatus(nil), watchDeliverableStatuses...)
+}
+
+// WatchDeliverable reports whether a run in this status is one of
+// WatchDeliverableStatuses.
+func (s RunStatus) WatchDeliverable() bool {
+	for _, d := range watchDeliverableStatuses {
+		if s == d {
+			return true
+		}
+	}
+	return false
+}
+
 // RunEndReason is the typed WHY a run ENDED, persisted on the run doc beside
 // FailureCode. It is the protocol between the surface that ends a run and the
 // surfaces that must recognise the ending — above all the runner admission,

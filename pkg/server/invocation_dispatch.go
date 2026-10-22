@@ -157,8 +157,8 @@ func (s *Server) dispatchInvocation(
 	// that skip this function (the PR-event fan-out, the auto-heal).
 	//
 	// Placed after each early return below, never before: resolving a hand-off
-	// reads the bot catalog and walks the run store, and a redelivery or a
-	// quota denial launches nothing.
+	// reads the bot catalog and lists the pull request's runs, and a
+	// redelivery or a quota denial launches nothing.
 	seed := func() {
 		s.stampHandoffs(ctx, cfg, route.BotID, vars, handoffQuery{
 			PRURL:   vars["pr_url"],

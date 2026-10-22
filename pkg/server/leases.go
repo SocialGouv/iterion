@@ -14,8 +14,9 @@ import (
 // The lease names of the server's singleton nets (pkg/lease), in one place so
 // two nets can never campaign for the same name by accident.
 const (
-	leaseMergeGateSweeper = "merge-gate-sweeper"
-	leaseBoardIssueSync   = "board-issue-sync"
+	leaseMergeGateSweeper    = "merge-gate-sweeper"
+	leaseBoardIssueSync      = "board-issue-sync"
+	leaseAssistantWatchSweep = "assistant-watch-sweep"
 )
 
 // leasedNets is every name above, with what runs on every replica while that
@@ -41,7 +42,15 @@ var leasedNets = []struct {
 	wired func(*Server) bool
 }{
 	{leaseMergeGateSweeper, "the merge-gate sweep", (*Server).gateSweepStarts},
+	{leaseAssistantWatchSweep, "the assistant run-watch sweep, whose every pass loads each run watching a card, walks its targets and delivers the due episodes once per replica", (*Server).assistantWatchStarts},
 	{leaseBoardIssueSync, "the forge→board issue sync, whose every pass then lists EVERY sync-enabled repo's issue window once per replica", (*Server).boardIssueSyncStarts},
+}
+
+// assistantWatchStarts is the assistant run-watch worker's start condition
+// (startAssistantRunWatches): a run service to read and a watch store to
+// sweep. Same two readers as gateSweepStart.
+func (s *Server) assistantWatchStarts() bool {
+	return s.runs != nil && s.assistantWatches != nil
 }
 
 // gateSweepStart is the merge-gate sweep's start condition and the store
@@ -108,6 +117,16 @@ func leaseStoreFor(s *Server, warnf func(format string, args ...any)) lease.Stor
 	}
 	if dbs, ok := s.cfg.Store.(interface{ DB() *mongo.Database }); ok && dbs.DB() != nil {
 		return lease.NewMongoStore(dbs.DB())
+	}
+	if s.cfg.Store == nil {
+		// No injected run store: the server builds its own filesystem store
+		// under the work dir (cmd/iterion's local path leaves Config.Store
+		// unset; the cloud path injects the Mongo store). That is one process
+		// by construction — the local studio, the desktop — so electing it
+		// is right, and the multi-replica warning below would name every
+		// leased net that also runs locally (the assistant run-watch sweep)
+		// at every boot.
+		return lease.NewMemoryStore()
 	}
 	nets := make([]string, 0, len(leasedNets))
 	for _, n := range leasedNets {

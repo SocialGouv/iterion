@@ -194,7 +194,9 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	tomb := bson.M{"$set": bson.M{"deleted_at": now, "status": "deleted", "updated_at": now},
 		"$unset": bson.M{"checkpoint": "", "inputs": "", "launch_env": "", "model_overrides": "",
-			"budget": "", "loop_overrides": "", "budget_raises": "", "attachments": ""}}
+			"budget": "", "loop_overrides": "", "budget_raises": "", "attachments": "",
+			// A tombstone watches nothing.
+			"watched_issue_ids": ""}}
 	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), versionRunUpdate(tomb)); err != nil {
 		return fmt.Errorf("store/mongo: tombstone run %s: %w", id, err)
 	}
@@ -600,6 +602,12 @@ func (s *Store) watchedIssues(ctx context.Context, runID string) ([]string, erro
 // ListRuns returns every run id sorted by created_at ascending. The
 // caller filters in higher layers (runview.Service.List). Tenant
 // scope is enforced when ctx carries a tenant_id.
+//
+// It is a COLLECTION SCAN with an in-memory sort: the tombstone predicate
+// matches no index and nothing orders the whole collection by created_at.
+// At ten thousand runs of ~140 KB that is seven seconds of mongod CPU per
+// call, which is why no periodic worker may call it (store.RunStore.ListRuns,
+// #2636) — a sweep asks an indexed question instead (listRunIDsBy).
 func (s *Store) ListRuns(ctx context.Context) ([]string, error) {
 	cur, err := s.runs.Find(
 		ctx,
@@ -659,6 +667,49 @@ func (s *Store) ListChildRuns(ctx context.Context, parentRunID string) ([]string
 		return []string{}, nil
 	}
 	return s.listRunIDsBy(ctx, bson.M{"parent_run_id": parentRunID}, "list child runs")
+}
+
+// deliverableWatchersFilter is the predicate ListDeliverableWatchers sends.
+// watchers_status_created (EnsureSchema) serves it: a partial index over the
+// runs that watch a card, keyed (status, created_at) so the status `$in`
+// becomes one bound per live status merged in created_at order — the scan
+// reads the live watchers alone, never every live run
+// (runs_deliverable_watchers_plan_test.go reads that plan off a real mongod,
+// over a population shaped like production).
+//
+// Two choices in it: the list's FIRST element rather than the field — a
+// RemoveWatchedIssues is a $pull, which leaves an EMPTY array behind, and
+// `$exists` on the field would keep every run that ever watched a card in
+// the answer for good; and the deliverable statuses — WatchedIssueIDs is
+// never cleared when a run ends, so without the status the answer would
+// grow with history (every assistant that ever watched), not with the live
+// watchers both consumers keep.
+func deliverableWatchersFilter() bson.M {
+	return bson.M{
+		"watched_issue_ids.0": bson.M{"$exists": true},
+		"status":              bson.M{"$in": store.WatchDeliverableStatuses()},
+	}
+}
+
+// ListDeliverableWatchers returns the ids of runs carrying at least one
+// watched card and in a status a notification can be delivered to
+// (store.WatchDeliverableStatuses), sorted by created_at ascending. Served
+// by watchers_status_created (see deliverableWatchersFilter), so the answer
+// costs the live watchers, never the live runs nor the collection. Tenant
+// scope is enforced when ctx carries a tenant_id. Refs #2636.
+func (s *Store) ListDeliverableWatchers(ctx context.Context) ([]string, error) {
+	return s.listRunIDsBy(ctx, deliverableWatchersFilter(), "list deliverable watchers")
+}
+
+// ListRunsForPR returns the ids of runs whose `pr_url` input equals prURL,
+// sorted by created_at ascending. Indexed by tenant_pr_url_created, partial
+// on the input so only runs launched with a pr_url index. Tenant scope is
+// enforced when ctx carries a tenant_id. Refs #2636.
+func (s *Store) ListRunsForPR(ctx context.Context, prURL string) ([]string, error) {
+	if prURL == "" {
+		return []string{}, nil
+	}
+	return s.listRunIDsBy(ctx, bson.M{"inputs.pr_url": prURL}, "list runs for pr")
 }
 
 // listRunIDsBy runs an indexed Find over the runs collection with the

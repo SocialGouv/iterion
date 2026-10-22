@@ -1177,6 +1177,31 @@ func (s *FilesystemRunStore) ListChildRuns(ctx context.Context, parentRunID stri
 	})
 }
 
+// ListDeliverableWatchers returns the ids of runs carrying at least one
+// watched card (WatchedIssueIDs non-empty) in a status a notification can
+// be delivered to (WatchDeliverableStatuses), sorted by created_at
+// ascending. Same scan-and-filter strategy as ListRunsBySourceIssue: the
+// filesystem store serves one process over a local tree, where the scan
+// is the index.
+func (s *FilesystemRunStore) ListDeliverableWatchers(ctx context.Context) ([]string, error) {
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		return len(r.WatchedIssueIDs) > 0 && r.Status.WatchDeliverable()
+	})
+}
+
+// ListRunsForPR returns the ids of runs whose `pr_url` input equals prURL,
+// sorted by created_at ascending. Same scan-and-filter strategy as
+// ListRunsBySourceIssue.
+func (s *FilesystemRunStore) ListRunsForPR(ctx context.Context, prURL string) ([]string, error) {
+	if prURL == "" {
+		return []string{}, nil
+	}
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		got, _ := r.Inputs["pr_url"].(string)
+		return got == prURL
+	})
+}
+
 // SetRunCredStamp writes a credential resolution's stamp on the run
 // document (see RunStore). Load-modify-save, like the other fs-side
 // patches: the filesystem store has no partial update.
@@ -1357,6 +1382,12 @@ func (s *FilesystemRunStore) filterRunsSorted(ctx context.Context, pred func(*Ru
 	}
 	var matches []match
 	for _, id := range ids {
+		// A scan is the local index, so it is the one place a cancelled
+		// caller (a sweep drained at shutdown, a project switch) must be
+		// heard: LoadRun itself ignores ctx.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		r, err := s.LoadRun(ctx, id)
 		if err != nil {
 			if s.logger != nil {
