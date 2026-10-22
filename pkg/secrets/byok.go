@@ -408,6 +408,11 @@ type Resolution struct {
 	// the publisher can stamp the run document with the credentials it
 	// actually sealed (the concurrency meter counts alive runs by it).
 	Fingerprint string
+	// BaseURL is the gateway root of an openai_compatible key, as the
+	// record stores it (canonical); "" for every other provider, whatever
+	// its row carries. It rides with the plaintext into the bundle
+	// (RunBundle.APIBaseURLs): the key is one credential with its URL.
+	BaseURL string
 }
 
 // Resolve returns at most one ApiKey for each requested provider,
@@ -580,6 +585,12 @@ func buildResolution(k ApiKey, sealer Sealer, currentUserID string) (Resolution,
 		SourceScope: scope,
 		Fingerprint: k.Fingerprint,
 	}
+	// Only a gateway key's URL travels: a vendor row's base_url column
+	// (refused by the routes, writable by hand in the store) is bound by
+	// no AAD and would reach the run unauthenticated.
+	if k.Provider == ProviderOpenAICompatible {
+		r.BaseURL = k.BaseURL
+	}
 	if sealer == nil {
 		return r, true
 	}
@@ -637,14 +648,16 @@ func checkApiKeyAADID(id string) error {
 // APIKeyFingerprint is the stable audit identity of a key: the ceiling,
 // alive_runs, last_used_at and the spend ledger all key on it. A gateway
 // key folds its base URL in — the same token on two gateways is two
-// identities — every other provider keeps sha256(secret), which the runner
-// recomputes from the sealed bundle (pkg/runner loop_credentials.go) and
-// the pool and fallback-door fallbacks recompute from the plaintext
-// (cloudpublisher). Those three sites still hash the secret alone: the run
-// bundle carries no base URL, and no gateway key is sealed into a run
-// until the walk learns the provider (#2005 PR-C', which moves them onto
-// this helper with the URL beside the key) — a fact
-// pkg/server/cloudpublisher's provider-coverage test pins.
+// identities — every other provider keeps sha256(secret). The runner
+// stamps what the server stamped: the server's fingerprint travels in the
+// bundle beside a gateway key (RunBundle.APIKeyFingerprints), and a key
+// met without one is recomputed here from the URL the bundle pairs it
+// with (pkg/runner loop_credentials.go). The pool and fallback-door
+// fallbacks still hash the plaintext alone (cloudpublisher) and move onto
+// this helper with #2005 PR-C' — harmless until then: they refuse a
+// gateway key by name instead of sealing one — the vocabulary is pinned by
+// cloudpublisher's provider-coverage test, the pool lane's refusal by
+// TestPoolGatewayRefusal_Drift.
 func APIKeyFingerprint(p Provider, secret, baseURL string) string {
 	if p == ProviderOpenAICompatible {
 		return FingerprintSHA256(string(p) + "\x00" + baseURL + "\x00" + secret)

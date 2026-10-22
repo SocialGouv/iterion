@@ -2,7 +2,7 @@
 
 Sixteen Mongo collections hold what funds a run: a credential sealed at rest, the bundle that carries it to a runner pod, the four meters that bill it, and the policy that decides where it may route.
 
-> Drawn from the code at commit `d3df633a6` — main at v3.277.2, with #2652 and #2005 PR-A; how this page is kept true: [README](README.md).
+> Drawn from the code at commit `6c136a77d` — main at v3.281.3, with #2652, #2005 PR-A and the PR-B'1 carriage; how this page is kept true: [README](README.md).
 
 ## Block 1 — a credential at rest, and who may see it
 
@@ -101,6 +101,10 @@ erDiagram
     datetime expires_at
     map bundle.api_keys "INSIDE the sealed body: provider -> plaintext"
     map bundle.pinned_api_keys "INSIDE: provider -> plaintext"
+    map bundle.api_base_urls "INSIDE: provider -> gateway root, paired with api_keys (openai_compatible only)"
+    map bundle.pinned_api_base_urls "INSIDE: provider -> gateway root, paired with pinned_api_keys"
+    map bundle.api_key_fingerprints "INSIDE: provider -> the server's fingerprint (the runner stamps it, never recomputes a URL-folded one)"
+    bool bundle.ambient_llm_refused "INSIDE: the run's LLM routes spend these credentials only; absent on a bundle sealed today"
     map bundle.oauth_credentials "INSIDE: kind -> the credentials.json / auth.json"
     map bundle.oauth_record_refs "INSIDE: kind -> oauth_credentials._id"
     map bundle.generic_secrets "INSIDE: workflow secret name -> plaintext"
@@ -167,7 +171,7 @@ erDiagram
     datetime period_start
   }
   run_secrets }o--|| runs : "run_id"
-  run_secrets }o..o{ api_keys : "bundle.api_keys / bundle.pinned_api_keys - plaintext"
+  run_secrets }o..o{ api_keys : "bundle.api_keys / bundle.pinned_api_keys - plaintext, with base_url beside a gateway key"
   run_secrets }o..o{ oauth_credentials : "bundle.oauth_record_refs"
   cred_pools }o--|| orgs : "org_id"
   cred_pledges }o--|| cred_pools : "pool_id"

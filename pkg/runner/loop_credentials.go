@@ -82,10 +82,22 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	// same subscription), so the record's connect-time fingerprint
 	// travels in the bundle instead. Absent for legacy records — those
 	// keep the fingerprint-less meter they always had.
+	// The server's own fingerprint travels in the bundle for a gateway key
+	// (RunBundle.APIKeyFingerprints): its identity folds its base URL in.
+	// Absent — every vendor key, and every bundle sealed before #2005
+	// PR-C' — the runner recomputes the identity the server would have
+	// stamped: sha256 of the secret for a vendor key, the URL-folded form
+	// for a gateway key met with its URL.
 	fingerprints := map[string]string{}
+	stamped := func(prov secrets.Provider, key, baseURL string) string {
+		if fp := bundle.APIKeyFingerprints[prov]; fp != "" {
+			return fp
+		}
+		return secrets.APIKeyFingerprint(prov, key, baseURL)
+	}
 	for prov, key := range bundle.APIKeys {
 		if key != "" {
-			fingerprints[string(prov)] = secrets.FingerprintSHA256(key)
+			fingerprints[string(prov)] = stamped(prov, key, bundle.APIBaseURLs[prov])
 		}
 	}
 	// A pinned key (RunBundle.PinnedAPIKeys) is stamped like any other: it
@@ -95,7 +107,7 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	// A slot cannot hold both — the fill stops at the first key per slot.
 	for prov, key := range bundle.PinnedAPIKeys {
 		if key != "" && fingerprints[string(prov)] == "" {
-			fingerprints[string(prov)] = secrets.FingerprintSHA256(key)
+			fingerprints[string(prov)] = stamped(prov, key, bundle.PinnedAPIBaseURLs[prov])
 		}
 	}
 	for kind, fp := range bundle.OAuthFingerprints {
@@ -107,7 +119,13 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	creds := secrets.Credentials{
 		APIKeys:       bundle.APIKeys,
 		PinnedAPIKeys: bundle.PinnedAPIKeys,
-		Generic:       bundle.GenericSecrets,
+		// The gateway roots paired with the key maps, and the publisher's
+		// word that this run spends its own credentials only. Not secret:
+		// cleanup below leaves them, as it leaves the hostnames.
+		APIBaseURLs:       bundle.APIBaseURLs,
+		PinnedAPIBaseURLs: bundle.PinnedAPIBaseURLs,
+		AmbientRefused:    bundle.AmbientLLMRefused,
+		Generic:           bundle.GenericSecrets,
 		// Per-secret egress narrowing from bot-secret bindings; the guard
 		// intersects these with the workflow's declared hosts. Hostnames
 		// are not secret, so cleanup below leaves them untouched.

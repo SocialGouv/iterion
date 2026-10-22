@@ -215,7 +215,7 @@ func (p *Publisher) fillFromOrg(
 						if outcome == sealNone {
 							continue
 						}
-						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), outcome)
+						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, outcome)
 						bundle.OrgSourced[string(prov)] = true
 						apiKeyFPs[prov] = r.Fingerprint
 						usedIDs = append(usedIDs, r.KeyID)
@@ -248,7 +248,7 @@ func (p *Publisher) fillFromOrg(
 								continue // a tenant key's restore takes precedence
 							}
 							skippedAPIKeys[prov] = skippedAPIKey{
-								plaintext: string(r.Plaintext), keyID: r.KeyID,
+								plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID,
 								fingerprint: r.Fingerprint, org: true,
 							}
 						}

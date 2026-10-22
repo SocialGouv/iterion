@@ -264,15 +264,12 @@ func sealDecision(prov secrets.Provider, familyTaken, pinned bool, facadeMayDefa
 // fillAPIKeySlotAs seals a key in the channel sealDecision chose. Pinned-only
 // never marks the family: it did not fill it, and on a FREE family the
 // tier's forfait must still be able to.
-func fillAPIKeySlotAs(bundle *secrets.RunBundle, taken map[string]bool, prov secrets.Provider, plaintext string, outcome sealOutcome) (pinnedOnly bool) {
+func fillAPIKeySlotAs(bundle *secrets.RunBundle, taken map[string]bool, prov secrets.Provider, plaintext, baseURL, fingerprint string, outcome sealOutcome) (pinnedOnly bool) {
 	if outcome == sealPinnedOnly {
-		if bundle.PinnedAPIKeys == nil {
-			bundle.PinnedAPIKeys = map[secrets.Provider]string{}
-		}
-		bundle.PinnedAPIKeys[prov] = plaintext
+		setAPIKey(bundle, prov, plaintext, baseURL, fingerprint, true)
 		return true
 	}
-	return fillAPIKeySlot(bundle, taken, prov, plaintext)
+	return fillAPIKeySlot(bundle, taken, prov, plaintext, baseURL, fingerprint)
 }
 
 // tierNative answers, lazily and once, whether a shared tier holds an
