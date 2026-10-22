@@ -40,6 +40,11 @@ import (
 // ClawExecutor implements runtime.NodeExecutor by routing LLM calls
 // through pluggable Backend implementations (claw, claude_code, codex, etc.).
 type ClawExecutor struct {
+	// sweepBudget and sweepBudgetOnCancel bound how long a sandboxed tool
+	// command's sweep is retried after its end went unproven (zero: the
+	// defaults, toolSweepBudget and toolSweepBudgetOnCancel).
+	sweepBudget, sweepBudgetOnCancel time.Duration
+
 	registry        *Registry
 	backendRegistry *delegate.Registry // backend registry (claw, claude_code, codex)
 	toolRegistry    *tool.Registry     // unified tool registry (preferred)

@@ -143,8 +143,12 @@ func gateAutoResume(code runtime.ErrorCode, cfg autoResumeConfig, budgetResumed 
 }
 
 // runtimeCode extracts the RuntimeError code from err, or "" when err is not a
-// RuntimeError.
+// RuntimeError. An undecided effect anywhere in the chain is the code,
+// whatever a wrapper said: no auto-resume may re-drive it.
 func runtimeCode(err error) runtime.ErrorCode {
+	if runtime.IsAmbiguousEffect(err) {
+		return runtime.ErrCodeAmbiguousEffect
+	}
 	var re *runtime.RuntimeError
 	if errors.As(err, &re) {
 		return re.Code

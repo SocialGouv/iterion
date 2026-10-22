@@ -146,6 +146,14 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		s.disarmRetry(runCtx, retryStore, ref.TenantID, ref.ID,
 			"auto-retry abandoned: the run is parked on the DLQ (DLQ_PARKED) — its armed retry was stale; only an operator's resume (iterion remote runs resume) wakes it")
 		return
+	} else if run != nil && run.FailureCode == store.FailureAmbiguousEffect {
+		// An undecided effect is final for automation too: a resume may
+		// repeat a call that already took effect, or run a node beside a
+		// command still running in the run's sandbox. An armed retry on
+		// such a doc is a stale one, from a park that came before it.
+		s.disarmRetry(runCtx, retryStore, ref.TenantID, ref.ID,
+			"auto-retry abandoned: the run's last failure left an effect undecided (AMBIGUOUS_EFFECT) — its armed retry was stale; only an operator's resume (iterion remote runs resume) wakes it")
+		return
 	}
 
 	// An automatic resume spends real money, so it passes the same

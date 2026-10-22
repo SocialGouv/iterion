@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -50,9 +51,16 @@ func (f *writeThroughRun) RefreshSecretFile(_ context.Context, name string, valu
 }
 
 func (f *writeThroughRun) Exec(_ context.Context, cmd []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	var b []byte
 	if opts.Stdin != nil {
-		b, _ := io.ReadAll(opts.Stdin)
+		b, _ = io.ReadAll(opts.Stdin)
 		f.execStdin = append(f.execStdin, b)
+	}
+	// The writer's shape, `sh -c <script> sh <path> <size>`: a container that
+	// stored the whole of its stdin says so the way the writer does.
+	if len(cmd) == 6 && cmd[0] == "sh" && cmd[1] == "-c" {
+		f.execPaths = append(f.execPaths, cmd[4])
+		return sandbox.ExecResult{Stdout: []byte(fmt.Sprintf("iterion-written %d\n", len(b)))}, nil
 	}
 	if len(cmd) > 0 {
 		f.execPaths = append(f.execPaths, cmd[len(cmd)-1])

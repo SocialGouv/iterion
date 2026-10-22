@@ -116,7 +116,7 @@ func TestToolNodeCommandStreamsOversizedShellThroughStdin(t *testing.T) {
 	e := &ClawExecutor{}
 	payload := strings.Repeat("x", 100_001)
 	resolved := "printf %s " + shellEscapeValue(payload, ShapeUndeclared)
-	cmd := e.toolNodeCommand(context.Background(), resolved, nil)
+	cmd := e.toolNodeCommand(context.Background(), resolved, nil).cmd
 	if got := cmd.Args; len(got) != 2 || got[0] != "bash" || got[1] != "-s" {
 		t.Fatalf("oversized command args = %v, want [bash -s]", got)
 	}
@@ -134,7 +134,7 @@ func TestToolNodeCommandStreamsOversizedShellThroughStdin(t *testing.T) {
 
 func TestToolNodeCommandKeepsSmallShellOnArgv(t *testing.T) {
 	e := &ClawExecutor{}
-	cmd := e.toolNodeCommand(context.Background(), "printf ok", nil)
+	cmd := e.toolNodeCommand(context.Background(), "printf ok", nil).cmd
 	if got := cmd.Args; len(got) != 3 || got[0] != "bash" || got[1] != "-c" || got[2] != "printf ok" {
 		t.Fatalf("small command args = %v, want [bash -c printf ok]", got)
 	}
@@ -678,7 +678,7 @@ func TestScriptRecipe_PythonRunsIsolated(t *testing.T) {
 		t.Fatalf("buildCmd: %v", err)
 	}
 	defer cleanup()
-	out, err := cmd.CombinedOutput()
+	out, err := cmd.cmd.CombinedOutput()
 	if _, serr := os.Stat(marker); serr == nil {
 		t.Fatalf("a module beside the script loaded inside the node: %s", out)
 	}
@@ -760,7 +760,7 @@ func TestScriptRecipe_CopySandboxWriteThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildCmd: %v", err)
 	}
-	if cmd == nil {
+	if cmd.cmd == nil {
 		t.Fatal("buildCmd returned nil cmd")
 	}
 	if len(fake.refreshed) != 1 {

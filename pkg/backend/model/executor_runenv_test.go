@@ -27,12 +27,12 @@ func TestRunExtraEnvReachesHostToolCommands(t *testing.T) {
 	e := &ClawExecutor{}
 	e.SetRunExtraEnv([]string{"PATH=/devbox/profile/bin:/usr/bin"})
 
-	cmd := e.toolNodeCommand(context.Background(), "true", nil)
+	cmd := e.toolNodeCommand(context.Background(), "true", nil).cmd
 	if !slices.Contains(cmd.Env, "PATH=/devbox/profile/bin:/usr/bin") {
 		t.Errorf("toolNodeCommand env misses the run-level PATH entry: %v", cmd.Env)
 	}
 
-	script := e.toolNodeScriptCommand(context.Background(), []string{"sh"}, "x.sh")
+	script := e.toolNodeScriptCommand(context.Background(), []string{"sh"}, "x.sh").cmd
 	if !slices.Contains(script.Env, "PATH=/devbox/profile/bin:/usr/bin") {
 		t.Errorf("toolNodeScriptCommand env misses the run-level PATH entry: %v", script.Env)
 	}
@@ -87,7 +87,7 @@ func TestEngineExtraEnvComposesOnTheLaunchLayerAndNeverFeedsBackIntoIt(t *testin
 		t.Fatalf("launch-surface PATH = %q after two engine pushes, want /project/bin untouched", got)
 	}
 
-	cmd := e.toolNodeCommand(context.Background(), "true", nil)
+	cmd := e.toolNodeCommand(context.Background(), "true", nil).cmd
 	if !slices.Contains(cmd.Env, "PATH=/shim-second:/project/bin") {
 		t.Errorf("toolNodeCommand env misses the engine's composed PATH: %v", cmd.Env)
 	}
@@ -99,7 +99,7 @@ func TestEngineExtraEnvComposesOnTheLaunchLayerAndNeverFeedsBackIntoIt(t *testin
 			t.Errorf("the first composition survived the second: %q", entry)
 		}
 	}
-	script := e.toolNodeScriptCommand(context.Background(), []string{"sh"}, "x.sh")
+	script := e.toolNodeScriptCommand(context.Background(), []string{"sh"}, "x.sh").cmd
 	if !slices.Contains(script.Env, "PATH=/shim-second:/project/bin") {
 		t.Errorf("toolNodeScriptCommand env misses the engine's composed PATH: %v", script.Env)
 	}
@@ -107,7 +107,7 @@ func TestEngineExtraEnvComposesOnTheLaunchLayerAndNeverFeedsBackIntoIt(t *testin
 	// A launch-surface push AFTER the engine composed does not drop the
 	// engine's PATH: the engine layer is merged last.
 	e.SetRunExtraEnv([]string{"PATH=/late/bin", "LATE=yes"})
-	cmd = e.toolNodeCommand(context.Background(), "true", nil)
+	cmd = e.toolNodeCommand(context.Background(), "true", nil).cmd
 	if !slices.Contains(cmd.Env, "PATH=/shim-second:/project/bin") {
 		t.Errorf("a later launch-surface PATH push dropped the engine's composed PATH: %v", cmd.Env)
 	}

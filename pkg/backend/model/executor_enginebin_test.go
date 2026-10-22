@@ -73,12 +73,12 @@ func TestToolNodeCommandsCarryTheEngineBinaryPath(t *testing.T) {
 	bin := canaryEngineBin(t)
 	e := &ClawExecutor{}
 
-	cmd := e.toolNodeCommand(context.Background(), "true", nil)
+	cmd := e.toolNodeCommand(context.Background(), "true", nil).cmd
 	if got := envValue(cmd.Env, sandbox.EngineBinaryEnvVar); got != bin {
 		t.Fatalf("shell command %s = %q, want %q", sandbox.EngineBinaryEnvVar, got, bin)
 	}
 
-	sc := e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py")
+	sc := e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py").cmd
 	if got := envValue(sc.Env, sandbox.EngineBinaryEnvVar); got != bin {
 		t.Fatalf("script command %s = %q, want %q", sandbox.EngineBinaryEnvVar, got, bin)
 	}

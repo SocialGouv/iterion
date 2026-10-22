@@ -1706,6 +1706,22 @@ Architecture:
   Kimi, Grok, and direct tool-node commands reach in via `kubectl exec`.
   Codex is the exception: its pinned SDK cannot use Iterion's outer
   sandbox and the node fails explicitly.
+- **A tool node's end is proven, not read from `kubectl`.** A stream lost
+  behind `kubectl exec` — the API server's WebSocket-to-SPDY translator, a
+  kubelet or container runtime restart — ends the session with status 0 and
+  the output that had arrived, while the command keeps running in the pod.
+  Every command the sandbox runs for a tool node therefore leads its own
+  session and prints a completion line on stdout after its own output: a
+  random nonce and its exit status. The engine strips the line and judges by
+  it. A missing line sweeps the command's node session in the pod — tried
+  again, within three minutes, while its exec cannot reach the pod — and
+  fails the node with `ExecStatusUnknownError`; when no sweep settles it, the
+  failure is recorded as `AMBIGUOUS_EFFECT`, which recovery never retries and
+  the runner never redelivers, save on the paths the amendment lists as
+  residuals (a fan-out that drops the branch, a subbot child read back from
+  its record, an operator cancel in the cloud). Files
+  written into the pod (`WriteFileExec`) are size-checked and proven the same
+  way ([ADR-127 amendment](adr/127-an-agent-nodes-processes-end-with-the-node.md#amendment-2026-10-21--a-sandboxed-tool-node-proves-its-end)).
 - Workspace is provided by an `emptyDir` volume mounted at
   `/workspace`, populated at pod start (V2) by tar-streaming the run's
   workspace (`RunInfo.WorkspacePath`) in via `kubectl exec` — the driver

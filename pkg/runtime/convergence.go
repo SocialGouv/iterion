@@ -145,7 +145,19 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 			return "", fmt.Errorf("%s", msg)
 		}
 	case ir.AwaitBestEffort:
-		// Proceed even with failures — failed branch metadata is exposed.
+		// Proceed even with failures — failed branch metadata is exposed —
+		// unless a branch's effect is undecided: what follows the join would
+		// rely on a call that may already have taken effect, or read a world
+		// a branch's command may still be changing.
+		if amb := firstAmbiguousBranchErr(ordered); amb != nil {
+			return "", &RuntimeError{
+				Code:    ErrCodeAmbiguousEffect,
+				Message: fmt.Sprintf("convergence at %s (best_effort): a branch's effect is undecided: %v", convergenceNodeID, amb),
+				NodeID:  convergenceNodeID,
+				Hint:    "check what the branch left before resuming: its call may have taken effect, or its command may still be running",
+				Cause:   amb,
+			}
+		}
 	}
 
 	// This settled invocation replaces its region's output view. Otherwise a
@@ -481,6 +493,11 @@ func classifiesBranchErr(err error) bool {
 // launders a typed code into EXECUTION_FAILED nor decides, by finishing
 // first or last, what the run's end carries.
 func stoppedBranch(err error) bool {
+	// An undecided effect is never a branch that merely stopped, whatever it
+	// wraps: what it may have done must reach the join's classification.
+	if IsAmbiguousEffect(err) {
+		return false
+	}
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrRunCancelled)
 }
 

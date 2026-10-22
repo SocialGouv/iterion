@@ -1,6 +1,6 @@
 # ADR-127 — An agent node's processes end with the node
 
-- **Status**: Accepted
+- **Status**: Accepted · **amended 2026-10-21** (see [Amendment](#amendment-2026-10-21--a-sandboxed-tool-node-proves-its-end))
 - **Date**: 2026-10-14
 - **Applies to**: every agent node, whatever its backend — the delegated CLIs
   (`claude_code` and its formatting pass, `codex`, `cliagent` and the backends
@@ -189,6 +189,149 @@ such — not a leak that happens to work.
     of the uid, and outlives the node with a line in the log.
 - A tool node's own leftovers are out of scope: a deterministic node that
   backgrounds work and exits 0 is legitimate, and its group is killed on
-  cancel only.
+  cancel only. In a sandbox this held only from the amendment on: see
+  [Amendment (2026-10-21)](#amendment-2026-10-21--a-sandboxed-tool-node-proves-its-end).
 - Cost: in a sandbox, one exec per delegation end, next to the existing CLI
   kill; elsewhere, two `/proc` scans 50 ms apart when the node left nothing.
+
+## Amendment (2026-10-21) — a sandboxed tool node proves its end
+
+The consequence above — a tool node's group "is killed on cancel only" — held
+on the host and not in a sandbox, and the sandbox hid a worse defect behind it.
+
+Measured on a modernization campaign's net rite. The gate node is a tool node
+whose script boots the target's world and applies mutants for two to three and
+a half hours, printing its report only at the end. It finished 52 minutes in,
+with an empty result and no error. Its script was still running in the pod: it
+went on applying mutants to the workspace while the agent node the workflow
+looped into worked there — a mutant was applied in `src/` when that agent
+started; the agent noticed it and stopped the script. The same node, run again
+in the same run, took 2 h 07 and reported normally.
+
+The mechanism, in the code. In a sandbox, a tool node's verdict was the exit
+status of the local exec client — `kubectl exec`, `docker exec`. client-go
+reads an error stream that closed without a status as success, so a stream lost
+behind the client (the API server's WebSocket-to-SPDY translator and the
+kubelet leg behind it, a kubelet or container runtime restart) ends the client
+with status 0 and whatever output had arrived. The engine parsed that output —
+`{result: ""}` for an empty stdout — and the node succeeded. A cancel killed the
+client, and nothing in the pod.
+
+### Decision
+
+7. **A command the sandbox runs for a tool node proves its end.** Every such
+   command — a recipe, a script, a postcondition, a self-repair — is built by
+   one function (`sandboxToolCommand`), which wraps it in a POSIX sh program
+   (`sandbox.Completion`). A driver that runs commands on the engine's own host
+   (`noop`, behind the child-devbox decorator too) hands back the process
+   itself — its exit status is the command's own — and the command runs as it
+   is.
+   - **The command keeps what an exec'd command has.** It leads its own session
+     and process group (`setsid`, where the container has it), so its own
+     `kill 0` reaches its processes, not the wrapper. The wrapper turns off job
+     control and errexit first — both can come from the environment, and
+     either would let `setsid` fork or end the wrapper before its line — and
+     outlives a HUP, INT or TERM sent to it. The session's variable is in the
+     exec's own environment, so the wrapper is of the session too.
+   - **The line.** Once the command has exited, the wrapper prints on stdout
+     one line holding a random nonce and the command's exit status — retried
+     while a stdout the command left non-blocking is full — then exits with
+     that status. On stdout, after everything the command wrote there, the line
+     also proves that the command's whole stdout arrived. The engine reads it
+     back out before anything else sees stdout.
+   - **The line found:** the command ended; the node succeeds only if the
+     client and the line both say 0. A proven end sweeps nothing.
+   - **The line missing:** the end is unknown. The command's session is swept
+     in the container (decision 2's sweep). A sweep whose exec never reached
+     the container — its client could not connect or open the stream — is
+     tried again, backing off: the exec path a stream was lost on is often
+     down a little longer than the stream. Any other unfinished attempt is
+     final: it may have signalled processes no later scan can find again. The
+     whole sweep ends within three minutes — ten seconds on a cancel — and
+     two seconds past that at most, for a killed client something still holds
+     the output of. The node fails with a `sandbox.ExecStatusUnknownError`
+     saying what the sweep stopped and what it could not do; never a success
+     carrying a partial output.
+   - **An end the sweep could not settle** — its program never ran to its end
+     within its budget, or something it signalled survived its KILL — leaves
+     the command possibly running: the error is an ambiguous effect
+     (`runtime.AmbiguousEffect`). A process of the uid no one can read is named
+     and settles nothing either way. An ambiguous effect is recorded as
+     `AMBIGUOUS_EFFECT` above the code a wrapper of the same process gave it
+     (a subbot boundary, the catch-all default) and above a budget deadline
+     that landed with it; its status write is detached from a done context —
+     a cancel, a drain — so that a store does not refuse it, while any other
+     failure that lands with a cancel is left to the cancel's own handling
+     (the status the publisher wrote, the drain's redelivery). Recovery never
+     retries it, the runner and the CLI read it as terminal, the retry sweeper
+     disarms a stale armed retry on it, and a join stops on it, `best_effort`
+     as `wait_all`, a sibling's human pause included. The residuals list
+     where this does not hold yet.
+   - **A Verified Action** stops on an ambiguous end of its recipe, of a
+     self-repair or of its postcondition; a recipe whose end was unknown but
+     settled lends it no output — the postcondition judges, and only its
+     output travels; a cancel ends the node with its cancel, never with a
+     `best_effort` success.
+   - **The input proves its end too.** A recipe over 100 KB is streamed to a
+     private temp file in the container, run only once its size is the size
+     sent, as `bash -s` reading that file — what `bash -s` makes of it, a `read`
+     in it reading its next lines included; a cut stream is refused.
+     A file `WriteFileExec` writes into the sandbox (a script's body pushed
+     into a copy-based sandbox, a credential) is put in place only once its
+     received size is the size sent, by a writer of its own that refuses a
+     directory as its destination and removes its temp file when a signal ends
+     it, and which then says so on stdout — the write is a success only when it
+     said so.
+8. **A tool node that backgrounds work and exits 0 stays legitimate:** a
+   proven end sweeps nothing, on a cancel too.
+
+### Consequences
+
+- A gate whose exec session is lost fails loudly, and the command it started
+  is stopped — or, when it cannot be, the run stops for a human, recorded as
+  such, rather than start a second copy beside it, save on the paths the
+  residuals list.
+- A cancelled sandboxed tool node ends its processes, as a host tool node's
+  group is killed on cancel.
+- Cost: one `sh` per sandboxed tool command; for an unknown end, one exec per
+  sweep attempt; one line on the writer's stdout.
+- Residuals:
+  - a fan-out drops an undecided branch in two cases: the parent's own cancel,
+    drain or deadline ends the fan-out before it reads its branches' results
+    (the fan-out, the per-item fan-out, a router's `multi`); and any cancel
+    the fan-out sends its branches — a `wait_all` sibling's failure, a budget
+    refusal in any await mode, a sibling's human pause — abandons a branch
+    whose sweep outlasts the branch cancel grace (five seconds, where a
+    cancelled sweep may take its ten, and two more for its client). The run
+    then records the other end — a failure, a budget wall, a pause — which a
+    resume, a raised cap or an answer re-drives;
+  - a subbot child read back from its record — one that paused at a human
+    gate, was resumed and then ended undecided — reaches its parent as plain
+    text: the parent records `EXECUTION_FAILED`, and recovery may run a fresh
+    child. The runner's, the CLI's and the dispatcher's subbot waits rebuild
+    the child's error the same way;
+  - an operator cancel in the cloud: the publisher writes `cancelled` before
+    the engine sees the cancel, and the resumable failure write skips a
+    cancelled run, so the run's record says `CANCELLED` while its events say
+    `AMBIGUOUS_EFFECT`. Nothing resumes a cancelled run on its own; a human
+    reading the record alone does not see the undecided effect;
+  - the engine's other execs into the sandbox — the workspace checkpoints
+    (`git add -A` and the commit), the scratch bank, the capture of the
+    workspace head, the git fixups — still take the client's status for the
+    command's end. Closing them takes the same completion at the drivers' exec;
+  - a run whose end stayed ambiguous is torn down as any failed run: its
+    workspace is exported and banked while the command may still be writing.
+    A human reconciles it before reusing the bank;
+  - a sweep that cannot reach a pod that is already gone cannot tell it from
+    an exec path that is down: the run is parked, and a human confirms;
+  - a KILL sent to the wrapper itself ends it before its line: the node fails
+    on an unknown end;
+  - a proven end with a non-zero status sweeps nothing: what the command left
+    running before it failed runs on until the run's container goes, as a host
+    tool node's leftovers do;
+  - `/bin/sh` shells without a `printf` builtin that reports a full
+    non-blocking pipe (mksh, OpenBSD ksh) can lose the line on such a pipe:
+    the node fails on an unknown end;
+  - the guard that every call into an exec seam of `pkg/backend/model` is a
+    listed one reads the syntax: a method value taken through a local alias
+    escapes it; the behavioural tests of the builders stand behind it.

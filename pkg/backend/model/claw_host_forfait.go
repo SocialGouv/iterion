@@ -22,11 +22,11 @@ import (
 const hostCodexForfaitSandboxRoot = "/tmp/iterion-codex-host"
 
 // removeHostCodexForfaitScript removes one dispatch's copy: the file
-// sandbox.WriteFileExec wrote (and its temp file, should the write have
-// stopped half-way), then the directory if nothing else is left in it. Never
-// recursive: what the node wrote there itself stays, and the exit status is
-// the copy's removal alone.
-const removeHostCodexForfaitScript = `rm -f -- "$1/auth.json" "$1/auth.json.tmp" && { rmdir -- "$1" 2>/dev/null || :; }`
+// sandbox.WriteFileExec wrote (and its writers' temp files, auth.json.tmp.<pid>,
+// should a write have stopped half-way), then the directory if nothing else is
+// left in it. Never recursive: what the node wrote there itself stays, and the
+// exit status is the copy's removal alone.
+const removeHostCodexForfaitScript = `rm -f -- "$1/auth.json" "$1"/auth.json.tmp.* && { rmdir -- "$1" 2>/dev/null || :; }`
 
 // hostCodexForfait returns what a sandboxed claw node on model is handed of
 // the HOST's ChatGPT forfait, when the in-process path spends that forfait —

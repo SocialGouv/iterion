@@ -1,7 +1,9 @@
 package sandbox_test
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,5 +89,41 @@ func TestWriteFileExec_SurfacesWriterFailure(t *testing.T) {
 	err := sandbox.WriteFileExec(context.Background(), run, filepath.Join(block, "child"), []byte("x"))
 	if err == nil || !strings.Contains(err.Error(), "exited") {
 		t.Fatalf("expected a writer-exited error, got %v", err)
+	}
+}
+
+// cutStdinRun hands the writer only the first half of its stdin: a stream
+// cut short behind an exec client that still reports the writer's status.
+type cutStdinRun struct{ sandbox.Run }
+
+func (c cutStdinRun) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	if opts.Stdin != nil {
+		b, err := io.ReadAll(opts.Stdin)
+		if err != nil {
+			return sandbox.ExecResult{}, err
+		}
+		opts.Stdin = bytes.NewReader(b[:len(b)/2])
+	}
+	return c.Run.Exec(ctx, cmd, opts)
+}
+
+// A stream cut short leaves no prefix of the content in place of the whole:
+// the file keeps what it held, and the write fails naming what arrived.
+func TestWriteFileExec_ACutStreamLeavesNoPrefix(t *testing.T) {
+	run := noopRun(t)
+	target := filepath.Join(t.TempDir(), "script.py")
+	if err := sandbox.WriteFileExec(context.Background(), run, target, []byte("old\n")); err != nil {
+		t.Fatalf("WriteFileExec: %v", err)
+	}
+	err := sandbox.WriteFileExec(context.Background(), cutStdinRun{run}, target, []byte("print('first half')\nprint('second half')\n"))
+	if err == nil || !strings.Contains(err.Error(), "received") {
+		t.Fatalf("a cut stream was written without a word: %v", err)
+	}
+	got, rerr := os.ReadFile(target)
+	if rerr != nil || string(got) != "old\n" {
+		t.Fatalf("a cut stream replaced the file: %q, %v", got, rerr)
+	}
+	if _, serr := os.Stat(target + ".tmp"); !os.IsNotExist(serr) {
+		t.Errorf("the partial temp file was left behind: %v", serr)
 	}
 }

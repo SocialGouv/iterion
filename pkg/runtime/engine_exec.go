@@ -553,8 +553,11 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 			// the cap as it now stands? — so any raise that buys real room
 			// lets the expiry fall through to ordinary recovery dispatch,
 			// instead of a budget stop naming a limit that no longer exists.
+			//
+			// An undecided end is not a budget stop even then: a raised cap
+			// would resume it beside a command that may still be running.
 			e.drainOverrides(rs)
-			if rem, bounded := rs.budget.RemainingDuration(); bounded && rem <= 0 {
+			if rem, bounded := rs.budget.RemainingDuration(); bounded && rem <= 0 && !IsAmbiguousEffect(execErr) {
 				used, limit, _ := rs.budget.DurationStatus()
 				e.recordFailedNodeSpend(rs, currentNodeID, output)
 				return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{

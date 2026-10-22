@@ -721,3 +721,26 @@ func TestSweepDueRetries_APoolRemapAbandonsInsteadOfReArming(t *testing.T) {
 	// non-idempotent $inc). Asserting the count needs the cloud-gate harness
 	// (auth store + org resolution wired) — deferred to P1b, which wires it.
 }
+
+// A run whose last failure left an effect undecided is final for automation:
+// its stale armed retry is disarmed, never resumed — a resume could repeat a
+// call that already took effect, or run a node beside a command still running.
+func TestSweepDueRetries_AmbiguousRunIsDisarmedNotResumed(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-amb"] = true
+	st.loadRun["run-amb"] = &store.Run{
+		ID: "run-amb", TenantID: "team-1",
+		Status:      store.RunStatusFailedResumable,
+		FailureCode: store.FailureAmbiguousEffect,
+	}
+	resumer := &fakeResumer{}
+	s := newRetrySweeperServer(t, st, resumer)
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-amb", time.Now().UTC().Add(-time.Minute))}}, resumer, time.Now().UTC())
+	if len(resumer.calls) != 0 {
+		t.Fatalf("Resume called %d times for a run whose effect is undecided, want 0", len(resumer.calls))
+	}
+	reason, ok := st.abandoned["run-amb"]
+	if !ok || !strings.Contains(reason, "AMBIGUOUS_EFFECT") {
+		t.Fatalf("the stale retry was not disarmed naming the undecided effect: %q (%v)", reason, ok)
+	}
+}

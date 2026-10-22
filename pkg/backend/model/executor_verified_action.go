@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // Verified Action ladder (ADR-044).
@@ -77,6 +77,17 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 		// Build / policy failure — not a recoverable recipe error.
 		return nil, setupErr
 	}
+	if ambiguousEnd(res.runErr) {
+		return nil, res.runErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if errors.Is(res.runErr, sandbox.ErrExecStatusUnknown) {
+		// A recipe whose end was never proven left a partial output: the
+		// postcondition judges the effect, and only its output travels.
+		res.output = nil
+	}
 	if res.runErr != nil {
 		// The ladder judges the recipe by its postcondition, not by this
 		// error — but the error is still what happened, so it is recorded.
@@ -103,6 +114,15 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 				if rerr != nil {
 					e.logVA(node.ID, fmt.Sprintf("self-repair attempt %d aborted: %v", i+1, rerr))
 					break
+				}
+				if ambiguousEnd(repairRes.runErr) {
+					return nil, repairRes.runErr
+				}
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if errors.Is(repairRes.runErr, sandbox.ErrExecStatusUnknown) {
+					repairRes.output = nil
 				}
 				lastRung = "self_repair"
 				met, pcOut, pcErr = e.runPostcondition(ctx, node, input)
@@ -137,7 +157,11 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 		}
 	}
 
-	// Rung 5 — policy.
+	// Rung 5 — policy. A cancelled node ends with its cancel, never with a
+	// best_effort success built on what the cancel cut short.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if policy == ir.PolicyBestEffort {
 		e.logVA(node.ID, "postcondition unmet after recipe; policy: best_effort → warn + continue")
 		out := e.verifiedOutput(res.output, nil, lastRung, false, policy)
@@ -196,7 +220,7 @@ func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode,
 
 func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, input map[string]any) (met bool, output map[string]any, err error) {
 	resolve := func() string { return e.postconditionBody(ctx, node, input) }
-	buildCmd := func(resolved string) (*exec.Cmd, func(), error) {
+	buildCmd := func(resolved string) (toolCommand, func(), error) {
 		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
 		return e.toolNodeCommand(ctx, materialized, env), nil, nil
 	}
@@ -204,7 +228,19 @@ func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, 
 	if setupErr != nil {
 		return false, nil, fmt.Errorf("model: tool node %q: postcondition: %w", node.ID, setupErr)
 	}
+	if ambiguousEnd(res.runErr) {
+		return false, nil, fmt.Errorf("model: tool node %q: postcondition: %w", node.ID, res.runErr)
+	}
 	return res.runErr == nil, res.output, nil
+}
+
+// ambiguousEnd reports whether err is a sandboxed command's unknown end whose
+// sweep could not finish (sandbox.ExecStatusUnknownError): the command may
+// still be running, so no rung after it can judge the world it may still be
+// changing — the ladder stops on it, and the runtime retries nothing.
+func ambiguousEnd(err error) bool {
+	var unknown *sandbox.ExecStatusUnknownError
+	return errors.As(err, &unknown) && unknown.AmbiguousEffect()
 }
 
 // selfRepair (rung 3) asks an LLM for a corrected command from the failure
@@ -269,7 +305,7 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 	// Run the corrected command deterministically as a shell command. The
 	// resolved (placeholder-form) command is what hooks/events persist.
 	resolve := func() string { return corrected }
-	buildCmd := func(resolved string) (*exec.Cmd, func(), error) {
+	buildCmd := func(resolved string) (toolCommand, func(), error) {
 		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
 		return e.toolNodeCommand(ctx, materialized, env), nil, nil
 	}

@@ -28,13 +28,13 @@ func TestToolNodeCommandsCarryTheTreeNoiseEnvWithoutAnyProvisioning(t *testing.T
 
 	e := &ClawExecutor{} // no sandbox, no artifact dir, no runExtraEnv, no devbox
 
-	cmd := e.toolNodeCommand(context.Background(), "git status --porcelain -- ':/'", nil)
+	cmd := e.toolNodeCommand(context.Background(), "git status --porcelain -- ':/'", nil).cmd
 	got := envValue(cmd.Env, "ITERION_TREE_NOISE")
 	if got != treenoise.EnvValue() {
 		t.Fatalf("shell command ITERION_TREE_NOISE = %q, want %q", got, treenoise.EnvValue())
 	}
 
-	sc := e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py")
+	sc := e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py").cmd
 	got = envValue(sc.Env, "ITERION_TREE_NOISE")
 	if got != treenoise.EnvValue() {
 		t.Fatalf("script command ITERION_TREE_NOISE = %q, want %q", got, treenoise.EnvValue())
@@ -58,7 +58,7 @@ func TestToolNodeCommandsKeepTheInheritedEnvironment(t *testing.T) {
 	t.Setenv("ITERION_NOISE_CANARY", "here")
 	e := &ClawExecutor{}
 
-	cmd := e.toolNodeCommand(context.Background(), "true", nil)
+	cmd := e.toolNodeCommand(context.Background(), "true", nil).cmd
 	if envValue(cmd.Env, "ITERION_NOISE_CANARY") != "here" {
 		t.Fatalf("the inherited environment was dropped: ITERION_NOISE_CANARY missing from %q", cmd.Env)
 	}
@@ -82,7 +82,7 @@ func envValue(env []string, key string) string {
 // nil base (which would drop the inherited environment silently).
 func TestToolNodeEnvBaseIsTheInheritedEnvironment(t *testing.T) {
 	e := &ClawExecutor{}
-	cmd := e.toolNodeCommand(context.Background(), "true", nil)
+	cmd := e.toolNodeCommand(context.Background(), "true", nil).cmd
 	parent := os.Environ()
 	if len(cmd.Env) < len(parent) {
 		t.Fatalf("cmd.Env has %d entries, want at least the parent's %d", len(cmd.Env), len(parent))
@@ -194,14 +194,14 @@ func TestToolNodeCommandsStepAsideForARunOrNodeValue(t *testing.T) {
 	e := &ClawExecutor{}
 	e.SetRunExtraEnv([]string{"ITERION_TREE_NOISE=':(exclude,top)vendor'"})
 
-	cmd := e.toolNodeCommand(context.Background(), "true", nil)
+	cmd := e.toolNodeCommand(context.Background(), "true", nil).cmd
 	entries := envEntries(cmd.Env, "ITERION_TREE_NOISE")
 	if len(entries) != 1 || entries[0] != "':(exclude,top)vendor'" {
 		t.Fatalf("shell command ITERION_TREE_NOISE entries = %q, want exactly the run's value", entries)
 	}
 
 	nodeEnv := map[string]string{treenoise.TreeNoiseEnvVar: "':(exclude,top)node'"}
-	cmd = e.toolNodeCommand(context.Background(), "true", nodeEnv)
+	cmd = e.toolNodeCommand(context.Background(), "true", nodeEnv).cmd
 	entries = envEntries(cmd.Env, "ITERION_TREE_NOISE")
 	// The node's env map is appended after the run's env, and the CHILD's
 	// env dedups last-wins (bash and every interpreter here) — what
@@ -210,7 +210,7 @@ func TestToolNodeCommandsStepAsideForARunOrNodeValue(t *testing.T) {
 		t.Fatalf("shell command with a node-env value = %q, want the node's value last", entries)
 	}
 
-	sc := e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py")
+	sc := e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py").cmd
 	entries = envEntries(sc.Env, "ITERION_TREE_NOISE")
 	if len(entries) != 1 || entries[0] != "':(exclude,top)vendor'" {
 		t.Fatalf("script command ITERION_TREE_NOISE entries = %q, want exactly the run's value", entries)
