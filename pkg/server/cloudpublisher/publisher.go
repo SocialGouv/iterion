@@ -4151,13 +4151,19 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// answer; the windows it consults are volatile and re-resolve). The
 	// ladder recomputes from the re-sealed bundle and rides THIS attempt's
 	// RunMessage; the doc's own Fallback stays the operator's.
-	// The resume reads the run's OWN inputs — the launch persisted them,
-	// and nothing rewrites them — through the launch view, with no trusted
-	// set: the trust question was answered at the launch, and the frozen
-	// pinned set beside it (prior.PinnedProviders) is the launch's answer
-	// replayed. A stored value that is not a text is undecided for the
-	// screens (launchVarsAsStrings keeps texts only).
-	resumeView := model.RouteViewForLaunch(wf, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Inputs, nil)
+	// The resume reads the run's OWN inputs — the launch persisted them and
+	// nothing rewrites them — through the DISPATCH view, the reading the
+	// runner applies to those same values: the run spends what its inputs
+	// say. The trust question (who may CERTIFY a route) was answered at the
+	// launch and is frozen beside them (prior.PinnedProviders, the policy's
+	// own Providers); a resume certifies nothing new, so declaring the run's
+	// inputs late here would leave every templated routing field undecided
+	// and refuse the resume of a run the launch admitted — under a non-empty
+	// allowlist, a paused run could never be answered (ADR-129 §7's parity:
+	// fill, restore, preview and dispatch read one program one way). A
+	// stored value that is not a text is undecided for the screens
+	// (launchVarsAsStrings keeps texts only).
+	resumeView := model.RouteViewForDispatch(wf, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Inputs)
 	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy)
 	grant = creds.poolLease()
 	// Armed before the error check — see SubmitLaunch. Runs before the

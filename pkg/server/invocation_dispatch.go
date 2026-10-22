@@ -330,6 +330,21 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 			botArgs[boardSecretOverridesKey] = string(raw)
 		}
 	}
+	// Name the integration whose LAUNCH-POLICY layers the card's launch must
+	// resolve — its routing block (ADR-129's per-integration cells and its
+	// `providers:` allowlist) and its retry block. The reason is stronger
+	// than for the keys above: a board-mode run that applies this
+	// integration's BYOK credential while resolving no routing layer spends
+	// that credential with the integration's own lock on where it may be
+	// spent ABSENT. The direct lane passes both layers to the resolvers
+	// (launchWebhookBot); a card lane reads them back from this id
+	// (cardLaunchPolicyLayers), so the live config answers and the level the
+	// run records is the level that decided.
+	if cfg.ID != "" {
+		botArgs[boardWebhookIDKey] = cfg.ID
+	} else if s.logger != nil {
+		s.logger.Warn("webhooks: board card for %s/%s names no integration (the config carries no id), so its launch resolves no integration-level routing or retry block", cfg.TenantID, route.BotID)
+	}
 	body := boardCardBody(route, vars, meta)
 	if _, err := store.Create(native.Issue{
 		Title:    truncate(title, 120),

@@ -46,6 +46,25 @@ func node(id, backend, provider, mdl string) *ir.AgentNode {
 	}
 }
 
+// assertWorkflowDialsFrozen is assertNoHostAnsweredDial for a fixture built
+// as NODES rather than as source text: the rows below carry this repo's own
+// `${…}` dials, each one a text the derivation expands through the process
+// environment, so the freeze that makes a row answer from its own default is
+// checked field by field against the reader itself. A dial a row grows
+// without its freeze refuses the row on the host that would have flipped it,
+// whatever form the reference takes.
+func assertWorkflowDialsFrozen(t *testing.T, wf *ir.Workflow) {
+	t.Helper()
+	for _, n := range wf.Nodes {
+		llm, ok := n.(ir.LLMNode)
+		if !ok {
+			continue
+		}
+		f := llm.GetLLMFields()
+		assertNoHostAnsweredDial(t, f.Backend, f.Provider, f.Model)
+	}
+}
+
 // securedRenovacyShape is bots/secured-renovacy: thirteen claude_code
 // nodes pinned `provider: "${RESCUE_PROVIDER:-zai}"` next to nodes that
 // pin nothing under `default_backend: claude_code`.
@@ -116,6 +135,7 @@ func TestWantsFor_ABRows_FailOpenOnUnresolvedAndNarrowOnResolved(t *testing.T) {
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
+			assertWorkflowDialsFrozen(t, row.wf)
 			got, res := wantsFor(model.RouteView{Workflow: row.wf})
 			if len(got) != row.wantCount {
 				t.Fatalf("wants = %v (%d), want %d — resolution %+v", wantKeys(got), len(got), row.wantCount, res)
@@ -135,6 +155,7 @@ func TestWantsFor_ABRows_FailOpenOnUnresolvedAndNarrowOnResolved(t *testing.T) {
 // and the run fell to the platform tier.
 func TestPoolTier_securedRenovacyShapeIsServedByADonor(t *testing.T) {
 	t.Setenv("RESCUE_PROVIDER", "")
+	assertWorkflowDialsFrozen(t, securedRenovacyShape())
 	var buf bytes.Buffer
 	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
 	f.pub.logger = iterlog.New(iterlog.LevelInfo, &buf)

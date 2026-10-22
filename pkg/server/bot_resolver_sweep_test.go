@@ -62,6 +62,10 @@ var teamlessResolveAllowed = map[string]string{
 	// launchTicketNow (the board's "launch now" and the task create/update
 	// checks) hold an authenticated identity and pass its team.
 	"pipeline_admission.go": "the admission loop is local-only; its board has no tenancy, so the launch it drives resolves platform-over-baked",
+	// The platform ADMIN view, not a launch: it answers "what does this
+	// deployment resolve with no tenant and no bot" for the settings page,
+	// which is the one reading that must not touch identity.
+	"platform_settings.go": "the platform-level effective-routing read of the admin settings view, deliberately identity-free",
 }
 
 func TestBotResolutionSweep_NoLiteralTeamlessResolution(t *testing.T) {
@@ -73,7 +77,7 @@ func TestBotResolutionSweep_NoLiteralTeamlessResolution(t *testing.T) {
 	// Only a LITERAL "" is decidable statically; a variable that happens to
 	// be empty at run time is the caller's own contract to keep.
 	teamless := regexp.MustCompile(
-		`(?:resolveBot(?:Source|Tiered(?:Raw)?)?|resolvePipelineBot|launchTicketNow|resolveRunRetryPolicy|handoffConsumersFor|botVarDefault|botManifestFor|effectiveFindByNameForTeam|effectiveEntriesFor(?:Team)?|botExistsForTeam|botConfigShareSpec|boardRouteForLabel|cmdDiscoveryFor|entryOriginFor|teamHandoffProducers|forgeBot(?:Entry|Forge|Invocations))\([^,]+,\s*""`)
+		`(?:resolveBot(?:Source|Tiered(?:Raw)?)?|resolvePipelineBot|launchTicketNow|resolveRunRetryPolicy|resolveRunLLMRoutePolicy|handoffConsumersFor|botVarDefault|botManifestFor|effectiveFindByNameForTeam|effectiveEntriesFor(?:Team)?|botExistsForTeam|botConfigShareSpec|boardRouteForLabel|cmdDiscoveryFor|entryOriginFor|teamHandoffProducers|forgeBot(?:Entry|Forge|Invocations))\([^,]+,\s*""`)
 	sweepServerFiles(t, func(name, body string) {
 		if !teamless.MatchString(body) {
 			return
