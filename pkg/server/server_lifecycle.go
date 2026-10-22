@@ -297,7 +297,7 @@ func (s *Server) ListenAndServe() error {
 	// managed forge_token secrets) fresh so bot runs never read an expired
 	// credential. PAT connections are skipped by the worker. No-op when the
 	// forge orchestrator isn't wired (local mode).
-	if s.forgeOrchestrator != nil {
+	if s.forgeTokenRefreshStarts() {
 		worker := &forge.RefreshWorker{
 			Connections:    s.forgeConnections,
 			Secrets:        s.genericSecrets,
@@ -319,21 +319,7 @@ func (s *Server) ListenAndServe() error {
 			}
 		}
 		s.goUntilShutdown("server.forgeTokenRefresh", func(ctx context.Context) {
-			// Boot sweep: a rolling deploy re-phases the ticker below onto the
-			// new pod's start time, so a token that was about to be refreshed by
-			// the old replica's next tick could otherwise sit dying until this
-			// replica's first tick, up to a full period away.
-			sweep(ctx)
-			t := time.NewTicker(forgeRefreshTick)
-			defer t.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					sweep(ctx)
-				}
-			}
+			s.runElectedForgeTokenRefresh(ctx, forgeRefreshTick, sweep)
 		})
 	}
 	s.startOAuthForfaitRefresh()
