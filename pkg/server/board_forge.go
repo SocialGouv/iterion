@@ -767,7 +767,7 @@ func (s *Server) handlePushIssueToForge(w http.ResponseWriter, r *http.Request) 
 	_, connID, repo, number := forgeLinkOf(card)
 	// Already linked → update the existing forge issue from the card.
 	if connID != "" && repo != "" && number > 0 {
-		ic, conn, ok := s.issueClientForConn(w, r.Context(), id.TeamID, connID)
+		ic, conn, ok := s.issueWriterForConn(w, r.Context(), id.TeamID, connID, repo)
 		if !ok {
 			return
 		}
@@ -782,15 +782,17 @@ func (s *Server) handlePushIssueToForge(w http.ResponseWriter, r *http.Request) 
 			httpError(w, http.StatusBadGateway, "update forge issue: %v", err)
 			return
 		}
+		s.auditTenant(r, id.TeamID, "forge.board.issue_updated", "board_card", card.ID, boardForgeAuditMeta(conn, repo, ref.Number))
 		writeJSON(w, pushIssueResp{URL: ref.URL, Number: ref.Number, Provider: string(conn.Provider)})
 		return
 	}
 	// Unlinked → create a new forge issue; body+repo required.
-	if strings.TrimSpace(req.ConnectionID) == "" || strings.TrimSpace(req.Repo) == "" {
+	req.ConnectionID, req.Repo = strings.TrimSpace(req.ConnectionID), strings.TrimSpace(req.Repo)
+	if req.ConnectionID == "" || req.Repo == "" {
 		httpError(w, http.StatusBadRequest, "connection_id and repo are required to push an unlinked card")
 		return
 	}
-	ic, conn, ok := s.issueClientForConn(w, r.Context(), id.TeamID, req.ConnectionID)
+	ic, conn, ok := s.issueWriterForConn(w, r.Context(), id.TeamID, req.ConnectionID, req.Repo)
 	if !ok {
 		return
 	}
@@ -801,6 +803,8 @@ func (s *Server) handlePushIssueToForge(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusBadGateway, "create forge issue: %v", err)
 		return
 	}
+	// Audited here: the forge write happened, whether or not the link below lands.
+	s.auditTenant(r, id.TeamID, "forge.board.issue_pushed", "board_card", card.ID, boardForgeAuditMeta(conn, req.Repo, ref.Number))
 	// Stamp the card with its new forge linkage so future pushes update it.
 	// A failed stamp must surface: an unlinked card whose forge issue exists
 	// would silently create a duplicate on the next push.
@@ -816,6 +820,40 @@ func (s *Server) handlePushIssueToForge(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, pushIssueResp{URL: ref.URL, Number: ref.Number, Provider: string(conn.Provider)})
+}
+
+// boardOpenedPullMarker is written into the description of every pull
+// request the board lane opens. Its author on the forge is the connection's
+// writer — the minted bot on a connection that posts as project bots, the
+// App on a GitHub App connection — and the webhook lanes skip the auto-review
+// of a pull request iterion's own bot authored (a bot run's pull request has
+// converged in its own loop). A pull request opened from a card is human
+// work, so the marker tells those guards to review it as one (#2681).
+const boardOpenedPullMarker = "<!-- iterion:opened-from-board -->"
+
+// withBoardOpenedPullMarker appends the marker to a pull request body — once:
+// a body that already carries it (a card's text copied back) is left as is.
+func withBoardOpenedPullMarker(body string) string {
+	if strings.Contains(body, boardOpenedPullMarker) {
+		return body
+	}
+	body = strings.TrimRight(body, "\n ")
+	if body == "" {
+		return boardOpenedPullMarker
+	}
+	return body + "\n\n" + boardOpenedPullMarker
+}
+
+// boardForgeAuditMeta is what a board-lane write records in the tenant's
+// audit log next to the acting user: the connection, the repository, the
+// number on the forge, and which identity posted there — the repository's
+// minted bot, or the connection's own credential.
+func boardForgeAuditMeta(conn forge.Connection, repo string, number int) map[string]any {
+	identity := "connection"
+	if conn.MintsProjectBots() {
+		identity = "project_bot"
+	}
+	return map[string]any{"connection_id": conn.ID, "provider": string(conn.Provider), "repo": repo, "number": number, "posted_as": identity}
 }
 
 // ---------------------------------------------------------------------------
@@ -902,7 +940,7 @@ func (s *Server) handleCreateIssuePull(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "connection_id and repo are required for an unlinked card")
 		return
 	}
-	pc, _, ok := s.pullClientForConn(w, r.Context(), id.TeamID, connID)
+	pc, conn, ok := s.pullWriterForConn(w, r.Context(), id.TeamID, connID, repo)
 	if !ok {
 		return
 	}
@@ -912,7 +950,7 @@ func (s *Server) handleCreateIssuePull(w http.ResponseWriter, r *http.Request) {
 	}
 	ref, err := pc.CreatePull(r.Context(), repo, forge.NewPull{
 		Title:        title,
-		Body:         req.Body,
+		Body:         withBoardOpenedPullMarker(req.Body),
 		SourceBranch: req.SourceBranch,
 		TargetBranch: req.TargetBranch,
 		Draft:        req.Draft,
@@ -921,6 +959,7 @@ func (s *Server) handleCreateIssuePull(w http.ResponseWriter, r *http.Request) {
 		writeForgePullError(w, "create pull request", err)
 		return
 	}
+	s.auditTenant(r, id.TeamID, "forge.board.pull_opened", "board_card", card.ID, boardForgeAuditMeta(conn, repo, ref.Number))
 	writeJSON(w, ref)
 }
 
@@ -955,7 +994,7 @@ func (s *Server) handleMergeIssuePull(w http.ResponseWriter, r *http.Request) {
 	}
 	var req mergePullReq
 	_ = decodeJSONOptional(r, &req)
-	pc, _, ok := s.pullClientForConn(w, r.Context(), id.TeamID, connID)
+	pc, conn, ok := s.pullWriterForConn(w, r.Context(), id.TeamID, connID, repo)
 	if !ok {
 		return
 	}
@@ -969,6 +1008,7 @@ func (s *Server) handleMergeIssuePull(w http.ResponseWriter, r *http.Request) {
 		writeForgePullError(w, "merge pull request", err)
 		return
 	}
+	s.auditTenant(r, id.TeamID, "forge.board.pull_merged", "board_card", card.ID, boardForgeAuditMeta(conn, repo, number))
 	writeJSON(w, ref)
 }
 
@@ -1107,10 +1147,11 @@ func (s *Server) cardFromPath(w http.ResponseWriter, r *http.Request, board nati
 	return card, true
 }
 
-// connAdminFor resolves a team connection and its forge.Admin client,
-// writing the appropriate HTTP error and returning ok=false on any
-// failure. Shared by issueClientForConn/pullClientForConn, which each
-// perform their own type assertion on the returned admin client.
+// connAdminFor resolves a team connection and its forge.Admin client — the
+// connection's own credential, the grant on an OAuth connection — writing the
+// appropriate HTTP error and returning ok=false on any failure. It serves the
+// board lane's READS (pullClientForConn: listing and reading pull requests);
+// its writes go through connWriterFor.
 func (s *Server) connAdminFor(w http.ResponseWriter, ctx context.Context, teamID, connID string) (forge.Admin, forge.Connection, bool) {
 	conn, err := s.forgeConnections.Get(ctx, connID)
 	if err != nil || conn.TenantID != teamID {
@@ -1126,18 +1167,52 @@ func (s *Server) connAdminFor(w http.ResponseWriter, ctx context.Context, teamID
 	return admin, conn, true
 }
 
-// issueClientForConn resolves a team connection to a forge.IssueClient.
-func (s *Server) issueClientForConn(w http.ResponseWriter, ctx context.Context, teamID, connID string) (forge.IssueClient, forge.Connection, bool) {
-	admin, conn, ok := s.connAdminFor(w, ctx, teamID, connID)
+func (s *Server) connWriterFor(w http.ResponseWriter, ctx context.Context, teamID, connID, repo string) (forge.Admin, forge.Connection, bool) {
+	conn, err := s.forgeConnections.Get(ctx, connID)
+	if err != nil || conn.TenantID != teamID {
+		httpError(w, http.StatusNotFound, "connection not found")
+		return nil, forge.Connection{}, false
+	}
+	writer, err := s.forgeWriterFor(ctx, conn, repo)
+	switch {
+	case errors.Is(err, forge.ErrRepoNotEnabled):
+		// 409 like the launch lane's refusal of the same condition: the
+		// repository's state, not a conditional header.
+		httpError(w, http.StatusConflict, "%v — enable the repository's bots on this connection first", err)
+		return nil, forge.Connection{}, false
+	case err != nil:
+		// Network-free failure (the writer only reads the integration and
+		// unseals its secret): our own outage, so 500, not 502.
+		httpError(w, http.StatusInternalServerError, "writer client: %v", err)
+		return nil, forge.Connection{}, false
+	}
+	return writer, conn, true
+}
+
+func (s *Server) issueWriterForConn(w http.ResponseWriter, ctx context.Context, teamID, connID, repo string) (forge.IssueClient, forge.Connection, bool) {
+	writer, conn, ok := s.connWriterFor(w, ctx, teamID, connID, repo)
 	if !ok {
 		return nil, forge.Connection{}, false
 	}
-	ic, ok := admin.(forge.IssueClient)
+	ic, ok := writer.(forge.IssueClient)
 	if !ok {
-		httpError(w, http.StatusNotImplemented, "%v", forgeCapabilityErr(conn, admin, "IssueClient"))
+		httpError(w, http.StatusNotImplemented, "%v", forgeCapabilityErr(conn, writer, "IssueClient"))
 		return nil, forge.Connection{}, false
 	}
 	return ic, conn, true
+}
+
+func (s *Server) pullWriterForConn(w http.ResponseWriter, ctx context.Context, teamID, connID, repo string) (forge.PullClient, forge.Connection, bool) {
+	writer, conn, ok := s.connWriterFor(w, ctx, teamID, connID, repo)
+	if !ok {
+		return nil, forge.Connection{}, false
+	}
+	pc, ok := writer.(forge.PullClient)
+	if !ok {
+		httpError(w, http.StatusNotImplemented, "%v", forgeCapabilityErr(conn, writer, "PullClient"))
+		return nil, forge.Connection{}, false
+	}
+	return pc, conn, true
 }
 
 func (s *Server) pullClientForConn(w http.ResponseWriter, ctx context.Context, teamID, connID string) (forge.PullClient, forge.Connection, bool) {

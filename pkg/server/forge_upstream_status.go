@@ -87,7 +87,7 @@ import (
 //	  forge.ErrNotMergeable                0  same — the forge stays authoritative on its merge state
 //	  forge.ErrProjectBotNotPermitted      0  the provisioning route answers 403 project_bot_not_permitted itself
 //	  forge.ErrProjectBotUnsupported       0  a configuration contradiction; the provisioning route answers 422
-//	  forge.ErrRepoNotEnabled              0  iterion's own state; the launch route answers 409
+//	  forge.ErrRepoNotEnabled              0  iterion's own state; the launch route and the board lane's writes answer 409
 func forgeUpstreamStatus(err error) (int, string) {
 	if err == nil {
 		return 0, ""

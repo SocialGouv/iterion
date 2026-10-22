@@ -151,7 +151,9 @@ func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forg
 
 // forgeWriterFor is the client every server-mediated forge WRITE on
 // (conn, repo) posts with — review notes, commit statuses, approvals,
-// reviewer sets, verdict and pause comments. On a connection that posts as
+// reviewer sets, verdict and pause comments, and the board lane's writes (a
+// card pushed to an issue, a pull request opened or merged from a card,
+// board_forge.go). On a connection that posts as
 // per-repository bots it is the repository's MINTED bot, opened from the
 // integration's own secret: the identity the webhook's BotLogin names and
 // the actor guard recognises. Everywhere else it is the connection's own
