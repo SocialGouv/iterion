@@ -243,6 +243,73 @@ func TestCalls_OnADoneContextFailAndChangeNothing(t *testing.T) {
 			t.Fatal("Release on a done context returned nil, want an error")
 		}
 		mustAcquire(t, ctx, st, "d", t0.Add(ttl+time.Second), false) // c still holds it
+		if _, held, err := st.Holder(done, "sweeper"); err == nil {
+			t.Fatalf("Holder on a done context = held %v, nil error; want an error", held)
+		}
+	})
+}
+
+// Holder is the read a health answer makes from any replica: who holds the
+// lease, and until when the store believes it.
+func TestHolder_NamesTheOwnerAndTheRecordedExpiry(t *testing.T) {
+	forEachStore(t, func(t *testing.T, ctx context.Context, st Store) {
+		if h, held, err := st.Holder(ctx, "sweeper"); err != nil || held {
+			t.Fatalf("Holder of a lease never taken = %+v, held %v, %v; want not held", h, held, err)
+		}
+		mustAcquire(t, ctx, st, "a", t0, true)
+		h, held, err := st.Holder(ctx, "sweeper")
+		if err != nil || !held {
+			t.Fatalf("Holder after Acquire = held %v, %v; want held", held, err)
+		}
+		if h.Owner != "a" || !h.ExpiresAt.Equal(t0.Add(ttl)) {
+			t.Fatalf("Holder after Acquire = %+v, want owner a expiring at %s", h, t0.Add(ttl).Format(time.RFC3339Nano))
+		}
+		mustRenew(t, ctx, st, "a", t0.Add(ttl/2), true)
+		if h, _, _ = st.Holder(ctx, "sweeper"); h.Owner != "a" || !h.ExpiresAt.Equal(t0.Add(ttl/2+ttl)) {
+			t.Fatalf("Holder after Renew = %+v, want owner a expiring at %s", h, t0.Add(ttl/2+ttl).Format(time.RFC3339Nano))
+		}
+		if err := st.Release(ctx, "sweeper", "a"); err != nil {
+			t.Fatalf("Release: %v", err)
+		}
+		if h, held, err := st.Holder(ctx, "sweeper"); err != nil || held {
+			t.Fatalf("Holder after Release = %+v, held %v, %v; want not held", h, held, err)
+		}
+	})
+}
+
+// An expired lease nobody took is still its owner's (Renew), so Holder still
+// names that owner — with the past expiry, for the reader to judge; a takeover
+// moves the name to the new owner.
+func TestHolder_AnExpiredLeaseStillNamesItsOwnerUntilATakeover(t *testing.T) {
+	forEachStore(t, func(t *testing.T, ctx context.Context, st Store) {
+		mustAcquire(t, ctx, st, "a", t0, true)
+		later := t0.Add(2 * ttl)
+		h, held, err := st.Holder(ctx, "sweeper")
+		if err != nil || !held || h.Owner != "a" || !h.ExpiresAt.Before(later) {
+			t.Fatalf("Holder of an expired lease = %+v, held %v, %v; want owner a with an expiry before %s", h, held, err, later.Format(time.RFC3339Nano))
+		}
+		mustAcquire(t, ctx, st, "b", later, true)
+		if h, held, err = st.Holder(ctx, "sweeper"); err != nil || !held || h.Owner != "b" || !h.ExpiresAt.Equal(later.Add(ttl)) {
+			t.Fatalf("Holder after a takeover = %+v, held %v, %v; want owner b expiring at %s", h, held, err, later.Add(ttl).Format(time.RFC3339Nano))
+		}
+	})
+}
+
+// Holder reads by name like the writes, and refuses an empty name.
+func TestHolder_IsKeyedByNameAndRefusesAnEmptyOne(t *testing.T) {
+	forEachStore(t, func(t *testing.T, ctx context.Context, st Store) {
+		if ok, err := st.Acquire(ctx, "one", "a", t0, ttl); err != nil || !ok {
+			t.Fatalf("Acquire(one, a) = %v, %v", ok, err)
+		}
+		if h, held, err := st.Holder(ctx, "two"); err != nil || held {
+			t.Fatalf("Holder(two) = %+v, held %v, %v; want not held", h, held, err)
+		}
+		if h, held, err := st.Holder(ctx, " one "); err != nil || !held || h.Owner != "a" {
+			t.Fatalf("Holder(one) = %+v, held %v, %v; want owner a", h, held, err)
+		}
+		if _, _, err := st.Holder(ctx, "  "); err == nil {
+			t.Fatal("Holder of an empty name returned nil, want an error")
+		}
 	})
 }
 
@@ -434,5 +501,33 @@ func TestMongoStore_ARenewalHeldUpPastTheReleaseDoesNotRecreateTheLease(t *testi
 		var doc bson.M
 		_ = coll.FindOne(ctx, bson.M{"_id": "sweeper"}).Decode(&doc)
 		t.Errorf("after a released, the successor is refused (%v, %v): the lease document is %v", ok, err, doc)
+	}
+}
+
+// A document this package never wrote — no owner, or no expiry — is refused,
+// not reported as a holding: an empty owner would read as "held by nobody in
+// particular", a zero expiry as "expired since year one". Mongo only: the
+// memory twin cannot hold such an entry.
+func TestHolder_MongoRefusesADocumentThisPackageNeverWrote(t *testing.T) {
+	ctx, db := testDB(t)
+	st := NewMongoStore(db)
+	coll := db.Collection(Collection)
+	if _, err := coll.InsertOne(ctx, bson.M{"_id": "sweeper"}); err != nil {
+		t.Fatal(err)
+	}
+	if h, held, err := st.Holder(ctx, "sweeper"); err == nil {
+		t.Fatalf("Holder over {_id} alone = %+v, held %v, nil error; want an error", h, held)
+	}
+	if _, err := coll.UpdateByID(ctx, "sweeper", bson.M{"$set": bson.M{"owner": "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if h, held, err := st.Holder(ctx, "sweeper"); err == nil {
+		t.Fatalf("Holder over a document with no expiry = %+v, held %v, nil error; want an error", h, held)
+	}
+	if _, err := coll.UpdateByID(ctx, "sweeper", bson.M{"$set": bson.M{"expires_at": t0.Add(ttl)}}); err != nil {
+		t.Fatal(err)
+	}
+	if h, held, err := st.Holder(ctx, "sweeper"); err != nil || !held || h.Owner != "a" {
+		t.Fatalf("Holder over a complete document = %+v, held %v, %v; want owner a", h, held, err)
 	}
 }

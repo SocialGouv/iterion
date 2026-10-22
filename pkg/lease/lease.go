@@ -51,6 +51,21 @@ type Store interface {
 	// wait out the TTL. Releasing a lease nobody holds is a no-op; releasing
 	// one another owner holds returns ErrLost and changes nothing.
 	Release(ctx context.Context, name, owner string) error
+	// Holder reports the named lease as the store holds it, and false when no
+	// owner holds it — never taken, or released. It is a read for health
+	// answers and operators: who runs the net, and until when the store
+	// believes it. It judges nothing against a clock — a lease past its
+	// expiry that nobody took is still its owner's (Renew) — so the reader
+	// compares ExpiresAt to its own now; and it never elects, renews or
+	// releases.
+	Holder(ctx context.Context, name string) (Holding, bool, error)
+}
+
+// Holding is a lease as its store holds it: the owner, and the expiry the
+// store recorded for that owner's last proven call.
+type Holding struct {
+	Owner     string
+	ExpiresAt time.Time
 }
 
 // minTTL is the shortest lease the stores keep: they measure time to the
@@ -61,14 +76,23 @@ const minTTL = time.Millisecond
 // would elect everybody under one anonymous identity, and a TTL under the
 // stores' precision would hand out leases that are expired on arrival.
 func validate(name, owner string, ttl time.Duration) error {
-	if strings.TrimSpace(name) == "" {
-		return errors.New("lease: empty lease name")
+	if err := validateName(name); err != nil {
+		return err
 	}
 	if strings.TrimSpace(owner) == "" {
 		return fmt.Errorf("lease %q: empty owner", name)
 	}
 	if ttl < minTTL {
 		return fmt.Errorf("lease %q: TTL %s is under the %s the stores measure", name, ttl, minTTL)
+	}
+	return nil
+}
+
+// validateName is the part of validate a read shares: an empty name is no
+// lease, in a read as in a write.
+func validateName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("lease: empty lease name")
 	}
 	return nil
 }
