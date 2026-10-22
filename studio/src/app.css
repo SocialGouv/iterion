@@ -59,6 +59,14 @@
   --color-accent-fg: #ffffff;
   --color-accent-text: #818cf8;     /* indigo-400 — accent text/links (AA on dark) */
 
+  /* Keyboard-focus indicator (the :focus-visible outline and the
+   * react-flow counter-rules below). Held ≥ 3:1 on surfaces 0-2 in
+   * both themes by __tests__/a11y/contrast.test.ts (its THEMES mirror)
+   * and value-pinned by focus-ring.test.ts; `accent` alone misses that
+   * bar in dark mode, so the ring rides the brighter accent-text
+   * sibling there. */
+  --color-focus-ring: #818cf8;
+
   /* Severity */
   --color-danger: #dc2626;          /* red-600 */
   --color-danger-soft: rgba(220, 38, 38, 0.18);
@@ -235,6 +243,7 @@
   --color-accent-soft: rgba(79, 70, 229, 0.16);
   --color-accent-fg: #ffffff;
   --color-accent-text: #818cf8;
+  --color-focus-ring: #818cf8;
   --color-danger: #dc2626;
   --color-danger-soft: rgba(220, 38, 38, 0.18);
   --color-danger-fg: #fecaca;
@@ -293,6 +302,7 @@
   --color-accent-soft: rgba(79, 70, 229, 0.12);
   --color-accent-fg: #ffffff;
   --color-accent-text: #4f46e5;
+  --color-focus-ring: #4f46e5;
   --color-danger: #b91c1c;
   --color-danger-soft: rgba(185, 28, 28, 0.10);
   --color-danger-fg: #7f1d1d;
@@ -405,7 +415,7 @@ samp {
 }
 
 :focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
@@ -416,6 +426,33 @@ input:focus:not(:focus-visible),
 textarea:focus:not(:focus-visible),
 select:focus:not(:focus-visible) {
   outline: none;
+}
+
+/* xyflow resets the outline on its focusable canvas elements (nodes,
+ * edges, selection rects) in a stylesheet imported before this file;
+ * restore the keyboard-focus indicator for keyboard users. Same
+ * specificity as the resets, later position wins the cascade — the
+ * import order is pinned by __tests__/a11y/focus-ring.test.ts. (The
+ * nodesselection rect is display:none in this app, so it cannot take
+ * focus today; the rule stays so the reset enumeration is complete.) */
+.react-flow__node.selectable:focus-visible,
+.react-flow__edge:focus-visible,
+.react-flow__edge.selectable:focus-visible,
+.react-flow__nodesselection-rect:focus-visible,
+.react-flow__selection:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* react-virtuoso inlines `outline: none` on its scroller, which it makes
+ * focusable (tabindex=0) so the keyboard can scroll the list; an inline
+ * style beats the cascade, so this counter-rule needs !important. The
+ * ring is drawn inside (negative offset): the scroller fills an
+ * overflow-hidden panel that would clip an outside ring. */
+[data-virtuoso-scroller]:focus-visible {
+  outline: 2px solid var(--color-focus-ring) !important;
+  outline-offset: -2px;
 }
 
 /* Run-canvas node selection. IRNode sets an inline `box-shadow` (the
