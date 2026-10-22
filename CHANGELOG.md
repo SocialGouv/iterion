@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.281.1](https://github.com/SocialGouv/iterion/compare/v3.281.0...v3.281.1) (2026-10-22)
+
+### Bug Fixes
+
+* **model,dryrun:** read a tool body's environment once, and preview what runs ([#2672](https://github.com/SocialGouv/iterion/issues/2672)) ([579c3f8](https://github.com/SocialGouv/iterion/commit/579c3f88909e242af55dc50ba15d37128f566f47)), references [#1607](https://github.com/SocialGouv/iterion/issues/1607) [#1522](https://github.com/SocialGouv/iterion/issues/1522)
+
+    <details><summary>why</summary>
+
+    A tool body's `${NAME}` and `${NAME:-default}` forms were read by three executor sites, each calling `expandBracedEnv` on the engine's own environment — and by nothing at all in `pkg/dryrun`, which rendered the AUTHORED text and held THAT to `bash -n`. So `validate --exec` and its syntax verdict judged text the engine will not hand the shell, and a production deep-scan pass whose run-id guard reads a braced default has been rejected since 16/09 for want of this reading.
+
+    </details>
+* **studio:** keyboard focus is visible on every focusable element — a ≥3:1 focus-ring token, xyflow and virtuoso counter-rules ([#2622](https://github.com/SocialGouv/iterion/issues/2622)) ([e3d8391](https://github.com/SocialGouv/iterion/commit/e3d839152b56b583ef72fd32836333cc8a8a0b23)), closes [#2524](https://github.com/SocialGouv/iterion/issues/2524), references [#2524](https://github.com/SocialGouv/iterion/issues/2524) [#2506](https://github.com/SocialGouv/iterion/issues/2506) [#2505](https://github.com/SocialGouv/iterion/issues/2505) [#4f46e5](https://github.com/SocialGouv/iterion/issues/4f46e5)
+
+    <details><summary>why</summary>
+
+    RGAA 10.7 / WCAG 2.4.7 (#2524): the audit's rendered probe found 28 occurrences where a Tab press produced no visible change. One class, three causes — the indicator was too faint, or reset by a library stylesheet, or reset by a library inline style:
+
+    </details>
+
 ## [3.281.0](https://github.com/SocialGouv/iterion/compare/v3.280.0...v3.281.0) (2026-10-22)
 
 ### Features
