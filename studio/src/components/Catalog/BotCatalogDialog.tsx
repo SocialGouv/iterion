@@ -298,7 +298,7 @@ export function BotCatalogDialog({
             return (
               <li
                 key={b.name}
-                className={`flex items-center gap-3 rounded px-2 py-2 hover:bg-surface-2 ${enabled ? "" : "opacity-60"}`}
+                className={`flex items-center gap-3 rounded px-2 py-2 hover:bg-surface-2 ${enabled ? "" : "text-fg-subtle"}`}
               >
                 <span className="shrink-0 text-base leading-none" aria-hidden="true">
                   {identity.emoji}

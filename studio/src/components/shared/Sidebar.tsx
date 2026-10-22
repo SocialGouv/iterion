@@ -53,7 +53,7 @@ export default function Sidebar() {
           <button
             type="button"
             onClick={toggle}
-            className="inline-flex items-center justify-center hover:opacity-80 transition-opacity"
+            className="inline-flex items-center justify-center rounded hover:bg-surface-2 transition-colors"
             title="Expand sidebar"
             aria-label="Expand sidebar"
             aria-expanded={false}
@@ -64,7 +64,7 @@ export default function Sidebar() {
           <>
             <Link
               href="/"
-              className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity"
+              className="flex items-center gap-2 min-w-0 rounded hover:bg-surface-2 transition-colors"
               title="Iterion home"
               aria-label="Iterion home"
             >

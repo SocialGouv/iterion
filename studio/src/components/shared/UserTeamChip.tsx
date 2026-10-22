@@ -52,7 +52,7 @@ export default function UserTeamChip({
         collapsed ? (
           <button
             type="button"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent text-fg-onAccent text-caption font-semibold uppercase hover:opacity-80 transition-opacity"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent text-fg-onAccent text-caption font-semibold uppercase hover:bg-accent-hover transition-opacity"
             title={accountLabel}
             aria-label={`Account menu — ${accountLabel}`}
           >

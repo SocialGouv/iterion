@@ -9,7 +9,7 @@ import { statusClasses } from "../runStatusClasses";
 // come from the same ITERATION_PALETTE so a user scanning the canvas
 // for "iter 3" sees the same amber tint in both places. Status is
 // overlaid as a ring/animation so the pill carries two dimensions:
-// which iteration (color) and how it went (ring/pulse/opacity).
+// which iteration (color) and how it went (ring/pulse/saturation).
 export function IterationPills({
   executions,
   selectedIteration,
@@ -33,9 +33,9 @@ export function IterationPills({
         // fill. Status drives extra cues:
         //   running → animate-pulse (matches StatusBadge running)
         //   failed  → red ring overlay
-        //   skipped → desaturated/opacity (engine bypassed this iter)
+        //   skipped → desaturated (engine bypassed this iter)
         const pulse = e.status === "running" ? "animate-pulse" : "";
-        const opacity = e.status === "skipped" ? "opacity-50" : "";
+        const opacity = e.status === "skipped" ? "saturate-0" : "";
         const failedRing = e.status === "failed" ? "ring-1 ring-danger" : "";
         const selectedRing = isSelected
           ? "ring-2 ring-accent shadow-sm"

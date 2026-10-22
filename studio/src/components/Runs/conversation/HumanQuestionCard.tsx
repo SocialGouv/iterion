@@ -34,9 +34,9 @@ export default function HumanQuestionCard({ runId, message, isActive }: Props) {
   // interaction ID for async cards.
   if (message.async) {
     return (
-      <div className="mt-1 rounded-md border border-accent-emphasis/50 bg-accent-soft/15 px-3 py-2 space-y-2">
+      <div className="mt-1 rounded-md border border-accent/50 bg-accent-soft/15 px-3 py-2 space-y-2">
         <div className="flex items-center gap-2 text-micro">
-          <span className="font-medium text-accent-fg">
+          <span className="font-medium text-accent-text">
             Question — the agent keeps working meanwhile
           </span>
           <span

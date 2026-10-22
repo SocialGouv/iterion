@@ -10,7 +10,7 @@ export interface CheckboxProps
 }
 
 const BOX =
-  "h-3.5 w-3.5 shrink-0 rounded border-border-strong bg-surface-1 accent-accent disabled:opacity-60 disabled:cursor-not-allowed";
+  "h-3.5 w-3.5 shrink-0 rounded bg-surface-1 accent-accent disabled:opacity-60 disabled:cursor-not-allowed";
 
 /**
  * Native checkbox styled with design tokens. Stays a real `<input

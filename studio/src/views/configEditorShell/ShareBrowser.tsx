@@ -141,7 +141,7 @@ export function ShareBrowser({
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Filter by repo, bot, category…"
           aria-label="Filter config-shares"
-          className="w-full rounded-md border border-border-default bg-surface-1 py-1.5 pl-8 pr-2 text-sm text-fg-default placeholder:text-fg-subtle focus:border-accent focus:outline-none"
+          className="w-full rounded-md border border-border-control bg-surface-1 py-1.5 pl-8 pr-2 text-sm text-fg-default placeholder:text-fg-subtle focus:border-accent focus:outline-none"
         />
       </label>
       <div className="px-0.5 text-caption text-fg-subtle">
@@ -252,7 +252,7 @@ function GroupHeader({
       {subtitle && (
         <span className="truncate font-mono text-caption text-fg-subtle">{subtitle}</span>
       )}
-      <span className="ml-auto shrink-0 rounded-full bg-surface-2 px-1.5 text-caption text-fg-subtle group-hover:bg-surface-3">
+      <span className="ml-auto shrink-0 rounded-full bg-surface-2 px-1.5 text-caption text-fg-muted group-hover:bg-surface-3">
         {count}
       </span>
     </button>

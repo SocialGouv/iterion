@@ -103,7 +103,7 @@ export default function SidebarContext({ collapsed }: Props) {
           type="button"
           onClick={toggleCommandPalette}
           title={`Open command palette (${kbdK})`}
-          className="flex items-center gap-2 px-2 py-1.5 rounded border border-border-default bg-surface-2 text-xs text-fg-subtle hover:text-fg-default hover:bg-surface-3 transition-colors group"
+          className="flex items-center gap-2 px-2 py-1.5 rounded border border-border-default bg-surface-2 text-xs text-fg-muted hover:text-fg-default hover:bg-surface-3 transition-colors group"
         >
           <MagnifyingGlassIcon className="h-3.5 w-3.5 shrink-0 group-hover:text-fg-default" />
           <span className="flex-1 text-left truncate">Search or run…</span>

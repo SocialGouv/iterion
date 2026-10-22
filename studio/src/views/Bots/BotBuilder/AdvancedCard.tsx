@@ -39,7 +39,7 @@ export default function AdvancedCard({
         <span>{open ? "▾" : "▸"}</span>
         <span>Advanced</span>
         {configured > 0 && (
-          <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-caption text-accent-fg">
+          <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-caption text-accent-text">
             {configured} set
           </span>
         )}

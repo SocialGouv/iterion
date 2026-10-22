@@ -65,7 +65,7 @@ export function LinkifiedText({ text, linkClassName }: LinkifiedTextProps) {
             rel="noopener noreferrer"
             className={
               linkClassName ??
-              "text-accent-text underline underline-offset-2 hover:opacity-80"
+              "text-accent-text underline underline-offset-2 hover:decoration-2"
             }
           >
             {p.href}

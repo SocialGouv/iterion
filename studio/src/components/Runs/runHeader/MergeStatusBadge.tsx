@@ -24,7 +24,7 @@ export default function MergeStatusBadge({
       <span className="ml-2 px-1.5 py-0.5 rounded bg-success-soft text-success-fg">
         {strategy === "squash" ? "squashed" : "merged"} into {merged}
         {mergedShort && (
-          <span className="ml-1 font-mono text-success-fg/80">
+          <span className="ml-1 font-mono text-success-fg">
             · {mergedShort}
           </span>
         )}

@@ -11,7 +11,7 @@ const STATUS_CLASS: Record<string, string> = {
   A: "text-success-fg",
   D: "text-danger-fg",
   R: "text-info-fg",
-  "??": "text-success-fg/70",
+  "??": "text-fg-muted",
 };
 
 export function StatusDot({ status }: { status: RunFileStatus }) {

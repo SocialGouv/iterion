@@ -190,7 +190,7 @@ export function Combobox<T = string>({
           type="button"
           id={id}
           disabled={disabled}
-          className={`w-full text-left bg-surface-1 text-fg-default rounded-md border border-border-strong outline-none transition-colors disabled:opacity-60 disabled:cursor-not-allowed focus:border-accent focus:ring-1 focus:ring-accent ${sizeClass} flex items-center justify-between gap-2`}
+          className={`w-full text-left bg-surface-1 text-fg-default rounded-md border border-border-control outline-none transition-colors disabled:opacity-60 disabled:cursor-not-allowed focus:border-accent focus:ring-1 focus:ring-accent ${sizeClass} flex items-center justify-between gap-2`}
           aria-haspopup="listbox"
           aria-controls={open ? listboxId : undefined}
         >
@@ -212,7 +212,7 @@ export function Combobox<T = string>({
             e.preventDefault();
             inputRef.current?.focus();
           }}
-          className="z-[var(--z-popover)] w-[var(--radix-popover-trigger-width)] max-h-[min(18rem,var(--radix-popover-content-available-height))] overflow-auto rounded-md border border-border-strong bg-surface-0 shadow-[var(--shadow-popover)]"
+          className="z-[var(--z-popover)] w-[var(--radix-popover-trigger-width)] max-h-[min(18rem,var(--radix-popover-content-available-height))] overflow-auto rounded-md border border-border-default bg-surface-0 shadow-[var(--shadow-popover)]"
         >
           <div className="p-1 sticky top-0 bg-surface-0 border-b border-border-default">
             <input
@@ -227,7 +227,7 @@ export function Combobox<T = string>({
                 onQueryChange?.(e.target.value);
               }}
               onKeyDown={onKeyDown}
-              className="w-full bg-surface-1 text-fg-default rounded border border-border-default px-2 py-1 text-xs outline-none focus:border-accent"
+              className="w-full bg-surface-1 text-fg-default rounded border border-border-control px-2 py-1 text-xs outline-none focus:border-accent"
             />
           </div>
           <ul className="py-1">

@@ -71,7 +71,7 @@ export default function RoutingPolicySection({
       description={`The (harness, credential) pairs this ${scope} may occupy, in order — refined by the levels below it, bounded by the platform ceiling. JSON: an object to replace, null to unset.`}
       metaLine={
         view.updated_at ? (
-          <span className="text-xs text-content-2">
+          <span className="text-xs text-fg-muted">
             {formatDateTime(view.updated_at)}
             {view.updated_by ? ` · ${view.updated_by}` : ""}
           </span>

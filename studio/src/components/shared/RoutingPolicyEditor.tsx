@@ -63,15 +63,15 @@ export function RoutingPolicyEditor({
       <div className="flex items-baseline justify-between gap-2">
         <h3 className="text-sm font-medium">
           {heading}
-          <span className="ml-2 text-xs font-normal text-content-2">{scopeLabel}</span>
+          <span className="ml-2 text-xs font-normal text-fg-muted">{scopeLabel}</span>
         </h3>
         {metaLine}
       </div>
-      <p className="text-xs text-content-2">{description}</p>
+      <p className="text-xs text-fg-muted">{description}</p>
       {saveError && <InlineBanner tone="danger">{saveError}</InlineBanner>}
       <textarea
         aria-label={heading}
-        className="w-full h-48 font-mono text-xs bg-surface-0 border border-border-subtle rounded-[var(--radius-md)] p-2"
+        className="w-full h-48 font-mono text-xs bg-surface-0 border border-border-control rounded-[var(--radius-md)] p-2"
         value={value}
         readOnly={!canManage}
         onChange={(e) => setDraft(e.target.value)}

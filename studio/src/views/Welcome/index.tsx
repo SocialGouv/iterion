@@ -75,7 +75,7 @@ export default function Welcome({ onComplete }: WelcomeProps) {
             <li
               key={s}
               aria-current={s === step ? "step" : undefined}
-              className={`${s === step ? "font-semibold text-fg-default" : ""} ${i <= idx ? "" : "opacity-40"}`}
+              className={`${s === step ? "font-semibold text-fg-default" : ""} ${i < idx ? "text-fg-muted" : i === idx ? "" : "text-fg-subtle"}`}
             >
               {i + 1}. {stepLabels[s]}
               {i < idx && <span className="sr-only"> (completed)</span>}

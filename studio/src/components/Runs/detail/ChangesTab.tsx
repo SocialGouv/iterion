@@ -144,7 +144,7 @@ export function ChangesTab({ runId, nodeId, iteration, ambiguousIteration }: Pro
               <span className={`w-16 shrink-0 ${statusTone(f.status)}`}>
                 {STATUS_LABEL[f.status] ?? f.status}
               </span>
-              <span className="truncate font-mono text-fg">{f.path}</span>
+              <span className="truncate font-mono text-fg-default">{f.path}</span>
               {f.binary ? (
                 <span className="shrink-0 text-fg-subtle">(binary)</span>
               ) : (

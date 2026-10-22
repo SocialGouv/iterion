@@ -40,7 +40,6 @@ export default function ReferenceEdge(props: EdgeProps) {
             style={{
               transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
               color,
-              opacity: 0.8,
             }}
           >
             {label}

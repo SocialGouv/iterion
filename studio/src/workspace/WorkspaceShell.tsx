@@ -512,7 +512,7 @@ export default function WorkspaceShell() {
         {openIds.length >= 2 && (
           <button
             type="button"
-            className={`h-7 px-2 rounded text-xs ${splitId ? "bg-accent/20 text-accent-text" : "text-fg-subtle hover:bg-surface-2 hover:text-fg-default"}`}
+            className={`h-7 px-2 rounded text-xs ${splitId ? "bg-accent-soft text-accent-text" : "text-fg-subtle hover:bg-surface-2 hover:text-fg-default"}`}
             onClick={() =>
               setSplitId((s) => {
                 if (s) return null;

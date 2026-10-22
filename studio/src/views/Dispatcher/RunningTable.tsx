@@ -113,7 +113,7 @@ export default function RunningTable({
                   {r.last_event_name ? r.last_event_name + " · " : ""}
                   {relTime(r.last_event_at)}
                   {stall.hint && (
-                    <span className="ml-1 text-warning-fg/90">⏱</span>
+                    <span className="ml-1 text-warning-fg">⏱</span>
                   )}
                 </Td>
                 <Td align="right">

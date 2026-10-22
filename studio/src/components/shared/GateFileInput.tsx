@@ -119,11 +119,13 @@ export default function GateFileInput({
         {...clickableRowProps(() => inputRef.current?.click(), `Upload ${label}`)}
         aria-invalid={Boolean(error) || undefined}
         aria-busy={uploading || undefined}
+        aria-disabled={disabled || undefined}
+        data-disabled={disabled || undefined}
         className={[
-          "flex flex-col items-center justify-center gap-1.5 rounded-md border-dashed border p-3 text-center transition-colors cursor-pointer",
+          "flex flex-col items-center justify-center gap-1.5 rounded-md border-dashed border p-3 text-center transition-colors cursor-pointer data-[disabled]:opacity-60",
           dragging ? "border-accent bg-accent-soft" : "border-border-default",
           error ? "border-danger ring-1 ring-danger" : "",
-          busy ? "opacity-60 pointer-events-none" : "hover:border-accent",
+          busy ? "pointer-events-none" : "hover:border-accent",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -156,6 +158,7 @@ export default function GateFileInput({
           ref={inputRef}
           type="file"
           accept={accept}
+          aria-label={`Upload ${label}`}
           className="sr-only"
           onChange={(e) => {
             const file = e.target.files?.[0];

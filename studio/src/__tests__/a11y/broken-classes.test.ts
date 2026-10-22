@@ -36,6 +36,13 @@ const BANNED: { label: string; re: RegExp }[] = [
   { label: "text-text-* — legacy double-prefix; use text-fg-*", re: /\btext-text-/ },
   { label: "bg-bg-* — phantom double-prefix; use bg-surface-*", re: /\bbg-bg-/ },
   { label: "bare border-border — use border-border-default", re: /\bborder-border(?![-\w])/ },
+  { label: "*-accent-emphasis — no such token; use accent / accent-hover", re: /\baccent-emphasis\b/ },
+  { label: "*-surface-default — no such token; use surface-0..3", re: /\bsurface-default\b/ },
+  { label: "text-accent-contrast — no such token; use text-fg-onAccent", re: /\baccent-contrast\b/ },
+  { label: "text-fg-link — no such token; use text-accent-text", re: /\btext-fg-link\b/ },
+  { label: "text-content-N — no such token; use text-fg-muted / text-fg-subtle", re: /\btext-content-\d\b/ },
+  { label: "bare text-fg — no such token; use text-fg-default", re: /(?<![\w-])text-fg(?![-\w])/ },
+  { label: "bare border-default — no such token; use border-border-default", re: /(?<![\w-])border-default(?![-\w])/ },
 ];
 
 describe("no phantom/legacy Tailwind classes", () => {

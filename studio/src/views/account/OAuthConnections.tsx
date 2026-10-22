@@ -312,7 +312,7 @@ function ScopedOAuthConnections({
                   Fallback order
                   <Select
                     aria-label={`${display} chain entry`}
-                    className="bg-surface-1 border border-border-subtle rounded px-2 py-1 text-fg"
+                    className="rounded px-2 py-1"
                     value={rankFor(kind)}
                     disabled={busy || connecting === kind || pasteKind === kind || renaming === kind}
                     onChange={(e) => selectRank(kind, Number(e.target.value))}
@@ -333,7 +333,7 @@ function ScopedOAuthConnections({
                     <span>
                       Account:{" "}
                       {conn.account_label ? (
-                        <span className="text-fg font-medium">{conn.account_label}</span>
+                        <span className="text-fg-default font-medium">{conn.account_label}</span>
                       ) : (
                         <span className="italic">unnamed — name it so the instance says whose subscription this is</span>
                       )}
@@ -348,7 +348,7 @@ function ScopedOAuthConnections({
 
                 {conn?.account_verified && (
                   <div className="text-xs text-fg-muted">
-                    Verified account: <span className="text-fg">{conn.account_email}</span>
+                    Verified account: <span className="text-fg-default">{conn.account_email}</span>
                     {conn.account_checked_at && ` · checked ${formatDateTime(conn.account_checked_at)}`}
                   </div>
                 )}

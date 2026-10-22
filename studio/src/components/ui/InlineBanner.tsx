@@ -82,14 +82,14 @@ export function InlineBanner({
         {title && <div className="font-medium">{title}</div>}
         {children}
       </div>
-      {suffix && <span className="shrink-0 opacity-70">{suffix}</span>}
+      {suffix && <span className="shrink-0">{suffix}</span>}
       {action && <div className="shrink-0">{action}</div>}
       {dismissable && (
         <button
           type="button"
           onClick={onDismiss}
           aria-label="Dismiss"
-          className="-mr-1 shrink-0 rounded p-0.5 opacity-70 hover:opacity-100 focus-visible:opacity-100"
+          className="-mr-1 shrink-0 rounded p-0.5 hover:bg-scrim-soft"
         >
           <X className="h-3.5 w-3.5" aria-hidden />
         </button>

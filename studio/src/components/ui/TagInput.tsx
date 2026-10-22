@@ -80,7 +80,8 @@ export function TagInput({
 
   return (
     <div
-      className={`flex flex-wrap items-center gap-1 min-h-7 bg-surface-1 text-fg-default rounded-md border border-border-strong px-1.5 py-1 focus-within:border-accent focus-within:ring-1 focus-within:ring-accent ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
+      className={`flex flex-wrap items-center gap-1 min-h-7 bg-surface-1 text-fg-default rounded-md border border-border-control px-1.5 py-1 focus-within:border-accent focus-within:ring-1 focus-within:ring-accent data-[disabled]:opacity-60 data-[disabled]:cursor-not-allowed`}
+      data-disabled={disabled || undefined}
       onClick={() => inputRef.current?.focus()}
     >
       {value.map((tag, i) => (

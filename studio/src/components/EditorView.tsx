@@ -280,7 +280,7 @@ export default function EditorView({ active = true }: EditorViewProps) {
     <ReactFlowProvider>
       <div className="h-full w-full overflow-hidden flex flex-col">
         {bannerRunId && (
-          <div className="flex items-center gap-2 px-3 py-1.5 text-xs bg-accent-soft text-accent-fg border-b border-border-default">
+          <div className="flex items-center gap-2 px-3 py-1.5 text-xs bg-accent-soft text-accent-text border-b border-border-default">
             <span aria-hidden>↗</span>
             <span>
               Opened from run{" "}

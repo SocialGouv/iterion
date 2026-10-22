@@ -75,7 +75,7 @@ const COMPONENTS: Components = {
   pre: ({ node: _node, ...props }) => <pre className={PRE_CLASS} {...props} />,
   a: ({ node: _node, ...props }) => (
     <a
-      className="text-accent-text underline underline-offset-2 hover:opacity-80"
+      className="text-accent-text underline underline-offset-2 hover:decoration-2"
       target="_blank"
       rel="noopener noreferrer"
       {...props}

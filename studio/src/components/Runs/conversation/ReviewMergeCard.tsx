@@ -193,7 +193,7 @@ function ReviewMergeCardTurn({
           href={review.reviewUrl}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-1 text-title text-accent-fg underline"
+          className="inline-flex items-center gap-1 text-title text-accent-text underline"
         >
           ↗ Open review environment ({review.reviewUrl})
         </a>
@@ -204,7 +204,7 @@ function ReviewMergeCardTurn({
       {/* Continue the dialogue */}
       <div className="space-y-1">
         <textarea
-          className="w-full rounded border border-border-default bg-surface-0 px-3 py-2 text-label text-fg-default"
+          className="w-full rounded border border-border-control bg-surface-0 px-3 py-2 text-label text-fg-default"
           rows={3}
           placeholder="Reply to the reviewer (e.g. what you tested, what you saw)…"
           value={reply}
@@ -246,7 +246,7 @@ function ReviewMergeCardTurn({
         )}
         {!noMerge && strategy === "squash" && (
           <textarea
-            className="w-full rounded border border-border-default bg-surface-0 px-3 py-2 text-body font-mono text-fg-default"
+            className="w-full rounded border border-border-control bg-surface-0 px-3 py-2 text-body font-mono text-fg-default"
             rows={2}
             placeholder="(optional) squash commit message — defaults to the run's commits"
             value={commitMsg}

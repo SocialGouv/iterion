@@ -91,7 +91,7 @@ backgrounds need the accent *dark enough*) and as **accent-on-surface**
 | Token | Dark | Light | Use for |
 |---|---|---|---|
 | `--color-accent` | `#4f46e5` (indigo-600) | `#4f46e5` | Button/brand **background**, focus ring, borders. White-on-accent = 5.8:1. |
-| `--color-accent-text` | `#818cf8` (indigo-400) | `#4f46e5` | Accent-coloured **text / links / icons** on a surface. AA on dark (5.7:1 on surface-0). |
+| `--color-accent-text` | `#a5b4fc` (indigo-300) | `#4f46e5` | Accent-coloured **text / links / icons** on a surface. AA on surfaces 0-2 and on `accent-soft` in both themes (dark: 8.9 / 7.4 / 5.2 on surfaces 0-2; indigo-400 was 3.5 on surface-2). |
 
 `--color-accent-fg` (white) is the text *on* an accent background;
 `--color-accent-soft` is the translucent tint for chips/hover. The
@@ -103,20 +103,21 @@ reconciled from a stray violet (`#7c3aed`) to `#4f46e5`.
 
 **Migration path** if the hue changes again: update the accent +
 accent-text quadruples in the `@theme`, `[data-theme="dark"]`, and
-`[data-theme="light"]` blocks of `studio/src/app.css`, keep the contrast
-assertions in `__tests__/a11y/contrast.test.ts` green (white-on-accent ≥
-4.5, accent-text-on-surface ≥ 4.5 in both themes), and update
-`theme-color`.
+`[data-theme="light"]` blocks of `studio/src/app.css` and in the mirror
+`__tests__/a11y/_tokens.ts` (held equal to the file by
+`tokens-mirror.test.ts`), keep the contrast assertions in
+`__tests__/a11y/contrast.test.ts` green (white-on-accent ≥ 4.5,
+accent-text-on-surface ≥ 4.5 in both themes), and update `theme-color`.
 
 ## Secondary accent: "live"
 
 Added in Phase 4 (this commit). `--color-live` is the dedicated token
 for **"this is currently running"** — a separate semantic from the
-informational `--color-info` (cyan-600).
+informational `--color-info` (cyan-500 in dark, cyan-700 in light).
 
 | Token | Dark | Light | Use for |
 |---|---|---|---|
-| `info` | `cyan-600` (`#0891b2`) | `cyan-700` (`#0e7490`) | Informational toasts, neutral status |
+| `info` | `cyan-500` (`#06b6d4`) | `cyan-700` (`#0e7490`) | Informational toasts, neutral status (the text colour; `info-solid` is the background under a white label) |
 | `live` | `cyan-400` (`#22d3ee`) | `cyan-600` (`#0891b2`) | Pulse on active runs, BackendStatusPill detecting, RunHeader active LiveDot |
 
 Why same family: `live` reads as a "fresher, more-active" cyan against
@@ -129,7 +130,12 @@ not pivot when transitioning from steady-state to active.
 
 ## Severity palette
 
-Kept as-is (red/amber/green/cyan + their soft and fg variants). The
+Red/amber/green/cyan, each in two tokens the way accent / accent-text
+are: the plain `<severity>` is the text, icon and border colour (dark
+-400/-500, light -700: AA on the panels in both themes) and
+`<severity>-solid` the background under a white label (dark -700, red
+-600; light = the plain), plus the `-soft` tint and the `-fg` written
+on it. The
 node-kind palette and iteration palette are independent dimensions —
 they do not need to harmonise with the severity palette. See
 `design-system.md` § Tokens for the full table.

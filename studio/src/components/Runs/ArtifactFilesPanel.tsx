@@ -197,9 +197,9 @@ export default function ArtifactFilesPanel({ runId }: Props) {
         {!files || files.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center text-fg-subtle px-4 text-center gap-1">
             <div>No artifact files yet.</div>
-            <div className="opacity-70">
+            <div>
               In-sandbox tools writing into{" "}
-              <code className="px-1 rounded bg-surface-2">
+              <code className="px-1 rounded bg-surface-2 text-fg-muted">
                 $ITERION_ARTIFACT_FILES_DIR
               </code>{" "}
               appear here as they land.
@@ -235,7 +235,7 @@ export default function ArtifactFilesPanel({ runId }: Props) {
                           e.preventDefault();
                           openPreview(f);
                         }}
-                        className="text-fg-link hover:underline"
+                        className="text-accent-text hover:underline"
                       >
                         {f.path}
                       </a>
@@ -249,14 +249,14 @@ export default function ArtifactFilesPanel({ runId }: Props) {
                     <td className="px-3 py-1.5 text-right whitespace-nowrap">
                       <button
                         type="button"
-                        className="text-fg-link hover:underline mr-3"
+                        className="text-accent-text hover:underline mr-3"
                         onClick={() => triggerDownload(f)}
                       >
                         Download
                       </button>
                       <button
                         type="button"
-                        className="text-fg-link hover:underline"
+                        className="text-accent-text hover:underline"
                         onClick={() => openPreview(f)}
                       >
                         Open
@@ -335,7 +335,7 @@ function DownloadsButton({
       trigger={
         <Button variant="ghost" size="sm" title="Downloads">
           <span>Downloads</span>
-          <span className="ml-1 inline-flex items-center justify-center min-w-[1.25rem] h-4 px-1 rounded bg-surface-2 text-fg-subtle text-caption font-mono">
+          <span className="ml-1 inline-flex items-center justify-center min-w-[1.25rem] h-4 px-1 rounded bg-surface-2 text-fg-muted text-caption font-mono">
             {count}
           </span>
         </Button>
@@ -347,7 +347,7 @@ function DownloadsButton({
           type="button"
           disabled={entries.length === 0}
           onClick={onClearAll}
-          className="text-micro text-fg-link hover:underline disabled:text-fg-subtle disabled:no-underline"
+          className="text-micro text-accent-text hover:underline disabled:text-fg-subtle disabled:no-underline"
         >
           Clear all
         </button>
@@ -365,7 +365,7 @@ function DownloadsButton({
                   <button
                     type="button"
                     onClick={() => onShow(e)}
-                    className="font-mono text-xs text-fg-link hover:underline truncate text-left"
+                    className="font-mono text-xs text-accent-text hover:underline truncate text-left"
                     title={e.path}
                   >
                     {e.basename}
@@ -381,14 +381,14 @@ function DownloadsButton({
                   <button
                     type="button"
                     onClick={() => onShow(e)}
-                    className="text-fg-link hover:underline"
+                    className="text-accent-text hover:underline"
                   >
                     Open
                   </button>
                   <button
                     type="button"
                     onClick={() => onRedownload(e)}
-                    className="text-fg-link hover:underline"
+                    className="text-accent-text hover:underline"
                   >
                     Re-download
                   </button>
@@ -396,7 +396,7 @@ function DownloadsButton({
                     <button
                       type="button"
                       onClick={() => onReveal(e)}
-                      className="text-fg-link hover:underline"
+                      className="text-accent-text hover:underline"
                     >
                       Reveal in folder
                     </button>

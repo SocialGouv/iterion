@@ -150,7 +150,7 @@ export default function MergeConflictView({
 
   if (snapshot === null && error === null) {
     return (
-      <div className="shrink-0 border-t border-border-default px-3 py-3 text-micro text-fg-subtle bg-warning-soft">
+      <div className="shrink-0 border-t border-border-default px-3 py-3 text-micro text-fg-muted bg-warning-soft">
         <Spinner /> Loading conflicts…
       </div>
     );

@@ -120,8 +120,8 @@ function BackendRow({ status }: { status: BackendStatus }) {
             {status.sources!.map((src, i) => {
               const overridden = src.includes("(overridden by ");
               return (
-                <span key={i} className={overridden ? "line-through opacity-60" : ""}>
-                  {i > 0 && <span className="opacity-50">, </span>}
+                <span key={i} className={overridden ? "line-through text-fg-subtle" : ""}>
+                  {i > 0 && <span className="text-fg-subtle">, </span>}
                   <span title={overridden ? src : undefined}>{src}</span>
                 </span>
               );

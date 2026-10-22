@@ -224,7 +224,7 @@ function SuggestedInvocationRow({
   if (inv.kind === "board") {
     if (!inv.board) {
       return (
-        <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5 opacity-70">
+        <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5">
           <Badge>{invocationKindLabel("board")}</Badge>
           <span className="min-w-0 flex-1 text-xs text-fg-muted">
             Dispatcher board target — no card-event filter declared, nothing to subscribe.
@@ -250,7 +250,7 @@ function SuggestedInvocationRow({
       ? `/${inv.command?.name ?? "command"} command`
       : `forge ${inv.forge?.event ?? "event"}`;
   return (
-    <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5 opacity-70">
+    <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5">
       <Badge>{invocationKindLabel(inv.kind)}</Badge>
       <span className="min-w-0 flex-1 text-xs text-fg-muted">
         {desc} — wire through the forge integration.

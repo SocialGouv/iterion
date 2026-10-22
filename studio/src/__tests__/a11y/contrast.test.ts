@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PERSONA, THEMES } from "./_tokens";
 
 // Deterministic WCAG contrast audit for the design-system colour tokens.
 //
@@ -6,15 +7,16 @@ import { describe, expect, it } from "vitest";
 // canvas to sample computed pixel colours; under jsdom getContext() is
 // unimplemented and the rule silently no-ops (a green that proves nothing).
 // So we compute the WCAG 2.1 relative-luminance ratio directly from the
-// token hex values mirrored from app.css, for BOTH themes. This is the
-// regression guard the design-system "Open items / contrast sweep" asked
-// for. If a token value in app.css changes, update the table below.
+// token hex values mirrored from app.css (the mirror lives in
+// _tokens.ts and tokens-mirror.test.ts holds it equal to the file), for
+// BOTH themes. This is the regression guard the design-system "Open items
+// / contrast sweep" asked for. A token value changes in app.css AND in
+// _tokens.ts, or the mirror guard says so.
 //
 // AA thresholds: 4.5:1 for normal text, 3:1 for large/UI. fg-subtle is a
-// deliberately de-emphasised tertiary token; we hold it to 4.5 only on the
-// primary panel surfaces (0/1), where small subtle labels actually live.
-// surface-2/3 are input/hover backgrounds that rarely carry static subtle
-// text, so they're audited at the 3:1 large/UI bar.
+// deliberately de-emphasised tertiary token, held to AA on surfaces 0-2 —
+// small subtle labels live on chips, drawers and popovers too — and to
+// the 3:1 bar on surface-3, the transient hover lift.
 
 type RGB = [number, number, number];
 
@@ -52,41 +54,6 @@ function contrast(a: RGB, b: RGB): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-// Mirrored from src/app.css.
-const THEMES = {
-  dark: {
-    surface: { 0: "#111827", 1: "#1f2937", 2: "#374151", 3: "#4b5563" },
-    fg: { default: "#ffffff", muted: "#d1d5db", subtle: "#9ca3af" },
-    // Decoupled accent (2026-06-21): `accent` is the button/brand background
-    // (white label on it), `accentText` is the brighter link/icon colour.
-    accent: "#4f46e5",
-    accentText: "#818cf8",
-    focusRing: "#818cf8",
-    onAccent: "#ffffff",
-    severity: {
-      danger: { soft: "#dc2626", softA: 0.18, fg: "#fecaca" },
-      warning: { soft: "#d97706", softA: 0.18, fg: "#fde68a" },
-      success: { soft: "#16a34a", softA: 0.18, fg: "#bbf7d0" },
-      info: { soft: "#0891b2", softA: 0.18, fg: "#a5f3fc" },
-      live: { soft: "#22d3ee", softA: 0.18, fg: "#cffafe" },
-    },
-  },
-  light: {
-    surface: { 0: "#ffffff", 1: "#f9fafb", 2: "#f3f4f6", 3: "#e5e7eb" },
-    fg: { default: "#111827", muted: "#374151", subtle: "#6b7280" },
-    accent: "#4f46e5",
-    accentText: "#4f46e5",
-    focusRing: "#4f46e5",
-    onAccent: "#ffffff",
-    severity: {
-      danger: { soft: "#b91c1c", softA: 0.1, fg: "#7f1d1d" },
-      warning: { soft: "#b45309", softA: 0.1, fg: "#78350f" },
-      success: { soft: "#15803d", softA: 0.1, fg: "#14532d" },
-      info: { soft: "#0e7490", softA: 0.1, fg: "#164e63" },
-      live: { soft: "#0891b2", softA: 0.12, fg: "#155e75" },
-    },
-  },
-} as const;
 
 const AA_TEXT = 4.5;
 const AA_LARGE = 3.0;
@@ -106,21 +73,17 @@ for (const [themeName, t] of Object.entries(THEMES)) {
       }
     }
 
-    // fg-subtle: AA on the primary panel surfaces where small subtle
-    // labels live; large/UI bar on surface-2 (inputs/tooltips). surface-3
-    // is the *hover* lift of surface-2 — a transient background, not a
-    // static text surface (subtle text is authored against surface-2 and
-    // the hover is momentary), so it's intentionally out of the audit.
-    // (dark fg-subtle on surface-3 is 2.98:1 — fine for a hover flash, not
-    // a standard we hold static text to.)
-    for (const s of [0, 1] as const) {
+    // fg-subtle: AA wherever small subtle text is authored — panels (0/1)
+    // and the chip / drawer / popover surface (2); the 3:1 bar on
+    // surface-3, the momentary hover lift.
+    for (const s of [0, 1, 2] as const) {
       it(`fg-subtle on surface-${s} ≥ ${AA_TEXT}`, () => {
         const ratio = contrast(hexToRgb(t.fg.subtle), hexToRgb(t.surface[s]));
         expect(ratio).toBeGreaterThanOrEqual(AA_TEXT);
       });
     }
-    it(`fg-subtle on surface-2 ≥ ${AA_LARGE}`, () => {
-      const ratio = contrast(hexToRgb(t.fg.subtle), hexToRgb(t.surface[2]));
+    it(`fg-subtle on surface-3 ≥ ${AA_LARGE}`, () => {
+      const ratio = contrast(hexToRgb(t.fg.subtle), hexToRgb(t.surface[3]));
       expect(ratio).toBeGreaterThanOrEqual(AA_LARGE);
     });
 
@@ -146,15 +109,60 @@ for (const [themeName, t] of Object.entries(THEMES)) {
       expect(ratio).toBeGreaterThanOrEqual(AA_TEXT);
     });
 
-    // Accent-TEXT (links / icons) on the panel surfaces — the decoupled
-    // token that fixed the old blue-600 link contrast (~3.4:1). Must clear
-    // AA, which is the constraint that keeps --color-accent-text bright
-    // enough. Together these two prove the decoupling actually buys AA on
-    // both sides (a single token could not).
-    for (const s of [0, 1] as const) {
+    // Accent-TEXT (links / icons) on the surfaces accent text is written
+    // on — the panels, the surface-2 rows and popovers, and the
+    // accent-soft chips — the decoupled token that fixed the old blue-600
+    // link contrast (~3.4:1). Must clear AA everywhere, which is the
+    // constraint that keeps --color-accent-text bright enough (indigo-400
+    // was 3.5:1 on surface-2 and 4.4:1 on an accent-soft chip in dark).
+    for (const s of [0, 1, 2] as const) {
       it(`accent-text on surface-${s} ≥ ${AA_TEXT}`, () => {
         const ratio = contrast(hexToRgb(t.accentText), hexToRgb(t.surface[s]));
         expect(ratio).toBeGreaterThanOrEqual(AA_TEXT);
+      });
+    }
+    it(`accent-text on accent-soft (over surface-1) ≥ ${AA_TEXT}`, () => {
+      const bg = composite(hexToRgb(t.accent), t.accentSoftA, hexToRgb(t.surface[1]));
+      expect(contrast(hexToRgb(t.accentText), bg)).toBeGreaterThanOrEqual(AA_TEXT);
+    });
+
+    // Severity, decoupled like accent / accent-text: the plain token is
+    // the text / icon / border colour (text-danger, border-warning), the
+    // -solid token the background under a white label (Button danger /
+    // success, DiagnosticBadge). One token for both roles cannot hold:
+    // the -600 greens and ambers held a white label at 3.2-3.3:1, and
+    // the -700 that fixed the label read 2.9:1 as text on surface-1.
+    // The plain colour clears AA on the panels (0/1), the 3:1 non-text
+    // bar on surface-2 (dark red-400 / cyan-500 read 3.7 / 4.3 there —
+    // the residual, for icons and borders) and, as an icon, 3:1 on its
+    // own -soft tint (IconButton hover; text on a tint is the -fg).
+    for (const name of ["danger", "warning", "success", "info"] as const) {
+      const sev = t.severity[name];
+      it(`fg-onAccent on ${name}-solid ≥ ${AA_TEXT}`, () => {
+        expect(contrast(hexToRgb(t.onAccent), hexToRgb(sev.solid))).toBeGreaterThanOrEqual(AA_TEXT);
+      });
+      for (const s of [0, 1] as const) {
+        it(`${name} (text) on surface-${s} ≥ ${AA_TEXT}`, () => {
+          expect(contrast(hexToRgb(sev.plain), hexToRgb(t.surface[s]))).toBeGreaterThanOrEqual(AA_TEXT);
+        });
+      }
+      it(`${name} (icon/border) on surface-2 ≥ ${AA_LARGE}`, () => {
+        expect(contrast(hexToRgb(sev.plain), hexToRgb(t.surface[2]))).toBeGreaterThanOrEqual(AA_LARGE);
+      });
+      it(`${name} (icon) on ${name}-soft (over surface-1) ≥ ${AA_LARGE}`, () => {
+        const bg = composite(hexToRgb(sev.soft), sev.softA, hexToRgb(t.surface[1]));
+        expect(contrast(hexToRgb(sev.plain), bg)).toBeGreaterThanOrEqual(AA_LARGE);
+      });
+    }
+
+    // Control boundary (WCAG 1.4.11 non-text contrast / RGAA 3.3): the
+    // border of a text field, checkbox or radio must hold 3:1 against
+    // every surface controls sit on — panels (0/1) and the surface-2
+    // drawers and cards (settings, var editors, PR sections).
+    for (const s of [0, 1, 2] as const) {
+      it(`border-control on surface-${s} ≥ ${AA_LARGE}`, () => {
+        const ratio = contrast(hexToRgb(t.borderControl), hexToRgb(t.surface[s]));
+        expect(ratio).toBeGreaterThanOrEqual(AA_LARGE);
       });
     }
 
@@ -171,23 +179,7 @@ for (const [themeName, t] of Object.entries(THEMES)) {
   });
 }
 
-// Persona identity palette — categorical hues used as the bot-name text
-// colour (run-header chip / board picker / catalog / recents) on the
-// surface-0/1 panels. Tokenised to --color-persona-* (was raw Tailwind
-// -400); mirrored here so the light-mode darkening keeps AA on white.
-// Dark = Tailwind-400, light = -700. Update on any app.css persona edit.
-const PERSONA = {
-  dark: {
-    sky: "#38bdf8", emerald: "#34d399", violet: "#a78bfa", teal: "#2dd4bf",
-    amber: "#fbbf24", cyan: "#22d3ee", rose: "#fb7185", orange: "#fb923c",
-    lime: "#a3e635",
-  },
-  light: {
-    sky: "#0369a1", emerald: "#047857", violet: "#6d28d9", teal: "#0f766e",
-    amber: "#b45309", cyan: "#0e7490", rose: "#be123c", orange: "#c2410c",
-    lime: "#4d7c0f",
-  },
-} as const;
+// Persona identity palette — see _tokens.ts for the mirror.
 
 for (const [themeName, t] of Object.entries(THEMES)) {
   describe(`a11y / persona contrast (${themeName} theme)`, () => {

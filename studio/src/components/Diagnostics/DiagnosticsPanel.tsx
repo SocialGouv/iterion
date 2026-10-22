@@ -54,18 +54,18 @@ export default function DiagnosticsPanel() {
         {hasIssues ? (
           <div className="flex items-center gap-2">
             {errorCount > 0 && (
-              <span className="bg-danger-soft text-danger px-1.5 py-0.5 rounded text-caption">
+              <span className="bg-danger-soft text-danger-fg px-1.5 py-0.5 rounded text-caption">
                 {errorCount} error{errorCount !== 1 ? "s" : ""}
               </span>
             )}
             {warningCount > 0 && (
-              <span className="bg-warning-soft text-warning px-1.5 py-0.5 rounded text-caption">
+              <span className="bg-warning-soft text-warning-fg px-1.5 py-0.5 rounded text-caption">
                 {warningCount} warning{warningCount !== 1 ? "s" : ""}
               </span>
             )}
           </div>
         ) : (
-          <span className="text-success/80">No issues found.</span>
+          <span className="text-success-fg">No issues found.</span>
         )}
         <IconButton
           label="Hide diagnostics"

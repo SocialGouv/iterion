@@ -212,7 +212,7 @@ export default function ModelPicker({
       {recommended && value !== recommended.spec && (
         <button
           type="button"
-          className="text-caption text-accent-fg hover:underline"
+          className="text-caption text-accent-text hover:underline"
           disabled={disabled}
           onClick={() => {
             setCustom(false);

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import * as dispatcher from "@/api/dispatcher";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { Textarea } from "@/components/ui/Textarea";
 import { Drawer } from "@/components/ui/Drawer";
 import { IconButton } from "@/components/ui/IconButton";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -532,8 +533,8 @@ function KVTable({
             placeholder={keyPlaceholder}
             onChange={(e) => setKey(k, e.target.value)}
           />
-          <textarea
-            className="input flex-1 min-h-[2.25rem]"
+          <Textarea
+            className="flex-1 min-h-[2.25rem]"
             rows={1}
             value={v}
             placeholder={valuePlaceholder}
@@ -582,8 +583,8 @@ function HookFields({
       </label>
       {enabled && value && (
         <>
-          <textarea
-            className="input min-h-[3rem] font-mono text-xs"
+          <Textarea
+            className="min-h-[3rem] font-mono text-xs"
             rows={3}
             value={value.script ?? ""}
             placeholder="git clone $REPO ."

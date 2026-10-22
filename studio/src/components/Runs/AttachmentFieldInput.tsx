@@ -77,11 +77,13 @@ export default function AttachmentFieldInput({
         {...clickableRowProps(() => inputRef.current?.click(), `Upload ${field.name}`)}
         aria-invalid={Boolean(value?.error) || undefined}
         aria-busy={showProgress || undefined}
+        aria-disabled={disabled || undefined}
+        data-disabled={disabled || undefined}
         className={[
-          "flex flex-col items-center justify-center gap-1.5 rounded-md border-dashed border p-3 text-center transition-colors cursor-pointer",
+          "flex flex-col items-center justify-center gap-1.5 rounded-md border-dashed border p-3 text-center transition-colors cursor-pointer data-[disabled]:opacity-60",
           dragging ? "border-accent bg-accent-soft" : "border-border-default",
           value?.error ? "border-danger ring-1 ring-danger" : "",
-          disabled ? "opacity-60 pointer-events-none" : "hover:border-accent",
+          disabled ? "pointer-events-none" : "hover:border-accent",
         ]
           .filter(Boolean)
           .join(" ")}

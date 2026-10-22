@@ -563,7 +563,7 @@ function CreateShareDialog({
             label="Never expires"
           />
           <div
-            className={`flex items-center gap-2 text-xs ${neverExpires ? "opacity-50" : ""}`}
+            className={`flex items-center gap-2 text-xs ${neverExpires ? "text-fg-subtle" : ""}`}
           >
             <label htmlFor="cs-exp">Expires in</label>
             <Input

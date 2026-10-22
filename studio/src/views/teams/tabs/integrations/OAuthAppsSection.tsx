@@ -126,7 +126,7 @@ export function OAuthAppsSection({
                 <div className="font-medium">
                   {a.provider} · {a.forge_base_url ?? "—"}
                   <span
-                    className="ml-2 rounded bg-surface-2 px-1 text-caption text-fg-subtle"
+                    className="ml-2 rounded bg-surface-2 px-1 text-caption text-fg-muted"
                     title={
                       a.platform
                         ? "Registered by the platform for every team — managed in the admin console"

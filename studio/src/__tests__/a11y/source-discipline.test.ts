@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { absoluteTargetHits } from "./_adminNestLinks";
+import { hit, isIntrinsic, jsxClassed } from "./_jsx";
 import { files, scan, scanWhole } from "./_scanner";
 
 // Source-discipline regression traps. Each scans every source module as raw
@@ -221,6 +222,169 @@ describe("source discipline", () => {
     if (hits.length) {
       throw new Error(
         `text-[Npx] with a token equivalent is banned — use text-caption/micro/body/label/title/display:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  // The four guards below read the JSX (per element, per tag, every static
+  // className shape) through _jsx.ts — a regex over `className="…"` saw one
+  // shape of four and let ~30 sites through.
+
+  it("never dims an element with a static opacity — tokens for text, a prefixed variant for inactive states", () => {
+    // `opacity-70` on a <span>/<code>/<li>, a text colour with an alpha
+    // (`text-fg-subtle/70`), an inline `style={{ opacity: .75 }}` or a
+    // `hover:opacity-80` all lower the text's contrast with the alpha (the
+    // audit measured 4.39:1 and below, RGAA 3.2). De-emphasised text is a
+    // tier (text-fg-muted / text-fg-subtle); an inactive control or row is
+    // `disabled:opacity-60` / `data-[disabled]:opacity-60` with the
+    // matching attribute — prefixed by a state, so exempt here and explicit
+    // in the DOM. Every step of the scale dims (opacity-5 … opacity-95) and
+    // so does an arbitrary value (`opacity-[.6]`, `opacity-(--x)`); only
+    // `opacity-0` (a reveal that ends at `group-hover:opacity-100`) and 100
+    // are not a dimming.
+    const re =
+      /(?<![\w:-])(hover:)?opacity-(?:[1-9]\d?|\[[^\]]*\]|\([^)]*\))(?![\w-])|(?<![\w:-])text-(fg|accent|danger|warning|success|info|live|persona|node)[\w-]*\/(?:\d+|\[[^\]]*\])(?![\w-])/;
+    const hits = jsxClassed()
+      .filter((e) => isIntrinsic(e.tag) && (re.test(e.classes) || e.styleOpacity !== undefined))
+      .map((e) => hit(e));
+    if (hits.length) {
+      throw new Error(
+        `static opacity on an element is banned (design-system.md § Don'ts) — text-fg-muted / text-fg-subtle for text, disabled: / data-[disabled]: for inactive states:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("no native control or control primitive draws its boundary with a chrome border token (RGAA 3.3)", () => {
+    // An <input>, <textarea>, <select> — or a className handed to one of
+    // the control primitives, which overrides theirs (Tailwind emits
+    // same-property utilities in alphabetical order) — carrying
+    // border-strong / -default / -subtle (under 2.5:1 against the surface)
+    // has no perceptible boundary. Chrome around the control (its popover,
+    // its card) keeps its hairlines — only the control's own tag is read.
+    const hits = jsxClassed()
+      .filter(
+        (e) =>
+          /^(input|textarea|select|Input|Textarea|Select|TagInput|Combobox|MarkdownPreview)$/.test(e.tag) &&
+          /\bborder-border-(strong|default|subtle)\b/.test(e.classes),
+      )
+      .map((e) => hit(e));
+    if (hits.length) {
+      throw new Error(
+        `a control with a chrome border token (design-system.md § Don'ts) — use border-border-control:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("every ui/ file rendering a native text control draws its boundary with border-control (RGAA 3.3)", () => {
+    // The inventory is read from the code, not listed: a new primitive that
+    // copies border-strong lands here. File-level on purpose — TagInput's
+    // inner <input> is borderless, its wrapper draws the control edge.
+    // Native checkboxes and radios draw their own box (appearance: auto),
+    // so a border class on them is inert and they are not held to it —
+    // the element's `type` attribute, read from the JSX, tells them apart.
+    const textControlFiles = new Set(
+      jsxClassed()
+        .filter(
+          (e) =>
+            e.path.includes("/components/ui/") &&
+            (/^(textarea|select)$/.test(e.tag) || (e.tag === "input" && e.inputType !== "checkbox" && e.inputType !== "radio")),
+        )
+        .map((e) => e.path),
+    );
+    // The classes are read from the JSX, not the file text: a comment
+    // naming border-control draws no boundary.
+    const classesOf = new Map<string, string>();
+    for (const e of jsxClassed()) classesOf.set(e.path, `${classesOf.get(e.path) ?? ""} ${e.classes}`);
+    const controls = [...textControlFiles];
+    expect(controls.length).toBeGreaterThanOrEqual(6);
+    const missing = controls.filter((p) => !/\bborder-border-control\b/.test(classesOf.get(p) ?? ""));
+    const strong = controls.filter((p) => /\bborder-border-strong\b/.test(classesOf.get(p) ?? ""));
+    expect(missing, "control files without border-border-control").toEqual([]);
+    expect(strong, "control files still using border-border-strong").toEqual([]);
+  });
+
+  it("text-accent-fg / text-fg-onAccent only sit on bg-accent, a bg-<severity>-solid or a black scrim", () => {
+    // Both tokens are white: on bg-accent-soft, bg-accent/20 or a bare
+    // surface they read 1.0-1.5:1 in the light theme (RGAA 3.2), and on
+    // a plain severity (the text colour: dark red-400 … cyan-500) 2.2-2.8:1.
+    // Accent text on a surface is text-accent-text; a white label sits on
+    // the -solid twin, or on the black scrim of a chip inside an accent
+    // row. The background sits under the same state prefix as the text,
+    // or under none (`focus:bg-accent focus:text-fg-onAccent` is one
+    // state; a `hover:bg-accent` under an unprefixed white text leaves
+    // the resting state white on nothing). Judged per variant: the pair
+    // must hold in every shape the className can take.
+    const WHITE = /(?<![\w-])((?:[\w-]+:)*)text-(?:accent-fg|fg-onAccent)(?![\w-])/g;
+    const SOLID = String.raw`bg-(?:accent|(?:danger|warning|success|info)-solid)(?![\w/-])|bg-black\/`;
+    const solidUnder = (v: string, prefix: string) =>
+      new RegExp(`(?<![\\w:-])${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:${SOLID})`).test(v);
+    const hits = jsxClassed().flatMap((e) =>
+      e.variants
+        .filter((v) =>
+          [...v.matchAll(WHITE)].some(([, prefix = ""]) => !solidUnder(v, prefix) && !(prefix && solidUnder(v, ""))),
+        )
+        .map((v) => hit(e, v)),
+    );
+    if (hits.length) {
+      throw new Error(
+        `white accent-fg text off bg-accent / bg-<severity>-solid (design-system.md § Don'ts) — text-accent-text on a surface, bg-<severity>-solid under a white label:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("text-accent-text never sits on a bg-accent/NN alpha tint — bg-accent-soft is the tint", () => {
+    // The tint under accent text is the accent-soft token: one pair, held
+    // ≥ 4.5:1 by the contrast audit (5.0+ over the light panels). An
+    // ad-hoc alpha is a pair no row measures — accent/20 read 4.4-4.6:1
+    // over the light panels (RGAA 3.2) — so every alpha is refused, the
+    // faint ones that happen to pass included. Judged per variant, state
+    // prefixes included (a hover:bg-accent/30 is the hovered pair).
+    const hits = jsxClassed().flatMap((e) =>
+      e.variants
+        .filter((v) => /\btext-accent-text\b/.test(v) && /(?<![\w-])(?:[\w-]+:)?bg-accent\/\d+\b/.test(v))
+        .map((v) => hit(e, v)),
+    );
+    if (hits.length) {
+      throw new Error(
+        `text-accent-text on a bg-accent/NN alpha tint (design-system.md § Don'ts) — use bg-accent-soft:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("no className overflows the reader's variant cap — a collapsed element is judged on its union", () => {
+    // Past MAX_VARIANTS the reader collapses the product to the union, and
+    // a pairing rule then sees classes from different branches together
+    // (a false pair, or a missed one). Named here so an overflow is a
+    // red test, not a silent change of what the rules above judge.
+    const hits = jsxClassed()
+      .filter((e) => e.collapsed)
+      .map((e) => hit(e));
+    if (hits.length) {
+      throw new Error(
+        `a className's variant product passed the reader's cap and collapsed to its union — split the className, or raise MAX_VARIANTS in _jsx.ts:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("text-fg-subtle never sits on a severity or accent -soft tint", () => {
+    // fg-subtle holds AA on the grey surfaces; on a -soft tint it reads
+    // 4.0-4.2:1 over the light panels, and under 4.5 in dark on live-soft
+    // or wherever the tint sits on surface-2. Secondary text on a tinted
+    // banner is text-fg-muted (or the tint's own -fg). Judged per variant.
+    const hits = jsxClassed().flatMap((e) =>
+      e.variants
+        .filter((v) => /\bbg-(danger|warning|success|info|live|accent)-soft\b/.test(v) && /\btext-fg-subtle\b/.test(v))
+        .map((v) => hit(e, v)),
+    );
+    if (hits.length) {
+      throw new Error(
+        `text-fg-subtle on a -soft tint (design-system.md § Don'ts) — use text-fg-muted:\n${hits.join("\n")}`,
       );
     }
     expect(hits).toHaveLength(0);

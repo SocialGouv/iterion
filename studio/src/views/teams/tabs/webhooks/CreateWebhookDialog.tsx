@@ -211,7 +211,8 @@ export function CreateWebhookDialog({
                       provider === p.id
                         ? "border-accent bg-accent-soft"
                         : "border-border-subtle"
-                    } ${p.available ? "" : "opacity-60 cursor-not-allowed"}`}
+                    } data-[disabled]:opacity-60 data-[disabled]:cursor-not-allowed`}
+                    data-disabled={p.available ? undefined : true}
                   >
                     <Radio
                       name="provider"

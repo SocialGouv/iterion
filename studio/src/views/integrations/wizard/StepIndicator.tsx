@@ -36,7 +36,7 @@ export function StepIndicator({
             className={[
               "inline-flex items-center gap-1.5",
               active ? "text-fg-default font-semibold" : "",
-              !active && !done ? "opacity-60" : "",
+              !active && !done ? "text-fg-subtle" : done ? "text-fg-muted" : "",
             ]
               .join(" ")
               .trim()}

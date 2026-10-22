@@ -340,7 +340,7 @@ function ForgeAccessSection({ forge }: { forge: NonNullable<BotEntryWithSchema["
     <div className="mt-3 border-t border-border-default pt-2">
       <div className="mb-1 flex items-center gap-2">
         <span className="text-xs font-medium text-fg-default">Forge access</span>
-        <span className="rounded bg-surface-2 px-1 text-caption text-fg-subtle">auto-provisioned · read-only</span>
+        <span className="rounded bg-surface-2 px-1 text-caption text-fg-muted">auto-provisioned · read-only</span>
       </div>
       <p className="mb-2 text-caption text-fg-subtle">
         What enabling this bot on a connected repo (Integrations) will set up. Declared in
