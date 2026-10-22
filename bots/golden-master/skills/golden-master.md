@@ -185,6 +185,26 @@ A set a LATER gate must score therefore has one durable home, the tree: commit i
 `GM_SEAL_COMMITTED=1` for a hand-run gate). A committed set is left in place by the seal
 precisely so it can wait for that gate.
 
+That leaving-in-place is **per set, never directory-wide**: the seal keeps the entries git
+TRACKS and relocates the rest, so a committed successor waiting for its gate does not stop the
+current run's own fresh set from sealing, and the order of the two acts does not matter. What
+does matter is which side of `git ls-files` each set is on. A set committed **in stride** — your
+own, saved as you drew it — is one the seal leaves behind: unsealed, unscored, and readable by
+the hardening loop that must never see it, after which the gate reports `0/0`, a term that reads
+green by being vacuous. Draw into the tree, commit only the SUCCESSOR.
+
+A net carrying an UNCLAIMED successor is therefore no longer a net where nothing can be sealed;
+it is a net carrying a debt. The set sits tracked until the gate that owns it opts in and
+consumes it, and no run of the bot can discharge it alone — writing the opt-in would spend the
+set at the wrong gate, deleting it destroys an artefact the run did not draw. A run that meets
+one reports the debt (`holdout_awaiting_gate`) rather than stacking a second set on top.
+
+The run that DRAWS a successor never writes the opt-in for it. The flag is read from the config
+being judged at every gate, so one written in advance is read by that same run's gate minutes
+later: it seals the committed set on the spot, scores both sets at once and leaves the next gate
+back at `0/0` — after moving tracked files out from under git as uncommitted deletions. Whoever
+owns the later gate writes it, when that gate is the one about to run.
+
 Two debts a `0/0` held-out figure can carry, both reported as FIELDS rather than prose, because
 a supervising process needs to see them:
 
