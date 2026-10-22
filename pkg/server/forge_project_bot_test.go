@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -101,9 +102,22 @@ func (m *projectBotGitLab) server() *httptest.Server {
 			return
 		}
 		_ = json.NewDecoder(r.Body).Decode(&m.mintBody)
+		// Like a GitLab that enforces token expiry (the PIC): the key must
+		// travel, and the date may not pass the 365-day ceiling.
+		expires, _ := m.mintBody["expires_at"].(string)
+		if expires == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"400 Bad request - expires_at is missing"}`))
+			return
+		}
+		if d, err := time.Parse("2006-01-02", expires); err != nil || d.After(time.Now().UTC().AddDate(0, 0, 365)) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"Expires at must be before ` + time.Now().UTC().AddDate(0, 0, 365).Format("2006-01-02") + `"}`))
+			return
+		}
 		m.minted[pbMinted] = true
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 58, "user_id": 575, "name": "iterion-bot", "token": pbMinted, "scopes": []string{"api"}, "access_level": 40, "expires_at": "2027-10-21"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 58, "user_id": 575, "name": "iterion-bot", "token": pbMinted, "scopes": []string{"api"}, "access_level": 40, "expires_at": expires})
 	})
 	mux.HandleFunc("DELETE /api/v4/projects/group%2Fapi/access_tokens/{id}", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()

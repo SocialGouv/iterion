@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,8 +62,8 @@ func TestMintProjectBot_RequestShapeAndCredential(t *testing.T) {
 	if scopes, _ := gotBody["scopes"].([]any); len(scopes) != 1 || scopes[0] != "api" {
 		t.Errorf("scopes = %v, want [api]", gotBody["scopes"])
 	}
-	if _, set := gotBody["expires_at"]; set {
-		t.Errorf("expires_at = %v: an omitted expiry must stay omitted so GitLab applies its maximum lifetime", gotBody["expires_at"])
+	if want := time.Now().UTC().AddDate(0, 0, 365).Format(gitlabDate); gotBody["expires_at"] != want {
+		t.Errorf("expires_at = %v, want %s: the mint always names an expiry (a GitLab that enforces expiry refuses a request without one), GitLab's ceiling first", gotBody["expires_at"], want)
 	}
 	if cred.TokenID != "58" || cred.Token != "glpat-minted-token" || cred.UserID != "166" {
 		t.Errorf("credential = %+v", cred)
@@ -242,4 +244,193 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// A GitLab that enforces token expiry refuses a mint without `expires_at`
+// before any default applies (the PIC, v19.4.2: "expires_at is missing"),
+// and its policy caps the lifetime — 365 days by default, lower per instance
+// or group, refused as "must be before <date>". The client never guesses the
+// cap: it names GitLab's ceiling, then shorter lifetimes, and keeps the first
+// token minted — here a 90-day policy, found on the fourth request.
+func TestMintProjectBot_LifetimeLadderIsJudgedByGitLab(t *testing.T) {
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	policy := today.AddDate(0, 0, 90)
+	var mu sync.Mutex
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		raw, _ := body["expires_at"].(string)
+		if raw == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"400 Bad request - expires_at is missing"}`))
+			return
+		}
+		mu.Lock()
+		asked = append(asked, raw)
+		mu.Unlock()
+		if d, err := time.Parse(gitlabDate, raw); err != nil || d.After(policy) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"Expires at must be before ` + policy.Format(gitlabDate) + `"}`))
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(tokenAnswer(58, "glpat-minted", raw))
+	}))
+	defer srv.Close()
+
+	cred, err := New(srv.Client(), srv.URL, "tok").MintProjectBot(context.Background(), "g/p", forge.ProjectBotSpec{Name: "b", AccessLevel: 40, Scopes: []string{"api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{today.AddDate(0, 0, 365).Format(gitlabDate), today.AddDate(0, 0, 364).Format(gitlabDate), today.AddDate(0, 0, 180).Format(gitlabDate), policy.Format(gitlabDate)}
+	mu.Lock()
+	got := append([]string(nil), asked...)
+	mu.Unlock()
+	if len(got) != len(want) {
+		t.Fatalf("asked %v, want the ladder walked down to the policy: %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("asked %v, want the ladder walked down to the policy: %v", got, want)
+		}
+	}
+	if !cred.ExpiresAt.Equal(policy) {
+		t.Errorf("expires_at = %v, want the lifetime GitLab granted %v", cred.ExpiresAt, policy)
+	}
+}
+
+// A refusal of the caller's rights reads the same at every lifetime: the
+// ladder ends, bounded by its length, and the typed error carries GitLab's
+// own reason — while a status other than 400 (the grant itself refused)
+// returns on the first answer.
+func TestMintProjectBot_RefusalsEndTheLadder(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   error
+		calls  int
+	}{
+		{"rights refused at every lifetime", 400, `{"message":"400 Bad request - User does not have permission to create project access token"}`, forge.ErrProjectBotNotPermitted, len(lifetimeLadder)},
+		{"grant rejected: no second request", 401, `{"message":"401 Unauthorized"}`, forge.ErrUnauthorized, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				calls++
+				mu.Unlock()
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			_, err := New(srv.Client(), srv.URL, "tok").MintProjectBot(context.Background(), "g/p", forge.ProjectBotSpec{Name: "b", AccessLevel: 40, Scopes: []string{"api"}})
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if tc.status == http.StatusBadRequest && !contains(err.Error(), "User does not have permission") {
+				t.Errorf("err = %v, must carry GitLab's own reason", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if calls != tc.calls {
+				t.Errorf("calls = %d, want %d", calls, tc.calls)
+			}
+		})
+	}
+}
+
+// An answer that may have minted ends the ladder on the spot, whatever it
+// says: a 2xx without a token, or a transport failure, is one request and
+// one error — a retry on a shorter lifetime would create a second token
+// nothing records.
+func TestMintProjectBot_AnAnswerThatMayHaveMintedEndsTheLadder(t *testing.T) {
+	t.Run("2xx without a token", func(t *testing.T) {
+		var mu sync.Mutex
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 5, "user_id": 9})
+		}))
+		defer srv.Close()
+		if _, err := New(srv.Client(), srv.URL, "tok").MintProjectBot(context.Background(), "g/p", forge.ProjectBotSpec{Name: "b", AccessLevel: 40, Scopes: []string{"api"}}); err == nil {
+			t.Fatal("a 2xx without a token must not yield a credential")
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1: the ladder must not retry an answer that may have minted", calls)
+		}
+	})
+	t.Run("transport failure", func(t *testing.T) {
+		var mu sync.Mutex
+		dials := 0
+		client := &http.Client{Transport: &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+			mu.Lock()
+			dials++
+			mu.Unlock()
+			return nil, errors.New("forge unreachable")
+		}}}
+		if _, err := New(client, "http://forge.invalid", "tok").MintProjectBot(context.Background(), "g/p", forge.ProjectBotSpec{Name: "b", AccessLevel: 40, Scopes: []string{"api"}}); err == nil {
+			t.Fatal("a transport failure must surface")
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if dials != 1 {
+			t.Errorf("dials = %d, want 1: a request that may have reached GitLab is never repeated on a shorter lifetime", dials)
+		}
+	})
+}
+
+// A policy lowered after the mint refuses the lifetime the bot was granted:
+// the rotation walks the ladder down like the mint did (GitLab rolls the
+// revoke back when it refuses the new token, so every step is safe), and the
+// bot lives on with the lifetime the policy now allows — here 30 days.
+func TestRotate_WalksTheLadderWhenThePolicyShrank(t *testing.T) {
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	policy := today.AddDate(0, 0, 30)
+	var mu sync.Mutex
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		raw, _ := body["expires_at"].(string)
+		mu.Lock()
+		asked = append(asked, raw)
+		mu.Unlock()
+		if d, err := time.Parse(gitlabDate, raw); err != nil || d.After(policy) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"Expires at must be before ` + policy.Format(gitlabDate) + `"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(tokenAnswer(59, "glpat-rotated", raw))
+	}))
+	defer srv.Close()
+
+	granted := today.AddDate(0, 0, 365)
+	cred, err := New(srv.Client(), srv.URL, "bot-token").RotateSelf(context.Background(), "g/p", granted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{granted.Format(gitlabDate), today.AddDate(0, 0, 364).Format(gitlabDate), today.AddDate(0, 0, 180).Format(gitlabDate), today.AddDate(0, 0, 90).Format(gitlabDate), policy.Format(gitlabDate)}
+	mu.Lock()
+	got := append([]string(nil), asked...)
+	mu.Unlock()
+	if len(got) != len(want) {
+		t.Fatalf("asked %v, want the granted lifetime then the ladder down to the policy: %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("asked %v, want the granted lifetime then the ladder down to the policy: %v", got, want)
+		}
+	}
+	if !cred.ExpiresAt.Equal(policy) {
+		t.Errorf("expires_at = %v, want the lifetime the policy now allows %v", cred.ExpiresAt, policy)
+	}
 }

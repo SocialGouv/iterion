@@ -451,8 +451,9 @@ func (s *Server) handlePreviewForgeEnable(w http.ResponseWriter, r *http.Request
 // projectBotNotPermittedDetail is the operator's reading of a refused mint:
 // the forge's own words first, then the two settings that produce them.
 func projectBotNotPermittedDetail(err error) string {
-	return err.Error() + " — the authorising account must hold the Maintainer role on the project, and project access tokens must be allowed on it" +
-		" (GitLab: the group's Settings → General → Permissions and group features → Project access tokens);" +
+	return err.Error() + " — the authorising account must hold the Maintainer role on the project, project access tokens must be allowed on it" +
+		" (GitLab: the group's Settings → General → Permissions and group features → Project access tokens)," +
+		" and the instance or group must allow a token lifetime of at least 7 days (iterion asks for 365, then shorter);" +
 		" otherwise connect the repository with a project access token created by hand (the personal-token method)"
 }
 

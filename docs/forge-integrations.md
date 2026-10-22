@@ -208,7 +208,11 @@ hooks, mint — and gives every enabled repository its **own** identity:
 
 - **Enable mints the bot.** `Provision` calls
   `POST /projects/:id/access_tokens` with the grant (name `iterion-bot`, role
-  Maintainer, scope `api`, expiry left to the instance's maximum), reads the
+  Maintainer, scope `api`, and an expiry — always named, since a GitLab that
+  requires the key refuses a request without one: GitLab's 365-day ceiling
+  first, then shorter ladder steps (364, 180, 90, 30, 7 days) until the
+  instance or group policy accepts one; the rotation walks the same ladder
+  when a policy shrank after the mint), reads the
   bot user's login with the minted token, seals the token as the
   integration's **own** managed `forge_token` secret (never the connection's,
   which is shared by every repo), gives the bot the iterion-bot avatar, and
