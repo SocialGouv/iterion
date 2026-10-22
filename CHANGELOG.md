@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.282.0](https://github.com/SocialGouv/iterion/compare/v3.281.3...v3.282.0) (2026-10-22)
+
+### Features
+
+* **dsl,model,dryrun,queue:** a tool node declares what the engine expands in its bodies ([#2694](https://github.com/SocialGouv/iterion/issues/2694)) ([30dcd15](https://github.com/SocialGouv/iterion/commit/30dcd15ef01903a1d878f2cffe87493f08d06980)), references [#1522](https://github.com/SocialGouv/iterion/issues/1522)
+
+    <details><summary>why</summary>
+
+    The engine rewrites the braced environment forms of every tool body before the body reaches its reader, and an author had no way to decline. A `language: js` body whose `${count}` belongs to the language, a `${NAME:-default}` a shell is meant to resolve itself, a published `.bot` a third party must be able to read as what it executes: all three were silently rewritten, and the C188 lint had no remedy to point at.
+
+    </details>
+
 ## [3.281.3](https://github.com/SocialGouv/iterion/compare/v3.281.2...v3.281.3) (2026-10-22)
 
 ### Bug Fixes
