@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.281.0](https://github.com/SocialGouv/iterion/compare/v3.280.0...v3.281.0) (2026-10-22)
+
+### Features
+
+* **secrets,server,cli,studio:** a tenant's OpenAI-compatible gateway is a credential record, and a key can be restricted to repositories ([#2671](https://github.com/SocialGouv/iterion/issues/2671)) ([05caafa](https://github.com/SocialGouv/iterion/commit/05caafa74f4f6dee67287f24db231fbfa652aaf5)), references [#2005](https://github.com/SocialGouv/iterion/issues/2005) [#2652](https://github.com/SocialGouv/iterion/issues/2652) [#2005](https://github.com/SocialGouv/iterion/issues/2005)
+
+    <details><summary>why</summary>
+
+    A team that must spend its own LLM gateway (a PLIAGE LiteLLM endpoint in front of Scaleway models) had one option: a dedicated runner pool carrying the key in its pod environment, one pool and one forked bot per team. This is PR-A of #2005 (ADR-131): the RECORD half. Provider openai_compatible joins the BYOK vocabulary; its key carries base_url, the gateway root, canonical at write (https only, host lower-cased and in punycode, literal addresses as net.IP prints them, no default port, no…
+
+    </details>
+
 ## [3.280.0](https://github.com/SocialGouv/iterion/compare/v3.279.1...v3.280.0) (2026-10-22)
 
 ### Features
