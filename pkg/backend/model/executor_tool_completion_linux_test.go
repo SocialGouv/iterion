@@ -492,20 +492,24 @@ func waitHeartbeatStill(t *testing.T, path string) {
 // command may still be running, and the runtime must not start a second copy
 // beside it. A sweep that finished leaves an ordinary failure.
 func TestSandboxedToolNodeUnknownEndWithAFailedSweepIsAmbiguous(t *testing.T) {
+	// A failing sweep is tried until its budget runs out, so its budget is
+	// short; a finishing sweep gets one it cannot outrun on a loaded machine,
+	// since a sweep its budget kills is an undecided end too.
 	for _, tc := range []struct {
 		name       string
 		sweepFails bool
+		budget     time.Duration
 		ambiguous  bool
 	}{
-		{"the sweep failed", true, true},
-		{"the sweep finished", false, false},
+		{"the sweep failed", true, 200 * time.Millisecond, true},
+		{"the sweep finished", false, 30 * time.Second, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requireSetsid(t)
 			dir := t.TempDir()
 			heart := filepath.Join(dir, "heartbeat")
 			e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
-			e.sweepBudget = 200 * time.Millisecond
+			e.sweepBudget = tc.budget
 			e.SetSandbox(&execClientRun{client: "lost", dir: dir, running: heart, sweepFails: tc.sweepFails})
 			// A short heartbeat: when the sweep fails nothing stops it, and it
 			// ends on its own before the temp dir goes.
