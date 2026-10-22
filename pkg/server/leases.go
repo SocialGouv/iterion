@@ -17,6 +17,7 @@ const (
 	leaseMergeGateSweeper    = "merge-gate-sweeper"
 	leaseBoardIssueSync      = "board-issue-sync"
 	leaseAssistantWatchSweep = "assistant-watch-sweep"
+	leaseForgeTokenRefresh   = "forge-token-refresh"
 )
 
 // leasedNets is every name above, with what runs on every replica while that
@@ -44,6 +45,15 @@ var leasedNets = []struct {
 	{leaseMergeGateSweeper, "the merge-gate sweep", (*Server).gateSweepStarts},
 	{leaseAssistantWatchSweep, "the assistant run-watch sweep, whose every pass loads each run watching a card, walks its targets and delivers the due episodes once per replica", (*Server).assistantWatchStarts},
 	{leaseBoardIssueSync, "the forge→board issue sync, whose every pass then lists EVERY sync-enabled repo's issue window once per replica", (*Server).boardIssueSyncStarts},
+	{leaseForgeTokenRefresh, "the forge token refresh sweep, whose every pass refreshes each due OAuth token once per replica — on a forge that rotates refresh tokens the loser ends needs_reauth and writes its stale copy over the winner's", (*Server).forgeTokenRefreshStarts},
+}
+
+// forgeTokenRefreshStarts is the forge token refresh sweep's start condition
+// (server_lifecycle.go): a forge orchestrator to refresh connections and
+// rotate project bots through. Its start site and the lease registry above
+// both ask HERE, for the reason gateSweepStart gives.
+func (s *Server) forgeTokenRefreshStarts() bool {
+	return s.forgeOrchestrator != nil
 }
 
 // assistantWatchStarts is the assistant run-watch worker's start condition

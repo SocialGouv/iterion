@@ -1,6 +1,7 @@
 package forge
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -23,6 +24,16 @@ type ConnectionStore interface {
 	Create(ctx context.Context, c Connection) error
 	Get(ctx context.Context, id string) (Connection, error)
 	Update(ctx context.Context, c Connection) error
+	// RevokeIfPayload flips the row to StatusNeedsReauth — and clears its
+	// recorded access-token expiry when clearExpiry — only while its stored
+	// sealed payload still equals expected: the compare-and-swap a refresh
+	// sweep needs to mark a connection it loaded without writing over a
+	// renewal another replica landed since (every renewal changes the
+	// payload), and without touching any other field an operator wrote
+	// meanwhile (a webhook base pin, a display name, an opt-out). It reports
+	// false, nil when the row exists with another payload, and
+	// ErrConnectionNotFound when there is no row.
+	RevokeIfPayload(ctx context.Context, id string, expected []byte, at time.Time, clearExpiry bool) (bool, error)
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]Connection, error)
 	// ExpiringBefore returns refreshable connections whose access token
@@ -72,6 +83,25 @@ func (m *MemoryConnectionStore) Update(_ context.Context, c Connection) error {
 	}
 	m.conns[c.ID] = c
 	return nil
+}
+
+func (m *MemoryConnectionStore) RevokeIfPayload(_ context.Context, id string, expected []byte, at time.Time, clearExpiry bool) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.conns[id]
+	if !ok {
+		return false, ErrConnectionNotFound
+	}
+	if !bytes.Equal(cur.SealedPayload, expected) {
+		return false, nil
+	}
+	cur.Status = StatusNeedsReauth
+	cur.UpdatedAt = at
+	if clearExpiry {
+		cur.AccessTokenExpiresAt = nil
+	}
+	m.conns[id] = cur
+	return true, nil
 }
 
 func (m *MemoryConnectionStore) Delete(_ context.Context, id string) error {
@@ -162,6 +192,29 @@ func (s *MongoConnectionStore) Get(ctx context.Context, id string) (Connection, 
 
 func (s *MongoConnectionStore) Update(ctx context.Context, c Connection) error {
 	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": c.ID}, c, nil, ErrConnectionNotFound, "forge: update connection")
+}
+
+// RevokeIfPayload is one UpdateOne whose filter carries the payload the
+// caller loaded and whose update names only the fields a revocation owns:
+// the match and the write are the same atomic statement, so a renewal
+// landing in between matches nothing, and nothing else on the row is
+// rewritten.
+func (s *MongoConnectionStore) RevokeIfPayload(ctx context.Context, id string, expected []byte, at time.Time, clearExpiry bool) (bool, error) {
+	update := bson.M{"$set": bson.M{"status": StatusNeedsReauth, "updated_at": at}}
+	if clearExpiry {
+		update["$unset"] = bson.M{"access_token_expires_at": ""}
+	}
+	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": id, "sealed_payload": expected}, update)
+	if err != nil {
+		return false, fmt.Errorf("forge: revoke connection %s if its credential is unchanged: %w", id, err)
+	}
+	if res.MatchedCount > 0 {
+		return true, nil
+	}
+	if _, err := s.Get(ctx, id); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func (s *MongoConnectionStore) Delete(ctx context.Context, id string) error {

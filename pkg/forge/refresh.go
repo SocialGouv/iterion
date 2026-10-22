@@ -83,6 +83,11 @@ func (w *RefreshWorker) lead() time.Duration {
 // RunOnce refreshes every connection expiring within the lead window.
 // Returns the number refreshed; per-connection errors are collected but do
 // not abort the sweep (one bad connection must not wedge the others).
+// refreshWriteBudget bounds one connection's renewal once the forge has been
+// asked (refreshOne): long enough for the forge round trip and the two store
+// writes, short enough to end inside a lease term's step-down margin.
+const refreshWriteBudget = 20 * time.Second
+
 func (w *RefreshWorker) RunOnce(ctx context.Context) (int, error) {
 	cutoff := w.now().Add(w.lead())
 	due, err := w.Connections.ExpiringBefore(ctx, cutoff)
@@ -92,6 +97,11 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) (int, error) {
 	refreshed := 0
 	var firstErr error
 	for _, conn := range due {
+		// A sweep whose term ended starts no further renewal: what is left
+		// is the successor's, whose term opens with a pass.
+		if ctx.Err() != nil {
+			return refreshed, firstErr
+		}
 		if err := w.refreshOne(ctx, conn); err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -153,10 +163,19 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	if err != nil {
 		return err
 	}
+	// From here the forge may rotate the credential, so the renewal runs to
+	// its row write on a bounded context detached from the sweep's: a term
+	// ending between the forge's answer and the write — step-down, lost
+	// lease, shutdown — would otherwise leave the forge holding a refresh
+	// token this row no longer has, and the next pass would mark the
+	// connection revoked with nobody racing it. The budget fits inside the
+	// lease's step-down margin; RunOnce stops between connections instead.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshWriteBudget)
+	defer cancel()
 	out, err := r.Refresh(ctx, conn, cur.RefreshToken)
 	if err != nil {
 		if errors.Is(err, ErrUnauthorized) {
-			return w.markRevoked(ctx, conn)
+			return w.markRevoked(ctx, conn, false)
 		}
 		// A permission mismatch is a PERMANENT config error (the install was
 		// approved with fewer permissions than iterion now requests). Mark the
@@ -296,13 +315,12 @@ func (w *RefreshWorker) refreshSecurityOnly(ctx context.Context, conn Connection
 		// connection keeps reading "active" while the map holds a token that
 		// dies within the hour — a 401 in the bot with nothing to explain it.
 		//
-		// Clear the expiry FIRST. markRevoked does not touch it, and this lane
-		// deliberately bypasses the StatusDegraded early-exit that stops the
-		// runtime lane from re-entering — so a revoked connection that stays
-		// dated is re-minted against the forge on every tick, forever, with no
+		// The expiry is cleared with the status: this lane deliberately
+		// bypasses the StatusDegraded early-exit that stops the runtime lane
+		// from re-entering — so a revoked connection that stays dated is
+		// re-minted against the forge on every tick, forever, with no
 		// self-heal path.
-		conn.AccessTokenExpiresAt = nil
-		return w.markRevoked(ctx, conn)
+		return w.markRevoked(ctx, conn, true)
 	case err != nil:
 		// Transient (or at least unclassified): keep retrying, but do not let
 		// the map keep promising freshness it no longer has. The map carries
@@ -443,16 +461,35 @@ func (w *RefreshWorker) rewriteManagedSecret(ctx context.Context, secretID strin
 	return w.Secrets.Update(ctx, gs)
 }
 
-func (w *RefreshWorker) markRevoked(ctx context.Context, conn Connection) error {
-	now := w.now()
-	conn.Status = StatusNeedsReauth
-	conn.UpdatedAt = now
-	if err := w.Connections.Update(ctx, conn); err != nil {
+// markRevoked flips the connection to StatusNeedsReauth with a compare-and-
+// swap on the credential this sweep loaded. A refresh token the forge rotates
+// (GitLab, Forgejo) is consumed by whoever refreshes first; a second sweep
+// refreshing with the same token is answered invalid_grant, which reaches
+// here as ErrUnauthorized. That loser must neither mark revoked a connection
+// the winner just renewed nor write its stale tokens over the fresh ones —
+// and a re-read followed by a write leaves a window where the winner lands
+// in between, so the write itself carries the condition: it matches only a
+// row whose sealed payload is still the one loaded (every renewal changes
+// it), sets only the fields a revocation owns (an operator's write that
+// landed meanwhile stays), and a renewal that landed since ends the loser's
+// work with nothing written. clearExpiry drops the recorded expiry as well
+// (the security-only lane's need, see refreshSecurityOnly).
+func (w *RefreshWorker) markRevoked(ctx context.Context, loaded Connection, clearExpiry bool) error {
+	written, err := w.Connections.RevokeIfPayload(ctx, loaded.ID, loaded.SealedPayload, w.now(), clearExpiry)
+	if err != nil {
 		return err
 	}
+	if !written {
+		return nil // renewed since this sweep loaded it: the winner's row stands
+	}
 	// A revoked credential can no longer refresh the org token either —
-	// withdraw it (same rationale as the degraded path).
-	return w.dropSecurityReadEntry(ctx, conn)
+	// withdraw it (same rationale as the degraded path), reading the opt-in
+	// as it is NOW: the sweep's copy may predate an opt-out.
+	fresh, err := w.Connections.Get(ctx, loaded.ID)
+	if err != nil {
+		return err
+	}
+	return w.dropSecurityReadEntry(ctx, fresh)
 }
 
 // markDegraded flips a connection to StatusDegraded on a permanent config
