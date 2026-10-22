@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/thinktokens"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -201,7 +202,42 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 		req.Tools[n-1].CacheControl = api.EphemeralCacheControl()
 	}
 
+	req.MaxTokens = fitRaisedBudget(req, opts.MaxTokensWindow)
 	return req, nil
+}
+
+// fitRaisedBudget is the request's max_tokens once a raised default (see
+// GenerationOptions.MaxTokensWindow) is fitted to the window: lowered so
+// that the estimated prompt plus max_tokens stays inside it, never below
+// claw's 8192 default — the budget every request carried before the raise.
+// A vLLM-served gateway refuses a request whose prompt plus max_tokens
+// exceeds the window, and the threshold compaction that keeps prompts in
+// bounds estimates the messages alone, not the system prompt and the tool
+// schemas this estimate includes.
+func fitRaisedBudget(req api.CreateMessageRequest, window int) int {
+	if window <= 0 || req.MaxTokens <= defaultMaxTokens {
+		return req.MaxTokens
+	}
+	room := window - estimatePromptTokens(req)
+	return max(defaultMaxTokens, min(req.MaxTokens, room))
+}
+
+// estimatePromptTokens over-estimates what a request's prompt costs: the
+// serialized system prompt, messages and tools at three bytes a token —
+// below the four of prose, so JSON, code and non-English text are not
+// under-counted.
+func estimatePromptTokens(req api.CreateMessageRequest) int {
+	raw, err := json.Marshal(struct {
+		System   string        `json:"system"`
+		Messages []api.Message `json:"messages"`
+		Tools    []api.Tool    `json:"tools"`
+	}{req.System, req.Messages, req.Tools})
+	if err != nil {
+		// Unmeasurable: claim the whole window, so the budget falls back
+		// to the default rather than risking a refusal.
+		return 1 << 30
+	}
+	return len(raw)/3 + 1
 }
 
 // buildToolMap creates a name→GenerationTool lookup.
@@ -298,7 +334,11 @@ func callAndAggregate(
 	span.SetTag("llm.model", wireModelID(opts.Model))
 
 	start := time.Now()
-	requestCtx, cancelRequest := context.WithCancel(ctx)
+	// A gateway client feeds the capture what claw's chat translator drops:
+	// the reasoning and the raw finish_reason (compatgw.ReasoningCapture).
+	// Any other client ignores it.
+	capture := compatgw.NewReasoningCapture()
+	requestCtx, cancelRequest := context.WithCancel(compatgw.WithReasoningCapture(ctx, capture))
 	defer cancelRequest()
 	coldTimeout := resolveClawStreamColdTimeout()
 	idleTimeout := resolveClawStreamIdleTimeout()
@@ -335,6 +375,9 @@ func callAndAggregate(
 	if errors.As(agg.err, &streamIdle) && streamIdle.Phase == StreamIdleCold {
 		streamIdle.Idle = coldTimeout
 	}
+	agg.maxTokens = req.MaxTokens
+	adoptGatewayReasoning(&agg, capture)
+	markBudgetCut(&agg, req.MaxTokens, capture.FinishReason())
 	latency := time.Since(start)
 	span.SetData("llm.input_tokens", agg.usage.InputTokens)
 	span.SetData("llm.output_tokens", agg.usage.OutputTokens)

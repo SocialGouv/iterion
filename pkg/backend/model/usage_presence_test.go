@@ -274,9 +274,10 @@ func TestClawBackend_EveryExitCarriesItsUnreportedCalls(t *testing.T) {
 			withoutUsageReport(toolUseEvents("tu_1", "structured_output", `{"answer":"blue"}`, 100, 20)),
 		}, false, 1},
 		{"structured call cut mid-answer", false, []script{withHead()}, true, 1},
-		{"structured answer the model malformed", false, []script{
+		{"structured answer the model malformed, and its re-ask too", false, []script{
 			withoutUsageReport(toolUseEvents("tu_1", "structured_output", `{"answer":`, 100, 20)),
-		}, true, 1},
+			withoutUsageReport(toolUseEvents("tu_2", "structured_output", `{"answer":`, 100, 20)),
+		}, true, 2},
 		{"tool loop answering in JSON", true, []script{
 			withoutUsageReport(textEvents(`{"answer":"blue"}`, 100, 20)),
 		}, false, 1},

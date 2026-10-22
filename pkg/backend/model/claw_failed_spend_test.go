@@ -105,13 +105,13 @@ func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
 	}
 
 	t.Run("a structured call the model answered off-schema", func(t *testing.T) {
-		// generateStructured: no tools, so a single billed turn — and the
-		// model answered with plain text instead of the synthetic tool_use
-		// the schema forces. The call is fully billed; only its shape is
-		// unusable.
+		// generateStructured: no tools — the forced turn and its one
+		// unforced re-ask (#2651), and the model answered both with plain
+		// text instead of the synthetic tool_use. Both calls are fully
+		// billed; only their shape is unusable.
 		reg := NewRegistry()
 		reg.Register("test", func(string) (api.APIClient, error) {
-			return newMockClient(textEvents("I would rather narrate.", 100, 30)), nil
+			return newMockClient(textEvents("I would rather narrate.", 100, 30), textEvents("Still narrating.", 50, 10)), nil
 		})
 		backend := NewClawBackend(reg, EventHooks{}, RetryPolicy{MaxAttempts: 1})
 		res, err := backend.Execute(context.Background(), delegate.Task{
@@ -120,8 +120,8 @@ func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
 		if err == nil {
 			t.Fatal("precondition: text instead of the synthetic tool_use must fail")
 		}
-		if res.Tokens != 130 || res.Output["_tokens"] != 130 {
-			t.Errorf("the billed structured turn was reported as free: Tokens=%d Output=%v", res.Tokens, res.Output)
+		if res.Tokens != 190 || res.Output["_tokens"] != 190 {
+			t.Errorf("the billed structured turns were reported as free: Tokens=%d Output=%v, want 190", res.Tokens, res.Output)
 		}
 	})
 
@@ -174,9 +174,11 @@ func TestClawParseFallbackPricesTheRecoveryPassItRan(t *testing.T) {
 		textEvents("I reviewed the diff. No findings.", 40, 10),
 		// The recovery pass: schema forced, and the model narrates AGAIN
 		// instead of emitting the synthetic tool_use. Fully billed at 20/5,
-		// and unusable — `partial(usage)` beside "did not produce a tool_use
-		// block".
+		// and unusable.
 		textEvents("Still narrating, sorry.", 20, 5),
+		// Its one unforced re-ask (#2651): narrated once more, billed 15/5
+		// — `partial(usage)` beside the StructuredOutputError carries both.
+		textEvents("And again.", 15, 5),
 	)
 	reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
 	backend := NewClawBackend(reg, EventHooks{}, RetryPolicy{MaxAttempts: 1})
@@ -197,16 +199,17 @@ func TestClawParseFallbackPricesTheRecoveryPassItRan(t *testing.T) {
 	if !res.ParseFallback {
 		t.Fatalf("precondition: want the parse-fallback exit, got %+v", res)
 	}
-	if n := len(mock.getCalls()); n != 3 {
-		t.Fatalf("precondition: want 2 loop steps THEN the recovery pass, got %d call(s)", n)
+	if n := len(mock.getCalls()); n != 4 {
+		t.Fatalf("precondition: want 2 loop steps THEN the recovery pass and its re-ask, got %d call(s)", n)
 	}
-	// 130 (tool step) + 50 (final text) + 25 (the abandoned recovery pass).
-	if res.Tokens != 205 {
-		t.Errorf("Result.Tokens = %d, want 205 — the recovery pass was billed too", res.Tokens)
+	// 130 (tool step) + 50 (final text) + 25 (the abandoned recovery pass)
+	// + 20 (its abandoned re-ask).
+	if res.Tokens != 225 {
+		t.Errorf("Result.Tokens = %d, want 225 — the recovery pass and its re-ask were billed too", res.Tokens)
 	}
 	// The map is what the engine books from (extractUsage), not the struct.
-	if got := res.Output["_tokens"]; got != 205 {
-		t.Errorf("_tokens = %v, want 205 — the engine prices from the map", got)
+	if got := res.Output["_tokens"]; got != 225 {
+		t.Errorf("_tokens = %v, want 225 — the engine prices from the map", got)
 	}
 }
 

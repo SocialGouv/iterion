@@ -664,6 +664,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	var gwResolved compatgw.Resolved
 	if gwRoute.Gateway() {
 		gwResolved = compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), os.Getenv)
+		if budget := gatewayOutputBudget(gwResolved); opts.MaxTokens <= 0 && budget > 0 {
+			opts.MaxTokens = budget
+			opts.MaxTokensWindow = gwResolved.Spec.ContextWindow
+		}
 	}
 	var (
 		res    delegate.Result
@@ -844,9 +848,11 @@ func objectUsage[T any](r *ObjectResult[T]) Usage {
 }
 
 func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
-	// Set the explicit schema for structured output.
+	// Set the explicit schema for structured output. The node's own output:
+	// a reasoning-ending answer is accepted, schema-validated downstream.
 	genOpts := opts
 	genOpts.ExplicitSchema = task.OutputSchema
+	genOpts.AnswerFromReasoning = true
 	genOpts = applySessionMessagesForTask(ctx, task, genOpts)
 
 	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
@@ -854,6 +860,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
+		logReaskCallFailure(b.logger, task.NodeID, err)
 		return meteredFailure(task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
 	}
 	captureSessionMessages(ctx, taskSessionKey(task), &TextResult{Messages: result.Messages})
@@ -1068,6 +1075,32 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		}
 	}
 
+	// Still free: a final turn that showed no text may have answered at the
+	// end of its reasoning (a gateway model that answers in
+	// reasoning_content, which claw's chat wire used to drop: #2651). Read
+	// before paying for the recovery pass — only when the loop really ended
+	// on an answer turn: a turn that called tools (the step limit) is
+	// mid-task, and its reasoning holds a provisional draft the recovery's
+	// finalizeReminder exists to replace. harvestStructured takes nothing
+	// from a turn cut at max_tokens, and only an object with the schema's
+	// shape that ends the reasoning.
+	final := lastStep(result)
+	if answerTurn := final.FinishReason != FinishToolCalls && len(final.ToolCalls) == 0; answerTurn {
+		raw, source := harvestStructured(task.OutputSchema, result.Text, final.Thinking, final.FinishReason == FinishLength, true)
+		var output map[string]any
+		if raw != nil && json.Unmarshal(raw, &output) == nil {
+			b.logger.Warn("[%s] structured output read from the %s of the tool loop's final turn — its text held no JSON object to parse", task.NodeID, source)
+			tokens := annotateUsage(output, task.Model, result.TotalUsage)
+			return delegate.Result{
+				Output:         output,
+				Tokens:         tokens,
+				BackendName:    delegate.BackendClaw,
+				ThinkingTokens: result.TotalUsage.ReasoningTokens,
+				ThinkingMs:     result.TotalUsage.ThinkingMs,
+			}, nil
+		}
+	}
+
 	// Recovery pass — fires when the tool loop produced either no
 	// final text (MaxSteps exhausted, model kept calling tools) OR a
 	// non-JSON narrative response ("No findings.", "I reviewed X..."
@@ -1088,6 +1121,20 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	recoveryOpts.Tools = nil
 	recoveryOpts.MaxSteps = 1
 	recoveryOpts.ExplicitSchema = task.OutputSchema
+	// The node's own output: a reasoning-ending answer is accepted (the
+	// executor validates it against the schema like any other).
+	recoveryOpts.AnswerFromReasoning = true
+	// A final turn cut at max_tokens with nothing to show spent its whole
+	// budget reasoning; the recovery pass at the same effort and the same
+	// budget is the same request, cut the same way (#2651: both out=8192,
+	// text empty). It runs at a lowered effort instead, said out loud.
+	if cutWithoutAnswer(final) {
+		if lowered, to, ok := effortAfterCut(recoveryOpts); ok {
+			b.logger.Warn("[%s] the tool loop's final turn was cut at max_tokens=%d before any answer; the recovery pass runs at reasoning_effort %s instead of %s",
+				task.NodeID, stepMaxTokens(final, opts), to, reasoningEffortOf(opts))
+			recoveryOpts = lowered
+		}
+	}
 
 	// Emit an OnLLMRequest before the recovery pass so the timeline /
 	// Prometheus exporter sees two distinct LLM steps for a recovered
@@ -1102,7 +1149,11 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		})
 	}
 	obj, recErr := GenerateObjectDirect[map[string]any](ctx, client, recoveryOpts)
+	logReaskCallFailure(b.logger, task.NodeID, recErr)
 	if recErr == nil && obj != nil && obj.Object != nil {
+		if obj.Recovered != "" {
+			b.logger.Warn("[%s] the recovery pass's structured output came from %s, not from its forced %q tool block", task.NodeID, recoveredLabel(obj.Recovered), "structured_output")
+		}
 		both := result.TotalUsage
 		accumulateUsage(&both, obj.TotalUsage)
 		tokens := annotateUsage(obj.Object, task.Model, both)
@@ -1135,8 +1186,11 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if text == "" {
 		// The most expensive failure claw has: a whole agentic tool loop ran
 		// (possibly to MaxSteps) and the schema-forced recovery pass ran on
-		// top of it, and the node has nothing to show for either.
-		return meteredFailure(task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
+		// top of it, and the node has nothing to show for either. The error
+		// says what every turn came back with, so the next run is fixed at
+		// its cause rather than re-run blind.
+		return meteredFailure(task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed — the tool loop's final turn: %s; the recovery pass: %v",
+			describeFinalTurn(final, stepMaxTokens(final, opts), recErr), recErr)
 	}
 	output := map[string]any{"text": text}
 	tokens := annotateUsage(output, task.Model, billed)

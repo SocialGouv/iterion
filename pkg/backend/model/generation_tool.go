@@ -77,6 +77,22 @@ type GenerationOptions struct {
 	// MaxTokens is the maximum tokens per response (default 8192).
 	MaxTokens int
 
+	// MaxTokensWindow, when > 0, marks MaxTokens as a default raised past
+	// claw's own (a gateway model's catalog max output) and is the context
+	// window it must fit in: buildRequest lowers it, never below the 8192
+	// default, so the request's estimated prompt plus max_tokens stays
+	// inside this window. 0 sends MaxTokens as it is — always the case for
+	// a max_tokens the node set.
+	MaxTokensWindow int
+
+	// AnswerFromReasoning lets a structured turn that showed no text answer
+	// through a JSON object ending its reasoning (harvestStructured) — the
+	// shape of a gateway model that answers in reasoning_content. Set by the
+	// claw backend for a node's own output only, never for a caller whose
+	// output is an action (an intervention, a command to run, a file to
+	// write): a reasoning can end on an object it merely quotes.
+	AnswerFromReasoning bool
+
 	// Temperature controls randomness (nil = provider default).
 	Temperature *float64
 
