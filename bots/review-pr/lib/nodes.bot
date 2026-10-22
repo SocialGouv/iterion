@@ -10,35 +10,66 @@
 
 dsl: 2
 
+## The CLAUDE-FAMILY merge step, taken by every review whose launch does not
+## carry `mono_family=gpt` (`merge_reviews -> converge_gpt when
+## vars.mono_family == 'gpt'` is the guard, and `converge` is the
+## unconditional fallback beside it — the same shape as `topology`'s reviewer
+## edges).
+##
+## The guard reads that ONE var, so it follows the launch's pin and not the
+## topology the run ends up with: a `review_tier: audit` launch, or an
+## explicit `--var review_mode=dual`, carrying `mono_family=gpt` fans BOTH
+## reviewers and still merges on the twin. Deliberate — that pin is the
+## operator's explicit choice, and on a GPT-only tenant (where InjectAll
+## injects it) putting the merge back on the Anthropic wire is the very
+## failure #2467 closes. A webhook launch reaches this node whenever the
+## publisher resolved dual, because reviewtopology.InjectIfDeclaredFamilies
+## deletes `mono_family` there and the var falls back to its declared
+## "claude" default.
 agent converge:
   ## Dedicated env (NOT ITERION_VIBE_MODEL_CLAUDE, which pins the
-  ## REVIEWER): in mono the merge is near-mechanical — dedupe, threshold,
-  ## cap and report. Opus 5.5 at medium effort is the Anthropic default;
-  ## choose a separate OpenAI route with ITERION_VIBE_BACKEND_EMIT=claw,
-  ## ITERION_VIBE_MODEL_EMIT=openai/gpt-6-sol and
-  ## ITERION_VIBE_PROVIDER_EMIT=auto when appropriate.
+  ## REVIEWER): the merge is near-mechanical — dedupe, threshold, cap and
+  ## report. Opus 5.5 at medium effort is the Anthropic default; this
+  ## node's model and provider dials move it to any model a CLI backend
+  ## serves (the backend dial is bounded — see there), and under
+  ## `mono_family=gpt` the twin below answers instead, on its own three.
   model: "${ITERION_VIBE_MODEL_EMIT:-claude-opus-5-5}"
   ## Overridable like every other route here, because this node is on
-  ## EVERY path: `mono_family` picks which reviewer judges, never who
-  ## merges. Pinned to one backend, it made the gpt family a half
-  ## promise — the review ran, then the merge died on the Anthropic
-  ## weekly cap, so a deployment whose Claude window is spent could not
-  ## review at all despite having a second family credentialed.
+  ## every path the gpt guard does not take. Pinned to one backend, it made
+  ## the gpt family a half promise — the review ran, then the merge died on
+  ## the Anthropic weekly cap, so a deployment whose Claude window is spent
+  ## could not review at all despite having a second family credentialed.
+  ##
+  ## BETWEEN CLI BACKENDS ONLY — claude_code, codex, pi, kimi, grok,
+  ## opencode. This node declares no `tools:`, which a CLI backend reads as
+  ## "no restriction" and claw as the node's WHOLE surface, so pointed at
+  ## claw the dial lands the merge with no tool at all: no report under
+  ## `report_path`, no board issue, and the capability grant below inert —
+  ## every append is gated on an already-restricted list
+  ## (model.assembleEffectiveTools). Declaring a list here is not the
+  ## answer either: on a CLI route the list becomes the whole surface too
+  ## and strips the shell this node's own boundary paragraph names
+  ## (TestReviewPrSharedPromptsStateEachRoutesSurface). The claw merge is
+  ## therefore a node of its own — `converge_gpt` declares the list, and
+  ## `mono_family=gpt` selects it.
   backend: "${ITERION_VIBE_BACKEND_EMIT:-claude_code}"
   ## Same Anthropic-direct pin as the claude slot, for the same reason
   ## (see reviewer_claude): unpinned, a capped forfait hands this node's
   ## claude id to the z.ai facade in silence. Its own dial, because this
-  ## node's backend is one too: moving it to claw + an openai/… model
-  ## needs ITERION_VIBE_PROVIDER_EMIT=auto (or openai) as well — a hint
-  ## names the route to the credential walk and the wire-reach check, so
-  ## a leftover `anthropic` would describe an Anthropic route this node
-  ## no longer takes.
+  ## node's backend is one too: moving the slot to another CLI backend's
+  ## model needs this hint moved with it — a hint names the route to the
+  ## credential walk and the wire-reach check, so a leftover `anthropic`
+  ## would describe an Anthropic route this node no longer takes. An
+  ## `openai/…` merge is the twin below, not a hint here: the twin pins claw
+  ## for that id (see there), the one route this node's `tools:`-less
+  ## surface cannot take.
   provider: "${ITERION_VIBE_PROVIDER_EMIT:-anthropic}"
   output: emit_output
-  ## The merged finding set is what a later run is handed (manifest
-  ## `produces: kind: review`). An artifact is written ONLY for a node that
-  ## declares `publish:` — without this the hand-off resolves to nothing, and
-  ## a missing seed is indistinguishable from "this PR was never reviewed".
+  ## The merged finding set a later run is handed, kept beside pr_gate's
+  ## own publication (manifest `produces:` names pr_gate, because it is the
+  ## one node BOTH twins feed): an artifact is written ONLY for a node
+  ## carrying `publish:`, and this one is this twin's own recovery, which
+  ## the hand-off consults when the gate's copy cannot be read.
   publish: review_findings
   system: emit_system
   user: emit_user
@@ -53,16 +84,86 @@ agent converge:
   fallbacks:
     ## The claude slot's GLM route, verbatim and on the same dial (see
     ## reviewer_claude for every trigger and for why it carries no
-    ## `backend:`): this node is on EVERY path, so a merge step with no
-    ## second server let a capped forfait cost the whole review even
-    ## when the reviewer itself had been rescued. claude_code only — on a
-    ## claw primary the hint is read nowhere and a bare GLM id is not a
-    ## claw spec, so the route fails fast.
+    ## `backend:`): this node is on every path the gpt guard does not take,
+    ## so a merge step with no second server let a capped forfait cost the
+    ## whole review even when the reviewer itself had been rescued.
+    ## claude_code only — on a claw primary the hint is read nowhere and a
+    ## bare GLM id is not a claw spec, so the route fails fast.
     glm:
       model: "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}"
       provider: "zai"
       on: [usage_window, auth, unavailable]
       metered: true
+
+## The GPT-FAMILY merge step (#2467). `mono_family=gpt` is resolved from the
+## run's credentials and claude is the preferred family
+## (reviewtopology.monoPreference), so a run carrying it has NO Claude
+## credential: a merge pinned to the Anthropic wire then dies after the
+## reviewer has already spent, and the run never reaches `pr_gate` — the
+## merge gate stays dark on a PR nobody can see was reviewed. A node's
+## `model:`/`backend:` resolve `${ENV:-default}` and never `{{vars.x}}`, so
+## the family cannot be a var here: it is a second, differently pinned node
+## behind the same guard that picks the reviewer (the glance tiers' shape).
+##
+## Everything but the route is SHARED with `converge` by name — the same
+## prompts, output schema, effort dial and capabilities — so the merge
+## contract has exactly one copy
+## (bots/review_pr_mono_gpt_merge_test.go).
+agent converge_gpt:
+  ## The OpenAI merge model this bundle documents (README, "Running
+  ## mono-GPT"). Its own three dials, moving TOGETHER like the gpt
+  ## reviewer's: backend, model and provider decide one route, and a
+  ## deployment that moves one of them alone lands the slot somewhere
+  ## nobody chose. The `_EMIT` trio keeps dialling the claude twin.
+  model: "${ITERION_VIBE_MODEL_EMIT_GPT:-openai/gpt-6-sol}"
+  ## Explicit pin: an `openai/…` id only resolves via claw (the
+  ## auto-resolver would send it to claude_code, which does not know the
+  ## prefix, and the schema validator fails).
+  backend: "${ITERION_VIBE_BACKEND_EMIT_GPT:-claw}"
+  ## Empty by default, like the gpt reviewer's: on claw the model's
+  ## `openai/` prefix IS the route, while a leftover hint would describe an
+  ## Anthropic route this node does not take to the credential walk and to
+  ## the wire-reach check (model.AnthropicWireRoutes).
+  provider: "${ITERION_VIBE_PROVIDER_EMIT_GPT:-}"
+  output: emit_output
+  ## Its OWN artifact name, not the claude twin's: the hand-off reads a
+  ## publication by NODE id (manifest `fallback_nodes`), so the name buys
+  ## nothing here while a shared one would make two nodes contend for the
+  ## same logical alias when a resume reconciles artifact owners.
+  publish: review_findings_gpt
+  system: emit_system
+  user: emit_user
+  ## The node's WHOLE surface on claw, where an empty `tools:` list means
+  ## no tools at all — not "no restriction" as it does on claude_code,
+  ## which hands the claude twin its full native toolset. These three carry
+  ## the merge's two side effects: `read_file` loads the iterion-board
+  ## skill, `write_file` writes the report under `report_path` (it creates
+  ## parent dirs), `glob` is how claw lists a directory. The board tools
+  ## ride the capability append on top, under the `mcp__iterion_board__`
+  ## names the prompt calls.
+  tools: [read_file, write_file, glob]
+  ## Same three as the claude twin, and reached here only because the
+  ## `tools:` list above is non-empty: the board MCP append is gated on an
+  ## already-restricted surface (model.assembleEffectiveTools), so on claw
+  ## the capability without the list would grant nothing.
+  capabilities: [board.read, board.create, board.label]
+  ## claw bounds a declared tool loop at 5 steps when the node names no
+  ## number (claw_backend), while the audit tier lets this step file 40
+  ## board issues before it writes the report: at the default the merge
+  ## would stop mid-publication.
+  tool_max_steps: 60
+  ## SHARED with the claude twin, deliberately: the published run table
+  ## reads the merge step's effort from the ENVIRONMENT (publish_review's
+  ## AI_CONVERGE_EFFORT), not from the node that ran, so a second dial here
+  ## would print a number the run did not use.
+  reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
+  ## Same convergence as the claude twin: one firing, after both reviewer
+  ## branches have settled.
+  await: wait_all
+  ## No rescue route, like every other gpt node here: the GLM route is
+  ## claude_code's (it carries a `provider:` hint, which claw reads
+  ## nowhere), and a deployment without a usable OpenAI route moves this
+  ## slot's three dials instead.
 
 judge reviewer_claude:
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5-5}"
@@ -1152,9 +1253,22 @@ compute merge_reviews:
 ## Deterministic branch (no LLM): reach the forge publish step ONLY
 ## when a pr_url was given. Passes the merged findings + counts through
 ## so publish_review reads them as input.* (stable across the edge).
+##
+## It is also the ONE node both merge twins feed, so it is where the merge's
+## payload AND its engine telemetry are read from (#2467): whichever twin
+## ran maps its own output onto this node's input, and every downstream
+## reader asks pr_gate instead of naming a twin — a reader naming one sees
+## the empty string on every run the other served, and the published run
+## table would describe a merge step that did not run
+## (bots/review_pr_mono_gpt_merge_test.go).
 compute pr_gate:
   input: pr_gate_input
   output: pr_gate_output
+  ## The hand-off's source (manifest `produces:`): the merged set as the
+  ## run's one review, written by the node every path crosses rather than
+  ## by whichever twin merged it. Same field names the resolver reads —
+  ## findings, questions, total_findings.
+  publish: merged_review
   expr:
     has_pr: "input.pr_url != ''"
     pr_url: "input.pr_url"
@@ -1164,3 +1278,11 @@ compute pr_gate:
     total_findings: "input.total_findings"
     claude_findings: "input.claude_findings"
     gpt_findings: "input.gpt_findings"
+    ## The merge step's engine telemetry, carried under ONE set of names:
+    ## the published run table names the model, backend, token count,
+    ## rescue stamp and routing label of the merge that actually ran.
+    ai_converge_model: "input.ai_converge_model"
+    ai_converge_backend: "input.ai_converge_backend"
+    ai_converge_tokens: "input.ai_converge_tokens"
+    ai_converge_fallback: "input.ai_converge_fallback"
+    ai_converge_wire: "input.ai_converge_wire"

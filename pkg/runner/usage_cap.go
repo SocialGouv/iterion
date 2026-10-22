@@ -15,6 +15,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
@@ -406,10 +407,22 @@ const usageCapStoreTimeout = 5 * time.Second
 // A cap exists to protect a subscription from a fleet of bots, not to strand
 // the fleet when its bookkeeping is unavailable: the mid-run guard is still
 // armed behind it, so the worst case of failing open is one wasted call.
+//
+// It runs at ADMISSION, where the run has no logger of its own: loop.go
+// registers the run log writer after this call has decided the run may pay for
+// a workspace at all, so every line below lands on the runner's log and none
+// in the `run.log` the studio reads. One fork carries the run id as a FIELD
+// through the whole walk — the shape loop_nats.go's admission-rejection lines
+// use, and the chokepoint the lines that do NOT format msg.RunID themselves
+// need: the two a supervisor drop writes (runview.PoolSurvivingSpecs,
+// supervise.SpecsFromWorkflow name the supervisor) and the credential-read
+// refusal in cappedRoutes (it names the credential key). Rendered by the
+// runner's own format, which is JSON (cmd/iterion/runner.go).
 func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage, logger *iterlog.Logger) error {
 	if r.cfg.UsageCapSource == nil || r.cfg.UsageCaps == nil {
 		return nil
 	}
+	logger = logger.WithField("run_id", msg.RunID) // nil-safe: a nil fork stays nil
 	// The LIVE effective policy — env defaults + the runtime settings
 	// record, one TTL-bounded lookup per claimed run.
 	pol := r.cfg.UsageCapSource.Effective(ctx)
@@ -452,7 +465,11 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		view.AllowedProviders = msg.LLMProviders
 	}
 	routes := model.AnthropicWireRoutes(view)
-	sups := preflightSupervisors(ctx, wf, msg, view.DecidedVars())
+	// One reading of the run's own topology, shared by the supervisor walk
+	// and the park decision: a transition this launch decided against is on
+	// no execution of this run.
+	open := launchVarEdges(wf, launchVars, haveLaunch)
+	sups := preflightSupervisors(ctx, wf, msg, view.DecidedVars(), open, logger)
 	// The adaptive-routing ladder's escapes (ADR-121 §1): a node whose
 	// PRIMARY rides the capped wire but whose computed ladder carries an
 	// open stage OFF it is not park-forcing — the capped call fails
@@ -481,7 +498,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	if len(capped) == 0 {
 		return nil
 	}
-	d, blocked := parkDecision(wf, capped, launchVarEdges(wf, launchVars, haveLaunch))
+	d, blocked := parkDecision(wf, capped, open)
 	if !blocked {
 		if logger != nil {
 			logger.Info("runner: run %s starts with %d capped route(s) it may avoid — the mid-run guard stops a claude_code call on a hard-capped one if the run takes it", msg.RunID, len(capped))
@@ -667,7 +684,29 @@ type supervisorRoute struct{ id, spec string }
 // resolves at its first evaluation (supervise.ResolveModel: the pin, the env
 // default, then the provider the watched nodes run on and the detector, under
 // the run's credentials). One that resolves no model fails every evaluation
-// and spends nothing.
+// and spends nothing, and so does one no node of this run's topology is
+// watched by (supervisorArms, reading `open`).
+//
+// The list is the one the spawn walks, pool filter included
+// (runview.PoolSurvivingSpecs, the same call loop.go makes before
+// supervise.StartDeclared): on a run stamped to a sovereign pool, a
+// supervisor whose effective model is not the pool's gateway is REFUSED at
+// spawn (D12), so metering it would park the run for spend no execution can
+// make — the same rule supervisorArms applies to the watch set. A run with
+// no pool stamp keeps every spec, which is every run but a pooled one.
+//
+// Both halves of that call get a logger, where a nil one discarded their two
+// lines: a spec the filter refuses here WIDENS the walk — a run a capped
+// supervisor would have parked starts instead — so the refusal that decided
+// it is named, and so is a monitor the spec walk cannot parse, at admission
+// rather than only at spawn.
+//
+// It is the ADMISSION logger, not the run's: usageCapPreflight runs before
+// loop.go registers the run log writer, so these two lines land on the
+// runner's own log and never in the `run.log` the studio and `iterion run
+// log` read — where the spawn's identical lines do land. The caller forks it
+// with the run id as a field for that reason; the filters' own text names the
+// supervisor and not the run.
 //
 // vars is view.DecidedVars — the pre-flight's shared reading folded through
 // the dispatch view, minus every name the reading leaves undecided: an
@@ -683,7 +722,7 @@ type supervisorRoute struct{ id, spec string }
 // on a late name would park, or spare, the run on the reading process's own
 // environment — the answer the view's field reading refuses to stand for
 // the run (ADR-129 §4, rule 1).
-func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage, vars map[string]any) []supervisorRoute {
+func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage, vars map[string]any, open ir.EdgeFilter, logger *iterlog.Logger) []supervisorRoute {
 	if wf == nil || len(wf.Supervisors) == 0 {
 		return nil
 	}
@@ -691,7 +730,10 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 		return nil
 	}
 	var out []supervisorRoute
-	for i, spec := range supervise.SpecsFromWorkflow(wf, vars, nil) {
+	for i, spec := range runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, vars, logger), msg.RunnerPool, logger) {
+		if !supervisorArms(wf, open, spec.Watches) {
+			continue
+		}
 		// A gateway-watched supervisor with no pin and no env default
 		// resolves the VENDOR family here while its evaluator refuses every
 		// evaluation (supervise.ErrGatewayWatchNeedsPin): metering it under a
@@ -709,6 +751,36 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 		out = append(out, supervisorRoute{id: supervisorRouteID(spec.Name, i), spec: resolved})
 	}
 	return out
+}
+
+// supervisorArms reports whether this run can arm the supervisor at all —
+// whether some node it WATCHES is on the run's topology, read through the
+// same launch-vars filter the park decision reads.
+//
+// A supervisor is otherwise counted as a route on every execution, and
+// nothing stops it in flight, so a capped one parks the run on its own. That
+// is true only while it can evaluate: a coordinator evaluates nothing unless
+// one of its watched nodes is ACTIVE (supervise.Coordinator.armed), so a
+// supervisor whose every watched node the launch excluded — a bi-model bot's
+// per-family pacer, the family this run does not take — never spawns a call
+// and spends nothing. Metering it would park the run for spend no execution
+// can make, which is the rule #1828's prune established for nodes.
+//
+// An EMPTY watch set is the whole run (armed from the first node), and so is
+// the answer here. A watched id the graph does not hold never matches an
+// active node either, so it arms nothing — the same verdict for the same
+// reason. With no launch reading `open` is nil and this is the whole-graph
+// answer: every node the entry can reach stands.
+func supervisorArms(wf *ir.Workflow, open ir.EdgeFilter, watches []string) bool {
+	if wf == nil || len(watches) == 0 {
+		return true
+	}
+	for _, id := range watches {
+		if wf.CanReachVia(open, func(n ir.Node) bool { return n != nil && n.NodeID() == id }) {
+			return true
+		}
+	}
+	return false
 }
 
 // supervisorRouteIDPrefix marks a capped route that is a supervisor, not a

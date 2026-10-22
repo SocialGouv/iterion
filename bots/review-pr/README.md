@@ -18,18 +18,23 @@ Billy, `whole_improve_loop` = Willy.)
 Revi runs **one reviewer by default** (`review_mode: mono`, Claude unless
 `mono_family` selects GPT). Set `review_mode: dual` to run independent Claude
 and GPT reviewers in parallel when cross-family confirmation is worth the
-extra provider call. A single `converge` step normalises the one or two reviewer
+extra provider call. One `converge` step normalises the one or two reviewer
 outputs, merges and de-duplicates findings, and raises the confidence of
 anything both families flagged ("cross-confirmed"). It then writes one issue
 per finding to the iterion native kanban board (labelled `severity:*`,
-`type:*`, `source:revi`) plus a markdown report.
+`type:*`, `source:revi`) plus a markdown report. `mono_family` picks the
+family of the WHOLE review: under `mono_family=gpt` the merge runs on
+`converge_gpt`, the same step on the GPT route, and the `pacer` supervisor is
+the GPT one — a mono-GPT review touches no Anthropic credential with no
+configuration at all.
 
 **Every reviewer route is a `${ENV_VAR:-default}` dial**, so an instance
 points a slot at whatever its credentials serve without re-releasing the
 bot: the claude slot defaults to `claude-opus-5-5` on `claude_code` (both
 tiers — the catalog ships no other Anthropic default; glance's frugality is
 its reasoning effort and tier caps), the gpt slot to `openai/gpt-6-astra` (glance twin:
-`openai/gpt-6-luna`) on `claw`, and every claude node — both reviewers and
+`openai/gpt-6-luna`) on `claw`, the gpt merge twin to `openai/gpt-6-sol` on
+`claw`, and every claude node — both reviewers and
 the `converge` merge step — carries a GLM fallback route (`provider: "zai"`,
 dial `ITERION_VIBE_MODEL_CLAUDE_FALLBACK`, default `glm-5.3`) for the day the
 Anthropic credential cannot serve. The published run table labels each row
@@ -41,7 +46,8 @@ the routing label. The routing label exists on claude_code sessions; a claw
 node on a `session: fresh` carries none, so its row falls back to the model
 id. Known limit: the `pacer` supervisor resolves in-process on claw, where a
 skipped forfait leaves it no Anthropic credential of its own — at the cap its
-evaluations fail; it publishes nothing.
+evaluations fail; it publishes nothing. (`pacer_gpt`, which watches the gpt
+reviewer, has its own route for the same reason the merge twin does.)
 
 ```
 diff_precheck (tool)   empty diff → done (nothing to review)
@@ -49,8 +55,13 @@ diff_precheck -> topology (condition)
   ├─ mono/claude -> reviewer_claude   claude_code + opus 5.5, read-only
   ├─ mono/gpt    -> reviewer_gpt      claw + openai/gpt-6-astra, read-only tools
   └─ dual        -> fan (fan_out_all) -> both reviewers
-reviewer_* -> merge_reviews (best_effort) -> converge (merge + dedupe → board + report)
-converge -> pr_gate    deterministic: was a pr_url given?
+reviewer_* -> merge_reviews (best_effort)
+merge_reviews -> converge_gpt   when mono_family == gpt   (claw + openai/gpt-6-sol)
+merge_reviews -> converge       otherwise                 (claude_code + opus 5.5)
+                                merge + dedupe → board + report
+converge* -> pr_gate   deterministic: was a pr_url given?  (the one node both
+                       merge twins feed: it carries the merged payload AND the
+                       merge's run telemetry forward)
   ├─ no  -> done
   └─ yes -> publish_review   deterministic forge publish via the iterion
             -> publish_health  server endpoint (inline comments, suggestions,
@@ -234,9 +245,9 @@ iterion run bots/review-pr/main.bot \
   comments, gate); the board/markdown report written upstream by
   `emit`/`converge` may still carry a drift-drawn finding or question a
   reviewer filed against rule 2d — and so may the prior-review digest a
-  later fixer run starts from, which reads that same upstream `converge`
-  artifact. Empty in `base_ref: HEAD` mode, where uncommitted work IS the
-  review's object.
+  later fixer run starts from, which reads that same upstream merged set
+  (through `pr_gate`'s artifact, whichever twin merged). Empty in
+  `base_ref: HEAD` mode, where uncommitted work IS the review's object.
 - **Anti-façade.** The endpoint re-fetches the posted review to count the
   comments the forge actually stored (falling back to a summary-only
   review when inline anchors are rejected — findings are folded into the
@@ -283,15 +294,22 @@ the flag at all, so there the `tools:` list is the only bound. It is not a
 sandbox on `claude_code` either — the native shell stays — so their prompt
 and their output schema still carry the rest. Declaring `tools:` on them would bound that shell too and is not free: a
 non-empty list installs `--disallowedTools`, taking
-`Task`/`WebFetch`/`Skill` off the node on every run. The single downstream `converge` step writes only the report file and
-creates board issues over MCP.
+`Task`/`WebFetch`/`Skill` off the node on every run. The one downstream merge
+step — `converge`, or `converge_gpt` on the GPT family — writes only the
+report file and creates board issues over MCP. `converge_gpt` runs on `claw`,
+where a `tools:` list is the node's WHOLE surface and an empty one is no tools
+at all, so it declares the three the merge needs (`read_file` for the
+iterion-board skill, `write_file` for the report, `glob`); the board
+operations then ride that list as the `mcp__iterion_board__` names the prompt
+calls, and the step is the same step on either route.
 
 ## The Anthropic pin, and the z.ai route below it
 
 Every claude_code node on a claude id — both claude reviewers **and**
 `converge` — pins its provider to `anthropic`, through a dial
 (`ITERION_VIBE_PROVIDER_CLAUDE` for the claude slot, `ITERION_VIBE_PROVIDER_EMIT`
-for the merge step). The pin is **load-bearing**: the wire's credential order
+for the merge step; the `converge_gpt` twin carries no hint, because on claw
+the model's `openai/` prefix is the route). The pin is **load-bearing**: the wire's credential order
 (secrets.AnthropicWireSlotOrder) puts facade keys (zai, moonshot) FIRST, so a
 z.ai key the run holds as a DEFAULT credential serves every unpinned node of
 the wire, the forfait beside it or not. The team's own z.ai key is always one
@@ -322,11 +340,12 @@ It is a `provider: "zai"` hint with no `backend:` of its own, so it stays on
 `claude_code`, the one backend that honours a provider hint: the hint forces
 the z.ai facade (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` from the run's
 `zai` credential, or `ZAI_API_KEY`) **even when Anthropic credentials are
-present**. On a `converge` moved to claw (`ITERION_VIBE_BACKEND_EMIT=claw`,
-with `ITERION_VIBE_PROVIDER_EMIT=auto`) the route cannot reach z.ai — claw
-reads no hint and a bare GLM id is not a claw spec — so it fails fast. It is
-armed for three failure categories — each a failure OF THE PINNED ANTHROPIC
-ROUTE, never of a facade:
+present**. The rescue rides `converge`'s own primary route, which a CLI
+backend serves by construction: claw reads no hint and a bare GLM id is not a
+claw spec. The merge step's `backend:` note bounds that dial to the CLI
+backends for a second reason — pointed at claw, the node holds no tool at all
+(below). It is armed for three failure categories — each a failure OF THE
+PINNED ANTHROPIC ROUTE, never of a facade:
 
 | category | the shape that produces it |
 |---|---|
@@ -365,9 +384,12 @@ would approve by omission, whereas a fallback-served review read the same diff
 and emitted the same schema. Blocking it would turn the rescue into a merge
 block on exactly the runs it exists to keep reviewing.
 
-The GPT nodes have no fallback route of their own: their backend, model and
-provider are dials (`ITERION_VIBE_BACKEND_GPT*`, `ITERION_VIBE_MODEL_GPT*`,
-`ITERION_VIBE_PROVIDER_GPT`), so an instance without a usable OpenAI route
+The GPT nodes — both reviewer tiers and the `converge_gpt` merge twin — have
+no fallback route of their own: their backend, model and provider are dials
+(`ITERION_VIBE_BACKEND_GPT*`, `ITERION_VIBE_MODEL_GPT*`,
+`ITERION_VIBE_PROVIDER_GPT`; `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT_GPT`
+for the merge twin, which keeps its own trio because the merge model is not
+the reviewer's), so an instance without a usable OpenAI route
 points them at a family it can serve — all three together, or the slot lands
 on a route nobody chose:
 
@@ -380,38 +402,75 @@ on a route nobody chose:
 
 See [main.bot](main.bot) for the full DSL.
 
-## Running mono-GPT while the Anthropic window is spent
+## Running mono-GPT: the family of the whole review
 
-A launch pinning `mono_family=gpt` takes `topology -> reviewer_gpt`, and the
-usage-cap pre-flight reads that: the claude reviewers are off such a run's
-topology, so an operator cap on the Anthropic window does not park it for
-them ([usage-caps.md](../../docs/usage-caps.md#what-a-cap-does-not-stop)). A
-webhook launch needs no `--var` for it: `SubmitLaunch` resolves the family
-through `reviewtopology.InjectAll` into the run's launch vars before
-publishing it (`pkg/server/cloudpublisher`), which is the reading the
-pre-flight folds.
+`mono_family` is the family of the WHOLE review, not only of the reviewer
+that judges. A launch carrying `mono_family=gpt` takes `topology ->
+reviewer_gpt`, `merge_reviews -> converge_gpt`, and the `pacer_gpt`
+supervisor; the claude reviewers, the claude merge step and the claude
+`pacer` are on no route such a run takes. **No deployment profile is needed
+for that** — not for the review, not for the merge, not for the pacer.
 
-Two routes of this bot are NOT the reviewers' and stay on the wire by
-default, so a deployment that must review on GPT through a spent window moves
-both:
+That is not a convenience: `mono_family` is resolved from the run's own
+credentials and claude is the PREFERRED family
+(`reviewtopology.monoPreference`), so a run carrying `gpt` holds no Claude
+credential at all. A merge step pinned to the Anthropic wire there died
+AFTER the reviewer had already spent, and the run never reached `pr_gate` —
+the `revi/review` gate stayed dark on a pull request whose review had in
+fact run. A webhook launch needs no `--var` for any of it: `SubmitLaunch`
+resolves the family through `reviewtopology.InjectAll` into the run's launch
+vars before publishing it (`pkg/server/cloudpublisher`), which is the
+reading the usage-cap pre-flight folds
+([usage-caps.md](../../docs/usage-caps.md#what-a-cap-does-not-stop)).
 
-| route | default | off the wire with |
-|---|---|---|
-| `pacer` supervisor | `anthropic/claude-opus-5-5` — every execution runs it, so a capped one parks the run | `ITERION_VIBE_MODEL_SUPERVISOR=openai/gpt-6-sol`, or `ITERION_SUPERVISORS=off` |
-| `converge` merge step | `claude_code` + `anthropic` — on every path that reviews anything, which parks the run under a SOFT cap (a hard one leaves it to the mid-run guard, the empty-diff path reaching `done` without it) | `ITERION_VIBE_BACKEND_EMIT=claw` + `ITERION_VIBE_MODEL_EMIT=openai/gpt-6-sol` + `ITERION_VIBE_PROVIDER_EMIT=auto` |
+| route | no `mono_family=gpt` | `mono_family=gpt` | its own dials |
+|---|---|---|---|
+| reviewer | `reviewer_claude` — `claude_code` + opus 5.5 + `anthropic` | `reviewer_gpt` — `claw` + `openai/gpt-6-astra` | `ITERION_VIBE_{MODEL,BACKEND}_{CLAUDE,GPT}`, `ITERION_VIBE_PROVIDER_{CLAUDE,GPT}` |
+| merge | `converge` — `claude_code` + opus 5.5 + `anthropic`, with the GLM rescue route below it | `converge_gpt` — `claw` + `openai/gpt-6-sol`, no hint, no rescue route (claw reads none) | `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT` / `…_EMIT_GPT` |
+| pacer supervisor | `pacer` — `anthropic/claude-opus-5-5`, watching `reviewer_claude` | `pacer_gpt` — `openai/gpt-6-sol`, watching `reviewer_gpt` | `ITERION_VIBE_MODEL_SUPERVISOR` / `…_SUPERVISOR_GPT`, or `ITERION_SUPERVISORS=off` |
 
-The provider hint travels with the backend for the credential walk's sake —
-left at `anthropic` it still describes an Anthropic route the node no longer
-takes — but it is not what the cap reads: a claw route is metered on the
-credential its `openai/…` model resolves, so the run starts either way. The
-GLM rescue route below `converge` is unreachable from claw anyway (claw reads
-no hint).
-The four `ITERION_VIBE_*` dials repoint live through `bot-vars` like every
-other dial here, without re-releasing the bundle; `ITERION_SUPERVISORS` is the
-machine-wide kill switch instead, the heavier lever of the two. With both
-routes moved, a mono-GPT review starts under a spent window with no override
-on the inactive claude nodes
-(`TestUsageCapPreflight_MonoGPTOnTheReviewPrBot`, `pkg/runner`).
+The column heading is the LAUNCH VAR, not the topology. A webhook launch the
+publisher resolved dual carries no `mono_family` at all
+(`reviewtopology.InjectIfDeclaredFamilies` deletes it there), so the var falls
+back to its declared `claude` default and the left column holds. A launch that
+keeps the pin while fanning both reviewers — `review_tier: audit`, or an
+explicit `--var review_mode=dual --var mono_family=gpt` — reviews
+cross-family and **merges on `converge_gpt`**: the pin is the operator's
+explicit choice, and on a GPT-only tenant (where `InjectAll` injects it)
+sending the merge back to the Anthropic wire is the failure this release
+closes. The published run table names the merge model that actually ran
+(`ai_converge_model`, carried through `pr_gate`), so a cross-family review
+merged on gpt-6-sol says so.
+
+**The trade, named: Opus 5.5 is no longer the default merger of a mono-GPT
+review.** A deployment that wants it back dials the twin
+(`ITERION_VIBE_BACKEND_EMIT_GPT=claude_code` +
+`ITERION_VIBE_MODEL_EMIT_GPT=claude-opus-5-5` +
+`ITERION_VIBE_PROVIDER_EMIT_GPT=anthropic` — all three, or the slot lands on
+a route nobody chose), pins an integration override on the `converge_gpt`
+selector, or pins `--var mono_family=claude`. The `_EMIT` trio keeps dialling
+the claude twin, which the twin's defaults now make redundant: a deployment
+carrying the pre-0.9.16 mono-GPT profile — the `_EMIT` backend dial pointed at
+claw, with an `openai/…` model and an `auto` hint — **must drop that profile**,
+not merely may. `converge` declares no `tools:` list, and on claw a node's
+list is its whole surface, so that profile leaves the claude-family merge with
+no tool at all: no report under `report_path`, no board issue, and its
+`capabilities:` grant inert (`TestReviewPrTheEmitBackendDialStopsAtTheCLIBackends`,
+`bots`). `converge_gpt` was split off to serve exactly that route, and it
+serves it with the list declared. A deployment that pointed the merge
+somewhere ELSE repeats that choice on the `_EMIT_GPT` trio instead.
+
+Each `ITERION_VIBE_*` dial repoints live through `bot-vars`, without
+re-releasing the bundle; `ITERION_SUPERVISORS` is the machine-wide kill
+switch instead, the heavier lever of the two. A supervisor is metered as a
+route on every execution only while one of the nodes it WATCHES is on the
+run's topology — a coordinator evaluates nothing until a watched node is
+active — which is what lets each family keep its own pacer without the other
+one parking the run (`runner.preflightSupervisors`). Pinned with no dial set,
+a mono-GPT review starts under a spent Anthropic window, soft cap or hard
+(`TestUsageCapPreflight_MonoGPTOnTheReviewPrBot`, `pkg/runner`), and the
+merge runs on claw (`TestReviewPRTier_GlanceRoutesToCheapReviewerGPT`,
+`e2e`).
 
 ## Layout — a bot in several files
 

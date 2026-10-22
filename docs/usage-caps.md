@@ -469,7 +469,13 @@ capped branch is on every execution):
   spends parks the run when capped, soft or hard, whatever the nodes spend.
   Supervisors the run will not spawn (`--supervisors off`,
   `ITERION_SUPERVISORS=0`) are not judged; one that resolves no model spends
-  nothing.
+  nothing; and neither does one whose every WATCHED node this run's launch
+  excluded — a coordinator evaluates only while a watched node is active
+  (`supervise.Coordinator.armed`), so its model is never called. That last
+  reading is what lets a bi-model bot give each family its own supervisor:
+  `review-pr`'s `pacer` watches the claude reviewer and `pacer_gpt` the gpt
+  one, and a mono run is metered for the family it takes alone. An EMPTY
+  `watches:` is the whole run and is always judged.
 
 **The paths are this run's, not the graph's.** A launch that pins a family has
 already excluded branches the graph still carries, and a capped route on one
@@ -527,30 +533,39 @@ the order the routes were read in.
 ### A bot whose family a launch pins — the deployment half
 
 The prune only stops a cap from parking a run for routes the run cannot take;
-it changes nothing about routes it does take. A mono-GPT `review-pr` keeps two
-anthropic-wire routes after it, and both are real spend:
+it changes nothing about routes it does take. So a bot whose launch pins a
+family owes the OTHER routes of that family too — not only its reviewers.
+`review-pr` carries four per family: three on edges the same launch-vars
+prune decides, and the pacer supervisor by its WATCH set — a supervisor has
+no edge, and a coordinator arms only while one of its watched nodes is
+active:
 
-- the `pacer` supervisor, `${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-opus-5-5}`
-  — a route every execution takes, so a capped one parks the run whatever the
-  prune said about the reviewers. Take it off the wire with
-  `ITERION_VIBE_MODEL_SUPERVISOR=openai/gpt-6-sol` (any spec off the wire), or
-  stop spawning it with `ITERION_SUPERVISORS=off`;
-- the `converge` merge step, `claude_code` + `anthropic` by default — on every
-  path that reviews anything. Under a HARD cap it parks nothing (the bot's
-  empty-diff short-circuit reaches `done` without it, and the mid-run guard
-  stops the call if the run goes that way), but under a SOFT cap a reachable
-  route is enough: move it with `ITERION_VIBE_BACKEND_EMIT=claw`,
-  `ITERION_VIBE_MODEL_EMIT=openai/gpt-6-sol` and
-  `ITERION_VIBE_PROVIDER_EMIT=auto`. The backend and the model are what this
-  verdict reads — a claw route is metered on the credential its model resolves
-  — so a leftover `anthropic` hint does not park the run; clearing it is the
-  node's own instruction, for the credential walk.
+- the reviewer — `reviewer_gpt` on claw, behind
+  `vars.mono_family == 'gpt'`, pre-empting the unconditional claude edge;
+- its **glance twin** — `reviewer_gpt_glance`, behind that guard ANDed with
+  `vars.review_tier == 'glance'`: a route of its own, which is why the
+  pre-flight's witness names all three claude NODES it prunes
+  (`reviewer_claude`, `reviewer_claude_glance`, `converge`) and not two;
+- the **merge step** — `converge_gpt`, claw + `openai/gpt-6-sol`, behind the
+  same guard. On every path that reviews anything, which is why its claude
+  twin used to park a mono-GPT run under a SOFT cap (a HARD one parks
+  nothing there: the bot's empty-diff short-circuit reaches `done` without
+  it, and the mid-run guard stops the call if the run goes that way);
+- the **pacer supervisor** — `pacer_gpt`, `openai/gpt-6-sol`, watching
+  `reviewer_gpt` alone, so the claude `pacer` beside it arms on no execution
+  of this run and is not metered.
 
-With both off the wire a mono-GPT review starts under a spent Anthropic
-window, soft or hard, with no override on the inactive claude nodes. The whole
-profile is pinned on the real bot by
-`TestUsageCapPreflight_MonoGPTOnTheReviewPrBot` (`pkg/runner`), case by case
-([the bot's own dials](../bots/review-pr/README.md#running-mono-gpt-while-the-anthropic-window-is-spent)).
+A mono-GPT review therefore starts under a spent Anthropic window, soft cap
+or hard, **with no dial set at all**
+(`TestUsageCapPreflight_MonoGPTOnTheReviewPrBot`, `pkg/runner`). The dials
+stay the escape hatch in both directions: pointing the merge twin's three
+(`ITERION_VIBE_{BACKEND,MODEL,PROVIDER}_EMIT_GPT`) back at `claude_code` +
+`claude-opus-5-5` + `anthropic` parks the run again, which is the operator's
+explicit choice honoured rather than replaced. What this verdict reads is the
+backend and the model — a claw route is metered on the credential its model
+resolves — so a leftover `anthropic` hint on a claw node does not park the
+run; clearing it is the node's own instruction, for the credential walk
+([the bot's own dials](../bots/review-pr/README.md#running-mono-gpt-the-family-of-the-whole-review)).
 
 ## Cloud
 

@@ -431,3 +431,80 @@ func TestAnUnfinishedRunSaysSo(t *testing.T) {
 		t.Errorf("the digest must say the producing run did not finish:\n%s", got)
 	}
 }
+
+// The fallback list is a UNION over every node it names, in order, de-duped by
+// anchor keeping the FIRST copy — there is no first-that-answers-wins. Two
+// consequences a producer's manifest must state rather than imply, and which
+// this pins:
+//
+//   - the seed is WIDER than the merged set: every raw finding the merge
+//     thresholded or capped away rides along (the digest's own note says the
+//     threshold, cap and cross-confirmation were not applied);
+//   - which node leads DECIDES the shape of a finding both copies hold — a
+//     merge step before the raw arrays is what keeps the merged form, with its
+//     bumped severity and its cross-confirmed flag.
+//
+// A producer that lists a merged node first to get the merged copy, and reads
+// the list as a precedence, would be describing a narrowing the resolver does
+// not do.
+func TestTheReviewFallbackUnionsEveryNodeAndKeepsTheFirstCopy(t *testing.T) {
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const prURL = "https://github.com/acme/widgets/pull/42"
+
+	// A fixture declaration, like reviewSpec above: the resolver reads the node
+	// layout from whichever bot declared it.
+	spec := bundle.ProducedArtifact{
+		Kind:          bundle.HandoffKindReview,
+		Node:          "gate",
+		FallbackNodes: []string{"merged", "raw"},
+		AnchorNode:    "precheck",
+	}
+
+	run, err := rs.CreateRun(ctx, mustRunID(t), "reviewer", map[string]any{"pr_url": prURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusFinished
+	write := func(node string, data map[string]any) {
+		t.Helper()
+		if werr := rs.WriteArtifact(ctx, &store.Artifact{RunID: run.ID, NodeID: node, Data: data}); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+	// No `gate` artifact: the primary cannot be read at all.
+	write("merged", map[string]any{
+		"total_findings": 1,
+		"findings": []any{map[string]any{
+			"severity": "high", "category": "correctness", "title": "shared finding",
+			"file": "a.go", "line": float64(7), "reviewers": "both", "confidence": "high",
+		}},
+	})
+	write("raw", map[string]any{
+		"claude_findings": []any{
+			map[string]any{"severity": "low", "category": "style", "title": "shared finding", "file": "a.go", "line": float64(7)},
+			map[string]any{"severity": "low", "category": "style", "title": "thresholded nit", "file": "b.go", "line": float64(1)},
+		},
+	})
+
+	findings, _, degraded, ok := loadReviewFindings(ctx, rs, run, spec)
+	if !ok || !degraded {
+		t.Fatalf("loadReviewFindings ok=%v degraded=%v, want a degraded answer from the fallback", ok, degraded)
+	}
+	titles := map[string]string{}
+	for _, f := range findings {
+		titles[strField(f, "title")] = strField(f, "severity")
+	}
+	if len(titles) != 2 {
+		t.Errorf("the fallback returned %d distinct finding(s) (%v), want 2 — every listed node is read and unioned, so a finding only the raw array holds is in the seed", len(titles), titles)
+	}
+	if _, widened := titles["thresholded nit"]; !widened {
+		t.Error("the seed drops the raw-only finding — the fallback is a union, so a producer naming a merged node beside the raw arrays does NOT narrow the seed back to the merged set")
+	}
+	if got := titles["shared finding"]; got != "high" {
+		t.Errorf("the shared anchor kept severity %q, want the FIRST listed node's %q — the de-dup keeps the first copy, which is the only reason listing a merged node ahead of the raw arrays buys anything", got, "high")
+	}
+}

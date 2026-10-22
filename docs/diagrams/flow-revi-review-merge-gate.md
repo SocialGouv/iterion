@@ -82,7 +82,7 @@ sequenceDiagram
 | server | Parks a synchronize launch for the quiet window; the sweeper re-reads the live config before firing it | `shouldDeferSyncLaunch`, `runWebhookDeferSweeper` |
 | server | Mints the per-run publish grant — url, token, capabilities — plus the repo's launch policy; an untrusted workspace has every grant var deleted | `injectForgePublishVars` |
 | server | Claims the repo's `gate_context` as `pending` on the run's `head_sha`, target = the run console | `markGateInFlight` |
-| engine | Runs the review DAG: `diff_precheck`, `tier_expand`, the `topology` router, the `reviewer_*` nodes, `merge_reviews`, `converge`, then `pr_gate` — which skips the publish when no `pr_url` was given | `bots/review-pr/main.bot` |
+| engine | Runs the review DAG: `diff_precheck`, `tier_expand`, the `topology` router, the `reviewer_*` nodes, `merge_reviews`, then the merge twin the launch's family picks (`converge`, or `converge_gpt` under `mono_family=gpt`), then `pr_gate` — which skips the publish when no `pr_url` was given | `bots/review-pr/main.bot` |
 | bot | Counts findings at or above `gate_severity`; an unknown severity blocks; an unresolved diff scope or unparseable findings fail closed to one | `publish_review` |
 | bot | POSTs the review and the gate block — context, count, threshold, totals, `audited_sha`, note — with the grant token | `publish_review` |
 | server | Authenticates the token, re-enforces the grant's repo against the parsed `pr_url`, the connection's tenant and host; drops unanchorable comments instead of failing the batch | `handleForgePublishReview` |

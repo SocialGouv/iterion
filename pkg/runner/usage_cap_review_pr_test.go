@@ -6,9 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
@@ -47,7 +50,9 @@ func blankReviewPrDials(t *testing.T) {
 		"ITERION_VIBE_MODEL_GPT", "ITERION_VIBE_BACKEND_GPT", "ITERION_VIBE_PROVIDER_GPT",
 		"ITERION_VIBE_MODEL_GPT_GLANCE", "ITERION_VIBE_BACKEND_GPT_GLANCE",
 		"ITERION_VIBE_MODEL_EMIT", "ITERION_VIBE_BACKEND_EMIT", "ITERION_VIBE_PROVIDER_EMIT",
-		"ITERION_VIBE_MODEL_SUPERVISOR", "ITERION_SUPERVISORS", "ITERION_DEFAULT_SUPERVISOR_MODEL",
+		"ITERION_VIBE_MODEL_EMIT_GPT", "ITERION_VIBE_BACKEND_EMIT_GPT", "ITERION_VIBE_PROVIDER_EMIT_GPT",
+		"ITERION_VIBE_MODEL_SUPERVISOR", "ITERION_VIBE_MODEL_SUPERVISOR_GPT",
+		"ITERION_SUPERVISORS", "ITERION_DEFAULT_SUPERVISOR_MODEL",
 	} {
 		t.Setenv(dial, "")
 	}
@@ -74,18 +79,26 @@ func reaches(wf *ir.Workflow, open ir.EdgeFilter, id string) bool {
 	return wf.CanReachVia(open, func(n ir.Node) bool { return n != nil && n.NodeID() == id })
 }
 
-// #1828's own scenario, read on the REAL review-pr bot: a mono-GPT review
+// decidedVarsForLaunch is the reading the pre-flight's supervisor walk gets —
+// the dispatch view's vars minus its late names (usageCapPreflight's own
+// `view.DecidedVars()`).
+func decidedVarsForLaunch(wf *ir.Workflow, vars map[string]any) map[string]any {
+	return model.RouteViewForDispatch(wf, model.ModelOverrides{}, nil, vars).DecidedVars()
+}
+
+// #2467, read on the REAL review-pr bot: a mono-GPT review
 // (`mono_family=gpt`, `review_mode=mono`, `review_tier=guard`) while the
-// Anthropic window is spent.
+// Anthropic window is spent, with NO dial set at all.
 //
-// The launch-vars prune takes both claude reviewers off this run's topology —
-// `topology -> reviewer_gpt when vars.mono_family == 'gpt'` holds, and that
-// pre-empts the unconditional claude fallback beside it. The bot's two other
-// anthropic-wire routes are REAL spend, and they decide whether the run
-// starts: the `pacer` supervisor runs on every execution, and `converge`
-// merges on every path that reviews anything. Which of the two parks the run
-// depends on the cap's mode, and this pins each case — the deployment half of
-// the ticket (docs/usage-caps.md).
+// `mono_family=gpt` is the family of the WHOLE review: the launch-vars prune
+// takes both claude reviewers AND the claude merge step off this run's
+// topology — each gpt guard holds, and that pre-empts the unconditional
+// claude fallback beside it — while `converge_gpt` merges on claw. The
+// `pacer` supervisor watches the claude reviewer alone, so it is on no route
+// this run takes either (a coordinator evaluates only while a watched node is
+// active), and `pacer_gpt` resolves off the Anthropic wire. Nothing the run
+// can reach spends the capped subscription, so it starts under either cap
+// mode with no deployment profile.
 func TestUsageCapPreflight_MonoGPTOnTheReviewPrBot(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	blankReviewPrDials(t)
@@ -97,75 +110,114 @@ func TestUsageCapPreflight_MonoGPTOnTheReviewPrBot(t *testing.T) {
 	soft := cappedWire(t, usagecap.WindowFiveHour, 0.95, resets) // and the five-hour window SOFT
 
 	open := wf.LaunchVarEdgeFilter(mono)
-	for _, id := range []string{"reviewer_claude", "reviewer_claude_glance"} {
+	for _, id := range []string{"reviewer_claude", "reviewer_claude_glance", "converge"} {
 		if reaches(wf, open, id) {
 			t.Errorf("%s is on a mono-gpt run's topology — the gpt guard holds, and it pre-empts the claude fallback", id)
 		}
 	}
-	if !reaches(wf, open, "reviewer_gpt") {
-		t.Error("reviewer_gpt is off a mono-gpt run's topology — the prune may only drop what the launch excluded")
-	}
-	if !reaches(wf, open, "converge") {
-		t.Error("converge is off the topology — it merges on every path that reviews anything")
-	}
-
-	// The supervisor is a route every execution takes, so a capped one parks
-	// the run whatever the prune said about the reviewers.
-	if err := preflightWithVars(t, hard, ctx, wf, mono); err == nil {
-		t.Error("a mono-gpt review started with its `pacer` supervisor on the spent wire — a supervisor spends on every execution")
+	for _, id := range []string{"reviewer_gpt", "converge_gpt"} {
+		if !reaches(wf, open, id) {
+			t.Errorf("%s is off a mono-gpt run's topology — the prune may only drop what the launch excluded", id)
+		}
 	}
 
-	t.Run("the supervisor off the wire, under a hard weekly cap", func(t *testing.T) {
-		t.Setenv("ITERION_SUPERVISORS", "off")
-		// `converge` stays claude_code + anthropic here, and a HARD cap on a
-		// claude_code route parks nothing the run can avoid: the bot's
-		// empty-diff short-circuit reaches `done` without it, and the mid-run
-		// guard stops the call if the run goes that way.
-		if err := preflightWithVars(t, hard, ctx, wf, mono); err != nil {
-			t.Errorf("a mono-gpt review parked with no capped route on every execution: %v", err)
+	// The supervisor walk: the claude `pacer` watches nodes this launch
+	// excluded, so it is not a route the run takes; `pacer_gpt` is, and the
+	// cap does not meter it.
+	sups := preflightSupervisors(ctx, wf, &queue.RunMessage{RunID: "run-sups", Vars: mono}, decidedVarsForLaunch(wf, mono), open, iterlog.Nop())
+	if len(sups) != 1 || sups[0].id != supervisorRouteIDPrefix+"pacer_gpt" {
+		t.Fatalf("the supervisor walk of a mono-gpt review is %v, want only supervisor:pacer_gpt — the claude pacer watches no node this run reaches", sups)
+	}
+	if _, metered := usageCapCredKeys(ctx, &queue.RunMessage{RunID: "run-sups"}).supervisorKey(ctx, sups[0].spec); metered {
+		t.Errorf("pacer_gpt resolves to %q, which the cap meters — the gpt pacer must leave the Anthropic wire", sups[0].spec)
+	}
+
+	// The whole point of the ticket: no env, no integration override, both
+	// cap modes.
+	for mode, caps := range map[string]usagecap.Store{"hard": hard, "soft": soft} {
+		if err := preflightWithVars(t, caps, ctx, wf, mono); err != nil {
+			t.Errorf("a mono-gpt review parked under the %s cap with no dial set: %v — mono_family=gpt means no Anthropic wire, merge and pacer included", mode, err)
+		}
+	}
+
+	t.Run("the claude family still merges on the wire", func(t *testing.T) {
+		claude := map[string]any{"mono_family": "claude", "review_mode": "mono", "review_tier": "guard"}
+		openClaude := wf.LaunchVarEdgeFilter(claude)
+		if !reaches(wf, openClaude, "converge") {
+			t.Error("converge is off a mono-claude run's topology — it is still the merge step of every other family")
+		}
+		if reaches(wf, openClaude, "converge_gpt") {
+			t.Error("converge_gpt is on a mono-claude run's topology — the gpt merge step is behind the gpt guard")
+		}
+		// Unchanged from before this ticket: the claude reviewer, the claude
+		// merge step and the claude pacer all ride the capped wire, and a
+		// soft cap stops nothing in flight.
+		if err := preflightWithVars(t, soft, ctx, wf, claude); err == nil {
+			t.Error("a mono-claude review started on a soft-capped wire — its reviewer, merge step and pacer all spend it")
 		}
 	})
 
-	t.Run("the merge step still on the wire, under a soft cap", func(t *testing.T) {
-		t.Setenv("ITERION_SUPERVISORS", "off")
-		// A soft cap stops nothing in flight, so a route the run MAY reach
-		// parks it — and `converge` is reachable on every non-empty diff.
+	t.Run("an operator dial still wins on the gpt merge step", func(t *testing.T) {
+		// The twin's own three dials, moved together onto the capped wire:
+		// an explicit choice is honoured, never silently replaced, and the
+		// pre-flight reads it.
+		t.Setenv("ITERION_VIBE_BACKEND_EMIT_GPT", "claude_code")
+		t.Setenv("ITERION_VIBE_MODEL_EMIT_GPT", "claude-opus-5-5")
+		t.Setenv("ITERION_VIBE_PROVIDER_EMIT_GPT", "anthropic")
 		if err := preflightWithVars(t, soft, ctx, wf, mono); err == nil {
-			t.Error("a mono-gpt review started with its merge step on a soft-capped wire — nothing would stop that call in flight")
+			t.Error("a mono-gpt review whose merge dials were pointed BACK at the wire started under a soft cap — the dials must still decide the route")
 		}
 	})
+}
 
-	t.Run("a claw merge step is metered on the credential its model names", func(t *testing.T) {
-		t.Setenv("ITERION_SUPERVISORS", "off")
-		t.Setenv("ITERION_VIBE_BACKEND_EMIT", "claw")
-		t.Setenv("ITERION_VIBE_MODEL_EMIT", "openai/gpt-6-sol")
-		// The provider hint is left at its `anthropic` default on purpose:
-		// the route still NAMES the wire (`model.AnthropicWireRoutes` lists
-		// it), but the cap meters a claw route on the credential its MODEL
-		// resolves (`credentialSlotForRoute`) — an openai slot, which this
-		// cap does not govern. Clearing the hint is the node's own
-		// instruction (`lib/nodes.bot`), for the credential walk, not for
-		// this verdict.
-		if err := preflightWithVars(t, soft, ctx, wf, mono); err != nil {
-			t.Errorf("a mono-gpt review parked for a claw route on an openai model: %v", err)
+// TestReviewPrTheTwoPacersEvaluationBound pins the per-run evaluation bound
+// the cost pacer's comment block states, which is the one number an operator
+// sizes the supervisor spend on.
+//
+// review-pr is the only shipped bot with TWO supervisors, one per reviewer
+// family, and a coordinator evaluates nothing until one of the nodes it
+// watches is active (supervisorArms, the pre-flight's own reading of the
+// launch-var topology). So a mono launch arms one pacer and a cross-family
+// launch arms both: the bound is max_evals per pacer, and twice that where
+// both watch sets are open. Read from the compiled bot and from the function
+// that decides it, so a watch set, a budget or a launch guard that moves
+// reddens here and the comment is re-read.
+func TestReviewPrTheTwoPacersEvaluationBound(t *testing.T) {
+	blankReviewPrDials(t)
+	wf := compileCatalogBot(t, "review-pr")
+	if len(wf.Supervisors) != 2 {
+		t.Fatalf("review-pr declares %d supervisor(s), want 2 — the comment's bound is stated over one pacer per family", len(wf.Supervisors))
+	}
+	const perPacer = 12
+	for _, sup := range wf.Supervisors {
+		if sup.MaxEvals != perPacer {
+			t.Errorf("supervisor %s declares max_evals %d, want %d — the comment states ≤%d evals per pacer", sup.Name, sup.MaxEvals, perPacer, perPacer)
 		}
-	})
-
-	// The deployment profile: the supervisor off the wire (either lever) and
-	// the merge step on claw + an openai model, its provider hint cleared.
-	t.Setenv("ITERION_VIBE_BACKEND_EMIT", "claw")
-	t.Setenv("ITERION_VIBE_MODEL_EMIT", "openai/gpt-6-sol")
-	t.Setenv("ITERION_VIBE_PROVIDER_EMIT", "auto")
-	for _, lever := range []struct{ name, value string }{
-		{"ITERION_SUPERVISORS", "off"},
-		{"ITERION_VIBE_MODEL_SUPERVISOR", "openai/gpt-6-sol"},
+	}
+	for _, tc := range []struct {
+		name  string
+		vars  map[string]any
+		armed int
+	}{
+		{"a mono-gpt launch arms the gpt pacer alone", map[string]any{"mono_family": "gpt", "review_mode": "mono", "review_tier": "guard"}, 1},
+		{"a mono-claude launch arms the claude pacer alone", map[string]any{"mono_family": "claude", "review_mode": "mono", "review_tier": "guard"}, 1},
+		{"the audit tier arms both", map[string]any{"mono_family": "gpt", "review_tier": "audit"}, 2},
+		{"an explicit dual arms both", map[string]any{"mono_family": "gpt", "review_mode": "dual"}, 2},
 	} {
-		t.Run("the full profile with "+lever.name+"="+lever.value, func(t *testing.T) {
-			t.Setenv(lever.name, lever.value)
-			for mode, caps := range map[string]usagecap.Store{"hard": hard, "soft": soft} {
-				if err := preflightWithVars(t, caps, ctx, wf, mono); err != nil {
-					t.Errorf("a mono-gpt review parked under the %s cap with every anthropic-wire route off this run: %v", mode, err)
+		t.Run(tc.name, func(t *testing.T) {
+			open := wf.LaunchVarEdgeFilter(tc.vars)
+			armed, bound := 0, 0
+			for _, sup := range wf.Supervisors {
+				if supervisorArms(wf, open, sup.Watches) {
+					armed++
+					bound += sup.MaxEvals // the bound is the armed pacers' OWN budgets
 				}
+			}
+			if armed != tc.armed {
+				t.Fatalf("%d pacer(s) arm on %v, want %d", armed, tc.vars, tc.armed)
+			}
+			if want := tc.armed * perPacer; bound != want {
+				t.Errorf("the run's evaluation bound is %d, want %d — the comment's ≤12 per pacer, ≤24 where both arm", bound, want)
 			}
 		})
 	}

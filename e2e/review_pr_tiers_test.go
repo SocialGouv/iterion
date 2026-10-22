@@ -24,10 +24,22 @@ func reviewOutputStub(family string) map[string]any {
 	}
 }
 
+// mergeOutputStub returns a minimal, schema-valid emit_output — what either
+// merge twin returns.
+func mergeOutputStub() map[string]any {
+	return map[string]any{
+		"report_path": "/tmp/review-pr-tier-test.md", "total_findings": 0,
+		"issues_created": []string{}, "failed_issues": []string{},
+		"findings": "[]", "questions": "", "ticket_conformance": "",
+		"_tokens": 10, "_cost_usd": 0.001,
+	}
+}
+
 // wireReviewPRStubs wires the deterministic diff_precheck tool, all four
 // reviewer node variants (only one or two of which ever fire per run), and
-// converge — enough to reach `done` via the no-pr_url path (pr_gate ->
-// done when not has_pr) without needing publish_review/publish_health.
+// both merge twins (one per run) — enough to reach `done` via the no-pr_url
+// path (pr_gate -> done when not has_pr) without needing
+// publish_review/publish_health.
 func wireReviewPRStubs(exec *scenarioExecutor) {
 	exec.on("diff_precheck", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{
@@ -45,14 +57,11 @@ func wireReviewPRStubs(exec *scenarioExecutor) {
 			return reviewOutputStub("gpt"), nil
 		})
 	}
-	exec.on("converge", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{
-			"report_path": "/tmp/review-pr-tier-test.md", "total_findings": 0,
-			"issues_created": []string{}, "failed_issues": []string{},
-			"findings": "[]", "questions": "", "ticket_conformance": "",
-			"_tokens": 10, "_cost_usd": 0.001,
-		}, nil
-	})
+	for _, id := range []string{"converge", "converge_gpt"} {
+		exec.on(id, func(_ map[string]any) (map[string]any, error) {
+			return mergeOutputStub(), nil
+		})
+	}
 }
 
 func runReviewPRTier(t *testing.T, runID string, inputs map[string]any) *scenarioExecutor {
@@ -103,6 +112,28 @@ func TestReviewPRTier_GlanceRoutesToCheapReviewerGPT(t *testing.T) {
 	}
 	if exec.wasCalled("reviewer_gpt") {
 		t.Error("glance/gpt: the full-strength reviewer_gpt ran instead of the glance variant")
+	}
+	// #2467: the family decides the MERGE step too, on the same guard.
+	if !exec.wasCalled("converge_gpt") {
+		t.Error("mono-gpt: converge_gpt never ran — `mono_family=gpt` is the family of the whole review, merge included")
+	}
+	if exec.wasCalled("converge") {
+		t.Error("mono-gpt: the Anthropic merge step ran — on a GPT-only tenant it has no credential, and the run dies before the gate posts a verdict")
+	}
+}
+
+// The claude family keeps the merge step it had: the GPT twin is behind the
+// gpt guard, and nothing else moved.
+func TestReviewPRTier_MonoClaudeKeepsItsMergeStep(t *testing.T) {
+	t.Parallel()
+	exec := runReviewPRTier(t, "e2e-tier-mono-claude-merge", map[string]any{
+		"mono_family": "claude",
+	})
+	if !exec.wasCalled("converge") {
+		t.Error("mono-claude: converge never ran — it is still the merge step of every family but gpt")
+	}
+	if exec.wasCalled("converge_gpt") {
+		t.Error("mono-claude: the gpt merge twin ran — it is behind `vars.mono_family == 'gpt'`")
 	}
 }
 
