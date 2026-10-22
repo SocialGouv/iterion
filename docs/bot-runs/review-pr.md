@@ -826,6 +826,26 @@ disabled and diff the two finding sets.
   the fan-out count now (`ir.ExecBranchConvergencePoint`); evolve's
   `review_fanout` had the identical shape. Guarded by
   `e2e/review_pr_convergence_test.go`.
+- **What routes the tiers now (#2006 / ADR-129, 2026-10), and what governs
+  their z.ai rescue.** A `{{vars.x}}` in `reasoning_effort:` is a compile
+  error (C027) where a node's `model:` resolves one, and since
+  [ADR-129](../adr/129-per-integration-typed-routing-overrides.md) an
+  `overrides` cell's `effort` on the routing policy selects this tier's effort
+  per forge integration. The `provider: "zai"` rescue route the four
+  claude-family slots carry (`reviewer_claude`, `reviewer_claude_glance`,
+  `converge`, and revi-converse's `converse_agent`) is governed by the
+  TENANT's `providers:` allowlist, not by a bot var: a `when:` knob on that
+  route is refused by a committed guard
+  (`bots/review_pr_glm_route_test.go`, because a `when:` is evaluated at
+  dispatch and a false one leaves the route in the file and unreachable), and
+  a repo that must not reach z.ai leaves `zai` out of `providers:` — the
+  rescue is then pruned at launch (logged, nothing re-routed) and dropped from
+  the chain at dispatch. On the shipped texts that first needs the deployment
+  to answer `ITERION_VIBE_PROVIDER_GPT`: undialled, ANY non-empty `providers:`
+  list refuses every `review-pr` launch on the two gpt slots' empty-default
+  hint, which an integration's cells cannot rescue (ADR-129 §7,
+  `TestReviIntegrationAcceptance_TheShippedSlotsAreRefused`). See
+  [cloud-llm-credentials.md](../cloud-llm-credentials.md#two-typed-fields-on-the-routing-policy).
 
 ## 2026-09-03/04 — cost-reduction pass (0.7.0) shipped through 4 rounds of its own review (PR #651)
 - Status: validated (the review loop itself; the cost delta is measured over the following days)

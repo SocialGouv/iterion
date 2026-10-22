@@ -292,16 +292,17 @@ judge reviewer_gpt:
   tool_max_steps: 30
   reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
 
-## GLANCE-TIER reviewers (#685). The "cheaper reviewer model" lever cannot
-## be expressed as a var on reviewer_claude/reviewer_gpt above: a node's
-## `model:`/`reasoning_effort:` only ever resolves `${ENV_VAR:-default}`
-## from the process environment, never `{{vars.x}}` — true on EVERY
-## backend, claw included (a template reaches the CLI/claw call literally
-## and fails). So a runtime-selectable model needs a second, differently
-## pinned node, picked by the SAME `topology` router that already picks
-## the family — never a new engine branch. Same prompts/schema/read-only
-## posture as their full-strength counterparts; only the model/effort
-## differ, and only topology's edges decide which of the two ever runs.
+## GLANCE-TIER reviewers (#685). `reasoning_effort:` takes a level or a
+## quoted `${ENV_VAR:-default}` string, so a `{{vars.x}}` there is a
+## COMPILE error (C027). A node's `model:` is not that shape: routing fields
+## resolve `{{vars.x}}` first and the environment form after, on EVERY
+## backend. These nodes are picked by the SAME `topology` router that
+## already picks the family, never by a new engine branch. Same
+## prompts/schema/read-only posture as their full-strength counterparts,
+## and only topology's edges decide which of the two ever runs.
+## Per-integration since ADR-129: an `overrides` cell's `effort` on the
+## routing policy re-targets this tier's reasoning effort per forge
+## integration, with no bot release and no process-environment dial.
 judge reviewer_claude_glance:
   model: "${ITERION_VIBE_MODEL_CLAUDE_GLANCE:-claude-opus-5-5}"
   backend: "${ITERION_VIBE_BACKEND_CLAUDE_GLANCE:-claude_code}"
