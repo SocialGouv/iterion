@@ -223,7 +223,10 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// reaches this guard's condition with a bot sender — its own actor guard
 	// already excluded that — and a human's re-request on a bot-authored MR
 	// is deliberate, so it reviews.)
-	if !gateResync && !reviewRequested && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername) {
+	// (A merge request the Studio opened from a card is authored by the bot
+	// too — the board lane posts as the repository's bot — but it is human
+	// work: its description carries boardOpenedPullMarker, and it reviews.)
+	if !gateResync && !reviewRequested && !strings.Contains(p.Description, boardOpenedPullMarker) && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
 			"MR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})

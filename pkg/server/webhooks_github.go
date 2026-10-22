@@ -306,7 +306,11 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// (A reviewRequested delivery is exempt: its own actor guard already
 	// excluded a bot sender, and a human's re-request on a bot-authored PR
 	// is deliberate, so it reviews.)
-	if !gateResync && !reviewRequested && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
+	// (A pull request the Studio opened from a card is authored by the App
+	// too — the board lane posts as the connection's writer — but it is
+	// human work: its description carries boardOpenedPullMarker, and it
+	// reviews.)
+	if !gateResync && !reviewRequested && !strings.Contains(p.Description, boardOpenedPullMarker) && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
 			"PR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})

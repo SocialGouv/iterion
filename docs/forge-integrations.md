@@ -247,6 +247,22 @@ hooks, mint — and gives every enabled repository its **own** identity:
   cannot be, so on such a repository it finds no token rather than another
   repository's — making that lane repository-aware is a follow-up.
 
+- **Studio board writes.** A card pushed to a forge issue, a pull request
+  opened or merged from a card, post as the repository's minted bot — the
+  same writer as the review lane — never as the person whose grant
+  bootstrapped the connection; that person is recorded in the team's audit
+  log (`forge.board.issue_pushed`, `issue_updated`, `pull_opened`,
+  `pull_merged`, with the connection, repository, number and the identity
+  that posted). Listing and reading pull requests keep the grant. A
+  repository with no minted bot — never enabled, or its bots disabled —
+  answers `409` to the write (enable the repository's bots first) rather
+  than posting as the person. A pull request opened from a card carries an
+  invisible marker in its description, so the webhook lane reviews it as
+  human work although its author is the bot (a bot run's own pull request
+  stays unreviewed); an author allowlist on the webhook still applies, so a
+  marked pull request is filtered when the bot is not an allowed author. A GitHub App connection already posts as the App on
+  both lanes; this makes the two forges agree (#2681).
+
 The existing `pat` path (a token the operator created by hand) is unchanged,
 and a GitLab OAuth connection made without the option keeps posting as the
 authorising account, as before.
