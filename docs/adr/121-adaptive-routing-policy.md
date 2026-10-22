@@ -197,6 +197,73 @@ trigger when no owned credential serves it, the whole-bundle gate unchanged
 on the non-fallback path. Never silently re-dated; this paragraph is the
 record.
 
+### Typed node overrides and a provider allowlist
+
+Two more fields ride this policy and their contract is
+[ADR-129](129-per-integration-typed-routing-overrides.md), not this record:
+`overrides` (per-node `{selector, backend, model, provider, effort}` cells,
+literal values, folded entry-wise per cell) and `providers` (the tenant's
+provider allowlist, replaced like `pair_order`). Both landed with #2586, the
+allowlist's gate and dispatch enforcement with #2605, and the operator-facing
+page is
+[cloud-llm-credentials.md](../cloud-llm-credentials.md#two-typed-fields-on-the-routing-policy).
+
+What that changes here, and what it deliberately does not:
+
+- **The shipped rescue routes stop being unconditional.** A catalogue route
+  spelling `provider: "zai"` resolves to a provider the allowlist judges:
+  outside a non-empty list it is pruned at launch and dropped from the chain
+  at dispatch, and a PRIMARY route outside the list, with no allowed step left
+  to serve the node, refuses the launch by name. No catalogue bot is edited:
+  the tenant's own list is what takes the route away (ADR-129 §5). A non-empty
+  list also refuses a launch whose routes the walk cannot READ (ADR-129 §5),
+  and a binding's `overrides` cells do not repair every such route: not a
+  node the walk records as fieldless (`fieldlessSite` — a `human` node's llm
+  half, a subbot, an agent recovery), whose refusal names replacing the node
+  instead, and not `review-pr`'s two `${ITERION_VIBE_PROVIDER_GPT:-}` slots,
+  whose refusal `TestReviIntegrationAcceptance_TheShippedSlotsAreRefused`
+  freezes — ADR-129 §7's named gap, not a defect of the list.
+- **§ Arbitrated 2 is untouched**, and the boundary is worth stating because
+  the two mechanisms look alike. The allowlist judges a route's RESOLVED
+  PROVIDER; the facade default decides whether a z.ai/Moonshot KEY may be the
+  anthropic wire's default. A node pinned `provider: "anthropic"` resolves to
+  `anthropic` whatever credential funds it, so the allowlist does not judge
+  WHICH KEY answers that wire. The list bears on the case from the other
+  end: a slot whose provider it excludes is sealed by no tier
+  (`sharedTierPolicy.withProviderAllowlist` → `sealableSlot`, gating the fill
+  and the refused-key restore alike) and names no ladder rung
+  (`allowlistedPairs`), so under `providers: [anthropic]` the bundle the
+  facade-first default reads holds no z.ai key to pick
+  (`TestProviders_SealGateIsTotalOverTheSlotVocabulary`,
+  `TestProviders_RescuePrunedPrimaryRefused`). The desktop `ZAI_API_KEY` env
+  knob is outside that gate, and reaches further than the unpinned case: on a
+  route PINNED to `zai` it answers whenever the run carries neither a `zai`
+  key of its own nor a tier-pinned one for the route, whatever anthropic-wire
+  credential the bundle holds (`facadeCredEnvForHint`'s process-env step,
+  taken after the run's own key and the pinned key and before the default
+  precedence walk); UNPINNED it answers only a bundle holding no
+  anthropic-wire credential at all (`selectedAnthropicCredEnvForCLI`'s env
+  fallback). The list governs the PINNED reach only, and by taking the route
+  away: under a list that omits `zai` a primary pinned to it alone refuses the
+  launch, and a rescue is pruned at launch and dropped at dispatch
+  (`dropForbidden`, every dispatch site refusing an empty chain), so no
+  element reaches the facade branch with that hint. The UNPINNED reach is
+  outside the list altogether: there is no pin for it to prune.
+- **§ 3's author intent holds exactly as written**: an override pins a FIELD
+  and may never drop or replace a node's `fallbacks:` routes. "No request may
+  reach z.ai" is a statement about a PROVIDER, which is why the mechanism is
+  the allowlist rather than a per-route edit.
+
+Two limits of the delivery, stated where a reader of this record will look for
+them. `overrides` carries no ceiling: `Ceiling` still prunes `triggers` alone,
+so a tenant bounds the field with a lock or not at all. And the shipped bot is
+not a carrier of either field — `bundle.RoutingSpec` names its fields one by
+one and stops before them — while `RoutingSpec` does carry `Locks`, so a
+manifest can lock what it cannot set and veto every binding's cells with no
+error and no refusal; ADR-129 §1's "Deliberately NOT chosen, two doors" names
+that as the condition an author door would have to close, and it is not
+closed.
+
 ## Amendment 2026-10-21 — a run that holds a gateway credential selects
 
 From #2005 PR-C' on ([ADR-131](131-tenant-gateway-credential.md) §5), §1's "a run that acquires no credential at all (env-funded, #2038) selects nothing" describes only a run whose every route is a gateway route AND whose team holds no `openai_compatible` key: a team-held gateway key is acquired like any key — the pair `claw+openai_compatible_key` joins `pair_order` as a seal-whitelist entry (never a ladder rung), the walk records `openai_compatible` as a pinned provider, and the tier walk, the stamps and the sovereign gate see it. Until PR-C' lands, the walk does not resolve the provider, a stored gateway key is inert, and §1 reads as written.

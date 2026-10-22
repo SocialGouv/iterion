@@ -161,6 +161,30 @@ has the vocabulary, the write-role table and the two rules that bite
 object replaces). On an org that requires provisioning approval, a
 spoken routing block parks the PATCH like any other expansion.
 
+Of the block's fields, `providers:` can stop this loop. It binds the webhook
+deliveries the integration makes, and every scheduled fire whose row carries
+no routing block of its own — the integration's block is PROJECTED onto the
+scheduled rows (`RoutingFromIntegration`), and a row an operator tuned
+through the schedule PATCH keeps its own and is not narrowed by this write.
+Where it binds, a primary route resolving outside the list with no allowed
+step left to serve the node REFUSES the launch, naming the node, the provider
+and the level that set the list, instead of re-routing. So a repository
+narrowed to one gateway loses the deliveries of any co-enabled bot whose
+route resolves ONLY to providers the list omits, and whatever gate those runs
+produced goes with them. A non-empty list also refuses a launch whose routing
+fields it cannot READ (ADR-129 §5), and this block's own `overrides` cells do
+not repair every such slot: not a node the walk records as fieldless
+(`fieldlessSite` — a `human` node's llm half, a subbot, an agent recovery),
+whose refusal says to replace the node or launch without the list, and not
+`review-pr`'s two `${ITERION_VIBE_PROVIDER_GPT:-}` slots (ADR-129 §7). The
+recipe above carries both — `dep-update-guard`'s `escalate` is
+`interaction: llm_or_human`. So screen EVERY bot the integration enables, not
+the one you are wiring: a refused launch names only ONE unreadable route, the
+head of a list sorted by site then field (`FirstUnreadable`) — a SAMPLE, not
+the inventory: on `dep-update-guard` under `providers: [anthropic]`, with none
+of its dials answered, it names `align`, while `escalate` sits further down
+the same list.
+
 Then **re-read** the integration and the webhook config. A write you did not
 read back is a write you are hoping about.
 

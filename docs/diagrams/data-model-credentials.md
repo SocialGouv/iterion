@@ -235,9 +235,14 @@ erDiagram
     string[] policy.pair_order "(harness, credential) pairs, e.g. 'claude_code+claude_forfait'"
     string[] policy.triggers "usage_window | unavailable | transient_exhausted | auth"
     string policy.refused_pinned_key "forfait | park"
+    bool policy.strict "a backend pin is a REQUIREMENT, not a preference - monotone, only the launcher's lock reopens it"
     string[] policy.locks
     map policy.model_classes "class -> family -> model"
+    string policy.cross_harness "off | reuse | restart"
+    object policy.overrides "an ARRAY of per-node cells - selector, backend, model, provider, effort"
+    string[] policy.providers "provider allowlist - a primary route outside it with no allowed step refuses the launch"
     datetime updated_at
+    string updated_by
   }
   platform_settings {
     string _id PK "family: usage_caps|platform_credentials|runner_pools|budget_floor|bot_roles|sandbox|bot_vars"

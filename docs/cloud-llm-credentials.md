@@ -890,17 +890,126 @@ Every launch snapshots the resolved policy on the run document
 (`llm_route_policy`, with each field's provenance) — "why did this run
 route this way" is answerable without replaying the launch.
 
+### Two typed fields on the routing policy
+
+[ADR-129](adr/129-per-integration-typed-routing-overrides.md) adds two fields
+to that same policy:
+
+- **`overrides`** — per-node routing cells. One entry is
+  `{selector, backend, model, provider, effort}`, the selector an exact node
+  id, an id glob, a kind keyword (`agent`, `judge`, `router`) or `*`. Values
+  are **literals**: `llmroute.Validate` refuses a cell containing `{{` or
+  `${`, naming the field — a pin the launch pre-flights cannot read is a pin
+  the tenancy gate cannot certify. `effort` re-targets the node's reasoning
+  effort (`effortForNode`).
+- **`providers`** — the tenant's provider allowlist: the credential-routing
+  providers a run of this level may spend. Against a non-empty list, a
+  **primary** route resolving outside it with no allowed step left to serve
+  the node REFUSES the launch, naming the node, the provider and the level
+  that set the list; a **rescue** route outside it is **pruned** — logged
+  naming its sites, nothing re-routed, no credential
+  sealed for it, and dispatch drops the element so it cannot burn a retry
+  budget on a call the tenant forbade; and a route the walk cannot READ
+  refuses too, because a lock that cannot be checked must not pass. An
+  explicitly empty list is refused at the write surface: a level that must
+  forbid everything has no run to make, and the honest spelling refuses the
+  bot.
+
+**Who may carry them.** The platform record, the org and team records, the
+four binding surfaces (webhook config, trigger subscription, schedule row,
+forge integration — each a full `llmroute.Policy`), and the run-level layer.
+The shipped bot is the one level that is NOT a carrier: `bundle.RoutingSpec`
+is declared field by field on purpose, so a field added to the shared struct
+never silently becomes author-writable manifest YAML, and it stops at
+`pair_order`, `triggers`, `refused_pinned_key`, `strict`, `model_classes` and
+`locks`. That last one is a hole ADR-129 §1 names ("Deliberately NOT chosen,
+two doors") and does not close: a manifest cannot SET either field but it can
+LOCK them, and `manifest.yaml` is writable by a `config_editor`
+(`canEditBots` → `canEditConfigShares`) where the team routing record needs
+`canManageTeam` —
+so an author's `locks: ["overrides"]` vetoes an operator's pin with no error
+and no refusal.
+
+**They fold differently, and the rule is each field's own.** `overrides`
+folds **entry-wise per (selector, field) cell** — a team pinning
+`judge → backend: claw` and an integration pinning
+`reviewer_gpt → model: <gateway id>` both hold, each cell's provenance keyed
+`overrides.<selector>.<field>`. `providers` is one list and **replaces** like
+`pair_order`, first setter wins (ADR-129 §2).
+
+**One fold at launch.** The resolved cells and the
+launcher's own `model_overrides` become ONE list, folded by
+`runview.EffectiveModelOverrides` through one body (`foldAndScreen`) at three
+entries — the cloud lane (`Service.Launch`), the in-process lane
+(`startInProcess`, which serves a local launch and the scheduler's start of a
+previously-queued root) and the credential preview (`PreviewCredentials`) —
+and **before** the permission screen: a cell folded in after it would reach
+past a guard the launcher's own override cannot. The DETACHED local runner
+(`ITERION_RUNS_DETACHED=1`), driven by `iterion run`, has no counterpart: it
+folds nothing, screens nothing and stamps no folded list, and says so for the
+override CELLS only — the launch's `model_overrides` and the
+policy's `overrides` share one Warn, conditional on one of them being
+non-empty (`detached.go:421-423`,
+`TestLaunchDetached_NamesTheDroppedOverrides`), while a policy whose only
+field is `providers:` is dropped WITHOUT a word: the allowlist reaches a
+runner on the queue message alone (`RunMessage.LLMProviders` →
+`ExecutorSpec.LLMProviders`, filled at `loop.go:3390` and nowhere else), and
+this lane sends none — the local-parity limit ADR-129 §8 states. The folded
+list is what the run document stamps, what the queue message carries, what
+every pre-flight reads and what a resume replays instead of re-folding
+(`TestResume_ReplaysTheFoldedRowsNotThePolicy`), so no reader re-derives a pin
+from a record that has moved since.
+Precedence, end to end:
+
+> node DSL field < policy-resolved `overrides` (platform < org < team < bot <
+> binding < run routing layer) < the launch's own `model_overrides`
+
+The launch wins that line at the two shapes ONE flat list can express: the
+SAME selector (the launch's rows sit after the policy's, and the later rule
+wins a tie), and a `*` row, which shadows every policy cell on that field
+outright. The residual the fold's own comment names: a policy cell on a MORE
+SPECIFIC selector than any launch row pinning the same field still wins that
+field on specificity inside the folded list — carrying the layer across the
+wire would take ranks on the wire twins — so a launcher states a field-wide
+gesture with `*`, or repeats the exact selector. (ADR-129 §6's `rank` decides
+between `MergeOver`'s layers, which is the CLI resume's fold, not this one.)
+
+A launcher's `model_overrides` is **not** lockable — it predates the policy
+and carries no level. A launcher who wants the fold's governance sends
+`llm_routing` with the launch, where `overrides` is lockable like every other
+field.
+
+**The governance asymmetry, said out loud.** The chain puts every binding
+ABOVE org and team, so a repo integration's block answers BEFORE the tenant's
+own cells: a sovereign team that wrote `providers: [openai_compatible]` is
+outranked by one of its integrations writing a wider list. The tenant's
+defence is a lock on its OWN record: `locks: ["providers"]` (or
+`locks: ["overrides"]`) on the team or org policy vetoes every setter above
+it, and the binding write surfaces refuse a lock of their own outright (422,
+naming the fields). Three limits ride with that:
+
+- the lock is per BLOCK, not per cell, deliberately: a level that must pin
+  one slot locks the block and states every cell it wants;
+- the manifest's `locks:` is the hole named above — a bot author, or a
+  `config_editor`, can take either field away from every binding without an
+  error;
+- there is **no `overrides` ceiling yet**. `llmroute.Ceiling` prunes
+  `triggers` and nothing else, so a tenant cannot BOUND the field without
+  locking it shut — named in ADR-129 §5 as a field of its own.
+
 ### The binding level — a repo pins its own slots
 
-Below the platform level and above the run, a forge integration carries
+A forge integration carries
 its own routing block (`routing` on the repo-bots API, ADR-129): the
-operator's per-repo pin over every launch the integration makes — webhook
-deliveries and scheduled fires alike. The block is typed
+operator's per-repo pin over the webhook deliveries the integration makes,
+and over every scheduled fire whose row carries no block of its own: the
+block is PROJECTED onto the scheduled rows (`RoutingFromIntegration` is that
+provenance), and a row an operator tuned through the schedule PATCH keeps its
+own and is not narrowed by this write. The block is typed
 (`overrides` cells per node selector, a `providers` allowlist; values are
 literals), validated at the write surface (an unknown field, a templated
 value or an out-of-vocabulary entry is a 400 naming it), and `locks` are
-refused there — the binding level holds no lock primitive, the author's
-manifest and the platform record do.
+refused there — the binding level holds no lock primitive.
 
 Write roles, one row per level that can carry a block:
 

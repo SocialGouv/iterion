@@ -462,6 +462,15 @@ gateway pins `providers: [openai_compatible]` plus the per-node cells,
 and no run of that repo can spend a shared key the tenant never named.
 Both fields live on the integration record, so both survive re-provisioning.
 
+The two mechanisms do not negotiate, and the order says which wins: the
+allowlist is checked on the route walk **before** any key is resolved, so a
+`key_overrides` pin naming a provider the list omits is never sealed — the
+route is refused (primary) or pruned (rescue) first, and no credential is
+sealed for it. A pin bypasses the refusal SKIP, never the tenancy lock. The
+integration is also only one level of the routing fold: a team or org record
+can take the field back with `locks: ["providers"]`, which the integration
+surface itself may not write.
+
 ## Multiple webhooks per bot — already supported
 
 The webhook spine keys configs by `_id`, not by bot; nothing stops N
