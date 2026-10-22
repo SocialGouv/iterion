@@ -157,6 +157,11 @@ const (
 	// asked. Distinct from paused so the UI never tells a willing
 	// contributor their contribution is off.
 	StatusBotFiltered Status = "bot_filtered"
+	// StatusRepoFiltered — the key's repository audience does not name the
+	// launch's repository (or the launch names none). Produced by the
+	// credential preview only: a pledge carries no repository filter, so
+	// the pool never reports it.
+	StatusRepoFiltered Status = "repo_filtered"
 	// StatusNoFallbackConsent — the donor shares, but only with runs that
 	// have no credential of their own (the whole-bundle tier); the
 	// routing fallback door needs the explicit `fallback_use` mark, so a

@@ -28,7 +28,9 @@ Diagram: [diagrams/data-model-credentials.md](diagrams/data-model-credentials.md
 metadata. Supported providers
 ([pkg/secrets/byok.go:Provider](../pkg/secrets/byok.go)):
 `anthropic` · `openai` · `bedrock` · `vertex` · `azure` · `openrouter` ·
-`xai` · `zai`.
+`xai` · `zai` · `moonshot` · `openai_compatible` (a tenant-owned gateway:
+the record carries `base_url`, see [ADR-131](adr/131-tenant-gateway-credential.md);
+storable and listed, but no run spends it until #2005 PR-C').
 
 Scope semantics:
 

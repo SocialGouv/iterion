@@ -2,7 +2,7 @@
 
 Sixteen Mongo collections hold what funds a run: a credential sealed at rest, the bundle that carries it to a runner pod, the four meters that bill it, and the policy that decides where it may route.
 
-> Drawn from the code at commit `61a305262` — main at v3.266.1, after #2391; how this page is kept true: [README](README.md).
+> Drawn from the code at commit `d3df633a6` — main at v3.277.2, with #2652 and #2005 PR-A; how this page is kept true: [README](README.md).
 
 ## Block 1 — a credential at rest, and who may see it
 
@@ -13,12 +13,14 @@ erDiagram
     string tenant_id FK "team id | orgtier:<org> | platform:"
     string scope_team FK "teams._id | orgtier:<org> | platform:"
     string scope_user FK "users._id"
-    string provider "anthropic|openai|bedrock|vertex|azure|openrouter|xai|zai|moonshot"
+    string provider "anthropic|openai|bedrock|vertex|azure|openrouter|xai|zai|moonshot|openai_compatible"
+    string base_url "gateway root, openai_compatible only; bound into the seal AAD; moved only with the secret re-sent"
     bytes sealed_secret
-    string fingerprint "first 8 bytes of sha256 of the plaintext"
+    string fingerprint "first 8 bytes of sha256 of the plaintext; base_url folded in for a gateway key"
     bool is_default
     int max_concurrent_runs
     string[] bots "canonical bot slugs"
+    string[] repos "owner/repo audience, lower-cased"
   }
   oauth_credentials {
     string _id PK "'<user_id>|<kind>', plus '|<rank>' only when rank > 0"

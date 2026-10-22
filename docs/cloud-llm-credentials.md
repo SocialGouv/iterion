@@ -242,6 +242,24 @@ rule for the value's shape (token / JSON / PEM), with `--kind` to name it and
 `--kind raw` to opt out — see
 [secrets.md](secrets.md#ingestion-shape-gate---kind).
 
+### A tenant-owned OpenAI-compatible gateway as a credential
+
+Provider `openai_compatible` ([ADR-131](adr/131-tenant-gateway-credential.md)) is a
+key record whose `base_url` names the gateway it authenticates against (a LiteLLM
+endpoint in front of a regional model host, a vLLM server): https only, no `/v1`,
+normalised at write, refused on every other provider. The seal binds the URL, so a
+row repointed in the store opens nowhere; the fingerprint folds it in, so one token on
+two gateways is two identities. Any key may carry a `repos` audience (`owner/repo`):
+it is checked in the credential walk before a webhook pin, and a launch that names no
+repository cannot spend a restricted key. Every tier may hold a gateway key — team,
+personal, org (shared through the org audience) and platform — and `llm_fallback=none`
+keeps a sovereign team on its own for every route the walk resolves. Until the walk
+learns the provider (#2005 PR-C'), a gateway key is storable but never sealed into a
+run: a gateway route is still served from the deployment's environment, `none`
+included; a webhook pin on such a key is refused at write; the pool never lends one.
+Moving a key's `base_url` is a rotation — the secret is re-sent and sealed under the
+new URL — so a mutator who never held the secret cannot redirect it.
+
 A refusal answers `400` with the reason, and leaves a trace an operator can
 find after the fact: a `Warn` in the server log and an audit event naming the
 field and the reason — never the value. Nothing is stored on a refusal. The

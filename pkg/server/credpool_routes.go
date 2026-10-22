@@ -311,6 +311,13 @@ func (s *Server) verifyLendable(r *http.Request, userID string, cred credpool.Cr
 		if string(k.Provider) != cred.Ref {
 			return secrets.OAuthRecord{}, &httpErr{http.StatusBadRequest, fmt.Sprintf("that key is a %s key, not %s", k.Provider, cred.Ref)}
 		}
+		// A gateway key authenticates against ITS tenant's endpoint, which
+		// a stranger's run never dials: the pool's vocabulary never names
+		// the provider (ADR-131 §5), so a pledge of one would sit "Sharing"
+		// and serve nobody. Refused here rather than parked there.
+		if k.Provider == secrets.ProviderOpenAICompatible {
+			return secrets.OAuthRecord{}, &httpErr{http.StatusBadRequest, "an openai_compatible gateway key is bound to its own gateway and is never pooled"}
+		}
 		// CreatedAt carries the reconnection signal, exactly as the OAuth
 		// branch does: a key added AFTER the pledge was parked is what
 		// clears the parked state. A zero record would read as "never

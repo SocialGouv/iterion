@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
@@ -172,6 +173,8 @@ var (
 	remoteLLMProvider string
 	remoteLLMName     string
 	remoteLLMDefault  bool
+	remoteLLMBaseURL  string
+	remoteLLMRepos    []string
 	remoteLLMKeyData  string
 	// remoteLLMAccountLabel names the ACCOUNT behind a forfait, so a
 	// listing says "jothedev" instead of a bare fingerprint.
@@ -188,21 +191,49 @@ var remoteAdminLLMCmd = &cobra.Command{
 }
 
 var remoteAdminLLMKeysCmd = &cobra.Command{
-	Use:   "api-keys [create|rotate|update|delete] [key-id]",
+	Use:   "api-keys [list|create|rotate|update|delete] [key-id]",
 	Short: "Platform provider API keys: list (default) or act on one (values from --from-env/--from-file/stdin)",
 	Args:  cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		if len(args) == 0 {
-			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/llm/api-keys")
+		action := "list"
+		if len(args) > 0 {
+			action = args[0]
 		}
-		action := args[0]
 		needID := func() (string, error) {
 			if len(args) < 2 {
 				return "", fmt.Errorf("usage: admin llm api-keys %s <key-id>", action)
 			}
 			return args[1], nil
 		}
+		// Every flag is read by some actions and not others: a flag
+		// accepted and dropped would leave the operator believing the key
+		// was restricted, repointed or rotated. Each is refused on the
+		// actions that do not read it, with the way that does what was
+		// asked.
+		for _, f := range []struct {
+			flag, hint string
+			on         []string
+		}{
+			{"provider", "a key's provider cannot change — create a new key", []string{"create"}},
+			{"name", "update takes --data '{\"name\":…}'", []string{"create"}},
+			{"default", "update takes --data '{\"is_default\":true}'", []string{"create"}},
+			{"base-url", "rotate takes --base-url beside the secret", []string{"create", "rotate"}},
+			{"repos", "update takes --data '{\"repos\":[…]}'", []string{"create"}},
+			{"data", "create and rotate take their fields as flags", []string{"update"}},
+			{"from-env", "update takes --data; the secret goes through rotate", []string{"create", "rotate"}},
+			{"from-file", "update takes --data; the secret goes through rotate", []string{"create", "rotate"}},
+		} {
+			if !cmd.Flags().Changed(f.flag) || slices.Contains(f.on, action) {
+				continue
+			}
+			return fmt.Errorf("--%s applies to %s only: %s would drop it (%s)", f.flag, strings.Join(f.on, "|"), action, f.hint)
+		}
 		switch action {
+		case "list":
+			if len(args) > 1 {
+				return fmt.Errorf("usage: admin llm api-keys [list]; %q is not a positional argument", args[1])
+			}
+			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/llm/api-keys")
 		case "create":
 			if len(args) != 1 {
 				return fmt.Errorf("usage: admin llm api-keys create --provider <p> --name <n> (value on --from-env/--from-file/stdin); %q is not a positional argument", args[1])
@@ -214,7 +245,7 @@ var remoteAdminLLMKeysCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			return cli.RemoteAPIKeysCreate(cmd.Context(), c, p, "platform", "", remoteLLMProvider, remoteLLMName, value, remoteLLMDefault)
+			return cli.RemoteAPIKeysCreate(cmd.Context(), c, p, "platform", "", remoteLLMProvider, remoteLLMName, value, remoteLLMDefault, remoteLLMBaseURL, remoteLLMRepos)
 		case "rotate":
 			id, err := needID()
 			if err != nil {
@@ -224,7 +255,7 @@ var remoteAdminLLMKeysCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			return cli.RemoteAPIKeysRotate(cmd.Context(), c, p, "platform", "", id, value)
+			return cli.RemoteAPIKeysRotate(cmd.Context(), c, p, "platform", "", id, value, remoteLLMBaseURL)
 		case "update":
 			id, err := needID()
 			if err != nil {
@@ -238,7 +269,7 @@ var remoteAdminLLMKeysCmd = &cobra.Command{
 			}
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/llm/api-keys/"+id, nil)
 		default:
-			return fmt.Errorf("unknown api-keys action %q (want create|rotate|update|delete)", action)
+			return fmt.Errorf("unknown api-keys action %q (want list|create|rotate|update|delete)", action)
 		}
 	}),
 }
@@ -927,6 +958,8 @@ func init() {
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMProvider, "provider", "", "LLM provider for create (anthropic|openai|…)")
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMName, "name", "", "Key display name for create")
 	remoteAdminLLMKeysCmd.Flags().BoolVar(&remoteLLMDefault, "default", false, "Make the created key the provider's default")
+	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMBaseURL, "base-url", "", "Gateway root for provider openai_compatible (https, no /v1)")
+	remoteAdminLLMKeysCmd.Flags().StringSliceVar(&remoteLLMRepos, "repos", nil, "Restrict the key to these repositories (owner/repo)")
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMKeyData, "data", "", "Patch JSON for update (literal or @file)")
 	remoteAdminLLMOAuthCmd.Flags().IntVar(&remoteLLMRank, "rank", 0, "Which link of the platform credential chain to address (0 = primary, 1+ = fallbacks tried in order)")
 	remoteAdminLLMOAuthCmd.Flags().StringVar(&remoteLLMAccountLabel, "account-label", "", "Name the account behind this forfait (with `set`/`connect`, or alone with `name`; `name --account-label \"\"` clears it)")

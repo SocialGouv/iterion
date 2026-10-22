@@ -69,6 +69,7 @@ const STATUS_COPY: Record<PledgeStatus, { label: string; tone: "success" | "warn
   serving: { label: "Every slot you allowed is busy", tone: "success" },
   unhealthy: { label: "Needs reconnecting", tone: "danger" },
   bot_filtered: { label: "Sharing, but not with this bot", tone: "neutral" },
+  repo_filtered: { label: "Sharing, but not for this repository", tone: "neutral" },
 };
 
 /**
@@ -80,6 +81,9 @@ function groupKeysByProvider(keys: ApiKeyView[]): Lendable[] {
   const byProvider = new Map<string, { id: string; label: string }[]>();
   for (const k of keys) {
     if (!k.scope_user_id) continue;
+    // A gateway key is bound to its own endpoint, which a stranger's run
+    // never dials; the server refuses to pool one, so it is not offered.
+    if (k.provider === "openai_compatible") continue;
     const choices = byProvider.get(k.provider) ?? [];
     choices.push({ id: k.id, label: `${k.name}${k.last4 ? ` (…${k.last4})` : ""}` });
     byProvider.set(k.provider, choices);

@@ -117,6 +117,8 @@ var (
 	remoteAPIKeyProvider string
 	remoteAPIKeyName     string
 	remoteAPIKeyDefault  bool
+	remoteAPIKeyBaseURL  string
+	remoteAPIKeyRepos    []string
 )
 
 var remoteAPIKeysCreateCmd = &cobra.Command{
@@ -131,7 +133,7 @@ var remoteAPIKeysCreateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return cli.RemoteAPIKeysCreate(cmd.Context(), c, p, remoteSecretScope, remoteScopeFlag(), remoteAPIKeyProvider, remoteAPIKeyName, value, remoteAPIKeyDefault)
+		return cli.RemoteAPIKeysCreate(cmd.Context(), c, p, remoteSecretScope, remoteScopeFlag(), remoteAPIKeyProvider, remoteAPIKeyName, value, remoteAPIKeyDefault, remoteAPIKeyBaseURL, remoteAPIKeyRepos)
 	}),
 }
 
@@ -139,7 +141,7 @@ var remoteAPIKeysUpdateData string
 
 var remoteAPIKeysUpdateCmd = &cobra.Command{
 	Use:   "update <key-id>",
-	Short: "Update an API key's metadata (--data JSON; rotate via secrets fields)",
+	Short: "Update an API key's metadata (--data JSON); the secret and a gateway move go through rotate",
 	Args:  cobra.ExactArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		base, err := remoteScopedBase(cmd, c, "api-keys")
@@ -147,6 +149,21 @@ var remoteAPIKeysUpdateCmd = &cobra.Command{
 			return err
 		}
 		return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", base+"/"+args[0], remoteAPIKeysUpdateData, "patch JSON")
+	}),
+}
+
+var remoteAPIKeysRotateBaseURL string
+
+var remoteAPIKeysRotateCmd = &cobra.Command{
+	Use:   "rotate <key-id>",
+	Short: "Rotate an API key's secret (value from --from-env/--from-file/stdin); --base-url moves a gateway key in the same write",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		value, err := cli.ReadSecretValue(remoteSecretFromEnv, remoteSecretFromFile, true)
+		if err != nil {
+			return err
+		}
+		return cli.RemoteAPIKeysRotate(cmd.Context(), c, p, remoteSecretScope, remoteScopeFlag(), args[0], value, remoteAPIKeysRotateBaseURL)
 	}),
 }
 
@@ -192,24 +209,27 @@ var remoteBindingsCmd = &cobra.Command{
 func init() {
 	for _, c := range []*cobra.Command{
 		remoteSecretsListCmd, remoteSecretsSetCmd, remoteSecretsRotateCmd, remoteSecretsDeleteCmd,
-		remoteAPIKeysListCmd, remoteAPIKeysCreateCmd, remoteAPIKeysUpdateCmd, remoteAPIKeysDeleteCmd,
+		remoteAPIKeysListCmd, remoteAPIKeysCreateCmd, remoteAPIKeysRotateCmd, remoteAPIKeysUpdateCmd, remoteAPIKeysDeleteCmd,
 	} {
 		c.Flags().StringVar(&remoteSecretScope, "scope", "team", "Store scope (team|me|org|platform — org/platform are api-keys only)")
 		c.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
 		c.Flags().StringVar(&remoteOrgFlag, "org", "", "Org id for --scope org (default: switched/active org)")
 	}
-	for _, c := range []*cobra.Command{remoteSecretsSetCmd, remoteSecretsRotateCmd, remoteAPIKeysCreateCmd} {
+	for _, c := range []*cobra.Command{remoteSecretsSetCmd, remoteSecretsRotateCmd, remoteAPIKeysCreateCmd, remoteAPIKeysRotateCmd} {
 		c.Flags().StringVar(&remoteSecretFromEnv, "from-env", "", "Read the value from this environment variable")
 		c.Flags().StringVar(&remoteSecretFromFile, "from-file", "", "Read the value from this file")
 	}
 	remoteAPIKeysCreateCmd.Flags().StringVar(&remoteAPIKeyProvider, "provider", "", "LLM provider (anthropic|openai|…)")
 	remoteAPIKeysCreateCmd.Flags().StringVar(&remoteAPIKeyName, "name", "", "Key display name")
 	remoteAPIKeysCreateCmd.Flags().BoolVar(&remoteAPIKeyDefault, "default", false, "Make this the provider's default key")
+	remoteAPIKeysCreateCmd.Flags().StringVar(&remoteAPIKeyBaseURL, "base-url", "", "Gateway root for provider openai_compatible (https, no /v1); refused on other providers")
+	remoteAPIKeysCreateCmd.Flags().StringSliceVar(&remoteAPIKeyRepos, "repos", nil, "Restrict the key to these repositories (owner/repo); empty = every repository")
+	remoteAPIKeysRotateCmd.Flags().StringVar(&remoteAPIKeysRotateBaseURL, "base-url", "", "Move an openai_compatible key to this gateway root in the same write (the server refuses a move without the secret)")
 	remoteAPIKeysUpdateCmd.Flags().StringVar(&remoteAPIKeysUpdateData, "data", "", "Patch JSON (literal or @file)")
 	remoteBindingsCmd.Flags().StringVar(&remoteBindingsData, "data", "", "Binding JSON for create (literal or @file)")
 	remoteBindingsCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
 
 	remoteSecretsCmd.AddCommand(remoteSecretsListCmd, remoteSecretsSetCmd, remoteSecretsRotateCmd, remoteSecretsDeleteCmd)
-	remoteAPIKeysCmd.AddCommand(remoteAPIKeysListCmd, remoteAPIKeysCreateCmd, remoteAPIKeysUpdateCmd, remoteAPIKeysDeleteCmd)
+	remoteAPIKeysCmd.AddCommand(remoteAPIKeysListCmd, remoteAPIKeysCreateCmd, remoteAPIKeysRotateCmd, remoteAPIKeysUpdateCmd, remoteAPIKeysDeleteCmd)
 	remoteCmd.AddCommand(remoteSecretsCmd, remoteAPIKeysCmd, remoteBindingsCmd)
 }

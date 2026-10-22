@@ -324,8 +324,14 @@ func (p *Publisher) newTierNative(ctx context.Context, tier, keyScope, botID str
 				p.logger.Warn("cloudpublisher: %s tier key list for the facade policy: %v — read as holding none: a facade key may take the anthropic wire's default for this launch", tier, err)
 				return false
 			}
+			// Both audiences, as Resolve reads them: a key the walk will
+			// withhold for this launch's bot OR repository is not a native
+			// credential the run holds, and counting it would keep every
+			// facade key off the anthropic wire's default for a run that
+			// then seals nothing.
+			repo := secrets.LaunchRepoFromContext(ctx)
 			for _, k := range visible {
-				if k.Provider == secrets.ProviderAnthropic && k.ServesBotForLaunch(botID) {
+				if k.Provider == secrets.ProviderAnthropic && k.ServesBotForLaunch(botID) && k.ServesRepoForLaunch(repo) {
 					return true
 				}
 			}

@@ -324,7 +324,7 @@ func TestMongoApiKey_PatchSetsEachNamedField(t *testing.T) {
 		SealedSecret: []byte("s1"), Last4: "1111", Fingerprint: "fp1"}); err != nil {
 		t.Fatal(err)
 	}
-	name, on, seven := "renamed", true, 7
+	name, on, seven, gw := "renamed", true, 7, "https://gw.example.test"
 	steps := []struct {
 		p     ApiKeyPatch
 		check func(ApiKey) bool
@@ -333,9 +333,15 @@ func TestMongoApiKey_PatchSetsEachNamedField(t *testing.T) {
 		{ApiKeyPatch{IsDefault: &on}, func(k ApiKey) bool { return k.IsDefault }},
 		{ApiKeyPatch{MaxConcurrentRuns: &seven}, func(k ApiKey) bool { return k.MaxConcurrentRuns == 7 }},
 		{ApiKeyPatch{Bots: &[]string{"review-pr"}}, func(k ApiKey) bool { return len(k.Bots) == 1 && k.Bots[0] == "review-pr" }},
+		{ApiKeyPatch{Repos: &[]string{"acme/api"}}, func(k ApiKey) bool { return len(k.Repos) == 1 && k.Repos[0] == "acme/api" }},
 		{ApiKeyPatch{Secret: &ApiKeySecretPatch{Sealed: []byte("s2"), Last4: "2222", Fingerprint: "fp2"}},
 			func(k ApiKey) bool {
 				return string(k.SealedSecret) == "s2" && k.Last4 == "2222" && k.Fingerprint == "fp2"
+			}},
+		// The URL lands in its own column, beside the blob sealed under it.
+		{ApiKeyPatch{BaseURL: &gw, Secret: &ApiKeySecretPatch{Sealed: []byte("s3"), Last4: "3333", Fingerprint: "fp3"}},
+			func(k ApiKey) bool {
+				return k.BaseURL == gw && string(k.SealedSecret) == "s3" && k.Fingerprint == "fp3"
 			}},
 	}
 	for i, st := range steps {
@@ -347,11 +353,49 @@ func TestMongoApiKey_PatchSetsEachNamedField(t *testing.T) {
 			t.Fatalf("step %d did not land on the real store: %+v (%v)", i, back, err)
 		}
 	}
-	// An incomplete rotation never reaches the store.
-	if _, err := s.Patch(tctx, "k", ApiKeyPatch{Secret: &ApiKeySecretPatch{Sealed: []byte("s3")}}); !errors.Is(err, ErrApiKeyPatchInvalid) {
+	// An incomplete rotation never reaches the store, nor a URL without
+	// the blob sealed under it.
+	if _, err := s.Patch(tctx, "k", ApiKeyPatch{Secret: &ApiKeySecretPatch{Sealed: []byte("s4")}}); !errors.Is(err, ErrApiKeyPatchInvalid) {
 		t.Fatalf("incomplete rotation = %v, want ErrApiKeyPatchInvalid", err)
 	}
-	if back, _ := s.Get(tctx, "k"); string(back.SealedSecret) != "s2" || back.Fingerprint != "fp2" {
-		t.Fatalf("the refused rotation landed anyway: %+v", back)
+	moved := "https://gw2.example.test"
+	if _, err := s.Patch(tctx, "k", ApiKeyPatch{BaseURL: &moved}); !errors.Is(err, ErrApiKeyPatchInvalid) {
+		t.Fatalf("a base URL without its secret = %v, want ErrApiKeyPatchInvalid", err)
+	}
+	if back, _ := s.Get(tctx, "k"); string(back.SealedSecret) != "s3" || back.Fingerprint != "fp3" || back.BaseURL != gw {
+		t.Fatalf("a refused patch landed anyway: %+v", back)
+	}
+}
+
+// The compare-and-swap holds on the real store, and a miss on a row that
+// still exists is reported as "changed", not "gone".
+func TestMongoApiKey_PatchWithExpectSealedIsACompareAndSwap(t *testing.T) {
+	s, ctx := mongoKeyStore(t)
+	tctx := store.WithTenant(ctx, "team-a")
+	if err := s.Create(tctx, ApiKey{ID: "cas", ScopeTeamID: "team-a", Provider: ProviderAnthropic, Name: "k", SealedSecret: []byte("v1"), Fingerprint: "fp1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Patch(tctx, "cas", ApiKeyPatch{Secret: &ApiKeySecretPatch{Sealed: []byte("v2"), Last4: "2222", Fingerprint: "fp2"}}); err != nil {
+		t.Fatal(err)
+	}
+	stale := ApiKeyPatch{Secret: &ApiKeySecretPatch{Sealed: []byte("v1b"), Last4: "1111", Fingerprint: "fp1b"}, ExpectSealed: []byte("v1")}
+	if _, err := s.Patch(tctx, "cas", stale); !errors.Is(err, ErrApiKeyChanged) {
+		t.Fatalf("stale re-seal = %v, want ErrApiKeyChanged", err)
+	}
+	if back, _ := s.Get(tctx, "cas"); string(back.SealedSecret) != "v2" {
+		t.Fatalf("the stale re-seal landed: %+v", back)
+	}
+	if _, err := s.Patch(tctx, "cas", ApiKeyPatch{Secret: &ApiKeySecretPatch{Sealed: []byte("v3"), Last4: "3333", Fingerprint: "fp3"}, ExpectSealed: []byte("v2")}); err != nil {
+		t.Fatalf("a current re-seal must land: %v", err)
+	}
+	// An empty patch still answers the guard, as the memory twin does.
+	if _, err := s.Patch(tctx, "cas", ApiKeyPatch{ExpectSealed: []byte("v2")}); !errors.Is(err, ErrApiKeyChanged) {
+		t.Fatalf("an empty patch with a stale guard = %v, want ErrApiKeyChanged", err)
+	}
+	if got, err := s.Patch(tctx, "cas", ApiKeyPatch{ExpectSealed: []byte("v3")}); err != nil || string(got.SealedSecret) != "v3" {
+		t.Fatalf("an empty patch with the current guard must answer the row: %+v %v", got, err)
+	}
+	if _, err := s.Patch(tctx, "missing", ApiKeyPatch{Secret: &ApiKeySecretPatch{Sealed: []byte("x"), Last4: "xxxx", Fingerprint: "fpx"}, ExpectSealed: []byte("v3")}); !errors.Is(err, ErrApiKeyNotFound) {
+		t.Fatalf("a missing row under CAS = %v, want ErrApiKeyNotFound", err)
 	}
 }

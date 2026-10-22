@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -283,5 +284,21 @@ func TestSchedule_CreateResolvesRepoIntegration(t *testing.T) {
 	_ = json.Unmarshal(w2.Body.Bytes(), &created2)
 	if created2.RepoIntegrationID != "" {
 		t.Errorf("unknown repo should not bind an integration, got %q", created2.RepoIntegrationID)
+	}
+}
+
+// The scheduled lane clones a repository but does not NAME it yet: the
+// credential walk's repository is "" for a scheduled run, so a key
+// restricted to that very repository is withheld there (docs/byok.md,
+// `repos` — "where it stops"; ADR-131 §3). #2005 PR-R stamps the lane from
+// its integration; this canary goes red then, and the doc moves with it.
+func TestScheduledLaunchNamesNoRepositoryYet(t *testing.T) {
+	sb := cloudsched.ScheduledBot{ID: "s1", TenantID: "t1", BotID: "nightly-audit", RepoURL: "https://github.com/acme/api.git", RepoRef: "main"}
+	spec := buildScheduledLaunchSpec(sb, "/tmp/x/main.bot", "workflow: {}", nil, nil)
+	if spec.ProjectPath != "" {
+		t.Fatalf("the scheduled lane now names repository %q — lift the \"where it stops\" paragraph of docs/byok.md and ADR-131 §3", spec.ProjectPath)
+	}
+	if (secrets.ApiKey{Repos: []string{"acme/api"}}).ServesRepoForLaunch(spec.ProjectPath) {
+		t.Fatal("a repo-restricted key would be spent by a launch that names no repository")
 	}
 }

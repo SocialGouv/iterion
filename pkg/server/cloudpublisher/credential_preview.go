@@ -587,14 +587,29 @@ func (x *credentialPreview) apiStage(tier, tenant, owner, meter, botID string, p
 		// from `closed` because a pin does NOT lift it — the live resolver
 		// reads it before the pin exemption, and a preview that promised
 		// otherwise would be a confident lie about the next launch.
-		outOfAudience := !k.ServesBotForLaunch(botID)
-		if outOfAudience {
+		// Each audience is named by the one that refused — the live walk
+		// reports the cause beside the key (secrets.AudienceRefusal), and the
+		// preview says the same thing, or the operator edits the wrong list.
+		launchRepo := secrets.LaunchRepoFromContext(ctx)
+		outOfBot, outOfRepo := !k.ServesBotForLaunch(botID), !k.ServesRepoForLaunch(launchRepo)
+		outOfAudience := outOfBot || outOfRepo
+		if outOfBot {
 			// The route refuses an empty bot_id with a 400 before this runs
 			// (pkg/server/credential_preview.go), so there is no "named no
 			// bot" arm here: a branch that cannot execute reads as a
 			// behaviour and is worse than its absence.
 			c.State = string(credpool.StatusBotFiltered)
 			c.Reason += " This key's workload audience does not name bot " + botID + "."
+		}
+		if outOfRepo {
+			if !outOfBot {
+				c.State = string(credpool.StatusRepoFiltered)
+			}
+			// The key's own list stays out of the reason, as the bot list
+			// does: a shared-tier key belongs to another tenant, and the
+			// repositories it names are theirs to know. The server log
+			// carries the list, for the operator.
+			c.Reason += " This key's repository audience does not name " + previewLaunchRepo(launchRepo) + "."
 		}
 		if !active || x.seal(tier, k.Provider, byWire) == sealNone {
 			c.Selection = "not_consulted"
@@ -788,4 +803,15 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 		c.Reason = "No fresh usage-window observation; the launch assumes availability."
 	}
 	return false, false
+}
+
+// previewLaunchRepo names the repository a preview was asked for. A preview
+// without one is not a launch that names none: the source may serve several
+// repositories or a pattern, and the next delivery will name one the preview
+// cannot know.
+func previewLaunchRepo(repo string) string {
+	if repo == "" {
+		return "a repository (none is known to this preview: the source names several, a pattern, or none)"
+	}
+	return "repository " + repo
 }

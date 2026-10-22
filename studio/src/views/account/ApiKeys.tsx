@@ -33,6 +33,8 @@ const PROVIDER_OPTIONS: Provider[] = [
   "openrouter",
   "xai",
   "zai",
+  "moonshot",
+  "openai_compatible",
 ];
 
 interface Props {
@@ -93,6 +95,7 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
     name: "",
     secret: "",
     is_default: false,
+    base_url: "",
   });
 
   // The team arm asks about THIS team, not the active one: this panel is a
@@ -117,9 +120,14 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
     setAdding(true);
     setMutErr(null);
     try {
-      await createApiKey(scope, draft);
+      await createApiKey(scope, {
+        ...draft,
+        // base_url belongs to a gateway key only; the server refuses it on a
+        // vendor key, so it is sent only where it means something.
+        base_url: draft.provider === "openai_compatible" ? draft.base_url : undefined,
+      });
       setShowAdd(false);
-      setDraft({ provider: "anthropic", name: "", secret: "", is_default: false });
+      setDraft({ provider: "anthropic", name: "", secret: "", is_default: false, base_url: "" });
       reload();
     } catch (e) {
       setMutErr(errorMessage(e));
@@ -213,6 +221,23 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
               required
             />
           </div>
+          {draft.provider === "openai_compatible" && (
+            <>
+              <InlineBanner tone="info" layout="inline">
+                A gateway key is stored, listed and audited, but no run spends it yet: the
+                credential walk learns this provider in a later release (#2005).
+              </InlineBanner>
+              <Input
+                size="md"
+                type="url"
+                className="font-mono"
+                placeholder="Gateway base URL (https://…, without /v1)"
+                value={draft.base_url}
+                onChange={(e) => setDraft({ ...draft, base_url: e.target.value })}
+                required
+              />
+            </>
+          )}
           <Input
             size="md"
             type="password"
@@ -271,7 +296,20 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
             {keys.map((k) => (
               <Tr key={k.id}>
                 <Td>{k.provider}</Td>
-                <Td>{k.name}</Td>
+                <Td>
+                  <div>{k.name}</div>
+                  {k.base_url && (
+                    <div className="text-fg-muted text-xs font-mono" title="Gateway this key is sealed for">
+                      {k.base_url}
+                    </div>
+                  )}
+                  {/* A server a release behind (the rollback window) omits the field. */}
+                  {(k.repos ?? []).length > 0 && (
+                    <div className="text-fg-muted text-xs" title="Only runs for these repositories spend this key">
+                      repos: {(k.repos ?? []).join(", ")}
+                    </div>
+                  )}
+                </Td>
                 <Td className="font-mono">{k.last4 ?? "—"}</Td>
                 <Td>
                   {canManage ? (

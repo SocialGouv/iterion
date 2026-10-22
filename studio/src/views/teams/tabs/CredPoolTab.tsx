@@ -29,6 +29,7 @@ const STATUS_TONE: Record<PledgeStatus, "success" | "warning" | "neutral" | "dan
   serving: "success",
   unhealthy: "danger",
   bot_filtered: "neutral",
+  repo_filtered: "neutral",
 };
 
 const csv = (v?: string[]) => (v ?? []).join(", ");

@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -48,6 +49,7 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	// refuses.
 	spec.Launch.Permission = strings.TrimSpace(req.Permission)
 	disabled := false
+	previewRepo := ""
 	switch req.Source.Kind {
 	case "personal":
 		if req.Source.ID != "" {
@@ -85,6 +87,21 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		}
 		spec.OwnerID = "webhook:" + cfg.ID
 		spec.Launch.KeyOverrides = cfg.KeyOverrides
+		// The repository the webhook serves rides the preview's context as
+		// it rides the launch's: a key restricted to repositories previews
+		// as withheld for any other, and as withheld when the webhook
+		// serves several (the launch would name one; the preview cannot).
+		// Only a LITERAL entry is a repository: the allowlist is a pattern
+		// list (webhooks.MatchProject — "*", "group/*"), and a pattern
+		// stamped as the repository would preview a key restricted to
+		// "group/api" as withheld while every delivery spends it.
+		// Trimmed as webhooks.MatchProject reads it, so the preview and the
+		// delivery agree on the entry.
+		if len(cfg.ProjectAllowlist) == 1 {
+			if entry := strings.TrimSpace(cfg.ProjectAllowlist[0]); !strings.Contains(entry, "*") {
+				previewRepo = entry
+			}
+		}
 		spec.Launch.Vars = applyWebhookVarLayers(map[string]string{}, cfg)
 		// The launch trusts the config's OPERATOR layer for the routing
 		// pre-flights (webhooks_gitlab.go's webhook lane); the preview
@@ -104,7 +121,7 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusServiceUnavailable, "credential preview is unavailable")
 		return
 	}
-	ctx := store.WithTenant(r.Context(), teamID)
+	ctx := secrets.WithLaunchRepo(store.WithTenant(r.Context(), teamID), previewRepo)
 	// Raw resolution reads the existing tiered source. Publishing a cloud bot
 	// snapshot would be a durable write and has no place in a preview.
 	lb, err := s.resolveBotTieredRaw(ctx, teamID, req.BotID, "")

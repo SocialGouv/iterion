@@ -38,11 +38,25 @@ func EncodeJSON(w http.ResponseWriter, v any) {
 // DecodeJSON reads at most 10 MB of the request body and unmarshals it into
 // dst.
 func DecodeJSON(r *http.Request, dst any) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	body, err := readBody(r)
 	if err != nil {
 		return err
 	}
 	return json.Unmarshal(body, dst)
+}
+
+// readBody reads the request body up to maxBody and REFUSES a longer one: a
+// body cut at the cap would decode as whatever fits in the first 10 MB and
+// drop the rest without a word.
+func readBody(r *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxBody {
+		return nil, fmt.Errorf("request body exceeds %d bytes", maxBody)
+	}
+	return body, nil
 }
 
 // DecodeJSONStrict is DecodeJSON with unknown fields REFUSED instead of
@@ -61,7 +75,7 @@ func DecodeJSON(r *http.Request, dst any) error {
 // have helped that case: the two names were semantically related and
 // textually unrelated. The list is.
 func DecodeJSONStrict(r *http.Request, dst any) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	body, err := readBody(r)
 	if err != nil {
 		return err
 	}
@@ -72,6 +86,13 @@ func DecodeJSONStrict(r *http.Request, dst any) error {
 			return fmt.Errorf("%w; accepted fields: %s", err, names)
 		}
 		return err
+	}
+	// One value, then nothing: a decoder stops at the end of the first
+	// value, so a body carrying a second one (`{"name":"x"}\n{"repos":[…]}`)
+	// would be accepted with its second half silently dropped — the exact
+	// outcome a strict decode exists to refuse.
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("unexpected content after the JSON body")
 	}
 	return nil
 }

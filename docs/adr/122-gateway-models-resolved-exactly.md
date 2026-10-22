@@ -119,3 +119,7 @@ as-is when its first segment IS `q`. Only the configured qualifier is recognised
 stays part of the id, so the "no cross-provider fallback" consequence holds. Within each table `q/<id>` is
 tried first; across tables the live table (both keys) keeps its precedence over the snapshot, as §1.2 says.
 The wire id is untouched: what the gateway serves is what it receives.
+
+## Amendment 2026-10-21 — the gateway may be a bundle credential
+
+From #2005 PR-C' on ([ADR-131](131-tenant-gateway-credential.md) §7), §6's "the gateway is env-funded … never to a bundle credential" is superseded for a run whose team holds an `openai_compatible` key: the key and its base URL are sealed into the run bundle and served before the environment, in-process and in the sandbox. The deployment's `OPENAI_COMPATIBLE_*` environment stays the path of a run that holds no such key (a laptop, a sovereign pool). The resolution order of §1 (operator table, catalog provider) is unchanged: the catalog stays operator-wide. Until PR-C' lands, §6 holds for every run, gateway key stored or not.

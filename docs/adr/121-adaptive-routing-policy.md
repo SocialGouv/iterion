@@ -196,3 +196,7 @@ donor-facing fallback-usable consent, the per-family consult on a fired
 trigger when no owned credential serves it, the whole-bundle gate unchanged
 on the non-fallback path. Never silently re-dated; this paragraph is the
 record.
+
+## Amendment 2026-10-21 — a run that holds a gateway credential selects
+
+From #2005 PR-C' on ([ADR-131](131-tenant-gateway-credential.md) §5), §1's "a run that acquires no credential at all (env-funded, #2038) selects nothing" describes only a run whose every route is a gateway route AND whose team holds no `openai_compatible` key: a team-held gateway key is acquired like any key — the pair `claw+openai_compatible_key` joins `pair_order` as a seal-whitelist entry (never a ladder rung), the walk records `openai_compatible` as a pinned provider, and the tier walk, the stamps and the sovereign gate see it. Until PR-C' lands, the walk does not resolve the provider, a stored gateway key is inert, and §1 reads as written.

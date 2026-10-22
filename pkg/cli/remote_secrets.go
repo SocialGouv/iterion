@@ -123,7 +123,7 @@ func RemoteSecretsRotate(ctx context.Context, c *RemoteClient, p *Printer, scope
 	return nil
 }
 
-func RemoteAPIKeysCreate(ctx context.Context, c *RemoteClient, p *Printer, scope, teamFlag, provider, name, value string, isDefault bool) error {
+func RemoteAPIKeysCreate(ctx context.Context, c *RemoteClient, p *Printer, scope, teamFlag, provider, name, value string, isDefault bool, baseURL string, repos []string) error {
 	base, err := RemoteSecretsBase(ctx, c, scope, teamFlag, "api-keys")
 	if err != nil {
 		return err
@@ -131,6 +131,15 @@ func RemoteAPIKeysCreate(ctx context.Context, c *RemoteClient, p *Printer, scope
 	req := map[string]any{"provider": provider, "name": name, "secret": value}
 	if isDefault {
 		req["is_default"] = true
+	}
+	// Sent only when given: the server refuses base_url on a vendor key and
+	// requires it on a gateway key — the CLI passes the operator's words
+	// through, it does not guess.
+	if baseURL != "" {
+		req["base_url"] = baseURL
+	}
+	if len(repos) > 0 {
+		req["repos"] = repos
 	}
 	raw, err := c.Call(ctx, "POST", base, req, nil)
 	if err != nil {
@@ -145,12 +154,20 @@ func RemoteAPIKeysCreate(ctx context.Context, c *RemoteClient, p *Printer, scope
 // secret edit + redeploy. New launches and resumes pick the fresh value
 // immediately; in-flight runs keep their sealed snapshot until they
 // finish or fail-resume.
-func RemoteAPIKeysRotate(ctx context.Context, c *RemoteClient, p *Printer, scope, teamFlag, keyID, value string) error {
+func RemoteAPIKeysRotate(ctx context.Context, c *RemoteClient, p *Printer, scope, teamFlag, keyID, value, baseURL string) error {
 	base, err := RemoteSecretsBase(ctx, c, scope, teamFlag, "api-keys")
 	if err != nil {
 		return err
 	}
-	raw, err := c.Call(ctx, "PATCH", base+"/"+keyID, map[string]string{"secret": value}, nil)
+	req := map[string]string{"secret": value}
+	// A gateway key moves only with its secret re-sent (the server refuses
+	// a base_url without one), so the move rides the rotation: the secret
+	// comes from the environment, a file or stdin, never from a JSON blob
+	// typed on the command line.
+	if baseURL != "" {
+		req["base_url"] = baseURL
+	}
+	raw, err := c.Call(ctx, "PATCH", base+"/"+keyID, req, nil)
 	if err != nil {
 		return err
 	}

@@ -3969,6 +3969,9 @@
           "alive_runs": {
             "type": "integer"
           },
+          "base_url": {
+            "type": "string"
+          },
           "bots": {
             "items": {
               "type": "string"
@@ -4008,6 +4011,12 @@
           "refused_until": {
             "type": "string"
           },
+          "repos": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "scope_user_id": {
             "type": "string"
           }
@@ -4018,7 +4027,8 @@
           "name",
           "is_default",
           "created_at",
-          "bots"
+          "bots",
+          "repos"
         ],
         "type": "object"
       },
@@ -4272,6 +4282,9 @@
       },
       "createApiKeyReq": {
         "properties": {
+          "base_url": {
+            "type": "string"
+          },
           "bots": {
             "items": {
               "type": "string"
@@ -4289,6 +4302,12 @@
           },
           "provider": {
             "type": "string"
+          },
+          "repos": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "secret": {
             "type": "string"
@@ -5524,6 +5543,9 @@
       },
       "updateApiKeyReq": {
         "properties": {
+          "base_url": {
+            "type": "string"
+          },
           "bots": {
             "items": {
               "type": "string"
@@ -5538,6 +5560,12 @@
           },
           "name": {
             "type": "string"
+          },
+          "repos": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "secret": {
             "type": "string"
