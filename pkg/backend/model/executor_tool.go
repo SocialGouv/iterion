@@ -445,7 +445,7 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// Bare `$NAME`, `$ec`, `$?`, `$1` etc. pass through verbatim so
 			// shell-level variables (positional args, exit-status, captured
 			// stdout) survive into the resolved command for sh -c to interpret.
-			expandedCommand := expandBracedEnv(node.Command)
+			expandedCommand, _ := ToolBodyEnv(node, node.Command, lookupToolEnv)
 			// One snapshot, one pass — the same snapshot the prompts render
 			// from. {{run.*}} and {{outputs.*}} resolve beside {{input.*}},
 			// under the same shell escaping and the same missing-value rule.
@@ -615,7 +615,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// literals — shell-escape's single-quote wrapping breaks
 			// script-language string parsers when the value contains embedded
 			// apostrophes. No compression: a script body is not a shell command line.
-			expanded := expandBracedEnv(node.Script)
+			expanded, _ := ToolBodyEnv(node, node.Script, lookupToolEnv)
 			// Same single pass over one snapshot as the shell recipe:
 			// {{run.*}} and {{outputs.*}} beside {{input.*}}, here as JSON
 			// literals.
@@ -1375,8 +1375,56 @@ func rawTemplateValue(val any, _ ValueShape) string {
 	return formatValue(val)
 }
 
+// ToolBodyEnv is the one reading of a tool body's environment forms. It
+// returns the body as its reader hands it on, and every braced form the
+// reading consulted — each with the name it looks up and whether the author
+// wrote a `:-` arm: a plain ${NAME} is answered when lookup carries the name
+// and kept as written when it does not, a ${NAME:-default} is answered from
+// lookup first and resolved to its default otherwise. That list is the
+// decision record a preview reports (ADR-130).
+//
+// The reads are the SOURCE body's, offsets included: ir.BracedEnvRead.At is
+// the position of the `$` in the body passed IN, which the caller holds
+// (node.Command, node.Script, node.Postcondition). The returned text is that
+// body after the reading, where those offsets no longer line up — compute a
+// position against the authored text, never against the answer.
+//
+// lookup is the environment the reader speaks for: lookupToolEnv for a run —
+// the engine's own overlay-then-process chain — and a lookup that answers
+// nothing for a preview, which must read the same on a laptop and in CI, the
+// reading `iterion validate` already gives a launch value
+// (ir.ResolveVarTextAsWritten). A nil lookup answers nothing and is guarded
+// here because the helpers call the lookup DIRECTLY: a nil func value
+// panics. noToolEnv is the environment that answers no name, which is what a
+// preview wants said rather than crashed.
+//
+// The reading is env-scoped, and it comes FIRST: every caller reads the
+// environment forms before resolving the body's {{…}} references, which is
+// the injection defence — expanding afterwards would read an upstream value's
+// own `$NAME` back out of the single quotes shellEscapeValue put it in.
+//
+// node is the body's own node — the subject the reading answers for. ADR-130
+// puts the declaration of what a body's environment reading does on the NODE,
+// which is why the chokepoint takes it rather than the text alone.
+func ToolBodyEnv(node *ir.ToolNode, body string, lookup func(string) (string, bool)) (string, []ir.BracedEnvRead) {
+	if lookup == nil {
+		lookup = noToolEnv
+	}
+	expanded, _ := expandBracedEnvSteps(body, lookup)
+	return expanded, ir.BracedEnvReads(body)
+}
+
+// noToolEnv is the environment of a reader that speaks for none: every name
+// is unset, so a ${NAME:-default} resolves to its default and a plain
+// ${NAME} is kept as written.
+func noToolEnv(string) (string, bool) { return "", false }
+
 // expandBracedEnv expands ${NAME} and ${NAME:-default} env references in
-// the author-controlled command template. Bare $NAME (and shell-special
+// the author-controlled command template under the engine's own environment
+// chain, by the body alone. Every production reading of a tool body goes
+// through ToolBodyEnv; this form is the door the scanner's own witnesses
+// hold it through — the linearity oracle (#1393) and the C188 reader pin
+// (ir.BracedEnvReads). Bare $NAME (and shell-special
 // $1, $?, $@, $ec, $OUT, ...) are passed through verbatim so shell-level
 // constructs survive into the resolved command for sh -c to interpret.
 //
@@ -1387,15 +1435,17 @@ func rawTemplateValue(val any, _ ValueShape) string {
 // `bash -c '...' _ "$1" "$2"`. The braced form is also the only form
 // SKILL.md documents, so tightening to it is BC for documented usage.
 func expandBracedEnv(s string) string {
-	out, _ := expandBracedEnvSteps(s)
+	out, _ := expandBracedEnvSteps(s, lookupToolEnv)
 	return out
 }
 
 // expandBracedEnvSteps is expandBracedEnv with the number of source positions
 // the scan read — the loop's own and the closing-brace searches' — which is
 // what a test asserts linearity on: a duration ratio would say the same thing
-// and flake on a shared runner (#1393).
-func expandBracedEnvSteps(s string) (string, int) {
+// and flake on a shared runner (#1393). lookup is the environment the body's
+// reader speaks for; ToolBodyEnv is where a caller's nil becomes the lookup
+// that answers nothing.
+func expandBracedEnvSteps(s string, lookup func(string) (string, bool)) (string, int) {
 	var out strings.Builder
 	out.Grow(len(s))
 	steps := 0
@@ -1446,8 +1496,8 @@ func expandBracedEnvSteps(s string) (string, int) {
 			// parser sees what the author wrote. The old behaviour was
 			// to erase unset-no-default refs which silently broke JS
 			// template literal interpolations.
-			if looksLikeEnvRef(body) && bracedEnvWouldExpand(body) {
-				out.WriteString(resolveBracedEnvBody(body))
+			if looksLikeEnvRef(body) && bracedEnvWouldExpand(body, lookup) {
+				out.WriteString(resolveBracedEnvBody(body, lookup))
 				i += 2 + end + 1
 				continue
 			}
@@ -1470,8 +1520,9 @@ func expandBracedEnvSteps(s string) (string, int) {
 // that script languages don't use, so this is unambiguously shell) OR
 // the named env var is actually set on the process. Otherwise the
 // `${body}` is preserved verbatim so a script-language interpolation
-// like `${fname}` doesn't get silently erased.
-func bracedEnvWouldExpand(body string) bool {
+// like `${fname}` doesn't get silently erased. lookup is the environment
+// the body's reader speaks for, which is what decides the second arm.
+func bracedEnvWouldExpand(body string, lookup func(string) (string, bool)) bool {
 	if strings.Contains(body, ":-") {
 		return true
 	}
@@ -1479,7 +1530,7 @@ func bracedEnvWouldExpand(body string) bool {
 	if idx := strings.Index(body, ":-"); idx != -1 {
 		name = body[:idx]
 	}
-	_, ok := lookupToolEnv(name)
+	_, ok := lookup(name)
 	return ok
 }
 
@@ -1536,8 +1587,10 @@ func looksLikeEnvRef(body string) bool {
 
 // resolveBracedEnvBody handles the body of a ${...} reference. Supports
 // the bash-style default form ${NAME:-fallback} so authors can write
-// recipes that work both with and without the env var set.
-func resolveBracedEnvBody(body string) string {
+// recipes that work both with and without the env var set. lookup is
+// consulted FIRST on both forms: a name it carries answers the reference,
+// and the author's default is the fallback.
+func resolveBracedEnvBody(body string, lookup func(string) (string, bool)) string {
 	name := body
 	defaultVal := ""
 	hasDefault := false
@@ -1546,7 +1599,7 @@ func resolveBracedEnvBody(body string) string {
 		defaultVal = body[idx+2:]
 		hasDefault = true
 	}
-	if v, ok := lookupToolEnv(name); ok {
+	if v, ok := lookup(name); ok {
 		return v
 	}
 	if hasDefault {

@@ -425,20 +425,40 @@ func (x *Executor) Execute(ctx context.Context, node ir.Node, input map[string]a
 		case n.Action != "":
 			x.add(Finding{Node: id, Kind: KindUnchecked, Where: "action", Detail: fmt.Sprintf("connector action %s is not executed by a dry run: its output is a shape", n.Action)})
 		case n.Script != "":
-			rendered := model.RenderScript(n.Script, n.ScriptRefs, input, vars, td, runID, x.reporter(id, "script", input))
-			x.shellCheck(id, "script", n.Language, rendered)
+			body, reads := x.bodyEnv(n, n.Script)
+			rendered := model.RenderScript(body, n.ScriptRefs, input, vars, td, runID, x.reporter(id, "script", input))
+			x.shellCheck(id, "script", n.Language, rendered, reads)
 		default:
-			rendered := model.RenderCommand(n.Command, n.CommandRefs, input, vars, td, runID, shapes, x.reporter(id, "command", input))
-			x.shellCheck(id, "command", "bash", rendered)
+			body, reads := x.bodyEnv(n, n.Command)
+			rendered := model.RenderCommand(body, n.CommandRefs, input, vars, td, runID, shapes, x.reporter(id, "command", input))
+			x.shellCheck(id, "command", "bash", rendered, reads)
 		}
 		if n.Postcondition != "" {
-			rendered := model.RenderCommand(n.Postcondition, n.PostcondRefs, input, vars, td, runID, shapes, x.reporter(id, "postcondition", input))
-			x.shellCheck(id, "postcondition", "bash", rendered)
+			body, reads := x.bodyEnv(n, n.Postcondition)
+			rendered := model.RenderCommand(body, n.PostcondRefs, input, vars, td, runID, shapes, x.reporter(id, "postcondition", input))
+			x.shellCheck(id, "postcondition", "bash", rendered, reads)
 		}
 	default:
 		x.add(Finding{Node: id, Kind: KindUnchecked, Detail: fmt.Sprintf("%s node: a dry run has no reading of it beyond the shape of its output", node.NodeKind())})
 	}
 	return x.output(id, schema), nil
+}
+
+// bodyEnv is the preview's reading of a tool body's environment forms: the
+// reading the run gives it (model.ToolBodyEnv), under a lookup that answers
+// nothing. A `${NAME:-default}` resolves to its default — the answer the run
+// uses when the engine's environment does not carry the name — and a plain
+// `${NAME}` is kept as written, because whether it is answered depends on
+// the ENGINE's process, which the validating process is not: reading this
+// host's environment would make the verdict follow the laptop. It is the
+// reading `validate` already gives a launch value (ir.ResolveVarTextAsWritten,
+// #1607), extended to the three bodies the engine hands a reader.
+//
+// The braced forms the reading consulted travel with the body: they are what
+// attributes a syntax refusal the preview's own answer may have caused
+// (bracedDefaultAttribution).
+func (x *Executor) bodyEnv(n *ir.ToolNode, body string) (string, []ir.BracedEnvRead) {
+	return model.ToolBodyEnv(n, body, nil)
 }
 
 // prompt renders a prompt the node names and reports each reference the
@@ -624,8 +644,11 @@ func (x *Executor) genericUnresolved(id, where, ref string) Finding {
 	return Finding{Node: id, Kind: KindUnresolvedRef, Where: where, Detail: fmt.Sprintf("{{%s}} resolves to nothing here: %s", ref, whyUnresolvedNamespace("input"))}
 }
 
-// shellCheck holds rendered shell text to its interpreter's parser.
-func (x *Executor) shellCheck(id, where, interpreter, text string) {
+// shellCheck holds rendered shell text to its interpreter's parser. reads are
+// the braced env forms the body's reading consulted, which attribute a syntax
+// refusal the preview's own answer may have caused; nil where the text is not
+// a tool body.
+func (x *Executor) shellCheck(id, where, interpreter, text string, reads []ir.BracedEnvRead) {
 	if x.shell == nil {
 		x.add(Finding{Node: id, Kind: KindUnchecked, Where: where, Detail: "shell syntax not checked: no checker"})
 		return
@@ -642,8 +665,31 @@ func (x *Executor) shellCheck(id, where, interpreter, text string) {
 		}
 		x.add(Finding{Node: id, Kind: KindUnchecked, Where: where, Detail: fmt.Sprintf("%s: no syntax check for this interpreter (%v)", lang, err)})
 	default:
-		x.add(Finding{Node: id, Kind: KindShellSyntax, Where: where, Detail: err.Error()})
+		x.add(Finding{Node: id, Kind: KindShellSyntax, Where: where, Detail: err.Error() + bracedDefaultAttribution(reads)})
 	}
+}
+
+// bracedDefaultAttribution names the answer the PREVIEW gave, when a body the
+// interpreter refuses carried a `${NAME:-default}`: the preview resolves that
+// arm to the author's default, so the refused text is the reading for an
+// engine whose environment does not carry the name — an engine whose process
+// does carry it hands the reader its value instead, and that text is not this
+// one. Without the clause the operator reads a bare parser error on a body
+// that parses as written. Empty where no `:-` arm was read: a plain `${NAME}`
+// is kept as written, so the preview's text is the author's there.
+func bracedDefaultAttribution(reads []ir.BracedEnvRead) string {
+	var names []string
+	seen := map[string]bool{}
+	for _, r := range reads {
+		if r.HasDefault && !seen[r.Name] {
+			seen[r.Name] = true
+			names = append(names, "${"+r.Name+":-…}")
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" — the preview answered %s with the author's default: this is the text an engine whose environment does not carry the name hands the reader, and an engine that carries it runs its value instead", strings.Join(names, ", "))
 }
 
 // candidates are the targets an llm router may select: its outgoing edges.

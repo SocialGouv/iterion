@@ -213,7 +213,7 @@ func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode,
 // same input schema, so a `json`-declared field holding a list must land as
 // one token here exactly as it does in the command itself.
 func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode, input map[string]any) string {
-	expanded := expandBracedEnv(node.Postcondition)
+	expanded, _ := ToolBodyEnv(node, node.Postcondition, lookupToolEnv)
 	td := TemplateDataFromContext(ctx)
 	return resolveCommandTemplate(expanded, node.PostcondRefs, input, e.vars, td, RunIDFromContext(ctx), e.nodeShapes(node), e.secretGuard)
 }

@@ -474,16 +474,16 @@ func TestExpandBracedEnv_UnterminatedBracePassthrough(t *testing.T) {
 
 func TestBracedEnvWouldExpand(t *testing.T) {
 	// Explicit default → always expandable.
-	if !bracedEnvWouldExpand("X:-fallback") {
+	if !bracedEnvWouldExpand("X:-fallback", lookupToolEnv) {
 		t.Error("with default should be expandable")
 	}
 	// No default, env unset → not expandable.
-	if bracedEnvWouldExpand("DEFINITELY_NOT_SET_4242") {
+	if bracedEnvWouldExpand("DEFINITELY_NOT_SET_4242", lookupToolEnv) {
 		t.Error("unset without default should not be expandable")
 	}
 	// Env set → expandable.
 	t.Setenv("MY_SET_VAR", "x")
-	if !bracedEnvWouldExpand("MY_SET_VAR") {
+	if !bracedEnvWouldExpand("MY_SET_VAR", lookupToolEnv) {
 		t.Error("set var should be expandable")
 	}
 }
@@ -515,7 +515,7 @@ func TestLooksLikeEnvRef(t *testing.T) {
 }
 
 func TestResolveBracedEnvBody_WithDefault(t *testing.T) {
-	got := resolveBracedEnvBody("UNSET_VAR_FOR_TEST_XYZ:-fallback")
+	got := resolveBracedEnvBody("UNSET_VAR_FOR_TEST_XYZ:-fallback", lookupToolEnv)
 	if got != "fallback" {
 		t.Errorf("got %q", got)
 	}
@@ -523,7 +523,7 @@ func TestResolveBracedEnvBody_WithDefault(t *testing.T) {
 
 func TestResolveBracedEnvBody_EnvWins(t *testing.T) {
 	t.Setenv("PRESET_VAR", "from-env")
-	got := resolveBracedEnvBody("PRESET_VAR:-fallback")
+	got := resolveBracedEnvBody("PRESET_VAR:-fallback", lookupToolEnv)
 	if got != "from-env" {
 		t.Errorf("got %q", got)
 	}
