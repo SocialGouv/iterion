@@ -108,6 +108,10 @@ const (
 	// band, after the C184/C185/C187 ambient family.
 	DiagBracedEnvDefeatsAssignment DiagCode = "C188" // a shell-bound tool body reads a name braced after assigning it — the engine answers the read before any shell runs (warning)
 
+	// Fallback route gates: a root vars subscript hides the selected key from
+	// the declaration check, but computed keys remain legal (warning).
+	DiagRootVarsSubscript DiagCode = "C189"
+
 	// Loop back-edge affordability guard diagnostics.
 	DiagInvalidLoopBudgetGuard DiagCode = "C133" // loop_budget_guard: value not one of on|off (error)
 

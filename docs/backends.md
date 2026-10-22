@@ -870,9 +870,15 @@ terminal is unreachable).
 dispatch, so an ordinary `--var` picks the active route set per run
 (that is how ONE `plan_review` node expresses both `wait` and `skip`
 policies). The compiler checks the expression parses, reads only
-`vars.*` (a route has no input/outputs of its own), and references only
-**declared** vars — at run time an absent var reads as false and would
-silently disarm the route. String literals use single quotes
+`vars.*` (a route has no input/outputs of its own), and holds every
+**dotted** reference to a **declared** var — at run time an absent var reads
+as false and would silently disarm the route. A root subscript instead warns
+with **C189** without becoming an error: `vars['name']` has no dotted path
+for C173 to check, and a computed `vars[expression]` key is likewise accepted
+but unverified. Bare `vars` and a subscript on a selected var
+(`vars.items[0]`) do not trigger C189. A static bracket read still participates
+in C155's `string[]`/`json` default check, with exactly one C189 per gate when
+both passes inspect it. String literals use single quotes
 (`vars.policy == 'skip'`); a route whose gate is false is simply absent
 from the chain.
 

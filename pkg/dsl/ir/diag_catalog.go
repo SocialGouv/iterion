@@ -207,6 +207,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagFallbackUnknownOn:     {"Unknown fallback trigger", "Use `usage_window`, `auth`, `unavailable`, `transient_exhausted` or `any` in `on:`."},
 	DiagFallbackUnsafeCross:   {"Unsafe fallback crossing", "Route to a gate-enforcing backend (`claude_code`/`claw`/`pi`), declare an explicit `tools:` list, or drop session continuity when crossing backends."},
 	DiagFallbackDrift:         {"Fallback capability drift", "Accept the degradation, or pin the route to a backend that honours the setting."},
+	DiagRootVarsSubscript:     {"Root vars subscript in a fallback gate", "Use `vars.<name>` for a static key so the declaration is checked; a computed key remains valid, but an absent result reads as false and disables the route."},
 
 	// Supervisors, resources, events, skills.
 	DiagUnknownWatchedNode:      {"Supervisor watches non-agent", "Watch an agent node, or fix the node id."},
