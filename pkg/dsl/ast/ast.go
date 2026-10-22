@@ -861,6 +861,16 @@ type ToolNodeDecl struct {
 	// an agent-judge `readonly:`, for a tool that still writes but partitions
 	// its writes. Default false = conservatively mutating (serialized fan-out).
 	ParallelSafe bool
+
+	// EnvExpansion (`env_expansion: braced | none`, ADR-130) is what the
+	// engine expands in this node's bodies before they run: the braced
+	// environment forms (`braced`, the default an empty value reads as) or
+	// nothing (`none`, the bodies' `${…}` text reaching their reader as the
+	// author wrote it). It is the node's, so the three bodies share it: a
+	// `postcondition:` disagreeing with its own `command:` about whose
+	// `${X}` that is would be a trap. The decline is env-scoped — `{{…}}`
+	// template substitution runs after it either way.
+	EnvExpansion string
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment

@@ -1271,6 +1271,7 @@ func (w *writer) tool(d *ast.ToolNodeDecl) *yaml.Node {
 	p.str("command", d.Command)
 	p.str("script", d.Script)
 	p.str("language", d.Language)
+	p.str("env_expansion", d.EnvExpansion)
 	p.str("input", d.Input)
 	p.str("output", d.Output)
 	p.str("publish", d.Publish)

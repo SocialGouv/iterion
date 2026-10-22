@@ -466,10 +466,15 @@ The compiled AST is what crosses to a runner
 (`queue.RunMessage.IRCompiled`, ADR-075), so the property is wire state:
 `ast.ToolNodeDecl` gains the field and `pkg/dsl/ast/jsonenc.go` its mirror.
 Forgetting it would mean a node that must run verbatim runs expanded on a
-runner, and only there. The house already guards that class reflectively —
-`TestEveryASTFieldHasAJSONCounterpart` and `TestEveryFieldSurvivesTheTransport`
-(`pkg/dsl/ast/jsonenc_sweep_test.go`, `jsonenc_fill_test.go`) — so the cloud
-twin ships in the same change by construction, not by discipline.
+runner, and only there. The house already guards that class reflectively, and
+the two sweeps watch different halves of it:
+`TestEveryASTFieldHasAJSONCounterpart` (`pkg/dsl/ast/jsonenc_sweep_test.go`)
+reads the mirror struct's tags, so it reddens on a field with no JSON
+counterpart, while `TestEveryFieldSurvivesTheTransport`
+(`jsonenc_fill_test.go`) fills a document and round-trips it, so it is the one
+that reddens on a forgotten CONVERTER line in `toolToJSON` or `toolFromJSON` —
+the likelier omission. Between them the cloud twin ships in the same change by
+construction, not by discipline.
 
 The wire carries a version, and this field is exactly the protocol's
 additive-intent case (`pkg/queue/types.go:44-48`): any ADDITIVE field whose
@@ -478,7 +483,7 @@ stale runner would silently fall back from — is a BREAKING change, and bumps
 `SchemaVersion`. A runner built before the property decodes `IRCompiled` with
 unknown JSON keys ignored, drops it, and expands a body the author declared
 verbatim — failing open, on a runner, only there. The property slice therefore
-bumps `SchemaVersion` 24 → 25 with the history line that names this record,
+bumps `SchemaVersion` 25 → 26 with the history line that names this record,
 on the precedent of v=21 — ADR-119's `ambient_context`, the same IR-carried
 node-policy shape (`queue/types.go:137`) — and leaves `MinSchemaVersion`
 alone, the rollout's default safe shape

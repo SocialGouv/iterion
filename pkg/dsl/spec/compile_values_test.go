@@ -46,10 +46,11 @@ var compileProbes = map[string]map[string]string{
 		"permission":      "judge a:\n  model: \"m\"\n  permission: %s\nworkflow w:\n  entry: a\n  a -> done\n",
 	},
 	"tool": {
-		"sandbox":  "tool a:\n  command: \"true\"\n  sandbox: %s\nworkflow w:\n  entry: a\n  a -> done\n",
-		"compress": "tool a:\n  command: \"true\"\n  compress: %s\nworkflow w:\n  entry: a\n  a -> done\n",
-		"language": "tool a:\n  script: \"true\"\n  language: %s\nworkflow w:\n  entry: a\n  a -> done\n",
-		"policy":   "tool a:\n  command: \"touch x\"\n  goal: \"g\"\n  postcondition: \"test -f x\"\n  policy: %s\nworkflow w:\n  entry: a\n  a -> done\n",
+		"sandbox":       "tool a:\n  command: \"true\"\n  sandbox: %s\nworkflow w:\n  entry: a\n  a -> done\n",
+		"compress":      "tool a:\n  command: \"true\"\n  compress: %s\nworkflow w:\n  entry: a\n  a -> done\n",
+		"language":      "tool a:\n  script: \"true\"\n  language: %s\nworkflow w:\n  entry: a\n  a -> done\n",
+		"env_expansion": "tool a:\n  command: \"true\"\n  env_expansion: %s\nworkflow w:\n  entry: a\n  a -> done\n",
+		"policy":        "tool a:\n  command: \"touch x\"\n  goal: \"g\"\n  postcondition: \"test -f x\"\n  policy: %s\nworkflow w:\n  entry: a\n  a -> done\n",
 	},
 	"secret": {
 		"as": "secrets:\n  s:\n    as: %s\nagent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  a -> done\n",

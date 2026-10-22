@@ -1405,8 +1405,24 @@ func rawTemplateValue(val any, _ ValueShape) string {
 //
 // node is the body's own node — the subject the reading answers for. ADR-130
 // puts the declaration of what a body's environment reading does on the NODE,
-// which is why the chokepoint takes it rather than the text alone.
+// which is why the chokepoint takes it rather than the text alone: a node that
+// does not ir.ToolNode.ExpandsBracedEnv gets its body back unchanged and an
+// empty record, whatever the lookup holds. This is the ONE place a run or a
+// preview reads it, so a reading that honours the declaration anywhere honours
+// it everywhere — a run, a dry run, the three bodies alike — and the predicate
+// fails closed, so a call that arrives with no declaration carrier keeps the
+// body rather than rewriting one an author may have declared verbatim.
 func ToolBodyEnv(node *ir.ToolNode, body string, lookup func(string) (string, bool)) (string, []ir.BracedEnvRead) {
+	if !node.ExpandsBracedEnv() {
+		// The node declines the reading (ADR-130): the body travels with its
+		// environment text as the author wrote it, whatever the lookup
+		// carries, and there is no decision to report because none was
+		// made. The predicate is the IR's and fails closed, so a reading
+		// that arrives without a declaration carrier — a nil node, a word
+		// the compiler refuses — keeps the body too, rather than rewriting
+		// one an author may have declared verbatim.
+		return body, nil
+	}
 	if lookup == nil {
 		lookup = noToolEnv
 	}

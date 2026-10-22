@@ -351,12 +351,16 @@ releases carry bots, and removes the trap for the next release.
 
 ## Rollout note (the queue schema)
 
-`bot_bundle` and `sandbox_image` ride the RunMessage, whose wire version is
-`queue.SchemaVersion` = **24**. A consumer accepts **v10 through v24**
-(`queue.MinSchemaVersion` = 10), so a message older than v10 is not
-consumable at all. The reverse direction keeps the standard policy: a
-pre-bump runner rejects a message from a newer server, so roll server and
-runner from the same release (or runner first) as usual.
+`bot_bundle` and `sandbox_image` ride the RunMessage, so their rollout is the
+queue's: a publisher stamps `queue.SchemaVersion` and a consumer accepts down
+to `queue.MinSchemaVersion`, below which a message is not consumable at all.
+Read those two constants in [pkg/queue/types.go](../pkg/queue/types.go) before
+sequencing a mixed-fleet deploy: this page cannot track them, and a stale
+number here is the exact failure the
+[queue rollout contract](cloud-queue-schema-rollout.md) exists to prevent. The
+reverse direction keeps the standard policy: a pre-bump runner rejects a
+message from a newer server, so roll server and runner from the same release
+(or runner first) as usual.
 
 ## Platform settings: bot roles + sandbox image + bot vars
 

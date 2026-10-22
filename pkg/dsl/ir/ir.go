@@ -418,6 +418,50 @@ type ToolNode struct {
 	// workspace — it just partitions those writes; unlike an agent/judge
 	// Readonly, it is not read-only. Default false = conservatively mutating.
 	ParallelSafe bool
+
+	// EnvExpansion is what the engine expands in this node's bodies before
+	// they run (ADR-130): EnvExpansionBraced — the braced environment forms,
+	// which an empty value also means — or EnvExpansionNone, which hands the
+	// authored `${…}` text to the body's reader untouched. The compiler
+	// refuses any other word, so nothing downstream reads a third state. It
+	// is read through ExpandsBracedEnv alone — the chokepoint that prepares a
+	// body (model.ToolBodyEnv) and the lint that names a defeated assignment
+	// (C188) ask that one predicate — and the decline is env-scoped: `{{…}}`
+	// template substitution runs after the reading either way.
+	EnvExpansion string
+}
+
+// Values of a tool node's `env_expansion:` (ADR-130). Only EnvExpansionNone
+// changes what the engine does; an absent property is EnvExpansionBraced,
+// which is why the reading tests for `none` rather than for `braced`.
+const (
+	EnvExpansionBraced = "braced" // the engine answers the body's braced env forms (the default)
+	EnvExpansionNone   = "none"   // the engine answers none of them: the body's env text is the author's
+)
+
+// ExpandsBracedEnv reports whether the engine answers the braced environment
+// forms of this node's bodies before their reader runs (ADR-130). It is the
+// one predicate every reader asks, so the declaration cannot be honoured at
+// one site and ignored at another.
+//
+// It fails CLOSED: only EnvExpansionBraced and the empty string an absent
+// property leaves expand. A nil node — no declaration carrier at all — and
+// any word the compiler would have refused answer false, because the
+// alternative is to rewrite a body the author may have declared verbatim,
+// which is the one outcome the record exists to refuse. The compiler keeps
+// both of those out of a run (C004 on an unknown word, a non-nil node at
+// every call site), so the floor costs nothing and holds the day a new
+// caller appears.
+func (n *ToolNode) ExpandsBracedEnv() bool {
+	if n == nil {
+		return false
+	}
+	switch n.EnvExpansion {
+	case EnvExpansionBraced, "":
+		return true
+	default:
+		return false
+	}
 }
 
 // ActionParam is one compiled argument of a connector action: the public key

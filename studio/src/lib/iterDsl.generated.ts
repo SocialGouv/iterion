@@ -490,6 +490,7 @@ export const iterDslPropertiesByKind = {
     "compress",
     "connection",
     "description",
+    "env_expansion",
     "goal",
     "input",
     "language",

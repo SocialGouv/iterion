@@ -267,8 +267,12 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=25 carries LLMProviders (ADR-129 §5): dropped, a stale runner
 	// dispatches every route the tenant's allowlist forbids — the leak the
 	// list exists to make impossible.
-	if SchemaVersion != 25 {
-		t.Errorf("SchemaVersion = %d, want 25 (bump intentionally)", SchemaVersion)
+	// v=26 carries a tool node's env_expansion (ADR-130) inside IRCompiled:
+	// dropped, a stale runner expands the braced environment forms of a body
+	// the author declared verbatim — the engine answering a read the body
+	// means for its own shell, on a runner and only there.
+	if SchemaVersion != 26 {
+		t.Errorf("SchemaVersion = %d, want 26 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
@@ -495,11 +499,17 @@ func TestRunMessage_PermissionSurvivesTheWire(t *testing.T) {
 // The pool name rides the wire and the stable envelope; its grammar is the
 // subject/stream suffix grammar, and the version bump is load-bearing (a
 // stale runner that dropped the field would execute the run outside the
-// team's pool). Red when the Validate check, the Envelope mirror or the
-// bump is reverted.
+// team's pool). Red when the Validate check or the Envelope mirror is
+// reverted.
+//
+// The floor is this test's own subject — the pool arrived at v=23 — and the
+// exact number is pinned once, by TestSchemaVersionConstant. A second exact
+// pin here would abort this contract on its first line at every later bump,
+// leaving ValidPoolName, the Validate refusals and the envelope mirror
+// unasserted while the failure read as a forgotten edit.
 func TestRunMessage_RunnerPoolWireContract(t *testing.T) {
-	if SchemaVersion != 25 {
-		t.Fatalf("SchemaVersion = %d, want 25 (the LLMProviders bump)", SchemaVersion)
+	if SchemaVersion < 23 {
+		t.Fatalf("SchemaVersion = %d, want at least 23 — the version that put the pool on the wire", SchemaVersion)
 	}
 	base := RunMessage{
 		V:            SchemaVersion,

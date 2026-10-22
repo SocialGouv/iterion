@@ -715,12 +715,19 @@ Rules that keep a body readable as what executes:
   resolves through the bot-var overlay (ADR-093) precisely because the body
   never assigns that name — the C188 check stays silent on it by
   construction.
-- There is no opt-out from the expansion yet: ADR-130 records the
-  `env_expansion` property as the answer, but it does not parse today. Until
-  it lands, keep a body that means `${…}` as text free of braced forms, and
-  spell a default the shell computes — `[ -z "$VAR" ] && VAR="…"`, the shape
-  golden-master's own rule names — rather than working around the engine in
-  the text.
+- Where the braces are not iterion's to answer, take the engine out of the
+  way instead of rewording the body: `env_expansion: none` on the node
+  ([ADR-130](adr/130-env-expansion-opt-out-for-tool-bodies.md), the full rule
+  in [dsl.md](dsl.md#template-namespaces)) hands `${NAME}` and
+  `${NAME:-default}` to the body's own reader exactly as written, in all three
+  of its bodies, and C188 goes silent on that node. It is what a `language: js`
+  body whose `${…}` is the language's wants (F3's seventeen template
+  literals), and what golden-master's hand-written rule was working around. It
+  costs the ADR-093 overlay for that node's bodies — a `${ITERION_*}` dial read
+  there is no longer answered by the engine — so a body that mixes a
+  self-assignment with a dial read fixes the warning at the price of the dial;
+  the bare-`$NAME` rewrite above is the fix that keeps both. The `{{…}}`
+  substitution is untouched either way: the decline is env-scoped.
 
 #### What C188 promises, and what it leaves out
 
