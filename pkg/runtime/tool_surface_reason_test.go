@@ -68,6 +68,28 @@ func TestToolSurfaceWriteReasonNamesTheArmThatDecided(t *testing.T) {
 			want: "backend ${ITERION_TEST_REASON_BACKEND} is read at its authored default, which names no route, so nothing here bounds what the node holds",
 		},
 		{
+			// `auto` falls through to a `default_backend:` that names no
+			// route, so the host's detection order decides this one and the
+			// clause says THAT. The reference spelling quoted is the field the
+			// author can act on; wording it as a reference this reading could
+			// not answer would state the opposite fact — no reference was
+			// written where the node holds `auto`, and `resolveBackendName`
+			// goes on to its own steps 3-5.
+			name: "auto under a default_backend read at an authored default that does not exist",
+			node: agent("auto", readOnly, nil),
+			dflt: "${ITERION_TEST_REASON_DEFAULT}",
+			want: `backend "${ITERION_TEST_REASON_DEFAULT}" resolves at dispatch, where the compiled-in detection order's first choice is claude_code, which does not bound what the node holds (#1652)`,
+		},
+		{
+			// The same cell on a node that names no route at all: the two
+			// spellings that fall through are worded alike, which is what
+			// "`auto` is read like the absent field" means in a message.
+			name: "an absent backend under that same default_backend",
+			node: agent("", readOnly, nil),
+			dflt: "${ITERION_TEST_REASON_DEFAULT}",
+			want: `backend "${ITERION_TEST_REASON_DEFAULT}" resolves at dispatch, where the compiled-in detection order's first choice is claude_code, which does not bound what the node holds (#1652)`,
+		},
+		{
 			name: "the same reference with no list at all",
 			node: agent("${ITERION_TEST_REASON_BACKEND}", nil, nil),
 			want: "backend ${ITERION_TEST_REASON_BACKEND} is read at its authored default, which names no route, so nothing here bounds what the node holds",

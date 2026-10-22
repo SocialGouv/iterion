@@ -1117,9 +1117,9 @@ func nodeBackendField(node ir.Node) string {
 // routeSpellingResolvesToARoute reports whether a `backend:` spelling names the
 // node's route once this dry run's own vars and environment are read: not
 // nothing, and not the explicit `auto` — the two spellings dispatch resolves
-// from elsewhere. It is the reading dispatch takes before it consults the
-// workflow default, asked of the resolver that takes it
-// (ResolveRoutingField) and not of the syntax.
+// from elsewhere (ir.BackendFallsThrough, the ONE spelling of that rule). It is
+// the reading dispatch takes before it consults the workflow default, asked of
+// the resolver that takes it (ResolveRoutingField) and not of the syntax.
 //
 // It is asked of the spellings the launch does not decide — a name, a `${VAR}`
 // reference, `auto`, an absent field: a template is answered before it, by the
@@ -1129,8 +1129,7 @@ func nodeBackendField(node ir.Node) string {
 // `${VAR}` the host answers names the node's route, and the default is a field
 // the node never reaches.
 func (x *Executor) routeSpellingResolvesToARoute(raw string) bool {
-	resolved := x.programExecutor().ResolveRoutingField(raw)
-	return resolved != "" && resolved != "auto"
+	return !ir.BackendFallsThrough(x.programExecutor().ResolveRoutingField(raw))
 }
 
 // EffectiveFallbackBackends answers the engine's fallback-route seam for a dry

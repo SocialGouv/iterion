@@ -43,9 +43,10 @@ func TestToolSurfaceCanWrite_IgnoresReadonlyWhereAdmissionHonoursIt(t *testing.T
 }
 
 // An omitted tools: list is the full native toolset on a CLI delegate and zero
-// tools on claw; the workflow default backend fills in when the node declares
-// none, and a route no name resolves is read as the detection order's first
-// choice, claude_code.
+// tools on claw; the workflow default backend fills in for a `backend:` that
+// falls through — an absent field and the explicit `auto` alike — and only a
+// route NEITHER names is read as the detection order's first choice,
+// claude_code.
 func TestToolSurfaceCanWrite_OmittedToolsFollowTheEffectiveBackend(t *testing.T) {
 	for _, tc := range []struct {
 		backend, dflt string
@@ -60,6 +61,11 @@ func TestToolSurfaceCanWrite_OmittedToolsFollowTheEffectiveBackend(t *testing.T)
 		{"", "claude_code", true},
 		{"", "claw", false},
 		{"claw", "claude_code", false},
+		// The fall-through the workflow default answers for, on the entry
+		// point's own table: `auto` is read on the default's route exactly as
+		// the absent field two rows up is.
+		{"auto", "claw", false},
+		{"auto", "claude_code", true},
 	} {
 		n := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: tc.backend}}
 		if got := ToolSurfaceCanWrite(n, tc.dflt, authoredDefaults); got != tc.want {

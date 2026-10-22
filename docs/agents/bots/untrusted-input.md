@@ -48,9 +48,13 @@ notion of what the node can do, never by grepping tool names:
   the node in the class (`delegate.CodexDeclaredListIsReadOnly`, read by
   the engine's walk). A `fallbacks:` route onto a backend that does not
   bound the list puts the node in the class whatever its primary backend,
-  since a pre-run reading is pessimistic over the whole chain. A route no
-  name resolves (`backend: ""`, `auto`) is read like the first choice of
-  the compiled-in detection order, claude_code. The backend is read at its
+  since a pre-run reading is pessimistic over the whole chain. A `backend:`
+  that falls through (absent, or `auto`) is read on the route
+  `default_backend:` names, as dispatch resolves it
+  (`ir.BackendFallsThrough`): `auto` under `default_backend: claw` is
+  bounded by its own `tools:` list and owes no paragraph for its route. A
+  route neither field names is read like the compiled-in detection order's
+  first choice, claude_code. The backend is read at its
   authored default (`${VAR:-default}` → `default`), so the guard's verdict
   does not depend on the host running it; a `${VAR}` with no authored
   default names no route at all and is read the same pessimistic way —

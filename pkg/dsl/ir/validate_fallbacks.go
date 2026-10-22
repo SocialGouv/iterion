@@ -628,6 +628,29 @@ var (
 	runBackend    = backendReader{lookup: lookupEnv}
 )
 
+// BackendFallsThrough reports whether a RESOLVED backend field leaves the
+// route to the next step of the chain instead of naming where the node runs:
+// a field that resolved to nothing, and the explicit `auto`.
+//
+// It is the ONE spelling of that rule. Dispatch reads it as its step 1 — the
+// node's own `backend:` wins unless it falls through, and then the workflow's
+// `default_backend:` answers (model.ClawExecutor.resolveBackendName) — the
+// source reading of a node's route reads it (backendReader.field, and
+// SourceNodeBackendName over it), and so does the IR-only tool-surface reading
+// in pkg/runtime, which asks for the route a pre-run analysis must judge.
+//
+// It answers for a field a reading already resolved, and says nothing about
+// WHAT the next step is: a `${VAR}` reference nothing answers names no backend
+// either, and whether such a field is the workflow default's to answer or the
+// host's is the caller's question, never this predicate's.
+func BackendFallsThrough(resolved string) bool {
+	switch strings.TrimSpace(resolved) {
+	case "", "auto":
+		return true
+	}
+	return false
+}
+
 // field answers what one backend field resolves to, and whether anything
 // at this level DECIDES it:
 //
@@ -642,7 +665,7 @@ var (
 //	                  neither name one nor substitute the workflow default.
 func (r backendReader) field(name string) (string, bool) {
 	if resolved, ok := r.resolve(name); ok {
-		if resolved == "auto" {
+		if BackendFallsThrough(resolved) {
 			return "", true
 		}
 		return resolved, true
