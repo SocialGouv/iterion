@@ -128,6 +128,9 @@ review-env/deploy	no `tools:` list declared on claude_code, the full native tool
 review-pr/converge	capability board.create
 review-pr/converge	capability board.label
 review-pr/converge	no `tools:` list declared on claude_code, the full native toolset
+review-pr/converge_gpt	capability board.create
+review-pr/converge_gpt	capability board.label
+review-pr/converge_gpt	tools: write_file
 review-pr/reviewer_claude	no `tools:` list declared on claude_code, the full native toolset
 review-pr/reviewer_claude_glance	no `tools:` list declared on claude_code, the full native toolset
 review-pr/reviewer_gpt	tools: bash

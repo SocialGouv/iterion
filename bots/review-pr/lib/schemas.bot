@@ -135,6 +135,17 @@ schema pr_gate_input:
   ## losing every finding.
   claude_findings: json
   gpt_findings: json
+  ## The merge step's engine telemetry, injected on the edge by WHICHEVER
+  ## twin ran (`converge` or `converge_gpt`) and carried forward under one
+  ## set of names: pr_gate is the single node both twins feed, so no
+  ## downstream reader has to know which of them merged. A reader naming a
+  ## twin directly would read the empty string on every run the other
+  ## served, and publish's run table would print an empty merge row.
+  ai_converge_model: json
+  ai_converge_backend: json
+  ai_converge_tokens: json
+  ai_converge_fallback: json
+  ai_converge_wire: json
 
 schema pr_gate_output:
   has_pr: bool
@@ -145,6 +156,11 @@ schema pr_gate_output:
   total_findings: int
   claude_findings: json
   gpt_findings: json
+  ai_converge_model: json
+  ai_converge_backend: json
+  ai_converge_tokens: json
+  ai_converge_fallback: json
+  ai_converge_wire: json
 
 schema publish_input:
   review_scope: string

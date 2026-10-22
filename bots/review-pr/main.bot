@@ -444,15 +444,27 @@ prompt pacer_policy:
 ## exploration, re-reads, long silence without finalisation) it posts a
 ## single "wrap up now" steering message the reviewer picks up at its
 ## next turn. It never judges code and never adds findings. Cost is
-## bounded by design: ≤12 haiku evals on a 6m cooldown (~cents/run) — a
-## window that still exists when spend nears the wall: with 4 evals on 5m
-## the coordinator refused every wake ("eval budget exhausted") long
-## before a $32 trigger could match on a review that runs 40-60 minutes.
+## bounded by design: ≤12 evals per pacer on a 6m cooldown, on the model
+## each declares — so ≤24 over the two coordinators on a cross-family
+## review, where both watch sets arm (`review_tier: audit`, or `--var
+## review_mode=dual`). A window that still exists when spend nears the
+## wall: with 4 evals on 5m the coordinator refused every wake ("eval
+## budget exhausted") long before a $32 trigger could match on a review
+## that runs 40-60 minutes.
 ## The cost_gt monitor rides the debounced mid-node usage_progress
 ## samples (plus budget_warning), so it fires WHILE the review runs —
 ## the cooldown wakes cover pacing between samples.
+##
+## ONE PACER PER FAMILY (#2467): a supervisor's `model:` is resolved per
+## declaration, so a single pacer watching both reviewers has one route —
+## and on a mono-GPT run, which holds no Claude credential, that route was
+## the Anthropic wire. Split, each pacer rides the family it watches, and a
+## coordinator evaluates nothing unless one of ITS watched nodes is active
+## (supervise.Coordinator.armed): the other family's pacer spends nothing,
+## which is also what keeps the usage-cap pre-flight from parking the run
+## for it (runner.preflightSupervisors).
 supervisor pacer:
-  watches: [reviewer_claude, reviewer_gpt]
+  watches: [reviewer_claude]
   model: "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-opus-5-5}"
   system: pacer_policy
   cooldown: "6m"
@@ -461,6 +473,18 @@ supervisor pacer:
   ## calibrated lower it fires in the cheap early phase, spends its four
   ## evals telling a review to wrap up before it has reproduced anything,
   ## and is silent by the time spend nears the real wall.
+  monitors: ["cost_gt=32"]
+
+## The same pacer on the GPT family — same policy prompt by name, same
+## cooldown, budget and trigger; only the route differs, and its own dial
+## (`ITERION_VIBE_MODEL_SUPERVISOR` keeps dialling the claude one). The
+## model is this bundle's OpenAI supervisor spec, the merge twin's.
+supervisor pacer_gpt:
+  watches: [reviewer_gpt]
+  model: "${ITERION_VIBE_MODEL_SUPERVISOR_GPT:-openai/gpt-6-sol}"
+  system: pacer_policy
+  cooldown: "6m"
+  max_evals: 12
   monitors: ["cost_gt=32"]
 
 ## ─── Workflow ───────────────────────────────────────────────────
@@ -561,11 +585,28 @@ workflow review_pr:
 
   reviewer_gpt_glance -> merge_reviews
 
+  ## THE MERGE FAMILY follows `mono_family` (#2467): a mono-GPT run is
+  ## resolved from credentials where claude is the preferred family
+  ## (reviewtopology.monoPreference), so it holds none — a merge on the
+  ## Anthropic wire would die after the reviewer had already spent, and the
+  ## run would never reach pr_gate to post a verdict. Same guard, same
+  ## prune: the unconditional `converge` edge is pre-empted when this one
+  ## holds (ir.LaunchVarEdgeFilter), which is what takes the Anthropic
+  ## merge step off a mono-gpt run's topology.
+  merge_reviews -> converge_gpt when "vars.mono_family == 'gpt'"
+
   merge_reviews -> converge
 
   ## emit always runs (board + markdown report). Then pr_gate decides
   ## whether to ALSO publish to a forge PR — only when pr_url is set —
   ## feeding emit's merged findings forward to the publish step.
+  ##
+  ## Both twins map the SAME keys onto pr_gate, their own output and
+  ## telemetry: pr_gate is the one node every path crosses, so nothing
+  ## downstream names a twin. Each edge is unconditional and is the only
+  ## one leaving its twin — exactly one twin runs per review, so exactly
+  ## one mapping fires, and pr_gate advances on it (it declares no
+  ## `await:`: the merge is on the trunk, past the reviewers' collector).
   converge -> pr_gate with {
     pr_url: "{{vars.pr_url}}",
     findings: "{{outputs.converge.findings}}",
@@ -574,6 +615,31 @@ workflow review_pr:
     total_findings: "{{outputs.converge.total_findings}}",
     claude_findings: "{{outputs.merge_reviews.claude_findings}}",
     gpt_findings: "{{outputs.merge_reviews.gpt_findings}}",
+    ## Engine telemetry, mapped on the EDGE so publish_review reads one set
+    ## of names whichever twin merged. The engine writes `_fallback_used`
+    ## only on a node it did not serve with its first choice, and
+    ## `_session_fingerprint` is the routing label a facade would otherwise
+    ## hide behind a model id.
+    ai_converge_model: "{{outputs.converge._model}}",
+    ai_converge_backend: "{{outputs.converge._backend}}",
+    ai_converge_tokens: "{{outputs.converge._tokens}}",
+    ai_converge_fallback: "{{outputs.converge._fallback_used}}",
+    ai_converge_wire: "{{outputs.converge._session_fingerprint}}",
+  }
+
+  converge_gpt -> pr_gate with {
+    pr_url: "{{vars.pr_url}}",
+    findings: "{{outputs.converge_gpt.findings}}",
+    questions: "{{outputs.converge_gpt.questions}}",
+    ticket_conformance: "{{outputs.converge_gpt.ticket_conformance}}",
+    total_findings: "{{outputs.converge_gpt.total_findings}}",
+    claude_findings: "{{outputs.merge_reviews.claude_findings}}",
+    gpt_findings: "{{outputs.merge_reviews.gpt_findings}}",
+    ai_converge_model: "{{outputs.converge_gpt._model}}",
+    ai_converge_backend: "{{outputs.converge_gpt._backend}}",
+    ai_converge_tokens: "{{outputs.converge_gpt._tokens}}",
+    ai_converge_fallback: "{{outputs.converge_gpt._fallback_used}}",
+    ai_converge_wire: "{{outputs.converge_gpt._session_fingerprint}}",
   }
 
   ## No PR target → finish after the board + report (the default,
@@ -617,11 +683,14 @@ workflow review_pr:
     ai_reviewer_gpt_glance_backend: "{{outputs.reviewer_gpt_glance._backend}}",
     ai_reviewer_gpt_glance_tokens: "{{outputs.reviewer_gpt_glance._tokens}}",
     ai_reviewer_gpt_glance_wire: "{{outputs.reviewer_gpt_glance._session_fingerprint}}",
-    ai_converge_model: "{{outputs.converge._model}}",
-    ai_converge_backend: "{{outputs.converge._backend}}",
-    ai_converge_tokens: "{{outputs.converge._tokens}}",
-    ai_converge_fallback: "{{outputs.converge._fallback_used}}",
-    ai_converge_wire: "{{outputs.converge._session_fingerprint}}",
+    ## The merge step's telemetry comes through pr_gate, not from a twin:
+    ## `mono_family` decides which of `converge` / `converge_gpt` ran, and
+    ## the run table must name the one that did.
+    ai_converge_model: "{{outputs.pr_gate.ai_converge_model}}",
+    ai_converge_backend: "{{outputs.pr_gate.ai_converge_backend}}",
+    ai_converge_tokens: "{{outputs.pr_gate.ai_converge_tokens}}",
+    ai_converge_fallback: "{{outputs.pr_gate.ai_converge_fallback}}",
+    ai_converge_wire: "{{outputs.pr_gate.ai_converge_wire}}",
     pr_url: "{{outputs.pr_gate.pr_url}}",
     reviewed_sha: "{{outputs.diff_precheck.reviewed_sha}}",
     effective_review_mode: "{{outputs.tier_expand.effective_review_mode}}",

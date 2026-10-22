@@ -1,7 +1,46 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.15
+version: 0.9.16
+## 0.9.16 — `mono_family` is the family of the WHOLE review, not only of the
+## reviewer that judges (#2467). A mono-GPT run is resolved from the run's
+## credentials, where claude is the preferred family
+## (reviewtopology.monoPreference), so it holds NO Claude credential: the
+## merge step and the pacer supervisor, both pinned to the Anthropic wire,
+## died after the reviewer had already spent and the run never reached
+## `pr_gate` — the merge gate stayed dark on a GPT-only tenant with no
+## override set. Now `merge_reviews -> converge_gpt when vars.mono_family ==
+## 'gpt'` takes a twin of the merge step on claw + openai/gpt-6-sol (its own
+## three dials, `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT_GPT`, moving
+## together), and the pacer is one supervisor per family
+## (`pacer` / `pacer_gpt`), each watching its own reviewer. The trade, named:
+## Opus 5.5 is no longer the default merger of a mono-GPT review — a
+## deployment that wants it back dials the twin or pins
+## `--var mono_family=claude`. The twin shares the merge prompts, output
+## schema, effort dial and capabilities BY NAME, and both twins feed
+## `pr_gate`, which now carries the merge's payload AND its engine telemetry
+## forward under one set of names, so no downstream reader — the published
+## run table included — has to know which twin ran. The twin declares the
+## three file tools the merge needs: on claw a `tools:` list IS the node's
+## whole surface, so an undeclared one left the board capability and
+## `tool_max_steps:` as silent no-ops — the merge could neither file its
+## issues nor write its report. Unchanged for every other family: dual and
+## mono-claude keep `converge`, its GLM rescue route and its dials
+## byte-for-byte. The guard reads `vars.mono_family` alone, so a launch
+## keeping that pin while fanning both reviewers (`review_tier: audit`, or an
+## explicit `--var review_mode=dual`) merges on the twin too. The two prompts
+## shared by nodes on two routes say what each route holds: the merge
+## paragraph names the shell on the claude route, which declares no tool
+## list, and the reviewers' names the claw slots' declared `bash` — a
+## boundary paragraph crediting the model with a tool its route has no way to
+## call is what the class exists to keep out. Each member's route surface is
+## pinned (`TestReviewPrSharedPromptsStateEachRoutesSurface`); the wording
+## itself is held by review, which is why both paragraphs name the route
+## beside every tool they credit. Same rule, read the other way, bounds the
+## claude twin's own backend dial: `ITERION_VIBE_BACKEND_EMIT` moves that
+## merge between CLI backends only, and a deployment carrying the pre-0.9.16
+## profile that pointed it at claw MUST drop that pin — the twin is the claw
+## merge now, and it declares the list a claw route needs.
 ## 0.9.15 — the supervisor reads the agent's activity as data: its policy carries the
 ## UNTRUSTED INPUT BOUNDARY paragraph, as every acting prompt of a shipped workflow does (#1722)
 ## 0.9.14 — the description's word wrap no longer starts a line with a
@@ -351,11 +390,26 @@ forge:
 # naming the other bot — and a second reviewer joins by declaring the same kind.
 produces:
   - kind: review
-    # The merged, de-duplicated finding set + the merged open questions.
-    node: converge
-    # Consulted when converge's array degrades to prose (it is an LLM step, and
-    # it has): the two families' RAW arrays, unioned and de-duped by anchor.
-    fallback_nodes: [merge_reviews]
+    # The merged, de-duplicated finding set + the merged open questions, read
+    # from the node BOTH merge twins feed: `mono_family` decides which of
+    # `converge` / `converge_gpt` merges, and pr_gate carries the payload of
+    # whichever ran under the field names this resolver reads (findings,
+    # questions, total_findings). Naming a twin here would hand a GPT-family
+    # review's fixer nothing.
+    node: pr_gate
+    # Consulted when the merged array degrades to prose (it is an LLM step,
+    # and it has). Every node listed is read and its arrays are UNIONED —
+    # there is no first-that-answers-wins (pkg/server.loadReviewFindings) —
+    # so this seed is the merged set PLUS the two families' RAW arrays, the
+    # findings the merge thresholded or capped away included. That is the
+    # declared cost of the fallback and the digest says so ("threshold, cap
+    # and cross-confirmation were not applied"); an un-merged set beats no
+    # set at all. The de-dup is by anchor and keeps the FIRST copy, so
+    # `converge` leading is what gives a finding both families raised its
+    # merged form — its bumped severity and its cross-confirmed flag —
+    # rather than a reviewer's raw one. Both twins are listed because
+    # `mono_family` decides which of them merged.
+    fallback_nodes: [converge, converge_gpt, merge_reviews]
     # Carries reviewed_sha, so a consumer is told when the branch moved under
     # the findings instead of acting on stale line anchors.
     anchor_node: diff_precheck
