@@ -166,6 +166,62 @@ The isolation chain, in the order a run meets it:
     loosening `none` back to `platform` lets a resumed run re-seal
     shared credentials — audited, and by design.
 
+## Routing dials: the pool's env block is pinned
+
+A pool's models, provider hints, backends and rescue routes are its own env
+block (`runnerPools[].env` in the chart). The chart renders every
+`ITERION_*` name of that block into `ITERION_BOT_VARS_ENV_PINS` — the union
+with a list the block spells itself, for an install that pinned by hand
+before the chart rendered it — and the runner reads a pinned name from the
+pod env **ahead of** the platform bot-vars record (`PUT
+/api/admin/settings/bot-vars`), whose precedence elsewhere is setting > pod
+env > .bot default ([ADR-093](adr/093-bot-vars-runtime-settings.md), its
+2026-10-22 addendum).
+
+The pin exists because the record is a fleet-wide dial written for the
+shared runners: a model id pinned there for the shared fleet's vendor would
+otherwise reach a pool pod whose provider hint and rescue model name its
+gateway — every route of the chain then crosses a gateway id with a vendor
+hint, the dispatch refuses each at build (`refuseGatewayCrossing`), and the
+pool runs nothing. A pinned name the pod leaves empty resolves to the .bot
+default, not to the record.
+
+**The record still reaches every name the block does not spell.** That is
+the point of the pin, and its limit: a platform-wide effort dial tunes a
+pool too, and so does a platform-wide model pin on a slot the block forgot
+— on a node with no gateway hint the record's vendor id is not refused, it
+dispatches as a vendor route, and the pool then leaks only if its pod holds
+a vendor credential (it holds none of the platform's; the team's own BYOK
+keys travel in the run bundle, see the residuals). So a pool block spells
+**every dial the bots it runs read**, not the three the incident named.
+For review-pr (its `lib/nodes.bot`): `ITERION_VIBE_MODEL_` and
+`ITERION_VIBE_BACKEND_` (`claw`: the one backend that serves a gateway
+route) for each of `CLAUDE`, `CLAUDE_GLANCE`, `GPT`, `GPT_GLANCE`, `EMIT`,
+`EMIT_GPT`; `ITERION_VIBE_PROVIDER_` (`openai_compatible`) for `CLAUDE`,
+`GPT`, `EMIT`, `EMIT_GPT` (a glance node reads its full slot's hint); the
+supervisors' `ITERION_VIBE_MODEL_SUPERVISOR` and `_SUPERVISOR_GPT`; and the
+rescue dial `ITERION_VIBE_MODEL_CLAUDE_FALLBACK`. Two consequences the
+bot's own comments spell out:
+
+- `ITERION_VIBE_BACKEND_EMIT=claw` is required on a pool — the merge step
+  defaults to `claude_code`, which cannot serve a gateway model — and on
+  claw the merge node has no tools: it returns its merged findings (what
+  the publish step consumes) but writes no report file under
+  `report_path` and files no board issue.
+- The authored rescue routes (`glm`, `provider: zai`) are refused on a pool
+  whatever the rescue dial says — a gateway id under a vendor hint — which
+  is the design: a pool must fail rather than leak. A pool has no rescue
+  route; a gateway outage fails the node.
+
+Operator notes:
+
+- Tune a pool in GitOps (its env block), never through the record — the
+  record cannot reach a pinned name, by design.
+- The runner says what it pinned at boot (`platformcfg: bot_vars: N name(s)
+  pinned to the process environment …`) and warns on a token that is not an
+  `ITERION_` name; a pool whose model still reads as the record's value has
+  no pin rendered — check the Deployment's env.
+
 ## Operations
 
 - `GET|PUT /api/admin/runner-pools` — the registry (super-admin; wholesale

@@ -175,9 +175,35 @@ spec:
                 secretKeyRef:
                   name: {{ default (printf "%s-auth" (include "iterion.fullname" $)) $.Values.secrets.auth.existingSecret }}
                   key: ITERION_MONGO_URI
-            {{- range $key, $value := $pool.env }}
+            {{- $env := $pool.env | default dict }}
+            {{- $pins := list }}
+            {{- range $key, $value := $env }}
+            {{- if ne $key "ITERION_BOT_VARS_ENV_PINS" }}
             - name: {{ $key }}
               value: {{ $value | quote }}
+            {{- if regexMatch "^ITERION_[A-Z0-9_]+$" $key }}
+            {{- $pins = append $pins $key }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- range splitList "," (get $env "ITERION_BOT_VARS_ENV_PINS" | default "") }}
+            {{- $spelled := trim . }}
+            {{- if $spelled }}
+            {{- $pins = append $pins $spelled }}
+            {{- end }}
+            {{- end }}
+            {{- if $pins }}
+            # The pool's own env block is pinned ahead of the platform
+            # bot-vars record (platformcfg.PinnedOverlay): the record tunes
+            # the shared fleet, these names are the pool's — a stored model
+            # pin for the shared fleet's vendor cannot re-route a pool on a
+            # name its block spells. Every ITERION_ name of the block, plus
+            # the names a block spells in ITERION_BOT_VARS_ENV_PINS itself
+            # (an install that pinned by hand before the chart rendered it):
+            # the union, so a name added to the block is pinned the day it
+            # lands.
+            - name: ITERION_BOT_VARS_ENV_PINS
+              value: {{ $pins | uniq | sortAlpha | join "," | quote }}
             {{- end }}
           envFrom:
             - configMapRef:

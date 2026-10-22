@@ -361,7 +361,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := platformcfg.ValidateEnv(); err != nil {
 		return err
 	}
-	ir.SetEnvOverlay(platformcfg.BotVarsOverlay(botVarsResolver, logger.Warn))
+	ir.SetEnvOverlay(platformcfg.EnvOverlayFor(botVarsResolver, os.Getenv, logger.Warn, logger.Info))
 	// Workflow text never reads a credential-shaped name from this process's
 	// environment: it holds the platform's credentials, not the tenant's.
 	ir.SetProcessEnvPolicy(platformcfg.CloudProcessEnvPolicy())
