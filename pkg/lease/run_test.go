@@ -759,6 +759,9 @@ func (downStore) Renew(context.Context, string, string, time.Time, time.Duration
 	return false, errors.New("store unreachable")
 }
 func (downStore) Release(context.Context, string, string) error { return nil }
+func (downStore) Holder(context.Context, string) (Holding, bool, error) {
+	return Holding{}, false, errors.New("store unreachable")
+}
 
 // A store that cannot answer elects nobody. Running anyway would put the work
 // back on every replica — the very load the election exists to remove — so

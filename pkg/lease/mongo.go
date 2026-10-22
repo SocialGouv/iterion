@@ -109,3 +109,31 @@ func (s *MongoStore) Release(ctx context.Context, name, owner string) error {
 		return ErrLost
 	}
 }
+
+// Holder is one read by _id. No document means nobody holds the lease; a
+// document is reported as written, expiry included, for the caller to judge
+// against its own clock.
+func (s *MongoStore) Holder(ctx context.Context, name string) (Holding, bool, error) {
+	if err := validateName(name); err != nil {
+		return Holding{}, false, err
+	}
+	name = strings.TrimSpace(name)
+	var doc struct {
+		Owner     string    `bson:"owner"`
+		ExpiresAt time.Time `bson:"expires_at"`
+	}
+	err := s.coll.FindOne(ctx, bson.M{"_id": name}).Decode(&doc)
+	switch {
+	case errors.Is(err, mongo.ErrNoDocuments):
+		return Holding{}, false, nil
+	case err != nil:
+		return Holding{}, false, fmt.Errorf("lease %q: read the holder: %w", name, err)
+	}
+	// A document this package never wrote — no owner, or no expiry — is not
+	// a holding: an empty owner would read as held by nobody in particular,
+	// a zero expiry as expired since year one.
+	if strings.TrimSpace(doc.Owner) == "" || doc.ExpiresAt.IsZero() {
+		return Holding{}, false, fmt.Errorf("lease %q: the document names no owner or no expiry — not a lease this package wrote", name)
+	}
+	return Holding{Owner: doc.Owner, ExpiresAt: stamp(doc.ExpiresAt)}, true, nil
+}

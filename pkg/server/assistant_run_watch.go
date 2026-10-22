@@ -60,7 +60,8 @@ type assistantWatchCoordinator struct {
 	worker               string
 	clock                clock.Clock
 	healthMu             sync.RWMutex
-	elected              bool // this replica holds the sweep's lease (runElectedAssistantWatchSweep)
+	elected              bool      // this replica holds the sweep's lease (runElectedAssistantWatchSweep)
+	termStartedAt        time.Time // when the current term began (setElected), or the runtime was switched under it (setRuntime)
 	lastSweepStartedAt   time.Time
 	lastSweepCompletedAt time.Time
 	lastSweepDuration    time.Duration
@@ -94,8 +95,12 @@ func (c *assistantWatchCoordinator) setRuntime(runs *runview.Service, watches ru
 	defer c.mu.Unlock()
 	c.runs, c.store, c.botPaths = runs, watches, slices.Clone(paths)
 	c.generation++
+	at := c.now()
 	c.healthMu.Lock()
 	c.lastSweepStartedAt, c.lastSweepCompletedAt, c.lastSweepDuration = time.Time{}, time.Time{}, 0
+	// The sweep's record starts over with its runtime, and so does the
+	// health route's grace for a term's first moments.
+	c.termStartedAt = at
 	c.healthMu.Unlock()
 }
 
@@ -190,6 +195,11 @@ type assistantWatchHeartbeat struct {
 	CompletedAt time.Time
 	Duration    time.Duration
 	Stale       bool
+	// TermStartedAt is when the replica's current term began, or its
+	// runtime was switched: the instant the health route counts a term's
+	// first moments from. Nothing a pass does re-stamps it, where StartedAt
+	// moves at the top of every pass, failing ones included.
+	TermStartedAt time.Time
 }
 
 func (c *assistantWatchCoordinator) heartbeat() assistantWatchHeartbeat {
@@ -203,21 +213,21 @@ func (c *assistantWatchCoordinator) heartbeat() assistantWatchHeartbeat {
 		c = root
 	}
 	c.healthMu.RLock()
-	elected := c.elected
+	elected, term := c.elected, c.termStartedAt
 	started, completed, duration := c.lastSweepStartedAt, c.lastSweepCompletedAt, c.lastSweepDuration
 	c.healthMu.RUnlock()
 	// Stale judges the sweep this replica OWES: a replica that does not hold
 	// the lease owes none, and reporting it stale would mark (N-1)/N of the
 	// fleet's health answers red for a sweep another replica is running.
 	if !elected {
-		return assistantWatchHeartbeat{Present: true, Elected: false, StartedAt: started, CompletedAt: completed, Duration: duration}
+		return assistantWatchHeartbeat{Present: true, Elected: false, StartedAt: started, CompletedAt: completed, Duration: duration, TermStartedAt: term}
 	}
 	if completed.IsZero() {
-		return assistantWatchHeartbeat{Present: true, Elected: true, StartedAt: started, CompletedAt: completed, Duration: duration, Stale: true}
+		return assistantWatchHeartbeat{Present: true, Elected: true, StartedAt: started, CompletedAt: completed, Duration: duration, Stale: true, TermStartedAt: term}
 	}
 	return assistantWatchHeartbeat{
 		Present: true, Elected: true, StartedAt: started, CompletedAt: completed, Duration: duration,
-		Stale: c.now().Sub(completed) > 3*assistantWatchSweepInterval,
+		Stale: c.now().Sub(completed) > 3*assistantWatchSweepInterval, TermStartedAt: term,
 	}
 }
 
@@ -333,8 +343,16 @@ func (c *assistantWatchCoordinator) setElected(elected bool) {
 	if c.origin != nil {
 		c = c.origin
 	}
+	at := c.now()
 	c.healthMu.Lock()
 	c.elected = elected
+	if elected {
+		// A term starts here, and nothing a pass does re-stamps it: the
+		// health route counts a term's first moments from this instant, not
+		// from the last pass that started — a failing pass starts again
+		// every interval and would stay "fresh" for ever.
+		c.termStartedAt = at
+	}
 	c.healthMu.Unlock()
 }
 

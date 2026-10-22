@@ -95,3 +95,22 @@ func (s *MemoryStore) Release(ctx context.Context, name, owner string) error {
 	delete(s.leases, name)
 	return nil
 }
+
+// Holder is one read of the map; the entry is reported as written, expiry
+// included, for the caller to judge against its own clock.
+func (s *MemoryStore) Holder(ctx context.Context, name string) (Holding, bool, error) {
+	if err := validateName(name); err != nil {
+		return Holding{}, false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Holding{}, false, err
+	}
+	name = strings.TrimSpace(name)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.leases[name]
+	if !ok {
+		return Holding{}, false, nil
+	}
+	return Holding{Owner: l.owner, ExpiresAt: l.expiresAt}, true, nil
+}

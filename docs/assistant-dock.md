@@ -286,8 +286,18 @@ pass asks the store for the runs that watch a card and can still consume a
 message (`ListDeliverableWatchers`: running or paused for a human, an indexed
 question) rather than for every run, so its cost follows the number of live
 watchers, never the size of the store nor its history (#2636). The watch-health
-route reports `elected` next to the last-sweep fields; only the holder can be
-`stale`, a replica that holds no lease owes no sweep. Shutdown cancels that worker and
+route reports `elected` next to the last-sweep fields, and names the lease
+`holder` (with `holder_expires_at`) read from the shared lease store, so any
+replica's answer names who holds the sweep's lease (#2680) — the lease, not
+progress: a holder whose passes fail still holds it, and only its own answer is
+`stale` for that (attention `sweep_stale` once three sweep intervals of its term
+pass without a completed pass — counted from the term's start, which a failing
+pass cannot re-stamp). `holder_state` says what the store
+answered: `held`; `free` (nobody holds it — the gap between a release and the
+successor's next attempt, normal during a hand-over, so no attention); `expired`
+(a holder nobody replaced: the sweep is dead, `stale` wherever it is read,
+attention `sweep_holder_expired`); `unreadable` (attention
+`sweep_holder_unreadable`). Shutdown cancels that worker and
 bounds its final join after HTTP draining. On a local project switch, an active
 sweep keeps its original project; queued work belongs to the selected project,
 and the old project's persisted watches resume when that project is selected

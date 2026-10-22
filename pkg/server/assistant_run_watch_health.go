@@ -1,14 +1,26 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/clock"
+	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/runwatch"
 	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// The holder_state values of the watch-health answer: what the shared lease
+// store said about the assistant sweep's lease when the route was asked.
+const (
+	assistantWatchHolderHeld       = "held"       // a replica holds it, named by holder
+	assistantWatchHolderFree       = "free"       // nobody holds it: a hand-over in progress
+	assistantWatchHolderExpired    = "expired"    // a holder nobody replaced: the sweep is dead
+	assistantWatchHolderUnreadable = "unreadable" // the lease store did not answer
 )
 
 const (
@@ -34,11 +46,30 @@ type assistantWatchCoordinatorHealth struct {
 	// Elected says whether THIS replica holds the sweep's lease. The sweep
 	// runs on one replica at a time (#2636), so a replica that answers
 	// `elected: false` owes no sweep: its last-sweep fields are the ones it
-	// recorded in its last term, if any, and Stale is false for it. Stale
-	// without Elected has two other sources: no coordinator at all
-	// (Present false), or a coordinator whose project moved under the
-	// request (a local project switch between the capture and the read).
-	Elected              bool       `json:"elected"`
+	// recorded in its last term, if any, and its own sweeps never make it
+	// Stale. Stale without Elected has three other sources: no coordinator
+	// at all (Present false), a coordinator whose project moved under the
+	// request (a local project switch between the capture and the read), or
+	// a lease past its expiry — a holder nobody replaced, so the sweep is
+	// dead fleet-wide and the answer says so wherever it is read
+	// (attention sweep_holder_expired).
+	Elected bool `json:"elected"`
+	// Holder names the replica the shared lease store records as holding the
+	// sweep's lease, with the expiry it recorded (HolderExpiresAt). Read from
+	// the store, so every replica's answer names who holds the lease, where
+	// Elected only says whether this one does (#2680). It names the lease,
+	// not progress: a holder whose passes fail still holds it, and only its
+	// own answer is Stale for that. HolderState says what the store answered
+	// — held, free (nobody holds it: the gap between a release and the
+	// successor's next attempt, normal during a hand-over), expired (a holder
+	// nobody replaced, attention sweep_holder_expired) or unreadable (the
+	// store did not answer, attention sweep_holder_unreadable).
+	Holder          string     `json:"holder,omitempty"`
+	HolderExpiresAt *time.Time `json:"holder_expires_at,omitempty"`
+	HolderState     string     `json:"holder_state,omitempty"`
+	// termStartedAt is the heartbeat's term start, for sweepStaleIsAttention;
+	// not part of the answer.
+	termStartedAt        time.Time
 	LastSweepStartedAt   *time.Time `json:"last_sweep_started_at,omitempty"`
 	LastSweepCompletedAt *time.Time `json:"last_sweep_completed_at,omitempty"`
 	LastSweepDurationMS  int64      `json:"last_sweep_duration_ms,omitempty"`
@@ -92,8 +123,48 @@ func (s *Server) handleAssistantWatchHealth(w http.ResponseWriter, r *http.Reque
 		Watches:      []assistantWatchHealthWatch{},
 		Attention:    []string{},
 	}
+	now := clock.Default.Now().UTC()
+	if c := s.assistantWatch; c != nil {
+		now = c.now()
+	}
 	if s.assistantWatch != nil {
 		out.Coordinator = projectAssistantWatchHeartbeat(snapshot.heartbeat())
+		// The heartbeat knows whether THIS replica holds the lease; the lease
+		// store knows who does. Reading it here lets any replica's answer
+		// name the holder, instead of nine answers in ten saying only "not
+		// me".
+		h, held, err := s.sweepLeaseHolder(r.Context())
+		switch {
+		case err != nil:
+			// A request the client already abandoned fails the read too;
+			// that is not the store's failure, and nobody reads the answer.
+			if r.Context().Err() == nil {
+				s.logWarn("assistant watch health: read the sweep lease holder: %v", err)
+			}
+			out.Coordinator.HolderState = assistantWatchHolderUnreadable
+			out.Attention = append(out.Attention, "sweep_holder_unreadable")
+		case !held:
+			// Nobody holds it: the gap between a holder's release and its
+			// successor's next attempt, normal during a hand-over — a state
+			// to read, never an attention code that turns a rollout into an
+			// alarm.
+			out.Coordinator.HolderState = assistantWatchHolderFree
+		case !h.ExpiresAt.After(now):
+			// Nobody renews and nobody took over: the sweep is dead for the
+			// whole fleet, not just for the replica asked.
+			expires := h.ExpiresAt
+			out.Coordinator.Holder, out.Coordinator.HolderExpiresAt = h.Owner, &expires
+			out.Coordinator.HolderState = assistantWatchHolderExpired
+			out.Coordinator.Stale = true
+			out.Attention = append(out.Attention, "sweep_holder_expired")
+		default:
+			expires := h.ExpiresAt
+			out.Coordinator.Holder, out.Coordinator.HolderExpiresAt = h.Owner, &expires
+			out.Coordinator.HolderState = assistantWatchHolderHeld
+		}
+		if sweepStaleIsAttention(out.Coordinator, now) {
+			out.Attention = append(out.Attention, "sweep_stale")
+		}
 	} else {
 		// A route can be served while the coordinator is starting, disabled, or
 		// deliberately absent in a test server. That is a stale health state,
@@ -131,10 +202,6 @@ func (s *Server) handleAssistantWatchHealth(w http.ResponseWriter, r *http.Reque
 	for _, watch := range watches {
 		key := watch.OwnerID + "\x00" + watch.AssistantRunID + "\x00" + run.ID
 		coverageCounts[key]++
-	}
-	now := clock.Default.Now().UTC()
-	if c := s.assistantWatch; c != nil {
-		now = c.now()
 	}
 	for _, watch := range watches {
 		key := watch.OwnerID + "\x00" + watch.AssistantRunID + "\x00" + run.ID
@@ -198,8 +265,37 @@ func (s *Server) handleAssistantWatchHealth(w http.ResponseWriter, r *http.Reque
 	s.writeJSONFor(w, r, out)
 }
 
+// sweepStaleIsAttention says whether a coordinator's staleness is the holder's
+// own dead sweep — attention, not a red field the CLI exits 0 on — or one of
+// the stale states that are no outage: a follower (it owes no sweep; stale
+// only for a project moved under the request), an expired lease (its own
+// code), or a term's first moments. Those moments are counted from the TERM's
+// start, never from the last pass that started: a failing pass starts again
+// every interval, and a holder whose every pass failed since its election
+// would otherwise read fresh for ever. "Stopped" is three sweep intervals of
+// the term without a pass completed in it — a completion from an earlier
+// term (a re-elected replica) does not count.
+func sweepStaleIsAttention(c assistantWatchCoordinatorHealth, now time.Time) bool {
+	if !c.Elected || !c.Stale || c.HolderState == assistantWatchHolderExpired {
+		return false
+	}
+	completedThisTerm := c.LastSweepCompletedAt != nil && !c.LastSweepCompletedAt.Before(c.termStartedAt)
+	fresh := !completedThisTerm && now.Sub(c.termStartedAt) <= 3*assistantWatchSweepInterval
+	return !fresh
+}
+
+// sweepLeaseHolder reads who holds the assistant sweep's lease from the shared
+// lease store. A server built without one cannot answer: that is an error the
+// route reports, never a healthy-looking silence.
+func (s *Server) sweepLeaseHolder(ctx context.Context) (lease.Holding, bool, error) {
+	if s.leases == nil {
+		return lease.Holding{}, false, errors.New("no lease store is wired")
+	}
+	return s.leases.Holder(ctx, leaseAssistantWatchSweep)
+}
+
 func projectAssistantWatchHeartbeat(h assistantWatchHeartbeat) assistantWatchCoordinatorHealth {
-	out := assistantWatchCoordinatorHealth{Present: h.Present, Elected: h.Elected, Stale: h.Stale}
+	out := assistantWatchCoordinatorHealth{Present: h.Present, Elected: h.Elected, Stale: h.Stale, termStartedAt: h.TermStartedAt}
 	if !h.StartedAt.IsZero() {
 		at := h.StartedAt
 		out.LastSweepStartedAt = &at

@@ -390,8 +390,16 @@ func RemoteRunsFollow(ctx context.Context, c *RemoteClient, p *Printer, id strin
 type remoteWatchHealthCoordinator struct {
 	Present bool `json:"present"`
 	// Elected: the answering replica holds the sweep's lease; the sweep runs
-	// on one replica at a time, and only the holder can be stale.
+	// on one replica at a time. Holder names the replica the shared lease
+	// store records as the holder, whichever replica answered, with the
+	// expiry it recorded; HolderState is what the store said — held, free
+	// (a hand-over in progress), expired (a holder nobody replaced, stale on
+	// every replica) or unreadable. A server older than the field sends no
+	// state, printed as unknown.
 	Elected              bool       `json:"elected"`
+	Holder               string     `json:"holder,omitempty"`
+	HolderExpiresAt      *time.Time `json:"holder_expires_at,omitempty"`
+	HolderState          string     `json:"holder_state,omitempty"`
 	LastSweepStartedAt   *time.Time `json:"last_sweep_started_at,omitempty"`
 	LastSweepCompletedAt *time.Time `json:"last_sweep_completed_at,omitempty"`
 	LastSweepDurationMS  int64      `json:"last_sweep_duration_ms,omitempty"`
@@ -473,8 +481,9 @@ func RemoteRunsWatchHealth(ctx context.Context, c *RemoteClient, p *Printer, id 
 		return nil
 	}
 
-	last, _ := json.Marshal(first)
-	lastHeartbeat := time.Now()
+	last := watchHealthChangeKey(first)
+	printedExpiry := first.Coordinator.HolderExpiresAt
+	lastLine := time.Now()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -486,15 +495,42 @@ func RemoteRunsWatchHealth(ctx context.Context, c *RemoteClient, p *Printer, id 
 			if readErr != nil {
 				return readErr
 			}
-			encoded, _ := json.Marshal(out)
-			heartbeat := time.Since(lastHeartbeat) >= time.Minute
-			if string(encoded) != string(last) || heartbeat {
-				print(out, raw, heartbeat && string(encoded) == string(last))
+			encoded := watchHealthChangeKey(out)
+			if reprint, heartbeat := watchHealthReprint(last, encoded, printedExpiry, time.Since(lastLine), time.Now()); reprint {
+				print(out, raw, heartbeat)
 				last = encoded
-				lastHeartbeat = time.Now()
+				printedExpiry = out.Coordinator.HolderExpiresAt
+				lastLine = time.Now()
 			}
 		}
 	}
+}
+
+// watchHealthReprint says whether --follow prints a read: the answer changed
+// (its change key leaves the lease expiry out), a minute passed since the
+// last line (a heartbeat, reported as such), or the expiry printed last has
+// passed — a renewal is not a change, but a "Lease until" in the past next to
+// a held holder would mislead, so the line refreshes when it would go stale.
+func watchHealthReprint(prevKey, key string, printedExpiry *time.Time, sinceLastLine time.Duration, now time.Time) (reprint, heartbeat bool) {
+	if key != prevKey {
+		return true, false
+	}
+	if sinceLastLine >= time.Minute {
+		return true, true
+	}
+	if printedExpiry != nil && !printedExpiry.After(now) {
+		return true, false
+	}
+	return false, false
+}
+
+// watchHealthChangeKey is what --follow compares between two reads: the answer
+// without the lease expiry, which the holder's renewal moves every third of
+// the TTL — a renewal is not a change worth a line.
+func watchHealthChangeKey(health remoteWatchHealth) string {
+	health.Coordinator.HolderExpiresAt = nil
+	encoded, _ := json.Marshal(health)
+	return string(encoded)
 }
 
 func printRemoteWatchHealth(p *Printer, health remoteWatchHealth, heartbeat bool) {
@@ -503,7 +539,29 @@ func printRemoteWatchHealth(p *Printer, health remoteWatchHealth, heartbeat bool
 	}
 	p.KV("Run", health.RunID)
 	p.KV("Target", health.TargetStatus)
-	p.KV("Coordinator", fmt.Sprintf("present=%t elected=%t stale=%t", health.Coordinator.Present, health.Coordinator.Elected, health.Coordinator.Stale))
+	holder := health.Coordinator.Holder
+	switch state := health.Coordinator.HolderState; state {
+	case "held":
+	case "expired":
+		holder += " (expired)"
+	case "free":
+		holder = "none"
+	case "unreadable":
+		holder = "unreadable"
+	case "":
+		holder = "unknown" // no coordinator, or a server older than the field
+	default:
+		// A state this CLI predates (a newer server): show what it sent
+		// rather than hide the name behind "unknown".
+		if holder == "" {
+			holder = "none"
+		}
+		holder += " (" + state + ")"
+	}
+	p.KV("Coordinator", fmt.Sprintf("present=%t elected=%t holder=%s stale=%t", health.Coordinator.Present, health.Coordinator.Elected, holder, health.Coordinator.Stale))
+	if health.Coordinator.HolderExpiresAt != nil {
+		p.KV("Lease until", FormatTime(*health.Coordinator.HolderExpiresAt))
+	}
 	if health.Coordinator.LastSweepCompletedAt != nil {
 		p.KV("Last sweep", FormatTime(*health.Coordinator.LastSweepCompletedAt))
 	}
