@@ -398,6 +398,7 @@ A node: `tool <name>:` at the top level or inside a `group`.
 | `command` | string | Shell command, run through bash -c (exclusive with script) |
 | `script` | string | Inline script run by the interpreter language: names |
 | `language` | ident — `js`, `node`, `py`, `python`, `python3`, `sh`, `bash` | Interpreter for script: |
+| `env_expansion` | ident — `braced`, `none` | What the engine expands in this node's bodies before they run: the braced environment forms (braced, the default) or nothing (none), which hands `${NAME}` and `${NAME:-default}` to the body's own reader as written — ADR-130; another word, or the property on an `action:` node that has no body, is refused (C004) |
 | `input` | ident | Schema the node's input is validated against |
 | `output` | ident | Schema the node's structured output must match |
 | `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |

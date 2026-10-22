@@ -497,6 +497,7 @@ var Kinds = append([]Kind{
 			prop("command", String, "Shell command, run through bash -c (exclusive with script)"),
 			prop("script", String, "Inline script run by the interpreter language: names"),
 			checked("language", "Interpreter for script:", "js", "node", "py", "python", "python3", "sh", "bash"),
+			checked("env_expansion", "What the engine expands in this node's bodies before they run: the braced environment forms (braced, the default) or nothing (none), which hands `${NAME}` and `${NAME:-default}` to the body's own reader as written — ADR-130; another word, or the property on an `action:` node that has no body, is refused (C004)", "braced", "none"),
 			pInput, pOutput, pPublish, pArtifactLabels,
 			pAwait,
 			pSandbox,

@@ -125,3 +125,32 @@ func TestParseDiagnosticsCarryHint(t *testing.T) {
 		t.Errorf("hint = %q, want the registry's remedy naming what an agent accepts", d.Hint)
 	}
 }
+
+// The two catalogue rows the `env_expansion` property amends (ADR-130). The
+// lint's Fix must name the hatch beside the bare rewrite — the remedy the
+// property exists to be — and C004's must name the enum case, because an
+// author sent there by `env_expansion: typo` or `language: lisp` finds a row
+// about malformed `{{…}}` refs otherwise. The staged wording of the lint's
+// slice (the rewrite alone, while the property did not parse) cannot survive
+// the property.
+// The lint's Fix also names what the hatch costs — the ADR-093 overlay for
+// the node's bodies — because the catalogue entry is the Hint the compiler
+// attaches to every diagnostic, printed beside the message by `iterion
+// validate` and the studio badge: a remedy whose price only the reference
+// page states is a remedy the author takes without reading it.
+func TestEnvExpansionJoinsTheCatalogueFixes(t *testing.T) {
+	for code, want := range map[DiagCode][]string{
+		DiagBracedEnvDefeatsAssignment: {"env_expansion: none", "ADR-093", "${ITERION_*}"},
+		DiagBadTemplateRef:             {"env_expansion", "language"},
+	} {
+		info, ok := Catalog[code]
+		if !ok {
+			t.Fatalf("%s has no catalogue entry", code)
+		}
+		for _, w := range want {
+			if !strings.Contains(info.Fix, w) {
+				t.Errorf("%s's catalogue fix does not name %q: %s", code, w, info.Fix)
+			}
+		}
+	}
+}

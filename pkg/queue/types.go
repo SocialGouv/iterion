@@ -162,7 +162,17 @@ import (
 // would dispatch every route the tenant forbids — the leak the list exists
 // to make impossible — so it must reject the message at the schema check.
 // Server-first rollout; MinSchemaVersion unchanged.
-const SchemaVersion = 25
+// v=26 (2026-10-22): a tool node's `env_expansion:` (ADR-130) rides the
+// compiled AST — IRCompiled, or the IRRef blob it is offloaded to when the
+// marshalled AST would exceed max_payload. Breaking by the additive-field
+// rule: a stale runner decodes the AST with unknown keys ignored, drops the
+// declaration and expands the braced environment forms of a body the author
+// declared verbatim — failing open, on a runner, and only there. The version
+// travels on the MESSAGE either way, so the gate holds on both carriers.
+// Same direction as v=21's ambient_context, the other IR-carried node
+// policy. Server-first rollout; MinSchemaVersion unchanged, so a stale
+// runner parks the message with a delayed Nak and a resume recovers it.
+const SchemaVersion = 26
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom

@@ -1216,3 +1216,68 @@ func indentToolBody(body string) string {
 	}
 	return b.String()
 }
+
+// A node that declares `env_expansion: none` takes the engine out of the way
+// (ADR-130): no braced read of its bodies is answered before the shell, so
+// the assignment DOES reach the read and there is nothing to warn about. A
+// check that kept firing after its own remedy trains authors to ignore it.
+// The gate is the node's, so it covers all three bodies at once.
+//
+// Mutation that reddens it: delete the EnvExpansionNone gate from
+// validateBracedEnvBodies — every row below reopens.
+func TestLintSilentWhenTheNodeOptsOut(t *testing.T) {
+	for name, tool := range map[string]string{
+		"command body": "tool gate:\n  command: |\n" + indentToolBody(
+			"COUNT=$(printf '%s' hi | wc -c)\necho \"${COUNT}\"\n") + "  env_expansion: none\n",
+		"postcondition body": "tool gate:\n  command: \"true\"\n  goal: \"g\"\n  env_expansion: none\n  postcondition: |\n" + indentToolBody(
+			"RUN_ID=\"x\"\ntest -n \"${RUN_ID:-}\"\n"),
+		"sh script body": "tool gate:\n  language: sh\n  env_expansion: none\n  script: |\n" + indentToolBody(
+			"COUNT=1\necho \"${COUNT}\"\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := compileText(t, bracedEnvSrc(tool))
+			if got := bracedEnvDiags(r); len(got) != 0 {
+				t.Errorf("C188 fired on a node that declined the expansion: %v", got)
+			}
+			// And the same body WITHOUT the declaration does fire, so the
+			// silence above is the gate's and not a fixture that nothing
+			// would have warned about either way.
+			plain := compileText(t, bracedEnvSrc(strings.Replace(tool, "  env_expansion: none\n", "", 1)))
+			if got := bracedEnvDiags(plain); len(got) != 1 {
+				t.Fatalf("the same body without the declaration drew %d findings, want 1 — the fixture does not arm the gate: %v", len(got), got)
+			}
+		})
+	}
+}
+
+// The remedy the author reads names both halves of the fix: the bare
+// rewrite, and the property that keeps the body verbatim. A diagnostic whose
+// only remedy is a rewrite has no answer for a body whose braces the
+// downstream language needs.
+//
+// It names the property's PRICE too. The remedy is node-scoped, and under it
+// the ADR-093 overlay stops answering the three bodies' `${ITERION_*}` reads
+// — the one shipped body C188 fires on assigns two names AND reads the
+// dispatcher-port dial — so an author who takes the hatch on the terminal's
+// word alone silences a warning and breaks an unrelated dial read in the same
+// body. The reference page carries the clause; the string in the binary is
+// what the author actually reads.
+//
+// Mutation that reddens it: drop either clause from the remedy built in
+// validateBracedEnvBodies.
+func TestBracedEnvRemedyNamesTheProperty(t *testing.T) {
+	r := compileText(t, bracedEnvSrc("tool gate:\n  command: |\n"+indentToolBody(
+		"COUNT=1\necho \"${COUNT}\"\n")))
+	got := bracedEnvDiags(r)
+	if len(got) != 1 {
+		t.Fatalf("want exactly one C188 finding, got %d: %v", len(got), got)
+	}
+	if !strings.Contains(got[0].Message, "env_expansion: none") {
+		t.Errorf("the finding does not name the hatch: %s", got[0].Message)
+	}
+	for _, want := range []string{"ADR-093", "${ITERION_*}", "no longer answered by the engine"} {
+		if !strings.Contains(got[0].Message, want) {
+			t.Errorf("the finding recommends the hatch without naming its cost (%q missing): %s", want, got[0].Message)
+		}
+	}
+}

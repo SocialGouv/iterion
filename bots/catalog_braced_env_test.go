@@ -46,7 +46,7 @@ func TestCatalogHasNoBracedReadOfItsOwnAssignment(t *testing.T) {
 		t.Fatal("no catalog workflows found — discovery glob likely broke")
 	}
 	judged := map[string]bool{} // bundle-relative tool node id → compiled
-	bodies := 0
+	bodies, declined := 0, 0
 	for _, path := range targets {
 		u := unit.LoadDir(path)
 		if u.Merged == nil {
@@ -67,18 +67,9 @@ func TestCatalogHasNoBracedReadOfItsOwnAssignment(t *testing.T) {
 				continue
 			}
 			judged[filepath.Dir(path)+"/"+id] = true
-			for _, b := range []struct {
-				text  string
-				shell bool
-			}{
-				{tn.Command, true},
-				{tn.Script, tn.Language == "" || tn.Language == "sh" || tn.Language == "bash"},
-				{tn.Postcondition, true},
-			} {
-				if b.text != "" && b.shell {
-					bodies++
-				}
-			}
+			j, d := shellBoundBodies(tn)
+			bodies += j
+			declined += d
 		}
 		// The compiler walks its nodes from a map, so the findings of one
 		// file arrive in no fixed order: sorted, a failure reads the same
@@ -103,10 +94,15 @@ func TestCatalogHasNoBracedReadOfItsOwnAssignment(t *testing.T) {
 		}
 	}
 	// A floor over a corpus the walk stopped reading passes everything: the
-	// shell-bound bodies the lint judged, and the fragments' tool nodes it
-	// reached through the mains that import them.
-	if bodies < 120 {
-		t.Fatalf("the walk judged %d shell-bound tool bodies over %d workflows — a read this thin is a walk that stopped reading, and this floor is now guarding nothing (the corpus carries 157 today)", bodies, len(targets))
+	// shell-bound bodies the walk reached, and the fragments' tool nodes it
+	// reached through the mains that import them. The quota is on the REACH
+	// (judged plus declining) because a bundle that declares
+	// `env_expansion: none` widely is still a corpus this walk read, while
+	// the judged count alone is what the lint's verdict above covers — a
+	// declining body is one nobody judged, and the two are reported apart so
+	// neither number can be read as the other.
+	if bodies+declined < 120 {
+		t.Fatalf("the walk reached %d shell-bound tool bodies over %d workflows (%d judged by the lint, %d declining the expansion) — a read this thin is a walk that stopped reading, and this floor is now guarding nothing (the corpus carries 157 judged today)", bodies+declined, len(targets), bodies, declined)
 	}
 	for _, p := range fragmentFiles(t, "*/lib/*.bot", 5) {
 		bundle := filepath.Dir(filepath.Dir(p))
@@ -115,6 +111,62 @@ func TestCatalogHasNoBracedReadOfItsOwnAssignment(t *testing.T) {
 				t.Errorf("%s declares the tool node %q that no compiled workflow of %s carries — a fragment no main imports is a body this floor never judges", p, name, bundle)
 			}
 		}
+	}
+}
+
+// shellBoundBodies counts one tool node's shell-bound bodies, split by what
+// the lint did with them: judged, or declining the expansion
+// (`env_expansion: none`, ADR-130 — the lint skips such a node entirely, so
+// its bodies are bodies nobody judged and counting them as judged would let
+// the quota above vouch for a verdict that was never reached). The predicate
+// is the IR's own, the one the lint and the engine ask, so the split cannot
+// drift from the gate it mirrors.
+func shellBoundBodies(tn *ir.ToolNode) (judged, declined int) {
+	for _, b := range []struct {
+		text  string
+		shell bool
+	}{
+		{tn.Command, true},
+		{tn.Script, tn.Language == "" || tn.Language == "sh" || tn.Language == "bash"},
+		{tn.Postcondition, true},
+	} {
+		if b.text == "" || !b.shell {
+			continue
+		}
+		if tn.ExpandsBracedEnv() {
+			judged++
+			continue
+		}
+		declined++
+	}
+	return judged, declined
+}
+
+// The census is the quota's witness, so it answers for the two halves apart:
+// a declining node's bodies are reached and not judged. Red when
+// shellBoundBodies counts a declining body as judged — which is what let the
+// floor's "157 shell-bound tool bodies the lint judged" cover bodies the lint
+// skipped.
+func TestTheCensusSeparatesTheBodiesTheLintSkipped(t *testing.T) {
+	node := &ir.ToolNode{
+		Command:       "COUNT=1; echo \"${COUNT}\"",
+		Script:        "RUN_ID=x; test -n \"${RUN_ID}\"",
+		Language:      "sh",
+		Postcondition: "test -n \"${RUN_ID:-}\"",
+	}
+	if judged, declined := shellBoundBodies(node); judged != 3 || declined != 0 {
+		t.Errorf("an undeclared node: judged=%d declined=%d, want 3 and 0", judged, declined)
+	}
+	node.EnvExpansion = ir.EnvExpansionNone
+	if judged, declined := shellBoundBodies(node); judged != 0 || declined != 3 {
+		t.Errorf("a node declaring `env_expansion: none`: judged=%d declined=%d, want 0 and 3 — the lint judges none of its bodies", judged, declined)
+	}
+	// A non-shell script body is out of the lint's reach whatever the node
+	// declares, so it is in neither count.
+	node.EnvExpansion = ""
+	node.Language = "js"
+	if judged, declined := shellBoundBodies(node); judged != 2 || declined != 0 {
+		t.Errorf("a `js` script body: judged=%d declined=%d, want 2 and 0", judged, declined)
 	}
 }
 

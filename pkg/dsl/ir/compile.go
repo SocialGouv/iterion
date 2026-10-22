@@ -1452,6 +1452,27 @@ func (c *compiler) compileTools() {
 			// language without script makes no sense.
 			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: `language:` is only valid alongside `script:`", t.Name)
 		}
+		// env_expansion governs the bodies the engine prepares for a reader;
+		// a node declaring none of the three has none — an `action:` node's
+		// arguments are the connector's, and a node with no recipe at all has
+		// nothing to prepare — so the declaration would read as configured
+		// while nothing honours it (ADR-130). Orthogonal to how many recipes
+		// the node declares, hence its own `if`: inside the switch above, a
+		// node that also trips `recipes == 0` or
+		// `language:`-without-`script:` would be told about that line alone
+		// and ship the inert one unmentioned. The message says what the
+		// condition reads and nothing more: naming `action:` there explains
+		// the refusal with a property the recipe-less shape never wrote.
+		//
+		// A declared `postcondition:` is one of the three bodies, so the
+		// property is NOT inert beside it. That arm cannot be reached by a
+		// document that compiles — a postcondition without a command or a
+		// script needs an `action:`, which C263 refuses it — so the
+		// conjunct's only witness is the shape below, invalid for the missing
+		// recipe and silent about `env_expansion:`.
+		if t.EnvExpansion != "" && t.Command == "" && t.Script == "" && t.Postcondition == "" {
+			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: `env_expansion:` is only valid alongside `command:`, `script:` or `postcondition:` — this node declares none of them, so the engine prepares no body whose environment forms the declaration would govern", t.Name)
+		}
 		actionParams := c.compileToolAction(t)
 
 		var cmdRefs []*Ref
@@ -1480,6 +1501,20 @@ func (c *compiler) compileTools() {
 				// known
 			default:
 				c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: unsupported language %q (want one of: js, node, py, python, python3, sh, bash)", t.Name, t.Language)
+			}
+		}
+
+		// env_expansion (ADR-130), on the arm `language:` above already
+		// spells. An unknown word is an ERROR and never the default: the
+		// default is "the engine rewrites your body", and the line exists to
+		// stop exactly that — reading a typo as the default would re-enable
+		// the expansion the author declined, in silence.
+		if t.EnvExpansion != "" {
+			switch t.EnvExpansion {
+			case EnvExpansionBraced, EnvExpansionNone:
+				// known
+			default:
+				c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: unsupported env_expansion %q (want one of: %s, %s)", t.Name, t.EnvExpansion, EnvExpansionBraced, EnvExpansionNone)
 			}
 		}
 
@@ -1554,6 +1589,7 @@ func (c *compiler) compileTools() {
 			Policy:        policy,
 			Recovery:      recovery,
 			ParallelSafe:  t.ParallelSafe,
+			EnvExpansion:  t.EnvExpansion,
 		}
 	}
 }

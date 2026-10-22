@@ -609,6 +609,7 @@ type jsonToolNodeDecl struct {
 	Recovery       *jsonRecoveryBlock `json:"recovery,omitempty"`
 	Needs          []string           `json:"needs,omitempty"`
 	ParallelSafe   bool               `json:"parallel_safe,omitempty"`
+	EnvExpansion   string             `json:"env_expansion,omitempty"`
 	Comments       []*jsonComment     `json:"comments,omitempty"`
 }
 
@@ -1147,6 +1148,7 @@ func toolToJSON(t *ToolNodeDecl) *jsonToolNodeDecl {
 		Recovery:       recoveryBlockToJSON(t.Recovery),
 		Needs:          t.Needs,
 		ParallelSafe:   t.ParallelSafe,
+		EnvExpansion:   t.EnvExpansion,
 	}
 }
 
@@ -2078,6 +2080,7 @@ func toolFromJSON(jt *jsonToolNodeDecl) (*ToolNodeDecl, error) {
 		Recovery:       recoveryBlockFromJSON(jt.Recovery),
 		Needs:          jt.Needs,
 		ParallelSafe:   jt.ParallelSafe,
+		EnvExpansion:   jt.EnvExpansion,
 	}, nil
 }
 

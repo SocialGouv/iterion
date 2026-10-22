@@ -240,6 +240,39 @@ func TestToolParallelSafeRoundtrip(t *testing.T) {
 	}
 }
 
+// env_expansion is wire state: the compiled AST is what crosses to a cloud
+// runner (ADR-075), so a node declaring `none` must arrive declaring `none`
+// — a runner that dropped the key would expand a body the author asked the
+// engine to leave verbatim, and only there.
+func TestToolEnvExpansionRoundtrip(t *testing.T) {
+	original := &ast.File{
+		Tools: []*ast.ToolNodeDecl{
+			{Name: "verbatim", Command: "echo ${NAME:-d}", EnvExpansion: "none"},
+			{Name: "plain", Command: "echo ok"},
+		},
+	}
+	data, err := ast.MarshalFile(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"env_expansion": "none"`) {
+		t.Errorf("expected env_expansion in JSON: %s", data)
+	}
+	restored, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if !reflect.DeepEqual(original, restored) {
+		t.Errorf("roundtrip mismatch:\noriginal=%#v\nrestored=%#v", original, restored)
+	}
+	// omitempty: a tool that declared nothing must not emit the key, so a
+	// bot's wire form does not move because the property exists.
+	plainData, _ := ast.MarshalFile(&ast.File{Tools: []*ast.ToolNodeDecl{{Name: "plain", Command: "echo ok"}}})
+	if strings.Contains(string(plainData), "env_expansion") {
+		t.Errorf("env_expansion should be omitted when unset: %s", plainData)
+	}
+}
+
 func TestLoopClauseRoundtrip(t *testing.T) {
 	// The loop bound has three wire forms (literal / expression / unbounded
 	// with optional fuel); each must survive marshal → unmarshal untouched,

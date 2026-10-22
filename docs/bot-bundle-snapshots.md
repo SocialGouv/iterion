@@ -43,9 +43,13 @@ the old version-checked stored-bundle/catalog path.
 ## Deployment
 
 A snapshot-bearing message requires **v13** — `queue.Validate` refuses one
-below it — while the accepted window is `queue.MinSchemaVersion` = 10 through
-`queue.SchemaVersion` = 24. Older runners must reject this new intent, since
-ignoring the payload would silently mix code versions again. Follow the cloud
+below it — while the accepted window is `queue.MinSchemaVersion` through
+`queue.SchemaVersion`, both read in
+[pkg/queue/types.go](../pkg/queue/types.go): this page cannot track their
+values, and a stale number here is the exact failure the
+[queue rollout contract](cloud-queue-schema-rollout.md) exists to prevent.
+Older runners must reject this new intent, since ignoring the payload would
+silently mix code versions again. Follow the cloud
 runbook's rollout/epoch procedure and align server and runner builds. A bundle snapshot fixes catalog
 drift, not binary/DSL incompatibility between releases.
 

@@ -170,6 +170,58 @@ workflow attributed:
 	}
 }
 
+// A node that declares `env_expansion: none` (ADR-130) previews the body its
+// author wrote: the preview is the one place a reader looks before paying for
+// a run, so the property has to be visible there as the text itself. The
+// `:-` arm is the discriminator — the preview resolves it to the default on
+// every other node, so a body that keeps it is a body the engine declined.
+func TestDryRunKeepsADeclinedBodyVerbatim(t *testing.T) {
+	const bot = `tool declined:
+  command: "echo ${DRYRUN_DECLINED:-fallback}"
+  env_expansion: none
+  goal: "g"
+  postcondition: "test -n ${DRYRUN_DECLINED:-fallback}"
+
+tool scripted:
+  language: sh
+  env_expansion: none
+  script: "printf %s ${DRYRUN_DECLINED:-fallback}"
+
+workflow declined:
+  worktree: none
+  sandbox: none
+  entry: declined
+  declined -> scripted
+  scripted -> done
+`
+	rec := &bodyRecorder{}
+	if _, err := Run(context.Background(), compileBot(t, bot), Options{Shell: rec}); err != nil {
+		t.Fatal(err)
+	}
+	bodies := rec.bodies()
+	joined := strings.Join(bodies, "\n")
+	// Every pass of the walk prepares the same three bodies, so the count is
+	// a multiple of three; what this witness reads is the TEXT, and a run
+	// that prepared nothing would assert nothing.
+	if len(bodies) == 0 {
+		t.Fatal("the preview prepared no body at all: the witness would pass on nothing")
+	}
+	for _, want := range []string{
+		"echo ${DRYRUN_DECLINED:-fallback}",
+		"test -n ${DRYRUN_DECLINED:-fallback}",
+		"printf %s ${DRYRUN_DECLINED:-fallback}",
+	} {
+		if !anyBody(bodies, want) {
+			t.Errorf("the preview did not keep %q verbatim — it shows a body the engine will not hand the reader, and the declaration is invisible where an author looks:\n%s", want, joined)
+		}
+	}
+	for _, resolved := range []string{"echo fallback", "test -n fallback", "printf %s fallback"} {
+		if anyBody(bodies, resolved) {
+			t.Errorf("the preview resolved a form the node declined, to %q:\n%s", resolved, joined)
+		}
+	}
+}
+
 // previewRenderAllowed lists the files that may render a tool body WITHOUT
 // reading its environment forms first, keyed by the path from the module
 // root, with the reason. The class is "sites that prepare a tool body for a

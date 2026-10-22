@@ -1643,6 +1643,13 @@ func TestDeepsecRefusesToRunWithoutAUsableRunID(t *testing.T) {
 // value the command itself sets in its env prefix (RUN_ID, SCAN_DIR_TTL_DAYS)
 // never reaches its own braced reference. Bare $NAME references pass through
 // verbatim for sh to interpret.
+//
+// The reading is the node's to decline: a tool node declaring
+// `env_expansion: none` (ADR-130) has none of its braced forms replaced, and
+// no body of this bot declares it — TestSecAuditCommandBlocksCarryNoBracedEnvReference
+// forbids every braced form in its command blocks, so adopting the property
+// here reddens that test before this mirror could speak for a body the
+// engine leaves alone.
 func expandEngineBracedEnv(s string) string {
 	var b strings.Builder
 	i := 0

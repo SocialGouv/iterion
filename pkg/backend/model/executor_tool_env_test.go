@@ -243,3 +243,128 @@ func TestEveryRunBodyRefusesANameTheProcessPolicyRefuses(t *testing.T) {
 		}
 	}
 }
+
+// `env_expansion: none` (ADR-130) is the author taking the engine out of the
+// way: at all three bodies the authored environment text reaches the reader
+// byte for byte, whatever the engine's own chain carries — the `:-` arm the
+// engine answers unconditionally included, and a `js` template literal the
+// heuristic only happened to spare. The declaration is the node's, so one
+// line covers the three bodies.
+//
+// Mutation that reddens it: make ToolBodyEnv ignore node.EnvExpansion (call
+// the expansion whatever the node declares) — every row goes red on its own
+// body, naming the text the engine rewrote.
+func TestEnvExpansionNoneKeepsTheBodyVerbatim(t *testing.T) {
+	const dial = "ITERION_TEST_BODY_VERBATIM_DIAL"
+	const plain = "ITERION_TEST_BODY_VERBATIM_PLAIN"
+	// Both the overlay and this process carry the names, so under `braced`
+	// every form below WOULD be answered: the verbatim text is the
+	// property's doing, not an environment that answers nothing.
+	t.Setenv(plain, "host-value")
+	ir.SetEnvOverlay(func(name string) (string, bool) {
+		if name == dial {
+			return "stored-dial", true
+		}
+		return "", false
+	})
+	defer ir.SetEnvOverlay(nil)
+
+	command := "echo ${" + dial + ":-authors-default} ${" + plain + "}"
+	script := "const n = `${count}`; const h = `${" + plain + "}`;"
+	postcondition := "test -n \"${" + dial + ":-authors-default}\""
+	declined := &ir.ToolNode{
+		BaseNode:      ir.BaseNode{ID: "body"},
+		Command:       command,
+		CommandRefs:   mustRefs(command),
+		Script:        script,
+		ScriptRefs:    mustRefs(script),
+		Language:      "js",
+		Postcondition: postcondition,
+		PostcondRefs:  mustRefs(postcondition),
+		EnvExpansion:  ir.EnvExpansionNone,
+	}
+	for where, want := range map[string]string{"command": command, "script": script, "postcondition": postcondition} {
+		if got := runBodies(t, declined)[where]; got != want {
+			t.Errorf("the %s reads %q, want the authored text %q — the engine rewrote a body the node declared verbatim", where, got, want)
+		}
+	}
+	// The same node WITHOUT the declaration is expanded, so the assertions
+	// above are the property's and not a body nothing would have touched.
+	expanded := *declined
+	expanded.EnvExpansion = ""
+	for where, got := range runBodies(t, &expanded) {
+		if got == map[string]string{"command": command, "script": script, "postcondition": postcondition}[where] {
+			t.Errorf("the %s was untouched without the declaration (%q) — the fixture does not arm the property", where, got)
+		}
+	}
+	// And the chokepoint names no read under `none`: there is no decision to
+	// report, because the engine made none.
+	if body, reads := ToolBodyEnv(declined, command, lookupToolEnv); body != command || len(reads) != 0 {
+		t.Errorf("ToolBodyEnv read %q with %d reads under `none`, want the body untouched and an empty record", body, len(reads))
+	}
+}
+
+// The chokepoint fails CLOSED on the declaration's CARRIER, not only on its
+// value: a call with no node, or with a word the compiler refuses, keeps the
+// body as written. Every call site passes a compiled node today and C004
+// stops a third word at compile, so neither row is a live path — the sweeps
+// of this package pin WHICH functions reach the chokepoint and with which
+// lookup, and none of them reads its first argument, so a future
+// `ToolBodyEnv(nil, body, lookupToolEnv)` would pass every one of them while
+// rewriting a body an author may have declared verbatim.
+//
+// Mutation that reddens it: read the declaration as `node != nil &&
+// node.EnvExpansion == ir.EnvExpansionNone` again, or return true from
+// ir.ToolNode.ExpandsBracedEnv's default arm.
+func TestToolBodyEnvFailsClosedWithoutADeclaration(t *testing.T) {
+	// A name no process carries, with an author's default: under the reading
+	// the `:-` arm is resolved and the text changes, which is what makes the
+	// rows below the predicate's doing.
+	const absent = "ITERION_TEST_BODY_CARRIER_ABSENT"
+	body := "echo ${" + absent + ":-authors-default}"
+	for name, node := range map[string]*ir.ToolNode{
+		"no node at all":    nil,
+		"a word off by one": {BaseNode: ir.BaseNode{ID: "body"}, EnvExpansion: ir.EnvExpansionNone + "e"},
+	} {
+		got, reads := ToolBodyEnv(node, body, lookupToolEnv)
+		if got != body || len(reads) != 0 {
+			t.Errorf("%s: ToolBodyEnv read %q with %d reads, want the authored text and an empty record — a body the engine rewrote for a declaration it could not read", name, got, len(reads))
+		}
+	}
+	// The same body on a node that declares nothing IS expanded, so the rows
+	// above are the floor's doing and not a body nothing would have touched.
+	expanded, reads := ToolBodyEnv(&ir.ToolNode{BaseNode: ir.BaseNode{ID: "body"}}, body, lookupToolEnv)
+	if expanded != "echo authors-default" || len(reads) != 1 {
+		t.Errorf("an undeclared node read %q with %d reads, want \"echo authors-default\" and one read — the fixture does not arm the floor", expanded, len(reads))
+	}
+}
+
+// The decline is ENV-scoped: `{{…}}` template substitution is the stage
+// after the reading and `none` does not touch it. A body that declines the
+// environment forms still gets its references resolved — shell-escaped in a
+// `command:`, a JSON literal in a `script:` — because the injection boundary
+// is the substitution's, not the expansion's.
+func TestEnvExpansionNoneStillSubstitutesTemplates(t *testing.T) {
+	command := "echo ${KEEP:-d} {{input.msg}}"
+	script := "x = `${KEEP}` + {{input.msg}}"
+	node := &ir.ToolNode{
+		BaseNode:     ir.BaseNode{ID: "body"},
+		Command:      command,
+		CommandRefs:  mustRefs(command),
+		Script:       script,
+		ScriptRefs:   mustRefs(script),
+		Language:     "js",
+		EnvExpansion: ir.EnvExpansionNone,
+	}
+	e := &ClawExecutor{}
+	ctx := context.Background()
+	input := map[string]any{"msg": "a b"}
+	shell, _ := e.shellRecipe(ctx, node, input)
+	script2, _ := e.scriptRecipe(ctx, node, input)
+	if got, want := shell(), "echo ${KEEP:-d} 'a b'"; got != want {
+		t.Errorf("the command reads %q, want %q — the reference must still resolve, shell-escaped, beside the declined env form", got, want)
+	}
+	if got, want := script2(), "x = `${KEEP}` + \"a b\""; got != want {
+		t.Errorf("the script reads %q, want %q", got, want)
+	}
+}

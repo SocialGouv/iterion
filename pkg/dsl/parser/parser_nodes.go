@@ -579,6 +579,12 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 			if v := p.parseBool(); v != nil {
 				td.ParallelSafe = *v
 			}
+		// env_expansion (ADR-130). A plain identifier, like the quad and the
+		// action triplet above: reserving the word as a lexer keyword would
+		// break a bot already using it as a node name or a schema field.
+		case "env_expansion":
+			p.expect(TokenColon)
+			td.EnvExpansion = p.expectIdent()
 		default:
 			p.unknownProperty("tool", propTok, propTok.Value)
 			p.skipUnknownProperty()

@@ -76,6 +76,12 @@ import "strings"
 // A name fires only where all three agree, and a `js`/`py` script body is
 // not a shell at all — the bare-$NAME remedy is not valid code there.
 //
+// A node that declares `env_expansion: none` draws nothing at all
+// (ADR-130): the engine answers none of its bodies' braced forms, so
+// the assignment reaches the read and the premise of the whole check is
+// gone. That is also the remedy the message names beside the bare
+// rewrite, for a body whose braces the downstream language needs.
+//
 // The shell-live half is why a read inside a comment, a single-quoted span or
 // a heredoc body draws nothing — not because such a position is safe: the
 // engine is quote-blind and substitutes all three (proven against
@@ -94,6 +100,17 @@ func (c *compiler) validateBracedEnvBodies(w *Workflow) {
 	for _, n := range w.Nodes {
 		t, ok := n.(*ToolNode)
 		if !ok {
+			continue
+		}
+		if !t.ExpandsBracedEnv() {
+			// The node declines the expansion (ADR-130), so no braced read
+			// of its bodies is answered before their reader runs: the
+			// assignment DOES reach the read, and there is nothing to name.
+			// The declaration is the node's, so this covers all three
+			// bodies. A check that kept firing after its own remedy would
+			// teach authors to ignore it. The predicate is the one the
+			// chokepoint asks (model.ToolBodyEnv), so the lint and the run
+			// cannot disagree about which bodies the engine rewrites.
 			continue
 		}
 		bodies := []struct {
@@ -199,6 +216,17 @@ func (c *compiler) validateBracedEnvBodies(w *Workflow) {
 				if !d.glued && !d.hasDefault {
 					remedy += " so the shell answers"
 				}
+				// The other half of the remedy: an author who needs the
+				// braces — a `js` template literal, a `:-` default the
+				// downstream language reads — takes the engine out of the
+				// way instead of rewording the body, and this check goes
+				// silent on the node (ADR-130). Its price travels with it:
+				// the ADR-093 overlay answers at expansion time only, so a
+				// declining body's `${ITERION_*}` dial read is answered by
+				// nobody — and the declaration is the node's three bodies',
+				// which is what makes the trade worth naming here rather
+				// than in a page the author may not open.
+				remedy += "; or declare `env_expansion: none` on the node, which keeps its bodies' environment forms verbatim at the price of the ADR-093 overlay for those bodies — an `${ITERION_*}` dial read there is no longer answered by the engine"
 				c.warnfAt(DiagBracedEnvDefeatsAssignment, t.ID, "",
 					"tool %q %s, body line %d: %s — %s. %s",
 					t.ID, b.where, strings.Count(b.text[:d.at], "\n")+1, form, mechanism, remedy)

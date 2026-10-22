@@ -1920,6 +1920,11 @@
           "description": "Free-text description shown by the studio and the reports",
           "type": "string"
         },
+        "env_expansion": {
+          "description": "What the engine expands in this node's bodies before they run: the braced environment forms (braced, the default) or nothing (none), which hands `${NAME}` and `${NAME:-default}` to the body's own reader as written — ADR-130; another word, or the property on an `action:` node that has no body, is refused (C004)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
         "goal": {
           "description": "Verified action: what the command is for, in one line",
           "type": "string"
@@ -4591,6 +4596,11 @@
         },
         "description": {
           "description": "Free-text description shown by the studio and the reports",
+          "type": "string"
+        },
+        "env_expansion": {
+          "description": "What the engine expands in this node's bodies before they run: the braced environment forms (braced, the default) or nothing (none), which hands `${NAME}` and `${NAME:-default}` to the body's own reader as written — ADR-130; another word, or the property on an `action:` node that has no body, is refused (C004)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
         "goal": {

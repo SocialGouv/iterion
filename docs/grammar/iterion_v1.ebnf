@@ -291,6 +291,7 @@ tool_prop = "description" ":" str_value NEWLINE
           | "command" ":" str_value NEWLINE
           | "script" ":" str_value NEWLINE
           | "language" ":" script_language NEWLINE
+          | "env_expansion" ":" env_expansion_mode NEWLINE
           | "input" ":" IDENT NEWLINE
           | "output" ":" IDENT NEWLINE
           | "publish" ":" IDENT NEWLINE
@@ -310,6 +311,9 @@ tool_prop = "description" ":" str_value NEWLINE
           | action_params_block
           | recovery_block | sandbox_decl ;
 script_language = "js" | "py" | "sh" | "bash" ;
+(* What the engine expands in a tool body before its reader runs: the
+   braced environment forms, or nothing (ADR-130). *)
+env_expansion_mode = "braced" | "none" ;
 action_policy = "required" | "recover" | "best_effort" ;
 (* A connector operation id: connector.resource.verb (ADR-098, C260). A
    quoted form is accepted too: an author who writes it unambiguously is not

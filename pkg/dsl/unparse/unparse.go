@@ -952,6 +952,13 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		if t.Language != "" {
 			writeProp(&w.b, "language", t.Language)
 		}
+		// Beside the recipe it governs (ADR-130). Dropping this line is the
+		// silent failure of the property: the body reads the same, the node
+		// no longer declines, and the engine expands text the author
+		// declared verbatim with no diff to see.
+		if t.EnvExpansion != "" {
+			writeProp(&w.b, "env_expansion", t.EnvExpansion)
+		}
 		// Connector action (ADR-098), written in the order an author reads it:
 		// what is called, with what credential, with which arguments.
 		// Both through the quoting path, like every other name-shaped field:

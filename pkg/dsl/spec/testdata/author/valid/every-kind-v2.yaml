@@ -281,6 +281,7 @@ nodes:
   - tool: run_tests
     description: Runs the tests
     command: go test ./...
+    env_expansion: none
     input: request
     output: verdict
     publish: test_output
