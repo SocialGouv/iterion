@@ -440,6 +440,14 @@ func TestReviewPrHandsOffThroughTheNodeBothTwinsFeed(t *testing.T) {
 //     where the list names one (model.assembleEffectiveTools);
 //   - a CLI route declaring no list runs the backend's full native roster,
 //     shell included (docs/agents/bots/untrusted-input.md);
+//   - a node whose `backend:` is a dial that a deployment can point at claw
+//     (`${ITERION_VIBE_BACKEND_*:-claude_code}`) is judged at its DEFAULT
+//     resolution like any other CLI route, PLUS by the per-node floor
+//     TestReviewPRReviewerSlotsDeclareAClawSurface, which holds the four
+//     reviewer slots to a shell-naming list: on claw that list is the whole
+//     surface, and a listless reviewer reviewed nothing on the pool
+//     (SocialGouv/iterion#2705). `converge` is the deliberate exception the
+//     family selector routes around — the claw merge is `converge_gpt`;
 //
 // — and the class: every node reading either prompt is classified here, so
 // one added to a shared paragraph is decided instead of inheriting a sentence
@@ -468,6 +476,16 @@ func TestReviewPrSharedPromptsStateEachRoutesSurface(t *testing.T) {
 		"reviewer_claude": true, "reviewer_claude_glance": true,
 		"reviewer_gpt": true, "reviewer_gpt_glance": true,
 		"converge": true, "converge_gpt": false,
+	}
+	// Slots whose backend dial can take claw on some deployment: on claw the
+	// declared list IS the whole surface, so these MUST declare one naming
+	// the shell, and on the CLI default the same list narrows the roster by
+	// design (SocialGouv/iterion#2705 — the claude twins shipped listless
+	// and reviewed nothing on the pool). converge is the deliberate
+	// exception: the claw merge is converge_gpt, a node of its own.
+	wantsList := map[string]bool{
+		"reviewer_claude": true, "reviewer_claude_glance": true,
+		"reviewer_gpt": true, "reviewer_gpt_glance": true,
 	}
 	shared := map[string]bool{"review_system": true, "emit_system": true}
 	unset := func(string) string { return "" }
@@ -503,7 +521,7 @@ func TestReviewPrSharedPromptsStateEachRoutesSurface(t *testing.T) {
 			if len(tools) == 0 {
 				t.Errorf("%s runs on claw and declares no tools — the list IS the whole surface there, so the node holds none of what its own paragraph names", id)
 			}
-		case len(tools) > 0:
+		case len(tools) > 0 && !wantsList[id]:
 			t.Errorf("%s declares %v on a CLI route — its paragraph reads an undeclared list as the full native roster, so the claim and the surface part ways", id, tools)
 		default:
 			// No list on a CLI backend: the backend's whole roster.

@@ -288,13 +288,17 @@ is a **scheduling** declaration — "this node mutates no workspace file", the
 promise that lets dual fan both reviewers onto one worktree — and a tool
 boundary, with the lever each backend has: `codex` an OS sandbox, `pi` a
 readers-only tool list, `claude_code` the withholding of the file-writing
-tools whatever the node's `tools:` list says (here it declares none at all)
-plus the worktree-moving pair; `claw`, `opencode` and `cliagent` do not read
+tools whatever the node's `tools:` list says — on the claude slots that
+list is `bash`, `read_file`, `glob`, `grep` (since 0.9.17) — plus the
+worktree-moving pair; `claw`, `opencode` and `cliagent` do not read
 the flag at all, so there the `tools:` list is the only bound. It is not a
 sandbox on `claude_code` either — the native shell stays — so their prompt
-and their output schema still carry the rest. Declaring `tools:` on them would bound that shell too and is not free: a
-non-empty list installs `--disallowedTools`, taking
-`Task`/`WebFetch`/`Skill` off the node on every run. The one downstream merge
+and their output schema still carry the rest. The declared list does bound
+the roster on `claude_code` too: a non-empty list installs
+`--disallowedTools`, taking `Task`/`WebFetch`/`Skill` off the node on every
+run — and it is required anyway, because on `claw` an empty list is no
+tools at all (SocialGouv/iterion#2705: a listless reviewer reviewed
+nothing and greened the gate). The one downstream merge
 step — `converge`, or `converge_gpt` on the GPT family — writes only the
 report file and creates board issues over MCP. `converge_gpt` runs on `claw`,
 where a `tools:` list is the node's WHOLE surface and an empty one is no tools
