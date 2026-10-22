@@ -3,6 +3,39 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.281.2](https://github.com/SocialGouv/iterion/compare/v3.281.1...v3.281.2) (2026-10-22)
+
+### Bug Fixes
+
+* **claw:** structured output through OpenAI-compatible gateways survives hidden reasoning ([#2664](https://github.com/SocialGouv/iterion/issues/2664)) ([298db1f](https://github.com/SocialGouv/iterion/commit/298db1f4a69f0e2279ea127e09e74c63b60f09d9)), closes [#2651](https://github.com/SocialGouv/iterion/issues/2651)
+
+    <details><summary>why</summary>
+
+    A claw node with tools and an output schema on openai_compatible/scaleway/glm-5.x lost its lot on every measured failure (glm-5.3 3/3, glm-5.2 4/5 then 5/11): the tool loop's final turn and the schema-forced recovery pass both came back with output_tokens equal to max_tokens (claw's 8192 default, the node sets none) and empty content. The budget went to hidden reasoning that claw's chat-completions translator drops (reasoning_content), the gateway's finish_reason "length" reached iterion as a…
+
+    </details>
+* compare serialized ASTs for author fragments ([#2572](https://github.com/SocialGouv/iterion/issues/2572)) ([6ecb1f0](https://github.com/SocialGouv/iterion/commit/6ecb1f0676d76d7d4696ddeb0a810cc8aed2b538))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 2 local (announced 3, ceiling 5) Adversarial-Model: kimi-code
+
+    </details>
+* enforce taxonomy release floors ([#2573](https://github.com/SocialGouv/iterion/issues/2573)) ([2229417](https://github.com/SocialGouv/iterion/commit/22294179b24518db033bcd34d7bfec65ae40ef8b))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 3 local (announced 8, ceiling 50) Adversarial-Model: kimi-code
+
+    </details>
+* **studio:** severity, text and control tokens hold their WCAG bars, and the guards read the JSX ([#2638](https://github.com/SocialGouv/iterion/issues/2638)) ([57e7a16](https://github.com/SocialGouv/iterion/commit/57e7a16bf46221b7fcc840f8567061dececcf889)), closes [#2506](https://github.com/SocialGouv/iterion/issues/2506) [#2505](https://github.com/SocialGouv/iterion/issues/2505), references [#a6adb8](https://github.com/SocialGouv/iterion/issues/a6adb8) [#667080](https://github.com/SocialGouv/iterion/issues/667080) [#a5b4fc](https://github.com/SocialGouv/iterion/issues/a5b4fc) [#2527](https://github.com/SocialGouv/iterion/issues/2527)
+
+    <details><summary>why</summary>
+
+    RGAA 3.2 / 3.3 in the studio: the token layer, the sites that bypassed it, and guards that read what ships instead of a regex over one JSX shape.
+
+    </details>
+
 ## [3.281.1](https://github.com/SocialGouv/iterion/compare/v3.281.0...v3.281.1) (2026-10-22)
 
 ### Bug Fixes
