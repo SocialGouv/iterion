@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.284.0](https://github.com/SocialGouv/iterion/compare/v3.283.0...v3.284.0) (2026-10-22)
+
+### Features
+
+* **server,forge:** the Studio's board writes post as the repository's minted bot ([#2704](https://github.com/SocialGouv/iterion/issues/2704)) ([1c4f5a2](https://github.com/SocialGouv/iterion/commit/1c4f5a24d0b1f0193e8eb14684d0158ad176db76)), closes [#2681](https://github.com/SocialGouv/iterion/issues/2681), references [#2630](https://github.com/SocialGouv/iterion/issues/2630)
+
+    <details><summary>why</summary>
+
+    On a GitLab connection that mints per-repository project bots, the review lane posted as the minted bot (#2630) while the board lane — a card pushed to a forge issue, a pull request opened or merged from a card — still posted as the person whose OAuth grant bootstrapped the connection; on a GitHub App connection the same gesture posted as the App. One Studio gesture, two identities.
+
+    </details>
+
 ## [3.283.0](https://github.com/SocialGouv/iterion/compare/v3.282.0...v3.283.0) (2026-10-22)
 
 ### Features
