@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -186,8 +187,8 @@ func twinAt(dest string) (existing []byte, there bool, why string) {
 // .bot carries the reading) and one for the document's YAML comments, which
 // the .bot is not written with; or the author document of a .bot, from a text
 // that parses without an error — never from one the parser recovered on —
-// proven to read back as the same program (ir.SameProgram, declaration by
-// declaration where nothing compiles to a workflow), with a notice
+// proven to read back as the same program (ir.SameProgram, re-read and
+// serialised ASTs where nothing compiles to a workflow), with a notice
 // for what the document does not carry: a frontmatter the catalog reader
 // does not read, the keys beyond the four of `catalog:`, the ordinary
 // comments.
@@ -239,7 +240,7 @@ func convertTwin(to, path string, raw []byte) (dest string, out []byte, notices 
 			// No compiled program to compare — a fragment under lib/, a
 			// file of schemas or prompts, a bot that does not compile yet:
 			// SameProgram compares diagnostic codes only there.
-			why = sameDeclarations(pr.File, back.File)
+			why = sameSerializedDeclarations(pr.File, back.File, abs)
 		}
 		if why != "" {
 			return dest, nil, nil, fmt.Errorf("%w: cannot be written as a document: the document written reads back as another program: %s", canon.ErrRefused, why)
@@ -256,19 +257,18 @@ func convertTwin(to, path string, raw []byte) (dest string, out []byte, notices 
 	return "", nil, nil, fmt.Errorf("fmt: --to takes bot or yaml, not %q", to)
 }
 
-// sameDeclarations compares, declaration by declaration, a .bot and the
-// program its document reads back as, when there is no compiled program to
-// compare: their span-free mirrors (ast.MarshalFileWithoutComments — the
-// document carries no comment), the profile as the text reads it, the
-// inline prompts by name (named after their bodies, an order that says
-// nothing) and every literal by its value (the writer spells `01.5` as
-// `1.5`, `010` as `10`). "" when they are one.
-func sameDeclarations(bot, back *ast.File) string {
-	a, err := declarationMirror(bot)
+// sameSerializedDeclarations compares a .bot and the program its document
+// reads back as when there is no compiled program to compare. Each side is
+// serialised and read again before its span-free AST is compared: the profile
+// is the effective one, Literal.Raw is spelling, and only the rank of prompts
+// and schemas — inline prompts included — is not a difference. Every other
+// list keeps its order. "" when they are one.
+func sameSerializedDeclarations(bot, back *ast.File, source string) string {
+	a, err := serializedDeclarations(bot, source)
 	if err != nil {
 		return "the .bot cannot be compared: " + err.Error()
 	}
-	b, err := declarationMirror(back)
+	b, err := serializedDeclarations(back, source)
 	if err != nil {
 		return "the document cannot be compared: " + err.Error()
 	}
@@ -278,21 +278,52 @@ func sameDeclarations(bot, back *ast.File) string {
 	return unparse.FirstJSONDifference(a, b)
 }
 
-// declarationMirror is f's mirror as sameDeclarations compares it, taken
-// off a copy: the JSON transport is the deep copy, comments left out.
-func declarationMirror(f *ast.File) ([]byte, error) {
+// serializedDeclarations reads f through the one .bot writer and parser, then
+// marshals the resulting AST without comments. The JSON transport makes the
+// private copy whose literal spellings are cleared before Unparse writes the
+// values (`01.5` as `1.5`, `010` as `10`). Only the prompt and schema arrays
+// are sorted by their encoded elements: the compiler holds those declarations
+// by name. Imports, supervisors, uses and every other list keep their order.
+func serializedDeclarations(f *ast.File, source string) ([]byte, error) {
 	raw, err := ast.MarshalFileWithoutComments(f)
 	if err != nil {
 		return nil, err
 	}
-	c, err := ast.UnmarshalFile(raw)
+	copy, err := ast.UnmarshalFile(raw)
 	if err != nil {
 		return nil, err
 	}
-	c.Profile = f.EffectiveProfile()
-	c.Prompts = unparse.InlinePromptsLast(c.Prompts)
-	literalsByValue(reflect.ValueOf(c))
-	return ast.MarshalFile(c)
+	literalsByValue(reflect.ValueOf(copy))
+	reread := parser.Parse(source, unparse.Unparse(copy))
+	if errs := diagnosticErrors(reread.Diagnostics); errs != "" {
+		return nil, fmt.Errorf("the serialised source does not parse: %s", errs)
+	}
+	reread.File.Profile = reread.File.EffectiveProfile()
+	raw, err = ast.MarshalFileWithoutComments(reread.File)
+	if err != nil {
+		return nil, err
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil, err
+	}
+	for key, value := range root {
+		if (key != "prompts" && key != "schemas") || !bytes.HasPrefix(bytes.TrimSpace(value), []byte("[")) {
+			continue
+		}
+		var declarations []json.RawMessage
+		if err := json.Unmarshal(value, &declarations); err != nil {
+			return nil, err
+		}
+		slices.SortFunc(declarations, func(a, b json.RawMessage) int {
+			return bytes.Compare(a, b)
+		})
+		root[key], err = json.Marshal(declarations)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(root)
 }
 
 var literalType = reflect.TypeOf(ast.Literal{})
