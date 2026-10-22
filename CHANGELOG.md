@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.284.1](https://github.com/SocialGouv/iterion/compare/v3.284.0...v3.284.1) (2026-10-22)
+
+### Bug Fixes
+
+* **bots:** the claude reviewer slots declare their tool surface — on claw an empty list is no tools at all ([#2706](https://github.com/SocialGouv/iterion/issues/2706)) ([d74fda3](https://github.com/SocialGouv/iterion/commit/d74fda336b9441f9c35be985d7610e19db7a19a2)), closes [#2705](https://github.com/SocialGouv/iterion/issues/2705), references [SocialGouv/iterion#2705](https://github.com/SocialGouv/iterion/issues/2705)
+
+    <details><summary>why</summary>
+
+    review-pr's claude reviewer slots (reviewer_claude, reviewer_claude_glance) shipped with no `tools:` list. On claude_code that reads as "no restriction" and the CLI's native roster applies; on claw the list IS the whole surface, so the slots dispatched with tool_count 0 — the model could not run one git command and answered the output schema with a stub whose summary said "placeholder", which the pipeline merged, published ("Revi — aucun problème détecté") and used to green `revi/review` on the…
+
+    </details>
+* **runtime:** the unit of a usage park is the provider wall ([#2708](https://github.com/SocialGouv/iterion/issues/2708)) ([8143922](https://github.com/SocialGouv/iterion/commit/81439221d26d575ea2194fd1e60dffe88b50b750)), closes [#2451](https://github.com/SocialGouv/iterion/issues/2451) [#2450](https://github.com/SocialGouv/iterion/issues/2450), references [#2451](https://github.com/SocialGouv/iterion/issues/2451)
+
+    <details><summary>why</summary>
+
+    Every reader of a usage park keyed on its own heuristic: the owner heard "Run failed" once per park (~25 pushes a day on a weekly wall), a probe's free re-park pushed too, a single wait could spend max_attempts x budget probe pods (120 at the defaults against 24 by design), and the pull-request notice gate could not tell the wall it was told about from a new one. The operator's decision (#2451, option A): the ANNOUNCED INSTANT is the unit — it is persisted on the retry row (`UsageParkWall`, fs…
+
+    </details>
+
 ## [3.284.0](https://github.com/SocialGouv/iterion/compare/v3.283.0...v3.284.0) (2026-10-22)
 
 ### Features
