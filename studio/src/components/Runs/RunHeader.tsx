@@ -37,6 +37,7 @@ import ForkedFromRow from "./runHeader/ForkedFromRow";
 import RunChildrenPanel from "./runHeader/RunChildrenPanel";
 import NotesRow from "./runHeader/NotesRow";
 import ResultLinksRow from "./runHeader/ResultLinksRow";
+import DeliverablesRow from "./runHeader/DeliverablesRow";
 import RunInformationAccordion from "./runHeader/RunInformationAccordion";
 import RunNameEditor from "./runHeader/RunNameEditor";
 import RunTagsRow from "./runHeader/RunTagsRow";
@@ -490,6 +491,12 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
       {liveStreamExpected && (
         <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
       )}
+      {/* Headline result-links (opened PR, live deploy, declared
+          deliverable) and the files the run left behind — the run's
+          "what did it produce" at a glance, like a CI run's summary,
+          always visible above the collapsed run information. */}
+      <ResultLinksRow links={resultLinks} />
+      <DeliverablesRow runId={run.id} />
       <RunInformationAccordion>
         <div className="shrink-0 border-b border-border-default px-3 py-2 sm:px-4 flex flex-col gap-1.5 text-sm">
           {/* Resolved backend/model chips. Nothing renders for
@@ -504,10 +511,6 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
           )}
           <RunTagsRow runId={run.id} />
         </div>
-        {/* Headline result-links (opened PR, live deploy) — the run's
-            "what did it produce" at a glance, above the detailed
-            deployment/finalization rows. */}
-        <ResultLinksRow links={resultLinks} />
         {/* What the run shipped, above where its commits landed: the live
             URL is the operator's destination at the end of a deploy run. */}
         {run.deployment && <DeploymentRow deployment={run.deployment} />}

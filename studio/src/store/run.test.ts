@@ -957,4 +957,29 @@ describe("applyEventsBatch — result-links (headline PR/deploy surfacing)", () 
     runStore.getState().applyEventsBatch([previewEvent(1, "", "pr")]);
     expect(runStore.getState().resultLinks).toHaveLength(0);
   });
+
+  it("surfaces a declared deliverable as a result link", () => {
+    runStore
+      .getState()
+      .applyEventsBatch([
+        previewEvent(1, "https://iterion.example/api/runs/r/artifact-files/report.md", "deliverable"),
+      ]);
+    const { resultLinks } = runStore.getState();
+    expect(resultLinks).toHaveLength(1);
+    expect(resultLinks[0]).toMatchObject({
+      url: "https://iterion.example/api/runs/r/artifact-files/report.md",
+      kind: "deliverable",
+    });
+  });
+
+  it("does NOT embed a deliverable in the Browser pane (a document, not a page)", () => {
+    runStore
+      .getState()
+      .applyEventsBatch([
+        previewEvent(1, "https://iterion.example/api/runs/r/artifact-files/report.md", "deliverable"),
+      ]);
+    const { browser } = runStore.getState();
+    expect(browser.currentUrl).toBeNull();
+    expect(browser.lastEventSeqSeen).toBe(1);
+  });
 });

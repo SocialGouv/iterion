@@ -48,11 +48,15 @@ export default function ArtifactsPanel({ runId }: { runId: string }) {
         )}
       </section>
 
-      <section className="flex flex-col min-h-0 flex-1 border-t border-border-default">
+      {/* The files section keeps its natural height and the panel as a
+          whole scrolls: a `flex-1 min-h-0` section under a tall list of
+          published outputs collapsed to zero and hid every download
+          button below the "N files" line. */}
+      <section className="flex flex-col shrink-0 border-t border-border-default">
         <div className="px-3 pt-3">
           <SectionHeading>Files</SectionHeading>
         </div>
-        <div className="flex-1 min-h-0">
+        <div className="min-h-[10rem]">
           <ArtifactFilesPanel runId={runId} />
         </div>
       </section>

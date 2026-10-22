@@ -13,6 +13,7 @@
 import {
   ArrowRightIcon,
   ExternalLinkIcon,
+  FileTextIcon,
   GlobeIcon,
   Link2Icon,
   RocketIcon,
@@ -33,6 +34,7 @@ const KIND_META: Record<string, KindMeta> = {
   pr: { label: "Pull request", icon: Link2Icon },
   deploy: { label: "Deployment", icon: RocketIcon },
   app: { label: "App", icon: GlobeIcon },
+  deliverable: { label: "Deliverable", icon: FileTextIcon },
 };
 const FALLBACK_META: KindMeta = { label: "Result", icon: ExternalLinkIcon };
 
@@ -47,6 +49,7 @@ export default function ResultLinksRow({ links }: { links: ResultLink[] }) {
 
   return (
     <div
+      role="group"
       className="shrink-0 px-4 py-2 bg-accent-soft/50 border-b border-border-default flex flex-col gap-1.5 text-body"
       aria-label="Run result links"
     >
