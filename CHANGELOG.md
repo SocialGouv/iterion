@@ -3,6 +3,56 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.280.0](https://github.com/SocialGouv/iterion/compare/v3.279.1...v3.280.0) (2026-10-22)
+
+### Features
+
+* **server,cloudpublisher:** the board and ticket launch lanes resolve the run's routing policy ([#2667](https://github.com/SocialGouv/iterion/issues/2667)) ([b3c4a2d](https://github.com/SocialGouv/iterion/commit/b3c4a2ddb81784064684f3fb2fc4fe8a8581ddc4)), references [#2000](https://github.com/SocialGouv/iterion/issues/2000) [#2006](https://github.com/SocialGouv/iterion/issues/2006) [#2000](https://github.com/SocialGouv/iterion/issues/2000) [#2005](https://github.com/SocialGouv/iterion/issues/2005)
+
+    <details><summary>why</summary>
+
+    The cloud board dispatcher (processBoardCard) and the pipeline admission lane (launchTicketNow — the Ready sweep and the operator's "launch now") were the only two of the six pkg/server launch lanes that resolved NO routing policy and no retry contract: a card- or ticket-launched run carried none of the tenant's override cells, none of its `providers:` allowlist and none of the bot's retry directive. Each lane now calls resolveRunLLMRoutePolicy and its retry twin on the team the launch is FOR…
+
+    </details>
+* warn on unchecked root vars subscripts ([#2570](https://github.com/SocialGouv/iterion/issues/2570)) ([c7b1774](https://github.com/SocialGouv/iterion/commit/c7b17747fb495842eaa467b5359afa7fd24755db))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 2 local (announced 3, ceiling 5) Adversarial-Model: kimi-code
+
+    </details>
+
+### Bug Fixes
+
+* **forge:** the project-bot mint and rotation always name an expiry GitLab accepts ([#2663](https://github.com/SocialGouv/iterion/issues/2663)) ([00b2765](https://github.com/SocialGouv/iterion/commit/00b27658c903a1dd558ee63d25bafa8650552c7c)), closes [#2653](https://github.com/SocialGouv/iterion/issues/2653)
+
+    <details><summary>why</summary>
+
+    The first live enable through an OAuth project-bot connection (PIC GitLab v19.4.2-ee) was refused: `POST /projects/:id/access_tokens` answered 400 "expires_at is missing". The mint omitted `expires_at` so that GitLab would apply its default maximum, but ResourceAccessTokens::CreateService refuses a request without the key before any default applies — on every 19.x with the allow_resource_access_token_creation_without_expiry_date flag off, and on any instance enforcing token expiry — and the…
+
+    </details>
+* **runtime,ir,model,dryrun:** a node on auto reads the route default_backend names, pre-run as at dispatch ([#2658](https://github.com/SocialGouv/iterion/issues/2658)) ([23a3751](https://github.com/SocialGouv/iterion/commit/23a375172ebdab539cdaceb5e008152d2d0bb5fc)), closes [#2428](https://github.com/SocialGouv/iterion/issues/2428), references [#1727](https://github.com/SocialGouv/iterion/issues/1727) [#2426](https://github.com/SocialGouv/iterion/issues/2426)
+
+    <details><summary>why</summary>
+
+    Both pre-run readings of a node's tool surface — the catalogue's prompt-injection boundary (`ToolSurfaceWriteReason`) and shared-worktree admission (`isMutatingNodeCtx`) — kept their own copy of dispatch's step 1 and substituted the workflow's `default_backend:` only where the node's `backend:` expanded to NOTHING. A node spelling `backend: auto` was therefore read as a route left to the host, while `model.ClawExecutor.resolveBackendName` had already routed it through the workflow default: the…
+
+    </details>
+* **sandbox:** a sandboxed tool node proves its end instead of trusting the exec client ([#2659](https://github.com/SocialGouv/iterion/issues/2659)) ([709d588](https://github.com/SocialGouv/iterion/commit/709d588976e86b03089247421c6f7bb4d31ddc7f))
+
+    <details><summary>why</summary>
+
+    In a sandbox, a tool node's verdict was the local exec client's exit status (kubectl exec, docker exec). client-go reads an error stream that closed without a status as success, so a stream lost behind the client ends it with status 0 and whatever output had arrived: the node succeeded with {result: ""} while its command kept running in the container. Measured on a long gate node: it finished 52 minutes into a 2-3.5 h script with an empty result and no error, and the script went on applying…
+
+    </details>
+* **server,store:** the sweeps ask the store for the watchers, one replica sweeps, the hand-off asks for the PR's runs ([#2654](https://github.com/SocialGouv/iterion/issues/2654)) ([b3e8694](https://github.com/SocialGouv/iterion/commit/b3e869440c8c7cf5df68854656ddeab7321e3363)), closes [#2636](https://github.com/SocialGouv/iterion/issues/2636)
+
+    <details><summary>why</summary>
+
+    Measured on ovh-prod (21/10): 10 server pods at ~1 CPU each with the HPA pinned at its maximum, the Mongo primary at 6 CPU and 487 MB/s out, for zero runs watching a card. Store.ListRuns is a collection scan with an in-memory sort (filter on deleted_at, sort on created_at, no index), and two periodic sweeps ran it on every replica then loaded every run whole: the assistant run-watch sweep every 20 s, the orphan reconcile every 60 s (which, on the lock-less cloud store, dropped each run it…
+
+    </details>
+
 ## [3.279.1](https://github.com/SocialGouv/iterion/compare/v3.279.0...v3.279.1) (2026-10-22)
 
 ### Bug Fixes
