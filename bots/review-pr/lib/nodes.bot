@@ -189,7 +189,6 @@ judge reviewer_claude:
   output: review_output
   system: review_system
   user: review_user_claude
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   ## `readonly:` is a SCHEDULING declaration — the node mutates no
   ## workspace file, which is what lets dual fan both reviewers onto one
   ## worktree — and a tool boundary, with the lever each backend has:
@@ -215,6 +214,7 @@ judge reviewer_claude:
   ## shipped uncapped) and the miss path is a soft stop — a truncated but
   ## valid review. Headroom until a live turn count says otherwise.
   tool_max_steps: 60
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   readonly: true
   fallbacks:
     ## GLM, the claude family's other server, when the Anthropic route
@@ -324,12 +324,12 @@ judge reviewer_claude_glance:
   output: review_output
   system: review_system
   user: review_user_claude
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium}"
   ## Same surface as reviewer_claude (see there): on claw the empty
   ## default is no tools at all, and a glance that cannot read the diff
   ## fills the schema with a stub.
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium}"
   readonly: true
   fallbacks:
     ## The glance tier is a cheaper PRIMARY, not a cheaper rescue: this
