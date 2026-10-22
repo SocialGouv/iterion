@@ -771,29 +771,32 @@ func TestExecutorToolNodeEnvVarInjectionAfterEscape(t *testing.T) {
 		CommandRefs: refs,
 	}
 
-	// The upstream value is the literal string `$ITERION_TEST_INJECT`.
-	// Pre-fix, this would survive shellEscape as `'$ITERION_TEST_INJECT'`,
-	// then ExpandEnv would substitute the env value, producing
-	// `''; touch <sentinel>; echo ''` which sh would interpret as three
-	// commands: an empty string, a `touch`, and another empty string.
-	payload := "$ITERION_TEST_INJECT"
-	output, err := exec.Execute(context.Background(), node, map[string]any{
-		"msg": payload,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	// The upstream value names the variable, in both spellings. `${NAME}` is
+	// the one the engine's own reading answers — a bare `$NAME` belongs to
+	// the shell and passes through whatever the order is, so the braced
+	// spelling is what holds the ORDER here: moved after the substitution,
+	// the reading would turn `'${ITERION_TEST_INJECT}'` into
+	// `''; touch <sentinel>; echo ''`, which bash reads as three commands —
+	// an empty string, a `touch`, and another empty string.
+	for _, payload := range []string{"${ITERION_TEST_INJECT}", "$ITERION_TEST_INJECT"} {
+		output, err := exec.Execute(context.Background(), node, map[string]any{
+			"msg": payload,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
-	// 1. The sentinel file must NOT exist — the touch payload was neutralized.
-	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
-		t.Fatalf("SECURITY REGRESSION: sentinel file %q exists, payload was executed (stat err: %v)", sentinel, statErr)
-	}
+		// 1. The sentinel file must NOT exist — the touch payload was neutralized.
+		if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+			t.Fatalf("SECURITY REGRESSION: sentinel file %q exists, payload %s was executed (stat err: %v)", sentinel, payload, statErr)
+		}
 
-	// 2. The echo output should be the LITERAL `$ITERION_TEST_INJECT` string,
-	//    proving that the env var was not expanded inside the substituted value.
-	result, _ := output["result"].(string)
-	if result != payload {
-		t.Errorf("env var was expanded inside escaped substitution: got %q, want literal %q", result, payload)
+		// 2. The echo output should be the LITERAL payload string, proving
+		//    that the env var was not expanded inside the substituted value.
+		result, _ := output["result"].(string)
+		if result != payload {
+			t.Errorf("env var was expanded inside escaped substitution: got %q, want literal %q", result, payload)
+		}
 	}
 }
 

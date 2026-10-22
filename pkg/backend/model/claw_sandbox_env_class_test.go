@@ -138,9 +138,10 @@ var launcherOnly = map[string]string{
 // ${NAME} a tool command spells — never a knob. The exemption holds for the
 // pair it names alone: the function that reads, and the reader it calls.
 var dynamicEnvReads = map[[2]string]string{
-	{"forwardableProviderEnv", "os.Getenv"}:   "the forwarding loop itself, over providerCredentialEnvVars",
-	{"bracedEnvWouldExpand", "lookupToolEnv"}: whyHostTool + ": the ${NAME} references a tool command spells",
-	{"resolveBracedEnvBody", "lookupToolEnv"}: whyHostTool + ": the ${NAME} references a tool command spells",
+	{"forwardableProviderEnv", "os.Getenv"}: "the forwarding loop itself, over providerCredentialEnvVars",
+	// The `${NAME}` references a tool command spells are read through the
+	// lookup its reader is handed, so they are classified where that lookup
+	// is passed: templateExpanders' ToolBodyEnv / expandBracedEnvSteps.
 }
 
 // envEnumerations: functions that hand the whole environment on, and read
@@ -459,6 +460,14 @@ var templateExpanders = map[string][2]int{
 	"os.Expand":                          {0, 1},
 	"pkg/dsl/ir.ExpandWithDefault":       {0, 1},
 	"pkg/dsl/ir.ExpandBracedWithDefault": {0, 1},
+	// The engine's reading of a tool body (ADR-130): the body, then the
+	// environment it is read against — the engine's own chain for a run, a
+	// lookup that answers nothing for a preview. The names are the AUTHOR's
+	// `${NAME}` references, data and never a knob of this package, which is
+	// why no side has to be checked for them; the reading itself is the
+	// host-side one hostSideEnvReads describes for a tool command.
+	"ToolBodyEnv":          {1, 2},
+	"expandBracedEnvSteps": {0, 1},
 }
 
 // envEnumerators hand back the whole environment.

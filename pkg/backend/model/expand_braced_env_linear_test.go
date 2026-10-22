@@ -23,8 +23,8 @@ func baselineExpandBracedEnv(s string) string {
 				continue
 			}
 			body := s[i+2 : i+2+end]
-			if looksLikeEnvRef(body) && bracedEnvWouldExpand(body) {
-				out.WriteString(resolveBracedEnvBody(body))
+			if looksLikeEnvRef(body) && bracedEnvWouldExpand(body, lookupToolEnv) {
+				out.WriteString(resolveBracedEnvBody(body, lookupToolEnv))
 				i += 2 + end + 1
 				continue
 			}
@@ -123,7 +123,7 @@ func TestExpandBracedEnv_ReadsEachPositionOnce(t *testing.T) {
 	for name, shape := range shapes {
 		for _, n := range []int{20000, 80000} {
 			in := shape(n)
-			if _, steps := expandBracedEnvSteps(in); steps > len(in) {
+			if _, steps := expandBracedEnvSteps(in, lookupToolEnv); steps > len(in) {
 				t.Errorf("%s (%d bytes): the scan read %d positions — more than one per byte",
 					name, len(in), steps)
 			}
