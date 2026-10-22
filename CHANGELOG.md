@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.279.1](https://github.com/SocialGouv/iterion/compare/v3.279.0...v3.279.1) (2026-10-22)
+
+### Bug Fixes
+
+* reconcile launch admission with resolved bots ([#2554](https://github.com/SocialGouv/iterion/issues/2554)) ([fd96290](https://github.com/SocialGouv/iterion/commit/fd96290847515cdadc170bd7d101fafffc1ce28d)), references [pre-#2613](https://github.com/pre-/issues/2613)
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 5 local (announced 3, ceiling 5) Adversarial-Model: kimi-code
+
+    </details>
+* retry private ultra11y npm installs ([#2548](https://github.com/SocialGouv/iterion/issues/2548)) ([bed5b66](https://github.com/SocialGouv/iterion/commit/bed5b6605844c2b7ed1a98ebc5342be483cee89d))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 2 local (announced 3, ceiling 5) Adversarial-Model: kimi-code
+
+    </details>
+
 ## [3.279.0](https://github.com/SocialGouv/iterion/compare/v3.278.0...v3.279.0) (2026-10-21)
 
 ### Features
