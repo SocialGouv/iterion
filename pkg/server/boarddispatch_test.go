@@ -663,6 +663,7 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 		boardRepoRefKey:         "main",
 		boardKeyOverridesKey:    `{"anthropic":"key-1"}`,
 		boardSecretOverridesKey: `{"forge_token":"sec-1"}`,
+		boardWebhookIDKey:       "wh1",
 	}
 	lc, err := liftBoardLaunchContext(botArgs)
 	if err != nil {
@@ -680,7 +681,23 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 	if lc.Vars["feature_prompt"] != "add X" {
 		t.Errorf("bot var dropped: %v", lc.Vars)
 	}
-	for _, reserved := range []string{boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey} {
+	// The integration the card names: the routing block read from it is what
+	// locks where the BYOK key above may be spent, so a run that applies one
+	// and resolves no integration level spends a credential with no lock on
+	// it. The card carries the REFERENCE, so the lift's job is the id alone.
+	if lc.WebhookID != "wh1" {
+		t.Errorf("integration id lifted wrong: %q", lc.WebhookID)
+	}
+	// A card an operator typed names no integration, and contributes no
+	// layer: an empty layer would claim a per-integration choice nobody made.
+	bare, err := liftBoardLaunchContext(map[string]string{"feature_prompt": "add X"})
+	if err != nil {
+		t.Fatalf("liftBoardLaunchContext (bare card): %v", err)
+	}
+	if bare.WebhookID != "" {
+		t.Errorf("a card with no reserved id lifted one: %q", bare.WebhookID)
+	}
+	for _, reserved := range []string{boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey} {
 		if _, leaked := lc.Vars[reserved]; leaked {
 			t.Errorf("reserved key %q leaked into bot vars", reserved)
 		}
@@ -711,6 +728,7 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 // correct composition is worthless if the launch path never calls it.
 func TestProcessBoardCardCarriesPRLaunchContext(t *testing.T) {
 	s, _ := newForgePublishTestServer(t)
+	seedBoardLaunchTenant(t, s, "team1")
 	s.cfg.PublicURL = "https://iterion.example"
 	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()
@@ -2801,6 +2819,7 @@ func TestCloudSweep_GateOffReleasesAnAbandonedRecoveryHold(t *testing.T) {
 func prLaunchGuardFixture(t *testing.T, gc forgeGateClient) *Server {
 	t.Helper()
 	s, _ := newForgePublishTestServer(t)
+	seedBoardLaunchTenant(t, s, "team1")
 	s.cfg.PublicURL = "https://iterion.example"
 	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()

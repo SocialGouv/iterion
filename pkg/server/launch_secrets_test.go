@@ -460,6 +460,7 @@ func TestProcessBoardCard_AStaleCardGrantIsNotRepinned(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := newForgePublishTestServer(t)
+			seedBoardLaunchTenant(t, s, "team1")
 			s.cfg.PublicURL = "https://iterion.example"
 			s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
 			s.webhookConfigs = webhooks.NewMemoryConfigStore()

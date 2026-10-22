@@ -202,6 +202,7 @@ func (refusingPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.W
 // back instead of parking it.
 func TestProcessBoardCard_LaunchRefusalIsTyped(t *testing.T) {
 	s, _ := newForgePublishTestServer(t)
+	seedBoardLaunchTenant(t, s, "team1")
 	botsDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(botsDir, "probe.bot"), []byte(
 		"schema probe_out:\n  ok: string\n\ntool noop:\n  command: `printf '{\"ok\":\"yes\"}'`\n  output: probe_out\n\nworkflow board_probe:\n  worktree: none\n  entry: noop\n  noop -> done\n",

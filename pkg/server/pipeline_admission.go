@@ -641,6 +641,13 @@ func (s *Server) pipelineBotEntry(ctx context.Context, botID string, lb *launchB
 // mint): the launch-now route answers prLaunchContextStatus, not its 409.
 var errTicketPRLaunchContext = errors.New("ticket launch refused")
 
+// errTicketRoutingUnresolved marks a ticket launch refused because the run's
+// routing policy could not be RESOLVED — a tenant record the fold cannot
+// read. It is an outage on this server's side, not a conflict on the card:
+// the launch-now route answers 503 so the operator retries instead of
+// editing a ticket that is fine, and the card is untouched either way.
+var errTicketRoutingUnresolved = errors.New("ticket launch refused: the run's routing policy could not be resolved")
+
 // refuseLiveClaim refuses a ticket whose claim is held under a live lease: its
 // launcher is already on it. A claim with no lease is admitted — that is what
 // a release N-1 binary writes, and it has no release path.
@@ -729,6 +736,53 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		}
 		return "", fmt.Errorf("bot %q is disabled", iss.Bot)
 	}
+	// The run's routing and retry contracts, resolved here like on every
+	// other launch lane: only the launch site sees every level at once, and
+	// the run document is the carrier the runner and every resume read.
+	// Resolved on the id the resolution above pinned (bot.Launch.BotID),
+	// the one the launch records, so the manifest level is read from the
+	// tier that will serve this run. Before the grant mint and the board
+	// claim below, so a refusal leaves no grant to hand back and the ticket
+	// keeps its column.
+	//
+	// The resolver's error is a REFUSAL, never folded around: a tenant
+	// record the fold cannot read would otherwise launch the ticket outside
+	// the vocabulary its operator locked. It carries no started-run fact, so
+	// the operator's "launch now" hands its metered slot back
+	// (RunMayHaveStarted); the admission LOOP launches with no team, where
+	// the tenant levels do not apply at all and the platform level and the
+	// env dials answer alone — a local board's cards name no integration, so
+	// no card-borne level outranks them either — and a tenant store therefore
+	// cannot stall a local studio board.
+	// A card a webhook materialised names its integration in a reserved
+	// bot-arg (ensureBoardCard → boardWebhookIDKey), and this lane launches
+	// the SAME cloud board the coordinator does (resolvePipelineBoardStore →
+	// cloudBoardResolve → CloudBoardFor): an operator's "launch now" on such
+	// a card must resolve that integration's routing block — its `providers:`
+	// lock included — exactly as the coordinator's own pickup does, through
+	// the same reader. The reserved keys are launch context, never bot vars,
+	// so the lift strips every one of them here too.
+	//
+	// The repo and BYOK-override halves of that context are deliberately NOT
+	// applied on this lane: a hand-launched webhook card has never cloned
+	// its repo here, and starting to would change what the run DOES, not
+	// which vocabulary it may spend. Named rather than half-done.
+	lc, err := liftBoardLaunchContext(iss.BotArgs)
+	if err != nil {
+		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, err)
+		return "", fmt.Errorf("ticket %s: %w", iss.ID, err)
+	}
+	routeLayers, retryLayers, policyErr := s.cardLaunchPolicyLayers(ctx, teamID, lc)
+	if policyErr != nil {
+		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, policyErr)
+		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, policyErr)
+	}
+	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, teamID, bot.Launch.BotID, routeLayers...)
+	if routeErr != nil {
+		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, routeErr)
+		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, routeErr)
+	}
+	retryPolicy := s.resolveRunRetryPolicy(ctx, teamID, bot.Launch.BotID, retryLayers...)
 	// The board dispatcher's composition (processBoardCard): the grant a card
 	// carries is dropped or, when it is another team's, refused; a card that
 	// targets a pull request gets the repo's launch policy and a grant of its
@@ -737,7 +791,7 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 	// ClaimForLaunch, but a local server holds no grant registry and refuses
 	// nothing here). On a copy: both steps write into the vars they are given.
 	var minted mintedGrant
-	launchVars, err := s.withoutCardGrant(teamID, cloneStringMap(iss.BotArgs))
+	launchVars, err := s.withoutCardGrant(teamID, lc.Vars)
 	if err == nil && teamID != "" {
 		launchVars, minted, err = s.applyPRLaunchContext(ctx, teamID, "", iss.Bot, launchVars, nil)
 	}
@@ -818,6 +872,8 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		// reserved slot, and this is what lets its own relaunch spend that
 		// reservation instead of being refused by it.
 		PipelineTicketID: iss.ID,
+		RetryPolicy:      retryPolicy,
+		LLMRoutePolicy:   routePolicy,
 	}
 	// The resolved bundle carries the source, the compile dir, the runner
 	// ref and the tier that served it — so a run says which tier it came

@@ -492,10 +492,82 @@ Revi slots to `claw` + `openai_compatible/<id>`, and the run resolves **no** `cl
 (`SubmitLaunch`) over the resolved chain, never over the `.bot` text. A deliberately unpinned slot is
 refused at launch, naming the provider, the node and the level.
 
+The shape that acceptance holds for, stated as the limit it is: a program whose routing fields are
+LITERALS and whose pinned slots carry no `provider:` hint of their own. **The shipped catalog does
+not have that shape**: 34 of its bots template at least one routing field on an env dial (195 such
+fields across 37 `.bot` files, `grep -rE '^\s*(model|backend|provider):\s*"?(\$\{|\{\{)' bots/`),
+and most of those slots also keep a `provider:` hint. The Revi pair is the measured instance — all
+six slots carry both — so under the acceptance's own cell every shipped Revi run is REFUSED **on a
+deployment that answers none of those dials**: the two gpt slots'
+`${ITERION_VIBE_PROVIDER_GPT:-}` is unreadable (§4 rule 1) and the four claude slots' hint still
+names `anthropic` (§5: an override pins a field, it never drops the author's hint). An integration's
+`overrides:` cells cannot rescue either shape, which is the contract, not a defect: they pin a
+field, and a `claw` cell may carry no `provider:` of its own (§3).
+
+The qualification is load-bearing, because a dial's reading belongs to the DEPLOYMENT, not to the
+text: `${ITERION_*}` is answered by the platform's stored `bot_vars` first (`ir.SetEnvOverlay` with
+`platformcfg.BotVarsOverlay`, installed in `cmd/iterion/server.go`; written through
+`PUT /api/admin/settings/bot-vars`, super-admin) and then by the pod environment — `ITERION_VIBE_*`
+is not credential-shaped, so `platformcfg.CloudProcessEnvPolicy` passes it. So delivery 1 gives a
+tenant the LOCK, and TWO roads make the catalog meet it: de-dial the routing fields of the bots that
+tenant runs and drop their hints, per §8's "a literal field is worth more than an env dial now"
+(which today covers only revi-converse's `backend:`); or point the three `ITERION_VIBE_PROVIDER_*`
+dials at that tenant's gateway, which needs no `.bot` edit but answers for every bot reading them,
+not for Revi alone — a platform-wide setting serving one tenant's lock, which is why de-dialling
+stays the named step. The Revi refusal is asserted on the shipped field texts verbatim
+(`TestReviIntegrationAcceptance_TheShippedSlotsAreRefused`, whose freeze fixes the undialled
+deployment it speaks for) so the gap cannot go quiet.
+
 ADR-121's parity property gains the vars and the preview: **fill, restore, preview and the launch
 gate** must agree for a run whose routing fields are templated. That is one property with four
 readers in two packages, and it is owed as a test driven from an integration-level cell — a test
 written over launcher rows would pass without ever exercising the new level.
+
+What that property covers, exactly: the four READERS given one launch shape. End-to-end parity for a
+RUN also needs every lane to hand each reader the same shape, and two do not. The first is the
+preview: `runview.CredentialPreviewRequest` carries no vars at all, so the `personal` arm previews a
+manual launch made with `--var` against the program's declared defaults. Named here rather than
+fixed: the field alone would be a half-measure (no caller has the form's vars to send), and the
+webhook arm has no such gap, seeding both the vars and the operator names it narrows on.
+
+The second is the pair of CARD lanes, and it cuts the other way — a shape that can REFUSE where the
+direct lane launches. A card's `bot_args` are its whole var set, and the rule that fills them is by
+NAME over the already-LAYERED map: `ensureBoardCard` copies the route's args var, the PR carry list
+and the bot's declared PR-scoped hand-offs, so an integration var whose name is one of those DOES
+ride the card — as a card value, not as the integration's — and every other one reaches no carded
+run, however `launch_vars` / `operator_launch_vars` set it; `applyWebhookVarLayers` merges both
+levels into every direct lane and into the credential preview, which is where the difference starts.
+Neither lane pins a name operator-decided (rule 2 of §4, deliberately), so a card value certifies
+nothing either way. A routing field dialled by an UNCARRIED var therefore reads from its DECLARED
+DEFAULT on a card lane, while one dialled by a carried name — or by any value a client wrote onto
+the card — leaves the field undecided; and under a non-empty `providers:` list either reading can
+refuse a card whose integration's direct lane and credential preview both launch. The bound is
+measured, not assumed: no shipped bot dials `model:` on a `{{vars.…}}` span
+(`bots/docs-refresh/main.bot:885,925` is the catalog's only var dial and it dials `backend:` alone,
+which the allowlist does not read — `envDeferred` is called for `provider` and `model` only), and an
+`${…}` dial reads the same on EVERY lane, no launch var reaching it, so it is no instance of this
+divergence at all (it is decided on its default where it carries one, unreadable where it does not).
+So the shipped catalog holds no instance of the refusal. The `backend:` half of the divergence it
+does hold — `docs-refresh` declares `llm_backend: string = "claude_code"` against an operator layer
+that may pin `claw` — changes the harness a carded run uses, not the vocabulary it may spend, which
+is exactly why the `providers:` bound holds. The refusing shape is reachable for a tenant's own
+program. The unpinned half of it is not new either: the trigger spine (`trigger_launcher.go`)
+resolves an allowlist and pins no name for the same reason — its vars are subscription-computed and may
+blind-carry an args-var payload — so this is one rule on the three lanes whose vars are not an
+operator's own gesture, not a card-lane exception.
+
+Named rather than fixed, because the only correct repair changes what a carded run DOES. The gate
+must certify the route the run will actually SPEND, so feeding it vars the run does not carry would
+admit a launch that then spends outside the list — strictly worse than the refusal; and trusting the
+value a card carries is rule 2's own hole (a bot-arg is member-writable and the webhook wrote it from
+the delivery payload). Handing the RUN the integration's var layers is the repair, and it is the
+`ensureBoardCard` carry list's follow-up rather than this slice's: every pinned var whose name that
+list does not already hold — the operator's `gate_context` among them — would start reaching cards
+already sitting in their columns, and for a name it DOES hold the follow-up owes a precedence rule
+(the card's copy, frozen at carding time, or the integration's value at launch).
+`TestRoutingParity_TheCardLaneShapeIsItsOwn` measures both refusals and the bound, and
+`TestLaunchLanes_CarryNoIntegrationVarLayer` pins both halves of the carry rule on the lanes
+themselves — one integration var of each kind, per level — so neither can go quiet.
 
 ### 8. Backend parity and the escape hatches
 
@@ -599,7 +671,34 @@ than re-polarized, so there is no string knob left to fail open.
   a team that must keep ONE cell locks the block and restates the rest (named follow-up, §5); the
   launcher's `model_overrides` is outside the lock primitive (§6); the board-dispatch and
   pipeline-admission lanes resolve no routing policy at all today (`pkg/server/boarddispatch.go:1864`,
-  `pipeline_admission.go:796`) and are wired by this work — an inherited ADR-121 gap; a pipeline
+  `pipeline_admission.go:796`) and are wired by this work — an inherited ADR-121 gap, with the
+  webhook level reaching a board-CARDED run through a reserved bot-arg that names the integration
+  (`__iterion_webhook_id`), which both card lanes read back from the config store
+  (`cardLaunchPolicyLayers`): the card carries the REFERENCE, never the policy values, because a
+  bot-arg is writable at the member rung and a card waits in its column — carried values would
+  record a client's own vocabulary as the integration's level and would freeze that level against a
+  later narrowing. The residual the reference leaves is bounded and named: the id is still
+  member-writable, so a card can name any integration **of its own team** (another team's, or one
+  deleted since, is a launch REFUSAL), which is strictly less than the arbitrary `llm_routing` the
+  same rung already sends to `POST /api/runs` as the more specific `run` level. The repo and
+  BYOK-override halves of a card's launch context stay carried values — cards materialised before
+  the reference existed hold them and name no integration, and refusing those would wedge every
+  card already in a column — so they keep two properties this record does not close: they are
+  member-writable, and any client write that rewrites a card's `bot_args` replaces them wholesale
+  (`native.Patch.BotArgs`), so an edited card loses its reserved launch context — including the
+  integration it names, which is how a deliberate client keeps the integration's credential
+  override while dropping the lock that governs it. The id is SWAPPABLE, not only droppable: a
+  rewrite can name a SIBLING integration instead, so a carded run's lock is chosen by whoever last
+  wrote the card's `bot_args`, from the set of the team's own integrations, and the credential and
+  the lock may then come from two different ones (measured on the real `processBoardCard`:
+  integration A's `key_overrides` blob under integration B's id publishes A's key with B's
+  `providers:`, which replaces the team's list — `TestBoardDispatch_ACardMayNameASiblingIntegration`).
+  The run document records the LEVEL (`webhook`), never WHICH integration set it, so "whose lock
+  decided this run" is answerable only from the card's surviving `bot_args`. Closing both halves —
+  the dropped lock and the swapped one — asks for the overrides to travel as a reference too,
+  behind a migration window for the cards in flight: named follow-up, not this slice;
+  neither lane pins any of its vars operator-decided, because a card's `bot_args` carry
+  payload-derived values the webhook wrote (§4 rule 2, deliberately); a pipeline
   queued root recovered after a restart re-launches from a minimal spec that carries no overrides
   (`pkg/runview/pipeline_scheduler.go:124-128`, a documented V1 limitation, local mode only); and
   `syncSchedules` carries neither the retry fields nor Routing today — this work adds both, in one

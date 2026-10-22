@@ -730,8 +730,14 @@ func (s *Server) handlePipelineBoardTaskLaunch(w http.ResponseWriter, r *http.Re
 			runMayExist = false
 		}
 		status := http.StatusConflict
-		if errors.Is(err, errTicketPRLaunchContext) {
+		switch {
+		case errors.Is(err, errTicketPRLaunchContext):
 			status = prLaunchContextStatus(err)
+		case errors.Is(err, errTicketRoutingUnresolved):
+			// A tenant routing record this server cannot read is an outage,
+			// not a conflict on the card: 409 would send the operator to
+			// edit a ticket nothing is wrong with.
+			status = http.StatusServiceUnavailable
 		}
 		s.httpErrorFor(w, r, status, "pipeline board launch: %v", err)
 		return

@@ -18,6 +18,14 @@ import (
 // every Persy eval 429 while the supervised campaign was happily running
 // on the Anthropic credential (run 01a042c2).
 func TestSpecsFromWorkflowDeriveProviderHint(t *testing.T) {
+	// The env-ref case below reads its dial through the EXPANDING process's
+	// environment: blanked here so the case answers from the fixture's own
+	// default, not from the shell. An operator with this repo's Revi dials
+	// exported (`ITERION_VIBE_MODEL_CLAUDE=openai/…`) otherwise reads a hint
+	// regression where only the shell changed. assertNoHostAnsweredDial
+	// below is what keeps that one line honest as the table grows: the
+	// freeze is checked against the reader, not trusted as a list.
+	t.Setenv("ITERION_VIBE_MODEL_CLAUDE", "")
 	wf := func(node ir.Node) *ir.Workflow {
 		return &ir.Workflow{
 			Nodes: map[string]ir.Node{"campaign": node},
@@ -79,6 +87,10 @@ func TestSpecsFromWorkflowDeriveProviderHint(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if llm, ok := tc.node.(ir.LLMNode); ok {
+				f := llm.GetLLMFields()
+				assertNoHostAnsweredDial(t, f.Model, f.Backend, f.Provider)
+			}
 			specs := SpecsFromWorkflow(wf(tc.node), nil, iterlog.Nop())
 			if len(specs) != 1 {
 				t.Fatalf("specs = %d, want 1", len(specs))
@@ -87,6 +99,28 @@ func TestSpecsFromWorkflowDeriveProviderHint(t *testing.T) {
 				t.Fatalf("ProviderHint = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// assertNoHostAnsweredDial fatals when a case's own field text is still
+// answered by the process environment: the derivation's reader
+// (ir.ExpandEnvWithDefault) must give what a reader answering nothing gives.
+//
+// Asked of the READER rather than of a list of names, because the freeze
+// above is one line for one dial and the table it protects grows: a case
+// that adds a dial — in any form the expander resolves, `${NAME}`,
+// `${NAME:-default}` or the bare `$NAME` — then refuses the run on the host
+// that would have flipped its hint, instead of asserting the host's answer.
+// The same rule guards the routing fixtures of
+// pkg/server/cloudpublisher (freezeHostDials); each package keeps its own
+// copy because a test helper is not shared API.
+func assertNoHostAnsweredDial(t *testing.T, texts ...string) {
+	t.Helper()
+	for _, s := range texts {
+		got, want := ir.ExpandEnvWithDefault(s), ir.ExpandWithDefault(s, func(string) string { return "" })
+		if got != want {
+			t.Fatalf("this host still answers a reference the case carries: the derivation's reader gives %q where an unset environment gives %q — freeze that dial", got, want)
+		}
 	}
 }
 

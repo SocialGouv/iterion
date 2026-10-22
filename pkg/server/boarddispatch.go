@@ -14,10 +14,13 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // boardCoordinator is the cross-tenant board view the cloud dispatcher needs.
@@ -1631,18 +1634,28 @@ func (d *boardDispatcher) log(format string, args ...any) {
 // on failure or pause (the dispatcher then moves the card to blocked). The
 // tenant identity is stamped on ctx so the publisher seals credentials.
 // Reserved BotArgs keys carrying the launch context a webhook-launched card
-// targets — the repo to clone AND the webhook's BYOK key / secret overrides.
-// The board coordinator launches from the card and otherwise has NONE of this
-// (the webhook's own SecretOverrides/KeyOverrides never reach it). ensureBoardCard
-// stamps them; liftBoardLaunchContext extracts them into the LaunchSpec so they
-// don't leak to the bot as vars. Secret resolution ALSO works via a (tenant,bot)
+// targets — the repo to clone, the webhook's BYOK key / secret overrides AND
+// the ID of the integration whose launch-policy layers (routing, retry) the
+// launch must resolve. The board coordinator launches from the card and
+// otherwise has NONE of this. ensureBoardCard stamps them;
+// liftBoardLaunchContext takes them off the vars — the repo and the overrides
+// into the LaunchSpec, the id into the launch's own read — so none of them
+// reaches the bot as a var. Secret resolution ALSO works via a (tenant,bot)
 // binding — the override is the belt to that braces, and the only route for a
 // per-webhook KeyOverride (BYOK billing), which has no binding equivalent.
+//
+// The launch policy rides as an ID, never as values, and
+// cardLaunchPolicyLayers reads it back from the config store: a bot-arg is
+// member-writable (the board task API) and a card waits in its column for as
+// long as its column holds it, so carried values would record a client's own
+// vocabulary as the integration's level, and would freeze that level against
+// the admin's later narrowing of the integration.
 const (
 	boardRepoURLKey         = "__iterion_repo_url"
 	boardRepoRefKey         = "__iterion_repo_ref"
 	boardKeyOverridesKey    = "__iterion_key_overrides"
 	boardSecretOverridesKey = "__iterion_secret_overrides"
+	boardWebhookIDKey       = "__iterion_webhook_id"
 )
 
 // boardLaunchContext is the non-var launch state lifted off a card's BotArgs.
@@ -1652,17 +1665,76 @@ type boardLaunchContext struct {
 	RepoRef         string
 	KeyOverrides    map[string]string
 	SecretOverrides map[string]string
+	WebhookID       string
+}
+
+// cardLaunchPolicyLayers reads the LAUNCH-POLICY layers of the integration a
+// card names — its routing block (ADR-129's per-integration cells and its
+// `providers:` allowlist) and its retry block, the two layers the DIRECT lane
+// hands its resolvers (launchWebhookBot: llmroute.SourceWebhook,
+// retrypolicy.SourceWebhook). The one producer of those layers on a card
+// lane: both lanes call it, neither folds around its error.
+//
+// Read LIVE from the config store, by the id the card carries, so an admin
+// narrowing the integration reaches the cards already sitting in its columns
+// and the level the run document records is the level that decided.
+//
+// A card naming no integration contributes no layer, so a card an operator
+// typed resolves bot→tenant→platform→env like any other launch. An id this
+// team cannot read is a REFUSAL, never an absent layer: a board-mode run that
+// applies the integration's BYOK credential while resolving no routing layer
+// spends that credential with the integration's own lock on where it may be
+// spent ABSENT (ADR-129 §5). The id is member-writable like every bot-arg, so
+// the tenant check is the guard that makes the recorded level true — another
+// team's config is as unreadable here as a deleted one.
+func (s *Server) cardLaunchPolicyLayers(ctx context.Context, tenant string, lc boardLaunchContext) ([]llmroute.Layer, []retrypolicy.Layer, error) {
+	if lc.WebhookID == "" {
+		return nil, nil, nil
+	}
+	if s.webhookConfigs == nil {
+		return nil, nil, fmt.Errorf("card names integration %s, whose launch policy this server cannot read (no webhook config store wired)", lc.WebhookID)
+	}
+	cfg, err := s.webhookConfigs.Get(store.WithoutTenantFilter(ctx), lc.WebhookID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the launch policy of integration %s: %w", lc.WebhookID, err)
+	}
+	if cfg.TenantID != tenant {
+		return nil, nil, fmt.Errorf("card names integration %s, which belongs to another team", lc.WebhookID)
+	}
+	var routeLayers []llmroute.Layer
+	if cfg.Routing != nil {
+		routeLayers = []llmroute.Layer{{Source: llmroute.SourceWebhook, Policy: *cfg.Routing}}
+	}
+	var retryLayers []retrypolicy.Layer
+	if p := retryLayerPolicy(cfg); p != nil {
+		retryLayers = []retrypolicy.Layer{{Source: retrypolicy.SourceWebhook, Policy: *p}}
+	}
+	return routeLayers, retryLayers, nil
+}
+
+// retryLayerPolicy is a webhook's retry block as a fold LAYER, or nil when
+// the config sets none of its fields: an all-zero policy contributes nothing
+// to the fold either way, and passing one would claim an explicit
+// per-integration choice nobody made. The routing block needs no twin —
+// cfg.Routing is already a pointer the operator either wrote or not.
+func retryLayerPolicy(cfg webhooks.Config) *retrypolicy.Policy {
+	p := cfg.RetryPolicy()
+	if p == (retrypolicy.Policy{}) {
+		return nil
+	}
+	return &p
 }
 
 // liftBoardLaunchContext splits a card's BotArgs into the bot's vars and the
-// reserved launch context (repo + overrides), removing the reserved keys from
-// the vars so they never leak to the bot. A malformed override blob is an
-// error: silently dropping it would launch the run WITHOUT the webhook's
-// BYOK key / secret overrides, so the failure must surface instead.
+// reserved launch context (repo + overrides + the integration id), removing
+// the reserved keys from the vars so they never leak to the bot. A malformed
+// blob is an error: silently dropping it would launch the run WITHOUT the
+// webhook's BYOK key / secret overrides, so the failure must surface instead.
 func liftBoardLaunchContext(botArgs map[string]string) (boardLaunchContext, error) {
 	lc := boardLaunchContext{
-		RepoURL: botArgs[boardRepoURLKey],
-		RepoRef: botArgs[boardRepoRefKey],
+		RepoURL:   botArgs[boardRepoURLKey],
+		RepoRef:   botArgs[boardRepoRefKey],
+		WebhookID: botArgs[boardWebhookIDKey],
 	}
 	if blob := botArgs[boardKeyOverridesKey]; blob != "" {
 		if err := json.Unmarshal([]byte(blob), &lc.KeyOverrides); err != nil {
@@ -1677,7 +1749,7 @@ func liftBoardLaunchContext(botArgs map[string]string) (boardLaunchContext, erro
 	lc.Vars = make(map[string]string, len(botArgs))
 	for k, v := range botArgs {
 		switch k {
-		case boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey:
+		case boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey:
 			continue
 		}
 		lc.Vars[k] = v
@@ -1811,10 +1883,14 @@ func (s *Server) boardLaunchPreconditions(ctx context.Context, tenant string, is
 		return nil, boardLaunchContext{}, fmt.Errorf("card %s names bot %q: %w: %w", iss.ID, iss.Bot, err, errCardUnlaunchable)
 	}
 	// A webhook-launched card carries its launch context (repo + the webhook's
-	// BYOK key / secret overrides) in reserved BotArgs keys (ensureBoardCard) —
-	// the coordinator otherwise has none of it. Lift it into the LaunchSpec so
-	// the runner clones + the publisher applies the overrides, and strip the
-	// reserved keys from the bot's vars.
+	// BYOK key / secret overrides + the id of the integration whose routing
+	// and retry blocks the launch resolves) in reserved BotArgs keys
+	// (ensureBoardCard) — the coordinator otherwise has none of it. Lift it so
+	// the runner clones, the publisher applies the overrides and the launch
+	// can read the integration level, and strip the reserved keys from the
+	// bot's vars. The lift is structural only: admission stays policy-blind
+	// (TestAdmitBoardCard_StaysPolicyBlind), the launch owns every read whose
+	// failure refuses it.
 	lc, err := liftBoardLaunchContext(iss.BotArgs)
 	if err != nil {
 		lb.Cleanup()
@@ -1844,6 +1920,33 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	}
 	defer lb.Cleanup()
 	ctx = store.WithIdentity(ctx, tenant, boardDispatcherActor)
+	// The run's routing and retry contracts, resolved here like on every
+	// other launch lane: only the launch site sees every level at once, and
+	// the run document is the carrier the runner and every resume read. A
+	// cloud card is the card's TEAM's spend, so the tenant levels answer —
+	// its `providers:` allowlist included — and a webhook-CARDED run adds its
+	// integration's own block on top: the layer the direct lane passes, read
+	// here from the integration the card names (cardLaunchPolicyLayers).
+	// Resolved BEFORE the PR launch context below, so a refusal has no minted
+	// grant to hand back.
+	//
+	// Both errors are a REFUSAL, never folded around: a tenant record the
+	// fold cannot read, or an integration whose block this launch cannot
+	// read, would otherwise launch the card outside the vocabulary its
+	// operator locked. Nothing ran, so it takes the launchRefusal exit — the
+	// card keeps its column under machine provenance, the refusal lands on
+	// its ledger, and the next tick retries it until the attempt cap files it
+	// blocked with the reason (processCard's errCardLaunchRefused arm): a
+	// store outage spaces and then stops these launches, it never widens them.
+	routeLayers, retryLayers, policyErr := s.cardLaunchPolicyLayers(ctx, tenant, lc)
+	if policyErr != nil {
+		return &launchRefusal{cardID: iss.ID, cause: policyErr}
+	}
+	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, tenant, lb.BotID, routeLayers...)
+	if routeErr != nil {
+		return &launchRefusal{cardID: iss.ID, cause: routeErr}
+	}
+	retryPolicy := s.resolveRunRetryPolicy(ctx, tenant, lb.BotID, retryLayers...)
 	// A card that targets a pull request also needs the repo's launch policy
 	// and a publish grant, neither of which can ride the card itself — and it
 	// passes the fork guard at CLAIM time: a head repo can vanish between
@@ -1869,6 +1972,8 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		RepoRef:            lc.RepoRef,
 		KeyOverrides:       lc.KeyOverrides,
 		SecretOverrides:    lc.SecretOverrides,
+		RetryPolicy:        retryPolicy,
+		LLMRoutePolicy:     routePolicy,
 		// Stamp the card onto the run record (ADR-046 SourceRef) — the
 		// card→run edge SetLastRun writes below is not enough: the
 		// fork-adoption sweep resolves an issue's runs through the indexed

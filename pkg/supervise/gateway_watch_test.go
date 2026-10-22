@@ -43,11 +43,17 @@ func TestGatewayWatch_NeedsAPinOrTheEnvDefault(t *testing.T) {
 		t.Fatal("the env default must lift the refusal")
 	}
 
-	// An unexpanded template is NO pin: the refusal holds.
+	// An unexpanded template is NO pin: the refusal holds. The template's own
+	// name is frozen, because a host that answered it would hand this leg an
+	// expanding pin and the refusal would rightly not come — the leg would
+	// then report the shell, not the rule.
 	e4 := NewLLMEvaluator()
 	e4.gatewayWatched = true
 	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
-	_, _, err = e4.Evaluate(context.Background(), EvalInput{Spec: Spec{Model: "${ITERION_TEST_SUPERVISOR_PIN_UNSET_X}"}})
+	const noPinRef = "${ITERION_TEST_SUPERVISOR_PIN_UNSET_X}"
+	t.Setenv("ITERION_TEST_SUPERVISOR_PIN_UNSET_X", "")
+	assertNoHostAnsweredDial(t, noPinRef)
+	_, _, err = e4.Evaluate(context.Background(), EvalInput{Spec: Spec{Model: noPinRef}})
 	if !errors.Is(err, ErrGatewayWatchNeedsPin) {
 		t.Fatal("an unexpanded template is no pin — want the refusal")
 	}
@@ -65,6 +71,11 @@ func TestGatewayWatch_NeedsAPinOrTheEnvDefault(t *testing.T) {
 // any template the launch cannot rule out. Vendor routes answer false. Red
 // when the walk drops a source or over-triggers.
 func TestGatewayWatched_ReadsTheWatchedRoutes(t *testing.T) {
+	// The env-default row below reads its own default, so the host answers
+	// none of the names the cases reference — and each case checks that
+	// against the walk's own reader rather than against this one line, so a
+	// row that grows a reference refuses instead of reading the shell.
+	t.Setenv("GWM", "")
 	wf := func(model string, fbs []ir.Fallback) *ir.Workflow {
 		return &ir.Workflow{
 			Nodes: map[string]ir.Node{
@@ -108,10 +119,30 @@ func TestGatewayWatched_ReadsTheWatchedRoutes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			assertWatchedDialsFrozen(t, tc.wf)
 			if got := gatewayWatched(tc.wf, tc.watches); got != tc.want {
 				t.Errorf("gatewayWatched = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// assertWatchedDialsFrozen is assertNoHostAnsweredDial over a case's own
+// workflow: every routing text the watch walk reads — each node's fields and
+// each of its fallbacks' — must answer from the fixture and not from the
+// process environment.
+func assertWatchedDialsFrozen(t *testing.T, wf *ir.Workflow) {
+	t.Helper()
+	for _, n := range wf.Nodes {
+		llm, ok := n.(ir.LLMNode)
+		if !ok {
+			continue
+		}
+		f := llm.GetLLMFields()
+		assertNoHostAnsweredDial(t, f.Model, f.Backend, f.Provider)
+		for _, fb := range llm.GetFallbacks() {
+			assertNoHostAnsweredDial(t, fb.Model, fb.Backend, fb.Provider)
+		}
 	}
 }
 

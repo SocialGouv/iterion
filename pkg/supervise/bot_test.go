@@ -114,7 +114,15 @@ func TestResolveModel(t *testing.T) {
 // raw string split at its first "/" into a garbage provider, every eval
 // soft-failed, and the declared supervisor was silently inert.
 func TestResolveModelExpandsEnvForm(t *testing.T) {
-	got, err := resolveModel(context.Background(), "${ITERION_TEST_SUP_MODEL_UNSET:-anthropic/claude-haiku-4-5}", "")
+	// The first leg asserts what an UNSET reference reads, so the host must
+	// answer nothing for that name — otherwise the leg reports the shell's
+	// model. The freeze is checked against resolveModel's own reader
+	// (assertNoHostAnsweredDial), so it holds for a reference this leg grows
+	// later, in any form the expander resolves.
+	const unsetRef = "${ITERION_TEST_SUP_MODEL_UNSET:-anthropic/claude-haiku-4-5}"
+	t.Setenv("ITERION_TEST_SUP_MODEL_UNSET", "")
+	assertNoHostAnsweredDial(t, unsetRef)
+	got, err := resolveModel(context.Background(), unsetRef, "")
 	if err != nil {
 		t.Fatalf("resolveModel: %v", err)
 	}

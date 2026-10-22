@@ -53,9 +53,13 @@ type LaunchSpec struct {
 	// these names — never through a lane-filled value, which the webhook
 	// lanes seed from the delivery payload (reviewPRVars, fixerPRVars), and
 	// which would hand the gate a route the payload chose (ADR-129 §4, rule
-	// 2). No lane fills it yet (slice 1): empty means launch values narrow
-	// nothing and only declared defaults do — the conservative half, which
-	// slice 3 completes.
+	// 2). Empty means launch values narrow nothing and only declared
+	// defaults do — the conservative half, and the DELIBERATE answer of
+	// every lane whose vars are not an operator's own gesture: a board card
+	// and a pipeline ticket carry bot_args a webhook wrote from the delivery
+	// payload (ensureBoardCard: the comment body, the PR url, a hand-off),
+	// so those lanes pin nothing. The manual launch (runs_launch.go) and the
+	// webhook config's OPERATOR layer do.
 	TrustedVarNames []string
 	// AllowUnknownInputs is the operator's explicit opt-out of the #1757
 	// input check: an input that names no declared var rides the launch
