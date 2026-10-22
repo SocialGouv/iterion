@@ -506,8 +506,10 @@ field, and a `claw` cell may carry no `provider:` of its own (§3).
 
 The qualification is load-bearing, because a dial's reading belongs to the DEPLOYMENT, not to the
 text: `${ITERION_*}` is answered by the platform's stored `bot_vars` first (`ir.SetEnvOverlay` with
-`platformcfg.BotVarsOverlay`, installed in `cmd/iterion/server.go`; written through
-`PUT /api/admin/settings/bot-vars`, super-admin) and then by the pod environment — `ITERION_VIBE_*`
+`platformcfg.EnvOverlayFor`, installed in `cmd/iterion/server.go` and the runner; written through
+`PUT /api/admin/settings/bot-vars`, super-admin) and then by the pod environment — a sovereign
+pool's own env block excepted, which its pins (`ITERION_BOT_VARS_ENV_PINS`, ADR-093 addendum
+2026-10-22) answer ahead of the record — `ITERION_VIBE_*`
 is not credential-shaped, so `platformcfg.CloudProcessEnvPolicy` passes it. So delivery 1 gives a
 tenant the LOCK, and TWO roads make the catalog meet it: de-dial the routing fields of the bots that
 tenant runs and drop their hints, per §8's "a literal field is worth more than an env dial now"

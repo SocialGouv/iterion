@@ -249,7 +249,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// no restart. Precedence: setting > pod env > .bot default.
 	botVarsResolver := platformcfg.NewResolver[platformcfg.BotVars](
 		platformcfg.NewMongoBotVars(st.DB()), logger.Warn)
-	ir.SetEnvOverlay(platformcfg.BotVarsOverlay(botVarsResolver, logger.Warn))
+	// The names ITERION_BOT_VARS_ENV_PINS spells — a sovereign pool's own
+	// env block, rendered by the chart — are the pod's, ahead of the record.
+	ir.SetEnvOverlay(platformcfg.EnvOverlayFor(botVarsResolver, os.Getenv, logger.Warn, logger.Info))
 	// Workflow text never reads a credential-shaped name from this process's
 	// environment: it holds the platform's credentials, not the tenant's.
 	ir.SetProcessEnvPolicy(platformcfg.CloudProcessEnvPolicy())

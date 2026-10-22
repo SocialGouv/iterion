@@ -236,7 +236,16 @@ runner:
 # Every entry requires: name, gateway.baseUrl, gateway.existingSecret.
 # Optional: replicas (default 1), image (default the shared runner
 # image), resources (default runner.resources), podAnnotations,
-# gateway.apiKeySecretKey (default OPENAI_COMPATIBLE_API_KEY).
+# gateway.apiKeySecretKey (default OPENAI_COMPATIBLE_API_KEY), env (literal
+# pod env — the pool's routing dials, ITERION_VIBE_MODEL_* and friends).
+# Every ITERION_ name in `env` is also rendered into ITERION_BOT_VARS_ENV_PINS:
+# the platform bot-vars record (PUT /api/admin/settings/bot-vars) does not
+# reach a pinned name, so a model pin stored for the shared fleet never
+# re-routes a pool on a name its block spells — spell EVERY dial the bots
+# the pool runs read (docs/sovereign-pools.md lists review-pr's). Tune a
+# pool here, in GitOps, not in the record. A block that spells
+# ITERION_BOT_VARS_ENV_PINS itself (an install whose chart predates the
+# rendering) gets the union of its spelling and its ITERION_ names.
 runnerPools: []
 #  - name: honorabilite
 #    replicas: 1
@@ -245,6 +254,9 @@ runnerPools: []
 #      baseUrl: "https://<regional-gateway>"
 #      existingSecret: "iterion-pool-honorabilite-gateway"
 #      # apiKeySecretKey: "OPENAI_COMPATIBLE_API_KEY"
+#    env:
+#      ITERION_VIBE_MODEL_CLAUDE: "openai_compatible/<gateway model id>"
+#      ITERION_VIBE_PROVIDER_CLAUDE: "openai_compatible"
 
 # --- HTTP exposure --------------------------------------------------
 service:

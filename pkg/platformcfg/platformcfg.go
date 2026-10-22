@@ -26,6 +26,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -205,7 +206,10 @@ var botVarsInfraPrefixes = []string{
 // manifests and scripts it embeds under pkg) to that rule, and every knob a
 // shipped bot reads to the other side of it.
 var botVarsInfraExact = map[string]bool{
-	"ITERION_PUBLIC_URL":   true,
+	"ITERION_PUBLIC_URL": true,
+	// The pin list is the process's own: a stored record cannot choose
+	// which names it does not reach.
+	EnvBotVarsEnvPins:      true,
 	"ITERION_DISABLE_AUTH": true,
 	"ITERION_SIGNUP_MODE":  true,
 	// The pinned-version fallback dial (#1517): the SERVER's own posture —
@@ -474,7 +478,8 @@ func botVarEntryError(name, val string) error {
 	return nil
 }
 
-// BotVarsOverlay is the lookup cmd wiring installs with ir.SetEnvOverlay.
+// BotVarsOverlay is the checked read of the record, the lookup EnvOverlayFor
+// installs with ir.SetEnvOverlay (behind the process's env pins).
 // Each stored value is checked against the write-time rule before it is
 // handed out: Validate guards only the admin write, while a record can also
 // be written by a binary carrying an older rule (server and runner roll out
@@ -502,6 +507,116 @@ func BotVarsOverlay(res *Resolver[BotVars], warn func(string, ...any)) func(name
 		}
 		return v, true
 	}
+}
+
+// EnvBotVarsEnvPins names, comma-separated, the ITERION_* names whose
+// process environment is read AHEAD of the bot_vars record: a sovereign
+// pool's own env block (the chart renders the list from runnerPools[].env;
+// another deployment spells it by hand). Read once, at boot, by the cmd
+// wiring — never through the overlay it configures.
+const EnvBotVarsEnvPins = "ITERION_BOT_VARS_ENV_PINS"
+
+// ParseEnvPins reads the pin list: comma-separated, whitespace around a
+// name dropped, empty tokens ignored. A token that is not an ITERION_ name
+// in upper snake case pins nothing — the overlay is consulted for those
+// names alone — and comes back in malformed, for the caller to say so: a
+// hand-spelled list separated by spaces or semicolons is one such token,
+// and a list that silently pins nothing is the defect it was spelled
+// against. Nil when nothing is pinned.
+func ParseEnvPins(raw string) (pins map[string]bool, malformed []string) {
+	for _, tok := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(tok)
+		if name == "" {
+			continue
+		}
+		if !envPinNameOK(name) {
+			malformed = append(malformed, name)
+			continue
+		}
+		if pins == nil {
+			pins = map[string]bool{}
+		}
+		pins[name] = true
+	}
+	return pins, malformed
+}
+
+// envPinNameOK is the pin grammar: ITERION_ then upper snake case — the
+// names lookupOverlay consults, spelled as the environment spells them.
+func envPinNameOK(name string) bool {
+	if !strings.HasPrefix(name, "ITERION_") || len(name) <= len("ITERION_") {
+		return false
+	}
+	for _, r := range name {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// SortedPinNames renders a pin set for a log line, sorted.
+func SortedPinNames(pins map[string]bool) []string {
+	out := make([]string, 0, len(pins))
+	for name := range pins {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// PinnedOverlay wraps a bot-vars overlay so a pinned name answers "no
+// override": ir.LookupEnv then reads the process environment, and the
+// record does not reach the name. Every other name takes the record as
+// before (setting > pod env > .bot default), so a platform-wide effort
+// dial still tunes a pool whose env block does not spell it.
+//
+// A pinned name is the process's word even when its env is empty: the
+// expansion falls to the .bot default, never to the record — the pin says
+// the deployment decided this name, and an empty decision is still its own.
+//
+// Why a spelled list rather than "the pod env wins on a pool": a pool pod
+// also carries the shared configmap through envFrom, and a name the
+// configmap sets is the deployment default the record exists to override;
+// only the names the pool's own block spells are the pool's. The chart
+// renders the list from that block (the union with a list the block spells
+// itself), so a name added to the block is pinned the day it lands. Without
+// the pin, a record that routes the shared fleet to a vendor model id
+// reaches a pool pod whose provider hint and rescue route name its gateway:
+// every route then crosses a gateway id with a vendor hint, the dispatch
+// refuses each at build, and the pool runs nothing.
+func PinnedOverlay(pins map[string]bool, inner func(name string) (string, bool)) func(name string) (string, bool) {
+	if len(pins) == 0 {
+		return inner
+	}
+	return func(name string) (string, bool) {
+		if pins[name] {
+			return "", false
+		}
+		return inner(name)
+	}
+}
+
+// EnvOverlayFor is the overlay the cmd wiring installs with
+// ir.SetEnvOverlay, server and runner alike: the bot_vars record, with the
+// names EnvBotVarsEnvPins spells in the process environment pinned ahead
+// of it. info, when non-nil, is told which names are pinned — the one
+// place an operator reads why a stored value does not reach a pod.
+func EnvOverlayFor(res *Resolver[BotVars], env func(string) string, warn, info func(string, ...any)) func(name string) (string, bool) {
+	overlay := BotVarsOverlay(res, warn)
+	pins, malformed := ParseEnvPins(env(EnvBotVarsEnvPins))
+	if len(malformed) > 0 && warn != nil {
+		warn("platformcfg: bot_vars: %s: %d token(s) are not ITERION_ names and pin nothing — one name per comma: %q",
+			EnvBotVarsEnvPins, len(malformed), malformed)
+	}
+	if len(pins) == 0 {
+		return overlay
+	}
+	if info != nil {
+		info("platformcfg: bot_vars: %d name(s) pinned to the process environment, the stored record does not reach them: %s",
+			len(pins), strings.Join(SortedPinNames(pins), ","))
+	}
+	return PinnedOverlay(pins, overlay)
 }
 
 // botVarValueRune is the value charset. A stored value is substituted RAW

@@ -118,3 +118,27 @@ child's own env.
 - A stored entry the wider rule now refuses is not deleted: the overlay
   ignores it with a warning (the pod env and the .bot default apply),
   `RefusedEntries` names it, and the record stays editable.
+
+## Addendum (2026-10-22) — a sovereign pool's own env block is pinned ahead of the record
+
+The precedence above is the shared fleet's. A sovereign runner pool
+(`runnerPools[]`, [sovereign pools](../sovereign-pools.md)) carries its
+routing in its own env block — gateway model ids, the `openai_compatible`
+hint, the claw backend — and the record, written for the shared fleet's
+vendor, reached those pods too: the record's vendor id under the pool's
+gateway hint, refused at build on every route, a pool that ran nothing
+(SocialGouv/iterion#2697).
+
+`ITERION_BOT_VARS_ENV_PINS` names, comma-separated, the `ITERION_*` names
+the process environment answers ahead of the record. The chart renders it
+from the pool's env block (every `ITERION_` name, in union with a list the
+block spells itself); `platformcfg.EnvOverlayFor` — the one overlay both
+cmds install — wraps the checked record read in `PinnedOverlay`. For a
+pinned name the precedence is **pod env > the .bot's `:-` default; the
+record never**, an empty pod value included. Every other name keeps
+setting > pod env > default, so a platform-wide effort dial still tunes a
+pool, and so does a model pin on a slot the block forgot: the pool block
+spells every dial the bots it runs read. The pin list is itself refused as
+a stored name; a token outside `ITERION_[A-Z0-9_]+` pins nothing and is
+warned about at boot.
+

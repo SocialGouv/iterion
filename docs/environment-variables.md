@@ -278,6 +278,7 @@ for the command's own shell. Local runs are unaffected.
 | Variable | Effect | Default |
 |---|---|---|
 | `ITERION_CLOUD_ENV_PASSTHROUGH` | Comma-separated credential-shaped names that workflow text may still read from a cloud process's environment — for a deployment whose teams are its operators. | unset |
+| `ITERION_BOT_VARS_ENV_PINS` | Comma-separated `ITERION_*` names the process environment answers AHEAD of the platform bot-vars record (`PUT /api/admin/settings/bot-vars`), whose precedence elsewhere is setting > pod env > .bot default. The chart renders it from a sovereign pool's `runnerPools[].env`, so a model pin stored for the shared fleet never re-routes a pool on a name its env block spells ([sovereign pools](sovereign-pools.md#routing-dials-the-pools-env-block-is-pinned)). Read at boot by the server and the runner. | unset |
 | `ITERION_CLOUD_SCHEDULE_GUARDS` | `allow` lets a cloud schedule or trigger carry a `guard:`, which the server runs as a shell command in its own pod. Otherwise the field is refused at write (422) and a guard stored earlier does not run: its tick is recorded `guard_error` and the reason is raised on the schedule's own `last_error`. | unset |
 
 ## See also
