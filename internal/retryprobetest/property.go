@@ -27,15 +27,20 @@ import (
 //	    fresher DATED instant, or by a credential's own reopening when the
 //	    refusal that named it was itself dated.
 //	I3  a park that followed real work (tokens spent) is charged, counted,
-//	    fed to the shared circuit and closes the probe ledger — exactly once;
-//	    and every arming of the row reaches the operator's counter once.
+//	    fed to the shared circuit and consumes the probe marker — exactly
+//	    once; and every arming of the row reaches the operator's counter once.
 //	I4  a probe-marked row is never retired before its announced instant, and
 //	    no probe ever pushes attempts past the budget.
 //	I5  one pause notice per provider wall — and not none: a notice offered on
-//	    an armed row whose probe ledger is closed is posted.
+//	    an armed row whose probe ledger is closed is posted. The same for the
+//	    run owner's own notification: at most one per wall, and the park that
+//	    opens a wall delivers it.
 //	I6  a marker nobody is paying for is read by NOBODY: an instant already
 //	    passed, or a pull older than store.ProbeMarkerTTL, and every payment
 //	    step on such a row behaves exactly as it would with no marker at all.
+//	I7  the probe ledger belongs to the WALL: no arming that re-states the
+//	    wall the row is on clears it, no arming that MOVES the wall inherits
+//	    it, and the pulls one wall spends never pass the probe budget.
 //
 // Each predicate names the violating step in its message; the driver replays
 // the failing sequence's prefixes to report the shortest one that violates.
@@ -52,6 +57,14 @@ const (
 	// StepParkBlind: the same, with a refusal that named no instant — the
 	// case whose decision is a GUESS.
 	StepParkBlind StepKind = "park_blind"
+	// StepParkRedated: the refusal names a window DURATION ("reached for 5
+	// hour"), so the instant it resolves to is recomputed from the moment it
+	// is read and every reading of ONE provider window answers a different
+	// one. The third production refusal shape, and the one no per-WALL
+	// invariant can see: a defect that invents a new wall per park satisfies
+	// "one notification per wall" and "budget probes per wall" while the
+	// owner's phone and the probe pass run at the sweeper's cadence.
+	StepParkRedated StepKind = "park_redated"
 	// StepParkAfterWorkDated / StepParkAfterWorkBlind: the window had
 	// genuinely reopened, the execution spent tokens, and THEN met a wall.
 	StepParkAfterWorkDated StepKind = "park_after_work_dated"
@@ -102,6 +115,11 @@ const (
 	// decided in pkg/runner and asserted by the runner driver; here it is
 	// the precondition that opens a new wall.
 	StepPaidPark StepKind = "paid_park"
+	// StepUserNotify offers the run's current outcome to the user-notification
+	// dispatcher, as the eventbus and the reconciliation sweep both do. It is
+	// the step the ticket's headline is about: the owner of a parked run hears
+	// about the WALL, once.
+	StepUserNotify StepKind = "user_notify"
 )
 
 // Step is one generated event, plus the facts the invariants read from it.
@@ -125,7 +143,7 @@ func (s Step) Dated() bool { return !s.At.IsZero() }
 // IsPark reports a step that goes through the runner's arming.
 func (s Step) IsPark() bool {
 	switch s.Kind {
-	case StepParkDated, StepParkBlind, StepParkAfterWorkDated, StepParkAfterWorkBlind:
+	case StepParkDated, StepParkBlind, StepParkRedated, StepParkAfterWorkDated, StepParkAfterWorkBlind:
 		return true
 	}
 	return false
@@ -204,6 +222,10 @@ type Snapshot struct {
 	Circuit int
 	// Notices is the pause notices posted on the pull request.
 	Notices int
+	// UserNotices is the notifications delivered to the run's OWNER
+	// (pkg/usernotify). A driver that does not wire the dispatcher leaves it
+	// at 0, and I5's user half then compares 0 with 0.
+	UserNotices int
 	// Abandons is the settlements that retired the retry.
 	Abandons int
 }
@@ -287,8 +309,59 @@ type Ledger struct {
 	// TokensSpent counts the ordinary (unprobed) resumes that legitimately
 	// took the minute's launch-rate token.
 	TokensSpent int
+	// ProbeBudget is the pulls ONE wall may spend (the deployment's
+	// ITERION_RETRY_PROBE_BUDGET). Zero means the driver does not drive the
+	// probe pass, and I7's bound is then not its business.
+	ProbeBudget int
+	// ProbeFloor is the deployment's ITERION_RETRY_PROBE_FLOOR: the shortest
+	// interval between two pulls of one ROW. Zero means the driver does not
+	// drive the probe pass, and I8's cadence half is then not its business.
+	ProbeFloor time.Duration
 	// Steps is the sequence so far, for the failure message.
 	Steps []Step
+
+	// notified counts, per provider wall (keyed on its second), the
+	// notifications the run's owner has had about it.
+	notified map[int64]int
+}
+
+// notifiedWall is what the owner has already heard about this wall.
+func (l *Ledger) notifiedWall(wall time.Time) int { return l.notified[wall.Unix()] }
+
+// armedHere reports a step that wrote an arming: attempts moved (a charged
+// park) or the marker was consumed while the row stayed armed (a free
+// re-arm).
+func armedHere(before, after Snapshot) bool {
+	if after.Attempts() > before.Attempts() {
+		return true
+	}
+	return before.Row != nil && before.Row.ProbeFrom != nil && after.Row != nil && after.Row.ProbeFrom == nil
+}
+
+// wallMoved reports that an arming MOVED the wall: the row carried one and the
+// arming wrote a different one. The legacy shape, which carried none at all,
+// is not a move — the budget on such a row is the budget of the wait it is
+// already on, and probe_count predates the wall field.
+func wallMoved(before, after *store.RunRetryState) bool {
+	if after == nil || after.Wall == nil || before == nil || before.Wall == nil {
+		return false
+	}
+	return !before.Wall.Equal(*after.Wall)
+}
+
+// ParkedWall is the provider wall this run is PARKED on, zero when it is not
+// parked on one — the fact every notification, alert and pull-request notice
+// about a usage park keys on (store.UsageParkWall), modelled here from the raw
+// fields on purpose: a checker that asked the production accessor would agree
+// with a broken one instead of catching it.
+func (s Snapshot) ParkedWall() time.Time {
+	if s.Status != store.RunStatusFailedResumable || s.Row == nil {
+		return time.Time{}
+	}
+	if s.Row.RetryAfter == nil || s.Row.Wall == nil || s.Row.Reason != store.RetryReasonUsageWindow {
+		return time.Time{}
+	}
+	return s.Row.Wall.UTC()
 }
 
 // Observe folds one executed step into the ledger and returns the invariants
@@ -407,9 +480,9 @@ func (l *Ledger) Observe(st Step, before, after Snapshot, now time.Time) []strin
 			if d := after.Circuit - before.Circuit; d != 1 {
 				fail("I3", "a park that followed real work fed the shared circuit %d time(s), want exactly 1", d)
 			}
-			if after.Row != nil && (after.Row.ProbeFrom != nil || after.Row.ProbeCount != 0) {
-				fail("I3", "a charged park left the probe ledger open (probe_from=%s probe_count=%d): the budget is per wait, and a ledger that survives its wait makes the bound unbounded",
-					instantPtr(after.Row.ProbeFrom), after.Row.ProbeCount)
+			if after.Row != nil && after.Row.ProbeFrom != nil {
+				fail("I3", "a charged park left the probe MARKER on the row (probe_from=%s): the next park would take the free treatment on a wall this execution already used",
+					instantPtr(after.Row.ProbeFrom))
 			}
 		} else if d := after.Attempts() - before.Attempts(); d != 0 {
 			fail("I3", "the attempt budget was spent, yet the arming charged %d more", d)
@@ -487,6 +560,96 @@ func (l *Ledger) Observe(st Step, before, after Snapshot, now time.Time) []strin
 		}
 	}
 
+	// I7 — the probe BUDGET belongs to the WALL. Two directions, and each is a
+	// measured cost: a budget cleared by an arming that re-states the wall
+	// prices one provider window at max_attempts × budget (120 pods and 5
+	// metered launches at the shipped defaults), and a budget INHERITED by a
+	// wall the provider moved leaves a genuinely new window unprobed until the
+	// run simply waits it out.
+	//
+	// The PACE is not the wall's and no arming may clear it — I8.
+	if before.Row != nil && after.Row != nil && after.Row.RetryAfter != nil && armedHere(before, after) {
+		if wallMoved(before.Row, after.Row) {
+			if after.Row.ProbeCount != 0 {
+				fail("I7", "an arming moved the wall from %s to %s and kept the previous wall's budget (probe_count=%d): the new window is probed on a budget it never spent",
+					instantPtr(before.Row.Wall), instantPtr(after.Row.Wall), after.Row.ProbeCount)
+			}
+		} else if after.Row.ProbeCount < before.Row.ProbeCount {
+			fail("I7", "an arming that left the wall at %s dropped the budget from %d to %d: the same window is probed afresh, which is the max_attempts × budget ceiling this rule exists to remove",
+				instantPtr(after.Row.Wall), before.Row.ProbeCount, after.Row.ProbeCount)
+		}
+	}
+	// I8 — the PACE belongs to the ROW, and nothing an arming does may hand a
+	// run a faster cadence than one pull per probe floor. Stated per RUN and
+	// not per wall on purpose: a defect that invents a new wall on every
+	// reading of one refusal satisfies every per-wall bound there is, and this
+	// is the clause that sees it. Two halves — the stamp an arming must leave
+	// alone, and the cadence the pulls must keep.
+	if before.Row != nil && after.Row != nil && armedHere(before, after) &&
+		before.Row.LastProbeAt != nil && after.Row.LastProbeAt == nil {
+		fail("I8", "an arming dropped last_probe_at (the pull of %s): the probe scan reads an absent stamp as \"never probed\", so this row is eligible again on the sweeper's NEXT pass instead of one floor later — a refusal that re-dates its window on every reading is then pulled once per sweep tick, charged nothing and bounded by nothing",
+			instantPtr(before.Row.LastProbeAt))
+	}
+	if l.ProbeFloor > 0 && before.Row != nil && after.Row != nil &&
+		after.Row.ProbeCount > before.Row.ProbeCount && before.Row.LastProbeAt != nil {
+		if since := now.Sub(before.Row.LastProbeAt.UTC()); since < l.ProbeFloor {
+			fail("I8", "the probe pass pulled this row %s after the previous pull (%s), inside the probe floor of %s: one pod per floor per run is the bound, whatever the provider does to its dates",
+				since, instantPtr(before.Row.LastProbeAt), l.ProbeFloor)
+		}
+	}
+	if l.ProbeBudget > 0 && after.Row != nil && after.Row.ProbeCount > l.ProbeBudget {
+		fail("I7", "the wall at %s has been pulled forward %d times, past the budget of %d: a forfait nobody resets must stop being probed and simply wait",
+			instantPtr(after.Row.Wall), after.Row.ProbeCount, l.ProbeBudget)
+	}
+
+	// I9 — only the PROVIDER moves a wall. A park whose refusal named no
+	// instant of its own says nothing about where this window ends: a window
+	// DURATION resolves a minute later to an instant a minute later, a blind
+	// refusal resolves to a bounded guess from the moment it is read, and a
+	// restore puts back an instant that is already the row's. So the wall the
+	// row is on stands while it is still AHEAD.
+	//
+	// The clause that is NOT per wall, and the only one that can see a defect
+	// which invents a wall per park: every per-wall bound (one notification, a
+	// budget of probes, one notice) is satisfied by a run whose every park
+	// opens a new wall, while its owner, its operator and its pull request
+	// hear from it once per park and the probe pass pulls it once per pass.
+	//
+	// A wall that has PASSED is spent news and may be replaced: the window it
+	// named is over, and the park that follows is a new wait whatever named
+	// it.
+	if st.IsPark() && !st.Dated() && armedHere(before, after) &&
+		before.Row != nil && before.Row.Wall != nil && before.Row.Wall.After(now) &&
+		wallMoved(before.Row, after.Row) {
+		fail("I9", "a park whose refusal named no instant of its own moved the wall from %s to %s: one provider window then collects a notification, an operator incident, a pull-request notice and a fresh probe budget per PARK, and no per-wall bound can see it",
+			instantPtr(before.Row.Wall), instantPtr(after.Row.Wall))
+	}
+
+	// I5b-for-usernotify — the run's OWNER hears about a wall once, and about
+	// every wall. Every park, probe pull, lease and free re-arm rewrites the
+	// row and moves updated_at, so a per-transition episode pushed one message
+	// per bookkeeping write — about twenty-five on a weekly wall at the
+	// shipped probe budget, each of them saying the run had failed.
+	//
+	// Counted per WALL rather than per step, because a run leaves its wall and
+	// comes back to it (a resume clears retry_after, the park re-arms the same
+	// instant) and a counter that reset on the way out would bless a second
+	// message on the way back. A notification delivered while the row is
+	// parked on NO wall is an ordinary outcome and not this invariant's
+	// business.
+	wallBefore := before.ParkedWall()
+	if delivered := after.UserNotices - before.UserNotices; delivered > 0 && !wallBefore.IsZero() {
+		if n := l.notifiedWall(wallBefore) + delivered; n > 1 {
+			fail("I5", "the run's owner has now been notified %d times about the wall at %s: one provider window collects a park, a pull and a free re-arm per probe of the budget, and nothing new happened to the run",
+				n, instant(wallBefore))
+		}
+	}
+	if st.Kind == StepUserNotify && !wallBefore.IsZero() &&
+		l.notifiedWall(wallBefore) == 0 && after.UserNotices == before.UserNotices {
+		fail("I5", "the park that opened the wall at %s notified nobody: suppressing it leaves the run's owner with a run that looks dead for days",
+			instant(wallBefore))
+	}
+
 	// Ledger bookkeeping the predicates above read. A PAID arming is what
 	// opens a wall — whoever performed it, and whatever it was called: it
 	// charges an attempt and closes the probe ledger, which is exactly what
@@ -497,6 +660,14 @@ func (l *Ledger) Observe(st Step, before, after Snapshot, now time.Time) []strin
 	}
 	if st.IsResume() && after.Resumes > before.Resumes && !liveBefore {
 		l.TokensSpent++
+	}
+	// What the owner has heard, booked on the wall the row was parked on when
+	// the step ran.
+	if delivered := after.UserNotices - before.UserNotices; delivered > 0 && !wallBefore.IsZero() {
+		if l.notified == nil {
+			l.notified = map[int64]int{}
+		}
+		l.notified[wallBefore.Unix()] += delivered
 	}
 	// And the wall the NEXT step owes: what this one legitimately left the row
 	// holding. A row holding nothing owes nothing — it is exhausted, retired

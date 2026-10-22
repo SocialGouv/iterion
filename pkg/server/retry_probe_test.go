@@ -77,8 +77,8 @@ func TestSweepRetryProbes_PullsANotYetDueRetryForwardToNow(t *testing.T) {
 	if got.runID != "run-parked" || !got.from.Equal(announced) || !got.to.Equal(now) {
 		t.Fatalf("pull = %+v, want run-parked from the announced %s to now %s", got, announced, now)
 	}
-	if v := counterValue(t, s.cfg.Metrics.RunsRetryProbes); v != 1 {
-		t.Errorf("iterion_runs_retry_probes_total = %v, want 1 — the pod a probe may waste has to be countable", v)
+	if v := probeResultValue(t, s.cfg.Metrics, metrics.RetryProbePulled); v != 1 {
+		t.Errorf("iterion_runs_retry_probes_total{result=pulled} = %v, want 1 — the pod a probe may waste has to be countable", v)
 	}
 }
 
@@ -124,8 +124,8 @@ func TestSweepRetryProbes_ALostPullIsNotCountedAsAProbe(t *testing.T) {
 	lister := &fakeRetryLister{probeRefs: []mongostore.RetryDueRef{dueRef("run-raced", now.Add(72*time.Hour))}}
 	s.sweepRetryProbes(context.Background(), lister, now)
 
-	if v := counterValue(t, s.cfg.Metrics.RunsRetryProbes); v != 0 {
-		t.Errorf("iterion_runs_retry_probes_total = %v after a lost CAS, want 0", v)
+	if v := probeResultValue(t, s.cfg.Metrics, metrics.RetryProbePulled); v != 0 {
+		t.Errorf("iterion_runs_retry_probes_total{result=pulled} = %v after a lost CAS, want 0", v)
 	}
 }
 
@@ -508,7 +508,8 @@ func TestStandDownProbedRetry_StillProtectsARowWhosePullIsOld(t *testing.T) {
 	st.loadRun["run-probed"] = run
 	s := newRetrySweeperServer(t, st, nil)
 
-	s.abandonRetry(context.Background(), st, "team-1", "run-probed", "auto-retry abandoned: whatever the sweeper decided")
+	s.abandonRetry(context.Background(), st, mongostore.RetryDueRef{ID: "run-probed", TenantID: "team-1"},
+		"auto-retry abandoned: whatever the sweeper decided")
 
 	if reason, ok := st.abandoned["run-probed"]; ok {
 		t.Fatalf("a row whose pull was %s ago was retired %s before its announced instant (%q): the wall is the row's, not the pull's",
@@ -563,7 +564,8 @@ func TestStandDownProbedRetry_StillProtectsARowPulledBeforeProbingWasDisarmed(t 
 	st.loadRun["run-probed"] = probedRun("run-probed", now, announced)
 	s := newRetrySweeperServer(t, st, nil)
 
-	s.abandonRetry(context.Background(), st, "team-1", "run-probed", "auto-retry abandoned: whatever the sweeper decided")
+	s.abandonRetry(context.Background(), st, mongostore.RetryDueRef{ID: "run-probed", TenantID: "team-1"},
+		"auto-retry abandoned: whatever the sweeper decided")
 
 	if reason, ok := st.abandoned["run-probed"]; ok {
 		t.Fatalf("a probed row was retired %s before its announced instant because probing is now off (%q)", announced.Sub(now), reason)
@@ -646,7 +648,7 @@ func TestSweepDueRetries_AResumeOnAMarkerFromAFinishedWaitIsBillable(t *testing.
 // circuit that deferred it, a sweeper outage, a pod slow to its preflight —
 // and that resume is nobody's probe: nothing refunds it, so the tenant's
 // monthly run quota pays for it, and the park it causes is charged an attempt
-// (pkg/runner, TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndReopensTheWaitsProbeLedger).
+// (pkg/runner, TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndKeepsTheWallsProbeLedger).
 // The mild error store.ProbeMarkerTTL names, measured here because the pages
 // that size the probe's cost for an operator state it.
 func TestSweepDueRetries_AResumeOlderThanTheMarkerTTLIsMetered(t *testing.T) {

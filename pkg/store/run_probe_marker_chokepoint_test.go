@@ -302,7 +302,7 @@ func walkFirstPartyGo(t *testing.T, root string, fn func(rel string, f *ast.File
 // run quota pays for that launch (pkg/server,
 // TestSweepDueRetries_AResumeOlderThanTheMarkerTTLIsMetered) — and the park it
 // causes is charged an attempt (pkg/runner,
-// TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndReopensTheWaitsProbeLedger).
+// TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndKeepsTheWallsProbeLedger).
 // An operator sizing a quota from a flat "a probe spends no attempt and no
 // quota unit" is sizing the best case; the worst is max_attempts metered
 // launches and max_attempts attempts per wait, which is the number that

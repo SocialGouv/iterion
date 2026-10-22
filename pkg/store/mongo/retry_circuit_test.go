@@ -92,7 +92,7 @@ func TestDelayRunRetryAnchorsLegacyIntent(t *testing.T) {
 	ctx := retryCtx()
 	seedFailedResumable(t, s, "run-delay-legacy")
 	original := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
-	if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-delay-legacy", original, "usage_window", "USAGE_LIMIT_BLOCKED", 3); err != nil || !scheduled {
+	if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-delay-legacy", original, original, "usage_window", "USAGE_LIMIT_BLOCKED", 3); err != nil || !scheduled {
 		t.Fatalf("ScheduleRunRetry = (%v, %v)", scheduled, err)
 	}
 	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": "run-delay-legacy"}), bson.M{"$unset": bson.M{retryPath("scheduled_at"): ""}}); err != nil {
@@ -116,7 +116,7 @@ func TestDelayRunRetryDoesNotConsumeAttempt(t *testing.T) {
 	seedFailedResumable(t, s, "run-delay")
 
 	original := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
-	if scheduled, attempt, err := s.ScheduleRunRetry(ctx, "run-delay", original, "usage_window", "USAGE_LIMIT_BLOCKED", 3); err != nil || !scheduled || attempt != 1 {
+	if scheduled, attempt, err := s.ScheduleRunRetry(ctx, "run-delay", original, original, "usage_window", "USAGE_LIMIT_BLOCKED", 3); err != nil || !scheduled || attempt != 1 {
 		t.Fatalf("ScheduleRunRetry = (%v, %d, %v), want (true, 1, nil)", scheduled, attempt, err)
 	}
 	armed, err := s.LoadRun(ctx, "run-delay")

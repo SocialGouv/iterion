@@ -99,7 +99,7 @@ type retryStoreSpy struct {
 	abandoned []string
 }
 
-func (r *retryStoreSpy) ScheduleRunRetry(_ context.Context, runID string, _ time.Time, _, _ string, _ int) (bool, int, error) {
+func (r *retryStoreSpy) ScheduleRunRetry(_ context.Context, runID string, _, _ time.Time, _, _ string, _ int) (bool, int, error) {
 	r.armed = append(r.armed, runID)
 	return true, 1, nil
 }
@@ -108,7 +108,7 @@ func (r *retryStoreSpy) PullRunRetry(_ context.Context, _ string, _, _ time.Time
 	return false, nil
 }
 
-func (r *retryStoreSpy) RearmProbedRunRetry(_ context.Context, _ string, _ time.Time) (bool, error) {
+func (r *retryStoreSpy) RearmProbedRunRetry(_ context.Context, _ string, _, _ time.Time) (bool, error) {
 	return false, nil
 }
 
@@ -123,9 +123,9 @@ func (r *retryStoreSpy) ClearRunRetry(_ context.Context, runID string) error {
 	r.cleared = append(r.cleared, runID)
 	return nil
 }
-func (r *retryStoreSpy) AbandonRunRetry(_ context.Context, runID, _ string) error {
+func (r *retryStoreSpy) AbandonRunRetry(_ context.Context, runID, _ string, _ time.Time) (bool, error) {
 	r.abandoned = append(r.abandoned, runID)
-	return nil
+	return true, nil
 }
 
 // #669 part 3: a manual resume never called ClearRunRetry, so a

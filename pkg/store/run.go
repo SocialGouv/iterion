@@ -607,6 +607,13 @@ type RunLLMRoutePolicy struct {
 	Sources map[string]string `json:"sources,omitempty" bson:"sources,omitempty"`
 }
 
+// RetryReasonUsageWindow is the failure class a usage-window park writes to
+// RunRetryState.Reason. One constant because it is a FILTER term in both
+// stores' probe scans and the discriminator every reader of a usage park
+// keys on (UsageParkWall): a second spelling would silently make a parked
+// run invisible to the pass that probes it.
+const RetryReasonUsageWindow = "usage_window"
+
 // RunRetryState is the live retry bookkeeping for a run whose failure is
 // waiting on a provider quota window to reopen.
 //
@@ -645,26 +652,106 @@ type RunRetryState struct {
 	// spends no attempt and the announced instant can be put back. The
 	// first arming after a probe consumes it.
 	//
+	// Distinct from Wall, which is durable: this one is the live claim "a
+	// probe is in flight on this row", and the two expire differently.
+	//
 	// Read it through AnnouncedProbeFrom (the wall) or ProbeInFlight (who
 	// pays), never bare: the two questions expire differently, and one
 	// accessor answering both got each of them wrong in turn.
 	ProbeFrom *time.Time `json:"probe_from,omitempty" bson:"probe_from,omitempty"`
-	// ProbeCount bounds the probes taken on ONE armed wait: a forfait
-	// nobody resets must stop being probed and simply wait. Reset by a
-	// paid arming, never by a probe's own re-arming — a counter a probe
-	// could reset would bound nothing. A paid arming normally starts a
-	// fresh wait; one that RESTORES the announced instant re-arms the wait
-	// the row was already on, and probes it afresh — see ProbeMarkerTTL for
-	// what that costs. Which armings those are is not a list: the spend and
-	// the age of the pull decide who PAYS, the refusal decides WHICH
-	// INSTANT, so every paid arming whose refusal named no instant of its
-	// own restores this wall and reopens this ledger (the cross product is
-	// derived in
-	// pkg/runner.TestArmUsageWindowRetry_ThePaidArmingsThatRestoreTheAnnouncedInstant).
+	// ProbeCount bounds the probes taken on ONE provider wall: a forfait
+	// nobody resets must stop being probed and simply wait. Reset by an
+	// arming that MOVES Wall and by nothing else — not by a probe's own
+	// re-arming, and not by a charged park that re-states the wall the row
+	// is already on. A counter either of those could reset would bound
+	// nothing: it would price one wall at max_attempts × budget.
 	ProbeCount int `json:"probe_count,omitempty" bson:"probe_count,omitempty"`
-	// LastProbeAt paces the probes: one per probe floor on this row,
-	// whatever the sweeper's own cadence.
+	// LastProbeAt paces the probes: one per probe floor on this ROW,
+	// whatever the sweeper's own cadence and whatever the wall.
+	//
+	// The pace is the row's and NO arming clears it — not even one that moves
+	// the wall. The probe scan's pace term treats an absent stamp as "never
+	// probed" (ListRunsForRetryProbe), so an arming that cleared it made the
+	// row eligible on the sweeper's next pass instead of one floor later:
+	// a provider whose refusal re-dates its window on every reading was then
+	// pulled once a minute, free of attempts, with no bound left. The budget
+	// above is the wall's; this is the row's.
 	LastProbeAt *time.Time `json:"last_probe_at,omitempty" bson:"last_probe_at,omitempty"`
+	// Wall is the instant the wait this row is on is expected to end: the
+	// one the provider's refusal named, or — when it named none — the
+	// bounded guess the park fell back to. It is the UNIT of a usage park.
+	//
+	// It carries none of the policy's arithmetic and none of the deployment's:
+	// a probe's pull, the shared circuit's deferral and the jitter all move
+	// RetryAfter and leave this alone, and unlike the probe marker it is not
+	// consumed by the arming that settles a probe. So it is the fact every
+	// reader that must tell "the same wait, said again" from "a new wall"
+	// keys on — the user notification's episode, the operator alert's, the
+	// pull request's pause notice, and the probe ledger above.
+	//
+	// Absent on a row armed before this field existed. The first arming after
+	// that writes it and clears NOTHING: a row that never carried a wall is
+	// not a row whose wall moved, and the probe ledger it carries (ProbeCount
+	// predates this field, so a spent budget is reachable) belongs to the
+	// wait it is already on.
+	Wall *time.Time `json:"wall,omitempty" bson:"wall,omitempty"`
+}
+
+// UsageWall is the instant the wait this row is on ends, or the zero time when
+// the row carries none (never armed, or armed before the field existed).
+func (s *RunRetryState) UsageWall() time.Time {
+	if s == nil || s.Wall == nil {
+		return time.Time{}
+	}
+	return s.Wall.UTC()
+}
+
+// UsageParkWall is the provider wall a run is PARKED on — the one fact a user
+// notification, an operator alert or a pull-request notice about a usage park
+// is about, and the episode key each of them dedups on.
+//
+// Zero when the run is not parked on such a wall, which every one of those
+// readers has to tell apart from "parked on a wall nobody named": a run that
+// has left failed_resumable, a wait armed for another reason, a retry nothing
+// has armed (abandoned, exhausted, or claimed and cleared), and a row from
+// before the wall was persisted. Those keep the per-transition episode, where
+// "the run failed" is the honest message.
+func UsageParkWall(status RunStatus, rs *RunRetryState) time.Time {
+	if status != RunStatusFailedResumable || rs == nil || rs.RetryAfter == nil {
+		return time.Time{}
+	}
+	if rs.Reason != RetryReasonUsageWindow {
+		return time.Time{}
+	}
+	return rs.UsageWall()
+}
+
+// UsageWallUnannounced reports that the wall this row waits on has not yet
+// been named where the run's pull request can see it — so the park firing a
+// notice now is the one that OPENED this wall, and the only one that has
+// anything to add.
+//
+// The evidence is the wall's own probe ledger, and it is evidence because the
+// ledger belongs to the wall: the only write that clears ProbeCount is an
+// arming that MOVES Wall, and the only write that raises it is a pull of THIS
+// wall. So an empty ledger on an armed usage park means no pass has probed
+// this wall yet, which is true of exactly the park that opened it — a probe's
+// re-park and a charged park that re-states the same instant both find it
+// non-empty, and a probed refusal that names a DIFFERENT instant moves the
+// wall, empties the ledger, and speaks.
+//
+// A reader comparing walls itself would race the sweeper's pull; the
+// comparison belongs to the arming, which makes it in one update.
+func (s *RunRetryState) UsageWallUnannounced() bool {
+	return s != nil && s.ProbeCount == 0
+}
+
+// UsageParkWall is UsageParkWall for a loaded run document.
+func (r *Run) UsageParkWall() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+	return UsageParkWall(r.Status, r.RetryState)
 }
 
 // ProbeMarkerTTL bounds how long after a pull the probe it started can still
@@ -674,17 +761,16 @@ type RunRetryState struct {
 //
 // It bounds the PAYMENT question only (ProbeInFlight), never the wall
 // (AnnouncedProbeFrom), which is what makes both errors mild and says which
-// they are: too short charges a genuinely probed park one attempt, meters its
-// resume, and — because that charged arming clears the probe ledger while
-// restoring the SAME announced instant — probes the same wait afresh, pace
-// included, so the probes one wait can cost are bounded by max_attempts ×
-// budget rather than by the budget alone, and says that instant again on the
-// pull request the run gates, since the pause notice reads the same ledger
-// (pkg/server.noticeGatePausedForRetry); the announced instant survives either
-// way, so the run still waits on its wall, and a circuit-delayed probe is the
-// case that reaches all of it. Too long gives one later park the probe's free
-// treatment within the hour that follows a pull. The greppable escape hatch is
-// the pass itself — ITERION_RETRY_PROBE_BUDGET=0 writes no marker at all.
+// they are: too short charges a genuinely probed park one attempt and meters
+// its resume — max_attempts of each per run — but that park restores the SAME
+// announced instant, so it moves no Wall: it opens no second probe budget, it
+// leaves the pace where the pull left it, and it says nothing new on the pull
+// request the run gates (pkg/server.noticeGatePausedForRetry reads the same
+// per-wall ledger). The announced instant survives either way, so the run
+// still waits on its wall, and a circuit-delayed probe is the case that
+// reaches all of it. Too long gives one later park the probe's free treatment
+// within the hour that follows a pull. The greppable escape hatch is the pass
+// itself — ITERION_RETRY_PROBE_BUDGET=0 writes no marker at all.
 const ProbeMarkerTTL = time.Hour
 
 // AnnouncedProbeFrom is the WALL question: which instant did a pull-forward

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 )
@@ -132,9 +133,7 @@ func (s *Server) probeRetry(ctx context.Context, retryStore store.RunRetryStore,
 		// are ordinary outcomes of a CAS, not failures.
 		return
 	}
-	if s.cfg.Metrics != nil {
-		s.cfg.Metrics.RunsRetryProbes.Inc()
-	}
+	s.countRetryProbe(metrics.RetryProbePulled)
 	probe := retryProbeCount(ref) + 1
 	s.auditRetry(ref, "run.retry.probed", map[string]any{
 		"announced_retry_after": announced,
@@ -184,7 +183,10 @@ func (s *Server) standDownProbedRetry(ctx context.Context, retryStore store.RunR
 		return false
 	}
 	announced := marker.UTC()
-	rearmed, err := retryStore.RearmProbedRunRetry(ctx, runID, announced)
+	// No wall: the stand-down observed nothing about the provider's window, so
+	// the row keeps the wall it is on — and with it the probe ledger that
+	// bounds and paces that wall's probes.
+	rearmed, err := retryStore.RearmProbedRunRetry(ctx, runID, announced, time.Time{})
 	if err != nil {
 		s.warnf("retry sweeper: run %s: cannot restore the provider's announced instant %s after a probe (%v) — deferring the decision to the next pass",
 			runID, announced.Format(time.RFC3339), err)
@@ -196,6 +198,9 @@ func (s *Server) standDownProbedRetry(ctx context.Context, retryStore store.RunR
 		// the right one.
 		return false
 	}
+	// The probe's pod bought no observation at all: its resume never reached
+	// the runner's preflight.
+	s.countRetryProbe(metrics.RetryProbeStoodDown)
 	s.auditSystem(tenantID, "retry-sweeper", "run.retry.probe_stood_down", "run", runID, map[string]any{
 		"retry_after": announced,
 		"cause":       cause,

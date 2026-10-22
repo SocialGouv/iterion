@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/retrycoord"
@@ -149,13 +150,18 @@ func usageWindowRefusalAt(execErr error, now time.Time) (at time.Time, source st
 	// window is real, only its end is unknown.
 	if at.IsZero() {
 		if parsed, pok := delegate.ParseResetHint(execErr.Error(), now); pok {
-			return parsed, source + "+parsed_text", parsed, true
+			// The come-back pad rides the WAKE only: both deliveries of one
+			// window — the typed error and the flattened text — wake just past
+			// the reset and name the same wall, the refusal's own instant.
+			return parsed.Add(time.Minute), source + "+parsed_text", parsed, true
 		}
 		return now.Add(usageWindowBlindWait), source + blindWaitSource, time.Time{}, true
 	}
-	// Come back just after the reset, not exactly on it.
-	at = at.Add(time.Minute)
-	return at, source, at, true
+	// Come back just after the reset, not exactly on it. The pad stays on the
+	// wake; authoritativeAt travels as the refusal's own instant, the value
+	// the wall readers key on — a typed park and a flattened park of the same
+	// window must answer the same wall.
+	return at.Add(time.Minute), source, at, true
 }
 
 // refusalNamesNoInstant reports that this refusal named no reset of its own,
@@ -165,9 +171,16 @@ func usageWindowRefusalAt(execErr error, now time.Time) (at time.Time, source st
 // branch REPLACES that string, so a reader keying on it cannot tell a
 // wall-less decision from a dated one, and the probe's restore silently stops
 // firing on exactly the rows it exists for.
+//
+// An instant the refusal did not DATE is a guess too, however precise it
+// looks: a window DURATION ("reached for 5 hour") resolves against the moment
+// it is read, so writing it over a probe's held-aside instant replaced a
+// four-day wall with a five-hour one and spent the attempt budget hourly
+// against a window that could not move (the invariant is I2 of
+// internal/retryprobetest).
 func refusalNamesNoInstant(execErr error, now time.Time) bool {
-	_, _, authoritativeAt, ok := usageWindowRefusalAt(execErr, now)
-	return ok && authoritativeAt.IsZero()
+	_, dated, ok := usageRefusalWall(execErr, now)
+	return ok && !dated
 }
 
 // usageWindowProbedRetryAt is usageWindowRetryAt for a re-failure that
@@ -196,7 +209,7 @@ func refusalNamesNoInstant(execErr error, now time.Time) bool {
 // Total, and it has to be: usageWindowRetryAt refuses on the error and the
 // policy alone — never on the attempt count — and every caller reaches here
 // only after that same pair has already said yes.
-func usageWindowProbedRetryAt(execErr error, pol retrypolicy.Policy, now, announced time.Time) (time.Time, string) {
+func usageWindowProbedRetryAt(execErr error, pol retrypolicy.Policy, now, announced time.Time) (time.Time, string, bool) {
 	at, source, _ := usageWindowRetryAt(execErr, pol, now, time.Time{}, 0)
 	return restoreAnnouncedInstant(at, source, announced, refusalNamesNoInstant(execErr, now))
 }
@@ -205,11 +218,116 @@ func usageWindowProbedRetryAt(execErr error, pol retrypolicy.Policy, now, announ
 // fresh refusal named no instant of its own (noFreshInstant) and the announced
 // one is still ahead. Shared by the free re-arm and the paid fall-through: a
 // guess written over the wall costs the run its life on either path.
-func restoreAnnouncedInstant(at time.Time, source string, announced time.Time, noFreshInstant bool) (time.Time, string) {
+//
+// `restored` is what the arming then tells the store about the WALL: a park
+// that put the held-aside instant back brought no news of where the wall is,
+// so the row keeps the one it has — and with it the probe ledger that bounds
+// and paces this wall's probes (store.RunRetryState.Wall).
+func restoreAnnouncedInstant(at time.Time, source string, announced time.Time, noFreshInstant bool) (time.Time, string, bool) {
 	if noFreshInstant && announced.After(at) {
-		return announced.UTC(), withAnnouncedRestored(source)
+		return announced.UTC(), withAnnouncedRestored(source), true
 	}
-	return at, source
+	return at, source, false
+}
+
+// usageRefusalWall is the instant ONE refusal says this wait ends, and
+// whether the PROVIDER dated it — rather than it being derived from the
+// moment the refusal is read.
+//
+// The wall is the refusal's own instant (authoritativeAt), never `at`: the
+// come-back pad, the jitter and the clamps are the wake's, and a typed park
+// and a flattened park of the same window must answer the same wall.
+//
+// `dated` is answered by the parser, ONCE, about the words the refusal
+// carries — the same words the typed ResetAt was resolved from
+// (ErrRateLimited renders its Detail, and RuntimeError renders its Cause), so
+// one ask covers every delivery shape. The parser knows which of its patterns
+// matched, which a comparison cannot see: a window DURATION resolves to
+// now+N, and an absolute instant a producer rendered FROM a duration ("reached
+// for 5 hour. Your limit will reset at …") sits inside the tolerance of
+// now+that duration — both are re-computed at every reading, and neither is
+// news about the wall. Asked of the parser rather than of a list of refusal
+// shapes on purpose: the shapes are an enumeration nobody can close, and a
+// shape added to delegate.ParseResetHint tomorrow gets the right answer here
+// with no change — a now-relative one included, which is the side that must
+// not be mistaken for news.
+//
+// A refusal whose words carry no hint at all falls back to asking the
+// decision a second apart: the bounded guess a naming-nothing refusal falls
+// back to moves with the reading, while a typed instant is frozen by its
+// producer — nothing re-dates it, and a producer that resolved its instant
+// from somewhere else prints it anyway: the operator's own cap renders
+// "resets <RFC3339>" into the refusal it raises (pkg/usagecap.Decision),
+// which reads as the absolute instant it is.
+func usageRefusalWall(execErr error, now time.Time) (wall time.Time, dated, ok bool) {
+	at, _, authoritative, ok := usageWindowRefusalAt(execErr, now)
+	if !ok {
+		return time.Time{}, false, false
+	}
+	wall = at.UTC()
+	if !authoritative.IsZero() {
+		wall = authoritative.UTC()
+	}
+	if _, textDated, hinted := delegate.ParseResetHintDated(execErr.Error(), now); hinted {
+		return wall, textDated, true
+	}
+	again, _, _, okAgain := usageWindowRefusalAt(execErr, now.Add(time.Second))
+	if !okAgain || !again.Equal(at) {
+		return wall, false, true
+	}
+	return wall, true, true
+}
+
+// usageParkWall is store.RunRetryState.Wall for the arming about to happen:
+// the instant the wait it opens is expected to END, and the unit every reader
+// of a usage park keys on. `held` is the wall the row already carries.
+//
+// The provider's own dated word wins — taken from the refusal and not from
+// `at`, which also carries the jitter, the five-minute floor, the max_wait
+// ceiling, the skipped credential's earlier wake and the shared circuit's
+// deferral: a WAKE, not a wall, and two parks on one provider window have to
+// agree on the wall.
+//
+// Everything else is NOT news about the wall, and the row's own wall stands
+// while it is still ahead (the zero time tells the store to keep it, ledger
+// included). That covers the park that put the held-aside instant back, and
+// every park whose instant is relative to now: a refusal naming a window
+// duration resolves a minute later to an instant a minute later, so trusting
+// it re-dated the wall on every reading — a new notification episode, a new
+// operator incident, a new pull-request notice and a fresh probe budget per
+// park, for one provider window nobody had new information about.
+//
+// A row whose wall has PASSED, or never had one, takes this park's instant:
+// the window it was told about is over (the run may well have worked since),
+// and a wait nobody can date still has to say where it ends or its owner
+// keeps being told the run failed. The refusal's own instant is used, not
+// `at`, for the reason above.
+//
+// `held` is read from the document this pod loaded. The store still decides
+// atomically whether the wall MOVED, so a stale reading costs at most one
+// ledger reset — and only an arming moves a wall, which is this pod's own
+// write plus a stand-down that passes no wall at all.
+func usageParkWall(execErr error, at, now, held time.Time, restored bool) time.Time {
+	refusalWall, dated, ok := usageRefusalWall(execErr, now)
+	if ok && dated {
+		return refusalWall
+	}
+	if !held.IsZero() && held.After(now) {
+		return time.Time{}
+	}
+	if restored {
+		// The held-aside instant the arming is putting back: the only instant
+		// this row has, and the honest wall for a legacy row that carries
+		// none of its own.
+		return at.UTC()
+	}
+	// The refusal's own instant — zero when this error is no usage refusal at
+	// all, which no caller here can reach (both have been told it is one by
+	// usageWindowRetryAt, on this same error) and which the store reads as "no
+	// news, keep the wall you have". A caller that had not established it
+	// would otherwise write `at` — an instant no provider named — as the
+	// identity four readers dedup on.
+	return refusalWall
 }
 
 // withAnnouncedRestored tags a reset source as carrying the probe's held-aside
@@ -397,7 +515,7 @@ func (r *Runner) armUsageWindowRetry(
 	runID string,
 	spentOnProvider bool,
 	logger *iterlog.Logger,
-) usageRetryOutcome {
+) (outcome usageRetryOutcome) {
 	retryStore := store.AsRunRetryStore(r.cfg.Store)
 	if retryStore == nil {
 		return usageRetryNotApplicable // local/filesystem store: no durable retry surface
@@ -438,9 +556,23 @@ func (r *Runner) armUsageWindowRetry(
 	// retry_after but keeps attempts, so the count is a lifetime total and
 	// survives the re-failure that precedes every arming.
 	var attemptsSpent int
+	// armedWhenRead is the armed instant this document carried, and the CAS
+	// argument of the settlement far below: a row a sweep tick has pulled
+	// forward or re-armed since must not be retired on this reading of it.
+	// Zero when nothing is armed — there is then no wait to protect, and the
+	// settlement is unconditional.
+	var armedWhenRead time.Time
 	if runMeta.RetryState != nil {
 		attemptsSpent = runMeta.RetryState.Attempts
+		if runMeta.RetryState.RetryAfter != nil {
+			armedWhenRead = runMeta.RetryState.RetryAfter.UTC()
+		}
 	}
+	// heldWall is the provider wall this row is already waiting on
+	// (store.RunRetryState.Wall), zero on a row that carries none — the row
+	// armed before the field existed, and the one nothing has ever parked.
+	// usageParkWall holds it against a park that brought no dated news.
+	heldWall := runMeta.RetryState.UsageWall()
 	decisionNow := time.Now().UTC()
 	// announcedFrom is the instant the provider announced, held aside by the
 	// sweeper's pull-forward probe (pkg/server/retry_probe.go) while it asks
@@ -500,9 +632,14 @@ func (r *Runner) armUsageWindowRetry(
 	// restored over a blind guess, because the fall-through below arms that
 	// same instant for a price. A DATED re-failure still wins: fresh news
 	// from the provider outranks the instant the probe set aside.
+	restored := false
 	if announcedFrom != nil {
-		at, source = restoreAnnouncedInstant(at, source, *announcedFrom, refusalNamesNoInstant(execErr, decisionNow))
+		at, source, restored = restoreAnnouncedInstant(at, source, *announcedFrom, refusalNamesNoInstant(execErr, decisionNow))
 	}
+	// The wall this park is on, decided from the refusal, the restore and the
+	// wall the row already carries — never from `at`, which the circuit below
+	// still moves.
+	wall := usageParkWall(execErr, at, decisionNow, heldWall, restored)
 
 	// A re-failure that followed a PROBE spends no attempt. The probe pulled
 	// this run forward speculatively and the preflight refused before
@@ -512,9 +649,44 @@ func (r *Runner) armUsageWindowRetry(
 	// clock. The arming consumes the marker, so the run's NEXT failure is
 	// charged normally. Its instant is decided by usageWindowProbedRetryAt,
 	// which holds the announced wall over a guess that would replace it.
+	// What the pull that preceded this park FOUND, for the operator weighing
+	// the pass's pods: the usage preflight met the window again, exactly where
+	// the provider said it was. Counted here rather than beside the free
+	// re-arm below, because the free re-arm is one of several parks that
+	// follow a pull: the marker aged past store.ProbeMarkerTTL (the very case
+	// that constant prices), the store blip that forces the charged
+	// fall-through, and a marker another writer consumed in between all
+	// observe the same refusal and used to report nothing — so `pulled` minus
+	// the other two labels credited those pods as probes that found the
+	// window REOPENED, the opposite of what happened.
+	//
+	// `announcedFrom != nil` is "this park follows a pull whose window is
+	// still ahead"; `!spentOnProvider` excludes the park that got PAST the
+	// preflight and spent tokens, which is not a probe's answer about the
+	// window (that pull's benefit is the `pulled` difference, by design).
+	//
+	// Deferred on the OUTCOME, because the count has to be one per PULL and
+	// only a park that lands consumes one: the paths that answer
+	// usageRetryNotApplicable persisted nothing, the caller naks, and
+	// JetStream redelivers the same message against a row whose marker no
+	// write consumed — up to queue MaxDeliver times. Counting on the way in
+	// reported one pull as that many refusals, and `pulled` minus the other
+	// labels then goes NEGATIVE. The residual is the store outage that fails
+	// every delivery to the DLQ: that pull is credited to the `pulled`
+	// difference as a probe whose run got past the preflight — one phantom
+	// success rather than N phantom refusals.
+	if announcedFrom != nil && !spentOnProvider {
+		defer func() {
+			if outcome != usageRetryNotApplicable {
+				r.countRetryProbe(metrics.RetryProbeStillBlocked)
+			}
+		}()
+	}
+
 	if probeInFlight {
-		freeAt, freeSource := usageWindowProbedRetryAt(execErr, pol, decisionNow, *announcedFrom)
-		rearmed, rearmErr := retryStore.RearmProbedRunRetry(ctx, runID, freeAt)
+		freeAt, freeSource, freeRestored := usageWindowProbedRetryAt(execErr, pol, decisionNow, *announcedFrom)
+		freeWall := usageParkWall(execErr, freeAt, decisionNow, heldWall, freeRestored)
+		rearmed, rearmErr := retryStore.RearmProbedRunRetry(ctx, runID, freeAt, freeWall)
 		switch {
 		case rearmErr != nil:
 			// Say it and fall through to the ordinary arming: a store blip
@@ -534,35 +706,53 @@ func (r *Runner) armUsageWindowRetry(
 		// below is the right one.
 	}
 
-	// Below here the arming is PAID, and so is what it reports: a probe's
-	// re-failure is the same wall counted once already, and feeding the
-	// shared circuit with up to a whole probe budget of self-inflicted
-	// refusals would open a breaker every sibling of this workflow revision
-	// then waits behind.
-	if r.cfg.Metrics != nil {
-		r.cfg.Metrics.RunsUsageWindowBlocked.Inc()
-	}
-	// Coordinate the retry wave across runner replicas. The per-run retry
-	// ledger remains authoritative for the attempt bound; the shared circuit
-	// only moves the next wake-up out of a provider-wide failure storm.
-	if key := retrycoord.Key(runMeta); key != "" {
+	// Below here the arming is PAID. Its per-park effects — the blocked
+	// counter and the shared circuit's failure — are recorded AFTER the
+	// arming lands, not before: a park the store refused is redelivered, and
+	// recording on the way in charged the breaker once per DELIVERY of one
+	// park — four redeliveries of a single park crossed the default threshold
+	// of 3 and opened a breaker every sibling run of the workflow then waits
+	// behind. The state is still READ here, so the wake moves behind an
+	// already open breaker; the park that OPENS it schedules on the pre-open
+	// state, and every park behind it takes the delay — the wave the breaker
+	// exists to hold back.
+	//
+	// The per-run retry ledger remains authoritative for the attempt bound;
+	// the shared circuit only moves the next wake-up out of a provider-wide
+	// failure storm.
+	circuitKey := retrycoord.Key(runMeta)
+	if circuitKey != "" {
 		circuitCtx, circuitCancel := context.WithTimeout(ctx, retryCircuitStoreTimeout)
-		circuitState, circuitErr := retrycoord.RecordFailure(circuitCtx, r.cfg.Store, key, runID, decisionNow, retrycoord.FromEnv())
+		circuitState, circuitErr := retrycoord.Open(circuitCtx, r.cfg.Store, circuitKey, decisionNow)
 		circuitCancel()
 		if circuitErr != nil {
 			// A circuit-store outage must not drop a durable per-run retry. The
 			// existing ScheduleRunRetry below still provides the safe fallback.
-			logger.Warn("runner: run %s: retry circuit update failed (%v) — scheduling per-run retry", runID, circuitErr)
+			logger.Warn("runner: run %s: retry circuit read failed (%v) — scheduling per-run retry on the unmodified wake", runID, circuitErr)
 		} else if coordinatedAt, delayed := usageWindowCircuitAt(at, circuitState, pol, decisionNow); delayed {
 			at = coordinatedAt
 			source += "+circuit_open"
 		}
 	}
 
-	scheduled, attempt, err := retryStore.ScheduleRunRetry(ctx, runID, at, "usage_window", string(runtime.ErrCodeUsageLimitBlocked), pol.MaxAttempts)
+	scheduled, attempt, err := retryStore.ScheduleRunRetry(ctx, runID, at, wall,
+		store.RetryReasonUsageWindow, string(runtime.ErrCodeUsageLimitBlocked), pol.MaxAttempts)
 	if err != nil {
 		logger.Error("runner: run %s: could not persist the usage-window retry (%v) — falling back to redelivery so the run is not lost", runID, err)
 		return usageRetryNotApplicable
+	}
+	// The park LANDED: this delivery acks whatever the branch below returns,
+	// so the counter and the breaker are charged once for this park however
+	// many deliveries it took to land.
+	if r.cfg.Metrics != nil {
+		r.cfg.Metrics.RunsUsageWindowBlocked.Inc()
+	}
+	if circuitKey != "" {
+		circuitCtx, circuitCancel := context.WithTimeout(ctx, retryCircuitStoreTimeout)
+		if _, circuitErr := retrycoord.RecordFailure(circuitCtx, r.cfg.Store, circuitKey, runID, decisionNow, retrycoord.FromEnv()); circuitErr != nil {
+			logger.Warn("runner: run %s: retry circuit update failed (%v) — the durable per-run retry is already armed", runID, circuitErr)
+		}
+		circuitCancel()
 	}
 	if !scheduled {
 		// A row whose announced wall is still ahead must not be retired
@@ -576,7 +766,10 @@ func (r *Runner) armUsageWindowRetry(
 		// it guards. Nothing is charged either way: the charge was REFUSED.
 		if announcedFrom != nil {
 			announced := announcedFrom.UTC()
-			rearmed, rearmErr := retryStore.RearmProbedRunRetry(ctx, runID, announced)
+			// No wall is passed: the charge was REFUSED, so this write states
+			// no news about where the wall is and the row keeps the one it
+			// has — together with the probe ledger that bounds it.
+			rearmed, rearmErr := retryStore.RearmProbedRunRetry(ctx, runID, announced, time.Time{})
 			switch {
 			case rearmErr != nil:
 				// Settling is irreversible and this one is not owed: hand the
@@ -602,8 +795,18 @@ func (r *Runner) armUsageWindowRetry(
 		// redelivery would re-hit the same wall, and say why in the run's
 		// own error field so it does not just go quiet.
 		reason := fmt.Sprintf("usage-window retries exhausted (max %d) — resume manually once the provider quota resets", pol.MaxAttempts)
-		if abandonErr := retryStore.AbandonRunRetry(ctx, runID, reason); abandonErr != nil {
+		// Conditioned on the instant THIS pod read: settling is irreversible,
+		// and a sweep tick is one pull away from having moved the row to probe
+		// it. A lost CAS leaves the row to whoever moved it, which is the
+		// honest outcome — the delivery is acked either way, because a
+		// redelivery would re-hit the same wall.
+		abandoned, abandonErr := retryStore.AbandonRunRetry(ctx, runID, reason, armedWhenRead)
+		switch {
+		case abandonErr != nil:
 			logger.Warn("runner: run %s: could not record the exhausted retry budget: %v", runID, abandonErr)
+		case !abandoned:
+			logger.Warn("runner: run %s: the exhausted retry budget was not recorded — the row moved since it was read (armed for %s), so it belongs to the pass that moved it",
+				runID, instantOrNone(armedWhenRead))
 		}
 		logger.Warn("runner: run %s: %s", runID, reason)
 		return usageRetryExhausted
@@ -619,6 +822,24 @@ func (r *Runner) armUsageWindowRetry(
 	logger.Warn("runner: run %s hit the provider usage window — retry %d/%d armed for %s (reset source: %s), NOT redelivering",
 		runID, attempt, pol.MaxAttempts, at.Format(time.RFC3339), source)
 	return usageRetryArmed
+}
+
+// countRetryProbe records what one pull-forward probe found, from the runner
+// side of it (metrics.RetryProbeStillBlocked is the only disposition a pod can
+// observe), ONCE per park that followed a pull. Nil-safe: a runner with no
+// registry wired counts nothing.
+func (r *Runner) countRetryProbe(result string) {
+	if r.cfg.Metrics != nil {
+		r.cfg.Metrics.RunsRetryProbes.WithLabelValues(result).Inc()
+	}
+}
+
+// instantOrNone renders an instant for a log line, or "nothing armed".
+func instantOrNone(t time.Time) string {
+	if t.IsZero() {
+		return "nothing"
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // noteFreeRearm records a re-arming that spent no attempt: the park counter

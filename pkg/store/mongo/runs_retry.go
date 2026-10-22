@@ -37,12 +37,56 @@ const retryClaimLease = 10 * time.Minute
 
 func retryPath(field string) string { return retryStateField + "." + field }
 
+// wallMoves is the pipeline predicate "this arming MOVES the wall the row is
+// waiting on": the row has one, and it is not this instant.
+//
+// A row with no stored wall answers FALSE. It is the shape armed before this
+// field existed, and the probe ledger it carries is the ledger of the wait it
+// is ALREADY on — probe_count predates the wall, so a spent budget is a
+// reachable state there. Treating the first arming after the upgrade as a
+// wall MOVE handed such a row a fresh budget of pods for a window whose
+// probes it had already spent.
+//
+// A single expression shared by the two armings: the probe budget's whole
+// bound rests on the two of them answering this question identically, and a
+// second copy of a $cond is where that drifts.
+func wallMoves(wall time.Time) bson.M {
+	return bson.M{"$and": bson.A{
+		bson.M{"$ne": bson.A{bson.M{"$type": "$" + retryPath("wall")}, "missing"}},
+		bson.M{"$ne": bson.A{"$" + retryPath("wall"), wall.UTC()}},
+	}}
+}
+
+// probeCountForWall renders probe_count: the BUDGET belongs to the wall, so
+// it survives an arming that re-states the wall the row is on and starts over
+// when the wall moves.
+//
+// Only probe_count. last_probe_at is the PACE, and the pace belongs to the
+// ROW: no arming may clear it. An arming that cleared it made the row
+// probe-eligible on the sweeper's very next pass instead of one floor later
+// (ListRunsForRetryProbe's pace term has an "absent" branch), so a provider
+// whose refusal re-dates its window on every reading — the window-DURATION
+// shape, whose instant is recomputed from now — was pulled once a minute,
+// free of attempts, with nothing left to bound it.
+func probeCountForWall(wall time.Time) bson.M {
+	return bson.M{"$cond": bson.M{
+		"if":   wallMoves(wall),
+		"then": "$$REMOVE",
+		"else": "$" + retryPath("probe_count"),
+	}}
+}
+
 // ScheduleRunRetry arms a retry, conditioning on the run still being
 // failed_resumable and under its attempt budget. Both preconditions are in
 // the FILTER rather than checked first and written second: an operator
 // resuming the run by hand between the two would otherwise have their
 // resume silently re-armed.
-func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time, reason, code string, maxAttempts int) (bool, int, error) {
+//
+// An aggregation pipeline rather than a plain update document, because the
+// probe ledger's fate depends on the row's OWN stored wall: read it in the
+// caller and the sweeper's pull lands in between, handing one wall a second
+// budget on a stale comparison.
+func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at, wall time.Time, reason, code string, maxAttempts int) (bool, int, error) {
 	if maxAttempts <= 0 {
 		return false, 0, nil
 	}
@@ -60,35 +104,46 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 			{retryPath("attempts"): bson.M{"$lt": maxAttempts}},
 		},
 	})
-	update := bson.M{
-		"$set": bson.M{
-			retryPath("retry_after"):  at.UTC(),
-			retryPath("scheduled_at"): now,
-			retryPath("reason"):       reason,
-			retryPath("code"):         code,
-			// Arming IS the promotion: continuation_state must only say
-			// retry_armed once a retry actually exists (the block point
-			// stamps unknown), and this write is the one that creates it.
-			"continuation_state": store.ContinuationRetryArmed,
-			"updated_at":         now,
-		},
-		"$unset": bson.M{
-			// A fresh arming supersedes the previous failure note and claim.
-			retryPath("last_error"): "",
-			retryPath("claimed_at"): "",
-			// A PAID arming is a new wait, so the probe ledger starts over:
-			// the budget is per wait. (A probe's own re-arming goes through
-			// RearmProbedRunRetry, which keeps the ledger — that is what
-			// makes the bound a bound.) The arming that RESTORES the
-			// announced instant is paid too and clears the ledger here while
-			// arming the same wait, which is why the bound on one wait is
-			// max_attempts × budget: store.ProbeMarkerTTL states the cost.
-			retryPath("probe_from"):    "",
-			retryPath("probe_count"):   "",
-			retryPath("last_probe_at"): "",
-		},
-		"$inc": bson.M{retryPath("attempts"): 1, "version": 1},
+	set := bson.M{
+		retryPath("retry_after"):  at.UTC(),
+		retryPath("scheduled_at"): now,
+		retryPath("reason"):       reason,
+		retryPath("code"):         code,
+		// $inc's pipeline spelling, with the absent case the filter above
+		// documents: a row that never retried has no attempts at all.
+		retryPath("attempts"): bson.M{"$add": bson.A{
+			bson.M{"$ifNull": bson.A{"$" + retryPath("attempts"), 0}}, 1,
+		}},
+		// A fresh arming supersedes the previous failure note and claim.
+		retryPath("last_error"): "$$REMOVE",
+		retryPath("claimed_at"): "$$REMOVE",
+		// The marker is CONSUMED by every arming — that is what makes the
+		// park after a probe charged normally.
+		retryPath("probe_from"): "$$REMOVE",
+		// Arming IS the promotion: continuation_state must only say
+		// retry_armed once a retry actually exists (the block point
+		// stamps unknown), and this write is the one that creates it.
+		"continuation_state": store.ContinuationRetryArmed,
+		"updated_at":         now,
 	}
+	// A zero wall is the caller saying this arming brought no news about where
+	// the provider's window ends (a park that put the held-aside instant back,
+	// a re-arm after a failed resume): the row keeps the wall it is on, and
+	// with it the probe ledger of that wall. Writing the zero instant here
+	// instead would make every such park look like a new wall — which is
+	// exactly the max_attempts × budget ceiling this rule removes.
+	if !wall.IsZero() {
+		set[retryPath("wall")] = wall.UTC()
+		// The probe BUDGET belongs to the WALL: it bounds the probes of one
+		// provider window, so a charged park that merely re-states the
+		// instant the row is already waiting for keeps it. Clearing it on
+		// every charged park priced one window at max_attempts × budget —
+		// 120 pods and 5 metered launches at the shipped defaults, against
+		// 24 and 0 by design. The PACE (last_probe_at) is the row's and is
+		// never written here: probeCountForWall says what clearing it cost.
+		set[retryPath("probe_count")] = probeCountForWall(wall)
+	}
+	update := mongo.Pipeline{{{Key: "$set", Value: set}}}
 	var updated struct {
 		RetryState *store.RunRetryState `bson:"retry_state"`
 	}
@@ -184,32 +239,35 @@ func (s *Store) PullRunRetry(ctx context.Context, runID string, expectedAfter, p
 // on the LAST attempt the budget allows would be refused outright, ending the
 // run the probe exists to save.
 //
-// probe_count and last_probe_at deliberately survive: they bound and pace the
-// probes of the CURRENT wait, and a ledger a probe's own re-arming could
-// reset would bound nothing.
-func (s *Store) RearmProbedRunRetry(ctx context.Context, runID string, at time.Time) (bool, error) {
+// The budget follows the same rule as the charged arming, and `wall` says
+// which case this is: the zero time keeps the wall the row is on (the
+// stand-down, and every restore of the held-aside instant), so probe_count
+// survives — it bounds the probes of THAT wall, and a budget a probe's own
+// re-arming could reset would bound nothing. A probed refusal naming a
+// different instant passes it and starts the budget over, because that is a
+// different wall. The PACE survives every arming: it belongs to the row.
+func (s *Store) RearmProbedRunRetry(ctx context.Context, runID string, at, wall time.Time) (bool, error) {
 	now := time.Now().UTC()
 	filter := withTenantFilter(ctx, bson.M{
 		"_id":                   runID,
 		"status":                string(store.RunStatusFailedResumable),
 		retryPath("probe_from"): bson.M{"$exists": true},
 	})
-	update := bson.M{
-		"$set": bson.M{
-			retryPath("retry_after"): at.UTC(),
-			// The row was armed before the pull and stays armed: an
-			// outcome consumer deferring to retry_armed must not see a
-			// window where nothing is coming.
-			"continuation_state": store.ContinuationRetryArmed,
-			"updated_at":         now,
-		},
-		"$unset": bson.M{
-			retryPath("probe_from"): "",
-			retryPath("claimed_at"): "",
-		},
-		"$inc": bson.M{"version": 1},
+	set := bson.M{
+		retryPath("retry_after"): at.UTC(),
+		retryPath("probe_from"):  "$$REMOVE",
+		retryPath("claimed_at"):  "$$REMOVE",
+		// The row was armed before the pull and stays armed: an
+		// outcome consumer deferring to retry_armed must not see a
+		// window where nothing is coming.
+		"continuation_state": store.ContinuationRetryArmed,
+		"updated_at":         now,
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	if !wall.IsZero() {
+		set[retryPath("wall")] = wall.UTC()
+		set[retryPath("probe_count")] = probeCountForWall(wall)
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(mongo.Pipeline{{{Key: "$set", Value: set}}}))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: re-arm probed retry %s: %w", runID, err)
 	}
@@ -273,11 +331,24 @@ func (s *Store) ClearRunRetry(ctx context.Context, runID string) error {
 	return nil
 }
 
-// AbandonRunRetry records why a run stopped retrying and leaves it
-// disarmed. Not conditioned on status: by the time we abandon, the reason
-// is already permanent, and the note matters more than the race.
-func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string) error {
+// AbandonRunRetry records why a run stopped retrying and leaves it disarmed.
+// Not conditioned on status: by the time we abandon, the reason is already
+// permanent, and the note matters more than that race.
+//
+// It IS conditioned on the armed instant the caller read, when it has one.
+// Settling is irreversible — the continuation goes final, so no pass lists
+// the row again, and the marker holding the provider's own dated word is
+// dropped — while the writes it races are one sweep tick away: a pull that
+// moved the row forward to probe it, or a re-arm that put the announced
+// instant back. Overwriting either retires a run days before the wall it is
+// waiting on falls. A lost CAS reports abandoned=false, which is the honest
+// answer: the row belongs to whoever moved it.
+func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string, expectedAfter time.Time) (bool, error) {
 	now := time.Now().UTC()
+	filter := bson.M{"_id": runID}
+	if !expectedAfter.IsZero() {
+		filter[retryPath("retry_after")] = expectedAfter.UTC()
+	}
 	update := bson.M{
 		"$set": bson.M{
 			retryPath("last_error"): reason,
@@ -297,10 +368,11 @@ func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string) error
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update)); err != nil {
-		return fmt.Errorf("store/mongo: abandon retry %s: %w", runID, err)
+	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, filter), versionRunUpdate(update))
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: abandon retry %s: %w", runID, err)
 	}
-	return nil
+	return res.MatchedCount > 0, nil
 }
 
 // RetryDueRef is one row of ListRunsDueForRetry: the run identity plus what
@@ -375,7 +447,7 @@ func (s *Store) ListRunsForRetryProbe(ctx context.Context, now time.Time, floor 
 	cur, err := s.runs.Find(ctx,
 		withTenantFilter(ctx, bson.M{
 			"status":                 string(store.RunStatusFailedResumable),
-			retryPath("reason"):      "usage_window",
+			retryPath("reason"):      store.RetryReasonUsageWindow,
 			retryPath("retry_after"): bson.M{"$gt": at.Add(floor)},
 			// A row already pulled forward is being settled by the due
 			// pass; re-pulling it would overwrite the announced instant.

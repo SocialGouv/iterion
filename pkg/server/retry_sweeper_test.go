@@ -85,8 +85,15 @@ type fakeRetryStore struct {
 	abandoned map[string]string
 	rearmed   map[string]time.Time
 	armBudget map[string]int // run id -> max attempts seen by ScheduleRunRetry
-	armOK     bool
-	circuit   *store.RetryCircuitState
+	// armWall is the wall each arming carried, abandonExpected the CAS
+	// argument each settlement carried, abandonCASLoses makes every
+	// settlement lose its race, and abandonRefused counts the refusals.
+	armWall         map[string]time.Time
+	abandonExpected map[string]time.Time
+	abandonCASLoses bool
+	abandonRefused  int
+	armOK           bool
+	circuit         *store.RetryCircuitState
 
 	pulls        []probePull
 	pullOK       bool
@@ -105,12 +112,14 @@ type probePull struct {
 
 func newFakeRetryStore() *fakeRetryStore {
 	return &fakeRetryStore{
-		claimWins: map[string]bool{},
-		loadRun:   map[string]*store.Run{},
-		abandoned: map[string]string{},
-		rearmed:   map[string]time.Time{},
-		armBudget: map[string]int{},
-		armOK:     true,
+		claimWins:       map[string]bool{},
+		loadRun:         map[string]*store.Run{},
+		abandoned:       map[string]string{},
+		rearmed:         map[string]time.Time{},
+		armBudget:       map[string]int{},
+		armWall:         map[string]time.Time{},
+		abandonExpected: map[string]time.Time{},
+		armOK:           true,
 
 		pullOK:       true,
 		probeRearmed: map[string]time.Time{},
@@ -133,7 +142,7 @@ func (f *fakeRetryStore) PullRunRetry(ctx context.Context, runID string, expecte
 // RearmProbedRunRetry models the store's CAS on the marker: no marker on the
 // run doc, no re-arm — and the marker is CONSUMED, so a second call reports
 // false the way the real update's filter does.
-func (f *fakeRetryStore) RearmProbedRunRetry(_ context.Context, runID string, at time.Time) (bool, error) {
+func (f *fakeRetryStore) RearmProbedRunRetry(_ context.Context, runID string, at, wall time.Time) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.rearmErr != nil {
@@ -169,10 +178,11 @@ func (f *fakeRetryStore) ClaimRunRetry(ctx context.Context, runID string, _ time
 	return true, nil
 }
 
-func (f *fakeRetryStore) ScheduleRunRetry(_ context.Context, runID string, at time.Time, _, _ string, maxAttempts int) (bool, int, error) {
+func (f *fakeRetryStore) ScheduleRunRetry(_ context.Context, runID string, at, wall time.Time, _, _ string, maxAttempts int) (bool, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.armBudget[runID] = maxAttempts
+	f.armWall[runID] = wall
 	if !f.armOK {
 		return false, 0, nil
 	}
@@ -194,11 +204,21 @@ func (f *fakeRetryStore) ClearRunRetry(_ context.Context, runID string) error {
 	return nil
 }
 
-func (f *fakeRetryStore) AbandonRunRetry(_ context.Context, runID, reason string) error {
+// AbandonRunRetry records the CAS argument the caller carried — the sweeper
+// owes the instant its SCAN listed, and a pass that passed the zero time would
+// settle a row another replica had just pulled forward. abandonCASLoses models
+// the lost race itself; the CAS's own semantics belong to the store and are
+// pinned on the twin (internal/retryprobetest) and against Mongo.
+func (f *fakeRetryStore) AbandonRunRetry(_ context.Context, runID, reason string, expectedAfter time.Time) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.abandonExpected[runID] = expectedAfter
+	if f.abandonCASLoses {
+		f.abandonRefused++
+		return false, nil
+	}
 	f.abandoned[runID] = reason
-	return nil
+	return true, nil
 }
 
 func (f *fakeRetryStore) RecordRetryFailure(_ context.Context, _, _ string, _ time.Time, _ int, _ time.Duration) (*store.RetryCircuitState, error) {

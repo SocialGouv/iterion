@@ -28,9 +28,9 @@ import (
 // against a wall.
 //
 // Fired from the run-outcome EVENT only, never the sweep: the sweep
-// re-offers the same run every minute for an hour, and this posts a
-// comment. One park = one outcome event = one comment; a second park
-// (the retry hit the same wall) legitimately produces a second one.
+// re-offers the same run every minute for an hour, and this posts a comment.
+// One park = one outcome event = one comment, and the park that OPENED the
+// provider wall is the one that speaks (below).
 
 // gatePauseNoticeMarker is the invisible provenance tag on the comment.
 // A future reader (or a de-dup pass) can find iterion's own pause notices
@@ -46,37 +46,32 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 	if s == nil || run == nil || run.RetryState == nil || run.RetryState.RetryAfter == nil {
 		return
 	}
-	// A probe's re-park has nothing to add. The pull-forward probe
-	// (retry_probe.go) resumes a parked run speculatively, the preflight
-	// refuses, and the free re-arm puts the SAME announced instant back with
-	// the same attempt number — a byte-identical comment, up to one per
-	// probe of the budget on a single provider wall. The park that STARTED
-	// the wait is the one that speaks: a PAID arming clears the probe ledger
-	// (store/mongo.ScheduleRunRetry), so a new wall still gets its notice.
+	// The park that OPENED the wall speaks, and a wall the provider MOVES
+	// speaks. The pull-forward probe (retry_probe.go) resumes a parked run
+	// speculatively, the preflight refuses, and the park that follows
+	// re-states the same instant under the same attempt number — a
+	// byte-identical comment, and the row collected one per probe of the
+	// budget plus one per charged park.
 	//
-	// Who PAYS for a park and whether it opens a new WALL are two questions,
-	// and a paid park that merely RESTORES the announced instant answers them
-	// differently: it clears this ledger while arming the wait the row was
-	// already on, so the pull request hears that instant a second time, under
-	// the attempt number that park charged — bounded by max_attempts, and the
-	// one thing new about it. Which parks those are follows from the rules
-	// rather than from a list: the execution's spend and the age of the pull
-	// decide who pays, the refusal decides which instant, so a park whose
-	// refusal named no instant of its own says the announced one again
-	// whatever made it paid (pkg/runner.armUsageWindowRetry, the cross product
-	// derived in
-	// TestArmUsageWindowRetry_ThePaidArmingsThatRestoreTheAnnouncedInstant).
-	// Telling such a park from a genuinely new wall is the missing fact
-	// below.
+	// Who PAYS for a park and which WALL it is on are two questions, and the
+	// row answers the second itself (store.RunRetryState.Wall): the probe
+	// ledger this reads is cleared by an arming that MOVES the wall and by
+	// nothing else, so a charged park that merely restored the announced
+	// instant is silent here, and a probed refusal naming a DIFFERENT instant
+	// — the case the pull request used to hear only at the next charged park —
+	// moves the wall and speaks.
 	//
-	// The one thing it cannot say is a probed refusal that names a DIFFERENT
-	// instant from the announced one: the row moves, this comment does not,
-	// and the pull request hears the new instant at the next paid park. The
-	// stand-down keys on the ledger because nothing records what was
-	// announced — telling those apart means persisting it.
-	if run.RetryState.ProbeCount > 0 {
-		s.gateNoticeDebug(run, "pause notice", "re-armed after probe %d of this wait — the pull request was already told about %s",
-			run.RetryState.ProbeCount, run.RetryState.RetryAfter.UTC().Format(time.RFC3339))
+	// What the ledger does NOT distinguish, and the honest bound on this
+	// rule: a wall no probe ever pulled keeps an empty ledger for its whole
+	// life, so a second charged park on it comments again — a wall closer than
+	// the probe floor, or any wall at all under
+	// ITERION_RETRY_PROBE_BUDGET=0. Bounded by max_attempts, and the
+	// behaviour that shipped before the wall was persisted. Telling those two
+	// apart means a second durable field (what the pull request was last
+	// told), which this change deliberately does not add.
+	if !run.RetryState.UsageWallUnannounced() {
+		s.gateNoticeDebug(run, "pause notice", "probe %d of the wall at %s — the pull request was already told about it",
+			run.RetryState.ProbeCount, instantOrUnknown(run.RetryState.UsageWall()))
 		return
 	}
 	// Where iterion may speak, and through whom, is ONE walk — the run's
@@ -267,6 +262,15 @@ func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) st
 		}
 	}
 	return b.String()
+}
+
+// instantOrUnknown renders an instant for a debug line, naming the legacy
+// shape explicitly: a row armed before the wall was persisted carries none.
+func instantOrUnknown(t time.Time) string {
+	if t.IsZero() {
+		return "an instant this row predates"
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // gatePauseCause extracts the provider's own sentence from the run error —

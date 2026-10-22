@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
+	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usernotify"
 )
 
 // The sweeper's half of the probe's guarantee, over random sequences.
@@ -36,6 +40,11 @@ const (
 	probeSequenceRunID  = "run-2247"
 	probeSequenceBot    = "bots/feed-watch/main.bot"
 	probeSequenceBudget = 3
+	// probeSequenceProbeBudget is the PROBE budget the pass runs with here —
+	// small on purpose, not the shipped 24: a forty-step sequence can spend
+	// three pulls on one wall, so I7's "probes per wall ≤ budget" bites inside
+	// the property instead of being a bound nothing ever reaches.
+	probeSequenceProbeBudget = 3
 )
 
 // modelRetryLister is the scan over the modelled row: the same two filters
@@ -77,7 +86,12 @@ type probeSequenceWorld struct {
 	notice   *Server
 	comments *stubCommenter
 	noticed  *store.Run
-	t        *testing.T
+	// pushes is the run OWNER's notification channel: the real
+	// usernotify.Dispatcher over the modelled row, with the episode claim
+	// that dedups the bus and the sweep. One park = one wall = one message is
+	// the guarantee it witnesses.
+	pushes *probeSequencePush
+	t      *testing.T
 	// armedWhenNoticed is the number of armings the row had taken when the
 	// pause notice last fired. The notice is driven by the run-outcome
 	// EVENT, so one park is one notice: a second notice with no arming in
@@ -169,8 +183,14 @@ func newProbeSequenceWorld(t *testing.T, notice *Server, comments *stubCommenter
 	// refuses.
 	wall := base.Add(4 * 24 * time.Hour).Truncate(time.Millisecond)
 	run := &store.Run{
-		ID:           probeSequenceRunID,
-		Status:       store.RunStatusFailedResumable,
+		ID:     probeSequenceRunID,
+		Status: store.RunStatusFailedResumable,
+		// The owner is what makes a notification addressable at all: a run
+		// with none ends as a deliberate no-op, and the user half of I5 would
+		// compare 0 with 0 for every sequence.
+		TenantID:     probeSequenceTenant,
+		OwnerID:      "user-1",
+		Name:         "weekly digest",
 		WorkflowHash: "wf-hash-1",
 		FilePath:     probeSequenceBot,
 		RetryPolicy: &store.RunRetryPolicy{
@@ -179,7 +199,8 @@ func newProbeSequenceWorld(t *testing.T, notice *Server, comments *stubCommenter
 		ContinuationState: store.ContinuationRetryArmed,
 		RetryState: &store.RunRetryState{
 			RetryAfter: &wall,
-			Reason:     "usage_window",
+			Wall:       &wall,
+			Reason:     store.RetryReasonUsageWindow,
 			Code:       "USAGE_LIMIT_BLOCKED",
 			Attempts:   1,
 		},
@@ -189,7 +210,8 @@ func newProbeSequenceWorld(t *testing.T, notice *Server, comments *stubCommenter
 	comments.bodies = nil
 	return &probeSequenceWorld{
 		st: st, s: s, lister: &modelRetryLister{st: st}, resumer: &fakeResumer{},
-		counter: counter, notice: notice, comments: comments, noticed: noticed, t: t,
+		counter: counter, notice: notice, comments: comments, noticed: noticed,
+		pushes: newProbeSequencePush(st), t: t,
 		// The seeded park is an arming no counter saw, and the pull request
 		// may legitimately be told about it once.
 		armedWhenNoticed: -1,
@@ -207,9 +229,51 @@ func (w *probeSequenceWorld) snapshot() retryprobetest.Snapshot {
 		Armings:      w.st.PaidArmings + w.st.FreeRearms,
 		Circuit:      w.st.CircuitFailures,
 		Notices:      len(w.comments.bodies),
+		UserNotices:  w.pushes.count(),
 		Abandons:     len(w.st.Abandons),
 	}
 }
+
+// probeSequencePush is the run owner's notification channel: the real
+// dispatcher, the real episode claim, and a sink that keeps what it delivered.
+type probeSequencePush struct {
+	dispatcher *usernotify.Dispatcher
+	sink       *recordingUserSink
+}
+
+type recordingUserSink struct {
+	mu   sync.Mutex
+	seen []usernotify.Notification
+}
+
+func (r *recordingUserSink) Name() string { return "probe-sequence" }
+
+// Deliver takes the lock: the dispatcher fans out to its sinks in goroutines,
+// and an observer fed by them that reads its own slice bare is a race the -race
+// job finds before the invariant does.
+func (r *recordingUserSink) Deliver(_ context.Context, n usernotify.Notification) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = append(r.seen, n)
+	return nil
+}
+
+func (r *recordingUserSink) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.seen)
+}
+
+func newProbeSequencePush(st store.RunStore) *probeSequencePush {
+	sink := &recordingUserSink{}
+	return &probeSequencePush{
+		dispatcher: usernotify.NewDispatcher(st, usernotify.NewMemPrefsStore(), usernotify.NewMemSentStore(),
+			"https://iterion.example", nil, sink),
+		sink: sink,
+	}
+}
+
+func (p *probeSequencePush) count() int { return p.sink.count() }
 
 // apply drives one step through the real pass. It reports false when the row
 // is in a state that step cannot reach in production.
@@ -254,7 +318,7 @@ func (w *probeSequenceWorld) apply(step retryprobetest.Step, now time.Time) bool
 			return false
 		}
 		if _, _, err := w.st.ScheduleRunRetry(context.Background(), probeSequenceRunID,
-			step.At, "usage_window", "USAGE_LIMIT_BLOCKED", probeSequenceBudget); err != nil {
+			step.At, step.At, store.RetryReasonUsageWindow, "USAGE_LIMIT_BLOCKED", probeSequenceBudget); err != nil {
 			w.t.Fatalf("model arming: %v", err)
 		}
 	case retryprobetest.StepAgeMarker:
@@ -274,6 +338,15 @@ func (w *probeSequenceWorld) apply(step retryprobetest.Step, now time.Time) bool
 		}
 		stale := now.Add(-2 * store.ProbeMarkerTTL).Truncate(time.Millisecond)
 		w.st.Mutate(func(r *store.Run) { r.RetryState.LastProbeAt = &stale })
+	case retryprobetest.StepUserNotify:
+		// What the eventbus and the reconciliation sweep both do: re-derive
+		// the run's outcome from the persisted row and hand it to the
+		// dispatcher. The episode claim is the only dedup there is, so this
+		// step is where "one notification per wall" is either true or not.
+		ev := trigger.BuildRunOutcome(ctx, w.st, probeSequenceRunID, nil)
+		if err := w.pushes.dispatcher.Handle(ctx, ev); err != nil {
+			w.t.Fatalf("user notification for %s: %v", ev.ID, err)
+		}
 	case retryprobetest.StepDue:
 		// The armed instant arrives, which is what the due pass needs to see
 		// a row a previous step armed for days out.
@@ -313,6 +386,7 @@ func sweeperProbeSteps() []retryprobetest.StepKind {
 		retryprobetest.StepDueSweepResumeFails,
 		retryprobetest.StepDueSweepPoolRemap,
 		retryprobetest.StepNotice,
+		retryprobetest.StepUserNotify,
 		retryprobetest.StepPaidPark,
 		retryprobetest.StepAgeMarker,
 		retryprobetest.StepAgePull,
@@ -325,7 +399,15 @@ func runSweeperSequence(t *testing.T, notice *Server, comments *stubCommenter, n
 	w := newProbeSequenceWorld(t, notice, comments, noticed, base)
 	// The seeded park is a wall the pull request may legitimately be told
 	// about once.
-	ledger := &retryprobetest.Ledger{MaxAttempts: probeSequenceBudget, Wall: base.Add(4 * 24 * time.Hour), WallsOpened: 1}
+	ledger := &retryprobetest.Ledger{
+		MaxAttempts: probeSequenceBudget, Wall: base.Add(4 * 24 * time.Hour), WallsOpened: 1,
+		ProbeBudget: probeSequenceProbeBudget,
+		// The floor the pass runs with (defaultRetryProbeFloor — only the
+		// budget is overridden below), so I8 holds this driver's pulls to one
+		// per floor per ROW: every step here runs microseconds after the last,
+		// and an arming that dropped the pace would be pulled again at once.
+		ProbeFloor: defaultRetryProbeFloor,
+	}
 	var bad []string
 	for _, step := range seq {
 		now := time.Now().UTC()
@@ -367,6 +449,12 @@ func noteSweeper(seen map[string]int, step retryprobetest.Step, before, after re
 	if after.Notices > before.Notices {
 		seen["pause notice posted"]++
 	}
+	if after.UserNotices > before.UserNotices {
+		seen["owner notified"]++
+	}
+	if step.Kind == retryprobetest.StepUserNotify && after.UserNotices == before.UserNotices {
+		seen["owner notification deduped"]++
+	}
 	if before.LiveMarker(now) && (step.Kind == retryprobetest.StepDueSweepPoolRemap || step.Kind == retryprobetest.StepDueSweepResumeFails) {
 		seen["settlement attempted on a probed row"]++
 	}
@@ -385,6 +473,10 @@ func noteSweeper(seen map[string]int, step retryprobetest.Step, before, after re
 // three real passes over 60 seeded sequences, asserting the guarantee after
 // every step.
 func TestProbeGuarantee_TheSweepersPassesKeepItOverRandomSequences(t *testing.T) {
+	// The pass reads its bounds from the environment on every tick, so this
+	// is how the probe budget the ledger asserts against is the one the scan
+	// applies.
+	t.Setenv(EnvRetryProbeBudget, strconv.Itoa(probeSequenceProbeBudget))
 	notice, comments, noticed := newProbeNoticeServer(t)
 	kinds := sweeperProbeSteps()
 	seen := map[string]int{}
@@ -406,6 +498,8 @@ func TestProbeGuarantee_TheSweepersPassesKeepItOverRandomSequences(t *testing.T)
 			seed, at, len(seq), strings.Join(shortest, "\n"))
 	}
 	for _, want := range []string{
+		"owner notified",
+		"owner notification deduped",
 		"row pulled forward",
 		"probe-driven resume",
 		"ordinary billable resume",

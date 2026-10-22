@@ -35,6 +35,11 @@ import (
 // derive the episode key from a run listing without loading each run;
 // truncation to the second keeps the key stable across the stores'
 // differing timestamp precisions.
+//
+// One outcome does NOT use it: a run parked on a provider usage window, whose
+// episode is the WALL it waits on (RunUsageParkEventID). There, updated_at
+// moves with every piece of retry bookkeeping while nothing new has happened
+// to the run.
 func RunOutcomeEventID(runID, status, interactionID string, updatedAt time.Time) string {
 	episode := status
 	if interactionID != "" && store.RunStatus(status).IsPaused() {
@@ -48,6 +53,25 @@ func RunOutcomeEventID(runID, status, interactionID string, updatedAt time.Time)
 		id += ":" + episode
 	}
 	return id
+}
+
+// RunUsageParkEventID is the episode of a run PARKED ON A PROVIDER WALL
+// (store.UsageParkWall): the run and the wall, and nothing else.
+//
+// A usage park is not an episode per transition. One wall collects a park, a
+// pull-forward probe, a free re-arm per probe of the budget and a charged park
+// per attempt, each rewriting the row and so moving updated_at — so the
+// per-transition key made each of them a fresh episode and pushed one message
+// per bookkeeping write to the run's owner (about twenty-five on a weekly wall
+// at the shipped probe budget, every one of them saying the run had failed).
+// Keyed on the wall, the claim that dedups the bus and the sweep dedups them
+// too, and a wall the provider MOVES is a new episode because it is news.
+//
+// Truncated to the second for RunOutcomeEventID's reason: the stores hold
+// instants at different precisions, and the sweep derives this key from a
+// listing while the event path derives it from the document.
+func RunUsageParkEventID(runID string, wall time.Time) string {
+	return "run:" + runID + ":usage_wall:" + strconv.FormatInt(wall.UTC().Truncate(time.Second).Unix(), 10)
 }
 
 // RunHealthEventID is the stable identity of a persisted run-health event.
@@ -77,8 +101,20 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 	var updatedAt time.Time
 	var bankState store.BankState
 	var finalBranch, finalCommit, finalBranchError string
+	// usageWall is the provider wall a parked run is waiting on, zero for
+	// every other outcome — the fact that makes the episode the WAIT instead
+	// of the transition. usageWake is when that row actually comes back,
+	// which is NOT the wall: the arming takes the earlier of the wall and a
+	// skipped credential's reopening, then applies the jitter, the floor and
+	// the max_wait ceiling. The wall identifies the episode; the wake is what
+	// a reader is told to expect, so both travel.
+	var usageWall, usageWake time.Time
 	if r, err := rs.LoadRun(fctx, runID); err == nil && r != nil {
 		updatedAt = r.UpdatedAt
+		usageWall = r.UsageParkWall()
+		if !usageWall.IsZero() && r.RetryState != nil && r.RetryState.RetryAfter != nil {
+			usageWake = r.RetryState.RetryAfter.UTC()
+		}
 		bankState, finalBranch, finalCommit, finalBranchError = r.BankState(), r.FinalBranch, r.FinalCommit, r.FinalBranchError
 		repo = r.ProjectPath
 		botID = r.BotID
@@ -120,6 +156,22 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 	}
 
 	payload := map[string]any{"bot_id": botID, "status": status, "run_id": runID}
+	// A usage park carries its WALL, so every consumer keys on the wait
+	// rather than on the transition — and reads it from the row that KNOWS
+	// it, never re-derived from retry_after (which the jitter, the shared
+	// circuit and a probe's pull all move) nor from the order of events.
+	if !usageWall.IsZero() {
+		payload["usage_park_wall"] = usageWall.UTC().Format(time.RFC3339)
+	}
+	// The instant the row is armed for. A consumer telling the run's owner
+	// when their run comes back has to say THIS one: the wall can be days
+	// later than the wake, because the arming takes the earlier of the wall
+	// and a skipped credential's reopening (measured: a team key reopening
+	// the same afternoon while the platform forfait it fell through to is
+	// walled until Monday — 69 hours apart).
+	if !usageWake.IsZero() {
+		payload["usage_park_resumes_at"] = usageWake.Format(time.RFC3339)
+	}
 	if bankState != "" {
 		payload["bank_state"] = string(bankState)
 		payload["final_branch"] = finalBranch
@@ -138,8 +190,12 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 		payload["owner_id"] = ownerID
 	}
 
+	id := RunOutcomeEventID(runID, status, interactionID, updatedAt)
+	if !usageWall.IsZero() {
+		id = RunUsageParkEventID(runID, usageWall)
+	}
 	return Event{
-		ID:         RunOutcomeEventID(runID, status, interactionID, updatedAt),
+		ID:         id,
 		Source:     SourceRun,
 		Kind:       kind,
 		TenantID:   tenantID,

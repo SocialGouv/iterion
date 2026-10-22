@@ -88,11 +88,37 @@ type Registry struct {
 	// waiting" and "every waiting run is stranded".
 	RunsRetrySweeps prometheus.Counter
 	// RunsRetryProbes counts the not-yet-due retries a pass pulled forward
-	// so the runner's usage preflight could answer early. It is the cost of
-	// the pull-forward probe made visible: each one is a pod that may find
-	// the window still shut.
-	RunsRetryProbes prometheus.Counter
+	// so the runner's usage preflight could answer early, BY what the probe
+	// then found. It is the cost of the pull-forward probe made visible —
+	// each pull is a pod — and the label is what makes it a cost/benefit
+	// reading rather than a cost one: see RetryProbePulled.
+	RunsRetryProbes *prometheus.CounterVec // result (pulled|still_blocked|stood_down)
 }
+
+// The dispositions of one pull-forward probe, each counted at the ONE site
+// that knows it:
+//
+//   - RetryProbePulled, at the pull itself (pkg/server.probeRetry): the pod
+//     this probe will spend;
+//   - RetryProbeStillBlocked, beside the free re-arm
+//     (pkg/runner.armUsageWindowRetry): the resume reached the runner and the
+//     usage preflight refused again — the window was exactly where the
+//     provider said it was;
+//   - RetryProbeStoodDown, at the sweeper's stand-down
+//     (pkg/server.standDownProbedRetry): the resume never reached the runner
+//     (admission deferred, publish refused, pool remapped), so the probe
+//     observed nothing at all.
+//
+// `pulled` minus the other two is what the pass exists for: the probes whose
+// run got PAST the preflight, which is the only outcome a probe cannot
+// observe from the row — the resume that works simply runs, and the park that
+// may follow it hours later is an ordinary new wall. An operator deciding
+// whether ITERION_RETRY_PROBE_BUDGET earns its pods reads that difference.
+const (
+	RetryProbePulled       = "pulled"
+	RetryProbeStillBlocked = "still_blocked"
+	RetryProbeStoodDown    = "stood_down"
+)
 
 // New registers the metrics on a fresh registry. Each call gives a
 // fully-isolated registry — convenient for tests, and called once at
@@ -209,10 +235,10 @@ func New() *Registry {
 		Name: "iterion_runs_retry_sweeps_total",
 		Help: "Retry-sweeper passes completed. Flat at 0 means the sweeper is not running, which the other retry metrics cannot distinguish from an idle one.",
 	})
-	r.RunsRetryProbes = prometheus.NewCounter(prometheus.CounterOpts{
+	r.RunsRetryProbes = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "iterion_runs_retry_probes_total",
-		Help: "Not-yet-due usage-window retries pulled forward so the runner's preflight could observe a reset the provider never announced.",
-	})
+		Help: "Pull-forward probes of a not-yet-due usage-window retry, by what the probe found: pulled (the pod spent), still_blocked (the preflight refused again), stood_down (its resume never reached the runner). pulled minus the other two found the window reopened.",
+	}, []string{"result"})
 	r.DLQDepth = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "iterion_dlq_depth",
 		Help: "Messages currently parked on the runs DLQ stream.",

@@ -208,6 +208,14 @@ func (d *OpsDispatcher) NotifyOperator(ctx context.Context, a Alert, episodeKey 
 // keeps the per-transition derivation (nothing rewrites a failed run, and a
 // resumed-then-refailed run is a genuinely new episode).
 func opsEpisodeKey(run *store.Run) string {
+	if wall := run.UsageParkWall(); !wall.IsZero() {
+		// A usage park's episode is the provider WALL, as it is for the user
+		// notification (trigger.RunUsageParkEventID) and the pull request's
+		// pause notice: attempts alone advances once per charged park, so one
+		// wall still cost the operator max_attempts incidents — and a park
+		// that merely re-stated the announced instant was one of them.
+		return fmt.Sprintf("%srun:%s:usage_wall:%d", opsEpisodePrefix, run.ID, wall.Truncate(time.Second).Unix())
+	}
 	if run.Status == store.RunStatusFailedResumable {
 		attempts := 0
 		if run.RetryState != nil {
@@ -365,7 +373,18 @@ func (d *OpsDispatcher) sweepRefs(ctx context.Context, refs []usernotify.RunRef)
 		// window for the whole lookback (usernotify's sweep sets the
 		// pattern at pkg/usernotify/sweep.go).
 		if d.Claims != nil {
-			key := opsEpisodePrefix + trigger.RunOutcomeEventID(ref.ID, ref.Status, ref.InteractionID, ref.UpdatedAt)
+			// usernotify.RunRef.Episode() is the SAME derivation
+			// trigger.BuildRunOutcome mints for the event this replay
+			// rebuilds — a usage park's wall-keyed id included. Deriving the
+			// per-transition one instead looked for a marker nothing ever
+			// writes, so every parked run paid two run loads on every pass.
+			//
+			// For a usage park this key and the EPISODE key coincide (both
+			// are the run and the wall), which the two-key discipline above
+			// survives: the marker is written only once delivery is
+			// confirmed, and the failed fan-out's Unmark releases both at
+			// once — so a released episode is never certified.
+			key := opsEpisodePrefix + ref.Episode()
 			if marked, err := d.Claims.IsMarked(ctx, key); err == nil && marked {
 				continue
 			}

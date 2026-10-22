@@ -143,7 +143,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	if lerr != nil {
 		s.warnf("retry sweeper: run %s: cannot read the run doc before resuming its retry (%v) — proceeding on the retry row alone: a DLQ-parked run whose stale retry survived would be resumed on top of the gate reconciler's repair", ref.ID, lerr)
 	} else if run != nil && run.FailureCode == store.FailureDLQParked {
-		s.disarmRetry(runCtx, retryStore, ref.TenantID, ref.ID,
+		s.disarmRetry(runCtx, retryStore, ref,
 			"auto-retry abandoned: the run is parked on the DLQ (DLQ_PARKED) — its armed retry was stale; only an operator's resume (iterion remote runs resume) wakes it")
 		return
 	} else if run != nil && run.FailureCode == store.FailureAmbiguousEffect {
@@ -151,7 +151,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		// repeat a call that already took effect, or run a node beside a
 		// command still running in the run's sandbox. An armed retry on
 		// such a doc is a stale one, from a park that came before it.
-		s.disarmRetry(runCtx, retryStore, ref.TenantID, ref.ID,
+		s.disarmRetry(runCtx, retryStore, ref,
 			"auto-retry abandoned: the run's last failure left an effect undecided (AMBIGUOUS_EFFECT) — its armed retry was stale; only an operator's resume (iterion remote runs resume) wakes it")
 		return
 	}
@@ -177,7 +177,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 			s.reArmRetry(runCtx, retryStore, ref, fmt.Errorf("admission deferred: %s", deny.reason))
 			return
 		}
-		s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID, fmt.Sprintf("auto-retry abandoned: %s", deny.reason))
+		s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %s", deny.reason))
 		return
 	}
 
@@ -217,7 +217,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		}
 		// A bot removed from the catalog will never resolve; re-arming
 		// would just re-fail every 15 minutes forever.
-		s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID, fmt.Sprintf("auto-retry abandoned: %v", err))
+		s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %v", err))
 		return
 	}
 	defer lb.Cleanup()
@@ -242,7 +242,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// rollback on the common case.
 	if r, err := s.cfg.Store.LoadRun(runCtx, ref.ID); err == nil && r != nil && !r.Status.CanAutoResume() {
 		adm.rollback(s.logger)
-		s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID,
+		s.abandonRetry(runCtx, retryStore, ref,
 			fmt.Sprintf("auto-retry abandoned: run is %s (%s)", r.Status, strings.TrimSpace(r.Error)))
 		return
 	}
@@ -267,7 +267,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 			// No second rollback: ErrPoolRemapped leaves BEFORE any publish,
 			// so RunMayHaveStarted is false and the refund above already
 			// fired — and ReleaseRun is a non-idempotent $inc (rva-2 F1).
-			s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID,
+			s.abandonRetry(runCtx, retryStore, ref,
 				"auto-retry abandoned: the team's runner-pool mapping moved past the run's frozen pool — relaunch the run on the new pool")
 			return
 		}
@@ -381,11 +381,12 @@ func retryDenialIsTransient(reason string) bool {
 // abandonRetry records a permanent stop, audits it, and republishes the
 // run's outcome so the consumers that stood down on the armed retry get
 // the event they were promised.
-func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStore, tenantID, runID, reason string) {
+func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, reason string) {
+	tenantID, runID := ref.TenantID, ref.ID
 	if s.standDownProbedRetry(ctx, retryStore, tenantID, runID, reason) {
 		return
 	}
-	if !s.disarmRetry(ctx, retryStore, tenantID, runID, reason) {
+	if !s.disarmRetry(ctx, retryStore, ref, reason) {
 		return
 	}
 
@@ -409,13 +410,27 @@ func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStor
 // land — the retry then stays claimable, the next sweep tick walks the
 // same path again, and anything a caller would do on top (a republish)
 // must wait for the tick that actually makes the stop permanent.
-func (s *Server) disarmRetry(ctx context.Context, retryStore store.RunRetryStore, tenantID, runID, reason string) bool {
-	if err := retryStore.AbandonRunRetry(ctx, runID, reason); err != nil {
+//
+// armedWhenRead is the instant the SCAN that led here listed, and the
+// settlement's CAS: this pass is one tick away from a sibling that pulled the
+// row forward to probe it, and retiring such a row destroys the provider's
+// own word days before it falls. A lost CAS is the same "did not land" as a
+// store error, and reads the same to the caller.
+func (s *Server) disarmRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, reason string) bool {
+	runID := ref.ID
+	armedWhenRead := ref.RetryAfter()
+	abandoned, err := retryStore.AbandonRunRetry(ctx, runID, reason, armedWhenRead)
+	if err != nil {
 		s.warnf("retry sweeper: abandon %s: %v", runID, err)
 		return false
 	}
+	if !abandoned {
+		s.warnf("retry sweeper: run %s: the retry was not abandoned — the row moved since the scan listed it armed for %s, so it belongs to the pass that moved it",
+			runID, armedWhenRead.Format(time.RFC3339))
+		return false
+	}
 	s.countRetry("abandoned")
-	s.auditSystem(tenantID, "retry-sweeper", "run.retry.abandoned", "run", runID, map[string]any{"reason": reason})
+	s.auditSystem(ref.TenantID, "retry-sweeper", "run.retry.abandoned", "run", runID, map[string]any{"reason": reason})
 	s.warnf("retry sweeper: run %s: %s", runID, reason)
 	return true
 }
@@ -428,13 +443,15 @@ func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore,
 	}
 	maxAttempts := s.retryMaxAttempts(ctx, ref.ID)
 	at := time.Now().UTC().Add(retryReenqueueBackoff)
-	scheduled, _, err := retryStore.ScheduleRunRetry(ctx, ref.ID, at, retryReason(ref), retryCode(ref), maxAttempts)
+	// The re-arm brings no news about the provider's window: the resume
+	// FAILED, so the row keeps the wall it is on (and its probe ledger).
+	scheduled, _, err := retryStore.ScheduleRunRetry(ctx, ref.ID, at, time.Time{}, retryReason(ref), retryCode(ref), maxAttempts)
 	if err != nil {
 		s.warnf("retry sweeper: re-arm %s: %v", ref.ID, err)
 		return
 	}
 	if !scheduled {
-		s.abandonRetry(ctx, retryStore, ref.TenantID, ref.ID, fmt.Sprintf("auto-retry gave up after a failed resume: %v", cause))
+		s.abandonRetry(ctx, retryStore, ref, fmt.Sprintf("auto-retry gave up after a failed resume: %v", cause))
 		return
 	}
 	s.countRetry("failed")
@@ -462,7 +479,7 @@ func retryAttempts(ref mongostore.RetryDueRef) int {
 
 func retryReason(ref mongostore.RetryDueRef) string {
 	if ref.RetryState == nil || ref.RetryState.Reason == "" {
-		return "usage_window"
+		return store.RetryReasonUsageWindow
 	}
 	return ref.RetryState.Reason
 }
@@ -494,6 +511,14 @@ func (s *Server) auditRetry(ref mongostore.RetryDueRef, action string, meta map[
 func (s *Server) countRetry(result string) {
 	if s.cfg.Metrics != nil {
 		s.cfg.Metrics.RunsRetryResumed.WithLabelValues(result).Inc()
+	}
+}
+
+// countRetryProbe records what one pull-forward probe found
+// (metrics.RetryProbePulled and friends). Nil-safe for countRetry's reason.
+func (s *Server) countRetryProbe(result string) {
+	if s.cfg.Metrics != nil {
+		s.cfg.Metrics.RunsRetryProbes.WithLabelValues(result).Inc()
 	}
 }
 

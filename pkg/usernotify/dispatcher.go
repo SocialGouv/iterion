@@ -177,6 +177,13 @@ func (d *Dispatcher) markDelivered(ctx context.Context, key string) {
 // kindFor maps the trigger event onto a notification Kind. A run.paused
 // without a pending interaction is an operator soft-pause — the operator
 // initiated it, so there is nobody to notify.
+//
+// A run parked on a provider usage window arrives as run.failed, because that
+// is what the engine wrote (failed_resumable), and it is NOT a failure to the
+// person reading: the event carries the wall it waits on, and that is the one
+// thing that tells the two apart. Read from the payload, which the builder
+// filled from the row that knows it (store.UsageParkWall) — a kind guessed
+// from the status would call every resumable failure a park.
 func kindFor(ev trigger.Event) (Kind, bool) {
 	switch ev.Kind {
 	case trigger.KindRunPaused:
@@ -187,11 +194,46 @@ func kindFor(ev trigger.Event) (Kind, bool) {
 	case trigger.KindRunFinished:
 		return KindRunFinished, true
 	case trigger.KindRunFailed:
+		if !usageParkWall(ev).IsZero() {
+			return KindUsageWindowParked, true
+		}
 		return KindRunFailed, true
 	case trigger.KindRunCancelled:
 		return KindRunCancelled, true
 	}
 	return "", false
+}
+
+// usageParkWall reads the provider wall the event's run is parked on, or the
+// zero time when it is not parked on one. The payload is the only source: the
+// dispatcher must not re-derive a wall from retry_after, which the policy's
+// jitter, the shared circuit and a probe's pull all move.
+func usageParkWall(ev trigger.Event) time.Time {
+	return eventInstant(ev, "usage_park_wall")
+}
+
+// usageParkResumesAt reads the instant the parked row is ARMED for — what the
+// run's owner is told to expect. Distinct from the wall, which identifies the
+// episode and can be days later: the arming takes the earlier of the wall and
+// a skipped credential's reopening, then applies the jitter, the floor and the
+// max_wait ceiling. Zero on an event that carries only the wall, where the
+// wall is the honest best answer.
+func usageParkResumesAt(ev trigger.Event) time.Time {
+	return eventInstant(ev, "usage_park_resumes_at")
+}
+
+// eventInstant reads one RFC3339 payload field, zero when absent or
+// unparseable — a malformed instant must not make a park look like a failure.
+func eventInstant(ev trigger.Event, key string) time.Time {
+	raw, _ := ev.Payload[key].(string)
+	if raw == "" {
+		return time.Time{}
+	}
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return at.UTC()
 }
 
 func (d *Dispatcher) build(ctx context.Context, ev trigger.Event, kind Kind, runID string) Notification {
@@ -249,7 +291,14 @@ func (d *Dispatcher) build(ctx context.Context, ev trigger.Event, kind Kind, run
 		}
 	}
 
-	title, body := d.render(fctx, kind, name, runID, nodeID, interactionID)
+	// The body names the WAKE (the instant the row is armed for), the episode
+	// keys on the WALL: a park whose wall is days past its wake would
+	// otherwise tell the owner to expect the run on the wrong day.
+	resumesAt := usageParkResumesAt(ev)
+	if resumesAt.IsZero() {
+		resumesAt = usageParkWall(ev)
+	}
+	title, body := d.render(fctx, kind, name, runID, nodeID, interactionID, resumesAt)
 
 	data := map[string]string{}
 	if nodeID != "" {
@@ -257,6 +306,15 @@ func (d *Dispatcher) build(ctx context.Context, ev trigger.Event, kind Kind, run
 	}
 	if interactionID != "" {
 		data["interaction_id"] = interactionID
+	}
+	if wall := usageParkWall(ev); !wall.IsZero() {
+		// The wall is the park's IDENTITY (the episode every reader dedups
+		// on); the wake is the instant to show a reader, and is what the body
+		// above names.
+		data["usage_park_wall"] = wall.Format(time.RFC3339)
+		if !resumesAt.IsZero() {
+			data["usage_park_resumes_at"] = resumesAt.Format(time.RFC3339)
+		}
 	}
 
 	return Notification{
@@ -275,7 +333,7 @@ func (d *Dispatcher) build(ctx context.Context, ev trigger.Event, kind Kind, run
 // render produces the display strings. The human-input body includes a
 // bounded excerpt of the node's authored `instructions:` text — never
 // resolved answer data — so the push payload cannot leak run content.
-func (d *Dispatcher) render(ctx context.Context, kind Kind, name, runID, nodeID, interactionID string) (title, body string) {
+func (d *Dispatcher) render(ctx context.Context, kind Kind, name, runID, nodeID, interactionID string, usageResumesAt time.Time) (title, body string) {
 	switch kind {
 	case KindHumanInputRequested:
 		title = "Input needed: " + name
@@ -302,6 +360,14 @@ func (d *Dispatcher) render(ctx context.Context, kind Kind, name, runID, nodeID,
 	case KindRunCancelled:
 		title = "Run cancelled: " + name
 		body = "The run was cancelled."
+	case KindUsageWindowParked:
+		// Nothing is wrong with the run: it is waiting, and the instant it
+		// comes back is the only actionable fact. Rendered in UTC like the
+		// pull-request pause notice (pkg/server.gatePauseNoticeBody) so a
+		// reader comparing the two reads one clock.
+		title = "Run paused on a usage window: " + name
+		body = "The LLM provider's quota window is exhausted. iterion resumes the run automatically at " +
+			usageResumesAt.Format("15:04 UTC on 2006-01-02") + "."
 	}
 	return title, body
 }

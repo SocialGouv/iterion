@@ -366,6 +366,45 @@ against a run sleeping through a window that reopened the first afternoon.
 `ITERION_RETRY_PROBE_BUDGET=0` disarms it in one variable, with no code change
 and no redeploy of anything else.
 
+The budget is per **wall**, not per arming. The provider's own instant is
+persisted on the retry row (`RunRetryState.Wall`), written by the park that
+decided it — from the refusal, never from `retry_after`, which also carries
+the jitter, the five-minute floor, the `max_wait` ceiling, a skipped
+credential's earlier wake and the shared circuit's deferral. The probe
+**budget** is cleared by an arming that MOVES that instant and by nothing
+else, so a charged park that merely re-states the wall the row is already on
+keeps it: the ceiling on one provider window is `budget` probes, beside at
+most `max_attempts` charged parks. A wall the provider genuinely moves is a
+new wait and is probed afresh.
+
+The **pace** (`last_probe_at`, one pull per floor) belongs to the ROW, not to
+the wall: no arming clears it, whatever it does to the wall. The scan reads an
+absent stamp as "never probed", so an arming that cleared it made the row
+eligible again on the sweeper's very next pass — one pod, one owner
+notification and one pull-request comment per sweep tick, charged no attempt
+and bounded by nothing.
+
+And only the provider's own **dated** word moves a wall. A refusal that names
+a window DURATION ("reached for 5 hour") resolves against the moment it is
+read, so believing it re-dated the wall on every park — a fresh episode, a
+fresh incident, a fresh notice and a fresh budget, for one window nobody had
+news about. Such a refusal, a blind guess and a park that restores the instant
+a probe set aside all say *nothing new*: the row keeps the wall it is on while
+that wall is still ahead. A wall that has PASSED is spent news and the next
+park names its own. Which refusals are dated is asked of the **parser**, which
+knows which of its patterns matched: a duration alone is this reading's own
+resolution, and so is an absolute instant a producer rendered INTO a sentence
+that also states the duration — the zai facade's "reached for 5 hour. Your
+limit will reset at …", whose instant sits within a minute of
+now+that duration (anything further is a real dated wall refused mid-window,
+with the time that REMAINS of it). A *typed* reset instant is the same ask,
+of the **text it was resolved from**, because the typed field is frozen: the
+claude_code classifier stores the parser's answer, and re-reading the field
+cannot see what it came from. A refusal whose words carry no hint at all keeps
+the typed instant's word — the operator's own cap window names a date.
+`ITERION_RETRY_PROBE_BUDGET=0` remains the one-variable escape hatch for the
+pass as a whole.
+
 A probe spends **no attempt**: `max_attempts` is reserved for work that gets
 past the preflight, so a re-failure that followed a probe re-arms for free (a
 probed wait that charged attempts would retire a run before the wall it waits
@@ -430,18 +469,13 @@ us the wait is over and both answers are no: the park is charged and announced,
 the resume is a billable launch, the settlement is the sweeper's ordinary one.
 
 That hour is a constant rather than a knob because both errors it can make are
-mild, and the one that is not is on the other side of the split: too short, a
-genuinely probed park (a resume the shared circuit deferred for longer) is
-charged one attempt, its resume is metered, and — since a paid arming clears
-the probe ledger while this one restores the *same* announced instant — that
-wait is probed afresh, pace included, so the probes one wait can cost are
-bounded by `max_attempts × budget` and not by the budget alone (120 pods and 5
-metered launches at the defaults, against 24 and 0), and the pull request hears
-that instant once more, under the attempt number the park charged, because the
-pause notice reads the same ledger; the announced instant survives all of it
-and the run still waits on its wall. Too long, one later park within the hour
-that follows a pull is free. The escape hatch is the pass itself —
-`ITERION_RETRY_PROBE_BUDGET=0` writes no marker at all.
+mild: too short, a genuinely probed park (a resume the shared circuit deferred
+for longer) is charged one attempt and its resume is metered — `max_attempts`
+of each per run — but it re-states the **same** wall, so it clears no ledger,
+starts no fresh budget and says nothing new on the pull request; the announced
+instant survives all of it and the run still waits on its wall. Too long, one
+later park within the hour that follows a pull is free. The escape hatch is
+the pass itself — `ITERION_RETRY_PROBE_BUDGET=0` writes no marker at all.
 
 A probe costs **a pod, not a quota unit** — while its resume follows the pull
 inside the marker's TTL (above): that resume passes the same
@@ -461,22 +495,24 @@ again.
 A forfait nobody resets is probed for a bounded day and then simply waits —
 per parked run, so a large parked fleet multiplies the pods and is where
 lowering the budget (or raising the floor) earns its keep. The day is per
-armed WAIT, and a paid park that restores the announced instant arms a new one
-on that same instant, so a run's own ceiling is `max_attempts × budget` (the
-marker's TTL, above). The pass pulls at
+provider WALL: a run's own ceiling is `budget` probes per wall the provider
+names, whatever the attempts spent re-stating it. The pass pulls at
 most two rows a minute whatever the fleet: every row it pulls becomes due, and
 a probe batch as wide as the due pass's would fill the capacity that resumes
-runs whose own instant has arrived. On the pull request a parked run gates,
-the park that STARTED the wait is the one that comments; a probe's re-park
-stays quiet, because it announces the instant already named there — except a
-paid park that merely RESTORED that instant, which clears the ledger this reads
-and so names it once more (above). Which parks those are follows from the two
-rules, and from nothing else: the spend and the age of the pull decide who
-pays, the refusal decides which instant, so a park whose refusal named no
-instant of its own says the announced one again whatever made it paid. When the provider's fresh refusal names a
-*different* one, the row moves and the comment does not: the pull request hears
-the new instant at the next **paid** park — the run's own wake at that instant,
-or the work that reopening the window finally allowed. The operator's own path stays
+runs whose own instant has arrived.
+
+**One park, one audience, per wall.** The persisted wall is the unit of a
+usage park for everything that observes one, and each reads it from the row:
+the run owner's push notification (its own kind, "paused on a usage window",
+with the wall folded into the episode id — `trigger.RunUsageParkEventID`), the
+operator's incident (`pkg/alert`, same key), and the pause notice on the pull
+request a parked run gates. On that pull request the park that OPENED the wall
+is the one that comments; a probe's re-park stays quiet, and so does a charged
+park that merely re-stated the instant already named there, because the probe
+ledger the notice reads belongs to the wall. When the provider's fresh refusal
+names a *different* instant, the arming moves the wall, clears that ledger,
+and the pull request hears the new instant there and then — it no longer waits
+for the next charged park. The operator's own path stays
 `iterion remote runs resume --usage-blocked`, which sweeps and resumes every
 blocked run at once.
 
