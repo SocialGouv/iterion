@@ -131,8 +131,8 @@ review-pr/converge	no `tools:` list declared on claude_code, the full native too
 review-pr/converge_gpt	capability board.create
 review-pr/converge_gpt	capability board.label
 review-pr/converge_gpt	tools: write_file
-review-pr/reviewer_claude	no `tools:` list declared on claude_code, the full native toolset
-review-pr/reviewer_claude_glance	no `tools:` list declared on claude_code, the full native toolset
+review-pr/reviewer_claude	tools: bash
+review-pr/reviewer_claude_glance	tools: bash
 review-pr/reviewer_gpt	tools: bash
 review-pr/reviewer_gpt_glance	tools: bash
 rgaa-audit/adjudicate	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)

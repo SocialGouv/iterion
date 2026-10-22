@@ -1,7 +1,13 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.16
+version: 0.9.17
+## 0.9.17 — the claude reviewer slots declare their tool surface
+## (`bash`, `read_file`, `glob`, `grep`): on claw an empty list is no tools
+## at all, so a pool deployment dispatched them with tool_count 0 and the
+## model filled the output schema with a stub — a placeholder review that
+## greened the gate (SocialGouv/iterion#2705). On claude_code the same list
+## narrows the roster to those four; the merge twins are unchanged.
 ## 0.9.16 — `mono_family` is the family of the WHOLE review, not only of the
 ## reviewer that judges (#2467). A mono-GPT run is resolved from the run's
 ## credentials, where claude is the preferred family

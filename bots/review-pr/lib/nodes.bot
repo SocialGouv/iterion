@@ -200,9 +200,21 @@ judge reviewer_claude:
   ## all, so there the `tools:` list is the only bound. It is not a
   ## sandbox on claude_code either: the native shell stays, so the
   ## prompt and the output schema still carry the rest.
-  ## Declaring `tools:` here would bound that shell too, and is not free
-  ## — a non-empty list installs --disallowedTools and takes
-  ## Task/WebFetch/Skill off this node on every run.
+  ## The list is REQUIRED, not decorative: on claw an empty `tools:` list
+  ## is no tools at all — the slot dispatched with tool_count 0, could not
+  ## run one git command, and filled the output schema with a stub whose
+  ## `summary` said "placeholder" while the publish step greened the gate
+  ## (probed live on the vao pool, SocialGouv/iterion#2705). The four read
+  ## tools are the review's whole surface: the diff commands the prompt
+  ## mandates run on `bash`, the rest reads. On claude_code the same list
+  ## costs --disallowedTools and takes Task/WebFetch/Skill off this node —
+  ## a price the list carries on the CLI routes, and one a
+  ## reviewer that must read a diff pays gladly.
+  tools: [bash, read_file, glob, grep]
+  ## 60, not the gpt twins' 30: on claude_code this bound is NEW (the slot
+  ## shipped uncapped) and the miss path is a soft stop — a truncated but
+  ## valid review. Headroom until a live turn count says otherwise.
+  tool_max_steps: 60
   readonly: true
   fallbacks:
     ## GLM, the claude family's other server, when the Anthropic route
@@ -313,6 +325,11 @@ judge reviewer_claude_glance:
   system: review_system
   user: review_user_claude
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium}"
+  ## Same surface as reviewer_claude (see there): on claw the empty
+  ## default is no tools at all, and a glance that cannot read the diff
+  ## fills the schema with a stub.
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
   readonly: true
   fallbacks:
     ## The glance tier is a cheaper PRIMARY, not a cheaper rescue: this
