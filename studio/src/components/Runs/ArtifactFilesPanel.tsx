@@ -1,33 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocation, useParams, useSearch } from "wouter";
 
+import { artifactFileURL } from "@/api/runs";
 import {
-  artifactFileURL,
-  downloadArtifactFile,
-  listArtifactFiles,
-} from "@/api/runs";
+  artifactFileFromSearch,
+  artifactFileRunPath,
+  runPathWithoutFile,
+} from "./artifacts/artifactFileLink";
+import PreviewBody from "./artifacts/PreviewBody";
+import {
+  useArtifactDownload,
+  useArtifactFilesQuery,
+  useArtifactFilesRefresh,
+  type ArtifactFileTarget,
+} from "./artifacts/useArtifactFiles";
 import { Button, Dialog, Popover } from "@/components/ui";
 import { desktop, isDesktop } from "@/lib/desktopBridge";
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
-import { useRunStore } from "@/store/run";
 import { useDownloadsStore, type DownloadEntry } from "@/store/downloads";
 import { useUIStore } from "@/store/ui";
 
-import { usePreview, type PreviewState } from "./usePreview";
+import { usePreview } from "./usePreview";
 
-// Events that suggest a tool just dropped a new file. Refresh on
-// node_finished (write_audit_md / emit_sbom complete here) and on the
-// terminal triplet (run_finished + run_failed + run_cancelled) so the
-// final SBOM shows up without the operator hitting refresh.
-const REFRESH_EVENTS = new Set([
-  "node_finished",
-  "run_finished",
-  "run_failed",
-  "run_cancelled",
-]);
-
-const DEBOUNCE_MS = 300;
 
 interface Props {
   runId: string | null;
@@ -37,24 +32,61 @@ interface Props {
 // — the per-run scratch area where in-sandbox tools (write_audit_md,
 // emit_sbom, …) drop arbitrary report/SBOM/manifest files.
 export default function ArtifactFilesPanel({ runId }: Props) {
-  const queryClient = useQueryClient();
-  const filesQuery = useQuery({
-    queryKey: ["run-artifact-files", runId],
-    queryFn: () => listArtifactFiles(runId!),
-    enabled: !!runId,
-  });
+  const filesQuery = useArtifactFilesQuery(runId);
   const files = filesQuery.data ?? null;
   const loading = filesQuery.isLoading;
   const error = filesQuery.error ? errorMessage(filesQuery.error) : null;
   const [downloadsOpen, setDownloadsOpen] = useState(false);
-  const lastSeenSeqRef = useRef<number>(-1);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { preview, openPreview, closePreview } = usePreview(runId);
+  useArtifactFilesRefresh(runId);
 
-  const events = useRunStore((s) => s.events);
+  // `?file=<path>` on the run URL asks for one file's preview — the
+  // address a deliverable is shared under. Only the ROUTED run answers
+  // it: every hydrated run tab stays mounted (RunsTabsView), and a hidden
+  // tab must neither open its own file of that name nor rewrite the
+  // address. The request is honoured once per path (closing the dialog
+  // must not reopen it) and forgotten when the key leaves the URL, so the
+  // same link works again later; a path the listing does not name is
+  // said once, never silently dropped. Opening or closing by hand keeps
+  // the URL in step, carrying every other query key (`?store=`) along.
+  const routeParams = useParams<{ id?: string }>();
+  const routed = !!runId && routeParams.id === runId;
+  const search = useSearch();
+  const [, navigate] = useLocation();
+  const requestedFile = routed ? artifactFileFromSearch(search) : null;
   const addToast = useUIStore((s) => s.addToast);
+  const openedFromURLRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!requestedFile) {
+      openedFromURLRef.current = null;
+      return;
+    }
+    if (!files || openedFromURLRef.current === requestedFile) return;
+    openedFromURLRef.current = requestedFile;
+    const target = files.find((f) => f.path === requestedFile);
+    if (target) {
+      openPreview(target);
+    } else {
+      addToast(`${requestedFile} is not among this run's files`, "error");
+    }
+  }, [requestedFile, files, openPreview, addToast]);
+  const openFile = useCallback(
+    (f: ArtifactFileTarget) => {
+      openPreview(f);
+      if (!routed || !runId) return;
+      openedFromURLRef.current = f.path;
+      navigate(artifactFileRunPath(runId, f.path, search), { replace: true });
+    },
+    [openPreview, routed, runId, navigate, search],
+  );
+  const closeFile = useCallback(() => {
+    closePreview();
+    if (routed && runId && requestedFile) {
+      navigate(runPathWithoutFile(runId, search), { replace: true });
+    }
+  }, [closePreview, routed, runId, requestedFile, navigate, search]);
+
   const allDownloads = useDownloadsStore((s) => s.entries);
-  const recordDownload = useDownloadsStore((s) => s.recordDownload);
   const removeDownload = useDownloadsStore((s) => s.removeDownload);
   const clearForRun = useDownloadsStore((s) => s.clearForRun);
 
@@ -62,70 +94,7 @@ export default function ArtifactFilesPanel({ runId }: Props) {
     () => (runId ? allDownloads.filter((e) => e.runId === runId) : []),
     [allDownloads, runId],
   );
-
-  // Live refresh: when new events arrive that suggest a tool wrote a
-  // file, schedule a debounced invalidation. Tracking the last seen seq
-  // avoids re-triggering on the same event after a re-render.
-  useEffect(() => {
-    if (!runId || events.length === 0) return;
-    let touched = false;
-    for (const ev of events) {
-      if (ev.seq <= lastSeenSeqRef.current) continue;
-      lastSeenSeqRef.current = ev.seq;
-      if (REFRESH_EVENTS.has(ev.type)) {
-        touched = true;
-      }
-    }
-    if (!touched) return;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      void queryClient.invalidateQueries({
-        queryKey: ["run-artifact-files", runId],
-      });
-    }, DEBOUNCE_MS);
-    // Clear the pending timer on unmount so a panel torn down within
-    // the debounce window doesn't invalidate after it's gone.
-    return () => {
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
-        debounceRef.current = null;
-      }
-    };
-  }, [events, runId, queryClient]);
-
-  const triggerDownload = useCallback(
-    (target: { path: string; size: number }) => {
-      if (!runId) return;
-      const basename = target.path.includes("/")
-        ? target.path.slice(target.path.lastIndexOf("/") + 1)
-        : target.path;
-      downloadArtifactFile(runId, target.path)
-        .then((outcome) => {
-          if (outcome.cancelled) return;
-          recordDownload({
-            runId,
-            path: target.path,
-            basename,
-            size: target.size,
-            contentType: outcome.contentType,
-            localPath: outcome.localPath,
-          });
-          addToast(`Downloaded ${basename}`, "success", {
-            action: {
-              label: "Open",
-              onClick: () => openPreview(target),
-            },
-          });
-        })
-        .catch((err: unknown) => {
-          addToast(
-            `Download failed: ${err instanceof Error ? err.message : "unknown error"}`,
-            "error",
-          );
-        });
-    },
-    [runId, recordDownload, addToast, openPreview],
-  );
+  const triggerDownload = useArtifactDownload(runId, openFile);
 
   if (!runId) {
     return (
@@ -165,7 +134,7 @@ export default function ArtifactFilesPanel({ runId }: Props) {
       entries={runDownloads}
       onShow={(e) => {
         setDownloadsOpen(false);
-        openPreview({ path: e.path, size: e.size });
+        openFile({ path: e.path, size: e.size });
       }}
       onRedownload={(e) => {
         setDownloadsOpen(false);
@@ -233,7 +202,7 @@ export default function ArtifactFilesPanel({ runId }: Props) {
                         onClick={(e) => {
                           if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
                           e.preventDefault();
-                          openPreview(f);
+                          openFile(f);
                         }}
                         className="text-accent-text hover:underline"
                       >
@@ -257,7 +226,7 @@ export default function ArtifactFilesPanel({ runId }: Props) {
                       <button
                         type="button"
                         className="text-accent-text hover:underline"
-                        onClick={() => openPreview(f)}
+                        onClick={() => openFile(f)}
                       >
                         Open
                       </button>
@@ -273,7 +242,7 @@ export default function ArtifactFilesPanel({ runId }: Props) {
         <Dialog
           open
           onOpenChange={(open) => {
-            if (!open) closePreview();
+            if (!open) closeFile();
           }}
           widthClass="max-w-4xl"
           title={
@@ -415,40 +384,6 @@ function DownloadsButton({
         </div>
       )}
     </Popover>
-  );
-}
-
-function PreviewBody({ preview }: { preview: PreviewState }) {
-  if (preview.loading) {
-    return (
-      <div className="h-64 flex items-center justify-center text-fg-subtle text-xs">
-        Loading preview…
-      </div>
-    );
-  }
-  if (preview.error) {
-    return (
-      <div className="text-xs text-danger">Failed to load: {preview.error}</div>
-    );
-  }
-  if (preview.textBody !== null) {
-    return (
-      <pre className="max-h-[70vh] overflow-auto text-xs font-mono whitespace-pre-wrap break-words bg-surface-0 p-3 rounded">
-        {preview.textBody}
-      </pre>
-    );
-  }
-  if (preview.blobURL && preview.contentType.startsWith("image/")) {
-    return (
-      <div className="max-h-[70vh] overflow-auto flex items-center justify-center bg-surface-0 p-3 rounded">
-        <img src={preview.blobURL} alt={preview.path} className="max-w-full" />
-      </div>
-    );
-  }
-  return (
-    <div className="text-xs text-fg-subtle py-6 text-center">
-      Preview not available for this file type. Use Download to save it.
-    </div>
   );
 }
 

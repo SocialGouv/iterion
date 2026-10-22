@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { useParams } from "wouter";
+import { useParams, useSearch } from "wouter";
+import { artifactFileFromSearch } from "./artifacts/artifactFileLink";
 import { Group, Panel } from "react-resizable-panels";
 import { useQuery } from "@tanstack/react-query";
 
@@ -206,6 +207,29 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
       return false;
     });
   }, [uiOpenEventLogToken, setBottomTab, setBottomTabPinned, setEventlogCollapsed]);
+
+  // A run URL asking for one artifact file (`?file=<path>`, the address a
+  // deliverable is shared under) opens the Artifacts drawer; the files
+  // panel then opens that file's preview. Same gestures as the "Show
+  // event log" link above, keyed on the query so a later navigation to
+  // another file re-reveals the drawer.
+  // Only the ROUTED run answers: every hydrated run tab stays mounted
+  // (RunsTabsView), and a hidden tab's drawer must not follow the address
+  // of the visible one.
+  const search = useSearch();
+  const requestedFile =
+    runId !== null && params.id === runId ? artifactFileFromSearch(search) : null;
+  useEffect(() => {
+    if (!requestedFile) return;
+    setBottomTab("artifacts");
+    writeStringFlag(BOTTOM_TAB_KEY, "artifacts");
+    setBottomTabPinned(true);
+    setEventlogCollapsed((prev) => {
+      if (!prev) return prev;
+      writeBooleanFlag(EVENTLOG_COLLAPSED_KEY, false);
+      return false;
+    });
+  }, [requestedFile, runId, setBottomTab, setBottomTabPinned, setEventlogCollapsed]);
 
   // Auto-reveal the Browser tab the first time a preview URL becomes
   // available, but only if the user hasn't already pinned a different

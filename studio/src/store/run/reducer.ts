@@ -171,7 +171,10 @@ type ReduceInput = Pick<
 // ResultLinksRow) rather than (or in addition to) the embeddable Browser
 // pane. A "pr" is a link only — GitHub/GitLab block iframing — while
 // "deploy"/"app" are live sites that keep the Browser pane too.
-const RESULT_LINK_KINDS: ReadonlySet<string> = new Set(["pr", "deploy", "app"]);
+// `deliverable` is a report, bundle or document the workflow declares as
+// its product (`[iterion] preview_url=<url> kind=deliverable`): a headline
+// link like a PR, never a page the Browser pane should embed.
+const RESULT_LINK_KINDS: ReadonlySet<string> = new Set(["pr", "deploy", "app", "deliverable"]);
 
 // upsertResultLink folds one link into the deduped-by-url list. A new url
 // appends (preserving discovery order); a known url updates its kind/scope
@@ -788,7 +791,7 @@ export function reduceEvents(
         // auto-reveal logic stays consistent. Embeddable kinds
         // (dev-server, artifact-html, deploy/app live sites) fall through
         // and drive the pane as before.
-        if (kind === "pr") {
+        if (kind === "pr" || kind === "deliverable") {
           browser = { ...browser, lastEventSeqSeen: evt.seq };
           break;
         }

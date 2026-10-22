@@ -38,21 +38,30 @@ echo "[iterion] preview_url=https://my-preview.example.com"
   refuses RFC1918, link-local, cloud-metadata, and `*.svc.cluster.local`
   addresses to mitigate SSRF.
 
-### Headline result-links (`kind=pr` / `deploy` / `app`)
+### Headline result-links (`kind=pr` / `deploy` / `app` / `deliverable`)
 
-When `kind` is a **result kind** — `pr`, `deploy`, or `app` — the URL is
-additionally surfaced as a prominent, always-visible **result-link** in
-the run summary (the run header's result-links bar), like a CI run's
+When `kind` is a **result kind** — `pr`, `deploy`, `app`, or
+`deliverable` — the URL is additionally surfaced as a prominent,
+always-visible **result-link** in the run summary (the run header's
+result-links bar, above the collapsed run information), like a CI run's
 "View deployment" button. The links are deduped by URL and kept in
 discovery order, so one run can advertise both a PR and a deploy. They
 are event-derived, so a reloaded terminal run rebuilds them from its
 event log. A `kind=pr` link is **link-only** (GitHub/GitLab block
-iframing, so it never loads in the Browser pane); `deploy`/`app` live
-sites keep the Browser pane too. The catalog PR-tail bots
-(`docs-refresh`, `feature-dev`, `app-dev`, `branch-improve-loop`,
-`whole-improve-loop`) emit `kind=pr` from a deterministic tool node once
-`finalize_mr` opens a PR; `app-dev` also emits `kind=deploy` for a
-healthy deploy.
+iframing, so it never loads in the Browser pane); so is `kind=deliverable`
+— a report, bundle or document the workflow declares as its product, a
+thing to read rather than a page to embed; `deploy`/`app` live sites keep
+the Browser pane too. The catalog PR-tail bots (`docs-refresh`,
+`feature-dev`, `app-dev`, `branch-improve-loop`, `whole-improve-loop`)
+emit `kind=pr` from a deterministic tool node once `finalize_mr` opens a
+PR; `app-dev` also emits `kind=deploy` for a healthy deploy.
+
+The files a run leaves in its artifact-files area (`$ITERION_ARTIFACT_FILES_DIR`)
+need no directive: the run header lists them as **Deliverables**, each
+opening its preview on the run page — markdown rendered, with a "Show
+source" toggle — at the shareable address `/runs/<id>?file=<path>`, which
+also reveals the Artifacts drawer; a download goes through the same path
+as the drawer's Download button (desktop save binding, downloads history).
 
 ## Capturing screenshots
 
