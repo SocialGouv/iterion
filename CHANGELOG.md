@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.283.0](https://github.com/SocialGouv/iterion/compare/v3.282.0...v3.283.0) (2026-10-22)
+
+### Features
+
+* **server,lease,cli:** the watch-health answer names the lease holder from any replica ([#2695](https://github.com/SocialGouv/iterion/issues/2695)) ([8fb71c3](https://github.com/SocialGouv/iterion/commit/8fb71c3fcd5412b826a27b2a1e3f1c43448a19cb)), closes [#2680](https://github.com/SocialGouv/iterion/issues/2680)
+
+    <details><summary>why</summary>
+
+    The assistant sweep runs on one replica — the holder of the assistant-watch-sweep lease — and the watch-health route answered for whichever replica the load balancer hit: nine answers in ten said elected=false and nothing said who sweeps.
+
+    </details>
+* **studio:** a run's deliverables — rendered markdown at a shareable address, listed in the run summary, reachable in the Artifacts drawer ([#2700](https://github.com/SocialGouv/iterion/issues/2700)) ([8db90b1](https://github.com/SocialGouv/iterion/commit/8db90b137700859380940692da839e971ba335e1)), references [#2690](https://github.com/SocialGouv/iterion/issues/2690) [#2690](https://github.com/SocialGouv/iterion/issues/2690)
+
+    <details><summary>why</summary>
+
+    The Artifacts drawer's Files section sat under a `flex-1 min-h-0` that collapsed to zero below a tall list of published outputs: the operator saw "6 files" and no Download button. The section now keeps its natural height and the panel scrolls as a whole.
+
+    </details>
+
+### Bug Fixes
+
+* **runner,chart:** a sovereign pool's env dials are pinned ahead of the platform bot-vars record ([#2702](https://github.com/SocialGouv/iterion/issues/2702)) ([941aa79](https://github.com/SocialGouv/iterion/commit/941aa79f1c989eee3bb035798c5fb277ab5376c4)), closes [#2697](https://github.com/SocialGouv/iterion/issues/2697)
+
+    <details><summary>why</summary>
+
+    A pool pod's own env block names its gateway on every routing dial (ITERION_VIBE_MODEL_*, ITERION_VIBE_PROVIDER_*, the *_FALLBACK rescue dial). The platform bot-vars record is installed by the runner with precedence setting > pod env > .bot default, so a model id stored for the shared fleet's vendor reached every pool pod: route 1 carried the record's vendor id under the pool's gateway hint, the authored vendor rescue route carried the pool's gateway id under its vendor hint,…
+
+    </details>
+
 ## [3.282.0](https://github.com/SocialGouv/iterion/compare/v3.281.3...v3.282.0) (2026-10-22)
 
 ### Features
