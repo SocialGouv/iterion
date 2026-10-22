@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.281.3](https://github.com/SocialGouv/iterion/compare/v3.281.2...v3.281.3) (2026-10-22)
+
+### Bug Fixes
+
+* **bots,runner:** a mono-GPT review merges on the GPT family, and a supervisor watching only excluded nodes is not a route ([#2684](https://github.com/SocialGouv/iterion/issues/2684)) ([162a36f](https://github.com/SocialGouv/iterion/commit/162a36f6f9abcaf088d4de38eecf5d6268196dd9)), closes [#2467](https://github.com/SocialGouv/iterion/issues/2467), references [#1828](https://github.com/SocialGouv/iterion/issues/1828) [#1828](https://github.com/SocialGouv/iterion/issues/1828)
+
+    <details><summary>why</summary>
+
+    `mono_family` is resolved from the run's credentials, and claude is the preferred family (`reviewtopology.monoPreference`), so a launch resolves `gpt` only where no Claude credential serves. review-pr nonetheless sent such a run to `converge` and to the `pacer` supervisor, both pinned to the Anthropic wire, AFTER the GPT reviewer had already spent: the merge died, the run never reached `pr_gate`, and the `revi/review` gate stayed dark on a GPT-only tenant until someone set three env vars plus…
+
+    </details>
+* **forge,server:** the token refresh sweep runs on one elected replica, and a lost refresh race writes nothing ([#2686](https://github.com/SocialGouv/iterion/issues/2686)) ([273d077](https://github.com/SocialGouv/iterion/commit/273d077fbc7d0cd0a87f904262e6840a2866075d)), closes [#2682](https://github.com/SocialGouv/iterion/issues/2682), references [#2685](https://github.com/SocialGouv/iterion/issues/2685)
+
+    <details><summary>why</summary>
+
+    A GitLab OAuth connection (PIC, team VAO) flipped to needs_reauth at 07:57:40Z while its row kept the previous expiry: three server pods had run their refresh sweep within five seconds — the ReplicaSet had just been rolled, so every replica's ticker was phase-aligned. GitLab rotates refresh tokens: whoever refreshes first consumes the token, the next replica's refresh is answered invalid_grant (ErrUnauthorized here), markRevoked flagged the connection and persisted the loser's stale copy over…
+
+    </details>
+
 ## [3.281.2](https://github.com/SocialGouv/iterion/compare/v3.281.1...v3.281.2) (2026-10-22)
 
 ### Bug Fixes
