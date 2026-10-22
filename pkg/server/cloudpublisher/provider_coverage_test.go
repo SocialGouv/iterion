@@ -28,6 +28,13 @@ func TestAllKnownProvidersCoversEveryValidProvider(t *testing.T) {
 			t.Errorf("provider %q is valid but absent from allKnownProviders — a BYOK key for it would never reach a run", p)
 		}
 	}
+	// The gateway provider is deliberately NOT walked yet: a gateway key is
+	// storable (#2005 PR-A) but stays inert until the walk vocabulary split
+	// and the URL carriage land (PR-C'). Sealing it before then would hand
+	// the runner a key with no endpoint to spend it on.
+	if walked[secrets.ProviderOpenAICompatible] {
+		t.Errorf("openai_compatible is in allKnownProviders before its carriage landed — a gateway key must stay inert until #2005 PR-C'")
+	}
 }
 
 // The meter backend decides whether a refused key is SKIPPED for the next

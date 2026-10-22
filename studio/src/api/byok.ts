@@ -12,7 +12,9 @@ export type Provider =
   | "azure"
   | "openrouter"
   | "xai"
-  | "zai";
+  | "zai"
+  | "moonshot"
+  | "openai_compatible";
 
 export interface ApiKeyView {
   id: string;
@@ -37,6 +39,10 @@ export interface ApiKeyView {
    * invisible in the UI is one an operator cannot verify or undo.
    */
   bots: string[];
+  /** Repository audience (owner/repo); an empty list funds every repository. */
+  repos: string[];
+  /** Gateway root of an openai_compatible key; absent on every other provider. */
+  base_url?: string;
 }
 
 export type OAuthKind = "claude_code" | "codex";
@@ -112,6 +118,10 @@ export async function createApiKey(scope: ApiKeyScope, input: {
   is_default?: boolean;
   /** Workload audience; omitted or empty funds every bot. */
   bots?: string[];
+  /** Repository audience; omitted or empty funds every repository. */
+  repos?: string[];
+  /** Required for provider openai_compatible, refused on every other. */
+  base_url?: string;
 }): Promise<ApiKeyView> {
   return send(apiKeyBase(scope), {
     method: "POST",
@@ -133,7 +143,7 @@ export async function updateApiKey(
    * a restriction that cannot be lifted from the UI that shows it is a key an
    * operator has to delete and recreate.
    */
-  input: { name?: string; is_default?: boolean; secret?: string; bots?: string[] },
+  input: { name?: string; is_default?: boolean; secret?: string; bots?: string[]; repos?: string[]; base_url?: string },
 ): Promise<ApiKeyView> {
   return send(`${apiKeyBase(scope)}/${encodeURIComponent(keyID)}`, {
     method: "PATCH",

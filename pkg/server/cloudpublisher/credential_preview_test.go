@@ -114,7 +114,7 @@ func bundleDescriptions(b secrets.RunBundle) []string {
 }
 
 func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
-	for _, scenario := range []string{"pool", "pool_suppressed_by_other_wire", "platform_same_wire", "org", "org_denied", "all_closed_restore", "pinned_blocked_key", "ranked_accounts", "bot_filtered", "bot_filtered_only_key", "platform_key_and_forfait_same_wire", "org_key_and_forfait_same_wire", "platform_key_and_closed_forfait", "platform_keys_first", "org_and_platform_closed_restore", "platform_refused_key_and_closed_forfait", "platform_refused_key_and_closed_forfait_keys_first"} {
+	for _, scenario := range []string{"pool", "pool_suppressed_by_other_wire", "platform_same_wire", "org", "org_denied", "all_closed_restore", "pinned_blocked_key", "ranked_accounts", "bot_filtered", "bot_filtered_only_key", "repo_filtered", "platform_key_and_forfait_same_wire", "org_key_and_forfait_same_wire", "platform_key_and_closed_forfait", "platform_keys_first", "org_and_platform_closed_restore", "platform_refused_key_and_closed_forfait", "platform_refused_key_and_closed_forfait_keys_first"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 12, MaxConcurrentRuns: 3})
 			p := f.pub
@@ -204,6 +204,16 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 				if scenario == "bot_filtered" {
 					seedKey(t, p.apiKeys, p.sealer, poolTeam, secrets.ProviderAnthropic, "open-sibling")
 				}
+			case "repo_filtered":
+				// The repository twin: a key restricted to another repository
+				// than the one this launch serves. Shown, named for its own
+				// cause, never predicted.
+				p.credPool = nil
+				scoped := seedScopedKey(t, p.apiKeys, p.sealer, poolTeam, secrets.ProviderAnthropic, "scoped-elsewhere", nil)
+				if _, err := p.apiKeys.Patch(t.Context(), scoped.ID, secrets.ApiKeyPatch{Repos: &[]string{"acme/x"}}); err != nil {
+					t.Fatal(err)
+				}
+				seedKey(t, p.apiKeys, p.sealer, poolTeam, secrets.ProviderAnthropic, "open-sibling")
 			case "ranked_accounts":
 				owner := secrets.OrgOwnerKey(poolTeam)
 				seedOAuth(t, p.oauthForfait, p.sealer, owner, "sk-first")
@@ -218,13 +228,19 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 				}
 				closeFP(usagecap.TenantScope(poolTeam), first.Fingerprint)
 			}
-			preview, err := previewReadOnly(p).PreviewCredentials(t.Context(), spec, nil)
+			// The repository the launch serves rides both contexts, as the
+			// HTTP preview and the launch stamp it.
+			launchCtx := t.Context()
+			if scenario == "repo_filtered" {
+				launchCtx = secrets.WithLaunchRepo(launchCtx, "acme/y")
+			}
+			preview, err := previewReadOnly(p).PreviewCredentials(launchCtx, spec, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			// Live resolution is the independent oracle, with real sealed records and
 			// real pool admission. Every metadata-only dependency above rejects writes.
-			ctx := store.WithTenant(t.Context(), poolTeam)
+			ctx := store.WithTenant(launchCtx, poolTeam)
 			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, "", nil, spec.Launch.KeyOverrides, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -257,7 +273,7 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 					t.Fatal("live rank oracle disagrees")
 				}
 			}
-			if scenario == "bot_filtered" || scenario == "bot_filtered_only_key" {
+			if scenario == "bot_filtered" || scenario == "bot_filtered_only_key" || scenario == "repo_filtered" {
 				// The oracle above already proves preview and live AGREE. What it
 				// cannot prove is that the agreement is the audience's doing: a
 				// preview that dropped the candidate entirely would agree too,
@@ -274,11 +290,18 @@ func TestCredentialPreviewMatchesSealedBundleAcrossTiers(t *testing.T) {
 				if filtered.Selected {
 					t.Fatalf("the preview predicts a key the live walk refuses: %+v", filtered)
 				}
-				if filtered.State != "bot_filtered" {
-					t.Fatalf("state = %q, want bot_filtered so the reason is legible: %+v", filtered.State, filtered)
+				wantState, wantReason := "bot_filtered", "workload audience"
+				if scenario == "repo_filtered" {
+					wantState, wantReason = "repo_filtered", "repository audience does not name repository acme/y"
 				}
-				if !strings.Contains(filtered.Reason, "workload audience") {
-					t.Fatalf("the reason does not name the audience: %q", filtered.Reason)
+				if filtered.State != wantState {
+					t.Fatalf("state = %q, want %s so the reason is legible: %+v", filtered.State, wantState, filtered)
+				}
+				if !strings.Contains(filtered.Reason, wantReason) {
+					t.Fatalf("the reason does not name the audience that refused: %q", filtered.Reason)
+				}
+				if scenario == "repo_filtered" && strings.Contains(filtered.Reason, "does not name bot") {
+					t.Fatalf("a repository withholding blamed on the bot: %q", filtered.Reason)
 				}
 			}
 			if scenario == "all_closed_restore" {

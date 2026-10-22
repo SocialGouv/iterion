@@ -177,11 +177,11 @@ asymmetry: not listable there, still mutable there.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/teams/{id}/api-keys` | team member | List team's BYOK keys |
-| `POST` | `/api/teams/{id}/api-keys` | team admin | Create |
-| `PATCH` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Rename, toggle default, ROTATE the sealed secret (same shape gate as create, new `last4` + fingerprint), set `max_concurrent_runs` (0 = uncapped) and replace the `bots` audience — an absent field is left alone, `"bots": []` clears it. The write is a `$set` of the named fields only, never a replace of the row. A row whose `provider` this server build does not know (written by a newer server during a rolling update, or left by a rollback) is refused with `409`, audited as `refused`: update it from a current server, or delete it |
+| `POST` | `/api/teams/{id}/api-keys` | team admin | Create — `base_url` required for `openai_compatible` (https, canonical; literal non-public addresses and reserved names refused) and refused elsewhere; `repos` restricts the key to repositories (full forge paths, no URL or glob); unknown fields and a second JSON value are refused (strict) |
+| `PATCH` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Rename, toggle default, ROTATE the sealed secret (same shape gate as create, new `last4` + fingerprint), set `max_concurrent_runs` (0 = uncapped), replace the `bots` or `repos` audience, move a gateway key's `base_url` — a rotation: `secret` is required in the same request and is sealed under the new URL, a move without it is `400` (the stored secret is never re-sealed for a host its holder did not prove it for), re-sending the stored URL is a no-op — and every rotation of a gateway key answers `409` when another writer rotated or moved the key between the read and the write; `base_url` on a vendor key is `400`, blank included (a create ignores an empty one as absent); unknown fields and a second JSON value are refused (strict) — an absent field is left alone, `"bots": []` clears it. The write is a `$set` of the named fields only, never a replace of the row. A row whose `provider` this server build does not know (written by a newer server during a rolling update, or left by a rollback) is refused with `409`, audited as `refused`: update it from a current server, or delete it |
 | `DELETE` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Delete |
 | `GET` | `/api/me/api-keys` | member | List own user-scoped keys |
-| `POST` | `/api/me/api-keys` | member | Create personal key |
+| `POST` | `/api/me/api-keys` | member | Create personal key (same fields and rules as the team route) |
 | `PATCH` | `/api/me/api-keys/{key_id}` | per record scope | Update — same write semantics and `409` on a row from a newer build as the team route |
 | `DELETE` | `/api/me/api-keys/{key_id}` | per record scope | Delete |
 | `GET` | `/api/teams/{id}/secrets` | team member | List team's generic secrets |

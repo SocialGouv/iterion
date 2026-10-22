@@ -670,7 +670,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	skippedForfaits := map[string]skippedForfait{}
 	// Every tier's walk reports here what its audience kept out, so the one
 	// thing a refusal does not leave behind — a trace — exists by the end.
-	withheld := newAudienceWithholdings(audienceBotID)
+	withheld := newAudienceWithholdings(audienceBotID, secrets.LaunchRepoFromContext(ctx))
 	// The shared tiers' ordering, read ONCE: the org fill, the platform fill
 	// and the restore of this launch apply the same answer. The facade
 	// policy's `auto` asks each tier whether it holds an Anthropic-native
@@ -2697,8 +2697,8 @@ func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID, botID 
 	for prov, keyID := range overrides {
 		if withheld.holds(keyID) {
 			p.logger.Warn(
-				"cloudpublisher: run %s pinned api key %s for %s, but its workload audience does not name this run's bot — the pin does NOT lift an audience, and the walk moved on",
-				runID, keyID, prov)
+				"cloudpublisher: run %s pinned api key %s for %s, but %s — the pin does NOT lift an audience, and the walk moved on",
+				runID, keyID, prov, withheld.cause(keyID))
 		}
 	}
 	if p.usageCaps == nil {
@@ -3636,6 +3636,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// re-derives it from the same frozen policy for its own walks.
 	launchView.AllowedProviders = policyProviders(spec.LLMRoutePolicy)
 	r.PinnedProviders = derivePinnedProviders(launchView)
+	// The repository this launch serves rides the context into the walk:
+	// a key restricted to repositories is spent only for one of them.
+	ctx = secrets.WithLaunchRepo(ctx, spec.ProjectPath)
 	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, runnerPool, wf, spec.KeyOverrides, spec.SecretOverrides, launchView, spec.Vars, spec.Trust, r.PinnedProviders, spec.LLMRoutePolicy)
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
 	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
@@ -4164,6 +4167,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// stored value that is not a text is undecided for the screens
 	// (launchVarsAsStrings keeps texts only).
 	resumeView := model.RouteViewForDispatch(wf, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Inputs)
+	secretsCtx = secrets.WithLaunchRepo(secretsCtx, prior.ProjectPath)
 	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy)
 	grant = creds.poolLease()
 	// Armed before the error check — see SubmitLaunch. Runs before the

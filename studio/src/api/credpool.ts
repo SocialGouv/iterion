@@ -40,7 +40,9 @@ export type PledgeStatus =
   | "exhausted"
   | "serving"
   | "unhealthy"
-  | "bot_filtered";
+  | "bot_filtered"
+  /** Credential preview only: the key's repository audience does not name the launch's repository. */
+  | "repo_filtered";
 
 /** Which store holds a lent credential — and what the money means. */
 export type CredentialSource = "oauth" | "api_key";

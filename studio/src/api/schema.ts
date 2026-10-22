@@ -7449,6 +7449,7 @@ export interface components {
         };
         apiKeyView: {
             alive_runs?: number;
+            base_url?: string;
             bots: string[];
             created_at: string;
             fingerprint?: string;
@@ -7461,6 +7462,7 @@ export interface components {
             provider: string;
             refused_reason?: string;
             refused_until?: string;
+            repos: string[];
             scope_user_id?: string;
         };
         boardBindingReq: {
@@ -7541,11 +7543,13 @@ export interface components {
             stored?: components["schemas"]["BotVars"];
         };
         createApiKeyReq: {
+            base_url?: string;
             bots?: string[];
             is_default?: boolean;
             max_concurrent_runs?: number;
             name: string;
             provider: string;
+            repos?: string[];
             secret: string;
         };
         createOrgReq: {
@@ -7899,10 +7903,12 @@ export interface components {
             status: string;
         };
         updateApiKeyReq: {
+            base_url?: string;
             bots?: string[];
             is_default?: boolean;
             max_concurrent_runs?: number;
             name?: string;
+            repos?: string[];
             secret?: string;
         };
         updateOrgReq: {

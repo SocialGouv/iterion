@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -380,6 +381,15 @@ func (s *Server) validateKeyOverrides(ctx context.Context, tenantID string, over
 		}
 		if string(k.Provider) != prov {
 			return fmt.Errorf("key_overrides[%s]: api key %q is for provider %q", prov, keyID, k.Provider)
+		}
+		// A gateway key is storable but no run spends it until the walk
+		// learns the provider (#2005 PR-C', which lifts this refusal and
+		// makes such a pin exclusive, ADR-131 §6). Until then a pin on one
+		// would be dropped at launch without a word — refused at write
+		// instead, so the operator's explicit choice is never replaced in
+		// silence.
+		if k.Provider == secrets.ProviderOpenAICompatible {
+			return fmt.Errorf("key_overrides[%s]: api key %q is an openai_compatible gateway key, which no run spends yet (#2005) — a pin on it would be dropped at launch", prov, keyID)
 		}
 	}
 	return nil

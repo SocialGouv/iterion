@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -141,6 +142,13 @@ const (
 	// Moonshot's own CLI and resolves its credentials from the host
 	// environment, outside this store entirely.
 	ProviderMoonshot Provider = "moonshot"
+	// ProviderOpenAICompatible is a tenant-owned OpenAI-compatible gateway
+	// (a LiteLLM endpoint in front of a regional model host, a vLLM
+	// server …): the record carries the gateway's base URL beside the key,
+	// and the model id after the `openai_compatible/` prefix is sent to it
+	// verbatim. Until the walk vocabulary learns it (#2005 PR-C'), such a
+	// key is storable but never sealed into a run.
+	ProviderOpenAICompatible Provider = "openai_compatible"
 )
 
 // ZAIDefaultBaseURL is the Anthropic-compatible endpoint z.ai's Coding
@@ -166,7 +174,7 @@ func (p Provider) Valid() bool {
 	switch p {
 	case ProviderAnthropic, ProviderOpenAI, ProviderBedrock,
 		ProviderVertex, ProviderAzure, ProviderOpenRouter, ProviderXAI,
-		ProviderZAI, ProviderMoonshot:
+		ProviderZAI, ProviderMoonshot, ProviderOpenAICompatible:
 		return true
 	}
 	return false
@@ -223,6 +231,12 @@ type ApiKey struct {
 	// no other tier could serve its wire — progress beats the ceiling
 	// when the alternative is a run with no credential at all.
 	MaxConcurrentRuns int `bson:"max_concurrent_runs,omitempty" json:"max_concurrent_runs,omitempty"`
+	// BaseURL is the gateway root of an openai_compatible key (no trailing
+	// slash, no `/v1`; https). Required for that provider, refused on every
+	// other: a vendor key has a compiled endpoint. It is not secret, so it
+	// rides the row in clear — and the seal binds it, so a repointed row
+	// fails to open rather than sending the key to another host.
+	BaseURL string `bson:"base_url,omitempty" json:"base_url,omitempty"`
 	// Bots is the key's WORKLOAD audience: the bot ids whose runs may draw
 	// on it. Empty admits every bot, so a key written before this field
 	// existed keeps funding exactly what it funded yesterday — naming one
@@ -245,6 +259,11 @@ type ApiKey struct {
 	// it is FOR, and the two are independent — a team-wide key can fund one
 	// bot, and a personal key can fund all of them.
 	Bots []string `bson:"bots,omitempty" json:"bots,omitempty"`
+	// Repos restricts which repositories a launch may spend this key for,
+	// named as the forge's full path (`owner/repo`). Empty admits every
+	// repository; a launch that names no repository cannot spend a
+	// restricted key. Checked in Resolve before the pin exemption, like Bots.
+	Repos []string `bson:"repos,omitempty" json:"repos,omitempty"`
 }
 
 // ServesBotForLaunch reports whether this key's audience admits botID.
@@ -266,6 +285,45 @@ func (k ApiKey) ServesBotForLaunch(botID string) bool {
 		return true
 	}
 	return botID != "" && k.listsBot(botID)
+}
+
+type launchRepoCtxKey struct{}
+
+// WithLaunchRepo stamps the repository a launch serves (the forge's full
+// path, "owner/repo") on the context the credential walk runs under, the
+// way the tenant travels: Resolve reads it to apply a key's Repos audience.
+// A launch that serves no repository stamps the empty string, and that
+// stamp overrides whatever a parent context carried: a repo-less launch
+// must never inherit a repository and spend a key restricted to it.
+func WithLaunchRepo(ctx context.Context, repo string) context.Context {
+	return context.WithValue(ctx, launchRepoCtxKey{}, repo)
+}
+
+// LaunchRepoFromContext returns the repository stamped by WithLaunchRepo,
+// or "" when the launch serves none.
+func LaunchRepoFromContext(ctx context.Context) string {
+	repo, _ := ctx.Value(launchRepoCtxKey{}).(string)
+	return repo
+}
+
+// ServesRepoForLaunch reports whether a launch for repo (the forge's full
+// path, "owner/repo") may spend this key. An empty Repos admits every
+// repository; a restricted key refuses a launch that names no repository
+// at all — a key scoped to one repo must never be spent from a surface
+// that cannot say which repo it serves.
+func (k ApiKey) ServesRepoForLaunch(repo string) bool {
+	if len(k.Repos) == 0 {
+		return true
+	}
+	if repo == "" {
+		return false
+	}
+	for _, r := range k.Repos {
+		if strings.EqualFold(r, repo) {
+			return true
+		}
+	}
+	return false
 }
 
 func (k ApiKey) listsBot(botID string) bool {
@@ -384,7 +442,7 @@ func Resolve(
 	keyOverrides map[Provider]string,
 	sealer Sealer,
 	usable func(ApiKey) bool,
-	onWithheld func(ApiKey),
+	onWithheld func(ApiKey, AudienceRefusal),
 ) (map[Provider]Resolution, error) {
 	if teamID == "" {
 		return nil, fmt.Errorf("secrets: team id required for resolve")
@@ -397,6 +455,7 @@ func Resolve(
 		return nil, err
 	}
 	out := make(map[Provider]Resolution, len(providers))
+	repo := LaunchRepoFromContext(ctx)
 	for _, candidate := range OrderedAPIKeyCandidates(visible, userID, providers, keyOverrides) {
 		k := candidate.Key
 		if _, already := out[k.Provider]; already {
@@ -413,9 +472,16 @@ func Resolve(
 		// next key, or nothing, and a caller reading an empty result cannot
 		// tell "no key" from "a key I refused". The withheld key travels
 		// with the refusal rather than being reconstructed from its absence.
-		if !k.ServesBotForLaunch(botID) {
+		// The repository audience is the same kind of gate: checked before
+		// the pin exemption, from the launch's own repository (WithLaunchRepo),
+		// so a key scoped to one repository is never spent for another nor
+		// from a surface that names none. Which audience refused travels
+		// with the key: a caller told "withheld" and left to guess the cause
+		// blames the bot for a repository mismatch.
+		why := AudienceRefusal{Bot: !k.ServesBotForLaunch(botID), Repo: !k.ServesRepoForLaunch(repo)}
+		if why.Bot || why.Repo {
 			if onWithheld != nil {
-				onWithheld(k)
+				onWithheld(k, why)
 			}
 			continue
 		}
@@ -427,6 +493,18 @@ func Resolve(
 		}
 	}
 	return out, nil
+}
+
+// AudienceRefusal says which of a key's audiences refused a launch. Resolve
+// hands it to onWithheld beside the key so the fact travels with the
+// refusal rather than being reconstructed by whoever reports it; both
+// flags may be true at once, and a report states every true one.
+type AudienceRefusal struct {
+	// Bot: the key's Bots list does not name the launch's bot.
+	Bot bool
+	// Repo: the key's Repos list does not name the launch's repository, or
+	// the launch named none.
+	Repo bool
 }
 
 // APIKeyCandidate is an ordered attempt, before any secret is opened.
@@ -522,22 +600,81 @@ func OpenApiKey(sealer Sealer, k ApiKey) ([]byte, error) {
 	if sealer == nil {
 		return nil, fmt.Errorf("secrets: nil sealer for OpenApiKey")
 	}
-	return sealer.Open(k.SealedSecret, apiKeyAAD(k.ID))
+	if err := checkApiKeyAADID(k.ID); err != nil {
+		return nil, err
+	}
+	return sealer.Open(k.SealedSecret, apiKeyAAD(k))
 }
 
 // apiKeyAAD is the single definition of a key's additional authenticated
-// data — sealing and opening must never disagree on it.
-func apiKeyAAD(id string) []byte { return []byte("api_key:" + id) }
+// data — sealing and opening must never disagree on it. Every key binds
+// its id; a gateway key also binds the base URL it was sealed with, so a
+// row repointed at another host IN THE STORE opens nowhere. (The API's
+// own base_url change is a rotation — the caller re-sends the secret —
+// so the binding is what makes a store-level repoint fail closed, not
+// what keeps a mutator from redirecting a secret they hold.) The NUL
+// between id and URL is the delimiter checkApiKeyAADID keeps out of ids.
+func apiKeyAAD(k ApiKey) []byte {
+	aad := "api_key:" + k.ID
+	if k.Provider == ProviderOpenAICompatible {
+		aad += "\x00" + k.BaseURL
+	}
+	return []byte(aad)
+}
+
+// checkApiKeyAADID refuses an id carrying the AAD delimiter: with a NUL in
+// the id, a vendor row's AAD "api_key:<id>" could spell a gateway row's
+// "api_key:<id>\x00<url>" and open a blob sealed for another provider.
+// Ids are uuids in production; this keeps the AAD unambiguous for every
+// row a test or a hand-written document may construct.
+func checkApiKeyAADID(id string) error {
+	if strings.ContainsRune(id, 0) {
+		return fmt.Errorf("secrets: api key id must not contain NUL (the AAD delimiter)")
+	}
+	return nil
+}
+
+// APIKeyFingerprint is the stable audit identity of a key: the ceiling,
+// alive_runs, last_used_at and the spend ledger all key on it. A gateway
+// key folds its base URL in — the same token on two gateways is two
+// identities — every other provider keeps sha256(secret), which the runner
+// recomputes from the sealed bundle (pkg/runner loop_credentials.go) and
+// the pool and fallback-door fallbacks recompute from the plaintext
+// (cloudpublisher). Those three sites still hash the secret alone: the run
+// bundle carries no base URL, and no gateway key is sealed into a run
+// until the walk learns the provider (#2005 PR-C', which moves them onto
+// this helper with the URL beside the key) — a fact
+// pkg/server/cloudpublisher's provider-coverage test pins.
+func APIKeyFingerprint(p Provider, secret, baseURL string) string {
+	if p == ProviderOpenAICompatible {
+		return FingerprintSHA256(string(p) + "\x00" + baseURL + "\x00" + secret)
+	}
+	return FingerprintSHA256(secret)
+}
 
 // SealAPIKey produces the sealed blob for storage. Pass the caller's
 // shared Sealer (e.g. ITERION_SECRETS_KEY-driven AESGCMSealer) and
 // the freshly-generated key ID; the AAD ties the ciphertext to that
 // record so it cannot be moved.
 func SealAPIKey(sealer Sealer, keyID string, plaintext []byte) ([]byte, error) {
+	return SealAPIKeyFor(sealer, ApiKey{ID: keyID}, plaintext)
+}
+
+// SealAPIKeyFor seals plaintext for the record k: its id, and for a gateway
+// key its base URL, are bound into the AAD (apiKeyAAD). A gateway key must
+// be sealed through this form — SealAPIKey knows no URL and would produce
+// a blob OpenApiKey refuses.
+func SealAPIKeyFor(sealer Sealer, k ApiKey, plaintext []byte) ([]byte, error) {
 	if sealer == nil {
 		return nil, errNilSealer
 	}
-	return sealer.Seal(plaintext, apiKeyAAD(keyID))
+	if err := checkApiKeyAADID(k.ID); err != nil {
+		return nil, err
+	}
+	if k.Provider == ProviderOpenAICompatible && k.BaseURL == "" {
+		return nil, fmt.Errorf("secrets: a gateway key is sealed with its base URL; none given for %s", k.ID)
+	}
+	return sealer.Seal(plaintext, apiKeyAAD(k))
 }
 
 // MemoryApiKeyStore is the in-process store used by tests of the
@@ -603,10 +740,21 @@ type ApiKeyPatch struct {
 	IsDefault         *bool
 	MaxConcurrentRuns *int
 	Bots              *[]string
+	Repos             *[]string
+	// BaseURL is the gateway root the Secret beside it is sealed under. It
+	// never travels alone (validate refuses it): the AAD binds the URL, so
+	// a row whose URL moved without its blob opens nowhere.
+	BaseURL *string
 	// Secret rotates the sealed value. Its three derived fields travel
 	// together: a sealed blob with a stale last4 or fingerprint would
 	// name a credential that no longer exists.
 	Secret *ApiKeySecretPatch
+	// ExpectSealed, when set, makes the write conditional on the row still
+	// holding this sealed value (ErrApiKeyChanged otherwise): the guard of
+	// a rotation prepared from a row another writer may have rotated or
+	// moved since — without it the stale rotation lands and silently
+	// undoes the other writer's change.
+	ExpectSealed []byte
 }
 
 // ApiKeySecretPatch is the sealed secret with its derived identity.
@@ -622,6 +770,13 @@ type ApiKeySecretPatch struct {
 // that cannot be opened.
 var ErrApiKeyPatchInvalid = errors.New("secrets: api key patch invalid")
 
+// ErrApiKeyChanged is a compare-and-swap miss: the row's sealed secret is
+// no longer the one the caller read. A rotation prepared from that read
+// would otherwise land as the last writer and silently undo what landed in
+// between — a rotation, or a move away from a gateway the operator no
+// longer trusts, reverted to the old host with a fresh secret.
+var ErrApiKeyChanged = errors.New("secrets: api key changed since it was read")
+
 // IsEmpty reports whether the patch names no field at all. It reads the
 // $set body rather than a second hand-kept list of the fields.
 func (p ApiKeyPatch) IsEmpty() bool {
@@ -633,6 +788,9 @@ func (p ApiKeyPatch) IsEmpty() bool {
 func (p ApiKeyPatch) validate() error {
 	if p.Secret != nil && (len(p.Secret.Sealed) == 0 || p.Secret.Last4 == "" || p.Secret.Fingerprint == "") {
 		return fmt.Errorf("%w: a rotation carries the sealed value, its last4 and its fingerprint together", ErrApiKeyPatchInvalid)
+	}
+	if p.BaseURL != nil && p.Secret == nil {
+		return fmt.Errorf("%w: a base URL travels with the secret sealed under it — the AAD binds the URL, so a row whose URL moved without its blob opens nowhere", ErrApiKeyPatchInvalid)
 	}
 	return nil
 }
@@ -652,6 +810,12 @@ func (p ApiKeyPatch) applyTo(k *ApiKey) {
 	}
 	if p.Bots != nil {
 		k.Bots = append([]string(nil), (*p.Bots)...)
+	}
+	if p.Repos != nil {
+		k.Repos = append([]string(nil), (*p.Repos)...)
+	}
+	if p.BaseURL != nil {
+		k.BaseURL = *p.BaseURL
 	}
 	if p.Secret != nil {
 		k.SealedSecret = append([]byte(nil), p.Secret.Sealed...)
@@ -681,6 +845,16 @@ func (p ApiKeyPatch) setDoc() bson.M {
 		}
 		set["bots"] = bots
 	}
+	if p.Repos != nil {
+		repos := *p.Repos
+		if repos == nil {
+			repos = []string{}
+		}
+		set["repos"] = repos
+	}
+	if p.BaseURL != nil {
+		set["base_url"] = *p.BaseURL
+	}
 	if p.Secret != nil {
 		set["sealed_secret"] = p.Secret.Sealed
 		set["last4"] = p.Secret.Last4
@@ -706,6 +880,9 @@ func (m *MemoryApiKeyStore) Patch(ctx context.Context, id string, p ApiKeyPatch)
 	// context: that is what the bare-context fixtures need.
 	if _, scoped := store.TenantFromContext(ctx); !scoped && cur.TenantID != "" {
 		return ApiKey{}, ErrApiKeyTenantMissing
+	}
+	if p.ExpectSealed != nil && !bytes.Equal(cur.SealedSecret, p.ExpectSealed) {
+		return ApiKey{}, ErrApiKeyChanged
 	}
 	p.applyTo(&cur)
 	m.keys[id] = cur
@@ -910,13 +1087,46 @@ func (s *MongoApiKeyStore) Patch(ctx context.Context, id string, p ApiKeyPatch) 
 		return ApiKey{}, err
 	}
 	if p.IsEmpty() {
-		return mongoutil.FindOne[ApiKey](ctx, s.coll, filter, ErrApiKeyNotFound, "secrets: patch api key")
+		// Nothing to write; the compare-and-swap still answers, as it does
+		// on the memory twin: a caller who guarded an empty patch is asking
+		// whether the row still holds the value it read.
+		cur, err := mongoutil.FindOne[ApiKey](ctx, s.coll, filter, ErrApiKeyNotFound, "secrets: patch api key")
+		if err != nil {
+			return ApiKey{}, err
+		}
+		if p.ExpectSealed != nil && !bytes.Equal(cur.SealedSecret, p.ExpectSealed) {
+			return ApiKey{}, ErrApiKeyChanged
+		}
+		return cur, nil
+	}
+	guarded := filter
+	if p.ExpectSealed != nil {
+		guarded = make(bson.M, len(filter)+1)
+		for k, v := range filter {
+			guarded[k] = v
+		}
+		guarded["sealed_secret"] = p.ExpectSealed
 	}
 	var out ApiKey
-	err = s.coll.FindOneAndUpdate(ctx, filter, bson.M{"$set": p.setDoc()},
+	err = s.coll.FindOneAndUpdate(ctx, guarded, bson.M{"$set": p.setDoc()},
 		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&out)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		return ApiKey{}, ErrApiKeyNotFound
+		if p.ExpectSealed == nil {
+			return ApiKey{}, ErrApiKeyNotFound
+		}
+		// Distinguish "gone" from "changed under us": the row exists but
+		// its sealed value moved. A read that fails for any other reason
+		// is reported as that failure — "not found" would send the caller
+		// to a 404 for a store blip.
+		_, gerr := mongoutil.FindOne[ApiKey](ctx, s.coll, filter, ErrApiKeyNotFound, "secrets: patch api key")
+		switch {
+		case gerr == nil:
+			return ApiKey{}, ErrApiKeyChanged
+		case errors.Is(gerr, ErrApiKeyNotFound):
+			return ApiKey{}, ErrApiKeyNotFound
+		default:
+			return ApiKey{}, fmt.Errorf("secrets: patch api key: compare-and-swap miss, re-read failed: %w", gerr)
+		}
 	}
 	if err != nil {
 		return ApiKey{}, fmt.Errorf("secrets: patch api key: %w", err)
@@ -1048,9 +1258,6 @@ func NewApiKeyID() string {
 func ParseProvider(s string) (Provider, error) {
 	p := Provider(strings.ToLower(strings.TrimSpace(s)))
 	if !p.Valid() {
-		if p == Provider("openai_compatible") {
-			return "", fmt.Errorf("unknown provider %q — an OpenAI-compatible gateway is not a BYOK provider: it is env-funded (set OPENAI_COMPATIBLE_BASE_URL / OPENAI_COMPATIBLE_API_KEY on the deployment)", s)
-		}
 		return "", fmt.Errorf("unknown provider %q", s)
 	}
 	return p, nil

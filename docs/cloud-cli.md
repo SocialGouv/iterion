@@ -203,6 +203,11 @@ read the value from `--from-env VAR`, `--from-file path`, or stdin:
 ```sh
 printf '%s' "$GITLAB_TOKEN" | iterion remote secrets set gitlab-token
 iterion remote api-keys create --provider anthropic --name prod --from-env ANTHROPIC_API_KEY
+# a tenant-owned OpenAI-compatible gateway, restricted to one repository (stored and
+# listed; no run spends it until #2005 PR-C')
+iterion remote api-keys create --provider openai_compatible --name pliage --base-url https://gateway.example.test --repos owner/repo --from-env PLIAGE_KEY
+# moving a gateway key is a rotation: the secret rides the same write, never a JSON blob
+iterion remote api-keys rotate <key-id> --base-url https://gateway-2.example.test --from-env PLIAGE_KEY
 ```
 
 ## Errors

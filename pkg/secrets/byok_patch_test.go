@@ -150,6 +150,9 @@ func TestApiKeyPatch_EveryFieldReachesBothWriters(t *testing.T) {
 	rt := reflect.TypeOf(ApiKeyPatch{})
 	for i := 0; i < rt.NumField(); i++ {
 		f := rt.Field(i)
+		if f.Name == "ExpectSealed" {
+			continue // a compare-and-swap guard, not a written field
+		}
 		var p ApiKeyPatch
 		v := reflect.ValueOf(&p).Elem().Field(i)
 		switch f.Type {

@@ -703,3 +703,7 @@ than re-polarized, so there is no string knob left to fail open.
   (`pkg/runview/pipeline_scheduler.go:124-128`, a documented V1 limitation, local mode only); and
   `syncSchedules` carries neither the retry fields nor Routing today — this work adds both, in one
   hunk, because they are the same class.
+
+## Amendment 2026-10-21 — the acceptance run is team-funded
+
+§4's "an env-funded run stays provable through a var — which is #2005's shape exactly" and §7's "is classified env-funded, and seals nothing" predate the operator's decision of 2026-10-21 ([ADR-131](131-tenant-gateway-credential.md)). From #2005 PR-C' on (§5), the acceptance run holds the team's `openai_compatible` key, is classified team-funded, and seals exactly that key with its base URL; from PR-R on (§8), override cells gain the selector class `supervisor:<name>` so an integration can pin a supervisor's route beside its nodes. Until those land, the acceptance run is env-funded as §4 and §7 say, and selectors stay as `policy.go` lists them.

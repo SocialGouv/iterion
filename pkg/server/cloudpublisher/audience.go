@@ -6,8 +6,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
-// audienceWithholdings remembers the keys a workload audience kept out of a
-// run's walk (secrets.ApiKey.Bots — see docs/byok.md).
+// audienceWithholdings remembers the keys an audience kept out of a run's
+// walk (secrets.ApiKey.Bots and .Repos — see docs/byok.md).
 //
 // It exists because the refusal leaves no other trace. Resolve simply yields
 // the next key, or none, and a caller reading an empty slot cannot tell "this
@@ -18,27 +18,36 @@ import (
 // account pays for it, and possibly which vendor answers.
 //
 // A recorder, never a decision: Resolve has already refused by the time this
-// is called.
+// is called. The CAUSE is recorded beside the key, as Resolve reported it: a
+// line that blamed the bot for a repository mismatch would send the operator
+// to edit the wrong list.
 type audienceWithholdings struct {
 	botID string
+	repo  string
 	seen  map[string]bool
-	rows  []secrets.ApiKey
+	rows  []withheldKey
 }
 
-func newAudienceWithholdings(botID string) *audienceWithholdings {
-	return &audienceWithholdings{botID: botID, seen: map[string]bool{}}
+type withheldKey struct {
+	key secrets.ApiKey
+	why secrets.AudienceRefusal
 }
 
-// note records one withheld key. Deduplicated by id: every tier re-resolves
-// the same providers and each restore walks them again, so the same key is
-// offered and refused several times per launch — four log lines would read as
-// four different keys.
-func (a *audienceWithholdings) note(k secrets.ApiKey) {
+func newAudienceWithholdings(botID, repo string) *audienceWithholdings {
+	return &audienceWithholdings{botID: botID, repo: repo, seen: map[string]bool{}}
+}
+
+// note records one withheld key with the audience that refused it. It is
+// the onWithheld of every Resolve call in the walk. Deduplicated by id:
+// every tier re-resolves the same providers and each restore walks them
+// again, so the same key is offered and refused several times per launch —
+// four log lines would read as four different keys.
+func (a *audienceWithholdings) note(k secrets.ApiKey, why secrets.AudienceRefusal) {
 	if a == nil || k.ID == "" || a.seen[k.ID] {
 		return
 	}
 	a.seen[k.ID] = true
-	a.rows = append(a.rows, k)
+	a.rows = append(a.rows, withheldKey{key: k, why: why})
 }
 
 // holds reports whether this key was withheld for its audience — the question
@@ -48,22 +57,59 @@ func (a *audienceWithholdings) holds(keyID string) bool {
 	return a != nil && keyID != "" && a.seen[keyID]
 }
 
+// cause spells out which audience refused the key, for a line that names
+// it: "its workload audience [a b] does not name bot x", "its repository
+// audience [o/r] does not name repository o/s" — both, joined, when both
+// refused. "" for a key this recorder never saw.
+func (a *audienceWithholdings) cause(keyID string) string {
+	if a == nil {
+		return ""
+	}
+	for _, row := range a.rows {
+		if row.key.ID == keyID {
+			return a.describe(row)
+		}
+	}
+	return ""
+}
+
+func (a *audienceWithholdings) describe(row withheldKey) string {
+	var parts []string
+	if row.why.Bot {
+		bot := a.botID
+		if bot == "" {
+			bot = "(none — this launch named no bot)"
+		}
+		parts = append(parts, "its workload audience ["+strings.Join(row.key.Bots, " ")+"] does not name bot "+bot)
+	}
+	if row.why.Repo {
+		parts = append(parts, "its repository audience ["+strings.Join(row.key.Repos, " ")+"] does not name "+describeLaunchRepo(a.repo))
+	}
+	return strings.Join(parts, " and ")
+}
+
+// describeLaunchRepo names the repository a launch serves, in the words a
+// withholding is explained with; a launch that names none says so, since
+// that is the cause a restricted key is withheld for on such a lane.
+func describeLaunchRepo(repo string) string {
+	if repo == "" {
+		return "a repository (this launch names none)"
+	}
+	return "repository " + repo
+}
+
 func (a *audienceWithholdings) any() bool { return a != nil && len(a.rows) > 0 }
 
-// warn states each withholding once, naming the run, the key, its audience and
-// the bot that was refused — everything needed to answer "why did this run not
-// use our key" without reading the database.
+// warn states each withholding once, naming the run, the key, the audience
+// that refused and what it refused — everything needed to answer "why did
+// this run not use our key" without reading the database.
 func (a *audienceWithholdings) warn(p *Publisher, runID string) {
 	if !a.any() || p == nil || p.logger == nil {
 		return
 	}
-	bot := a.botID
-	if bot == "" {
-		bot = "(none — this launch named no bot)"
-	}
-	for _, k := range a.rows {
+	for _, row := range a.rows {
 		p.logger.Warn(
-			"cloudpublisher: api key %s (%s, provider=%s) WITHHELD from run %s — its workload audience [%s] does not name bot %s; the walk falls through to the next key or tier, which may be another account or another vendor",
-			k.ID, k.Name, k.Provider, runID, strings.Join(k.Bots, " "), bot)
+			"cloudpublisher: api key %s (%s, provider=%s) WITHHELD from run %s — %s; the walk falls through to the next key or tier, which may be another account or another vendor",
+			row.key.ID, row.key.Name, row.key.Provider, runID, a.describe(row))
 	}
 }
