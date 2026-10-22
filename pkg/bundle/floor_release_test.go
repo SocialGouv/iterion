@@ -157,10 +157,89 @@ func TestEveryShippedBundleDeclaresAFloorThatReachesWhatItNeeds(t *testing.T) {
 			if pf := CheckSyntaxFloor(m, MaxSyntaxRequirementsDir(dir)); !pf.OK {
 				t.Errorf("%s declares %q, which does not reach %s, the release that reads %s: a floor constant moved and this manifest did not follow — raise it", path, pf.Declared, pf.Need, pf.Reason)
 			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Errorf("%s: %v", path, err)
+				continue
+			}
+			if err := checkCatalogTaxonomyFloor(manifestKeySet(t, body), m); err != nil {
+				t.Errorf("%s: %v", path, err)
+			}
 		}
 	}
 	if checked < 30 {
 		t.Fatalf("only %d shipped manifests were read — the walk lost a collection, and a green verdict would mean nothing", checked)
 	}
 	t.Logf("%d shipped manifests declare a floor that reaches what they need", checked)
+}
+
+const catalogTaxonomySince = "3.225.0"
+
+func TestCatalogTaxonomyFloorFollowsTopLevelKeyPresence(t *testing.T) {
+	check := func(t *testing.T, taxonomy, requirement string, wantErr bool) {
+		t.Helper()
+		body := "name: x\n" + taxonomy + requirement
+		m, err := DecodeManifest([]byte(body), "test")
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		err = checkCatalogTaxonomyFloor(manifestKeySet(t, []byte(body)), m)
+		if (err != nil) != wantErr {
+			t.Fatalf("taxonomy floor error = %v, want error = %v\nmanifest:\n%s", err, wantErr, body)
+		}
+	}
+
+	taxonomies := map[string]string{
+		"category only": "category: verify\n",
+		"tags only":     "tags: [read-only]\n",
+		"both":          "category: verify\ntags: [read-only]\n",
+		"root merge":    "compat: &taxonomy\n  category: verify\n  tags: [read-only]\n<<: *taxonomy\n",
+		"neither":       "",
+	}
+	floors := map[string]struct {
+		yaml                string
+		wantErrWithTaxonomy bool
+	}{
+		"absent": {"", true},
+		"lower":  {"requires:\n  iterion: \">= 3.224.0\"\n", true},
+		"equal":  {"requires:\n  iterion: \">= 3.225.0\"\n", false},
+		"higher": {"requires:\n  iterion: \">= 3.226.0\"\n", false},
+	}
+	for taxonomyName, taxonomy := range taxonomies {
+		for floorName, floor := range floors {
+			t.Run(taxonomyName+"/"+floorName, func(t *testing.T) {
+				check(t, taxonomy, floor.yaml, taxonomy != "" && floor.wantErrWithTaxonomy)
+			})
+		}
+	}
+
+	for name, taxonomy := range map[string]string{
+		"empty category":                            "category:\n",
+		"empty tags":                                "tags:\n",
+		"empty category and tags":                   "category:\ntags:\n",
+		"null category and tags root merge":         "compat: &taxonomy\n  category:\n  tags:\n<<: *taxonomy\n",
+		"empty-valued category and tags root merge": "compat: &taxonomy\n  category: \"\"\n  tags: []\n<<: *taxonomy\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			check(t, taxonomy, "requires:\n  iterion: \">= 3.224.0\"\n", true)
+		})
+	}
+}
+
+func checkCatalogTaxonomyFloor(keys map[string]bool, m *Manifest) error {
+	if !keys["category"] && !keys["tags"] {
+		return nil
+	}
+	if m == nil || m.Requires == nil {
+		return errors.New("top-level category/tags require requires.iterion >= " + catalogTaxonomySince)
+	}
+	constraint, err := ParseEngineConstraint(m.Requires.Iterion)
+	if err != nil {
+		return err
+	}
+	need, _ := numericVersionParts(catalogTaxonomySince)
+	if compareVersionParts(constraint.Min, need) < 0 {
+		return errors.New("top-level category/tags require requires.iterion >= " + catalogTaxonomySince + "; got " + strings.TrimSpace(m.Requires.Iterion))
+	}
+	return nil
 }

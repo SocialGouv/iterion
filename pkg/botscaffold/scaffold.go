@@ -125,10 +125,8 @@ type Spec struct {
 	Shape string `json:"shape,omitempty"`
 
 	// EngineFloor is the version the generated manifest requires at least
-	// (`requires.iterion`): the templates are written in dsl profile 2, and
-	// a runner older than the profile would fail at its first parse of a
-	// child. Empty takes this build's own version when it is orderable; a
-	// dev build writes no floor.
+	// (`requires.iterion`). Empty derives a default from this build, the
+	// rendered sources and Category; an explicit value is emitted unchanged.
 	EngineFloor string `json:"engine_floor,omitempty"`
 }
 
@@ -137,8 +135,9 @@ type Spec struct {
 // or, for a dev build, the release that reads the newest profile — raised
 // to the release the RENDERED sources need when that is later (a shape
 // that imports needs the release that reads `import`, whatever build
-// scaffolds it), so a fresh scaffold never draws C252 on its own floor.
-func defaultEngineFloor(sources map[string]string) string {
+// scaffolds it), and to category/tags' strict-decoding release when the
+// manifest declares a category.
+func defaultEngineFloor(sources map[string]string, category string) string {
 	floor := strings.TrimPrefix(strings.SplitN(appinfo.Version, "+", 2)[0], "v")
 	if _, ok := bundle.CompareVersions(floor, "0"); !ok {
 		floor = parser.ProfileSince[parser.MaxProfile]
@@ -146,6 +145,12 @@ func defaultEngineFloor(sources map[string]string) string {
 	if need, _ := bundle.RequiredRelease(bundle.MaxSyntaxRequirements(sources)); need != "" {
 		if c, ok := bundle.CompareVersions(need, floor); !ok || c > 0 {
 			floor = need
+		}
+	}
+	if category != "" {
+		const categorySince = "3.225.0"
+		if c, ok := bundle.CompareVersions(categorySince, floor); !ok || c > 0 {
+			floor = categorySince
 		}
 	}
 	return floor
@@ -292,7 +297,7 @@ func Scaffold(dir string, s Spec) (Result, error) {
 				sources[rel] = string(body)
 			}
 		}
-		s.EngineFloor = defaultEngineFloor(sources)
+		s.EngineFloor = defaultEngineFloor(sources, s.Category)
 	}
 	if err := checkAnnexPaths(annexes); err != nil {
 		return Result{}, err
