@@ -127,7 +127,7 @@ grants. iterion is the scaffold shape where a graph earns its keep, and
 the graph of the workflow itself is a fact iterion owns and nobody else
 has.
 
-### 4. What costs money is LLM extraction — and this repository has no API key
+### 4. What costs money is LLM extraction — and no key funds the commons
 
 Microsoft's LazyGraphRAG work puts GraphRAG indexing at ≈ **1 000×** a
 vector index; the $1 544-versus-$1.45-per-million-tokens pair is a
@@ -136,13 +136,15 @@ not a Microsoft figure. LazyGraphRAG, LightRAG and KET-RAG all exist to
 defer or avoid that extraction pass.
 
 iterion's own runs go through OAuth subscription backends, not API keys —
-the constraint is written into this repo's `.graphifyignore`, which
-excludes all markdown from the operator's trial graph *because* semantic
-extraction would need a key. So the only index this project can finance
-is a **deterministic** one: AST, imports, markdown links, the `.bot` DAG.
-That is a constraint, and it happens to be the right one — deterministic
-means exact, reproducible, and gateable in CI, which an LLM-extracted
-graph is not.
+and the operator's trial graph now runs semantic extraction through a
+`GEMINI_API_KEY` (declared in [.graphifyignore](../../.graphifyignore)'s
+header, which no longer excludes markdown: without the key the graph
+degrades to cluster-only AST). The correction matters for what follows:
+the repository's **discoverability commons** — the indexes the gate and
+every session share — remain **deterministic** on purpose: AST, imports,
+markdown links, the `.bot` DAG. Deterministic means exact, reproducible,
+and gateable in CI, which an LLM-extracted graph is not; the operator's
+keyed trial graph is a local tool, not a commons.
 
 ### 5. Embedded graph databases churn; do not couple the engine to one
 
@@ -228,7 +230,15 @@ path is a lead to verify, not a proof.
 ## What is refused, and what would reopen it
 
 **Refused on 2026-09-19: embeddings and LLM-based extraction**, for the
-repository's own discoverability commons. Reopening requires *both*:
+repository's own discoverability commons. **Re-examined 2026-10-23** (the
+facts changed, the refusal holds): the `.graphifyignore` citation this
+refusal once relied on is stale — the file no longer excludes markdown and
+now declares semantic extraction for the operator's keyed trial graph and no
+longer excludes markdown wholesale (CHANGELOG.md stays out). That
+key funds a local tool, not the commons, and neither reopening condition is
+met: there is still no BYOK credential this project may spend on *indexing*,
+and no `bench discovery` measurement showing the deterministic index left a
+gap a semantic one closes. Reopening still requires *both*:
 
 1. a BYOK credential this project may spend on indexing
    ([docs/byok.md](../byok.md)), and

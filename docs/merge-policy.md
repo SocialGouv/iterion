@@ -195,6 +195,7 @@ Repository **admins bypass the queue** (`bypass_mode: always`) — a hotfix can
 still be pushed straight to `main` (e.g. un-break a red main fast). Use it
 sparingly; the queue is the default path. Non-admins must go through a PR + the
 queue.
+For reviewed chantier work, the [operator direct-landing lane](#the-operator-direct-landing-lane-decided-2026-10-22) generalises this bypass — and owes it what a hotfix does not: the train, the locally reproduced gate and the greppable trailers.
 
 ### The fast lane for an incident fix, and its exact procedure
 
@@ -417,3 +418,17 @@ not a CI step or an automatically deployed resource.
 A proposed configurable floor is tracked separately in the infrastructure PR
 linked from #1198. Keep the ticket open until approved activation and
 representative concurrent CI runs demonstrate the result.
+
+## The operator direct-landing lane (decided 2026-10-22)
+
+Operator-led chantiers may bypass the queue entirely: no PR, a **train**
+(the branch rebased onto `origin/main`, the full required-check set reproduced
+locally ON THE INTEGRATED TREE), then a direct push to `main`. The lane's
+contract — the exhaustive local gate, the converged adversarial loop, the
+`Adversarial-Rounds:` / `Adversarial-Model:` / `Landing-Train:` trailers, the
+post-hoc CI witness, the red-`main` priority, and the duty to warn sessions
+with queued PRs or unpushed branches — lives in
+[the review-and-merge page](agents/workflow/review-and-merge.md#the-operator-direct-landing-lane-decided-2026-10-22).
+Every existing PR keeps the queue and its `revi/review` blocking gate; the
+lane is the admin bypass generalised from hotfixes to reviewed chantier work,
+and its bypass is greppable in the trailers by design.

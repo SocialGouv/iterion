@@ -2,7 +2,8 @@
 
 Every change lands through a pull request whose `revi/review` gate is green.
 The documented exceptions are the admin bypass below — which allows a direct
-push to `main`, not just a queue skip — and the release bot, whose
+push to `main`, not just a queue skip — the **operator direct-landing lane**
+(§ below, decided 2026-10-22), and the release bot, whose
 `chore: release` commits land on `main` with no PR and no gate.
 The loop is:
 
@@ -31,6 +32,39 @@ The loop is:
    written explicitly when nobody attacked the change — format, what survives
    the squash, and rationale in
    [adversarial-review-loop.md](adversarial-review-loop.md#say-what-the-review-cost-in-the-commit).
+
+## The operator direct-landing lane (decided 2026-10-22)
+
+For operator-led chantiers where the queue's wall clock is the bottleneck, the
+operator (admin) may land a change **without a PR**, by push to `main`. This
+amends the sentence above for that lane only — every existing PR keeps
+`revi/review` as its blocking gate, and the queue keeps serialising the PRs
+that exist. The lane's blocking proof replaces the PR's:
+
+1. **The gate, locally reproduced.** The full required-check set a workflow
+   job can express — everything but `revi/review`, which item 2 replaces —
+   runs locally. Its definition is `task ci:gate`, and the lane is CLOSED
+   until that stream lands: no direct landing before the checked-in
+   exhaustive mapping from `tests.yml` jobs to local members exists in this
+   tree (the mapping lives with the chantier's evidence until then). Exit
+   codes are read per member, never piped.
+2. **A converged local adversarial loop.** Per
+   [the loop](adversarial-review-loop.md): rounds until no unassumed
+   high/critical finding stands, the fixes re-attacked, the budget respected.
+3. **The train.** The branch rebases onto `origin/main` into an integration
+   branch and the gate runs ON THE INTEGRATED TREE — this is the queue's one
+   unique guarantee (it tests the merge ref) reproduced locally. A red train is
+   fixed on the train, never pushed.
+4. **The trailers, greppable.** `Adversarial-Rounds:` / `Adversarial-Model:` as
+   everywhere, plus `Landing-Train:` naming the train and its evidence
+   directory — a bypass that cannot be grepped is a bypass that did not happen.
+5. **The witnesses, post-hoc.** The GitHub CI still fires on every push to
+   `main`; a cancelled or missing witness run is NOT success in the landing
+   record; a red `main` outranks every other work until green.
+
+Courtesies that are duties: warn the sessions with PRs in flight before the
+first push of a wave (a direct push invalidates their merge groups), and warn
+sessions with unpushed branches (each `main` advance costs them a rebase).
 
 ## The merge queue
 

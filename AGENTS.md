@@ -33,12 +33,12 @@ interactive sessions).
 
 ## Non-negotiables
 
-- **Review loop.** Every change lands through a PR whose `revi/review` gate is
-  green. Run a local adversarial round on the diff before every push: the
-  findings decide the next round, the diff size caps the budget, you fix the
-  findings (by hand or through another round), and commits that ship reviewed
-  work carry `Adversarial-Rounds:` / `Adversarial-Model:` trailers ([the loop](docs/agents/workflow/adversarial-review-loop.md),
-  [merge and gate](docs/agents/workflow/review-and-merge.md)).
+- **Review loop.** Every change lands reviewed: a PR whose `revi/review` gate
+  is green, or the operator's admin-only direct-landing lane — local full gate + train +
+  converged loop, push to `main`, CI as witness ([merge and
+  gate](docs/agents/workflow/review-and-merge.md)). Findings decide the next
+  round, the budget caps it, you fix them, and reviewed work carries
+  `Adversarial-Rounds:` / `Adversarial-Model:` trailers ([the loop](docs/agents/workflow/adversarial-review-loop.md)).
 - **Do not comment `/billy`** — the fixer is paused here
   ([why, and the re-arm](docs/agents/workflow/billy.md#billy-is-paused)).
 - **Never hand-edit `CHANGELOG.md`.** Bump `claw-code-go` only with
