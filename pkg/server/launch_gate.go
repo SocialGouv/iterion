@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -189,6 +190,9 @@ type launchAdmission struct {
 // targets no repository) passes the zero value and is judged as ordinary,
 // uncapped work — which is what it is.
 type launchSubject struct {
+	// ReplacingRunIDs are selected by the webhook's tenant/subject/bot scope.
+	// The gate verifies each is live and owned by this team before crediting it.
+	ReplacingRunIDs []string
 	// ExistingRun is set after reading the run or its durable retry row. It exempts
 	// continuation from maintenance, never from the existing quota gates.
 	ExistingRun bool
@@ -543,6 +547,17 @@ func (s *Server) gateConcurrency(ctx context.Context, t identity.Team, floor bud
 			s.logger.Warn("launch gate: active-run count for %s: %v (fail-open)", t.ID, err)
 		}
 		return nil
+	}
+	seen := map[string]bool{}
+	for _, runID := range subj.ReplacingRunIDs {
+		if seen[runID] {
+			continue
+		}
+		seen[runID] = true
+		run, err := s.cfg.Store.LoadRun(ctx, runID)
+		if err == nil && run != nil && run.TenantID == t.ID && (run.Status == store.RunStatusRunning || run.Status == store.RunStatusQueued) && active > 0 {
+			active--
+		}
 	}
 	if active >= maxActive {
 		return &launchDenial{

@@ -10,14 +10,17 @@ import (
 // dispatcher consumes a normalized view via tracker.Issue (see
 // pkg/dispatcher/tracker/native.go for the conversion).
 type Issue struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Body     string   `json:"body,omitempty"`
-	State    string   `json:"state"`
-	Labels   []string `json:"labels,omitempty"`
-	Priority int      `json:"priority,omitempty"`
-	Assignee string   `json:"assignee,omitempty"`
-	Blockers []string `json:"blockers,omitempty"`
+	// ConsumedEffects are durable one-shot receipts, written atomically with
+	// label removal. Retained across re-arming so an older effect can recover.
+	ConsumedEffects []string `json:"consumed_effects,omitempty" bson:"consumed_effects,omitempty"`
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	Body            string   `json:"body,omitempty"`
+	State           string   `json:"state"`
+	Labels          []string `json:"labels,omitempty"`
+	Priority        int      `json:"priority,omitempty"`
+	Assignee        string   `json:"assignee,omitempty"`
+	Blockers        []string `json:"blockers,omitempty"`
 	// ParentID is the planner (or prior planner) ticket that spawned this
 	// one. Distinct from Blockers (scheduling deps): ParentID is provenance
 	// / campaign ownership so the /pipelines UI can nest children under a

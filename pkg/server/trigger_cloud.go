@@ -102,6 +102,7 @@ func (c *cloudBoardEffect) ConsumeMatchLabels(_ context.Context, tenantID, issue
 
 var _ trigger.BoardEffect = (*cloudBoardEffect)(nil)
 var _ trigger.LabelConsumer = (*cloudBoardEffect)(nil)
+var _ trigger.EffectLabelConsumer = (*cloudBoardEffect)(nil)
 
 // cloudTenantLister narrows the subscription store to the one extra query
 // the source needs (satisfied by trigger.MongoSubscriptionStore).
@@ -448,6 +449,7 @@ func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.Su
 	evalOpts := []trigger.EvaluatorOption{
 		trigger.WithBoardEffect(effect),
 		trigger.WithLauncher(launcher),
+		trigger.WithEffectOutbox(func(tenant string) trigger.EffectOutbox { return coord.StoreFor(tenant) }),
 		trigger.WithLogger(logger),
 	}
 	// The two halves of the projection travel together — the same value
@@ -528,4 +530,12 @@ func firstNonEmptyStr(a, b string) string {
 		return a
 	}
 	return b
+}
+
+func (c *cloudBoardEffect) ConsumeMatchLabelsForEffect(_ context.Context, tenantID, issueID string, labels []string, effectID string) (bool, error) {
+	st, err := c.storeFor(tenantID)
+	if err != nil {
+		return false, err
+	}
+	return st.ConsumeLabelsForEffect(issueID, labels, effectID)
 }

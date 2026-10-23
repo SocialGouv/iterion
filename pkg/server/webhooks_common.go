@@ -850,7 +850,7 @@ func (out *webhookLaunchResult) duplicateOf(existing webhooks.Delivery) {
 	}
 }
 
-// supersedeLiveRuns cancels the runs a fresh delivery has made obsolete, when
+// supersededRunIDs selects the runs a fresh delivery has made obsolete, when
 // the webhook opts into overlap=supersede.
 //
 // The key is (webhook, subject, bot) — ONE pull request's runs of ONE bot, not
@@ -861,28 +861,17 @@ func (out *webhookLaunchResult) duplicateOf(existing webhooks.Delivery) {
 // from launching, because the new run is the one carrying the current truth.
 // Every outcome is logged — a superseded run is a real event an operator will
 // see in the run list and needs to be able to explain.
-func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta, botID string) {
-	cancel := s.webhookCancelRun
-	if cancel == nil && s.runs != nil {
-		// Named reason: this cancel is nobody's click. It lands in run.Error,
-		// which the merge-gate synthetic status quotes — "cancelled by user"
-		// there sent operators hunting for a human who did nothing.
-		cancel = func(runID string) error {
-			return s.runs.CancelWithReason(runID, supersededRunReason)
-		}
+func (s *Server) supersededRunIDs(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta, botID string) []string {
+	if s.webhookDeliveries == nil || !overlapSupersedes(cfg) || meta.SubjectID == "" || (s.webhookCancelRun == nil && s.runs == nil) {
+		return nil
 	}
-	if s.webhookDeliveries == nil || cancel == nil || !overlapSupersedes(cfg) {
-		return
-	}
-	if meta.SubjectID == "" {
-		return // no subject to scope the supersede to; never cancel repo-wide
-	}
+	var ids []string
 	recent, err := s.webhookDeliveries.ListByWebhook(ctx, cfg.TenantID, cfg.ID, supersedeLookback)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("webhooks: supersede lookup failed for %s %s: %v", cfg.ID, meta.SubjectID, err)
 		}
-		return
+		return nil
 	}
 	for _, d := range recent {
 		if d.RunID == "" || d.BotID != botID || d.SubjectID != meta.SubjectID {
@@ -901,16 +890,24 @@ func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, met
 		if d.Status != webhooks.StatusLaunched {
 			continue
 		}
-		// Cancel is a no-op on a run that already finished, so the delivery
-		// row's status is enough of a filter — no run lookup needed.
-		if cerr := cancel(d.RunID); cerr != nil {
-			if s.logger != nil {
-				s.logger.Debug("webhooks: supersede could not cancel run %s (likely already finished): %v", d.RunID, cerr)
-			}
-			continue
-		}
-		if s.logger != nil {
-			s.logger.Info("webhooks: superseded run %s (%s on %s) — a newer delivery for the same subject arrived", d.RunID, botID, meta.SubjectID)
+
+		ids = append(ids, d.RunID)
+	}
+	return ids
+}
+
+// Only an admitted replacement may cancel its selected predecessors.
+func (s *Server) cancelSupersededRuns(ids []string) {
+	cancel := s.webhookCancelRun
+	if cancel == nil && s.runs != nil {
+		cancel = func(id string) error { return s.runs.CancelWithReason(id, supersededRunReason) }
+	}
+	if cancel == nil {
+		return
+	}
+	for _, id := range ids {
+		if err := cancel(id); err != nil {
+			s.warnf("webhooks: supersede cancel %s: %v", id, err)
 		}
 	}
 }
@@ -975,7 +972,7 @@ func (s *Server) headReviewClaim(ctx context.Context, cfg webhooks.Config, rules
 
 // overlapSupersedes reports whether this webhook's overlap policy resolves to
 // supersede — the single predicate shared by the launch tail's cancel pass
-// (supersedeLiveRuns) and the re-request collapse, which DEFERS to it: an
+// (supersededRunIDs) and the re-request collapse, which DEFERS to it: an
 // explicit supersede is the operator saying "newest request wins".
 func overlapSupersedes(cfg webhooks.Config) bool {
 	if cfg.Overlap == "" {
@@ -1290,25 +1287,10 @@ func (s *Server) launchWebhookTarget(
 		}
 	}
 
-	// Maintenance must be consulted before cancelling useful live work.
-	// Keep the final gate below: this preflight neither meters nor reserves
-	// admission, and a fence armed meanwhile must still stop the new run.
-	if d := s.gateMaintenance(ctx, launchSubject{BotID: botID, Repo: meta.ProjectPath}); d != nil {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
-		out.Status, out.Error, out.denial = webhooks.StatusLaunchError, d.reason, d
-		return out
-	}
-
-	// 1b. Supersede: this delivery's input makes the live run for the same
-	// subject obsolete (a newer commit on the same PR). Cancel before
-	// metering, so the superseded run's slot is freed for the fresh one.
-	s.supersedeLiveRuns(ctx, cfg, meta, botID)
-
-	// 2. Run-launch admission. Only reached for a genuinely new delivery
-	// (replays were filtered in step 1), so the quota CAS fires once per
-	// distinct event. A denied event writes a terminal row under a random
-	// key so a later forge retry can launch once the quota resets.
-	adm, d := s.gateLaunch(ctx, launchSubject{BotID: botID, Repo: meta.ProjectPath})
+	// Select predecessors without side effects. Admission reads maintenance
+	// ONCE, after this lookup, and credits only verified live replacement slots.
+	predecessors := s.supersededRunIDs(ctx, cfg, meta, botID)
+	adm, d := s.gateLaunch(ctx, launchSubject{BotID: botID, Repo: meta.ProjectPath, ReplacingRunIDs: predecessors})
 	if d != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
 		out.Status = webhooks.StatusLaunchError
@@ -1444,6 +1426,7 @@ func (s *Server) launchWebhookTarget(
 		out.httpStatus = http.StatusUnprocessableEntity
 		return out
 	}
+	s.cancelSupersededRuns(predecessors)
 	// meta.ProjectPath is the forge slug already parsed by the provider
 	// handler — thread it onto the launch so the run is filterable by
 	// repository in the studio.
@@ -1679,7 +1662,7 @@ func (s *Server) stopHealRunForRequeuedPR(ctx context.Context, cfg webhooks.Conf
 // disarm covers the second, and it is the one nothing else would do (the
 // retry lives in the store, not in the run's process).
 //
-// Scoped to (project, subject) across EVERY bot, unlike supersedeLiveRuns
+// Scoped to (project, subject) across EVERY bot, unlike supersededRunIDs
 // which is per-bot: supersede replaces one bot's work with newer work of
 // the same bot, while a closed PR ends everyone's. The PROJECT half is
 // load-bearing — a subject id ("pr:7") carries no repo and one webhook

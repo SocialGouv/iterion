@@ -58,6 +58,7 @@ var spawnCensus = map[string]detachedSpawn{
 	"server.go:New": {2, "the hub's fan-out loop (ended by Hub.Stop) and the local file watcher (ended by Watcher.Stop); neither writes to a store"},
 	"server_lifecycle.go:(*Server).ListenAndServe":               {2, "the cloud board dispatcher arm and the cancel watcher inside it: the outer goroutine closes s.boardDispDone, which Shutdown waits on before the join; the inner one cancels on the shutdown signal"},
 	"trigger_cloud.go:StartCloudTriggerCoordinator":              {1, "the cloud board poll loop; cloudBoardSource.Stop cancels it and waits on its done channel, and the shutdown calls it (StopSource) before the bus cancels"},
+	"trigger_coordinator.go:StartTriggerCoordinator":             {1, "the effects outbox worker ticker; TriggerCoordinator.stopEffects cancels it and the shutdown waits on effectsDone before the bus cancels"},
 	"watch_coordinator.go:startWatchCoordinator":                 {1, "the watch fan-out worker; watchCoordinator.Close waits on its done channel, and the shutdown calls it before the bus cancels"},
 	"watcher.go:(*Watcher).Start":                                {1, "the ignore-cache GC of the file watcher, bounded by the watcher's own done channel; it prunes an in-memory map"},
 	"watcher.go:(*Watcher).handleEvent":                          {1, "the debounce timer of one file event: it broadcasts the last event for that path to the hub, and writes to no store"},

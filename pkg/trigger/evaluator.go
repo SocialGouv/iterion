@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -17,9 +18,10 @@ import (
 // method has the eventbus.Handler signature so the wiring layer can register
 // it with bus.Subscribe without the trigger package importing eventbus.
 type Evaluator struct {
-	subs     SubscriptionStore
-	launcher Launcher    // direct mode; nil = direct subs skipped (warn)
-	board    BoardEffect // board mode; nil = board subs skipped (warn)
+	outboxFor func(string) EffectOutbox
+	subs      SubscriptionStore
+	launcher  Launcher    // direct mode; nil = direct subs skipped (warn)
+	board     BoardEffect // board mode; nil = board subs skipped (warn)
 	// projection executes EffectKindProjection rows. It has no bus-path
 	// counterpart: a projection is materialized by the outbox writer, never
 	// matched from a subscription.
@@ -61,12 +63,24 @@ func NewEvaluator(subs SubscriptionStore, opts ...EvaluatorOption) *Evaluator {
 	return e
 }
 
-// Handle evaluates one event against the subscription store and fires every
-// matching subscription. It never returns the effect errors fatally — a
-// single subscription failure is logged and the rest still fire (one bad
-// trigger must not silence the others). The signature matches
-// eventbus.Handler.
+// Handle materializes every matching effect before acknowledging delivery
+// when an outbox is configured (both production coordinators). Without one,
+// it retains the synchronous embedding API. The signature is eventbus.Handler.
 func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
+	if e.outboxFor != nil {
+		rows, err := MaterializeEffects(ctx, e.subs, nil, ev, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		out := e.outboxFor(ev.TenantID)
+		if out == nil {
+			return fmt.Errorf("trigger: no effect outbox for tenant %q", ev.TenantID)
+		}
+		return out.UpsertPending(ctx, rows)
+	}
 	matched, err := matchingSubscriptions(ctx, e.subs, ev)
 	if err != nil {
 		return err
@@ -129,7 +143,8 @@ type effectOpts struct {
 	alreadyConsumed bool
 	// onConsumed, when non-nil, runs between the atomic label consume and
 	// the launch (the outbox persists its ConsumeMarked row marker there).
-	onConsumed func()
+	onConsumed func() error
+	effectID   string
 }
 
 // errEffectMachineCaused = the event came from iterion acting on the
@@ -200,7 +215,17 @@ func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event,
 			if !ok {
 				return fmt.Errorf("subscription %s requires consume_labels but the board effect cannot consume", sub.ID)
 			}
-			consumed, err := lc.ConsumeMatchLabels(ctx, ev.TenantID, ev.Subject.ID, sub.Match.Labels)
+			var consumed bool
+			var err error
+			if opts.effectID != "" {
+				durable, ok := e.board.(EffectLabelConsumer)
+				if !ok {
+					return fmt.Errorf("subscription %s requires recoverable label consumption", sub.ID)
+				}
+				consumed, err = durable.ConsumeMatchLabelsForEffect(ctx, ev.TenantID, ev.Subject.ID, sub.Match.Labels, opts.effectID)
+			} else {
+				consumed, err = lc.ConsumeMatchLabels(ctx, ev.TenantID, ev.Subject.ID, sub.Match.Labels)
+			}
 			if err != nil {
 				return fmt.Errorf("consume labels: %w", err)
 			}
@@ -208,7 +233,9 @@ func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event,
 				return errEffectOneShotSpent
 			}
 			if opts.onConsumed != nil {
-				opts.onConsumed()
+				if err := opts.onConsumed(); err != nil {
+					return err
+				}
 			}
 		}
 		_, err := e.launcher.Launch(ctx, e.buildPlan(sub, ev))
@@ -334,4 +361,9 @@ func (e *Evaluator) warn(format string, args ...any) {
 	if e.logger != nil {
 		e.logger.Warn(format, args...)
 	}
+}
+
+// WithEffectOutbox selects durable delivery for events handled by this evaluator.
+func WithEffectOutbox(resolve func(string) EffectOutbox) EvaluatorOption {
+	return func(e *Evaluator) { e.outboxFor = resolve }
 }

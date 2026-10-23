@@ -105,6 +105,14 @@ erDiagram
         string last_error
         string last_run_id FK "runs._id"
     }
+    schedule_launch_intents {
+        string _id PK "schedule id plus nominal slot time"
+        object schedule "ScheduledBot snapshot, including tenant_id and next_fire_at"
+        datetime not_before "retry deadline or claim lease"
+        string claim_id
+        bool done
+        bool prepared
+    }
     trigger_subscriptions {
         string _id PK
         string tenant_id FK "team id"
@@ -140,11 +148,12 @@ erDiagram
     trigger_subscriptions }o..o{ repo_integrations : "repo (slug) - compared to the EVENT repo, never joined to an integration; one slug may match several"
     scheduled_bots |o--o{ runs : "source.schedule_id - empty on a run no schedule launched"
     scheduled_bots }o--o| runs : "last_run_id"
+    scheduled_bots |o--o{ schedule_launch_intents : "schedule._id - inserted before advancing next_fire_at"
     trigger_subscriptions |o--o{ runs : "source.schedule_id"
     scheduled_bots |o..o{ audit_events : "target_id on the schedule.* rows, never joined"
 ```
 
-- **Both rows carry the same policy; only one carries its clock.** A schedule-kind `trigger_subscriptions` row has **no** next-fire field — the resident `trigger.Scheduler` keeps its next-fire instants in memory.
+- **Both rows carry the same policy; their clocks live separately.** A schedule-kind `trigger_subscriptions` row has **no** next-fire field — the resident `trigger.Scheduler` persists its calendar and pending intentions in `schedule-intents.json`. Cloud slots persist in `schedule_launch_intents` before `scheduled_bots.next_fire_at` advances, so a maintenance hold survives a restart.
 - **The two surfaces do not overlap — and together they do not cover every row.** `cloudsched` fires `scheduled_bots` rows only; the resident `trigger.Scheduler` fires subscriptions of tenant `""` only, the local single-host scope. So a schedule- or keepalive-kind `trigger_subscriptions` row carrying a real team id is fired by neither.
 - **The gate persists nothing of its own.** `pkg/schedgate` returns a `TickRecord`; that record is the tick's trace. In cloud the record lands in `audit_events` (`action` `schedule.tick.<decision>`, `tenant_id` the schedule's **team**).
 
@@ -192,11 +201,12 @@ erDiagram
 | Collection | Package | Document struct | Tenant field (values) | Unique / TTL indexes | Twin |
 |---|---|---|---|---|---|
 | `trigger_subscriptions` | `pkg/trigger` | `Subscription` | `tenant_id` — a team; `""` is the local scope | none unique, none TTL | memory (local, manifest-seeded each start) / Mongo (cloud) |
-| `trigger_effects` | `pkg/trigger` (type), `pkg/dispatcher/boardmongo` (store) | `EffectRow` | `tenant_id` — a team | TTL `done_ttl`, 7 days, partial on `state: "done"` | none (cloud-only) |
+| `trigger_effects` | `pkg/trigger` (type), `pkg/dispatcher/boardmongo` (store) | `EffectRow` | `tenant_id` — a team | TTL `done_ttl`, 7 days, partial on `state: "done"` | file `trigger-effects.json` beside the native board |
 | `board_issues` | `pkg/dispatcher/boardmongo` | `issueDoc` wrapping `native.Issue` | `tenant_id` — a team | none unique, none TTL | file `issues/<id>.json` |
 | `board_events` | `pkg/dispatcher/boardmongo` | `eventDoc` wrapping `native.Event` | `tenant_id` — a team | none unique, none TTL | file `events.jsonl` |
 | `board_config` | `pkg/dispatcher/boardmongo` | `configDoc` wrapping `native.Board` | the `_id` is the tenant: `<team>`, `seq:<team>`, `trigger-cursor:<team>` | the `_id` index only | file `board.json` (the seq is recovered from `events.jsonl`; the cursor has no twin) |
 | `scheduled_bots` | `pkg/cloudsched` | `ScheduledBot` | `tenant_id` — a team | none unique, none TTL | none (cloud-only) — the in-process store is test-only; `~/.iterion/schedules.yaml` is the host counterpart |
+| `schedule_launch_intents` | `pkg/cloudsched` | `LaunchIntent` | `schedule.tenant_id` — a team | unique slot `_id`; no TTL | `schedule-intents.json` beside the native board (resident trigger scheduler) |
 | `leases` | `pkg/lease` | none — `{_id, owner, expires_at, renewed_at}` | none — deployment-wide names | the `_id` index only | memory-only (which elects every process, so it is for one) |
 | `forge_board_bindings` | `pkg/forge` | `BoardBinding` | the `_id` is the team | none unique, none TTL | none (cloud-only) — the in-process store answers the OpenAPI spec generator and tests, no runtime mode |
 | `bot_sources` | `pkg/botsource` | `BotSource` | `tenant_id` — a team, or `platform:` | `tenant_slug_unique` | `memory-only` (local mode and tests); the baked catalog is the filesystem tier |
@@ -214,4 +224,3 @@ The three board collections share one filesystem twin, the native tracker's `<st
 - [bot-invocations.md](../bot-invocations.md) — the manifest capability a subscription is derived from; [cloud-rest-api.md](../cloud-rest-api.md) — the schedule and trigger routes.
 - [github-board-sync.md](../github-board-sync.md) — the projection effect and the reconciliation pass that share the outbox; [agents/engine/automation-surfaces.md](../agents/engine/automation-surfaces.md) — the domain index for the four trigger families.
 - [adr/046-event-driven-runs-trigger-spine.md](../adr/046-event-driven-runs-trigger-spine.md), [adr/094-trigger-effect-outbox.md](../adr/094-trigger-effect-outbox.md), [adr/096-board-claim-lease-and-watchdog.md](../adr/096-board-claim-lease-and-watchdog.md), [adr/097-github-projects-v2-board-sync.md](../adr/097-github-projects-v2-board-sync.md).
-

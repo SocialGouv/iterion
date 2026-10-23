@@ -39,7 +39,8 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("cloudsched: ensure schema: %w", err)
 	}
-	return nil
+	_, err = db.Collection(intentCollection).Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "done", Value: 1}, {Key: "not_before", Value: 1}}})
+	return err
 }
 
 func (s *MongoStore) Create(ctx context.Context, sb ScheduledBot) error {

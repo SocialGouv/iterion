@@ -2,6 +2,7 @@ package cloudsched
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -13,22 +14,20 @@ import (
 // run publisher (resolve the bot, build a LaunchSpec, SubmitLaunch).
 type LaunchFunc func(ctx context.Context, sb ScheduledBot) error
 
-// GateFunc decides, AFTER this replica won the slot's CAS, whether the
+// GateFunc decides, AFTER this replica claimed the slot's intention, whether the
 // launch proceeds (overlap policy + guard, pkg/schedgate). On
 // proceed=false, rec is the skip record for the audit sink; on
 // proceed=true rec is ignored (the ticker audits the fired outcome
 // itself, with the launch error) and guardStdout carries the guard's
 // stdout ("" when no guard) for injection into the launch vars.
-// Positioned after the CAS on purpose: the slot must be consumed
-// exactly once across replicas regardless of the gate's verdict, and
-// only the CAS winner may run the guard (a pre-CAS gate would run it
-// on every replica).
+// Only the intent claimant runs the guard; its admitted payload is persisted
+// before launch so a maintenance retry does not consume the guard again.
 type GateFunc func(ctx context.Context, sb ScheduledBot) (proceed bool, guardStdout string, rec schedgate.TickRecord)
 
-// Ticker fires due schedules. It is multi-replica-safe WITHOUT leader
-// election: every replica may run a Ticker; the CAS in ClaimTick guarantees
-// each slot fires exactly once (the first replica to advance next_fire_at
-// wins; the rest see the moved value and skip).
+// Ticker materializes each due slot before advancing its calendar, then
+// executes leased intentions. A hold keeps the same intention pending.
+// Claims prevent concurrent execution; a crash after launch but before the
+// completion write can still cause an at-least-once replay.
 type Ticker struct {
 	Store    Store
 	Launch   LaunchFunc
@@ -66,18 +65,40 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 			t.warn("bad schedule on %s: %v", sb.ID, nerr)
 			continue
 		}
-		won, cerr := t.Store.ClaimTick(ctx, sb.ID, sb.NextFireAt, next, now)
+		if err := t.Store.PutIntent(ctx, sb); err != nil {
+			t.warn("materialize slot %s: %v", sb.ID, err)
+			continue
+		}
+		_, cerr := t.Store.ClaimTick(ctx, sb.ID, sb.NextFireAt, next, now)
 		if cerr != nil {
 			t.warn("claim %s: %v", sb.ID, cerr)
 			continue
 		}
-		if !won {
-			continue // another replica claimed this slot
+	}
+	intents, err := t.Store.ClaimIntents(ctx, now, 200)
+	if err != nil {
+		return fired, err
+	}
+	for _, intent := range intents {
+		if t.now().After(intent.NotBefore) {
+			continue
 		}
-		// The slot is already advanced (consumed) whatever happens next —
-		// `fired` counts slot activity, not successful launches.
+		sb := intent.Schedule
+		current, err := t.Store.Get(ctx, sb.ID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			continue
+		} // lease recovers transient reads
+		finish := func(hold bool) {
+			if err := t.Store.FinishIntent(ctx, intent, hold, now); err != nil {
+				t.warn("finish intent %s: %v", intent.ID, err)
+			}
+		}
+		if errors.Is(err, ErrNotFound) || current.Disabled {
+			finish(false)
+			continue
+		}
 		fired++
-		if t.Gate != nil {
+		if t.Gate != nil && !intent.Prepared {
 			proceed, guardStdout, rec := t.Gate(ctx, sb)
 			if !proceed {
 				if t.Audit != nil {
@@ -89,7 +110,8 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 				// said "nothing to do" is the schedule working: it raises
 				// nothing. Either way the verdict replaces the previous one,
 				// so a schedule that recovers is no longer marked unhealthy.
-				t.recordGateVerdict(ctx, sb, rec, now)
+				t.recordGateVerdict(ctx, current, rec, now)
+				finish(false)
 				t.warn("gate skipped %s (%s): %s", sb.ID, sb.BotID, rec.Reason)
 				continue
 			}
@@ -103,14 +125,24 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 				sb.Vars = vars
 			}
 		}
-		// A failed launch is logged, not retried within the slot (the
-		// next slot fires normally). This is at-most-once-per-slot,
-		// matching the host-crontab scheduler.
+		if !intent.Prepared {
+			intent.Schedule = sb
+			prepared, err := t.Store.PrepareIntent(ctx, intent)
+			if err != nil {
+				t.warn("prepare intent %s: %v", intent.ID, err)
+			}
+			if err != nil || !prepared {
+				continue
+			}
+		}
+		// Maintenance postpones this intention. Ordinary failures retain
+		// the scheduler's historical terminal verdict for this slot.
 		lerr := t.Launch(ctx, sb)
+		finish(errors.Is(lerr, schedgate.ErrMaintenanceHold))
 		if lerr != nil {
 			t.warn("launch %s (%s): %v", sb.ID, sb.BotID, lerr)
 		}
-		t.recordLaunchVerdict(ctx, sb, lerr, now)
+		t.recordLaunchVerdict(ctx, current, lerr, now)
 		if t.Audit != nil {
 			rec := schedgate.NewTickRecord(schedgate.SurfaceCloud, sb.ID, now, schedgate.LaunchDecision(lerr))
 			rec.ScheduleName = sb.BotID

@@ -696,12 +696,26 @@ read also refuses new admissions with 503 until the store recovers.
 
 For durable consumers this is a `maintenance_hold`, not a failed execution:
 trigger effects stay pending, board cards return to their launch column, and
-deferred webhooks keep their accepted payload. Repeated holds consume no
+deferred webhooks keep their accepted payload. Bus events (including run
+outcomes) are materialized before execution: Mongo stores cloud effects;
+`trigger-effects.json` beside the native board stores local effects. One-shot
+label consumption records the owning effect ID in the same card write as the
+label removal, so a failed outbox marker is recoverable.
+
+Schedules materialize an intention per nominal slot before advancing the
+calendar. Cloud intentions live in `schedule_launch_intents`, local intentions
+and calendar state in `schedule-intents.json` beside the native board. A hold
+at 09:00 can resume at 09:01 without waiting for tomorrow, including after a
+scheduler restart. Repeated holds consume no
 failure attempts. After disarming, the ordinary worker/dispatcher sweeps launch
 the preserved work (subject to its other admission rules). A webhook with
-`overlap: supersede` checks maintenance before cancelling a live predecessor,
-both at immediate admission and when parking a debounced delivery; the final
-launch admission still rechecks the fence.
+`overlap: supersede` selects predecessors, obtains one coherent admission
+(crediting verified live predecessor slots), then cancels. Parking a debounced
+payload does not cancel anything; its sweep obtains admission first. A fence
+armed after admission does not retroactively refuse that replacement.
+
+These journals provide at-least-once recovery: a crash after a launch succeeds
+but before its completion marker is persisted can still replay the launch.
 
 Existing runs continue: HTTP/WebSocket resumes and automatic retries remain
 allowed by this fence, while retaining their ordinary authorization and quota

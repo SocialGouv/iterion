@@ -82,3 +82,10 @@ type LabelConsumer interface {
 type Nudger interface {
 	Refresh()
 }
+
+// EffectLabelConsumer atomically removes labels and records the effect ID on
+// the card. Replaying that ID returns true even after the labels are gone;
+// a different effect may only consume a newly armed label set.
+type EffectLabelConsumer interface {
+	ConsumeMatchLabelsForEffect(ctx context.Context, tenantID, issueID string, labels []string, effectID string) (bool, error)
+}

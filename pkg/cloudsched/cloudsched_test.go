@@ -417,11 +417,74 @@ func TestMongoStore_CAS(t *testing.T) {
 	// #1426 twin: exercise the same MarkRunOutcome contract against the
 	// mongo store so the two twins never drift.
 	assertMarkRunOutcomeContract(t, store, "sb-1", now)
+	assertIntentContract(t, store)
 
 	if err := store.Delete(ctx, "sb-1"); err != nil {
 		t.Errorf("Delete: %v", err)
 	}
 	if _, err := store.Get(ctx, "sb-1"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get after delete: want ErrNotFound, got %v", err)
+	}
+}
+
+func TestRound2MemoryIntentClaims(t *testing.T) { assertIntentContract(t, NewMemoryStore()) }
+func assertIntentContract(t *testing.T, st Store) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sb := ScheduledBot{ID: "intent-contract", BotID: "bot", Cron: "0 9 * * *", NextFireAt: now, Vars: map[string]string{"payload": "original"}}
+	if err := st.PutIntent(ctx, sb); err != nil {
+		t.Fatal(err)
+	}
+	sb.Vars = map[string]string{"payload": "changed"}
+	if err := st.PutIntent(ctx, sb); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.ClaimIntents(ctx, now, 100)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("claim: %v %v", rows, err)
+	}
+	first := rows[0]
+	prepared, err := st.PrepareIntent(ctx, first)
+	if err != nil || !prepared {
+		t.Fatalf("prepare=%v %v", prepared, err)
+	}
+	if first.Schedule.Vars["payload"] != "original" {
+		t.Fatal("re-materialization changed intent")
+	}
+	if next, err := st.ClaimIntents(ctx, now, 100); err != nil || len(next) != 0 {
+		t.Fatalf("double claim: %v %v", next, err)
+	}
+	// Crash, reclaim, and a late completion from the old owner.
+	rows, err = st.ClaimIntents(ctx, now.Add(intentLease+time.Second), 100)
+	if err != nil || len(rows) != 1 {
+		t.Fatal(rows, err)
+	}
+	second := rows[0]
+	if !second.Prepared || second.Schedule.Vars["payload"] != "original" {
+		t.Fatalf("lost prepared payload: %+v", second)
+	}
+	if ok, err := st.PrepareIntent(ctx, first); err != nil || ok {
+		t.Fatalf("stale prepare=%v %v", ok, err)
+	}
+	if err := st.FinishIntent(ctx, first, false, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FinishIntent(ctx, second, true, now); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = st.ClaimIntents(ctx, now.Add(time.Minute), 100)
+	if err != nil || len(rows) != 1 {
+		t.Fatal(rows, err)
+	}
+	if err := st.FinishIntent(ctx, rows[0], false, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutIntent(ctx, sb); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = st.ClaimIntents(ctx, now.Add(time.Hour), 100)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("completed slot resurrected: %v %v", rows, err)
 	}
 }

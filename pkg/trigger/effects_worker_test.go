@@ -15,6 +15,7 @@ import (
 type stubConsumingBoard struct {
 	promotes    int
 	promoteErr  error
+	receipts    map[string]bool
 	consumes    int
 	consumeLeft int // how many consumes still answer true
 	consumeErr  error
@@ -262,4 +263,18 @@ func TestMaterializeEffects_ObservationalAndDisabled(t *testing.T) {
 	if rows, _ := MaterializeEffects(context.Background(), subs, nil, ev, time.Now()); len(rows) != 0 {
 		t.Fatal("observational (already-launched) event materialized an effect")
 	}
+}
+
+func (f *stubConsumingBoard) ConsumeMatchLabelsForEffect(ctx context.Context, tenant, id string, labels []string, key string) (bool, error) {
+	if f.receipts[key] {
+		return true, nil
+	}
+	ok, err := f.ConsumeMatchLabels(ctx, tenant, id, labels)
+	if ok {
+		if f.receipts == nil {
+			f.receipts = map[string]bool{}
+		}
+		f.receipts[key] = true
+	}
+	return ok, err
 }

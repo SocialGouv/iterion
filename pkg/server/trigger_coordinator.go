@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -42,11 +43,13 @@ func schedulerTickInterval() time.Duration {
 // bots. Both are best-effort enhancements over the dispatcher poll — a host
 // without fsnotify simply falls back to the 30s poll.
 type TriggerCoordinator struct {
-	bus       eventbus.Bus
-	source    *trigger.BoardSource
-	scheduler *trigger.Scheduler
-	cancelSub func(context.Context)
-	logger    *iterlog.Logger
+	bus         eventbus.Bus
+	source      *trigger.BoardSource
+	scheduler   *trigger.Scheduler
+	cancelSub   func(context.Context)
+	logger      *iterlog.Logger
+	stopEffects context.CancelFunc
+	effectsDone chan struct{}
 }
 
 // StartTriggerCoordinator builds the spine and begins tailing. Returns nil
@@ -65,7 +68,9 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 		bus = eventbus.NewInProcBus(logger)
 	}
 	effect := trigger.NewNativeBoardEffect(ns, nudger, logger)
+	out := trigger.NewFileEffectOutbox(filepath.Join(ns.Root(), "trigger-effects.json"))
 	eval := trigger.NewEvaluator(subs,
+		trigger.WithEffectOutbox(func(string) trigger.EffectOutbox { return out }),
 		trigger.WithBoardEffect(effect),
 		trigger.WithLauncher(launcher),
 		trigger.WithLogger(logger),
@@ -92,12 +97,30 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 		return nil
 	}
 	tc := &TriggerCoordinator{bus: bus, source: src, cancelSub: cancelSub, logger: logger}
+	effectsCtx, stopEffects := context.WithCancel(context.Background())
+	tc.stopEffects = stopEffects
+	tc.effectsDone = make(chan struct{})
+	go func() {
+		defer close(tc.effectsDone)
+		worker := trigger.EffectWorker{Outbox: out, Subs: subs, Evaluator: eval, Logger: logger}
+		tick := time.NewTicker(100 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-effectsCtx.Done():
+				return
+			case <-tick.C:
+				worker.Tick(effectsCtx, 20)
+			}
+		}
+	}()
 	// Schedule source: fire schedule-kind subscriptions on their cron. Only
 	// useful when a launcher is wired (something to launch); scoped to the
 	// local tenant "" so it's a no-op in cloud mode (cloudsched owns that).
 	if launcher != nil {
 		tc.scheduler = trigger.NewScheduler(subs, launcher,
 			trigger.WithSchedulerLogger(logger),
+			trigger.WithSchedulerStateFile(filepath.Join(ns.Root(), "schedule-intents.json")),
 			trigger.WithSchedulerGate(gate),
 			trigger.WithSchedulerInterval(schedulerTickInterval()),
 		)
@@ -193,6 +216,10 @@ func (t *TriggerCoordinator) StopSource() {
 	}
 	if t.source != nil {
 		t.source.Stop()
+	}
+	if t.stopEffects != nil {
+		t.stopEffects()
+		<-t.effectsDone
 	}
 }
 

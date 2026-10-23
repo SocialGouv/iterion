@@ -740,6 +740,10 @@ jobs:
             ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
             ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/runwatch/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
             ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/... ./pkg/platformcfg/... ./pkg/server/...
+          # Exercise the public cloud coordinator against the durable outbox,
+          # including tenants that only subscribe to custom/run events.
+          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/server/ \
+            -run '^TestRound3CloudCoordinatorBusHoldRecovery$'
 
       - name: Mongo diagnostics on failure
         # A harness failure that reads "ReplicaSetNoPrimary" AFTER the

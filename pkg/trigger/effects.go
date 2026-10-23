@@ -23,10 +23,10 @@ import (
 // promised end to end (Core NATS could not promise it either); the contract
 // is at-least-once execution with idempotent/one-shot effects:
 //   - board promote is idempotent (same-bot check);
-//   - direct+consume_labels rows persist ConsumeMarked between the atomic
-//     label consume and the launch, so a retry after a launch failure (or a
-//     reclaim after a crash) SKIPS the consume and retries the launch —
-//     the one-shot is spent exactly once and the launch still happens;
+//   - direct+consume_labels atomically record the effect ID with label removal
+//     on the card, then persist ConsumeMarked before launch. A failed marker
+//     or crashed worker recovers ownership from the card receipt; a retry
+//     never mistakes its own consumed labels for another event's one-shot;
 //   - direct-without-consume launches may double only in the crash window
 //     between the launch and MarkDone, which is the documented residue.
 
@@ -153,7 +153,8 @@ func (r EffectRow) Owner() string {
 }
 
 // EffectOutbox is the durable store the source writes and the worker drains.
-// Implemented by boardmongo (cloud) and MemoryEffectOutbox (tests/local).
+// Implemented by boardmongo (cloud), FileEffectOutbox (local) and
+// MemoryEffectOutbox (tests).
 type EffectOutbox interface {
 	// UpsertPending inserts rows that do not exist yet ($setOnInsert
 	// semantics): re-materializing an already-known pair — a racing
@@ -166,7 +167,8 @@ type EffectOutbox interface {
 	// same row.
 	ClaimDue(ctx context.Context, now time.Time, limit int) ([]EffectRow, error)
 	// MarkConsumed persists ConsumeMarked=true on a claimed row — written
-	// between the atomic label consume and the launch. Every Mark* takes
+	// between the atomic label consume and the launch. The card's durable
+	// receipt remains the authority if this marker write fails. Every Mark* takes
 	// the caller's claimID and is a no-op when the claim was stolen.
 	MarkConsumed(ctx context.Context, id, claimID string) error
 	// MarkDone terminates a row successfully.

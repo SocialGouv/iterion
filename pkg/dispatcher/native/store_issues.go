@@ -186,6 +186,7 @@ func (s *Store) List(filter ListFilter) ([]*Issue, error) {
 // own mutable instance and cannot mutate the in-memory cache.
 func cloneIssue(in *Issue) *Issue {
 	c := *in
+	c.ConsumedEffects = append([]string(nil), in.ConsumedEffects...)
 	c.External = in.External.Clone()
 	if in.GaveUp != nil {
 		g := *in.GaveUp
@@ -916,3 +917,50 @@ func validateIssueID(id string) error {
 // for safe cross-platform storage. UUIDs never contain a literal "__".
 func encodeID(id string) string { return strings.ReplaceAll(id, ":", "__") }
 func decodeID(s string) string  { return strings.ReplaceAll(s, "__", ":") }
+
+// ConsumeLabelsForEffect is the filesystem twin of the Mongo receipt CAS.
+func (s *Store) ConsumeLabelsForEffect(id string, labels []string, effectID string) (consumed bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("ConsumeLabelsForEffect", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return false, err
+	}
+	for _, key := range iss.ConsumedEffects {
+		if key == effectID {
+			return true, nil
+		}
+	}
+	if effectID == "" || len(labels) == 0 {
+		return false, nil
+	}
+	strip := map[string]bool{}
+	for _, label := range labels {
+		found := false
+		for _, actual := range iss.Labels {
+			if actual == label {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false, nil
+		}
+		strip[label] = true
+	}
+	remaining := []string{}
+	for _, label := range iss.Labels {
+		if !strip[label] {
+			remaining = append(remaining, label)
+		}
+	}
+	iss.Labels = remaining
+	iss.ConsumedEffects = append(iss.ConsumedEffects, effectID)
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return false, err
+	}
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
+	return true, s.emitPostCommitEvent(Event{Type: EvtIssueUpdated, IssueID: id, Payload: map[string]any{"consumed_labels": labels}})
+}

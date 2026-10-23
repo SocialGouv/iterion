@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/storekit"
@@ -12,12 +13,14 @@ import (
 // MemoryStore is an in-memory Store for tests + single-process use. ClaimTick
 // enforces the same CAS-on-next_fire_at semantics as the Mongo store.
 type MemoryStore struct {
-	kit *storekit.Memory[ScheduledBot]
+	intentMu sync.Mutex
+	intents  map[string]LaunchIntent
+	kit      *storekit.Memory[ScheduledBot]
 }
 
 // NewMemoryStore returns an empty in-memory store.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{kit: storekit.NewMemory[ScheduledBot](ErrNotFound)}
+	return &MemoryStore{intents: map[string]LaunchIntent{}, kit: storekit.NewMemory[ScheduledBot](ErrNotFound)}
 }
 
 var _ Store = (*MemoryStore)(nil)

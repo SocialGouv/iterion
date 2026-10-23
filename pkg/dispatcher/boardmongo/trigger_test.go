@@ -45,6 +45,7 @@ func TestMongoStore_TriggerPrimitives(t *testing.T) {
 		t.Fatalf("EnsureSchema: %v", err)
 	}
 	st := boardmongo.New(db, "trig-tenant")
+	runConsumeReceiptSuite(t, st)
 
 	// --- ConsumeLabels: one-shot, atomic, label-preserving ---
 	iss, err := st.Create(native.Issue{Title: "t", State: native.StateInbox, Labels: []string{"bug", native.LabelTriageAuto}})

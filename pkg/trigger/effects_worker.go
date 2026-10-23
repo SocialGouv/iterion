@@ -7,6 +7,7 @@ import (
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
 // EffectWorker drains an EffectOutbox: claim → execute → mark, with bounded
@@ -31,7 +32,7 @@ var errEffectOneShotSpent = errors.New("trigger: one-shot already spent")
 // ErrMaintenanceHold reports a launch postponed by platform maintenance.
 // No execution was attempted: durable consumers must keep the work pending
 // without spending its failure budget. Launchers may wrap it with details.
-var ErrMaintenanceHold = errors.New("maintenance_hold")
+var ErrMaintenanceHold = schedgate.ErrMaintenanceHold
 
 // Tick claims up to limit due rows and executes each. Returns the number of
 // rows it acted on (tests + callers pacing on activity).
@@ -148,13 +149,14 @@ func (w *EffectWorker) applyClaimedEffect(ctx context.Context, row *EffectRow) e
 	}
 	return w.Evaluator.applyEffect(ctx, sub, row.Event, effectOpts{
 		alreadyConsumed: row.ConsumeMarked,
-		onConsumed: func() {
+		effectID:        row.ID,
+		onConsumed: func() error {
+			// Failure is recoverable through the card's atomic receipt. Never
+			// launch after a failed marker write and hope it succeeds.
 			if err := w.Outbox.MarkConsumed(ctx, row.ID, row.ClaimID); err != nil {
-				// The consume happened; without the marker a reclaim would
-				// read "spent by another event" and drop the launch. Press
-				// on to the launch NOW — this attempt is the marker.
-				w.warn("trigger: effect %s consumed but marker write failed (%v) — launching in-line to not lose the one-shot", row.ID, err)
+				return fmt.Errorf("persist consume receipt: %w", err)
 			}
+			return nil
 		},
 	})
 }

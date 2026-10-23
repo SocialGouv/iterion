@@ -270,3 +270,28 @@ func (s *Store) AdvanceTriggerCursor(from, to int64) (bool, error) {
 	}
 	return res.ModifiedCount == 1, nil
 }
+
+// ConsumeLabelsForEffect persists the one-shot ownership in the SAME document
+// update as the label removal. A timeout, failed event emit, or failed outbox
+// marker is recovered by the effect ID, never by guessing from absent labels.
+func (s *Store) ConsumeLabelsForEffect(id string, labels []string, effectID string) (bool, error) {
+	if id == "" || len(labels) == 0 || effectID == "" {
+		return false, nil
+	}
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	filter := bson.M{"_id": id, "tenant_id": s.tenant, "issue.labels": bson.M{"$all": labels}, "issue.consumed_effects": bson.M{"$ne": effectID}}
+	res, err := s.issues.UpdateOne(ctx, filter, bson.M{
+		"$pull":     bson.M{"issue.labels": bson.M{"$in": labels}},
+		"$addToSet": bson.M{"issue.consumed_effects": effectID},
+		"$set":      bson.M{"issue.updatedat": time.Now().UTC()},
+	})
+	if err != nil {
+		return false, fmt.Errorf("boardmongo: consume for effect: %w", err)
+	}
+	if res.ModifiedCount > 0 {
+		return true, s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: id, Payload: map[string]any{"consumed_labels": labels}})
+	}
+	count, err := s.issues.CountDocuments(ctx, bson.M{"_id": id, "tenant_id": s.tenant, "issue.consumed_effects": effectID})
+	return count > 0, err
+}

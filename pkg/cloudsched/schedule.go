@@ -123,6 +123,11 @@ type ScheduledBot struct {
 // Store persists scheduled bots. Mongo (cloud) and an in-memory impl (tests)
 // satisfy it.
 type Store interface {
+	// PutIntent is idempotent per nominal slot and must precede ClaimTick.
+	PutIntent(context.Context, ScheduledBot) error
+	ClaimIntents(context.Context, time.Time, int) ([]LaunchIntent, error)
+	PrepareIntent(context.Context, LaunchIntent) (bool, error)
+	FinishIntent(context.Context, LaunchIntent, bool, time.Time) error
 	Create(ctx context.Context, sb ScheduledBot) error
 	Get(ctx context.Context, id string) (ScheduledBot, error)
 	ListByIntegration(ctx context.Context, tenantID, integrationID string) ([]ScheduledBot, error)

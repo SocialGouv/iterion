@@ -332,6 +332,7 @@ func (n *NativeBoardEffect) ConsumeMatchLabels(_ context.Context, _ string, issu
 
 var _ BoardEffect = (*NativeBoardEffect)(nil)
 var _ LabelConsumer = (*NativeBoardEffect)(nil)
+var _ EffectLabelConsumer = (*NativeBoardEffect)(nil)
 
 // actorFor blanks the actor on a machine-caused event: attributing a
 // watchdog's repair to whoever the card is assigned to is a lie the
@@ -341,4 +342,11 @@ func actorFor(assignee string, machine bool) string {
 		return ""
 	}
 	return assignee
+}
+
+func (n *NativeBoardEffect) ConsumeMatchLabelsForEffect(_ context.Context, _ string, issueID string, labels []string, effectID string) (bool, error) {
+	if n.store == nil {
+		return false, fmt.Errorf("trigger: native board effect has no store")
+	}
+	return n.store.ConsumeLabelsForEffect(issueID, labels, effectID)
 }

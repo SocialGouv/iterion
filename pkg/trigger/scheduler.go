@@ -2,6 +2,8 @@ package trigger
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -25,14 +27,18 @@ import (
 // not). Firing a finished scheduled run still emits a run-completion event, so
 // chaining off a scheduled run works through the run source.
 type Scheduler struct {
-	subs     SubscriptionStore
-	launcher Launcher
-	logger   *iterlog.Logger
-	interval time.Duration
-	now      func() time.Time
-	gate     *ScheduleGate
+	stateFile   string
+	stateLoaded bool
+	tickMu      sync.Mutex
+	subs        SubscriptionStore
+	launcher    Launcher
+	logger      *iterlog.Logger
+	interval    time.Duration
+	now         func() time.Time
+	gate        *ScheduleGate
 
 	mu       sync.Mutex
+	pending  map[string]*scheduleIntent
 	nextFire map[string]time.Time // sub.ID -> next due instant (in-memory)
 	// lastTickAt / lastSubsSeen back Status(): the observable proof the
 	// scheduler loop is alive (a dead loop shows a frozen tick instant
@@ -44,8 +50,12 @@ type Scheduler struct {
 	done chan struct{}
 }
 
-// SchedulerStatus is the read-only health snapshot behind
-// /api/v1/triggers/health.
+type scheduleIntent struct {
+	Sub  Subscription
+	Plan *LaunchPlan
+}
+
+// SchedulerStatus reports scheduler liveness through /api/v1/triggers/health.
 type SchedulerStatus struct {
 	// LastTickAt is when tick() last ran (zero before the first tick).
 	LastTickAt time.Time `json:"last_tick_at"`
@@ -130,6 +140,7 @@ func NewScheduler(subs SubscriptionStore, launcher Launcher, opts ...SchedulerOp
 		interval: time.Minute,
 		now:      time.Now,
 		nextFire: map[string]time.Time{},
+		pending:  map[string]*scheduleIntent{},
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}
@@ -178,6 +189,12 @@ func (s *Scheduler) loop() {
 // First sighting of a subscription only arms it (computes the next fire from
 // now) — it does not fire immediately, so adding a schedule never back-fires.
 func (s *Scheduler) tick(ctx context.Context, now time.Time) {
+	s.tickMu.Lock()
+	defer s.tickMu.Unlock()
+	if err := s.loadScheduleState(); err != nil {
+		s.warn("scheduler: load intentions: %v", err)
+		return
+	}
 	if s.launcher == nil {
 		return
 	}
@@ -216,10 +233,40 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 			s.mu.Unlock()
 			continue
 		}
+		key := sub.ID + ":" + nf.UTC().Format(time.RFC3339Nano)
+		if s.pending[key] == nil {
+			s.pending[key] = &scheduleIntent{Sub: sub}
+		}
 		s.nextFire[sub.ID] = next
 		s.mu.Unlock()
-
-		s.fireIsolated(ctx, sub)
+	}
+	if err := s.saveScheduleState(); err != nil {
+		s.warn("scheduler: persist intentions: %v", err)
+		return
+	}
+	// Claim separately from the calendar. A hold releases the intention,
+	// so the next tick retries it even when nextFire is tomorrow.
+	s.mu.Lock()
+	claimed := map[string]*scheduleIntent{}
+	for key, intent := range s.pending {
+		if !seen[intent.Sub.ID] {
+			delete(s.pending, key)
+			continue
+		}
+		claimed[key] = intent
+	}
+	s.mu.Unlock()
+	for key, intent := range claimed {
+		err := s.fireIsolated(ctx, intent.Sub, intent)
+		s.mu.Lock()
+		if !errors.Is(err, ErrMaintenanceHold) {
+			delete(s.pending, key)
+		}
+		s.mu.Unlock()
+		if err := s.saveScheduleState(); err != nil {
+			s.warn("scheduler: persist outcome: %v", err)
+			return
+		}
 	}
 	s.mu.Lock()
 	s.lastTickAt = now
@@ -233,6 +280,9 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 		}
 	}
 	s.mu.Unlock()
+	if err := s.saveScheduleState(); err != nil {
+		s.warn("scheduler: persist calendar: %v", err)
+	}
 }
 
 // fireIsolated contains a panic from one subscription's fire (a bad
@@ -240,16 +290,20 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 // whole scheduler loop — the next tick still serves every other
 // subscription. The panic is logged with its stack, never swallowed
 // silently.
-func (s *Scheduler) fireIsolated(ctx context.Context, sub Subscription) {
+func (s *Scheduler) fireIsolated(ctx context.Context, sub Subscription, intents ...*scheduleIntent) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			err = fmt.Errorf("scheduler panic: %v", r)
 			s.warn("scheduler: PANIC firing %s (%s): %v\n%s", sub.ID, sub.BotID, r, debug.Stack())
 		}
 	}()
-	s.fire(ctx, sub)
+	return s.fire(ctx, sub, intents...)
 }
 
-func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
+func (s *Scheduler) fire(ctx context.Context, sub Subscription, intents ...*scheduleIntent) error {
+	if len(intents) > 0 && intents[0].Plan != nil {
+		return s.launchPlan(ctx, sub, *intents[0].Plan)
+	}
 	vars := make(map[string]string, len(sub.Vars))
 	for k, v := range sub.Vars {
 		vars[k] = v
@@ -283,7 +337,7 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 		case schedgate.TickGuardError:
 			s.warn("scheduler: %s (%s) guard error: %s", sub.ID, sub.BotID, out.Record.Error)
 		}
-		return
+		return nil
 	}
 	if out.GuardRan {
 		vars[policy.GuardVar] = out.GuardStdout
@@ -324,7 +378,21 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 			ScheduleName: sub.BotID,
 		},
 	}
+	if len(intents) > 0 {
+		intents[0].Plan = &plan
+		if err := s.saveScheduleState(); err != nil {
+			return fmt.Errorf("%w: persist schedule plan: %v", ErrMaintenanceHold, err)
+		}
+	}
+	return s.launchPlan(ctx, sub, plan)
+}
+
+func (s *Scheduler) launchPlan(ctx context.Context, sub Subscription, plan LaunchPlan) error {
 	runID, err := s.launcher.Launch(ctx, plan)
+	// The intention freezes input, not the health field written by earlier holds.
+	if current, readErr := s.subs.Get(ctx, sub.ID); readErr == nil {
+		sub.LastError = current.LastError
+	}
 	recordLaunchVerdict(ctx, s.subs, s.logger, sub, err)
 	rec := s.tickRecord(sub, schedgate.LaunchDecision(err))
 	rec.RunID = runID
@@ -333,6 +401,7 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 		s.warn("scheduler: launch %s (%s): %v", sub.ID, sub.BotID, err)
 	}
 	s.audit(rec)
+	return err
 }
 
 // tickRecord stamps the invariant trigger-surface audit fields.
@@ -362,4 +431,9 @@ func (s *Scheduler) warn(format string, args ...any) {
 	if s.logger != nil {
 		s.logger.Warn(format, args...)
 	}
+}
+
+// WithSchedulerStateFile persists local calendar and outstanding intentions.
+func WithSchedulerStateFile(path string) SchedulerOption {
+	return func(s *Scheduler) { s.stateFile = path }
 }

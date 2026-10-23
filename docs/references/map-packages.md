@@ -216,7 +216,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/subbotsource` | resolves the source reference carried by a subbot node. | — |
 | `pkg/supervise` | implements LLM-driven supervisor agents that watch a running iterion workflow from a separate goroutine/process and enqueue steering messages the… | `Evaluator`, `IdempotentInjector`, `Injector`, `Observer`, `WatcherProgressStoreProvider` |
 | `pkg/treenoise` | the canonical list of "tree noise": paths the run's own setup and tooling write into the workspace, which never count as the pass's work — the… | — |
-| `pkg/trigger` | the unifying spine for event-driven runs. | `BoardEffect`, `EffectOutbox`, `LabelConsumer`, `Launcher`, `Nudger`, `ProjectionBindings`, `ProjectionEffect`, `Publisher`, `SubscriptionStore` |
+| `pkg/trigger` | the unifying spine for event-driven runs. | `BoardEffect`, `EffectLabelConsumer`, `EffectOutbox`, `LabelConsumer`, `Launcher`, `Nudger`, `ProjectionBindings`, `ProjectionEffect`, `Publisher`, `SubscriptionStore` |
 | `pkg/usagecap` | stops a deployment from spending its LLM subscription down to the provider's own wall. | `PolicySource`, `SettingsStore`, `Store` |
 | `pkg/usernotify` | delivers user-addressed notifications for run lifecycle moments — a run pausing on a human form, finishing, failing — to per-user channels (web… | `PrefsStore`, `SentStore`, `Sink` |
 | `pkg/usernotify/webpush` | the Web Push (RFC 8030 + VAPID) usernotify.Sink: it delivers a Notification to every browser PushSubscription registered by each recipient, via the… | `SubscriptionStore` |
