@@ -39,7 +39,13 @@ never 409s.
   keystrokes. **Absolute cap 2 h.** Overridable via
   `ITERION_RUN_SHELL_IDLE_TIMEOUT` / `ITERION_RUN_SHELL_MAX_LIFETIME`
   (Go durations). On teardown the whole process group is killed — a
-  `sleep 999 &` left behind does not outlive the socket.
+  `sleep 999 &` left behind does not outlive the socket. The same
+  watchdog tick asks again whether the credential the shell was opened
+  with still stands AND whether its opener still holds the run's scope —
+  at most one store read every 30 s,
+  `ITERION_RUN_SHELL_WATCH_PERIOD`: an account disabled, a session
+  revoked, a membership removed or a super-admin demoted after the
+  upgrade ends the shell within a tick.
 - Unix only; the Windows desktop build answers 501.
 
 ## Wire protocol (for tooling)
@@ -50,7 +56,15 @@ never 409s.
 |---|---|---|
 | both | binary | raw PTY bytes (no envelope, no base64) |
 | C→S | text | `{"type":"resize","cols":N,"rows":N}` · `{"type":"ping"}` |
-| S→C | text | `{"type":"pong"}` · `{"type":"exit"}` · `{"type":"error"}` |
+| S→C | text | `{"type":"pong"}` · `{"type":"exit"}` · `{"type":"error","message":"…"}` |
+
+A refused credential, a lost scope or the lifetime cap also sends a
+WebSocket close frame: `1008` with a reason starting `credential_refused`
+or `scope_lost`, `1000` with a reason starting `lifetime_reached` — every
+such reason is the token followed by its cause, as in
+`scope_lost: the run this socket watches is gone`, never the bare token,
+and for a refused credential or a lost scope the same cause rides an
+`error` frame ahead of the close.
 
 Refusals answer plain HTTP before the upgrade: 403 cloud mode, 404
 unknown run, 409 live run / no workdir / cross-store, 410 worktree

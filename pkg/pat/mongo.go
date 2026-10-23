@@ -55,6 +55,16 @@ func (s *MongoStore) Revoke(ctx context.Context, id string, at time.Time) error 
 	return s.kit.Set(ctx, id, bson.M{"revoked_at": at}, "revoke")
 }
 
+func (s *MongoStore) RevokeAllByUser(ctx context.Context, userID string, at time.Time) (int64, error) {
+	res, err := s.kit.Coll().UpdateMany(ctx,
+		bson.M{"user_id": userID, "revoked_at": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"revoked_at": at}})
+	if err != nil {
+		return 0, fmt.Errorf("pat: revoke the tokens of user %s: %w", userID, err)
+	}
+	return res.ModifiedCount, nil
+}
+
 // MarkUsed is a best-effort stamp: a token revoked-and-purged mid-request
 // is not an error here.
 func (s *MongoStore) MarkUsed(ctx context.Context, id string, at time.Time) error {

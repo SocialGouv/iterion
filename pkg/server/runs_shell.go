@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/runshell"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -33,11 +35,19 @@ import (
 // shell is a viewer; reconnect = fresh shell). Both-sides idle for
 // shellIdleTimeout — PTY OUTPUT counts as activity, so a watched
 // `htop` lives — or shellMaxLifetime overall tears the session down,
-// so orphaned shells never accumulate.
+// so orphaned shells never accumulate. Every input frame is a command in the
+// run's worktree, so the credential AND the scope the shell was opened with
+// are asked again while it is open (shellConn.standing, on the watchdog's
+// tick).
 
 const (
 	defaultShellIdleTimeout = 30 * time.Minute
 	defaultShellMaxLifetime = 2 * time.Hour
+	// defaultShellWatchPeriod is the watchdog's tick: the idle poll, and the
+	// one standing read an open shell spends per period per connection.
+	defaultShellWatchPeriod = 30 * time.Second
+	// shellStandingTimeout bounds that read.
+	shellStandingTimeout = 10 * time.Second
 )
 
 func shellIdleTimeout() time.Duration {
@@ -46,6 +56,10 @@ func shellIdleTimeout() time.Duration {
 
 func shellMaxLifetime() time.Duration {
 	return envDurationOrDefault("ITERION_RUN_SHELL_MAX_LIFETIME", defaultShellMaxLifetime)
+}
+
+func shellWatchPeriod() time.Duration {
+	return envDurationOrDefault("ITERION_RUN_SHELL_WATCH_PERIOD", defaultShellWatchPeriod)
 }
 
 func envDurationOrDefault(name string, def time.Duration) time.Duration {
@@ -137,7 +151,12 @@ func (s *Server) handleRunShell(w http.ResponseWriter, r *http.Request) {
 	if s.logger != nil {
 		s.logger.Info("server: post-mortem shell opened for run %s in %s (from %s)", run.ID, run.WorkDir, r.RemoteAddr)
 	}
-	newShellConn(s, conn, sess, run.ID).run()
+	// Snapshot the authenticated identity: r.Context() dies with the upgrade,
+	// and the credential it names is what the watchdog asks about for as long
+	// as the shell is open. Zero value when no auth context reached the
+	// handler (a server built without the middleware).
+	opener, _ := auth.FromContext(r.Context())
+	newShellConn(s, conn, sess, run.ID, opener).run()
 }
 
 func shellSizeFromQuery(r *http.Request) (cols, rows uint16) {
@@ -154,6 +173,8 @@ type shellControlMsg struct {
 	Type string `json:"type"`
 	Cols uint16 `json:"cols,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
+	// Message carries the cause of an "error" frame.
+	Message string `json:"message,omitempty"`
 }
 
 type shellConn struct {
@@ -162,6 +183,10 @@ type shellConn struct {
 	sess   *runshell.Session
 	runID  string
 
+	// identity is the credential this shell was opened with, snapshotted at
+	// the upgrade. Zero value when no auth context reached the handler.
+	identity auth.Identity
+
 	// lastActivity is the freshest instant EITHER side moved bytes.
 	lastActivity atomic.Int64
 
@@ -169,8 +194,8 @@ type shellConn struct {
 	closeOnce sync.Once
 }
 
-func newShellConn(s *Server, conn *websocket.Conn, sess *runshell.Session, runID string) *shellConn {
-	c := &shellConn{server: s, conn: conn, sess: sess, runID: runID}
+func newShellConn(s *Server, conn *websocket.Conn, sess *runshell.Session, runID string, opener auth.Identity) *shellConn {
+	c := &shellConn{server: s, conn: conn, sess: sess, runID: runID, identity: opener}
 	c.touch()
 	return c
 }
@@ -247,22 +272,27 @@ func (c *shellConn) pumpWSToPTY() {
 }
 
 // watchIdle enforces the both-sides idle timeout and the absolute
-// lifetime cap.
+// lifetime cap, and re-asks the standing of the credential the shell was
+// opened with once per tick.
 func (c *shellConn) watchIdle(done <-chan struct{}) {
 	idle := shellIdleTimeout()
 	deadline := time.NewTimer(shellMaxLifetime())
 	defer deadline.Stop()
-	tick := time.NewTicker(30 * time.Second)
+	tick := time.NewTicker(shellWatchPeriod())
 	defer tick.Stop()
 	for {
 		select {
 		case <-done:
 			return
 		case <-deadline.C:
-			c.writeControl(shellControlMsg{Type: "error"})
+			c.writeControl(shellControlMsg{Type: "error", Message: wsCloseLifetimeReached})
+			_ = c.writeClose(websocket.CloseNormalClosure, wsCloseLifetimeReached, "reopen the shell")
 			c.close("shell lifetime cap reached")
 			return
 		case <-tick.C:
+			if !c.standing() {
+				return
+			}
 			last := time.Unix(0, c.lastActivity.Load())
 			if time.Since(last) > idle {
 				c.close("shell idle timeout")
@@ -270,6 +300,51 @@ func (c *shellConn) watchIdle(done <-chan struct{}) {
 			}
 		}
 	}
+}
+
+// standing asks whether the credential this shell was opened with still
+// stands AND the scope its upgrade resolved still holds — the run's team and
+// the caller's member standing in it, the same computation every open
+// command surface runs on its tick (runSocketStanding) — at most one store
+// read per shellWatchPeriod() per connection. Every input frame is a command
+// in the run's worktree, so the questions the upgrade asked are owed again
+// for as long as the shell is open: a refusal or a lost scope ends the
+// session, naming the bound in an error frame and in the close frame. A read
+// that did not complete leaves it open — the server's own failure is no
+// verdict on the credential or the scope.
+//
+// A shell carrying no credential is one no auth context ever reached (a
+// server built without the middleware); dev mode stands by construction.
+func (c *shellConn) standing() bool {
+	if c.identity.Credential == "" {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), shellStandingTimeout)
+	defer cancel()
+	verdict := c.server.runSocketStanding(ctx, c.runID, c.identity)
+	switch verdict.outcome {
+	case socketStands, socketUnreadable:
+		return true
+	case socketCredentialRefused:
+		c.writeControl(shellControlMsg{Type: "error", Message: wsCloseCredentialRefused + ": " + verdict.cause})
+		_ = c.writeClose(websocket.ClosePolicyViolation, wsCloseCredentialRefused, verdict.cause)
+		c.close("the credential it was opened with no longer stands: " + verdict.cause)
+		return false
+	case socketScopeLost:
+		c.writeControl(shellControlMsg{Type: "error", Message: wsCloseScopeLost + ": " + verdict.cause})
+		_ = c.writeClose(websocket.ClosePolicyViolation, wsCloseScopeLost, verdict.cause)
+		c.close("the scope its upgrade resolved no longer holds: " + verdict.cause)
+		return false
+	}
+	return true
+}
+
+// writeClose sends the close frame under this connection's write lock, the
+// same discipline every other write here follows.
+func (c *shellConn) writeClose(code int, token, cause string) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return writeWSClose(c.conn, code, token, cause)
 }
 
 func (c *shellConn) writeControl(msg shellControlMsg) {

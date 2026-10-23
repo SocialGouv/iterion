@@ -17,9 +17,11 @@ import (
 // a DNS TXT challenge before its IdP may auto-link addresses at that domain).
 func (s *Server) registerOrgSSODomainRoutes() {
 	s.mux.Handle("GET /api/orgs/{id}/sso/domains", s.requireAuth(http.HandlerFunc(s.handleListOrgSSODomains)))
-	s.mux.Handle("POST /api/orgs/{id}/sso/domains", s.requireAuth(http.HandlerFunc(s.handleCreateOrgSSODomain)))
-	s.mux.Handle("POST /api/orgs/{id}/sso/domains/{domain_id}/verify", s.requireAuth(http.HandlerFunc(s.handleVerifyOrgSSODomain)))
-	s.mux.Handle("DELETE /api/orgs/{id}/sso/domains/{domain_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteOrgSSODomain)))
+	// The writes change which accounts the org's auto-linking providers sign
+	// in as: they ask the chokepoint first (gateDerivation).
+	s.mux.Handle("POST /api/orgs/{id}/sso/domains", s.requireAuth(s.gateDerivation(auth.ChangeSignIn, s.handleCreateOrgSSODomain)))
+	s.mux.Handle("POST /api/orgs/{id}/sso/domains/{domain_id}/verify", s.requireAuth(s.gateDerivation(auth.ChangeSignIn, s.handleVerifyOrgSSODomain)))
+	s.mux.Handle("DELETE /api/orgs/{id}/sso/domains/{domain_id}", s.requireAuth(s.gateDerivation(auth.ChangeSignIn, s.handleDeleteOrgSSODomain)))
 }
 
 // orgDomainView is the response shape: the row plus the DNS TXT record the

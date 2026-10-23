@@ -218,7 +218,13 @@ var remoteTeamsCreateCmd = &cobra.Command{
 var remoteTeamsSwitchCmd = &cobra.Command{
 	Use:   "switch <team-id>",
 	Short: "Switch the CLI's default team (mints a team-pinned token)",
-	Args:  cobra.ExactArgs(1),
+	Long: "Switch the CLI's default team.\n\n" +
+		"A token's team is fixed when it is minted, so switching means minting a\n" +
+		"new one — which a token may not do: the instance refuses it. From a\n" +
+		"stored token, pin the team at login instead:\n" +
+		"  iterion remote login <url> --email <you> --team <id>\n" +
+		"or switch team in the studio and run `iterion remote login <url>`.",
+	Args: cobra.ExactArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		return cli.RemoteTeamsSwitch(cmd.Context(), c, p, args[0], cliTokenName())
 	}),
@@ -340,7 +346,7 @@ var remoteMePasswordCmd = &cobra.Command{
 
 var remoteMeSessionsRevokeCmd = &cobra.Command{
 	Use:   "sessions-revoke-all",
-	Short: "Revoke all your active sessions",
+	Short: "Sign out everywhere: end every session, revoke every personal access token (this CLI's included) and disconnect the SSO identities a session connected",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/me/sessions/revoke-all", nil)

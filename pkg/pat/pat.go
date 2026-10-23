@@ -6,7 +6,15 @@
 // inherits the user's role (including super-admin) within the
 // resolved team. There are no granular scopes yet (v2); mitigations
 // are the optional team pin, the optional expiry, ITERION_PAT_MAX_TTL,
-// instant revocation, and audit rows on create/revoke/use.
+// instant revocation — of one token, or of every token of the account
+// by "sign out everywhere" and an admin disable — and audit rows on
+// create/revoke/use. A PAT mints no credential of its own account but a
+// WebSocket ticket: it never switches team or org, never mints another PAT,
+// links no SSO identity and resets no password of its own account
+// (auth.Service.CheckDerivation, which also reads its row at every route it
+// gates), so the pin and the expiry bound every credential it derives. A
+// super-admin's token keeps the platform-admin routes, whose acts on other
+// accounts — a temporary password included — outlive it.
 package pat
 
 import (
@@ -69,6 +77,10 @@ type Store interface {
 	ListByUser(ctx context.Context, userID string) ([]Token, error)
 	// Revoke marks the token unusable; rows are kept for audit.
 	Revoke(ctx context.Context, id string, at time.Time) error
+	// RevokeAllByUser revokes every token of userID not revoked yet — "sign
+	// out everywhere" and an admin disable — and returns how many it
+	// revoked. A token already revoked keeps its first revocation instant.
+	RevokeAllByUser(ctx context.Context, userID string, at time.Time) (int64, error)
 	MarkUsed(ctx context.Context, id string, at time.Time) error
 }
 

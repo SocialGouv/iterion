@@ -99,7 +99,7 @@ func TestOpenAPITypedSchemas(t *testing.T) {
 	if ref, _ := schema["$ref"].(string); ref != "#/components/schemas/loginReq" {
 		t.Errorf("login requestBody $ref = %q, want loginReq", ref)
 	}
-	// 200 response schema present (AuthMeResponse).
+	// 200 response schema present (AuthSessionResponse).
 	resp200, ok := login["responses"].(map[string]any)["200"].(map[string]any)
 	if !ok {
 		t.Fatalf("login has no 200 response: %+v", login["responses"])
@@ -114,7 +114,7 @@ func TestOpenAPITypedSchemas(t *testing.T) {
 		t.Fatalf("no components emitted")
 	}
 	schemas := comps["schemas"].(map[string]any)
-	for _, want := range []string{"loginReq", "AuthMeResponse", "createOrgReq", "orgView"} {
+	for _, want := range []string{"loginReq", "AuthSessionResponse", "createOrgReq", "orgView"} {
 		if _, ok := schemas[want]; !ok {
 			t.Errorf("components.schemas missing %q", want)
 		}
@@ -177,5 +177,92 @@ func TestMethodlessRouteGetsGetAndPost(t *testing.T) {
 	}
 	if _, ok := item["post"]; !ok {
 		t.Error("method-less route missing post")
+	}
+}
+
+// TestTheSpecCarriesTheChokepointRefusals: the routes the credential
+// derivation chokepoint gates carry their refusal statuses in the spec —
+// 401 for a revoked session's access token, 403 for a credential that may
+// not do the route's act, and the route-specific conflicts — and a route
+// the chokepoint does not gate carries none of them.
+func TestTheSpecCarriesTheChokepointRefusals(t *testing.T) {
+	s := &Server{mux: newRecordingMux()}
+	s.mux.Handle("POST /api/me/password", http.NotFoundHandler())
+	s.mux.Handle("POST /api/me/sessions/revoke-all", http.NotFoundHandler())
+	s.mux.Handle("DELETE /api/me/sso/links/{provider}/{subject}", http.NotFoundHandler())
+	s.mux.Handle("GET /api/admin/users", http.NotFoundHandler())
+	s.mux.Handle("POST /api/v1/plugins/thing", http.NotFoundHandler())
+	s.mux.Handle("GET /api/me/sso/links", http.NotFoundHandler()) // not gated
+
+	doc := s.buildOpenAPI()
+	paths := doc["paths"].(map[string]any)
+	codesOf := func(path, method string) map[string]any {
+		t.Helper()
+		item, ok := paths[path].(map[string]any)
+		if !ok {
+			t.Fatalf("%s is not in the spec", path)
+		}
+		op, ok := item[method].(map[string]any)
+		if !ok {
+			t.Fatalf("%s %s is not in the spec", method, path)
+		}
+		resp, _ := op["responses"].(map[string]any)
+		return resp
+	}
+	for _, p := range []struct{ path, method string }{
+		{"/api/me/password", "post"},
+		{"/api/me/sessions/revoke-all", "post"},
+		{"/api/me/sso/links/{provider}/{subject}", "delete"},
+		{"/api/admin/users", "get"},
+		{"/api/v1/plugins/thing", "post"},
+	} {
+		if _, ok := codesOf(p.path, p.method)["401"]; !ok {
+			t.Fatalf("%s %s carries no 401 refusal", p.method, p.path)
+		}
+	}
+	if _, ok := codesOf("/api/me/sso/links/{provider}/{subject}", "delete")["409"]; !ok {
+		t.Fatal("the unlink carries no 409 (last_sign_in_method)")
+	}
+	if _, ok := codesOf("/api/me/password", "post")["429"]; !ok {
+		t.Fatal("the password change carries no 429 (the proof's bucket)")
+	}
+	if _, ok := codesOf("/api/me/sessions/revoke-all", "post")["503"]; !ok {
+		t.Fatal("sign out everywhere carries no 503 (cleanup incomplete)")
+	}
+	if resp := codesOf("/api/me/sso/links", "get"); len(resp) > 1 {
+		t.Fatalf("a route the chokepoint does not gate gained refusal codes: %v", resp)
+	}
+}
+
+// TestTheSpecTypesTheSSOLinkList: GET /api/me/sso/links answers a typed
+// response — the SSO link rows with session_linked, the marker that names
+// which identity "sign out everywhere" keeps — not the untyped default no
+// client could read the field from.
+func TestTheSpecTypesTheSSOLinkList(t *testing.T) {
+	s := &Server{mux: newRecordingMux()}
+	s.mux.Handle("GET /api/me/sso/links", http.NotFoundHandler())
+	doc := s.buildOpenAPI()
+	paths := doc["paths"].(map[string]any)
+	get := paths["/api/me/sso/links"].(map[string]any)["get"].(map[string]any)
+	resp200, ok := get["responses"].(map[string]any)["200"].(map[string]any)
+	if !ok {
+		t.Fatalf("the link list carries no 200 response: %+v", get["responses"])
+	}
+	schema := resp200["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+	props, _ := schema["properties"].(map[string]any)
+	links, ok := props["links"].(map[string]any)
+	if !ok {
+		t.Fatalf("the response schema names no links array: %+v", schema)
+	}
+	items, _ := links["items"].(map[string]any)
+	if ref, _ := items["$ref"].(string); ref != "#/components/schemas/ssoLinkView" {
+		t.Fatalf("the link rows $ref = %q, want ssoLinkView", ref)
+	}
+	comps := doc["components"].(map[string]any)["schemas"].(map[string]any)
+	view := comps["ssoLinkView"].(map[string]any)
+	vprops, _ := view["properties"].(map[string]any)
+	sl, ok := vprops["session_linked"].(map[string]any)
+	if !ok || sl["type"] != "boolean" {
+		t.Fatalf("ssoLinkView.session_linked = %+v, want a boolean property", vprops["session_linked"])
 	}
 }

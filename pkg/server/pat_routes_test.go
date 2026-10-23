@@ -45,7 +45,14 @@ func newPATTestServer(t *testing.T) (*Server, context.Context) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", Email: "u1@x", TeamID: "t1", Role: identity.RoleMember})
+	// The super-admin superAdminCtx presents: a token is minted from a live
+	// account only (auth.Service.CheckDerivation reads it).
+	if _, err := s.authStore().CreateUser(context.Background(), identity.User{
+		ID: "admin", Email: "admin@x", Status: identity.UserStatusActive, IsSuperAdmin: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", Email: "u1@x", TeamID: "t1", Role: identity.RoleMember, Credential: auth.CredentialAccessToken})
 	return s, ctx
 }
 
@@ -163,8 +170,12 @@ func TestPATExpiryAndPins(t *testing.T) {
 		if err != nil {
 			t.Fatalf("signer: %v", err)
 		}
+		ids := identity.NewMemoryStore()
+		if _, err := ids.CreateUser(context.Background(), identity.User{ID: "admin", Email: "admin@x", Status: identity.UserStatusActive, IsSuperAdmin: true}); err != nil {
+			t.Fatal(err)
+		}
 		svc, err := auth.NewService(auth.Config{
-			Store:      outageStore{Store: identity.NewMemoryStore(), err: errors.New("store unavailable")},
+			Store:      outageStore{Store: ids, err: errors.New("store unavailable")},
 			Sessions:   auth.NewMemorySessionStore(),
 			Signer:     signer,
 			SignupMode: auth.SignupOpen,

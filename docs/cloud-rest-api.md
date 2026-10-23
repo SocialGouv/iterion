@@ -49,10 +49,27 @@ Authentication. Most routes accept any of:
   access token; authenticates **as** the issuing user with that user's
   role + super-admin flag
   ([pkg/server/pat_routes.go:identityFromPAT](../pkg/server/pat_routes.go)).
+  Up to four rows are resolved on every request — the token, its owner,
+  the owner's membership of the token's team, and that team (a
+  super-admin's token with no team scope reads the first two). A refusal
+  answers `401` with its reason: no such token or one that does not verify,
+  a revoked or expired token, an owner gone or not active, no team scope, a
+  membership or team gone; a row the store could not read answers
+  `500 {"error":"identity unavailable"}` with the cause logged, so a
+  client never throws away a live credential over a store outage.
 - **WS ticket**: `?ticket=<t>` on `/api/ws[/…]` and on a run's
-  `browser/cdp` — a single-use, 60-second ticket minted by an authenticated
-  `POST /api/ws/ticket`, which itself accepts a ticket, so a ticket can mint
-  its successor; it is resolved and consumed before any JWT/PAT verification.
+  `browser/cdp` — a single-use ticket minted by an authenticated
+  `POST /api/ws/ticket` from a live access token or a PAT (a ticket
+  presented there mints nothing: `403`), valid 60 seconds and never past
+  the credential that minted it; it is resolved and consumed before any
+  JWT/PAT verification, and its redemption checks that credential again —
+  past its expiry, once its session is signed out, its account disabled or
+  the personal access token that minted it revoked, the ticket is refused.
+  A ticket the store refuses — unknown, expired or already redeemed —
+  answers `401 {"error":"invalid or expired ws ticket"}` and never falls
+  through to the other credentials; a redemption the store could not
+  complete answers `500 {"error":"identity unavailable"}` with the cause
+  logged, like a PAT row the server could not read.
 - **WS query**: `?t=<access-jwt>` — or an `iap_` PAT — on `/api/ws` and `/api/ws/*` alone, for a WebSocket client
   that can set neither header nor cookie.
 
@@ -81,24 +98,185 @@ JWT layer.
 |---|---|---|---|
 | `POST` | `/api/auth/login` | public | Email + password login |
 | `POST` | `/api/auth/refresh` | refresh cookie or `X-Iterion-Refresh` | Rotate access JWT |
-| `POST` | `/api/auth/logout` | public | Drop refresh session + cookies |
+| `POST` | `/api/auth/logout` | public | Sign the presented refresh token's session out + clear the cookies; `?lineage=<id>` names the session meant (another one is left signed in, `204` with `X-Iterion-Logout: other-session`) |
 | `POST` | `/api/auth/register` | public (when `signup_mode=open` or with invite) | Create account |
-| `POST` | `/api/auth/password/change` | public (legacy) | First-login password rotation for `pending_password_change` users |
+| `POST` | `/api/auth/password/change` | public (legacy) | First-login password rotation for `pending_password_change` users (`409` below) |
 | `POST` | `/api/auth/password/reset/request` | public | Mint + email a reset token (always 200, no enumeration) |
-| `POST` | `/api/auth/password/reset/confirm` | public | Redeem `iar_…`, set new password, issue fresh session |
+| `POST` | `/api/auth/password/reset/confirm` | public | Redeem `iar_…`, set new password, issue fresh session (`409` below) |
 | `GET` | `/api/auth/providers` | public | List configured OIDC connectors + `signup_mode` |
 | `GET` | `/api/auth/oidc/{provider}/start` | public | Start OIDC dance |
 | `GET` | `/api/auth/oidc/{provider}/callback` | public | OIDC redirect target |
 | `GET` | `/api/auth/invitations/lookup` | public | Resolve invitation token → email + team |
 | `POST` | `/api/auth/invitations/accept` | session JWT (never a PAT) | Accept an invitation while logged in. The path is public to the middleware, so the handler verifies the cookie or `Bearer` JWT itself — an `iap_…` PAT never resolves here |
-| `GET` | `/api/auth/me` | authenticated (no role) | Current user + active team identity. `/api/auth/*` is tenant-free, so an account with no team at all reads it |
-| `POST` | `/api/auth/me/team/{team_id}` | member | Switch active team |
-| `POST` | `/api/auth/me/org/{org_id}` | member | Switch active org (re-issues the JWT; validates org then team) |
-| `POST` | `/api/me/password` | member | Self-service password change |
-| `POST` | `/api/me/sessions/revoke-all` | member | Sign out every device |
+| `GET` | `/api/auth/me` | authenticated (no role) | Current user, org→teams tree and active context, and `session_lineage` — the session the access token belongs to (absent for a PAT) — with `expires_at`, that session's own bound (a pending sign-out's record expires at it; absent when the session is gone). `/api/auth/*` is tenant-free, so an account with no team at all reads it |
+| `POST` | `/api/auth/me/team/{team_id}` | member, session access token (a PAT answers `403`) | Switch active team |
+| `POST` | `/api/auth/me/org/{org_id}` | member, session access token (a PAT answers `403`) | Switch active org (re-issues the JWT; validates org then team) |
+| `POST` | `/api/me/password` | member, a live session (below); a personal access token answers `403` | Self-service password change (`409` below); personal access tokens and connected SSO identities are kept. The current-password proof is throttled like the sign-in (`429`) and feeds the account's lockout |
+| `POST` | `/api/me/sessions/revoke-all` | member, a live session (below) | Sign out every device, revoke every personal access token of the account and remove every SSO identity a signed-in session connected (the one the account was created or first signed in with stays; a password-less account whose every remaining identity was session-written keeps its oldest). A cleanup step failing after the record answers `503 signout_cleanup_failed` — sign in again and repeat |
 
 Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 [pkg/server/password_routes.go](../pkg/server/password_routes.go).
+
+Every route that mints a credential — login, register, refresh, the
+password change and reset confirm, the desktop exchange, the team and org
+switches — answers the session alone (`AuthSessionResponse`: `user`, the
+`active_*` context, `expires_at` — the access credential's own expiry, not
+`GET /api/auth/me`'s session bound — and `access_token` for a non-browser
+client). The OIDC callback mints one too and answers a `302`: in a browser
+it sets the session cookies; for a desktop SSO it sets none and redirects a
+single-use ticket to the desktop's loopback, which the desktop redeems at
+`POST /api/auth/desktop/exchange`. Go's redirect writes a short HTML link
+as the body of either. None answers the org tree: `GET
+/api/auth/me` is the one route that builds it, and when it cannot read the
+tree — one org's teams included — it answers `500 {"error":"identity
+unavailable"}`, never an empty or partial tree. Every 5xx a store or
+server failure causes on the routes of this section — `GET
+/api/auth/oidc/github/callback/orgs` included, the forge feature that lives
+under the auth prefix for its redirect URI, its upstream GitHub exchange
+too — and on `GET` and `POST /api/teams` and `GET /api/teams/{id}/members`
+below carries that same body, and the cause goes to the server log; a
+deployment with no auth service answers `auth not configured`. A refusal
+keeps its own status and message. On `GET /api/teams/{id}/members` and
+`POST /api/teams` it rests only on rows the store returned — the member
+list's `403 not a member`, the team creation's `403 org admin or owner
+required` — and a row the store could not read answers the 500 above. The
+SSO routes refuse on a failed read too, and say so in their flow
+([flow-auth-login.md](diagrams/flow-auth-login.md)): `GET
+/api/auth/oidc/{provider}/start` answers `404 unknown provider` whatever
+stopped the provider's resolution, and its callback redirects with
+`unknown_provider` likewise, or with `state_expired` when the sign-in state
+cannot be taken. Any
+authenticated route reached with an `iap_` PAT answers that same 500 when
+one of the rows the middleware resolves for it — the token, its owner, the
+owner's membership of the token's team, and that team — cannot be read. The team-management routes below keep 500 bodies that name the row a
+failure may have left standing.
+
+> **Migration (since the release that includes #1668).** The nine
+> credential routes — `POST /api/auth/login`, `POST /api/auth/register`,
+> `POST /api/auth/refresh`, `POST /api/auth/password/change`,
+> `POST /api/auth/password/reset/confirm`, `POST /api/auth/desktop/exchange`,
+> `POST /api/me/password`, `POST /api/auth/me/team/{team_id}` and
+> `POST /api/auth/me/org/{org_id}` — no longer carry `orgs`: a client that
+> read the org→teams tree from their answer reads it from
+> `GET /api/auth/me`.
+
+`POST /api/auth/refresh` answers `401` when the presented credential is
+absent or dead, with a body that names which: `no refresh token` (nothing
+was presented, and the cookies are left alone), `auth: session revoked`,
+`auth: session expired`, `auth: session not found` (an unknown token —
+Mongo's TTL index reaps expired sessions — or, followed by `: its account
+no longer exists`, a session whose account is gone), `auth: account
+disabled` and `auth: session revoked: the account must change its
+password` (an account an administrator reset or set pending a password
+change); each of the last five clears the cookies. A `5xx` leaves the
+cookies alone: the client keeps the token it presented and presents it
+again, promptly — a failure before the rotation rotated nothing, and a
+rotation whose successor was handed to nobody (never written, or written
+and never claimed, whatever step failed after the rotation) is completed
+by the token's next presentation, if it comes within five minutes of the
+rotation (or within `ITERION_REFRESH_REUSE_GRACE` when that is longer) and
+before the token's own expiry; later, the token reads as abandoned and its
+presentation as reuse. A rotated token whose successor was handed out,
+presented again within `ITERION_REFRESH_REUSE_GRACE` (30 s by default,
+measured on the database's clock), receives the same successor — unless
+that successor was itself rotated or revoked since, which is reuse. Reuse
+revokes the token's lineage — every session rotated from the same login,
+whoever holds it — and the account's other logins, its other devices,
+keep their sessions; the reuse of a token whose session was retired before
+lineages were recorded (by a release before #1668) names no lineage and
+revokes every session of the account
+([cloud-admin.md](cloud-admin.md#2-required-secrets-at-boot)). A reuse
+whose revocation could not be completed answers `500` and keeps the
+cookies: the token presented again is reuse again and retries it. A
+sign-out (`POST /api/auth/logout`) revokes the presented token's lineage
+the same way and answers `204`, clearing the cookies, and a later
+presentation of that token is reuse; a sign-out whose session read or
+revocation fails answers `500 {"error":"identity unavailable"}` and leaves
+the cookies, for the client to present the token again. A sign-out may
+name the session it means, `POST /api/auth/logout?lineage=<id>` with the
+`session_lineage` `GET /api/auth/me` answered: a presented token of another
+lineage — a session the client opened since — signs nothing out and keeps
+its cookies, answering `204` with `X-Iterion-Logout: other-session`; every
+other `204` means the presented session is signed out, or there was none.
+"Sign out everywhere" (`POST /api/me/sessions/revoke-all`), a password
+change (`POST /api/me/password`), a reset (`POST
+/api/auth/password/reset/confirm` or an administrator's `POST
+/api/admin/users/{id}/reset-password`) and the rotation an administrator
+forces (`POST /api/auth/password/change`) end every session of the account
+before the new credential lands — and the credential changes again once
+it landed. A revocation answers from its record, the one write it waits
+for; its pass over the live sessions runs after the answer. A failure
+before the new credential is committed answers `500` and leaves the
+password, and a reset's link, as they were — the sessions may already
+have ended. A failure once the new password is committed answers `409
+{"error":"password changed, but no session could be opened: sign in with
+the new password","error_code":"password_changed_sign_in"}` and clears the
+cookies: the password is changed and a reset's link spent, so presenting
+the same request again answers `invalid credentials`. One credential
+change runs at a time per account: a second waits up to 20 seconds, then
+answers `409` with `error_code` `credential_change_busy`, nothing
+changed. A commit whose answer is lost may have landed: the revocation
+that follows a commit runs anyway, the request answers `500`, and a reset's
+link stays spent. A change an administrator's disable lands under answers
+the `409` above and opens no session. "Sign out everywhere" also revokes
+every personal access token of the account and removes every SSO identity
+a signed-in session connected (`GET /api/me/sso/{provider}/link/start`) —
+the one the account was created or first signed in with through SSO stays;
+a password change and the resets keep both. An administrator's disable
+(`PATCH /api/admin/users/{id}`) ends the sessions, revokes the personal
+access tokens and removes those SSO identities once the status landed, and
+answers `500` with the account disabled when that revocation fails. The
+refresh cookie's `Expires` is the session's expiry rounded up to the hour.
+
+The team and org switches (`POST /api/auth/me/team/{team_id}`, `POST
+/api/auth/me/org/{org_id}`) re-scope the presented access token without
+extending it: the token they answer expires when the presented one does,
+and names the same session (its `sid` and `sgen` claims). They answer
+`401` once that session is signed out, the account signed out everywhere
+(any of the revocations above), disabled (`auth: account disabled`) or
+pending a password change, and `403 {"error":"a personal access token
+cannot mint another credential: sign in to mint one"}` to a personal
+access token: a token is pinned to its team and its own expiry. An access
+token minted before access tokens named their session switches too,
+bounded by its own expiry alone. `POST /api/me/tokens` and `GET
+/api/me/sso/{provider}/link/start` refuse the same credentials the same
+way — a personal access token mints no other token and links no SSO
+identity — the link start also answers `403` to an access token that names
+no session, and the link's callback asks again once the link is written,
+removing it (`?sso_link_error=failed`) when the session ended meanwhile;
+`POST /api/ws/ticket` answers `401` to the access token of a revoked
+session, `403` to a ticket presented to mint another, and an `expires_in`
+no longer than the presenting credential has left; the ticket's redemption
+asks again, so a ticket opens no WebSocket once the credential that minted
+it expired, its session ended or the personal access token that minted it
+was revoked.
+
+The routes that change or remove a credential — `POST /api/me/password`,
+`POST /api/me/sessions/revoke-all`, `DELETE /api/me/tokens/{token_id}`,
+`DELETE /api/me/sso/links/{provider}/{subject}` — and the writes of an
+org's sign-in configuration (`POST`/`PATCH`/`DELETE
+/api/orgs/{id}/sso/providers…`, `POST`/`DELETE /api/orgs/{id}/sso/domains…`
+and `…/verify`) answer `401` to the access token of a revoked session, of a
+disabled or pending account, before they act; a live personal access token
+passes them (it is refused `403` at `POST /api/me/password`: that route
+answers with a session). Every platform-admin route (`/api/admin/…`, the
+plugin enable, disable, install and uninstall routes, a marketplace
+plugin's install and uninstall, and the marketplace moderation of a public
+or instance-wide entry) answers `401` to the same tokens and `403
+super-admin only` once the account is no longer a super-admin, whatever
+the token says; the same two platform acts outside the admin prefix do the
+same — `PUT /api/orgs/{id}/members/{user_id}`, the instance-wide (`global`)
+memory space writes, and revoking another account's personal access
+token. A super-admin's claim is re-read from the account where every
+request's identity is established, so a demotion takes the platform
+authority away at once everywhere — the team and org routes the flag
+could reach included — while the token's ordinary access persists to its
+expiry. A personal access token passes the platform-admin routes, but
+`POST /api/admin/users/{id}/reset-password` answers it `403` for its own
+account.
+`POST /api/auth/desktop/exchange` answers `401` (`auth: session revoked`,
+`auth: account disabled`) to a ticket whose session was revoked, or whose
+account was disabled or set pending, since the IdP callback minted it.
 
 ## Teams + members + invitations
 
@@ -106,7 +284,7 @@ Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 |---|---|---|---|
 | `GET` | `/api/teams` | member | List the caller's teams |
 | `POST` | `/api/teams` | org admin | Create a team in the `org_id` the body names, else in the caller's active org (`canManageOrg`) |
-| `GET` | `/api/teams/{id}/members` | team member | List members |
+| `GET` | `/api/teams/{id}/members` | team member | List members. `403 not a member` means the authorization reads answered; one that could not be completed answers the identity `500` above, logged — unless another row already grants access (an org admin of the team's org), which no failed read takes away |
 | `PUT` | `/api/teams/{id}/members/{user_id}` | team admin | Place an account that ALREADY exists, idempotently (`{"role":…}`). Refuses **422** when the user is not yet a member of the team's ORG — that membership is the identity boundary a team grant sits inside, so the order is `PUT /api/orgs/…` first. The membership is re-read AFTER the grant is written — on a context detached from the request, and on both outcomes of that write, since a store that reports an error may have applied it anyway: **409** when a concurrent `DELETE /api/orgs/{id}/members/{user_id}` took it away in between and the grant was revoked — with the pending invitations the holder addressed to their own address in this team, which that grant was the premise of (`invitation.deleted`, reason `creator_team_grant_unwound`), a sweep that fails being named in the same body for a revoke by hand; **500** when the revoke itself failed (the body names the grant that may still stand), or when an ACKNOWLEDGED write's membership cannot be re-confirmed (the grant is revoked too — a boundary nothing can certify does not hold one up). A write that FAILED with the membership unreadable answers that write error and keeps the grant: one store fails both calls, and the grant left standing is the one the member already held |
 | `PATCH` | `/api/teams/{id}/members/{user_id}` | team admin | Change role. A role change WRITES the grant row back, so for a role that HAS a boundary it owes the same guards as the `PUT`: **422** when the user is not (or is no longer) a member of the team's org — an existing grant is refused, never revoked, since that drift is what `orphan_grant` reports — and **409**/**500** at the re-read that follows the write, under the `PUT`'s rule. A role OUTSIDE the ladder (`config_editor`) is mirrored up to no org membership (ADR-078), so writing it reads no boundary when the grant is ALREADY off the ladder too — the state a `config_editor` invitation creates, answered **200** for an account that holds no org membership. Taking a LADDER grant off the ladder still reads the boundary: otherwise the holder of an orphan `admin` grant, who passes the team-admin check on that grant alone, would re-role themselves and keep the grant in one request. The same holder still reaches that grant state in two, by minting an invitation to their own address and accepting it, but only for a role mirrored up to NO org membership: a mint is capped at its minter's own org standing (`POST /api/teams/{id}/invitations`), so that pair of requests no longer re-admits them to the ORG — which is why `orphan_grant` reports a missing org membership for ANY role and `off_ladder` names the sanctioned cause beside it rather than inside it |
 | `DELETE` | `/api/teams/{id}/members/{user_id}` | team admin | Remove a member. A concurrent `PATCH …/members/{user_id}` that read the grant before this removal writes that row back and re-creates the grant at the role it asked for: the store has no conditional write, so the role change cannot tell its own update from a resurrection. Both calls answer success; the removal is idempotent, so re-issue it. This delete also WITHDRAWS a premise: the mint's own confirmation keeps a self-addressed invitation on its creator's grant in the team when they hold no org membership row in its org (`POST /api/teams/{id}/invitations`), so once the grant is taken those rows are swept, one audit line each (`invitation.deleted`, reason `creator_team_grant_removed`) — a row left standing would be a re-entry ticket into the team the grant was just taken from. It takes only what that grant was the premise of: a row addressed to SOMEBODY ELSE stands, and so does everything a holder who still HAS an org membership row minted, those resting on that row — read ONCE, before the invitations are selected, so a row written back in between (a placement, an accept, a role change) is read as absent and what rests on it is swept too: that window costs an invitation that stops working, with nothing granted and no org rank written, each row taken named in the team's audit trail and re-mintable. **500** when the team's org, that row or the team's invitations cannot be read — a selection that could not be made is not one that found nothing — naming the row that may stand and asking for the removal again |
@@ -580,8 +758,8 @@ who is not a member of that team enters as a viewer.
 | `GET`/`POST`/`DELETE` | `/api/runs/{id}/queue-messages`, `…/queue-message`, `…/queue-message/{msgID}` | viewer (GET) · member (POST, DELETE) | Pending steering messages for the run |
 | `GET` | `/api/runs/{id}/log` | viewer | Streamed run log |
 | `GET` | `/api/runs/{id}/preview` | viewer | Preview proxy (SSRF-guarded) |
-| `GET` | `/api/ws/runs/{id}/shell` | member | Post-mortem PTY in a preserved worktree — a local-mode operation: cloud answers `403` before the upgrade ([post-mortem-shell.md](post-mortem-shell.md)) |
-| `GET` | `/api/ws/runs/{id}` | viewer | Live run-console WebSocket. The upgrade and `subscribe` are a read; the mutating envelopes (`cancel`, `pause`, `answer`, `queue_message`, `cancel_queued_message`, `bump_loop`, `raise_budget`) take a member on the same connection |
+| `GET` | `/api/ws/runs/{id}/shell` | member | Post-mortem PTY in a preserved worktree — a local-mode operation: cloud answers `403` before the upgrade ([post-mortem-shell.md](post-mortem-shell.md)); while open, it asks again every 30 s whether its credential still stands |
+| `GET` | `/api/ws/runs/{id}` | viewer | Live run-console WebSocket. The upgrade and `subscribe` are a read; the mutating envelopes (`cancel`, `pause`, `answer`, `queue_message`, `cancel_queued_message`, `bump_loop`, `raise_budget`) take a member on the same connection, and each asks again whether the socket's credential still stands (a refusal: an `error` envelope `credential_refused`, then close `1008` with a reason starting `credential_refused`) AND whether the caller still holds the run's scope (a lost scope — a membership removed, a demotion — answers an `error` envelope `forbidden` on that envelope and the socket stays; a read that does not complete refuses that envelope with `standing_unavailable` or `scope_unavailable` and the socket stays); the connection stops at 2 h (`ITERION_RUN_WS_MAX_LIFETIME`, close `1000` with a reason starting `lifetime_reached`) |
 | `GET` | `/api/v1/runs/stats` | authenticated (no role) — another team than the active one, through `?team_id=` or `X-Iterion-Team`, needs `canViewTeam` | Rolling stats (for the studio) |
 | `GET` | `/api/v1/limits/cost` | authenticated (no role) | Cost-cap status |
 | `POST` | `/api/v1/limits/cost/override` | authenticated (no role) | Grant or revoke the day's cost-cap override. **Any authenticated caller with a team** — the handler performs no role check, and the route sits outside the run-scope prefixes, so the ADR-103 ladder does not apply either: a `viewer` passes. The audit actor is recorded as `operator`. A local-mode feature: cloud stores keep no spend ledger, so there the status reads `enabled: false` and the override answers `409`. |
@@ -604,7 +782,7 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `GET` | `/api/admin/users` | super-admin | List users (`?offset=&limit=` pagination, limit default 50 / max 200; `?q=` matches an email PREFIX or an exact user id — not a substring, so the match rides the unique index on `email`) |
 | `GET` | `/api/admin/users/{id}` | super-admin | One account's file: status, last sign-in, whether a password sign-in is possible at all, its SSO links, and the orgs/teams it was **granted** — not what it could reach. See [administering accounts](ticket-context.md#an-account-signs-in-and-sees-nothing) |
 | `PATCH` | `/api/admin/users/{id}` | super-admin | Status / super-admin flag |
-| `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset; disabled accounts return 422 and must be explicitly re-enabled first |
+| `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset; disabled accounts return 422 and must be explicitly re-enabled first; a personal access token answers `403` for its own account |
 | `GET` | `/api/admin/audit` | super-admin | Platform audit log (filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
 | `GET` | `/api/admin/dlq` | super-admin | List parked messages |
 | `GET` | `/api/admin/dlq/{seq}` | super-admin | Peek payload |
@@ -724,3 +902,12 @@ in form only: without it the mint pins the caller's ACTIVE team, and answers
 A super-admin keeps unpinned tokens, which resolve to the owner's default team
 at every use, or to no team. Membership and the team's existence are re-checked
 on every call that resolves a team.
+
+A token is minted from a live session only: the route answers `403` to a
+personal access token (a token never mints another) and `401` to the
+access token of a revoked session or of a disabled or pending account. It
+asks again once the token's row is written, and revokes the token — never
+answering its plaintext — when a revocation landed meanwhile. A token
+lives until its own expiry or its revocation: by hand
+(`DELETE /api/me/tokens/{token_id}`), by "sign out everywhere", or by an
+administrator's disable; a password change and a reset keep it.

@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/auth"
 )
 
 // registerAuthRoutes wires every /api/auth/* and /api/teams/*
@@ -68,13 +70,28 @@ func (s *Server) registerAuthRoutes() {
 	s.mux.Handle("GET /api/auth/me", s.requireAuth(http.HandlerFunc(s.handleMe)))
 	s.mux.Handle("POST /api/auth/me/team/{team_id}", s.requireAuth(http.HandlerFunc(s.handleSwitchTeam)))
 	s.mux.Handle("POST /api/auth/me/org/{org_id}", s.requireAuth(http.HandlerFunc(s.handleSwitchOrg)))
-	s.mux.Handle("POST /api/me/password", s.requireAuth(http.HandlerFunc(s.handleChangeMyPassword)))
-	s.mux.Handle("POST /api/me/sessions/revoke-all", s.requireAuth(http.HandlerFunc(s.handleRevokeAllSessions)))
+	// The routes that change or remove a credential of the account ask the
+	// chokepoint first (gateDerivation): the access token of a revoked session
+	// changes nothing. The current-password proof of POST /api/me/password is
+	// throttled like the login it stands for, keyed on the account: a
+	// credential that must not mint gets no offline-speed oracle on the
+	// account password.
+	passwordProofLimit := s.limitRoute(
+		authBucketCfg{rate: 1.0 / 12.0, burst: 5}, // the login bucket's shape
+		func(r *http.Request) string {
+			if id, ok := auth.FromContext(r.Context()); ok {
+				return "user:" + id.UserID
+			}
+			return ""
+		},
+	)
+	s.mux.Handle("POST /api/me/password", s.requireAuth(s.gateDerivation(auth.ChangeCredential, passwordProofLimit(s.handleChangeMyPassword))))
+	s.mux.Handle("POST /api/me/sessions/revoke-all", s.requireAuth(s.gateDerivation(auth.ChangeCredential, s.handleRevokeAllSessions)))
 	// Connected SSO identities (self-service): list, connect a new one (the exit
 	// from the 409 link-required dead-end), and disconnect one.
 	s.mux.Handle("GET /api/me/sso/links", s.requireAuth(http.HandlerFunc(s.handleListMySSOLinks)))
 	s.mux.Handle("GET /api/me/sso/{provider}/link/start", s.requireAuth(http.HandlerFunc(s.handleOIDCLinkStart)))
-	s.mux.Handle("DELETE /api/me/sso/links/{provider}/{subject}", s.requireAuth(http.HandlerFunc(s.handleUnlinkMySSO)))
+	s.mux.Handle("DELETE /api/me/sso/links/{provider}/{subject}", s.requireAuth(s.gateDerivation(auth.ChangeCredential, s.handleUnlinkMySSO)))
 
 	// Team management.
 	s.mux.Handle("GET /api/teams", s.requireAuth(http.HandlerFunc(s.handleListTeams)))

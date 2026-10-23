@@ -879,3 +879,55 @@ func TestValidate_CanonicalRedirectNeedsAnOriginInEveryMode(t *testing.T) {
 		})
 	}
 }
+
+// TestLoad_RefreshReuseGrace pins the override of the refresh-token reuse
+// grace window: 30s by default, a duration from the env or the YAML, 0 to
+// disable it, a negative value refused.
+func TestLoad_RefreshReuseGrace(t *testing.T) {
+	clearITERION(t)
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.RefreshReuseGrace != 30*time.Second {
+		t.Fatalf("default RefreshReuseGrace = %v, want 30s", cfg.Auth.RefreshReuseGrace)
+	}
+
+	t.Setenv("ITERION_REFRESH_REUSE_GRACE", "0s")
+	if cfg, err = Load(LoadOptions{}); err != nil || cfg.Auth.RefreshReuseGrace != 0 {
+		t.Fatalf("ITERION_REFRESH_REUSE_GRACE=0s: got %v (err %v), want 0 (the window disabled)", cfg.Auth.RefreshReuseGrace, err)
+	}
+
+	t.Setenv("ITERION_REFRESH_REUSE_GRACE", "")
+	path := filepath.Join(t.TempDir(), "auth.yaml")
+	if err := os.WriteFile(path, []byte("auth:\n  refresh_reuse_grace: \"45s\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = Load(LoadOptions{YAMLPath: path}); err != nil || cfg.Auth.RefreshReuseGrace != 45*time.Second {
+		t.Fatalf("auth.refresh_reuse_grace: 45s: got %v (err %v)", cfg.Auth.RefreshReuseGrace, err)
+	}
+
+	t.Setenv("ITERION_MODE", "cloud")
+	t.Setenv("ITERION_NATS_URL", "nats://nats:4222")
+	t.Setenv("ITERION_MONGO_URI", "mongodb://mongo:27017")
+	t.Setenv("ITERION_S3_ENDPOINT", "http://minio:9000")
+	t.Setenv("ITERION_JWT_SECRET", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
+	t.Setenv("ITERION_SECRETS_KEY", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
+	t.Setenv("ITERION_REFRESH_REUSE_GRACE", "-1s")
+	if _, err := Load(LoadOptions{}); err == nil || !strings.Contains(err.Error(), "ITERION_REFRESH_REUSE_GRACE") {
+		t.Fatalf("a negative ITERION_REFRESH_REUSE_GRACE: got %v, want it refused", err)
+	}
+
+	// A window as long as a session's lifetime is refused the same way.
+	t.Setenv("ITERION_REFRESH_TTL", "1h")
+	for _, grace := range []string{"1h", "2h"} {
+		t.Setenv("ITERION_REFRESH_REUSE_GRACE", grace)
+		if _, err := Load(LoadOptions{}); err == nil || !strings.Contains(err.Error(), "ITERION_REFRESH_REUSE_GRACE") || !strings.Contains(err.Error(), "ITERION_REFRESH_TTL") {
+			t.Fatalf("ITERION_REFRESH_REUSE_GRACE=%s on a 1h ITERION_REFRESH_TTL: got %v, want it refused", grace, err)
+		}
+	}
+	t.Setenv("ITERION_REFRESH_REUSE_GRACE", "59m")
+	if _, err := Load(LoadOptions{}); err != nil {
+		t.Fatalf("ITERION_REFRESH_REUSE_GRACE=59m on a 1h ITERION_REFRESH_TTL: %v", err)
+	}
+}

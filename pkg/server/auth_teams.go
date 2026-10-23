@@ -18,18 +18,38 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	u, err := s.authStore().GetUser(r.Context(), id.UserID)
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "load user: %v", err)
+		s.authError(w, r, fmt.Errorf("load user: %w", err))
 		return
 	}
-	orgs, _ := s.buildOrgTree(r.Context(), u.ID)
-	writeJSON(w, AuthMeResponse{
-		User:          s.toUserView(u),
-		Orgs:          orgs,
-		ActiveOrg:     id.OrgID,
-		ActiveOrgRole: string(id.OrgRole),
-		ActiveTeam:    id.TeamID,
-		ActiveRole:    string(id.Role),
-	})
+	orgs, err := s.buildOrgTree(r.Context(), u.ID)
+	if err != nil {
+		s.identityFailure(w, r, err)
+		return
+	}
+	resp := AuthMeResponse{
+		User:           s.toUserView(u),
+		Orgs:           orgs,
+		ActiveOrg:      id.OrgID,
+		ActiveOrgRole:  string(id.OrgRole),
+		ActiveTeam:     id.TeamID,
+		ActiveRole:     string(id.Role),
+		SessionLineage: id.SessionLineage,
+	}
+	// A credential that names a session answers that session's bound: the
+	// store read it, not the access token's exp. A read that failed is
+	// answered as the failure it is — a bound nobody could read is not a
+	// fact about the session, never rendered as absent.
+	if id.SessionLineage != "" {
+		bound, found, err := s.authSvc.SessionExpiresAt(r.Context(), id.UserID, id.SessionLineage)
+		if err != nil {
+			s.identityFailure(w, r, err)
+			return
+		}
+		if found {
+			resp.ExpiresAt = bound.Format(time.RFC3339)
+		}
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleSwitchTeam(w http.ResponseWriter, r *http.Request) {
@@ -39,13 +59,12 @@ func (s *Server) handleSwitchTeam(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "team_id required")
 		return
 	}
-	newID, access, exp, err := s.authSvc.SwitchTeam(r.Context(), id.UserID, teamID)
+	sw, err := s.authSvc.SwitchTeam(r.Context(), id, teamID)
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		s.authError(w, r, err)
 		return
 	}
-	s.setAuthCookies(w, access, exp, "", time.Time{})
-	s.writeIdentityResponse(w, r, newID, access, exp)
+	s.writeSession(w, r, switchSession(sw))
 }
 
 func (s *Server) handleSwitchOrg(w http.ResponseWriter, r *http.Request) {
@@ -55,13 +74,12 @@ func (s *Server) handleSwitchOrg(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "org_id required")
 		return
 	}
-	newID, access, exp, err := s.authSvc.SwitchOrg(r.Context(), id.UserID, orgID)
+	sw, err := s.authSvc.SwitchOrg(r.Context(), id, orgID)
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		s.authError(w, r, err)
 		return
 	}
-	s.setAuthCookies(w, access, exp, "", time.Time{})
-	s.writeIdentityResponse(w, r, newID, access, exp)
+	s.writeSession(w, r, switchSession(sw))
 }
 
 // ---- Team management ----
@@ -70,7 +88,7 @@ func (s *Server) handleListTeams(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	memberships, err := s.authStore().ListMembershipsByUser(r.Context(), id.UserID)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "list memberships: %v", err)
+		s.identityFailure(w, r, fmt.Errorf("list memberships: %w", err))
 		return
 	}
 	teamIDs := make([]string, 0, len(memberships))
@@ -78,12 +96,13 @@ func (s *Server) handleListTeams(w http.ResponseWriter, r *http.Request) {
 		teamIDs = append(teamIDs, m.TeamID)
 	}
 	// One bulk fetch instead of a GetTeam per membership. A team absent
-	// from the map is skipped exactly like the old per-row ErrNotFound;
-	// an infra failure renders the same empty list it always did, but
-	// is logged instead of vanishing.
+	// from the map is skipped: the store said it is not there. A read
+	// that FAILED is not a fact about the user, so it aborts the answer
+	// instead of rendering as an empty list.
 	teamsByID, err := s.authStore().GetTeamsByIDs(r.Context(), teamIDs)
-	if err != nil && s.logger != nil {
-		s.logger.Warn("auth: bulk-load teams for user %s: %v", id.UserID, err)
+	if err != nil {
+		s.identityFailure(w, r, fmt.Errorf("list teams: %w", err))
+		return
 	}
 	views := make([]MembershipView, 0, len(memberships))
 	for _, m := range memberships {
@@ -125,13 +144,20 @@ func (s *Server) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "no active organization")
 		return
 	}
-	if !s.canManageOrg(r.Context(), id, orgID) {
+	// A "no" resting on an org-membership read that failed is that failure,
+	// not a refusal.
+	allowed, err := s.canManageOrgOrFail(r.Context(), id, orgID)
+	if err != nil {
+		s.identityFailure(w, r, err)
+		return
+	}
+	if !allowed {
 		httpError(w, http.StatusForbidden, "org admin or owner required")
 		return
 	}
 	t, err := s.authSvc.CreateTeamFor(r.Context(), id.UserID, orgID, req.Name, req.Slug)
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		s.authError(w, r, err)
 		return
 	}
 	writeJSON(w, t)
@@ -140,13 +166,21 @@ func (s *Server) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListTeamMembers(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	teamID := r.PathValue("id")
-	if !s.canViewTeam(r.Context(), id, teamID) {
+	// A refusal here keeps its own 403; a refusal that rests on a read the
+	// store could not complete is the failure it is (canViewTeamOrFail), as
+	// this route's contract states.
+	allowed, err := s.canViewTeamOrFail(r.Context(), id, teamID)
+	if err != nil {
+		s.identityFailure(w, r, fmt.Errorf("authorize the member list of team %s: %w", teamID, err))
+		return
+	}
+	if !allowed {
 		httpError(w, http.StatusForbidden, "not a member")
 		return
 	}
 	ms, err := s.authStore().ListMembershipsByTeam(r.Context(), teamID)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "list members: %v", err)
+		s.identityFailure(w, r, fmt.Errorf("list members: %w", err))
 		return
 	}
 	type memberView struct {
@@ -159,13 +193,14 @@ func (s *Server) handleListTeamMembers(w http.ResponseWriter, r *http.Request) {
 	for _, m := range ms {
 		userIDs = append(userIDs, m.UserID)
 	}
-	// One bulk fetch instead of a GetUser per member. A missing user
-	// yields the zero User — the row still renders with id + role, as
-	// it did when the old per-row GetUser error was swallowed; an infra
-	// failure is logged instead of vanishing.
+	// One bulk fetch instead of a GetUser per member. A user absent from
+	// the map yields the zero User — the row still renders with id + role.
+	// A read that FAILED is not that: rendering it the same way would show
+	// every member as an account with no email or name.
 	usersByID, err := s.authStore().GetUsersByIDs(r.Context(), userIDs)
-	if err != nil && s.logger != nil {
-		s.logger.Warn("auth: bulk-load members of team %s: %v", teamID, err)
+	if err != nil {
+		s.identityFailure(w, r, fmt.Errorf("load member accounts: %w", err))
+		return
 	}
 	out := make([]memberView, 0, len(ms))
 	for _, m := range ms {
@@ -522,7 +557,7 @@ func (s *Server) handleInvitationLookup(w http.ResponseWriter, r *http.Request) 
 	}
 	inv, err := s.authStore().GetInvitationByTokenHash(r.Context(), auth.HashRefreshToken(tok))
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		s.authError(w, r, err)
 		return
 	}
 	if inv.AcceptedAt != nil {
@@ -535,7 +570,7 @@ func (s *Server) handleInvitationLookup(w http.ResponseWriter, r *http.Request) 
 	}
 	t, err := s.authStore().GetTeam(r.Context(), inv.TeamID)
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		s.authError(w, r, err)
 		return
 	}
 	writeJSON(w, struct {
@@ -578,7 +613,7 @@ func (s *Server) handleInvitationAcceptForLoggedIn(w http.ResponseWriter, r *htt
 	}
 	mb, err := s.authSvc.AcceptInvitationForExistingUser(r.Context(), id.UserID, body.Token)
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		s.authError(w, r, err)
 		return
 	}
 	s.auditTenant(r, mb.TeamID, "invitation.accepted", "member", id.UserID, map[string]any{"role": string(mb.Role)})

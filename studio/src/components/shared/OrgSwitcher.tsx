@@ -13,6 +13,16 @@ import { adminPath } from "@/views/admin/adminRoutes";
 //
 // Hidden in local dev (user id "dev") and for restricted/no-org users, where
 // there is no org context to switch.
+
+// What the switcher says while the auth state holds a tree the server could
+// not re-read after a step it committed (treeStale): the list below may be
+// missing the org just created or showing the name just changed, and a re-read
+// is already scheduled. Non-blocking — the step itself succeeded. It rides the
+// trigger's own aria-label and title rather than an aria-live region: the
+// switcher is a button, and its explicit aria-label is what a screen reader
+// reads — text inside it would not reach the accessible name.
+const STALE_TREE_HINT = "Organizations may be out of date — reloading…";
+
 function orgInitials(name: string, fallback: string): string {
   return (
     name
@@ -34,6 +44,7 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
     activeOrgRole,
     activeTeamID,
     teams,
+    treeStale,
     selectOrg,
     selectTeam,
   } = useAuth();
@@ -53,6 +64,10 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
   const canManageActiveOrg = !!user?.is_super_admin || hasOrgRole(activeOrgRole, "admin");
   const isSuper = user?.is_super_admin ?? false;
   const initials = orgInitials(orgLabel, user?.email?.[0]?.toUpperCase() ?? "?");
+  const orgTitle = treeStale ? `Organization: ${orgLabel} — ${STALE_TREE_HINT}` : `Organization: ${orgLabel}`;
+  const orgAriaLabel = treeStale
+    ? `Switch organization — current: ${orgLabel}. ${STALE_TREE_HINT}`
+    : `Switch organization — current: ${orgLabel}`;
 
   const closeAfter = (fn: () => void) => () => {
     fn();
@@ -74,8 +89,8 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
           <button
             type="button"
             className="flex h-8 w-full items-center justify-center rounded hover:bg-surface-2 transition-colors"
-            title={`Organization: ${orgLabel}`}
-            aria-label={`Switch organization — current: ${orgLabel}`}
+            title={orgTitle}
+            aria-label={orgAriaLabel}
           >
             <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-accent text-fg-onAccent text-caption font-semibold uppercase">
               {initials}
@@ -85,8 +100,8 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
           <button
             type="button"
             className="flex w-full items-center gap-2 rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-left hover:bg-surface-2 transition-colors"
-            title={`Organization: ${orgLabel}`}
-            aria-label={`Switch organization — current: ${orgLabel}`}
+            title={orgTitle}
+            aria-label={orgAriaLabel}
           >
             <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent text-fg-onAccent text-caption font-semibold uppercase">
               {initials}
@@ -99,6 +114,11 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
               {activeTeamName && activeTeamName !== orgLabel && (
                 <span className="block truncate text-caption text-fg-subtle">
                   team: {activeTeamName}
+                </span>
+              )}
+              {treeStale && (
+                <span className="block truncate text-caption text-warning-fg">
+                  {STALE_TREE_HINT}
                 </span>
               )}
             </span>

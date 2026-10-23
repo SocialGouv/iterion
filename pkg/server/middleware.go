@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -63,19 +64,26 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 				UserID:       "dev",
 				Email:        "dev@local",
 				IsSuperAdmin: true,
+				Credential:   auth.CredentialDevMode,
 			})
 			ctx = store.WithIdentity(ctx, "dev", "dev")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
-		// Single-use WS ticket path (?ticket= on /api/ws[/*]): the ticket
-		// resolves DIRECTLY to an identity, so it runs before the JWT/PAT
-		// verification. ok=true with an empty UserID means a ticket was
-		// presented but was invalid/expired/used — reject rather than falling
-		// through to the (absent) bearer.
-		if id, ok := s.wsTicketIdentity(r); ok {
-			if id.UserID == "" {
-				httpError(w, http.StatusUnauthorized, "invalid or expired ws ticket")
+		// Single-use WS ticket path (?ticket= on a WS-upgrade path): the
+		// ticket resolves DIRECTLY to an identity, so it runs before the
+		// JWT/PAT verification. A presented ticket is never a fall-through
+		// to the (absent) bearer: one that authenticates nobody is a 401,
+		// and a redemption the store could not complete answers through
+		// identityFailure (500, the generic body, the cause logged) — the
+		// ticket may still be live, so a 401 would misstate it.
+		if id, presented, err := s.wsTicketIdentity(r); presented {
+			if errors.Is(err, errWSTicketRefused) {
+				httpError(w, http.StatusUnauthorized, "%s", err.Error())
+				return
+			}
+			if err != nil {
+				s.identityFailure(w, r, err)
 				return
 			}
 			// The run-by-id choke point (ADR-103): a ticket whose WS
@@ -102,6 +110,15 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			var err error
 			id, err = s.identityFromPAT(r.Context(), token)
 			if err != nil {
+				// A row the server could not READ is its own failure, not a
+				// verdict on the credential: it answers through
+				// identityFailure (500, the generic body, the cause logged)
+				// like every other identity route. Only a refusal is a 401.
+				var failure patIdentityFailure
+				if errors.As(err, &failure) {
+					s.identityFailure(w, r, fmt.Errorf("resolve the identity of a personal access token: %w", failure.err))
+					return
+				}
 				httpError(w, http.StatusUnauthorized, "%s", err.Error())
 				return
 			}
@@ -120,6 +137,25 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 					httpError(w, http.StatusUnauthorized, "token invalid")
 				}
 				return
+			}
+			// The super-admin claim is re-derived HERE, where the identity is
+			// established (revokeSuperAdminClaim): the flag a JWT carries was
+			// minted with it and says nothing about the account now. Every
+			// reader below — the platform-admin routes, the team/org RBAC
+			// escape hatches, the org-member placement, the marketplace
+			// moderation, the global memory space, the cross-account PAT
+			// revoke, the org-SSO proof bypass — reads a flag that stands.
+			// A token that claims nothing pays nothing.
+			if id.IsSuperAdmin && id.Credential == auth.CredentialAccessToken {
+				var refusal error
+				id, refusal, err = s.revokeSuperAdminClaim(r.Context(), id)
+				if err != nil {
+					s.identityFailure(w, r, fmt.Errorf("check the platform authority of %s: %w", id.UserID, err))
+					return
+				}
+				if refusal != nil {
+					r = r.WithContext(withSuperAdminRefusal(r.Context(), refusal))
+				}
 			}
 		}
 		// Stamp both the auth identity (for handlers + RBAC checks)
@@ -252,9 +288,17 @@ func (s *Server) isSuperAdmin(r *http.Request) bool {
 	return id.IsSuperAdmin
 }
 
-// requireSuperAdmin wraps next, allowing only platform super-admins.
+// requireSuperAdmin wraps next, allowing only platform super-admins: the
+// flag was re-derived from the account when the identity was established
+// (revokeSuperAdminClaim), and a claim the standing refused is re-stated
+// here (401, the reason) so a revoked session's token reads as revoked, not
+// as merely unprivileged.
 func (s *Server) requireSuperAdmin(next http.Handler) http.Handler {
 	return s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if refusal := superAdminRefusal(r.Context()); refusal != nil {
+			s.derivationError(w, r, refusal)
+			return
+		}
 		if !s.isSuperAdmin(r) {
 			httpError(w, http.StatusForbidden, "super-admin only")
 			return

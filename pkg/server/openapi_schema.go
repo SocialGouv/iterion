@@ -69,9 +69,26 @@ var botIDParam = queryParam{
 // CLI-driven surface; extend it route-by-route as schemas are needed.
 func routeSchemas() map[string]routeOp {
 	return map[string]routeOp{
-		// Auth + identity.
-		"POST /api/auth/login": {request: loginReq{}, response: AuthMeResponse{}},
-		"GET /api/auth/me":     {response: AuthMeResponse{}},
+		// Auth + identity. Every route that mints a credential answers the
+		// session alone (AuthSessionResponse); the identity view with its
+		// org tree is GET /api/auth/me's (AuthMeResponse).
+		"POST /api/auth/login":                  {request: loginReq{}, response: AuthSessionResponse{}},
+		"POST /api/auth/register":               {request: registerReq{}, response: AuthSessionResponse{}},
+		"POST /api/auth/refresh":                {response: AuthSessionResponse{}},
+		"POST /api/auth/password/change":        {request: changePasswordReq{}, response: AuthSessionResponse{}},
+		"POST /api/auth/password/reset/confirm": {request: passwordResetConfirmReq{}, response: AuthSessionResponse{}},
+		"POST /api/auth/desktop/exchange":       {request: desktopExchangeReq{}, response: AuthSessionResponse{}},
+		"POST /api/me/password":                 {request: changeMyPasswordReq{}, response: AuthSessionResponse{}},
+		"POST /api/auth/me/team/{team_id}":      {response: AuthSessionResponse{}},
+		"POST /api/auth/me/org/{org_id}":        {response: AuthSessionResponse{}},
+		"GET /api/auth/me":                      {response: AuthMeResponse{}},
+
+		// The caller's connected SSO identities: session_linked is the
+		// kept-identity marker "sign out everywhere" acts on, so the response
+		// is typed instead of the untyped default no client can read it from.
+		"GET /api/me/sso/links": {response: struct {
+			Links []ssoLinkView `json:"links"`
+		}{}},
 
 		// OAuth metadata projections exclude provider UUIDs and sealed secrets.
 		"GET /api/me/oauth/connections":         {response: oauthConnectionsView{}},

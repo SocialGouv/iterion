@@ -1043,6 +1043,7 @@ func buildAuthStack(ctx context.Context, cfg iterconfig.Config, st *mongostore.S
 		SignupMode:               iterauth.SignupMode(cfg.Auth.SignupMode),
 		GitHubUngrantedPolicy:    iterauth.GitHubUngrantedPolicy(cfg.Auth.OIDC.GitHubUngrantedPolicy),
 		RefreshTTL:               cfg.Auth.RefreshTTL,
+		RefreshReuseGrace:        &cfg.Auth.RefreshReuseGrace,
 		Logger:                   logger,
 		Resets:                   a.resetStore,
 		Mailer:                   mailer,

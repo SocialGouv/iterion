@@ -5,14 +5,14 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useLocation } from "wouter";
 
-import { ApiError, confirmPasswordReset } from "@/api/auth";
+import { ApiError, confirmPasswordReset, passwordChangedSignIn } from "@/api/auth";
 import { useAuth } from "@/auth/AuthContext";
 
 // ResetPassword consumes ?token=... from the reset email, sets the new
-// password, and lets the freshly-issued cookies take over (the server
-// renderAuthResponse path).
+// password, and lets the freshly-issued cookies take over: the confirm
+// answers the session, whose identity completeSignIn then loads.
 export default function ResetPassword() {
-  const { reloadIdentity } = useAuth();
+  const { completeSignIn, credentialSignedOut } = useAuth();
   const [, navigate] = useLocation();
   const [token, setToken] = useState("");
   const [password, setPassword] = useState("");
@@ -44,9 +44,22 @@ export default function ResetPassword() {
     setBusy(true);
     try {
       await confirmPasswordReset(token, password);
-      await reloadIdentity();
+      // kind "delivery": the reset is a credential change the server
+      // committed, not a sign-in the user chose — a pending sign-out stays
+      // OWED and resolves GONE instead of being abandoned unpresented.
+      await completeSignIn(undefined, "delivery");
       navigate("/", { replace: true });
     } catch (e) {
+      // The reset WAS applied; only the session could not be opened, and the
+      // token is spent — re-submitting this form would be refused. The browser
+      // is signed out (the server cleared the cookies), so it goes to the
+      // sign-in form with the server's sentence pinned over it.
+      const changed = passwordChangedSignIn(e);
+      if (changed) {
+        credentialSignedOut(changed);
+        navigate("/login", { replace: true });
+        return;
+      }
       const msg = e instanceof ApiError ? e.message : errorMessage(e);
       setErr(msg);
     } finally {

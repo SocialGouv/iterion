@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -72,6 +74,13 @@ func (s *Server) handleStartGitHubOrgs(w http.ResponseWriter, r *http.Request) {
 
 // handleGitHubOrgsCallback exchanges the code, reads the user's GitHub orgs from
 // the connector's group keys, persists them on the user, and redirects back.
+//
+// It is a browser's top-level navigation under /api/auth, so every 5xx it
+// answers owes the identity contract (identityUnavailable): the generic body,
+// the cause in the server log. That covers the upstream exchange too — the
+// provider's error text is no more a client's business than the store's.
+// Only "the account is not there" keeps the redirect: the store ANSWERED, and
+// there is nothing left to persist the org hint on.
 func (s *Server) handleGitHubOrgsCallback(w http.ResponseWriter, r *http.Request) {
 	if s.forgeStates == nil {
 		httpError(w, http.StatusNotFound, "not enabled")
@@ -94,16 +103,21 @@ func (s *Server) handleGitHubOrgsCallback(w http.ResponseWriter, r *http.Request
 	}
 	ext, err := conn.ExchangeCode(r.Context(), code, s.githubOrgsRedirectURI(), "")
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "github exchange failed: %v", err)
+		s.identityFailure(w, r, fmt.Errorf("exchange the github code for the orgs of user %s: %w", pending.UserID, err))
 		return
 	}
 	if st := s.authStore(); st != nil && pending.UserID != "" {
-		if u, err := st.GetUser(r.Context(), pending.UserID); err == nil {
+		u, err := st.GetUser(r.Context(), pending.UserID)
+		if err != nil && !errors.Is(err, identity.ErrNotFound) {
+			s.identityFailure(w, r, fmt.Errorf("read the account %s the github orgs are for: %w", pending.UserID, err))
+			return
+		}
+		if err == nil {
 			// The org list is all this callback owns: a whole-row write would
 			// carry the status and the privilege flag its read predates.
 			orgs := githubOrgsFromGroups(ext.Groups)
 			if _, err := st.PatchUser(r.Context(), u.ID, identity.UserPatch{GitHubOrgs: &orgs}); err != nil {
-				httpError(w, http.StatusInternalServerError, "persist github orgs: %v", err)
+				s.identityFailure(w, r, fmt.Errorf("persist the github orgs of user %s: %w", u.ID, err))
 				return
 			}
 		}

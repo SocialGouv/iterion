@@ -2,15 +2,82 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server"
 )
+
+// --- what a personal access token may not do ---
+
+// A personal access token authenticates; it does not DERIVE another
+// credential. The instance refuses it at every route that mints one — POST
+// /api/me/tokens and the team/org switches — because a PAT is pinned to its
+// team and its own expiry, and a derived credential would escape both.
+//
+// The CLI's stored credential IS a personal access token (RemoteConfig.Token,
+// `iap_…`), so the two commands that mint say so before presenting it: the
+// request would come back 403 and read as a server fault, and the operator
+// would learn nothing of the path that does work — a login.
+const patCannotMint = "a personal access token cannot mint another credential: the instance refuses it (403)"
+
+// patCannotMintSentence is the server's own wording for that refusal
+// (pkg/auth/derive.go), matched to recognise a 403 that reached a command
+// whose local check could not see it coming — a credential that is not
+// `iap_`-prefixed: an access token pasted into ITERION_REMOTE_TOKEN, a token
+// minted before the prefix.
+const patCannotMintSentence = "cannot mint another credential"
+
+// presentsPAT reports whether what this client sends on its own is a personal
+// access token — stored in ~/.iterion/cli-auth.json, or taken from the
+// environment (ITERION_REMOTE_TOKEN / ITERION_TOKEN): ResolveRemoteConfig has
+// already chosen between them.
+func (c *RemoteClient) presentsPAT() bool {
+	return strings.HasPrefix(strings.TrimSpace(c.cfg.Token), pat.TokenPrefix)
+}
+
+// refuseIfPAT is the pre-flight refusal, advice included, of a command that
+// would mint a credential from the stored one. Nothing is sent.
+func (c *RemoteClient) refuseIfPAT(advice string) error {
+	if !c.presentsPAT() {
+		return nil
+	}
+	return fmt.Errorf("%s\n%s", patCannotMint, advice)
+}
+
+// asPATMintRefusal reports whether err is the instance's own refusal to
+// derive a credential, and renders it with the same advice — for the
+// credential the local check could not recognise.
+func asPATMintRefusal(err error, advice string) (error, bool) {
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusForbidden && strings.Contains(ae.Body, patCannotMintSentence) {
+		return fmt.Errorf("%s\n%s", describeErrorBody([]byte(ae.Body)), advice), true
+	}
+	return err, false
+}
+
+// teamSwitchAdvice names the two ways to put the CLI on another team, given
+// that only a sign-in mints a team-pinned token.
+func teamSwitchAdvice(base, teamID string) string {
+	return "Log in again pinned to the team:\n" +
+		"  iterion remote login " + base + " --email <you> --team " + teamID + "\n" +
+		"or switch to the team in the studio and run `iterion remote login " + base +
+		"` (the browser approval pins the studio's active team)."
+}
+
+// tokenCreateAdvice names the two ways to get a new token.
+func tokenCreateAdvice(base string) string {
+	return "Create the token in the studio (Account → Access tokens),\n" +
+		"or from a fresh login: `iterion remote login " + base + " --email <you>`" +
+		" (add `--team <id>` to pin it to a team)."
+}
 
 // --- Personal access tokens (/api/me/tokens) ---
 
@@ -53,8 +120,14 @@ func RemoteTokensList(ctx context.Context, c *RemoteClient, p *Printer) error {
 	return nil
 }
 
-// RemoteTokensCreate mints a PAT and prints the plaintext once.
+// RemoteTokensCreate mints a PAT and prints the plaintext once. A token mints
+// no token (patCannotMint), so this refuses before it sends anything when the
+// stored credential is one.
 func RemoteTokensCreate(ctx context.Context, c *RemoteClient, p *Printer, name, teamID string, expiresInDays int) error {
+	advice := tokenCreateAdvice(c.BaseURL())
+	if err := c.refuseIfPAT(advice); err != nil {
+		return err
+	}
 	req := map[string]any{"name": name, "expires_in_days": expiresInDays}
 	if teamID != "" {
 		teamID, err := resolveRemoteTeamID(ctx, c, teamID)
@@ -69,7 +142,8 @@ func RemoteTokensCreate(ctx context.Context, c *RemoteClient, p *Printer, name, 
 	}
 	raw, err := c.Call(ctx, "POST", "/api/me/tokens", req, &out)
 	if err != nil {
-		return err
+		refusal, _ := asPATMintRefusal(err, advice)
+		return refusal
 	}
 	if p.Format == OutputJSON {
 		PrintRemoteJSON(p, raw)
@@ -131,12 +205,24 @@ var teamUUIDShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-
 // NAMES are deliberately not matched: slugs are globally unique, names
 // are not, and a silent first-match across orgs pins an identity the
 // operator did not choose.
+//
+// It is the one resolver every command that sends a team_id goes through —
+// `tokens create`, `teams switch`, and the login that pins the token it mints
+// (LoginWithPassword, under its own JWT) — so a slug the CLI prints in an
+// advice is a slug the CLI accepts back.
 func resolveRemoteTeamID(ctx context.Context, c *RemoteClient, arg string) (string, error) {
+	return resolveRemoteTeamIDAs(ctx, c, "", arg)
+}
+
+// resolveRemoteTeamIDAs is resolveRemoteTeamID reading the org tree under an
+// explicit bearer: a login resolves the team of the token it is about to mint
+// with the JWT it just received, before any credential is stored.
+func resolveRemoteTeamIDAs(ctx context.Context, c *RemoteClient, bearer, arg string) (string, error) {
 	arg = strings.ToLower(strings.TrimSpace(arg))
 	if teamUUIDShape.MatchString(arg) {
 		return arg, nil
 	}
-	me, err := c.Me(ctx)
+	me, err := c.MeAs(ctx, bearer)
 	if err != nil {
 		return "", fmt.Errorf("resolving team %q: %w — pass the team UUID (see `iterion remote teams list`)", arg, err)
 	}
@@ -159,14 +245,42 @@ func resolveRemoteTeamID(ctx context.Context, c *RemoteClient, arg string) (stri
 	}
 }
 
+// ResolveRemoteRunScopeTeam resolves the --team flag of the run reads (runs
+// list, stats, repos, resume --usage-blocked) the way the mint path resolves
+// the team it pins: a UUID passes through untouched — no read — a slug
+// resolves against the account's org tree. The server reads ?team_id= as an
+// id verbatim, so a slug sent as one answers a member and an org admin 403
+// "not authorised to scope this route to team_id=<slug>" and a super-admin an
+// empty scope; an unresolved slug is refused here, with its name, before
+// anything is sent (r7c F8). An empty flag scopes nothing (the caller's
+// active team).
+func ResolveRemoteRunScopeTeam(ctx context.Context, c *RemoteClient, flag string) (string, error) {
+	arg := strings.TrimSpace(flag)
+	if arg == "" {
+		return "", nil
+	}
+	return resolveRemoteTeamID(ctx, c, arg)
+}
+
 // RemoteTeamsSwitch changes the CLI's default team. A PAT's identity
 // team is pinned at mint time, so switching means minting a NEW token
 // pinned to the target team, persisting it, and revoking the previous
 // CLI token (identified deterministically by its SHA-256 fingerprint;
 // an env-provided or unmatched token is left alone with a notice).
+//
+// That mint is exactly what a personal access token may not do
+// (patCannotMint), and a PAT is what the CLI stores: the refusal comes first,
+// before any request, and names the login that does pin a team.
 func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID, tokenName string) error {
 	if strings.TrimSpace(teamID) == "" {
 		return fmt.Errorf("team id required (see `iterion remote teams list`)")
+	}
+	// Before resolution, which reads /api/auth/me: a credential that cannot
+	// mint must send nothing at all. The advice therefore carries the
+	// argument as typed — a slug or a UUID — and the login it names resolves
+	// it the same way this command would (resolveRemoteTeamID).
+	if err := c.refuseIfPAT(teamSwitchAdvice(c.BaseURL(), strings.TrimSpace(teamID))); err != nil {
+		return err
 	}
 	// Resolution is read-only and comes before the env-mode refusal so the
 	// advice it prints carries the UUID, not the raw argument.
@@ -175,7 +289,7 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 		return err
 	}
 	if os.Getenv("ITERION_REMOTE_URL") != "" {
-		return fmt.Errorf("teams switch mutates the stored credential and cannot run in ITERION_REMOTE_URL env mode — mint a team-pinned token instead: `iterion remote tokens create --team %s`", teamID)
+		return fmt.Errorf("teams switch mutates the stored credential and cannot run in ITERION_REMOTE_URL env mode — pin a team at login instead: `iterion remote login %s --email <you> --team %s`", c.BaseURL(), teamID)
 	}
 	// No client-side membership pre-check: the mint endpoint's canViewTeam
 	// is the authority (it also grants org-admins and super-admins teams a
@@ -190,6 +304,9 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 	}
 	req := map[string]any{"name": tokenName, "team_id": teamID, "expires_in_days": 0}
 	if _, err := c.Call(ctx, "POST", "/api/me/tokens", req, &minted); err != nil {
+		if refusal, ok := asPATMintRefusal(err, teamSwitchAdvice(c.BaseURL(), teamID)); ok {
+			return refusal
+		}
 		return fmt.Errorf("%w (see `iterion remote teams list`)", err)
 	}
 	if minted.Token == "" {

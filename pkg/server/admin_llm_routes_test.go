@@ -88,6 +88,7 @@ func newAdminLLMServerWith(t *testing.T, mutate ...func(*Config)) (*llmSpyKeySto
 	}
 	s := New(cfg, iterlog.New(iterlog.LevelError, nil))
 
+	seedPlatformAdmin(t, s.authStore(), "root")
 	adminTok, _, err := signer.IssueAccess(auth.Identity{UserID: "root", IsSuperAdmin: true, TeamID: "team-root"})
 	if err != nil {
 		t.Fatalf("issue admin token: %v", err)

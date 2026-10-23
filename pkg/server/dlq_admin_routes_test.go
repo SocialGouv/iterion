@@ -248,6 +248,7 @@ func newDLQAdminServerWith(t *testing.T, wrap func(store.RunStore) store.RunStor
 		Queue:                   q,
 	}, iterlog.New(iterlog.LevelError, nil))
 
+	seedPlatformAdmin(t, s.authStore(), "root")
 	adminTok, _, err := signer.IssueAccess(auth.Identity{UserID: "root", IsSuperAdmin: true})
 	if err != nil {
 		t.Fatalf("issue admin token: %v", err)

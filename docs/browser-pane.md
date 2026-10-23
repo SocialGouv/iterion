@@ -123,7 +123,16 @@ Framing rule: **one WebSocket BinaryMessage = one CDP JSON-RPC
 message**. The server re-frames Chromium's null-terminated pipe stream
 into discrete WS frames in both directions. The frontend client
 (`studio/src/lib/cdpClient.ts`) speaks plain JSON-RPC; it doesn't see
-the pipe framing.
+the pipe framing. The bridge asks again every 30 s whether the credential
+it was opened with still stands AND whether its opener still holds the
+run's scope (`ITERION_RUN_BROWSER_STANDING_PERIOD`). A refused credential
+closes it (close code `1008`, a reason starting `credential_refused`); a
+scope its opener no longer holds closes it the same way (a reason starting
+`scope_lost`); and three consecutive standing reads that do not complete
+close it too (a reason starting `standing_unavailable`) — every such
+reason is its token followed by the cause, never the bare token — instead
+of driving the run's Chromium on a credential nobody could re-check. It
+carries no absolute lifetime cap.
 
 ### Disabling the pane
 

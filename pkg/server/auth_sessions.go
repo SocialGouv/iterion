@@ -90,9 +90,30 @@ func (s *Server) setAuthCookies(w http.ResponseWriter, access string, accessExp 
 			HttpOnly: true,
 			Secure:   s.cfg.CookieSecure,
 			SameSite: http.SameSiteLaxMode,
-			Expires:  refreshExp,
+			Expires:  refreshCookieExpiry(refreshExp),
 		})
 	}
+}
+
+// refreshCookieExpiry is the Expires a refresh cookie carries: the session's
+// expiry rounded UP to the hour. A refresh session's expiry is its rotation's
+// instant plus the TTL, and a token presented again inside the reuse window
+// is answered with the session that rotation wrote — so an exact expiry would
+// date, to the second, the rotation an HTTP client holding the token was
+// answered from. Rounded to the hour it hides WHEN that rotation ran, not
+// THAT the answer came from an earlier rotation: an hour boundary falling
+// between the rotation and the redelivery shows it, and so does the answer's
+// latency — a rotation writes where a redelivery only reads. Rounded up, the
+// cookie never dies before the session it carries.
+func refreshCookieExpiry(exp time.Time) time.Time {
+	if exp.IsZero() {
+		return exp
+	}
+	up := exp.Truncate(time.Hour)
+	if up.Before(exp) {
+		up = up.Add(time.Hour)
+	}
+	return up
 }
 
 // refreshCookiePath is /api/auth normally, but __Host- mandates Path=/.
@@ -201,11 +222,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// (timing-indistinguishable), so there is no separate "locked"
 		// label — anything else is an internal error.
 		s.markLogin("error")
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		s.authError(w, r, err)
 		return
 	}
 	s.markLogin("success")
-	s.renderAuthResponse(w, r, res)
+	s.writeSession(w, r, loginSession(res))
 }
 
 // markLogin bumps the password-login outcome counter (no-op without a
@@ -232,10 +253,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.authSvc.ChangePasswordPending(r.Context(), req.Email, req.CurrentPassword, req.NewPassword, r.UserAgent(), s.clientIP(r))
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		s.credentialChangeError(w, r, err)
 		return
 	}
-	s.renderAuthResponse(w, r, res)
+	s.writeSession(w, r, loginSession(res))
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -249,10 +270,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.authSvc.Register(r.Context(), req.Email, req.Password, req.Name, req.Invitation, r.UserAgent(), s.clientIP(r))
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		s.authError(w, r, err)
 		return
 	}
-	s.renderAuthResponse(w, r, res)
+	s.writeSession(w, r, loginSession(res))
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -263,21 +284,49 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.authSvc.Refresh(r.Context(), tok, r.UserAgent(), s.clientIP(r))
 	if err != nil {
-		s.clearAuthCookies(w)
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		// Only a refusal of the credential itself (401: revoked, expired,
+		// unknown) clears the cookies carrying it. A failure leaves the
+		// presented token the client's to present again — Refresh rotates
+		// nothing before every read it needs has succeeded.
+		if mapAuthErrorStatus(err) == http.StatusUnauthorized {
+			s.clearAuthCookies(w)
+		}
+		s.authError(w, r, err)
 		return
 	}
-	s.renderAuthResponse(w, r, res)
+	s.writeSession(w, r, loginSession(res))
 }
 
+// LogoutOutcomeHeader, set to LogoutOtherSession, marks a 204 of POST
+// /api/auth/logout?lineage=<id> that signed nothing out: the presented token
+// belongs to another lineage — a session the client opened since the one it
+// meant to end — and its cookies are kept. Every other 204 means the
+// presented session is signed out, or there was none.
+const (
+	LogoutOutcomeHeader = "X-Iterion-Logout"
+	LogoutOtherSession  = "other-session"
+)
+
+// handleLogout signs out the session of the presented refresh token (its
+// lineage) and clears the auth cookies. With ?lineage=<id>, a token of
+// another lineage signs nothing out: the answer is 204 with
+// X-Iterion-Logout: other-session and the cookies are kept — a client whose
+// pending sign-out names a session it no longer holds never ends the one it
+// holds now. A sign-out whose read or record failed is not done: it answers
+// the failure (identityFailure) and leaves the cookies, so the client still
+// holds the token to present again — clearing them would drop the only
+// credential that can still end a live session.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	tok := s.refreshTokenFromRequest(r)
-	if tok != "" {
-		// Logout stays 204 regardless (the client's cookies are cleared
-		// either way), but a failed revocation leaves the refresh token
-		// live server-side — make it visible.
-		if err := s.authSvc.Logout(r.Context(), tok); err != nil && s.logger != nil {
-			s.logger.Error("auth: revoke refresh token on logout: %v", err)
+	if tok := s.refreshTokenFromRequest(r); tok != "" {
+		signedOut, err := s.authSvc.LogoutOf(r.Context(), tok, r.URL.Query().Get("lineage"))
+		if err != nil {
+			s.identityFailure(w, r, err)
+			return
+		}
+		if !signedOut {
+			w.Header().Set(LogoutOutcomeHeader, LogoutOtherSession)
+			w.WriteHeader(http.StatusNoContent)
+			return
 		}
 	}
 	s.clearAuthCookies(w)

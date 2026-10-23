@@ -65,11 +65,12 @@ func (s *Server) memoryRef(r *http.Request) (knowledge.SpaceRef, bool) {
 
 // requireMemoryWriteAuth gates a memory MUTATION. The `global` space is
 // instance-wide (not tenant-scoped), so a write/delete/import there is
-// visible to EVERY tenant — in multi-tenant (cloud) mode that requires
-// super-admin (else any authenticated member could pollute or wipe other
-// orgs' shared knowledge). Tenant-scoped spaces only affect the caller's
-// own org, so a member may write them. Local single-tenant mode (no
-// identity store) has no cross-tenant concern and is always allowed.
+// visible to EVERY tenant — in multi-tenant (cloud) mode that requires a
+// super-admin whose platform authority stands (platformAuthorityStands: the
+// flag from the account, the credential still live). Tenant-scoped spaces
+// only affect the caller's own org, so a member may write them. Local
+// single-tenant mode (no identity store) has no cross-tenant concern and is
+// always allowed.
 func (s *Server) requireMemoryWriteAuth(w http.ResponseWriter, r *http.Request, ref knowledge.SpaceRef) bool {
 	if ref.Visibility != knowledge.VisibilityGlobal {
 		return true
@@ -77,10 +78,9 @@ func (s *Server) requireMemoryWriteAuth(w http.ResponseWriter, r *http.Request, 
 	if s.authStore() == nil {
 		return true // local single-tenant
 	}
-	if id, ok := auth.FromContext(r.Context()); ok && id.IsSuperAdmin {
+	if s.platformAuthority(w, r) {
 		return true
 	}
-	httpError(w, http.StatusForbidden, "writing the global memory space requires super-admin")
 	return false
 }
 

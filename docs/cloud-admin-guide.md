@@ -33,7 +33,10 @@ account is created **active** with that password and reconciled to it on
 password reset only on drift so idempotent restarts are no-ops. The
 secret is authoritative — rotate by updating it and restarting, and note
 that a password changed through the UI **reverts on the next restart**
-by design. Nothing is logged on this path.
+by design. A password this reconciliation replaces at boot ends none of
+the account's sessions and none of its personal access tokens: after a
+rotation meant to shut someone out, sign the account out everywhere.
+Nothing is logged on this path.
 
 **One-time temp password (when no password is declared).** Set only
 `ITERION_BOOTSTRAP_ADMIN_EMAIL` and roll the chart. The server creates
@@ -195,11 +198,29 @@ curl -X PATCH https://iterion.example.com/api/admin/users/$USER_ID \
   -d '{"status":"pending_password_change"}'
 ```
 
-Setting the status to `pending_password_change` blocks login until the
-user rotates via `POST /api/auth/password/change` (the standard
-auth-rotation endpoint also covers the bootstrap and post-reset flows).
-Disabling the user (`status:"disabled"`) refuses every login attempt
-while keeping their data.
+Setting the status to `pending_password_change` sends a password sign-in
+to the rotation via `POST /api/auth/password/change` (the standard
+auth-rotation endpoint also covers the bootstrap and post-reset flows) and
+refuses an SSO sign-in (the login page shows `sso_error=password_change_required`);
+meanwhile it refuses every refresh and every credential a session would
+mint — a team switch, a personal access token, a WebSocket ticket, an SSO
+link — and
+refuses the account's personal access tokens: the user's open sessions end
+at their next renewal, within the access-token lifetime, 15 minutes by
+default, and the rotation itself revokes every session born before it. An
+account that signs in through SSO only has no password to rotate: its way
+out is the emailed reset ("Forgot your password?"), which sets a password
+and the account active — or an administrator setting the status back to
+`active`. Disabling the user (`status:"disabled"`) refuses every login
+attempt while keeping their data, and ends every session, revokes every
+personal access token and removes every SSO identity a signed-in session
+connected once the status has landed; a revocation that fails answers `500`
+with the account disabled — repeat the request. The super-admin declared
+with `ITERION_BOOTSTRAP_ADMIN_PASSWORD` is the exception: the next
+restart's reconciliation (§1.1) sets it active and super-admin again — the
+sessions, tokens and identities the disable ended stay ended — so remove
+the `ITERION_BOOTSTRAP_ADMIN_*` declaration before disabling that account
+for good.
 
 ### 1.7 DLQ triage
 

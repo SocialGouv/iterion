@@ -57,8 +57,7 @@ func (s *Server) handlePutOrgMember(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	orgID := r.PathValue("id")
 	memberID := r.PathValue("user_id")
-	if !id.IsSuperAdmin {
-		httpError(w, http.StatusForbidden, "super-admin required to place an existing account in an org")
+	if !s.platformAuthority(w, r) {
 		return
 	}
 	if !s.canManageOrg(r.Context(), id, orgID) {

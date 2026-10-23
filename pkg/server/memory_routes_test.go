@@ -85,14 +85,16 @@ func TestMemoryRoutes_GlobalWriteGate(t *testing.T) {
 	s := newOrgTestServer(t) // authSvc set → s.authStore() != nil
 	const gl = "visibility=global&name=shared"
 
-	member := auth.WithIdentity(context.Background(), auth.Identity{UserID: "m", TeamID: "t1"})
+	// Dev-mode principals: the gate's derivation reads the flag they carry,
+	// as a server without authentication would stamp them.
+	member := auth.WithIdentity(context.Background(), auth.Identity{UserID: "m", TeamID: "t1", Credential: auth.CredentialDevMode})
 	w := httptest.NewRecorder()
 	s.handleMemoryWriteDoc(w, httptest.NewRequest("PUT", "/api/memory/doc?"+gl+"&path=a.md", strings.NewReader("# A")).WithContext(member))
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("member global write should 403, got %d (%s)", w.Code, w.Body.String())
 	}
 
-	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "admin", IsSuperAdmin: true})
+	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "admin", IsSuperAdmin: true, Credential: auth.CredentialDevMode})
 	w = httptest.NewRecorder()
 	s.handleMemoryWriteDoc(w, httptest.NewRequest("PUT", "/api/memory/doc?"+gl+"&path=a.md", strings.NewReader("# A")).WithContext(admin))
 	if w.Code != http.StatusOK {

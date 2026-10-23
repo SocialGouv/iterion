@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -46,6 +47,10 @@ const (
 	ssoErrLinkRequired     = "link_required"
 	ssoErrRestricted       = "restricted"
 	ssoErrLoginFailed      = "login_failed"
+	// ssoErrPasswordChangeRequired refuses the SSO sign-in of an account an
+	// administrator set pending a password change: the SPA names the exits
+	// (the forced change, or the emailed reset for an SSO-only account).
+	ssoErrPasswordChangeRequired = "password_change_required"
 )
 
 // redirectSSOError aborts an OIDC callback by redirecting the browser to the
@@ -74,6 +79,8 @@ func ssoErrorForAuth(err error) string {
 		return ssoErrLinkRequired
 	case errors.Is(err, auth.ErrSSORestricted):
 		return ssoErrRestricted
+	case errors.Is(err, auth.ErrPasswordChangeRequired):
+		return ssoErrPasswordChangeRequired
 	default:
 		return ssoErrLoginFailed
 	}
@@ -169,7 +176,7 @@ func (s *Server) resolveOrgTenants(r *http.Request) []string {
 // ---- OIDC handlers ----
 
 func (s *Server) handleOIDCStart(w http.ResponseWriter, r *http.Request) {
-	s.beginOIDCFlow(w, r, r.PathValue("provider"), "")
+	s.beginOIDCFlow(w, r, r.PathValue("provider"), auth.Identity{})
 }
 
 // handleOIDCLinkStart begins an SSO flow that, on completion, attaches the
@@ -183,13 +190,22 @@ func (s *Server) handleOIDCLinkStart(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
-	s.beginOIDCFlow(w, r, r.PathValue("provider"), id.UserID)
+	// A link authenticates the account through an IdP identity from then on:
+	// only a live session starts one (auth.Service.CheckDerivation), and the
+	// callback asks again before it links.
+	if _, err := s.checkDerivation(r.Context(), id, auth.MintSSOLink); err != nil {
+		s.derivationError(w, r, err)
+		return
+	}
+	s.beginOIDCFlow(w, r, r.PathValue("provider"), id)
 }
 
 // beginOIDCFlow resolves the connector, persists PendingAuth and redirects to
-// the IdP authorize URL. linkUserID is empty for a sign-in flow and set to the
-// caller's user id for the connect-from-settings flow.
-func (s *Server) beginOIDCFlow(w http.ResponseWriter, r *http.Request, name, linkUserID string) {
+// the IdP authorize URL. link is the zero Identity for a sign-in flow and the
+// caller's identity for the connect-from-settings flow: its account, and the
+// session the callback checks again before it links.
+func (s *Server) beginOIDCFlow(w http.ResponseWriter, r *http.Request, name string, link auth.Identity) {
+	linkUserID := link.UserID
 	c, tenantID, providerID, err := s.resolveConnector(r.Context(), name)
 	if err != nil {
 		httpError(w, http.StatusNotFound, "unknown provider")
@@ -197,7 +213,7 @@ func (s *Server) beginOIDCFlow(w http.ResponseWriter, r *http.Request, name, lin
 	}
 	state, verifier, _, err := oidc.GenerateStateAndPKCE()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "internal error")
+		s.identityFailure(w, r, fmt.Errorf("generate the OIDC state: %w", err))
 		return
 	}
 	redirectURI := s.oidcRedirectURI(name)
@@ -222,7 +238,7 @@ func (s *Server) beginOIDCFlow(w http.ResponseWriter, r *http.Request, name, lin
 	}
 	authURL, err := c.AuthorizeURL(r.Context(), redirectURI, state, verifier)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "build authorize URL: %v", err)
+		s.identityFailure(w, r, fmt.Errorf("build authorize URL: %w", err))
 		return
 	}
 	// The agent-binding cookie is a BROWSER login-CSRF guard: it is set on the
@@ -236,25 +252,27 @@ func (s *Server) beginOIDCFlow(w http.ResponseWriter, r *http.Request, name, lin
 	if !desktop {
 		binding, err = newAgentBindingToken()
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, "internal error")
+			s.identityFailure(w, r, fmt.Errorf("generate the agent binding: %w", err))
 			return
 		}
 	}
 	if err := s.oidcStates.Put(r.Context(), oidc.PendingAuth{
-		Provider:        name,
-		State:           state,
-		CodeVerifier:    verifier,
-		RedirectURI:     redirectURI,
-		NextURL:         next,
-		IssuedAt:        time.Now().UTC(),
-		AgentBinding:    binding,
-		TenantID:        tenantID,
-		OrgProviderID:   providerID,
-		LinkUserID:      linkUserID,
-		Desktop:         desktop,
-		DesktopRedirect: desktopRedirect,
+		Provider:              name,
+		State:                 state,
+		CodeVerifier:          verifier,
+		RedirectURI:           redirectURI,
+		NextURL:               next,
+		IssuedAt:              time.Now().UTC(),
+		AgentBinding:          binding,
+		TenantID:              tenantID,
+		OrgProviderID:         providerID,
+		LinkUserID:            linkUserID,
+		LinkSessionLineage:    link.SessionLineage,
+		LinkSessionGeneration: link.SessionGeneration,
+		Desktop:               desktop,
+		DesktopRedirect:       desktopRedirect,
 	}); err != nil {
-		httpError(w, http.StatusInternalServerError, "persist state: %v", err)
+		s.identityFailure(w, r, fmt.Errorf("persist state: %w", err))
 		return
 	}
 	if binding != "" {
@@ -396,12 +414,60 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// ?sso_linked / ?sso_link_error could not be shown — a link that failed
 	// reported nothing at all.
 	if pending.LinkUserID != "" {
-		if err := s.authSvc.LinkExternalToUser(r.Context(), ext, pending.LinkUserID); err != nil {
+		// The session that started the link must still be live: a sign-out,
+		// "sign out everywhere", a password change or a disable landing during
+		// the IdP round trip refuses the link. The access token that started it
+		// may have expired meanwhile; its session is what is asked.
+		started := auth.Identity{
+			UserID:            pending.LinkUserID,
+			Credential:        auth.CredentialAccessToken,
+			SessionLineage:    pending.LinkSessionLineage,
+			SessionGeneration: pending.LinkSessionGeneration,
+		}
+		if _, err := s.checkDerivation(r.Context(), started, auth.MintSSOLink); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("oidc link refused for user %s via %s: the session that started it: %v", pending.LinkUserID, name, err)
+			}
+			http.Redirect(w, r, deeplink.Path("/account")+"?sso_link_error="+url.QueryEscape(linkErrorCode(err)), http.StatusFound)
+			return
+		}
+		created, err := s.authSvc.LinkExternalToUser(r.Context(), ext, pending.LinkUserID, pending.LinkSessionLineage)
+		if err != nil {
+			// The write's answer may have been lost AFTER the row landed (the
+			// lost-commit class): the row THIS flow wrote — same account, this
+			// flow's session lineage — is removed before the caller is told
+			// anything, exactly like the refusal path below. A row another
+			// flow wrote is not ours to remove.
+			if uerr := s.authSvc.RemoveFlowSSOLink(context.WithoutCancel(r.Context()), pending.LinkUserID, ext.Provider, ext.Subject, pending.LinkSessionLineage); uerr != nil {
+				s.identityFailure(w, r, fmt.Errorf("remove the SSO link %s/%s of user %s after a write whose answer was lost: %w (write error: %v)", ext.Provider, ext.Subject, pending.LinkUserID, uerr, err))
+				return
+			}
 			if s.logger != nil {
 				s.logger.Warn("oidc link failed for user %s via %s: %v", pending.LinkUserID, name, err)
 			}
 			http.Redirect(w, r, deeplink.Path("/account")+"?sso_link_error="+url.QueryEscape(linkErrorCode(err)), http.StatusFound)
 			return
+		}
+		// Asked again once the link exists: a "sign out everywhere" or a
+		// disable whose record landed after the check above and before the
+		// link was written may have removed the account's session links
+		// without seeing it. A revocation recorded after this second check
+		// sees the link. A refusal — or a check that could not complete —
+		// removes the link this flow wrote before the caller is told
+		// anything.
+		if created {
+			if _, err := s.checkDerivation(r.Context(), started, auth.MintSSOLink); err != nil {
+				uerr := s.authSvc.RemoveFlowSSOLink(context.WithoutCancel(r.Context()), pending.LinkUserID, ext.Provider, ext.Subject, pending.LinkSessionLineage)
+				if uerr != nil {
+					s.identityFailure(w, r, fmt.Errorf("remove the SSO link %s/%s of user %s written from a session refused since: %w (refusal: %v)", ext.Provider, ext.Subject, pending.LinkUserID, uerr, err))
+					return
+				}
+				if s.logger != nil {
+					s.logger.Warn("oidc link of user %s via %s removed: the session that started it was refused once the link was written: %v", pending.LinkUserID, name, err)
+				}
+				http.Redirect(w, r, deeplink.Path("/account")+"?sso_link_error="+url.QueryEscape(linkErrorCode(err)), http.StatusFound)
+				return
+			}
 		}
 		http.Redirect(w, r, deeplink.Path("/account")+"?sso_linked="+url.QueryEscape(c.Display()), http.StatusFound)
 		return
@@ -434,6 +500,9 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		ticket, mintErr := s.desktopTickets.Mint(r.Context(), res)
 		if mintErr != nil {
+			if s.logger != nil {
+				s.logger.Error("sso login via %s: mint the desktop ticket: %v", name, mintErr)
+			}
 			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
 			return
 		}
@@ -468,6 +537,11 @@ type ssoLinkView struct {
 	ProviderUserID string `json:"provider_user_id"`
 	Email          string `json:"email,omitempty"`
 	CreatedAt      string `json:"created_at,omitempty"`
+	// SessionLinked marks a link a signed-in session wrote from the account
+	// settings: "sign out everywhere" and an admin disable remove those —
+	// except that an account with no password keeps its oldest link, so it
+	// never loses every sign-in method it had.
+	SessionLinked bool `json:"session_linked"`
 }
 
 // handleListMySSOLinks returns the caller's connected SSO identities.
@@ -475,14 +549,15 @@ func (s *Server) handleListMySSOLinks(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	links, err := s.authSvc.ListSSOLinks(r.Context(), id.UserID)
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		s.authError(w, r, err)
 		return
 	}
 	out := struct {
 		Links []ssoLinkView `json:"links"`
 	}{Links: make([]ssoLinkView, 0, len(links))}
 	for _, l := range links {
-		v := ssoLinkView{Provider: l.Provider, ProviderUserID: l.ProviderUserID, Email: l.Email}
+		v := ssoLinkView{Provider: l.Provider, ProviderUserID: l.ProviderUserID, Email: l.Email,
+			SessionLinked: l.SessionLineage != ""}
 		if !l.CreatedAt.IsZero() {
 			v.CreatedAt = l.CreatedAt.UTC().Format(time.RFC3339)
 		}
@@ -501,7 +576,11 @@ func (s *Server) handleUnlinkMySSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.authSvc.UnlinkExternal(r.Context(), id.UserID, provider, subject); err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		if errors.Is(err, auth.ErrLastSignInMethod) {
+			s.httpErrorCode(w, r, http.StatusConflict, "last_sign_in_method", "%s", auth.ErrLastSignInMethod.Error())
+			return
+		}
+		s.authError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

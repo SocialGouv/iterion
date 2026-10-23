@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
@@ -97,6 +98,21 @@ func (s *Server) buildOpenAPI() map[string]any {
 						},
 					}
 				}
+			}
+			// The credential-derivation chokepoint's refusal statuses: the
+			// routes that mint a credential, grant or exercise platform
+			// authority, or change or remove one answer the refusals before
+			// their handler runs, and the spec carries them (the generator
+			// has no other source for error responses).
+			if responses := chokepointResponses(m, rt.Pattern); responses != nil {
+				resp, _ := op["responses"].(map[string]any)
+				if resp == nil {
+					resp = map[string]any{}
+				}
+				for code, r := range responses {
+					resp[code] = r
+				}
+				op["responses"] = resp
 			}
 			if _, ok := op["responses"]; !ok {
 				op["responses"] = map[string]any{"default": map[string]any{"description": "Response"}}
@@ -208,4 +224,60 @@ func title(s string) string {
 		b.WriteString(w[1:])
 	}
 	return b.String()
+}
+
+// chokepointRefusalDescriptions are the shared refusal bodies: what the
+// credential-derivation chokepoint (auth.Service.CheckDerivation, and the
+// super-admin re-derivation at the identity) refuses, per status.
+var chokepointRefusalDescriptions = map[int]string{
+	http.StatusUnauthorized:       "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone.",
+	http.StatusForbidden:          "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route.",
+	http.StatusConflict:           "The change conflicts with the account's state (see the error code in the body).",
+	http.StatusTooManyRequests:    "The proof is throttled like the sign-in it stands for; Retry-After names the wait.",
+	http.StatusServiceUnavailable: "The request's record landed but a later step failed; sign in again and repeat the request (every step is idempotent).",
+}
+
+// gatedRouteChokepointCodes lists the refusal statuses of every route the
+// chokepoint gates, beyond the platform-admin family (every /api/admin/
+// route and the non-GET plugin routes, which all answer 401 and 403). Keyed
+// "METHOD pattern" as the mux registers them; keep in step with the
+// gateDerivation / requireSuperAdmin registrations.
+var gatedRouteChokepointCodes = map[string][]int{
+	"POST /api/auth/me/team/{team_id}":                   {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/auth/me/org/{org_id}":                     {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/me/tokens":                                {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/ws/ticket":                                {http.StatusUnauthorized, http.StatusForbidden},
+	"GET /api/me/sso/{provider}/link/start":              {http.StatusUnauthorized, http.StatusForbidden},
+	"DELETE /api/me/sso/links/{provider}/{subject}":      {http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict},
+	"DELETE /api/me/tokens/{token_id}":                   {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/me/password":                              {http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict, http.StatusTooManyRequests},
+	"POST /api/me/sessions/revoke-all":                   {http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable},
+	"POST /api/admin/users/{id}/reset-password":          {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/orgs/{id}/sso/providers":                  {http.StatusUnauthorized, http.StatusForbidden},
+	"PATCH /api/orgs/{id}/sso/providers/{provider_id}":   {http.StatusUnauthorized, http.StatusForbidden},
+	"DELETE /api/orgs/{id}/sso/providers/{provider_id}":  {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/orgs/{id}/sso/domains":                    {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/orgs/{id}/sso/domains/{domain_id}/verify": {http.StatusUnauthorized, http.StatusForbidden},
+	"DELETE /api/orgs/{id}/sso/domains/{domain_id}":      {http.StatusUnauthorized, http.StatusForbidden},
+}
+
+// chokepointResponses answers the refusal response objects a route carries:
+// the platform-admin family (every /api/admin/ route, the non-GET plugin
+// routes) always, the explicit table's codes where the route is gated, nil
+// for a route the chokepoint does not gate.
+func chokepointResponses(method, pattern string) map[string]any {
+	codes, ok := gatedRouteChokepointCodes[method+" "+pattern]
+	if !ok {
+		isPlatformAdmin := strings.HasPrefix(pattern, "/api/admin/") || pattern == "/api/admin"
+		isPluginWrite := strings.HasPrefix(pattern, "/api/v1/plugins") && method != http.MethodGet
+		if !isPlatformAdmin && !isPluginWrite {
+			return nil
+		}
+		codes = []int{http.StatusUnauthorized, http.StatusForbidden}
+	}
+	out := make(map[string]any, len(codes))
+	for _, code := range codes {
+		out[strconv.Itoa(code)] = map[string]any{"description": chokepointRefusalDescriptions[code]}
+	}
+	return out
 }

@@ -219,7 +219,12 @@ func TestRefreshRotationAndReuseDetection(t *testing.T) {
 	if r2.RefreshToken == res.RefreshToken {
 		t.Fatal("refresh token should rotate")
 	}
-	// Reusing the now-revoked first token must wipe all sessions.
+	// Reusing the now-revoked first token once its rotation's reuse grace
+	// window has passed must wipe all sessions. The window is measured on
+	// the session store's clock, so that is the clock moved past it.
+	clock := &testClock{now: svc.now().Add(DefaultRefreshReuseGrace + time.Second)}
+	svc.now = clock.Now
+	svc.sessions.(*MemorySessionStore).SetClock(clock.Now)
 	_, err = svc.Refresh(ctx, res.RefreshToken, "ua", "ip")
 	if !errors.Is(err, ErrSessionRevoked) {
 		t.Fatalf("expected ErrSessionRevoked, got %v", err)
@@ -238,7 +243,7 @@ func TestSwitchTeamRequiresMembership(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	other, _ := svc.store.CreateTeam(ctx, identity.Team{ID: "other", Name: "Other", Slug: "other"})
-	if _, _, _, err := svc.SwitchTeam(ctx, res.User.ID, other.ID); !errors.Is(err, ErrNotAMember) {
+	if _, err := svc.SwitchTeam(ctx, Identity{Credential: CredentialAccessToken, UserID: res.User.ID}, other.ID); !errors.Is(err, ErrNotAMember) {
 		t.Fatalf("expected ErrNotAMember, got %v", err)
 	}
 }

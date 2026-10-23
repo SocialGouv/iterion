@@ -2,7 +2,7 @@
 
 Six families of credential reach the iterion cloud API, and each one either converges on the single function that mints a session or on the single choke that turns a presented token into a tenant-scoped identity.
 
-> Drawn from the code at commit `f564846d3`. How this page is kept true: [README](README.md).
+> Drawn from the code at commit `98787101a` (branch fix/org-tree-errors-1668, on v3.276.0). How this page is kept true: [README](README.md).
 
 ## Minting a session
 
@@ -37,14 +37,15 @@ flowchart TD
     GLOB --> MINT
     MINT -->|"PendingAuth.Desktop"| TICK["mint a 2-minute desktop ticket, 302 it to the validated loopback - no cookie is set"]
     TICK --> DEX
-    MINT --> OUT{"renderAuthResponse"}
+    MINT -->|"an SSO login in the browser"| SSOOUT["setAuthCookies, then a 302 to the PendingAuth next= target - no body"]
+    MINT -->|"a password login"| OUT{"writeSession - the session alone, an AuthSessionResponse with no org tree, so nothing read after the mint can fail its answer"}
     DEX --> OUT
     OUT -->|"Sec-Fetch-* or Origin present, so a browser"| COOK["HttpOnly cookies only - access_token is omitted from the body"]
     OUT -->|"CLI, SDK or the desktop native client"| BODY["the same cookies, plus access_token in the JSON body"]
 ```
 
 - The gates above are ordered as the code runs them, and neither covers the SSO entry points. The origin gate is the umbrella middleware's and runs before the public-path bypass, so it covers `/api/auth/login` even though `isPublicPath` lists it — but `originGateAllows` returns true for anything that is not a state-changing `/api/` call, and `/start` and `/callback` are GETs. The buckets are not middleware: `limitRoute` decorates the login handler (shared with the password change and both reset routes), register, refresh and the desktop exchange — the two SSO routes are registered bare.
-- `POST /api/auth/register`, the forced rotation on `POST /api/auth/password/change` and the invitation acceptance paths are not drawn: each one ends in the same `issueLogin`, hence in the same minting node.
+- Not drawn, and not through `issueLoginInTeam`: the password flows — the forced rotation on `POST /api/auth/password/change`, `POST /api/me/password` and the reset confirm — read the session's context (`prepareLogin`) and revoke every session of the account (`revokeAccount`) BEFORE they commit, and write the refresh row after it (`commitLogin`), so a read or a revocation that fails leaves the password and the link as they were; their new session is born under the generation their own revocation raised, read from nothing (`RevokedAccountRoot`). `POST /api/auth/register` builds its session from the rows it just wrote (`loginContextFromRows`), born under generation zero (`NewAccountRoot`), with no read after its commit; the logged-in invitation accept mints nothing — every read it needs runs once before it claims the invitation, and the team and the org membership it mirrors the grant to are read again after the claim, so the write follows rows an off-boarding may have just removed; a read that fails there answers an error with the invitation already spent and nothing granted — an admin reads it "accepted by" that account, which holds no grant, the same link answers 409 `invitation already accepted`, and only a new invitation gets the user in. An SSO first login plans the grants its matched rows take BEFORE it creates the account, so a read the plan needs that fails commits neither the account nor its SSO link; the plan reads no row of that account — a uuid minted a moment ago holds none — and the landing defaults come from the grant's own team read. Its session's context is read once the account, its link and its grants are written (`issueNewAccountLogin`), its root born under generation zero, read from nothing: a read failing there answers an error with the account written, and the user's next attempt signs in as a returning user.
 - A `/start` call maps every resolver failure to one `404 unknown provider`; only the callback splits `unknown_provider` from `disabled`, because that is where the user sees a banner.
 - The tenant and the provider id come from `PendingAuth`, written at `/start` and keyed by the IdP-echoed state, so a slug presented at `/callback` cannot be coerced into another tenant's policy.
 - `GitHubGatingActive` counts enabled `kind=github` rows with **no tenant filter**: one org's allow-list switches gating on for every GitHub login on the deployment, and a gated match then admits a user even under `invite_only`.
@@ -61,9 +62,11 @@ flowchart TD
     RA -->|"cfg.DisableAuth - a local studio or the desktop build"| DEV["ghostTeamMutatingRefusal first, unconditionally and with no canManageTeam probe, then a synthesized super-admin on a literal dev store tenant - scopeRunByID and stampAuthedContext are both skipped"]
     DEV --> HANDLER["the handler runs"]
     RA -->|"a ticket query parameter on a WS-upgrade path"| WST{"wsTicketIdentity - FindOneAndDelete, so single-use is atomic across replicas"}
-    WST -->|"presented but invalid, expired or already redeemed"| XT["401 - explicitly not a fall-through to the absent bearer"]
+    WST -->|"presented but unknown, expired or already redeemed, or naming no user"| XT["401 - explicitly not a fall-through to the absent bearer"]
+    WST -->|"a redemption the ticket store could not complete - a failed FindOneAndDelete, or a stored identity that does not decode"| X500P
     RA -->|"a bearer with the iap_ prefix"| PAT{"identityFromPAT - hash lookup, Usable, owner active, team pin or default_team_id, membership AND team re-read"}
-    PAT -->|"revoked or expired, owner inactive, membership gone, team read failed"| X401P["401 naming which read refused, never a narrower identity"]
+    PAT -->|"unknown, revoked or expired, owner inactive, membership or team gone"| X401P["401 naming which read refused, never a narrower identity"]
+    PAT -->|"a row the store could not read"| X500P["500 identity unavailable - the cause logged, never a 401 a client would read as a dead token"]
     RA -->|"any other bearer, the access cookie of the spelling this build writes, or a t= query parameter on /api/ws and /api/ws/*"| JWT{"signer.Verify - HS256 only, issuer and audience and exp required, kid dispatch, jti denylist"}
     JWT -->|"expired"| XJ1["401 token expired"]
     JWT -->|"bad signature, issuer, audience, or a denied jti"| XJ2["401 token invalid"]
@@ -89,19 +92,29 @@ flowchart TD
 ```mermaid
 stateDiagram-v2
 %% vocabulary: auth.Session
-    [*] --> live: IssueSession stores the hex SHA-256 of a fresh 48-byte token with a 30-day expires_at
-    live --> revoked: Refresh CAS-sets revoked_at from absent, then issues the next session
-    live --> revoked: logout revokes the presented row only, and answers 204 either way
-    live --> revoked: RevokeUserSessions - revoke-all, a password change or reset confirm, a disabled owner
-    revoked --> revoked: presented again, or a CAS lost to a parallel refresh - EVERY session of that user is revoked and the caller gets 401
+    [*] --> live: IssueSession stores the hex SHA-256 of a fresh 48-byte token with a 30-day expires_at and its delivered_at, as the root of a new lineage - its lineage is its own id, born under the account's session generation the login read before its commit, zero for an account the login created
+    live --> rotated: Refresh reads all it answers with, then RotateSession CAS-sets revoked_at - the database clock - with the rotation record - nonce, key id, successor hash, the client - and writes the successor, carrying rotated_from, the lineage and its generation, then checks it against session_revocations and claims it - delivered_at - before answering
+    rotated --> rotated: presented again, its successor handed out - claimed - live, never rotated, and within ITERION_REFRESH_REUSE_GRACE of the rotation on the database clock - answered with that same successor, re-derived, checked and claimed again - or its successor handed to nobody, never written or never claimed - written or claimed then, if presented within the completion horizon, 5 minutes or the window if longer, and before the token's own expiry
+    live --> revoked: logout - records the lineage in session_revocations, the commit point it answers 204 from, 500 with the cookies kept when its read or record failed - then a pass after the answer revokes the lineage's live sessions, revoked_at written only where absent
+    live --> revoked: RevokeUserSessions - revoke-all, a password change, a reset by email or by an administrator, the forced rotation, an administrator's disable - raises the account's generation in session_revocations, then a pass after the answer revokes the account's live sessions born under a lower generation
+    rotated --> rotated: logout with a token of its lineage, or RevokeUserSessions - the row is left as it is, revoked_at and rotation record kept, and the revocation's record refuses the successor that record names
+    rotated --> rotated: presented again past the window with its successor handed out, past the completion horizon with it handed to nobody, or with its successor revoked or rotated - its LINEAGE is recorded as revoked and its live session revoked, and the caller gets 401, every session of the user when the row carries no lineage, retired before lineages were recorded - and a record that fails answers 500, the next presentation retrying it
+    revoked --> revoked: presented again - its lineage is revoked again and the caller gets 401, every session of the user when the row carries no lineage
     live --> expired: now is past expires_at - Refresh answers ErrSessionExpired, a 401 of its own, while the row is still there to be read
-    expired --> revoked: logout and RevokeUserSessions filter on revoked_at alone, so an expired row is revoked like any other
+    expired --> revoked: the passes of a sign-out and of a revoke-all match a live row by its user and its lineage or generation, never by its expiry, so an expired row is revoked like any other
     expired --> gone: the lazy TTL index on expires_at reaps it, with no sweeper
+    rotated --> gone: reaped at the original expiry
     revoked --> gone: reaped at the original expiry, the revoked row being kept until then
     gone --> [*]
 ```
 
-No access-token denylist is wired at boot, so a revoke-all lets outstanding access JWTs age out within their access-token TTL (`ITERION_ACCESS_TTL`, 15 minutes by default); `JWTDenylist` and `NewJWTSignerMulti` exist but nothing outside tests constructs them.
+- A refresh reads everything its answer needs — the account, its memberships, the active team's org — BEFORE the rotation, so a failed read leaves the presented token live; the successor's write, its check against `session_revocations` (`confirmSuccessor`), its claim (`ClaimSession`, which only a session not revoked takes) and its check again are the steps after it. A revocation records itself there first — the record is its commit point, the one write it waits for — and its pass over the live sessions runs after its answer, so a sign-out or a revoke-all that lands while the write is in flight, whether its pass ran before the successor existed, after it, or not yet, retires that successor and refuses the presentation; a write, a check or a claim that fails leaves the successor unwritten or unclaimed — handed to nobody — and no refresh deletes a row it wrote, so the token's next presentation completes it and no successor a presentation was handed disappears. A refresh is bounded at 20 seconds as a whole and each of its session-store steps at 5 seconds.
+- The reuse grace window (`ITERION_REFRESH_REUSE_GRACE`, 30 seconds by default, `0` disables it, measured on the database's clock — `RotateSession` stamps `$$NOW` and the presentation is compared with `SessionStore.Now`, both on the primary) is what two tabs, a desktop retrying a lost answer, or two concurrent refreshes of one token present: a token a rotation retired moments ago. A rotation whose successor was handed to nobody — never written, or written and never claimed — is completed by the token's next presentation within the completion horizon — 5 minutes after the rotation, or the window when that is longer — and before the token's expiry; later, the token is one its holder abandoned, and its presentation is reuse. The successor is re-derived from the presented token and the rotation's nonce under a key derived from the JWT signing key, and checked against the successor hash the rotation recorded — `sessions` stores no refresh token; a desktop SSO ticket carries one, plaintext, readable until the desktop redeems it or two minutes pass, and resting in its collection until Mongo's TTL monitor reaps it, in the oplog of a replica set and in every backup taken meanwhile — the ticket's expiry does not end the session it carries ([cloud-admin.md](../cloud-admin.md) §2, [#2635](https://github.com/SocialGouv/iterion/issues/2635)). Its price: a stolen token replayed within the window of its rotation receives the same successor the legitimate holder received, and both then hold the same lineage until a retired token of it is presented past its window, which revokes the lineage — the account's other logins keep their sessions. A sign-out never re-opens a window: it keeps `revoked_at` and revokes the presented token's whole lineage, whose record refuses every successor a retired token of it names.
+- A token the store has no row for — Mongo's TTL index reaped an expired session — and a session whose account no longer exists answer 401 `session not found`, which clears the cookies; a store failure answers 500 and leaves them alone.
+
+- An access token names the session it was minted for (`sid`, the lineage; `sgen`, its generation). Every route that mints a credential, grants or exercises platform authority, or changes or removes a credential asks `CheckDerivation` first — a team or org switch, `POST /api/me/tokens` (again once the token exists), `POST /api/ws/ticket` and its ticket's redemption, the SSO link's start and callback (again once the link is written), the removal of an SSO identity or a personal access token, the in-app password change, "sign out everywhere", the writes of an org's SSO providers and verified domains, the platform acts outside the admin prefix (org-member placement, the global memory space, another account's token), and every platform-admin route (`requireSuperAdmin`, which also reads the super-admin flag from the account); the desktop exchange asks `CheckStanding` of the session its ticket carries. The super-admin CLAIM is re-derived where the identity is established — a token carries it only while its credential stands and the account still is a super-admin — so a demotion takes the platform authority away at once, everywhere. It refuses a credential once a revocation covers its session (`SessionRevoked`) or the account is disabled or pending a password change, a personal access token whose row is revoked, expired or gone (`SetPATState`), a personal access token asking for a credential of its own account and a ticket everything, and an access token naming no session an SSO link; it answers the presented credential's expiry: a switch re-issues the token with that expiry and the same session (`IssueAccessUntil`), a WebSocket ticket opens nothing past it. A token naming no session — minted before access tokens named theirs — is otherwise bounded by its own expiry alone.
+
+No access-token denylist is wired at boot, so after a revoke-all an outstanding access JWT keeps the access it grants until its own expiry — the access-token TTL, `ITERION_ACCESS_TTL`, 15 minutes by default — except at the routes above, which refuse it (`CheckDerivation`); everything else it does meanwhile is done and persists ([cloud-admin.md](../cloud-admin.md) §2). `JWTDenylist` and `NewJWTSignerMulti` exist but nothing outside tests constructs them.
 
 ## Steps
 
@@ -117,12 +130,12 @@ No access-token denylist is wired at boot, so a revoke-all lets outstanding acce
 | server | builds a per-org connector by unsealing its client secret behind the public-unicast SSRF guard | `resolveConnector`, `buildOrgOIDCConnector`, `outboundStrict` |
 | store | resolves the GitHub gating context with one positive-only `$in` over the materialised keys | `githubGateContext`, `FindGitHubGrantingOrgs` |
 | store | grants memberships grant-only, preserving an existing `Source`, and deletes only `github_sso` rows that stopped matching | `grantMembership`, `reconcileGitHubGrants` |
-| server | picks the active team, resolves its org and org role, mints the JWT with a kid header, a UUID jti and an exp at the access-token TTL (15 minutes by default) | `issueLoginInTeam`, `pickActiveTeam`, `resolveOrgForTeam`, `JWTSigner.IssueAccess` |
-| store | writes the refresh row; the plaintext token is returned and never persisted | `IssueSession`, `MongoSessionStore` |
-| server | sets the HttpOnly cookies and echoes `access_token` only for a non-browser caller | `renderAuthResponse`, `isBrowserClient`, `setAuthCookies` |
+| server | picks the active team, resolves its org and org role, reads the account's session generation, mints the JWT with a kid header, a UUID jti, the session it names and an exp at the access-token TTL (15 minutes by default) | `issueLoginInTeam`, `pickActiveTeam`, `resolveOrgForTeam`, `NewSessionRoot`, `JWTSigner.IssueAccess` |
+| store | writes the refresh row as the root of a new lineage; the plaintext token is returned and never persisted in `sessions` — a desktop SSO ticket carries it, readable until the desktop redeems it or two minutes pass, then resting in its collection, the oplog and backups until reaped | `IssueSession`, `MongoSessionStore` |
+| server | sets the HttpOnly cookies and echoes `access_token` only for a non-browser caller; the org tree is not part of the answer — `GET /api/auth/me` is the one route that builds it | `writeSession`, `isBrowserClient`, `setAuthCookies`, `handleMe`, `buildOrgTree` |
 | desktop | takes a single-use ticket at a validated loopback instead of cookies, then redeems it over its native client | `safeDesktopRedirect`, `handleDesktopExchange` |
 | cli | signs in with a PAT, with email and password, or through a browser loopback on `127.0.0.1` | `runRemoteLogin`, `loginViaBrowser` |
-| server | re-issues the access token alone on a team or org switch — no new refresh row | `handleSwitchTeam`, `Service.SwitchTeam`, `effectiveMembership` |
+| server | re-issues the presented access token on a team or org switch, with its expiry and its session — no new refresh row — refusing a revoked session, a disabled account, one pending a password change and a personal access token | `handleSwitchTeam`, `Service.SwitchTeam`, `Service.CheckDerivation`, `effectiveMembership`, `JWTSigner.IssueAccessUntil` |
 | server | verifies a later request: the WS ticket first, then an `iap_` PAT, then the JWT | `requireAuth`, `wsTicketIdentity`, `identityFromPAT`, `JWTSigner.Verify` |
 | store | re-reads the PAT's owner, membership and team on every use; `last_used_at` is written off the hot path | `identityFromPAT`, `pat.Token.Usable` |
 | server | re-scopes a run-addressed route to the run's team, then stamps the store tenant | `scopeRunByID`, `stampAuthedContext` |
@@ -132,9 +145,9 @@ No access-token denylist is wired at boot, so a revoke-all lets outstanding acce
 
 | what | states | moved by |
 | --- | --- | --- |
-| `identity.UserStatus` | `active`, `disabled`, `pending_password_change` | the admin PATCH disables; `ChangePasswordPending` and a reset confirm activate; `disabled` refuses login, refresh and PAT use alike |
+| `identity.UserStatus` | `active`, `disabled`, `pending_password_change` | the admin PATCH disables or sets pending; `ChangePasswordPending` and a reset confirm activate; `disabled` refuses login, refresh, every credential mint and PAT use alike; `pending_password_change` refuses refresh, every credential mint, PAT use and an SSO login, and sends a password login to the forced change |
 | `users` lockout | unlocked, `locked_until` set 15 minutes out | the fifth consecutive failure sets it; any success clears it; while locked, `Login` still spends argon2id and answers `ErrInvalidCredentials` |
-| `auth.Session` | live, expired, revoked, TTL-reaped | the state diagram above |
+| `auth.Session` | live, rotated, expired, revoked, TTL-reaped | the state diagram above |
 | `pat.Token` | usable, revoked, expired | `Usable` is false once `revoked_at` is set or `expires_at` has passed; the row is kept after revocation for audit |
 | `oidc.PendingAuth` | put, taken, TTL-expired | `Put` at `/start`, `Take` at `/callback` is single-use and re-checks the 10-minute expiry because TTL deletion is lazy |
 | WS and desktop tickets | minted, redeemed, TTL-expired | `Mint` (60 seconds, or 2 minutes for a desktop ticket) and a `FindOneAndDelete` `Redeem` |
@@ -153,7 +166,7 @@ No access-token denylist is wired at boot, so a revoke-all lets outstanding acce
 - **`canAutoLink`** — five conditions: `AutoLinkOnEmail`, a domain store, a DNS-TXT-verified domain for the tenant, a target that is not a super-admin, and a target that administers no other non-personal team. Any failure is `ErrLinkRequiresConsent` → 409 on the API, `sso_error=link_required` on the callback.
 - **The signup gates** — both sit on the NEW-identity branch, past `oidc_links` and past the email match: `ErrSSORestricted` → 403 for a gated GitHub identity matching no allow-listed team, `ErrSignupClosed` → 400 for an ungated one meeting a `signup_mode` other than `open`. A returning user keeps logging in — an `oidc_links` row, or an email match on an operator-trusted provider, ends in `issueLogin` with no gate check, and `reconcileGitHubGrants` merely deletes the `github_sso` memberships that stopped matching. On the callback both are a 302 instead: `sso_error=restricted` for the first, and `sso_error=login_failed` for the second, which falls into the `default` arm of `ssoErrorForAuth` alongside every other failure.
 - **`safeDesktopRedirect`** — 400 at `/start` unless `next=` is an absolute `http` loopback URL with an explicit port, no userinfo and no fragment.
-- **`wsTicketIdentity`** — a presented but dead ticket is a hard 401, never a fall-through to the bearer paths.
+- **`wsTicketIdentity`** — a presented but dead ticket — unknown, expired, already redeemed, or naming no user — is a hard 401 `invalid or expired ws ticket`, never a fall-through to the bearer paths; a redemption the ticket store could not complete is no verdict on the ticket: 500 `identity unavailable`, the cause logged and the ticket kept out of the log.
 - **`identityFromPAT`** — distinct 401 messages for an invalid, revoked or expired token, an inactive owner, a vanished membership and a failed team read; the mint side refuses a token that resolves to no team unless its owner is a super-admin.
 - **`JWTSigner.Verify`** — HS256 only, with issuer, audience and expiry required; 401 `token expired`, otherwise 401 `token invalid` (a denied jti included).
 - **`scopeRunByID`** — 404 for a missing, deleted or invisible run, 403 for a role below the route's rung, 500 when the store fails.
@@ -162,7 +175,7 @@ No access-token denylist is wired at boot, so a revoke-all lets outstanding acce
 
 ## Collections touched
 
-- Read on every mint: `users`, `memberships`, `org_memberships`, `teams`, `orgs` — the active team, its parent org, the caller's roles and the org tree the response carries.
+- Read on a mint: `users`, `memberships`, `org_memberships`, `teams` — the active team, its parent org and the caller's roles — and `session_revocations` for the account's session generation, unless the call created the account or revoked its sessions itself — except where the login is already in hand: a registration builds it from the rows it wrote, the desktop exchange redeems the login its ticket stored. An org switch also lists the org's teams to pick its landing team, and a super-admin's switch into an org reads that `orgs` row; both switches read `session_revocations` for the session the presented token names. The org tree — the `orgs` and every team of each org a user belongs to — is built by `GET /api/auth/me` alone.
 - Written on a password login: `users` (`failed_logins`, `locked_until`, `last_login_at`, and `updated_at`, which the store stamps on every patch — a failed sign-in moves it too) and `sessions` (one hashed refresh row per issued session).
 - Written on an SSO login: `oidc_links`, plus `memberships` and `org_memberships` for a grant; a new non-gated identity also creates `orgs`, `teams` and their membership rows through `createPersonalTeam`.
 - Read on the SSO path: `org_sso_providers` (the per-org row and the GitHub allow-list index) and `org_verified_domains` (the auto-link gate).

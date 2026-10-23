@@ -66,7 +66,8 @@ describe("the browser's identity changing under a live session", () => {
   // browser never inherits the previous user's active repo". Signing out used
   // to be the only way the identity could change — it is not any more: a
   // password-reset link opened WITH a session ends in fresh cookies for the
-  // token's owner, and the view that follows calls reloadIdentity.
+  // token's owner, and the view that follows loads that identity
+  // (completeSignIn), through the same adoptIdentity as reloadIdentity.
   //
   // The reset therefore has to key on the identity, not on the route that
   // changed it. A guard at ResetPassword's call site would need repeating at

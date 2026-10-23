@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -119,8 +120,8 @@ func (m *MemoryStore) PatchUser(_ context.Context, id string, p UserPatch) (User
 	if !ok {
 		return User{}, ErrNotFound
 	}
-	if p.statusRefused(cur.Status) {
-		return User{}, ErrUserStatusChanged
+	if err := p.precondition(cur); err != nil {
+		return User{}, err
 	}
 	if p.Empty() {
 		return cur, nil
@@ -776,6 +777,12 @@ func (m *MemoryStore) ListInvitationsByTeam(_ context.Context, teamID string) ([
 func (m *MemoryStore) UpsertOIDCLink(_ context.Context, link OIDCLink) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// A link written without its stamp carries the write's instant — the
+	// same rule the mongo twin applies to the same field, so keep-one keeps
+	// the same link on both twins for an otherwise-identical history.
+	if link.CreatedAt.IsZero() {
+		link.CreatedAt = time.Now().UTC()
+	}
 	k := oidcKey(link.Provider, link.ProviderUserID)
 	if cur, ok := m.oidc[k]; ok && cur.UserID != link.UserID {
 		if set := m.oidcByUser[cur.UserID]; set != nil {
@@ -817,6 +824,58 @@ func (m *MemoryStore) ListOIDCLinksByUser(_ context.Context, userID string) ([]O
 		return out[i].Provider < out[j].Provider
 	})
 	return out, nil
+}
+
+// DeleteSessionOIDCLinks removes the SSO identity links a signed-in session
+// wrote (SessionLineage set), all of them or one lineage's. The removal never
+// leaves an account without a sign-in method it had: when the account has no
+// password and EVERY link the removal matches, its OLDEST link survives (the
+// same rule in both twins) — a compromised session's cleanup must not lock
+// its owner out of an account that signs in through SSO only.
+func (m *MemoryStore) DeleteSessionOIDCLinks(_ context.Context, userID, lineageID string) (int64, error) {
+	if userID == "" {
+		return 0, errors.New("identity: delete session oidc links: no user id")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var candidates []OIDCLink
+	for k := range m.oidcByUser[userID] {
+		link := m.oidc[k]
+		if link.SessionLineage == "" || (lineageID != "" && link.SessionLineage != lineageID) {
+			continue
+		}
+		candidates = append(candidates, link)
+	}
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+	var n int64
+	for _, link := range candidates {
+		k := oidcKey(link.Provider, link.ProviderUserID)
+		delete(m.oidc, k)
+		delete(m.oidcByUser[userID], k)
+		n++
+	}
+	if u, ok := m.users[userID]; ok && u.PasswordHash == "" && len(m.oidcByUser[userID]) == 0 {
+		oldest := candidates[0]
+		for _, c := range candidates[1:] {
+			if c.CreatedAt.Before(oldest.CreatedAt) ||
+				(c.CreatedAt.Equal(oldest.CreatedAt) && oidcKey(c.Provider, c.ProviderUserID) < oidcKey(oldest.Provider, oldest.ProviderUserID)) {
+				oldest = c
+			}
+		}
+		k := oidcKey(oldest.Provider, oldest.ProviderUserID)
+		m.oidc[k] = oldest
+		if m.oidcByUser[userID] == nil {
+			m.oidcByUser[userID] = make(map[string]bool)
+		}
+		m.oidcByUser[userID][k] = true
+		n--
+	}
+	if len(m.oidcByUser[userID]) == 0 {
+		delete(m.oidcByUser, userID)
+	}
+	return n, nil
 }
 
 func (m *MemoryStore) DeleteOIDCLink(_ context.Context, provider, providerUserID string) error {

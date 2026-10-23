@@ -176,6 +176,46 @@ func runPatchSuite(t *testing.T, s Store) {
 		}
 	})
 
+	t.Run("user: the password-hash precondition refuses a replaced hash and writes nothing", func(t *testing.T) {
+		seedUser("pu4", "pu4@example.org", User{PasswordHash: "hash-current", Status: UserStatusActive})
+		stale, now := "hash-verified-earlier", time.Now().UTC().Truncate(time.Millisecond)
+		if _, err := s.PatchUser(ctx, "pu4", UserPatch{
+			LastLoginAt: &now, IfPasswordHash: &stale,
+		}); !errors.Is(err, ErrUserPasswordChanged) {
+			t.Fatalf("want ErrUserPasswordChanged, got %v", err)
+		}
+		after, err := s.GetUser(ctx, "pu4")
+		if err != nil {
+			t.Fatalf("GetUser: %v", err)
+		}
+		if after.LastLoginAt != nil {
+			t.Fatalf("the refused patch still landed: %+v", after)
+		}
+		// The empty patch answers the precondition too.
+		if _, err := s.PatchUser(ctx, "pu4", UserPatch{IfPasswordHash: &stale}); !errors.Is(err, ErrUserPasswordChanged) {
+			t.Fatalf("an empty patch reported success on a replaced hash: %v", err)
+		}
+		// The hash the row holds admits the write.
+		current := "hash-current"
+		got, err := s.PatchUser(ctx, "pu4", UserPatch{LastLoginAt: &now, IfPasswordHash: &current})
+		if err != nil {
+			t.Fatalf("PatchUser under the current hash: %v", err)
+		}
+		if got.LastLoginAt == nil || !got.LastLoginAt.Equal(now) {
+			t.Fatalf("the admitted patch did not land: %+v", got)
+		}
+		// The status arm still answers first when both refuse.
+		disabled := UserStatusDisabled
+		if _, err := s.PatchUser(ctx, "pu4", UserPatch{Status: &disabled}); err != nil {
+			t.Fatalf("disable: %v", err)
+		}
+		if _, err := s.PatchUser(ctx, "pu4", UserPatch{
+			LastLoginAt: &now, IfPasswordHash: &stale, IfNotStatus: []UserStatus{UserStatusDisabled},
+		}); !errors.Is(err, ErrUserStatusChanged) {
+			t.Fatalf("want ErrUserStatusChanged when both arms refuse, got %v", err)
+		}
+	})
+
 	t.Run("user: a refusal is not a missing account", func(t *testing.T) {
 		seedUser("pu3", "pu3@example.org", User{Status: UserStatusDisabled})
 		name := "ghost"

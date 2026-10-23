@@ -180,12 +180,12 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 		return auth.Identity{}, false, nil
 	}
 	if id.IsSuperAdmin {
-		return auth.Identity{
+		return withCredentialOf(auth.Identity{
 			UserID: id.UserID, Email: id.Email, IsSuperAdmin: true,
 			OrgID: id.OrgID, OrgRole: id.OrgRole,
 			TeamID: teamID, Role: identity.RoleAdmin,
-			Kind: id.Kind, JTI: id.JTI, Via: "super-admin",
-		}, true, nil
+			Via: "super-admin",
+		}, id), true, nil
 	}
 	mb, err := st.GetMembership(ctx, id.UserID, teamID)
 	switch {
@@ -195,12 +195,12 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 			// ADR-078 keeps the capability out of the run console.
 			return auth.Identity{}, false, nil
 		}
-		effective := auth.Identity{
+		effective := withCredentialOf(auth.Identity{
 			UserID: id.UserID, Email: id.Email,
 			OrgID: id.OrgID, OrgRole: id.OrgRole,
 			TeamID: teamID, Role: mb.Role,
-			Kind: id.Kind, JTI: id.JTI, Via: "membership",
-		}
+			Via: "membership",
+		}, id)
 		// The run's team's ORG is the organization this request acts in:
 		// a member resuming a run of another org must be gated —
 		// suspension, monthly budgets — by THAT org, not the
@@ -241,16 +241,33 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 		if oerr != nil || !om.Role.AtLeast(identity.OrgRoleAdmin) {
 			return auth.Identity{}, false, nil
 		}
-		return auth.Identity{
+		return withCredentialOf(auth.Identity{
 			UserID: id.UserID, Email: id.Email,
 			OrgID: t.OrgID, OrgRole: om.Role,
 			TeamID: teamID, Role: identity.RoleViewer,
-			Kind: id.Kind, JTI: id.JTI, Via: "org-admin-lineage",
-		}, true, nil
+			Via: "org-admin-lineage",
+		}, id), true, nil
 	default:
 		// A transient store failure must NOT degrade into a verdict.
 		return auth.Identity{}, false, err
 	}
+}
+
+// withCredentialOf returns scoped carrying the credential facts of from — the
+// principal kind, the token id, the credential kind, its expiry and its
+// session — so an identity re-scoped to a run's team is still the credential
+// that was presented: what it may mint and until when does not change with
+// the team it acts in.
+func withCredentialOf(scoped, from auth.Identity) auth.Identity {
+	scoped.Kind = from.Kind
+	scoped.JTI = from.JTI
+	scoped.Credential = from.Credential
+	scoped.ExpiresAt = from.ExpiresAt
+	scoped.SessionLineage = from.SessionLineage
+	scoped.SessionGeneration = from.SessionGeneration
+	scoped.CredentialID = from.CredentialID
+	scoped.MintedBy = from.MintedBy
+	return scoped
 }
 
 // runScopeLadder is the route ladder of ADR-103, enforced HERE at the choke
@@ -330,4 +347,84 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 		return nil, false
 	}
 	return s.stampAuthedContext(w, r, resolved)
+}
+
+// socketStanding is what one tick of an open run socket (the Browser-Live
+// CDP bridge, the post-mortem shell) concluded about the connection it
+// tends.
+type socketStanding int
+
+const (
+	// socketStands: the credential stands and the scope its upgrade resolved
+	// still holds. The socket keeps going.
+	socketStands socketStanding = iota
+	// socketCredentialRefused: the credential no longer stands — nothing it
+	// sends will be served again. The socket closes naming
+	// credential_refused.
+	socketCredentialRefused
+	// socketScopeLost: the scope the upgrade resolved no longer holds — the
+	// run is gone, or the caller no longer holds a member standing in the
+	// run's team. The socket closes naming scope_lost.
+	socketScopeLost
+	// socketUnreadable: a read did not complete — no verdict. The socket
+	// stays and the caller counts the tick toward its own fail-closed limit.
+	socketUnreadable
+)
+
+// socketTick is one tick's verdict plus what the caller needs to act on it.
+type socketTick struct {
+	outcome socketStanding
+	// cause names what happened, for the close frame and the log line.
+	// Empty while the socket stands.
+	cause string
+}
+
+// runSocketStanding re-asks, for an open run socket, the two questions its
+// upgrade answered once: does the credential still stand, and does the scope
+// it resolved still hold. The scope half is the run console's own
+// per-envelope computation (runConn.mutationAllowed), shared by every open
+// command surface so the answer cannot diverge: the run's team, live, then
+// the caller's standing in it, the super-admin reach read from the account
+// as THIS tick's standing read just returned it — never from the flag the
+// upgrade snapshotted.
+//
+// A bridge or a shell has no envelope to refuse, so a lost scope closes the
+// socket instead of refusing one frame — the fail-closed rule its three-read
+// counter already implements for a standing nobody could re-check. A read
+// that did not complete is no verdict (socketUnreadable): the server's own
+// failure is no refusal, and mapAuthErrorStatus told the two apart above.
+func (s *Server) runSocketStanding(ctx context.Context, runID string, opener auth.Identity) socketTick {
+	user, err := s.checkStanding(ctx, opener)
+	if err != nil {
+		if mapAuthErrorStatus(err) >= http.StatusInternalServerError {
+			if s.logger != nil {
+				s.logger.Error("server: run socket of %s: the standing of its credential could not be read: %v", runID, err)
+			}
+			return socketTick{outcome: socketUnreadable}
+		}
+		return socketTick{outcome: socketCredentialRefused, cause: err.Error()}
+	}
+	team, terr := s.runTenant(ctx, runID)
+	if terr != nil {
+		if errors.Is(terr, store.ErrRunNotFound) || errors.Is(terr, store.ErrRunDeleted) {
+			return socketTick{outcome: socketScopeLost, cause: "the run this socket watches is gone"}
+		}
+		if s.logger != nil {
+			s.logger.Error("server: run socket of %s: its team could not be resolved: %v", runID, terr)
+		}
+		return socketTick{outcome: socketUnreadable}
+	}
+	scoped := opener
+	scoped.IsSuperAdmin = user.IsSuperAdmin
+	resolved, ok, serr := identityInTeamOn(s.authStore(), ctx, scoped, team)
+	if serr != nil {
+		if s.logger != nil {
+			s.logger.Error("server: run socket of %s: the caller's standing in %s could not be read: %v", runID, team, serr)
+		}
+		return socketTick{outcome: socketUnreadable}
+	}
+	if !ok || !resolved.Role.AtLeast(identity.RoleMember) {
+		return socketTick{outcome: socketScopeLost, cause: "your standing in the run's team no longer holds"}
+	}
+	return socketTick{outcome: socketStands}
 }

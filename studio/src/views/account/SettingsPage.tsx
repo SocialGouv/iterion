@@ -18,7 +18,11 @@ import {
   changeMyPassword,
   listProviders,
   listSSOLinks,
+  passwordChangedSignIn,
+  errorCodeOf,
   revokeAllMySessions,
+  SIGNOUT_CLEANUP_FAILED_CODE,
+  SIGNOUT_CLEANUP_FAILED_TEXT,
   ssoLinkStartURL,
   unlinkSSO,
   type ProvidersResponse,
@@ -227,6 +231,17 @@ function ConnectedSSOSection({ userEmail }: { userEmail?: string }) {
                 {l.email && (
                   <div className="text-xs text-fg-muted truncate">{l.email}</div>
                 )}
+                {typeof l.session_linked === "boolean" && (
+                  <Badge
+                    variant={l.session_linked ? "warning" : "neutral"}
+                    size="sm"
+                    className="mt-1"
+                  >
+                    {l.session_linked
+                      ? "Removed when you sign out everywhere"
+                      : "Kept when you sign out everywhere"}
+                  </Badge>
+                )}
               </div>
               <Button
                 variant="secondary"
@@ -266,6 +281,7 @@ function ConnectedSSOSection({ userEmail }: { userEmail?: string }) {
 }
 
 function ChangePasswordSection() {
+  const { completeSignIn, credentialSignedOut } = useAuth();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -287,12 +303,31 @@ function ChangePasswordSection() {
     }
     setBusy(true);
     try {
-      await changeMyPassword(current, next);
+      const answer = await changeMyPassword(current, next);
+      // The change revoked every session of the account, this window's
+      // included, and answered a NEW one whose cookies it set. It is a
+      // delivered session like a sign-in's, so it goes through the same
+      // bookkeeping and identity re-read: the client leaves the replaced
+      // session behind and learns the lineage a sign-out from here names.
+      // The kind is "delivery", not "sign-in": the change is not the user
+      // choosing a sign-in over a pending sign-out, so an OWED record stays
+      // OWED — resolved GONE (its cookie is gone), never ABANDONED.
+      await completeSignIn(answer, "delivery");
       setOk(true);
       setCurrent("");
       setNext("");
       setConfirm("");
     } catch (e) {
+      // The password IS the new one and the server cleared the cookies: this
+      // browser is signed out, and sending the same request again would only
+      // be refused (the current password it carries is no longer the
+      // account's). The state leaves the account, which lands the shell on the
+      // sign-in form, and the server's sentence is pinned over it.
+      const changed = passwordChangedSignIn(e);
+      if (changed) {
+        credentialSignedOut(changed);
+        return;
+      }
       const msg = e instanceof ApiError ? e.message : errorMessage(e);
       setErr(msg);
     } finally {
@@ -381,7 +416,8 @@ function SignOutEverywhereSection() {
   const submit = async () => {
     const ok = await confirm({
       title: "Sign out everywhere?",
-      message: "Revoke every signed-in session for this account?",
+      message:
+        "End every signed-in session for this account AND revoke its personal access tokens — the ones your CLI and your CI jobs use will stop working until you issue new ones. Every SSO identity you connected from this page is disconnected too; the one you signed up or first signed in with stays, so you can still sign in with it.",
       confirmLabel: "Sign out everywhere",
       confirmVariant: "danger",
     });
@@ -395,7 +431,17 @@ function SignOutEverywhereSection() {
       // Login immediately rather than waiting for the next 401.
       await signOut();
     } catch (e) {
-      setErr(errorMessage(e));
+      // A cleanup step that failed AFTER the sign-out landed answers 503
+      // signout_cleanup_failed: the sessions are gone and this window's
+      // cookies are cleared, but something on the account (tokens,
+      // connections) may be left half-done. The plain transport text would
+      // say nothing the user can act on, so the machine's own answer is
+      // rendered: sign in again and repeat the sign-out everywhere.
+      if (errorCodeOf(e) === SIGNOUT_CLEANUP_FAILED_CODE) {
+        setErr(SIGNOUT_CLEANUP_FAILED_TEXT);
+      } else {
+        setErr(errorMessage(e));
+      }
     } finally {
       setBusy(false);
     }
@@ -407,8 +453,10 @@ function SignOutEverywhereSection() {
       <div>
         <h3 className="font-medium">Sign out everywhere</h3>
         <p className="text-xs text-fg-subtle mt-0.5">
-          Use this when a session may be compromised. PATs are not affected — revoke them on the
-          tokens tab.
+          Use this when a session may be compromised: every signed-in session ends and every personal access token of
+          this account is revoked, your CLI and CI tokens included. Every SSO identity you connected from this page is
+          disconnected as well — the one you signed up or first signed in with stays, so SSO sign-in keeps working.
+          Issue new tokens from the tokens tab afterwards, and reconnect the identities you still want.
         </p>
       </div>
       {err && (

@@ -219,7 +219,7 @@ func TestRemoteErrorPaths_readTheBodyAsAPIErrorDoes(t *testing.T) {
 	})
 	t.Run("login", func(t *testing.T) {
 		c := remoteTestClient(t, refuse)
-		_, err := c.LoginWithPassword(context.Background(), "a@b.c", "pw", "cli")
+		_, _, err := c.LoginWithPassword(context.Background(), "a@b.c", "pw", "cli", "")
 		if err == nil || !strings.Contains(err.Error(), "— hint: ask an org admin") {
 			t.Fatalf("login refusal = %v, want the server's hint", err)
 		}

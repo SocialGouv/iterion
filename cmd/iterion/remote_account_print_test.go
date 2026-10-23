@@ -41,7 +41,7 @@ func captureStdout(t *testing.T, run func() error) string {
 // it as text, and never acts on it.
 func TestRemoteLoginAndStatus_showTheServersAccountInert(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"user": map[string]any{"email": "ops@example.test\x1b]0;owned\x07\x1b[2J\u202e"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"user": map[string]any{"id": "u1", "email": "ops@example.test\x1b]0;owned\x07\x1b[2J\u202e"}})
 	}))
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())

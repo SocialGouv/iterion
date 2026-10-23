@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/Input";
 import { useLocation } from "wouter";
 import { listProviders, type ProvidersResponse } from "@/api/auth";
 import { ApiError } from "@/api/auth";
+import { abandon, canPresent, readRecord, SignOutHeldError } from "@/api/signOutMachine";
 import { consumeQueryParams } from "@/lib/queryFlash";
 import { useAuth } from "@/auth/AuthContext";
 import { signInReturnTo } from "@/auth/returnTo";
@@ -42,6 +43,11 @@ function ssoErrorNotice(
         tone: "danger",
         text: "That SSO provider is no longer available. Try signing in with your email and password.",
       };
+    case "password_change_required":
+      return {
+        tone: "warning",
+        text: `Your administrator requires a password change before your next sign-in. An account that signs in through ${provider} has no password to type here: set one with "Forgot your password?" below — the link is emailed to you — or ask your administrator.`,
+      };
     case "state_expired":
       return {
         tone: "warning",
@@ -67,13 +73,17 @@ function ssoErrorNotice(
 // Login so it can be composed both as a standalone full-screen page
 // (Login, below) and beneath the cloud marketing hero (CloudLanding).
 export function SignInCard() {
-  const { signIn, signUp, status } = useAuth();
+  const { signIn, signUp, status, retrySignOut } = useAuth();
   const [, navigate] = useLocation();
   const returnTo = signInReturnTo(window.location);
   const serverInfo = useServerInfoStore((s) => s.info);
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // signInHeld: a password/registration submit the machine held because an
+  // unconfirmed sign-out still stands and this browser still holds the named
+  // session (I4). null once the explicit way past it is taken.
+  const [signInHeld, setSignInHeld] = useState<{ expiresAt: string | null } | null>(null);
   const [name, setName] = useState("");
   const [invitation, setInvitation] = useState("");
   const [providers, setProviders] = useState<ProvidersResponse | null>(null);
@@ -83,6 +93,9 @@ export function SignInCard() {
   // failed, never an impossible combination.
   const [discovery, setDiscovery] = useState<"idle" | "loading" | "error">("idle");
   const [redirecting, setRedirecting] = useState(false);
+  // The provider whose start is held by an unconfirmed sign-out this browser
+  // still holds the named session of (oidcStart): null when none is.
+  const [ssoHeld, setSsoHeld] = useState<{ name: string; display: string; expiresAt: string | null } | null>(null);
   const [ssoNotice, setSsoNotice] = useState<{
     tone: "warning" | "danger";
     text: string;
@@ -148,16 +161,30 @@ export function SignInCard() {
 
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
+    await doSubmit(false);
+  };
+
+  // doSubmit is the credential step under the machine's SIGN-IN gate: the
+  // first attempt presents any pending sign-out and is HELD while it stays
+  // unconfirmed and this browser still holds the named session; the second
+  // runs on the user's explicit "sign in anyway", which abandons the record
+  // (its notice stays, I2) and lets this sign-in land.
+  const doSubmit = async (anyway: boolean) => {
     setErr(null);
+    setSignInHeld(null);
     setBusy(true);
     try {
       if (mode === "login") {
-        await signIn(email, password);
+        await signIn(email, password, { anyway });
       } else {
-        await signUp({ email, password, name, invitation: invitation || undefined });
+        await signUp({ email, password, name, invitation: invitation || undefined }, { anyway });
       }
       navigate(returnTo, { replace: true });
     } catch (e) {
+      if (e instanceof SignOutHeldError) {
+        setSignInHeld({ expiresAt: e.record.expires_at });
+        return;
+      }
       // 403 "password change required" → forced rotation flow. Carry the
       // email + the rejected password as the temporary credential so the
       // user only has to type the new one.
@@ -177,10 +204,42 @@ export function SignInCard() {
     }
   };
 
-  const oidcStart = (name: string) => {
-    setRedirecting(true);
+  const redirectToProvider = (name: string) => {
     const next = encodeURIComponent(returnTo);
     window.location.href = `${BASE}/auth/oidc/${encodeURIComponent(name)}/start?next=${next}`;
+  };
+
+  // The machine's SSO-START transition, the same rule as the password sign-in:
+  // a sign-out still pending is presented first (once the provider's session
+  // replaces the cookies, nothing here can end the old one), and while the
+  // presentation stays unconfirmed and this browser still holds the named
+  // session, the start is held behind the explicit choice — a landing here
+  // would otherwise deliver a session the sign-out never got to end (I4). A
+  // record whose session is no longer held (+GONE) only warns: the start goes.
+  const oidcStart = async (name: string, display: string) => {
+    setRedirecting(true);
+    setSsoHeld(null);
+    await retrySignOut();
+    const record = readRecord();
+    if (record && canPresent(record)) {
+      setRedirecting(false);
+      setSsoHeld({ name, display, expiresAt: record.expires_at });
+      return;
+    }
+    redirectToProvider(name);
+  };
+
+  // The escape from a held start: "Continue with <provider> anyway" abandons
+  // the sign-out for the duration of THIS provider trip — the record moves to
+  // ABANDONED (its notice stays in every tab, I2; the abandonment authorised
+  // leaving for the provider, nothing else) — and the redirect goes. A trip
+  // abandoned at the provider lands back on a browser that still holds the
+  // session: the landing refuses to adopt it and re-presents the sign-out.
+  const continueWithoutTheSignOut = (name: string) => {
+    abandon();
+    setSsoHeld(null);
+    setRedirecting(true);
+    redirectToProvider(name);
   };
 
   const showRegister = providers?.signup_mode === "open" || invitation !== "";
@@ -294,6 +353,43 @@ export function SignInCard() {
             </InlineBanner>
           )}
 
+          {signInHeld && (
+            <InlineBanner tone="warning" layout="inline" role="alert">
+              Your last sign-out is not confirmed and this browser still holds that session, so this sign-in is on
+              hold: it would replace the session you asked to end. Retry the sign-out above, or sign in anyway — the
+              session you asked to end stays active
+              {signInHeld.expiresAt ? ` until ${signInHeld.expiresAt}` : " until its expiry"}.
+            </InlineBanner>
+          )}
+          {signInHeld && (
+            <Button variant="secondary" className="w-full" onClick={() => void doSubmit(true)}>
+              Sign in anyway — the session you signed out stays active
+              {signInHeld.expiresAt ? ` until ${signInHeld.expiresAt}` : " until its expiry"}
+            </Button>
+          )}
+
+          {ssoHeld && (
+            <InlineBanner
+              tone="warning"
+              layout="inline"
+              role="alert"
+              action={
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => continueWithoutTheSignOut(ssoHeld.name)}
+                >
+                  Continue with {ssoHeld.display} anyway
+                </Button>
+              }
+            >
+              Your last sign-out is not confirmed and this browser still holds that session, so signing in with{" "}
+              {ssoHeld.display} is on hold: it would end the session {ssoHeld.display} opens instead. Retry the
+              sign-out above, or continue anyway — the session you asked to end stays active
+              {ssoHeld.expiresAt ? ` until ${ssoHeld.expiresAt}` : " until its expiry"}.
+            </InlineBanner>
+          )}
+
           {redirecting ? (
             <div className="text-sm text-fg-muted py-1" aria-live="polite">
               Redirecting to your provider…
@@ -305,7 +401,7 @@ export function SignInCard() {
                   key={p.name}
                   variant="secondary"
                   className="w-full"
-                  onClick={() => oidcStart(p.name)}
+                  onClick={() => void oidcStart(p.name, p.display)}
                 >
                   Continue with {p.display}
                 </Button>

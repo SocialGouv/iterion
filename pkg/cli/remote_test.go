@@ -26,6 +26,21 @@ func remoteTestClient(t *testing.T, handler http.Handler) *cli.RemoteClient {
 	return cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: "iap_test"})
 }
 
+// remoteSessionToken is a credential shaped like an ACCESS token — the kind
+// that may derive another credential. A personal access token may not: the
+// instance refuses it at every mint route, and the commands that mint refuse
+// it before sending anything (TestRemoteMintCommands_...), so the mint
+// mechanics are exercised from the credential that reaches them.
+const remoteSessionToken = "eyJhbGciOiJIUzI1NiJ9.e30.sig"
+
+// remoteTestSessionClient is remoteTestClient with a session credential.
+func remoteTestSessionClient(t *testing.T, handler http.Handler) *cli.RemoteClient {
+	t.Helper()
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	return cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: remoteSessionToken})
+}
+
 func remotePrinter(format cli.OutputFormat) (*cli.Printer, *bytes.Buffer) {
 	buf := &bytes.Buffer{}
 	return &cli.Printer{W: buf, Format: format}, buf
@@ -429,7 +444,7 @@ func TestRemoteRunsFollow_FailureIsError(t *testing.T) {
 // --- tokens ---
 
 func TestRemoteTokensCreate_PrintsPlaintextOnce(t *testing.T) {
-	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := remoteTestSessionClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/api/auth/me" {
 			fmt.Fprint(w, `{"user":{"id":"u1"},"orgs":[{"org_id":"o1","teams":[{"team_id":"team-1","team_name":"Team 1","team_slug":"team-1"}]}]}`)
 			return
@@ -480,10 +495,10 @@ func TestRemoteTeamsSwitch_ResolvesSlugToTheUUID(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	if err := cli.SaveRemoteConfig(cli.RemoteConfig{BaseURL: ts.URL, Token: "iap_old"}); err != nil {
+	if err := cli.SaveRemoteConfig(cli.RemoteConfig{BaseURL: ts.URL, Token: remoteSessionToken}); err != nil {
 		t.Fatal(err)
 	}
-	c := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: "iap_old"})
+	c := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: remoteSessionToken})
 	p, _ := remotePrinter(cli.OutputHuman)
 	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "pic-graal", "cli"); err != nil {
 		t.Fatalf("switch by slug: %v", err)
@@ -505,7 +520,7 @@ func TestRemoteTeamsSwitch_MintsPersistsRevokes(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("ITERION_REMOTE_URL", "")
 
-	oldToken := "iap_old"
+	oldToken := remoteSessionToken
 	oldFP := secrets.FingerprintSHA256(oldToken)
 	var revoked string
 
@@ -563,7 +578,7 @@ func TestRemoteTeamsSwitch_MintsPersistsRevokes(t *testing.T) {
 func TestRemoteTeamsSwitch_RejectsNonMember(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ITERION_REMOTE_URL", "")
-	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := remoteTestSessionClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"error":"not a member of team \"team-x\""}`)
 	}))

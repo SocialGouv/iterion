@@ -27,17 +27,19 @@ func TestLinkExternalToUser_AttachAndIdempotent(t *testing.T) {
 	u := seedUser(t, svc, "alice@acme.example")
 	ext := oidc.ExternalUser{Provider: "oidc-org-prov1", Subject: "kc-1", Email: "alice@acme.example"}
 
-	if err := svc.LinkExternalToUser(context.Background(), ext, u.ID); err != nil {
-		t.Fatalf("link: %v", err)
+	created, err := svc.LinkExternalToUser(context.Background(), ext, u.ID, "lineage-1")
+	if err != nil || !created {
+		t.Fatalf("link: created=%v err=%v", created, err)
 	}
-	// The link now resolves to this user.
+	// The link now resolves to this user, and records the session that wrote it.
 	link, err := svc.store.GetOIDCLink(context.Background(), ext.Provider, ext.Subject)
-	if err != nil || link.UserID != u.ID {
-		t.Fatalf("link not stored for user: %v (%+v)", err, link)
+	if err != nil || link.UserID != u.ID || link.SessionLineage != "lineage-1" {
+		t.Fatalf("link not stored for user with its session: %v (%+v)", err, link)
 	}
-	// Second link is a no-op, not an error.
-	if err := svc.LinkExternalToUser(context.Background(), ext, u.ID); err != nil {
-		t.Fatalf("re-link should be idempotent: %v", err)
+	// Second link is a no-op, not an error, and writes nothing.
+	created, err = svc.LinkExternalToUser(context.Background(), ext, u.ID, "lineage-2")
+	if err != nil || created {
+		t.Fatalf("re-link should be an idempotent no-op: created=%v err=%v", created, err)
 	}
 }
 
@@ -47,10 +49,10 @@ func TestLinkExternalToUser_RefusesIdentityOwnedByAnother(t *testing.T) {
 	other := seedUser(t, svc, "other@acme.example")
 	ext := oidc.ExternalUser{Provider: "github", Subject: "gh-9", Email: "owner@acme.example"}
 
-	if err := svc.LinkExternalToUser(context.Background(), ext, owner.ID); err != nil {
+	if _, err := svc.LinkExternalToUser(context.Background(), ext, owner.ID, "lineage-1"); err != nil {
 		t.Fatalf("first link: %v", err)
 	}
-	if err := svc.LinkExternalToUser(context.Background(), ext, other.ID); !errors.Is(err, ErrLinkAlreadyOwned) {
+	if _, err := svc.LinkExternalToUser(context.Background(), ext, other.ID, "lineage-2"); !errors.Is(err, ErrLinkAlreadyOwned) {
 		t.Fatalf("expected ErrLinkAlreadyOwned, got %v", err)
 	}
 }
@@ -60,7 +62,7 @@ func TestListAndUnlinkSSO(t *testing.T) {
 	u := seedUser(t, svc, "bob@acme.example")
 	other := seedUser(t, svc, "eve@acme.example")
 	ext := oidc.ExternalUser{Provider: "google", Subject: "g-1", Email: "bob@acme.example"}
-	if err := svc.LinkExternalToUser(context.Background(), ext, u.ID); err != nil {
+	if _, err := svc.LinkExternalToUser(context.Background(), ext, u.ID, "lineage-1"); err != nil {
 		t.Fatalf("link: %v", err)
 	}
 
@@ -73,12 +75,19 @@ func TestListAndUnlinkSSO(t *testing.T) {
 	if err := svc.UnlinkExternal(context.Background(), other.ID, ext.Provider, ext.Subject); !errors.Is(err, identity.ErrNotFound) {
 		t.Fatalf("cross-user unlink should be NotFound, got %v", err)
 	}
-	// The owner can.
+	// The account's last sign-in method (no password, one link) is refused.
+	if err := svc.UnlinkExternal(context.Background(), u.ID, ext.Provider, ext.Subject); !errors.Is(err, ErrLastSignInMethod) {
+		t.Fatalf("unlinking the last sign-in method of a password-less account should be refused, got %v", err)
+	}
+	// With a second provider in place, the owner can.
+	if _, err := svc.LinkExternalToUser(context.Background(), oidc.ExternalUser{Provider: "google", Subject: "g-2", Email: "bob@acme.example"}, u.ID, "lineage-1"); err != nil {
+		t.Fatalf("second link: %v", err)
+	}
 	if err := svc.UnlinkExternal(context.Background(), u.ID, ext.Provider, ext.Subject); err != nil {
 		t.Fatalf("unlink: %v", err)
 	}
 	links, _ = svc.ListSSOLinks(context.Background(), u.ID)
-	if len(links) != 0 {
-		t.Fatalf("expected no links after unlink, got %v", links)
+	if len(links) != 1 || links[0].ProviderUserID != "g-2" {
+		t.Fatalf("expected only g-2 after unlink, got %v", links)
 	}
 }

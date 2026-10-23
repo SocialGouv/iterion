@@ -216,7 +216,7 @@ func TestSwitchTeamDoesNotRestoreARevokedSuperAdmin(t *testing.T) {
 		cur.IsSuperAdmin = false
 		cur.PasswordHash = rotated
 	})
-	if _, _, _, err := svc.SwitchTeam(ctx, u.ID, res.ActiveTeamID); err != nil {
+	if _, err := svc.SwitchTeam(ctx, Identity{Credential: CredentialAccessToken, UserID: u.ID}, res.ActiveTeamID); err != nil {
 		t.Fatalf("SwitchTeam: %v", err)
 	}
 	d.assertInjected()
@@ -307,7 +307,7 @@ func TestBestEffortUserWritesCannotUndoADeactivation(t *testing.T) {
 			cur.IsSuperAdmin = false
 			cur.PasswordHash = rotated
 		})
-		if _, _, _, err := svc.SwitchOrg(ctx, u.ID, org2.ID); err != nil {
+		if _, err := svc.SwitchOrg(ctx, Identity{Credential: CredentialAccessToken, UserID: u.ID}, org2.ID); err != nil {
 			t.Fatalf("SwitchOrg: %v", err)
 		}
 		d.assertInjected()

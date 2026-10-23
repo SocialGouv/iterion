@@ -31,7 +31,21 @@ Headless alternatives:
 ```sh
 iterion remote login https://… --token iap_…          # existing PAT
 iterion remote login https://… --email e@x --password …  # mints a CLI PAT
+iterion remote login https://… --email e@x --password … --team <id|slug>  # pinned to a team
 ```
+
+A `--token` (or `ITERION_TOKEN`) login is saved only when the instance
+answers `GET /api/auth/me` with that token's account — a JSON identity with
+a user id. A redirect is followed nowhere (the token is never sent to its
+target) — and when the target is another host the refusal names it as the
+URL to log in to instead — and a redirect, an HTML page, an unrelated JSON
+body or an error status refuses the login with nothing saved; a server
+error (5xx) says to retry once the server answers. `--team` pins the token
+a `--email` login mints — a team UUID or a team slug, resolved against your
+own org tree under the login's session, like `teams switch`, and saved as
+the team's UUID; it is refused with `--token` (a token's team is fixed at
+its mint) and with the browser flow (the approval pins the studio's active
+team).
 
 `iterion remote status` shows the logged-in instance + account;
 `iterion remote logout` forgets the credential.
@@ -51,19 +65,28 @@ entirely (a stored token is never sent to a different host).
 ## Tenant scope (teams / orgs)
 
 Team-scoped commands (secrets, api-keys, webhooks, forge, audit team,
-bindings) resolve their team in this order:
+bindings, and the run reads — `runs list`, `runs stats`, `runs repos`,
+`resume --usage-blocked`) resolve their team in this order:
 
-1. `--team <id>` flag
+1. `--team <id|slug>` flag (a slug resolves against the org tree, an
+   unknown one is refused naming it)
 2. `ITERION_REMOTE_TEAM`
-3. the default persisted by `iterion remote teams switch <id>`
+3. the default persisted by a `--team` login (or by `teams switch` from a session credential)
 4. the account's active team (from `/api/auth/me`)
 
-A PAT's *identity* team is pinned at mint time, so `teams switch`
-mints a **new** token pinned to the target team, stores it, and
-revokes the previous CLI token (matched by fingerprint — tokens you
-minted for other purposes are never touched). Org-scoped commands
-(`--org` / `ITERION_REMOTE_ORG` / `orgs switch`) work the same way but
-without re-minting (org scope is path-based).
+A PAT's *identity* team is pinned at mint time, and a PAT may not mint
+another credential (the instance answers `403`), so `teams switch` cannot
+run from a stored token: pin the team at login —
+`iterion remote login <url> --email <you> --team <id>` — or switch team in
+the studio and run `iterion remote login <url>` (the browser approval pins
+the studio's active team). From a session credential it still mints a new
+token pinned to the target team, stores it, and revokes the previous CLI
+token (matched by fingerprint — tokens you minted for other purposes are
+never touched). `iterion remote tokens create` is refused the same way
+from a stored token: create the token in the studio (Account → Access
+tokens) or from a fresh login. Both refusals happen before anything is
+sent. Org-scoped commands (`--org` / `ITERION_REMOTE_ORG` /
+`orgs switch`) need no re-minting (org scope is path-based).
 
 ## The launch → follow → inspect recipe
 
@@ -130,7 +153,7 @@ the staging step alone and prints the upload id.
 | `forge` | `connections · refresh · repo-bots · oauth-apps · integrations` |
 | `audit` / `usage` / `limits` | `audit team\|org\|admin` · org usage · cost limits |
 | `memory` | `docs · doc get\|put\|delete · export · import` (`--name` space) — `usage` carries no space flags, so the server refuses it |
-| `admin users` | `users` alone lists (`--q` matches an email PREFIX or an exact id); `get <user-id>` returns one account's file — status, last sign-in, whether a password sign-in is possible at all, its SSO links, and the orgs/teams it was actually granted; `update <user-id> --data`; `reset-password <user-id>` mints a one-shot temporary password and revokes every session. See [administering accounts](ticket-context.md#an-account-signs-in-and-sees-nothing). |
+| `admin users` | `users` alone lists (`--q` matches an email PREFIX or an exact id); `get <user-id>` returns one account's file — status, last sign-in, whether a password sign-in is possible at all, its SSO links, and the orgs/teams it was actually granted; `update <user-id> --data`; `reset-password <user-id>` mints a one-shot temporary password and revokes every session — refused (`403`) for your own account when the CLI presents a personal access token, which is what a login stores: change your own password from the studio (Account → Profile → Change password). See [administering accounts](ticket-context.md#an-account-signs-in-and-sees-nothing). |
 | `admin` | `orgs · users · dlq · llm · caps · bots · roles · sandbox` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart); `bots` = platform bot overrides — push any bot without an image rollout, `roles`/`sandbox` = runtime webhook role bindings + `sandbox: auto` image, see [platform-bots.md](platform-bots.md)) |
 | `sso` | `providers · domains` (org-scoped) |
 | `plugins` | `list · enable · disable · install · uninstall · config` |

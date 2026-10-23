@@ -700,7 +700,38 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 // passes Port=0. Tests that construct Config{} directly previously got
 // 4891 by default; they now get a random port, which is what we want
 // to avoid cross-test bind conflicts.
+// runSocketDurationEnvVars are the run-socket lifetime and standing-period
+// knobs an operator may override with Go durations. An unparsable or
+// non-positive value is answered with the default — and NAMED at boot
+// (warnInvalidEnvDurations): the operator stated a value, and it is not
+// honoured.
+var runSocketDurationEnvVars = []string{
+	"ITERION_RUN_WS_MAX_LIFETIME",
+	"ITERION_RUN_SHELL_MAX_LIFETIME",
+	"ITERION_RUN_SHELL_IDLE_TIMEOUT",
+	"ITERION_RUN_SHELL_WATCH_PERIOD",
+	"ITERION_RUN_BROWSER_STANDING_PERIOD",
+}
+
+// warnInvalidEnvDurations states, once at boot, every run-socket duration
+// the operator set that the server cannot honour: an unparsable or
+// non-positive value answers the default, which is never silent — the
+// operator's explicit choice is not replaced without a word (philosophy #1).
+func warnInvalidEnvDurations(log *iterlog.Logger) {
+	if log == nil {
+		return
+	}
+	for _, name := range runSocketDurationEnvVars {
+		if v := os.Getenv(name); v != "" {
+			if d, err := time.ParseDuration(v); err != nil || d <= 0 {
+				log.Warn("server: %s=%q is not a positive Go duration — the default is used; state a value like \"2h\" to honour the override", name, v)
+			}
+		}
+	}
+}
+
 func New(cfg Config, logger *iterlog.Logger) *Server {
+	warnInvalidEnvDurations(logger)
 	// Default to loopback. The previous behaviour was to leave Addr as ":<port>"
 	// which binds 0.0.0.0 — exposing the studio (which has unauthenticated
 	// /api/files/save and /api/files/open endpoints) to anyone on the LAN.
@@ -1168,5 +1199,6 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	s.registerInitialProject()
 	s.wireTeamGrantSweep()
 	s.wireTeamRankReconcile()
+	s.wirePATState()
 	return s
 }

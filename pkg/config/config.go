@@ -168,6 +168,16 @@ type AuthConfig struct {
 	// (30 days). Refresh tokens rotate on every use.
 	RefreshTTL time.Duration `yaml:"refresh_ttl"`
 
+	// RefreshReuseGrace is the refresh-token reuse grace window: a token
+	// a rotation retired, presented again within it, receives the same
+	// successor instead of reading as reuse (auth.Service.Refresh). It is
+	// measured on the session store's clock, the one that stamps the
+	// rotation. Keep it above the desktop's refresh timeout plus its retry
+	// floor (10 s + 15 s), or a retry after a lost answer lands outside it;
+	// keep it below RefreshTTL (refused otherwise). Above 5 minutes the
+	// server warns at startup. 0 disables the window. Default 30s.
+	RefreshReuseGrace time.Duration `yaml:"refresh_reuse_grace"`
+
 	// BootstrapAdminEmail, when set on first boot of an empty users
 	// collection, creates a super-admin account with that email and
 	// a randomly generated one-time password printed to the server
@@ -465,10 +475,11 @@ func Defaults() Config {
 			StallTimeout: 5 * time.Minute,
 		},
 		Auth: AuthConfig{
-			AccessTTL:    15 * time.Minute,
-			RefreshTTL:   30 * 24 * time.Hour,
-			SignupMode:   "invite_only",
-			CookieSecure: true,
+			AccessTTL:         15 * time.Minute,
+			RefreshTTL:        30 * 24 * time.Hour,
+			RefreshReuseGrace: 30 * time.Second,
+			SignupMode:        "invite_only",
+			CookieSecure:      true,
 			OIDC: OIDCConfig{
 				Google: OIDCProviderConfig{
 					IssuerURL:   "https://accounts.google.com",
@@ -636,6 +647,12 @@ func (c *Config) Validate() error {
 		}
 		if c.Auth.RefreshTTL <= 0 {
 			return fmt.Errorf("ITERION_REFRESH_TTL %s invalid (want > 0)", c.Auth.RefreshTTL)
+		}
+		if c.Auth.RefreshReuseGrace < 0 {
+			return fmt.Errorf("ITERION_REFRESH_REUSE_GRACE %s invalid (want >= 0, 0 disables the window)", c.Auth.RefreshReuseGrace)
+		}
+		if c.Auth.RefreshReuseGrace > 0 && c.Auth.RefreshReuseGrace >= c.Auth.RefreshTTL {
+			return fmt.Errorf("ITERION_REFRESH_REUSE_GRACE %s invalid (want below ITERION_REFRESH_TTL %s)", c.Auth.RefreshReuseGrace, c.Auth.RefreshTTL)
 		}
 		// Public URL is required only when at least one OIDC provider
 		// is enabled — without it we can't form a redirect URI.

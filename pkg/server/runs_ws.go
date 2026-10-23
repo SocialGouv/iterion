@@ -91,6 +91,28 @@ const (
 	wsTypeRaiseBudget = "raise_budget"
 )
 
+// defaultRunWSMaxLifetime bounds how long one run socket stays open, whatever
+// its traffic. The identity is read once, at the upgrade, and a subscription
+// needs no further envelope, so without this cap the run's event stream
+// outlives its credential's account for as long as the client answers the
+// pings (the mutating envelopes carry their own question — runConn.standing).
+// It is the post-mortem shell's absolute cap (runs_shell.go), so the two
+// sockets of the same console state one truth; the cost of reaching it is one
+// redial, which the studio does by itself and resumes from its last seq.
+const defaultRunWSMaxLifetime = 2 * time.Hour
+
+// runWSStandingTimeout bounds the standing read one mutating envelope waits
+// for. The read pump serves envelopes one at a time, so a store that never
+// answers would hold the whole command surface of the socket.
+const runWSStandingTimeout = 10 * time.Second
+
+// runWSMaxLifetime is defaultRunWSMaxLifetime, overridable by the operator
+// like the shell's caps. A deployment that wants no practical cap states a
+// long duration (ITERION_RUN_WS_MAX_LIFETIME=87600h).
+func runWSMaxLifetime() time.Duration {
+	return envDurationOrDefault("ITERION_RUN_WS_MAX_LIFETIME", defaultRunWSMaxLifetime)
+}
+
 type wsSubscribeRequest struct {
 	FromSeq int64 `json:"from_seq,omitempty"`
 	// ReplayHistory tells the server whether to send disk-persisted
@@ -280,6 +302,26 @@ type runConn struct {
 	logSub        runstream.LogSubscription
 	closeOnce     sync.Once
 	closed        chan struct{}
+	// closeFrame is what the write pump writes when it reads the empty item
+	// sendCh carries as the close marker. Set once — the first reason is the
+	// one that decided — under mu, which the pump takes to read it.
+	closeFrame *wsCloseFrame
+}
+
+// wsCloseMarker is the empty item sendCh carries to tell the write pump that
+// the next thing to write is runConn.closeFrame. It rides the SAME channel as
+// the envelopes, so the close is ordered BEHIND everything the server decided
+// before it — the error naming a refusal reaches the client by FIFO, not by
+// an interleaving a reader would have to reconstruct. A marshalled envelope
+// is never empty (json.Marshal of a struct yields at least two bytes), so the
+// marker is unambiguous.
+var wsCloseMarker []byte
+
+// wsCloseFrame is a close code and the reason behind it.
+type wsCloseFrame struct {
+	code  int
+	token string
+	cause string
 }
 
 // authCtx returns a fresh background ctx with the tenant/user
@@ -306,7 +348,42 @@ func newRunConn(s *Server, conn *websocket.Conn, runID string) *runConn {
 func (c *runConn) run() {
 	defer c.close()
 	errtrack.Go("server.runWS.writePump", c.writePump)
+	errtrack.Go("server.runWS.watchLifetime", c.watchLifetime)
 	c.readPump()
+}
+
+// watchLifetime closes the socket when its absolute lifetime is up
+// (runWSMaxLifetime). The client is told which bound it hit, so it redials
+// instead of treating the close as a transport failure.
+func (c *runConn) watchLifetime() {
+	lifetime := runWSMaxLifetime()
+	t := time.NewTimer(lifetime)
+	defer t.Stop()
+	select {
+	case <-c.closed:
+	case <-t.C:
+		if c.server.logger != nil {
+			c.server.logger.Info("server: ws of run %s reached its lifetime cap (%s) — closing", c.runID, lifetime)
+		}
+		c.closeWithReason(websocket.CloseNormalClosure, wsCloseLifetimeReached, "reopen the socket to present a credential again")
+	}
+}
+
+// closeWithReason queues the close frame behind the envelopes the server has
+// already decided, so the client reads them before the socket goes down; the
+// write pump tears the connection down once the frame is on the wire. It
+// returns at once if the connection is already gone — a full buffer means
+// sendEnvelope is closing a consumer that stopped reading.
+func (c *runConn) closeWithReason(code int, token, cause string) {
+	c.mu.Lock()
+	if c.closeFrame == nil {
+		c.closeFrame = &wsCloseFrame{code: code, token: token, cause: cause}
+	}
+	c.mu.Unlock()
+	select {
+	case c.sendCh <- wsCloseMarker:
+	case <-c.closed:
+	}
 }
 
 func (c *runConn) close() {
@@ -372,12 +449,10 @@ var runWSMutatingTypes = map[string]bool{
 }
 
 func (c *runConn) dispatch(env runWSEnvelope) {
-	// A zero Role means no auth context at all (local/desktop mode, where
-	// the run console runs trusted): the gate guards AUTHENTICATED
-	// surfaces.
-	if runWSMutatingTypes[env.Type] && c.identity.Role != "" && !c.identity.Role.AtLeast(identity.RoleMember) {
-		c.sendError("forbidden", "your role in the run's team does not allow this action", env.AckID)
-		return
+	if runWSMutatingTypes[env.Type] {
+		if !c.mutationAllowed(env) {
+			return
+		}
 	}
 	switch env.Type {
 	case wsTypeSubscribe:
@@ -410,6 +485,84 @@ func (c *runConn) dispatch(env runWSEnvelope) {
 	default:
 		c.sendError("unknown_type", "unknown message type: "+env.Type, env.AckID)
 	}
+}
+
+// mutationAllowed asks, per envelope that changes the run, whether the
+// credential this socket was opened with still stands AND still carries this
+// run. The whole scope — the run's team, the caller's standing THERE, the
+// super-admin reach — was resolved once at the upgrade and is re-derived on
+// every mutating envelope from the account as the store reads it now: a
+// membership removed or a super-admin demoted after the upgrade stops
+// steering the run at the next envelope instead of at the next upgrade, and
+// a socket stops at its credential's expiry-side refusals the same way.
+//
+// A refusal of the CREDENTIAL answers the envelope and closes the socket,
+// naming the bound in the close frame: nothing this credential sends will be
+// served again. A refusal of the SCOPE answers the envelope forbidden and
+// leaves the socket's reads alone. A read that did not complete refuses THAT
+// envelope only — the server's own failure is no verdict on the credential
+// (mapAuthErrorStatus tells the two apart).
+//
+// A connection carrying no credential is one no auth context ever reached
+// (the local run console, a server built without the middleware): there is
+// nothing to ask about. A cross-store connection drives no run of this
+// server (its mutating envelopes are refused downstream), so its scope is
+// not re-derived here; its credential still is.
+func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
+	if c.identity.Credential == "" {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(c.authCtx(), runWSStandingTimeout)
+	defer cancel()
+	user, err := c.server.checkStanding(ctx, c.identity)
+	if err != nil {
+		if mapAuthErrorStatus(err) >= http.StatusInternalServerError {
+			if c.server.logger != nil {
+				c.server.logger.Error("server: ws of run %s: the standing of its credential could not be read: %v", c.runID, err)
+			}
+			c.sendError("standing_unavailable", "the credential of this connection could not be checked — retry", env.AckID)
+			return false
+		}
+		if c.server.logger != nil {
+			c.server.logger.Warn("server: ws of run %s refused a %s and closed: %v", c.runID, env.Type, err)
+		}
+		c.sendError(wsCloseCredentialRefused, err.Error(), env.AckID)
+		c.closeWithReason(websocket.ClosePolicyViolation, wsCloseCredentialRefused, err.Error())
+		return false
+	}
+	if c.xStore != nil {
+		return true
+	}
+	team, terr := c.server.runTenant(ctx, c.runID)
+	if terr != nil {
+		if errors.Is(terr, store.ErrRunNotFound) || errors.Is(terr, store.ErrRunDeleted) {
+			c.sendError("forbidden", "the run this socket watches is gone", env.AckID)
+			return false
+		}
+		if c.server.logger != nil {
+			c.server.logger.Error("server: ws of run %s: its team could not be resolved: %v", c.runID, terr)
+		}
+		c.sendError("scope_unavailable", "the run's team could not be resolved — retry", env.AckID)
+		return false
+	}
+	envID := c.identity
+	envID.IsSuperAdmin = user.IsSuperAdmin
+	resolved, ok, serr := identityInTeamOn(c.server.authStore(), ctx, envID, team)
+	if serr != nil {
+		if c.server.logger != nil {
+			c.server.logger.Error("server: ws of run %s: the caller's standing in %s could not be read: %v", c.runID, team, serr)
+		}
+		c.sendError("scope_unavailable", "your standing in the run's team could not be resolved — retry", env.AckID)
+		return false
+	}
+	if !ok || !resolved.Role.AtLeast(identity.RoleMember) {
+		if c.server.logger != nil {
+			c.server.logger.Warn("server: ws of run %s refused a %s: no member standing in %s", c.runID, env.Type, team)
+		}
+		c.sendError("forbidden", "your standing in the run's team no longer allows this action", env.AckID)
+		return false
+	}
+	return true
 }
 
 // handleSubscribe registers the connection's event subscription and
@@ -814,7 +967,7 @@ func (c *runConn) sendAck(ackID string) {
 
 // writePump drains sendCh to the WebSocket connection and emits
 // periodic ping frames so idle connections don't time out at NAT/LB
-// hops.
+// hops. A close frame on that same channel is the last thing it writes.
 func (c *runConn) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
@@ -824,6 +977,18 @@ func (c *runConn) writePump() {
 			return
 		case data, ok := <-c.sendCh:
 			if !ok {
+				return
+			}
+			if len(data) == 0 {
+				c.mu.Lock()
+				frame := c.closeFrame
+				c.mu.Unlock()
+				if frame != nil {
+					if err := writeWSClose(c.conn, frame.code, frame.token, frame.cause); err != nil && c.server.logger != nil {
+						c.server.logger.Warn("ws: close frame for run %s: %v", c.runID, err)
+					}
+				}
+				c.close()
 				return
 			}
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
