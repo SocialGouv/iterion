@@ -109,6 +109,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		RunnerPoolsSettings:         platformcfg.NewMemoryStore[platformcfg.RunnerPools](),
 		SandboxSettings:             platformcfg.NewMemoryStore[platformcfg.Sandbox](),
 		BotVarsSettings:             platformcfg.NewMemoryStore[platformcfg.BotVars](),
+		MaintenanceSettings:         platformcfg.NewMemoryStore[platformcfg.Maintenance](),
 		BudgetFloorSettings:         platformcfg.NewMemoryStore[budgetfloor.Policy](),
 		PlatformCredentialsSettings: platformcfg.NewMemoryStore[platformcfg.PlatformCredentials](),
 		Store:                       runStore,

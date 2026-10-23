@@ -265,6 +265,7 @@ type Server struct {
 	routingPolicyStoreFor func(docID string) platformcfg.Store[platformcfg.RoutingPolicyRecord]
 	botVars               *platformcfg.Resolver[platformcfg.BotVars]
 	botVarsStore          platformcfg.Store[platformcfg.BotVars]
+	maintenanceStore      platformcfg.Store[platformcfg.Maintenance]
 	// budgetFloor reserves capacity for named workloads and caps individual
 	// repositories; nil (or an unwritten record) reserves and caps nothing,
 	// so every gate behaves as it did before the family existed.
@@ -802,6 +803,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		sandboxCfgStore:     cfg.SandboxSettings,
 		platformCredsStore:  cfg.PlatformCredentialsSettings,
 		botVarsStore:        cfg.BotVarsSettings,
+		maintenanceStore:    cfg.MaintenanceSettings,
 		forgeIntegrations:   cfg.ForgeIntegrations,
 		boardBindings:       cfg.BoardBindings,
 		provisionApprovals:  cfg.ProvisionApprovals,

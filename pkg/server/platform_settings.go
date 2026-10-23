@@ -75,6 +75,10 @@ func (s *Server) registerAdminSettingsFamilyRoutes() {
 	if s.authSvc == nil {
 		return
 	}
+	if s.maintenanceStore != nil {
+		s.mux.Handle("GET /api/admin/settings/maintenance", s.requireSuperAdmin(http.HandlerFunc(s.handleGetMaintenance)))
+		s.mux.Handle("PUT /api/admin/settings/maintenance", s.requireSuperAdmin(http.HandlerFunc(s.handlePutMaintenance)))
+	}
 	if s.botRolesStore != nil {
 		s.mux.Handle("GET /api/admin/settings/bot-roles", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetBotRoles)))
 		s.mux.Handle("PUT /api/admin/settings/bot-roles", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminPutBotRoles)))

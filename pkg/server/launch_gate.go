@@ -179,6 +179,9 @@ type launchAdmission struct {
 // targets no repository) passes the zero value and is judged as ordinary,
 // uncapped work — which is what it is.
 type launchSubject struct {
+	// ExistingRun is set after reading the run or its durable retry row. It exempts
+	// continuation from maintenance, never from the existing quota gates.
+	ExistingRun bool
 	// BotID is the workload a reservation can name.
 	BotID string
 	// Repo is the forge slug (store.Run.ProjectPath), the same identity
@@ -240,6 +243,9 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 // version of that mistake anyone ever sees.
 func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdmission, *launchDenial) {
 	id, _ := auth.FromContext(ctx)
+	if d := s.gateMaintenance(ctx, subj); d != nil {
+		return nil, d
+	}
 	st := s.authStore()
 	// st == nil is local/filesystem mode (no auth, single operator); a
 	// super-admin bypasses the gate entirely.

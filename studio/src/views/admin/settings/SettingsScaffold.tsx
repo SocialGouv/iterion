@@ -6,9 +6,10 @@
 // its title, description, the fetched view, and the form body.
 
 import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { useAuth } from "@/auth/AuthContext";
-import { FeatureUnavailableError } from "@/api/adminSettings";
+import { FeatureUnavailableError, getMaintenance } from "@/api/adminSettings";
 import { errorMessage } from "@/lib/errorHints";
 
 import { Button } from "@/components/ui/Button";
@@ -68,6 +69,12 @@ export function SettingsScaffold({
   const isSuper = user?.is_super_admin ?? false;
   const serverInfo = useServerInfoStore((s) => s.info);
   const isCloud = serverInfo?.mode === "cloud";
+  const maintenance = useQuery({
+    queryKey: ["admin-settings-maintenance"],
+    queryFn: getMaintenance,
+    enabled: isSuper && isCloud,
+    refetchInterval: 10000,
+  });
 
   useHeaderSlot({
     left: <span className="text-sm font-semibold">{title}</span>,
@@ -114,6 +121,16 @@ export function SettingsScaffold({
       <div className="max-w-3xl mx-auto p-3 sm:p-6 space-y-4">
         <AdminNav />
 
+        {maintenance.data && (
+          <InlineBanner tone={maintenance.data.fence_launches ? "warning" : "info"} layout="inline">
+            New launches: {maintenance.data.fence_launches ? "paused for maintenance" : "enabled"}.
+            {maintenance.data.reason && ` ${maintenance.data.reason} (${maintenance.data.updated_at})`}
+            {maintenance.data.fence_launches && " Existing runs can continue and resume."}
+          </InlineBanner>
+        )}
+        {maintenance.error && !(maintenance.error instanceof FeatureUnavailableError) && (
+          <InlineBanner tone="danger" layout="inline">Maintenance status unavailable.</InlineBanner>
+        )}
         <p className="text-caption text-fg-subtle max-w-2xl">{description}</p>
 
         {banner && (

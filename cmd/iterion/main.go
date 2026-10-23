@@ -51,7 +51,7 @@ func main() {
 	// same file just planted (#498 review, R6fa6d2). The hook needs
 	// neither. Detected from argv, not cobra, so it runs before any
 	// of that work.
-	if !isPermissionHookInvocation() {
+	if !isPermissionHookInvocation() && !isContractsInvocation() {
 		// Auto-load `.env` from the working directory (and walk up to
 		// the closest one) before subcommands run, so iterion behaves
 		// like every other modern CLI tool when API keys / model env

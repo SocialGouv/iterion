@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "iterion chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "config": {
+      "type": "object"
+    },
+    "containerSecurityContext": {
+      "type": "object"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "global": {
+      "type": "object"
+    },
+    "image": {
+      "type": "object"
+    },
+    "imagePullSecrets": {
+      "type": "array"
+    },
+    "ingress": {
+      "type": "object"
+    },
+    "metrics": {
+      "type": "object"
+    },
+    "minio": {
+      "type": "object"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "local",
+        "cloud"
+      ]
+    },
+    "mongodb": {
+      "type": "object"
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "nats": {
+      "type": "object"
+    },
+    "networkPolicy": {
+      "type": "object"
+    },
+    "persistence": {
+      "type": "object"
+    },
+    "probes": {
+      "type": "object"
+    },
+    "runner": {
+      "type": "object"
+    },
+    "runnerPools": {
+      "type": "array"
+    },
+    "secrets": {
+      "type": "object"
+    },
+    "securityContext": {
+      "type": "object"
+    },
+    "server": {
+      "type": "object"
+    },
+    "service": {
+      "type": "object"
+    },
+    "serviceAccount": {
+      "type": "object"
+    }
+  }
+}

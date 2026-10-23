@@ -3,13 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { BotVarsSettingsView } from "@/api/adminSettings";
+import type { BotVarsSettingsView, MaintenanceSettings } from "@/api/adminSettings";
 
 const getBotVars = vi.fn<() => Promise<BotVarsSettingsView>>();
+const getMaintenance = vi.fn<() => Promise<MaintenanceSettings>>();
 
 vi.mock("@/api/adminSettings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/adminSettings")>();
-  return { ...actual, getBotVars: () => getBotVars() };
+  return { ...actual, getBotVars: () => getBotVars(), getMaintenance: () => getMaintenance() };
 });
 vi.mock("@/auth/AuthContext", () => ({
   useAuth: () => ({ user: { is_super_admin: true } }),
@@ -47,10 +48,24 @@ function renderPage() {
 
 beforeEach(() => {
   getBotVars.mockReset();
+  getMaintenance.mockResolvedValue({ fence_launches: false, reason: "", updated_at: "" });
 });
 afterEach(cleanup);
 
 describe("BotVarsPage", () => {
+  it("shows the dated maintenance reason read-only while preserving existing runs", async () => {
+    getBotVars.mockResolvedValue(view());
+    getMaintenance.mockResolvedValue({
+      fence_launches: true,
+      reason: "Schema rollout",
+      updated_at: "2026-10-23T10:00:00Z",
+    });
+    renderPage();
+    expect(await screen.findByText(/paused for maintenance/)).toBeTruthy();
+    expect(screen.getByText(/Schema rollout.*2026-10-23T10:00:00Z/)).toBeTruthy();
+    expect(screen.getByText(/Existing runs can continue and resume/)).toBeTruthy();
+  });
+
   // The refused map is the one field that changes what the operator should
   // DO: a refused entry still shows up in the stored rows, so without the
   // banner it reads as applied while the server hands out nothing for it.

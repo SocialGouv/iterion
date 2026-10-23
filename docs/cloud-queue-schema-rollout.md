@@ -19,6 +19,11 @@ ordering can spare the queue.
 > re-publishes the run at the server's current schema version; discard the
 > parked copy afterwards.
 
+The stop-new-launches switch is `maintenance.fence_launches`; see
+[admission maintenance](cloud-deployment.md#local-contracts-and-admission-maintenance)
+for the dated super-admin API, existing-run resume exemption and local
+`iterion contracts` probe. This switch does not drain already admitted work.
+
 ## Wire compatibility policy
 
 - **Explicit compatibility window.** A consumer accepts only

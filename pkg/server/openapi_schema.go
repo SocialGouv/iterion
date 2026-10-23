@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/modelcatalog"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
@@ -145,6 +146,8 @@ func routeSchemas() map[string]routeOp {
 		// view.
 		"GET /api/admin/settings/usage-caps":           {response: usageCapsView{}},
 		"PUT /api/admin/settings/usage-caps":           {response: usageCapsView{}},
+		"GET /api/admin/settings/maintenance":          {response: platformcfg.Maintenance{}},
+		"PUT /api/admin/settings/maintenance":          {request: maintenanceRequest{}, response: platformcfg.Maintenance{}},
 		"GET /api/admin/settings/bot-roles":            {response: botRolesSettingsView{}},
 		"PUT /api/admin/settings/bot-roles":            {response: botRolesSettingsView{}},
 		"GET /api/admin/settings/sandbox":              {response: sandboxSettingsView{}},

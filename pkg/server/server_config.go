@@ -297,6 +297,8 @@ type Config struct {
 	// re-tuning a bot (model pin, reasoning effort) is a settings write,
 	// not a Helm change + rollout. Nil keeps env-only expansion.
 	BotVarsSettings platformcfg.Store[platformcfg.BotVars]
+	// MaintenanceSettings is read on each admission, without a stale cache.
+	MaintenanceSettings platformcfg.Store[platformcfg.Maintenance]
 	// BudgetFloorSettings is the capacity-reservation family (pkg/budgetfloor):
 	// which workloads hold a band of the shared budget, and which
 	// repositories are capped inside it. Nil leaves both unenforced.

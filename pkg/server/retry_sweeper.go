@@ -166,10 +166,11 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// about this launch, so pass it: a retry judged as ordinary work would
 	// face the ceiling its OWN reservation lowered, and the reservation would
 	// refuse the run it exists to protect. Nil (the store could not answer)
-	// falls back to the ordinary subject, like every other unknown.
-	var subj launchSubject
+	// loses the budget subject, but the durable retry row still proves this
+	// is an existing run: maintenance must not abandon its continuation.
+	subj := launchSubject{ExistingRun: true}
 	if run != nil {
-		subj = launchSubject{BotID: run.BotID, Repo: run.ProjectPath}
+		subj = launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath}
 	}
 	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref), subj)
 	if deny != nil {

@@ -148,3 +148,11 @@ export function putPlatformCredentialsSettings(
     }),
   );
 }
+
+export type MaintenanceSettings = components["schemas"]["Maintenance"];
+
+export function getMaintenance(): Promise<MaintenanceSettings> {
+  return guard404("admin-settings-maintenance", () =>
+    request<MaintenanceSettings>("/admin/settings/maintenance"),
+  );
+}

@@ -970,7 +970,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if s.runs != nil {
 		gateMeta, gateMetaErr = s.runs.LoadRunCtx(r.Context(), id)
 		if gateMetaErr == nil && gateMeta != nil {
-			subj = launchSubject{BotID: gateMeta.BotID, Repo: gateMeta.ProjectPath}
+			subj = launchSubject{ExistingRun: true, BotID: gateMeta.BotID, Repo: gateMeta.ProjectPath}
 		}
 	}
 	adm, d := s.gateLaunch(r.Context(), subj)

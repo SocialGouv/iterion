@@ -72,3 +72,5 @@ in the commands/paths that actually worked.
 - [assistant-dock](../../assistant-dock.md) — which bot answers the studio assistant where (Nexie owns `/whats-next`, Copi the dock).
 - [brand](../../brand.md) — the mascot assets and which forge identity gets the avatar how.
 - [groups-iteration-subbots](../../groups-iteration-subbots.md#child-bundle-resources) — child skills/devbox missing or leaking into a parent.
+
+- [Admission maintenance and local contracts](../../cloud-deployment.md#local-contracts-and-admission-maintenance) — stop new launches without blocking existing-run resumes; inspect binary contracts offline.

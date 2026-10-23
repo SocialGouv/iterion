@@ -663,6 +663,58 @@ The mechanism lives in the runner's `Shutdown`
 decoupled from the fetch-loop context so stopping intake never cancels a
 live run.
 
+## Local contracts and admission maintenance
+
+`iterion contracts` prints JSON describing only the executable: queue
+`schema_version` / `min_schema_version`, the local run format and Mongo run
+schema versions, and its build. It opens no connection and disables telemetry
+initialization. `pkg/store` has no compiled migration registry; the probe says
+so explicitly. Server/runner build skew is **unknown** from one executable:
+compare the output of the two deployed binaries offline, not a pod count.
+
+A super-admin can read or replace the `maintenance` record in the existing
+`platform_settings` collection through `GET` / `PUT
+/api/admin/settings/maintenance`. Studio's platform settings screens show it
+read-only and refresh every ten seconds. To stop new launches:
+
+```sh
+curl -X PUT "$ITERION_URL/api/admin/settings/maintenance" \
+  -H "Authorization: Bearer $ITERION_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"fence_launches":true,"reason":"Queue schema rollout, change CHG-123"}'
+```
+
+Both fields are required on each PUT. The server stamps `updated_at` and
+`updated_by`; disarm with `fence_launches:false` and an explanatory reason.
+An absent record defaults to false. Every new launch admission reads the
+shared record directly (no TTL cache), including HTTP, board dispatcher,
+trigger, webhook and schedule admissions; forks are also refused because
+they create a new run. An armed fence returns HTTP 503
+with `error: maintenance_fence` and a `detail` naming
+`maintenance.fence_launches`, the reason and its timestamp. A failed settings
+read also refuses new admissions with 503 until the store recovers.
+
+Existing runs continue: HTTP/WebSocket resumes and automatic retries remain
+allowed by this fence, while retaining their ordinary authorization and quota
+checks. Already admitted launches can finish admission; arming is not an
+atomic barrier against requests that passed the check concurrently, nor a
+queue/runner drain. Drain and migration orchestration are separate operations.
+**Break glass:** an authenticated super-admin bypasses the launch fence and
+can also disarm it through the same PUT endpoint.
+
+The chart's `values.schema.json` checks top-level names and types, including
+subchart values and Helm's reserved `global` overlay; nested keys remain open.
+`go test ./charts/iterion` verifies that schema keys match template references
+and dependencies, accepts the committed values files and rejects misspelled
+top-level keys. After editing values or templates, run
+`devbox run -- task chart:render-diff` (or `BASE=<commit>`): it compares HEAD
+(or BASE) with the working tree, rendering each side with its own
+`values-dev.yaml`. Install chart dependencies first with `task
+chart:dep-update`; the comparison itself uses local archives and no network.
+Read the rendered diff: an empty result is explicitly reported and is not
+proof that an intended values change took effect. Both renders use the same
+local subchart archives; dependency upgrades require their own review.
+
 ## Resume from a paused / failed run
 
 Cloud-mode resume goes through the same NATS path as launch. The

@@ -215,6 +215,11 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	// Fork creates a new run, even though its source is an existing run.
+	if d := s.gateMaintenance(r.Context(), launchSubject{}); d != nil {
+		s.writeLaunchDenial(w, r, d)
+		return
+	}
 	var req forkRunRequest
 	if err := readJSON(r, &req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "decode fork request: %v", err)

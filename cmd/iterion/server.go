@@ -669,6 +669,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		BotRolesSettings:            stores.botRoles,
 		RunnerPoolsSettings:         stores.runnerPools,
 		BotVarsSettings:             stores.botVars,
+		MaintenanceSettings:         stores.maintenance,
 		BotVarsResolver:             botVarsResolver,
 		SandboxSettings:             stores.sandboxCfg,
 		SandboxResolver:             sandboxResolver,
@@ -800,6 +801,7 @@ type cloudStores struct {
 	runnerPools      *platformcfg.MongoStore[platformcfg.RunnerPools]
 	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
 	botVars          *platformcfg.MongoStore[platformcfg.BotVars]
+	maintenance      *platformcfg.MongoStore[platformcfg.Maintenance]
 	platformCreds    *platformcfg.MongoStore[platformcfg.PlatformCredentials]
 	budgetFloor      *platformcfg.MongoStore[budgetfloor.Policy]
 	marketplace      marketplace.Store
@@ -835,6 +837,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		runnerPools:      platformcfg.NewMongoRunnerPools(st.DB()),
 		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
 		botVars:          platformcfg.NewMongoBotVars(st.DB()),
+		maintenance:      platformcfg.NewMongoMaintenance(st.DB()),
 		platformCreds:    platformcfg.NewMongoPlatformCredentials(st.DB()),
 		budgetFloor:      platformcfg.NewMongoBudgetFloor(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),

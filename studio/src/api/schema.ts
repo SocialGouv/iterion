@@ -508,6 +508,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/settings/maintenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/maintenance */
+        get: operations["getAdminSettingsMaintenance"];
+        /** PUT /api/admin/settings/maintenance */
+        put: operations["putAdminSettingsMaintenance"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/settings/platform-credentials": {
         parameters: {
             query?: never;
@@ -6838,6 +6856,13 @@ export interface components {
             parent_run_id?: string;
             root_run_id?: string;
         };
+        Maintenance: {
+            fence_launches: boolean;
+            reason: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by?: string;
+        };
         MembershipView: {
             personal?: boolean;
             role: string;
@@ -7698,6 +7723,10 @@ export interface components {
         loginReq: {
             email: string;
             password: string;
+        };
+        maintenanceRequest: {
+            fence_launches?: boolean;
+            reason: string;
         };
         modelCapabilitiesResponse: {
             context_window: number;
@@ -8835,6 +8864,50 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getAdminSettingsMaintenance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Maintenance"];
+                };
+            };
+        };
+    };
+    putAdminSettingsMaintenance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["maintenanceRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Maintenance"];
+                };
             };
         };
     };

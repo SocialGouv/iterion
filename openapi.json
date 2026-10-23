@@ -1955,6 +1955,29 @@
         },
         "type": "object"
       },
+      "Maintenance": {
+        "properties": {
+          "fence_launches": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fence_launches",
+          "reason",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "MembershipView": {
         "properties": {
           "personal": {
@@ -4817,6 +4840,20 @@
         ],
         "type": "object"
       },
+      "maintenanceRequest": {
+        "properties": {
+          "fence_launches": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
       "modelCapabilitiesResponse": {
         "properties": {
           "context_window": {
@@ -6724,6 +6761,56 @@
           }
         },
         "summary": "PUT /api/admin/settings/budget-floor",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/settings/maintenance": {
+      "get": {
+        "operationId": "getAdminSettingsMaintenance",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Maintenance"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/settings/maintenance",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsMaintenance",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/maintenanceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Maintenance"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/admin/settings/maintenance",
         "tags": [
           "admin"
         ]

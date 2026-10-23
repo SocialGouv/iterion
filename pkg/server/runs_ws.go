@@ -626,7 +626,7 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	var subj launchSubject
 	if c.server.runs != nil {
 		if runMeta, err := c.server.runs.LoadRunCtx(c.authCtx(), c.runID); err == nil && runMeta != nil {
-			subj = launchSubject{BotID: runMeta.BotID, Repo: runMeta.ProjectPath}
+			subj = launchSubject{ExistingRun: true, BotID: runMeta.BotID, Repo: runMeta.ProjectPath}
 		}
 	}
 	adm, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity), subj)

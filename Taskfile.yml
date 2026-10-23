@@ -1411,6 +1411,15 @@ tasks:
     cmds:
       - helm template iterion charts/iterion -f charts/iterion/values-dev.yaml
 
+  chart:render-diff:
+    desc: Diff HEAD (or BASE) against the working chart using values-dev, without network
+    vars:
+      BASE: '{{.BASE | default "HEAD"}}'
+    env:
+      CHART_DIFF_BASE: '{{.BASE}}'
+    cmds:
+      - bash scripts/chart-render-diff.sh "$CHART_DIFF_BASE"
+
   chart:package:
     desc: Package the chart into dist/ (mirrors what release.yml publishes to OCI)
     deps: [chart:check-version, chart:dep-update]

@@ -27,7 +27,8 @@ const ColRoutingPolicies = "llm_routing_policies"
 
 // Family doc ids.
 const (
-	FamilyBotRoles = "bot_roles"
+	FamilyBotRoles    = "bot_roles"
+	FamilyMaintenance = "maintenance"
 	// FamilyRunnerPools is the sovereign runner-pool registry (#2029).
 	FamilyRunnerPools = "runner_pools"
 	FamilySandbox     = "sandbox"
@@ -49,6 +50,11 @@ const (
 type MongoStore[T any] struct {
 	col   *mongo.Collection
 	docID string
+}
+
+// NewMongoMaintenance binds admission maintenance to the existing settings collection.
+func NewMongoMaintenance(db *mongo.Database) *MongoStore[Maintenance] {
+	return &MongoStore[Maintenance]{col: db.Collection(colPlatformSettings), docID: FamilyMaintenance}
 }
 
 // NewMongoBotRoles binds the bot_roles family to a database.
@@ -120,6 +126,8 @@ func (s *MongoStore[T]) Put(ctx context.Context, rec T) error {
 // none today, the switch is the same shape stampUpdatedAt maintains.
 func updatedAtOf[T any](rec *T) time.Time {
 	switch v := any(rec).(type) {
+	case *Maintenance:
+		return v.UpdatedAt
 	case *BotRoles:
 		return v.UpdatedAt
 	case *Sandbox:
@@ -308,6 +316,8 @@ type CASDeleter interface {
 // stores (covering every writer, incl. the CLI) rather than per handler.
 func stampUpdatedAt[T any](rec *T) {
 	switch v := any(rec).(type) {
+	case *Maintenance:
+		v.UpdatedAt = time.Now().UTC()
 	case *BotRoles:
 		v.UpdatedAt = time.Now().UTC()
 	case *Sandbox:
