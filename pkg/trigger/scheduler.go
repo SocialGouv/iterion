@@ -301,8 +301,9 @@ func (s *Scheduler) fireIsolated(ctx context.Context, sub Subscription, intents 
 }
 
 func (s *Scheduler) fire(ctx context.Context, sub Subscription, intents ...*scheduleIntent) error {
-	if len(intents) > 0 && intents[0].Plan != nil {
-		return s.launchPlan(ctx, sub, *intents[0].Plan)
+	var prepared *LaunchPlan
+	if len(intents) > 0 {
+		prepared = intents[0].Plan
 	}
 	vars := make(map[string]string, len(sub.Vars))
 	for k, v := range sub.Vars {
@@ -312,6 +313,11 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription, intents ...*sche
 	// Overlap + guard gate (pkg/schedgate). A skipped tick is a normal,
 	// audited outcome — the cron slot simply passes.
 	policy := sub.Policy()
+	if prepared != nil {
+		// The guard's consumed payload belongs to the intention; overlap
+		// belongs to this attempt, after earlier held slots may have launched.
+		policy.Guard = ""
+	}
 	var lister schedgate.ScheduleRunLister
 	if s.gate != nil {
 		lister = s.gate.Lister
@@ -351,6 +357,9 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription, intents ...*sche
 		}
 	}
 
+	if prepared != nil {
+		return s.launchPlan(ctx, sub, *prepared)
+	}
 	plan := LaunchPlan{
 		BotID:           sub.BotID,
 		TenantID:        sub.TenantID,

@@ -857,8 +857,8 @@ func (out *webhookLaunchResult) duplicateOf(existing webhooks.Delivery) {
 // the repo's. Two PRs must review concurrently, and two different bots on the
 // same PR are doing different jobs; neither supersedes the other.
 //
-// Best-effort by construction: a cancel that fails must not stop the new run
-// from launching, because the new run is the one carrying the current truth.
+// Cancellation is best-effort: a failed cancel permits the new run only if
+// concurrency capacity remains. Otherwise the replacement waits for a slot.
 // Every outcome is logged — a superseded run is a real event an operator will
 // see in the run list and needs to be able to explain.
 func (s *Server) supersededRunIDs(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta, botID string) []string {
@@ -1430,7 +1430,17 @@ func (s *Server) launchWebhookTarget(
 	// meta.ProjectPath is the forge slug already parsed by the provider
 	// handler — thread it onto the launch so the run is filterable by
 	// repository in the studio.
-	runID, lerr := launch(ctx, botID, vars, t.RepoURL, t.RepoRef, meta.ProjectPath, cfg.KeyOverrides, cfg.SecretOverrides)
+	var runID string
+	var lerr error
+	if adm != nil && adm.confirmReplacement != nil {
+		// Cancel may fail or merely request asynchronous termination. The
+		// predecessor's slot is not ours until the active count permits it.
+		d = adm.confirmReplacement(ctx)
+		lerr = d.err()
+	}
+	if lerr == nil {
+		runID, lerr = launch(ctx, botID, vars, t.RepoURL, t.RepoRef, meta.ProjectPath, cfg.KeyOverrides, cfg.SecretOverrides)
+	}
 	bookCtx, cancelBook := launchBookingContext(ctx)
 	defer cancelBook()
 	if lerr != nil {
@@ -1462,6 +1472,10 @@ func (s *Server) launchWebhookTarget(
 		out.DeliveryID = delivery.ID
 		out.attempts = delivery.Attempts
 		out.httpStatus = http.StatusBadGateway
+		if d != nil {
+			out.denial = d
+			out.httpStatus = d.status
+		}
 		return out
 	}
 	launchedAt := time.Now().UTC()

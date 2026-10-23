@@ -170,9 +170,13 @@ func orValue[T int | float64](team, def T) T {
 // duplicate webhook deliveries) call rollback so the monthly run
 // counter stays true.
 type launchAdmission struct {
-	counter  orgusage.Counter
-	usageKey orgusage.Subject
-	when     time.Time
+	// Replacement credit is provisional until cancellation frees capacity.
+	// This rechecks only concurrency, preserving the maintenance decision
+	// and the quota/rate tokens already acquired by this admission.
+	confirmReplacement func(context.Context) *launchDenial
+	counter            orgusage.Counter
+	usageKey           orgusage.Subject
+	when               time.Time
 	// The per-minute launch bucket whose token this launch consumed
 	// (#1726). rollback refunds it: a launch the caller refuses after the
 	// gate — a malformed body, a lost duplicate race — must not leave the
@@ -191,7 +195,8 @@ type launchAdmission struct {
 // uncapped work — which is what it is.
 type launchSubject struct {
 	// ReplacingRunIDs are selected by the webhook's tenant/subject/bot scope.
-	// The gate verifies each is live and owned by this team before crediting it.
+	// The gate verifies each is live and owned by this team before provisionally
+	// crediting it. The caller must confirmReplacement after cancellation.
 	ReplacingRunIDs []string
 	// ExistingRun is set after reading the run or its durable retry row. It exempts
 	// continuation from maintenance, never from the existing quota gates.
@@ -369,6 +374,15 @@ func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdm
 	}
 	if adm != nil && rateKey != "" {
 		adm.rate, adm.rateKey, adm.rateCfg = s.authLimiter, rateKey, rateCfg
+	}
+	if d == nil && len(subj.ReplacingRunIDs) > 0 {
+		if adm == nil {
+			adm = &launchAdmission{}
+		}
+		subj.ReplacingRunIDs = nil
+		adm.confirmReplacement = func(ctx context.Context) *launchDenial {
+			return s.gateConcurrency(ctx, t, floor, subj)
+		}
 	}
 	return adm, d
 }

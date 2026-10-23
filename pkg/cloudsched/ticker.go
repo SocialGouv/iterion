@@ -22,6 +22,8 @@ type LaunchFunc func(ctx context.Context, sb ScheduledBot) error
 // stdout ("" when no guard) for injection into the launch vars.
 // Only the intent claimant runs the guard; its admitted payload is persisted
 // before launch so a maintenance retry does not consume the guard again.
+// Prepared intentions call Gate again with Guard empty: the overlap verdict
+// must reflect runs launched since preparation, while guard vars stay intact.
 type GateFunc func(ctx context.Context, sb ScheduledBot) (proceed bool, guardStdout string, rec schedgate.TickRecord)
 
 // Ticker materializes each due slot before advancing its calendar, then
@@ -98,8 +100,12 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 			continue
 		}
 		fired++
-		if t.Gate != nil && !intent.Prepared {
-			proceed, guardStdout, rec := t.Gate(ctx, sb)
+		if t.Gate != nil {
+			gateSchedule := sb
+			if intent.Prepared {
+				gateSchedule.Guard = ""
+			}
+			proceed, guardStdout, rec := t.Gate(ctx, gateSchedule)
 			if !proceed {
 				if t.Audit != nil {
 					t.Audit(rec)
@@ -115,7 +121,7 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 				t.warn("gate skipped %s (%s): %s", sb.ID, sb.BotID, rec.Reason)
 				continue
 			}
-			if guardStdout != "" {
+			if !intent.Prepared && guardStdout != "" {
 				// Copy-on-write: sb is a loop copy, but Vars is a shared map.
 				vars := make(map[string]string, len(sb.Vars)+1)
 				for k, v := range sb.Vars {

@@ -54,12 +54,15 @@ func TestRound2HeldIntentDoesNotRerunConsumedGuard(t *testing.T) {
 	ctx := context.Background()
 	st := cloudsched.NewMemoryStore()
 	now := time.Now().UTC()
-	if err := st.Create(ctx, cloudsched.ScheduledBot{ID: "guarded", BotID: "bot", Cron: "0 9 * * *", NextFireAt: now, GuardVar: "input"}); err != nil {
+	if err := st.Create(ctx, cloudsched.ScheduledBot{ID: "guarded", BotID: "bot", Cron: "0 9 * * *", NextFireAt: now, Guard: "consume", GuardVar: "input"}); err != nil {
 		t.Fatal(err)
 	}
 	hold := true
 	guards, launches := 0, 0
-	ticker := &cloudsched.Ticker{Store: st, Now: func() time.Time { return now }, Gate: func(context.Context, cloudsched.ScheduledBot) (bool, string, schedgate.TickRecord) {
+	ticker := &cloudsched.Ticker{Store: st, Now: func() time.Time { return now }, Gate: func(_ context.Context, sb cloudsched.ScheduledBot) (bool, string, schedgate.TickRecord) {
+		if sb.Guard == "" {
+			return true, "", schedgate.TickRecord{}
+		}
 		guards++
 		return guards == 1, "original", schedgate.TickRecord{}
 	}, Launch: func(_ context.Context, sb cloudsched.ScheduledBot) error {
