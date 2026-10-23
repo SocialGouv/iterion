@@ -33,3 +33,47 @@ func TestLocateIterionBinary_AbsolutisesARelativeITERIONBIN(t *testing.T) {
 		t.Fatalf("LocateIterionBinary() = %q, want %q", got, bin)
 	}
 }
+
+// The fixed install-path tier is injectable: a pinned tier is the one the
+// lookup consults, and the restore hands the decision back to the host.
+func TestSetInstallPathCandidatesPinsTheFixedTier(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "iterion")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_BIN", "")
+	t.Setenv("HOME", t.TempDir())
+
+	restore := SetInstallPathCandidates(func() []string { return []string{fake} })
+	defer restore()
+	if got := LocateIterionBinary(); got != fake {
+		t.Fatalf("LocateIterionBinary() = %q, want the pinned tier candidate %q", got, fake)
+	}
+
+	restore()
+	if got := LocateIterionBinary(); got == fake {
+		t.Fatal("the pinned candidate survived the restore")
+	}
+}
+
+// ITERION_BIN keeps its precedence over the fixed tier: the operator's
+// escape hatch wins without touching the injected candidates.
+func TestInstallTierYieldsToTheEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	pinned := filepath.Join(dir, "pinned-iterion")
+	envBin := filepath.Join(dir, "env-iterion")
+	for _, p := range []string{pinned, envBin} {
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("ITERION_BIN", envBin)
+	t.Setenv("HOME", t.TempDir())
+
+	restore := SetInstallPathCandidates(func() []string { return []string{pinned} })
+	defer restore()
+	if got := LocateIterionBinary(); got != envBin {
+		t.Fatalf("LocateIterionBinary() = %q, want the ITERION_BIN override %q", got, envBin)
+	}
+}

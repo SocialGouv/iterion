@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -356,6 +357,10 @@ func TestResume_ReplaysTheFoldedRowsNotThePolicy(t *testing.T) {
 func TestLaunchDetached_NamesTheDroppedOverrides(t *testing.T) {
 	t.Setenv("ITERION_RUNS_DETACHED", "1")
 	t.Setenv("PATH", t.TempDir()) // no runner binary: the spawn fails after the warnings
+	t.Setenv("ITERION_BIN", "")   // the env tier: a host override would spawn a real binary
+	t.Setenv("HOME", t.TempDir()) // the install tier reads UserHomeDir
+	restore := proc.SetInstallPathCandidates(func() []string { return nil })
+	t.Cleanup(restore) // the fixed install paths: the resolver must refuse on any host
 	var buf bytes.Buffer
 	srv, err := NewService(t.TempDir(), WithLogger(iterlog.New(iterlog.LevelWarn, &buf)))
 	if err != nil {

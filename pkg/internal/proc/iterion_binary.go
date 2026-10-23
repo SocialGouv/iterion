@@ -60,16 +60,35 @@ func locateIterionBinaryCandidate() string {
 			return env
 		}
 	}
-	candidates := []string{"/usr/local/bin/iterion", "/usr/bin/iterion"}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".local", "bin", "iterion"))
-	}
-	for _, p := range candidates {
+	for _, p := range installPathCandidates() {
 		if isExecutableFile(p) {
 			return p
 		}
 	}
 	return ""
+}
+
+// installPathCandidates serves the fixed install-path tier of the lookup
+// (the standard locations probed after the sibling and ITERION_BIN tiers).
+// Tests pin it so a host install cannot make a refusal-path witness spawn a
+// real binary; production never replaces it.
+var installPathCandidates = defaultInstallPathCandidates
+
+func defaultInstallPathCandidates() []string {
+	candidates := []string{"/usr/local/bin/iterion", "/usr/bin/iterion"}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".local", "bin", "iterion"))
+	}
+	return candidates
+}
+
+// SetInstallPathCandidates pins the fixed install-path tier for the life of
+// the returned restore func. Test seam: a refusal-path witness (detached
+// launches, MCP wiring) holds it empty so the lookup refuses on any host.
+func SetInstallPathCandidates(paths func() []string) (restore func()) {
+	old := installPathCandidates
+	installPathCandidates = paths
+	return func() { installPathCandidates = old }
 }
 
 // isVolatileBuildPath reports whether p looks like a Go-toolchain

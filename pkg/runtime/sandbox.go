@@ -39,6 +39,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runops"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -1869,77 +1870,15 @@ func backendIsClaw(name string) bool {
 	return false
 }
 
-// isVolatileBuildPath reports whether p looks like a Go-toolchain
-// temporary build artifact (`go run`, `go test`, watchexec-driven
-// hot rebuilds). Such paths get unlinked and recreated under load,
-// so bind-mounting them into a sandbox container resolves the inode
-// at mount time but later exec()'s inside the container hit
-// "no such file or directory" once watchexec rotates the build dir.
-// Observed under `task studio:dev`: the daemon ran from
-// /tmp/go-build*/b001/exe/iterion, the sandbox bound that path at
-// /usr/local/bin/iterion inside the container, claw-runner exec'd
-// it, and got ENOENT because the host file had been recycled.
-//
-// Resolver callers skip the sibling-of-Executable check when this
-// returns true and fall through to the stable install paths
-// (/usr/local/bin/iterion, /usr/bin/iterion, …) instead.
-func isVolatileBuildPath(p string) bool {
-	return strings.Contains(p, "/go-build") || strings.Contains(p, "/T/go-build")
-}
-
 // locateHostIterionBinary finds an `iterion` executable on the host
-// suitable for bind-mounting into a sandbox container. Search order:
-//
-//  1. Sibling of the running executable (covers `dpkg -i` installs
-//     where iterion-desktop and iterion live in the same /usr/bin
-//     and the operator launches iterion-desktop directly). Skipped
-//     when the executable lives under a Go-toolchain temp build dir
-//     (see [isVolatileBuildPath]).
-//  2. ITERION_BIN env var override (escape hatch for unusual installs).
-//  3. /usr/local/bin/iterion → /usr/bin/iterion → ~/.local/bin/iterion
-//     (standard Linux install paths).
-//
-// Returns "" when no binary can be located — the caller falls back to
-// expecting the sandbox image to ship its own copy on PATH.
+// suitable for bind-mounting into a sandbox container. It is proc.
+// LocateIterionBinary under a sandbox name: the same resolution order
+// (sibling of the running executable, volatile build paths skipped,
+// ITERION_BIN, the standard install paths) and the same one-absolute-path
+// contract — a relative ITERION_BIN would be read as a named volume by the
+// container run, not a bind-mount source.
 func locateHostIterionBinary() string {
-	p := locateHostIterionBinaryCandidate()
-	if p == "" {
-		return ""
-	}
-	// Same contract as proc.LocateIterionBinary: one absolute form — a
-	// relative ITERION_BIN would be read as a named volume by the
-	// container run, not a bind-mount source.
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return ""
-	}
-	return abs
-}
-
-func locateHostIterionBinaryCandidate() string {
-	if exe, err := os.Executable(); err == nil && !isVolatileBuildPath(exe) {
-		candidate := filepath.Join(filepath.Dir(exe), "iterion")
-		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
-			return candidate
-		}
-	}
-	if env := strings.TrimSpace(os.Getenv("ITERION_BIN")); env != "" {
-		// #nosec G304 G703 — env is the operator-set ITERION_BIN override, host
-		// configuration not external request input.
-		if info, statErr := os.Stat(env); statErr == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
-			return env
-		}
-	}
-	candidates := []string{"/usr/local/bin/iterion", "/usr/bin/iterion"}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".local", "bin", "iterion"))
-	}
-	for _, p := range candidates {
-		if info, statErr := os.Stat(p); statErr == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
-			return p
-		}
-	}
-	return ""
+	return proc.LocateIterionBinary()
 }
 
 // EngineRepoRoot returns the path the engine should treat as the
