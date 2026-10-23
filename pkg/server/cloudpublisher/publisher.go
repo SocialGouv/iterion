@@ -3803,7 +3803,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 			retErr = errors.Join(retErr, fmt.Errorf("cloudpublisher: mark run %s failed after launch failure (run may be stuck queued): %w", runID, uerr))
 		}
 	}()
-	if err := p.store.SaveRun(ctx, r); err != nil {
+	if err := store.PersistLaunch(ctx, func(ctx context.Context) error { return p.store.SaveRun(ctx, r) }); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
 	persisted = true

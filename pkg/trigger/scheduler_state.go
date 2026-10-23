@@ -1,12 +1,15 @@
 package trigger
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/gofrs/flock"
 )
 
 type scheduleState struct {
@@ -15,12 +18,11 @@ type scheduleState struct {
 }
 
 func (s *Scheduler) loadScheduleState() error {
-	if s.stateFile == "" || s.stateLoaded {
+	if s.stateFile == "" {
 		return nil
 	}
 	raw, err := os.ReadFile(s.stateFile)
 	if errors.Is(err, os.ErrNotExist) {
-		s.stateLoaded = true
 		return nil
 	}
 	if err != nil {
@@ -38,7 +40,6 @@ func (s *Scheduler) loadScheduleState() error {
 	if state.Pending != nil {
 		s.pending = state.Pending
 	}
-	s.stateLoaded = true
 	return nil
 }
 func (s *Scheduler) saveScheduleState() error {
@@ -52,4 +53,28 @@ func (s *Scheduler) saveScheduleState() error {
 		return err
 	}
 	return store.WriteFileAtomic(s.stateFile, raw, 0600)
+}
+
+// The journal is one atomic file: lock before reloading it and retain exclusion
+// until every launch and outcome write finishes. OS locks disappear on crash.
+func (s *Scheduler) lockScheduleState(ctx context.Context) (func(), error) {
+	if s.stateFile == "" {
+		return func() {}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(s.stateFile), 0700); err != nil {
+		return nil, err
+	}
+	lock := flock.New(s.stateFile + ".lock")
+	ok, err := lock.TryLockContext(ctx, 10*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ctx.Err()
+	}
+	return func() {
+		if err := lock.Unlock(); err != nil {
+			s.warn("scheduler: unlock intentions: %v", err)
+		}
+	}, nil
 }

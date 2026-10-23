@@ -77,91 +77,113 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 			continue
 		}
 	}
-	intents, err := t.Store.ClaimIntents(ctx, now, 200)
+	schedules, err := t.Store.ListIntentSchedules(ctx, now, 200)
 	if err != nil {
 		return fired, err
 	}
-	for _, intent := range intents {
-		if t.now().After(intent.NotBefore) {
-			continue
-		}
-		sb := intent.Schedule
-		current, err := t.Store.Get(ctx, sb.ID)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			continue
-		} // lease recovers transient reads
-		finish := func(hold bool) {
-			if err := t.Store.FinishIntent(ctx, intent, hold, now); err != nil {
-				t.warn("finish intent %s: %v", intent.ID, err)
-			}
-		}
-		if errors.Is(err, ErrNotFound) || current.Disabled {
-			finish(false)
-			continue
-		}
-		fired++
-		if t.Gate != nil {
-			gateSchedule := sb
-			if intent.Prepared {
-				gateSchedule.Guard = ""
-			}
-			proceed, guardStdout, rec := t.Gate(ctx, gateSchedule)
-			if !proceed {
-				if t.Audit != nil {
-					t.Audit(rec)
-				}
-				// A guard that could not RUN stops the schedule producing
-				// runs, which its operator reads on the schedule itself
-				// (last_error), not in the audit trail. A guard that ran and
-				// said "nothing to do" is the schedule working: it raises
-				// nothing. Either way the verdict replaces the previous one,
-				// so a schedule that recovers is no longer marked unhealthy.
-				t.recordGateVerdict(ctx, current, rec, now)
-				finish(false)
-				t.warn("gate skipped %s (%s): %s", sb.ID, sb.BotID, rec.Reason)
-				continue
-			}
-			if !intent.Prepared && guardStdout != "" {
-				// Copy-on-write: sb is a loop copy, but Vars is a shared map.
-				vars := make(map[string]string, len(sb.Vars)+1)
-				for k, v := range sb.Vars {
-					vars[k] = v
-				}
-				vars[sb.Policy().GuardVar] = guardStdout
-				sb.Vars = vars
-			}
-		}
-		if !intent.Prepared {
-			intent.Schedule = sb
-			prepared, err := t.Store.PrepareIntent(ctx, intent)
+	for _, id := range schedules {
+		_, err := t.Store.WithSchedule(ctx, id, func(ctx context.Context) {
+			intents, err := t.Store.ClaimScheduleIntents(ctx, id, now, 200)
 			if err != nil {
-				t.warn("prepare intent %s: %v", intent.ID, err)
+				t.warn("claim schedule %s: %v", id, err)
+				return
 			}
-			if err != nil || !prepared {
-				continue
+			for _, intent := range intents {
+				fired += t.fireIntent(ctx, intent, now)
 			}
-		}
-		// Maintenance postpones this intention. Ordinary failures retain
-		// the scheduler's historical terminal verdict for this slot.
-		lerr := t.Launch(ctx, sb)
-		finish(errors.Is(lerr, schedgate.ErrMaintenanceHold))
-		if lerr != nil {
-			t.warn("launch %s (%s): %v", sb.ID, sb.BotID, lerr)
-		}
-		t.recordLaunchVerdict(ctx, current, lerr, now)
-		if t.Audit != nil {
-			rec := schedgate.NewTickRecord(schedgate.SurfaceCloud, sb.ID, now, schedgate.LaunchDecision(lerr))
-			rec.ScheduleName = sb.BotID
-			rec.BotID = sb.BotID
-			rec.TenantID = sb.TenantID
-			rec.Cron = sb.Cron
-			if lerr != nil {
-				rec.Error = lerr.Error()
-			}
-			t.Audit(rec)
+		})
+		if err != nil {
+			t.warn("exclude schedule %s: %v", id, err)
 		}
 	}
 	return fired, nil
+}
+
+func (t *Ticker) fireIntent(ctx context.Context, intent LaunchIntent, now time.Time) int {
+	fired := 0
+
+	if ctx.Err() != nil || t.now().After(intent.NotBefore) {
+		return fired
+	}
+	sb := intent.Schedule
+	current, err := t.Store.Get(ctx, sb.ID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return fired
+	} // lease recovers transient reads
+	finish := func(hold bool) {
+		if err := t.Store.FinishIntent(ctx, intent, hold, now); err != nil {
+			t.warn("finish intent %s: %v", intent.ID, err)
+		}
+	}
+	if errors.Is(err, ErrNotFound) || current.Disabled {
+		finish(false)
+		return fired
+	}
+	fired++
+	if t.Gate != nil {
+		gateSchedule := sb
+		if intent.Prepared {
+			gateSchedule.Guard = ""
+		}
+		proceed, guardStdout, rec := t.Gate(ctx, gateSchedule)
+		if ctx.Err() != nil {
+			return fired
+		}
+		if !proceed {
+			if t.Audit != nil {
+				t.Audit(rec)
+			}
+			// A guard that could not RUN stops the schedule producing
+			// runs, which its operator reads on the schedule itself
+			// (last_error), not in the audit trail. A guard that ran and
+			// said "nothing to do" is the schedule working: it raises
+			// nothing. Either way the verdict replaces the previous one,
+			// so a schedule that recovers is no longer marked unhealthy.
+			t.recordGateVerdict(ctx, current, rec, now)
+			finish(false)
+			t.warn("gate skipped %s (%s): %s", sb.ID, sb.BotID, rec.Reason)
+			return fired
+		}
+		if !intent.Prepared && guardStdout != "" {
+			// Copy-on-write: sb is a loop copy, but Vars is a shared map.
+			vars := make(map[string]string, len(sb.Vars)+1)
+			for k, v := range sb.Vars {
+				vars[k] = v
+			}
+			vars[sb.Policy().GuardVar] = guardStdout
+			sb.Vars = vars
+		}
+	}
+	if !intent.Prepared {
+		intent.Schedule = sb
+		prepared, err := t.Store.PrepareIntent(ctx, intent)
+		if err != nil {
+			t.warn("prepare intent %s: %v", intent.ID, err)
+		}
+		if err != nil || !prepared {
+			return fired
+		}
+	}
+	// Maintenance postpones this intention. Ordinary failures retain
+	// the scheduler's historical terminal verdict for this slot.
+	lerr := t.Launch(ctx, sb)
+	finish(ctx.Err() != nil || errors.Is(lerr, schedgate.ErrMaintenanceHold))
+	if lerr != nil {
+		t.warn("launch %s (%s): %v", sb.ID, sb.BotID, lerr)
+	}
+	t.recordLaunchVerdict(ctx, current, lerr, now)
+	if t.Audit != nil {
+		rec := schedgate.NewTickRecord(schedgate.SurfaceCloud, sb.ID, now, schedgate.LaunchDecision(lerr))
+		rec.ScheduleName = sb.BotID
+		rec.BotID = sb.BotID
+		rec.TenantID = sb.TenantID
+		rec.Cron = sb.Cron
+		if lerr != nil {
+			rec.Error = lerr.Error()
+		}
+		t.Audit(rec)
+	}
+	return fired
 }
 
 // recordGateVerdict persists on the schedule's own health field what the gate

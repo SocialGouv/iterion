@@ -123,6 +123,11 @@ type ScheduledBot struct {
 // Store persists scheduled bots. Mongo (cloud) and an in-memory impl (tests)
 // satisfy it.
 type Store interface {
+	// WithSchedule excludes other replicas through overlap evaluation and launch.
+	// Its context fences the final run persistence against an expired owner.
+	WithSchedule(context.Context, string, func(context.Context)) (bool, error)
+	ListIntentSchedules(context.Context, time.Time, int) ([]string, error)
+	ClaimScheduleIntents(context.Context, string, time.Time, int) ([]LaunchIntent, error)
 	// PutIntent is idempotent per nominal slot and must precede ClaimTick.
 	PutIntent(context.Context, ScheduledBot) error
 	ClaimIntents(context.Context, time.Time, int) ([]LaunchIntent, error)

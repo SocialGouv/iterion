@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"os"
+	"reflect"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
@@ -52,15 +53,15 @@ func cloudBoardTickInterval() time.Duration {
 // board. Unlike the local NativeBoardEffect (bound to ONE store), it
 // resolves the tenant store per call from the plan/event tenant.
 type cloudBoardEffect struct {
-	coord  *boardmongo.Coordinator
+	coord  boardmongo.TriggerCoordinator
 	logger *iterlog.Logger
 }
 
-func (c *cloudBoardEffect) storeFor(tenantID string) (*boardmongo.Store, error) {
+func (c *cloudBoardEffect) storeFor(tenantID string) (boardmongo.TriggerStore, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("trigger: cloud board effect needs a tenant id")
 	}
-	return c.coord.StoreFor(tenantID), nil
+	return c.coord.TriggerStoreFor(tenantID), nil
 }
 
 // Promote stamps the matched card's bot + bot-args so the cloud board
@@ -128,7 +129,7 @@ type cloudBoardStore interface {
 // delivery, with a leased claim and bounded retries where the bus had
 // at-most-once and warn-only losses.
 type cloudBoardSource struct {
-	coord   *boardmongo.Coordinator
+	coord   boardmongo.TriggerCoordinator
 	tenants cloudTenantLister
 	subs    trigger.SubscriptionStore
 	eval    *trigger.Evaluator
@@ -213,7 +214,7 @@ func (s *cloudBoardSource) tickOnce() {
 		}
 	}
 	for _, tenant := range tenants {
-		st := s.coord.StoreFor(tenant)
+		st := s.coord.TriggerStoreFor(tenant)
 		materialized, err := s.drainTenant(tenant, st)
 		if err != nil && s.ctx.Err() == nil {
 			s.warn("trigger: cloud board source: tenant %s: %v", tenant, err)
@@ -434,8 +435,8 @@ type CloudTriggerCoordinator struct {
 // poll-tail. Returns nil (a no-op, logged) when a prerequisite is missing.
 // The schedule/keepalive kinds stay with cloudsched; forge events stay
 // observational (webhooks remain the launch authority).
-func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.SubscriptionStore, launcher trigger.Launcher, projection *boardProjectionEffect, bus eventbus.Bus, logger *iterlog.Logger, runs store.RunStore) *CloudTriggerCoordinator {
-	if coord == nil || subs == nil || bus == nil {
+func StartCloudTriggerCoordinator(coord boardmongo.TriggerCoordinator, subs trigger.SubscriptionStore, launcher trigger.Launcher, projection *boardProjectionEffect, bus eventbus.Bus, logger *iterlog.Logger, runs store.RunStore) *CloudTriggerCoordinator {
+	if coord == nil || (reflect.ValueOf(coord).Kind() == reflect.Pointer && reflect.ValueOf(coord).IsNil()) || subs == nil || bus == nil {
 		return nil
 	}
 	lister, ok := subs.(cloudTenantLister)
@@ -449,7 +450,7 @@ func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.Su
 	evalOpts := []trigger.EvaluatorOption{
 		trigger.WithBoardEffect(effect),
 		trigger.WithLauncher(launcher),
-		trigger.WithEffectOutbox(func(tenant string) trigger.EffectOutbox { return coord.StoreFor(tenant) }),
+		trigger.WithEffectOutbox(func(tenant string) trigger.EffectOutbox { return coord.TriggerStoreFor(tenant) }),
 		trigger.WithLogger(logger),
 	}
 	// The two halves of the projection travel together — the same value

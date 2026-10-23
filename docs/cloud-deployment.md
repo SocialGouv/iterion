@@ -706,7 +706,17 @@ Schedules materialize an intention per nominal slot before advancing the
 calendar. Cloud intentions live in `schedule_launch_intents`, local intentions
 and calendar state in `schedule-intents.json` beside the native board. A hold
 at 09:00 can resume at 09:01 without waiting for tomorrow, including after a
-scheduler restart. Repeated holds consume no
+scheduler restart. The intention retains the guard result and payload; each
+retry re-evaluates overlap. Three held slots with `overlap: skip` launch only
+one run while it remains live. Cloud replicas exclude each other per schedule
+from the overlap check through launch persistence. The renewable lease's owner
+is checked in the **same Mongo transaction** as the run write: a paused worker
+whose lease was taken cannot persist behind its successor's overlap check.
+This requires a Mongo replica set and the scheduler and run stores to share
+the bootstrap Mongo client. Queue publication follows the committed run write.
+Local schedulers hold a file lock across journal reload, overlap, launch and
+outcome persistence; multiple coordinators cannot replay cached journal state.
+Repeated holds consume no
 failure attempts. After disarming, the ordinary worker/dispatcher sweeps launch
 the preserved work (subject to its other admission rules). A webhook with
 `overlap: supersede` selects predecessors, obtains one coherent admission

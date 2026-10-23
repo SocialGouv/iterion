@@ -87,6 +87,33 @@ func Run(ctx context.Context, st Store, spec Spec, fn func(context.Context)) err
 	}
 }
 
+// TryRun serves at most one renewable term. Contention returns immediately;
+// callers retry on their own work cadence. A term is NOT a persistence fence:
+// non-idempotent writers must validate ownership atomically with their write.
+func TryRun(ctx context.Context, st Store, spec Spec, fn func(context.Context)) (bool, error) {
+	if st == nil {
+		return false, errors.New("lease: nil store")
+	}
+	if err := validate(spec.Name, spec.Owner, spec.TTL); err != nil {
+		return false, err
+	}
+	spec.Name, spec.Owner = strings.TrimSpace(spec.Name), strings.TrimSpace(spec.Owner)
+	c := &campaign{st: st, spec: spec}
+	sent := time.Now()
+	callCtx, cancel := context.WithTimeout(ctx, spec.TTL/3)
+	ok, err := st.Acquire(callCtx, spec.Name, spec.Owner, sent, spec.TTL)
+	cancel()
+	if err != nil {
+		c.releaseUnanswered(ctx)
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	c.serveTerm(ctx, sent, fn)
+	return true, nil
+}
+
 type campaign struct {
 	st   Store
 	spec Spec

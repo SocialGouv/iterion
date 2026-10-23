@@ -60,12 +60,15 @@ func (s *MemoryStore) PutIntent(_ context.Context, sb ScheduledBot) error {
 	s.intents[id] = LaunchIntent{ID: id, Schedule: snapshot}
 	return nil
 }
-func (s *MemoryStore) ClaimIntents(_ context.Context, now time.Time, limit int) ([]LaunchIntent, error) {
+func (s *MemoryStore) ClaimIntents(ctx context.Context, now time.Time, limit int) ([]LaunchIntent, error) {
+	return s.ClaimScheduleIntents(ctx, "", now, limit)
+}
+func (s *MemoryStore) ClaimScheduleIntents(_ context.Context, schedule string, now time.Time, limit int) ([]LaunchIntent, error) {
 	s.intentMu.Lock()
 	defer s.intentMu.Unlock()
 	ids := []string{}
 	for id, r := range s.intents {
-		if !r.Done && !r.NotBefore.After(now) {
+		if !r.Done && !r.NotBefore.After(now) && (schedule == "" || r.Schedule.ID == schedule) {
 			ids = append(ids, id)
 		}
 	}
@@ -107,10 +110,17 @@ func (s *MongoStore) PutIntent(ctx context.Context, sb ScheduledBot) error {
 	return err
 }
 func (s *MongoStore) ClaimIntents(ctx context.Context, now time.Time, limit int) ([]LaunchIntent, error) {
+	return s.ClaimScheduleIntents(ctx, "", now, limit)
+}
+func (s *MongoStore) ClaimScheduleIntents(ctx context.Context, schedule string, now time.Time, limit int) ([]LaunchIntent, error) {
+	filter := bson.M{"done": false, "not_before": bson.M{"$lte": now}}
+	if schedule != "" {
+		filter["schedule._id"] = schedule
+	}
 	var rows []LaunchIntent
 	for i := 0; i < limit; i++ {
 		var row LaunchIntent
-		err := s.intentColl().FindOneAndUpdate(ctx, bson.M{"done": false, "not_before": bson.M{"$lte": now}},
+		err := s.intentColl().FindOneAndUpdate(ctx, filter,
 			bson.M{"$set": bson.M{"claim_id": intentClaim(), "not_before": now.Add(intentLease)}},
 			options.FindOneAndUpdate().SetSort(bson.D{{Key: "not_before", Value: 1}}).SetReturnDocument(options.After)).Decode(&row)
 		if errors.Is(err, mongo.ErrNoDocuments) {

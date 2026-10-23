@@ -13,6 +13,8 @@ import (
 // MemoryStore is an in-memory Store for tests + single-process use. ClaimTick
 // enforces the same CAS-on-next_fire_at semantics as the Mongo store.
 type MemoryStore struct {
+	scopeMu  sync.Mutex
+	scopes   map[string]string
 	intentMu sync.Mutex
 	intents  map[string]LaunchIntent
 	kit      *storekit.Memory[ScheduledBot]

@@ -27,15 +27,14 @@ import (
 // not). Firing a finished scheduled run still emits a run-completion event, so
 // chaining off a scheduled run works through the run source.
 type Scheduler struct {
-	stateFile   string
-	stateLoaded bool
-	tickMu      sync.Mutex
-	subs        SubscriptionStore
-	launcher    Launcher
-	logger      *iterlog.Logger
-	interval    time.Duration
-	now         func() time.Time
-	gate        *ScheduleGate
+	stateFile string
+	tickMu    sync.Mutex
+	subs      SubscriptionStore
+	launcher  Launcher
+	logger    *iterlog.Logger
+	interval  time.Duration
+	now       func() time.Time
+	gate      *ScheduleGate
 
 	mu       sync.Mutex
 	pending  map[string]*scheduleIntent
@@ -191,6 +190,12 @@ func (s *Scheduler) loop() {
 func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
+	unlock, err := s.lockScheduleState(ctx)
+	if err != nil {
+		s.warn("scheduler: lock intentions: %v", err)
+		return
+	}
+	defer unlock()
 	if err := s.loadScheduleState(); err != nil {
 		s.warn("scheduler: load intentions: %v", err)
 		return

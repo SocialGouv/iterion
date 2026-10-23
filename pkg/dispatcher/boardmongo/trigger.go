@@ -295,3 +295,26 @@ func (s *Store) ConsumeLabelsForEffect(id string, labels []string, effectID stri
 	count, err := s.issues.CountDocuments(ctx, bson.M{"_id": id, "tenant_id": s.tenant, "issue.consumed_effects": effectID})
 	return count > 0, err
 }
+
+// TriggerStore is the tenant store surface used by the cloud trigger spine.
+// Keeping the coordinator behind this seam lets the same coordinator wiring
+// exercise durable file stores in the deterministic layer.
+type TriggerStore interface {
+	TriggerCursor() (int64, error)
+	EventsAfter(int64, int) ([]native.Event, error)
+	AdvanceTriggerCursor(int64, int64) (bool, error)
+	Get(string) (*native.Issue, error)
+	Update(string, native.Patch) (*native.Issue, error)
+	ConsumeLabels(string, []string) (bool, error)
+	ConsumeLabelsForEffect(string, []string, string) (bool, error)
+	trigger.EffectOutbox
+}
+
+// TriggerCoordinator resolves tenant stores and discovers outstanding effects,
+// including tenants with no board subscriptions (custom and run events).
+type TriggerCoordinator interface {
+	TriggerStoreFor(string) TriggerStore
+	DistinctEffectTenants(context.Context) ([]string, error)
+}
+
+func (c *Coordinator) TriggerStoreFor(tenant string) TriggerStore { return c.StoreFor(tenant) }
