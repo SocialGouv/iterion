@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -290,7 +291,7 @@ func (f *fakeIRBlobs) IRBlobBackend() string { return "s3" }
 // hydrates it by fetching the blob back through the IRBlobStore seam.
 func TestLoadWorkflow_FetchesIRRef(t *testing.T) {
 	const src = "workflow main:\n  entry: a\n  a -> done\nagent a:\n  backend: \"claw\"\n  model: \"openai/gpt-5.4-mini\"\n  system: sys\nprompt sys:\n  hi\n"
-	pr := parser.Parse("main.bot", src)
+	pr := parsertest.Parse("main.bot", src)
 	body, err := ast.MarshalFile(pr.File)
 	if err != nil {
 		t.Fatalf("marshal AST: %v", err)
@@ -369,7 +370,7 @@ workflow main:
   entry: a
   a -> done
 `
-	pr := parser.Parse("firecrawl.bot", src)
+	pr := parsertest.Parse("firecrawl.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("parse error: %s", d.Error())

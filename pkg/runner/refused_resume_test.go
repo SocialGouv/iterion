@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -321,7 +321,7 @@ func TestRefusedResume_aGateRefusedBeforeItsClaimWaitsAgainWithItsRefusal(t *tes
 	if ok, err := st.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusPausedWaitingHuman}); err != nil || !ok {
 		t.Fatalf("the publisher's queued flip: ok=%v err=%v", ok, err)
 	}
-	pr := parser.Parse("main.bot", "workflow main:\n  entry: done\n")
+	pr := parsertest.Parse("main.bot", "workflow main:\n  entry: done\n")
 	body, err := ast.MarshalFile(pr.File)
 	if err != nil {
 		t.Fatal(err)

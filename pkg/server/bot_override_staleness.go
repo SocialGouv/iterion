@@ -119,7 +119,12 @@ type bakedCatalog struct {
 // botregistry (or one long-lived single-flight walker), both out of scope here.
 func (s *Server) newBakedCatalogResolver() *platformcfg.Resolver[bakedCatalog] {
 	return platformcfg.NewResolverFunc(func(context.Context) (*bakedCatalog, error) {
-		entries, diagnostics, err := botregistry.ListWithDiagnostics(s.botListOptions())
+		// Versions only: an overlay its reader refused decides no version,
+		// so this projection reads past it (every entry listed disabled,
+		// which it never reads).
+		opts := s.botListOptions()
+		opts.ListPastAnUnreadOverlay = true
+		entries, diagnostics, err := botregistry.ListWithDiagnostics(opts)
 		if err != nil {
 			return nil, fmt.Errorf("bot catalog walk for the override-staleness check: %w", err)
 		}
@@ -135,6 +140,12 @@ func (s *Server) newBakedCatalogResolver() *platformcfg.Resolver[bakedCatalog] {
 			// answering "nothing is shadowed" out of a partial catalog would
 			// clear an override that really is stale.
 			if d.Kind == botregistry.DiscoveryErrorShadowed {
+				continue
+			}
+			// A source listed without its frontmatter identity still carries
+			// its manifest's version, and an overlay that is not read hides
+			// nothing from this projection: neither leaves a version unread.
+			if d.Kind == botregistry.DiscoveryErrorIdentity || d.Kind == botregistry.DiscoveryErrorOverlay {
 				continue
 			}
 			return nil, fmt.Errorf("bot catalog walk for the override-staleness check: %s", d.Error)

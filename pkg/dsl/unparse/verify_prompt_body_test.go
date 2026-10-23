@@ -1,6 +1,7 @@
 package unparse
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -50,7 +51,7 @@ func TestVerifyAcceptsPromptBodiesTheSyntaxCannotCarry(t *testing.T) {
 				t.Errorf("%s %q: refused: %v\n%s", name, body, err, text)
 				continue
 			}
-			pr := parser.Parse("", text)
+			pr := parsertest.Parse("", text)
 			if len(pr.File.Prompts) != 1 {
 				t.Fatalf("%s %q: the prompt did not survive: %+v", name, body, pr.File.Prompts)
 			}
@@ -93,7 +94,7 @@ func TestUnparseWritesPromptBodiesInCanonicalForm(t *testing.T) {
 	if want := "prompt p:\n  Hello\n  World\n"; text != want {
 		t.Fatalf("got %q, want %q", text, want)
 	}
-	if again := Unparse(parser.Parse("", text).File); again != text {
+	if again := Unparse(parsertest.Parse("", text).File); again != text {
 		t.Fatalf("the round-trip is not stable: %q then %q", text, again)
 	}
 }

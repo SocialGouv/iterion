@@ -1,11 +1,10 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // Compile must not mutate its input: group expansion used to append the
@@ -37,7 +36,7 @@ func TestCompileDoesNotMutateItsInput(t *testing.T) {
 		"  r2.check -> done",
 	}
 	src := strings.Join(lines, "\n") + "\n"
-	pr := parser.Parse("pure.bot", src)
+	pr := parsertest.Parse("pure.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("unexpected parse diagnostic: %s", d.Error())
 	}
@@ -45,7 +44,7 @@ func TestCompileDoesNotMutateItsInput(t *testing.T) {
 	// Compile, the compiled input must still equal it field for field — not
 	// only in the lengths of the slices the expansion appends to (a mutant
 	// that scaled a shared resource capacity passed that weaker check).
-	fresh := parser.Parse("pure.bot", src).File
+	fresh := parsertest.Parse("pure.bot", src).File
 
 	first := Compile(pr.File)
 	if first.HasErrors() {

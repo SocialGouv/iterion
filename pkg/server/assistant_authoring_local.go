@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -96,10 +97,40 @@ func (d *authoringDirectory) read(name string, limit int64) ([]byte, os.FileInfo
 	}
 	b, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err == nil && int64(len(b)) > limit {
-		err = errors.New("authoring file exceeds the read limit")
+		err = errAuthoringReadLimit
 	}
 	return b, pinned, err
 }
+
+// links is how many names the regular file name of the directory has — more
+// than one when hard links give its bytes other names, which a write in
+// place changes too.
+func (d *authoringDirectory) links(name string) (uint64, error) {
+	info, err := d.root.Lstat(name)
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, errors.New("authoring file is not regular")
+	}
+	f, err := openAuthoringFileAt(d.file, name, os.O_RDONLY, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = f.Close() }()
+	pinned, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if !os.SameFile(info, pinned) {
+		return 0, authoringConflictError{"authoring file changed while opening"}
+	}
+	return authoringFileLinks(f)
+}
+
+// errAuthoringReadLimit is a read that met its limit before the file's end:
+// the bytes it answers are the limit's and one more, never the file whole.
+var errAuthoringReadLimit = errors.New("authoring file exceeds the read limit")
 
 var authoringControlName = regexp.MustCompile(`^(?:[a-f0-9]{64}\.lock|[a-f0-9-]{36}\.(?:record|candidate|before|undo))$`)
 
@@ -607,8 +638,57 @@ func closeAuthoringLocalLocks(locks []*authoringLocalLock) {
 	}
 }
 
-func (l *authoringLocalLock) writeEditorFile(content []byte, createOnly bool, ignore func(string), warnf func(string, ...any)) error {
+// checkStored reads the locked file as it is now (absent when it is not
+// there) and holds it to checkStoredFile against what the write was decided
+// on. The read stops one byte past the length of the bytes the write was
+// decided on: a longer file is not those bytes, whatever it holds, so it is
+// the 409 without being read whole. A write decided from a presented digest
+// (the digest rule: no bytes held, decided.exists set) reads the file whole
+// instead — the digest is judged against the stored bytes themselves. A
+// read that fails otherwise than "not there" is the write's failure: a file
+// that cannot be read is no file whose replacement can be checked.
+func (l *authoringLocalLock) checkStored(check storedCheck) error {
+	limit := int64(len(check.decided.bytes))
+	if check.decided.exists && limit == 0 {
+		info, statErr := l.parent.root.Lstat(filepath.Base(l.path))
+		switch {
+		case statErr == nil && info.Mode().IsRegular():
+			limit = info.Size()
+		case statErr == nil:
+			return errors.New("authoring destination is not a regular file")
+		case errors.Is(statErr, fs.ErrNotExist):
+			return checkStoredFile(check.name, storedFile{}, check.decided, check.presented)
+		default:
+			return statErr
+		}
+	}
+	b, _, err := l.parent.read(filepath.Base(l.path), limit)
+	stored := storedAt(b)
+	switch {
+	case err == nil, errors.Is(err, errAuthoringReadLimit):
+		// Past the limit, b is the decided length and one byte more: a
+		// stored file other than the decided one, which checkStoredFile
+		// says.
+	case errors.Is(err, fs.ErrNotExist):
+		stored = storedFile{}
+	default:
+		return err
+	}
+	return checkStoredFile(check.name, stored, check.decided, check.presented)
+}
+
+// writeEditorFile writes content over the locked file in place (or creates
+// it, createOnly). It reads the file under the lock first and holds it to
+// checkStoredFile: the file must be the one the write was decided on
+// (check.decided — absent for a creation), and a workflow file existing as
+// stored is written over only by a write presenting the digest its whole
+// read issued (check.presented, the digest rule). Nothing is written
+// otherwise.
+func (l *authoringLocalLock) writeEditorFile(check storedCheck, content []byte, createOnly bool, ignore func(string), warnf func(string, ...any)) error {
 	if err := l.verify(); err != nil {
+		return err
+	}
+	if err := l.checkStored(check); err != nil {
 		return err
 	}
 	if createOnly {
@@ -665,6 +745,72 @@ func (l *authoringLocalLock) writeEditorFile(content []byte, createOnly bool, ig
 	return f.Sync()
 }
 
+// replaceFile replaces the locked file with content in one rename, so a
+// reader that takes no lock reads the file as it was or as content — never
+// an empty or absent file, which a manifest read would list with its
+// defaults (enabled). The candidate is staged beside the file under a name
+// of its own — created, written, fsynced and closed — and only then is the
+// file held to checkStored, as every writer of a stored file holds it: it
+// must be the one the write was decided on (check.decided — absent for a
+// creation); nothing is written otherwise. The check comes last so that
+// only the verify's Lstat and the rename separate it from the replacement:
+// a writer outside the lock (an editor, git) landing before it is a 409.
+// One landing in that last window is replaced, the residual of a check no
+// rename can make atomic; a creation is renamed without replacing
+// (renameAuthoringAt), so a file created there is a 409 too. The stored
+// file's permission bits are kept.
+func (l *authoringLocalLock) replaceFile(check storedCheck, content []byte, ignore func(string)) error {
+	if err := l.verify(); err != nil {
+		return err
+	}
+	name := filepath.Base(l.path)
+	mode := os.FileMode(0o644)
+	if info, err := l.parent.root.Lstat(name); err == nil {
+		mode = info.Mode().Perm()
+	}
+	staged := "." + name + ".replace-" + uuid.NewString()
+	f, err := openAuthoringFileAt(l.parent.file, staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = l.parent.root.Remove(staged)
+		}
+	}()
+	_, writeErr := f.Write(content)
+	if err := errors.Join(writeErr, f.Chmod(mode), f.Sync(), f.Close()); err != nil {
+		return err
+	}
+	if authoringStepHook != nil {
+		if err := authoringStepHook("replace:staged"); err != nil {
+			return err
+		}
+	}
+	if err := l.verify(); err != nil {
+		return err
+	}
+	if err := l.checkStored(check); err != nil {
+		return err
+	}
+	if ignore != nil {
+		ignore(l.path)
+	}
+	if !check.decided.exists {
+		if err := renameAuthoringAt(l.parent.file, staged, l.parent.file, name); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				return createdSinceRefusal(check.name)
+			}
+			return err
+		}
+	} else if err := replaceAuthoringAt(l.parent.file, staged, name); err != nil {
+		return err
+	}
+	renamed = true
+	return syncAuthoringDirectory(l.parent.file)
+}
+
 type authoringRecovery struct {
 	Scope  string   `json:"scope"`
 	Path   string   `json:"path"`
@@ -701,6 +847,15 @@ func prepareAuthoringLocal(l *authoringLocalLock, p authoringPreviewFile, ignore
 		}
 		if string(body) != p.Before {
 			return nil, authoringConflictError{"authoring destination changed before preparation"}
+		}
+		// The bytes the transaction replaces, held to the check every
+		// writer of a stored file makes (checkStoredFile).
+		name := p.Path
+		if name == "" {
+			name = filepath.Base(l.path)
+		}
+		if err := checkStoredFile(name, storedAt(body), storedFile{bytes: []byte(p.Before), exists: true, readWhole: p.readWhole}, p.presented); err != nil {
+			return nil, err
 		}
 		tx.expectedInfo = info
 		mode = info.Mode().Perm()

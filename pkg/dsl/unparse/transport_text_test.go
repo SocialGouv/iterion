@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,7 +23,7 @@ func TestCorpusTextSurvivesTheJSONTransport(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pr := parser.Parse(path, string(src))
+		pr := parsertest.Parse(path, string(src))
 		broken := pr.File == nil
 		for _, d := range pr.Diagnostics {
 			if d.Severity == parser.SeverityError {

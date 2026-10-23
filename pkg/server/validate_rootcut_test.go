@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // The C222 of /api/validate — "bundle does not open: …", a WARNING in the
@@ -29,7 +29,7 @@ func TestValidateNamesAnUnopenableBundleWithoutTheHostRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workDir, "bund", "manifest.yaml"), []byte("schema_version: 99\nname: [broken\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pr := parser.Parse("main.bot", "workflow x:\n  entry: done\n")
+	pr := parsertest.Parse("main.bot", "workflow x:\n  entry: done\n")
 	if len(pr.Diagnostics) != 0 {
 		t.Fatalf("parse: %v", pr.Diagnostics)
 	}

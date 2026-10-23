@@ -1,10 +1,9 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A network block's mode and inherit are refused at compile (C044) with the
@@ -14,7 +13,7 @@ import (
 func TestSandboxNetworkModeAndInheritAreCheckedAtCompile(t *testing.T) {
 	compile := func(network string) []string {
 		src := "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  sandbox:\n    image: \"img\"\n    network:\n" + network + "  a -> done\n"
-		pr := parser.Parse("net.bot", src)
+		pr := parsertest.Parse("net.bot", src)
 		if len(pr.Diagnostics) != 0 {
 			t.Fatalf("parse: %v", pr.Diagnostics)
 		}
@@ -51,7 +50,7 @@ func TestSandboxNetworkModeAndInheritAreCheckedAtCompile(t *testing.T) {
 func TestSandboxNetworkBlockWithoutModeWarns(t *testing.T) {
 	compile := func(network string) *CompileResult {
 		src := "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  sandbox:\n    image: \"img\"\n    network:\n" + network + "  a -> done\n"
-		pr := parser.Parse("net.bot", src)
+		pr := parsertest.Parse("net.bot", src)
 		if len(pr.Diagnostics) != 0 {
 			t.Fatalf("parse: %v", pr.Diagnostics)
 		}

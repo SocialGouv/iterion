@@ -154,7 +154,10 @@ export default function EditorChangeOffer({
 
       setAction("saving");
       const savedGeneration = state._generation;
-      const result = await api.saveFile(currentPath, state.document);
+      // The digest rule: the save presents the digest this tab's open
+      // issued — a concurrent edit is a 409, never an overwrite.
+      const digest = targetStore?.getState().openedDigest ?? undefined;
+      const result = await api.saveFile(currentPath, state.document, digest ? { digest } : undefined);
       const afterSave = resolveEditorSession(proposalSession);
       if (
         afterSave &&
@@ -321,8 +324,10 @@ export default function EditorChangeOffer({
         }
         const state = afterValidation.store.getState();
         // Document and verdict together: a proposal that parses whole ends
-        // the salvage, so a buffer opened on an unreadable file becomes
-        // writable again — that is how Copi repairs one.
+        // the salvage of a file that did not parse, so a buffer opened on an
+        // unreadable file becomes writable again — that is how Copi repairs
+        // one. A salvage the server's READER made (a read budget) is not
+        // ended: Copi never saw that file, and the proposal is not it.
         applyParsedSource(parsed, state);
         const after = afterValidation.store.getState();
         after.setCurrentSource(proposal.source);

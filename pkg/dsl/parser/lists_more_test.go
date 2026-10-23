@@ -13,8 +13,8 @@ func TestResourcePoolReadsTheDashList(t *testing.T) {
 	inline := "agent a:\n  description: \"x\"\n\nworkflow w:\n  entry: a\n  resources:\n    gpu: [\"gpu-1\", \"gpu-2\"]\n    cpu: 3\n  a -> done\n"
 	dash := "agent a:\n  description: \"x\"\n\nworkflow w:\n  entry: a\n  resources:\n    gpu: ## the pool\n      - \"gpu-1\"\n      - \"gpu-2\"\n    cpu: 3\n  a -> done\n"
 	for _, profile := range []string{"", "dsl: 2\n"} {
-		want := Parse("i.bot", profile+inline)
-		got := Parse("d.bot", profile+dash)
+		want := parseLenient("i.bot", profile+inline)
+		got := parseLenient("d.bot", profile+dash)
 		if len(want.Diagnostics) != 0 || len(got.Diagnostics) != 0 {
 			t.Fatalf("profile %q: inline=%v dash=%v", profile, want.Diagnostics, got.Diagnostics)
 		}
@@ -44,7 +44,7 @@ func TestAnEmptyBulletIsRefusedNotIgnored(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			res := Parse("x.bot", c.src)
+			res := parseLenient("x.bot", c.src)
 			if len(res.Diagnostics) != 1 {
 				t.Fatalf("want exactly one diagnostic, got %v", res.Diagnostics)
 			}
@@ -62,8 +62,8 @@ func TestAnEmptyBulletIsRefusedNotIgnored(t *testing.T) {
 // The short form of a secret takes one bare word as any string-valued
 // property does: `token: abc` is `token: "abc"`.
 func TestASecretShortFormReadsABareWord(t *testing.T) {
-	quoted := Parse("q.bot", "secrets:\n  token: \"abc\"\n  other:\n    value: \"x\"\n")
-	bare := Parse("b.bot", "secrets:\n  token: abc\n  other:\n    value: \"x\"\n")
+	quoted := parseLenient("q.bot", "secrets:\n  token: \"abc\"\n  other:\n    value: \"x\"\n")
+	bare := parseLenient("b.bot", "secrets:\n  token: abc\n  other:\n    value: \"x\"\n")
 	if len(quoted.Diagnostics) != 0 || len(bare.Diagnostics) != 0 {
 		t.Fatalf("quoted=%v bare=%v", quoted.Diagnostics, bare.Diagnostics)
 	}

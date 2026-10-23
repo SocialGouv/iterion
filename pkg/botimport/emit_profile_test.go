@@ -1,6 +1,7 @@
 package botimport
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -11,7 +12,7 @@ func TestImportDraftUsesProfileTwoAndKeepsParagraphs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pr := parser.Parse("paragraphs.bot", res.BotSource)
+	pr := parsertest.Parse("paragraphs.bot", res.BotSource)
 	if pr.File == nil || pr.File.EffectiveProfile() != 2 {
 		t.Fatalf("imported draft must declare profile 2: %s", res.BotSource)
 	}
@@ -46,7 +47,7 @@ func TestEmitProfileTwoQuotedValuesRoundTrip(t *testing.T) {
 			if parser.ReadPreamble(text).Profile != 2 {
 				text = "dsl: 2\n" + text
 			}
-			pr := parser.Parse("quoted.bot", text)
+			pr := parsertest.Parse("quoted.bot", text)
 			for _, d := range pr.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Fatalf("emitted value %q does not parse under profile 2: %s", value, d.Error())

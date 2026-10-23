@@ -2,6 +2,7 @@ package author
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -146,7 +147,7 @@ func TestDocsIterFencesRoundTripThroughTheAuthorDocument(t *testing.T) {
 			rel := strings.TrimPrefix(f.File, docsRoot+string(filepath.Separator))
 			where := fmt.Sprintf("%s:%d fence `iter %s`", rel, f.Line, f.Info)
 			name := filepath.Join(filepath.Dir(f.File), fmt.Sprintf("fence-%d.bot", f.Line))
-			pr := parser.Parse(name, f.Body)
+			pr := parsertest.Parse(name, f.Body)
 			if hasParseErrors(pr.Diagnostics) {
 				continue // the ir guard reports it
 			}

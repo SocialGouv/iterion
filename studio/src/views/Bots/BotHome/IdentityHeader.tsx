@@ -79,7 +79,10 @@ export default function IdentityHeader({ entry }: { entry: BotEntryWithSchema })
           size="lg"
           className="min-w-0 flex-1"
           avatar={
-            entry.is_bundle ? (
+            // The icon is a manifest edit: an installed package's manifest
+            // is the package's (the server refuses the edit), so its icon
+            // is shown, not picked.
+            entry.is_bundle && !entry.installed ? (
               <EmojiPicker
                 onSelect={(emoji) => void onPickIcon(emoji)}
                 trigger={

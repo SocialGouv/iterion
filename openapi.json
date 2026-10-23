@@ -4086,6 +4086,12 @@
           "content": {
             "type": "string"
           },
+          "id": {
+            "type": "string"
+          },
+          "stored_sha256": {
+            "type": "string"
+          },
           "version": {
             "type": "integer"
           }
@@ -4192,6 +4198,15 @@
             },
             "type": "object"
           },
+          "id": {
+            "type": "string"
+          },
+          "stored_sha256": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
           "version": {
             "type": "integer"
           }
@@ -4209,6 +4224,12 @@
           },
           "created_by": {
             "type": "string"
+          },
+          "file_sha256": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "files": {
             "additionalProperties": {
@@ -5807,6 +5828,15 @@
             "required": false,
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "description": "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted.",
+            "in": "query",
+            "name": "bot_id",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -11865,6 +11895,15 @@
             "required": false,
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "description": "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted.",
+            "in": "query",
+            "name": "bot_id",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],

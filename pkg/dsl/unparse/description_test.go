@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -47,7 +48,7 @@ wait w:
   event: "ready"
   timeout: "30s"
 `
-	pr1 := parser.Parse("desc.bot", src)
+	pr1 := parsertest.Parse("desc.bot", src)
 	if pr1.File == nil {
 		t.Fatal("parse returned nil File")
 	}
@@ -58,7 +59,7 @@ wait w:
 	}
 
 	unparsed := unparse.Unparse(pr1.File)
-	pr2 := parser.Parse("desc.roundtrip.bot", unparsed)
+	pr2 := parsertest.Parse("desc.roundtrip.bot", unparsed)
 	if pr2.File == nil {
 		t.Fatalf("re-parse returned nil File\nUnparsed:\n%s", unparsed)
 	}

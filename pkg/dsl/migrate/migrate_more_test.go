@@ -3,6 +3,7 @@ package migrate
 import (
 	"errors"
 	"github.com/SocialGouv/iterion/pkg/dsl/internal/rewrite"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -63,7 +64,7 @@ func TestMigrationRemovesOnlyTheDirectivesProfileTwoRefuses(t *testing.T) {
 			if string(res.Migrated) != c.want {
 				t.Fatalf("migrated:\n%s\nwant:\n%s", res.Migrated, c.want)
 			}
-			after := parser.Parse("x.bot", string(res.Migrated))
+			after := parsertest.Parse("x.bot", string(res.Migrated))
 			if len(after.Diagnostics) != 0 || after.File.EffectiveProfile() != 2 {
 				t.Fatalf("the migrated file does not read as profile 2: %v", after.Diagnostics)
 			}
@@ -78,7 +79,7 @@ func TestMigrationRemovesEverySpellingOfTheDirective(t *testing.T) {
 		if strings.Contains(string(res.Migrated), "strict-escape") || !strings.HasPrefix(string(res.Migrated), "dsl: 2\n\ntool t:") {
 			t.Fatalf("%q was not removed:\n%s", spelling, res.Migrated)
 		}
-		if parser.Parse("x.bot", string(res.Migrated)).File.Tools[0].Command != "a\nb" {
+		if parsertest.Parse("x.bot", string(res.Migrated)).File.Tools[0].Command != "a\nb" {
 			t.Fatalf("%q: the strict value changed", spelling)
 		}
 	}
@@ -148,7 +149,7 @@ func TestTheHeaderGoesAboveTheCommentsThatLeadTheFirstDeclaration(t *testing.T) 
 			if !strings.HasPrefix(string(res.Migrated), tc.want) {
 				t.Fatalf("migrated:\n%s\nwant it to open with:\n%s", res.Migrated, tc.want)
 			}
-			after := parser.Parse("x.bot", string(res.Migrated))
+			after := parsertest.Parse("x.bot", string(res.Migrated))
 			for _, d := range after.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Fatalf("the migrated file does not parse: %s", d.Error())

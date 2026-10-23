@@ -60,7 +60,28 @@ func RemoteAdminBotsPush(ctx context.Context, c *RemoteClient, p *Printer, dir, 
 	for _, p := range botsource.ExecutableFiles(dir) {
 		fmt.Fprintf(os.Stderr, "warning: %s is executable — the override drops file modes (materialized 0644), so a step invoking it directly will fail; call it through its interpreter instead\n", p)
 	}
-	body, err := json.Marshal(map[string]any{"files": files})
+	// The digest rule: what the write replaces, it carries the digests a
+	// whole read issued — this push's own fetch of the stored bundle (its
+	// id, its version, each file's digest). A bot deleted and re-created
+	// since the operator's local tree was made is not overwritten: the id
+	// names the bot, and a mismatch is a 409 saying so. A bot that is not
+	// there is a creation, decided on its absence.
+	payload := map[string]any{"files": files}
+	var stored struct {
+		ID         string            `json:"id"`
+		Version    int               `json:"version"`
+		FileSHA256 map[string]string `json:"file_sha256"`
+	}
+	if _, err := c.Call(ctx, "GET", "/api/admin/bots/"+slug, nil, &stored); err == nil {
+		digests := make(map[string]string, len(stored.FileSHA256))
+		for path, digest := range stored.FileSHA256 {
+			digests[path] = digest
+		}
+		payload["id"] = stored.ID
+		payload["version"] = stored.Version
+		payload["stored_sha256"] = digests
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}

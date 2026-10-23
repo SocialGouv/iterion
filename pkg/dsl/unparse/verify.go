@@ -128,7 +128,10 @@ func reread(f *ast.File, text string) error {
 	// from the JSON transport has no source file: naming one here made the
 	// re-parse resolve its includes while the document itself could not,
 	// and every bot with an include was refused at save.
-	pr := parser.Parse(sourceFile(f), text)
+	pr, err := parser.Parse(sourceFile(f), text)
+	if err != nil {
+		return fmt.Errorf("the serialised source is not read: %w", err)
+	}
 	var errs []string
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {

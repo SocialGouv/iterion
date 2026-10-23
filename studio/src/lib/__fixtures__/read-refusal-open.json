@@ -1,0 +1,62 @@
+{
+  "source": "import \"lib/a.bot\"\nimport \"lib/b.bot\"\n\nworkflow w:\n  entry: worker\n  worker -> done\n",
+  "document": {
+    "prompts": [
+      {
+        "file": "lib/a.bot",
+        "name": "pa",
+        "body": "Alpha."
+      }
+    ],
+    "workflows": [
+      {
+        "file": "main.bot",
+        "name": "w",
+        "entry": "worker",
+        "edges": [
+          {
+            "from": "worker",
+            "to": "done"
+          }
+        ]
+      }
+    ],
+    "salvage": "not read whole: E001"
+  },
+  "diagnostics": [
+    "lib/b.bot:10:3: error [E001]: the bot is past the read budget of 60, which its files share — every word, value, punctuation mark, prompt line, line end, indentation step and file's end spends one, a comment two: the reader stops here"
+  ],
+  "path": "demo/main.bot",
+  "confirmed_disk_path": "/workspace/demo/main.bot",
+  "unit": {
+    "root": "demo",
+    "main": "main.bot",
+    "revision": "d25fa7e9bc7a7d5b936bdb0049c13f36fb2a5d4cf9f36918e466c9d2e549f5f7",
+    "files": [
+      {
+        "rel": "main.bot",
+        "imports": [
+          "lib/a.bot",
+          "lib/b.bot"
+        ],
+        "digest": "29ceaf88a57a258249dbc9fb09555c08dbd0544b6ca85dd178f07c20210ed068"
+      },
+      {
+        "rel": "lib/a.bot",
+        "digest": "70855f4363616f7251add5413bef78ed2a8b6017ff0604846ad9d3f91f20ebe6"
+      },
+      {
+        "rel": "lib/b.bot",
+        "parse_errors": 1,
+        "parse_error": "lib/b.bot:10:3: error [E001]: the bot is past the read budget of 60, which its files share — every word, value, punctuation mark, prompt line, line end, indentation step and file's end spends one, a comment two: the reader stops here"
+      }
+    ],
+    "load_errors": 1,
+    "load_error": "lib/b.bot:10:3: error [E001]: the bot is past the read budget of 60, which its files share — every word, value, punctuation mark, prompt line, line end, indentation step and file's end spends one, a comment two: the reader stops here"
+  },
+  "bindable": false,
+  "read_refusal": {
+    "message": "lib/b.bot:10:3: error [E001]: the bot is past the read budget of 60, which its files share — every word, value, punctuation mark, prompt line, line end, indentation step and file's end spends one, a comment two: the reader stops here",
+    "hint": "The budget is ITERION_DSL_READ_BUDGET wherever a bot is read — the CLI, the server, the runner — and the files of a bot share it: a larger count raises it, 0 removes it."
+  }
+}

@@ -2,11 +2,11 @@ package model
 
 import (
 	"context"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -65,7 +65,7 @@ func buildJudgeTask(t *testing.T, wf *ir.Workflow, id string) delegate.Task {
 // Reddens on the mutation that drops ToolsDeclared from the task — which is
 // what every CLI backend reads to decide whether the list bounds it.
 func TestADeclaredEmptyToolListReachesTheBackendAsZeroToolsAndStaysDeclared(t *testing.T) {
-	pr := parser.Parse("b.bot", emptyToolsSource)
+	pr := parsertest.Parse("b.bot", emptyToolsSource)
 	wf := ir.Compile(pr.File).Workflow
 
 	declared := buildJudgeTask(t, wf, "review_gpt")

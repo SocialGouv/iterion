@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"io"
+	"io/fs"
+	"math"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botinstall"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
 // BotsConfig configures the bot registry exposed at /api/v1/bots. It
@@ -180,7 +184,26 @@ func (s *Server) handleBotsGet(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "bots: %q not found", name)
 		return
 	}
-	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: s.entryOrigin(name)})
+	s.writeJSONFor(w, r, s.catalogEntryView(entry, ""))
+}
+
+// catalogEntryView is an entry of the filesystem catalog (or a platform
+// override) as the bots API answers it: read-only, its origin, and whether
+// it is an installed package (isInstalledBundle).
+func (s *Server) catalogEntryView(entry botregistry.EntryWithSchema, catalogError string) botEntryView {
+	origin := s.entryOrigin(entry.Name)
+	return botEntryView{EntryWithSchema: entry, Editable: false, Origin: origin, Installed: origin == "catalog" && s.isInstalledBundle(entry.Path), CatalogError: catalogError}
+}
+
+// isInstalledBundle reports whether a discovered bundle's directory is an
+// installed package — under the workspace's .botz/, compared on canonical
+// paths as the save door's refusal is (isMaterializedBotDependencyPath).
+func (s *Server) isInstalledBundle(path string) bool {
+	if path == "" {
+		return false
+	}
+	abs, err := s.safePath(path)
+	return err == nil && s.isMaterializedBotDependencyPath(abs)
 }
 
 // botUpdateRequest is the wire body for PUT /api/v1/bots/{name}. Pointer
@@ -241,13 +264,24 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 			"bots: %q resolves to a bundle with no filesystem path; edit it through the bot-source API, not the filesystem catalog", name)
 		return
 	}
+	// An installed package's manifest is the package's: an update (install
+	// --force, the marketplace's Update, an upload) replaces .botz/<name>
+	// whole and reads nothing of it, so an edit here — a disable above all —
+	// would be undone in silence. Its visibility in this workspace is the
+	// overlay's, which an update leaves alone; the save door refuses .botz
+	// the same way (isMaterializedBotDependencyPath).
+	if s.isInstalledBundle(entry.Path) {
+		s.httpErrorFor(w, r, http.StatusConflict,
+			"bots: %q is an installed package (.botz/): its manifest is the package's, and an update replaces it whole — set its visibility in this workspace with the Catalog manager's toggle (PUT /api/v1/bots/%s/overlay), which an update leaves alone, and edit its metadata in the package's source", name, name)
+		return
+	}
 	var req botUpdateRequest
 	if err := readJSON(r, &req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
 		return
 	}
 
-	manifestPath := filepath.Join(entry.Path, "manifest.yaml")
+	manifestPath := filepath.Join(entry.Path, bundle.ManifestFile)
 	patch := bundle.ManifestPatch{
 		DisplayName: req.DisplayName,
 		Icon:        req.Icon,
@@ -260,12 +294,48 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 		Category:    req.Category,
 		Tags:        req.Tags,
 	}
-	if _, err := bundle.WriteManifest(manifestPath, patch); err != nil {
+	if err := patchManifestLocked(r.Context(), manifestPath, patch); err != nil {
+		if s.writeStoredFileRefusal(w, r, err) {
+			return
+		}
+		var conflict authoringConflictError
+		if errors.As(err, &conflict) {
+			s.httpErrorFor(w, r, http.StatusConflict, "bots: write manifest: %v", err)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: write manifest: %v", err)
 		return
 	}
 	catalogError := s.regenCatalog(name, "update")
 	s.respondBot(w, r, name, catalogError)
+}
+
+// patchManifestLocked applies patch to the manifest at path under the
+// authoring lock every server writer of the file takes: read there, patched
+// (bundle.PatchManifest) and replaced in one rename (replaceFile) over the
+// very bytes it was patched from. Two edits at once both land — the second
+// patches what the first wrote — and a file another writer replaced outside
+// the lock between the read and the rename is a 409 (checkStoredFile), never
+// written over.
+func patchManifestLocked(ctx context.Context, path string, patch bundle.ManifestPatch) error {
+	locks, err := acquireAuthoringLocalLocks(ctx, []string{path})
+	if err != nil {
+		return err
+	}
+	defer closeAuthoringLocalLocks(locks)
+	body, _, err := locks[0].parent.read(filepath.Base(path), math.MaxInt64-1)
+	decided := storedAt(body)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		decided = storedFile{}
+	}
+	out, _, err := bundle.PatchManifest(path, body, patch)
+	if err != nil {
+		return err
+	}
+	return locks[0].replaceFile(storedCheck{name: bundle.ManifestFile, decided: decided}, out, nil)
 }
 
 // botOverlayRequest is the wire body for PUT /api/v1/bots/{name}/overlay.
@@ -304,7 +374,20 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 	if s.refuseStoredBotEdit(w, r, name) {
 		return
 	}
-	if err := botregistry.SetOverlayEnabled(s.cfg.WorkDir, name, req.Enabled); err != nil {
+	if err := botregistry.SetOverlayEnabled(r.Context(), s.cfg.WorkDir, name, req.Enabled); err != nil {
+		// An overlay past a bound of its reader is not rewritten from what
+		// was not read: the refusal is the workspace file's, not a fault.
+		var refused *botregistry.OverlayRefusal
+		if errors.As(err, &refused) {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "bots: overlay: %v", unit.RelTextRoot(s.cfg.WorkDir, err.Error()))
+			return
+		}
+		// Another writer holds the overlay's lock past the wait: nothing
+		// was written, and a later toggle may find it free.
+		if errors.Is(err, context.DeadlineExceeded) {
+			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "bots: overlay: %v", unit.RelTextRoot(s.cfg.WorkDir, err.Error()))
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: overlay: %v", err)
 		return
 	}
@@ -368,7 +451,7 @@ func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name, catalo
 		s.httpErrorFor(w, r, http.StatusNotFound, "bots: %q not found", name)
 		return
 	}
-	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: s.entryOrigin(name), CatalogError: catalogError})
+	s.writeJSONFor(w, r, s.catalogEntryView(entry, catalogError))
 }
 
 // regenCatalog refreshes the orchestrator-facing bot catalog after a change

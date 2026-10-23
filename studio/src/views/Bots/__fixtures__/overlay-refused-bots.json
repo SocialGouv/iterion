@@ -1,0 +1,16 @@
+{
+  "_comment": "GET /api/v1/bots as the server answers it over a workspace overlay its reader refused (dumped by the gallery dump test of #1690's round-5 fixer; bots trimmed to name and enabled).",
+  "bots": [
+    {
+      "name": "secret-bot",
+      "enabled": false
+    }
+  ],
+  "discovery_errors": [
+    {
+      "path": ".iterion/bot-overrides.yaml",
+      "error": "botregistry: the workspace overlay .iterion/bot-overrides.yaml is not read: line 4: the YAML may hold more than 400 values — counted before it is read, each `:` `,` `?` `-` `[` `{` and `#` it holds as the values and comments it can open — The budget is ITERION_DSL_READ_BUDGET wherever a bot is read — the CLI, the server, the runner — and the files of a bot share it: a larger count raises it, 0 removes it. — every bot is listed disabled until it is read: the doors that read bot visibility (card launch, slash-command discovery, the catalogue's regeneration) route none of them meanwhile; every other door that starts a bot — a manual Run, webhooks, triggers and schedules among them — does not read it",
+      "kind": "overlay"
+    }
+  ]
+}

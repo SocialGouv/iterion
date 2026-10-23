@@ -1,10 +1,9 @@
 package author
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // An AST edit rewrites a Literal's value and leaves Raw behind — the normal
@@ -34,7 +33,7 @@ func TestTheWriterWritesTheEditedFloatNotAStaleRawSpelling(t *testing.T) {
 		"  t -> done",
 		"",
 	}, nl)
-	pr := parser.Parse("x.bot", bot)
+	pr := parsertest.Parse("x.bot", bot)
 	if len(pr.Diagnostics) > 0 {
 		t.Fatalf(".bot refused: %v", pr.Diagnostics)
 	}
@@ -81,7 +80,7 @@ func TestAFloatRawStillNamingTheValueKeepsItsSpelling(t *testing.T) {
 		"  t -> done",
 		"",
 	}, nl)
-	pr := parser.Parse("x.bot", bot)
+	pr := parsertest.Parse("x.bot", bot)
 	if len(pr.Diagnostics) > 0 {
 		t.Fatalf(".bot refused: %v", pr.Diagnostics)
 	}

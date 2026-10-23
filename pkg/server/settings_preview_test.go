@@ -1,16 +1,16 @@
 package server
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 func compileSource(t *testing.T, src string) *ir.Workflow {
 	t.Helper()
-	pr := parser.Parse("test.bot", src)
+	pr := parsertest.Parse("test.bot", src)
 	if pr.File == nil {
 		t.Fatalf("parse failed: %+v", pr.Diagnostics)
 	}

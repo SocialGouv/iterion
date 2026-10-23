@@ -31,7 +31,7 @@ func TestAuthoringLocalDelayedWatcherEventsKeepCurrentSourceObservable(t *testin
 		t.Fatal(err)
 	}
 	defer closeAuthoringLocalLocks(locks)
-	tx, err := prepareAuthoringLocal(locks[0], authoringPreviewFile{Operation: "replace", Before: before, After: after}, watcher.IgnorePath, nil)
+	tx, err := prepareAuthoringLocal(locks[0], authoringPreviewFile{Operation: "replace", Before: before, After: after, readWhole: true}, watcher.IgnorePath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

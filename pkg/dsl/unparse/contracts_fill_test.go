@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"reflect"
 	"testing"
 
@@ -25,7 +26,7 @@ func TestEveryContractFieldSurvivesTheWriter(t *testing.T) {
 		t.Fatalf("the filler left %s at its zero value: a drop of it would pass unseen", left)
 	}
 	out := Unparse(f)
-	back := parser.Parse("x.bot", out)
+	back := parsertest.Parse("x.bot", out)
 	for _, d := range back.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("the written text does not parse: %s\n%s", d.Error(), out)

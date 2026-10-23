@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -9,7 +10,7 @@ import (
 
 func compileText(t *testing.T, src string) *CompileResult {
 	t.Helper()
-	pr := parser.Parse("x.bot", src)
+	pr := parsertest.Parse("x.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("fixture does not parse: %s", d.Error())

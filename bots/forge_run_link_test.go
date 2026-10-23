@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -194,7 +195,7 @@ func assemblesStudioPath(wf *ir.Workflow) bool {
 // output is read.
 func TestEveryForgeFacingBotLinksItsRun(t *testing.T) {
 	for dir := range forgeFacingBots(t) {
-		u := unit.LoadDir(filepath.Join(dir, "main.bot"))
+		u := unittest.Whole(unit.LoadDir(filepath.Join(dir, "main.bot")))
 		if u.Merged == nil {
 			continue // the parse/compile test reports it
 		}
@@ -233,7 +234,7 @@ func TestEveryForgePostingSkillMandatesTheRunFooter(t *testing.T) {
 		if len(skills) == 0 {
 			continue
 		}
-		u := unit.LoadDir(filepath.Join(dir, "main.bot"))
+		u := unittest.Whole(unit.LoadDir(filepath.Join(dir, "main.bot")))
 		if u.Merged == nil {
 			continue
 		}

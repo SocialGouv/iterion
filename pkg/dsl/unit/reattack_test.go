@@ -25,7 +25,7 @@ func TestAFragmentLoadedAloneIsReadFromTheBotsRoot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	u := LoadDir(filepath.Join(dir, "lib", "nodes.bot"))
+	u := salvageUnit(LoadDir(filepath.Join(dir, "lib", "nodes.bot")))
 	if u.HasErrors() {
 		t.Fatalf("a fragment importing its sibling by bare name is refused when loaded alone: %v", u.Diagnostics)
 	}
@@ -44,7 +44,7 @@ func TestAFragmentLoadedAloneIsReadFromTheBotsRoot(t *testing.T) {
 	}
 	// The document of that fragment, saved: the staged text is keyed from
 	// the fragment's directory, as LoadDirStaged documents, and lands on it.
-	staged := LoadDirWithMain(filepath.Join(dir, "lib", "nodes.bot"), "", []byte("import \"schemas.bot\"\n\nagent c:\n  model: \""+pinnedModel+"\"\n  description: \"c\"\n  output: s\n"))
+	staged := salvageUnit(LoadDirWithMain(filepath.Join(dir, "lib", "nodes.bot"), "", []byte("import \"schemas.bot\"\n\nagent c:\n  model: \""+pinnedModel+"\"\n  description: \"c\"\n  output: s\n")))
 	if staged.HasErrors() || len(staged.Merged.Agents) != 1 || staged.Merged.Agents[0].Name != "c" {
 		t.Fatalf("the staged text of a fragment loaded alone was not taken as its main: %v %+v", staged.Diagnostics, staged.Merged.Agents)
 	}
@@ -66,7 +66,7 @@ func TestTheMainMayBeASymlinkTheFragmentsMayNot(t *testing.T) {
 	if err := os.Symlink(filepath.Join(real, "main.bot"), link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if u := LoadDir(link); u.HasErrors() || len(u.Files) != 1 || len(u.Merged.Workflows) != 1 {
+	if u := salvageUnit(LoadDir(link)); u.HasErrors() || len(u.Files) != 1 || len(u.Merged.Workflows) != 1 {
 		t.Fatalf("a symlinked .bot no longer loads: %v", u.Diagnostics)
 	}
 	// A unit whose main is a symlink reads its fragments beside the LINK,
@@ -84,13 +84,13 @@ func TestTheMainMayBeASymlinkTheFragmentsMayNot(t *testing.T) {
 	if err := os.Symlink(filepath.Join(real, "unit-main.bot"), filepath.Join(unitDir, "main.bot")); err != nil {
 		t.Fatal(err)
 	}
-	if u := LoadDir(filepath.Join(unitDir, "main.bot")); u.HasErrors() || len(u.Files) != 2 {
+	if u := salvageUnit(LoadDir(filepath.Join(unitDir, "main.bot"))); u.HasErrors() || len(u.Files) != 2 {
 		t.Fatalf("a symlinked main with fragments beside the link: %v (%d files)", u.Diagnostics, len(u.Files))
 	}
 	if err := os.Symlink(filepath.Join(dir, "unit", "lib", "f.bot"), filepath.Join(real, "lib", "f.bot")); err != nil {
 		t.Fatal(err)
 	}
-	u := LoadDir(filepath.Join(real, "unit-main.bot"))
+	u := salvageUnit(LoadDir(filepath.Join(real, "unit-main.bot")))
 	if !u.HasErrors() || !strings.Contains(u.Diagnostics[0].Message, "symlink") {
 		t.Fatalf("a symlinked fragment was read: %v", u.Diagnostics)
 	}
@@ -103,13 +103,13 @@ func TestLoadMapReadsTheFragmentsBesideANestedMain(t *testing.T) {
 		"bots/x/main.bot":  "import \"lib/a.bot\"\n\nworkflow w:\n  entry: a\n  a -> done\n",
 		"bots/x/lib/a.bot": "agent a:\n  model: \"" + pinnedModel + "\"\n  description: \"d\"\n",
 	}
-	u := LoadMap(files, "bots/x/main.bot")
+	u := salvageUnit(LoadMap(files, "bots/x/main.bot"))
 	if u.HasErrors() || len(u.Files) != 2 || u.Files[1].Rel != "bots/x/lib/a.bot" {
 		t.Fatalf("nested main: %v (%d files)", u.Diagnostics, len(u.Files))
 	}
 	// A path to another bot's lib/ stays outside.
 	files["bots/x/main.bot"] = "import \"../y/lib/a.bot\"\n"
-	if u := LoadMap(files, "bots/x/main.bot"); !u.HasErrors() {
+	if u := salvageUnit(LoadMap(files, "bots/x/main.bot")); !u.HasErrors() {
 		t.Fatalf("an import leaving the bot's lib/ was accepted")
 	}
 	for _, mainRel := range []string{"main.bot", "lib/nodes.bot", "bots/x/main.bot", "bots/x/lib/n.bot"} {
@@ -161,7 +161,7 @@ func TestAFragmentBelowLibAndAMainInADirectoryNamedLib(t *testing.T) {
 	write("bot/main.bot", "import \"lib/deep/x.bot\"\n\nworkflow w:\n  entry: a\n  a -> done\n")
 	write("bot/lib/deep/x.bot", "import \"y.bot\"\n\nagent a:\n  model: \""+pinnedModel+"\"\n  description: \"d\"\n  output: s\n")
 	write("bot/lib/deep/y.bot", "schema s:\n  ok: bool\n")
-	u := LoadDir(filepath.Join(dir, "bot", "lib", "deep", "x.bot"))
+	u := salvageUnit(LoadDir(filepath.Join(dir, "bot", "lib", "deep", "x.bot")))
 	if u.HasErrors() || u.Main != "lib/deep/x.bot" || u.Root != filepath.Join(dir, "bot") || len(u.Files) != 2 {
 		t.Fatalf("a nested fragment alone: %v main=%q root=%q files=%d", u.Diagnostics, u.Main, u.Root, len(u.Files))
 	}
@@ -177,7 +177,7 @@ func TestAFragmentBelowLibAndAMainInADirectoryNamedLib(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "sibling"), filepath.Join(dir, "lib", "lib", "esc")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	u = LoadDir(filepath.Join(dir, "lib", "main.bot"))
+	u = salvageUnit(LoadDir(filepath.Join(dir, "lib", "main.bot")))
 	if u.Root != filepath.Join(dir, "lib") || u.Main != "main.bot" {
 		t.Fatalf("a main in a directory named lib was re-rooted: root=%q main=%q", u.Root, u.Main)
 	}
@@ -186,7 +186,7 @@ func TestAFragmentBelowLibAndAMainInADirectoryNamedLib(t *testing.T) {
 	}
 	// A file with no workflow and no lib/ above it is what it is.
 	write("loose/frag.bot", "schema s:\n  ok: bool\n")
-	if u := LoadDir(filepath.Join(dir, "loose", "frag.bot")); u.Root != filepath.Join(dir, "loose") || u.Main != "frag.bot" {
+	if u := salvageUnit(LoadDir(filepath.Join(dir, "loose", "frag.bot"))); u.Root != filepath.Join(dir, "loose") || u.Main != "frag.bot" {
 		t.Fatalf("a loose file was re-rooted: root=%q main=%q", u.Root, u.Main)
 	}
 }

@@ -1,6 +1,7 @@
 package ast_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,7 +23,7 @@ import (
 // compileBothWays compiles src directly and through the JSON transport.
 func compileBothWays(t *testing.T, name, src string) (direct, viaJSON *ir.CompileResult) {
 	t.Helper()
-	pr := parser.Parse(name, src)
+	pr := parsertest.Parse(name, src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("%s: parse error: %s", name, d.Error())
@@ -90,7 +91,7 @@ func TestTransportCarriesGroupsUsesForeachAndPools(t *testing.T) {
 	dsltest.AssertSameProgram(t, "transport.bot", direct, viaJSON)
 
 	// And the AST itself keeps the declarations, not only their effect.
-	pr := parser.Parse("transport.bot", transportFixture)
+	pr := parsertest.Parse("transport.bot", transportFixture)
 	raw, err := ast.MarshalFile(pr.File)
 	if err != nil {
 		t.Fatal(err)
@@ -223,7 +224,7 @@ func TestTransportCarriesAFullKindGroup(t *testing.T) {
 			t.Errorf("human prompt: %q", body)
 		}
 	}
-	pr := parser.Parse("fullgroup.bot", fullKindGroupFixture)
+	pr := parsertest.Parse("fullgroup.bot", fullKindGroupFixture)
 	raw, err := ast.MarshalFile(pr.File)
 	if err != nil {
 		t.Fatal(err)
@@ -256,7 +257,7 @@ func TestCorpusSurvivesTheJSONTransport(t *testing.T) {
 		if strings.Contains(string(src), `{{include "`) {
 			continue
 		}
-		pr := parser.Parse(path, string(src))
+		pr := parsertest.Parse(path, string(src))
 		skip := false
 		for _, pd := range pr.Diagnostics {
 			if pd.Severity == parser.SeverityError {

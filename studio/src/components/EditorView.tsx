@@ -28,6 +28,7 @@ import { findNodeDecl } from "@/lib/defaults";
 import { useTabsStore } from "@/store/tabs";
 import { EditorTabActiveContext } from "@/components/Editor/editorTabActive";
 import { HiddenSubtreeContext } from "@/components/ui/hiddenSubtree";
+import { countOfRaw } from "@/lib/diagnostics";
 
 interface EditorViewProps {
   // Whether this editor tab is the visible one. EditorTabsView keeps
@@ -60,8 +61,9 @@ export default function EditorView({ active = true }: EditorViewProps) {
   const dirty = useDocumentStore(
     (s) => s._generation !== s._savedGeneration,
   );
-  const diagnosticCount = useDocumentStore((s) => s.diagnostics.length);
-  const warningCount = useDocumentStore((s) => s.warnings.length);
+  // The readings' counts, the ones they did not report included.
+  const diagnosticCount = useDocumentStore((s) => countOfRaw(s.diagnostics));
+  const warningCount = useDocumentStore((s) => countOfRaw(s.warnings));
   const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
   const selectedEdgeId = useSelectionStore((s) => s.selectedEdgeId);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);

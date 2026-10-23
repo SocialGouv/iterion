@@ -2,6 +2,7 @@ package botscaffold
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,7 +26,7 @@ func TestEveryTemplateRendersProfileTwoWithAFloor(t *testing.T) {
 		t.Run("shape="+shape, func(t *testing.T) {
 			spec.Slug = "probe"
 			spec.EngineFloor = parser.ProfileSince[2]
-			dir := t.TempDir()
+			dir := filepath.Join(t.TempDir(), "bot")
 			if _, err := Scaffold(dir, spec); err != nil {
 				t.Fatalf("Scaffold: %v", err)
 			}
@@ -36,7 +37,7 @@ func TestEveryTemplateRendersProfileTwoWithAFloor(t *testing.T) {
 				}
 				bots++
 				src, _ := os.ReadFile(path)
-				pr := parser.Parse(path, string(src))
+				pr := parsertest.Parse(path, string(src))
 				if pr.File.EffectiveProfile() != 2 {
 					t.Errorf("%s reads as profile %d", path, pr.File.EffectiveProfile())
 				}
@@ -77,7 +78,7 @@ func TestScaffoldFloorIsThisBuildsVersion(t *testing.T) {
 	}
 	build := fmt.Sprintf("%d.0.2", n+1)
 	appinfo.Version = "v" + build + "+abc123"
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "bot")
 	if _, err := Scaffold(dir, minimalSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestScaffoldFloorIsThisBuildsVersion(t *testing.T) {
 	}
 
 	appinfo.Version = "dev"
-	dir = t.TempDir()
+	dir = filepath.Join(t.TempDir(), "bot")
 	if _, err := Scaffold(dir, minimalSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -106,12 +107,12 @@ func TestScaffoldQuotesForTheLexer(t *testing.T) {
 	spec := minimalSpec()
 	spec.Model = odd
 	spec.Vars = []VarSpec{{Name: "note", Type: "string", Default: odd}}
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "bot")
 	if _, err := Scaffold(dir, spec); err != nil {
 		t.Fatalf("Scaffold: %v", err)
 	}
 	src, _ := os.ReadFile(filepath.Join(dir, "main.bot"))
-	pr := parser.Parse("main.bot", string(src))
+	pr := parsertest.Parse("main.bot", string(src))
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("rendered file does not parse: %v\n%s", d, src)

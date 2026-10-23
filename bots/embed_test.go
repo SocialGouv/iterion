@@ -3,6 +3,7 @@ package bots
 import (
 	"bytes"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"io"
 	"io/fs"
 	"os"
@@ -43,7 +44,7 @@ func TestEmbeddedMainsAreWholePrograms(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: walk the embed: %v", dir, err)
 		}
-		u := unit.LoadMap(files, "main.bot")
+		u := unittest.Whole(unit.LoadMap(files, "main.bot"))
 		if u.HasErrors() {
 			for _, d := range u.Diagnostics {
 				t.Errorf("%s: %s", name, d.Error())
@@ -170,7 +171,7 @@ func TestMaterializePublishesEachFileAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := unit.LoadDir(dst)
+	u := unittest.Whole(unit.LoadDir(dst))
 	if len(u.Files) < 2 {
 		t.Fatalf("%d file(s) in the unit, want a fragment to drift", len(u.Files))
 	}
@@ -225,7 +226,7 @@ func TestMaterializeWritesTheWholeBot(t *testing.T) {
 	if want := filepath.Join(root, "feature-dev", "main.bot"); dst != want {
 		t.Fatalf("materialised at %s, want %s", dst, want)
 	}
-	u := unit.LoadDir(dst)
+	u := unittest.Whole(unit.LoadDir(dst))
 	if u.HasErrors() {
 		for _, d := range u.Diagnostics {
 			t.Errorf("%s", d.Error())
@@ -245,7 +246,7 @@ func TestMaterializeWritesTheWholeBot(t *testing.T) {
 	if _, err := Materialize(root, "feature-dev/main.bot"); err != nil {
 		t.Fatalf("materialize again: %v", err)
 	}
-	if again := unit.LoadDir(dst); again.HasErrors() || again.Digest != u.Digest {
+	if again := unittest.Whole(unit.LoadDir(dst)); again.HasErrors() || again.Digest != u.Digest {
 		t.Fatalf("a drifted fragment was not rewritten (errors %v, digest %s vs %s)", again.HasErrors(), again.Digest, u.Digest)
 	}
 
@@ -264,7 +265,7 @@ func TestMaterializeWritesTheWholeBot(t *testing.T) {
 	if want := filepath.Join(fragRoot, "feature-dev", filepath.FromSlash(fragment)); got != want {
 		t.Errorf("fragment materialised at %s, want %s", got, want)
 	}
-	if byFragment := unit.LoadDir(filepath.Join(fragRoot, "feature-dev", "main.bot")); byFragment.HasErrors() || byFragment.Digest != u.Digest {
+	if byFragment := unittest.Whole(unit.LoadDir(filepath.Join(fragRoot, "feature-dev", "main.bot"))); byFragment.HasErrors() || byFragment.Digest != u.Digest {
 		t.Errorf("naming a fragment did not write its whole bot beside it")
 	}
 	files, main, ok := Sources(path.Join("feature-dev", fragment))

@@ -313,7 +313,7 @@ var frontmatterWitnesses = map[string]witness{
 // the error's own text with its whitespace collapsed, then the remedy of
 // every structured cause the reading returns. "" where the block reads.
 func frontmatterRefusal(block string) (read string, causes []workflowfile.YAMLCause, remedies string) {
-	_, _, err := workflowfile.DecodeFrontmatter(block)
+	_, _, err := workflowfile.DecodeFrontmatter(block, parser.ReadBudget())
 	if err == nil {
 		return "", nil, ""
 	}
@@ -515,7 +515,7 @@ func TestEveryGoTypeTheFrontmatterReadingDecodesIntoHasAWitness(t *testing.T) {
 // owes its author in words, not one the gate may accept in silence.
 func TestAFrontmatterWrittenAsItsRemedySaysReads(t *testing.T) {
 	for name, p := range frontmatterPrescriptions {
-		fm, extra, err := workflowfile.DecodeFrontmatter(p.block)
+		fm, extra, err := workflowfile.DecodeFrontmatter(p.block, parser.ReadBudget())
 		if err != nil {
 			t.Errorf("%s does not read: %s", name, strings.Join(strings.Fields(err.Error()), " "))
 			continue
@@ -621,7 +621,7 @@ func TestTheTagClauseIsTrueOfEachOfTheFourKeys(t *testing.T) {
 		"a tagged item of capabilities":   {block: "name: probe\ncapabilities: [!!binary aGk=]\n", want: workflowfile.Frontmatter{Name: "probe", Capabilities: []string{"hi"}}},
 		"a tagged item on its own line":   {block: "name: probe\ntriggers:\n  - !!int 3\n", want: workflowfile.Frontmatter{Name: "probe", Triggers: []string{"3"}}},
 	} {
-		fm, _, err := workflowfile.DecodeFrontmatter(p.block)
+		fm, _, err := workflowfile.DecodeFrontmatter(p.block, parser.ReadBudget())
 		switch {
 		case err != nil:
 			t.Errorf("%s is refused (%s), where the clause says the value the tag names is taken", name, strings.Join(strings.Fields(err.Error()), " "))
@@ -787,7 +787,7 @@ func TestAConstructOneReadingResolvesIsSaidOfThatReading(t *testing.T) {
 			}
 			// The reading that resolves the construct, executed: a remedy
 			// claiming it refuses one would be false of the identity below.
-			fm, _, err := workflowfile.DecodeFrontmatter(tc.resolved)
+			fm, _, err := workflowfile.DecodeFrontmatter(tc.resolved, parser.ReadBudget())
 			if err != nil {
 				t.Fatalf("the block %q is refused — the construct is no longer one this reading resolves: %v", tc.resolved, err)
 			}
@@ -821,7 +821,7 @@ func TestAConstructOneReadingResolvesIsSaidOfThatReading(t *testing.T) {
 // entry its refusal takes is the anchor's: an alias spelling the words of
 // another entry's message takes that other entry's remedy nowhere.
 func TestAnAnchorNameChoosesNothing(t *testing.T) {
-	fm, _, err := workflowfile.DecodeFrontmatter("name: &a b probe\n")
+	fm, _, err := workflowfile.DecodeFrontmatter("name: &a b probe\n", parser.ReadBudget())
 	switch {
 	case err != nil:
 		t.Fatalf("`name: &a b probe` is refused (%v): an anchor name's bound is no longer the first space, and the formats below are recognizable by their own words alone", err)
@@ -1759,7 +1759,7 @@ func TestTheBlocksTheOutOfReachRefusalsNameRead(t *testing.T) {
 		"a key beyond the four written twice": "name: probe\nk: 1\nk: 2\n",
 		"a key the four do not name":          "name: probe\nunknown: 1\n",
 	} {
-		if _, _, err := workflowfile.DecodeFrontmatter(block); err != nil {
+		if _, _, err := workflowfile.DecodeFrontmatter(block, parser.ReadBudget()); err != nil {
 			t.Errorf("%s is refused: %s — the reading is strict, so the messages yamlProblemsOutOfReach calls out of reach for that reason reach an author bare", name, strings.Join(strings.Fields(err.Error()), " "))
 		}
 	}

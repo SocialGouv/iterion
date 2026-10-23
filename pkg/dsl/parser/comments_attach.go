@@ -16,10 +16,12 @@ func attachComments(file string, f *ast.File, tokens []Token) {
 	if f == nil {
 		return
 	}
-	_, placed := Scan(tokens)
 	idx := newDeclIndex(f)
 	var head []*ast.Comment
-	for _, pc := range placed {
+	// Each comment is handed over the moment the scan knows its address:
+	// the source's comments are never held twice, once placed and once in
+	// the AST.
+	scanComments(tokens, func(pc PlacedComment) {
 		c := &ast.Comment{
 			Text:   pc.Text,
 			Anchor: pc.Path,
@@ -32,16 +34,16 @@ func attachComments(file string, f *ast.File, tokens []Token) {
 			// declaration. Both keep the place they were written at.
 			c.Anchor = ""
 			head = append(head, c)
-			continue
+			return
 		}
 		slot := idx.slotFor(pc, c)
 		if slot == nil {
 			c.Anchor, c.Place = "", ast.CommentBefore
 			head = append(head, c)
-			continue
+			return
 		}
 		*slot = append(*slot, c)
-	}
+	})
 	f.Comments = head
 }
 

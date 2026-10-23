@@ -11,7 +11,7 @@ import (
 // literal, so the bytes it still held do not each become an "unexpected
 // character" the body loop then reads as a property name.
 func TestBadEscapeIsReportedOnce(t *testing.T) {
-	pr := parser.Parse("esc.bot", "# strict-escape: on\nagent a:\n  model: \"a\\db\"\n  output: out\n")
+	pr := parser.ParseLenient("esc.bot", "# strict-escape: on\nagent a:\n  model: \"a\\db\"\n  output: out\n")
 	if len(pr.Diagnostics) != 1 || pr.Diagnostics[0].Code != parser.DiagBadEscape {
 		var got []string
 		for _, d := range pr.Diagnostics {
@@ -36,7 +36,7 @@ func TestIndentOutsideAnyBlockIsNamed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pr := parser.Parse("ind.bot", tc.src)
+			pr := parser.ParseLenient("ind.bot", tc.src)
 			var named bool
 			for _, d := range pr.Diagnostics {
 				if strings.Contains(d.Message, "''") {
@@ -62,7 +62,7 @@ func TestIndentOutsideAnyBlockIsNamed(t *testing.T) {
 // into the next line and swallow the `expr:` header, which the compiler then
 // reported as "compute has no expr block" on a compute that has one.
 func TestRecoveryAfterUnknownPropertyStopsAtTrailingComment(t *testing.T) {
-	pr := parser.Parse("cmt.bot", "schema s:\n  kind: string\n\ncompute big:\n  output: s\n  bogus: 1 # c\n  expr:\n    kind: \"1\"\n")
+	pr := parser.ParseLenient("cmt.bot", "schema s:\n  kind: string\n\ncompute big:\n  output: s\n  bogus: 1 # c\n  expr:\n    kind: \"1\"\n")
 	if pr.File == nil || len(pr.File.Computes) != 1 {
 		t.Fatalf("expected one compute, got %+v", pr.File)
 	}
@@ -86,7 +86,7 @@ func TestRecoveryAfterUnknownPropertyStopsAtTrailingComment(t *testing.T) {
 // belongs must not become the prompt name the compiler then reports as
 // unknown.
 func TestLexerDiagnosisIsNotAValue(t *testing.T) {
-	pr := parser.Parse("val.bot", "# strict-escape: on\nagent a:\n  system: \"a\\db\"\n  model: \"m\"\n")
+	pr := parser.ParseLenient("val.bot", "# strict-escape: on\nagent a:\n  system: \"a\\db\"\n  model: \"m\"\n")
 	if pr.File == nil || len(pr.File.Agents) != 1 {
 		t.Fatalf("expected one agent, got %+v", pr.File)
 	}
@@ -125,7 +125,7 @@ func TestLexerDiagnosisSurvivesInsideBlocks(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pr := parser.Parse("lex.bot", tc.src)
+			pr := parser.ParseLenient("lex.bot", tc.src)
 			var found bool
 			for _, d := range pr.Diagnostics {
 				if d.Code == tc.code && strings.Contains(d.Message, tc.message) {

@@ -104,8 +104,8 @@ func openAuthorDocument(path string) (*authorDocument, *bundle.Bundle, error) {
 // with the .bot as anchor, where `validate x.bot` reads a .bot's fragments;
 // diagram draws it with runview.FragmentAnchor's, where `diagram x.bot`
 // reads them. One construction, anchored as each surface's .bot is.
-func (doc *authorDocument) loadUnit(anchor string) *unit.Unit {
-	return unit.LoadDirWithMainAST(anchor, doc.parsePath, doc.res.File, doc.src)
+func (doc *authorDocument) loadUnit(anchor string) (*unit.Unit, error) {
+	return unit.LoadDirWithMainAST(anchor, doc.parsePath, doc.res.File, doc.src, doc.res.Spent)
 }
 
 // noWrittenForm is E054 when the document reads and the program it
@@ -163,7 +163,13 @@ func (doc *authorDocument) twinAnotherProgram(documentUnit *unit.Unit, b *bundle
 		return nil, err
 	}
 	theDocument := theProgramOf(documentUnit, prompts, promptsDir)
-	theBot := theProgramOf(doc.theBotsUnit(documentUnit), prompts, promptsDir)
+	botsUnit, err := doc.theBotsUnit(documentUnit)
+	if err != nil {
+		// The .bot as a launcher reads it is past the read budget its files
+		// share: no program a launcher runs, and the refusal says why.
+		return doc.twinWarning(noProgramBeside + err.Error()), nil
+	}
+	theBot := theProgramOf(botsUnit, prompts, promptsDir)
 	if refused := theBot.errorsOfItsOwn(theDocument, doc.botNamed); refused != "" {
 		return doc.twinWarning(noProgramBeside + refused), nil
 	}
@@ -206,7 +212,7 @@ func (doc *authorDocument) twinAnotherProgram(documentUnit *unit.Unit, b *bundle
 // the file the document's unit read AT THE SAME absolute path, whichever of
 // the two sides the loader re-roots — and the document's own file, whatever
 // name that unit gave it, is never staged over the .bot's frozen text.
-func (doc *authorDocument) theBotsUnit(documentUnit *unit.Unit) *unit.Unit {
+func (doc *authorDocument) theBotsUnit(documentUnit *unit.Unit) (*unit.Unit, error) {
 	start := filepath.Dir(doc.botPath)
 	staged := map[string][]byte{filepath.Base(doc.botPath): doc.twinText}
 	for _, f := range documentUnit.Files {
@@ -409,7 +415,10 @@ func compileAuthorDocument(path string) (*ir.Workflow, *authorDocument, error) {
 			return nil, nil, fmt.Errorf("open workflow bundle: %w", err)
 		}
 	}
-	u := doc.loadUnit(runview.FragmentAnchor(doc.botPath, b))
+	u, err := doc.loadUnit(runview.FragmentAnchor(doc.botPath, b))
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse error: %w", err)
+	}
 	// The .bot named as the caller named the document (doc.botNamed): the
 	// MCP stage reads its configuration beside it, and names it as
 	// `diagram x.bot` does.

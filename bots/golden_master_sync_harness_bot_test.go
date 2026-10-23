@@ -2,6 +2,7 @@ package bots
 
 import (
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // TestGoldenMasterSyncHarnessBotCompiles: a sibling workflow is not a
@@ -21,7 +21,7 @@ import (
 // A graph that a fresh `iterion validate` would reject must fail here.
 func TestGoldenMasterSyncHarnessBotCompiles(t *testing.T) {
 	src := readHarnessFile(t, "golden-master/sync-harness.bot")
-	pr := parser.Parse("golden-master/sync-harness.bot", src)
+	pr := parsertest.Parse("golden-master/sync-harness.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Logf("parse diagnostic: %s", d.Error())
 	}

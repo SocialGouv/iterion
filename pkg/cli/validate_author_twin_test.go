@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -193,7 +194,7 @@ func documentWithItsBot(t *testing.T, text string) (doc, bot string) {
 // program E056 speaks of, read where no document is in the way.
 func theProgramALauncherRuns(t *testing.T, bot string) *ir.CompileResult {
 	t.Helper()
-	return ir.Compile(unit.LoadDir(bot).Merged)
+	return ir.Compile(unittest.Whole(unit.LoadDir(bot)).Merged)
 }
 
 // botTheCompilerRefuses is a .bot the parser accepts and the compiler

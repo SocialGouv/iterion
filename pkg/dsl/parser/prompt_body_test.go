@@ -77,7 +77,7 @@ func indentBody(body string) string {
 // diagnostics.
 func parseBody(t *testing.T, text string) (string, []Diagnostic) {
 	t.Helper()
-	pr := Parse("p.bot", text)
+	pr := parseLenient("p.bot", text)
 	if len(pr.File.Prompts) != 1 {
 		t.Fatalf("%q: want one prompt, got %d", text, len(pr.File.Prompts))
 	}

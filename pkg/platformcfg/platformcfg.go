@@ -296,6 +296,10 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_ROUTE_COOLDOWN":               true,
 	"ITERION_MODEL_SPECS":                  true,
 	"ITERION_CLAW_SLASH_COMMAND_MAX_BYTES": true,
+	// The read budget of a bot — its .bot files together, or its YAML
+	// twin: a bound on what an uploaded bot may cost the server that reads
+	// it, 0 removing it.
+	"ITERION_DSL_READ_BUDGET": true,
 	// Bounds on work that spends: node re-executions (no DSL field sets
 	// them), schema-correction re-asks, a session spinning without progress
 	// or failing its tools in a streak (0 disables the last three).

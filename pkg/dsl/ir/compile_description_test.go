@@ -1,6 +1,7 @@
 package ir_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -49,7 +50,7 @@ workflow main:
   e -> w
   w -> done
 `
-	pr := parser.Parse("desc.bot", src)
+	pr := parsertest.Parse("desc.bot", src)
 	if pr.File == nil {
 		t.Fatal("parse returned nil File")
 	}

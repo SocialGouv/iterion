@@ -495,7 +495,7 @@ func TestAuthoringLocalControlExcludedFromGitBundlesAndDiscovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer closeAuthoringLocalLocks(locks)
-			tx, err := prepareAuthoringLocal(locks[0], authoringPreviewFile{Operation: "replace", Before: before, After: after}, nil, nil)
+			tx, err := prepareAuthoringLocal(locks[0], authoringPreviewFile{Operation: "replace", Before: before, After: after, readWhole: true}, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -847,7 +847,7 @@ func TestAuthoringLocalCommitAndEditorWritersParticipate(t *testing.T) {
 		t.Fatalf("concurrent commits: %v", seen)
 	}
 	// Ordinary save keeps its established in-place behavior after publication.
-	body, _ := json.Marshal(saveFileRequest{Path: editor, Document: document})
+	body, _ := json.Marshal(saveFileRequest{Path: editor, Document: document, Digest: digestOfFile(t, filepath.Dir(path), filepath.Base(path))})
 	req := httptest.NewRequest(http.MethodPost, "/api/files", strings.NewReader(string(body)))
 	rec := httptest.NewRecorder()
 	publishedInfo, _ := os.Stat(path)

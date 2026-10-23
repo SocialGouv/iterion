@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -48,7 +49,7 @@ func TestUnparseKeepsEveryStringShapeInProfileTwo(t *testing.T) {
 			if strings.Contains(text, "strict-escape") {
 				t.Fatalf("a profile-2 file carries no directive:\n%s", text)
 			}
-			pr := parser.Parse("shape.bot", text)
+			pr := parsertest.Parse("shape.bot", text)
 			for _, d := range pr.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Fatalf("does not parse back: %s\n%s", d.Error(), text)

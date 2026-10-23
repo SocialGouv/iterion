@@ -1,11 +1,11 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -27,7 +27,7 @@ func TestUnparseKeepsPromptParagraphsInProfileTwo(t *testing.T) {
 	if !strings.Contains(text, "  continues.\n\n  Second paragraph.\n") {
 		t.Fatalf("the paragraph break is not written blank:\n%s", text)
 	}
-	pr := parser.Parse("p.bot", text)
+	pr := parsertest.Parse("p.bot", text)
 	if len(pr.Diagnostics) != 0 {
 		t.Fatalf("does not parse back: %v\n%s", pr.Diagnostics, text)
 	}

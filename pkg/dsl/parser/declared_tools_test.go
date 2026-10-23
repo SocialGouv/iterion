@@ -36,7 +36,7 @@ workflow w:
 // and an absent `tools:` line is not. Reddens on the mutation that sends the
 // tools arm back through parseToolList (the shared, nil-returning helper).
 func TestEmptyToolListParsesDeclaredWhileAnAbsentOneStaysNil(t *testing.T) {
-	pr := Parse("declared.bot", declaredToolsSrc)
+	pr := parseLenient("declared.bot", declaredToolsSrc)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == SeverityError {
 			t.Fatalf("unexpected parse error: %s %s", d.Code, d.Message)
@@ -62,7 +62,7 @@ func TestEmptyToolListParsesDeclaredWhileAnAbsentOneStaysNil(t *testing.T) {
 // (executor_build_task.go: `if effectiveCaps == nil`). Reddens on the
 // mutation that widens the declared parse to every bracket list.
 func TestEmptyCapabilityListStaysNilSoTheNodeStillInheritsTheWorkflows(t *testing.T) {
-	pr := Parse("declared.bot", declaredToolsSrc)
+	pr := parseLenient("declared.bot", declaredToolsSrc)
 	for _, j := range pr.File.Judges {
 		if j.Name != "empty_caps" {
 			continue
@@ -107,7 +107,7 @@ func TestOnlyAnEmptyBracketDeclaresAnEmptyToolSurface(t *testing.T) {
 		{"tools: x]", false, true},
 	} {
 		src := "prompt p:\n  \"\"\"s\"\"\"\n\njudge j:\n  model: \"m\"\n  system: p\n  user: p\n  " + tc.line + "\n\nworkflow w:\n  entry: j\n  j -> done\n"
-		pr := Parse("x.bot", src)
+		pr := parseLenient("x.bot", src)
 		if len(pr.File.Judges) == 0 {
 			t.Fatalf("%s: no judge parsed", tc.line)
 		}

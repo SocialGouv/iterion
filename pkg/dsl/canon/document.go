@@ -53,7 +53,7 @@ func Document(name string, src []byte) ([]byte, error) {
 	if errs := diagnosticsOf(back.Diagnostics, parser.SeverityError); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: its written form does not read back: %s", ErrRefused, strings.Join(errs, "; "))
 	}
-	if why := commentReadingLost(res.Diagnostics, back.Diagnostics); why != "" {
+	if why := commentReadingLost(res.CommentReadings, back.CommentReadings); why != "" {
 		return nil, fmt.Errorf("%w: the .bot reads it otherwise than it is written, and its written form would put that reading in the author's place: %s", ErrRefused, why)
 	}
 	if why := firstDifferentLine(unparse.Unparse(res.File), unparse.Unparse(back.File)); why != "" {
@@ -86,20 +86,17 @@ func otherReadings(diags []parser.Diagnostic) []parser.Diagnostic {
 }
 
 // commentReadingLost names the first comment reading of the source the
-// written form does not report as well — the value it reads, with the
+// written form does not read as well — the value it reads, with the
 // comment cutting it, gone or changed — "" when the written form keeps
-// every one.
+// every one. The two are every reading of each (author.Result's
+// CommentReadings), never the reported ones: a report keeps the first
+// thousand in its document's order, and the writer orders the nodes.
 func commentReadingLost(src, written []parser.Diagnostic) string {
 	kept := map[string]int{}
 	for _, d := range written {
-		if author.IsCommentReading(d) {
-			kept[d.Message]++
-		}
+		kept[d.Message]++
 	}
 	for _, d := range src {
-		if !author.IsCommentReading(d) {
-			continue
-		}
 		if kept[d.Message] == 0 {
 			return d.Error()
 		}

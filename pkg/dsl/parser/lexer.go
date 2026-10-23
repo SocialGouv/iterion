@@ -2,16 +2,148 @@ package parser
 
 import (
 	"fmt"
+	"math"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Safety limits to prevent DoS from malicious .bot files.
 const (
 	maxSourceSize   = 10 * 1024 * 1024 // 10 MB max file size
 	maxNestingDepth = 100              // max indentation nesting levels
+)
+
+// ReadBudgetEnv names the operator's override of the read budget.
+const ReadBudgetEnv = "ITERION_DSL_READ_BUDGET"
+
+// DefaultReadBudget is how much one bot may ask the reader to record:
+// 2^20 records of its .bot files together — every word, value, punctuation
+// mark, prompt line (blank or not), line end, indentation step and the end
+// of each file is one, a comment two (commentRecords) — and 2^20 of a
+// YAML twin's reading, a value one and a comment line two (pkg/dsl/author).
+// The size cap bounds each file's bytes; the
+// budget bounds what they turn into, which a dense shape makes hundreds of
+// bytes of memory per byte of source (one flat list of one-letter names, a
+// line of commas, a run of comment lines). The lexer spends it as it reads,
+// so a bot past it is refused before the work it asks for, not after; the
+// files of one bot share it (NewUnitBudget), so splitting a bot into
+// fragments does not multiply what one load of it costs.
+const DefaultReadBudget = 1 << 20
+
+// commentRecords is what a comment spends of the read budget. A token the
+// parser reads and drops costs the readers its token; a comment is
+// addressed by the comment scan, kept in the AST and written back by the
+// canonical form, about twice that — measured at the budget's edge, a run
+// of comment lines against a flat list of names: 507 against 284 MiB of
+// peak memory on /api/parse's work, 826 against 407 on the canonical form.
+const commentRecords = 2
+
+// ReadBudget is the budget in force: DefaultReadBudget, or the count the
+// operator sets in ITERION_DSL_READ_BUDGET where the source is read — 0
+// removes the budget. A value that is not a count (a sign, a unit, a
+// number past the int range) keeps the default, and the process says so
+// once on stderr, naming the value and the budget it applied — as an
+// error, which no ITERION_LOG_LEVEL silences: the operator meant
+// something, and silence would replace it unseen.
+func ReadBudget() int {
+	v := strings.TrimSpace(os.Getenv(ReadBudgetEnv))
+	if v == "" {
+		return DefaultReadBudget
+	}
+	n, err := strconv.Atoi(v)
+	switch {
+	case err != nil || n < 0:
+		if _, warned := readBudgetWarned.LoadOrStore(v, true); !warned {
+			iterlog.NewFromEnv(os.Stderr).Error("dsl: invalid %s=%q (a count of records, 0 for none); using the default %d", ReadBudgetEnv, v, DefaultReadBudget)
+		}
+		return DefaultReadBudget
+	case n == 0:
+		return math.MaxInt
+	}
+	return n
+}
+
+// readBudgetWarned holds the invalid values already said, once each per
+// process: every source read would otherwise say it again.
+var readBudgetWarned sync.Map
+
+// ReadBudgetMessage is the refusal of a source past budget, the wording
+// every reader of the budget gives (the lexer, the YAML twin's speller).
+func ReadBudgetMessage(budget int) string {
+	return fmt.Sprintf("the source is past the read budget of %d — every word, value, punctuation mark, prompt line, line end, indentation step and the file's end spends one, a comment two: the reader stops here", budget)
+}
+
+// UnitBudgetMessage is the refusal of a bot whose files together are past
+// the budget they share, said in the file — or at the import of the file —
+// the budget ran out in.
+func UnitBudgetMessage(budget int) string {
+	return fmt.Sprintf("the bot is past the read budget of %d, which its files share — every word, value, punctuation mark, prompt line, line end, indentation step and file's end spends one, a comment two: the reader stops here", budget)
+}
+
+// ReadBudgetHint is the remedy of a refusal for the read budget: the
+// operator's count. Splitting a bot into fragments is none, since its files
+// share the budget.
+const ReadBudgetHint = "The budget is " + ReadBudgetEnv + " wherever a bot is read — the CLI, the server, the runner — and the files of a bot share it: a larger count raises it, 0 removes it."
+
+// The remedies of the two refusals of a whole source. A source past a bound
+// is no misplaced line, so E001's catalogued hint — about a line's
+// indentation — would send its author to the wrong place. The size cap is a
+// file's, so a large bot is split into fragments under it; the read budget
+// is the bot's.
+const (
+	sizeRefusalHint = "A bot this large reads in parts: move declarations into fragments under lib/ (`import \"lib/<name>.bot\"`), each read on its own 10 MiB — the read budget stays the bot's."
+	readBudgetHint  = ReadBudgetHint
+)
+
+// A Budget is a read budget and what the sources reading on it spent: one
+// source's own (Parse, NewLexer), or the one the files of a bot share
+// (NewUnitBudget) — a bot written in ten files costs its reader what the
+// same bot in one file does, never ten times it.
+type Budget struct {
+	limit, spent int
+	// unit marks a bot's budget: its refusal names the bot, whichever of
+	// its files ran out.
+	unit bool
+}
+
+// NewUnitBudget is the budget in force (ReadBudget) for the files of one
+// bot to share, of which spent is already taken — what the reading of a
+// main its caller parsed spent (an author document's).
+func NewUnitBudget(spent int) *Budget {
+	return &Budget{limit: ReadBudget(), spent: spent, unit: true}
+}
+
+// sourceBudget is one source's own budget.
+func sourceBudget() *Budget {
+	return &Budget{limit: ReadBudget()}
+}
+
+// Spent is what the sources reading on b took of it.
+func (b *Budget) Spent() int { return b.spent }
+
+// Left is what is left of b.
+func (b *Budget) Left() int { return b.limit - b.spent }
+
+// Limit is b's count of records.
+func (b *Budget) Limit() int { return b.limit }
+
+// Bound names the bound a source was refused whole for (Lexer.Refused,
+// ParseResult.Refused).
+type Bound int
+
+const (
+	// BoundNone: the source reads.
+	BoundNone Bound = iota
+	// BoundSize: the source is past the 10 MiB size cap.
+	BoundSize
+	// BoundBudget: the source is past the read budget.
+	BoundBudget
 )
 
 // Lexer tokenizes an iterion DSL source file with indent-sensitive INDENT/DEDENT tokens.
@@ -64,13 +196,54 @@ type Lexer struct {
 	blockScalarBaseLevel int // -1 means "use first non-blank content line's indent"
 	blockScalarStartLine int
 	blockScalarStartCol  int
+
+	// budget is the read budget this source spends (spend): its own, or
+	// the one the files of its bot share. What it spent is the records it
+	// made — tokens, and the blank prompt lines profile 1 notes instead of
+	// a token.
+	budget *Budget
+	// refused is the bound the whole source was refused for, and
+	// refusedHint that refusal's remedy (refuseWhole); BoundNone and ""
+	// while the source reads.
+	refused     Bound
+	refusedHint string
 }
 
-// NewLexer creates a new Lexer for the given source.
+// Refused is the bound the lexer refused the whole source for — its token
+// stream then the one refusal — BoundNone when the source reads.
+func (l *Lexer) Refused() Bound {
+	return l.refused
+}
+
+// refusal is the refusal of the whole source as the parser reports it
+// (addErrorHint, named file), nil while the source reads.
+func (l *Lexer) refusal(file string) *ReadRefusal {
+	if l.refused == BoundNone {
+		return nil
+	}
+	t := l.tokens[0]
+	return &ReadRefusal{Bound: l.refused, Diagnostic: Diagnostic{
+		Code:     lexerCode(t),
+		Severity: SeverityError,
+		Message:  t.Value,
+		File:     file,
+		Line:     t.Line,
+		Column:   t.Column,
+		Hint:     l.refusedHint,
+	}}
+}
+
+// NewLexer creates a new Lexer for the given source, on a budget of its
+// own.
 func NewLexer(filename, src string) *Lexer {
+	return lexSource(filename, src, sourceBudget())
+}
+
+// lexSource is NewLexer spending budget.
+func lexSource(filename, src string, budget *Budget) *Lexer {
 	if len(src) > maxSourceSize {
-		l := &Lexer{file: filename, line: 1, col: 1}
-		l.tokens = []Token{{Type: TokenError, Code: DiagUnexpectedToken, Value: fmt.Sprintf("source file exceeds maximum size (%d bytes > %d)", len(src), maxSourceSize), Line: 1, Column: 1}}
+		l := &Lexer{file: filename, line: 1, col: 1, budget: budget}
+		l.refuseWhole(BoundSize, fmt.Sprintf("source file exceeds maximum size (%d bytes > %d)", len(src), maxSourceSize), sizeRefusalHint, 1, 1)
 		return l
 	}
 	// Normalize the source before tokenising:
@@ -91,14 +264,14 @@ func NewLexer(filename, src string) *Lexer {
 		// meanwhile, never with a profile this build knows nothing of.
 		profile = 1
 	}
-	return newLexer(filename, src, profile, pre.StrictEscape || profile >= 2)
+	return newLexer(filename, src, profile, pre.StrictEscape || profile >= 2, budget)
 }
 
 // newLexer is NewLexer with the profile and the escape mode decided by the
 // caller instead of read off the source's head: a fragment of text — an
 // edge line read on its own (ParseEdgeLine) — has no head to read them
-// from. src is already normalised.
-func newLexer(filename, src string, profile int, strictEscape bool) *Lexer {
+// from. src is already normalised; budget is what the source spends.
+func newLexer(filename, src string, profile int, strictEscape bool, budget *Budget) *Lexer {
 	l := &Lexer{
 		src:          []rune(src),
 		file:         filename,
@@ -108,8 +281,12 @@ func newLexer(filename, src string, profile int, strictEscape bool) *Lexer {
 		atLineStart:  true,
 		strictEscape: strictEscape,
 		profile:      profile,
+		budget:       budget,
 	}
-	l.lineStarts = []int{0}
+	// One entry per line, sized from the newline count: grown by append, a
+	// source of blank lines would allocate five times the table it ends
+	// with.
+	l.lineStarts = make([]int, 1, strings.Count(src, "\n")+1)
 	for i, r := range l.src {
 		if r == '\n' {
 			l.lineStarts = append(l.lineStarts, i+1)
@@ -332,7 +509,12 @@ func (l *Lexer) handleLineStart() {
 				// Profile 1 skips every blank line — the model gets one
 				// newline for a paragraph break — a rule frozen with it.
 				// Noted as a place profile 2 reads otherwise, once a further
-				// body line proves the blank line interior.
+				// body line proves the blank line interior: a record like
+				// profile 2's empty prompt line, so it spends the budget as
+				// that token does.
+				if !l.spend(l.line, 1, 1) {
+					return
+				}
 				l.pendingBlanks = append(l.pendingBlanks, ProfileRead{Line: l.line, Kind: "paragraph"})
 			}
 		}
@@ -900,10 +1082,68 @@ func (l *Lexer) advance() {
 	}
 }
 
+// spend takes n records off the budget before the lexer makes them — a
+// token is one, a comment commentRecords, a blank prompt line profile 1
+// notes instead of a token one — and reports whether it may. The record the
+// budget has no room for refuses the whole source where that record starts
+// (withinText): what a source costs the reader never outgrows the budget,
+// however much text follows.
+//
+// One writer of the token stream spends nothing: the parser's resync of a
+// broken list inserts the DEDENTs that close the block loops the list left
+// open (spliceDedents). Each loop was opened by an INDENT spent here and
+// closes once, so the stream stays under twice the budget.
+func (l *Lexer) spend(line, col, n int) bool {
+	if l.refused != BoundNone {
+		return false
+	}
+	if n <= l.budget.Left() {
+		l.budget.spent += n
+		return true
+	}
+	line, col = l.withinText(line, col)
+	msg := ReadBudgetMessage(l.budget.limit)
+	if l.budget.unit {
+		msg = UnitBudgetMessage(l.budget.limit)
+	}
+	l.refuseWhole(BoundBudget, msg, readBudgetHint, line, col)
+	return false
+}
+
+// withinText is line:col moved off the line after the source's final
+// newline — where the end of the file and the dedents closing it stand —
+// to the end of the source's last line: a refusal names a place the file
+// holds.
+func (l *Lexer) withinText(line, col int) (int, int) {
+	if n := len(l.lineStarts); n >= 2 && line == n && l.lineStarts[n-1] == len(l.src) {
+		return n - 1, l.lineStarts[n-1] - l.lineStarts[n-2]
+	}
+	return line, col
+}
+
+// refuseWhole replaces the token stream with the one refusal of the whole
+// source for bound, at line:col, its remedy kept for the parser to report
+// (hint), and stops the scanner: the records made so far are dropped, so no
+// reader of the stream sees a source cut short, and none of them outlives
+// the refusal.
+func (l *Lexer) refuseWhole(bound Bound, msg, hint string, line, col int) {
+	l.tokens = []Token{{Type: TokenError, Code: DiagUnexpectedToken, Value: msg, Line: line, Column: col}}
+	l.refused, l.refusedHint = bound, hint
+	l.profileReads, l.pendingBlanks, l.blockScalarBuf = nil, nil, nil
+	l.pos = len(l.src)
+}
+
 // emit records a token at the position its scanner started from; the
 // scanner has consumed the token's text by now, so the current position is
 // where it ends.
 func (l *Lexer) emit(tt TokenType, value string, line, col int) {
+	records := 1
+	if tt == TokenComment {
+		records = commentRecords
+	}
+	if !l.spend(line, col, records) {
+		return
+	}
 	offset := 0
 	if line >= 1 && line <= len(l.lineStarts) {
 		offset = l.lineStarts[line-1] + col - 1
@@ -954,6 +1194,9 @@ func (l *Lexer) skipRestOfString() {
 // own diagnostic code, so the parser can report the cause wherever the token
 // surfaces — inside a block as well as at the top level.
 func (l *Lexer) emitError(code DiagCode, msg string, line, col int) {
+	if !l.spend(line, col, 1) {
+		return
+	}
 	l.tokens = append(l.tokens, Token{Type: TokenError, Code: code, Value: msg, Line: line, Column: col})
 }
 

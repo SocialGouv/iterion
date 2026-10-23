@@ -2,10 +2,10 @@ package spec_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 )
 
@@ -164,14 +164,14 @@ func TestEveryFormIsTheParsersLanguage(t *testing.T) {
 			for _, v := range w.accepted {
 				n++
 				doc := fmt.Sprintf(line, witnessLine(p, v, indent))
-				if res := parser.Parse("probe.bot", doc); len(res.Diagnostics) > 0 {
+				if res := parsertest.Parse("probe.bot", doc); len(res.Diagnostics) > 0 {
 					t.Errorf("%s.%s (%s): the form accepts %q, the parser refuses it: %v", kind, p.Name, p.Form, v, res.Diagnostics)
 				}
 			}
 			for _, v := range w.refused {
 				n++
 				doc := fmt.Sprintf(line, witnessLine(p, v, indent))
-				if res := parser.Parse("probe.bot", doc); len(res.Diagnostics) == 0 {
+				if res := parsertest.Parse("probe.bot", doc); len(res.Diagnostics) == 0 {
 					t.Errorf("%s.%s (%s): the form refuses %q, the parser accepts it", kind, p.Name, p.Form, v)
 				}
 			}

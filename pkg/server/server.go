@@ -25,6 +25,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/botscaffold"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -722,6 +724,24 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	}
 	if cfg.WSTickets == nil {
 		cfg.WSTickets = wsticket.NewMemoryStore(wsTicketTTL)
+	}
+	// A create killed between its staging directory and its publish leaves
+	// bots/.<slug>.scaffold-*/ beside the discovery roots — no bot, and
+	// discovery skips it — swept here so the stale ones do not pile up.
+	// The age keeps this from racing a concurrent create on a shared
+	// checkout: an in-flight scaffold's staging is fresh by construction,
+	// and the sweep takes only directories the scaffold marked as its own.
+	// An empty WorkDir would make the roots process-CWD-relative — on a
+	// pod, wherever the binary happened to start, someone else's tree — so
+	// the sweep is an explicit no-op there instead.
+	if cfg.WorkDir == "" {
+		logger.Info("bots: staging sweep skipped: no work directory configured")
+	} else {
+		for _, root := range botregistry.DefaultPaths(cfg.WorkDir) {
+			for _, path := range botscaffold.SweepStale(root, time.Hour) {
+				logger.Info("bots: swept a create's staging leftover: %s", path)
+			}
+		}
 	}
 	s := &Server{
 		cfg:          cfg,

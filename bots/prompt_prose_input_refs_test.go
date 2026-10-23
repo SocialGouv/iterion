@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -78,7 +79,7 @@ func TestCatalogPromptProseNamesAnInputTheNodeShows(t *testing.T) {
 
 	bodies := map[string]int{}
 	for _, path := range targets {
-		u := unit.LoadDir(path)
+		u := unittest.Whole(unit.LoadDir(path))
 		if u.Merged == nil {
 			continue // parse failures belong to TestCatalogBotsParseAndCompileClean
 		}
@@ -143,7 +144,7 @@ func TestCatalogPromptProseNamesAnInputTheNodeShows(t *testing.T) {
 // the operator reads.
 func TestProseGuardSeesEverySurface(t *testing.T) {
 	path := filepath.Join("testdata", "prose_input_refs", "surfaces.bot")
-	u := unit.LoadDir(path)
+	u := unittest.Whole(unit.LoadDir(path))
 	if u.Merged == nil {
 		t.Fatalf("%s: no file", path)
 	}
@@ -284,7 +285,7 @@ func TestTheProseReportNamesTheCarrierTheReaderAndTheRemedy(t *testing.T) {
 			mustNotSay: []string{"the model reads this text"},
 		},
 	} {
-		u := unit.LoadDir(tc.file)
+		u := unittest.Whole(unit.LoadDir(tc.file))
 		if u.Merged == nil {
 			t.Fatalf("%s: no file", tc.file)
 		}
@@ -324,7 +325,7 @@ func TestTheProseReportNamesTheCarrierTheReaderAndTheRemedy(t *testing.T) {
 // reports a value the operator is reading.
 func TestProseGuardCreditsTheEntryFloorOfAHumanNode(t *testing.T) {
 	path := filepath.Join("testdata", "prose_input_refs", "human_entry.bot")
-	u := unit.LoadDir(path)
+	u := unittest.Whole(unit.LoadDir(path))
 	if u.Merged == nil {
 		t.Fatalf("%s: no file", path)
 	}

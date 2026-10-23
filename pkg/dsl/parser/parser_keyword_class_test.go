@@ -18,7 +18,7 @@ func TestEveryKeywordIsAValidName(t *testing.T) {
 		}
 		t.Run(kw, func(t *testing.T) {
 			src := "agent " + kw + ":\n  model: \"m\"\nvars:\n  " + kw + ": string\nschema s:\n  " + kw + ": string\n"
-			res := parser.Parse("kw.bot", src)
+			res := parser.ParseLenient("kw.bot", src)
 			for _, d := range res.Diagnostics {
 				t.Errorf("keyword %q as a name: %v", kw, d)
 			}
@@ -39,7 +39,7 @@ func TestEveryKeywordIsAValidName(t *testing.T) {
 // not one of its properties is an unknown PROPERTY (E012, with the remedy),
 // not an "unexpected token".
 func TestKeywordInAValueMatchedBlockIsAnUnknownProperty(t *testing.T) {
-	res := parser.Parse("kw.bot", "workflow w:\n  sandbox:\n    needs: 1\n")
+	res := parser.ParseLenient("kw.bot", "workflow w:\n  sandbox:\n    needs: 1\n")
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != parser.DiagUnknownProperty {
 		t.Fatalf("want one E012, got %v", res.Diagnostics)
 	}

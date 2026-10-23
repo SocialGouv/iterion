@@ -8,7 +8,7 @@ import { parseBotSourceEditorPath } from "@/api/client";
 import type { IterDocument } from "@/api/types";
 import { ITER_LANGUAGE_ID } from "@/lib/iterLanguage";
 import { registerIterLanguage } from "@/lib/iterMonaco";
-import { applyParsedSource } from "@/lib/salvage";
+import { applyParsedSource, readRefusalSentence } from "@/lib/salvage";
 import { useConfirm } from "@/hooks/useConfirm";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
@@ -27,6 +27,7 @@ export default function SourceView() {
   const documentStore = useDocumentStoreInstance();
   const document = useDocumentStore((s) => s.document);
   const unit = useDocumentStore((s) => s.unit);
+  const readRefusal = useDocumentStore((s) => s.readRefusal);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const resolvedTheme = useThemeStore((s) => s.resolved);
   const setDocument = useDocumentStore((s) => s.setDocument);
@@ -427,7 +428,7 @@ export default function SourceView() {
           setParseError("This edit was closed while it was applying. Nothing was applied.");
           return;
         }
-        applyParsedSource(result, { setDocument, setSalvaged });
+        applyParsedSource(result, { setDocument, setSalvaged, readRefusal: documentStore.getState().readRefusal });
         // What the STORE ends up holding, not what was handed to it: the
         // store normalises the document, so the object the next render
         // reads is not the one this answer carried.
@@ -483,7 +484,7 @@ export default function SourceView() {
       // makes the document the program again, so a save may write it. The
       // canvas cannot do this — it never held the region the parser could
       // not read — which is why the refusal points here.
-      applyParsedSource(result, { setDocument, setSalvaged });
+      applyParsedSource(result, { setDocument, setSalvaged, readRefusal: documentStore.getState().readRefusal });
       // The provenance follows the apply, as it does on the per-file branch:
       // without it the buffer keeps naming the PRE-apply document for the
       // whole debounce, and a second Apply to the same file is refused as
@@ -695,7 +696,19 @@ export default function SourceView() {
             entirely in the merged state. The buttons branch keeps its natural
             width, being three short labels. */}
         <div className="flex min-w-0 gap-2">
-          {unit && salvaged ? (
+          {/* A document the server's reader refused is no text to repair
+              here: a bound of the reader cut it short, or the file is no text
+              it reads (not UTF-8), and the note — in place of Edit — names
+              the remedy, which is not an edit here. */}
+          {salvaged && readRefusal ? (
+            <span
+              className="truncate text-xs text-fg-subtle"
+              title={readRefusalSentence(readRefusal)}
+              data-testid="source-view-read-refusal-note"
+            >
+              Read-only: {readRefusalSentence(readRefusal)}
+            </span>
+          ) : unit && salvaged ? (
             <span
               className="truncate text-xs text-fg-subtle"
               title="Read-only: this bot's main did not parse."

@@ -12,7 +12,7 @@ import (
 // form, and the unparser writes a blank line between declarations.
 func TestEmptyDeclarationsParse(t *testing.T) {
 	src := "schema s:\n\nprompt p:\n\ncursor c:\n\n## a comment after the blank line is fine\nmcp_server m:\n\nsupervisor v:\n\ngroup g:\n\nworkflow w:\n  entry: done\n"
-	pr := Parse("empty.bot", src)
+	pr := parseLenient("empty.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Errorf("unexpected diagnostic: %s", d.Error())
 	}
@@ -42,7 +42,7 @@ func TestEmptyDeclarationsParse(t *testing.T) {
 
 // An empty declaration may also be the last thing in the file.
 func TestEmptyDeclarationAtEndOfFile(t *testing.T) {
-	pr := Parse("empty.bot", "workflow w:\n  entry: done\n\nschema s:\n")
+	pr := parseLenient("empty.bot", "workflow w:\n  entry: done\n\nschema s:\n")
 	for _, d := range pr.Diagnostics {
 		t.Errorf("unexpected diagnostic: %s", d.Error())
 	}
@@ -61,7 +61,7 @@ func TestEmptyWorkflowParses(t *testing.T) {
 		"prompt p:\n  x\n\nworkflow w:\n",
 		"workflow w:\n\nschema s:\n  ok: bool\n",
 	} {
-		pr := Parse("empty.bot", src)
+		pr := parseLenient("empty.bot", src)
 		for _, d := range pr.Diagnostics {
 			t.Errorf("%q: unexpected diagnostic: %s", src, d.Error())
 		}
@@ -69,7 +69,7 @@ func TestEmptyWorkflowParses(t *testing.T) {
 			t.Errorf("%q: empty workflow not kept: %+v", src, pr.File.Workflows)
 		}
 	}
-	if pr := Parse("bad.bot", "workflow w:\nentry: a\n"); !indentError(pr) {
+	if pr := parseLenient("bad.bot", "workflow w:\nentry: a\n"); !indentError(pr) {
 		t.Fatalf("an unindented workflow body parsed without the indentation error: %v", pr.Diagnostics)
 	}
 }
@@ -86,7 +86,7 @@ func indentError(pr *ParseResult) bool {
 // A body at the wrong indentation is still the indentation error with its
 // hint, not an empty declaration followed by a stray line.
 func TestUnindentedBodyIsStillTheIndentError(t *testing.T) {
-	pr := Parse("bad.bot", "schema s:\ncode: string\n")
+	pr := parseLenient("bad.bot", "schema s:\ncode: string\n")
 	if !indentError(pr) {
 		t.Fatalf("want the E002 indentation error, got %v", pr.Diagnostics)
 	}
@@ -97,7 +97,7 @@ func TestUnindentedBodyIsStillTheIndentError(t *testing.T) {
 // top-level nodes, with no diagnostic anywhere.
 func TestUnindentedGroupBodyIsStillTheIndentError(t *testing.T) {
 	src := "group review:\nagent linter:\n  description: \"lint\"\nagent tester:\n  description: \"test\"\n\nworkflow w:\n  entry: linter\n  linter -> tester\n  tester -> done\n"
-	pr := Parse("bad.bot", src)
+	pr := parseLenient("bad.bot", src)
 	if !indentError(pr) {
 		t.Fatalf("an unindented group body parsed without the indentation error: %v", pr.Diagnostics)
 	}
@@ -105,7 +105,7 @@ func TestUnindentedGroupBodyIsStillTheIndentError(t *testing.T) {
 
 // An indented comment alone is not a body, and not a blank line either.
 func TestCommentOnlyBodyIsStillTheIndentError(t *testing.T) {
-	pr := Parse("bad.bot", "schema verdict:\n  ## nothing yet\nagent a:\n  output: verdict\n")
+	pr := parseLenient("bad.bot", "schema verdict:\n  ## nothing yet\nagent a:\n  output: verdict\n")
 	if !indentError(pr) {
 		t.Fatalf("a comment-only body parsed without the indentation error: %v", pr.Diagnostics)
 	}
@@ -115,7 +115,7 @@ func TestCommentOnlyBodyIsStillTheIndentError(t *testing.T) {
 // under it is a mistake, and the unparser writes `description: ""` for a
 // node that has nothing else.
 func TestNodeHeaderWithoutBodyStillFails(t *testing.T) {
-	pr := Parse("bad.bot", "agent a:\n\nworkflow w:\n  entry: a\n")
+	pr := parseLenient("bad.bot", "agent a:\n\nworkflow w:\n  entry: a\n")
 	if len(pr.Diagnostics) == 0 {
 		t.Fatal("a bodyless agent header parsed without a diagnostic")
 	}

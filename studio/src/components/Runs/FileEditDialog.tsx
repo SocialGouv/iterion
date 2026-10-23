@@ -82,7 +82,7 @@ export default function FileEditDialog({
         // author's diff stays against what they started from.
         if (!store.runFiles[bufKey]) {
           const text = res.binary ? "" : res.content;
-          store.setRunFile(bufKey, { value: text, original: text });
+          store.setRunFile(bufKey, { value: text, original: text, originalSha256: res.sha256 });
         }
       })
       .catch((err: unknown) => {
@@ -127,13 +127,17 @@ export default function FileEditDialog({
     setSaving(true);
     setError(null);
     try {
-      await saveRunFileContent(runId, path, next);
+      // The digest of the text the edit was made from: the save replaces
+      // exactly those bytes, or is refused (409) — the run may have written
+      // the file since.
+      const sent = useEditBuffersStore.getState().runFiles[bufKey]?.originalSha256;
+      const saved = await saveRunFileContent(runId, path, next, sent);
       const store = useEditBuffersStore.getState();
       const held = store.runFiles[bufKey];
       // Settled only into a buffer that is still there: one discarded while
       // the write was in flight is not resurrected by its answer. Text typed
       // during the flight stays, dirty against what landed.
-      if (held) store.setRunFile(bufKey, { ...held, original: next });
+      if (held) store.setRunFile(bufKey, { ...held, original: next, originalSha256: saved.sha256 });
       // Refresh the files tree / diff so the new state (and the large-
       // changeset count) reflects the edit immediately. Invalidate every
       // mode by matching the run-files key prefix.
@@ -225,7 +229,10 @@ export default function FileEditDialog({
               const store = useEditBuffersStore.getState();
               const held = store.runFiles[bufKey];
               // Typing before the read answered has no buffer to write to.
+              // Spread, not rebuilt: the digest of `original` belongs to the
+              // buffer as much as `original` does.
               store.setRunFile(bufKey, {
+                ...held,
                 value: v ?? "",
                 original: held?.original ?? value,
               });

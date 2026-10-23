@@ -344,7 +344,7 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
 
   const openFileForEdit = (rel: string) => {
     const content = bundle?.files?.[rel] ?? "";
-    setEditing({ rel, value: content, original: content, created: false });
+    setEditing({ rel, value: content, original: content, originalSha256: bundle?.file_sha256?.[rel], created: false });
   };
 
   const onNewFile = async () => {
@@ -421,7 +421,18 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     const saved = editing;
     setSaving(true);
     try {
-      const updated = await putBotSourceFile(at.teamID, at.slug, saved.rel, saved.value, ifMatch());
+      // The digest of the text this edit was made from: the write replaces
+      // exactly those bytes (a raw edit, which the server lets replace a
+      // `.bot` its reader refuses as stored), or it is refused.
+      const updated = await putBotSourceFile(
+        at.teamID,
+        at.slug,
+        saved.rel,
+        saved.value,
+        ifMatch(),
+        saved.created ? undefined : saved.originalSha256,
+        bundle?.id,
+      );
       setBundle(updated, at);
       if (stillOn(at)) {
         // Closed only if the buffer still holds what was written. Text typed
@@ -432,7 +443,7 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
             ? e
             : e.value === saved.value
               ? null
-              : { ...e, original: saved.value, created: false },
+              : { ...e, original: saved.value, originalSha256: updated.file_sha256?.[saved.rel], created: false },
         );
         setConflict(false);
       }
@@ -474,7 +485,12 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
         // yet.
         setEditing((e) =>
           e && e.rel === rel
-            ? { ...e, value: fresh.files?.[e.rel] ?? "", original: fresh.files?.[e.rel] ?? "" }
+            ? {
+                ...e,
+                value: fresh.files?.[e.rel] ?? "",
+                original: fresh.files?.[e.rel] ?? "",
+                originalSha256: fresh.file_sha256?.[e.rel],
+              }
             : e,
         );
       }
@@ -500,7 +516,7 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     const at = shown;
     setBusyRel(rel);
     try {
-      const updated = await deleteBotSourceFile(at.teamID, at.slug, rel, ifMatch());
+      const updated = await deleteBotSourceFile(at.teamID, at.slug, rel, ifMatch(), bundle?.id);
       setBundle(updated, at);
       if (stillOn(at)) setConflict(false);
     } catch (err) {

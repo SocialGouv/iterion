@@ -88,6 +88,13 @@ type authoringPreviewFile struct {
 	Operation string `json:"operation"`
 	Before    string `json:"before"`
 	After     string `json:"after"`
+	// readWhole says Before was read whole by the strict reader in this
+	// request (a unit load that was not cut short), and presented is the
+	// digest of Before a raw edit presents (the assistant's expected_sha256):
+	// what prepareAuthoringLocal hands checkStoredFile beside the bytes it
+	// reads under the lock.
+	readWhole bool
+	presented string
 }
 
 type authoringChangeResponse struct {
@@ -167,8 +174,13 @@ type authoringTarget struct {
 	teamID            string
 	slug              string
 	version           int
-	files             map[string]string // cloud bundle contents; nil for local
-	userID            string
+	// id is the bot's identity as this snapshot read it (the digest rule's
+	// cloud half): a bot deleted and re-created under the same slug at the
+	// same version is not the bot the assistant read, and its commit is a
+	// conflict, not a write.
+	id     string
+	files  map[string]string // cloud bundle contents; nil for local
+	userID string
 }
 
 type resolvedAuthoringFile struct {
@@ -496,7 +508,7 @@ func (s *Server) resolveAuthoringTarget(r *http.Request, editorPath string) (*au
 		if _, ok := bs.Files[activePath]; !ok {
 			return nil, errors.New("active editor file is absent from the bot source")
 		}
-		return &authoringTarget{editorPath: editorPath, activeBundlePath: activePath, manifest: m, teamID: teamID, slug: slug, version: bs.Version, files: bs.Files, userID: id.UserID}, nil
+		return &authoringTarget{editorPath: editorPath, activeBundlePath: activePath, manifest: m, teamID: teamID, slug: slug, version: bs.Version, id: bs.ID, files: bs.Files, userID: id.UserID}, nil
 	}
 	absEditor, err := s.safePath(editorPath)
 	if err != nil {
@@ -741,7 +753,11 @@ func (t *authoringTarget) preview(changes []authoringFileChange) ([]authoringPre
 		if !utf8.ValidString(next) {
 			return nil, nil, fmt.Errorf("changes[%d] result is not UTF-8 text", i)
 		}
-		previews = append(previews, authoringPreviewFile{Scope: declared.Scope, Path: declared.Path, Operation: "replace", Before: content, After: next})
+		// The replacements are exact edits of the bytes the assistant's
+		// snapshot read (expected_sha256): the digest goes with the preview,
+		// the write's claim that it replaces those bytes and no reading of
+		// them (checkStoredFile).
+		previews = append(previews, authoringPreviewFile{Scope: declared.Scope, Path: declared.Path, Operation: "replace", Before: content, After: next, presented: change.ExpectedSHA256})
 		resolved = append(resolved, file)
 	}
 	return previews, resolved, nil
@@ -1009,6 +1025,9 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 		if bs.Version != target.version {
 			return 0, nil, authoringConflictError{"bot source changed before commit"}
 		}
+		if bs.ID != target.id {
+			return 0, nil, authoringConflictError{"bot source changed before commit: the bot was deleted and re-created (a new id), and this commit was decided on the old one"}
+		}
 		files := cloneAuthoringStringMap(bs.Files)
 		for _, p := range previews {
 			if p.Scope != bundle.AuthoringScopeBundle {
@@ -1030,7 +1049,24 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 		if gap := bundleSyntaxFloorGap(bs); gap != nil {
 			return 0, nil, authoringValidationFailure{Code: "bot_engine_floor", Message: gap.refusal(bs.Slug)}
 		}
-		out, err := s.botSources.Update(store.WithTenant(r.Context(), target.teamID), bs)
+		// The requires half of the same guard, run exactly as the push
+		// routes run it: an edit that raises requires.iterion above this
+		// deployment's engine floor is refused here too, never stored for a
+		// runner that cannot launch it. No force on this path. The deletion
+		// half cannot fire here — the change shape is replace-only (create
+		// is refused for cloud), so the manifest never leaves the file set —
+		// hence no stored bundle handed over.
+		if out := s.requiresFloorGap(r.Context(), bs, nil, false); out.refusal != "" {
+			return 0, nil, authoringValidationFailure{Code: "bot_engine_floor", Message: out.refusal}
+		}
+		// The store write every bot-source update goes through: pinned to the
+		// version the previews were read at, each file it replaces held to
+		// the bytes the assistant's snapshot read (its expected_sha256).
+		presented := make(map[string]string, len(previews))
+		for _, p := range previews {
+			presented[p.Path] = p.presented
+		}
+		out, _, err := s.storeBotSource(r.Context(), target.teamID, target.userID, bs, presented, "")
 		if err != nil {
 			return 0, nil, err
 		}
@@ -1298,6 +1334,9 @@ type authoringForbiddenError struct{ message string }
 func (e authoringForbiddenError) Error() string { return e.message }
 
 func (s *Server) authoringError(w http.ResponseWriter, r *http.Request, err error) {
+	if s.writeStoredFileRefusal(w, r, err) {
+		return
+	}
 	var conflict authoringConflictError
 	var fileExists authoringFileExistsError
 	var forbidden authoringForbiddenError

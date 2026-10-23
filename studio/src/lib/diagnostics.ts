@@ -1,4 +1,4 @@
-import type { IterDocument, Edge } from "@/api/types";
+import type { IterDocument, Edge, ReadRefusal } from "@/api/types";
 import type { DiagnosticIssue } from "@/api/client";
 import { getAllNodeNames } from "@/lib/defaults";
 import { makeEdgeId } from "@/lib/documentToGraph";
@@ -14,6 +14,43 @@ export interface ParsedDiagnostic {
   code: string;
   /** Message body without the "severity [code]: " prefix. */
   message: string;
+  /** How many more of its code the reading counted and did not report,
+   *  said on the last one it kept (`unreportedBehind`); 0 for the others. */
+  unreported: number;
+}
+
+/** The reading's own words, on the last diagnostic it kept of a code past
+ *  its cap: "— and N more E012 errors not reported: …". */
+const UNREPORTED_RE = /— and (\d+) more (?:\S+ )?(?:errors?|warnings?) not reported/;
+
+/**
+ * How many diagnostics a reading counted behind this one and did not report.
+ * A reading of a source reports at most 1000 of each code (and 2000 of each
+ * severity), and says on the last one kept of a code how many more there
+ * were: a count shown of a list is the list's entries plus these, or it
+ * shows 4000 errors for a reading of 5300.
+ */
+export function unreportedBehind(raw: string): number {
+  const m = raw.match(UNREPORTED_RE);
+  return m ? Number(m[1]) : 0;
+}
+
+/** How many diagnostics of `severity` the readings behind `diags` counted:
+ *  each entry, and the ones its reading did not report behind it. */
+export function countOf(diags: AttributedDiagnostic[], severity: DiagnosticSeverity): number {
+  let n = 0;
+  for (const d of diags) {
+    if (d.severity === severity) n += 1 + d.unreported;
+  }
+  return n;
+}
+
+/** How many diagnostics a list of raw strings stands for: each entry and the
+ *  ones its reading did not report behind it. */
+export function countOfRaw(raws: string[]): number {
+  let n = 0;
+  for (const r of raws) n += 1 + unreportedBehind(r);
+  return n;
 }
 
 export interface AttributedDiagnostic extends ParsedDiagnostic {
@@ -48,7 +85,7 @@ function parseDiagnostic(
 ): ParsedDiagnostic {
   const match = raw.match(PREFIX_RE);
   if (!match) {
-    return { raw, severity: fallbackSeverity, code: "", message: raw };
+    return { raw, severity: fallbackSeverity, code: "", message: raw, unreported: unreportedBehind(raw) };
   }
   const sev = match[1]!.toLowerCase() === "warning" ? "warning" : "error";
   return {
@@ -56,6 +93,7 @@ function parseDiagnostic(
     severity: sev,
     code: match[2]!.toUpperCase(),
     message: raw.slice(match[0].length),
+    unreported: unreportedBehind(raw),
   };
 }
 
@@ -116,6 +154,7 @@ function fromIssue(issue: DiagnosticIssue): AttributedDiagnostic {
     edgeId: issue.edge_id || undefined,
     hint: issue.hint || undefined,
     source: "structured",
+    unreported: unreportedBehind(issue.message),
   };
 }
 
@@ -159,6 +198,20 @@ export function groupDiagnostics(
   }
 
   return { byNode, byEdge, global, all };
+}
+
+/** The read refusal's remedy, attached to the diagnostic that IS the
+ *  refusal: the answer carries it as a string, which no code-keyed hint
+ *  table can follow back to the variable that moves the budget. */
+export function withReadRefusalHint(g: GroupedDiagnostics, r: ReadRefusal | null): GroupedDiagnostics {
+  if (!r?.hint) return g;
+  const hint = r.hint;
+  const attach = (list: AttributedDiagnostic[]) => list.map((d) => (d.raw === r.message ? { ...d, hint } : d));
+  const byNode = new Map<string, AttributedDiagnostic[]>();
+  for (const [k, v] of g.byNode) byNode.set(k, attach(v));
+  const byEdge = new Map<string, AttributedDiagnostic[]>();
+  for (const [k, v] of g.byEdge) byEdge.set(k, attach(v));
+  return { byNode, byEdge, global: attach(g.global), all: attach(g.all) };
 }
 
 export function dominantSeverity(

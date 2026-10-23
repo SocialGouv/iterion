@@ -1,10 +1,9 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A bare `supervisor NAME:` — what the studio saves the moment a
@@ -12,7 +11,7 @@ import (
 // with the default budget: it is warned about and not armed.
 func TestEmptySupervisorIsNotArmed(t *testing.T) {
 	src := "supervisor persy:\n\ntool t:\n  command: \"true\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
-	pr := parser.Parse("x.bot", src)
+	pr := parsertest.Parse("x.bot", src)
 	if len(pr.Diagnostics) != 0 {
 		t.Fatalf("parse: %v", pr.Diagnostics)
 	}
@@ -37,7 +36,7 @@ func TestEmptySupervisorIsNotArmed(t *testing.T) {
 // A bare `workflow w:` compiles to the diagnostic the author can act on —
 // the workflow declares no entry — not to a lookup of a node named "".
 func TestEmptyWorkflowNamesWhatItLacks(t *testing.T) {
-	pr := parser.Parse("x.bot", "workflow w:\n")
+	pr := parsertest.Parse("x.bot", "workflow w:\n")
 	if len(pr.Diagnostics) != 0 {
 		t.Fatalf("parse: %v", pr.Diagnostics)
 	}
@@ -58,7 +57,7 @@ func TestEmptyWorkflowNamesWhatItLacks(t *testing.T) {
 // model can fill.
 func TestNodeReferencingAnEmptySchemaIsWarned(t *testing.T) {
 	src := "schema verdict:\n\nprompt p:\n  judge it\n\nagent a:\n  model: \"m\"\n  output: verdict\n  system: p\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	pr := parser.Parse("x.bot", src)
+	pr := parsertest.Parse("x.bot", src)
 	if len(pr.Diagnostics) != 0 {
 		t.Fatalf("parse: %v", pr.Diagnostics)
 	}

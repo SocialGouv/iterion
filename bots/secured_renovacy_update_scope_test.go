@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"strings"
 	"testing"
 
@@ -27,7 +28,7 @@ func TestSecuredRenovacyShowsTheOperatorsUpdateScope(t *testing.T) {
 	const varName = "update_scope"
 	path := "secured-renovacy/main.bot"
 
-	u := unit.LoadDir(path)
+	u := unittest.Whole(unit.LoadDir(path))
 	if u.Merged == nil {
 		t.Fatalf("%s: no unit loaded", path)
 	}

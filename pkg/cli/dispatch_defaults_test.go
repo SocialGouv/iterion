@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -80,7 +81,7 @@ func TestBuildDefaultConfig_ValidatesAndExtractsCatalogue(t *testing.T) {
 	}
 	several := 0
 	for _, m := range mains {
-		u := unit.LoadDir(m)
+		u := unittest.Whole(unit.LoadDir(m))
 		if u.HasErrors() {
 			for _, d := range u.Diagnostics {
 				t.Errorf("%s: %s", m, d.Error())

@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -15,7 +16,7 @@ import (
 // the same values.
 func TestUnparseWritesTheProfileTwoHeader(t *testing.T) {
 	src := "## ---\n## name: probe\n## ---\n## a note\ndsl: 2\n\ntool t:\n  command: \"a\\nb \\\"q\\\"\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
-	res := parser.Parse("x.bot", src)
+	res := parsertest.Parse("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("fixture does not parse: %v", res.Diagnostics)
 	}
@@ -30,7 +31,7 @@ func TestUnparseWritesTheProfileTwoHeader(t *testing.T) {
 	if pre := parser.ReadPreamble(text); pre.Profile != 2 {
 		t.Fatalf("the written text reads as profile %d:\n%s", pre.Profile, text)
 	}
-	back := parser.Parse("x.bot", text)
+	back := parsertest.Parse("x.bot", text)
 	if len(back.Diagnostics) != 0 {
 		t.Fatalf("the written text does not parse: %v\n%s", back.Diagnostics, text)
 	}
@@ -58,7 +59,7 @@ func TestUnparseWritesTheDirectiveAfterTheFrontmatter(t *testing.T) {
 	if pre := parser.ReadPreamble(text); !pre.StrictEscape || pre.Profile != 0 {
 		t.Fatalf("the written text does not read strict profile 1: %+v\n%s", pre, text)
 	}
-	back := parser.Parse("x.bot", text)
+	back := parsertest.Parse("x.bot", text)
 	if got := back.File.Tools[0].Command; got != "grep `x` \"y\"" {
 		t.Fatalf("command read back as %q", got)
 	}
@@ -69,7 +70,7 @@ func TestUnparseWritesTheDirectiveAfterTheFrontmatter(t *testing.T) {
 // another profile than the document's is refused.
 func TestVerifyRefusesAProfileMismatch(t *testing.T) {
 	src := "dsl: 2\n\ntool t:\n  command: \"x\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
-	res := parser.Parse("x.bot", src)
+	res := parsertest.Parse("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("fixture: %v", res.Diagnostics)
 	}
@@ -79,7 +80,7 @@ func TestVerifyRefusesAProfileMismatch(t *testing.T) {
 		t.Fatalf("Verify = %v, want the profile mismatch", err)
 	}
 	// And the other way round.
-	v1 := parser.Parse("x.bot", lost)
+	v1 := parsertest.Parse("x.bot", lost)
 	if err := unparse.Verify(v1.File, src); err == nil || !strings.Contains(err.Error(), "reads as dsl profile 2, the document is profile 1") {
 		t.Fatalf("Verify = %v, want the profile mismatch", err)
 	}

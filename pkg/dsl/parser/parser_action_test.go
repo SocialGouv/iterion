@@ -24,7 +24,7 @@ func TestParseActionNode(t *testing.T) {
   retry: 3
   timeout: 30s
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	if len(res.File.Tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(res.File.Tools))
@@ -61,7 +61,7 @@ func TestParseActionNode(t *testing.T) {
 // value the author never wrote, on the one recipe whose whole promise is that
 // the request is what was declared.
 func TestParseActionParamRefusesAnUnquotedMultiWordValue(t *testing.T) {
-	res := parser.Parse("test.bot", `tool comment:
+	res := parser.ParseLenient("test.bot", `tool comment:
   action: forgejo.issue.comment
   connection: forge_main
   params:
@@ -107,7 +107,7 @@ func TestParseActionParamRefusesAnUnquotedMultiWordValue(t *testing.T) {
 // The third word used to be read as the NEXT parameter name, so the author got
 // a diagnostic about something they never wrote.
 func TestParseActionParamMultiWordDoesNotInventAParameter(t *testing.T) {
-	res := parser.Parse("test.bot", `tool comment:
+	res := parser.ParseLenient("test.bot", `tool comment:
   action: forgejo.issue.comment
   connection: forge_main
   params:
@@ -140,7 +140,7 @@ func TestParseActionDurationsAndCounts(t *testing.T) {
 		{"  timeout: 1500ms\n  retry: 0\n", "1500ms", "0"},
 		{"  timeout: \"45s\"\n  retry: \"2\"\n", "45s", "2"},
 	} {
-		res := parser.Parse("test.bot", "tool comment:\n  action: forgejo.issue.comment\n  connection: c\n"+tc.src)
+		res := parser.ParseLenient("test.bot", "tool comment:\n  action: forgejo.issue.comment\n  connection: c\n"+tc.src)
 		assertNoDiags(t, res)
 		if len(res.File.Tools) != 1 {
 			t.Fatalf("expected 1 tool for %q", tc.src)
@@ -158,7 +158,7 @@ func TestParseActionID(t *testing.T) {
 		{`"forgejo.issue.comment"`, "forgejo.issue.comment"},
 		{"forgejo.pull_request.merge", "forgejo.pull_request.merge"},
 	} {
-		res := parser.Parse("test.bot", "tool t:\n  action: "+tc.written+"\n  connection: c\n")
+		res := parser.ParseLenient("test.bot", "tool t:\n  action: "+tc.written+"\n  connection: c\n")
 		assertNoDiags(t, res)
 		assertEq(t, "Action", res.File.Tools[0].Action, tc.want)
 	}
@@ -167,7 +167,7 @@ func TestParseActionID(t *testing.T) {
 // A trailing dot produces a diagnostic where the mistake is, rather than a
 // truncated id that fails far away as "unknown operation".
 func TestParseActionIDTrailingDotIsDiagnosed(t *testing.T) {
-	res := parser.Parse("test.bot", "tool t:\n  action: forgejo.issue.\n  connection: c\n")
+	res := parser.ParseLenient("test.bot", "tool t:\n  action: forgejo.issue.\n  connection: c\n")
 	if len(res.Diagnostics) == 0 {
 		t.Fatal("a trailing dot in an operation id must be diagnosed")
 	}
@@ -190,7 +190,7 @@ func diagText(res *parser.ParseResult) string {
 // join this replaced.
 func TestParseActionParamHintKeepsPunctuatedValuesIntact(t *testing.T) {
 	for _, written := range []string{"refs/heads/main", "my-repo", "a.b.c", "1.2.3-rc1"} {
-		res := parser.Parse("test.bot", "tool t:\n  action: p.r.v\n  connection: c\n  params:\n    k: "+written+"\n")
+		res := parser.ParseLenient("test.bot", "tool t:\n  action: p.r.v\n  connection: c\n  params:\n    k: "+written+"\n")
 		if len(res.Diagnostics) == 0 {
 			t.Errorf("%q: an unquoted punctuated value must be diagnosed", written)
 			continue
@@ -215,7 +215,7 @@ func TestParseActionParamHintKeepsPunctuatedValuesIntact(t *testing.T) {
 // comment and kept going into the NEXT line — so `output:` was deleted from
 // the node too. Every property of this recipe reads through that path.
 func TestParseActionPropertiesAcceptATrailingComment(t *testing.T) {
-	res := parser.Parse("test.bot", `tool comment:
+	res := parser.ParseLenient("test.bot", `tool comment:
   action: forgejo.issue.comment   # the operation
   connection: forge_main  ## the connection
   params:
@@ -261,7 +261,7 @@ func TestParseActionPropertiesAcceptATrailingComment(t *testing.T) {
 // the line IS ended, so the refusal below never fires. A vendor receiving a
 // value the author never wrote is this recipe's whole failure mode.
 func TestParseActionParamRefusesANumberFollowedByAWord(t *testing.T) {
-	res := parser.Parse("test.bot", `tool comment:
+	res := parser.ParseLenient("test.bot", `tool comment:
   action: forgejo.issue.comment
   connection: forge_main
   params:
@@ -314,7 +314,7 @@ func TestParseActionParamsBlockDiagnosesAMalformedBody(t *testing.T) {
 `},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			res := parser.Parse("test.bot", tc.src)
+			res := parser.ParseLenient("test.bot", tc.src)
 			if len(res.Diagnostics) == 0 {
 				t.Fatal("a body that is not an indented block must be diagnosed")
 			}
@@ -348,7 +348,7 @@ workflow w:
 `},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			res := parser.Parse("test.bot", tc.src)
+			res := parser.ParseLenient("test.bot", tc.src)
 			assertNoDiags(t, res)
 			if len(res.File.Tools) != 1 {
 				t.Fatalf("expected 1 tool, got %d", len(res.File.Tools))
@@ -383,7 +383,7 @@ func TestParseActionParamAcceptsAQuotedWireKey(t *testing.T) {
     "activity-id": 2
     plain: 3
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	if len(res.File.Tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(res.File.Tools))
@@ -406,7 +406,7 @@ func TestParseActionParamAcceptsAQuotedWireKey(t *testing.T) {
 	// A key that is neither an identifier nor a quoted string is still
 	// refused, naming the position: the escape hatch is the quoted form, not
 	// "anything goes here now".
-	bad := parser.Parse("test.bot", "tool a:\n  action: p.r.v\n  connection: c\n  params:\n    42: x\n")
+	bad := parser.ParseLenient("test.bot", "tool a:\n  action: p.r.v\n  connection: c\n  params:\n    42: x\n")
 	if !strings.Contains(diagText(bad), "expected a parameter name") {
 		t.Errorf("a non-name key must still be diagnosed, got %s", diagText(bad))
 	}
@@ -427,7 +427,7 @@ func TestParseActionParamsBlocksAccumulate(t *testing.T) {
   params:
     repo: "widgets"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	got := res.File.Tools[0].Params
 	if len(got) != 2 || got[0].Key != "owner" || got[1].Key != "repo" {
@@ -441,7 +441,7 @@ func TestParseActionConnectionAcceptsAQuotedAlias(t *testing.T) {
 		{`"forge-main"`, "forge-main"},
 		{`"main 2"`, "main 2"},
 	} {
-		res := parser.Parse("test.bot", "tool t:\n  action: p.r.v\n  connection: "+tc.written+"\n")
+		res := parser.ParseLenient("test.bot", "tool t:\n  action: p.r.v\n  connection: "+tc.written+"\n")
 		assertNoDiags(t, res)
 		if len(res.File.Tools) != 1 {
 			t.Fatalf("%s: expected 1 tool", tc.written)

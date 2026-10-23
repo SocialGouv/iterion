@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -22,7 +22,7 @@ workflow w:
   entry: emit
   emit -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parsertest.Parse("test.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %+v", res.Diagnostics)
 	}
@@ -32,7 +32,7 @@ workflow w:
 		t.Fatalf("unparse output missing env_expansion — `iterion fmt` would delete the declaration:\n%s", out)
 	}
 
-	res2 := parser.Parse("test.bot", out)
+	res2 := parsertest.Parse("test.bot", out)
 	if len(res2.Diagnostics) != 0 {
 		t.Fatalf("reparse diagnostics: %+v\nsource:\n%s", res2.Diagnostics, out)
 	}

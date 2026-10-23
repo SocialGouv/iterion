@@ -218,8 +218,8 @@ not enabled on this server`.
 |---|---|---|---|
 | `GET` | `/api/teams/{id}/bot-sources` | bot editor | List the team's bots (metadata only — file bodies omitted) |
 | `GET` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | One bot with its full file map |
-| `PUT` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Create or replace the whole bundle (`{files, version?}`) |
-| `PUT` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Per-file save (`{content, version?}`) |
+| `PUT` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Create or replace the whole bundle (`{files, version?, id?, stored_sha256?}`) |
+| `PUT` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Per-file save (`{content, version?, id?, stored_sha256?}`) |
 | `DELETE` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Delete one file (never `main.bot`) |
 | `DELETE` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Delete the bot |
 | `POST` | `/api/teams/{id}/bot-sources/{slug}/fork` | bot editor | Fork a baked catalog bot (`{from}`) into an editable copy |
@@ -234,7 +234,61 @@ holds such a key from before this rule is written again by deleting that file
 Every write **compiles the bundle before it persists** — a bot that fails to
 parse/compile is rejected `400 bot does not compile: <diagnostics>`, never
 left to fail at launch. A non-zero `version` is an optimistic if-match token
-(`409` if a concurrent editor advanced it); slug collisions are `409`. Source:
+(`409` if a concurrent editor advanced it); slug collisions are `409`.
+
+### The digest rule — what a read decided, a write carries
+
+`GET` on one bot answers, beside the files, `id`, `version` and
+`file_sha256` — per file, the digest of the bytes as answered. A write of an
+existing file presents back what that read issued: `version` and `id` name
+the bot (a bot deleted and re-created under the same slug is a NEW id, and a
+write pinned to the old one is `409`, never a replacement), and
+`stored_sha256` — per path on the whole-bundle `PUT`, the single file's own
+on the per-file `PUT` — must still be the digest of the stored file the
+write REPLACES or OMITS (an omission deletes), for EVERY file the write
+touches or drops — `manifest.yaml` and the bundle's other non-`.bot` files
+included, so an omission without that file's digest is a `409` naming it,
+never a silent deletion. A digest of other bytes, a
+missing one, or a missing `id` on an update is `409` naming what changed; a
+creation (no `version`) decides on the bot's absence and carries none; the
+per-file `DELETE` removes by name and needs no digest — pinned to a
+`version`, it presents `bot_id` like the `PUT`s do (a bot deleted and
+re-created takes no old client's delete); presented without a `version`,
+the id is still honored — the identity is judged and the freshest version
+is deleted — and with neither `version` nor `bot_id`, the delete stays
+last-write-wins. A write that deletes a manifest which declared
+`requires.iterion` is `409` too: the requirement dies with the file, and
+the push is told to push it with the manifest or force.
+
+Migration note: the version number used to be the whole claim, and
+`stored_sha256` was optional — a write was decided on a fresh fetch of the
+bundle, so two editors could still silently overwrite one another, and a bot
+deleted and re-created at the same version took an old client's write. The
+studio and `iterion remote admin bots push` were migrated in the same
+change; a custom client starts sending `id` and `stored_sha256` (both come
+from the same `GET` that already handed it the files) or receives `409` on
+every update of an existing bot — every file of it, the bundle's
+non-`.bot` files included.
+
+The same rule holds the workspace's own doors: a save of an existing file
+through `POST /api/files/save` (disk studio) presents `digest`, the sha256
+its open issued in the open response, and an open that did not read a file
+whole — past the read budget or the size cap, a file that is not UTF-8 —
+issues none, so no save decided from such an open can present one. The file
+door holds a save to the file's own whole read alone; a save through the
+bot's unit document is held to the read budget the bot's files share — a
+fragment whose own read passes while the shared budget refuses it lands
+through the file door, and the landed state is visible: the bot opens
+short, and the files the budget cut answer no digest. A
+document the server's reader refused opens with its `document` marked
+`{"salvage": "not read whole: <code>"}`, which every door that decodes a
+document refuses (`400`, `ast.ErrSalvage`) wherever it runs. `salvage` is
+reserved: a document carrying any key that case-folds to it at top level is
+refused as the display of a load not read whole (the match is Go's
+case-insensitive one, `Salvage` and unicode folds included); below the top
+level the word is a name like any other.
+
+Source:
 [pkg/server/bot_sources_routes.go](../pkg/server/bot_sources_routes.go),
 store [pkg/botsource/](../pkg/botsource/botsource.go).
 

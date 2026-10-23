@@ -2,12 +2,12 @@ package unparse_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -66,9 +66,9 @@ workflow w:
 func TestReferenceListsKeepQuotedValues(t *testing.T) {
 	values := []string{"allow:Read", "deny:run_command", "Bash(go test:*)", "git.*", "read_file", "true", "file-name", "two words", `quote"tick` + "`", "back\\slash", "line\nbreak"}
 	for _, profile := range []int{1, 2} {
-		for name := range referenceLists(parser.Parse("refs.bot", referenceWorkflow).File) {
+		for name := range referenceLists(parsertest.Parse("refs.bot", referenceWorkflow).File) {
 			t.Run(fmt.Sprintf("v%d/%s", profile, name), func(t *testing.T) {
-				p := parser.Parse("refs.bot", referenceWorkflow)
+				p := parsertest.Parse("refs.bot", referenceWorkflow)
 				if len(p.Diagnostics) != 0 {
 					t.Fatal(p.Diagnostics)
 				}
@@ -76,7 +76,7 @@ func TestReferenceListsKeepQuotedValues(t *testing.T) {
 				f.Profile = profile
 				*referenceLists(f)[name] = values
 				out := unparse.Unparse(f)
-				back := parser.Parse("refs.bot", out)
+				back := parsertest.Parse("refs.bot", out)
 				if len(back.Diagnostics) != 0 {
 					t.Fatalf("parse: %v\n%s", back.Diagnostics, out)
 				}
@@ -92,7 +92,7 @@ func TestReferenceListsKeepQuotedValues(t *testing.T) {
 }
 
 func TestReferenceListsKeepBareSpelling(t *testing.T) {
-	f := parser.Parse("refs.bot", referenceWorkflow).File
+	f := parsertest.Parse("refs.bot", referenceWorkflow).File
 	f.Agents[0].ToolPolicy = []string{"git.*", "read_file", "mcp.server.tool"}
 	if out := unparse.Unparse(f); !strings.Contains(out, "tool_policy: [git.*, read_file, mcp.server.tool]") {
 		t.Fatal(out)

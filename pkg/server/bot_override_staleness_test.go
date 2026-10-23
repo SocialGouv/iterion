@@ -94,7 +94,7 @@ func TestBotSourceListing_ReportsAnOverrideShadowingANewerBake(t *testing.T) {
 			botsource.MainBotFile: testBotMain,
 			"manifest.yaml":       "name: reviewer\nversion: " + version + "\n",
 		}
-		body, _ := json.Marshal(botSourcePutReq{Files: files})
+		body, _ := json.Marshal(botSourcePutReq{Files: files, ID: storedIDFor(s, edCtx, "reviewer"), StoredSHA256: storedDigestsFor(s, edCtx, "reviewer")})
 		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/reviewer", strings.NewReader(string(body))).WithContext(edCtx)
 		r.SetPathValue("id", "t1")
 		r.SetPathValue("slug", "reviewer")

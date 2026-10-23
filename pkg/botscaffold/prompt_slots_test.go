@@ -1,13 +1,12 @@
 package botscaffold
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // templateForShape is the gallery entry carrying shape.
@@ -66,7 +65,7 @@ func TestGalleryPayloadSlotsSurviveTheBlankLineDrop(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pr := parser.Parse("main.bot", string(src))
+		pr := parsertest.Parse("main.bot", string(src))
 		if len(pr.Diagnostics) != 0 {
 			t.Fatalf("%s: parse: %v", shape, pr.Diagnostics)
 		}

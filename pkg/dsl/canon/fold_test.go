@@ -2,6 +2,7 @@ package canon
 
 import (
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -52,7 +53,7 @@ func TestAValueItsAuthorWroteOnOneLineIsNotAFold(t *testing.T) {
 	if _, err := Bytes("flat.bot", []byte(src)); err != nil {
 		t.Fatalf("a value its author wrote on one line was refused: %v", err)
 	}
-	if _, _, folds := Folds("flat.bot", src, src); folds {
+	if _, _, folds, _ := Folds("flat.bot", src, src); folds {
 		t.Fatal("a file compared against itself folds nothing")
 	}
 }
@@ -64,7 +65,7 @@ func TestFoldsComparesTwoTextsAndNeedsABefore(t *testing.T) {
 	stored := "dsl: 2\n\ntool t:\n  description: \"a\"\n  command: `line one\nline two`\n"
 	folded := "dsl: 2\n\ntool t:\n  description: \"a\"\n  command: \"line one\\nline two\"\n"
 
-	line, size, folds := Folds("t.bot", stored, folded)
+	line, size, folds, _ := Folds("t.bot", stored, folded)
 	if !folds {
 		t.Fatal("a write that puts a stored multi-line value on one line was not seen")
 	}
@@ -74,12 +75,12 @@ func TestFoldsComparesTwoTextsAndNeedsABefore(t *testing.T) {
 	if size <= 0 {
 		t.Fatalf("size %d", size)
 	}
-	if _, _, folds := Folds("t.bot", "", folded); folds {
+	if _, _, folds, _ := Folds("t.bot", "", folded); folds {
 		t.Fatal("a file with no stored text folded something")
 	}
 	// The other direction is not a fold: a write that SPREADS a value over
 	// lines is the author un-folding it, which is what #1612 wants.
-	if _, _, folds := Folds("t.bot", folded, stored); folds {
+	if _, _, folds, _ := Folds("t.bot", folded, stored); folds {
 		t.Fatal("un-folding a value was refused")
 	}
 }
@@ -121,11 +122,11 @@ func TestEditingTheFoldedValueItselfIsStillAFold(t *testing.T) {
 	// The same file with the multi-line value EDITED into a shape the
 	// writer cannot keep over lines.
 	edited := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline two\\nhas a `backtick` now\"\n"
-	if _, _, folds := Folds("t.bot", stored, edited); !folds {
+	if _, _, folds, _ := Folds("t.bot", stored, edited); !folds {
 		t.Fatal("editing the value the writer folds made the fold invisible")
 	}
 	// And through the document path, which is what the studio's saves use.
-	pr := parser.Parse("t.bot", edited)
+	pr := parsertest.Parse("t.bot", edited)
 	if parseErrs(pr) != "" {
 		t.Fatalf("fixture: %s", parseErrs(pr))
 	}
@@ -135,7 +136,7 @@ func TestEditingTheFoldedValueItselfIsStillAFold(t *testing.T) {
 	// The control, so the test cannot pass on a predicate that refuses
 	// everything: the same edit keeping the value over its lines.
 	kept := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: `line one\nline two\nline three`\n"
-	if _, _, folds := Folds("t.bot", stored, kept); folds {
+	if _, _, folds, _ := Folds("t.bot", stored, kept); folds {
 		t.Fatal("an edit that keeps the value over its lines was called a fold")
 	}
 }
@@ -150,7 +151,7 @@ func TestTheLineNamedIsTheFilesOwn(t *testing.T) {
 	// The writer emits prompts, then schemas, then agents, then tools: a
 	// tool declared FIRST here comes back last.
 	src := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: `line one\nline two`\n\ntool flat:\n  description: \"has a `backtick`\\nand a newline\"\n\nprompt p:\n  a\n  b\n  c\n  d\n  e\n\nagent a:\n  system: p\n\nworkflow w:\n  entry: t\n  t -> flat\n  flat -> a\n  a -> done\n"
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	if parseErrs(pr) != "" {
 		t.Fatalf("fixture: %s", parseErrs(pr))
 	}
@@ -198,11 +199,11 @@ func mustText(t *testing.T, pr *parser.ParseResult) string {
 func TestAFileGetsItsOwnBytesBack(t *testing.T) {
 	// This repo's own fixture is that shape: a decoy the author wrote on
 	// one line, and a value spread over two.
-	if _, _, folds := Folds("decoy.bot", foldDecoyFirst, foldDecoyFirst); folds {
+	if _, _, folds, _ := Folds("decoy.bot", foldDecoyFirst, foldDecoyFirst); folds {
 		t.Fatal("a byte-identical write was called a fold")
 	}
 	withComment := foldDecoyFirst + "\n## a note\n"
-	if _, _, folds := Folds("decoy.bot", foldDecoyFirst, withComment); folds {
+	if _, _, folds, _ := Folds("decoy.bot", foldDecoyFirst, withComment); folds {
 		t.Fatal("a comment-only edit was called a fold")
 	}
 	// And the same file with the spread value deliberately folded IS one:
@@ -211,7 +212,7 @@ func TestAFileGetsItsOwnBytesBack(t *testing.T) {
 	if folded == foldDecoyFirst {
 		t.Fatal("the fixture did not change: the control cannot bite")
 	}
-	if _, _, folds := Folds("decoy.bot", foldDecoyFirst, folded); !folds {
+	if _, _, folds, _ := Folds("decoy.bot", foldDecoyFirst, folded); !folds {
 		t.Fatal("folding the spread value of a mixed file was not seen")
 	}
 }
@@ -221,13 +222,13 @@ func TestAFileGetsItsOwnBytesBack(t *testing.T) {
 // refuse the author's delete; the writer's form is what separates them.
 func TestDroppingADeclarationIsNotAFold(t *testing.T) {
 	stored := "tool a:\n  command: `one\ntwo`\n\ntool b:\n  command: `three\nfour`\n\nworkflow w:\n  entry: a\n  a -> b\n  b -> done\n"
-	pr := parser.Parse("p.bot", stored)
+	pr := parsertest.Parse("p.bot", stored)
 	if parseErrs(pr) != "" {
 		t.Fatalf("fixture: %s", parseErrs(pr))
 	}
 	// The same file with one tool removed, still written over its lines.
 	dropped := "tool a:\n  command: `one\ntwo`\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	if _, _, folds := Folds("p.bot", stored, dropped); folds {
+	if _, _, folds, _ := Folds("p.bot", stored, dropped); folds {
 		t.Fatal("removing a declaration was called a fold")
 	}
 }
@@ -244,14 +245,14 @@ func TestDeletingTheDeclarationThatHeldASpreadValueIsNotAFold(t *testing.T) {
 	stored := "dsl: 2\n\ntool a:\n  description: \"x\"\n  command: `one\ntwo`\n\ntool b:\n  description: \"y\"\n  command: `three\nfour`\n\ntool c:\n  description: \"z\"\n  command: \"five\\nsix\"\n"
 	// `tool b` removed; `tool a` is still written over its lines.
 	dropped := "dsl: 2\n\ntool a:\n  description: \"x\"\n  command: `one\ntwo`\n\ntool c:\n  description: \"z\"\n  command: \"five\\nsix\"\n"
-	if _, _, folds := Folds("m.bot", stored, dropped); folds {
+	if _, _, folds, _ := Folds("m.bot", stored, dropped); folds {
 		t.Fatal("deleting a declaration that held a spread value was called a fold")
 	}
 	// The control, so this cannot pass on a predicate that never refuses:
 	// the same file with every spread value folded — what the writer
 	// produces for it, all or nothing.
 	rendered := "dsl: 2\n\ntool a:\n  description: \"x\"\n  command: \"one\\ntwo\"\n\ntool b:\n  description: \"y\"\n  command: \"three\\nfour\"\n\ntool c:\n  description: \"z\"\n  command: \"five\\nsix\"\n"
-	line, _, folds := Folds("m.bot", stored, rendered)
+	line, _, folds, _ := Folds("m.bot", stored, rendered)
 	if !folds {
 		t.Fatal("a render that folds every spread value was not seen")
 	}
@@ -292,7 +293,7 @@ func TestTheWriterNeverMixesItsFormsInOneRender(t *testing.T) {
 				return nil
 			}
 			norm := rewrite.Normalize(raw)
-			pr := parser.Parse(p, norm.Text)
+			pr := parsertest.Parse(p, norm.Text)
 			if pr.File == nil || parseErrs(pr) != "" {
 				return nil
 			}
@@ -350,7 +351,7 @@ func TestTheWriterNeverMixesItsFormsInOneRender(t *testing.T) {
 		"profile 1, a spread value beside a flat one": "tool a:\n  command: `one\ntwo`\n\ntool b:\n  command: \"flat\"\n\nworkflow w:\n  entry: a\n  a -> b\n  b -> done\n",
 		"profile 2, a block scalar and a raw string":  "dsl: 2\n\ntool a:\n  command: |\n    echo one\n    echo two\n\ntool b:\n  command: `one\ntwo`\n\nworkflow w:\n  entry: a\n  a -> b\n  b -> done\n",
 	} {
-		pr := parser.Parse(name, src)
+		pr := parsertest.Parse(name, src)
 		if pr.File == nil || parseErrs(pr) != "" {
 			t.Fatalf("%s: fixture does not parse: %s", name, parseErrs(pr))
 		}
@@ -384,7 +385,7 @@ func TestTheWriterNeverMixesItsFormsInOneRender(t *testing.T) {
 		"profile 2, one value no form carries":     "dsl: 2\n\ntool t:\n  command: \"has a `backtick`\\nand a newline\"\n\nworkflow w:\n  entry: t\n  t -> done\n",
 		"profile 2, a spread value folded with it": "dsl: 2\n\ntool t:\n  command: `one\ntwo`\n\ntool u:\n  command: \"has a `backtick`\\nand a newline\"\n\nworkflow w:\n  entry: t\n  t -> u\n  u -> done\n",
 	} {
-		pr := parser.Parse(name, src)
+		pr := parsertest.Parse(name, src)
 		if pr.File == nil || parseErrs(pr) != "" {
 			t.Fatalf("%s: fixture does not parse: %s", name, parseErrs(pr))
 		}
@@ -409,4 +410,34 @@ func TestTheWriterNeverMixesItsFormsInOneRender(t *testing.T) {
 		withFolded++
 	}
 	t.Logf("%d shipped files rendered: %d carry a folded value, none carry both; %d fixtures carry a spread value, none carry both", scanned, withFolded, withSpread)
+}
+
+// A text the reader refuses whole — past the read budget or the size cap —
+// is one refusal, no value: Folds cannot tell whether the write folds a
+// value of it, and says so, where reading "nothing spread" off the refusal
+// let a stored file past the budget take a fold. Every write path refuses
+// on that (fail closed); the canonical form does.
+func TestFoldsCannotTellPastABound(t *testing.T) {
+	stored := "dsl: 2\n\ntool t:\n  description: \"a\"\n  command: `line one\nline two`\n" + strings.Repeat("tool u:\n  description: \"a\"\n  command: \"b\"\n", 40)
+	folded := "dsl: 2\n\ntool t:\n  description: \"a\"\n  command: \"line one\\nline two\"\n"
+	t.Setenv("ITERION_DSL_READ_BUDGET", "")
+	if _, _, folds, err := Folds("t.bot", stored, folded); err != nil || !folds {
+		t.Fatalf("within the budget the fold is told: folds=%v err=%v", folds, err)
+	}
+	// A document whose render folds (the decoy's), and the file it is
+	// written over, stored past the budget the server reads it on now.
+	decoy := parsertest.Parse("decoy.bot", foldDecoyFirst).File
+	storedDecoy := foldDecoyFirst + strings.Repeat("\ntool u:\n  description: \"a\"\n  command: \"b\"\n", 40)
+	t.Setenv("ITERION_DSL_READ_BUDGET", "64")
+	_, _, folds, err := Folds("t.bot", stored, folded)
+	if err == nil || folds || !strings.Contains(err.Error(), "the stored text is not read") || !strings.Contains(err.Error(), "past the read budget of 64") {
+		t.Fatalf("stored past the budget: folds=%v err=%v, want the error naming the stored text and its refusal", folds, err)
+	}
+	_, _, folds, err = Folds("t.bot", "", stored)
+	if err == nil || folds || !strings.Contains(err.Error(), "the incoming text is not read") {
+		t.Fatalf("incoming past the budget: folds=%v err=%v, want the error naming the incoming text", folds, err)
+	}
+	if _, err := Text("decoy.bot", decoy, []byte(storedDecoy)); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "cannot be told") {
+		t.Fatalf("the canonical form over a stored file past the budget: %v, want the refusal saying it cannot tell", err)
+	}
 }

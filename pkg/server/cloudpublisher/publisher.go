@@ -4755,13 +4755,25 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 	// files beside its source: an import it carries is refused here, with
 	// the remedy, rather than compiled on the pod with its pieces missing.
 	var u *unit.Unit
+	var loadErr error
 	if bundleDir != "" || source == "" {
-		u = unit.LoadDirWithMain(parserPath, parserPath, []byte(src))
+		u, loadErr = unit.LoadDirWithMain(parserPath, parserPath, []byte(src))
 	} else {
-		u = unit.LoadMap(map[string]string{parserPath: src}, parserPath)
-		if len(u.Files) > 0 && u.Files[0].AST != nil && len(u.Files[0].AST.Imports) > 0 {
+		u, loadErr = unit.LoadMap(map[string]string{parserPath: src}, parserPath)
+		if loadErr == nil && len(u.Files) > 0 && u.Files[0].AST != nil && len(u.Files[0].AST.Imports) > 0 {
 			return nil, fmt.Errorf("cloudpublisher: %w — launch the bot as a bundle", runview.ErrInlineImport)
 		}
+	}
+	var short *unit.ShortError
+	if errors.As(loadErr, &short) {
+		// A load a bound cut short, a file no text the reader reads, or a
+		// fragment there and not read: nothing is published of what was
+		// read. The refusal is the client's — its root cut first.
+		short.RelDiagnostics()
+		return nil, fmt.Errorf("cloudpublisher: parse %s: %w", unit.RelTextRoot(short.Root(), parserPath), loadErr)
+	}
+	if loadErr != nil {
+		return nil, fmt.Errorf("cloudpublisher: parse %s: %w", parserPath, loadErr)
 	}
 	// The refusal below crosses to the client as the 400 body `launch: %v`:
 	// a disk-loaded unit's diagnostics are cut to the unit's relative names

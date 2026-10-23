@@ -42,11 +42,14 @@ func Write(f *ast.File) ([]byte, error) {
 // that path is not carried; Comments of the two texts says which, and a
 // caller that must not lose one compares them.
 func WriteKeepingComments(f *ast.File, src []byte) ([]byte, error) {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(src, &doc); err != nil {
+	doc, _, err := readFirst(src)
+	if err != nil {
 		return nil, fmt.Errorf("author: the document's comments cannot be read: %w", err)
 	}
-	return write(f, &doc)
+	if doc == nil {
+		doc = &yaml.Node{}
+	}
+	return write(f, doc)
 }
 
 // write renders f, with the comments of the document from when it is not nil.
@@ -456,7 +459,7 @@ func frontmatterOf(f *ast.File) *yaml.Node {
 	if !block.Found || !block.Closed {
 		return nil
 	}
-	fm, _, err := workflowfile.DecodeFrontmatter(strings.Join(block.Lines, "\n"))
+	fm, _, err := workflowfile.DecodeFrontmatter(strings.Join(block.Lines, "\n"), parser.ReadBudget())
 	if err != nil {
 		return nil
 	}

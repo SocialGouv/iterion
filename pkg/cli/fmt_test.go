@@ -5,13 +5,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -71,7 +71,7 @@ func TestFmtWritesTheCanonicalTextOnce(t *testing.T) {
 		t.Fatalf("outcome %+v", res.Files)
 	}
 	got, _ := os.ReadFile(path)
-	want := unparse.Unparse(parser.Parse(path, looseBot).File)
+	want := unparse.Unparse(parsertest.Parse(path, looseBot).File)
 	if string(got) != want {
 		t.Fatalf("the file is not the writer's text:\n%s\n--- want ---\n%s", got, want)
 	}

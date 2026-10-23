@@ -2,6 +2,7 @@ package unparse_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -66,7 +67,7 @@ workflow main:
 // fixture names eleven other places, and dropping any of them reddens here
 // on the diff of that line.
 func TestEveryCommentPositionSurvivesTheWriter(t *testing.T) {
-	pr := parser.Parse("positions.bot", commentPositions)
+	pr := parsertest.Parse("positions.bot", commentPositions)
 	assertNoErrors(t, pr)
 	got := unparse.Unparse(pr.File)
 	if got != commentPositions {
@@ -81,7 +82,7 @@ func TestEveryCommentPositionSurvivesTheWriter(t *testing.T) {
 // the studio sends back — the document a save is actually written from. A
 // comment the transport drops, or whose address it loses, moves the text.
 func TestEveryCommentPositionSurvivesTheTransport(t *testing.T) {
-	pr := parser.Parse("positions.bot", commentPositions)
+	pr := parsertest.Parse("positions.bot", commentPositions)
 	assertNoErrors(t, pr)
 	raw, err := ast.MarshalFile(pr.File)
 	if err != nil {
@@ -101,7 +102,7 @@ func TestEveryCommentPositionSurvivesTheTransport(t *testing.T) {
 // declaration they were written around, not in one flat list at the file's
 // head — which is what makes them survive an edit that moves a declaration.
 func TestCommentsAreOnTheirDeclaration(t *testing.T) {
-	pr := parser.Parse("positions.bot", commentPositions)
+	pr := parsertest.Parse("positions.bot", commentPositions)
 	assertNoErrors(t, pr)
 	f := pr.File
 	head := commentTextsOf(f.Comments, ast.CommentBefore)
@@ -137,7 +138,7 @@ func TestCommentsAreOnTheirDeclaration(t *testing.T) {
 // property a comment led. The comment is not dropped — it is written at the
 // end of the block it was in, and the text still says what it said.
 func TestACommentWhoseAnchorIsGoneStaysInItsDeclaration(t *testing.T) {
-	pr := parser.Parse("x.bot", commentPositions)
+	pr := parsertest.Parse("x.bot", commentPositions)
 	assertNoErrors(t, pr)
 	f := pr.File
 	f.Agents[0].Sandbox = nil // the block LEADS-SANDBOX and its two ENDS named
@@ -147,7 +148,7 @@ func TestACommentWhoseAnchorIsGoneStaysInItsDeclaration(t *testing.T) {
 			t.Errorf("%q was dropped with the block it named:\n%s", want, out)
 		}
 	}
-	back := parser.Parse("x.bot", out)
+	back := parsertest.Parse("x.bot", out)
 	assertNoErrors(t, back)
 	if got := len(back.File.Agents[0].Comments); got != len(f.Agents[0].Comments) {
 		t.Fatalf("the agent carries %d comments after the rewrite, %d before", got, len(f.Agents[0].Comments))
@@ -163,7 +164,7 @@ func TestACommentWhoseAnchorIsGoneStaysInItsDeclaration(t *testing.T) {
 // out, so a save dropped every comment inside a declaration and reported
 // success.
 func TestVerifySeesACommentLost(t *testing.T) {
-	pr := parser.Parse("x.bot", commentPositions)
+	pr := parsertest.Parse("x.bot", commentPositions)
 	assertNoErrors(t, pr)
 	text := unparse.Unparse(pr.File)
 	lost := removeLine(text, "## LEADS-MODEL")
@@ -184,7 +185,7 @@ func TestVerifySeesACommentLost(t *testing.T) {
 // which is the shape of the defect #1282 named, every comment hoisted to
 // the file's head.
 func TestACommentMovedToAnotherDeclarationIsRefused(t *testing.T) {
-	pr := parser.Parse("x.bot", commentPositions)
+	pr := parsertest.Parse("x.bot", commentPositions)
 	assertNoErrors(t, pr)
 	text := unparse.Unparse(pr.File)
 	moved := strings.Replace(text, "  ## LEADS-MODEL\n", "", 1)
@@ -227,7 +228,7 @@ func TestAHumanNodeKeepsWhatItsInteractionSays(t *testing.T) {
 		"a mode that is not the default":    {bot("  interaction: human_or_host\n", ""), "interaction: human_or_host"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			pr := parser.Parse("h.bot", tc.src)
+			pr := parsertest.Parse("h.bot", tc.src)
 			assertNoErrors(t, pr)
 			first := unparse.Unparse(pr.File)
 			if err := unparse.Verify(pr.File, first); err != nil {
@@ -241,7 +242,7 @@ func TestAHumanNodeKeepsWhatItsInteractionSays(t *testing.T) {
 			if tc.want != "" && !has {
 				t.Fatalf("the writer dropped %q:\n%s", tc.want, first)
 			}
-			again := parser.Parse("h.bot", first)
+			again := parsertest.Parse("h.bot", first)
 			assertNoErrors(t, again)
 			if second := unparse.Unparse(again.File); second != first {
 				t.Fatalf("the writer is not a fixed point on a human node:\n%s", lineDiff(first, second))
@@ -559,7 +560,7 @@ workflow main:
 `,
 	} {
 		t.Run(name, func(t *testing.T) {
-			pr := parser.Parse("x.bot", src)
+			pr := parsertest.Parse("x.bot", src)
 			assertNoErrors(t, pr)
 			got := unparse.Unparse(pr.File)
 			if got != src {
@@ -613,7 +614,7 @@ workflow main:
   ## SECOND-MAIN-EDGE
   a -> done
 `
-	pr := parser.Parse("x.bot", src)
+	pr := parsertest.Parse("x.bot", src)
 	for _, w := range pr.File.Workflows {
 		for _, e := range w.Edges {
 			if len(e.Comments) > 0 {
@@ -702,7 +703,7 @@ func TestTheWriterKeepsCommentsWhenItRewritesTheText(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			pr := parser.Parse("x.bot", tc.src)
+			pr := parsertest.Parse("x.bot", tc.src)
 			assertNoErrors(t, pr)
 			out := unparse.Unparse(pr.File)
 			if err := unparse.Verify(pr.File, out); err != nil {
@@ -725,7 +726,7 @@ func TestTheWriterKeepsCommentsWhenItRewritesTheText(t *testing.T) {
 				at += j + len(w)
 			}
 			// …and what the writer wrote reads back the same way.
-			again := parser.Parse("x.bot", out)
+			again := parsertest.Parse("x.bot", out)
 			assertNoErrors(t, again)
 			if twice := unparse.Unparse(again.File); twice != out {
 				t.Fatalf("not a fixed point:\n%s", lineDiff(out, twice))
@@ -757,7 +758,7 @@ workflow demo:
 
   a -> done
 `
-	pr := parser.Parse("x.bot", src)
+	pr := parsertest.Parse("x.bot", src)
 	assertNoErrors(t, pr)
 	w := pr.File.Workflows[0]
 	w.Comments = []*ast.Comment{{Text: "ABOUT-THE-ENTRY", Anchor: "entry", Place: ast.CommentAtEnd}}
@@ -768,7 +769,7 @@ workflow demo:
 	if !strings.Contains(out, "  ## ABOUT-THE-ENTRY\n  entry: a\n") {
 		t.Fatalf("the comment is not above the line it names:\n%s", out)
 	}
-	again := parser.Parse("x.bot", out)
+	again := parsertest.Parse("x.bot", out)
 	assertNoErrors(t, again)
 	if twice := unparse.Unparse(again.File); twice != out {
 		t.Fatalf("not a fixed point:\n%s", lineDiff(out, twice))
@@ -801,7 +802,7 @@ workflow w:
   entry: a
   a -> done
 `
-	pr := parser.Parse("d.bot", src)
+	pr := parsertest.Parse("d.bot", src)
 	assertNoErrors(t, pr)
 	if len(pr.File.Comments) != 1 {
 		t.Fatalf("the fixture no longer carries the directive on a declaration: head=%d", len(pr.File.Comments))
@@ -813,7 +814,7 @@ workflow w:
 	if !strings.HasPrefix(out, "## strict-escape: on\n") {
 		t.Fatalf("the directive is not at the head, where the lexer reads it:\n%s", out)
 	}
-	again := parser.Parse("d.bot", out)
+	again := parsertest.Parse("d.bot", out)
 	assertNoErrors(t, again)
 	if twice := unparse.Unparse(again.File); twice != out {
 		t.Fatalf("not a fixed point:\n%s", lineDiff(out, twice))
@@ -859,7 +860,7 @@ workflow w:
   entry: g
   g -> done
 `
-	pr := parser.Parse("c.bot", src)
+	pr := parsertest.Parse("c.bot", src)
 	assertNoErrors(t, pr)
 	out := unparse.Unparse(pr.File)
 	if err := unparse.Verify(pr.File, out); err != nil {

@@ -32,7 +32,10 @@ var ErrRefused = errors.New("canonical form refused")
 // and unparse.Verify compares them (#1282).
 func Bytes(name string, src []byte) ([]byte, error) {
 	norm := rewrite.Normalize(src)
-	pr := parser.Parse(name, norm.Text)
+	pr, err := parser.Parse(name, norm.Text)
+	if err != nil {
+		return nil, fmt.Errorf("%w: is not read: %v", ErrRefused, err)
+	}
 	if errs := diagnosticsOf(pr.Diagnostics, parser.SeverityError); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: does not parse: %s", ErrRefused, strings.Join(errs, "; "))
 	}
@@ -73,7 +76,11 @@ func Text(name string, f *ast.File, src []byte) (string, error) {
 	if err := unparse.Verify(f, text); err != nil {
 		return "", err
 	}
-	if line, size, folds := Folds(name, string(src), text); folds {
+	line, size, folds, err := Folds(name, string(src), text)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrRefused, err)
+	}
+	if folds {
 		return "", fmt.Errorf("%w: the value at line %d is written over several lines and the writer has no form for one — its %d characters would come back as a single line (#1612)", ErrRefused, line, size)
 	}
 	return text, nil
@@ -102,42 +109,60 @@ func Text(name string, f *ast.File, src []byte) (string, error) {
 // catch is an author folding one value while spreading another in the same
 // write; what it will not do is refuse a file its own bytes back, or
 // refuse a declaration being deleted.
-func Folds(name, stored, incoming string) (line, size int, folds bool) {
-	if !foldsSomething(name, incoming) {
-		return 0, 0, false
+//
+// It cannot tell when the reader refuses a text it needs whole — past the
+// size cap or the read budget, its token stream is that one refusal — and
+// says so in err rather than read "nothing spread" off a stream that holds
+// no value at all: a write path refuses on err (fail closed).
+func Folds(name, stored, incoming string) (line, size int, folds bool, err error) {
+	in, err := valuesOf(name, "incoming", incoming)
+	if err != nil {
+		return 0, 0, false, err
 	}
-	if _, _, after := spreadValues(name, incoming); after > 0 {
-		return 0, 0, false
+	if !in.folded || in.spread > 0 {
+		return 0, 0, false, nil
 	}
-	line, size, before := spreadValues(name, stored)
-	if before == 0 {
-		return 0, 0, false
+	was, err := valuesOf(name, "stored", stored)
+	if err != nil {
+		return 0, 0, false, err
 	}
-	return line, size, true
+	if was.spread == 0 {
+		return 0, 0, false, nil
+	}
+	return was.line, was.size, true, nil
 }
 
-// spreadValues counts the values text writes over SEVERAL lines, and gives
-// the line and length of the first.
-func spreadValues(name, text string) (line, size, n int) {
-	for _, t := range parser.NewLexer(name, text).All() {
-		if t.Type != parser.TokenString || t.EndLine <= t.Line {
+// values is what Folds reads of one text: whether it writes a value holding
+// a newline on ONE line (folded), how many values it writes over SEVERAL
+// lines (spread), and the line and length of the first of those.
+type values struct {
+	folded     bool
+	spread     int
+	line, size int
+}
+
+// valuesOf reads text's values for Folds; which names the text in the
+// error that says the reader refused it whole.
+func valuesOf(name, which, text string) (values, error) {
+	l := parser.NewLexer(name, text)
+	toks := l.All()
+	if l.Refused() != parser.BoundNone {
+		return values{}, fmt.Errorf("whether the write folds a value written over several lines cannot be told: the %s text is not read (%s)", which, toks[0].Value)
+	}
+	var v values
+	for _, t := range toks {
+		if t.Type != parser.TokenString {
 			continue
 		}
-		if n == 0 {
-			line, size = t.Line, t.End-t.Offset
-		}
-		n++
-	}
-	return line, size, n
-}
-
-// foldsSomething reports whether text writes a value holding a newline on
-// ONE line.
-func foldsSomething(name, text string) bool {
-	for _, t := range parser.NewLexer(name, text).All() {
-		if t.Type == parser.TokenString && strings.Contains(t.Value, "\n") && t.EndLine == t.Line {
-			return true
+		switch {
+		case t.EndLine > t.Line:
+			if v.spread == 0 {
+				v.line, v.size = t.Line, t.End-t.Offset
+			}
+			v.spread++
+		case strings.Contains(t.Value, "\n"):
+			v.folded = true
 		}
 	}
-	return false
+	return v, nil
 }

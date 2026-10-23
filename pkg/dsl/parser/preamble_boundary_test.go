@@ -18,7 +18,7 @@ func TestTheDirectiveWindowEndsWhereItAlwaysDid(t *testing.T) {
 	if pre := ReadPreamble(thirtyOne + "## strict-escape: on\ntool t:\n  command: \"a\\nb\"\n"); pre.StrictEscape {
 		t.Fatalf("a directive on line 32 followed by code was never read — the rule is frozen")
 	}
-	res := Parse("x.bot", thirtyOne+"## strict-escape: on\ntool t:\n  command: \"a\\nb\"\n")
+	res := parseLenient("x.bot", thirtyOne+"## strict-escape: on\ntool t:\n  command: \"a\\nb\"\n")
 	if got := res.File.Tools[0].Command; got != `a\nb` {
 		t.Fatalf("command read as %q under a line-32 directive followed by code", got)
 	}

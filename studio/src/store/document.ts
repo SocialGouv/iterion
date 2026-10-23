@@ -20,6 +20,7 @@ import type {
   Edge,
   Comment,
   UnitInfo,
+  ReadRefusal,
 } from "@/api/types";
 import type { DiagnosticIssue } from "@/api/client";
 import { createEmptyDocument, getAllNodeNames, getAllSchemaNames, getAllPromptNames, findNodeDecl } from "@/lib/defaults";
@@ -171,6 +172,18 @@ export interface DocumentState {
    *  over what the author wrote. Cleared by a parse of the buffer that comes
    *  back whole. */
   salvaged: boolean;
+  /** Why `salvaged`, when a bound of the server's reader made the document
+   *  a salvage — the read budget the bot's files share, or a file's size
+   *  cap — rather than its text: the remedy is then the server's dial, not
+   *  an edit (ReadRefusal). Null otherwise; it travels with `salvaged`. */
+  readRefusal: ReadRefusal | null;
+  /** The digest the open issued for THIS file (the digest rule): what the
+   *  save presents so a concurrent edit is a conflict, never an overwrite.
+   *  Null for a refused open (no whole read, no digest), a unit (its files
+   *  carry their own), and a cloud bot source (client.ts holds the opened
+   *  bundle). Cleared with the path. */
+  openedDigest: string | null;
+  setOpenedDigest: (digest: string | null) => void;
   /** True once the path was SET to null — File → New, Import, Start blank:
    *  the document follows no file. A fresh store's null path is not that:
    *  it means "not resolved yet", and a tab keeps the file param its load is
@@ -228,7 +241,9 @@ export interface DocumentState {
   setDocument: (doc: IterDocument) => void;
   setDiagnostics: (d: string[], w?: string[], issues?: DiagnosticIssue[]) => void;
   setCurrentFilePath: (path: string | null) => void;
-  setSalvaged: (salvaged: boolean) => void;
+  /** Sets the salvage verdict and, for one a bound of the reader made, its
+   *  refusal: the two travel together, a cleared verdict clearing both. */
+  setSalvaged: (salvaged: boolean, readRefusal?: ReadRefusal | null) => void;
   setCurrentSource: (source: string | null) => void;
   setUnit: (unit: UnitInfo | null) => void;
   setSourceBuffer: (buffer: SourceBuffer | null) => void;
@@ -434,6 +449,8 @@ export function createDocumentStore() {
   issues: [],
   currentFilePath: null,
   salvaged: false,
+  openedDigest: null,
+  readRefusal: null,
   detached: false,
   currentSource: null,
   unit: null,
@@ -460,10 +477,11 @@ export function createDocumentStore() {
   // about this one, so the flag is dropped with the unit. A null path here is
   // a detachment — told apart from a fresh store's null by `detached`.
   setCurrentFilePath: (currentFilePath) =>
-    set({ currentFilePath, unit: null, salvaged: false, sourceBuffer: null, detached: currentFilePath === null }),
-  setSalvaged: (salvaged) => set({ salvaged }),
+    set({ currentFilePath, unit: null, salvaged: false, readRefusal: null, openedDigest: null, sourceBuffer: null, detached: currentFilePath === null }),
+  setSalvaged: (salvaged, readRefusal = null) => set({ salvaged, readRefusal: salvaged ? readRefusal : null }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   setUnit: (unit) => set({ unit }),
+  setOpenedDigest: (openedDigest) => set({ openedDigest }),
   setSourceBuffer: (sourceBuffer) => set({ sourceBuffer }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),
   beginReplace: () => {

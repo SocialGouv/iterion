@@ -15,7 +15,7 @@ func TestParseFrontmatterAcceptsSingleHashComments(t *testing.T) {
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
-			fm := ParseFrontmatter([]byte(src))
+			fm := testFrontmatter(t, []byte(src))
 			if fm == nil {
 				t.Fatal("no frontmatter parsed")
 			}
@@ -27,13 +27,24 @@ func TestParseFrontmatterAcceptsSingleHashComments(t *testing.T) {
 			}
 		})
 	}
-	if ParseFrontmatter([]byte("workflow w:\n  entry: a\n")) != nil {
+	if testFrontmatter(t, []byte("workflow w:\n  entry: a\n")) != nil {
 		t.Error("a file without a fence has no frontmatter")
 	}
 	// The block still has to be the first thing in the file: a comment above
 	// the fence, of either hash count, means "no frontmatter" — the same rule
 	// as before, now applied evenly.
-	if ParseFrontmatter([]byte("# a note\n## ---\n## name: Alpha Bot\n## ---\n")) != nil {
+	if testFrontmatter(t, []byte("# a note\n## ---\n## name: Alpha Bot\n## ---\n")) != nil {
 		t.Error("a comment above the fence must not be read as a frontmatter block")
 	}
+}
+
+// testFrontmatter is ParseFrontmatter of a text whose block the reader
+// reads: a refusal fails the test.
+func testFrontmatter(t testing.TB, raw []byte) *Frontmatter {
+	t.Helper()
+	fm, err := ParseFrontmatter("main.bot", raw)
+	if err != nil {
+		t.Fatalf("the frontmatter is refused: %v", err)
+	}
+	return fm
 }

@@ -18,7 +18,7 @@ func TestImportsAreReadAtTheHeadOfTheFile(t *testing.T) {
 		"after frontmatter": "## ---\n## name: x\n## ---\ndsl: 2\n\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := Parse("x.bot", head+body)
+			res := parseLenient("x.bot", head+body)
 			if len(res.Diagnostics) != 0 {
 				t.Fatalf("diagnostics: %v", res.Diagnostics)
 			}
@@ -47,7 +47,7 @@ func TestAnImportAfterADeclarationIsRefused(t *testing.T) {
 		"vars:\n  x: string\nimport \"lib/x.bot\"\n",
 		"dsl: 2\nprompt p:\n  Text.\n\nimport \"lib/x.bot\"\n",
 	} {
-		res := Parse("x.bot", src)
+		res := parseLenient("x.bot", src)
 		if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagMisplacedImport {
 			t.Fatalf("%q: diagnostics %v", src, res.Diagnostics)
 		}
@@ -76,7 +76,7 @@ func TestAnImportPathIsHeldToItsRules(t *testing.T) {
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
-			res := Parse("x.bot", "dsl: 2\n"+src+"agent a:\n  description: \"d\"\n")
+			res := parseLenient("x.bot", "dsl: 2\n"+src+"agent a:\n  description: \"d\"\n")
 			var codes []DiagCode
 			for _, d := range res.Diagnostics {
 				codes = append(codes, d.Code)
@@ -102,7 +102,7 @@ func TestAnImportPathIsHeldToItsRules(t *testing.T) {
 	}
 	// The fragment door folds its case (#1762), one rule with bundle.Detect:
 	// a fragment the launcher takes by name is one the import takes too.
-	res := Parse("x.bot", "dsl: 2\nimport \"lib/X.BOT\"\nagent a:\n  description: \"d\"\n")
+	res := parseLenient("x.bot", "dsl: 2\nimport \"lib/X.BOT\"\nagent a:\n  description: \"d\"\n")
 	for _, d := range res.Diagnostics {
 		if d.Code == DiagBadImportPath {
 			t.Fatalf("an upper-case fragment refused where the launcher takes it: %v", d)
@@ -119,7 +119,7 @@ func TestAnImportPathIsHeldToItsRules(t *testing.T) {
 // `import` is a keyword like `dsl`: a node, a schema field or a property may
 // still be named so, since names are read through tokenAsIdent.
 func TestImportIsAKeywordUsableAsAName(t *testing.T) {
-	res := Parse("x.bot", "schema s:\n  import: string\n\nagent import:\n  description: \"d\"\n  input: s\n\nworkflow w:\n  entry: import\n  import -> done\n")
+	res := parseLenient("x.bot", "schema s:\n  import: string\n\nagent import:\n  description: \"d\"\n  input: s\n\nworkflow w:\n  entry: import\n  import -> done\n")
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("diagnostics: %v", res.Diagnostics)
 	}
@@ -133,7 +133,7 @@ func TestImportIsAKeywordUsableAsAName(t *testing.T) {
 // applied — the file was read as profile 1 — and the parser says so (E041)
 // rather than record a profile the strings above it never got.
 func TestTheHeaderPrecedesTheImports(t *testing.T) {
-	res := Parse("x.bot", "import \"lib/x.bot\"\ndsl: 2\n\nagent a:\n  description: \"d\"\n")
+	res := parseLenient("x.bot", "import \"lib/x.bot\"\ndsl: 2\n\nagent a:\n  description: \"d\"\n")
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagMisplacedHeader || !strings.Contains(res.Diagnostics[0].Message, "import") {
 		t.Fatalf("diagnostics %v", res.Diagnostics)
 	}
@@ -149,7 +149,7 @@ func TestTheHeaderPrecedesTheImports(t *testing.T) {
 // nowhere, still put a header below it out of the lexer's reach — and a
 // header twice, an import between, is named as a duplicate.
 func TestTheHeaderPrecedesEvenAMalformedImport(t *testing.T) {
-	res := Parse("x.bot", "import \"../x.bot\"\ndsl: 2\n\ntool t:\n  command: \"a\\nb\"\n")
+	res := parseLenient("x.bot", "import \"../x.bot\"\ndsl: 2\n\ntool t:\n  command: \"a\\nb\"\n")
 	codes := map[DiagCode]bool{}
 	for _, d := range res.Diagnostics {
 		codes[d.Code] = true
@@ -160,7 +160,7 @@ func TestTheHeaderPrecedesEvenAMalformedImport(t *testing.T) {
 	if res.File.Profile != 0 || res.File.Tools[0].Command != "a\\nb" {
 		t.Fatalf("the AST claims profile %d for a file read as profile 1 (command %q)", res.File.Profile, res.File.Tools[0].Command)
 	}
-	res = Parse("x.bot", "dsl: 2\nimport \"lib/x.bot\"\ndsl: 2\n\nagent a:\n  description: \"d\"\n")
+	res = parseLenient("x.bot", "dsl: 2\nimport \"lib/x.bot\"\ndsl: 2\n\nagent a:\n  description: \"d\"\n")
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagMisplacedHeader || !strings.Contains(res.Diagnostics[0].Message, "duplicate") || res.File.Profile != 2 {
 		t.Fatalf("a duplicate header below an import: %v (profile %d)", res.Diagnostics, res.File.Profile)
 	}

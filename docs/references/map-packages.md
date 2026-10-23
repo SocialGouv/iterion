@@ -37,6 +37,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/hometest` | keeps a test binary off the operator's homes: the iterion home (ITERION_HOME) and the user home (HOME). | — |
 | `internal/httpx` | provides the shared JSON request/response helpers used by iterion's HTTP handlers. | — |
 | `internal/mdcode` | answers one question about markdown: which of its bytes are code. | — |
+| `internal/modtypes` | type-checks this module's packages as the compiler sees them, for the guard tests that hold a rule over the whole tree: which code references a door,… | — |
 | `internal/pricingtest` | isolates a test binary from the host's live model prices. | — |
 | `internal/proctest` | checks OS resources owned by a test binary. | — |
 | `internal/retryprobetest` | models the durable retry row the usage-window pull-forward probe acts on, so the real decision code of pkg/runner and pkg/server can be driven over… | — |
@@ -131,9 +132,11 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/dsl/ir` | defines the canonical Intermediate Representation (IR) produced by compiling an AST. | `LLMNode`, `Node`, `WithNode` |
 | `pkg/dsl/migrate` | rewrites a `.bot` file from syntax profile 1 to profile 2 (ADR-098) surgically: only the bytes whose MEANING changes between the two profiles are… | — |
 | `pkg/dsl/parser` | — | — |
+| `pkg/dsl/parser/parsertest` | how a test outside pkg/dsl/parser reads a source in one value: the strict reading (parser.Parse). | — |
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — |
 | `pkg/dsl/types` | defines shared enum types used by both the AST and IR packages. | — |
 | `pkg/dsl/unit` | loads a bot's compilation unit: its main file and the fragments the file imports, transitively, merged into one ast.File (ADR-098 §3). | — |
+| `pkg/dsl/unit/unittest` | how a test outside pkg/dsl/unit takes a loader's two answers as one unit: the whole load. | — |
 | `pkg/dsl/unparse` | converts an ast.File back into .bot DSL text. | — |
 | `pkg/dsl/workflowfile` | the single source of truth for which file extensions iterion recognises as workflow source files. | — |
 | `pkg/errtrack` | iterion's optional error-tracking seam. | — |

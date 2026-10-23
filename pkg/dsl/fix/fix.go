@@ -333,7 +333,13 @@ func Bytes(name string, src []byte) (*Result, error) {
 	res := &Result{Name: name, Original: src, Fixed: src}
 	norm := rewrite.Normalize(src)
 	mainPath, rel := unitOf(name)
-	before := unit.LoadDirStaged(mainPath, map[string][]byte{rel: src})
+	before, err := unit.LoadDirStaged(mainPath, map[string][]byte{rel: src})
+	if err != nil {
+		// The bot is not read whole — past the read budget its files share,
+		// or a file past the size cap: nothing of it is fixed, and the
+		// remedy is the reader's, not an edit of this file.
+		return nil, fmt.Errorf("%w: %s's bot is not read whole (%v)", ErrRefused, name, err)
+	}
 	if errs := parseErrors(before.Diagnostics); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: %s does not parse — fix it first: %s", ErrRefused, name, strings.Join(errs, "; "))
 	}
@@ -407,7 +413,10 @@ func Bytes(name string, src []byte) (*Result, error) {
 
 	// The proof: the fixed text parses, and the unit compiles to the same
 	// diagnostics of this file minus the ones fixed — nothing else moved.
-	after := unit.LoadDirStaged(mainPath, map[string][]byte{rel: res.Fixed})
+	after, err := unit.LoadDirStaged(mainPath, map[string][]byte{rel: res.Fixed})
+	if err != nil {
+		return nil, fmt.Errorf("%w: the fixed %s's bot is not read whole (%v)", ErrRefused, name, err)
+	}
 	if errs := parseErrors(after.Diagnostics); len(errs) > 0 || after.Merged == nil {
 		return nil, fmt.Errorf("%w: the fixed %s does not parse (a defect of the fix, not of the file): %s", ErrRefused, name, strings.Join(errs, "; "))
 	}

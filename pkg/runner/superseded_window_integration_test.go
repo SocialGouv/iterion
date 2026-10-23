@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"sync"
 	"testing"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -64,7 +64,7 @@ func windowAttempt(t *testing.T, conn *natsq.Conn, fs store.RunStore) *queue.Run
 	if ok, err := fs.UpdateRunOutcome(ctx, runID, store.RunStatusFailedResumable, "drain", store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending}, []store.RunStatus{store.RunStatusRunning}); err != nil || !ok {
 		t.Fatalf("park: %v %v", ok, err)
 	}
-	pr := parser.Parse("main.bot", "workflow main:\n  entry: done\n")
+	pr := parsertest.Parse("main.bot", "workflow main:\n  entry: done\n")
 	body, err := ast.MarshalFile(pr.File)
 	if err != nil {
 		t.Fatal(err)

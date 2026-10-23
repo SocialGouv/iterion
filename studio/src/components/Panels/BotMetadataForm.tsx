@@ -86,8 +86,70 @@ function toPatch(d: Draft, baseline: Draft): BotPatch {
  * The catalog checkbox writes the manifest DEFAULT; a workspace overlay
  * (set via the Catalog manager) can override it locally — surfaced as a
  * note when the resolved `enabled` diverges from the manifest default.
+ *
+ * An installed package (`bot.installed`, under .botz/) is not edited here:
+ * its manifest is the package's and an update replaces it whole, so the
+ * server refuses the edit (409). Its visibility in this workspace is the
+ * overlay's (InstalledPackageVisibility), which an update leaves alone.
  */
 export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
+  return bot.installed ? <InstalledPackageVisibility bot={bot} /> : <ManifestMetadataForm bot={bot} />;
+}
+
+/** InstalledPackageVisibility is the Bot tab of an installed package: its
+ *  name, why its manifest is not edited here, and its visibility in this
+ *  workspace — the Catalog manager's overlay toggle. */
+function InstalledPackageVisibility({ bot }: { bot: BotEntryWithSchema }) {
+  const setOverlay = useBotsStore((s) => s.setOverlay);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [catalogNote, setCatalogNote] = useState<string | null>(null);
+
+  const onToggle = async (next: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setCatalogNote(null);
+    try {
+      const updated = await setOverlay(bot.name, next);
+      setCatalogNote(catalogStaleSuffix(updated) || null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update the bot's visibility");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="h-full overflow-y-auto p-3">
+      <div className="mb-3">
+        <div className="mb-1 text-xs text-fg-subtle">Bot (technical name — immutable)</div>
+        <div className="font-mono text-sm text-fg-default">{bot.name}</div>
+      </div>
+      <p className="mb-2 text-caption text-fg-muted">
+        Installed package (.botz): its manifest is the package&apos;s own and an update replaces
+        it, so its metadata is edited in the package&apos;s source, not here.
+      </p>
+      <CheckboxField
+        label="Active in this workspace (exposed to Nexie)"
+        checked={bot.enabled !== false}
+        onChange={(v) => void onToggle(v)}
+        help="A setting of this workspace (the Catalog manager's toggle): an update of the package leaves it as it is."
+      />
+      <div aria-live="polite">
+        {error ? (
+          <span className="text-caption text-danger">Save failed: {error}</span>
+        ) : busy ? (
+          <span className="text-caption text-fg-muted">Saving…</span>
+        ) : catalogNote ? (
+          <span className="text-caption text-warning">Saved{catalogNote}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ManifestMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
   const saveBot = useBotsStore((s) => s.saveBot);
   const addToast = useUIStore((s) => s.addToast);
   const [draft, setDraft] = useState<Draft>(() => toDraft(bot));

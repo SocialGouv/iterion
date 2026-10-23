@@ -1,4 +1,4 @@
-import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, UnitInfo, UnitFileInfo } from "./types";
+import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, ReadRefusal, UnitInfo, UnitFileInfo } from "./types";
 import { apiBase, isScopedPane, scopePrefix } from "@/lib/scope";
 import { isWorkflowFile } from "@/lib/workflowFile";
 
@@ -257,6 +257,10 @@ export async function parseSource(
    *  SALVAGED, so a caller that opens a file through this must bind no
    *  path to it. Absent from an older server. */
   bindable?: boolean;
+  /** Set when the server's reader refused the text and made the document a
+   *  salvage (ReadRefusal): the cause and its remedy, never the author's
+   *  text. */
+  read_refusal?: ReadRefusal;
 }> {
   return request("/parse", {
     method: "POST",
@@ -373,7 +377,7 @@ export async function parseUnitFile(
   editorPath: string,
   rel: string,
   source: string,
-): Promise<{ document: IterDocument; diagnostics: string[]; unit?: UnitInfo; bindable?: boolean }> {
+): Promise<{ document: IterDocument; diagnostics: string[]; unit?: UnitInfo; bindable?: boolean; read_refusal?: ReadRefusal }> {
   const bs = parseBotSourceEditorPath(editorPath);
   if (bs) {
     const bundle = await apiRequest<BotSourceFilesResponse>(
@@ -411,6 +415,10 @@ export async function parseUnit(
    *  then a salvage. A unit that merely fails to LOAD stays true — its
    *  write back is refused server-side, naming the fragment. */
   bindable?: boolean;
+  /** Set when the server's reader refused the text and made the document a
+   *  salvage (ReadRefusal): the cause and its remedy, never the author's
+   *  text. */
+  read_refusal?: ReadRefusal;
 }> {
   return request("/parse", {
     method: "POST",
@@ -502,6 +510,10 @@ export async function loadExample(
    *  the sites that write a document refuse it. Absent (an older server, a
    *  unit response) reads as true. */
   bindable?: boolean;
+  /** Set when the server's reader refused the text and made the document a
+   *  salvage (ReadRefusal): the cause and its remedy, never the author's
+   *  text. */
+  read_refusal?: ReadRefusal;
   /** Set when the example is a bot in several files inside the workspace:
    *  the document is the merged unit, and the unit carries the files' parse
    *  and load verdict — what the launch gate refuses on, whether or not
@@ -509,6 +521,9 @@ export async function loadExample(
    *  /api/files/open does. An embedded bot, or one outside the workspace,
    *  is served as one flat program and has none. */
   unit?: UnitInfo;
+  /** The digest the open issued for the program's file (the digest rule):
+   *  a save of it presents this. Absent for a refused open. */
+  digest?: string;
 }> {
   // Encode each path segment but keep the slashes so subdirectory
   // examples (e.g. "feature_dev/main.bot") route correctly.
@@ -565,7 +580,22 @@ interface BotSourceFilesResponse {
   files: Record<string, string>;
   origin?: string;
   version: number;
+  /** sha256 of each file's content as answered: the digests a save presents
+   *  back (the digest rule). */
+  file_sha256?: Record<string, string>;
 }
+
+// openedBotSources holds, by editor path, the bundle read each cloud save is
+// decided on — the digest rule: the write carries the id, the version and
+// the per-file digests THE OPEN ISSUED, never a fresh fetch (a fetch at save
+// time would turn a concurrent editor's write, and a bot deleted and
+// re-created, into silent overwrites). openFile sets it, saveFile consumes
+// it; a save with no snapshot on file is refused — the studio holds no read
+// of that bot to save against, and one must be made (reopen) before writing.
+const openedBotSources = new Map<
+  string,
+  { id: string; version: number; files: Record<string, string>; digests: Record<string, string> }
+>();
 
 export async function openFile(
   path: string,
@@ -585,9 +615,19 @@ export async function openFile(
    *  on the same grounds. A unit stays writable either way: its write back is
    *  refused server-side, naming the fragment at fault. */
   bindable?: boolean;
+  /** Set when the server's reader refused the text and made the document a
+   *  salvage (ReadRefusal): the cause and its remedy, never the author's
+   *  text. */
+  read_refusal?: ReadRefusal;
   /** Set when the file is the main of a bot in several files: the document
-   *  is the merged unit, and a save must present `unit.revision`. */
+   *  is the merged unit, and a save must present `unit.revision` (its files
+   *  carry their own digests). */
   unit?: UnitInfo;
+  /** The digest the open issued for this file (the digest rule): a save of
+   *  it presents this. Absent for a refused open — no whole read, no
+   *  digest — and for a cloud bot source (the opened bundle snapshot holds
+   *  the digests). */
+  digest?: string;
 }> {
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
@@ -595,7 +635,10 @@ export async function openFile(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
       { signal: options?.signal },
     );
-    const source = bundle.files?.[bs.rel] ?? "";
+    const files = bundle.files ?? {};
+    const digests = bundle.file_sha256 ?? {};
+    openedBotSources.set(path, { id: bundle.id, version: bundle.version, files, digests });
+    const source = files[bs.rel] ?? "";
     if (isWorkflowFile(bs.rel) && importsFragments(source)) {
       // A workflow in several files — the bundle's main, or a companion
       // workflow of its own: the unit is parsed from the whole files map
@@ -613,6 +656,7 @@ export async function openFile(
         path,
         unit: parsed.unit,
         bindable: parsed.bindable !== false,
+        read_refusal: parsed.read_refusal,
       };
     }
     const parsed = await parseSource(source, options);
@@ -626,6 +670,7 @@ export async function openFile(
       diagnostics: parsed.diagnostics,
       path,
       bindable: parsed.bindable !== false,
+      read_refusal: parsed.read_refusal,
     };
   }
   return request("/files/open", {
@@ -638,43 +683,69 @@ export async function openFile(
 export async function saveFile(
   path: string,
   document: IterDocument,
-  options?: { createOnly?: boolean; revision?: string; unitFiles?: UnitFileInfo[] },
+  options?: { createOnly?: boolean; revision?: string; unitFiles?: UnitFileInfo[]; digest?: string },
 ): Promise<SaveFileResponse> {
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
     if (options?.createOnly) {
       throw new Error("Save As is not available for a cloud bot source.");
     }
-    // Carry the botsource CAS token. The old per-file editor write omitted it,
-    // so two tabs could silently overwrite one another even though the store
-    // already supported optimistic concurrency.
-    const current = await apiRequest<BotSourceFilesResponse>(
-      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
-    );
+    // The digest rule: the save carries the read it was decided on — the
+    // bot's id and version, and, per file it replaces, the digest the open
+    // issued. The read is THIS tab's, taken at open (openedBotSources): a
+    // fetch at save time would decide the write on bytes nobody this save
+    // knows read whole, and turn a concurrent editor's write — or a bot
+    // deleted and re-created — into a silent overwrite.
+    const opened = openedBotSources.get(path);
+    if (!opened) {
+      throw new Error(
+        `the studio holds no read of ${bs.slug} to save against: reopen the bot (a save presents the digest its open issued)`,
+      );
+    }
     if (options?.revision !== undefined) {
       // A bot in several files — the document was opened as its unit and
       // carries the revision it was opened at, which decides the path:
       // never the stored text at save time, which may have moved. It is
       // written back file by file
       // — only the files whose program changed come back — patched into
-      // the whole bundle the store holds, and written as ONE versioned
-      // PUT, so manifest, prompts, skills and every other file survive and
-      // a concurrent editor is a conflict, never a silent overwrite. The
-      // file list the client holds (unit.files) goes with it: a per-file
-      // edit may have changed a file's `import` lines or its `dsl:`
-      // profile, which the document does not carry.
-      const rewritten = await unparseUnit(document, current.files ?? {}, bs.rel, options.revision, options.unitFiles);
-      const files = { ...(current.files ?? {}), ...rewritten.files };
+      // the whole bundle THE OPEN held, and written as ONE versioned PUT
+      // carrying the opened digests, so manifest, prompts, skills and every
+      // other file survive and a concurrent editor is a conflict, never a
+      // silent overwrite. The file list the client holds (unit.files) goes
+      // with it: a per-file edit may have changed a file's `import` lines
+      // or its `dsl:` profile, which the document does not carry.
+      const rewritten = await unparseUnit(document, opened.files, bs.rel, options.revision, options.unitFiles);
+      const files = { ...opened.files, ...rewritten.files };
+      const digests: Record<string, string> = {};
+      for (const rel of Object.keys(rewritten.files)) {
+        digests[rel] = opened.digests[rel] ?? "";
+      }
       await apiRequest(
         `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
-        { method: "PUT", body: JSON.stringify({ files, version: current.version }) },
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            files,
+            id: opened.id,
+            version: opened.version,
+            stored_sha256: digests,
+          }),
+        },
       );
       return { path, source: rewritten.source, files: Object.keys(rewritten.files).sort(), revision: rewritten.revision };
     }
     const { source } = await unparse(document);
     await apiRequest(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}/files/${bs.rel}`,
-      { method: "PUT", body: JSON.stringify({ content: source, version: current.version }) },
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          content: source,
+          id: opened.id,
+          version: opened.version,
+          stored_sha256: opened.digests[bs.rel] ?? "",
+        }),
+      },
     );
     return { path, source };
   }
@@ -686,6 +757,9 @@ export async function saveFile(
       ...(options?.createOnly ? { create_only: true } : {}),
       ...(options?.revision ? { revision: options.revision } : {}),
       ...(options?.unitFiles ? { unit_files: options.unitFiles } : {}),
+      // The digest rule: what this save replaces, it holds the digest the
+      // open issued — a concurrent edit is a 409, never an overwrite.
+      ...(options?.digest ? { digest: options.digest } : {}),
     }),
   });
 }

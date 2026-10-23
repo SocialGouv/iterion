@@ -2,12 +2,12 @@ package migrate
 
 import (
 	"bytes"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/internal/dsltest"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // Every shipped bot, example and fixture migrates without a refusal, and
@@ -27,7 +27,7 @@ func TestMigrateDryRunOverTheCorpus(t *testing.T) {
 			t.Errorf("%s: %v", path, err)
 			continue
 		}
-		before := parser.Parse(path, string(src))
+		before := parsertest.Parse(path, string(src))
 		if before.File.EffectiveProfile() == 2 {
 			if res.Changed || !bytes.Equal(src, res.Migrated) || len(res.Changes) != 0 || len(res.Prompts) != 0 {
 				t.Errorf("%s: migrating an already-profile-2 file must be byte-idempotent", path)
@@ -49,7 +49,7 @@ func TestMigrateDryRunOverTheCorpus(t *testing.T) {
 				t.Errorf("%s:%d: unexpected change %s (the corpus has no directive)", path, c.Line, c.Kind)
 			}
 		}
-		after := parser.Parse(path, string(res.Migrated))
+		after := parsertest.Parse(path, string(res.Migrated))
 		if after.File.EffectiveProfile() != 2 || len(parseErrors(after.Diagnostics)) > 0 {
 			t.Errorf("%s: migrated text reads as profile %d with %v", path, after.File.EffectiveProfile(), after.Diagnostics)
 		}

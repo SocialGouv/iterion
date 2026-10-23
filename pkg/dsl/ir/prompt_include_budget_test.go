@@ -2,13 +2,12 @@ package ir
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // fanOutTree writes depth levels of files under dir, each including the
@@ -44,7 +43,7 @@ func TestPromptIncludes_RefuseAnExponentialTree(t *testing.T) {
 	}
 
 	start := time.Now()
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), src)
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), src)
 	err := InlinePromptIncludes(pr.File)
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprint(maxPromptIncludeExpansions)) {
 		t.Fatalf("want a refusal naming the expansion budget, got %v", err)
@@ -54,7 +53,7 @@ func TestPromptIncludes_RefuseAnExponentialTree(t *testing.T) {
 	}
 
 	start = time.Now()
-	cr := Compile(parser.Parse(filepath.Join(dir, "main.bot"), src).File)
+	cr := Compile(parsertest.Parse(filepath.Join(dir, "main.bot"), src).File)
 	var refused bool
 	for _, d := range cr.Diagnostics {
 		if d.Code == DiagBadPromptInclude && strings.Contains(d.Message, fmt.Sprint(maxPromptIncludeExpansions)) {
@@ -80,7 +79,7 @@ func TestPromptIncludes_RefuseAnExpansionPastTheByteBudget(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), src)
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), src)
 	err := InlinePromptIncludes(pr.File)
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprint(maxPromptIncludeTotalBytes)) {
 		t.Fatalf("want a refusal naming the byte budget, got %v", err)
@@ -100,7 +99,7 @@ func TestPromptIncludes_AllowASiblingRepeat(t *testing.T) {
 		}
 	}
 	src, _ := os.ReadFile(filepath.Join(dir, "main.bot"))
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), string(src))
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), string(src))
 	if err := InlinePromptIncludes(pr.File); err != nil {
 		t.Fatalf("a sibling repeat was refused: %v", err)
 	}

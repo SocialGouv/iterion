@@ -1,6 +1,7 @@
 package author
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -54,7 +55,7 @@ func TestAPromptInPlaceEndingWithANewlineRoundTrips(t *testing.T) {
 	for _, body := range []string{"first" + nl + "second" + nl, "first" + nl + "second", "one line" + nl} {
 		t.Run(strings.ReplaceAll(body, nl, "/"), func(t *testing.T) {
 			bot := strings.Join([]string{"dsl: 2", "", "agent a:", "  model: m", "  user: " + unparse.QuoteStrict(body), "", "workflow w:", "  entry: a", "  a -> done", ""}, nl)
-			pr := parser.Parse("x.bot", bot)
+			pr := parsertest.Parse("x.bot", bot)
 			if len(pr.Diagnostics) > 0 {
 				t.Fatalf(".bot refused: %v", pr.Diagnostics)
 			}

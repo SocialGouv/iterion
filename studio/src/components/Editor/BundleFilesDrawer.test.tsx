@@ -127,6 +127,13 @@ const BUNDLE = {
     "lib/nodes.bot": "dsl: 2\n\ntool a:\n  command: \"true\"\n",
     "skills/notes.md": "# notes\n",
   },
+  // The server's digest of each file as answered: what a raw edit presents
+  // back to replace exactly that text.
+  file_sha256: {
+    "main.bot": "sha-demo-main",
+    "lib/nodes.bot": "sha-demo-nodes",
+    "skills/notes.md": "sha-demo-notes",
+  },
 };
 
 const OTHER = {
@@ -137,6 +144,11 @@ const OTHER = {
     "main.bot": "workflow o:\n",
     "skills/notes.md": "# OTHER notes\n",
     "skills/o.md": "# o\n",
+  },
+  file_sha256: {
+    "main.bot": "sha-other-main",
+    "skills/notes.md": "sha-other-notes",
+    "skills/o.md": "sha-other-o",
   },
 };
 
@@ -172,16 +184,20 @@ describe("BundleFilesDrawer writes", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(botSources.putBotSourceFile).toHaveBeenCalledTimes(1));
+    // …and the digest of the text the edit was made from: a raw edit
+    // replaces exactly those bytes, the stored file's.
     expect(botSources.putBotSourceFile).toHaveBeenCalledWith(
       "team-1",
       "demo",
       "skills/notes.md",
       "# edited\n",
       7,
+      "sha-demo-notes",
+      "b1",
     );
   });
 
-  it("deletes with the version it read", async () => {
+  it("deletes with the version it read and the bot's id", async () => {
     botSources.deleteBotSourceFile.mockResolvedValue({ ...BUNDLE, version: 8 });
     open();
     await screen.findByRole("button", { name: "skills/notes.md" });
@@ -194,6 +210,7 @@ describe("BundleFilesDrawer writes", () => {
       "demo",
       "skills/notes.md",
       7,
+      "b1",
     );
   });
 
@@ -330,6 +347,8 @@ describe("BundleFilesDrawer and the bundle's main", () => {
       "main.bot",
       "workflow w:\n  entry: a\n  a -> done\n",
       7,
+      "sha-demo-main",
+      "b1",
     );
   });
 
@@ -479,6 +498,8 @@ describe("BundleFilesDrawer's Ctrl+S", () => {
       "skills/notes.md",
       "the author's work\n",
       7,
+      "sha-demo-notes",
+      "b1",
     );
   });
 
@@ -816,6 +837,8 @@ describe("BundleFilesDrawer's answers that land after it moved", () => {
       "skills/notes.md",
       "typed in other's notes\n",
       3,
+      "sha-other-notes",
+      "b2",
     ]);
   });
 

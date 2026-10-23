@@ -20,7 +20,7 @@ func TestMCPServer_StdioTransportWithCommandArgs(t *testing.T) {
   command: "/usr/local/bin/mcp-helper"
   args: ["--port", "9000", "--verbose"]
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	if len(res.File.MCPServers) != 1 {
@@ -40,7 +40,7 @@ func TestMCPServer_SSETransport(t *testing.T) {
   transport: sse
   url: "https://events.example.com/mcp"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	if len(res.File.MCPServers) != 1 {
@@ -54,7 +54,7 @@ func TestMCPServer_InvalidTransport(t *testing.T) {
   transport: telegraph
   url: "https://x.example.com"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagInvalidValue) {
 		t.Fatalf("expected DiagInvalidValue for unknown transport, got %v", res.Diagnostics)
 	}
@@ -72,7 +72,7 @@ func TestMCPServer_UnknownProperty(t *testing.T) {
   url: "https://x.example.com"
   bogus_prop: true
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagUnknownProperty) {
 		t.Fatalf("expected DiagUnknownProperty for 'bogus_prop', got %v", res.Diagnostics)
 	}
@@ -83,7 +83,7 @@ func TestMCPServer_MissingName(t *testing.T) {
   transport: http
   url: "https://x.example.com"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagExpectedToken) {
 		t.Fatalf("expected DiagExpectedToken for missing name, got %v", res.Diagnostics)
 	}
@@ -99,7 +99,7 @@ func TestMCPServer_AuthUnknownPropertyDoesNotLoseValidFields(t *testing.T) {
     bogus: "x"
     token_url: "https://example.com/oauth/token"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagUnknownProperty) {
 		t.Fatalf("expected DiagUnknownProperty for 'bogus', got %v", res.Diagnostics)
 	}
@@ -135,7 +135,7 @@ workflow flow:
   entry: worker
   worker -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	a := res.File.Agents[0]
 	if a.MCP == nil {
@@ -168,7 +168,7 @@ workflow flow:
   entry: worker
   worker -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagUnknownProperty) {
 		t.Fatalf("expected DiagUnknownProperty inside mcp block, got %v", res.Diagnostics)
 	}

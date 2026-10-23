@@ -269,6 +269,11 @@ func relLaunchError(path, bundleDir string, u *unit.Unit, err error) error {
 	if u != nil {
 		text = u.RelText(text)
 	}
+	var short *unit.ShortError
+	if errors.As(err, &short) {
+		// A load cut short hands no unit over: its root rides the refusal.
+		text = unit.RelTextRoot(short.Root(), text)
+	}
 	if bundleDir != "" {
 		text = unit.RelTextRoot(bundleDir, text)
 	}
@@ -453,29 +458,37 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 		parserPath = abs
 	}
 	var u *unit.Unit
+	var loadErr error
 	switch {
 	case inline != "" && b != nil:
-		u = unit.LoadDirWithMain(b.IterPath, parserPath, []byte(inline))
+		u, loadErr = unit.LoadDirWithMain(b.IterPath, parserPath, []byte(inline))
 	case besideBundleMain(parserPath, b):
 		src, err := os.ReadFile(parserPath) // #nosec G304 -- the path the caller named
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot read file: %w", err)
 		}
-		u = unit.LoadDirWithMain(b.IterPath, parserPath, src)
+		u, loadErr = unit.LoadDirWithMain(b.IterPath, parserPath, src)
 	case inline != "":
-		u = unit.LoadMap(map[string]string{parserPath: inline}, parserPath)
-		if len(u.Files) > 0 && u.Files[0].AST != nil && len(u.Files[0].AST.Imports) > 0 {
+		u, loadErr = unit.LoadMap(map[string]string{parserPath: inline}, parserPath)
+		if loadErr == nil && len(u.Files) > 0 && u.Files[0].AST != nil && len(u.Files[0].AST.Imports) > 0 {
 			return nil, nil, nil, fmt.Errorf("%s: %w", parserPath, ErrInlineImport)
 		}
 	default:
-		u = unit.LoadDir(parserPath)
-		if len(u.Files) == 0 {
+		u, loadErr = unit.LoadDir(parserPath)
+		if loadErr == nil && len(u.Files) == 0 {
 			// The main itself was not read: the error names the file the
 			// caller asked for, wrapped, as it always has.
 			if _, err := os.ReadFile(parserPath); err != nil {
 				return nil, nil, nil, fmt.Errorf("cannot read file: %w", err)
 			}
 		}
+	}
+	if loadErr != nil {
+		// A bot past the read budget its files share — or holding a file
+		// past the size cap — is not compiled from what was read of it:
+		// the refusal, positioned, with its remedy (relLaunchError cuts
+		// the load's root from it on the launch path).
+		return nil, nil, nil, fmt.Errorf("parse error: %w", loadErr)
 	}
 	wf, cs, err := compileLoadedUnit(u, path, parserPath, withHash, b)
 	return wf, cs, u, err

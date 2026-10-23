@@ -17,8 +17,10 @@ func openAuthoringFileAt(*os.File, string, int, os.FileMode) (*os.File, error) {
 	return nil, errAuthoringPlatform
 }
 func renameAuthoringAt(*os.File, string, *os.File, string) error { return errAuthoringPlatform }
+func replaceAuthoringAt(*os.File, string, string) error          { return errAuthoringPlatform }
 func requireAuthoringSameFilesystem(*os.File, *os.File) error    { return errAuthoringPlatform }
 func validateAuthoringOwnership(*os.File, bool) error            { return errAuthoringPlatform }
 func syncAuthoringDirectory(*os.File) error                      { return errAuthoringPlatform }
+func authoringFileLinks(*os.File) (uint64, error)                { return 0, errAuthoringPlatform }
 func normalizeAuthoringLockName(name string) string              { return name }
 func authoringLockOpenFlags() int                                { return os.O_RDWR }

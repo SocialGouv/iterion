@@ -64,7 +64,14 @@ func check(path string) bool {
 	if botPath == path {
 		botPath = path + ".bot"
 	}
-	u := unit.LoadDirWithMainAST(botPath, path, res.File, src)
+	u, err := unit.LoadDirWithMainAST(botPath, path, res.File, src, res.Spent)
+	if err != nil {
+		// The bot is past the read budget its files share: the refusal is
+		// the whole answer, and nothing is compiled of what was read.
+		fmt.Println(err)
+		fmt.Printf("%s: INVALID (%d error(s), %d warning(s))\n", filepath.Base(path), errors+1, warnings)
+		return true
+	}
 	for _, d := range u.Diagnostics {
 		fmt.Println(d.Error())
 		if d.Severity == parser.SeverityError {
@@ -108,7 +115,12 @@ func write(paths []string) int {
 			code = 1
 			continue
 		}
-		pr := parser.Parse(path, string(src))
+		pr, err := parser.Parse(path, string(src))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			code = 1
+			continue
+		}
 		hasErrors := false
 		for _, d := range pr.Diagnostics {
 			if d.Severity == parser.SeverityError {

@@ -106,48 +106,98 @@ func orderableBuild(v string) bool {
 }
 
 // guardBundleEngineRequirement holds a bundle about to be STORED against the
-// deployment's engine floor. It returns "" when the push may proceed, or the
-// warning it must carry when force was passed; a refusal is written to w and
-// signalled by ok=false.
+// deployment's engine floor. It returns the warnings the guard's forces
+// carry — none when the push may proceed unremarked, one per guard forced
+// past — or writes a refusal to w and signals it by ok=false. stored is the
+// bundle as the write read it at the version it is pinned to (nil for a
+// creation): the guard judges the RESULTING state, and its requires half
+// reads the manifest OF THAT STATE — the write's when it lands one, and when
+// the write DELETES the manifest (a whole-bundle push or a per-file DELETE
+// that omits manifest.yaml), the requirement the stored manifest declared
+// dies with the file and is checked by nothing afterwards — that deletion is
+// refused like a floor the manifest does not reach, not passed in silence. A
+// manifest the write REPLACES is judged by the text it lands (a knowing
+// edit, held by the digest rule); only the deletion is the silent shed.
 //
-// Refuse rather than warn, deliberately, on the one path where warning was
+// Refuse rather than warn, deliberately, on the paths where warning was
 // already tried: `docs/platform-bots.md` documents the two-halves rule in
 // prose, and a production push broke it anyway. The escape hatch is explicit
-// (`--force` / `?force=1`) and never silent — the forced push carries the
+// (`--force` / `?force=1`) and never silent — the forced push carries every
 // overridden requirement in its response warnings and in the audit trail the
-// write already produces.
-func (s *Server) guardBundleEngineRequirement(w http.ResponseWriter, r *http.Request, bs botsource.BotSource) (warning string, ok bool) {
-	m := bs.Manifest()
-	if gap := bundleSyntaxFloorGap(bs); gap != nil {
-		if forceRequested(r) {
-			return fmt.Sprintf("FORCED past the syntax-floor guard: %q uses %s and %s — a runner older than the release that reads it will fail at its first parse of a child, a fragment or the contract",
-				bs.Slug, gap.uses, gap.gap), true
-		}
-		s.httpErrorFor(w, r, http.StatusConflict, "%s, or push anyway with --force", gap.refusal(bs.Slug))
-		return "", false
-	}
-	if m == nil || m.Requires == nil || strings.TrimSpace(m.Requires.Iterion) == "" {
-		return "", true
-	}
-	floor, sources := s.engineFloor(r.Context())
-	verdict, reason := bundle.CheckManifestEngine(m, floor)
+// write already produces. Forcing past one guard checks the other still: a
+// push forced past a source the reader cut short is still told the engine
+// requirement its manifest declares.
+func (s *Server) guardBundleEngineRequirement(w http.ResponseWriter, r *http.Request, bs botsource.BotSource, stored *botsource.BotSource) (warnings []string, ok bool) {
 	forced := forceRequested(r)
+	if gap := bundleSyntaxFloorGap(bs); gap != nil {
+		if !forced {
+			s.httpErrorFor(w, r, http.StatusConflict, "%s, or push anyway with --force", gap.refusal(bs.Slug))
+			return nil, false
+		}
+		warnings = append(warnings, gap.forced(bs.Slug))
+	}
+	out := s.requiresFloorGap(r.Context(), bs, stored, forced)
+	if out.refusal != "" {
+		s.httpErrorFor(w, r, http.StatusConflict, "%s", out.refusal)
+		return nil, false
+	}
+	return append(warnings, out.warnings...), true
+}
+
+// requiresFloorOutcome is what the requires half of the engine-requirement
+// guard concludes: pass (warnings carries what a forced guard or an
+// unchecked floor would have told the operator), or refusal (non-empty: the
+// write is refused with this reason).
+type requiresFloorOutcome struct {
+	warnings []string
+	refusal  string
+}
+
+// requiresFloorGap is the REQUIRES half of guardBundleEngineRequirement,
+// judged on the bundle as the write leaves it, shared by the push routes and
+// the assistant's authoring commit. A declared requires.iterion above this
+// deployment's engine floor is refused; forced past on the paths that carry
+// the override, with the FORCED warning. No requirement in the resulting
+// state, but a write that DELETES the manifest of the stored bundle, sheds
+// the requirement the stored one declared — refused the same way (stored
+// nil on the paths whose change shape cannot delete the manifest, the
+// assistant commit among them: replace-only, create refused for cloud, so
+// the manifest never leaves the file set). A floor the comparison cannot
+// order is EngineUnknown: passed, carrying the warning that the push went
+// unverified.
+func (s *Server) requiresFloorGap(ctx context.Context, bs botsource.BotSource, stored *botsource.BotSource, forced bool) requiresFloorOutcome {
+	m := bs.Manifest()
+	if m == nil || m.Requires == nil || strings.TrimSpace(m.Requires.Iterion) == "" {
+		// No requirement in the resulting state — but a write that DELETES
+		// the manifest sheds the requirement the stored one declared. The
+		// same refusal a too-low declaration meets, same escape hatch.
+		if m == nil && stored != nil {
+			if declared, need := declaredEngineRequirement(stored); declared {
+				refusal := fmt.Sprintf("bot %q: this write deletes the manifest that declared requires.iterion %q — the requirement dies with the file and a launch below it is checked by nothing: push the bundle with its manifest, or push anyway with --force", bs.Slug, need)
+				if forced {
+					return requiresFloorOutcome{warnings: []string{"FORCED past the engine-requirement guard: " + refusal}}
+				}
+				return requiresFloorOutcome{refusal: refusal}
+			}
+		}
+		return requiresFloorOutcome{}
+	}
+	floor, sources := s.engineFloor(ctx)
+	verdict, reason := bundle.CheckManifestEngine(m, floor)
 	switch verdict {
 	case bundle.EngineOK:
-		return "", true
+		return requiresFloorOutcome{warnings: nil}
 	case bundle.EngineUnknown:
 		// Never a silent pass: the operator learns the check did not run.
-		return fmt.Sprintf("%s (floor from %s) — the engine requirement could not be checked, so this push is unverified",
-			reason, strings.Join(sources, ", ")), true
+		return requiresFloorOutcome{warnings: []string{fmt.Sprintf("%s (floor from %s) — the engine requirement could not be checked, so this push is unverified",
+			reason, strings.Join(sources, ", "))}}
 	}
 	if forced {
-		return fmt.Sprintf("FORCED past the engine-requirement guard: %s (floor from %s) — a launch of %q will be refused on any pod below the requirement",
-			reason, strings.Join(sources, ", "), bs.Slug), true
+		return requiresFloorOutcome{warnings: []string{fmt.Sprintf("FORCED past the engine-requirement guard: %s (floor from %s) — a launch of %q will be refused on any pod below the requirement",
+			reason, strings.Join(sources, ", "), bs.Slug)}}
 	}
-	s.httpErrorFor(w, r, http.StatusConflict,
-		"bot %q: %s (floor from %s). Bump the runner image and restart the server first (docs/platform-bots.md § Shipping a baked-catalog change), or push anyway with --force",
-		bs.Slug, reason, strings.Join(sources, ", "))
-	return "", false
+	return requiresFloorOutcome{refusal: fmt.Sprintf("bot %q: %s (floor from %s). Bump the runner image and restart the server first (docs/platform-bots.md § Shipping a baked-catalog change), or push anyway with --force",
+		bs.Slug, reason, strings.Join(sources, ", "))}
 }
 
 // syntaxFloorGap is what a bundle's sources use that its manifest's floor
@@ -157,10 +207,29 @@ type syntaxFloorGap struct {
 	uses string // what the sources use: "`contract` (main.bot)"
 	gap  string // what the manifest declares, or does not
 	need string // the release the floor must reach
+	// short names the sources a bound of the reader cut short, each with
+	// its refusal (bundle.SyntaxRequirements.Short): what they use is not
+	// known, so no declared floor is checked against them.
+	short string
+}
+
+// forced is the warning a push forced past the gap carries: the sources a
+// bound of the reader cut short, each with its refusal and remedy, when that
+// is the gap — what they need was not checked, and every reader held to the
+// same budget refuses them — or the syntax the floor does not reach.
+func (g *syntaxFloorGap) forced(slug string) string {
+	if g.short != "" {
+		return fmt.Sprintf("FORCED past the syntax-floor guard: %q has executable sources the server does not read whole, so the release they need was not checked (C256) — and every reader held to this read budget refuses them: %s", slug, g.short)
+	}
+	return fmt.Sprintf("FORCED past the syntax-floor guard: %q uses %s and %s — a runner older than the release that reads it will fail at its first parse of a child, a fragment or the contract",
+		slug, g.uses, g.gap)
 }
 
 // refusal is the sentence a write is refused with.
 func (g *syntaxFloorGap) refusal(slug string) string {
+	if g.short != "" {
+		return fmt.Sprintf("bot %q has executable sources the server does not read whole, so the release they need cannot be told (C256): %s", slug, g.short)
+	}
 	return fmt.Sprintf("bot %q uses %s but its manifest %s: declare `requires: { iterion: \">= %s\" }` (`iterion dsl migrate` writes it for a profile)", slug, g.uses, g.gap, g.need)
 }
 
@@ -175,6 +244,12 @@ func (g *syntaxFloorGap) refusal(slug string) string {
 // exactly those builds. nil when the floor reads what the sources use.
 func bundleSyntaxFloorGap(bs botsource.BotSource) *syntaxFloorGap {
 	syntax := bundle.MaxSyntaxRequirements(bs.Files)
+	if len(syntax.Short) > 0 {
+		// A source the walk could not read whole uses what nobody read: a
+		// floor that admits it is certified by nothing. The files are the
+		// bundle's own names, the refusal its remedy.
+		return &syntaxFloorGap{uses: "sources not read whole", gap: "cannot be checked", short: strings.Join(syntax.Short, "; ")}
+	}
 	if !syntax.Asks() {
 		return nil
 	}
@@ -191,6 +266,21 @@ func bundleSyntaxFloorGap(bs botsource.BotSource) *syntaxFloorGap {
 		gap = fmt.Sprintf("declares requires.iterion %q, below %s (the release that reads it)", pf.Declared, need)
 	}
 	return &syntaxFloorGap{uses: syntax.Describe(), gap: gap, need: need}
+}
+
+// declaredEngineRequirement reports whether a stored bundle's manifest
+// declares `requires.iterion`, and what it asks: the requirement a write
+// that deletes the manifest would shed.
+func declaredEngineRequirement(bs *botsource.BotSource) (bool, string) {
+	if bs == nil {
+		return false, ""
+	}
+	m := bs.Manifest()
+	if m == nil || m.Requires == nil {
+		return false, ""
+	}
+	need := strings.TrimSpace(m.Requires.Iterion)
+	return need != "", need
 }
 
 // forceRequested reads the explicit override off the request.

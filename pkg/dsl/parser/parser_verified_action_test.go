@@ -20,7 +20,7 @@ func TestParseVerifiedActionQuad(t *testing.T) {
     model: "anthropic/claude-sonnet-4-6"
     agent_tools: [bash, read_file]
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	if len(res.File.Tools) != 1 {
@@ -48,7 +48,7 @@ func TestParseToolParallelSafe(t *testing.T) {
   command: "render --scene {{outputs.dispatch.item.id}}"
   parallel_safe: true
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	if len(res.File.Tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(res.File.Tools))
@@ -58,7 +58,7 @@ func TestParseToolParallelSafe(t *testing.T) {
 	}
 
 	// Absent the property, it defaults to false (safe, serialized-only fan-out).
-	res2 := parser.Parse("test.bot", "tool plain:\n  command: \"echo ok\"\n")
+	res2 := parser.ParseLenient("test.bot", "tool plain:\n  command: \"echo ok\"\n")
 	assertNoDiags(t, res2)
 	if res2.File.Tools[0].ParallelSafe {
 		t.Fatal("plain tool must default ParallelSafe = false")
@@ -70,7 +70,7 @@ func TestParseToolNodeNoQuad(t *testing.T) {
 	src := `tool plain:
   command: "echo ok"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	tn := res.File.Tools[0]
 	if tn.Goal != "" || tn.Postcondition != "" || tn.Policy != "" || tn.Recovery != nil {
@@ -87,7 +87,7 @@ func TestParseRecoveryUnknownProperty(t *testing.T) {
   recovery:
     bogus_field: 3
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagUnknownProperty) {
 		t.Fatalf("expected DiagUnknownProperty for bogus recovery field, got %v", res.Diagnostics)
 	}

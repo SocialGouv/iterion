@@ -130,6 +130,35 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 		return res, fmt.Errorf("dsl migrate: %d file(s) refused — nothing was written:\n  %s", len(res.Refused), strings.Join(res.Refused, "\n  "))
 	}
 
+	// The floors, decided before a byte is written: each bundle's walk reads
+	// its sources as the migration leaves them, whole or not at all. A
+	// source the read budget cuts short uses what nobody read (C256): a
+	// floor written off the others would admit runners that cannot read it,
+	// so the run is refused, nothing written.
+	dirs := make([]string, 0, len(bundleDirs))
+	for d := range bundleDirs {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	syntaxOf := make(map[string]bundle.SyntaxRequirements, len(dirs))
+	for _, dir := range dirs {
+		staged := map[string]string{}
+		for _, p := range plans {
+			if !p.out.Changed || bundle.OwningDir(p.path) != dir {
+				continue
+			}
+			if rel, err := filepath.Rel(dir, p.path); err == nil {
+				staged[filepath.ToSlash(rel)] = string(p.out.Migrated)
+			}
+		}
+		syntax := bundle.MaxSyntaxRequirementsDirStaged(dir, staged)
+		if len(syntax.Short) > 0 {
+			reportMigration(opts, res)
+			return res, fmt.Errorf("%w: %s: the floor its sources need cannot be told — not read whole (C256): %s — nothing was written", migrate.ErrRefused, dir, strings.Join(syntax.Short, "; "))
+		}
+		syntaxOf[dir] = syntax
+	}
+
 	// Then write.
 	if write {
 		for i, p := range plans {
@@ -147,11 +176,6 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 		}
 	}
 
-	dirs := make([]string, 0, len(bundleDirs))
-	for d := range bundleDirs {
-		dirs = append(dirs, d)
-	}
-	sort.Strings(dirs)
 	for _, dir := range dirs {
 		mp := manifestPath(dir)
 		if mp == "" {
@@ -169,7 +193,7 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 		// older than the release reading contracts, is not left with a
 		// floor `validate` then asks to raise (C252).
 		bundleFloor := floor
-		if need, _ := bundle.RequiredRelease(bundle.MaxSyntaxRequirementsDir(dir)); need != "" {
+		if need, _ := bundle.RequiredRelease(syntaxOf[dir]); need != "" {
 			if c, ok := bundle.CompareVersions(need, bundleFloor); !ok || c > 0 {
 				bundleFloor = need
 			}

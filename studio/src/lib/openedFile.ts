@@ -1,4 +1,4 @@
-import type { IterDocument, UnitInfo } from "@/api/types";
+import type { IterDocument, ReadRefusal, UnitInfo } from "@/api/types";
 
 /** What `/api/files/open` answers, as far as the store cares. */
 export interface OpenedFile {
@@ -11,6 +11,15 @@ export interface OpenedFile {
    *  what it salvaged. Absent reads as true — an older server, and the
    *  answers a client builds for a program it holds itself. */
   bindable?: boolean;
+  /** Set when the server's reader refused the file — a bound of it, or a
+   *  file that is no text it reads (not UTF-8) — and made `document` the
+   *  salvage (ReadRefusal): the cause and its remedy. */
+  read_refusal?: ReadRefusal;
+  /** The digest the open issued for this file (the digest rule): a save of
+   *  it presents this, so a concurrent edit is a conflict, never an
+   *  overwrite. Absent for a refused open (no whole read, no digest) and
+   *  for a unit (its files carry their own). */
+  digest?: string;
 }
 
 /** The slice of the document store an opened file writes to. */
@@ -19,7 +28,8 @@ export interface OpenedFileTargetStore {
   setDiagnostics: (d: string[]) => void;
   setCurrentSource: (s: string) => void;
   setCurrentFilePath: (p: string | null) => void;
-  setSalvaged: (salvaged: boolean) => void;
+  setSalvaged: (salvaged: boolean, readRefusal?: ReadRefusal | null) => void;
+  setOpenedDigest: (digest: string | null) => void;
   setUnit: (u: UnitInfo | null) => void;
   markSaved: () => void;
   markReplaced: () => void;
@@ -57,7 +67,8 @@ export function applyOpenedFile(result: OpenedFile, store: OpenedFileTargetStore
   store.setDocument(result.document);
   store.setDiagnostics(result.diagnostics);
   store.setCurrentFilePath(result.path ?? null);
-  store.setSalvaged(result.bindable === false);
+  store.setSalvaged(result.bindable === false, result.read_refusal ?? null);
+  store.setOpenedDigest(result.digest ?? null);
   store.setCurrentSource(result.source);
   store.setUnit(result.unit ?? null);
   store.markSaved();

@@ -2,17 +2,14 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -216,7 +213,10 @@ func convertTwin(to, path string, raw []byte) (dest string, out []byte, notices 
 		}
 		return dest, []byte(text), notices, nil
 	case "yaml":
-		pr := parser.Parse(abs, string(raw))
+		pr, err := parser.Parse(abs, string(raw))
+		if err != nil {
+			return dest, nil, nil, fmt.Errorf("%w: is not read: %v — a document is written from a program read whole", canon.ErrRefused, err)
+		}
 		if errs := diagnosticErrors(namedAs(pr.Diagnostics, path)); errs != "" {
 			return dest, nil, nil, fmt.Errorf("%w: does not parse: %s — a document is written from a program, never from a text the parser recovered on", canon.ErrRefused, errs)
 		}
@@ -279,11 +279,11 @@ func sameSerializedDeclarations(bot, back *ast.File, source string) string {
 }
 
 // serializedDeclarations reads f through the one .bot writer and parser, then
-// marshals the resulting AST without comments. The JSON transport makes the
-// private copy whose literal spellings are cleared before Unparse writes the
-// values (`01.5` as `1.5`, `010` as `10`). Only the prompt and schema arrays
-// are sorted by their encoded elements: the compiler holds those declarations
-// by name. Imports, supervisors, uses and every other list keep their order.
+// marshals the resulting AST without comments. The door's copy is the private
+// one whose literal spellings are cleared before Unparse writes the values
+// (`01.5` as `1.5`, `010` as `10`). Only the prompt and schema lists are
+// sorted, by name: the compiler holds those declarations by name. Imports,
+// supervisors, uses and every other list keep their order.
 func serializedDeclarations(f *ast.File, source string) ([]byte, error) {
 	raw, err := ast.MarshalFileWithoutComments(f)
 	if err != nil {
@@ -294,36 +294,29 @@ func serializedDeclarations(f *ast.File, source string) ([]byte, error) {
 		return nil, err
 	}
 	literalsByValue(reflect.ValueOf(copy))
-	reread := parser.Parse(source, unparse.Unparse(copy))
+	reread, err := parser.Parse(source, unparse.Unparse(copy))
+	if err != nil {
+		return nil, fmt.Errorf("the serialised source is not read whole: %v", err)
+	}
 	if errs := diagnosticErrors(reread.Diagnostics); errs != "" {
 		return nil, fmt.Errorf("the serialised source does not parse: %s", errs)
 	}
 	reread.File.Profile = reread.File.EffectiveProfile()
-	raw, err = ast.MarshalFileWithoutComments(reread.File)
-	if err != nil {
-		return nil, err
-	}
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &root); err != nil {
-		return nil, err
-	}
-	for key, value := range root {
-		if (key != "prompts" && key != "schemas") || !bytes.HasPrefix(bytes.TrimSpace(value), []byte("[")) {
-			continue
-		}
-		var declarations []json.RawMessage
-		if err := json.Unmarshal(value, &declarations); err != nil {
-			return nil, err
-		}
-		slices.SortFunc(declarations, func(a, b json.RawMessage) int {
-			return bytes.Compare(a, b)
-		})
-		root[key], err = json.Marshal(declarations)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return json.Marshal(root)
+	sortDeclarationsByName(reread.File)
+	return ast.MarshalFileWithoutComments(reread.File)
+}
+
+// sortDeclarationsByName orders the prompt and schema lists by name — the
+// compiler holds those declarations by name, so their written order is not
+// the program. The sort is stable: two declarations of one name keep their
+// written order, and the comparison judges them a difference.
+func sortDeclarationsByName(f *ast.File) {
+	slices.SortStableFunc(f.Prompts, func(a, b *ast.PromptDecl) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	slices.SortStableFunc(f.Schemas, func(a, b *ast.SchemaDecl) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 }
 
 var literalType = reflect.TypeOf(ast.Literal{})
@@ -405,7 +398,7 @@ func frontmatterNotices(path string, f *ast.File, carries bool) []string {
 		err   error
 	)
 	if block.Closed {
-		ident, extra, err = workflowfile.DecodeFrontmatter(strings.Join(block.Lines, "\n"))
+		ident, extra, err = workflowfile.DecodeFrontmatter(strings.Join(block.Lines, "\n"), parser.ReadBudget())
 	}
 	var notes []string
 	if !carries {
@@ -417,6 +410,10 @@ func frontmatterNotices(path string, f *ast.File, carries bool) []string {
 			// alone sends the author of a `# ---` head looking for a line
 			// their file does not hold.
 			why = "the frontmatter block is not closed (no second `# ---`/`## ---` line)"
+		case errors.As(err, new(*workflowfile.YAMLDecodeRefusal)):
+			// Past the bound of its decode: the block is not read, and
+			// the count is the operator's to raise.
+			why = "the frontmatter is not read: " + err.Error() + " — " + parser.ReadBudgetEnv + " raises the count, 0 removes it"
 		case err != nil:
 			// The reading's own words, and the remedy of its structured
 			// cause where the author document's table answers it: a
@@ -443,10 +440,11 @@ func frontmatterNotices(path string, f *ast.File, carries bool) []string {
 
 // documentCarriesCatalog reports whether the document written has a
 // top-level `catalog:` — read off the bytes that were written, so a note
-// about them states what they hold rather than what the writer meant.
+// about them states what they hold rather than what the writer meant —
+// through the bounds every reading of a document is held to (author.ReadOne).
 func documentCarriesCatalog(doc []byte) bool {
-	var root yaml.Node
-	if err := yaml.Unmarshal(doc, &root); err != nil || len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+	root, err := author.ReadOne(doc)
+	if err != nil || root == nil || len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
 		return false
 	}
 	m := root.Content[0]
@@ -470,12 +468,19 @@ func forceNote(to, dest, from string, existing, out []byte) string {
 	lead := dest + ": --force replaces it whole — "
 	switch to {
 	case "bot":
-		pr := parser.Parse(dest, string(existing))
+		pr, err := parser.Parse(dest, string(existing))
+		if err != nil {
+			return lead + "it is not read whole (" + err.Error() + "), so what it carries, its comments included, is not counted"
+		}
 		if diagnosticErrors(pr.Diagnostics) != "" {
 			return lead + "it does not parse as a .bot, so what it carries, its comments included, is not counted"
 		}
 		had, hadKeys := botCarries(pr.File)
-		kept, keptKeys := botCarries(parser.Parse(dest, string(out)).File)
+		written, err := parser.Parse(dest, string(out))
+		if err != nil {
+			return lead + "what " + from + " writes is not read whole (" + err.Error() + "), so what the file carries is not counted"
+		}
+		kept, keptKeys := botCarries(written.File)
 		n, first := lostLines(had, kept)
 		var keys []string
 		for _, k := range hadKeys {
@@ -499,8 +504,8 @@ func forceNote(to, dest, from string, existing, out []byte) string {
 		}
 		return note
 	case "yaml":
-		if !oneYAMLDocument(existing) {
-			return lead + "it does not read as one YAML document, so what it carries, its comments included, is not counted"
+		if _, err := author.ReadOne(existing); err != nil {
+			return lead + "it does not read as one YAML document within its reader's bounds (" + err.Error() + "), so what it carries, its comments included, is not counted"
 		}
 		n, first := lostLines(author.Comments(existing), author.Comments(out))
 		if n == 0 {
@@ -509,23 +514,6 @@ func forceNote(to, dest, from string, existing, out []byte) string {
 		return fmt.Sprintf("%s%d comment line(s) it carries are not in what %s writes (the first: %s)", lead, n, from, first)
 	}
 	return ""
-}
-
-// oneYAMLDocument reports whether text is what author.Comments reads whole:
-// UTF-8 holding one YAML document, or nothing at all. Comments alone, a
-// second document, a text that is not YAML are not.
-func oneYAMLDocument(text []byte) bool {
-	if !utf8.Valid(text) {
-		return false
-	}
-	if strings.TrimSpace(strings.TrimPrefix(string(text), "\ufeff")) == "" {
-		return true
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(text))
-	if dec.Decode(&yaml.Node{}) != nil {
-		return false
-	}
-	return errors.Is(dec.Decode(&yaml.Node{}), io.EOF)
 }
 
 // lostLines counts the lines of had that kept does not hold, each line of
@@ -586,12 +574,12 @@ func botCarries(f *ast.File) (comments, keys []string) {
 // frontmatterByKey reads a frontmatter block as the --force note compares
 // it: one YAML document holding one mapping — its keys, sorted, a key named
 // twice counted once as the catalogue reads it, and the block's own YAML
-// comments, which the writer does not keep. Any other block is not read
-// (ok false), and is compared line by line.
+// comments, which the writer does not keep — within the bounds every
+// reading of a document is held to (author.ReadOne). Any other block is not
+// read (ok false), and is compared line by line.
 func frontmatterByKey(text string) (keys, comments []string, ok bool) {
-	dec := yaml.NewDecoder(strings.NewReader(text))
-	var doc yaml.Node
-	if dec.Decode(&doc) != nil || !errors.Is(dec.Decode(&yaml.Node{}), io.EOF) {
+	doc, err := author.ReadOne([]byte(text))
+	if err != nil || doc == nil {
 		return nil, nil, false
 	}
 	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {

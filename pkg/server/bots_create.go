@@ -153,13 +153,17 @@ func (s *Server) handleBotCreateCloud(w http.ResponseWriter, r *http.Request) {
 // scaffoldStatus maps a Scaffold failure to its HTTP status: a generated
 // workflow the compiler refuses is the OPERATOR's input to fix (a
 // `{{vars.x}}` in the mission with no such var, a var row the shape needs
-// removed from the form), so it is a 422 carrying the diagnostic; anything
-// else (a write failure, a template the build cannot render) is the
-// server's.
+// removed from the form), so it is a 422 carrying the diagnostic; a file
+// another writer created in the bot's directory since its absence was
+// checked (the scaffold creates, never replaces) is a 409; anything else (a
+// write failure, a template the build cannot render) is the server's.
 func scaffoldStatus(err error) int {
 	var generated *botscaffold.GeneratedError
 	if errors.As(err, &generated) {
 		return http.StatusUnprocessableEntity
+	}
+	if errors.Is(err, fs.ErrExist) {
+		return http.StatusConflict
 	}
 	return http.StatusInternalServerError
 }

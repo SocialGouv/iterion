@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ func TestBundleSkillsVarRefusesANonAbsoluteOverride(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		compiled := ir.Compile(parser.Parse(path, string(src)).File)
+		compiled := ir.Compile(parsertest.Parse(path, string(src)).File)
 		if compiled.Workflow == nil {
 			t.Fatalf("%s: compile: %+v", bot, compiled.Diagnostics)
 		}
@@ -123,7 +123,7 @@ func TestBundleSkillsVarPatternAdmitsItsOwnDefault(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		compiled := ir.Compile(parser.Parse(path, string(src)).File)
+		compiled := ir.Compile(parsertest.Parse(path, string(src)).File)
 		for _, d := range compiled.Diagnostics {
 			if d.Severity == ir.SeverityError {
 				t.Fatalf("%s: %s: %s", bot, d.Code, d.Message)

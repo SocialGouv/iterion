@@ -2,6 +2,7 @@ package bots
 
 import (
 	"bytes"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,7 +16,7 @@ import (
 // returns for a single file, so a test that read main.bot alone reads the
 // whole program. A bot in one file parses exactly as before.
 func parseBotUnit(path string) *parser.ParseResult {
-	u := unit.LoadDir(path)
+	u := unittest.Whole(unit.LoadDir(path))
 	return &parser.ParseResult{File: u.Merged, Diagnostics: u.Diagnostics}
 }
 
@@ -25,7 +26,7 @@ func parseBotUnit(path string) *parser.ParseResult {
 // is not a unit (a bot in one file, a skill, a manifest) reads byte for
 // byte as os.ReadFile does.
 func botUnitSource(path string) ([]byte, error) {
-	u := unit.LoadDir(path)
+	u := unittest.Whole(unit.LoadDir(path))
 	if len(u.Files) <= 1 {
 		return os.ReadFile(path)
 	}

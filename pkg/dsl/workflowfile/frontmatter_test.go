@@ -11,7 +11,7 @@ import (
 // keys beyond the four are returned by name, sorted, each once; an empty
 // block reads as an empty identity, not a refusal.
 func TestDecodeFrontmatterIsTheOneReading(t *testing.T) {
-	fm, extra, err := DecodeFrontmatter("name: first\ndescription: d\nname: last\nowner: jo\ntriggers: [a, b]\nowner: jo\nzeta:\n  deep: 1")
+	fm, extra, err := DecodeFrontmatter("name: first\ndescription: d\nname: last\nowner: jo\ntriggers: [a, b]\nowner: jo\nzeta:\n  deep: 1", 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,10 +21,10 @@ func TestDecodeFrontmatterIsTheOneReading(t *testing.T) {
 	if !reflect.DeepEqual(extra, []string{"owner", "zeta"}) {
 		t.Fatalf("extra = %q, want owner and zeta once each, sorted", extra)
 	}
-	if _, _, err := DecodeFrontmatter("name: probe\ntriggers: just-one"); err == nil {
+	if _, _, err := DecodeFrontmatter("name: probe\ntriggers: just-one", 1<<20); err == nil {
 		t.Fatal("a scalar where a list is expected was read")
 	}
-	fm, extra, err = DecodeFrontmatter("")
+	fm, extra, err = DecodeFrontmatter("", 1<<20)
 	if err != nil || !fm.Empty() || len(extra) != 0 {
 		t.Fatalf("an empty block: %v %+v %q", err, fm, extra)
 	}
@@ -40,7 +40,7 @@ func TestDecodeFrontmatterIsTheOneReading(t *testing.T) {
 // the named struct, so the remedy table keyed on that target names one
 // stable Go type, and the causes the reading returns carry it.
 func TestFrontmatterRefusalNamesItsDecodeTarget(t *testing.T) {
-	_, _, err := DecodeFrontmatter("- a\n")
+	_, _, err := DecodeFrontmatter("- a\n", 1<<20)
 	if err == nil {
 		t.Fatal("a list where the block's mapping was expected was read")
 	}
@@ -59,7 +59,7 @@ func TestFrontmatterRefusalNamesItsDecodeTarget(t *testing.T) {
 // The causes of a multi-key refusal: one per value the reading could not
 // read, each its own target and its own line, in the reader's order.
 func TestFrontmatterCausesPerValueRefused(t *testing.T) {
-	_, _, err := DecodeFrontmatter("name: [a]\ntriggers: 3\n")
+	_, _, err := DecodeFrontmatter("name: [a]\ntriggers: 3\n", 1<<20)
 	if err == nil {
 		t.Fatal("two keys of the wrong shape were read")
 	}

@@ -2,13 +2,13 @@ package runtime
 
 import (
 	"context"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -187,7 +187,7 @@ workflow wf:
   gate -> done when "decision == 'approved'"
   gate -> fail
 `
-	cr := ir.Compile(parser.Parse("t.bot", src).File)
+	cr := ir.Compile(parsertest.Parse("t.bot", src).File)
 	if cr.Workflow == nil {
 		t.Fatalf("compile failed: %+v", cr.Diagnostics)
 	}
@@ -266,7 +266,7 @@ workflow wf:
   gate -> impl when "decision == 'changes_requested'" as fix_loop(3)
   gate -> fail
 `
-	cr := ir.Compile(parser.Parse("t.bot", src).File)
+	cr := ir.Compile(parsertest.Parse("t.bot", src).File)
 	if cr.Workflow == nil {
 		t.Fatalf("compile failed: %+v", cr.Diagnostics)
 	}
@@ -334,7 +334,7 @@ workflow wf:
   gate -> impl when "decision == 'changes_requested'" as fix_loop(3)
   gate -> fail
 `
-	cr := ir.Compile(parser.Parse("t.bot", src).File)
+	cr := ir.Compile(parsertest.Parse("t.bot", src).File)
 	if cr.Workflow == nil {
 		t.Fatalf("compile failed: %+v", cr.Diagnostics)
 	}
@@ -422,7 +422,7 @@ workflow wf:
   gate -> impl when "decision == 'changes_requested'" as fix_loop(3)
   gate -> fail
 `
-	cr := ir.Compile(parser.Parse("t.bot", src).File)
+	cr := ir.Compile(parsertest.Parse("t.bot", src).File)
 	if cr.Workflow == nil {
 		t.Fatalf("compile failed: %+v", cr.Diagnostics)
 	}

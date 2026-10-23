@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"net/http"
 	"net/http/httptest"
@@ -71,7 +72,7 @@ func TestSaveAUnitKeepsAFragmentsSubbotSourceAsWritten(t *testing.T) {
 	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); !strings.Contains(got, "source: \"kids/other.bot\"") {
 		t.Fatalf("the edited source was not written in the fragment's terms:\n%s", got)
 	}
-	if u := unit.LoadDir(filepath.Join(workdir, "demo", "main.bot")); u.HasErrors() || u.Merged.Subbots[0].Source != "lib/kids/other.bot" {
+	if u := unittest.Whole(unit.LoadDir(filepath.Join(workdir, "demo", "main.bot"))); u.HasErrors() || u.Merged.Subbots[0].Source != "lib/kids/other.bot" {
 		t.Fatalf("after the save the unit resolves the child at %q", u.Merged.Subbots[0].Source)
 	}
 }
@@ -254,7 +255,7 @@ func TestUnparseUnitPresentsAndReturnsTheRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	patched := map[string]string{"main.bot": out.Files["main.bot"], "lib/nodes.bot": unitFixtureNodes}
-	if len(out.Files) != 1 || out.Revision == "" || out.Revision == opened.Unit.Revision || out.Revision != unit.LoadMap(patched, "main.bot").Digest {
+	if len(out.Files) != 1 || out.Revision == "" || out.Revision == opened.Unit.Revision || out.Revision != unittest.Whole(unit.LoadMap(patched, "main.bot")).Digest {
 		t.Fatalf("rewritten %v revision %q", out.Files, out.Revision)
 	}
 	// The main is a workflow file, on both endpoints: a manifest is never

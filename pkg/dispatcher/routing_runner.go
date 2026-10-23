@@ -122,6 +122,13 @@ func (r *RoutingRunner) resolveDynamicPath(key string) (string, bool) {
 		Workdir: botregistry.WorkdirFromPaths(r.BotsPaths),
 	})
 	if err != nil {
+		// No catalogue, no dynamic route — a workspace overlay its reader
+		// refused included (*botregistry.OverlayRefusal): the operator's
+		// visibility decisions are unread, and a bot is routed only on
+		// them. Said, since nothing else here is.
+		if r.logger != nil {
+			r.logger.Warn("routing runner: no dynamic route for %q: the bot catalogue is not read: %v", key, err)
+		}
 		return "", false
 	}
 	nk := botregistry.NormalizeName(key)

@@ -2,6 +2,7 @@ package botscaffold
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -50,7 +51,7 @@ func scaffoldedWorkflows(t *testing.T, spec Spec) map[string]*ir.Workflow {
 		if !strings.HasSuffix(rel, ".bot") || strings.HasPrefix(rel, unit.FragmentDir+"/") {
 			continue
 		}
-		u := unit.LoadDir(abs)
+		u := unittest.Whole(unit.LoadDir(abs))
 		if len(u.Diagnostics) != 0 {
 			t.Fatalf("%s: %s: parse: %v", spec.Shape, rel, u.Diagnostics)
 		}

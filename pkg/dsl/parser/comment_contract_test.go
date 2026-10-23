@@ -65,7 +65,7 @@ func TestStrictEscapeDirectiveSurvivesSingleHashComments(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pr := parser.Parse("se.bot", tc.header+body)
+			pr := parser.ParseLenient("se.bot", tc.header+body)
 			for _, d := range pr.Diagnostics {
 				t.Fatalf("unexpected diagnostic: %s", d.Error())
 			}
@@ -85,7 +85,7 @@ func TestStrictEscapeDirectiveSurvivesSingleHashComments(t *testing.T) {
 func TestPromptHeaderTrailingCommentKeepsTheBody(t *testing.T) {
 	for _, header := range []string{"prompt p: # why", "prompt p: ## why", "prompt p:"} {
 		src := "schema out:\n  ok: bool\n\n" + header + "\n  # Heading of the body\n  Body text.\n\nagent a:\n  model: \"m\"\n  output: out\n  system: p\n\nworkflow w:\n  entry: a\n  a -> done\n"
-		pr := parser.Parse("ph.bot", src)
+		pr := parser.ParseLenient("ph.bot", src)
 		for _, d := range pr.Diagnostics {
 			t.Errorf("%q: unexpected diagnostic: %s", header, d.Error())
 		}

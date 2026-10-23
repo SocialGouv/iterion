@@ -25,6 +25,7 @@ func saveWorkflowRequest(t *testing.T, s *Server, path, name string, createOnly 
 		Path:       path,
 		Document:   document,
 		CreateOnly: createOnly,
+		Digest:     digestOfFile(t, s.cfg.WorkDir, path),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +296,7 @@ func TestSaveFileCarriesTheWorkflowPermissionGate(t *testing.T) {
 
 	save := func(t *testing.T, document string) string {
 		t.Helper()
-		body, err := json.Marshal(saveFileRequest{Path: "gated.bot", Document: json.RawMessage(document)})
+		body, err := json.Marshal(saveFileRequest{Path: "gated.bot", Document: json.RawMessage(document), Digest: digestOfFile(t, workdir, "gated.bot")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -353,7 +354,7 @@ func TestSaveFileRefusesAnEmptiedPermissionRuleList(t *testing.T) {
 
 	post := func(t *testing.T, document string) (int, string) {
 		t.Helper()
-		body, err := json.Marshal(saveFileRequest{Path: "gate.bot", Document: json.RawMessage(document)})
+		body, err := json.Marshal(saveFileRequest{Path: "gate.bot", Document: json.RawMessage(document), Digest: digestOfFile(t, workdir, "gate.bot")})
 		if err != nil {
 			t.Fatal(err)
 		}

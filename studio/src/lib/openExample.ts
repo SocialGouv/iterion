@@ -30,7 +30,8 @@ export async function openExampleIntoStore(name: string, store: DocumentStore): 
     // the editor is about that file — and is marked a SALVAGE instead, which
     // is what refuses the write.
     s.setCurrentFilePath(result.path ?? `bots/${name}`);
-    s.setSalvaged(result.bindable === false);
+    s.setSalvaged(result.bindable === false, result.read_refusal ?? null);
+    s.setOpenedDigest(result.digest ?? null);
     s.setUnit(result.unit ?? null);
     s.markSaved();
   });

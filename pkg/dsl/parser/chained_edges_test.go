@@ -35,8 +35,8 @@ func TestAChainOfArrowsReadsAsItsEdges(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			head := "workflow w:\n  entry: a\n  "
-			got := Parse("c.bot", head+strings.ReplaceAll(c.chained, "\n", "\n  "))
-			want := Parse("e.bot", head+strings.ReplaceAll(c.explicit, "\n", "\n  "))
+			got := parseLenient("c.bot", head+strings.ReplaceAll(c.chained, "\n", "\n  "))
+			want := parseLenient("e.bot", head+strings.ReplaceAll(c.explicit, "\n", "\n  "))
 			if len(got.Diagnostics) != 0 || len(want.Diagnostics) != 0 {
 				t.Fatalf("diagnostics chained=%v explicit=%v", got.Diagnostics, want.Diagnostics)
 			}
@@ -56,7 +56,7 @@ func TestAChainOfArrowsReadsAsItsEdges(t *testing.T) {
 	}
 	// The same chain inside a group.
 	src := "group g:\n  agent a:\n    description: \"x\"\n  agent b:\n    description: \"y\"\n  agent c:\n    description: \"z\"\n  a -> b -> c when ok\n"
-	res := Parse("g.bot", src)
+	res := parseLenient("g.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("group: %v", res.Diagnostics)
 	}
@@ -72,7 +72,7 @@ func TestAChainOfArrowsReadsAsItsEdges(t *testing.T) {
 // dropped, the next line is read.
 func TestAClauseBeforeAnArrowIsRefused(t *testing.T) {
 	src := "workflow w:\n  entry: a\n  a -> b when ok -> c\n  b -> done\n"
-	res := Parse("c.bot", src)
+	res := parseLenient("c.bot", src)
 	if len(res.Diagnostics) != 1 {
 		t.Fatalf("want one diagnostic, got %v", res.Diagnostics)
 	}
@@ -92,7 +92,7 @@ func TestAClauseBeforeAnArrowIsRefused(t *testing.T) {
 func TestWithMapValuesMayBeBareLiterals(t *testing.T) {
 	bare := "workflow w:\n  entry: a\n  a -> b with { n: 3, f: 1.5, ok: true, no: false, s: \"x\" }\n"
 	quoted := "workflow w:\n  entry: a\n  a -> b with { n: \"3\", f: \"1.5\", ok: \"true\", no: \"false\", s: \"x\" }\n"
-	got, want := Parse("b.bot", bare), Parse("q.bot", quoted)
+	got, want := parseLenient("b.bot", bare), parseLenient("q.bot", quoted)
 	if len(got.Diagnostics) != 0 || len(want.Diagnostics) != 0 {
 		t.Fatalf("diagnostics bare=%v quoted=%v", got.Diagnostics, want.Diagnostics)
 	}
@@ -107,12 +107,12 @@ func TestWithMapValuesMayBeBareLiterals(t *testing.T) {
 	}
 	// The same map on a group instantiation.
 	use := "group g(n):\n  agent a:\n    description: \"{{params.n}}\"\n\nuse g as r1 with { n: 3 }\n"
-	res := Parse("u.bot", use)
+	res := parseLenient("u.bot", use)
 	if len(res.Diagnostics) != 0 || len(res.File.Uses) != 1 || len(res.File.Uses[0].With) != 1 || res.File.Uses[0].With[0].Value != "3" {
 		t.Fatalf("use … with: %v %+v", res.Diagnostics, res.File.Uses)
 	}
 	// An identifier is still not a value: it would read as a reference.
-	bad := Parse("x.bot", "workflow w:\n  entry: a\n  a -> b with { n: three }\n")
+	bad := parseLenient("x.bot", "workflow w:\n  entry: a\n  a -> b with { n: three }\n")
 	if len(bad.Diagnostics) == 0 {
 		t.Fatalf("a bare identifier was accepted as a with value")
 	}

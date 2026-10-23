@@ -2,12 +2,12 @@ package ast_test
 
 import (
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -763,7 +763,7 @@ workflow w:
 
   produce_episode -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parsertest.Parse("test.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %+v", res.Diagnostics)
 	}
@@ -776,7 +776,7 @@ workflow w:
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 	out := unparse.Unparse(restored)
-	res2 := parser.Parse("test.bot", out)
+	res2 := parsertest.Parse("test.bot", out)
 	if len(res2.Diagnostics) != 0 {
 		t.Fatalf("reparse diagnostics: %+v\nsource:\n%s", res2.Diagnostics, out)
 	}

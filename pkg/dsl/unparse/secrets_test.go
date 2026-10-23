@@ -1,11 +1,11 @@
 package unparse
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 const secretsRoundtripSrc = `secrets:
@@ -33,13 +33,13 @@ workflow w:
 `
 
 func TestSecretsRoundtrip(t *testing.T) {
-	pr1 := parser.Parse("t.bot", secretsRoundtripSrc)
+	pr1 := parsertest.Parse("t.bot", secretsRoundtripSrc)
 	if len(pr1.Diagnostics) > 0 {
 		t.Fatalf("first parse diagnostics: %+v", pr1.Diagnostics)
 	}
 	out1 := Unparse(pr1.File)
 
-	pr2 := parser.Parse("t.bot", out1)
+	pr2 := parsertest.Parse("t.bot", out1)
 	if len(pr2.Diagnostics) > 0 {
 		t.Fatalf("re-parse produced diagnostics:\n%s\n%+v", out1, pr2.Diagnostics)
 	}
@@ -66,7 +66,7 @@ func TestSecretsRoundtrip(t *testing.T) {
 }
 
 func TestSecretsASTJSONRoundtrip(t *testing.T) {
-	pr := parser.Parse("t.bot", secretsRoundtripSrc)
+	pr := parsertest.Parse("t.bot", secretsRoundtripSrc)
 	if len(pr.Diagnostics) > 0 {
 		t.Fatalf("parse diagnostics: %+v", pr.Diagnostics)
 	}

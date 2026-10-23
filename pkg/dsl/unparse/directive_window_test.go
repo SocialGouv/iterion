@@ -1,10 +1,9 @@
 package unparse
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A profile-1 file opts into standard escapes by the strict-escape
@@ -43,7 +42,7 @@ func TestAFrontmatterCannotPushTheDirectiveOutOfItsWindow(t *testing.T) {
 				b.WriteString("## strict-escape: on" + nl)
 			}
 			b.WriteString("tool t:" + nl + "  command: " + `"x"` + nl + nl + "workflow w:" + nl + "  entry: t" + nl + "  t -> done" + nl)
-			pr := parser.Parse("x.bot", b.String())
+			pr := parsertest.Parse("x.bot", b.String())
 			if len(pr.Diagnostics) > 0 {
 				t.Fatalf("the input is refused: %v", pr.Diagnostics)
 			}

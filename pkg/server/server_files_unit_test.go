@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,6 +44,11 @@ type openedUnit struct {
 	// False when the file did not parse: the document is the salvage, and
 	// the studio marks the buffer so the sites that write it refuse.
 	Bindable bool `json:"bindable"`
+	// Set when a bound of the reader made the document the salvage.
+	ReadRefusal *readRefusalInfo `json:"read_refusal"`
+	// The digest the open issued (the digest rule): present only because
+	// this open read the file whole.
+	Digest string `json:"digest"`
 }
 
 func openPath(t *testing.T, s *Server, path string) (*httptest.ResponseRecorder, openedUnit) {
@@ -65,16 +71,39 @@ func savePath(t *testing.T, s *Server, path string, document json.RawMessage, re
 	return savePathClaimed(t, s, path, document, revision, nil)
 }
 
+// digestOfFile is the digest a well-formed client presents for the file as
+// it stands: sha256 of its current bytes.
+func digestOfFile(t *testing.T, workdir, rel string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(rel)))
+	if errors.Is(err, os.ErrNotExist) {
+		return "" // a creation decides on the absence; no digest to present
+	}
+	if err != nil {
+		t.Fatalf("read %s for its digest: %v", rel, err)
+	}
+	return contentSHA256(string(b))
+}
+
 // savePathClaimed is savePath carrying the unit's file list as the client
 // holds it (unit_files) — what a save after a per-file edit of a header
 // presents, so the file's profile and import lines are written from the
 // claim rather than rebuilt from the stored files.
 func savePathClaimed(t *testing.T, s *Server, path string, document json.RawMessage, revision string, unitFiles []unitFileInfo) (*httptest.ResponseRecorder, saveFileResponse) {
 	t.Helper()
-	body, _ := json.Marshal(saveFileRequest{Path: path, Document: document, Revision: revision, UnitFiles: unitFiles})
-	req := httptest.NewRequest(http.MethodPost, "/api/files/save", bytes.NewReader(body))
+	req := saveFileRequest{Path: path, Document: document, Revision: revision, UnitFiles: unitFiles}
+	if revision == "" && len(unitFiles) == 0 && !req.CreateOnly {
+		// A single-file save presents the digest of the file as it stands —
+		// the well-formed client, which saved from a whole read of it (a
+		// file that is not there is a creation, decided on its absence). A
+		// test that means to present a stale digest, or none, marshals its
+		// own saveFileRequest.
+		req.Digest = digestOfFile(t, s.cfg.WorkDir, path)
+	}
+	body, _ := json.Marshal(req)
+	r := httptest.NewRequest(http.MethodPost, "/api/files/save", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	s.handleSaveFile(rec, req)
+	s.handleSaveFile(rec, r)
 	var out saveFileResponse
 	if rec.Code == http.StatusOK {
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -129,7 +158,7 @@ func TestOpenAUnitReturnsTheMergedDocumentWithProvenanceAndRevision(t *testing.T
 	if opened.Unit == nil || opened.Unit.Main != "main.bot" || opened.Unit.Root != "demo" || len(opened.Unit.Files) != 2 || opened.Unit.Files[0].Imports[0] != "lib/nodes.bot" {
 		t.Fatalf("unit %+v", opened.Unit)
 	}
-	if want := unit.LoadDir(filepath.Join(workdir, "demo", "main.bot")).Digest; opened.Unit.Revision != want {
+	if want := unittest.Whole(unit.LoadDir(filepath.Join(workdir, "demo", "main.bot"))).Digest; opened.Unit.Revision != want {
 		t.Fatalf("revision %q, want the unit's digest %q", opened.Unit.Revision, want)
 	}
 	if opened.Source != unitFixtureMain {
@@ -178,7 +207,7 @@ func TestSaveAUnitRewritesOnlyTheFileThatChanged(t *testing.T) {
 	if got := readFixture(t, workdir, "demo/main.bot"); got != unitFixtureMain {
 		t.Fatalf("the main was rewritten:\n%s", got)
 	}
-	if want := unit.LoadDir(filepath.Join(workdir, "demo", "main.bot")).Digest; saved.Revision != want || saved.Revision == opened.Unit.Revision {
+	if want := unittest.Whole(unit.LoadDir(filepath.Join(workdir, "demo", "main.bot"))).Digest; saved.Revision != want || saved.Revision == opened.Unit.Revision {
 		t.Fatalf("revision after save %q, want the new digest %q", saved.Revision, want)
 	}
 	// The same program again: nothing to write.

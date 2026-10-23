@@ -10,26 +10,123 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 )
 
-// ParseResult is the output of Parse.
+// ParseResult is the output of Parse: the reading of a whole source.
 type ParseResult struct {
-	File        *ast.File
+	File *ast.File
+	// Diagnostics are what the reading reports: at most MaxReported of each
+	// code (Report).
 	Diagnostics []Diagnostic
+	// ErrorCount is how many errors the reading found, reported or not —
+	// the count to show; Diagnostics may hold fewer.
+	ErrorCount int
+	// Refused is the bound the source was refused whole for — Diagnostics
+	// then hold that one refusal — BoundNone when it reads. No exported
+	// door answers a refused source as a result: Parse and ParseSpending
+	// answer it as a *ReadRefusal, and a result a caller holds is a reading
+	// of the whole source — or of none at all: a source that is no text the
+	// reader reads (not UTF-8, E006) is a result whose File is nil and whose
+	// one diagnostic says so.
+	Refused Bound
+	// Spent is what the reading spent of its read budget.
+	Spent int
 	// ProfileReads lists, for a file read as profile 1, the places profile 2
 	// would read otherwise (Lexer.ProfileReads); nil for a profile-2 file.
 	ProfileReads []ProfileRead
+	// refusal is the refusal of a source refused whole (Refused), nil when
+	// it reads.
+	refusal *ReadRefusal
 }
 
-// Parse parses an iterion DSL source file and returns the AST and any diagnostics.
+// ReadRefusal is the refusal of a source a bound of the reader refused whole
+// — past the size cap, or past the read budget it spends — and the refusal of
+// a bot the read budget its files share cut short (pkg/dsl/unit). Such a
+// source has no reading: the empty file it reads as is nothing of the file,
+// and a writer, a route or a verdict that took it for one would act on a file
+// it never read. Parse, ParseSpending and the unit loaders answer it in place
+// of a result, and no door of this package hands the empty reading over: a
+// display of such a source shows the refusal. The one salvage left is a bot's
+// files short of the cut (unit.Salvage), a view whose methods hand out no
+// AST, no unit and no program.
+type ReadRefusal struct {
+	// Bound is the bound the reader met: BoundSize or BoundBudget —
+	// BoundNone for a load refused without one: a bot one of whose files is
+	// no text the reader reads (not UTF-8, E006), or one whose fragment is
+	// there and was not read (its permissions, or the root's confinement;
+	// pkg/dsl/unit answers both loads short).
+	Bound Bound
+	// Diagnostic is the refusal as the reading reports it — positioned
+	// where the bound was met, its Hint the remedy: for the read budget,
+	// ReadBudgetEnv.
+	Diagnostic Diagnostic
+}
+
+// Error is the positioned refusal and its remedy. Diagnostic.Error leaves
+// the hint to the readers that show one beside it; a refusal quoted as an
+// error reaches readers that do not — a 422 body, a CLI line, a launch
+// refusal — and the remedy is the one thing the operator needs from it.
+func (r *ReadRefusal) Error() string {
+	if r.Diagnostic.Hint == "" {
+		return r.Diagnostic.Error()
+	}
+	return r.Diagnostic.Error() + " — " + r.Diagnostic.Hint
+}
+
+// ReadRefusal is the refusal of a source refused whole, nil for one that
+// reads. Nil on every result an exported door answers — they answer a
+// refused source as the error — so it speaks only inside this package.
+func (pr *ParseResult) ReadRefusal() *ReadRefusal {
+	return pr.refusal
+}
+
+// Parse reads src, the source file named filename, whole: its AST and what
+// the reading reports. A source the parser recovers on is read whole — its
+// AST is what the parser could make of it, its errors say what it could
+// not.
+//
+// A source a bound of the reader refuses whole — past the size cap, or past
+// the read budget — has no reading to give, and Parse answers nil and a
+// *ReadRefusal: positioned, naming its remedy. A caller that reports the
+// refusal has all of it in the error, and nothing else of the source: no
+// door hands the empty reading over.
 //
 // A source holding a byte that is not UTF-8 is refused before it lexes
-// (E006), with the byte's line: the lexer reads runes, so the byte would
-// otherwise arrive everywhere as U+FFFD where its author wrote another
-// character, and the errors the parser reports then name positions the
-// author never wrote. The author document refuses the same byte by name
-// (E050, pkg/dsl/author/guard.go) — one rule at both doors.
-func Parse(filename, src string) *ParseResult {
+// (E006), with the byte's line, and answers a result with no File: the
+// lexer reads runes, so the byte would otherwise arrive everywhere as U+FFFD
+// where its author wrote another character, and the errors the parser
+// reports then name positions the author never wrote. The author document
+// refuses the same byte by name (E050, pkg/dsl/author/guard.go) — one rule
+// at both doors.
+func Parse(filename, src string) (*ParseResult, error) {
+	return whole(parseAny(filename, src, sourceBudget()))
+}
+
+// ParseSpending is Parse on budget, which the source spends with the other
+// sources reading on it: the files of one bot (NewUnitBudget). A source the
+// budget (or the size cap) refuses answers nil and its *ReadRefusal, as
+// Parse does — the budget spent to the cut. The unit loader is its reader:
+// it records a file's refusal and answers a bot cut short as a refusal of
+// its own.
+func ParseSpending(filename, src string, budget *Budget) (*ParseResult, error) {
+	return whole(parseAny(filename, src, budget))
+}
+
+// whole is an exported door's answer for the reading pr: pr when it read the
+// source whole, its refusal otherwise.
+func whole(pr *ParseResult) (*ParseResult, error) {
+	if pr.refusal != nil {
+		return nil, pr.refusal
+	}
+	return pr, nil
+}
+
+// parseAny reads src on budget and answers what it read, a source refused
+// whole included — its File empty, its one diagnostic the refusal, Refused
+// the bound, ReadRefusal the refusal. Unexported on purpose: nothing it
+// holds of a refused source is the file, and no exported door hands that
+// reading over (whole).
+func parseAny(filename, src string, budget *Budget) *ParseResult {
 	if at := invalidUTF8(src); at >= 0 {
-		return &ParseResult{Diagnostics: []Diagnostic{{
+		return &ParseResult{ErrorCount: 1, Diagnostics: []Diagnostic{{
 			Code:     DiagNotUTF8,
 			Severity: SeverityError,
 			Message:  fmt.Sprintf("the source is not UTF-8 text (byte %d): it is read as U+FFFD where its author wrote another character", at),
@@ -39,15 +136,16 @@ func Parse(filename, src string) *ParseResult {
 			Hint:     HintFor(DiagNotUTF8),
 		}}}
 	}
+	before := budget.spent
 	p := &parser{
-		lex:  NewLexer(filename, src),
+		lex:  lexSource(filename, src, budget),
 		file: filename,
 	}
 	f := p.parseFile()
 	// Every `##` line goes back to the declaration it was written around,
 	// with the address the writer reads to put it back (comments.go).
 	attachComments(filename, f, p.lex.All())
-	return &ParseResult{File: f, Diagnostics: p.diags, ProfileReads: p.lex.ProfileReads()}
+	return &ParseResult{File: f, Diagnostics: p.report.Diagnostics(), ErrorCount: p.report.Count(SeverityError), Refused: p.lex.Refused(), Spent: budget.spent - before, ProfileReads: p.lex.ProfileReads(), refusal: p.lex.refusal(filename)}
 }
 
 // invalidUTF8 is the offset of src's first byte that is not UTF-8, -1 when
@@ -67,9 +165,11 @@ func invalidUTF8(src string) int {
 
 // parser is the recursive-descent parser state.
 type parser struct {
-	lex   *Lexer
-	file  string
-	diags []Diagnostic
+	lex  *Lexer
+	file string
+	// report is every diagnostic of the reading, the one place each is
+	// recorded (addErrorHint).
+	report Report
 	// blockHost is the kind whose body the block being parsed sits in — what
 	// an "outdent it" remedy must name when the block has several possible
 	// hosts (an mcp: block under a workflow is not an agent's). Set by
@@ -84,6 +184,11 @@ type parser struct {
 	// inlineByHash dedupes them by body.
 	inlinePrompts []*ast.PromptDecl
 	inlineByHash  map[string]*ast.PromptDecl
+	// directives are the strict-escape directives written between the
+	// declarations, for refuseDirectiveInProfile: the file's comments
+	// themselves are given to the AST once, with their addresses, by
+	// attachComments.
+	directives []Token
 }
 
 // ---- helpers ----
@@ -113,8 +218,10 @@ func (p *parser) addErrorHint(code DiagCode, t Token, msg, hint string) {
 	if t.Type == TokenError {
 		// Unconditional — a lexer diagnosis may share a parser code (the
 		// block-scalar opener is E002), and lexerError passes exactly
-		// this pair, so the replacement is idempotent for it.
-		code, msg, hint = lexerCode(t), t.Value, ""
+		// this pair, so the replacement is idempotent for it. A lexer that
+		// refused the whole source holds that refusal alone, with the
+		// remedy of the bound it ran into.
+		code, msg, hint = lexerCode(t), t.Value, p.lex.refusedHint
 	}
 	if t.Type == TokenIndent && (code == DiagUnexpectedToken || code == DiagUnknownProperty) {
 		// "unexpected token ''" / "unknown property ''": an indent token
@@ -126,7 +233,7 @@ func (p *parser) addErrorHint(code DiagCode, t Token, msg, hint string) {
 	if hint == "" {
 		hint = HintFor(code)
 	}
-	p.diags = append(p.diags, Diagnostic{
+	p.report.Add(Diagnostic{
 		Code:     code,
 		Severity: SeverityError,
 		Message:  msg,
@@ -363,10 +470,9 @@ func (p *parser) parseFile() *ast.File {
 			}
 			if t.Type == TokenComment {
 				p.next()
-				f.Comments = append(f.Comments, &ast.Comment{
-					Text: t.Value,
-					Span: ast.Span{Start: p.pos(t), End: p.pos(t)},
-				})
+				if IsStrictEscapeDirective(t.Value) {
+					p.directives = append(p.directives, t)
+				}
 				continue
 			}
 			break
@@ -574,11 +680,7 @@ func (p *parser) refuseDirectiveInProfile(f *ast.File) {
 	if f.EffectiveProfile() <= ast.DefaultProfile {
 		return
 	}
-	for _, c := range f.Comments {
-		if !IsStrictEscapeDirective(c.Text) {
-			continue
-		}
-		at := Token{Type: TokenComment, Value: c.Text, Line: c.Span.Start.Line, Column: c.Span.Start.Column}
+	for _, at := range p.directives {
 		p.addError(DiagDirectiveInProfile, at, fmt.Sprintf("the strict-escape directive is profile 1's — profile %d reads standard escapes by default", f.EffectiveProfile()))
 	}
 }

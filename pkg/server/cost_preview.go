@@ -153,8 +153,8 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		parserPath = "studio.bot"
 	}
 
-	pr := parser.Parse(parserPath, src)
-	if pr.File == nil {
+	pr, err := parser.Parse(parserPath, src)
+	if err != nil || pr.File == nil {
 		// Never 5xx on bad input — the chip silently hides and /api/validate
 		// remains the authoritative blocker for the Launch button.
 		writeJSON(w, previewCostResponse{Notes: []string{"workflow_unparseable"}})

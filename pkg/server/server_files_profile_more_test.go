@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A document that carries no profile — an older studio build's — must not
@@ -25,7 +25,7 @@ func TestSaveFileRefusesToLowerTheProfile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res := parser.Parse("keep.bot", src)
+	res := parsertest.Parse("keep.bot", src)
 	doc, err := ast.MarshalFile(res.File)
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +38,7 @@ func TestSaveFileRefusesToLowerTheProfile(t *testing.T) {
 	stripped, _ := json.Marshal(m)
 
 	post := func(document []byte) *http.Response {
-		body, _ := json.Marshal(map[string]any{"path": "keep.bot", "document": json.RawMessage(document)})
+		body, _ := json.Marshal(map[string]any{"path": "keep.bot", "document": json.RawMessage(document), "digest": digestOfFile(t, filepath.Dir(path), "keep.bot")})
 		resp, err := http.Post(hs.URL+"/api/files/save", "application/json", bytes.NewReader(body))
 		if err != nil {
 			t.Fatal(err)

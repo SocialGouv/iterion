@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -125,7 +126,7 @@ func TestTypedFailNameCollides(t *testing.T) {
 // implicit terminal.
 func TestTypedFailCannotUseAReservedName(t *testing.T) {
 	src := "compute gate:\n  expr:\n    pct: \"42\"\n\nfail fail:\n  code: BOOM\n\nworkflow reserved:\n  entry: gate\n  gate -> fail\n"
-	res := parser.Parse("test.bot", src)
+	res := parsertest.Parse("test.bot", src)
 	found := false
 	for _, d := range res.Diagnostics {
 		if d.Code == parser.DiagReservedName {

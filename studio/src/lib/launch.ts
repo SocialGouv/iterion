@@ -1,4 +1,4 @@
-import type { IterDocument, UnitInfo } from "@/api/types";
+import type { IterDocument, ReadRefusal, UnitInfo } from "@/api/types";
 import { salvageRefusal } from "@/lib/salvage";
 
 /** The slice of the document store the launch gate reads. */
@@ -6,6 +6,8 @@ export interface LaunchGateState {
   document: IterDocument | null;
   currentFilePath: string | null;
   salvaged: boolean;
+  /** Why the salvage, when the server's reader made it (ReadRefusal). */
+  readRefusal?: ReadRefusal | null;
   unit: UnitInfo | null;
   diagnostics: string[];
   _generation: number;

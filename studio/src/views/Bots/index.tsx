@@ -36,6 +36,7 @@ import {
   type BotCategory,
 } from "@/lib/botTaxonomy";
 import { useBotsStore } from "@/store/bots";
+import { DiscoveryErrorBanners } from "./DiscoveryErrorBanners";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 
@@ -350,20 +351,7 @@ export default function BotsView() {
           {botsError}
         </InlineBanner>
       )}
-      {discoveryErrors.length > 0 && (
-        <InlineBanner
-          tone="warning"
-          title={`${discoveryErrors.length} bot${discoveryErrors.length === 1 ? "" : "s"} skipped`}
-        >
-          <ul className="list-disc pl-4">
-            {discoveryErrors.map((d, i) => (
-              <li key={`${i}-${d.path}`}>
-                <code>{d.path}</code>: {d.error}
-              </li>
-            ))}
-          </ul>
-        </InlineBanner>
-      )}
+      <DiscoveryErrorBanners errors={discoveryErrors} />
       {triggersError && (
         <InlineBanner tone="warning" title="Couldn't load trigger counts">
           {triggersError}

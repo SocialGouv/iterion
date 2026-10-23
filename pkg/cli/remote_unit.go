@@ -36,7 +36,10 @@ func prepareUnit(filePath string) (string, error) {
 	if a, err := filepath.Abs(filePath); err == nil {
 		abs = a
 	}
-	u := unit.LoadDirWithMain(abs, abs, src)
+	u, err := unit.LoadDirWithMain(abs, abs, src)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", filePath, err)
+	}
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return "", fmt.Errorf("%s: %s", filePath, d.Error())

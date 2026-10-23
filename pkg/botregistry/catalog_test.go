@@ -1,6 +1,7 @@
 package botregistry
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -187,7 +188,7 @@ func TestList_AppliesOverlayAndKeepsDisabled(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "bots", "b1", "manifest.yaml"), "name: b1\n")
 	writeFile(t, filepath.Join(dir, "bots", "b1", "main.bot"), "agent x:\n  model: \"test\"\n")
-	if err := SetOverlayEnabled(dir, "b1", boolPtr(false)); err != nil {
+	if err := SetOverlayEnabled(context.Background(), dir, "b1", boolPtr(false)); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := List(ListOptions{Paths: DefaultPaths(dir), Workdir: dir})

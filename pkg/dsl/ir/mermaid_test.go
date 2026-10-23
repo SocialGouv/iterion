@@ -1,6 +1,7 @@
 package ir_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -11,7 +12,7 @@ import (
 // compileTestWorkflow parses and compiles an inline workflow DSL string.
 func compileTestWorkflow(t *testing.T, src string) *ir.Workflow {
 	t.Helper()
-	pr := parser.Parse("test.bot", src)
+	pr := parsertest.Parse("test.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("parse error: %s", d.Error())

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +17,7 @@ import (
 
 func compileBotText(t *testing.T, src string) *ir.Workflow {
 	t.Helper()
-	pr := parser.Parse("x.bot", src)
+	pr := parsertest.Parse("x.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("fixture does not parse: %s", d.Error())

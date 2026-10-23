@@ -47,7 +47,7 @@ func TestAMisspeltBlockHeaderDropsItsBodyEverywhere(t *testing.T) {
 			}},
 	}
 	for _, c := range cases {
-		res := Parse("t.bot", c.src)
+		res := parseLenient("t.bot", c.src)
 		if len(res.Diagnostics) != 1 {
 			t.Errorf("%s: want exactly one diagnostic, got %v", c.name, res.Diagnostics)
 			continue
@@ -64,7 +64,7 @@ func TestAMisspeltBlockHeaderDropsItsBodyEverywhere(t *testing.T) {
 // author's mistake, and swallowing it would only make it resurface after the
 // header is fixed.
 func TestALexerErrorInsideADroppedBodyIsStillReported(t *testing.T) {
-	res := Parse("t.bot", "agent a:\n  model: \"m\"\n  sandbx:\n    image: \"i\"\n\tuser: \"u\"\n  system: s\n")
+	res := parseLenient("t.bot", "agent a:\n  model: \"m\"\n  sandbx:\n    image: \"i\"\n\tuser: \"u\"\n  system: s\n")
 	var codes []string
 	for _, d := range res.Diagnostics {
 		codes = append(codes, string(d.Code))
@@ -81,7 +81,7 @@ func TestALexerErrorInsideADroppedBodyIsStillReported(t *testing.T) {
 // source of an edge that lacks its arrow — while a node NAMED like a keyword
 // is still a valid edge endpoint.
 func TestADeclarationAGroupCannotHoldIsRefusedByName(t *testing.T) {
-	res := Parse("g.bot", "group g:\n  emit e:\n    event: \"x\"\n  agent a:\n    model: \"m\"\n")
+	res := parseLenient("g.bot", "group g:\n  emit e:\n    event: \"x\"\n  agent a:\n    model: \"m\"\n")
 	if len(res.Diagnostics) != 1 {
 		t.Fatalf("want one diagnostic, got %v", res.Diagnostics)
 	}
@@ -95,7 +95,7 @@ func TestADeclarationAGroupCannotHoldIsRefusedByName(t *testing.T) {
 	if len(res.File.Groups) != 1 || len(res.File.Groups[0].Agents) != 1 {
 		t.Fatalf("the member after the refused declaration did not parse: %+v", res.File.Groups)
 	}
-	res = Parse("g.bot", "group g:\n  agent emit:\n    model: \"m\"\n  emit -> done\n")
+	res = parseLenient("g.bot", "group g:\n  agent emit:\n    model: \"m\"\n  emit -> done\n")
 	if len(res.Diagnostics) != 0 || len(res.File.Groups[0].Edges) != 1 {
 		t.Fatalf("an edge from a node named `emit` must still parse: %v, %d edges", res.Diagnostics, len(res.File.Groups[0].Edges))
 	}

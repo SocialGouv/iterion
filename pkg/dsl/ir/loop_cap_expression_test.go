@@ -3,6 +3,7 @@ package ir
 import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 )
@@ -23,7 +24,7 @@ workflow w:
 `
 
 func TestLoopCapExpressionCompilesThroughTransport(t *testing.T) {
-	pr := parser.Parse("loop-cap.bot", loopCapExpressionSource)
+	pr := parsertest.Parse("loop-cap.bot", loopCapExpressionSource)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatal(d.Error())

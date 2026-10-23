@@ -1,10 +1,9 @@
 package author
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A DECLARED empty tools list (`tools: []`, the author saying "this node has
@@ -26,7 +25,7 @@ func TestADeclaredEmptyToolsListSurvivesTheDocument(t *testing.T) {
 				lines = append(lines, tc.tools)
 			}
 			lines = append(lines, "", "workflow w:", "  entry: a", "  a -> done", "")
-			pr := parser.Parse("x.bot", strings.Join(lines, nl))
+			pr := parsertest.Parse("x.bot", strings.Join(lines, nl))
 			if len(pr.Diagnostics) > 0 {
 				t.Fatalf(".bot refused: %v", pr.Diagnostics)
 			}

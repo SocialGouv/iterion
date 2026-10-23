@@ -2,11 +2,11 @@ package author
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -42,7 +42,7 @@ func TestTheDocumentsCatalogIsWhatTheCatalogReaderReads(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			src := head + body
-			pr := parser.Parse("x.bot", src)
+			pr := parsertest.Parse("x.bot", src)
 			if hasParseErrors(pr.Diagnostics) {
 				t.Fatalf("the .bot does not parse: %v", pr.Diagnostics)
 			}
@@ -50,7 +50,7 @@ func TestTheDocumentsCatalogIsWhatTheCatalogReaderReads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := bundle.ParseFrontmatter([]byte(src))
+			want := testFrontmatter(t, []byte(src))
 			if has := strings.Contains(string(out), "\ncatalog:\n"); has != !want.Empty() {
 				t.Fatalf("the document carries a catalog: %v, while the catalogue reads %s\n%s", has, identityOf(want), out)
 			}
@@ -58,7 +58,7 @@ func TestTheDocumentsCatalogIsWhatTheCatalogReaderReads(t *testing.T) {
 			if errs := errorsOf(res); len(errs) > 0 {
 				t.Fatalf("the document does not read: %v\n%s", errs, out)
 			}
-			if got := bundle.ParseFrontmatter([]byte(unparse.Unparse(res.File))); identityOf(got) != identityOf(want) {
+			if got := testFrontmatter(t, []byte(unparse.Unparse(res.File))); identityOf(got) != identityOf(want) {
 				t.Fatalf("the .bot the document writes back carries %s, the original %s\n%s", identityOf(got), identityOf(want), out)
 			}
 		})

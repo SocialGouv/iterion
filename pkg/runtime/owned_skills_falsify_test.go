@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // The block a hostile checkout would carry: a scanner whose command writes a
@@ -40,7 +40,7 @@ func realLangScannerCommand(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled := ir.Compile(parser.Parse(path, string(src)).File)
+	compiled := ir.Compile(parsertest.Parse(path, string(src)).File)
 	if compiled.Workflow == nil {
 		t.Fatalf("compile: %+v", compiled.Diagnostics)
 	}
@@ -187,7 +187,7 @@ func TestNoBotParsesIterionBlocksFromTheWorkspaceSkills(t *testing.T) {
 				t.Errorf("%s: %v", path, rerr)
 				return nil
 			}
-			compiled := ir.Compile(parser.Parse(path, string(src)).File)
+			compiled := ir.Compile(parsertest.Parse(path, string(src)).File)
 			if compiled.Workflow == nil {
 				return nil // a fragment that does not compile standalone
 			}
@@ -248,7 +248,7 @@ func realFamilyCommand(t *testing.T, nodeID string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled := ir.Compile(parser.Parse(path, string(src)).File)
+	compiled := ir.Compile(parsertest.Parse(path, string(src)).File)
 	if compiled.Workflow == nil {
 		t.Fatalf("secured-renovacy: compile: %+v", compiled.Diagnostics)
 	}
@@ -393,7 +393,7 @@ func TestNoBotResolvesABinaryFromTheWorkspace(t *testing.T) {
 				t.Errorf("%s: %v", path, rerr)
 				return nil
 			}
-			compiled := ir.Compile(parser.Parse(path, string(src)).File)
+			compiled := ir.Compile(parsertest.Parse(path, string(src)).File)
 			if compiled.Workflow == nil {
 				return nil // a fragment that does not compile standalone
 			}

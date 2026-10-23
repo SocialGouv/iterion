@@ -404,8 +404,20 @@ func (s *Server) invalidatePlatformBots() {
 // a new-slug platform bot is appended. The platform + baked floor —
 // effectiveEntriesForTeam adds the team tier on top for a lane that knows
 // which team its launch is for.
+//
+// These are the catalog reads of the launch lanes that never ask what the
+// workspace overlay says of a bot's visibility — the webhook hand-off's
+// consumers, the review gate's var default, the forge command map and its
+// pause notice, the trigger spine's derivation. Listing PAST an overlay its
+// reader refuses is what they need: a refusal would take down the whole
+// catalog read (a trigger derivation answering 500, a hand-off seed list
+// empty) while the launch itself resolves without the overlay
+// (ResolveBotEntry). The Bots gallery and the card launch, which DO judge
+// visibility, keep the fail-closed refusal (botListOptions).
 func (s *Server) effectiveEntriesWithSchema() ([]botregistry.EntryWithSchema, error) {
-	catalog, err := botregistry.ListWithSchema(s.botListOptions())
+	opts := s.botListOptions()
+	opts.ListPastAnUnreadOverlay = true
+	catalog, err := botregistry.ListWithSchema(opts)
 	if err != nil {
 		return nil, err
 	}

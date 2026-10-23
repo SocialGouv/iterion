@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +34,7 @@ func TestRoundtripExamples(t *testing.T) {
 			}
 
 			// Step 1: Parse original.
-			pr1 := parser.Parse(name, string(src))
+			pr1 := parsertest.Parse(name, string(src))
 			if pr1.File == nil {
 				t.Fatal("original parse returned nil File")
 			}
@@ -66,7 +67,7 @@ func TestRoundtripExamples(t *testing.T) {
 			}
 
 			// Step 4: Re-parse the unparsed text.
-			pr2 := parser.Parse(name+".roundtrip", unparsed)
+			pr2 := parsertest.Parse(name+".roundtrip", unparsed)
 			if pr2.File == nil {
 				t.Fatalf("re-parse returned nil File.\nUnparsed:\n%s", unparsed)
 			}
@@ -122,7 +123,7 @@ workflow main:
   run_tests -> done
 `
 
-	pr1 := parser.Parse("tool_input.bot", src)
+	pr1 := parsertest.Parse("tool_input.bot", src)
 	if pr1.File == nil {
 		t.Fatal("parse returned nil File")
 	}
@@ -148,7 +149,7 @@ workflow main:
 	}
 
 	unparsed := unparse.Unparse(restored)
-	pr2 := parser.Parse("tool_input.roundtrip.bot", unparsed)
+	pr2 := parsertest.Parse("tool_input.roundtrip.bot", unparsed)
 	if pr2.File == nil {
 		t.Fatalf("re-parse returned nil File\nUnparsed:\n%s", unparsed)
 	}
@@ -198,7 +199,7 @@ func TestActionIdentPropsSurviveARoundTrip(t *testing.T) {
 				Name: "t", Action: tc.action, Connection: tc.connection,
 			}}}
 			out := unparse.Unparse(src)
-			res := parser.Parse("rt.bot", out)
+			res := parsertest.Parse("rt.bot", out)
 			for _, d := range res.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Fatalf("re-parse of\n%s\nfailed: %s", out, d.Message)
@@ -257,7 +258,7 @@ func TestActionParamKeysAndScalarsSurviveARoundTrip(t *testing.T) {
 				Timeout: tc.timeout,
 			}}}
 			out := unparse.Unparse(src)
-			res := parser.Parse("rt.bot", out)
+			res := parsertest.Parse("rt.bot", out)
 			for _, d := range res.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Fatalf("re-parse of\n%s\nfailed: %s", out, d.Message)

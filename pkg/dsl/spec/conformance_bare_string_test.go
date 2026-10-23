@@ -3,11 +3,11 @@ package spec_test
 import (
 	"bytes"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 )
 
@@ -33,8 +33,8 @@ func TestEveryStringPropertyReadsABareWord(t *testing.T) {
 				word = p.Values[0] // a quoted enum: its own words, bare
 			}
 			n++
-			quoted := parser.Parse("q.bot", fmt.Sprintf(line, p.Name+`: "`+word+`"`))
-			bare := parser.Parse("b.bot", fmt.Sprintf(line, p.Name+": "+word))
+			quoted := parsertest.Parse("q.bot", fmt.Sprintf(line, p.Name+`: "`+word+`"`))
+			bare := parsertest.Parse("b.bot", fmt.Sprintf(line, p.Name+": "+word))
 			if len(quoted.Diagnostics) != 0 || len(bare.Diagnostics) != 0 {
 				t.Errorf("%s.%s: quoted %v, bare %v", kind, p.Name, quoted.Diagnostics, bare.Diagnostics)
 				continue
@@ -63,7 +63,7 @@ func TestABareValueMustBeOnePlainWord(t *testing.T) {
 		"agent a:\n  timeout: 20\n",
 		"agent a:\n  description: 3.5\n",
 	} {
-		if res := parser.Parse("x.bot", src); len(res.Diagnostics) == 0 {
+		if res := parsertest.Parse("x.bot", src); len(res.Diagnostics) == 0 {
 			t.Errorf("accepted without quotes: %q", src)
 		}
 	}

@@ -29,7 +29,7 @@ func TestParseFrontmatterReadsTheHeadAsTheParserDoes(t *testing.T) {
 		"not closed":                     {"## ---\n## name: Alpha Bot\n" + body, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			fm := ParseFrontmatter([]byte(tc.src))
+			fm := testFrontmatter(t, []byte(tc.src))
 			got := ""
 			if fm != nil {
 				got = fm.Name

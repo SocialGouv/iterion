@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -28,7 +28,7 @@ import (
 
 func compileTestSource(t *testing.T, src string) *ir.Workflow {
 	t.Helper()
-	pr := parser.Parse("test.bot", src)
+	pr := parsertest.Parse("test.bot", src)
 	if pr.File == nil {
 		t.Fatalf("parse failed: %+v", pr.Diagnostics)
 	}

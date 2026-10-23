@@ -2,10 +2,9 @@ package ir
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A finding must point at the line the author has to EDIT: the edge line for
@@ -48,7 +47,7 @@ func TestDiagnosticsPointAtTheEdgeAndPromptLines(t *testing.T) {
 		/* 32 */ "  c -> done",
 	}
 	src := strings.Join(lines, "\n") + "\n"
-	pr := parser.Parse("pos.bot", src)
+	pr := parsertest.Parse("pos.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("unexpected parse diagnostic: %s", d.Error())
 	}
@@ -81,7 +80,7 @@ func TestDiagnosticsPointAtTheEdgeAndPromptLines(t *testing.T) {
 	// Determinism: the same file compiles to the same ordered list.
 	first := diagSignature(res.Diagnostics)
 	for i := 0; i < 5; i++ {
-		again := Compile(parser.Parse("pos.bot", src).File)
+		again := Compile(parsertest.Parse("pos.bot", src).File)
 		if s := diagSignature(again.Diagnostics); s != first {
 			t.Fatalf("diagnostic order changed between two compilations:\n%s\nvs\n%s", first, s)
 		}
@@ -119,7 +118,7 @@ workflow w:
   r -> b with { taken: "{{input.zzz}}" }
   b -> done
 `
-	res := Compile(parser.Parse("r.bot", src).File)
+	res := Compile(parsertest.Parse("r.bot", src).File)
 	var seen bool
 	for _, d := range res.Diagnostics {
 		if d.Code != DiagRefNodeNoSchema {

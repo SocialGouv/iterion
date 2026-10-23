@@ -26,6 +26,12 @@ func openAuthoringFileAt(parent *os.File, name string, flags int, mode os.FileMo
 func renameAuthoringAt(from *os.File, fromName string, to *os.File, toName string) error {
 	return renameDependencyAt(int(from.Fd()), fromName, int(to.Fd()), toName)
 }
+
+// replaceAuthoringAt renames fromName over toName inside dir, replacing it in
+// one step — the one authoring rename that replaces (replaceFile).
+func replaceAuthoringAt(dir *os.File, fromName, toName string) error {
+	return unix.Renameat(int(dir.Fd()), fromName, int(dir.Fd()), toName)
+}
 func requireAuthoringSameFilesystem(a, b *os.File) error {
 	var left, right unix.Stat_t
 	if err := unix.Fstat(int(a.Fd()), &left); err != nil {
@@ -52,3 +58,12 @@ func validateAuthoringOwnership(f *os.File, private bool) error {
 func syncAuthoringDirectory(f *os.File) error       { return f.Sync() }
 func normalizeAuthoringLockName(name string) string { return name }
 func authoringLockOpenFlags() int                   { return os.O_RDWR | unix.O_NOFOLLOW | unix.O_NONBLOCK }
+
+// authoringFileLinks is how many names the open file has (its link count).
+func authoringFileLinks(f *os.File) (uint64, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
+		return 0, err
+	}
+	return st.Nlink, nil
+}

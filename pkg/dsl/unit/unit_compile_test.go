@@ -5,6 +5,7 @@ package unit_test
 // cycle for an in-package test once the bundle walks units, not for this one.
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"strings"
 	"testing"
 
@@ -21,7 +22,7 @@ func TestTheMergedUnitCompilesAndWritesFlat(t *testing.T) {
 		"main.bot":      "dsl: 2\nimport \"lib/nodes.bot\"\n\nschema s:\n  ok: bool\n\nworkflow w:\n  entry: a\n  a -> done\n",
 		"lib/nodes.bot": "dsl: 2\nagent a:\n  model: \"anthropic/claude-opus-4-8\"\n  description: \"d\"\n  output: s\n",
 	}
-	u := unit.LoadMap(files, "main.bot")
+	u := unittest.Whole(unit.LoadMap(files, "main.bot"))
 	if u.HasErrors() {
 		t.Fatalf("diagnostics: %v", u.Diagnostics)
 	}

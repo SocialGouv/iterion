@@ -28,7 +28,7 @@ workflow t:
 // on the next studio save — and a gate that stops declaring its second input
 // source is exactly the invisibility this mode exists to remove.
 func TestInteractionHumanOrHost_ParsesAndSurvivesUnparse(t *testing.T) {
-	res := parser.Parse("test.bot", humanOrHostSrc)
+	res := parser.ParseLenient("test.bot", humanOrHostSrc)
 	assertNoDiags(t, res)
 	var found bool
 	for _, n := range res.File.Humans {
@@ -50,7 +50,7 @@ func TestInteractionHumanOrHost_ParsesAndSurvivesUnparse(t *testing.T) {
 // The parser's error message enumerates the accepted modes; a new mode that
 // is accepted but unlisted sends the next author hunting.
 func TestInteractionModeError_ListsHumanOrHost(t *testing.T) {
-	res := parser.Parse("test.bot", strings.Replace(humanOrHostSrc, "human_or_host", "nonsense", 1))
+	res := parser.ParseLenient("test.bot", strings.Replace(humanOrHostSrc, "human_or_host", "nonsense", 1))
 	var msg string
 	for _, d := range res.Diagnostics {
 		msg += d.Message + "\n"

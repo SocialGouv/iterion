@@ -18,15 +18,17 @@ import (
 // on a trailing line and never hear of it again.
 //
 // So the RAW source is scanned once, before any reading of it, and one
-// warning per document lists the physical line of every NEL, LS and PS it
-// holds — no need to know any scalar's extent. A line is counted where the
-// scanner ends one (yamlBreaks), so the line named is the one every other
-// diagnostic of the document counts by.
+// warning per document counts every NEL, LS and PS it holds and lists the
+// physical line of each — no need to know any scalar's extent. A line is
+// counted where the scanner ends one (yamlBreaks), so the line named is the
+// one every other diagnostic of the document counts by. The list stops at
+// parser.MaxReported lines, the count never: a document of nothing but
+// separators would otherwise make the notice longer than the document.
 func separatorNotice(name string, src []byte) *parser.Diagnostic {
 	// The BOM is the scanner's to skip, and it is not a separator.
 	s := strings.TrimPrefix(string(src), "\ufeff")
-	var lines []int
-	line := 1
+	var lines []int // the first parser.MaxReported lines holding one
+	total, line := 0, 1
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		switch r {
@@ -38,23 +40,29 @@ func separatorNotice(name string, src []byte) *parser.Diagnostic {
 		case '\n':
 			line++
 		case 0x85, 0x2028, 0x2029:
-			lines = append(lines, line)
+			total++
+			if len(lines) < parser.MaxReported {
+				lines = append(lines, line)
+			}
 			line++
 		}
 		i += size
 	}
-	if len(lines) == 0 {
+	if total == 0 {
 		return nil
 	}
 	sep := "an invisible line separator"
 	where := "line " + strconv.Itoa(lines[0])
-	if len(lines) > 1 {
-		sep = strconv.Itoa(len(lines)) + " invisible line separators"
+	if total > 1 {
+		sep = strconv.Itoa(total) + " invisible line separators"
 		parts := make([]string, len(lines))
 		for i, l := range lines {
 			parts[i] = strconv.Itoa(l)
 		}
 		where = "lines " + strings.Join(parts, ", ")
+		if more := total - len(lines); more > 0 {
+			where += " and " + strconv.Itoa(more) + " more"
+		}
 	}
 	d := docDiag(name, lines[0], 1, "the document holds "+sep+" (U+0085 NEL, U+2028 LS, U+2029 PS — "+where+"): yaml.v3 ends a line at each; inside a block body it is read as a newline, on a trailing line it is chomped like a blank line")
 	d.Code = parser.DiagAuthorSeparators

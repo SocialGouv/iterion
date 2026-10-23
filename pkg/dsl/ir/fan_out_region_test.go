@@ -1,11 +1,11 @@
 package ir_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // sharedTargetSource is the mono/dual topology review-pr and evolve ship: a
@@ -83,7 +83,7 @@ workflow shared_target:
 
 func compileSharedTarget(t *testing.T) *ir.CompileResult {
 	t.Helper()
-	pr := parser.Parse("shared_target.bot", sharedTargetSource)
+	pr := parsertest.Parse("shared_target.bot", sharedTargetSource)
 	if pr.File == nil {
 		for _, d := range pr.Diagnostics {
 			t.Logf("parse: %s", d.Error())
@@ -209,7 +209,7 @@ workflow trunk_bypass:
 
 func compileTrunkBypass(t *testing.T) *ir.CompileResult {
 	t.Helper()
-	pr := parser.Parse("trunk_bypass.bot", trunkBypassSource)
+	pr := parsertest.Parse("trunk_bypass.bot", trunkBypassSource)
 	if pr.File == nil {
 		for _, d := range pr.Diagnostics {
 			t.Logf("parse: %s", d.Error())

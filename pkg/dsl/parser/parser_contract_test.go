@@ -63,7 +63,7 @@ agent a:
 // producer of an output, criteria with JSON parameters, effects — and a
 // port may bear a keyword's name. The workflow names its contract.
 func TestContractDeclarationIsRead(t *testing.T) {
-	res := Parse("x.bot", contractFixture)
+	res := parseLenient("x.bot", contractFixture)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("diagnostics: %v", res.Diagnostics)
 	}
@@ -133,7 +133,7 @@ func TestAnEmptyContractIsABareHeader(t *testing.T) {
 		"empty inputs block": "contract c:\n  inputs:\n\nagent a:\n  description: \"d\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := Parse("x.bot", src)
+			res := parseLenient("x.bot", src)
 			if len(res.Diagnostics) != 0 {
 				t.Fatalf("diagnostics: %v", res.Diagnostics)
 			}
@@ -167,7 +167,7 @@ func TestContractRefusals(t *testing.T) {
 		"workflow contract is an identifier": {"workflow w:\n  contract: \"c\"\n  entry: a\n  a -> done\n", DiagExpectedToken, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := Parse("x.bot", tc.src+tail)
+			res := parseLenient("x.bot", tc.src+tail)
 			var found bool
 			for _, d := range res.Diagnostics {
 				if d.Code == tc.code && strings.Contains(d.Message, tc.text) {
@@ -189,7 +189,7 @@ func TestContractRefusals(t *testing.T) {
 // refuses at C302, is WritableJSONValue's rule; here the lexer's.
 func TestAContractDefaultTheTextCannotWriteDoesNotParse(t *testing.T) {
 	for _, value := range []string{"-1", "1e3", "[1, -2]"} {
-		res := Parse("x.bot", "contract c:\n  inputs:\n    x: int\n      default: "+value+"\n")
+		res := parseLenient("x.bot", "contract c:\n  inputs:\n    x: int\n      default: "+value+"\n")
 		var errors int
 		for _, d := range res.Diagnostics {
 			if d.Severity == SeverityError {
@@ -224,7 +224,7 @@ func TestAContractValueEndsWithItsLine(t *testing.T) {
 		"dotted schema":            {"      file:\n        schema: a.b\n", "schema takes one value on its line"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := Parse("x.bot", "contract c:\n  inputs:\n    r: json\n"+tc.body+tail)
+			res := parseLenient("x.bot", "contract c:\n  inputs:\n    r: json\n"+tc.body+tail)
 			var errors []string
 			for _, d := range res.Diagnostics {
 				if d.Severity == SeverityError {
@@ -244,7 +244,7 @@ func TestAContractValueEndsWithItsLine(t *testing.T) {
 		})
 	}
 	// A dotted type is refused at the port the same way.
-	res := Parse("x.bot", "contract c:\n  inputs:\n    r: a.b\n"+tail)
+	res := parseLenient("x.bot", "contract c:\n  inputs:\n    r: a.b\n"+tail)
 	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Message, "a port's type takes one value") || len(res.File.Workflows) != 1 {
 		t.Fatalf("dotted type: %v", res.Diagnostics)
 	}
@@ -258,7 +258,7 @@ func TestContractDuplicateRemedyAndDottedKind(t *testing.T) {
 		"property": "contract c:\n  version: 1\n  version: 2\n",
 		"JSON key": "contract c:\n  criteria:\n    k:\n      params: {a: 1, a: 2}\n",
 	} {
-		res := Parse("x.bot", src)
+		res := parseLenient("x.bot", src)
 		var found bool
 		for _, d := range res.Diagnostics {
 			if d.Code == DiagDuplicateBlock {
@@ -272,7 +272,7 @@ func TestContractDuplicateRemedyAndDottedKind(t *testing.T) {
 			t.Errorf("%s: no E014 in %v", name, res.Diagnostics)
 		}
 	}
-	res := Parse("x.bot", "contract c:\n  criteria:\n    k:\n      kind: plugin.check\n")
+	res := parseLenient("x.bot", "contract c:\n  criteria:\n    k:\n      kind: plugin.check\n")
 	if len(res.Diagnostics) != 0 || res.File.Contracts[0].Criteria[0].Kind != "plugin.check" {
 		t.Fatalf("dotted kind: %v %+v", res.Diagnostics, res.File.Contracts[0].Criteria[0])
 	}
@@ -284,7 +284,7 @@ func TestContractDuplicateRemedyAndDottedKind(t *testing.T) {
 // held to its line like the contract's own values, and the members after
 // it are kept.
 func TestATypelessPortAndTheWorkflowContractLine(t *testing.T) {
-	res := Parse("x.bot", "contract c:\n  inputs:\n    r:\n      description: \"d\"\n\nagent a:\n  description: \"d\"\n")
+	res := parseLenient("x.bot", "contract c:\n  inputs:\n    r:\n      description: \"d\"\n\nagent a:\n  description: \"d\"\n")
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != DiagExpectedToken || res.Diagnostics[0].Line != 3 {
 		t.Fatalf("typeless port: %v", res.Diagnostics)
 	}
@@ -294,7 +294,7 @@ func TestATypelessPortAndTheWorkflowContractLine(t *testing.T) {
 	if len(res.File.Agents) != 1 {
 		t.Fatal("the declaration after the contract was lost")
 	}
-	res = Parse("x.bot", "workflow w:\n  contract: c extra\n  entry: a\n  a -> done\n\nagent a:\n  description: \"d\"\n")
+	res = parseLenient("x.bot", "workflow w:\n  contract: c extra\n  entry: a\n  a -> done\n\nagent a:\n  description: \"d\"\n")
 	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Message, "contract takes one value on its line") {
 		t.Fatalf("workflow contract with a tail: %v", res.Diagnostics)
 	}

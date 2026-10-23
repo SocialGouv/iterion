@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -42,7 +43,7 @@ func TestUnparseCarriageReturnSurvives(t *testing.T) {
 	for _, v := range []string{"echo one\r\necho two", "lone\rcr", "tick ` and \r\n"} {
 		f := &ast.File{Tools: []*ast.ToolNodeDecl{{Name: "t", Command: v}}}
 		text := unparse.Unparse(f)
-		pr := parser.Parse("cr.bot", text)
+		pr := parsertest.Parse("cr.bot", text)
 		for _, d := range pr.Diagnostics {
 			t.Fatalf("%q: does not parse back: %s\n%s", v, d.Error(), text)
 		}
@@ -75,7 +76,7 @@ func TestUnparseHoistsTheStrictEscapeDirective(t *testing.T) {
 	if strings.Count(text, "strict-escape: on") != 1 {
 		t.Errorf("directive written more than once:\n%s", text)
 	}
-	pr := parser.Parse("late.bot", text)
+	pr := parsertest.Parse("late.bot", text)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("does not parse back: %s", d.Error())
 	}
@@ -104,7 +105,7 @@ func TestUnparseGivesAnEmptyDeclarationABody(t *testing.T) {
 		Judges:       []*ast.JudgeDecl{{Name: "j"}},
 	}
 	text := unparse.Unparse(f)
-	pr := parser.Parse("empty.bot", text)
+	pr := parsertest.Parse("empty.bot", text)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("does not parse back: %s\n%s", d.Error(), text)

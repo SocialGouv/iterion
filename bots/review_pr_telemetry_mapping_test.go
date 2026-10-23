@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"sort"
 	"strings"
 	"testing"
@@ -40,7 +41,7 @@ var telemetryKeyOf = map[string]string{
 //     source's engine key, or the run table describes a merge step that did
 //     not run on every run the other twin served.
 func TestReviewPRPublishEdgeMapsTheServingTelemetry(t *testing.T) {
-	u := unit.LoadDir("review-pr/main.bot")
+	u := unittest.Whole(unit.LoadDir("review-pr/main.bot"))
 	if u.Merged == nil {
 		t.Fatalf("review-pr: the bundle did not parse: %v", u.Diagnostics)
 	}

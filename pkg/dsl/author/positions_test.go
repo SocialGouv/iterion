@@ -1,6 +1,7 @@
 package author
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,7 +180,7 @@ workflow:
 	if errs := errorsOf(res); len(errs) > 0 {
 		t.Fatalf("refused: %v", errs)
 	}
-	bot := parser.Parse("w.bot", "dsl: 2\n\nagent a:\n  model: m\n\nworkflow w:\n  entry: a\n  a -> nowhere\n")
+	bot := parsertest.Parse("w.bot", "dsl: 2\n\nagent a:\n  model: m\n\nworkflow w:\n  entry: a\n  a -> nowhere\n")
 	var fromBot *ir.Diagnostic
 	for _, d := range ir.Compile(bot.File).Diagnostics {
 		if d.Code == ir.DiagUnknownNode {

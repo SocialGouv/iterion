@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,6 +95,45 @@ func canonReason(err error) string {
 	return strings.TrimPrefix(err.Error(), canon.ErrRefused.Error()+": ")
 }
 
+// shortRefusal is the refusal of a route that would build a document, a
+// file's text or a verdict from a load a bound of the reader cut short —
+// what the loaders answer as a *unit.ShortError, never as a unit: a file
+// the load did not read holds nothing in what it loaded, so a document built
+// from it lacks that file's declarations and a file rebuilt from one is
+// written without them. It quotes the load's own refusal — positioned in
+// the file, or at the import, where the bot was cut short, cut to the
+// unit's names for the client — with its remedy: the operator's read
+// budget, which no edit of the files moves, or the size cap of a file.
+// what says what the route does not do.
+func shortRefusal(err error, what string) string {
+	var short *unit.ShortError
+	if !errors.As(err, &short) {
+		return fmt.Sprintf("the bot's files are not read (%v), so %s", err, what)
+	}
+	short.RelDiagnostics()
+	d := short.ReadRefusal().Diagnostic
+	msg := fmt.Sprintf("the bot's files are not read whole (%s), so %s", d.Error(), what)
+	if d.Hint != "" {
+		msg += ". " + d.Hint
+	}
+	return msg
+}
+
+// stagedKey is the key a file of a disk unit is staged under for
+// unit.LoadDirStaged: its slash path from the directory of the MAIN on disk
+// (abs), which differs from the unit's rel when the main is itself a `lib/`
+// fragment loaded from the root its lib/ belongs to (root). A mismatched key
+// is read as no staged text at all: the loader falls back to disk.
+func stagedKey(abs, root, rel string) string {
+	if root == "" {
+		return rel
+	}
+	if k, err := filepath.Rel(filepath.Dir(abs), filepath.Join(root, filepath.FromSlash(rel))); err == nil {
+		return filepath.ToSlash(k)
+	}
+	return rel
+}
+
 // unitRootOf is the directory a unit's relative paths are named from, read
 // off the path the request named and the main's own Rel: the two compose
 // back into that path, which is what the studio rebuilds every unit file's
@@ -124,23 +164,28 @@ func unitRootOf(reqPath, main string) string {
 	return ""
 }
 
-func unitInfoOf(u *unit.Unit, reqPath string) *unitInfo {
+// unitInfoOf is what an answer says of a load: read off its view
+// (unit.Salvage), whole or short — a whole unit is shown through the same
+// view (unit.Salvage(u, nil)).
+func unitInfoOf(u *unit.Salvaged, reqPath string) *unitInfo {
 	// Files is never nil: the picker of the Source view iterates it, and a
 	// JSON `null` would reach a TS `UnitFileInfo[]` that declares itself
 	// non-nullable.
-	info := &unitInfo{Root: unitRootOf(reqPath, u.Main), Main: u.Main, Revision: u.Digest, Files: []unitFileInfo{}, Unread: u.Unread}
-	for _, f := range u.Files {
-		fi := unitFileInfo{Rel: f.Rel, Digest: fileDigest(f.Source)}
-		fi.ParseErrors, fi.ParseError = errorVerdict(f.ParseDiagnostics)
-		if f.AST != nil {
-			fi.Profile = f.AST.Profile
-			for _, im := range f.AST.Imports {
-				fi.Imports = append(fi.Imports, im.Path)
-			}
+	info := &unitInfo{Root: unitRootOf(reqPath, u.Main()), Main: u.Main(), Revision: u.Digest(), Files: []unitFileInfo{}, Unread: u.Unread()}
+	for _, f := range u.Files() {
+		// The digest rule: an open issues a file's digest only for a file it
+		// read WHOLE — a file a bound refused, one that is no text the
+		// reader reads, or one past a budget's cut is answered with no
+		// digest, and no save of it can present one.
+		var digest string
+		if f.ReadWhole {
+			digest = fileDigest(f.Source)
 		}
+		fi := unitFileInfo{Rel: f.Rel, Digest: digest, Profile: f.Profile, Imports: f.Imports}
+		fi.ParseErrors, fi.ParseError = errorVerdict(f.ParseErrors, f.ParseDiagnostics)
 		info.Files = append(info.Files, fi)
 	}
-	info.LoadErrors, info.LoadError = errorVerdict(u.Diagnostics)
+	info.LoadErrors, info.LoadError = errorVerdict(u.ErrorCount(), u.Diagnostics())
 	return info
 }
 
@@ -154,7 +199,7 @@ func unitInfoOf(u *unit.Unit, reqPath string) *unitInfo {
 // what the overlay read of it, which stagedLoadFailure has already refused
 // if the parser could only salvage it.
 func storedUnitVerdict(info *unitInfo, stored *unit.Unit) {
-	info.LoadErrors, info.LoadError = errorVerdict(stored.Diagnostics)
+	info.LoadErrors, info.LoadError = errorVerdict(stored.ErrorCount(), stored.Diagnostics)
 	// The fragments the answered verdict is about travel with it. The
 	// staged file list is no substitute: an apply that drops the broken
 	// `import` line leaves no file naming the fragment the stored load
@@ -163,25 +208,22 @@ func storedUnitVerdict(info *unitInfo, stored *unit.Unit) {
 	info.Unread = stored.Unread
 	for i, fi := range info.Files {
 		if f, ok := unitFile(stored, fi.Rel); ok {
-			info.Files[i].ParseErrors, info.Files[i].ParseError = errorVerdict(f.ParseDiagnostics)
+			info.Files[i].ParseErrors, info.Files[i].ParseError = errorVerdict(f.ParseErrorCount(), f.ParseDiagnostics)
 		}
 	}
 }
 
-// errorVerdict is what a unit answer carries of a diagnostics list: how
-// many errors it leaves, and the first of them as Diagnostic.Error spells
-// it — the string the studio's Diagnostics panel shows, so the launch
-// refusal quotes what the author can look up. One file's own parse
-// (File.ParseDiagnostics) and the whole load (Unit.Diagnostics) are read
-// through it, since both refuse the launch and both have to be told. The
-// unit's diagnostics are cut to the unit's relative names before the
-// answer is built, so neither name discloses the workspace root (#1934).
-func errorVerdict(diags []parser.Diagnostic) (count int, first string) {
-	for _, d := range diags {
-		if d.Severity == parser.SeverityError {
-			count++
-		}
-	}
+// errorVerdict is what a unit answer carries of a reading: how many errors
+// it found — the reading's own count (File.ParseErrorCount,
+// Unit.ErrorCount), which its list, at most parser.MaxReported of each
+// code, may fall short of — and the first of them as Diagnostic.Error
+// spells it: the string the studio's Diagnostics panel shows, so the
+// launch refusal quotes what the author can look up. One file's own parse
+// and the whole load are read through it, since both refuse the launch and
+// both have to be told. The unit's diagnostics are cut to the unit's
+// relative names before the answer is built, so neither name discloses the
+// workspace root (#1934).
+func errorVerdict(count int, diags []parser.Diagnostic) (int, string) {
 	return count, firstErrorDiagnostic(diags)
 }
 
@@ -626,7 +668,11 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 		httpError(w, http.StatusUnprocessableEntity, "a bot in several files cannot be saved as a new file: save it in place, or write the flattened program by hand")
 		return
 	}
-	u := unit.LoadDirWithMain(absPath, absPath, current)
+	u, err := unit.LoadDirWithMain(absPath, absPath, current)
+	if err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%s", shortRefusal(err, "nothing is saved: a file the load did not read would be written without its declarations"))
+		return
+	}
 	// The unit was read from disk, and the refusal below answers the
 	// diagnostic to the client: it names the fragment at fault by its
 	// unit-relative path (#1934).
@@ -640,7 +686,10 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 		return
 	}
 	if req.Revision != u.Digest {
-		httpError(w, http.StatusConflict, "the files of %s changed on disk since the document was opened: reopen it and redo the edit", req.Path)
+		// A revision is also another one when the reader reads the same
+		// files otherwise — a document opened from a bot the read budget cut
+		// short (unit.Unit.Digest) — and that document lacks what was not read.
+		httpError(w, http.StatusConflict, "the files of %s changed since the document was opened — on disk, or in what the reader reads of them (a read budget that cut the bot short): reopen it and redo the edit", req.Path)
 		return
 	}
 	if !hasProvenance(doc) {
@@ -689,7 +738,31 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 		writeJSON(w, saveFileResponse{Path: req.Path, Source: mainText, ConfirmedDiskPath: absPath, Revision: u.Digest})
 		return
 	}
-	if err := siblingImportersStillCompile(target, stagedText); err != nil {
+	// From here the save reads no declaration of the stored files and none
+	// of the document — only what it keeps of them here — so neither
+	// reading is held while the bot is read again as the save would leave
+	// it: at the read budget's edge each reading is hundreds of MiB.
+	revision, root, mainRel := u.Digest, target.Root, u.Main
+	// Each file is written over the bytes the save read of it — a file of
+	// the unit loaded whole above, or one the claim newly imports, read when
+	// the document was built — and the transaction holds each to those bytes
+	// under its lock (checkStoredFile): the unit's files were read whole, the
+	// others are read again there. Their names are all that is kept.
+	whole := make(map[string]bool, len(u.Files))
+	for _, f := range u.Files {
+		whole[f.Rel] = true
+	}
+	// The files as the save would leave them must read whole too: written
+	// past the read budget they share, the bot would open short of a file.
+	keyed := make(map[string][]byte, len(stagedText))
+	for rel, text := range stagedText {
+		keyed[stagedKey(absPath, root, rel)] = text
+	}
+	if _, err := unit.LoadDirStaged(absPath, keyed); err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%s", shortRefusal(err, "nothing is saved: written, they would not be read whole"))
+		return
+	}
+	if err := siblingImportersStillCompile(root, mainRel, stagedText); err != nil {
 		httpError(w, http.StatusUnprocessableEntity, "%v", err)
 		return
 	}
@@ -703,8 +776,10 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 		return
 	}
 	defer closeAuthoringLocalLocks(locks)
-	// Under the locks: the unit is still the one the document was opened at.
-	if again := unit.LoadDir(absPath); again.Digest != u.Digest {
+	// Under the locks: the unit is still the one the document was opened at
+	// — read whole, or it is not: a load cut short has no revision a
+	// document presents.
+	if again, err := unit.LoadDir(absPath); err != nil || again.Digest != revision {
 		httpError(w, http.StatusConflict, "the files of %s changed on disk while the save waited for their locks: reopen it and redo the edit", req.Path)
 		return
 	}
@@ -721,9 +796,12 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 	}
 	previews := make([]authoringPreviewFile, 0, len(staged))
 	for _, f := range staged {
-		previews = append(previews, authoringPreviewFile{Scope: "unit", Path: f.rel, Operation: "update", Before: string(f.before), After: f.after})
+		previews = append(previews, authoringPreviewFile{Scope: "unit", Path: f.rel, Operation: "update", Before: string(f.before), After: f.after, readWhole: whole[f.rel]})
 	}
 	if _, err := s.publishAuthoringLocal(r.Context(), locks, previews, false); err != nil {
+		if s.writeStoredFileRefusal(w, r, err) {
+			return
+		}
 		var conflict authoringConflictError
 		if errors.As(err, &conflict) {
 			httpError(w, http.StatusConflict, "%v", err)
@@ -736,40 +814,46 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 	for _, f := range staged {
 		written = append(written, f.rel)
 	}
-	writeJSON(w, saveFileResponse{Path: req.Path, Source: mainText, ConfirmedDiskPath: absPath, Revision: unit.LoadDir(absPath).Digest, Files: written})
+	// The revision the next save presents: the unit as written, read again.
+	// Read short — the files moved past the budget since the write — it has
+	// none, and the next save is told to reopen.
+	revisionAfter := ""
+	if again, err := unit.LoadDir(absPath); err == nil {
+		revisionAfter = again.Digest
+	}
+	writeJSON(w, saveFileResponse{Path: req.Path, Source: mainText, ConfirmedDiskPath: absPath, Revision: revisionAfter, Files: written})
 }
 
 // siblingImportersStillCompile reloads every other workflow file of the
-// unit's directory that imports a fragment about to be rewritten, against
-// the staged contents, and refuses the save when one of them no longer
-// loads or compiles: a fragment shared by two mains must not break the
-// other in silence.
-func siblingImportersStillCompile(u *unit.Unit, staged map[string][]byte) error {
-	entries, err := os.ReadDir(u.Root)
+// unit's directory (root, its main named main; "" checks every one — the
+// door of a fragment saved on its own) that imports a fragment about to be
+// rewritten, against the staged contents, and refuses the save when one of
+// them no longer loads or compiles: a fragment shared by two mains must not
+// break the other in silence.
+//
+// Whether a sibling imports a rewritten fragment is read off the sibling as
+// the save would leave it, read whole — which reaches a rewritten file
+// exactly when the stored one does: the import path to the first rewritten
+// file it reaches runs through files the save leaves alone. A sibling that
+// is past the read budget its files share is not read whole, and a load cut
+// short lists none of the files past its cut: its membership is read off
+// its import lines alone (unit.MembersDir), which no budget moves. One that
+// reaches no rewritten fragment is no business of this save, short or not;
+// one that does cannot be checked, and the save is refused with the cause —
+// the sibling's budget — and its remedy.
+func siblingImportersStillCompile(root, main string, staged map[string][]byte) error {
+	names, err := mainsBeside(root, main)
 	if err != nil {
 		return err
 	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() || e.Name() == u.Main || !workflowfile.IsWorkflowFile(e.Name()) {
-			continue
-		}
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
 	for _, name := range names {
-		sibling := filepath.Join(u.Root, name)
-		before := unit.LoadDir(sibling)
-		imports := false
-		for _, f := range before.Files {
-			if _, ok := staged[f.Rel]; ok && f.Rel != before.Main {
-				imports = true
-			}
+		after, err := importerAsSaved(root, name, staged)
+		if err != nil {
+			return err
 		}
-		if !imports {
+		if after == nil {
 			continue
 		}
-		after := unit.LoadDirStaged(sibling, staged)
 		// The sibling was read from disk, and the refusal answers its
 		// diagnostic to the client — relative names (#1934).
 		relUnitDiagnostics(after)
@@ -790,6 +874,96 @@ func siblingImportersStillCompile(u *unit.Unit, staged map[string][]byte) error 
 	return nil
 }
 
+// mainsBeside is every workflow file of root but main ("" for none), by
+// name, sorted: the mains a rewritten fragment of root's lib/ may serve.
+func mainsBeside(root, main string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || e.Name() == main || !workflowfile.IsWorkflowFile(e.Name()) {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// importerAsSaved loads the unit whose main is name — a slash path from
+// root — as a save leaving the staged files (keyed from root) would leave
+// it, and answers its unit when it reaches a staged file and reads whole;
+// nil when it reaches none — no business of the save, whether it reads
+// whole or not. Whether it reaches one is read off the main read whole —
+// which reaches a rewritten file exactly when the stored one does: the
+// import path to the first rewritten file it reaches runs through files
+// the save leaves alone — or, for a load cut short, off its import lines
+// alone (unit.MembersDir), which no budget moves; a unit rooted elsewhere
+// than root names other files than the staged ones, and reaches none.
+//
+// A unit it reaches that the save leaves short is the refusal — the caller
+// compiles the unit it is answered (the unit door's sibling check) and
+// cannot check one cut short: one whole as stored (the save takes it past
+// the read budget its files share), one that leaves a file unread its
+// stored load read whole, and one already short whose breaking cannot be
+// checked. The file door, which asked the same of a fragment's own save,
+// is gone with the membership heuristic: what a save may replace is held
+// by the digest rule (checkStoredFile), not by a re-reading of units.
+func importerAsSaved(root, name string, staged map[string][]byte) (*unit.Unit, error) {
+	sibling := filepath.Join(root, filepath.FromSlash(name))
+	forLoad := make(map[string][]byte, len(staged))
+	for rel, src := range staged {
+		forLoad[stagedKey(sibling, root, rel)] = src
+	}
+	after, err := unit.LoadDirStaged(sibling, forLoad)
+	if err == nil {
+		if after.Main != name || !reachesStaged(unitRels(after), staged, after.Main) {
+			return nil, nil
+		}
+		return after, nil
+	}
+	var short *unit.ShortError
+	if !errors.As(err, &short) {
+		return nil, err
+	}
+	members, merr := unit.MembersDir(sibling, forLoad)
+	if merr != nil {
+		return nil, fmt.Errorf("%s, a main beside the rewritten fragments, cannot be read even for its import lines (%v): whether the save breaks it cannot be told, so nothing is saved", name, merr)
+	}
+	if len(members) == 0 || members[0] != name || !reachesStaged(members, staged, name) {
+		return nil, nil
+	}
+	_, berr := unit.LoadDir(sibling)
+	if berr == nil {
+		// Whole as stored: the save is what takes it past the budget.
+		return nil, fmt.Errorf("saving would take %s past the read budget its files share: %s", name, shortRefusal(err, "nothing is saved: written, they would not be read whole"))
+	}
+	var storedShort *unit.ShortError
+	if !errors.As(berr, &storedShort) {
+		return nil, berr
+	}
+	readAfter := short.ReadWhole()
+	for _, rel := range storedShort.ReadWhole() {
+		if !slices.Contains(readAfter, rel) {
+			return nil, fmt.Errorf("saving would leave %s, which %s reads whole as stored, unread: %s", rel, name, shortRefusal(err, "nothing is saved: written, they would not be read whole"))
+		}
+	}
+	return nil, fmt.Errorf("saving changes a fragment %s imports, and %s", name, shortRefusal(err, "whether the save breaks it cannot be checked: nothing is saved"))
+}
+
+// reachesStaged reports whether a unit's files, by Rel, hold a staged one
+// other than its main.
+func reachesStaged(rels []string, staged map[string][]byte, main string) bool {
+	for _, rel := range rels {
+		if _, ok := staged[rel]; ok && rel != main {
+			return true
+		}
+	}
+	return false
+}
+
 func firstErrorDiagnostic(diags []parser.Diagnostic) string {
 	for _, d := range diags {
 		if d.Severity == parser.SeverityError {
@@ -800,8 +974,9 @@ func firstErrorDiagnostic(diags []parser.Diagnostic) string {
 }
 
 // authoringStepHook is a test seam: called before each transition of every
-// authoring transaction with the transition's name, a fault it returns
-// interrupts the write there. Nil outside tests.
+// authoring transaction with the transition's name — and by replaceFile
+// between its staged candidate and its check ("replace:staged") — a fault
+// it returns interrupts the write there. Nil outside tests.
 var authoringStepHook func(string) error
 
 // publishAuthoringLocal writes a set of files as one journaled transaction:
@@ -890,6 +1065,9 @@ type unitOpenResponse struct {
 	// what the parser SALVAGED, and binding it would make the next save
 	// write that back over what the author wrote.
 	Bindable bool `json:"bindable"`
+	// ReadRefusal is set when a bound of the reader made the document a
+	// salvage — the read budget the bot's files share cut the load short.
+	ReadRefusal *readRefusalInfo `json:"read_refusal,omitempty"`
 }
 
 // parseUnitFiles parses a bot in several files, given as a files map, as its
@@ -904,16 +1082,17 @@ func (s *Server) parseUnitFiles(w http.ResponseWriter, req parseRequest) {
 		httpError(w, http.StatusBadRequest, "main %q is not a workflow file: a unit is read from a .bot", main)
 		return
 	}
-	u := unit.LoadMap(req.Files, main)
+	// The cloud editor's open of a bundle, as the disk open is
+	// (handleOpenFile): a load the read budget cuts short opens as the
+	// view of what was read (unit.Salvage), its document marked as one,
+	// non-bindable, its refusal said, its revision another than any whole
+	// load's.
+	u := unit.Salvage(unit.LoadMap(req.Files, main))
 	var diags []string
-	for _, d := range u.Diagnostics {
+	for _, d := range u.Diagnostics() {
 		diags = append(diags, d.Error())
 	}
-	if u.Merged == nil {
-		writeJSON(w, parseResponse{Diagnostics: diags})
-		return
-	}
-	docJSON, err := ast.MarshalFileWithProvenance(u.Merged, "")
+	docJSON, err := u.MarshalDocument("")
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 		return
@@ -930,8 +1109,14 @@ func (s *Server) parseUnitFiles(w http.ResponseWriter, req parseRequest) {
 	// then the main's salvage plus the fragments, so it is a salvage, and
 	// the verdict says so — the same rule as /api/files/open and
 	// /api/examples for a unit on disk.
-	mainParse := parser.Parse(main, req.Files[main])
-	writeJSON(w, parseResponse{Document: json.RawMessage(docJSON), Diagnostics: diags, Unit: info, Bindable: !parseHasErrors(mainParse.Diagnostics)})
+	//
+	// A load that did not read the bot whole (unit.Salvaged.Whole) is a
+	// salvage whatever the main's parse: the document lacks the files it did
+	// not read, and the budget that cut it short is the reader's, so no
+	// revision of the files tells a save that a later, larger budget reads
+	// them all.
+	mainParse, err := parser.Parse(main, req.Files[main])
+	writeJSON(w, parseResponse{Document: json.RawMessage(docJSON), Diagnostics: diags, Unit: info, Bindable: err == nil && !parseHasErrors(mainParse.Diagnostics) && u.Whole(), ReadRefusal: unitReadRefusal(u)})
 }
 
 // unparseUnitFiles writes a document of a bot in several files back into
@@ -946,7 +1131,11 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		httpError(w, http.StatusBadRequest, "main %q is not a workflow file: a unit is written back from a .bot", main)
 		return
 	}
-	u := unit.LoadMap(req.Files, main)
+	u, err := unit.LoadMap(req.Files, main)
+	if err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%s", shortRefusal(err, "nothing is written back: a file the load did not read would come back without its declarations"))
+		return
+	}
 	if d := firstErrorDiagnostic(u.Diagnostics); d != "" {
 		httpError(w, http.StatusUnprocessableEntity, "the bundle's files do not load as one unit (%s): fix them before saving", d)
 		return
@@ -960,7 +1149,7 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		return
 	}
 	if req.Revision != u.Digest {
-		httpError(w, http.StatusConflict, "the files of the bot changed since the document was opened: reopen it and redo the edit")
+		httpError(w, http.StatusConflict, "the files of the bot changed since the document was opened — in the bundle, or in what the reader reads of them (a read budget that cut the bot short): reopen it and redo the edit")
 		return
 	}
 	if u.Merged == nil {
@@ -1016,7 +1205,14 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 	for rel, text := range out {
 		patched[rel] = text
 	}
-	writeJSON(w, unparseResponse{Source: source, Files: out, Revision: unit.LoadMap(patched, main).Digest})
+	// The files as the bundle would hold them must read whole too: written
+	// back past the read budget they share, the bot would open short.
+	written, err := unit.LoadMap(patched, main)
+	if err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%s", shortRefusal(err, "nothing is written back: patched in, they would not be read whole"))
+		return
+	}
+	writeJSON(w, unparseResponse{Source: source, Files: out, Revision: written.Digest})
 }
 
 // unitRequest is where a per-file request of the Source view reads its bot
@@ -1033,8 +1229,10 @@ type unitRequest struct {
 	root  string // the unit's directory on disk, "" for a files map
 }
 
-// stage reloads the unit with rel's text replaced by source.
-func (ur unitRequest) stage(rel, source string) *unit.Unit {
+// stage reloads the unit with rel's text replaced by source: a
+// *unit.ShortError when the staged files are past the read budget they
+// share.
+func (ur unitRequest) stage(rel, source string) (*unit.Unit, error) {
 	if ur.files != nil {
 		patched := make(map[string]string, len(ur.files))
 		for k, v := range ur.files {
@@ -1043,18 +1241,12 @@ func (ur unitRequest) stage(rel, source string) *unit.Unit {
 		patched[rel] = source
 		return unit.LoadMap(patched, ur.main)
 	}
-	// Keyed the way loadDir keys its staged map: from the directory of the
-	// MAIN on disk, not by the unit's rel. For a main that is itself a
-	// `lib/` fragment the two differ, and a mismatched key is read as "no
-	// staged text" — the loader falls back to disk and the route answers
-	// 200 with the author's edit silently gone.
-	key := rel
-	if ur.root != "" {
-		if k, err := filepath.Rel(filepath.Dir(ur.abs), filepath.Join(ur.root, filepath.FromSlash(rel))); err == nil {
-			key = filepath.ToSlash(k)
-		}
-	}
-	return unit.LoadDirStaged(ur.abs, map[string][]byte{key: []byte(source)})
+	// Keyed the way loadDir keys its staged map (stagedKey): from the
+	// directory of the MAIN on disk, not by the unit's rel. For a main that
+	// is itself a `lib/` fragment the two differ, and a mismatched key is
+	// read as "no staged text" — the loader falls back to disk and the route
+	// answers 200 with the author's edit silently gone.
+	return unit.LoadDirStaged(ur.abs, map[string][]byte{stagedKey(ur.abs, ur.root, rel): []byte(source)})
 }
 
 // claimConflict is a claimed-unit validation failure that is a STALENESS
@@ -1084,7 +1276,10 @@ func (s *Server) claimedTarget(u *unit.Unit, ur unitRequest, claimed []unitFileI
 	if len(claimed) == 0 || claimedMatchesStored(u, claimed) {
 		return u, nil, nil, nil
 	}
-	probe := ur.probeUnit(u, claimed)
+	probe, err := ur.probeUnit(u, claimed)
+	if err != nil {
+		return nil, nil, nil, errors.New(shortRefusal(err, "the files the document claims cannot be checked"))
+	}
 	return finishClaimed(u, probe, claimed, forWrite)
 }
 
@@ -1147,7 +1342,7 @@ func importPathsEqual(a, b []string) bool {
 // and walks its own imports from there. The probe's entries for the kept
 // files are the synthetic headers', not the files': what the declarations
 // are is the stored unit's to say.
-func (ur unitRequest) probeUnit(stored *unit.Unit, claimed []unitFileInfo) *unit.Unit {
+func (ur unitRequest) probeUnit(stored *unit.Unit, claimed []unitFileInfo) (*unit.Unit, error) {
 	held := make(map[string]bool, len(stored.Files))
 	for _, f := range stored.Files {
 		held[f.Rel] = true
@@ -1184,16 +1379,10 @@ func (ur unitRequest) probeUnit(stored *unit.Unit, claimed []unitFileInfo) *unit
 		if !held[cf.Rel] {
 			continue
 		}
-		// Keyed the way stage keys its overlay: from the directory of the
-		// main on disk, which differs from the unit's rels when the main is
-		// itself a `lib/` fragment.
-		key := cf.Rel
-		if ur.root != "" {
-			if k, err := filepath.Rel(filepath.Dir(ur.abs), filepath.Join(ur.root, filepath.FromSlash(cf.Rel))); err == nil {
-				key = filepath.ToSlash(k)
-			}
-		}
-		staged[key] = []byte(claimedHeaderText(cf, mainStub(cf, stored, stub)))
+		// Keyed the way stage keys its overlay (stagedKey): from the
+		// directory of the main on disk, which differs from the unit's rels
+		// when the main is itself a `lib/` fragment.
+		staged[stagedKey(ur.abs, ur.root, cf.Rel)] = []byte(claimedHeaderText(cf, mainStub(cf, stored, stub)))
 	}
 	return unit.LoadDirStaged(ur.abs, staged)
 }
@@ -1338,7 +1527,9 @@ func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo, forWrite bo
 
 // resolveUnitRequest is the ONE place the two modes are told apart. A path
 // goes through s.safePath — the audited workspace boundary — and through
-// workflowfile.IsWorkflowFile, like every other route that reads a bot.
+// workflowfile.IsWorkflowFile, like every other route that reads a bot. A
+// stored unit the read budget cuts short is answered as its
+// *unit.ShortError, before anything is asked of its files (unitRequestError).
 func (s *Server) resolveUnitRequest(files map[string]string, main, path string) (unitRequest, error) {
 	if len(files) > 0 {
 		if main == "" {
@@ -1347,7 +1538,11 @@ func (s *Server) resolveUnitRequest(files map[string]string, main, path string) 
 		if !workflowfile.IsWorkflowFile(main) {
 			return unitRequest{}, fmt.Errorf("main %q is not a workflow file: a unit is read from a .bot", main)
 		}
-		return unitRequest{unit: unit.LoadMap(files, main), files: files, main: main}, nil
+		u, err := unit.LoadMap(files, main)
+		if err != nil {
+			return unitRequest{}, err
+		}
+		return unitRequest{unit: u, files: files, main: main}, nil
 	}
 	if path == "" {
 		return unitRequest{}, errors.New("a per-file request names no bot: give the bundle's files and its main, or the workspace path of the main")
@@ -1359,8 +1554,23 @@ func (s *Server) resolveUnitRequest(files map[string]string, main, path string) 
 	if err != nil {
 		return unitRequest{}, err
 	}
-	u := unit.LoadDir(abs)
+	u, err := unit.LoadDir(abs)
+	if err != nil {
+		return unitRequest{}, err
+	}
 	return unitRequest{unit: u, main: u.Main, abs: abs, root: u.Root}, nil
+}
+
+// unitRequestError answers a failure of resolveUnitRequest: a stored unit
+// the read budget cut short is the load's refusal (422, what the route does
+// not do), anything else a request naming no bot it can read (400).
+func unitRequestError(w http.ResponseWriter, err error, what string) {
+	var short *unit.ShortError
+	if errors.As(err, &short) {
+		httpError(w, http.StatusUnprocessableEntity, "%s", shortRefusal(err, what))
+		return
+	}
+	httpError(w, http.StatusBadRequest, "%v", err)
 }
 
 // unitFile is the unit's file named rel, and whether it holds one. A rel
@@ -1391,11 +1601,16 @@ func unitFile(u *unit.Unit, rel string) (unit.File, bool) {
 // header edit behind a verdict only a save needs — the save makes it, as
 // a conflict, when it runs.
 func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc *ast.File) {
+	// A file the load did not read whole renders as nothing of it — the
+	// text it does not hold — and any other file of a bot read short is
+	// rendered from a document missing what was not read. The refusal is the
+	// load's, positioned, cut to the unit's names for the client.
 	ur, err := s.resolveUnitRequest(req.Files, req.Main, req.Path)
 	if err != nil {
-		httpError(w, http.StatusBadRequest, "%v", err)
+		unitRequestError(w, err, req.File+" is not shown: its text would be rendered from what was read")
 		return
 	}
+	relUnitDiagnostics(ur.unit)
 	if ur.unit.Merged == nil {
 		httpError(w, http.StatusUnprocessableEntity, "the bot's files hold no program")
 		return
@@ -1421,14 +1636,20 @@ func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc 
 	// is missing everything after the error. Rendering it back would show
 	// the author a text their file does not contain and hide the very lines
 	// they have to fix, which is what this route exists not to do.
-	if spr := parser.Parse(f.Rel, string(f.Source)); parseHasErrors(spr.Diagnostics) {
+	if spr, serr := parser.Parse(f.Rel, string(f.Source)); serr != nil || parseHasErrors(spr.Diagnostics) {
+		why := ""
+		if serr != nil {
+			why = serr.Error()
+		} else {
+			why = firstParseError(spr.Diagnostics)
+		}
 		// The diagnostic itself, not a guess about it: several error-severity
 		// diagnostics leave a COMPLETE ast (an unknown property, a bad `dsl:`
 		// value), so "does not parse" would be false of them — while the
 		// render is still not the file, which is what this refuses.
 		writeJSON(w, unparseResponse{
 			Source:  string(f.Source),
-			Refused: fmt.Sprintf("iterion could not read all of %s (%s), so the document holds only what could be read of it — repair it where this bot's files live", f.Rel, firstParseError(spr.Diagnostics)),
+			Refused: fmt.Sprintf("iterion could not read all of %s (%s), so the document holds only what could be read of it — repair it where this bot's files live", f.Rel, why),
 			Stored:  true,
 		})
 		return
@@ -1472,9 +1693,13 @@ func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc 
 // bot whose files do not parse or do not load as one, and an apply has
 // stored nothing for it to lift.
 func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
+	// A stored unit the read budget cuts short is refused first, and so
+	// for every file it names: a file past the cut is in no list of a load
+	// cut short, and "not a file of this bot" would blame the name for the
+	// budget.
 	ur, err := s.resolveUnitRequest(req.Files, req.Main, req.Path)
 	if err != nil {
-		httpError(w, http.StatusBadRequest, "%v", err)
+		unitRequestError(w, err, req.File+" cannot be applied: the document would lack the declarations of what was not read, and a save of it would write them away")
 		return
 	}
 	if _, ok := unitFile(ur.unit, req.File); !ok {
@@ -1491,7 +1716,11 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
 	// less than it did is the author's edit, and /api/parse answers parse
 	// diagnostics alone on every one of its three shapes. What the program
 	// compiles to is /api/validate's question.
-	pr := parser.Parse(req.File, req.Source)
+	pr, err := parser.Parse(req.File, req.Source)
+	if err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%s is not read whole (%v), so it cannot be applied — the rest of the bot would be saved without what it declares", req.File, err)
+		return
+	}
 	if parseHasErrors(pr.Diagnostics) {
 		var errs []string
 		for _, d := range pr.Diagnostics {
@@ -1502,7 +1731,16 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
 		httpError(w, http.StatusUnprocessableEntity, "%s does not parse, so it cannot be applied — the rest of the bot would be saved without what it declares: %s", req.File, strings.Join(errs, "; "))
 		return
 	}
-	staged := ur.stage(req.File, req.Source)
+	// A load that did not read the bot whole answers a document missing
+	// what it did not read, and the save of that document writes those
+	// files back without their declarations: refused, the staged load — an
+	// edit pushing the bot past the read budget its files share, which the
+	// file's own parse above cannot see — as the stored one was.
+	staged, err := ur.stage(req.File, req.Source)
+	if err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%s", shortRefusal(err, req.File+" cannot be applied: the document would lack the declarations of what was not read, and a save of it would write them away"))
+		return
+	}
 	// Both units were read from disk, and both the refusal below and the
 	// 200's diagnostics cross to the client — relative names (#1934). The
 	// stored unit's are cut too so the refusal's already-known comparison
@@ -1538,7 +1776,7 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
 		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 		return
 	}
-	info := unitInfoOf(staged, staged.Main)
+	info := unitInfoOf(unit.Salvage(staged, nil), staged.Main)
 	info.Root = ""
 	info.Revision = ""
 	storedUnitVerdict(info, ur.unit)
@@ -1546,11 +1784,12 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
 	if mf, ok := unitFile(staged, staged.Main); ok {
 		mainSource = string(mf.Source)
 	}
+	mainParse, mainErr := parser.Parse(staged.Main, mainSource)
 	writeJSON(w, parseResponse{
 		Document:    json.RawMessage(docJSON),
 		Diagnostics: diags,
 		Unit:        info,
-		Bindable:    !parseHasErrors(parser.Parse(staged.Main, mainSource).Diagnostics),
+		Bindable:    mainErr == nil && !parseHasErrors(mainParse.Diagnostics),
 	})
 }
 
@@ -1650,11 +1889,21 @@ func stagedLoadFailure(stored, staged *unit.Unit, file string) string {
 // against the file it is about.
 func (s *Server) unitFoldReason(source string, files map[string]string, main, path string) string {
 	ur, err := s.resolveUnitRequest(files, main, path)
+	var short *unit.ShortError
+	if errors.As(err, &short) {
+		short.RelDiagnostics()
+		return fmt.Sprintf("the bot's files are not read whole (%s): the merged program holds only what was read", short.ReadRefusal().Diagnostic.Error())
+	}
 	if err != nil || ur.unit.Merged == nil {
 		return ""
 	}
+	relUnitDiagnostics(ur.unit)
 	for _, f := range ur.unit.Files {
-		if line, size, folds := canon.Folds(f.Rel, string(f.Source), source); folds {
+		line, size, folds, err := canon.Folds(f.Rel, string(f.Source), source)
+		if err != nil {
+			return fmt.Sprintf("%s: %v", f.Rel, err)
+		}
+		if folds {
 			return fmt.Sprintf("%s: the value at line %d is written over several lines and the merged program has no form for one — its %d characters come back as a single line (#1612)", f.Rel, line, size)
 		}
 	}

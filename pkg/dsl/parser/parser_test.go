@@ -41,7 +41,7 @@ func TestFixtures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res := parser.Parse(name, string(src))
+			res := parser.ParseLenient(name, string(src))
 			if len(res.Diagnostics) > 0 {
 				for _, d := range res.Diagnostics {
 					t.Errorf("diagnostic: %s", d.Error())
@@ -57,7 +57,7 @@ func TestFixtures(t *testing.T) {
 // TestFixturePRRefineSingleModel validates detailed AST structure.
 func TestFixturePRRefineSingleModel(t *testing.T) {
 	src := readFixture(t, "../testdata/pr_refine_single_model.bot")
-	res := parser.Parse("pr_refine_single_model.bot", src)
+	res := parser.ParseLenient("pr_refine_single_model.bot", src)
 	assertNoDiags(t, res)
 
 	f := res.File
@@ -123,7 +123,7 @@ func TestFixturePRRefineSingleModel(t *testing.T) {
 // TestFixtureCIFixUntilGreen validates the CI fix fixture structure.
 func TestFixtureCIFixUntilGreen(t *testing.T) {
 	src := readFixture(t, "../testdata/ci_fix_until_green.bot")
-	res := parser.Parse("ci_fix_until_green.bot", src)
+	res := parser.ParseLenient("ci_fix_until_green.bot", src)
 	assertNoDiags(t, res)
 
 	f := res.File
@@ -154,7 +154,7 @@ func TestFixtureCIFixUntilGreen(t *testing.T) {
 // TestFixtureRecipeBenchmark validates router/join/fan-out patterns.
 func TestFixtureRecipeBenchmark(t *testing.T) {
 	src := readFixture(t, "../testdata/recipe_benchmark.bot")
-	res := parser.Parse("recipe_benchmark.bot", src)
+	res := parser.ParseLenient("recipe_benchmark.bot", src)
 	assertNoDiags(t, res)
 
 	f := res.File
@@ -181,7 +181,7 @@ func TestMinimalAgent(t *testing.T) {
   user: usr_prompt
   session: fresh
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	if len(res.File.Agents) != 1 {
@@ -199,7 +199,7 @@ func TestMinimalWorkflow(t *testing.T) {
 
   start -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	wf := res.File.Workflows[0]
@@ -217,7 +217,7 @@ func TestPromptBody(t *testing.T) {
   Bonjour {{input.name}},
   Comment allez-vous ?
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	if len(res.File.Prompts) != 1 {
@@ -244,7 +244,7 @@ func TestPromptBodyRecoveryDiagnostic(t *testing.T) {
   Comment allez-vous ?
 not_a_prompt_line:
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagUnexpectedToken) && !hasDiagCode(res, parser.DiagExpectedToken) {
 		t.Fatal("expected DiagUnexpectedToken or DiagExpectedToken once the prompt block dedents into a malformed top-level token")
 	}
@@ -255,7 +255,7 @@ func TestSchemaWithEnum(t *testing.T) {
   approved: bool
   confidence: string [enum: "low", "medium", "high"]
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	s := res.File.Schemas[0]
@@ -277,7 +277,7 @@ func TestVarsWithDefaults(t *testing.T) {
   rate: float = 3.14
   debug: bool = false
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	vb := res.File.Vars
@@ -296,7 +296,7 @@ func TestVarsWithEnum(t *testing.T) {
   bare: string [enum: "a", "b"]
   plain: string = "x"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	vb := res.File.Vars
@@ -325,7 +325,7 @@ func TestVarsEnumRejectsUnquotedValues(t *testing.T) {
 	src := `vars:
   mode: string [enum: autonomous, "interview"]
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagInvalidValue) {
 		t.Fatal("expected DiagInvalidValue for an unquoted enum value in a var declaration")
 	}
@@ -336,7 +336,7 @@ func TestAttachmentsBlock_Short(t *testing.T) {
   logo: image
   spec: file
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	ab := res.File.Attachments
@@ -356,7 +356,7 @@ func TestAttachmentsBlock_FullProps(t *testing.T) {
     accept_mime: ["application/pdf", "text/markdown"]
     required: true
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	ab := res.File.Attachments
@@ -380,7 +380,7 @@ func TestAttachmentsBlock_WorkflowLevel(t *testing.T) {
     logo: image
   entry: done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	wd := res.File.Workflows[0]
@@ -399,7 +399,7 @@ func TestEdgeWithAllClauses(t *testing.T) {
     key2: "{{vars.x}}"
   }
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	e := res.File.Workflows[0].Edges[0]
@@ -436,7 +436,7 @@ func TestEdgeLoopTemplatedCap(t *testing.T) {
 
   a -> b as fix_loop("{{outputs.select.cap}}")
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	e := res.File.Workflows[0].Edges[0]
@@ -460,7 +460,7 @@ func TestEdgeLoopQuotedIntLiteralCap(t *testing.T) {
 
   a -> b as fix("2")
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	e := res.File.Workflows[0].Edges[0]
@@ -479,7 +479,7 @@ func TestEdgeLoopMalformedExpressionCapRejected(t *testing.T) {
 
   a -> b as fix("vars.n +")
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if len(res.Diagnostics) == 0 {
 		t.Fatal("expected a diagnostic for a malformed loop cap expression")
 	}
@@ -491,7 +491,7 @@ func TestEdgeWhenNot(t *testing.T) {
 
   a -> b when not approved
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	e := res.File.Workflows[0].Edges[0]
@@ -506,7 +506,7 @@ func TestToolNode(t *testing.T) {
   command: "${CI_COMMAND}"
   output: ci_result
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	td := res.File.Tools[0]
@@ -521,7 +521,7 @@ func TestToolNodeWithInput(t *testing.T) {
   input: commit_input
   output: commit_result
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	td := res.File.Tools[0]
@@ -536,7 +536,7 @@ func TestToolNodeWithScript(t *testing.T) {
 		"  language: js\n" +
 		"  script: `console.log(JSON.stringify({ok: true}))`\n" +
 		"  output: result\n"
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	td := res.File.Tools[0]
@@ -553,7 +553,7 @@ func TestToolNodeBlockScalarScript(t *testing.T) {
 		"    const fs = require('fs')\n" +
 		"    console.log('hello')\n" +
 		"  output: result\n"
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	td := res.File.Tools[0]
@@ -566,7 +566,7 @@ func TestRouterDecl(t *testing.T) {
 	src := `router dispatch:
   mode: condition
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	r := res.File.Routers[0]
@@ -577,7 +577,7 @@ func TestRouterDeclRoundRobin(t *testing.T) {
 	src := `router selector:
   mode: round_robin
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	r := res.File.Routers[0]
@@ -591,7 +591,7 @@ func TestRouterDeclLLMWithBackend(t *testing.T) {
   backend: "claude_code"
   system: my_prompt
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	r := res.File.Routers[0]
@@ -609,7 +609,7 @@ func TestHumanDecl(t *testing.T) {
   interaction: human
   min_answers: 2
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	h := res.File.Humans[0]
@@ -628,7 +628,7 @@ func TestAgentWithTools(t *testing.T) {
   tools: [read_file, write_file, git_diff]
   tool_max_steps: 15
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
@@ -646,7 +646,7 @@ func TestAgentMaxTokens(t *testing.T) {
   user: usr
   max_tokens: 2048
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
@@ -660,7 +660,7 @@ func TestJudgeMaxTokens(t *testing.T) {
   user: usr
   max_tokens: 1024
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	j := res.File.Judges[0]
@@ -674,7 +674,7 @@ func TestAgentTimeout(t *testing.T) {
   user: usr
   timeout: "30s"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
@@ -688,7 +688,7 @@ func TestJudgeTimeout(t *testing.T) {
   user: usr
   timeout: "${NODE_TIMEOUT:-20m}"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	j := res.File.Judges[0]
@@ -705,7 +705,7 @@ func TestAgentSessionFork(t *testing.T) {
   user: usr
   session: fork
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
@@ -721,7 +721,7 @@ func TestAgentCommand(t *testing.T) {
   system: sys
   user: usr
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
@@ -736,7 +736,7 @@ func TestJudgeCommand(t *testing.T) {
   system: sys
   user: usr
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	j := res.File.Judges[0]
@@ -748,7 +748,7 @@ func TestAgentReasoningEffort(t *testing.T) {
   model: "claude-4"
   reasoning_effort: high
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "high")
 }
@@ -758,7 +758,7 @@ func TestAgentReasoningEffortXHigh(t *testing.T) {
   model: "claude-4"
   reasoning_effort: xhigh
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "xhigh")
 }
@@ -768,7 +768,7 @@ func TestAgentReasoningEffortMax(t *testing.T) {
   model: "claude-4"
   reasoning_effort: max
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "max")
 }
@@ -781,7 +781,7 @@ func TestAgentReasoningEffortNone(t *testing.T) {
   model: "openai/gpt-6-sol"
   reasoning_effort: none
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "none")
 }
@@ -791,7 +791,7 @@ func TestAgentReasoningEffortNoneQuoted(t *testing.T) {
   model: "openai/gpt-6-sol"
   reasoning_effort: "none"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "none")
 }
@@ -801,7 +801,7 @@ func TestJudgeReasoningEffort(t *testing.T) {
   model: "claude-4"
   reasoning_effort: low
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	assertEq(t, "ReasoningEffort", res.File.Judges[0].ReasoningEffort, "low")
 }
@@ -811,7 +811,7 @@ func TestReasoningEffortInvalid(t *testing.T) {
   model: "claude-4"
   reasoning_effort: ultra
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if len(res.Diagnostics) == 0 {
 		t.Fatal("expected diagnostic for invalid reasoning_effort")
 	}
@@ -822,7 +822,7 @@ func TestAgentReasoningEffortEnvSubst(t *testing.T) {
   model: "claude-4"
   reasoning_effort: "${VIBE_EFFORT:-max}"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "${VIBE_EFFORT:-max}")
 }
@@ -832,7 +832,7 @@ func TestAgentReasoningEffortEnvSubstBare(t *testing.T) {
   model: "claude-4"
   reasoning_effort: "${VIBE_EFFORT}"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "${VIBE_EFFORT}")
 }
@@ -847,7 +847,7 @@ agent x:
   user: u
   session: fresh
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	if len(res.File.Comments) != 1 {
 		t.Fatalf("expected 1 comment, got %d", len(res.File.Comments))
@@ -862,7 +862,7 @@ func TestCompactionBlockWorkflow(t *testing.T) {
     preserve_recent: 8
   a -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	c := res.File.Workflows[0].Compaction
@@ -889,7 +889,7 @@ func TestCompactionBlockAgent(t *testing.T) {
     threshold: 0.95
     preserve_recent: 12
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	c := res.File.Agents[0].Compaction
@@ -916,7 +916,7 @@ func TestBudgetBlock(t *testing.T) {
     max_iterations: 10
   a -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	b := res.File.Workflows[0].Budget
@@ -939,7 +939,7 @@ func TestWorkflowVars(t *testing.T) {
   entry: a
   a -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	wv := res.File.Workflows[0].Vars
@@ -966,7 +966,7 @@ func TestDiagReservedName(t *testing.T) {
   user: u
   session: fresh
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagReservedName) {
 		t.Error("expected DiagReservedName for agent named 'done'")
 	}
@@ -981,7 +981,7 @@ func TestDiagBadIndentation(t *testing.T) {
   user: u
   session: fresh
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	// 3-space indent should produce an indentation error
 	if !hasDiagCode(res, parser.DiagBadIndentation) && !hasDiagCode(res, parser.DiagExpectedToken) && !hasDiagCode(res, parser.DiagUnexpectedToken) {
 		// The lexer emits TokenError for bad indentation which the parser sees
@@ -1003,7 +1003,7 @@ func TestDiagUnknownProperty(t *testing.T) {
   session: fresh
   foobar: baz
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagUnknownProperty) {
 		t.Error("expected DiagUnknownProperty for 'foobar'")
 	}
@@ -1018,7 +1018,7 @@ func TestAgentSessionPersist(t *testing.T) {
   user: usr
   session: persist
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	assertEq(t, "Session", res.File.Agents[0].Session, ast.SessionPersist)
 }
@@ -1032,7 +1032,7 @@ func TestDiagInvalidSessionMode(t *testing.T) {
   user: u
   session: invalid_mode
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagInvalidValue) {
 		t.Error("expected DiagInvalidValue for invalid session mode")
 	}
@@ -1042,7 +1042,7 @@ func TestDiagInvalidType(t *testing.T) {
 	src := `vars:
   x: foobar
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if !hasDiagCode(res, parser.DiagInvalidType) {
 		t.Error("expected DiagInvalidType for unknown type 'foobar'")
 	}
@@ -1051,7 +1051,7 @@ func TestDiagInvalidType(t *testing.T) {
 func TestDiagUnexpectedTopLevel(t *testing.T) {
 	src := `12345
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if len(res.Diagnostics) == 0 {
 		t.Error("expected diagnostic for unexpected top-level token")
 	}
@@ -1083,7 +1083,7 @@ attachments:
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res := parser.Parse("test.bot", tc.src)
+			res := parser.ParseLenient("test.bot", tc.src)
 			if !hasDiagCode(res, parser.DiagDuplicateBlock) {
 				t.Fatalf("expected DiagDuplicateBlock for duplicate %s, got diags=%v", tc.name, res.Diagnostics)
 			}
@@ -1110,7 +1110,7 @@ workflow w:
   entry: c
   c -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	assertEq(t, "schemas", len(res.File.Schemas), 2)
@@ -1128,7 +1128,7 @@ func TestAllFieldTypes(t *testing.T) {
   f: string[]
   g: file
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	fields := res.File.Schemas[0].Fields
@@ -1314,8 +1314,8 @@ func TestFixtureStability(t *testing.T) {
 				t.Fatal(err)
 			}
 			srcStr := string(src)
-			res1 := parser.Parse(name, srcStr)
-			res2 := parser.Parse(name, srcStr)
+			res1 := parser.ParseLenient(name, srcStr)
+			res2 := parser.ParseLenient(name, srcStr)
 
 			assertNoDiags(t, res1)
 			assertNoDiags(t, res2)
@@ -1353,7 +1353,7 @@ func TestAgentBackend(t *testing.T) {
   tools: [read_file, write_file]
   tool_max_steps: 10
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
@@ -1373,7 +1373,7 @@ func TestJudgeBackend(t *testing.T) {
   user: usr
   session: fresh
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	j := res.File.Judges[0]
@@ -1394,7 +1394,7 @@ func TestAgentProvider(t *testing.T) {
   user: usr
   session: fresh
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
@@ -1416,7 +1416,7 @@ func TestJudgeProviderTemplated(t *testing.T) {
   user: usr
   session: fresh
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	j := res.File.Judges[0]
@@ -1435,7 +1435,7 @@ func TestRouterLLMProvider(t *testing.T) {
   system: sys
   user: usr
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	r := res.File.Routers[0]
@@ -1453,7 +1453,7 @@ func TestDottedToolNames(t *testing.T) {
   tools: [git_diff, mcp.claude_code.search, mcp.falcon.lookup]
   tool_max_steps: 5
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
@@ -1475,7 +1475,7 @@ func TestWildcardToolRef(t *testing.T) {
   session: fresh
   tools: [mcp.claude_code.*, git_diff, mcp.codex.*]
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
@@ -1492,7 +1492,7 @@ func TestMCPServerDecl(t *testing.T) {
   transport: http
   url: "https://api.githubcopilot.com/mcp"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	if len(res.File.MCPServers) != 1 {
@@ -1516,7 +1516,7 @@ func TestMCPServerAuthBlock(t *testing.T) {
     scopes: ["repo", "read:org"]
     revoke_url: "https://github.com/login/oauth/revoke"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	if len(res.File.MCPServers) != 1 {
@@ -1545,7 +1545,7 @@ func TestMCPServerAuthUnknownProperty(t *testing.T) {
     type: "oauth2"
     bogus: "x"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	if len(res.Diagnostics) == 0 {
 		t.Fatal("expected diagnostic for unknown auth property")
 	}
@@ -1586,7 +1586,7 @@ workflow flow:
   implement -> review
   review -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	wf := res.File.Workflows[0]

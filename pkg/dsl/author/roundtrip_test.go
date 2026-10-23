@@ -2,6 +2,8 @@ package author
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/internal/dsltest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -36,13 +37,13 @@ func TestCorpusRoundTripsThroughTheAuthorDocument(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pr := parser.Parse(path, string(src))
+		pr := parsertest.Parse(path, string(src))
 		if hasParseErrors(pr.Diagnostics) {
 			skipped++ // not a program: nothing to round-trip
 			continue
 		}
 		converted++
-		if bundle.ParseFrontmatter(src) != nil {
+		if testFrontmatter(t, src) != nil {
 			withCatalog++
 		}
 		name := filepath.ToSlash(strings.TrimPrefix(path, rel+string(filepath.Separator)))
@@ -62,11 +63,11 @@ func TestCorpusRoundTripsThroughTheAuthorDocument(t *testing.T) {
 			// (bundle.ParseFrontmatter) off the original text and off the
 			// .bot the document writes back through the unparser — the
 			// `fmt --to bot` path — never through the writer's own reading.
-			if a, b := catalogText(src), catalogText([]byte(unparse.Unparse(res.File))); a != b {
+			if a, b := catalogText(t, src), catalogText(t, []byte(unparse.Unparse(res.File))); a != b {
 				t.Fatalf("the catalog identity changed:\n  before: %s\n  after:  %s\n--- written:\n%s", a, b, out)
 			}
-			direct := unit.LoadDir(path)
-			via := unit.LoadDirWithMainAST(path, path+".yaml", res.File, out)
+			direct := unittest.Whole(unit.LoadDir(path))
+			via := unittest.Whole(unit.LoadDirWithMainAST(path, path+".yaml", res.File, out, res.Spent))
 			if len(direct.Files) != len(via.Files) {
 				t.Fatalf("the unit loaded %d files directly and %d through the document\n--- written:\n%s", len(direct.Files), len(via.Files), out)
 			}
@@ -173,8 +174,8 @@ func sortInlinePrompts(f *ast.File) {
 
 // catalogText is the catalog identity a .bot text carries, read by the
 // catalogue's own reader, rendered for a comparison.
-func catalogText(src []byte) string {
-	fm := bundle.ParseFrontmatter(src)
+func catalogText(t testing.TB, src []byte) string {
+	fm := testFrontmatter(t, src)
 	if fm == nil {
 		return "(none)"
 	}

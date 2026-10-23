@@ -4,6 +4,7 @@ package ast
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -142,6 +143,10 @@ type jsonFile struct {
 	Uses         []*jsonUseDecl          `json:"uses,omitempty"`
 	Workflows    []*jsonWorkflowDecl     `json:"workflows,omitempty"`
 	Comments     []*jsonComment          `json:"comments,omitempty"`
+	// Salvage marks the display of a load a bound of the reader cut short
+	// (MarshalSalvageWithProvenance): why it is short. UnmarshalFile
+	// refuses a document that carries it.
+	Salvage string `json:"salvage,omitempty"`
 }
 
 // jsonGroupDecl mirrors GroupDecl — a reusable node cluster with its
@@ -1732,11 +1737,38 @@ func edgeToJSON(e *Edge) *jsonEdge {
 // Unmarshal
 // ---------------------------------------------------------------------------
 
-// Unmarshal converts JSON (produced by Marshal) back to an File.
+// ErrSalvage is UnmarshalFile's refusal of a document marked as the display
+// of a load cut short (MarshalSalvageWithProvenance): it lacks what the load
+// did not read, so decoded it would be a program of what was read — and a
+// file rebuilt from it would be written without the declarations it holds.
+var ErrSalvage = errors.New("the document is the display of a bot not read whole, not a program")
+
+// UnmarshalJSON decodes a document through UnmarshalFile, so EVERY
+// encoding/json decode of a document — a helper's, a holder's, one reached
+// through a struct field — meets the refusal of one marked as a salvage the
+// one door makes. The mirror (jsonFile) is a distinct type, so the decode
+// does not recurse. A decode into a typed mirror of the keys first, which
+// drops the marker before any File is built, is no decode of a document and
+// stays refused by the guards, not here.
+func (f *File) UnmarshalJSON(data []byte) error {
+	d, err := UnmarshalFile(data)
+	if err != nil {
+		return err
+	}
+	*f = *d
+	return nil
+}
+
+// Unmarshal converts JSON (produced by Marshal) back to an File. A document
+// marked as a salvage (MarshalSalvageWithProvenance) is refused, ErrSalvage,
+// wherever the decode runs.
 func UnmarshalFile(data []byte) (*File, error) {
 	var jf jsonFile
 	if err := json.Unmarshal(data, &jf); err != nil {
 		return nil, fmt.Errorf("astjson: %w", err)
+	}
+	if jf.Salvage != "" {
+		return nil, fmt.Errorf("astjson: %w (%s)", ErrSalvage, jf.Salvage)
 	}
 	if err := rejectNilElements(reflect.ValueOf(&jf), "document"); err != nil {
 		return nil, err

@@ -162,7 +162,11 @@ func TestE056ReadsTheSharedFragmentOnceWhereverTheLoaderRootsTheSides(t *testing
 			}
 			// The frame: the loader reads the document from a root above
 			// its own directory, so the two loads do not start alike.
-			if main := opened.loadUnit(opened.botPath).Main; main == filepath.Base(opened.botPath) {
+			opu, err := opened.loadUnit(opened.botPath)
+			if err != nil {
+				t.Fatalf("loadUnit: %v", err)
+			}
+			if main := opu.Main; main == filepath.Base(opened.botPath) {
 				t.Fatalf("the fixture is not the frame it claims: the loader read the document as %q, its own name", main)
 			}
 			if said := twinVerdict(t, doc, func() {}); said != "" {
@@ -195,7 +199,10 @@ func twinVerdict(t *testing.T, doc string, save func()) string {
 	if err != nil {
 		t.Fatalf("openAuthorDocument: %v", err)
 	}
-	u := d.loadUnit(d.botPath)
+	u, err := d.loadUnit(d.botPath)
+	if err != nil {
+		t.Fatalf("loadUnit: %v", err)
+	}
 	save()
 	said, err := d.twinAnotherProgram(u, b)
 	if err != nil {

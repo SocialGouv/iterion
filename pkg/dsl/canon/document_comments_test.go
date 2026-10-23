@@ -504,15 +504,9 @@ func TestTheDocumentsCanonicalFormDropsTheDocumentMarkersThemselves(t *testing.T
 // same value cut by the same comment: a reading the written form no longer
 // reports — the value quoted, the comment moved off it — is named.
 func TestACommentReadingTheWrittenFormLosesIsNamed(t *testing.T) {
-	src := author.Parse("x.bot.yaml", []byte(commentedDoc)).Diagnostics
-	var readings int
-	for _, d := range src {
-		if author.IsCommentReading(d) {
-			readings++
-		}
-	}
-	if readings != 1 {
-		t.Fatalf("the fixture carries %d comment reading(s), want 1: %v", readings, src)
+	src := author.Parse("x.bot.yaml", []byte(commentedDoc)).CommentReadings
+	if len(src) != 1 || !author.IsCommentReading(src[0]) {
+		t.Fatalf("the fixture carries %d comment reading(s), want 1: %v", len(src), src)
 	}
 	if why := commentReadingLost(src, src); why != "" {
 		t.Fatalf("a written form reporting the same reading lost it: %s", why)
@@ -520,8 +514,38 @@ func TestACommentReadingTheWrittenFormLosesIsNamed(t *testing.T) {
 	if why := commentReadingLost(src, nil); !strings.Contains(why, `"Say hello."`) {
 		t.Fatalf("a reading the written form lost is not named: %q", why)
 	}
-	other := []parser.Diagnostic{{Code: parser.DiagAuthorPromptBody, Severity: parser.SeverityWarning, Message: "a prompt body the lexer settles"}}
-	if author.IsCommentReading(other[0]) || commentReadingLost(other, nil) != "" {
+	other := parser.Diagnostic{Code: parser.DiagAuthorPromptBody, Severity: parser.SeverityWarning, Message: "a prompt body the lexer settles"}
+	if author.IsCommentReading(other) {
 		t.Fatal("an E053 reading of another kind is taken for a comment reading")
+	}
+}
+
+// The canonical form keeps every comment reading of a document however
+// many it holds: they are compared whole, never the thousand of each that
+// a reading reports — which, the writer reordering the nodes, are not the
+// same thousand in the source and in its written form. A document of 1200
+// readings, its prompts written before its schemas, is rewritten, its
+// readings all kept.
+func TestManyCommentReadingsSurviveTheRewrite(t *testing.T) {
+	t.Setenv("ITERION_DSL_READ_BUDGET", "")
+	var b strings.Builder
+	b.WriteString("dsl: 2\nprompts:\n")
+	for i := 0; i < 600; i++ {
+		fmt.Fprintf(&b, "  p%d: x # c\n", i)
+	}
+	b.WriteString("schemas:\n  s:\n")
+	for i := 0; i < 600; i++ {
+		fmt.Fprintf(&b, "    f%d: string # c\n", i)
+	}
+	src := []byte(b.String())
+	out, err := Document("r.bot.yaml", src)
+	if err != nil {
+		t.Fatalf("a document of 1200 comment readings, reordered by the writer, was refused: %v", err)
+	}
+	if string(out) == string(src) {
+		t.Fatal("the fixture is already canonical: the writer did not reorder it")
+	}
+	if got := len(author.Parse("r.bot.yaml", out).CommentReadings); got != 1200 {
+		t.Errorf("the written form reads %d comment readings, want 1200", got)
 	}
 }

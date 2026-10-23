@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -49,7 +50,7 @@ func TestCatalogInputReadsAreMappedByAnIncomingEdge(t *testing.T) {
 
 	counts := map[string]int{}
 	for _, path := range targets {
-		u := unit.LoadDir(path)
+		u := unittest.Whole(unit.LoadDir(path))
 		if u.Merged == nil {
 			continue // the parse/compile test reports it
 		}
@@ -127,7 +128,7 @@ func TestInputReadGuardSeesEverySurface(t *testing.T) {
 	}
 	for _, tc := range cases {
 		path := filepath.Join("testdata", "input_mapping", tc.file)
-		u := unit.LoadDir(path)
+		u := unittest.Whole(unit.LoadDir(path))
 		if u.Merged == nil {
 			t.Fatalf("%s: no file", path)
 		}
@@ -172,7 +173,7 @@ func TestTheHumanSystemPromptsReadingFollowsTheInteractionMode(t *testing.T) {
 		{"review_url.bot", "replaced by the empty string"},
 	} {
 		path := filepath.Join("testdata", "input_mapping", tc.file)
-		u := unit.LoadDir(path)
+		u := unittest.Whole(unit.LoadDir(path))
 		if u.Merged == nil {
 			t.Fatalf("%s: no file", path)
 		}

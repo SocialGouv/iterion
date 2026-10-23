@@ -2,13 +2,13 @@ package bots_test
 
 import (
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // deepsecAgentCorpus spans what an operator actually mistypes on
@@ -47,7 +47,7 @@ func TestTheDeclaredPatternAndTheShellBeltAgreeOnDeepsecAgent(t *testing.T) {
 
 	// The declaration, asked of the compiler rather than matched out of
 	// the text: what the engine enforces is the compiled var.
-	pr := parser.Parse("sec-audit-source/main.bot", string(src))
+	pr := parsertest.Parse("sec-audit-source/main.bot", string(src))
 	res := ir.Compile(pr.File)
 	if res.Workflow == nil {
 		t.Fatalf("the bot does not compile: %v", res.Diagnostics)

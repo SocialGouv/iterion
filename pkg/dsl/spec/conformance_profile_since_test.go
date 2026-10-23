@@ -2,6 +2,7 @@ package spec_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -39,10 +40,10 @@ func TestSinceMarksMatchTheParser(t *testing.T) {
 			marked++
 			sample := strings.ReplaceAll(sampleValues(p)[0], "\n", "\n"+indent)
 			doc := fmt.Sprintf(line, sample)
-			if res := parser.Parse("probe.bot", fmt.Sprintf("dsl: %d\n", p.Since-1)+doc); len(res.Diagnostics) == 0 {
+			if res := parsertest.Parse("probe.bot", fmt.Sprintf("dsl: %d\n", p.Since-1)+doc); len(res.Diagnostics) == 0 {
 				t.Errorf("%s.%s: the registry says the property arrives in profile %d, yet profile %d accepts it", kind, p.Name, p.Since, p.Since-1)
 			}
-			if res := parser.Parse("probe.bot", fmt.Sprintf("dsl: %d\n", p.Since)+doc); len(res.Diagnostics) != 0 {
+			if res := parsertest.Parse("probe.bot", fmt.Sprintf("dsl: %d\n", p.Since)+doc); len(res.Diagnostics) != 0 {
 				t.Errorf("%s.%s: accepted from profile %d by the registry, refused by the parser: %v", kind, p.Name, p.Since, res.Diagnostics)
 			}
 		}

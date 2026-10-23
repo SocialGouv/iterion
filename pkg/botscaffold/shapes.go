@@ -256,7 +256,10 @@ func compileGuard(name, src string, annexes map[string][]byte) error {
 			files[rel] = string(body)
 		}
 	}
-	u := unit.LoadMap(files, main)
+	u, err := unit.LoadMap(files, main)
+	if err != nil {
+		return &GeneratedError{Name: name, Detail: "is not read: " + err.Error()}
+	}
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return &GeneratedError{Name: name, Detail: "does not parse: " + d.Error()}

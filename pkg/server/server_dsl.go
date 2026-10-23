@@ -59,6 +59,10 @@ type parseResponse struct {
 	// that hold their source themselves: a cloud bot source is fetched and
 	// parsed here, never opened through /api/files/open.
 	Bindable bool `json:"bindable"`
+	// ReadRefusal is set when a bound of the reader made the document a
+	// salvage: the text past the read budget or the size cap (a source),
+	// the files past the budget they share (a bundle's unit).
+	ReadRefusal *readRefusalInfo `json:"read_refusal,omitempty"`
 }
 
 // DiagnosticDTO is the wire-safe shape of an ir.Diagnostic. It carries the
@@ -185,7 +189,17 @@ func (s *Server) handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pr := parser.Parse("studio.bot", req.Source)
+	// The editor's parse: the cloud editor opens a bot in one file through
+	// it. A text the reader refuses whole answers its refusal — no document
+	// of it (the empty one), bindable false, the refusal said
+	// (read_refusal): the studio writes none of it, and applies none of it
+	// over a document it holds (applyParsedSource).
+	pr, err := parser.Parse("studio.bot", req.Source)
+	var refused *parser.ReadRefusal
+	if errors.As(err, &refused) {
+		writeRefusedParse(w, refused)
+		return
+	}
 
 	var diags []string
 	for _, d := range pr.Diagnostics {
@@ -208,6 +222,20 @@ func (s *Server) handleParse(w http.ResponseWriter, r *http.Request) {
 		Diagnostics: diags,
 		Bindable:    !parseHasErrors(pr.Diagnostics),
 	})
+}
+
+// writeRefusedParse answers the parse of a text the reader refuses whole:
+// no document of it (the empty one, MARKED as the display of a refusal —
+// every decode of it answers ast.ErrSalvage, so no door takes it back as a
+// program once the refusal's remedy is applied), the refusal its one
+// diagnostic and its read refusal, bindable false.
+func writeRefusedParse(w http.ResponseWriter, refused *parser.ReadRefusal) {
+	empty, err := ast.MarshalSalvageWithProvenance(&ast.File{}, "", "not read whole: "+string(refused.Diagnostic.Code))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+		return
+	}
+	writeJSON(w, parseResponse{Document: json.RawMessage(empty), Diagnostics: []string{refused.Diagnostic.Error()}, ReadRefusal: readRefusalOf(refused)})
 }
 
 func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
@@ -637,6 +665,12 @@ type exampleResponse struct {
 	Path              string          `json:"path,omitempty"`
 	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
 	Bindable          bool            `json:"bindable"`
+	// Digest is the sha256 of the program's source as this open read it —
+	// issued only because the open read it WHOLE: what a save of the file
+	// it names presents (the digest rule, checkStoredFile). A refused open
+	// (writeRefusedOpen) issues none.
+	Digest      string           `json:"digest,omitempty"`
+	ReadRefusal *readRefusalInfo `json:"read_refusal,omitempty"`
 }
 
 // writeExample answers with one program's document and text — a bot in
@@ -644,7 +678,21 @@ type exampleResponse struct {
 // directory is served as — and, for a file inside the working directory,
 // the path the studio opens and saves it by (empty otherwise).
 func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
-	pr := parser.Parse(name, source)
+	// An example opens as the editor opens a file (handleOpenFile): a text
+	// the reader refuses whole — past a bound, or no text it reads at all
+	// (not UTF-8, E006) — answers its refusal through the same answer,
+	// writeRefusedOpen: the bytes, nothing of it, bindable false, the
+	// refusal said with its remedy.
+	pr, err := parser.Parse(name, source)
+	var refused *parser.ReadRefusal
+	if errors.As(err, &refused) {
+		writeRefusedOpen(w, openFileResponse{Source: source, Path: rel, ConfirmedDiskPath: confirmed, ReadRefusal: readRefusalOf(refused)}, refused.Diagnostic)
+		return
+	}
+	if pr.File == nil {
+		writeRefusedOpen(w, openFileResponse{Source: source, Path: rel, ConfirmedDiskPath: confirmed}, firstErrorOf(pr.Diagnostics))
+		return
+	}
 	var diags []string
 	bindable := true
 	for _, d := range pr.Diagnostics {
@@ -656,11 +704,6 @@ func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 		if d.Severity == parser.SeverityError {
 			bindable = false
 		}
-	}
-
-	if pr.File == nil {
-		writeJSON(w, parseResponse{Diagnostics: diags})
-		return
 	}
 
 	docJSON, err := ast.MarshalFile(pr.File)
@@ -676,6 +719,7 @@ func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 		Path:              rel,
 		ConfirmedDiskPath: confirmed,
 		Bindable:          bindable,
+		Digest:            contentSHA256(source),
 	})
 }
 
@@ -694,8 +738,18 @@ func writeExample(w http.ResponseWriter, name, source, rel, confirmed string) {
 // new file. A unit that does not load is told through its diagnostics,
 // never served as its main alone.
 func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data []byte) {
-	u := unit.LoadDirWithMain(abs, abs, data)
-	if len(u.Files) == 0 || u.Files[0].AST == nil || len(u.Files[0].AST.Imports) == 0 {
+	// The bot picker's open, as /api/files/open: a load the read budget cuts
+	// short opens as the view of what was read (unit.Salvage), its document
+	// marked as one, non-bindable, the refusal said; nothing flat is served
+	// of it — only a
+	// load read whole and loading without error is ever flattened, from the
+	// unit the strict loader answered. A main past the budget alone reads as
+	// no import and is answered as one file: its refusal, bound to its path
+	// only for the save to refuse it (handleSaveFile reads the file on disk
+	// whole or writes nothing).
+	u, loadErr := unit.LoadDirWithMain(abs, abs, data)
+	view := unit.Salvage(u, loadErr)
+	if files := view.Files(); len(files) == 0 || len(files[0].Imports) == 0 {
 		// A bot in one file inside the working directory names its real
 		// path too, so the studio opens and saves the file it was handed
 		// rather than a copy under bots/.
@@ -706,24 +760,23 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 	var diags []string
 	// The unit was read from disk and its diagnostics are answered to the
 	// client: they name the files by their unit-relative paths (#1934).
-	relUnitDiagnostics(u)
-	for _, d := range u.Diagnostics {
+	view.RelDiagnostics()
+	for _, d := range view.Diagnostics() {
 		diags = append(diags, d.Error())
 	}
-	if u.Merged == nil {
-		writeJSON(w, parseResponse{Diagnostics: diags})
-		return
-	}
-	if u.HasErrors() {
-		// Bindable is the MAIN's own parse, not u.HasErrors(): a unit also
-		// fails to load on a missing fragment, an import cycle or a duplicate
-		// declaration, and in those the main was read whole — calling it a
-		// salvage would tell the author their file did not parse when it did,
-		// and leave a buffer with nowhere to go. A save is refused all the
-		// same, by saveUnit, which names the fragment at fault. Same posture
-		// as /api/files/open and parseUnitFiles.
-		mainParse := parser.Parse(name, string(data))
-		bindable := !parseHasErrors(mainParse.Diagnostics)
+	if loadErr != nil || view.HasErrors() {
+		// Bindable is the MAIN's own parse, not the load's errors: a unit
+		// also fails to load on a missing fragment, an import cycle or a
+		// duplicate declaration, and in those the main was read whole —
+		// calling it a salvage would tell the author their file did not
+		// parse when it did, and leave a buffer with nowhere to go. A save
+		// is refused all the same, by saveUnit, which names the fragment at
+		// fault. Same posture as /api/files/open and parseUnitFiles.
+		mainParse, mainErr := parser.Parse(name, string(data))
+		// A load that did not read the bot whole is a salvage, the main's
+		// parse aside (unit.Salvaged.Whole): the same rule as
+		// /api/files/open.
+		bindable := mainErr == nil && !parseHasErrors(mainParse.Diagnostics) && view.Whole()
 		rel, confirmed, inWorkDir := s.workDirRelative(abs, name)
 		if inWorkDir {
 			// This is the bot /api/files/open answers for, under that same
@@ -734,34 +787,43 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 			// it the studio binds the path, says the bot is launchable and
 			// has nothing left to refuse it with. It stays writable: the
 			// save is refused by saveUnit, naming the fragment at fault.
-			docJSON, err := ast.MarshalFileWithProvenance(u.Merged, u.Root)
+			docJSON, err := view.MarshalDocument(view.Root())
 			if err != nil {
 				httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 				return
 			}
-			writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(u, rel), Bindable: bindable})
+			writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(view, rel), Bindable: bindable, ReadRefusal: unitReadRefusal(view)})
 			return
 		}
 		// Outside the working directory there is no path to open it by and
-		// no unit to present one for: the main's text and the program the
-		// loader merged of it, with the diagnostics.
-		docJSON, err := ast.MarshalFile(u.Merged)
+		// no unit to present one for: the main's text and the document the
+		// loader merged of it — each declaration naming its file from the
+		// example's own root — with the diagnostics. The digest rule: the
+		// main's digest rides only when the load read the main itself
+		// whole; a cut before it issues none.
+		docJSON, err := view.MarshalDocument(view.Root())
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Bindable: bindable})
+		var mainDigest string
+		if files := view.Files(); len(files) > 0 && files[0].ReadWhole {
+			mainDigest = contentSHA256(string(data))
+		}
+		writeJSON(w, exampleResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Bindable: bindable, Digest: mainDigest, ReadRefusal: unitReadRefusal(view)})
 		return
 	}
 	if rel, confirmed, ok := s.workDirRelative(abs, name); ok {
-		docJSON, err := ast.MarshalFileWithProvenance(u.Merged, u.Root)
+		docJSON, err := view.MarshalDocument(view.Root())
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(u, rel), Bindable: true})
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(view, rel), Bindable: true})
 		return
 	}
+	// Read whole and loading without error: the unit the strict loader
+	// answered, flattened.
 	flat, err := flatProgram(name, u.Merged)
 	if err != nil {
 		// The include-inlining refusal rides no diagnostic: it names the

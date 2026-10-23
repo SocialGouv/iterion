@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -35,7 +36,7 @@ func TestCompileReportsTheFilesItsIncludesRead(t *testing.T) {
 		t.Helper()
 		mainBot := filepath.Join(root, "main.bot")
 		write("main.bot", src)
-		pr := parser.Parse(mainBot, src)
+		pr := parsertest.Parse(mainBot, src)
 		for _, d := range pr.Diagnostics {
 			if d.Severity == parser.SeverityError {
 				t.Fatalf("parse error: %s", d.Error())

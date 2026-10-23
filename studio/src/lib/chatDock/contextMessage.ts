@@ -47,6 +47,12 @@ export interface ActiveEditorDocumentSnapshot {
   // including the common case where there was nothing to save.
   dirty: boolean;
   source?: string;
+  /** Set when the tab holds a salvage the server's READER made — the file
+   *  past its read budget or size cap: the document is withheld (complete
+   *  false, no source), never sent as the file's, and nothing applied or
+   *  saved over it lands until the file is reopened read whole. The
+   *  refusal as the server said it, and its remedy. */
+  readRefusal?: import("@/api/types").ReadRefusal;
   authoring?: AssistantAuthoringSnapshot;
   sharedBundle?: import("@/api/client").SharedBundleFileMetadata;
 }

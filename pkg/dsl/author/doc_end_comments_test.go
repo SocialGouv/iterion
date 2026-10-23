@@ -838,7 +838,7 @@ func TestAFlowCollectionTagNameCarryingABracketIsRead(t *testing.T) {
 		t.Fatalf("comments = %q, want the plainly tagged collection's %q", got, want)
 	}
 	for _, foot := range []bool{false, true} {
-		if n := commentsAfterClose("# real", sourceLines([]byte(flowBracketTagBody)), 0, foot); n != 0 {
+		if n := commentsAfterClose([]string{"# real"}, map[string]bool{"# real": true}, sourceLines([]byte(flowBracketTagBody)), 0, foot)["# real"]; n != 0 {
 			t.Fatalf("%d comments were counted in the region of a closing bracket the read never found (foot=%v)", n, foot)
 		}
 	}

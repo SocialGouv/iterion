@@ -2,6 +2,10 @@ package fix
 
 import (
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -32,7 +36,7 @@ workflow w:
 
 func c137(t *testing.T, src string) []ir.Diagnostic {
 	t.Helper()
-	pr := parser.Parse("q.bot", src)
+	pr := parsertest.Parse("q.bot", src)
 	var out []ir.Diagnostic
 	for _, d := range ir.Compile(pr.File).Diagnostics {
 		if d.Code == ir.DiagQuotedCommandRef {
@@ -124,7 +128,7 @@ func TestTheProofCountsDiagnostics(t *testing.T) {
 // PlanFor is the validator's view: the edits for the diagnostics it already
 // holds, and the ones it could not place — no recompile.
 func TestPlanForAnnotatesDiagnostics(t *testing.T) {
-	edits, left := PlanFor("q.bot", []byte(quotedBot), parser.Parse("q.bot", quotedBot).File, c137(t, quotedBot))
+	edits, left := PlanFor("q.bot", []byte(quotedBot), parsertest.Parse("q.bot", quotedBot).File, c137(t, quotedBot))
 	if len(edits) != 2 || len(left) != 1 || edits[0].Node != "checkout" || edits[1].Node != "verify" {
 		t.Fatalf("edits %+v left %+v", edits, left)
 	}
@@ -209,7 +213,7 @@ workflow w:
 `
 	diags := c137(t, src)
 	diags[0].NodeID = "u9.ghost"
-	edits, left := PlanFor("g.bot", []byte(src), parser.Parse("g.bot", src).File, diags)
+	edits, left := PlanFor("g.bot", []byte(src), parsertest.Parse("g.bot", src).File, diags)
 	if len(edits) != 0 || len(left) != 1 || left[0].Node != "u9.ghost" || !strings.Contains(left[0].Why, "cannot be located") {
 		t.Fatalf("edits %+v left %+v", edits, left)
 	}
@@ -330,5 +334,35 @@ workflow w:
 	}
 	if !said {
 		t.Fatalf("the raw reference was not said left: %+v", res.Left)
+	}
+}
+
+// A file of a bot the read budget cut short is not fixed: the unit is not
+// read whole, so nothing of it compiles to prove an edit against, and the
+// refusal is the reader's — positioned where the bot ran out, with the
+// operator's count for remedy — never "does not parse" of a file that does.
+func TestAFileOfABotReadShortIsNotFixed(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"main.bot":  "import \"lib/a.bot\"\nimport \"lib/b.bot\"\n\nworkflow w:\n  entry: done\n",
+		"lib/a.bot": "prompt pa:\n  Alpha.\n",
+		"lib/b.bot": "prompt pb:\n  Beta gamma delta.\n",
+	}
+	spent := 0
+	for rel, src := range files {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(parser.ReadBudgetEnv, "0")
+		spent += parsertest.Parse(rel, src).Spent
+	}
+	t.Setenv(parser.ReadBudgetEnv, strconv.Itoa(spent-1))
+	_, err := Bytes(filepath.Join(dir, "lib", "a.bot"), []byte(files["lib/a.bot"]))
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "not read whole") || !strings.Contains(err.Error(), "b.bot:") || !strings.Contains(err.Error(), parser.ReadBudgetEnv) {
+		t.Fatalf("fix of a file of a bot read short: %v — want refused, not read whole, positioned in lib/b.bot, the operator's count for remedy", err)
 	}
 }

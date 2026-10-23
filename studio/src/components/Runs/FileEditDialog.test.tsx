@@ -38,7 +38,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const FILE = { path: ".gitignore", content: "node_modules/\n", binary: false, exists: true };
+const FILE = { path: ".gitignore", content: "node_modules/\n", binary: false, exists: true, sha256: "sha-read" };
 
 function openDialog(path: string | null = ".gitignore", onClose: () => void = () => {}) {
   runs.getRunFileContent.mockResolvedValue(FILE);
@@ -52,20 +52,31 @@ const bufferValue = () =>
 
 describe("FileEditDialog writes", () => {
   it("saves what is typed, and the save marks the buffer clean", async () => {
-    runs.saveRunFileContent.mockResolvedValue(undefined);
+    runs.saveRunFileContent.mockResolvedValueOnce({ ...FILE, content: "node_modules/\ndist/\n", sha256: "sha-first-save" });
     openDialog();
     const buffer = await screen.findByLabelText("file");
     await waitFor(() => expect(bufferValue()).toBe("node_modules/\n"));
     fireEvent.change(buffer, { target: { value: "node_modules/\ndist/\n" } });
     expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
 
+    // The digest of the text the edit was made from goes with the save: it
+    // replaces exactly the bytes the read answered.
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
-      expect(runs.saveRunFileContent).toHaveBeenCalledWith("run-1", ".gitignore", "node_modules/\ndist/\n"),
+      expect(runs.saveRunFileContent).toHaveBeenCalledWith("run-1", ".gitignore", "node_modules/\ndist/\n", "sha-read"),
     );
     await waitFor(() => expect(screen.getByRole("button", { name: "Saved" })).toBeTruthy());
     // Clean: closing it now asks nothing.
     expect(anyUnsavedBuffer()).toBe(false);
+
+    // The next save presents the digest of what the first one wrote, as the
+    // server answered it.
+    runs.saveRunFileContent.mockResolvedValueOnce({ ...FILE, content: "node_modules/\ndist/\nbuild/\n", sha256: "sha-second-save" });
+    fireEvent.change(buffer, { target: { value: "node_modules/\ndist/\nbuild/\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(runs.saveRunFileContent).toHaveBeenLastCalledWith("run-1", ".gitignore", "node_modules/\ndist/\nbuild/\n", "sha-first-save"),
+    );
   });
 });
 
@@ -127,6 +138,9 @@ describe("FileEditDialog's buffer survives an unmount it does not control", () =
     expect(useEditBuffersStore.getState().runFiles[runFileBufferKey("run-1", ".gitignore")]).toEqual({
       value: "dist/\n",
       original: "node_modules/\n",
+      // The digest of the text it started from stays with it: the save
+      // that adopts it presents that, not the digest of a later read.
+      originalSha256: "sha-read",
     });
     expect(anyUnsavedBuffer()).toBe(true);
 
@@ -165,6 +179,9 @@ describe("FileEditDialog's buffer survives an unmount it does not control", () =
     expect(useEditBuffersStore.getState().runFiles[runFileBufferKey("run-1", ".gitignore")]).toEqual({
       value: "mine\n",
       original: "node_modules/\n",
+      // The digest of the text it started from stays with it: the save
+      // that adopts it presents that, not the digest of a later read.
+      originalSha256: "sha-read",
     });
     expect(anyUnsavedBuffer()).toBe(true);
   });

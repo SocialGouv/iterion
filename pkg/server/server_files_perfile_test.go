@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -374,7 +376,7 @@ func TestAPerFileRequestOnACloudBundleReadsItsFilesMap(t *testing.T) {
 // JSON `null`, and the studio's UnitFileInfo[] declares itself non-nullable
 // (#1581: the transport erases nil-from-empty, so prove the round trip).
 func TestAUnitAlwaysCarriesAFilesArray(t *testing.T) {
-	raw, err := json.Marshal(unitInfoOf(&unit.Unit{Main: "main.bot"}, "main.bot"))
+	raw, err := json.Marshal(unitInfoOf(unit.Salvage(&unit.Unit{Main: "main.bot"}, nil), "main.bot"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,12 +413,12 @@ func TestRenderingOneFileRefusesADocumentWithoutProvenance(t *testing.T) {
 // test whose subject is something else.
 func TestPerFileFixturesParse(t *testing.T) {
 	for name, src := range map[string]string{"foldNodes": foldNodes, "foldMain": foldMain, "foldPlain": foldPlain, "foldMainTwo": foldMainTwo} {
-		pr := parser.Parse(name, src)
+		pr := parsertest.Parse(name, src)
 		if parseHasErrors(pr.Diagnostics) {
 			t.Fatalf("%s: %v", name, pr.Diagnostics)
 		}
 	}
-	if _, err := ast.MarshalFile(parser.Parse("f", foldNodes).File); err != nil {
+	if _, err := ast.MarshalFile(parsertest.Parse("f", foldNodes).File); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -447,9 +449,17 @@ func TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("seed: %d %s", w.Code, w.Body.String())
 	}
-	putFile := func(path, content string) *httptest.ResponseRecorder {
-		b, _ := json.Marshal(map[string]any{"content": content})
-		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/folded/files/"+path, strings.NewReader(string(b))).WithContext(edCtx)
+	putFold := func(path, content string) *httptest.ResponseRecorder {
+		t.Helper()
+		// The drawer's flow: the id and the stored digest its read answered.
+		body := map[string]any{"content": content, "version": 1, "id": storedIDFor(s, edCtx, "folded")}
+		if bs, err := s.botSources.GetBySlug(context.Background(), "t1", "folded"); err == nil {
+			if held, ok := bs.Files[path]; ok {
+				body["stored_sha256"] = contentSHA256(held)
+			}
+		}
+		b, _ := json.Marshal(body)
+		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/folded/files/"+path, bytes.NewReader(b)).WithContext(edCtx)
 		r.SetPathValue("id", "t1")
 		r.SetPathValue("slug", "folded")
 		r.SetPathValue("path", path)
@@ -461,7 +471,7 @@ func TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	// the studio's own renderer produces for this file, and what the
 	// compile check happily accepts.
 	folded := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline\\r two\\n\"\n"
-	if w := putFile("lib/nodes.bot", folded); w.Code != http.StatusUnprocessableEntity {
+	if w := putFold("lib/nodes.bot", folded); w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("a write that folds a stored value: %d %s", w.Code, w.Body.String())
 	}
 	after, err := s.botSources.GetBySlug(context.Background(), "t1", "folded")
@@ -475,7 +485,7 @@ func TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	// Without it the test would pass just as well on a route that refuses
 	// every write.
 	kept := "dsl: 2\n\ntool t:\n  description: \"probe, edited\"\n  command: `line one\nline two`\n"
-	if w := putFile("lib/nodes.bot", kept); w.Code != http.StatusOK {
+	if w := putFold("lib/nodes.bot", kept); w.Code != http.StatusOK {
 		t.Fatalf("an edit that folds nothing was refused: %d %s", w.Code, w.Body.String())
 	}
 }
@@ -534,7 +544,7 @@ func TestPuttingAWholeBundleRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 		"manifest.yaml": "name: whole\nversion: 1.0.0\nrequires:\n  iterion: \">= " + parser.ImportSince + "\"\n",
 	}
 	put := func(f map[string]string) *httptest.ResponseRecorder {
-		body, _ := json.Marshal(botSourcePutReq{Files: f})
+		body, _ := json.Marshal(botSourcePutReq{Files: f, Version: versionIfStored(s), ID: storedIDFor(s, edCtx, "whole"), StoredSHA256: storedDigestsFor(s, edCtx, "whole")})
 		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/whole", strings.NewReader(string(body))).WithContext(edCtx)
 		r.SetPathValue("id", "t1")
 		r.SetPathValue("slug", "whole")
@@ -728,7 +738,7 @@ func TestThePerFileEditorCarriesAnAddedImport(t *testing.T) {
 	}
 	// The saved unit holds three files now: the revision moved, and covers
 	// the fragment the import joined.
-	if want := unit.LoadDir(filepath.Join(workdir, "demo", "main.bot")).Digest; saved.Revision != want || saved.Revision == opened.Unit.Revision {
+	if want := unittest.Whole(unit.LoadDir(filepath.Join(workdir, "demo", "main.bot"))).Digest; saved.Revision != want || saved.Revision == opened.Unit.Revision {
 		t.Fatalf("revision after save %q, want the new unit's digest %q", saved.Revision, want)
 	}
 }

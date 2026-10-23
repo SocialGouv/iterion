@@ -181,6 +181,24 @@ for an explicit creation, while modifying an existing workflow requires an
 exact path match. Text such as “the workflow is open” is never evidence that
 the requested buffer is active.
 
+A tab that holds a salvage the server's reader made — a bot past its read
+budget, a file past the size cap, a file that is not UTF-8 — sends no
+document: `complete: false`, no `source`, and `readRefusal` with the refusal
+and its remedy (the read budget's `ITERION_DSL_READ_BUDGET`; for a file past
+the size cap, its declarations moved into fragments under `lib/`; for E006,
+the file saved as UTF-8). A whole replacement applied to such a tab replaces
+the canvas and leaves the salvage: Save, Save As and the launch stay refused
+until the file is reopened and read whole. The server's own doors refuse
+those writes whichever client sends them: a studio save or a bot-source write
+over a stored file its reader refuses — alone, or as a file that the stored
+load of a unit reaching it did not read, the read budget its files share run
+out in it or before it (any file the reader opens as a main heads a unit:
+a subdirectory's main, a workflow under `lib/`, a fragment that imports) —
+is a 422; only a raw edit that presents the stored text's digest — the exact
+replacements below, the files drawer, the run's file editor — replaces such
+a file. The document such a tab shows is marked a salvage, and no server
+door decodes it.
+
 ## Actions and operator autonomy
 
 Assistant reads and navigation do not need an action policy. Writes do. A

@@ -91,7 +91,10 @@ func Bytes(name string, src []byte, opts Options) (*Result, error) {
 	res := &Result{Name: name, Original: src}
 
 	norm := rewrite.Normalize(src)
-	before := parser.Parse(name, norm.Text)
+	before, err := parser.Parse(name, norm.Text)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s is not read: %v", ErrRefused, name, err)
+	}
 	if errs := parseErrors(before.Diagnostics); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: %s does not parse in its own profile — fix it first: %s", ErrRefused, name, strings.Join(errs, "; "))
 	}
@@ -114,7 +117,10 @@ func Bytes(name string, src []byte, opts Options) (*Result, error) {
 	res.Changed = !bytes.Equal(res.Migrated, src)
 
 	// The oracle: the two texts read as the same document.
-	after := parser.Parse(name, rewrite.Normalize(res.Migrated).Text)
+	after, err := parser.Parse(name, rewrite.Normalize(res.Migrated).Text)
+	if err != nil {
+		return nil, fmt.Errorf("%w: the migrated %s is not read: %v", ErrRefused, name, err)
+	}
 	if errs := parseErrors(after.Diagnostics); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: the migrated %s does not parse in profile %d (a defect of the migration, not of the file): %s", ErrRefused, name, to, strings.Join(errs, "; "))
 	}
@@ -124,7 +130,11 @@ func Bytes(name string, src []byte, opts Options) (*Result, error) {
 	if why := sameDocument(before.File, after.File); why != "" {
 		return nil, fmt.Errorf("%w: the migration would change the program of %s: %s", ErrRefused, name, why)
 	}
-	if !sameCatalogueIdentity(src, res.Migrated) {
+	same, err := sameCatalogueIdentity(name, src, res.Migrated)
+	if err != nil {
+		return nil, fmt.Errorf("%w: whether the migration keeps the catalogue identity of %s (its `## ---` frontmatter) cannot be told: %v", ErrRefused, name, err)
+	}
+	if !same {
 		return nil, fmt.Errorf("%w: the migration would change the catalogue identity of %s (its `## ---` frontmatter)", ErrRefused, name)
 	}
 	res.Prompts = promptChanges(after.File, before.File)
@@ -289,9 +299,19 @@ func sameDocument(before, after *ast.File) string {
 // the lexer reads the file, a BOM or CRLF endings hiding nothing. No edit of
 // today's migration touches a frontmatter line, so this is the guard that
 // outlives the edit rules: an edit kind added later that did would be
-// refused here, not discovered on the board.
-func sameCatalogueIdentity(before, after []byte) bool {
-	return reflect.DeepEqual(bundle.ParseFrontmatter(before), bundle.ParseFrontmatter(after))
+// refused here, not discovered on the board. A frontmatter either text
+// does not let the reader read is an error: "not read" on both sides is no
+// proof they agree.
+func sameCatalogueIdentity(name string, before, after []byte) (bool, error) {
+	fb, err := bundle.ParseFrontmatter(name, before)
+	if err != nil {
+		return false, err
+	}
+	fa, err := bundle.ParseFrontmatter(name, after)
+	if err != nil {
+		return false, err
+	}
+	return reflect.DeepEqual(fb, fa), nil
 }
 
 // firstDifference names the first line at which two JSON documents differ.

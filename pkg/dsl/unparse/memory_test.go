@@ -1,6 +1,7 @@
 package unparse
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -71,7 +72,7 @@ workflow flow:
 
   reviser -> done
 `
-	pr1 := parser.Parse("test.bot", src)
+	pr1 := parsertest.Parse("test.bot", src)
 	if hasErrors(pr1.Diagnostics) {
 		t.Fatalf("first parse: %v", pr1.Diagnostics)
 	}
@@ -88,7 +89,7 @@ workflow flow:
 	}
 
 	round := Unparse(first)
-	pr2 := parser.Parse("test.bot", round)
+	pr2 := parsertest.Parse("test.bot", round)
 	if hasErrors(pr2.Diagnostics) {
 		t.Fatalf("second parse: %v\n%s", pr2.Diagnostics, round)
 	}
@@ -124,7 +125,7 @@ workflow flow:
 
   finder -> done
 `
-	pr := parser.Parse("test.bot", src)
+	pr := parsertest.Parse("test.bot", src)
 	if hasErrors(pr.Diagnostics) {
 		t.Fatalf("parse: %v", pr.Diagnostics)
 	}
@@ -136,7 +137,7 @@ workflow flow:
 	if !strings.Contains(round, "project_root: true") {
 		t.Fatalf("unparse dropped project_root:\n%s", round)
 	}
-	pr2 := parser.Parse("test.bot", round)
+	pr2 := parsertest.Parse("test.bot", round)
 	if hasErrors(pr2.Diagnostics) {
 		t.Fatalf("second parse: %v\n%s", pr2.Diagnostics, round)
 	}
@@ -160,7 +161,7 @@ workflow flow:
 
   reviser -> done
 `
-	pr := parser.Parse("test.bot", src)
+	pr := parsertest.Parse("test.bot", src)
 	found := false
 	for _, d := range pr.Diagnostics {
 		if strings.Contains(d.Message, "bogus_field") || strings.Contains(d.Message, "memory property") {

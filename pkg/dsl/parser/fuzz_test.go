@@ -44,7 +44,7 @@ func FuzzParse(f *testing.F) {
 	f.Add("schema s:\n  field: string\n  field: int\n")
 
 	f.Fuzz(func(t *testing.T, src string) {
-		res := parser.Parse("fuzz.bot", src)
+		res := parser.ParseLenient("fuzz.bot", src)
 		if res == nil {
 			t.Fatal("Parse returned nil")
 		}

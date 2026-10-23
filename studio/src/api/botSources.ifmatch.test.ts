@@ -53,12 +53,12 @@ describe("putBotSourceFile", () => {
 });
 
 describe("deleteBotSourceFile", () => {
-  it("sends the if-match version in the query, since a DELETE carries no body", async () => {
+  it("sends the if-match version and the bot's id in the query, since a DELETE carries no body", async () => {
     const calls = mockFetch();
-    await deleteBotSourceFile("team-1", "demo", "skills/a.md", 3);
+    await deleteBotSourceFile("team-1", "demo", "skills/a.md", 3, "bot-7");
     expect(calls[0]!.init!.method).toBe("DELETE");
     expect(calls[0]!.url).toBe(
-      "/api/teams/team-1/bot-sources/demo/files/skills/a.md?version=3",
+      "/api/teams/team-1/bot-sources/demo/files/skills/a.md?version=3&bot_id=bot-7",
     );
     expect(calls[0]!.init!.body).toBeUndefined();
   });
@@ -68,5 +68,6 @@ describe("deleteBotSourceFile", () => {
     await deleteBotSourceFile("team-1", "demo", "skills/a.md", "unchecked");
     expect(calls[0]!.url).toBe("/api/teams/team-1/bot-sources/demo/files/skills/a.md");
     expect(calls[0]!.url).not.toContain("version");
+    expect(calls[0]!.url).not.toContain("bot_id");
   });
 });

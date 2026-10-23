@@ -78,6 +78,14 @@ func MaxSyntaxRequirementsDirWithMain(dir, mainRel, mainText string) SyntaxRequi
 	return maxSyntaxRequirementsDir(dir, map[string]string{mainRel: mainText})
 }
 
+// MaxSyntaxRequirementsDirStaged is MaxSyntaxRequirementsDir with some
+// files' texts — keyed by slash path from the bundle's root — handed over in
+// place of the disk's: a writer that decides a floor before it writes reads
+// the sources as it will leave them.
+func MaxSyntaxRequirementsDirStaged(dir string, staged map[string]string) SyntaxRequirements {
+	return maxSyntaxRequirementsDir(dir, staged)
+}
+
 func maxSyntaxRequirementsDir(dir string, staged map[string]string) SyntaxRequirements {
 	root, collection, ok := collectionOf(dir)
 	if !ok {
@@ -145,7 +153,7 @@ func isRootEntry(rel string) bool {
 
 func walkSyntax(entries []string, read func(rel string) (string, sourceState)) SyntaxRequirements {
 	profile := 0
-	var declaredBy, unread, importedBy, contractedBy, aliasBy, matchingBy, emptyToolsBy []string
+	var declaredBy, unread, short, importedBy, contractedBy, aliasBy, matchingBy, emptyToolsBy []string
 	visited := map[string]bool{}
 	var visit func(rel string)
 	visit = func(rel string) {
@@ -174,7 +182,7 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 			return path.Join(base, frag)
 		}
 		main := path.Base(rel)
-		u := unit.Load(func(frag string) ([]byte, error) {
+		u, err := unit.Load(func(frag string) ([]byte, error) {
 			if frag == main {
 				return []byte(src), nil
 			}
@@ -188,6 +196,14 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 			}
 			return []byte(body), nil
 		}, main, join)
+		if err != nil {
+			// The read budget, or a file's size cap, cut the workflow's
+			// unit short: the files past the cut are in no list here, and
+			// a floor read off the rest would admit runners that cannot
+			// read them. Named, never counted (Short).
+			short = append(short, rel+": "+err.Error())
+			return
+		}
 		for _, f := range u.Files {
 			if f.AST != nil && len(f.AST.Imports) > 0 {
 				importedBy = append(importedBy, f.Name)
@@ -239,12 +255,13 @@ func walkSyntax(entries []string, read func(rel string) (string, sourceState)) S
 	}
 	declaredBy = slices.Compact(slices.Sorted(slices.Values(declaredBy)))
 	unread = slices.Compact(slices.Sorted(slices.Values(unread)))
+	short = slices.Compact(slices.Sorted(slices.Values(short)))
 	importedBy = slices.Compact(slices.Sorted(slices.Values(importedBy)))
 	contractedBy = slices.Compact(slices.Sorted(slices.Values(contractedBy)))
 	aliasBy = slices.Compact(slices.Sorted(slices.Values(aliasBy)))
 	matchingBy = slices.Compact(slices.Sorted(slices.Values(matchingBy)))
 	emptyToolsBy = slices.Compact(slices.Sorted(slices.Values(emptyToolsBy)))
-	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, AliasBy: aliasBy, MatchingBy: matchingBy, EmptyToolsBy: emptyToolsBy, Unread: unread}
+	return SyntaxRequirements{Profile: profile, DeclaredBy: declaredBy, ImportedBy: importedBy, ContractedBy: contractedBy, AliasBy: aliasBy, MatchingBy: matchingBy, EmptyToolsBy: emptyToolsBy, Unread: unread, Short: short}
 }
 
 // aliasUses collects the tool-name spellings of one file's AST that resolve
@@ -341,6 +358,14 @@ type SyntaxRequirements struct {
 	// which is the opposite bound on every CLI backend.
 	EmptyToolsBy []string
 	Unread       []string
+	// Short names the executable sources whose unit a bound of the reader
+	// cut short — the read budget its files share, a file past the size
+	// cap — each with the refusal: what those files use is not known, so no
+	// floor read off the others certifies the bundle. A writer of a floor
+	// (the push admission, `dsl migrate`, the scaffold) refuses on it and
+	// `validate` reports it as an error (C256); the remedy is the reader's
+	// budget, never a lower floor.
+	Short []string
 }
 
 // UsesImport reports whether any source of the bundle imports.

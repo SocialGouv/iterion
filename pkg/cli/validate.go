@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dryrun"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
@@ -302,12 +303,13 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	// read beside it — a bot in several files is validated as the program
 	// it is, each file's diagnostics at its own path.
 	var u *unit.Unit
+	var loadErr error
 	if doc != nil {
 		// The document, read into its AST by the converter, is the unit's
 		// main under the .bot's name: its fragments are read beside that
 		// .bot, and every position stays the document's own. The converter's
 		// diagnostics come first, then the loader's.
-		u = doc.loadUnit(doc.botPath)
+		u, loadErr = doc.loadUnit(doc.botPath)
 		for _, d := range doc.res.Diagnostics {
 			result.addParseDiagnostic(d)
 		}
@@ -322,15 +324,49 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		// comparison reads once and merges into each of them, so a node
 		// reading one is no difference between the two files. A prompt of
 		// that bundle that cannot be read names itself.
-		d, err := doc.twinAnotherProgram(u, bundleHandle)
-		if err != nil {
-			return err
-		}
-		if d != nil {
-			result.addParseDiagnostic(*d)
+		if loadErr == nil {
+			d, err := doc.twinAnotherProgram(u, bundleHandle)
+			if err != nil {
+				return err
+			}
+			if d != nil {
+				result.addParseDiagnostic(*d)
+			}
 		}
 	} else {
-		u = unit.LoadDirWithMain(parsePath, parsePath, src)
+		u, loadErr = unit.LoadDirWithMain(parsePath, parsePath, src)
+	}
+	var short *unit.ShortError
+	if errors.As(loadErr, &short) {
+		// A bot past the read budget its files share is reported by its
+		// refusal — positioned, with the remedy — and nothing else of it:
+		// no file's profile, no compile of the program a load cut short
+		// read (its errors would name nodes the files past the cut
+		// declare), and no verdict read off what it did not read — the
+		// verdict's cause is the refusal, never "no workflow".
+		refused := short.ReadRefusal()
+		refusal := refused.Diagnostic
+		result.addParseDiagnostic(refusal)
+		result.Valid = false
+		sortValidateDiagnostics(result.Diagnostics)
+		// A bound cut the bot short (read up to the cut, not whole); a file
+		// that is no text the reader reads (not UTF-8, E006) was not read
+		// at all.
+		verdict := "not read whole: "
+		if refused.Bound == parser.BoundNone {
+			verdict = "not read: "
+		}
+		if p.Format == OutputJSON {
+			p.JSON(result)
+		} else {
+			p.Header("Validate: " + path)
+			printDiagnostics(p, result.Diagnostics)
+			p.Line("  result: INVALID (" + verdict + refusal.Message + ")")
+		}
+		return validationFailed(p)
+	}
+	if loadErr != nil {
+		return loadErr
 	}
 	for _, d := range u.Diagnostics {
 		result.addParseDiagnostic(d)
@@ -397,11 +433,20 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		}
 		// A file that failed to PARSE has its cause named already: a second
 		// error saying no workflow was found would count one cause twice —
-		// the workflow is missing because the program did not parse.
+		// the workflow is missing because the program did not parse — and
+		// the verdict names that cause, not the program it left: a source
+		// or a document its reader refused (not UTF-8, E006; a document
+		// refused whole, E050) was not read, a workflow in it or not.
 		parseErrored := false
 		for _, d := range result.Diagnostics {
 			if d.Severity == "error" {
 				parseErrored = true
+				switch d.Code {
+				case string(parser.DiagNotUTF8), string(parser.DiagAuthorDocument):
+					why = "not read: " + d.Message
+				default:
+					why = "does not parse: " + d.Message
+				}
 				break
 			}
 		}
@@ -500,7 +545,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			syntax = bundle.MaxSyntaxRequirementsDirWithMain(bundleHandle.Dir, filepath.Base(doc.botPath), doc.text)
 		}
 		lintWorkflow := cr.Workflow
-		lintFrontmatter := bundle.ParseFrontmatter(frontmatterText(doc, src))
+		lintFrontmatter, fmErr := bundle.ParseFrontmatter(parsePath, frontmatterText(doc, src))
 		lintPath := parsePath
 		if filepath.Base(bundleHandle.IterPath) != bundle.MainBotFile {
 			// The manifest binds to the bundle's CANONICAL main —
@@ -514,7 +559,17 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			// included; a main that does not compile to a workflow leaves
 			// the manifest-bound checks silent, as its own invalid form
 			// leaves them.
-			lintWorkflow, lintFrontmatter, lintPath = lintMainOfBundle(bundleHandle)
+			lintWorkflow, lintFrontmatter, lintPath, fmErr = lintMainOfBundle(bundleHandle)
+		}
+		if fmErr != nil {
+			// The checks that read the frontmatter (C221) see none: said, not
+			// taken for "no frontmatter".
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "bundle",
+				Severity: "warning",
+				File:     lintPath,
+				Message:  fmErr.Error() + " — the checks that read it did not run",
+			})
 		}
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
 			// nil for a bundle known by its skills/ alone: the profile checks
@@ -789,7 +844,10 @@ func dryRunChildren(collectionDir string) func(parent, source string) (string, *
 		if !ok {
 			return "", nil, fmt.Errorf("not read within the bundle's collection")
 		}
-		u := unit.LoadDirWithMain(path, path, src)
+		u, err := unit.LoadDirWithMain(path, path, src)
+		if err != nil {
+			return path, nil, fmt.Errorf("is not read whole: %w", err)
+		}
 		if u.HasErrors() || u.Merged == nil {
 			return path, nil, fmt.Errorf("does not parse")
 		}
@@ -914,29 +972,34 @@ func validationFailed(p *Printer) error {
 // the manifest (dispatch_vars, invocations, chat, the memory-name triple)
 // binds to main.bot, so the cross-check reads main.bot's compiled program,
 // its frontmatter and its children's contracts — the directory form's
-// verdict — whatever sibling the operator named. (nil, nil, "") when the
-// main cannot be read or compiled to a workflow: the manifest-bound checks
-// nil-guard themselves out, the floor checks (C250–C253, read off the
+// verdict — whatever sibling the operator named. (nil, nil, "", nil) when
+// the main cannot be read or compiled to a workflow: the manifest-bound
+// checks nil-guard themselves out, the floor checks (C250–C256, read off the
 // bundle's sources) still run — the same silence the directory form keeps
-// for a main that does not compile.
-func lintMainOfBundle(b *bundle.Bundle) (*ir.Workflow, *bundle.Frontmatter, string) {
+// for a main that does not compile. The error is a frontmatter the reader
+// did not read (bundle.ParseFrontmatter), for the caller to say.
+func lintMainOfBundle(b *bundle.Bundle) (*ir.Workflow, *bundle.Frontmatter, string, error) {
 	mainPath := filepath.Join(b.Dir, bundle.MainBotFile)
 	src, err := os.ReadFile(mainPath)
 	if err != nil {
-		return nil, nil, ""
+		return nil, nil, "", nil
 	}
-	u := unit.LoadDirWithMain(mainPath, mainPath, src)
-	if u.Merged == nil {
-		return nil, nil, ""
+	u, err := unit.LoadDirWithMain(mainPath, mainPath, src)
+	if err != nil || u.Merged == nil {
+		// A main past the read budget its files share is no program the
+		// manifest-bound checks may be held to: silent, as for one that
+		// does not compile; the floor walk names it (C256).
+		return nil, nil, "", nil
 	}
 	if err := runview.MergeBundlePrompts(u.Merged, b); err != nil {
-		return nil, nil, ""
+		return nil, nil, "", nil
 	}
 	mcr := ir.Compile(u.Merged)
 	if mcr.Workflow == nil {
-		return nil, nil, ""
+		return nil, nil, "", nil
 	}
-	return mcr.Workflow, bundle.ParseFrontmatter(src), mainPath
+	fm, err := bundle.ParseFrontmatter(mainPath, src)
+	return mcr.Workflow, fm, mainPath, err
 }
 
 // scanBundleSkills reads a bundle's skills/*.md frontmatter (name +

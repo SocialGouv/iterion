@@ -98,9 +98,13 @@ describe("EditorChangeOffer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Save current file" }));
     await screen.findByText("Editor change saved");
+    // The digest rule: the save presents the digest the tab's open issued
+    // (none in this fixture — the store's openedDigest is null — so the
+    // options are absent and the server refuses an existing file's save).
     expect(api.saveFile).toHaveBeenCalledWith(
       "bots/demo/main.bot",
       store.getState().document,
+      undefined,
     );
     expect(store.getState().isDirty()).toBe(false);
   });

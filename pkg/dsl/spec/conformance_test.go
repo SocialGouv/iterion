@@ -2,6 +2,7 @@ package spec_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	goast "go/ast"
 	goparser "go/parser"
 	"go/token"
@@ -81,7 +82,7 @@ var freeEntryProbes = map[string]string{
 }
 
 func parserAccepts(tmpl, name string) bool {
-	res := parser.Parse("probe.bot", fmt.Sprintf(tmpl, name))
+	res := parsertest.Parse("probe.bot", fmt.Sprintf(tmpl, name))
 	for _, d := range res.Diagnostics {
 		if d.Code == parser.DiagUnknownProperty {
 			return false
@@ -262,7 +263,7 @@ func TestEveryListedPropertyParsesCleanWithItsForm(t *testing.T) {
 				n++
 				value := strings.ReplaceAll(sample, "\n", "\n"+indent)
 				doc := fmt.Sprintf(line, value)
-				if res := parser.Parse("probe.bot", doc); len(res.Diagnostics) > 0 {
+				if res := parsertest.Parse("probe.bot", doc); len(res.Diagnostics) > 0 {
 					t.Errorf("%s.%s (%s): %q drew %v", kind, p.Name, p.Form, doc, res.Diagnostics)
 				}
 			}
@@ -270,7 +271,7 @@ func TestEveryListedPropertyParsesCleanWithItsForm(t *testing.T) {
 			// must be refused here, or the list is decoration.
 			if p.Form == spec.Enum {
 				doc := fmt.Sprintf(line, p.Name+": zz_bogus")
-				if res := parser.Parse("probe.bot", doc); len(res.Diagnostics) == 0 {
+				if res := parsertest.Parse("probe.bot", doc); len(res.Diagnostics) == 0 {
 					t.Errorf("%s.%s (enum): a value outside %v is accepted", kind, p.Name, p.Values)
 				}
 			}
@@ -306,7 +307,7 @@ func TestFreeEntryBlocksTakeAnyName(t *testing.T) {
 		if k.Entries == nil {
 			t.Errorf("%s: probed as free entries but the registry declares no Entries", kind)
 		}
-		res := parser.Parse("probe.bot", doc)
+		res := parsertest.Parse("probe.bot", doc)
 		if len(res.Diagnostics) > 0 {
 			t.Errorf("%s: an arbitrary entry drew %v", kind, res.Diagnostics)
 		}

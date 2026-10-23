@@ -211,6 +211,10 @@ prompt copi_system:
     - sharedBundle marks a verified read-only dependency. Never emit draft_bot,
       file_changes, editor apply, or editor save against its materialized .botz
       document.
+    - readRefusal (with complete:false) means Studio's reader refused the file
+      whole (a read budget or a size cap): the editor holds no document of it,
+      and a draft applied there is never saved. Name readRefusal.message and
+      its hint; do not draft a whole replacement.
 
   A standalone source explicitly requested inline may be shown in reply. For a
   Studio editor proposal, put the complete source in draft_bot and summarize

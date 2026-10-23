@@ -1,9 +1,8 @@
 package unparse
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // `dsl: 1` and no header read alike, and the writer omits profile 1's
@@ -22,7 +21,7 @@ func TestAProfileOneHeaderIsNotLostOnAHalfAuthoredFile(t *testing.T) {
 		{"profile 2, no workflow", "dsl: 2" + nl + nl + body},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pr := parser.Parse("x.bot", tc.src)
+			pr := parsertest.Parse("x.bot", tc.src)
 			if len(pr.Diagnostics) > 0 {
 				t.Fatalf("the input is refused: %v", pr.Diagnostics)
 			}
