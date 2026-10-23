@@ -492,7 +492,7 @@ print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'rev
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
+  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} CLAUDE_SUMMARY={{input.claude_summary}} GPT_SUMMARY={{input.gpt_summary}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
 import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 
 # Stable handle for one finding, shared with iterion's prior-review digest
@@ -558,6 +558,24 @@ if reviewed and ws and looks_like_sha:
         cur = ''
     if cur and cur != reviewed:
         stale_anchors = reviewed[:12] + ' -> ' + cur[:12]
+
+# Placeholder-shape guard (#2705): a schema-valid filler is not a review.
+# Inspect the original reviewer summaries, before convergence can hide them.
+# The schema accepts any string; placeholder is the observed filler value.
+# An empty scanned area union is only evidence of a non-review when the
+# precheck reports a non-empty diff. Unknown scope still fails the gate below.
+try:
+    scope_files = int(str(os.environ.get('SCOPE_FILES', '')).strip())
+except (ValueError, TypeError):
+    scope_files = -1
+placeholder_reason = ''
+if any(os.environ.get(k, '').strip() == 'placeholder' for k in ('CLAUDE_SUMMARY', 'GPT_SUMMARY')):
+    placeholder_reason = 'placeholder-shape: summary=placeholder'
+elif scope_files > 0 and not os.environ.get('REVIEW_SCOPE', '').strip():
+    placeholder_reason = 'placeholder-shape: empty scanned_areas for non-empty diff'
+if placeholder_reason:
+    emit(False, skipped=placeholder_reason, summary='Review refused: ' + placeholder_reason,
+         gate_requested=gate_enabled, gate_skipped_reason=placeholder_reason)
 
 try:
     findings = json.loads(os.environ.get('FINDINGS') or '[]')
@@ -1055,10 +1073,7 @@ gate_ctx = str(os.environ.get('GATE_CONTEXT', '')).strip() or 'revi/review'
 # is precisely what the first wiring of this mapping produced. ai_value just
 # below exists to filter those same renders out of the sibling AI_* mappings,
 # so they are not hypothetical in this command.
-try:
-    scope_unresolved = int(str(os.environ.get('SCOPE_FILES', '')).strip()) < 0
-except (ValueError, TypeError):
-    scope_unresolved = True
+scope_unresolved = scope_files < 0
 # The engine writes _fallback_used ONLY on a node it did not serve with its
 # first choice, so presence is the fact -- read through ai_value, which drops
 # an unsubstituted render (the glance twin never runs when topology picked the
@@ -1204,12 +1219,15 @@ body_missing = flag('BODY_MISSING')
 # and it is the more expensive of the two: anchors can be re-posted, a gate
 # nobody notices is a PR nobody can merge.
 gate_missing = flag('GATE_REQ') and not flag('GATE_POSTED')
-degraded = body_missing or (total > 0 and posted == 0) or gate_missing
+placeholder_refused = skipped.startswith('placeholder-shape:')
+degraded = body_missing or (total > 0 and posted == 0) or gate_missing or placeholder_refused
 banners = []
+if placeholder_refused:
+    banners.append(chr(9888) + ' REVIEW REFUSED: ' + skipped + '. Re-run the reviewers before publishing a verdict.')
 if body_missing:
     banners.append(chr(9888) + ' REVIEW BODY MISSING: review body did not land on the PR; only the inline comments reported by the publish step can be confirmed. Re-run with the same pr_url to publish the summary and any unanchored findings.')
 if gate_missing:
-    banners.append(chr(9888) + ' MERGE GATE NOT POSTED: the review landed but its required check did not (reason: ' + (os.environ.get('GATE_SKIPPED', '') or 'none given') + '). Until a review posts the status on the CURRENT head, this PR cannot merge; push again or re-run the review on the same pr_url.')
+    banners.append(chr(9888) + ' MERGE GATE NOT POSTED: the required check did not land (reason: ' + (os.environ.get('GATE_SKIPPED', '') or 'none given') + '). Until a review posts the status on the CURRENT head, this PR cannot merge; push again or re-run the review on the same pr_url.')
 if banners:
     banner = ' '.join(banners)
 elif degraded:

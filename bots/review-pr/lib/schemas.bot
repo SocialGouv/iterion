@@ -164,6 +164,10 @@ schema pr_gate_output:
 
 schema publish_input:
   review_scope: string
+  ## The raw reviewer summaries survive convergence so a schema-shaped
+  ## placeholder cannot become an approval through the merge step.
+  claude_summary: string
+  gpt_summary: string
   ## diff_precheck's file count, carried to the gate. `-1` is its ignorance
   ## sentinel — the scope could not be computed, so no code was read — and the
   ## gate fails closed on it. Distinct from `0`, which is a real answer.

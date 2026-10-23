@@ -107,7 +107,9 @@ func TestReviewPRPublishPinsTheGateToTheReviewedRevision(t *testing.T) {
 		"{{input.ai_converge_fallback}}":               "''",
 		"{{input.ai_converge_wire}}":                   "''",
 
-		"{{input.review_scope}}":          "''",
+		"{{input.review_scope}}":          "'code:a.go'",
+		"{{input.claude_summary}}":        "'Reviewed a.go'",
+		"{{input.gpt_summary}}":           "''",
 		"{{input.reviewed_sha}}":          "'" + reviewed + "'",
 		"{{input.pr_url}}":                "'https://github.com/acme/widgets/pull/7'",
 		"{{input.findings}}":              "'[]'",

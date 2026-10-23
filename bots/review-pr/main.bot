@@ -649,6 +649,8 @@ workflow review_pr:
 
   pr_gate -> publish_review when has_pr with {
     review_scope: "{{outputs.merge_reviews.review_scope}}",
+    claude_summary: "{{outputs.merge_reviews.claude_summary}}",
+    gpt_summary: "{{outputs.merge_reviews.gpt_summary}}",
     ## diff_precheck's ignorance sentinel (-1), mapped on the EDGE because a
     ## tool node's command body substitutes only input/vars/secrets/run.id —
     ## an {{outputs.…}} ref there reaches the shell as literal text.

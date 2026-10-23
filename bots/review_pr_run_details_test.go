@@ -181,8 +181,9 @@ func TestReviewPRRunDetails(t *testing.T) {
 			refs := map[string]string{
 				"vars.forge_publish_url": srv.URL + endpointPath, "vars.forge_publish_token": "test-token",
 				"input.pr_url": "https://github.com/acme/repo/pull/1", "input.effective_review_mode": "mono",
-				"input.findings":    `[{"file":"a.go","line":1,"title":"A real finding","severity":"high"}]`,
-				"vars.gate_enabled": "true", "vars.gate_severity": "high",
+				"input.findings":     `[{"file":"a.go","line":1,"title":"A real finding","severity":"high"}]`,
+				"input.review_scope": "code:a.go",
+				"vars.gate_enabled":  "true", "vars.gate_severity": "high",
 			}
 			for k, v := range tc.refs {
 				refs[k] = v

@@ -100,7 +100,7 @@ func TestReviewPRConcisePublication(t *testing.T) {
 			// absent or unparseable count fails the gate closed, so every case
 			// here — each of which describes a review that DID read code — has
 			// to carry a real one or it would block for the wrong reason.
-			refs := map[string]string{"vars.forge_publish_url": srv.URL, "vars.forge_publish_token": "test", "input.pr_url": "https://github.com/acme/repo/pull/1", "input.effective_review_mode": "mono", "vars.gate_enabled": "true", "vars.gate_severity": "high", "input.scope_files": "3"}
+			refs := map[string]string{"vars.forge_publish_url": srv.URL, "vars.forge_publish_token": "test", "input.pr_url": "https://github.com/acme/repo/pull/1", "input.effective_review_mode": "mono", "vars.gate_enabled": "true", "vars.gate_severity": "high", "input.scope_files": "3", "input.review_scope": "code:a.go"}
 			for k, v := range tc.refs {
 				refs[k] = v
 			}

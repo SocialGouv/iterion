@@ -135,6 +135,7 @@ type Guard struct {
 	literalPlaceholder map[string]string // every encoding → its placeholder
 	matcher            *literalMatcher   // every known encoding, longest first
 	placeholderValue   map[string]string // placeholder → raw value (Materialize)
+	placeholderByName  map[string]string // exact declared name → placeholder
 	filePathByName     map[string]string // secret name → mounted file path
 	fileHints          []FileSecretHint
 	fileValueByName    map[string]string // secret name → file plaintext (host materialisation)
@@ -192,6 +193,7 @@ func New(secrets []Secret, cfg Config) *Guard {
 	g := &Guard{
 		literalPlaceholder: make(map[string]string),
 		placeholderValue:   make(map[string]string),
+		placeholderByName:  make(map[string]string),
 		filePathByName:     make(map[string]string),
 		cfg:                cfg,
 	}
@@ -241,6 +243,7 @@ func New(secrets []Secret, cfg Config) *Guard {
 		g.secrets = append(g.secrets, s)
 		if !s.RedactOnly {
 			g.placeholderValue[ph] = s.Value
+			g.placeholderByName[s.Name] = ph
 		}
 		encs := encodingsOf(s.Value)
 
@@ -815,7 +818,13 @@ func (g *Guard) ResolveSecretRef(name string) string {
 	if path := g.SecretFilePath(name); path != "" {
 		return path
 	}
-	ph := defaultPlaceholder(name)
+	// A generated placeholder is not a declaration: sanitizing an unknown
+	// name can even alias a declared one. Resolve the exact registered name,
+	// including its custom placeholder, and never offer RedactOnly values.
+	ph, declared := g.placeholderByName[name]
+	if !declared {
+		return ""
+	}
 	if g.cfg.Placeholders {
 		return ph
 	}

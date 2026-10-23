@@ -49,3 +49,13 @@ command). Sandboxed runs bind-mount each rewriter's host binary at its declared
 `sandbox_mount` (rtk → `/usr/local/bin/rtk`). Diagnostic `C102` flags an invalid
 `compress:` value.
 
+**Secret substitution is table-driven.** The launcher's
+`BuildSecretGuard` registers only declared secrets for materialization;
+`secretMaterializer` binds that guard into the delegate task. The Bash
+`rewriteCommandHandler` skips compression when that substitution changes
+the input, then `materializeSecretsHandler` supplies the value. Neither
+pass treats a bare `ITERION_*` literal as a secret. `ResolveSecretRef` also
+requires the exact declared name; sanitizing an unknown name must not alias
+a declared one. Diagnose command corruption before output restoration:
+`TestToolRewritePreservesUndeclaredLiterals` checks the command bytes, a
+pipeline, repeated Go-template literals, and the declared-secret round trip.

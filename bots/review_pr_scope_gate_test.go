@@ -83,6 +83,7 @@ func TestTheGateRefusesAReviewThatReadNothing(t *testing.T) {
 			"{{vars.gate_severity}}":          "high",
 			"{{vars.gate_context}}":           "revi/review",
 			"{{input.scope_files}}":           scopeFiles,
+			"{{input.review_scope}}":          "code:a.txt",
 		} {
 			if !strings.Contains(body, ref) {
 				t.Fatalf("%s is no longer referenced by publish_review — the test wires nothing", ref)
