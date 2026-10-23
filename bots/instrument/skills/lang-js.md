@@ -81,3 +81,24 @@ handlers installed by you, no client (`Sentry.getClient()` undefined).
 services, jobs). Leave alone: tests, build scripts, CLIs whose stdout
 is the product, and browser bundles (frontend logging is a different
 scope — flag it as a finding instead of wiring it drive-by).
+
+## Metrics family: `prom-client`
+
+- **SDK**: `prom-client`. Expose `register.metrics()` on the production
+  HTTP server under `/metrics` (Express: `app.get('/metrics', async (_req, res) => res.set('Content-Type', register.contentType).end(await register.metrics()))`);
+  for Fastify use `fastify-metrics`; for NestJS `@willsoto/nestjs-prometheus`
+  (it installs the /metrics controller and default collectors only — HTTP
+  request metrics need an interceptor of your own).
+- **HTTP request count + latency by route and status**: express →
+  `prom-express` or a hand middleware over `new Counter(...)` and
+  `new Histogram(...)` from prom-client, registered in the registry you
+  expose, with a ROUTE TEMPLATE label — `req.route.path` COMPOSED with
+  mounted-router prefixes (`req.baseUrl` alone re-introduces the ids:
+  nested routers answer the matched child path), never `req.originalUrl`. NestJS/fastify
+  libraries default to route templates — keep it that way.
+- **Process metrics**: `prom-client`'s default collect list already
+  carries CPU, memory, FDs and event-loop lag (`collectDefaultMetrics()`)
+  — present unless a custom registry was chosen deliberately.
+- **Scrape wiring**: `ServiceMonitor` or scrape annotations per the repo's
+  manifests (see the metrics family skill).
+- **Env gate**: the house config convention, beside the DSN toggle.

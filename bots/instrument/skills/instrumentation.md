@@ -9,8 +9,9 @@ You are instrumenting ONE repository for observability. The families
 requested for this run are in `scope`; this skill defines what each
 family means and the discipline that keeps the work honest. Stack
 specifics (which SDK, which log lib, which wiring seams) live in the
-`lang-<stack>` skills — read the one(s) matching the repo. Tracing has
-its own skill, read ONLY when scope asks for it.
+`lang-<stack>` skills — read the one(s) matching the repo, and when
+scope asks for metrics read [metrics.md](metrics.md) BEFORE the recipes.
+Tracing has its own skill, read ONLY when scope asks for it.
 
 ## 0. Survey first (cheap, before any edit)
 

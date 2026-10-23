@@ -243,3 +243,28 @@ personal names — the fields and frame vars unit tests never build.
 setup, not scattered), bare `except: pass` that swallows what should
 be captured (flag as finding if fixing is out of scope). Leave alone:
 tests, scripts/, notebooks, CLI stdout that is the product.
+
+## Metrics family: `prometheus_client`
+
+- **SDK**: `prometheus_client` (the official client). Start the exposition
+  with `start_http_server(port)` ONLY for sidecar-style processes; on a
+  FastAPI/Starlette app, mount the ASGI app so `/metrics` shares the
+  production server (`prometheus_client.make_asgi_app()` → `app.mount("/metrics", make_asgi_app())`).
+- **HTTP request count + latency by route and status**: FastAPI →
+  `prometheus-fastapi-instrumentator` (`Instrumentator().instrument(app)` —
+  the method is `instrument`, never `instrument_app` — with
+  `metrics.latency(should_include_status=True)` so the duration histogram
+  carries the status like the counter does; the defaults label only the
+  counter). The `handler` label must be
+  the ROUTE TEMPLATE — the library defaults to it; never pass raw paths.
+  For Flask use `prometheus-flask-exporter`; for Django,
+  `django-prometheus`.
+- **Process metrics**: `prometheus_client`'s default `PROCESS_COLLECTOR`
+  plus `GC_COLLECTOR`/`PLATFORM_COLLECTOR` ship with the default registry —
+  do not build a custom registry unless isolation is required (and then
+  mount THAT app too).
+- **Scrape wiring**: `ServiceMonitor` under prometheus-operator with the
+  app's port name; scrape annotations otherwise. Follow the repo's
+  existing manifests.
+- **Env gate**: follow the house config convention; the toggle belongs
+  beside the Sentry DSN toggle in the same config module.

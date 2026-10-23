@@ -95,3 +95,24 @@ on the scope; DSN unset produces nothing.
 `log.Printf/Fatalf` imports outside `main` bootstrap, per-package
 ad-hoc loggers. Leave alone: test files, `//go:build`-tagged host
 tooling, generated code, and stdout that is the command's product.
+
+## Metrics family: `promhttp`
+
+- **SDK**: `prometheus/client_golang`. Expose `promhttp.Handler()` on the
+  production mux under `/metrics` (`mux.Handle("/metrics", promhttp.Handler())`);
+  for a separate-port discipline, run it on the admin/metrics listener the
+  service already owns.
+- **HTTP request count + latency by route and status**: the framework
+  middleware — Chi: `promhttp.InstrumentHandlerCounter` +
+  `InstrumentHandlerDuration` with the route template resolved AFTER the
+  handler — `promhttp.WithLabelFromCtx` plus a Chi middleware that stashes
+  `chi.RouteContext(req.Context()).RoutePattern()` post-handler (Chi fills
+  it late; a plain extra label in the vector panics), never `req.URL.Path`; Gin: `ginprometheus`; Echo: `echo-prometheus`. Standard
+  library: wrap the mux with the same instrumenters and a
+  `routeTemplate(req)` helper the repo owns.
+- **Process metrics**: `prometheus/client_golang/prometheus`'s default
+  registry carries the Go collector + process collector — `promhttp.Handler()`
+  serves them already; do not build a second registry.
+- **Scrape wiring**: `ServiceMonitor` or scrape annotations per the repo's
+  manifests (see the metrics family skill).
+- **Env gate**: the house config convention, beside the DSN toggle.
