@@ -137,7 +137,7 @@ func TestCheckDerivation_ARevokedSessionsAccessTokenMintsNothing(t *testing.T) {
 			t.Fatalf("Login: %v", err)
 		}
 		access := presentedAccess(t, f.svc, login.AccessToken)
-		f.clock.Advance(time.Until(access.ExpiresAt) + time.Second)
+		f.clock.Advance(access.ExpiresAt.Sub(f.clock.Now()) + time.Minute)
 		for _, mint := range everyMint {
 			if _, err := f.svc.CheckDerivation(ctx, access, mint); !errors.Is(err, ErrTokenExpired) {
 				t.Fatalf("an expired access token minting %s: got %v, want ErrTokenExpired", mint, err)

@@ -96,7 +96,7 @@ func TestCheckStanding_AnOpenSocketIsAskedAboutItsSessionNotItsExpiry(t *testing
 	access := presentedAccess(t, f.svc, login.AccessToken)
 	ticket := access
 	ticket.MintedBy, ticket.Credential = CredentialAccessToken, CredentialWSTicket
-	f.clock.Advance(time.Until(access.ExpiresAt) + time.Minute)
+	f.clock.Advance(access.ExpiresAt.Sub(f.clock.Now()) + time.Minute)
 	if _, err := f.svc.CheckStanding(ctx, access); !errors.Is(err, ErrTokenExpired) {
 		t.Fatalf("an expired access token asked with its expiry: got %v, want ErrTokenExpired", err)
 	}
