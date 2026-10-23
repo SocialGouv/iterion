@@ -65,5 +65,5 @@ func authoringFileLinks(f *os.File) (uint64, error) {
 	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
 		return 0, err
 	}
-	return st.Nlink, nil
+	return uint64(st.Nlink), nil //nolint:unconvert // Nlink is uint16 on darwin, uint64 on linux
 }
