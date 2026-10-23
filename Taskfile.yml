@@ -660,11 +660,28 @@ tasks:
       - task: map:gen
       - task: openapi:gen
 
+  openapi:check:dry:
+    desc: Verify the committed OpenAPI spec + TS types are fresh WITHOUT mutating them (snapshot, regenerate, compare, restore)
+    cmds:
+      - cp openapi.json /tmp/openapi.json.genbak
+      - cp studio/src/api/schema.ts /tmp/schema.ts.genbak
+      - task: openapi:gen
+      - cmd: |
+          if ! git diff --quiet -- openapi.json studio/src/api/schema.ts; then
+            echo "::error::OpenAPI spec / client drift — run 'task openapi:gen' and commit the result."
+            git --no-pager diff --stat -- openapi.json studio/src/api/schema.ts
+            cp /tmp/openapi.json.genbak openapi.json
+            cp /tmp/schema.ts.genbak studio/src/api/schema.ts
+            exit 1
+          fi
+      - cp /tmp/openapi.json.genbak openapi.json
+      - cp /tmp/schema.ts.genbak studio/src/api/schema.ts
+
   gen:check:
-    desc: Check maps, OpenAPI, chart version and dispatcher catalogue freshness (openapi:check repairs-then-verifies — a checker that mutates; making it non-mutating is the ci-gate stream's)
+    desc: Check maps, OpenAPI (non-mutating via openapi:check:dry), chart version and dispatcher catalogue freshness
     cmds:
       - task: map:check
-      - task: openapi:check
+      - task: openapi:check:dry
       - task: chart:check-version
       - task: templates:dispatch-bots:check
 
