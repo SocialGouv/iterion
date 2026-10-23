@@ -1167,6 +1167,67 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		}, nil
 	}
 
+	// One recovery retry at a LOWERED reasoning effort (#2710): a long tool
+	// loop's structured turns on a gateway model can come back empty at a
+	// high effort — four identical deaths on the vao pool, ~$5 of reading
+	// lost per death — while the same conversation answers at a lower one.
+	// One billed call against a full restart of the review. A recovery the
+	// cut remedy already lowered cannot go lower, and effortAfterCut refuses
+	// it, so the retry fires at most once.
+	if lowered, to, ok := effortAfterCut(recoveryOpts); ok {
+		if b.logger != nil {
+			b.logger.Warn("[%s] the recovery pass failed (%v); it runs once more at reasoning_effort %s instead of %s",
+				task.NodeID, recErr, to, reasoningEffortOf(recoveryOpts))
+		}
+		lowered.SkipUserPromptSubmit = true
+		if b.hooks.OnLLMRequest != nil {
+			b.hooks.OnLLMRequest(task.NodeID, LLMRequestInfo{
+				Model:        task.Model,
+				WireModel:    wireModelIfDistinct(task.Model),
+				MessageCount: len(lowered.Messages),
+				Timestamp:    time.Now(),
+			})
+		}
+		obj2, recErr2 := GenerateObjectDirect[map[string]any](ctx, client, lowered)
+		logReaskCallFailure(b.logger, task.NodeID, recErr2)
+		if recErr2 == nil && obj2 != nil && obj2.Object != nil {
+			if obj2.Recovered != "" && b.logger != nil {
+				b.logger.Warn("[%s] the lowered recovery pass's structured output came from %s, not from its forced %q tool block", task.NodeID, recoveredLabel(obj2.Recovered), "structured_output")
+			}
+			both := result.TotalUsage
+			var prevReasoning int
+			var prevThinkingMs int
+			if obj != nil {
+				accumulateUsage(&both, obj.TotalUsage)
+				prevReasoning = obj.TotalUsage.ReasoningTokens
+				prevThinkingMs = obj.TotalUsage.ThinkingMs
+			}
+			accumulateUsage(&both, obj2.TotalUsage)
+			tokens := annotateUsage(obj2.Object, task.Model, both)
+			return delegate.Result{
+				Output:             obj2.Object,
+				Tokens:             tokens,
+				BackendName:        delegate.BackendClaw,
+				FormattingPassUsed: true,
+				ThinkingTokens:     result.TotalUsage.ReasoningTokens + prevReasoning + obj2.TotalUsage.ReasoningTokens,
+				ThinkingMs:         result.TotalUsage.ThinkingMs + prevThinkingMs + obj2.TotalUsage.ThinkingMs,
+			}, nil
+		}
+		// The retry is billed too: its partial usage rides the first
+		// recovery's into every exit below, and its failure is logged while
+		// the first recovery's stays the cause of record.
+		if obj2 != nil {
+			if obj == nil {
+				obj = obj2
+			} else {
+				accumulateUsage(&obj.TotalUsage, obj2.TotalUsage)
+			}
+		}
+		if recErr == nil {
+			recErr = recErr2
+		}
+	}
+
 	// BOTH exits below are past the recovery pass, and both owe its bill: it
 	// is a separate, fully-billed provider call, and its usage reaches here
 	// only because GenerateObjectDirect hands back a partial beside its error
