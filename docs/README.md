@@ -19,6 +19,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 
 ## Comparisons
 
+- [layering.md](layering.md) — the package layers as an executable guard: who may import whom, the pinned exception count, the ratchet.
 - [Iterion and alternatives](comparisons/index.md) — agent workflow architectures, developer experience and decision criteria.
 - [Feature matrix](comparisons/feature-matrix.md) — 21 features across 10 products, with sources and conditions.
 - [Iterion feature inventory](comparisons/feature-inventory.md) — 140 criteria across 16 categories.
