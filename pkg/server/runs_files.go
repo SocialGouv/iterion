@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"github.com/SocialGouv/iterion/pkg/treenoise"
+	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 
@@ -625,12 +627,25 @@ type runFileContentResponse struct {
 	Content string `json:"content"`
 	Binary  bool   `json:"binary"`
 	Exists  bool   `json:"exists"`
+	// SHA256 is the digest of the text answered (Content): what a save
+	// presents back as stored_sha256 to replace exactly that text.
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // saveRunFileRequest is the body of PUT /api/runs/{id}/files/content.
 type saveRunFileRequest struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	// StoredSHA256 is the digest of the text the edit replaces, as the
+	// read that seeded the buffer answered it (sha256): the save writes
+	// only over those bytes (409 otherwise). For a WORKFLOW file that
+	// exists it is the digest rule (checkStoredFile): required — the GET
+	// that seeded the buffer issued it, and a save without one writes over
+	// bytes no whole read decided on. Omitted for a workflow file, nothing
+	// is written; for any other file it still names the bytes the write
+	// replaces (409 on a mismatch), and a file with other names — hard
+	// links — is replaced by no save without it.
+	StoredSHA256 string `json:"stored_sha256,omitempty"`
 }
 
 // handleGetRunFileContent returns the raw UTF-8 contents of one path inside a
@@ -696,6 +711,7 @@ func (s *Server) handleGetRunFileContent(w http.ResponseWriter, r *http.Request)
 		resp.Binary = true // leave Content empty; the editor refuses binary
 	} else {
 		resp.Content = string(data)
+		resp.SHA256 = contentSHA256(resp.Content)
 	}
 	s.writeJSONFor(w, r, resp)
 }
@@ -753,6 +769,16 @@ func (s *Server) handleSaveRunFileContent(w http.ResponseWriter, r *http.Request
 		s.httpErrorFor(w, r, http.StatusConflict, "run file path changed while waiting to save")
 		return
 	}
+	// An installed package's files are the package's: the same boundary the
+	// save door and the manifest edit hold (isMaterializedBotDependencyPath),
+	// here for a run that executed in place — its workdir is the operator's
+	// workspace, .botz included. A disable written into .botz/<pkg>/manifest.yaml
+	// by hand is undone whole by the next update, and the overlay toggle is
+	// the write that survives it.
+	if s.isMaterializedBotDependencyPath(fresh) {
+		s.httpErrorFor(w, r, http.StatusForbidden, "%s is an installed package (.botz/): its files are read-only — set its visibility with the overlay toggle, or edit the source bundle and run iterion bots sync", req.Path)
+		return
+	}
 
 	// #nosec G304 — abs is the output of safePathWithin (symlink-aware
 	// containment against run.WorkDir); request input cannot escape the
@@ -761,12 +787,65 @@ func (s *Server) handleSaveRunFileContent(w http.ResponseWriter, r *http.Request
 		s.httpErrorFor(w, r, http.StatusBadRequest, "path is a directory")
 		return
 	}
+	// The file is replaced as stored now — the bytes the digest the editor
+	// presents must name (checkStoredFile), and a workflow file the reader
+	// refuses as stored is replaced only by an edit that presents one. The
+	// read is the GET's: a file past maxRunFileEditBytes is no file this
+	// editor shows, so it is no file it replaces (413), and it is never read
+	// whole to say so.
+	current, _, readErr := locks[0].parent.read(filepath.Base(abs), maxRunFileEditBytes)
+	decided := storedAt(current)
+	if readErr != nil {
+		switch {
+		case errors.Is(readErr, errAuthoringReadLimit):
+			s.httpErrorFor(w, r, http.StatusRequestEntityTooLarge,
+				"file too large to edit (more than %d bytes; limit %d)", maxRunFileEditBytes, maxRunFileEditBytes)
+			return
+		case !errors.Is(readErr, fs.ErrNotExist):
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "read: %v", readErr)
+			return
+		}
+		decided = storedFile{}
+	}
+	// The check below knows the file by the name its path resolved to, and
+	// the write is in place: a file with other names — hard links, one of
+	// them perhaps a workflow file the reader refuses — would change under
+	// every one. Only an edit that holds its bytes (their digest) replaces
+	// such a file.
+	if decided.exists && req.StoredSHA256 == "" {
+		links, err := locks[0].parent.links(filepath.Base(abs))
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "read: %v", err)
+			return
+		}
+		if links > 1 {
+			s.httpErrorFor(w, r, http.StatusConflict, "%s has %d names (hard links): a save that does not present the digest of the text it replaces would change the bytes every name holds — reload it in the editor and save from there", req.Path, links)
+			return
+		}
+	}
 	// #nosec G304 — see rationale above; abs is containment-checked.
-	if err := locks[0].writeEditorFile([]byte(req.Content), false, nil, s.logWarn); err != nil {
+	if err := locks[0].writeEditorFile(storedCheck{name: runFileStoredName(req.Path, abs), decided: decided, presented: req.StoredSHA256}, []byte(req.Content), false, nil, s.logWarn); err != nil {
+		if s.writeStoredFileRefusal(w, r, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "write: %v", err)
 		return
 	}
-	s.writeJSONFor(w, r, runFileContentResponse{Path: req.Path, Content: req.Content, Exists: true})
+	s.writeJSONFor(w, r, runFileContentResponse{Path: req.Path, Content: req.Content, Exists: true, SHA256: contentSHA256(req.Content)})
+}
+
+// runFileStoredName is the name the stored-file check knows a run file by:
+// the file the path RESOLVED to (abs, symlinks and dot segments resolved),
+// whose extension decides whether the reader's refusal guards it — never
+// the request's spelling, under which "x.bot/." or a link named notes.txt is
+// no workflow file. The requested path, cleaned, names it while it is the
+// same file name; the resolved base otherwise.
+func runFileStoredName(requested, abs string) string {
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(requested)))
+	if path.Base(clean) == filepath.Base(abs) {
+		return clean
+	}
+	return filepath.Base(abs)
 }
 
 // resolveRunWorktreePath validates that the run has a live on-disk worktree

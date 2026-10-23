@@ -85,7 +85,7 @@ func TestSaveFileKeepsTheCommentsOfTheFile(t *testing.T) {
 
 	// Save: the same document back, untouched — a canvas that changed
 	// nothing must leave the file saying what it said.
-	body, err = json.Marshal(saveFileRequest{Path: "commented.bot", Document: opened.Document})
+	body, err = json.Marshal(saveFileRequest{Path: "commented.bot", Document: opened.Document, Digest: digestOfFile(t, workdir, "commented.bot")})
 	if err != nil {
 		t.Fatal(err)
 	}

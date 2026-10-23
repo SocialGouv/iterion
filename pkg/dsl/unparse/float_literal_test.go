@@ -2,12 +2,12 @@ package unparse_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"math"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -18,7 +18,7 @@ func TestFloatLiteralKeepsItsDecimalSpellingAndKind(t *testing.T) {
 		for _, typ := range []string{"float", "int"} {
 			t.Run(raw+"/"+typ, func(t *testing.T) {
 				src := "vars:\n  x: " + typ + " = " + raw + "\npresets:\n  sample:\n    x: " + raw + "\n" + literalWorkflow
-				p := parser.Parse("float.bot", src)
+				p := parsertest.Parse("float.bot", src)
 				if len(p.Diagnostics) != 0 {
 					t.Fatal(p.Diagnostics)
 				}
@@ -29,7 +29,7 @@ func TestFloatLiteralKeepsItsDecimalSpellingAndKind(t *testing.T) {
 				if err := unparse.Verify(p.File, out); err != nil {
 					t.Fatal(err)
 				}
-				back := parser.Parse("float.bot", out)
+				back := parsertest.Parse("float.bot", out)
 				if back.File.Vars.Fields[0].Default.Kind != ast.LitFloat || back.File.Presets.Entries[0].Values[0].Value.Kind != ast.LitFloat {
 					t.Fatal("float came back as another literal kind")
 				}
@@ -49,7 +49,7 @@ func TestFloatLiteralFromEditedASTUsesCurrentValue(t *testing.T) {
 		{"underscore raw", "1_0.0", 10}, {"source fragment", "8.0\n  y: float = 9.0", 8},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := parser.Parse("float.bot", "vars:\n  x: float = 1.0\n"+literalWorkflow).File
+			f := parsertest.Parse("float.bot", "vars:\n  x: float = 1.0\n"+literalWorkflow).File
 			f.Vars.Fields[0].Default = &ast.Literal{Kind: ast.LitFloat, Raw: tc.raw, FloatVal: tc.value}
 			data, err := ast.MarshalFile(f)
 			if err != nil {
@@ -63,7 +63,7 @@ func TestFloatLiteralFromEditedASTUsesCurrentValue(t *testing.T) {
 			if err = unparse.Verify(f, out); err != nil {
 				t.Fatal(err)
 			}
-			p := parser.Parse("float.bot", out)
+			p := parsertest.Parse("float.bot", out)
 			if len(p.Diagnostics) != 0 {
 				t.Fatal(p.Diagnostics)
 			}

@@ -35,7 +35,7 @@ func varNames(f *ast.File) []string {
 
 func parseErrors(t *testing.T, src string) []string {
 	t.Helper()
-	res := parser.Parse("v.bot", src)
+	res := parser.ParseLenient("v.bot", src)
 	var errs []string
 	for _, d := range res.Diagnostics {
 		if d.Severity == parser.SeverityError {
@@ -127,7 +127,7 @@ func TestAMalformedConstraintDoesNotEatTheNextDeclaration(t *testing.T) {
 		`x: string [matching: ""]`,
 	} {
 		t.Run(entry, func(t *testing.T) {
-			res := parser.Parse("v.bot", varSrc(entry))
+			res := parser.ParseLenient("v.bot", varSrc(entry))
 			// The declarations after the broken line must survive: the
 			// program is still readable, and the operator is pointed at
 			// the one line they got wrong.

@@ -40,6 +40,14 @@ var FrontmatterKeys = []string{"name", "description", "triggers", "capabilities"
 // behind. An error is a block the reading does not read, and the caller
 // says what that means for it: no identity for the catalogue, no `catalog:`
 // in the author document, the reason of `fmt --to yaml`'s note.
+//
+// The block is held to budget — the read budget in force, parser.ReadBudget,
+// which every caller passes, so the block reads the same everywhere — by
+// what its decode costs: before it runs, the values its indicators can open
+// (CheckYAMLDecode, a *YAMLDecodeRefusal past it), not the two records each
+// of its lines spent as a comment of the .bot. Every indicator counts, the
+// text of a `|` block too: yaml.v2 reads the block, and the skeleton that
+// sets such text aside is proven by yaml.v3's reading alone.
 // frontmatterFields is the type the reading decodes a block into: the four
 // keys, and every key beside them into a map. Named so the reader's refusal
 // names one stable Go type — `cannot unmarshal … into
@@ -50,7 +58,10 @@ type frontmatterFields struct {
 	Rest        map[string]any `yaml:",inline"`
 }
 
-func DecodeFrontmatter(text string) (fm *Frontmatter, extra []string, err error) {
+func DecodeFrontmatter(text string, budget int) (fm *Frontmatter, extra []string, err error) {
+	if r := CheckYAMLDecode([]byte(text), budget, false); r != nil {
+		return nil, nil, r
+	}
 	var read frontmatterFields
 	if err := yaml.Unmarshal([]byte(text), &read); err != nil {
 		return nil, nil, err

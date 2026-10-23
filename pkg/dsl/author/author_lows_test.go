@@ -63,13 +63,13 @@ func TestARawFoldInsideAQuotedValueIsRefused(t *testing.T) {
 		g := &guard{name: "x", rawLines: []string{"command: \"echo hi\"\r  more: x"}}
 		n := &yaml.Node{Kind: yaml.ScalarNode, Style: yaml.DoubleQuotedStyle, Line: 1, Column: 10}
 		g.rawFoldBreak(n)
-		if len(g.diags) != 0 {
-			t.Errorf("the terminator after the close is named a fold: %v", g.diags)
+		if g.errs.Count(parser.SeverityError) != 0 {
+			t.Errorf("the terminator after the close is named a fold: %v", g.errs.Diagnostics())
 		}
 		g2 := &guard{name: "x", rawLines: []string{"command: \"echo a\rb\""}}
 		n2 := &yaml.Node{Kind: yaml.ScalarNode, Style: yaml.DoubleQuotedStyle, Line: 1, Column: 10}
 		g2.rawFoldBreak(n2)
-		if len(g2.diags) == 0 {
+		if g2.errs.Count(parser.SeverityError) == 0 {
 			t.Errorf("the fold inside the value is not refused")
 		}
 	})

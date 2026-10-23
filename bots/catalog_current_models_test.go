@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"strings"
 	"testing"
 
@@ -16,7 +17,7 @@ func TestCatalogCurrentModelDefaults(t *testing.T) {
 	paths := teamBotFiles(t)
 	checked, models, anthropic, openai := 0, 0, 0, 0
 	for _, path := range paths {
-		u := unit.LoadDir(path)
+		u := unittest.Whole(unit.LoadDir(path))
 		if u.Merged == nil {
 			t.Fatalf("%s: no parsed unit", path)
 		}

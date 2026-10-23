@@ -1,11 +1,11 @@
 package unparse
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // Every block the AST can hold empty — the `{}` a canvas document carries
@@ -33,7 +33,7 @@ func TestVerifyAcceptsEmptyBlocks(t *testing.T) {
 			if err := Verify(f, text); err != nil {
 				t.Fatalf("an empty %s block does not round-trip: %v\n%s", name, err, text)
 			}
-			if again := Unparse(parser.Parse("", text).File); again != text {
+			if again := Unparse(parsertest.Parse("", text).File); again != text {
 				t.Fatalf("the round-trip is not stable:\n%s\n---\n%s", text, again)
 			}
 		})
@@ -237,7 +237,7 @@ func TestVerifyAcceptsAModelessSandboxFromTheTransport(t *testing.T) {
 // that header has to read back as the same block.
 func TestZeroValuedSandboxBuildRoundTrips(t *testing.T) {
 	src := "agent a:\n  model: \"m\"\n  sandbox:\n    build:\n      args: {}\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	pr := parser.Parse("zero.bot", src)
+	pr := parsertest.Parse("zero.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("parse: %s", d.Error())
 	}
@@ -252,7 +252,7 @@ func TestZeroValuedSandboxBuildRoundTrips(t *testing.T) {
 // that header has to read back as the same block.
 func TestZeroValuedBudgetRoundTrips(t *testing.T) {
 	src := "agent a:\n  model: \"m\"\n\nworkflow w:\n  entry: a\n  budget:\n    max_cost_usd: 0\n  a -> done\n"
-	pr := parser.Parse("zero.bot", src)
+	pr := parsertest.Parse("zero.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("parse: %s", d.Error())
 	}

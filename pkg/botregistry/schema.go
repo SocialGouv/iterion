@@ -122,19 +122,19 @@ type fileStamp struct {
 	mtime time.Time
 }
 
-// stampsOf stats every file of the unit; nil when one cannot be stat'd,
+// stampsOf stats every file named (a load's files); nil when one cannot be stat'd,
 // so that the entry never hits.
-func stampsOf(u *unit.Unit) map[string]fileStamp {
-	if len(u.Files) == 0 {
+func stampsOf(names []string) map[string]fileStamp {
+	if len(names) == 0 {
 		return nil
 	}
-	out := make(map[string]fileStamp, len(u.Files))
-	for _, f := range u.Files {
-		info, err := os.Stat(f.Name)
+	out := make(map[string]fileStamp, len(names))
+	for _, name := range names {
+		info, err := os.Stat(name)
 		if err != nil {
 			return nil
 		}
-		out[f.Name] = fileStamp{size: info.Size(), mtime: info.ModTime()}
+		out[name] = fileStamp{size: info.Size(), mtime: info.ModTime()}
 	}
 	return out
 }
@@ -249,16 +249,37 @@ func LoadSchema(e Entry) (*VarsBlock, *PresetsBlock, error) {
 			return c.vars, mergeFilePresets(e, c.presets), schemaErr
 		}
 	}
-	u := unit.LoadDir(abs)
-	if len(u.Files) == 0 {
+	loaded, loadErr := unit.LoadDir(abs)
+	// The salvage of a load cut short is read for its stamps alone — its
+	// files' names, through the view (unit.Salvage): the files it
+	// read are the ones that decide where the budget ran out, so the refusal
+	// cached under them holds while they hold. No schema is drawn from it:
+	// the schema is the whole unit's alone.
+	view := unit.Salvage(loaded, loadErr)
+	files := view.Files()
+	if len(files) == 0 {
 		if _, err := os.Stat(abs); err != nil {
 			return nil, nil, err
 		}
 	}
-	vars, presets, schemaErr := loadSchemaFromUnit(u)
+	var vars *VarsBlock
+	var presets *PresetsBlock
+	var schemaErr error
+	if loadErr != nil {
+		// A bot past the read budget its files share declares vars the
+		// load did not read: an error the launch form shows, never a bot
+		// that declares none.
+		schemaErr = fmt.Errorf("parse failed: %w", loadErr)
+	} else {
+		vars, presets, schemaErr = loadSchemaFromUnit(loaded)
+	}
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		names = append(names, f.Name)
+	}
 	cached := cachedSchema{
-		digest:  u.Digest,
-		stamps:  stampsOf(u),
+		digest:  view.Digest(),
+		stamps:  stampsOf(names),
 		vars:    vars,
 		presets: presets, // cache the in-source block only; file presets merge fresh
 	}

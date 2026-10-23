@@ -1,10 +1,9 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A "duplicate" finding must point at the REPEAT — the line the author
@@ -39,7 +38,7 @@ func TestDuplicateFindingsPointAtTheRepeat(t *testing.T) {
 		/* 25 */ "  b -> c",
 		/* 26 */ "  c -> done",
 	}
-	pr := parser.Parse("dup.bot", strings.Join(lines, "\n")+"\n")
+	pr := parsertest.Parse("dup.bot", strings.Join(lines, "\n")+"\n")
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("unexpected parse diagnostic: %s", d.Error())
 	}
@@ -76,7 +75,7 @@ func TestDuplicateUsePrefixPointsAtTheRepeatedUse(t *testing.T) {
 		/* 13 */ "  entry: r1.gate",
 		/* 14 */ "  r1.gate -> done",
 	}
-	pr := parser.Parse("use.bot", strings.Join(lines, "\n")+"\n")
+	pr := parsertest.Parse("use.bot", strings.Join(lines, "\n")+"\n")
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("unexpected parse diagnostic: %s", d.Error())
 	}

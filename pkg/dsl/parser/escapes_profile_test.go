@@ -21,7 +21,7 @@ func TestDirectiveIsRefusedInProfileTwo(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			res := Parse("x.bot", c.src)
+			res := parseLenient("x.bot", c.src)
 			var found []Diagnostic
 			for _, d := range res.Diagnostics {
 				if d.Code == DiagDirectiveInProfile {
@@ -44,7 +44,7 @@ func TestDirectiveIsRefusedInProfileTwo(t *testing.T) {
 		})
 	}
 	// Profile 1 keeps honouring the directive, silently.
-	res := Parse("x.bot", "## strict-escape: on\ntool t:\n  command: \"a\\nb\"\n")
+	res := parseLenient("x.bot", "## strict-escape: on\ntool t:\n  command: \"a\\nb\"\n")
 	if len(res.Diagnostics) != 0 || res.File.Tools[0].Command != "a\nb" {
 		t.Fatalf("profile 1 with the directive: %v, command %q", res.Diagnostics, res.File.Tools[0].Command)
 	}

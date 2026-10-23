@@ -2,6 +2,7 @@ package spec_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -58,7 +59,7 @@ func borrowed(block, from, not spec.Kind) string {
 
 func e012Hint(t *testing.T, doc string) string {
 	t.Helper()
-	res := parser.Parse("probe.bot", doc)
+	res := parsertest.Parse("probe.bot", doc)
 	for _, d := range res.Diagnostics {
 		if d.Code == parser.DiagUnknownProperty {
 			return d.Hint

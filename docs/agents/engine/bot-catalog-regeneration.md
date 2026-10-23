@@ -33,6 +33,26 @@ to open, and none at all — silently — when `ITERION_BOTS_PATH` is unset)
 mirrors no skill whatsoever, so it refreshes nothing: every owner's copy
 is a file that run cannot read.
 
+## An overlay that is not read
+
+The workspace overlay (`.iterion/bot-overrides.yaml`) is read with its own
+bounds: a size cap, and the read budget (`ITERION_DSL_READ_BUDGET`) its YAML
+decode is held to. One its reader refuses holds visibility decisions nobody
+read, so it never counts as no overlay: the catalogue is not regenerated,
+card launch and slash-command discovery refuse while it stands, and the
+studio's Bots gallery lists every bot disabled beside the refusal. Every
+other door that starts a bot reads no bot visibility at all — among them a
+manual Run (its resume, retry and rewind too), label, pull-request and
+generic webhooks, provisioned slash commands and converse replies,
+triggers, schedules, the cloud board, the push-debounce sweeper, the forge
+gate's relaunch and auto-fix, the local dispatcher's static routes,
+`iterion run`, the MCP `local_run` and a subbot's delegation — and the local
+dispatcher of the default configuration reads its own store's overlay, not
+the workspace's (#2676). A listing that finds the overlay's
+bytes unchanged reuses their reading instead of decoding them again. The
+Catalog manager's toggles are applied one at a time, under a lock file beside
+the overlay; a toggle waits for it 30 s at most (503 after).
+
 ## Who hears about a refresh that failed
 
 The refresh is never fatal to the gesture that triggered it — the bundle is

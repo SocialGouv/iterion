@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -38,7 +39,7 @@ const matchingSrc = "dsl: 2\n\n" +
 // writeVarsBlock (the writer), drop Matching from jsonVarField, from
 // varsBlockToJSON, or from varsBlockFromJSON (the transport).
 func TestVarMatchingSurvivesTheWriterAndTheJSONTransport(t *testing.T) {
-	pr := parser.Parse("matching.bot", matchingSrc)
+	pr := parsertest.Parse("matching.bot", matchingSrc)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("fixture does not parse: %s", d.Error())
@@ -59,7 +60,7 @@ func TestVarMatchingSurvivesTheWriterAndTheJSONTransport(t *testing.T) {
 		if !strings.Contains(text, `[matching: "^[A-Za-z0-9._][A-Za-z0-9._-]*$|^$"]`) {
 			t.Fatalf("iterion fmt dropped the constraint:\n%s", text)
 		}
-		pr2 := parser.Parse("matching.bot", text)
+		pr2 := parsertest.Parse("matching.bot", text)
 		for _, d := range pr2.Diagnostics {
 			if d.Severity == parser.SeverityError {
 				t.Fatalf("the written text does not parse back: %s\n%s", d.Error(), text)

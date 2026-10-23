@@ -1,9 +1,8 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // The compiler's own list puts a finding without a position AFTER the
@@ -11,7 +10,7 @@ import (
 // edge that names an unknown node, not before it.
 func TestGlobalFindingsSortAfterPositionedOnes(t *testing.T) {
 	src := "schema out:\n  ok: bool\n\nagent a:\n  model: \"m\"\n  output: out\n\nworkflow w:\n  entry: ghost\n  a -> zzz\n"
-	pr := parser.Parse("order.bot", src)
+	pr := parsertest.Parse("order.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("unexpected parse diagnostic: %s", d.Error())
 	}

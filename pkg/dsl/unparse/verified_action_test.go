@@ -1,10 +1,10 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -26,7 +26,7 @@ workflow w:
   entry: commit_changes
   commit_changes -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parsertest.Parse("test.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %+v", res.Diagnostics)
 	}
@@ -48,7 +48,7 @@ workflow w:
 	}
 
 	// Reparse: the quad must come back identical.
-	res2 := parser.Parse("test.bot", out)
+	res2 := parsertest.Parse("test.bot", out)
 	if len(res2.Diagnostics) != 0 {
 		t.Fatalf("reparse diagnostics: %+v\nsource:\n%s", res2.Diagnostics, out)
 	}
@@ -72,7 +72,7 @@ workflow w:
   entry: render_scene
   render_scene -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parsertest.Parse("test.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %+v", res.Diagnostics)
 	}
@@ -82,7 +82,7 @@ workflow w:
 		t.Fatalf("unparse output missing parallel_safe:\n%s", out)
 	}
 
-	res2 := parser.Parse("test.bot", out)
+	res2 := parsertest.Parse("test.bot", out)
 	if len(res2.Diagnostics) != 0 {
 		t.Fatalf("reparse diagnostics: %+v\nsource:\n%s", res2.Diagnostics, out)
 	}

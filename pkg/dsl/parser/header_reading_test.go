@@ -44,7 +44,7 @@ func TestTheHeaderIsReadAlikeByTheLexerAndTheParser(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			src := c.header + "\n" + body
 			lex := NewLexer("x.bot", src).Profile()
-			res := Parse("x.bot", src)
+			res := parseLenient("x.bot", src)
 			if res.File.EffectiveProfile() != lex {
 				t.Fatalf("%q: the parser reads profile %d, the lexer %d", c.header, res.File.EffectiveProfile(), lex)
 			}
@@ -76,7 +76,7 @@ func TestTheHeaderIsReadAlikeByTheLexerAndTheParser(t *testing.T) {
 
 // The refusal of junk after the number names what was read.
 func TestJunkAfterTheProfileNumberIsNamed(t *testing.T) {
-	res := Parse("x.bot", "dsl: 2 oops\nagent a:\n  description: \"x\"\n")
+	res := parseLenient("x.bot", "dsl: 2 oops\nagent a:\n  description: \"x\"\n")
 	var msg string
 	for _, d := range res.Diagnostics {
 		if d.Code == DiagUnknownProfile {
@@ -95,7 +95,7 @@ func TestJunkAfterTheProfileNumberIsNamed(t *testing.T) {
 // removed properties read as profile 1 — not as the future profile's.
 func TestARefusedFutureProfileReadsAsProfileOne(t *testing.T) {
 	src := "dsl: 3\n\nprompt p:\n  One.\n\n  Two.\n\nagent a:\n  system: p\n  description: \"a\\nb\"\n  memory:\n    enabled: true\n    project_root: true\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	res := Parse("x.bot", src)
+	res := parseLenient("x.bot", src)
 	codes := map[DiagCode]int{}
 	for _, d := range res.Diagnostics {
 		codes[d.Code]++

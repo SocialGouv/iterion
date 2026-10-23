@@ -2,13 +2,13 @@ package spec_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 )
 
@@ -252,7 +252,7 @@ func TestEntriesMatchTheParser(t *testing.T) {
 		exercised := map[string]bool{}
 		for _, a := range w.accepted {
 			doc := entryDoc(tmpl, a.line)
-			res := parser.Parse("probe.bot", doc)
+			res := parsertest.Parse("probe.bot", doc)
 			if len(res.Diagnostics) > 0 {
 				t.Errorf("%s: accepted entry %q drew %v", kind, a.line, res.Diagnostics)
 				continue
@@ -271,7 +271,7 @@ func TestEntriesMatchTheParser(t *testing.T) {
 			}
 		}
 		for _, r := range w.refused {
-			if res := parser.Parse("probe.bot", entryDoc(tmpl, r)); len(res.Diagnostics) == 0 {
+			if res := parsertest.Parse("probe.bot", entryDoc(tmpl, r)); len(res.Diagnostics) == 0 {
 				t.Errorf("%s: refused entry %q is accepted", kind, r)
 			}
 		}
@@ -285,7 +285,7 @@ func TestEntriesMatchTheParser(t *testing.T) {
 			if !required[part] {
 				t.Errorf("%s: a missing-part witness for %q, which the registry does not mark Required", kind, part)
 			}
-			if res := parser.Parse("probe.bot", entryDoc(tmpl, line)); len(res.Diagnostics) == 0 {
+			if res := parsertest.Parse("probe.bot", entryDoc(tmpl, line)); len(res.Diagnostics) == 0 {
 				t.Errorf("%s: the registry marks %q Required, yet the parser accepts the entry without it: %q", kind, part, line)
 			}
 		}
@@ -341,7 +341,7 @@ func TestEntriesKeysAreWhatTheParserNames(t *testing.T) {
 			t.Errorf("%s: no quoted-key witness", kind)
 			continue
 		}
-		res := parser.Parse("probe.bot", entryDoc(tmpl, line))
+		res := parsertest.Parse("probe.bot", entryDoc(tmpl, line))
 		accepted := len(res.Diagnostics) == 0
 		quotedOK := k.Entries.Key == spec.String || k.Entries.Key == spec.StringOrIdent
 		if accepted != quotedOK {
@@ -362,7 +362,7 @@ func TestHeadersMatchTheParser(t *testing.T) {
 		t.Fatalf("use header: %+v", u.Header)
 	}
 	body := "\n  agent x:\n    model: \"m\"\n  x -> done\n"
-	res := parser.Parse("g.bot", "group g(zz_a, zz_b):"+body+"use g as zz_p with { zz_a: \"v\", zz_b: 3 }\n")
+	res := parsertest.Parse("g.bot", "group g(zz_a, zz_b):"+body+"use g as zz_p with { zz_a: \"v\", zz_b: 3 }\n")
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("header witnesses: %v", res.Diagnostics)
 	}
@@ -373,7 +373,7 @@ func TestHeadersMatchTheParser(t *testing.T) {
 		t.Errorf("use: %+v", use)
 	}
 	// The optional parts left out: still a group, still a use.
-	res = parser.Parse("g.bot", "group g:"+body+"use g as zz_p\n")
+	res = parsertest.Parse("g.bot", "group g:"+body+"use g as zz_p\n")
 	if len(res.Diagnostics) != 0 || len(res.File.Groups[0].Params) != 0 || res.File.Uses[0].With != nil {
 		t.Errorf("without the optional parts: %v %+v %+v", res.Diagnostics, res.File.Groups[0], res.File.Uses[0])
 	}
@@ -383,7 +383,7 @@ func TestHeadersMatchTheParser(t *testing.T) {
 		"group g(1):" + body,
 		"group g(\"a\"):" + body,
 	} {
-		if res := parser.Parse("g.bot", src); len(res.Diagnostics) == 0 {
+		if res := parsertest.Parse("g.bot", src); len(res.Diagnostics) == 0 {
 			t.Errorf("accepted: %q", src)
 		}
 	}
@@ -402,7 +402,7 @@ func TestHeadersMatchTheParser(t *testing.T) {
 			case !f.Required && ok:
 				t.Errorf("%s header: a missing-part witness for %q, which is not Required", k.Name, f.Name)
 			case ok:
-				if res := parser.Parse("g.bot", line); len(res.Diagnostics) == 0 {
+				if res := parsertest.Parse("g.bot", line); len(res.Diagnostics) == 0 {
 					t.Errorf("%s header: %q is Required, yet the parser accepts the line without it: %q", k.Name, f.Name, line)
 				}
 			}
@@ -452,7 +452,7 @@ func TestAGroupHoldsWhatTheRegistrySays(t *testing.T) {
 			t.Errorf("%s: no minimal body for the group probe", k.Name)
 			continue
 		}
-		res := parser.Parse("g.bot", "group g:\n  "+k.Name+" x:\n    "+body+"\n")
+		res := parsertest.Parse("g.bot", "group g:\n  "+k.Name+" x:\n    "+body+"\n")
 		refused := false
 		for _, d := range res.Diagnostics {
 			if strings.Contains(d.Message, "cannot be declared inside a group") {
@@ -498,7 +498,7 @@ func TestEnumValuesAreTheParsersList(t *testing.T) {
 				continue
 			}
 			n++
-			res := parser.Parse("probe.bot", fmt.Sprintf(strings.Replace(tmpl, "%s: 1", "%s", 1), p.Name+": zz_bogus"))
+			res := parsertest.Parse("probe.bot", fmt.Sprintf(strings.Replace(tmpl, "%s: 1", "%s", 1), p.Name+": zz_bogus"))
 			var listed []string
 			for _, d := range res.Diagnostics {
 				if m := acceptedWordsRe.FindStringSubmatch(d.Message); m != nil {

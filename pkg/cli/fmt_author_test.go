@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"sort"
 	"strings"
@@ -12,8 +13,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/author"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -55,7 +56,7 @@ func TestFmtToBotWritesTheBotADocumentStandsFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the .bot was not written: %v", err)
 	}
-	pr := parser.Parse(bot, string(got))
+	pr := parsertest.Parse(bot, string(got))
 	if diagnosticErrors(pr.Diagnostics) != "" || unparse.Unparse(pr.File) != string(got) {
 		t.Fatalf("the .bot written is not canonical .bot text:\n%s", got)
 	}
@@ -369,7 +370,7 @@ func TestFmtToYamlWritesTheDocumentOfABot(t *testing.T) {
 	if back.HasErrors() {
 		t.Fatalf("the document written does not read: %v\n%s", back.Diagnostics, out)
 	}
-	if why := ir.SameProgram(ir.Compile(back.File), ir.Compile(parser.Parse(bot, botText).File)); why != "" {
+	if why := ir.SameProgram(ir.Compile(back.File), ir.Compile(parsertest.Parse(bot, botText).File)); why != "" {
 		t.Fatalf("the document written is not the .bot's program (%s):\n%s", why, out)
 	}
 	if !strings.Contains(string(out), "catalog:") || !strings.Contains(string(out), "name: probe") {
@@ -422,7 +423,7 @@ func TestFmtToYamlWritesADocumentThatReadsBack(t *testing.T) {
 	if back.HasErrors() {
 		t.Fatalf("the document written does not read: %v\n%s", back.Diagnostics, out)
 	}
-	if why := ir.SameProgram(ir.Compile(back.File), ir.Compile(parser.Parse(bot, botText).File)); why != "" || !strings.Contains(string(out), "default: 1.5\n") {
+	if why := ir.SameProgram(ir.Compile(back.File), ir.Compile(parsertest.Parse(bot, botText).File)); why != "" || !strings.Contains(string(out), "default: 1.5\n") {
 		t.Fatalf("the document written is not the .bot's program, its float in the reader's digits (%s):\n%s", why, out)
 	}
 	// A .bot that compiles to no workflow — a fragment, the same literals —
@@ -558,13 +559,13 @@ func TestFmtToYamlRefusesAFragmentReadBackWhoseOrderChangesTheProgram(t *testing
 			}
 			fragment := writeBot(t, "original/lib/fragment.bot", tc.original)
 			writeBot(t, "reordered/lib/fragment.bot", tc.reordered)
-			a := ir.Compile(unit.LoadDir("original/main.bot").Merged)
-			b := ir.Compile(unit.LoadDir("reordered/main.bot").Merged)
+			a := ir.Compile(unittest.Whole(unit.LoadDir("original/main.bot")).Merged)
+			b := ir.Compile(unittest.Whole(unit.LoadDir("reordered/main.bot")).Merged)
 			if why := ir.SameProgram(a, b); why == "" || !strings.Contains(why, tc.want) {
 				t.Fatalf("the fixture's orders are not the expected two programs: %q, want a difference naming %q", why, tc.want)
 			}
 
-			reordered := parser.Parse("reordered/lib/fragment.bot", tc.reordered)
+			reordered := parsertest.Parse("reordered/lib/fragment.bot", tc.reordered)
 			if diagnosticErrors(reordered.Diagnostics) != "" {
 				t.Fatalf("the reordered fragment does not parse: %v", reordered.Diagnostics)
 			}
@@ -623,8 +624,8 @@ func TestFmtToYamlCarriesTheCatalogTheCatalogReaderReads(t *testing.T) {
 			}
 			// What the catalogue reads off the .bot, it reads off the .bot
 			// the document writes back.
-			want := bundle.ParseFrontmatter([]byte(tc.head + body))
-			got := bundle.ParseFrontmatter([]byte(unparse.Unparse(author.Parse(bot+".yaml", doc).File)))
+			want := testFrontmatter(t, []byte(tc.head+body))
+			got := testFrontmatter(t, []byte(unparse.Unparse(author.Parse(bot+".yaml", doc).File)))
 			if catalogIdentity(got) != catalogIdentity(want) {
 				t.Fatalf("the .bot the document writes back carries %s, the original %s", catalogIdentity(got), catalogIdentity(want))
 			}
@@ -1179,4 +1180,15 @@ func TestFixTakesNoDocument(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "author document") || !strings.Contains(err.Error(), "fmt --to bot") {
 		t.Fatalf("fix on a document: %v", err)
 	}
+}
+
+// testFrontmatter is bundle.ParseFrontmatter of a text whose block the
+// reader reads: a refusal fails the test.
+func testFrontmatter(t testing.TB, raw []byte) *bundle.Frontmatter {
+	t.Helper()
+	fm, err := bundle.ParseFrontmatter("main.bot", raw)
+	if err != nil {
+		t.Fatalf("the frontmatter is refused: %v", err)
+	}
+	return fm
 }

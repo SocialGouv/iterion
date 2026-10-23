@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +51,22 @@ type botSourceView struct {
 	// Warnings are non-fatal push-time notices (e.g. provisioned-projection
 	// drift for a platform override). Empty on reads.
 	Warnings []string `json:"warnings,omitempty"`
+	// FileSHA256 is the sha256 of each file's content as answered: what a
+	// raw edit of one presents back (botSourceFilePutReq.StoredSHA256) to
+	// replace exactly that text.
+	FileSHA256 map[string]string `json:"file_sha256,omitempty"`
+}
+
+// viewOf is the answer for a bot source, each file's digest beside it.
+func viewOf(bs botsource.BotSource, warnings ...string) botSourceView {
+	v := botSourceView{BotSource: bs, Warnings: warnings}
+	if len(bs.Files) > 0 {
+		v.FileSHA256 = make(map[string]string, len(bs.Files))
+		for path, content := range bs.Files {
+			v.FileSHA256[path] = contentSHA256(content)
+		}
+	}
+	return v
 }
 
 // botSourceCtx authorises the request and returns a tenant-scoped context.
@@ -162,7 +179,7 @@ func (s *Server) getBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 		s.botSourceError(w, r, err)
 		return
 	}
-	s.writeJSONFor(w, r, botSourceView{BotSource: bs})
+	s.writeJSONFor(w, r, viewOf(bs))
 }
 
 type botSourcePutReq struct {
@@ -170,6 +187,20 @@ type botSourcePutReq struct {
 	// Version, when non-zero, is an if-match token: the write is rejected with
 	// 409 if the stored version advanced (a concurrent editor wrote in between).
 	Version int `json:"version,omitempty"`
+	// ID is the bot's identity as the read that seeded this write answered
+	// it (botSourceView.ID): the digest rule's cloud half. The version CAS
+	// alone is a number, not a bot — a bot deleted and re-created (also at
+	// version 1) would take an old client's write for its own. Required on
+	// an update; a creation (no version) decides on the bot's absence and
+	// carries none.
+	ID string `json:"id,omitempty"`
+	// StoredSHA256 is, per path, the digest of the file AS STORED AT THE
+	// PINNED VERSION (botSourceView.FileSHA256): the digest rule — every
+	// file this write REPLACES or OMITS (an omission deletes) must carry
+	// the digest a whole read of that version issued, and a digest of other
+	// bytes, or none, is a 409 naming what changed. A file kept byte for
+	// byte asks nothing.
+	StoredSHA256 map[string]string `json:"stored_sha256,omitempty"`
 }
 
 // handlePutBotSource creates or replaces a bot's whole bundle. The bundle is
@@ -199,8 +230,30 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
 		return
 	}
-	bs := botsource.BotSource{TenantID: tenantID, Slug: slug, Files: req.Files, Version: req.Version}
+	bs := botsource.BotSource{TenantID: tenantID, Slug: slug, Files: req.Files, Version: req.Version, ID: req.ID}
+	if req.Version != 0 && req.ID == "" {
+		s.httpErrorFor(w, r, http.StatusConflict, "bot source %q carries no identity: an update presents the id its read answered (the bundle response's), and none came — reload the bot and redo the edit", slug)
+		return
+	}
 	if err := bs.Validate(); err != nil {
+		s.botSourceError(w, r, err)
+		return
+	}
+	// The bundle as stored, read once: every check below is asked of it,
+	// and the write is pinned to its version (storeBotSource), so a write
+	// that landed meanwhile makes this one a conflict rather than a write
+	// over bytes nothing here read. A slug that does not exist yet is a
+	// creation, decided on its absence.
+	stored, err := s.botSources.GetBySlug(store.WithTenant(r.Context(), tenantID), tenantID, slug)
+	var storedBundle *botsource.BotSource
+	switch {
+	case err == nil:
+		storedBundle = &stored
+		if bs.Version == 0 {
+			bs.Version = stored.Version
+		}
+	case errors.Is(err, botsource.ErrNotFound):
+	default:
 		s.botSourceError(w, r, err)
 		return
 	}
@@ -208,8 +261,8 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 	// whole bundle: this is where the studio's CLOUD save of a bot in
 	// several files lands, and where a push that folds a stored value
 	// would otherwise replace it with a text its author never wrote. A
-	// slug that does not exist yet is a creation — no before, no claim.
-	if !s.bundleFoldsNothing(w, r, tenantID, slug, bs.Files) {
+	// creation has no before and no claim.
+	if !s.bundleFoldsNothing(w, r, storedBundle, bs.Files) {
 		return
 	}
 	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
@@ -219,16 +272,19 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 	// Compiling here says nothing about the ENGINE that will evaluate it: a
 	// call to a builtin the runners' evaluator lacks parses generically. The
 	// manifest's `requires.iterion` is what closes that, held against the
-	// deployment's actual floor (engine_floor.go).
-	engineWarning, ok := s.guardBundleEngineRequirement(w, r, bs)
+	// deployment's actual floor (engine_floor.go) — judged on the resulting
+	// state, so a push that omits the manifest does not slip past the guard
+	// with the requirement it sheds.
+	engineWarnings, ok := s.guardBundleEngineRequirement(w, r, bs, storedBundle)
 	if !ok {
 		return
 	}
-	warnings := s.platformPushWarnings(tenantID, bs)
-	if engineWarning != "" {
-		warnings = append(warnings, engineWarning)
+	warnings := append(s.platformPushWarnings(tenantID, bs), engineWarnings...)
+	presented := make(map[string]string, len(req.StoredSHA256))
+	for path, digest := range req.StoredSHA256 {
+		presented[path] = digest
 	}
-	s.writeBotSource(w, r, tenantID, userID, bs, warnings...)
+	s.writeBotSource(w, r, tenantID, userID, bs, presented, "", warnings...)
 }
 
 // platformPushWarnings surfaces the known gaps a platform push does NOT
@@ -246,7 +302,11 @@ func (s *Server) platformPushWarnings(tenantID string, bs botsource.BotSource) [
 	if m == nil {
 		return nil
 	}
-	baked, ok, err := botregistry.FindByName(s.botListOptions(), bs.Slug)
+	// The baked manifest's invocations, which no workspace overlay decides:
+	// read past one its reader refused.
+	opts := s.botListOptions()
+	opts.ListPastAnUnreadOverlay = true
+	baked, ok, err := botregistry.FindByName(opts, bs.Slug)
 	if err != nil || !ok {
 		return nil // a new-slug platform bot has nothing provisioned to drift from
 	}
@@ -266,8 +326,22 @@ type botSourceFilePutReq struct {
 	Content string `json:"content"`
 	// Version, when non-zero, is an if-match token: the write is rejected
 	// with 409 if the stored version advanced (a concurrent editor wrote in
-	// between). Omitted = last-write-wins.
+	// between). Omitted, the write is checked against the bundle as this
+	// request reads it, and only a write landing between that read and this
+	// one is a conflict.
 	Version int `json:"version,omitempty"`
+	// ID is the bot's identity as the read that seeded this write answered
+	// it (botSourceView.ID), required with a version (the digest rule's
+	// cloud half).
+	ID string `json:"id,omitempty"`
+	// StoredSHA256 is the sha256 of the stored text this write replaces
+	// (botSourceView.FileSHA256) — the digest rule: REQUIRED for a file the
+	// bundle holds, whatever the edit. The read that issued it is the
+	// bundle fetch that seeded the editor (or the drawer), a whole read of
+	// the file's bytes at the pinned version; an editor whose document a
+	// refusal left empty was issued no digest, and its save carries none.
+	// A digest of other bytes than the stored ones is a 409.
+	StoredSHA256 string `json:"stored_sha256,omitempty"`
 }
 
 // handlePutBotSourceFile writes one file into an existing bundle — the editor's
@@ -302,6 +376,9 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 	// store), and a write that Validate then REJECTS must not have already
 	// poisoned the stored row — one rejected traversal key otherwise bricks
 	// the bot (unwritable and unlaunchable) and races concurrent launches.
+	// The bundle as read is kept beside it: the engine-floor guard judges the
+	// resulting state against what the write was decided on.
+	storedBundle := &botsource.BotSource{Slug: bs.Slug, Files: bs.Files}
 	files := make(map[string]string, len(bs.Files)+1)
 	for k, v := range bs.Files {
 		files[k] = v
@@ -309,7 +386,16 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 	stored := bs.Files[path]
 	files[path] = body.Content
 	bs.Files = files
-	bs.Version = body.Version
+	// Pinned to the version read above when the client presents none:
+	// every check below is asked of that version (storeBotSource).
+	if body.Version != 0 {
+		bs.Version = body.Version
+		bs.ID = body.ID
+	}
+	if body.Version != 0 && body.ID == "" {
+		s.httpErrorFor(w, r, http.StatusConflict, "bot source %q carries no identity: an update presents the id its read answered (the bundle response's), and none came — reload the bot and redo the edit", slug)
+		return
+	}
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
 		return
@@ -323,7 +409,12 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 	// single-file save and the files drawer, neither of which goes through
 	// a save path of ours.
 	if workflowfile.IsWorkflowFile(path) {
-		if line, size, folds := canon.Folds(path, stored, body.Content); folds {
+		line, size, folds, err := canon.Folds(path, stored, body.Content)
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: %v", path, err)
+			return
+		}
+		if folds {
 			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it", path, line, size)
 			return
 		}
@@ -335,16 +426,17 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 		return
 	}
 	// Same guard as the whole-bundle push: an edit to manifest.yaml alone can
-	// introduce (or raise) the requirement, and this path persists it too.
-	engineWarning, ok := s.guardBundleEngineRequirement(w, r, bs)
+	// introduce (or raise) the requirement, and this path persists it too —
+	// judged on the resulting state, the bundle as this write read it beside.
+	engineWarnings, ok := s.guardBundleEngineRequirement(w, r, bs, storedBundle)
 	if !ok {
 		return
 	}
-	if engineWarning != "" {
-		s.writeBotSource(w, r, tenantID, userID, bs, engineWarning)
-		return
+	var presented map[string]string
+	if body.StoredSHA256 != "" {
+		presented = map[string]string{path: body.StoredSHA256}
 	}
-	s.writeBotSource(w, r, tenantID, userID, bs)
+	s.writeBotSource(w, r, tenantID, userID, bs, presented, "", engineWarnings...)
 }
 
 func (s *Server) handleDeleteBotSourceFile(w http.ResponseWriter, r *http.Request) {
@@ -379,7 +471,28 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	// Clone before mutating — same aliasing hazard as the file put above.
+	// The bot's identity, the same echo the PUTs present in their bodies: a
+	// delete pinned to a version names the bot that read answered, and a bot
+	// deleted and re-created (a new id, the version free again) takes no old
+	// client's delete (#2678's second sequence). Required when a version is
+	// presented; presented WITHOUT one, the id is still honored — the
+	// identity guard judges it, and the freshest version is deleted; absent
+	// entirely, the delete stays last-write-wins. It rides the
+	// query as the version does; the store write carries it, so the
+	// identity guard judges the PRESENTED id against its own fresh read —
+	// a re-creation between this route's read and the store write is a 409.
+	botID := strings.TrimSpace(r.URL.Query().Get("bot_id"))
+	if version != 0 && botID == "" {
+		s.httpErrorFor(w, r, http.StatusConflict, "bot source %q carries no identity: a delete pinned to a version presents the id its read answered (the bundle response's), and none came — reload the bot and redo the edit", slug)
+		return
+	}
+	if botID != "" {
+		bs.ID = botID
+	}
+	// Clone before mutating — same aliasing hazard as the file put above. The
+	// bundle as read is kept beside it: the engine-floor guard judges the
+	// resulting state against what the write was decided on.
+	storedBundle := &botsource.BotSource{Slug: bs.Slug, Files: bs.Files}
 	files := make(map[string]string, len(bs.Files))
 	for k, v := range bs.Files {
 		if k != path {
@@ -394,7 +507,10 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 	// manifest still declares the floor its sources need.
 	before := validateBundleCompileSelected(bs.Files, []string{path})
 	bs.Files = files
-	bs.Version = version
+	// Pinned to the version read above when the client presents none.
+	if version != 0 {
+		bs.Version = version
+	}
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
 		return
@@ -403,57 +519,111 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot no longer compiles without %s: %s", path, strings.Join(fresh, "; "))
 		return
 	}
-	engineWarning, ok := s.guardBundleEngineRequirement(w, r, bs)
+	engineWarnings, ok := s.guardBundleEngineRequirement(w, r, bs, storedBundle)
 	if !ok {
 		return
 	}
-	if engineWarning != "" {
-		s.writeBotSource(w, r, tenantID, userID, bs, engineWarning)
-		return
-	}
-	s.writeBotSource(w, r, tenantID, userID, bs)
+	// The file is removed by name: a knowing removal, which no reading of
+	// it decided (storeBotSource). The presented id rides bs.ID: the store
+	// write's identity guard judges it against its own re-read.
+	s.writeBotSource(w, r, tenantID, userID, bs, nil, path, engineWarnings...)
 }
 
 // writeBotSource persists a create-or-update: an existing slug updates in place
 // (preserving the id), a new slug creates. warnings ride the response so a
 // push learns its known gaps immediately (see platformPushWarnings).
-func (s *Server) writeBotSource(w http.ResponseWriter, r *http.Request, tenantID, userID string, bs botsource.BotSource, warnings ...string) {
-	ctx := store.WithTenant(r.Context(), tenantID)
+// presented and removedByName are storeBotSource's.
+func (s *Server) writeBotSource(w http.ResponseWriter, r *http.Request, tenantID, userID string, bs botsource.BotSource, presented map[string]string, removedByName string, warnings ...string) {
+	out, created, err := s.storeBotSource(r.Context(), tenantID, userID, bs, presented, removedByName)
+	if err != nil {
+		var deleted botSourceDeletedError
+		switch {
+		case s.writeStoredFileRefusal(w, r, err):
+		case errors.As(err, &deleted):
+			// 404 and not the version conflict: the bot was DELETED, not
+			// written by someone else, and a client told "another editor
+			// wrote to it, reload to see" would offer a reload that cannot
+			// succeed.
+			s.httpErrorFor(w, r, http.StatusNotFound, "%v", err)
+		default:
+			s.botSourceError(w, r, err)
+		}
+		return
+	}
+	if created {
+		s.auditBotSource(r, tenantID, "created", out)
+	} else {
+		s.auditBotSource(r, tenantID, "updated", out)
+	}
+	s.writeJSONFor(w, r, viewOf(out, warnings...))
+}
+
+// botSourceDeletedError is a write pinned to a version of a bot source that
+// no longer exists.
+type botSourceDeletedError struct {
+	slug    string
+	version int
+}
+
+func (e botSourceDeletedError) Error() string {
+	return fmt.Sprintf("bot source %q no longer exists: it was deleted since you read version %d", e.slug, e.version)
+}
+
+// storeBotSource is the one write of a bot source's files to the store, and
+// with checkStoredFile the cloud twin of the authoring lock's: the write is
+// pinned to the version it was decided on (bs.Version — every update
+// presents one; 0 is a creation, decided on the bot's absence), and each
+// workflow file it REPLACES or REMOVES is held, as stored at that version,
+// to what the reader reads of it (checkStoredBotFiles): one the server's
+// reader refuses as stored — alone, or as a file the stored load of a unit
+// reaching it did not read, the read budget its files share run out in it
+// or before it — is written over only by a raw edit presenting its digest
+// (presented, by path), and dropped only by name:
+// removedByName, the file a per-file DELETE names ("" for none), is a
+// removal no reading decided. A version that moved is the
+// store's conflict (ErrVersionConflict, 409), checked here before the files
+// are, so no file is judged at a version the write would not land on; a bot
+// created since its absence was read is a 409 too. created reports a
+// creation.
+func (s *Server) storeBotSource(ctx context.Context, tenantID, userID string, bs botsource.BotSource, presented map[string]string, removedByName string) (out botsource.BotSource, created bool, err error) {
+	ctx = store.WithTenant(ctx, tenantID)
 	existing, err := s.botSources.GetBySlug(ctx, tenantID, bs.Slug)
 	switch {
 	case err == nil:
+		if bs.Version == 0 {
+			return botsource.BotSource{}, false, &storedFileRefusal{http.StatusConflict, fmt.Sprintf("bot source %q already exists: it was created since this write was decided on its absence — reload it and redo the edit", bs.Slug)}
+		}
+		if bs.ID == "" {
+			return botsource.BotSource{}, false, &storedFileRefusal{http.StatusConflict, fmt.Sprintf("bot source %q carries no identity: an update presents the id its read answered, and none came — reload the bot and redo the edit", bs.Slug)}
+		}
+		if bs.ID != existing.ID {
+			return botsource.BotSource{}, false, &storedFileRefusal{http.StatusConflict, fmt.Sprintf("bot source %q is not the bot this write read: the bot was deleted and re-created (a new id), and a write pinned to the old one replaces a bot nobody read — reload it and redo the edit", bs.Slug)}
+		}
+		if bs.Version != existing.Version {
+			return botsource.BotSource{}, false, botsource.ErrVersionConflict
+		}
+		// Stored at the version the write is pinned to, which is the
+		// version every check of this write was asked of.
+		if err := checkStoredBotFiles(existing.Files, bs.Files, presented, removedByName); err != nil {
+			return botsource.BotSource{}, false, err
+		}
 		bs.ID = existing.ID
 		bs.UpdatedBy = userID
-		out, uerr := s.botSources.Update(ctx, bs)
-		if uerr != nil {
-			s.botSourceError(w, r, uerr)
-			return
-		}
-		s.auditBotSource(r, tenantID, "updated", out)
-		s.writeJSONFor(w, r, botSourceView{BotSource: out, Warnings: warnings})
+		out, err = s.botSources.Update(ctx, bs)
+		return out, false, err
 	case errors.Is(err, botsource.ErrNotFound):
 		// An if-match token names a row the caller READ. Falling through to
 		// a create here would drop it and resurrect the bundle from that
-		// caller's snapshot — the bot was deleted between this handler's
-		// read and this one, and the token is exactly what says so.
-		//
-		// 404 and not the version conflict: the bot was DELETED, not written
-		// by someone else, and a client told "another editor wrote to it,
-		// reload to see" would offer a reload that cannot succeed.
+		// caller's snapshot — the bot was deleted between that read and this
+		// one, and the token is exactly what says so.
 		if bs.Version != 0 {
-			s.httpErrorFor(w, r, http.StatusNotFound, "bot source %q no longer exists: it was deleted since you read version %d", bs.Slug, bs.Version)
-			return
+			return botsource.BotSource{}, false, botSourceDeletedError{bs.Slug, bs.Version}
 		}
 		bs.CreatedBy = userID
-		out, cerr := s.botSources.Create(ctx, bs)
-		if cerr != nil {
-			s.botSourceError(w, r, cerr)
-			return
-		}
-		s.auditBotSource(r, tenantID, "created", out)
-		s.writeJSONFor(w, r, botSourceView{BotSource: out, Warnings: warnings})
+		out, err = s.botSources.Create(ctx, bs)
+		return out, true, err
 	default:
-		s.botSourceError(w, r, err)
+		return botsource.BotSource{}, false, err
 	}
 }
 
@@ -558,7 +728,7 @@ func (s *Server) forkBotSourceFor(w http.ResponseWriter, r *http.Request, tenant
 		return
 	}
 	s.auditBotSource(r, tenantID, "forked", out)
-	s.writeJSONFor(w, r, botSourceView{BotSource: out})
+	s.writeJSONFor(w, r, viewOf(out))
 }
 
 // catalogBundleFiles reads a baked catalog bot's COMPLETE bundle tree off the
@@ -661,7 +831,13 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 		}
 		path := filepath.Join(dir, filepath.FromSlash(rel))
 		// The workflow's unit: the file and the fragments its imports reach.
-		u := unit.LoadDir(path)
+		u, err := unit.LoadDir(path)
+		if err != nil {
+			// Past the read budget its files share: refused with the
+			// refusal, named as the bundle holds the file.
+			diags = append(diags, rel+": "+strings.ReplaceAll(err.Error(), dir+string(os.PathSeparator), ""))
+			continue
+		}
 		for _, d := range u.Diagnostics {
 			if d.Severity == parser.SeverityError {
 				// The unit was read from a temporary directory the editor
@@ -746,17 +922,11 @@ func (s *Server) botSourceError(w http.ResponseWriter, r *http.Request, err erro
 
 // bundleFoldsNothing reports whether a whole-bundle write leaves every
 // stored workflow's multi-line values over their lines, answering the
-// refusal itself when it does not. A slug with nothing stored is a
-// creation and folds nothing; a store that cannot be read is an error,
-// never a quiet "nothing to compare".
-func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, tenantID, slug string, files map[string]string) bool {
-	stored, err := s.botSources.GetBySlug(store.WithTenant(r.Context(), tenantID), tenantID, slug)
-	if errors.Is(err, botsource.ErrNotFound) {
+// refusal itself when it does not. stored is the bundle as the write read
+// it; nil — nothing stored — is a creation, which folds nothing.
+func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, stored *botsource.BotSource, files map[string]string) bool {
+	if stored == nil {
 		return true
-	}
-	if err != nil {
-		s.botSourceError(w, r, err)
-		return false
 	}
 	paths := make([]string, 0, len(files))
 	for path := range files {
@@ -767,7 +937,12 @@ func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, tena
 		if !workflowfile.IsWorkflowFile(path) {
 			continue
 		}
-		if line, size, folds := canon.Folds(path, stored.Files[path], files[path]); folds {
+		line, size, folds, err := canon.Folds(path, stored.Files[path], files[path])
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: %v", path, err)
+			return false
+		}
+		if folds {
 			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it", path, line, size)
 			return false
 		}

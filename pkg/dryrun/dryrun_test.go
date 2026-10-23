@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,7 +93,7 @@ workflow dry:
 
 func compileBot(t *testing.T, src string) *ir.Workflow {
 	t.Helper()
-	pr := parser.Parse("dry.bot", src)
+	pr := parsertest.Parse("dry.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("the fixture does not parse: %s", d.Error())

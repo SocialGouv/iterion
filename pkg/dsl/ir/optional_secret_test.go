@@ -1,9 +1,8 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 func TestOptionalFileSecretCompiles(t *testing.T) {
@@ -25,7 +24,7 @@ workflow w:
   entry: x
   x -> done
 `
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	if len(pr.Diagnostics) > 0 {
 		t.Fatalf("parse: %+v", pr.Diagnostics)
 	}

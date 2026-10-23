@@ -1,10 +1,9 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // `worktree:` takes auto or none; any other word is refused at compile
@@ -16,7 +15,7 @@ import (
 func TestWorktreeValueIsCheckedAtCompile(t *testing.T) {
 	compile := func(worktree string) (string, []string) {
 		src := "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n" + worktree + "  a -> done\n"
-		pr := parser.Parse("wt.bot", src)
+		pr := parsertest.Parse("wt.bot", src)
 		if len(pr.Diagnostics) != 0 {
 			t.Fatalf("parse: %v", pr.Diagnostics)
 		}
@@ -50,7 +49,7 @@ func TestWorktreeValueIsCheckedAtCompile(t *testing.T) {
 	}
 	// The diagnostic is positioned (the workflow's span): `iterion validate`
 	// prints a file:line for it, not a bare code.
-	pr := parser.Parse("wt.bot", "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  worktree: ATUO\n  a -> done\n")
+	pr := parsertest.Parse("wt.bot", "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  worktree: ATUO\n  a -> done\n")
 	for _, d := range Compile(pr.File).Diagnostics {
 		if d.Code == DiagInvalidWorktree && (d.File != "wt.bot" || d.Line == 0) {
 			t.Fatalf("C142 carries no source position: %s:%d:%d", d.File, d.Line, d.Column)

@@ -62,13 +62,16 @@ func (s *Server) snapshotLaunchBot(ctx context.Context, teamID string, lb *launc
 		// fragment declares is a child of this workflow — made relative to
 		// the root on the merged copy, the base every host resolves it from.
 		dir := path.Dir(current.file)
-		u := unit.Load(func(rel string) ([]byte, error) {
+		u, err := unit.Load(func(rel string) ([]byte, error) {
 			f, ok := snap.Files[path.Join(dir, rel)]
 			if !ok {
 				return nil, fmt.Errorf("%w: %s", os.ErrNotExist, rel)
 			}
 			return f.Content, nil
 		}, path.Base(current.file), func(rel string) string { return path.Join(dir, rel) })
+		if err != nil {
+			return nil, fmt.Errorf("bundle snapshot: parse %s: %w", current.file, err)
+		}
 		for _, diagnostic := range u.Diagnostics {
 			if diagnostic.Severity == parser.SeverityError {
 				return nil, fmt.Errorf("bundle snapshot: parse %s: %s", current.file, diagnostic.Error())

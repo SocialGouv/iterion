@@ -1,6 +1,8 @@
 package cli_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"maps"
 	"os"
 	"path/filepath"
@@ -55,7 +57,7 @@ func everyBotInTheTree(t *testing.T) []string {
 // its unit loaded off the disk, merged and compiled, as the engine does.
 func theProgramOfTheBot(t *testing.T, path string) *ir.CompileResult {
 	t.Helper()
-	return ir.Compile(unit.LoadDir(path).Merged)
+	return ir.Compile(unittest.Whole(unit.LoadDir(path)).Merged)
 }
 
 // theProgramOfTheDocument is the program the document at path describes,
@@ -68,7 +70,7 @@ func theProgramOfTheDocument(t *testing.T, bot, doc string) *ir.CompileResult {
 	if res.HasErrors() {
 		t.Fatalf("the document %s does not read: %v", doc, res.Diagnostics)
 	}
-	return ir.Compile(unit.LoadDirWithMainAST(bot, doc, res.File, src).Merged)
+	return ir.Compile(unittest.Whole(unit.LoadDirWithMainAST(bot, doc, res.File, src, res.Spent)).Merged)
 }
 
 // aPairOfItsOwn copies the .bot at path and every fragment its unit reads
@@ -78,7 +80,7 @@ func theProgramOfTheDocument(t *testing.T, bot, doc string) *ir.CompileResult {
 // back instead, for a corpus file no conversion writes a document from.
 func aPairOfItsOwn(t *testing.T, path string) (bot, doc, why string) {
 	t.Helper()
-	u := unit.LoadDir(path)
+	u := unittest.Whole(unit.LoadDir(path))
 	if u.Merged == nil || len(u.Files) == 0 {
 		return "", "", "the unit holds no file"
 	}
@@ -178,7 +180,7 @@ func editsOf(t *testing.T, path string) map[string][]byte {
 // file: such a text holds no program to edit.
 func parsedBot(t *testing.T, path string) *ast.File {
 	t.Helper()
-	pr := parser.Parse(path, string(mustReadFile(t, path)))
+	pr := parsertest.Parse(path, string(mustReadFile(t, path)))
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil

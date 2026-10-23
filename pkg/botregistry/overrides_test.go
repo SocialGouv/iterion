@@ -1,6 +1,7 @@
 package botregistry
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,7 +21,7 @@ func TestLoadOverrides_MissingIsEmpty(t *testing.T) {
 
 func TestResolveEnabled_OverlayWins(t *testing.T) {
 	dir := t.TempDir()
-	if err := SetOverlayEnabled(dir, "feature_dev", boolPtr(false)); err != nil {
+	if err := SetOverlayEnabled(context.Background(), dir, "feature_dev", boolPtr(false)); err != nil {
 		t.Fatalf("SetOverlayEnabled: %v", err)
 	}
 	ov, err := LoadOverrides(dir)
@@ -39,7 +40,7 @@ func TestResolveEnabled_OverlayWins(t *testing.T) {
 
 func TestResolveEnabled_OverlayCanReEnable(t *testing.T) {
 	dir := t.TempDir()
-	if err := SetOverlayEnabled(dir, "willy", boolPtr(true)); err != nil {
+	if err := SetOverlayEnabled(context.Background(), dir, "willy", boolPtr(true)); err != nil {
 		t.Fatal(err)
 	}
 	ov, _ := LoadOverrides(dir)
@@ -51,10 +52,10 @@ func TestResolveEnabled_OverlayCanReEnable(t *testing.T) {
 
 func TestSetOverlayEnabled_NilClearsOverride(t *testing.T) {
 	dir := t.TempDir()
-	if err := SetOverlayEnabled(dir, "doki", boolPtr(false)); err != nil {
+	if err := SetOverlayEnabled(context.Background(), dir, "doki", boolPtr(false)); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetOverlayEnabled(dir, "doki", nil); err != nil {
+	if err := SetOverlayEnabled(context.Background(), dir, "doki", nil); err != nil {
 		t.Fatal(err)
 	}
 	ov, _ := LoadOverrides(dir)
@@ -69,7 +70,7 @@ func TestSetOverlayEnabled_NilClearsOverride(t *testing.T) {
 
 func TestSetOverlayEnabled_Persists(t *testing.T) {
 	dir := t.TempDir()
-	if err := SetOverlayEnabled(dir, "seki", boolPtr(false)); err != nil {
+	if err := SetOverlayEnabled(context.Background(), dir, "seki", boolPtr(false)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, overridesRelPath)); err != nil {

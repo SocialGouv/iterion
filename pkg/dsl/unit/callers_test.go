@@ -4,8 +4,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -34,11 +32,12 @@ func TestEveryParseCallerChoosesFileOrUnit(t *testing.T) {
 		"pkg/dsl/canon/canon.go":                     "the canonical form rewrites one file on its own text — a unit is formatted file by file, each proven against itself, as the studio's per-file save is",
 		"pkg/dsl/migrate/migrate.go":                 "the migrator rewrites one file in place; a unit migrates file by file",
 		"pkg/dsl/unit/unit.go":                       "the unit loader itself parses each file of the unit",
+		"pkg/dsl/parser/parsertest/parsertest.go":    "the tests' one-value parse of one source; production code never depends on it (TestNoGuardIsReadAroundByTheBuild)",
 		"pkg/dsl/unparse/verify.go":                  "Verify re-parses the one file it wrote",
 		"pkg/runview/rewind_auto.go":                 "parses the recorded main of a run launched before units were recorded; a unit run is read through unit.LoadMap and LoadDir, and a unit run recorded main-only is refused",
 		"pkg/server/cost_preview.go":                 "previews an uploaded document, the flattened unit (lot 3, remote launch)",
 		"pkg/server/server_dsl.go":                   "the studio's parse endpoint hands the EDITOR a document from text, and the example loader parses the one program it serves — a bot in several files it reads as its unit (on disk) or serves flat (embedded); it also re-parses the MAIN alone to answer whether that one file was read whole",
-		"pkg/server/server_files.go":                 "the save guard normalises the document being saved",
+		"pkg/server/server_files.go":                 "the editor's open hands the EDITOR a document of one file — a bot in several files it reads as its unit",
 		// Neither of the two below compiles anything: each asks of ONE file
 		// whether the parser read it whole, which is what tells the editor
 		// its document is a salvage. The unit's own diagnostics cannot
@@ -47,53 +46,25 @@ func TestEveryParseCallerChoosesFileOrUnit(t *testing.T) {
 		// unit that did not LOAD.
 		"pkg/server/server_files_unit.go": "re-parses the MAIN alone, to answer the editor whether that file was read whole",
 	}
-	root := filepath.Join("..", "..", "..")
-	skipNames := map[string]bool{"vendor": true, "studio": true, "node_modules": true, "testdata": true}
-	parserDir := filepath.Join(root, "pkg", "dsl", "parser")
-
+	// Every production file of the module, skipped by path from the root
+	// (walkModuleSources), never by a directory's name. The parser's own
+	// package imports nothing of itself, so its files reference no Parse
+	// this detector reads.
 	seen := map[string]bool{}
 	var offenders []string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			name := info.Name()
-			// Hidden directories hold worktrees and scratch clones; the
-			// parser package is the function's own.
-			if skipNames[name] || (strings.HasPrefix(name, ".") && path != root) || path == parserDir {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		src, rerr := os.ReadFile(path) // #nosec G304 -- walking this repository's own tree
-		if rerr != nil {
-			return rerr
-		}
-		calls, perr := referencesParse(path, src)
+	walkModuleSources(t, func(rel string, src []byte) {
+		calls, perr := referencesParse(rel, src)
 		if perr != nil {
-			return perr
+			t.Fatalf("%s: %v", rel, perr)
 		}
 		if !calls {
-			return nil
+			return
 		}
-		rel, rerr := filepath.Rel(root, path)
-		if rerr != nil {
-			return rerr
-		}
-		rel = filepath.ToSlash(rel)
 		seen[rel] = true
 		if _, ok := documentSurfaces[rel]; !ok {
 			offenders = append(offenders, rel)
 		}
-		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	sort.Strings(offenders)
 	for _, rel := range offenders {
 		t.Errorf("%s calls parser.Parse: a compile reads the unit (unit.LoadDir / LoadMap / LoadDirWithMain); a surface that hands a DOCUMENT over is listed in this test with its reason", rel)

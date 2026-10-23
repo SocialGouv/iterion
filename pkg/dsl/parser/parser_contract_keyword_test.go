@@ -9,7 +9,7 @@ import "testing"
 // `contract: c` line.
 func TestANodeNamedContractKeepsItsEdges(t *testing.T) {
 	src := "vars:\n  goal: string\n\nprompt u:\n  Do {{vars.goal}}.\n\nagent contract:\n  model: \"anthropic/claude-sonnet-4-6\"\n  user: u\n\ncontract c:\n  inputs:\n    goal: string\n\nworkflow w:\n  contract: c\n  entry: contract\n  contract -> done\n"
-	pr := Parse("x.bot", src)
+	pr := parseLenient("x.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == SeverityError {
 			t.Fatalf("a node named contract does not parse: %s", d.Error())

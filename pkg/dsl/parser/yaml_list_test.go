@@ -13,8 +13,8 @@ func TestDashListReadsAsTheInlineList(t *testing.T) {
 	inline := "agent a:\n  description: \"x\"\n  tools: [bash, mcp.srv.*, \"kebab-tool\"]\n  skills: [\"changelog-writer\", house.style]\n  needs: [godot, blender]\n\nsupervisor s:\n  watches: [a]\n  monitors: [\"tool_error\", \"cost>3\"]\n  system: p\n\nprompt p:\n  Watch.\n\nworkflow w:\n  entry: a\n  allow: [\"Read(**)\", \"Bash(go test:*)\"]\n  sandbox:\n    network:\n      mode: allowlist\n      rules: [\"!**.evil.site\", github]\n  a -> done\n"
 	dash := "agent a:\n  description: \"x\"\n  tools:\n    - bash\n    - mcp.srv.*\n    ## a comment between items\n    - \"kebab-tool\"\n  skills:\n    - \"changelog-writer\"\n    - house.style\n  needs:\n    - godot\n    - blender\n\nsupervisor s:\n  watches:\n    - a\n  monitors:\n    - \"tool_error\"\n    - \"cost>3\"\n  system: p\n\nprompt p:\n  Watch.\n\nworkflow w:\n  entry: a\n  allow:\n    - \"Read(**)\"\n    - \"Bash(go test:*)\"\n  sandbox:\n    network:\n      mode: allowlist\n      rules:\n        - \"!**.evil.site\"\n        - github\n  a -> done\n"
 	for _, profile := range []string{"", "dsl: 2\n"} {
-		want := Parse("i.bot", profile+inline)
-		got := Parse("d.bot", profile+dash)
+		want := parseLenient("i.bot", profile+inline)
+		got := parseLenient("d.bot", profile+dash)
 		if len(want.Diagnostics) != 0 || len(got.Diagnostics) != 0 {
 			t.Fatalf("profile %q: diagnostics inline=%v dash=%v", profile, want.Diagnostics, got.Diagnostics)
 		}
@@ -55,7 +55,7 @@ func TestDashListMistakesDrawOneDiagnosticEach(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			res := Parse("x.bot", c.src)
+			res := parseLenient("x.bot", c.src)
 			if len(res.Diagnostics) != 1 {
 				t.Fatalf("want exactly one diagnostic, got %v", res.Diagnostics)
 			}
@@ -78,7 +78,7 @@ func TestDashListMistakesDrawOneDiagnosticEach(t *testing.T) {
 // scalar or a raw string never becomes a token.
 func TestDashIsATokenOnlyWhereItOpensAnItem(t *testing.T) {
 	src := "prompt p:\n  - a bullet\n  - another\n\ntool t:\n  command: |\n    - not a list\n    echo -n x\n  description: `- raw`\n\nworkflow w:\n  entry: t\n  t -> done\n"
-	res := Parse("x.bot", src)
+	res := parseLenient("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}
@@ -89,13 +89,13 @@ func TestDashIsATokenOnlyWhereItOpensAnItem(t *testing.T) {
 		t.Fatalf("scalar text changed: %q / %q", res.File.Tools[0].Command, res.File.Tools[0].Description)
 	}
 	// A bare `-x` (no space) is still not a token of the language.
-	bad := Parse("x.bot", "agent a:\n  tools:\n    -bash\n")
+	bad := parseLenient("x.bot", "agent a:\n  tools:\n    -bash\n")
 	if len(bad.Diagnostics) == 0 {
 		t.Fatalf("`-bash` was accepted")
 	}
 	// Nor is a ` - ` in the middle of a line: the lexer refuses the
 	// character itself (E001), it does not become an item opener.
-	mid := Parse("x.bot", "agent a:\n  tools: [bash - grep]\n")
+	mid := parseLenient("x.bot", "agent a:\n  tools: [bash - grep]\n")
 	var lexerRefusal bool
 	for _, d := range mid.Diagnostics {
 		if d.Code == DiagUnexpectedToken && strings.Contains(d.Message, "unexpected character") {
@@ -116,7 +116,7 @@ func TestDashIsATokenOnlyWhereItOpensAnItem(t *testing.T) {
 func TestDashListSurvivesTrailingComments(t *testing.T) {
 	src := "agent a:\n  description: \"x\"\n  tools: ## allowed\n    - bash ## the shell\n    - \"kebab-tool\" ## quoted\n    - grep\n  skills: ## s\n    - house.style ## c\n    - \"changelog-writer\"\n  needs: ## n\n    - godot ## g\n    - blender\n\nsupervisor s:\n  watches: ## w\n    - a ## the agent\n  monitors:\n    - \"tool_error\" ## e\n    - \"cost>3\"\n  system: p\n\nprompt p:\n  Watch.\n\nworkflow w:\n  entry: a\n  allow: ## rules\n    - \"Read(**)\" ## r\n    - \"Bash(go test:*)\"\n  sandbox:\n    network:\n      mode: allowlist\n      rules: ## hosts\n        - \"!**.evil.site\" ## no\n        - github\n  a -> done\n"
 	for _, profile := range []string{"", "dsl: 2\n"} {
-		res := Parse("x.bot", profile+src)
+		res := parseLenient("x.bot", profile+src)
 		if len(res.Diagnostics) != 0 {
 			t.Fatalf("profile %q: %v", profile, res.Diagnostics)
 		}

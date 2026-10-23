@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -57,7 +58,7 @@ func TestPrepareUnitWritesTheProgramOutFlat(t *testing.T) {
 	if !strings.Contains(flat, "PART-FROM-THE-FRAGMENT") || !strings.Contains(flat, "agent worker") {
 		t.Fatalf("the fragment's node or its include is missing:\n%s", flat)
 	}
-	pr := parser.Parse("<inline>", flat)
+	pr := parsertest.Parse("<inline>", flat)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("the flat text does not parse: %s", d.Error())

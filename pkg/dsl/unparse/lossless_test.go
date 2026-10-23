@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +49,7 @@ func TestUnparseKeepsEveryStringShape(t *testing.T) {
 				}},
 			}
 			text := unparse.Unparse(f)
-			pr := parser.Parse("shape.bot", text)
+			pr := parsertest.Parse("shape.bot", text)
 			for _, d := range pr.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Fatalf("does not parse back: %s\n%s", d.Error(), text)
@@ -85,7 +86,7 @@ func TestUnparseSwitchesToStrictEscapeWhenNoV1FormExists(t *testing.T) {
 	if !strings.HasPrefix(text, "## strict-escape: on\n") {
 		t.Fatalf("expected the strict-escape directive on the first line:\n%s", text)
 	}
-	pr := parser.Parse("strict.bot", text)
+	pr := parsertest.Parse("strict.bot", text)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("does not parse back: %s\n%s", d.Error(), text)
 	}
@@ -119,7 +120,7 @@ func TestUnparseKeepsGroupsAndUses(t *testing.T) {
 		"use gate_block as r2 with { label: \"B\", retries: \"3\" }\n\n" +
 		"workflow w:\n  entry: r1.gate\n  resources:\n    slot: [\"s1\", \"s2\"]\n" +
 		"  r1.check -> r2.gate\n  r2.check -> done\n"
-	pr := parser.Parse("groups.bot", src)
+	pr := parsertest.Parse("groups.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("fixture does not parse: %s", d.Error())
 	}
@@ -131,7 +132,7 @@ func TestUnparseKeepsGroupsAndUses(t *testing.T) {
 	if !strings.Contains(text, "group gate_block(label, retries):") || strings.Count(text, "use gate_block as ") != 2 {
 		t.Fatalf("groups/uses did not come out:\n%s", text)
 	}
-	pr2 := parser.Parse("groups.bot", text)
+	pr2 := parsertest.Parse("groups.bot", text)
 	for _, d := range pr2.Diagnostics {
 		t.Fatalf("does not parse back: %s\n%s", d.Error(), text)
 	}
@@ -151,7 +152,7 @@ func TestCorpusSurvivesUnparse(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pr := parser.Parse(path, string(src))
+		pr := parsertest.Parse(path, string(src))
 		skip := false
 		for _, d := range pr.Diagnostics {
 			if d.Severity == parser.SeverityError {
@@ -162,7 +163,7 @@ func TestCorpusSurvivesUnparse(t *testing.T) {
 			continue
 		}
 		text := unparse.Unparse(pr.File)
-		pr2 := parser.Parse(path, text)
+		pr2 := parsertest.Parse(path, text)
 		for _, d := range pr2.Diagnostics {
 			if d.Severity == parser.SeverityError {
 				t.Errorf("%s: the unparsed source does not parse: %s", path, d.Error())

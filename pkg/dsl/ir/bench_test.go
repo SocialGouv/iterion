@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"testing"
 
@@ -13,7 +14,7 @@ func parseFixtureB(b *testing.B, path string) *parser.ParseResult {
 	if err != nil {
 		b.Fatal(err)
 	}
-	res := parser.Parse("bench.bot", string(data))
+	res := parsertest.Parse("bench.bot", string(data))
 	if res.File == nil {
 		b.Fatal("parse failed")
 	}

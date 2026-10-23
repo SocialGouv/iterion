@@ -12,7 +12,10 @@ import (
 func TestParseToolEnvExpansion(t *testing.T) {
 	for _, want := range []string{"braced", "none"} {
 		src := "tool emit:\n  command: \"echo ${NAME:-d}\"\n  env_expansion: " + want + "\n"
-		res := parser.Parse("test.bot", src)
+		res, err := parser.Parse("test.bot", src)
+		if err != nil {
+			t.Fatalf("the source is not read whole: %v", err)
+		}
 		assertNoDiags(t, res)
 		if len(res.File.Tools) != 1 {
 			t.Fatalf("expected 1 tool, got %d", len(res.File.Tools))
@@ -20,7 +23,10 @@ func TestParseToolEnvExpansion(t *testing.T) {
 		assertEq(t, "EnvExpansion", res.File.Tools[0].EnvExpansion, want)
 	}
 
-	plain := parser.Parse("test.bot", "tool plain:\n  command: \"echo ok\"\n")
+	plain, err := parser.Parse("test.bot", "tool plain:\n  command: \"echo ok\"\n")
+	if err != nil {
+		t.Fatalf("the source is not read whole: %v", err)
+	}
 	assertNoDiags(t, plain)
 	assertEq(t, "EnvExpansion of a plain tool", plain.File.Tools[0].EnvExpansion, "")
 }
@@ -37,7 +43,10 @@ tool env_expansion:
   command: "echo ok"
   output: env_expansion
 `
-	res := parser.Parse("test.bot", src)
+	res, err := parser.Parse("test.bot", src)
+	if err != nil {
+		t.Fatalf("the source is not read whole: %v", err)
+	}
 	assertNoDiags(t, res)
 	if len(res.File.Schemas) != 1 || len(res.File.Tools) != 1 {
 		t.Fatalf("expected the schema and the tool to parse, got %d schema(s) and %d tool(s)", len(res.File.Schemas), len(res.File.Tools))

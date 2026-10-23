@@ -129,6 +129,10 @@ func WriteFileAtomicNew(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// SyncDir makes a directory's entries durable — a name published in it by a
+// rename — where the platform syncs a directory at all (fsyncDir).
+func SyncDir(dir string) error { return fsyncDir(dir) }
+
 // fsyncDir opens dir and calls Sync on the descriptor so the directory
 // entry update from the most recent rename/create reaches the platter.
 // On platforms where opening a directory for sync isn't supported the

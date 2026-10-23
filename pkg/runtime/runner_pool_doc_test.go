@@ -2,12 +2,12 @@ package runtime
 
 import (
 	"context"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -18,7 +18,7 @@ import (
 // pool-team run (rva F3). Red when the stamping, the named-field gate or
 // the WithRunnerPool option is dropped.
 func TestEngineRun_TheFrozenPoolStampReachesTheDocument(t *testing.T) {
-	pr := parser.Parse("pool.bot", `schema out:
+	pr := parsertest.Parse("pool.bot", `schema out:
   answer: string
 prompt p:
   Say the word.

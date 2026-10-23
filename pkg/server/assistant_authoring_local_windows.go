@@ -97,6 +97,16 @@ func openAuthoringFileAt(parent *os.File, name string, flags int, mode os.FileMo
 	return authoringWindowsOpenAt(parent, name, access, disposition, windows.FILE_NON_DIRECTORY_FILE, mode == 0o600)
 }
 func renameAuthoringAt(from *os.File, fromName string, to *os.File, toName string) error {
+	return renameAuthoringAtReplacing(from, fromName, to, toName, false)
+}
+
+// replaceAuthoringAt renames fromName over toName inside dir, replacing it in
+// one step — the one authoring rename that replaces (replaceFile).
+func replaceAuthoringAt(dir *os.File, fromName, toName string) error {
+	return renameAuthoringAtReplacing(dir, fromName, dir, toName, true)
+}
+
+func renameAuthoringAtReplacing(from *os.File, fromName string, to *os.File, toName string, replace bool) error {
 	if toName == "" || toName == "." || toName == ".." || strings.ContainsAny(toName, "/\\:") {
 		return os.ErrInvalid
 	}
@@ -107,15 +117,19 @@ func renameAuthoringAt(from *os.File, fromName string, to *os.File, toName strin
 		return err
 	}
 	defer func() { _ = source.Close() }()
-	// FILE_RENAME_INFORMATION's first union is zero: ReplaceIfExists=false.
-	// Both supported architectures align HANDLE to 8 bytes. Native NT relative
-	// rename keeps the destination bound to its verified parent handle.
+	// FILE_RENAME_INFORMATION's first union is ReplaceIfExists: zero (no
+	// replace) unless the caller replaces. Both supported architectures align
+	// HANDLE to 8 bytes. Native NT relative rename keeps the destination
+	// bound to its verified parent handle.
 	info := struct {
 		Flags          uint32
 		RootDirectory  windows.Handle
 		FileNameLength uint32
 		FileName       [256]uint16
 	}{RootDirectory: windows.Handle(to.Fd())}
+	if replace {
+		info.Flags = 1
+	}
 	name, err := windows.UTF16FromString(toName)
 	if err != nil {
 		return err
@@ -197,3 +211,12 @@ func validateAuthoringOwnership(f *os.File, private bool) error {
 func syncAuthoringDirectory(*os.File) error         { return nil }
 func normalizeAuthoringLockName(name string) string { return strings.TrimRight(name, " .") }
 func authoringLockOpenFlags() int                   { return os.O_RDWR }
+
+// authoringFileLinks is how many names the open file has (its link count).
+func authoringFileLinks(f *os.File) (uint64, error) {
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(windows.Handle(f.Fd()), &info); err != nil {
+		return 0, err
+	}
+	return uint64(info.NumberOfLinks), nil
+}

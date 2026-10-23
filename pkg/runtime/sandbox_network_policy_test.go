@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"io"
 	"net"
 	"net/url"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/noop"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -36,7 +36,7 @@ import (
 // through the real parser + IR compiler.
 func compileSandboxSpec(t *testing.T, src string) *sandbox.Spec {
 	t.Helper()
-	res := parser.Parse("net.bot", src)
+	res := parsertest.Parse("net.bot", src)
 	cr := ir.Compile(res.File)
 	if cr.Workflow == nil {
 		t.Fatalf("compile produced no workflow: %+v", cr.Diagnostics)

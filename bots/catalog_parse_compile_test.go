@@ -3,6 +3,7 @@ package bots
 import (
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -551,7 +552,7 @@ func TestCatalogBotsParseAndCompileClean(t *testing.T) {
 	checked := 0
 	for _, path := range targets {
 		// The bot's unit: its main and the fragments the imports reach.
-		u := unit.LoadDir(path)
+		u := unittest.Whole(unit.LoadDir(path))
 		parseFailed := false
 		for _, d := range u.Diagnostics {
 			if d.Severity == parser.SeverityError {

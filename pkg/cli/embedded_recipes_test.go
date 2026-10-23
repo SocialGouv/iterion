@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +25,7 @@ func TestResolveRecipePathMaterialisesTheWholeBot(t *testing.T) {
 	if !strings.HasPrefix(got, cache) {
 		t.Fatalf("resolved to %q, want a path under the cache %q", got, cache)
 	}
-	u := unit.LoadDir(got)
+	u := unittest.Whole(unit.LoadDir(got))
 	if u.HasErrors() {
 		for _, d := range u.Diagnostics {
 			t.Errorf("%s", d.Error())

@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -47,7 +48,7 @@ workflow w:
   r1.check -> r2.seed
   r2.check -> done
 `
-	pr := parser.Parse("groups.bot", src)
+	pr := parsertest.Parse("groups.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatal(d.Error())

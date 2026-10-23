@@ -26,7 +26,7 @@ workflow t:
     slot: 2
   a -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	for _, d := range res.Diagnostics {
 		t.Fatalf("unexpected diagnostic: %s", d.Error())
 	}
@@ -62,7 +62,7 @@ workflow t:
 	if !strings.Contains(out, "slot: 2") {
 		t.Errorf("unparse lost the counting form; output:\n%s", out)
 	}
-	res2 := parser.Parse("rt.bot", out)
+	res2 := parser.ParseLenient("rt.bot", out)
 	for _, d := range res2.Diagnostics {
 		t.Fatalf("round-trip diagnostic: %s", d.Error())
 	}
@@ -103,7 +103,7 @@ workflow w:
   child -> pair
   pair -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	for _, d := range res.Diagnostics {
 		t.Fatalf("unexpected diagnostic: %s", d.Error())
 	}
@@ -119,7 +119,7 @@ workflow w:
 
 	// Round-trip: unparse must re-emit `needs:` and re-parsing must preserve it.
 	out := unparse.Unparse(res.File)
-	res2 := parser.Parse("rt.bot", out)
+	res2 := parser.ParseLenient("rt.bot", out)
 	for _, d := range res2.Diagnostics {
 		t.Fatalf("round-trip diagnostic: %s", d.Error())
 	}
@@ -155,7 +155,7 @@ workflow w:
   iso -> plain
   plain -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	for _, d := range res.Diagnostics {
 		t.Fatalf("unexpected diagnostic: %s", d.Error())
 	}
@@ -174,7 +174,7 @@ workflow w:
 	if !strings.Contains(out, "isolated: true") {
 		t.Errorf("unparse did not emit `isolated: true`:\n%s", out)
 	}
-	res2 := parser.Parse("rt.bot", out)
+	res2 := parser.ParseLenient("rt.bot", out)
 	for _, d := range res2.Diagnostics {
 		t.Fatalf("round-trip diagnostic: %s", d.Error())
 	}

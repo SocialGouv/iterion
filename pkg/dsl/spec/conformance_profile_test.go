@@ -2,6 +2,7 @@ package spec_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -30,7 +31,7 @@ func TestProfileMarksMatchTheParser(t *testing.T) {
 			sample := strings.ReplaceAll(sampleValues(p)[0], "\n", "\n"+indent)
 			doc := fmt.Sprintf(line, sample)
 			if p.Until == 0 {
-				res := parser.Parse("probe.bot", fmt.Sprintf("dsl: %d\n", parser.MaxProfile)+doc)
+				res := parsertest.Parse("probe.bot", fmt.Sprintf("dsl: %d\n", parser.MaxProfile)+doc)
 				for _, d := range res.Diagnostics {
 					if d.Code == parser.DiagRemovedInProfile || d.Code == parser.DiagUnknownProperty {
 						t.Errorf("%s.%s: unmarked, yet profile %d refuses it: %v", kind, p.Name, parser.MaxProfile, d)
@@ -39,14 +40,14 @@ func TestProfileMarksMatchTheParser(t *testing.T) {
 				continue
 			}
 			marked++
-			res := parser.Parse("probe.bot", fmt.Sprintf("dsl: %d\n", p.Until)+doc)
+			res := parsertest.Parse("probe.bot", fmt.Sprintf("dsl: %d\n", p.Until)+doc)
 			if len(res.Diagnostics) > 0 {
 				t.Errorf("%s.%s: accepted until profile %d by the registry, refused by the parser: %v", kind, p.Name, p.Until, res.Diagnostics)
 			}
 			if p.Until+1 > parser.MaxProfile {
 				continue
 			}
-			res = parser.Parse("probe.bot", fmt.Sprintf("dsl: %d\n", p.Until+1)+doc)
+			res = parsertest.Parse("probe.bot", fmt.Sprintf("dsl: %d\n", p.Until+1)+doc)
 			if len(res.Diagnostics) != 1 || res.Diagnostics[0].Code != parser.DiagRemovedInProfile {
 				t.Errorf("%s.%s: removed from profile %d by the registry; the parser says %v (want exactly one E043)", kind, p.Name, p.Until+1, res.Diagnostics)
 			}

@@ -198,6 +198,18 @@ type ListOptions struct {
 	// Empty disables overlay resolution (entries keep the manifest
 	// default). Typically the same dir passed to DefaultPaths.
 	Workdir string
+
+	// ListPastAnUnreadOverlay opts a listing into an answer past a
+	// workspace overlay its reader refused (*OverlayRefusal): every entry
+	// listed Enabled=false — the visibility decisions the overlay may carry
+	// are unread, so no bot is shown routable — and a DiscoveryErrorOverlay
+	// diagnostic that says so. Unset, the refusal is the listing's error:
+	// a reader that routes, launches or dispatches by Entry.Enabled never
+	// reads a catalogue whose operator's decisions were not read. Set only
+	// by a surface that shows the diagnostic (the studio's gallery) or that
+	// reads nothing the overlay decides (a name, a version, an invocation);
+	// every such site is listed in TestEveryUnreadOverlayOptInIsListed.
+	ListPastAnUnreadOverlay bool
 }
 
 // Config carries the discovery roots for the bot registry. Lives here
@@ -239,7 +251,10 @@ func FindByName(opts ListOptions, name string) (Entry, bool, error) {
 func EnsureNameFree(opts ListOptions, name string) error {
 	// ONE discovery walk: the entries and the diagnostics must come from
 	// the same filesystem snapshot, or a bundle repaired between two
-	// walks is neither found nor reported.
+	// walks is neither found nor reported. A name is taken or free whatever
+	// the workspace overlay decides of its visibility, so an overlay its
+	// reader refused does not stop the check (ListPastAnUnreadOverlay).
+	opts.ListPastAnUnreadOverlay = true
 	entries, diags, err := ListWithDiagnostics(opts)
 	if err != nil {
 		return err
@@ -324,6 +339,24 @@ const (
 	// frontmatter `name:` — which is why the path is reported rather than
 	// dropped.
 	DiscoveryErrorShadowed DiscoveryErrorKind = "shadowed"
+	// DiscoveryErrorIdentity is a bot source that IS listed, whose `## ---`
+	// frontmatter the reader did not read — the main past the read budget
+	// or the size cap, a block whose YAML could open more values than the
+	// budget (bundle.ParseFrontmatter): its Entry carries the file's name
+	// (a loose bot) or the manifest's triggers and capabilities (a bundle)
+	// instead of what the block declares. The one kind whose source has an
+	// Entry; the error says what the entry lacks and the remedy, since the
+	// budget is the operator's dial and lowering it must never strip an
+	// identity in silence.
+	DiscoveryErrorIdentity DiscoveryErrorKind = "identity"
+	// DiscoveryErrorOverlay is the workspace overlay
+	// (.iterion/bot-overrides.yaml) refused before its decode — past the
+	// size cap or the read budget (OverlayRefusal) — in a listing that
+	// opted past it (ListOptions.ListPastAnUnreadOverlay): every bot is
+	// listed disabled, the overlay's visibility decisions unread, and the
+	// error says so. Without the opt-in the refusal is the listing's error,
+	// as an overlay that is not YAML always is.
+	DiscoveryErrorOverlay DiscoveryErrorKind = "overlay"
 )
 
 // DiscoveryError is one skipped bot source: the bundle directory or bot
@@ -349,7 +382,9 @@ type DiscoveryError struct {
 // ListWithDiagnostics is List plus the per-entry discovery errors: one
 // DiscoveryError per skipped bundle directory or bot file. The returned
 // error stays reserved for FATAL failures (an unstat-able root, a
-// broken workspace overlay) — a partial one never fails the list.
+// broken workspace overlay, one its reader refused — *OverlayRefusal,
+// unless opts.ListPastAnUnreadOverlay) — a partial one never fails the
+// list.
 func ListWithDiagnostics(opts ListOptions) ([]Entry, []DiscoveryError, error) {
 	entries, diags, err := discoverBots(opts.Paths)
 	if err != nil {
@@ -362,11 +397,22 @@ func ListWithDiagnostics(opts ListOptions) ([]Entry, []DiscoveryError, error) {
 	// auto-dispatch filter.
 	if opts.Workdir != "" {
 		ov, err := LoadOverrides(opts.Workdir)
+		var refused *OverlayRefusal
+		unread := false
+		if errors.As(err, &refused) && opts.ListPastAnUnreadOverlay {
+			// The overlay is past a bound of its reader, and the caller asked
+			// for the catalogue anyway: what the operator decided is unknown,
+			// so every bot is listed disabled — a bot nobody can route is
+			// recoverable, one that routes itself back on is not — and the
+			// refusal is said beside the list.
+			diags = append(diags, DiscoveryError{Path: refused.Path, Error: refused.Error() + " — every bot is listed disabled until it is read: the doors that read bot visibility (card launch, slash-command discovery, the catalogue's regeneration) route none of them meanwhile; every other door that starts a bot — a manual Run, webhooks, triggers and schedules among them — does not read it", Kind: DiscoveryErrorOverlay})
+			unread, ov, err = true, nil, nil
+		}
 		if err != nil {
 			return nil, nil, err
 		}
 		for i := range entries {
-			entries[i].Enabled = ResolveEnabled(entries[i].Name, entries[i].Enabled, ov)
+			entries[i].Enabled = !unread && ResolveEnabled(entries[i].Name, entries[i].Enabled, ov)
 			if rel, relErr := filepath.Rel(opts.Workdir, entries[i].Path); relErr == nil && !strings.HasPrefix(rel, "..") {
 				entries[i].RelPath = filepath.ToSlash(rel)
 			}
@@ -503,6 +549,15 @@ func DefaultPaths(workDir string) []string {
 	}
 }
 
+// isScaffoldStagingDir reports whether a directory NAME is one of
+// botscaffold's staging directories ("."+slug+".scaffold-"+random), whose
+// leftover beside the roots is no bot. The spelling lives here because
+// botscaffold's tests sit in its own package (an import would cycle them);
+// TestTheStagingSpellingsAgree holds the two to one shape.
+func isScaffoldStagingDir(name string) bool {
+	return strings.HasPrefix(name, ".") && strings.Contains(name, ".scaffold-")
+}
+
 // discoverBots walks each root and produces one Entry per discovered
 // bot. Bundles (directories with manifest.yaml + main.bot) collapse
 // into one entry; individual .bot files become one entry each.
@@ -541,10 +596,12 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				claimedBy[key] = path
 			}
 		}
-		if seenDiag[path] {
+		// One per path and kind: a source listed without its identity can
+		// also lose its name to a claimer, and both are said.
+		if seenDiag[string(kind)+"\x00"+path] {
 			return
 		}
-		seenDiag[path] = true
+		seenDiag[string(kind)+"\x00"+path] = true
 		diags = append(diags, DiscoveryError{Path: path, Error: err.Error(), Kind: kind})
 	}
 	addEntry := func(e *Entry) {
@@ -577,10 +634,13 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 			if !workflowfile.IsWorkflowFile(root) {
 				return nil, nil, fmt.Errorf("bots: unsupported bot file extension for %s (expected .bot)", root)
 			}
-			e, err := parseBotFile(root)
+			e, identity, err := parseBotFile(root)
 			if err != nil {
 				recordDiag(root, DiscoveryErrorFile, err)
 				continue
+			}
+			if identity != nil {
+				recordDiag(root, DiscoveryErrorIdentity, identity)
 			}
 			addEntry(e)
 			continue
@@ -596,6 +656,13 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				return nil
 			}
 			if d.IsDir() {
+				if path != root && isScaffoldStagingDir(d.Name()) {
+					// A scaffold's staging directory left by a create that
+					// died before its publish is no bot: never listed,
+					// never enabled, never routable, and it claims no name
+					// (SweepStale removes the stale ones at start).
+					return filepath.SkipDir
+				}
 				if path != root && isFragmentDir(path) {
 					// A bot's fragments live under lib/ beside its main
 					// (`import "lib/x.bot"`): parts of that bot, never bots
@@ -607,12 +674,15 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				manifest := filepath.Join(path, bundle.ManifestFile)
 				mainBot := filepath.Join(path, bundle.MainBotFile)
 				if fileExists(manifest) && fileExists(mainBot) {
-					e, err := parseBundle(path)
+					e, identity, err := parseBundle(path)
 					if err != nil {
 						recordDiag(path, DiscoveryErrorBundle, err)
 						// SkipDir either way: a malformed bundle must not
 						// leak its main.bot back in as a loose bot file.
 						return filepath.SkipDir
+					}
+					if identity != nil {
+						recordDiag(path, DiscoveryErrorIdentity, identity)
 					}
 					addEntry(e)
 					return filepath.SkipDir
@@ -623,10 +693,13 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 			if !workflowfile.IsWorkflowFile(name) || underAny(path, fragmentDirs) {
 				return nil
 			}
-			e, err := parseBotFile(path)
+			e, identity, err := parseBotFile(path)
 			if err != nil {
 				recordDiag(path, DiscoveryErrorFile, err)
 				return nil
+			}
+			if identity != nil {
+				recordDiag(path, DiscoveryErrorIdentity, identity)
 			}
 			addEntry(e)
 			return nil
@@ -638,10 +711,14 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 	return entries, diags, nil
 }
 
-func parseBundle(dir string) (*Entry, error) {
+// parseBundle reads a bundle directory's entry. identity is the refusal of
+// its main.bot's frontmatter — which overrides the manifest's triggers and
+// capabilities — when the reader did not read it: the entry is the
+// manifest's alone, and the caller says so (DiscoveryErrorIdentity).
+func parseBundle(dir string) (e *Entry, identity, err error) {
 	m, err := bundle.LoadManifest(filepath.Join(dir, bundle.ManifestFile))
 	if err != nil {
-		return nil, fmt.Errorf("bots: %w", err)
+		return nil, nil, fmt.Errorf("bots: %w", err)
 	}
 	if m == nil {
 		m = &bundle.Manifest{}
@@ -649,7 +726,11 @@ func parseBundle(dir string) (*Entry, error) {
 	if m.Name == "" {
 		m.Name = filepath.Base(dir)
 	}
-	if fm := bundle.ReadFrontmatter(filepath.Join(dir, "main.bot")); fm != nil {
+	fm, identity := bundle.ReadFrontmatter(filepath.Join(dir, "main.bot"))
+	if identity != nil {
+		identity = fmt.Errorf("listed with its manifest's triggers and capabilities, which the frontmatter of its main.bot overrides — %w", identity)
+	}
+	if fm != nil {
 		if len(fm.Triggers) > 0 {
 			m.Triggers = fm.Triggers
 		}
@@ -683,19 +764,26 @@ func parseBundle(dir string) (*Entry, error) {
 		Enabled:         m.IsEnabled(), // manifest default; overlay composed in List
 		ManifestEnabled: m.IsEnabled(), // preserved pre-overlay for the studio Bot panel
 		IsBundleDir:     true,
-	}, nil
+	}, identity, nil
 }
 
-func parseBotFile(path string) (*Entry, error) {
+// parseBotFile reads a loose .bot file's entry. identity is the refusal of
+// its frontmatter — its name, description, triggers and capabilities — when
+// the reader did not read it: the entry carries the file's name and no
+// declared identity, and the caller says so (DiscoveryErrorIdentity).
+func parseBotFile(path string) (e *Entry, identity, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("bots: read %s: %w", path, err)
+		return nil, nil, fmt.Errorf("bots: read %s: %w", path, err)
 	}
-	fm := bundle.ParseFrontmatter(raw)
+	fm, identity := bundle.ParseFrontmatter(path, raw)
+	if identity != nil {
+		identity = fmt.Errorf("listed under its file name, with no declared description, triggers or capabilities — %w", identity)
+	}
 	// Loose .bot files carry no manifest, so they default to
 	// enabled (overlay may still flip them in List) and are not
 	// manifest-editable.
-	e := &Entry{Path: path, Enabled: true, ManifestEnabled: true}
+	e = &Entry{Path: path, Enabled: true, ManifestEnabled: true}
 	if fm != nil {
 		e.Name = fm.Name
 		e.Description = fm.Description
@@ -713,7 +801,7 @@ func parseBotFile(path string) (*Entry, error) {
 	if e.Description == "" {
 		e.Description = leadingCommentDescription(raw, filepath.Base(path))
 	}
-	return e, nil
+	return e, identity, nil
 }
 
 // leadingCommentDescription returns the first paragraph of comment lines

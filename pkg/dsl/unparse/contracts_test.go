@@ -3,6 +3,7 @@ package unparse
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -82,7 +83,7 @@ func documentJSON(t *testing.T, f *ast.File) []byte {
 // parser reads — in the writer's canonical order, empty entries as bare
 // headers — and the text reads as the same document.
 func TestContractsRoundTrip(t *testing.T) {
-	res := parser.Parse("x.bot", contractSource)
+	res := parsertest.Parse("x.bot", contractSource)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("fixture: %v", res.Diagnostics)
 	}
@@ -90,7 +91,7 @@ func TestContractsRoundTrip(t *testing.T) {
 	if out != contractSource {
 		t.Fatalf("written:\n%s\nwant:\n%s", out, contractSource)
 	}
-	back := parser.Parse("x.bot", out)
+	back := parsertest.Parse("x.bot", out)
 	if len(back.Diagnostics) != 0 {
 		t.Fatalf("the written text does not parse: %v\n%s", back.Diagnostics, out)
 	}
@@ -126,7 +127,7 @@ func TestContractJSONValuesUseTheWritersQuoting(t *testing.T) {
 			t.Errorf("the text lacks %q:\n%s", want, out)
 		}
 	}
-	back := parser.Parse("x.bot", out)
+	back := parsertest.Parse("x.bot", out)
 	if len(back.Diagnostics) != 0 {
 		t.Fatalf("the written text does not parse: %v\n%s", back.Diagnostics, out)
 	}
@@ -151,7 +152,7 @@ func TestAnEmptyContractIsWrittenAsABareHeader(t *testing.T) {
 		Workflows: []*ast.WorkflowDecl{{Name: "w", Contract: "c"}},
 	}
 	out := Unparse(f)
-	back := parser.Parse("x.bot", out)
+	back := parsertest.Parse("x.bot", out)
 	for _, d := range back.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("does not parse back: %s\n%s", d.Error(), out)
@@ -202,7 +203,7 @@ func TestContractNamesThatAreNotIdentifiersAreRefusedAtTheName(t *testing.T) {
 		"effect":    {func(c *ast.ContractDecl) { c.Effects[0].Name = "e:\n    injected" }, "\n    injected:\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := parser.Parse("x.bot", contractSource)
+			res := parsertest.Parse("x.bot", contractSource)
 			if len(res.Diagnostics) != 0 {
 				t.Fatalf("fixture: %v", res.Diagnostics)
 			}
@@ -211,7 +212,7 @@ func TestContractNamesThatAreNotIdentifiersAreRefusedAtTheName(t *testing.T) {
 			if strings.Contains(out, tc.bare) {
 				t.Fatalf("the name was written bare:\n%s", out)
 			}
-			back := parser.Parse("x.bot", out)
+			back := parsertest.Parse("x.bot", out)
 			var refused bool
 			for _, d := range back.Diagnostics {
 				refused = refused || d.Severity == parser.SeverityError
@@ -234,7 +235,7 @@ func TestContractNamesThatAreNotIdentifiersAreRefusedAtTheName(t *testing.T) {
 // `required: true` — the span-free mirror holds: a text that dropped one is
 // not the same document.
 func TestVerifyHoldsTheContractToTheDocument(t *testing.T) {
-	res := parser.Parse("x.bot", contractSource)
+	res := parsertest.Parse("x.bot", contractSource)
 	out := Unparse(res.File)
 	for name, edit := range map[string]func(string) string{
 		"no contract": func(s string) string {
@@ -267,7 +268,7 @@ func TestVerifyHoldsTheContractToTheDocument(t *testing.T) {
 	if err := Verify(res.File, out); err != nil {
 		t.Fatalf("the unedited text is refused: %v", err)
 	}
-	normalised := parser.Parse("x.bot", "contract c:\n  version: 1\n  inputs:\n    goal: string\n      required: true\n\nagent a:\n  description: \"d\"\n\nworkflow w:\n  contract: c\n  entry: a\n  a -> done\n")
+	normalised := parsertest.Parse("x.bot", "contract c:\n  version: 1\n  inputs:\n    goal: string\n      required: true\n\nagent a:\n  description: \"d\"\n\nworkflow w:\n  contract: c\n  entry: a\n  a -> done\n")
 	if len(normalised.Diagnostics) != 0 {
 		t.Fatalf("fixture: %v", normalised.Diagnostics)
 	}
@@ -315,7 +316,7 @@ func TestVerifyRefusesWhatTheTextCannotCarry(t *testing.T) {
 // quoted and refused at the port.
 func TestContractDottedKindAndNamedTypesRoundTrip(t *testing.T) {
 	src := "contract c:\n  inputs:\n    x: string\n      file:\n        schema: report\n  criteria:\n    k:\n      kind: plugin.check\n      port: input.x\n"
-	res := parser.Parse("x.bot", src)
+	res := parsertest.Parse("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("fixture: %v", res.Diagnostics)
 	}
@@ -339,7 +340,7 @@ func TestContractDottedKindAndNamedTypesRoundTrip(t *testing.T) {
 // compiler refuses: kept by the parser, written back, held by the guard.
 func TestAnExplicitContractVersionSurvives(t *testing.T) {
 	src := "contract c:\n  version: 0\n"
-	res := parser.Parse("x.bot", src)
+	res := parsertest.Parse("x.bot", src)
 	if len(res.Diagnostics) != 0 || res.File.Contracts[0].Version == nil || *res.File.Contracts[0].Version != 0 {
 		t.Fatalf("version read as %v (%v)", res.File.Contracts[0].Version, res.Diagnostics)
 	}

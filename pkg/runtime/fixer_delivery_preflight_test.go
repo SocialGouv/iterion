@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,7 +19,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -59,7 +59,7 @@ func TestFixerWorkflowDiffRefusesBeforeAnalysis(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			parsed := parser.Parse(path, string(src))
+			parsed := parsertest.Parse(path, string(src))
 			compiled := ir.Compile(parsed.File)
 			if compiled.Workflow == nil {
 				t.Fatalf("compile: %+v", compiled.Diagnostics)

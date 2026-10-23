@@ -1,6 +1,7 @@
 package unit
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,7 +41,7 @@ func TestLoadDirWithMainASTHoldsTheLoadersRules(t *testing.T) {
 	write("lib/shared.bot", "import \"helper.bot\"\n\nschema s:\n  ok: bool\n")
 
 	parse := func(name, src string) *parser.ParseResult {
-		pr := parser.Parse(name, src)
+		pr := parsertest.Parse(name, src)
 		if len(pr.Diagnostics) > 0 {
 			t.Fatalf("%s: %v", name, pr.Diagnostics)
 		}
@@ -49,7 +50,7 @@ func TestLoadDirWithMainASTHoldsTheLoadersRules(t *testing.T) {
 
 	t.Run("a main beside lib reads its fragments there", func(t *testing.T) {
 		pr := parse("main.bot.yaml", "import \"lib/shared.bot\"\n\nagent a:\n  model: \"m\"\n\nworkflow w:\n  entry: a\n  a -> done\n")
-		u := LoadDirWithMainAST(filepath.Join(root, "main.bot"), "main.bot.yaml", pr.File, []byte("the yaml"))
+		u := salvageUnit(LoadDirWithMainAST(filepath.Join(root, "main.bot"), "main.bot.yaml", pr.File, []byte("the yaml"), pr.Spent))
 		if u.HasErrors() {
 			t.Fatalf("diagnostics: %v", u.Diagnostics)
 		}
@@ -66,7 +67,7 @@ func TestLoadDirWithMainASTHoldsTheLoadersRules(t *testing.T) {
 
 	t.Run("a fragment alone below lib is read from the bot's root", func(t *testing.T) {
 		pr := parse("shared.bot.yaml", "import \"helper.bot\"\n\nschema s:\n  ok: bool\n")
-		u := LoadDirWithMainAST(filepath.Join(lib, "shared.bot"), "shared.bot.yaml", pr.File, []byte("y"))
+		u := salvageUnit(LoadDirWithMainAST(filepath.Join(lib, "shared.bot"), "shared.bot.yaml", pr.File, []byte("y"), pr.Spent))
 		if u.HasErrors() {
 			t.Fatalf("the sibling import is refused: %v", u.Diagnostics)
 		}
@@ -77,7 +78,7 @@ func TestLoadDirWithMainASTHoldsTheLoadersRules(t *testing.T) {
 
 	t.Run("a main with a workflow below lib stays where it is", func(t *testing.T) {
 		pr := parse("odd.bot.yaml", "agent a:\n  model: \"m\"\n\nworkflow w:\n  entry: a\n  a -> done\n")
-		u := LoadDirWithMainAST(filepath.Join(lib, "odd.bot"), "odd.bot.yaml", pr.File, []byte("y"))
+		u := salvageUnit(LoadDirWithMainAST(filepath.Join(lib, "odd.bot"), "odd.bot.yaml", pr.File, []byte("y"), pr.Spent))
 		if u.Root != lib || u.Main != "odd.bot" {
 			t.Fatalf("root %q, main %q — want lib itself and odd.bot", u.Root, u.Main)
 		}
@@ -86,7 +87,7 @@ func TestLoadDirWithMainASTHoldsTheLoadersRules(t *testing.T) {
 	t.Run("each file's parse diagnostics are its own, and the handed-over main has none", func(t *testing.T) {
 		write("lib/bad.bot", "agent \n  model\n")
 		pr := parse("main.bot.yaml", "import \"lib/bad.bot\"\n\nworkflow w:\n  entry: done\n")
-		u := LoadDirWithMainAST(filepath.Join(root, "main.bot"), "main.bot.yaml", pr.File, []byte("the yaml"))
+		u := salvageUnit(LoadDirWithMainAST(filepath.Join(root, "main.bot"), "main.bot.yaml", pr.File, []byte("the yaml"), pr.Spent))
 		// The caller parsed the main — from YAML, which the parser never
 		// read — so there is no parse of its own text to report, whatever
 		// the fragment it imports does.
@@ -109,7 +110,7 @@ func TestLoadDirWithMainASTHoldsTheLoadersRules(t *testing.T) {
 
 	t.Run("a fragment's error names the main by mainName", func(t *testing.T) {
 		pr := parse("main.bot.yaml", "import \"lib/missing.bot\"\n\nworkflow w:\n  entry: a\n")
-		u := LoadDirWithMainAST(filepath.Join(root, "main.bot"), "main.bot.yaml", pr.File, []byte("y"))
+		u := salvageUnit(LoadDirWithMainAST(filepath.Join(root, "main.bot"), "main.bot.yaml", pr.File, []byte("y"), pr.Spent))
 		if !u.HasErrors() {
 			t.Fatal("a missing fragment is not refused")
 		}

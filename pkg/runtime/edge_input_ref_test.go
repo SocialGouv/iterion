@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"sync"
 	"testing"
@@ -18,7 +19,7 @@ import (
 // on the same edge mapping.
 func compileBot(t *testing.T, src string) *ir.CompileResult {
 	t.Helper()
-	res := parser.Parse("test.bot", src)
+	res := parsertest.Parse("test.bot", src)
 	for _, d := range res.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("parse error: %s", d.Error())

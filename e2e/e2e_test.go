@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +38,7 @@ func compileFixture(t *testing.T, name string) *ir.Workflow {
 	path := resolveFixturePath(t, name)
 	// The fixture's unit: the file and the fragments its imports reach,
 	// beside it — a bot in several files compiles as the program it is.
-	u := unit.LoadDir(path)
+	u := unittest.Whole(unit.LoadDir(path))
 	for _, d := range u.Diagnostics {
 		t.Logf("parse diagnostic: %s", d.Error())
 	}

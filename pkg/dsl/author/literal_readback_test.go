@@ -1,10 +1,10 @@
 package author
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
@@ -24,7 +24,7 @@ func TestAValueWhoseLiteralSpellingDoesNotReadBackIsWrittenQuoted(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bot := strings.Join([]string{"dsl: 2", "", "tool t:", "  command: " + unparse.QuoteStrict(tc.value), "", "workflow w:", "  entry: t", "  t -> done", ""}, nl)
-			pr := parser.Parse("x.bot", bot)
+			pr := parsertest.Parse("x.bot", bot)
 			if len(pr.Diagnostics) > 0 {
 				t.Fatalf(".bot refused: %v", pr.Diagnostics)
 			}

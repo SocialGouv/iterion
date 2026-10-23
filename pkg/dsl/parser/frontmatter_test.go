@@ -34,7 +34,7 @@ func TestFrontmatterIsReadOffTheHeadWhereverTheHeadStarts(t *testing.T) {
 		"no comment at all":              {"dsl: 2\n" + body, false, false, nil, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
-			pr := Parse("x.bot", tc.src)
+			pr := parseLenient("x.bot", tc.src)
 			got := Frontmatter(pr.File)
 			if got.Found != tc.found || got.Closed != tc.closed || got.Span != tc.span || !reflect.DeepEqual(got.Lines, tc.lines) {
 				t.Fatalf("got %+v, want found=%v closed=%v span=%d lines=%q\n%s", got, tc.found, tc.closed, tc.span, tc.lines, tc.src)

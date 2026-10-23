@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"strings"
 	"testing"
 
@@ -31,7 +32,7 @@ func TestDepUpdateGuardEveryFeedbackEdgePinsTheAuditedSHA(t *testing.T) {
 		pinField = "audited_sha"
 	)
 
-	u := unit.LoadDir(bot)
+	u := unittest.Whole(unit.LoadDir(bot))
 	if u.Merged == nil {
 		t.Fatalf("%s: the bundle did not parse: %v", bot, u.Diagnostics)
 	}

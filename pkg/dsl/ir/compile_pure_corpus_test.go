@@ -1,6 +1,7 @@
 package ir_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -25,7 +26,7 @@ func TestCorpusCompileIsPure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pr := parser.Parse(path, string(src))
+		pr := parsertest.Parse(path, string(src))
 		broken := pr.File == nil
 		for _, d := range pr.Diagnostics {
 			if d.Severity == parser.SeverityError {
@@ -35,7 +36,7 @@ func TestCorpusCompileIsPure(t *testing.T) {
 		if broken {
 			continue
 		}
-		fresh := parser.Parse(path, string(src)).File
+		fresh := parsertest.Parse(path, string(src)).File
 		ir.Compile(pr.File)
 		if !reflect.DeepEqual(pr.File, fresh) {
 			t.Errorf("%s: Compile changed its input", path)

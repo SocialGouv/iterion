@@ -26,7 +26,7 @@ func TestUnknownPropertyCarriesTheRegistryRemedy(t *testing.T) {
 		{"sandbox property in a network under a workflow", "workflow w:\n  entry: a\n  sandbox:\n    image: \"i\"\n    network:\n      image: \"x\"\n", "unknown sandbox.network property \"image\"", "belongs to the enclosing `sandbox`"},
 	}
 	for _, c := range cases {
-		res := Parse("t.bot", c.src)
+		res := parseLenient("t.bot", c.src)
 		var found bool
 		for _, d := range res.Diagnostics {
 			if d.Code != DiagUnknownProperty {
@@ -55,7 +55,7 @@ func TestUnknownPropertyCarriesTheRegistryRemedy(t *testing.T) {
 // edges around it still parse.
 func TestUnknownWorkflowPropertyIsE012NotAMissingArrow(t *testing.T) {
 	src := "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  budjet:\n    max_cost_usd: 1\n  a -> done\n"
-	res := Parse("t.bot", src)
+	res := parseLenient("t.bot", src)
 	if len(res.Diagnostics) != 1 {
 		t.Fatalf("want exactly one diagnostic, got %v", res.Diagnostics)
 	}
@@ -78,7 +78,7 @@ func TestUnknownWorkflowPropertyIsE012NotAMissingArrow(t *testing.T) {
 // An edge line is still an edge — the colon peek must not swallow it.
 func TestEdgesStillParseAfterTheColonPeek(t *testing.T) {
 	src := "workflow w:\n  entry: a\n  a -> b when ok\n  a -> done else\n  b -> a as fix(3)\n"
-	res := Parse("t.bot", src)
+	res := parseLenient("t.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}

@@ -26,7 +26,7 @@ var fixture = map[string]string{
 // file keeps its own profile — the fragment's string reads verbatim under
 // its own profile 1 while the main is profile 2.
 func TestAUnitMergesItsFragmentsMainFirst(t *testing.T) {
-	u := LoadMap(fixture, "main.bot")
+	u := salvageUnit(LoadMap(fixture, "main.bot"))
 	if u.HasErrors() {
 		t.Fatalf("diagnostics: %v", u.Diagnostics)
 	}
@@ -63,7 +63,7 @@ func TestAUnitMergesItsFragmentsMainFirst(t *testing.T) {
 // directory; every host resolves a child against the unit's root, so the
 // merged copy carries the root-relative source. The fragment's text stays.
 func TestASubbotDeclaredInAFragmentIsMadeRootRelative(t *testing.T) {
-	u := LoadMap(fixture, "main.bot")
+	u := salvageUnit(LoadMap(fixture, "main.bot"))
 	if u.HasErrors() {
 		t.Fatalf("diagnostics: %v", u.Diagnostics)
 	}
@@ -75,7 +75,7 @@ func TestASubbotDeclaredInAFragmentIsMadeRootRelative(t *testing.T) {
 	}
 	// One in the main stays as written.
 	files := map[string]string{"main.bot": "subbot child:\n  source: \"kids/k.bot\"\n\nworkflow w:\n  entry: child\n  child -> done\n"}
-	if got := LoadMap(files, "main.bot").Merged.Subbots[0].Source; got != "kids/k.bot" {
+	if got := salvageUnit(LoadMap(files, "main.bot")).Merged.Subbots[0].Source; got != "kids/k.bot" {
 		t.Fatalf("the main's subbot source changed: %q", got)
 	}
 }
@@ -83,13 +83,13 @@ func TestASubbotDeclaredInAFragmentIsMadeRootRelative(t *testing.T) {
 // The digest follows the files: a fragment edited, a fragment added, and
 // nothing else.
 func TestTheDigestFollowsEveryFileOfTheUnit(t *testing.T) {
-	base := LoadMap(fixture, "main.bot").Digest
+	base := salvageUnit(LoadMap(fixture, "main.bot")).Digest
 	edited := map[string]string{}
 	for k, v := range fixture {
 		edited[k] = v
 	}
 	edited["lib/schemas.bot"] = strings.Replace(edited["lib/schemas.bot"], "ok: bool", "ok: string", 1)
-	if LoadMap(edited, "main.bot").Digest == base {
+	if salvageUnit(LoadMap(edited, "main.bot")).Digest == base {
 		t.Fatalf("a fragment edit did not change the digest")
 	}
 	same := map[string]string{}
@@ -97,7 +97,7 @@ func TestTheDigestFollowsEveryFileOfTheUnit(t *testing.T) {
 		same[k] = v
 	}
 	same["lib/unrelated.bot"] = "agent z:\n  description: \"z\"\n" // not imported: not part of the unit
-	if LoadMap(same, "main.bot").Digest != base {
+	if salvageUnit(LoadMap(same, "main.bot")).Digest != base {
 		t.Fatalf("a file the unit does not reach changed the digest")
 	}
 }
@@ -157,7 +157,7 @@ func TestTheLoaderNamesWhatItRefuses(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			u := LoadMap(c.files, "main.bot")
+			u := salvageUnit(LoadMap(c.files, "main.bot"))
 			if !reflect.DeepEqual(u.Unread, c.unread) {
 				t.Fatalf("Unread = %q, want %q", u.Unread, c.unread)
 			}
@@ -181,7 +181,7 @@ func TestTheLoaderNamesWhatItRefuses(t *testing.T) {
 	}
 	// The same node twice in ONE file is the compiler's to report, not the
 	// loader's: no E010 from here.
-	u := LoadMap(map[string]string{"main.bot": "agent x:\n  description: \"d\"\n\ntool x:\n  command: \"true\"\n"}, "main.bot")
+	u := salvageUnit(LoadMap(map[string]string{"main.bot": "agent x:\n  description: \"d\"\n\ntool x:\n  command: \"true\"\n"}, "main.bot"))
 	for _, d := range u.Diagnostics {
 		if d.Code == parser.DiagDuplicateDecl {
 			t.Fatalf("a same-file duplicate was reported by the loader: %v", d)
@@ -254,7 +254,7 @@ func TestTheLoadNamesTheFragmentsItCouldNotRead(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			u := LoadMap(c.files, "main.bot")
+			u := salvageUnit(LoadMap(c.files, "main.bot"))
 			if !reflect.DeepEqual(u.Unread, c.unread) {
 				t.Fatalf("Unread = %q, want %q (diagnostics %v)", u.Unread, c.unread, u.Diagnostics)
 			}
@@ -285,14 +285,14 @@ func TestLoadDirReadsUnderTheRootAndNoFurther(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	u := LoadDir(filepath.Join(root, "main.bot"))
+	u := salvageUnit(LoadDir(filepath.Join(root, "main.bot")))
 	if u.HasErrors() {
 		t.Fatalf("diagnostics: %v", u.Diagnostics)
 	}
 	if u.Root != root || u.Main != "main.bot" || u.Files[1].Name != filepath.Join(root, "lib", "schemas.bot") {
 		t.Fatalf("root %q main %q name %q", u.Root, u.Main, u.Files[1].Name)
 	}
-	if LoadMap(fixture, "main.bot").Digest != u.Digest {
+	if salvageUnit(LoadMap(fixture, "main.bot")).Digest != u.Digest {
 		t.Fatalf("the same files read from disk and from a map have different digests")
 	}
 
@@ -306,7 +306,7 @@ func TestLoadDirReadsUnderTheRootAndNoFurther(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "main.bot"), []byte("import \"lib/link.bot\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	u = LoadDir(filepath.Join(root, "main.bot"))
+	u = salvageUnit(LoadDir(filepath.Join(root, "main.bot")))
 	var refused bool
 	for _, d := range u.Diagnostics {
 		if d.Code == parser.DiagImportUnreadable && strings.Contains(d.Message, "symlink") {
@@ -331,7 +331,7 @@ func TestLoadDirReadsUnderTheRootAndNoFurther(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "main.bot"), []byte("import \"lib/out/evil.bot\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	u = LoadDir(filepath.Join(root, "main.bot"))
+	u = salvageUnit(LoadDir(filepath.Join(root, "main.bot")))
 	refused = false
 	for _, d := range u.Diagnostics {
 		if d.Code == parser.DiagImportUnreadable {
@@ -363,7 +363,7 @@ func TestAFragmentResolvingOutsideNamesTheImportAsWritten(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "main.bot"), []byte("import \"lib/ext/x.bot\"\n\nworkflow w:\n  entry: done\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	u := LoadDir(filepath.Join(root, "main.bot"))
+	u := salvageUnit(LoadDir(filepath.Join(root, "main.bot")))
 	var msg string
 	for _, d := range u.Diagnostics {
 		if d.Code == parser.DiagImportUnreadable {
@@ -384,11 +384,11 @@ func TestAFragmentResolvingOutsideNamesTheImportAsWritten(t *testing.T) {
 // A file that is not there, or that does not parse, is reported where it
 // is — the main included.
 func TestAMissingOrBrokenFileIsReportedInPlace(t *testing.T) {
-	u := LoadMap(map[string]string{}, "main.bot")
+	u := salvageUnit(LoadMap(map[string]string{}, "main.bot"))
 	if len(u.Diagnostics) != 1 || u.Diagnostics[0].Code != parser.DiagImportUnreadable || u.Merged == nil {
 		t.Fatalf("missing main: %v merged=%v", u.Diagnostics, u.Merged)
 	}
-	u = LoadMap(map[string]string{"main.bot": "import \"lib/a.bot\"\n", "lib/a.bot": "agent a:\n  bogus: 1\n"}, "main.bot")
+	u = salvageUnit(LoadMap(map[string]string{"main.bot": "import \"lib/a.bot\"\n", "lib/a.bot": "agent a:\n  bogus: 1\n"}, "main.bot"))
 	if !u.HasErrors() || u.Diagnostics[0].File != "lib/a.bot" {
 		t.Fatalf("a fragment's parse error is not in its file: %v", u.Diagnostics)
 	}
@@ -414,7 +414,7 @@ func TestLoadDirWithMainTakesTheDocumentAsMain(t *testing.T) {
 	}
 	doc := "dsl: 2\nimport \"lib/nodes.bot\"\n\nworkflow w:\n  entry: b\n  b -> done\n"
 	name := filepath.Join(t.TempDir(), "a1b2c3-main.bot")
-	u := LoadDirWithMain(filepath.Join(root, "main.bot"), name, []byte(doc))
+	u := salvageUnit(LoadDirWithMain(filepath.Join(root, "main.bot"), name, []byte(doc)))
 	if u.HasErrors() {
 		t.Fatalf("diagnostics: %v", u.Diagnostics)
 	}
@@ -433,7 +433,7 @@ func TestLoadDirWithMainTakesTheDocumentAsMain(t *testing.T) {
 		t.Fatalf("merged: %d agents, %d workflows", len(u.Merged.Agents), len(u.Merged.Workflows))
 	}
 	// The identity is the document's, not the disk main's.
-	if LoadDir(filepath.Join(root, "main.bot")).Digest == u.Digest {
+	if salvageUnit(LoadDir(filepath.Join(root, "main.bot"))).Digest == u.Digest {
 		t.Fatal("the unit with the document as main has the digest of the unit on disk")
 	}
 }

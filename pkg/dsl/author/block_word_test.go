@@ -1,10 +1,9 @@
 package author
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A word-valued property (an enum word, an ident, a type, a backend or a
@@ -150,7 +149,7 @@ func TestTheParserQuotesTheValueItEchoes(t *testing.T) {
 		"  entry: a",
 		"  a -> done",
 	}, nl) + nl
-	res := parser.Parse("x.bot", src)
+	res := parsertest.Parse("x.bot", src)
 	found := false
 	for _, d := range res.Diagnostics {
 		if strings.Contains(d.Message, "interaction mode") {

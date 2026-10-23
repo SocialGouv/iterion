@@ -11,6 +11,8 @@ package ir_test
 // new count here.
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +32,7 @@ func TestShippedCorpusStaysSilentOnClassCoverage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pr := parser.Parse(path, string(src))
+		pr := parsertest.Parse(path, string(src))
 		// A deliberately broken fixture is someone else's diagnostic; the
 		// fire set is a claim about workflows that compile.
 		broken := pr.File == nil
@@ -52,7 +54,7 @@ func TestShippedCorpusStaysSilentOnClassCoverage(t *testing.T) {
 			}
 		}
 		if unresolved {
-			u := unit.LoadDir(path)
+			u := unittest.Whole(unit.LoadDir(path))
 			if u.Merged != nil {
 				res = ir.Compile(u.Merged)
 			}

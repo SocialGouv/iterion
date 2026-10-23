@@ -73,10 +73,15 @@ func TestCatalogBotsBundleConsistencyClean(t *testing.T) {
 			continue // compile failure is another test's job
 		}
 
+		fm, err := bundle.ReadFrontmatter(mainBot)
+		if err != nil {
+			t.Errorf("%s: frontmatter: %v", mainBot, err)
+			continue
+		}
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
 			Manifest:    m,
 			Workflow:    cr.Workflow,
-			Frontmatter: bundle.ReadFrontmatter(mainBot),
+			Frontmatter: fm,
 			DirName:     filepath.Base(dir),
 			// A shipped bundle using a syntax with a floor declares it
 			// (C252 in CI): a catalogue bot a runner cannot parse is a

@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ func orphanFragments(botDirs []string) []string {
 			continue
 		}
 		reached := map[string]bool{}
-		for _, f := range unit.LoadDir(mainBot).Files {
+		for _, f := range unittest.Whole(unit.LoadDir(mainBot)).Files {
 			reached[f.Rel] = true
 		}
 		lib := filepath.Join(dir, unit.FragmentDir)

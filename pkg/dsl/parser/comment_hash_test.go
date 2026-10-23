@@ -49,7 +49,7 @@ workflow w: # header comment
   a -> t # trailing after an edge
   t -> done
 `
-	res := parser.Parse("hash.bot", src)
+	res := parser.ParseLenient("hash.bot", src)
 	for _, d := range res.Diagnostics {
 		t.Errorf("unexpected diagnostic: %s", d.Error())
 	}

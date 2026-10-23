@@ -8,12 +8,17 @@ export function useAutoValidation() {
   // validated with the bundle's prompts/*.md in scope (see api.validate).
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
+  // A document the server's reader cut short is not the program: validated,
+  // it answers for the declarations the reader never read ("not found")
+  // and its verdict would replace the refusal, which is the one true thing
+  // to say about it. Not validated while the refusal stands.
+  const readRefusal = useDocumentStore((s) => s.readRefusal);
   const docStore = useDocumentStoreInstance();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const abortRef = useRef<AbortController>(undefined);
 
   useEffect(() => {
-    if (!document) return;
+    if (!document || readRefusal) return;
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(async () => {
       // Abort any in-flight validation to prevent stale results
@@ -48,5 +53,5 @@ export function useAutoValidation() {
       // has nothing left to describe.
       abortRef.current?.abort();
     };
-  }, [document, currentFilePath, setDiagnostics, docStore]);
+  }, [document, currentFilePath, readRefusal, setDiagnostics, docStore]);
 }

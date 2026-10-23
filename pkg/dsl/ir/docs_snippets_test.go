@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -203,7 +204,7 @@ func compileSnippet(s docfences.Fence) (parseErrs, compileErrs []string, err err
 	default:
 		return nil, nil, fmt.Errorf("unknown fence tag %q — use `iter`, `iter fragment`, `iter fragment:edges`, `iter fragment:workflow`, `iter fragment:<kind>` or `iter invalid` (one word, no spaces)", tag)
 	}
-	pr := parser.Parse(filepath.Base(s.File), src)
+	pr := parsertest.Parse(filepath.Base(s.File), src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			parseErrs = append(parseErrs, d.Error())

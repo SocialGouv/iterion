@@ -80,7 +80,7 @@ func TestCommentsAfterCloseCountsItsOwnRegion(t *testing.T) {
 		{"a text written nowhere near, foot", "# z", true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := commentsAfterClose(tc.text, lines, 2, tc.foot); got != tc.want {
+			if got := commentsAfterClose([]string{tc.text}, map[string]bool{tc.text: true}, lines, 2, tc.foot)[tc.text]; got != tc.want {
 				t.Fatalf("commentsAfterClose(%q, foot=%v) = %d, want %d", tc.text, tc.foot, got, tc.want)
 			}
 		})

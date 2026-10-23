@@ -2,13 +2,12 @@ package ir
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // The include budget is per FILE: a budget per prompt is multiplied by
@@ -34,7 +33,7 @@ func TestPromptIncludes_BudgetIsPerFileNotPerPrompt(t *testing.T) {
 	}
 
 	start := time.Now()
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), src)
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), src)
 	err := InlinePromptIncludes(pr.File)
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprint(maxPromptIncludeTotalBytes)) {
 		t.Fatalf("want a refusal naming the byte budget, got %v", err)
@@ -46,7 +45,7 @@ func TestPromptIncludes_BudgetIsPerFileNotPerPrompt(t *testing.T) {
 		t.Fatalf("the refusal took %s", took)
 	}
 
-	cr := Compile(parser.Parse(filepath.Join(dir, "main.bot"), src).File)
+	cr := Compile(parsertest.Parse(filepath.Join(dir, "main.bot"), src).File)
 	var refusals int
 	for _, d := range cr.Diagnostics {
 		if d.Code == DiagBadPromptInclude && strings.Contains(d.Message, "expand past") {

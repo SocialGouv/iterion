@@ -46,8 +46,19 @@ func TestTheDirectiveIsReadWhateverTheCatalogsLength(t *testing.T) {
 			t.Errorf("%d-line description: the command is read as %q, want %q", lines, got, want)
 		}
 		bot := unparse.Unparse(res.File)
-		if fm := bundle.ParseFrontmatter([]byte(bot)); fm == nil || fm.Name != "probe" {
+		if fm := testFrontmatter(t, []byte(bot)); fm == nil || fm.Name != "probe" {
 			t.Errorf("%d-line description: the catalog identity is lost in the .bot the document writes back:%s%s", lines, nl, bot)
 		}
 	}
+}
+
+// testFrontmatter is bundle.ParseFrontmatter of a text whose block the
+// reader reads: a refusal fails the test.
+func testFrontmatter(t testing.TB, raw []byte) *bundle.Frontmatter {
+	t.Helper()
+	fm, err := bundle.ParseFrontmatter("main.bot", raw)
+	if err != nil {
+		t.Fatalf("the frontmatter is refused: %v", err)
+	}
+	return fm
 }

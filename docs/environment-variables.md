@@ -116,6 +116,12 @@ environment of the launcher process: that is the operator's own binary and
 the operator's choice, but it is worth knowing before enabling one in a pod
 that holds platform credentials (`ITERION_PLUGINS_ENABLE`).
 
+## Reading a source
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_DSL_READ_BUDGET` | How much one bot may ask its reader to record, its files together. Of `.bot` files: records — every word, value, punctuation mark, prompt line (blank or not), line end, indentation step and the end of each file is one, a comment two; the lexer spends them while it reads, so a bot past the budget is refused (E001) at the record it ran out on, in whichever file, before the work it asks for. Of a YAML twin: its values and comment lines, a value one and a comment line two, counted on what it decodes (E050) — before the decode runs, the values its `:` `,` `?` `-` `[` `{` could open and the comments its `#` could hang on them, two each, outside the text of a `|` or `>` block, may reach twice the count — then the records of the `.bot` it spells (E001), which the fragments it imports share. A frontmatter block is held to it by the values its decode can build. The 10 MiB size cap bounds a file's bytes, not what they turn into: read whole, a flat list of one-letter names would cost some 600 bytes of memory per byte of text. A larger count raises it; `0` removes it, and with it the caps of the diagnostics a reading reports (1000 of each code, 2000 of each severity). A value that is no count keeps the default, and the process says so once on stderr, as an error no log level silences. Set it wherever a bot is read — the CLI, the server, the runner — or a bot one of them accepts is refused by another. The files of a bot share it — the main and every `lib/` fragment it imports — so a bot in several files costs its reader what it would in one, and splitting it is no way past the budget: raising the count is. | `1048576` (2^20) |
+
 ## Runtime and runner
 
 | Variable | Effect | Default |

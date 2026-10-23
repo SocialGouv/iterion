@@ -104,6 +104,32 @@ describe("the toolbar's Save", () => {
     expect(store.getState().currentFilePath).toBeNull();
   });
 
+  // A salvage the server's READER made survives a whole answer applied to
+  // its tab — but Import unbinds first: the tab is no longer about the file
+  // nobody read, and the imported text, read whole, is its program. The
+  // verdict is the store's as the unbinding left it, never the one before.
+  it("ends a read-refusal salvage when a whole file is imported over it", async () => {
+    const store = createDocumentStore();
+    store.getState().setDocument(createEmptyDocument());
+    store.getState().setCurrentFilePath("bots/big/main.bot");
+    store.getState().setSalvaged(true, { message: "main.bot:9:1: error [E001]: the bot is past the read budget of 60", hint: "The budget is ITERION_DSL_READ_BUDGET." });
+    store.getState().markSaved();
+    api.parseSource.mockResolvedValue({ document: createEmptyDocument(), diagnostics: [], bindable: true });
+    render(
+      <DocumentStoreProvider store={store}>
+        <Harness />
+      </DocumentStoreProvider>,
+    );
+
+    const file = new File(["workflow y:\n  entry: done\n"], "imported.bot");
+    fireEvent.change(screen.getByLabelText("import"), { target: { files: [file] } });
+
+    await waitFor(() => expect(api.parseSource).toHaveBeenCalled());
+    await waitFor(() => expect(store.getState().currentFilePath).toBeNull());
+    expect(store.getState().salvaged).toBe(false);
+    expect(store.getState().readRefusal).toBeNull();
+  });
+
   // Download and Copy hand the document out AS the program: a .bot on the
   // author's disk under a name they trust, or text they will paste into one.
   // Same harm as a save, so the same refusal — the class is every site that

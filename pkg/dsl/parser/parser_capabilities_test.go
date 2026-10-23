@@ -12,7 +12,7 @@ func TestAgentCapabilities(t *testing.T) {
   model: "gpt-4"
   capabilities: [board.create, board.move, board.read]
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	if len(res.File.Agents) != 1 {
@@ -29,7 +29,7 @@ func TestJudgeCapabilities(t *testing.T) {
   model: "gpt-4"
   capabilities: [board.read]
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	if len(res.File.Judges) != 1 {
@@ -51,7 +51,7 @@ workflow w:
 
   a -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	if len(res.File.Workflows) != 1 {

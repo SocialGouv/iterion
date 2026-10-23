@@ -4,6 +4,8 @@ package unit_test
 // pkg/bundle and the unit loader — a cycle for an in-package test.
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"reflect"
 	"sort"
@@ -106,7 +108,7 @@ func acceptanceWorkflow(kinds ...acceptanceKind) string {
 // error codes — the loader's and the compiler's — sorted, minus the ones a
 // credential-less host adds to any bot.
 func acceptanceErrors(files map[string]string) []string {
-	u := unit.LoadMap(files, "main.bot")
+	u := unittest.Whole(unit.LoadMap(files, "main.bot"))
 	var codes []string
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
@@ -195,7 +197,7 @@ func TestTheSameInlineTextInTwoFilesIsOnePromptInTheMerge(t *testing.T) {
 		"main.bot":  "import \"lib/f.bot\"\n\nagent one:\n  model: \"" + pinnedModel + "\"\n  system: \"You are careful.\"\n",
 		"lib/f.bot": "agent two:\n  model: \"" + pinnedModel + "\"\n  system: \"You are careful.\"\n",
 	}
-	u := unit.LoadMap(files, "main.bot")
+	u := unittest.Whole(unit.LoadMap(files, "main.bot"))
 	if u.HasErrors() {
 		t.Fatalf("diagnostics: %v", u.Diagnostics)
 	}
@@ -230,7 +232,7 @@ func TestAMixedProfileUnitWritesOutAsOneFile(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			u := unit.LoadMap(files, "main.bot")
+			u := unittest.Whole(unit.LoadMap(files, "main.bot"))
 			if u.HasErrors() {
 				t.Fatalf("diagnostics: %v", u.Diagnostics)
 			}
@@ -238,7 +240,7 @@ func TestAMixedProfileUnitWritesOutAsOneFile(t *testing.T) {
 			if err := unparse.Verify(u.Merged, flat); err != nil {
 				t.Fatalf("the merged program is not its own text: %v\n%s", err, flat)
 			}
-			again := parser.Parse("flat.bot", flat)
+			again := parsertest.Parse("flat.bot", flat)
 			if len(again.Diagnostics) != 0 || again.File.Tools[0].Command != u.Merged.Tools[0].Command {
 				t.Fatalf("the flat text reads another command: %q vs %q (%v)\n%s", again.File.Tools[0].Command, u.Merged.Tools[0].Command, again.Diagnostics, flat)
 			}

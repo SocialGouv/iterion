@@ -5,7 +5,7 @@ import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
 import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
 import { getHint } from "@/lib/diagnosticHints";
-import type { AttributedDiagnostic } from "@/lib/diagnostics";
+import { countOf, type AttributedDiagnostic } from "@/lib/diagnostics";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Input } from "@/components/ui/Input";
@@ -35,8 +35,10 @@ export default function DiagnosticsPanel() {
   const visibleGlobal = visible.filter((d) => !(d.nodeId || d.edgeId));
   const visibleAttributed = visible.filter((d) => d.nodeId || d.edgeId);
 
-  const errorCount = grouped.all.filter((d) => d.severity === "error").length;
-  const warningCount = grouped.all.length - errorCount;
+  // The readings' counts, not the list's length: a reading reports at most
+  // 1000 of each code, and says how many more it counted (unreportedBehind).
+  const errorCount = countOf(grouped.all, "error");
+  const warningCount = countOf(grouped.all, "warning");
   const hasIssues = grouped.all.length > 0;
   const filterActive = search.trim() !== "" || showErrorsOnly;
   const attributedCount = visibleAttributed.length;
@@ -191,6 +193,7 @@ function DiagnosticList({
             <span className="min-w-0 flex-1">
               <span className="text-fg-default">{titleText}</span>
               {hint && <span className="text-fg-subtle"> · {d.message}</span>}
+              {d.hint && <span className="block text-fg-subtle italic">{d.hint}</span>}
               {attributionText && (
                 <span className="text-fg-subtle ml-1">
                   · {attributionText}

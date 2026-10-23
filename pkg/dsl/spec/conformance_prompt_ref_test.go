@@ -2,6 +2,7 @@ package spec_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestAPromptRefMakesAnInlinePromptAndAStringDoesNot(t *testing.T) {
 			if p.Form != spec.PromptRef && p.Form != spec.String {
 				continue
 			}
-			res := parser.Parse("probe.bot", fmt.Sprintf(line, p.Name+`: "`+text+`"`))
+			res := parsertest.Parse("probe.bot", fmt.Sprintf(line, p.Name+`: "`+text+`"`))
 			if len(res.Diagnostics) != 0 {
 				t.Errorf("%s.%s: %v", kind, p.Name, res.Diagnostics)
 				continue

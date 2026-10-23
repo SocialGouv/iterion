@@ -14,7 +14,7 @@ import (
 // so from here.
 func TestParseRefusesNonUTF8Source(t *testing.T) {
 	src := "workflow w:\n  entry: a\n\nagent a:\n  backend: \"claude_code\"\n  system: \"caf\xe9\"\n"
-	res := Parse("latin1.bot", src)
+	res := parseLenient("latin1.bot", src)
 	if len(res.Diagnostics) != 1 {
 		t.Fatalf("diagnostics: %v, want exactly the E006 refusal", res.Diagnostics)
 	}
@@ -40,7 +40,7 @@ func TestParseRefusesNonUTF8Source(t *testing.T) {
 // the guard refuses a byte that is not UTF-8, never an accent.
 func TestParseAcceptsUTF8Accents(t *testing.T) {
 	src := "workflow w:\n  entry: a\n\nagent a:\n  backend: \"claude_code\"\n  system: \"café — naïve\"\n"
-	res := Parse("utf8.bot", src)
+	res := parseLenient("utf8.bot", src)
 	for _, d := range res.Diagnostics {
 		if d.Severity == SeverityError {
 			t.Fatalf("valid UTF-8 refused: %v", d)

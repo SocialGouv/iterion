@@ -2,6 +2,7 @@ package bots
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"maps"
 	"os"
 	"path/filepath"
@@ -1539,7 +1540,7 @@ workflow w:
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			pr := parser.Parse("fixture.bot", c.src)
+			pr := parsertest.Parse("fixture.bot", c.src)
 			if pr.File == nil || parseHasErrors(pr) {
 				t.Fatalf("fixture did not parse cleanly: %v", pr.Diagnostics)
 			}

@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/author"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
@@ -439,7 +439,7 @@ func TestTheDiagramOfADocumentIsTheDiagramOfItsBotOverTheCorpus(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pr := parser.Parse(bot, string(orig))
+		pr := parsertest.Parse(bot, string(orig))
 		if diagnosticErrors(pr.Diagnostics) != "" {
 			notWritten++
 			continue

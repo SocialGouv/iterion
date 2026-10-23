@@ -98,9 +98,32 @@ type PlacedComment struct {
 // line and of every `##` comment in it — the single reading of "where is
 // this written" that the parser and the writer share.
 func Scan(tokens []Token) (lines []CodeLine, comments []PlacedComment) {
-	w := &scanner{}
+	if n := countComments(tokens); n > 0 {
+		comments = make([]PlacedComment, 0, n)
+	}
+	w := &scanner{keepLines: true, emit: func(c PlacedComment) { comments = append(comments, c) }}
 	w.run(tokens)
-	return w.lines, w.comments
+	return w.lines, comments
+}
+
+// scanComments is Scan for a reader that needs the comments alone — the
+// parser handing them to the AST: each comment goes to emit once its
+// address is known, in Scan's order, and neither the line table nor the
+// list of comments is built.
+func scanComments(tokens []Token, emit func(PlacedComment)) {
+	w := &scanner{emit: emit}
+	w.run(tokens)
+}
+
+// countComments is the number of comments in tokens.
+func countComments(tokens []Token) int {
+	n := 0
+	for _, t := range tokens {
+		if t.Type == TokenComment {
+			n++
+		}
+	}
+	return n
 }
 
 // ScanSource is Scan on text no parser run has tokenised — the writer's
@@ -112,11 +135,19 @@ func ScanSource(name, src string) (lines []CodeLine, comments []PlacedComment) {
 // scanner walks the token stream line by line, keeping the enclosing block
 // keys on a column-ordered stack.
 type scanner struct {
-	lines    []CodeLine
-	comments []PlacedComment
-	// pending are the comments met since the last code line, waiting for
-	// the line they lead.
-	pending []PlacedComment
+	// lines is the address of every code line, recorded when keepLines.
+	lines     []CodeLine
+	keepLines bool
+	// emit receives each comment once its address is known; emitted
+	// counts them.
+	emit    func(PlacedComment)
+	emitted int
+	// tokens is the stream being read, and pending the comments met since
+	// the last code line, waiting for the line they lead: their tokens'
+	// indices — a run of a million comment lines waits as a million
+	// indices, never as a million addressed copies.
+	tokens  []Token
+	pending []pendingComment
 	decl    DeclRef
 	edges   int
 	// stack holds one entry per enclosing block, deepest last: the column
@@ -138,6 +169,28 @@ type scanner struct {
 	lastEnd  int
 }
 
+// pendingComment is a comment waiting for its address: its token, and
+// whether a blank line separates it from the comment above it (Blank).
+type pendingComment struct {
+	tok   int
+	blank bool
+}
+
+// placed is the pending comment p as Scan reports it, before its address.
+func (w *scanner) placed(p pendingComment) PlacedComment {
+	t := w.tokens[p.tok]
+	return PlacedComment{Text: t.Value, Line: t.Line, Col: t.Column, Blank: p.blank}
+}
+
+// line is the line pending comment p is written on.
+func (w *scanner) line(p pendingComment) int { return w.tokens[p.tok].Line }
+
+// put hands an addressed comment to the reader.
+func (w *scanner) put(c PlacedComment) {
+	w.emitted++
+	w.emit(c)
+}
+
 type blockRef struct {
 	col int
 	key string
@@ -150,14 +203,24 @@ type blockRef struct {
 }
 
 func (w *scanner) run(tokens []Token) {
-	var line []Token
+	// The code line being read is tokens[from:to] while its tokens stand
+	// together in the stream, which is how the lexer writes a line: read
+	// in place, a line of a million tokens costs nothing to hand over.
+	// cut is the copy for a line a skipped token stands inside of.
+	from, to := -1, -1
+	var cut []Token
+	w.tokens = tokens
+	w.pending = make([]pendingComment, 0, countComments(tokens))
 	flush := func() {
-		if len(line) > 0 {
-			w.codeLine(line)
-			line = nil
+		switch {
+		case cut != nil:
+			w.codeLine(cut)
+		case from >= 0:
+			w.codeLine(tokens[from:to])
 		}
+		from, cut = -1, nil
 	}
-	for _, t := range tokens {
+	for i, t := range tokens {
 		switch t.Type {
 		case TokenEOF:
 			continue
@@ -173,13 +236,22 @@ func (w *scanner) run(tokens []Token) {
 			continue
 		case TokenComment:
 			flush()
-			w.comment(t)
+			w.comment(i, t)
 			continue
 		}
-		if len(line) > 0 && t.Line != line[0].Line {
+		if from >= 0 && t.Line != tokens[from].Line {
 			flush()
 		}
-		line = append(line, t)
+		switch {
+		case from < 0:
+			from, to = i, i+1
+		case cut != nil:
+			cut = append(cut, t)
+		case i == to:
+			to = i + 1
+		default:
+			cut = append(append([]Token(nil), tokens[from:to]...), t)
+		}
 	}
 	flush()
 	w.flushTail()
@@ -202,21 +274,21 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// comment records a `##` line: written on the last statement's own lines it
-// is that statement's trailing comment, else it waits for the line it leads.
-func (w *scanner) comment(t Token) {
-	c := PlacedComment{Text: t.Value, Line: t.Line, Col: t.Column}
+// comment records the `##` line tokens[i]: written on the last statement's
+// own lines it is that statement's trailing comment, else it waits for the
+// line it leads.
+func (w *scanner) comment(i int, t Token) {
 	if w.seenCode && t.Line <= w.lastEnd {
+		c := PlacedComment{Text: t.Value, Line: t.Line, Col: t.Column}
 		c.Decl, c.Path, c.Edge = w.last.Decl, w.last.Path, w.last.Edge
 		c.Place = ast.CommentTrailing
-		w.comments = append(w.comments, c)
+		w.put(c)
 		return
 	}
-	if n := len(w.pending); n > 0 && t.Line > w.pending[n-1].Line+1 {
-		// A blank line inside the run: the author's paragraph break.
-		c.Blank = true
-	}
-	w.pending = append(w.pending, c)
+	// A blank line inside the run: the author's paragraph break.
+	n := len(w.pending)
+	blank := n > 0 && t.Line > w.line(w.pending[n-1])+1
+	w.pending = append(w.pending, pendingComment{tok: i, blank: blank})
 }
 
 // codeLine records one line of code and hands it the comments written above
@@ -308,7 +380,7 @@ func (w *scanner) codeLine(toks []Token) {
 	head := 0
 	if underHead {
 		head = len(w.pending)
-		for i, want := len(w.pending)-1, line.Line-1; i >= 0 && w.pending[i].Line == want; i, want = i-1, want-1 {
+		for i, want := len(w.pending)-1, line.Line-1; i >= 0 && w.line(w.pending[i]) == want; i, want = i-1, want-1 {
 			head = i
 		}
 		// The frontmatter block is never cut: a bot's catalogue identity
@@ -318,10 +390,10 @@ func (w *scanner) codeLine(toks []Token) {
 		// and a blank line inside it would otherwise send the second half
 		// travelling with the first declaration — leaving code between
 		// the two fences and the bot without a name.
-		if fm := frontmatterEnd(w.pending); fm > head {
+		if fm := w.frontmatterEnd(); fm > head {
 			head = fm
 		}
-		if head == 0 && len(w.comments) == 0 && !w.seenCode {
+		if head == 0 && w.emitted == 0 && !w.seenCode {
 			// One run, opening the file, glued to what follows: the head
 			// it has always been — the frontmatter and the strict-escape
 			// directive are read there — and the round trip keeps it
@@ -329,11 +401,13 @@ func (w *scanner) codeLine(toks []Token) {
 			head = len(w.pending)
 		}
 	}
-	for i, c := range w.pending {
-		w.attachLeading(c, line, openHere, i < head)
+	for i, p := range w.pending {
+		w.attachLeading(w.placed(p), line, openHere, i < head)
 	}
 	w.pending = w.pending[:0]
-	w.lines = append(w.lines, line)
+	if w.keepLines {
+		w.lines = append(w.lines, line)
+	}
 	w.last, w.seenCode, w.lastEnd = line, true, line.End
 }
 
@@ -345,22 +419,22 @@ func (w *scanner) attachLeading(c PlacedComment, next CodeLine, open []blockRef,
 		// The file's own head, which is where it is already written back
 		// (File.Comments).
 		c.Place = ast.CommentBefore
-		w.comments = append(w.comments, c)
+		w.put(c)
 	case c.Col <= next.Col && next.Keyed:
 		c.Decl, c.Path, c.Edge, c.Place = next.Decl, next.Path, next.Edge, ast.CommentBefore
-		w.comments = append(w.comments, c)
+		w.put(c)
 	case !next.Keyed && !w.seenCode:
 		// Before any declaration, above a line that takes no comment: the
 		// head all the same.
 		c.Place = ast.CommentBefore
-		w.comments = append(w.comments, c)
+		w.put(c)
 	default:
 		// Either the block the comment sits in closed under it, or the
 		// line below it is one the grammar gives no key (a `- item`, a
 		// closing brace): it is written back below the last line of the
 		// block it was in — the deepest one still open at its column.
 		w.atEnd(&c, open, false)
-		w.comments = append(w.comments, c)
+		w.put(c)
 	}
 }
 
@@ -394,14 +468,15 @@ func (w *scanner) atEnd(c *PlacedComment, open []blockRef, tail bool) {
 
 // flushTail addresses the comments no line of code follows.
 func (w *scanner) flushTail() {
-	for _, c := range w.pending {
+	for _, p := range w.pending {
+		c := w.placed(p)
 		if !w.seenCode {
 			c.Place = ast.CommentBefore
-			w.comments = append(w.comments, c)
+			w.put(c)
 			continue
 		}
 		w.atEnd(&c, w.stack, true)
-		w.comments = append(w.comments, c)
+		w.put(c)
 	}
 	w.pending = nil
 }
@@ -489,12 +564,15 @@ func nestedDeclKey(toks []Token) (kind, name string, ok bool) {
 // frontmatterEnd is the number of pending comments the frontmatter block
 // takes — its opening fence through its closing one — or 0 when the run
 // does not open with a fence.
-func frontmatterEnd(pending []PlacedComment) int {
-	if len(pending) == 0 || strings.TrimSpace(pending[0].Text) != workflowfile.FrontmatterFence {
+func (w *scanner) frontmatterEnd() int {
+	fence := func(p pendingComment) bool {
+		return strings.TrimSpace(w.tokens[p.tok].Value) == workflowfile.FrontmatterFence
+	}
+	if len(w.pending) == 0 || !fence(w.pending[0]) {
 		return 0
 	}
-	for i := 1; i < len(pending); i++ {
-		if strings.TrimSpace(pending[i].Text) == workflowfile.FrontmatterFence {
+	for i := 1; i < len(w.pending); i++ {
+		if fence(w.pending[i]) {
 			return i + 1
 		}
 	}

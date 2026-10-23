@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,7 +42,7 @@ func TestParseWithFilesReturnsTheUnitWithProvenance(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Unit == nil || out.Unit.Main != "main.bot" || out.Unit.Root != "" || len(out.Unit.Files) != 2 || out.Unit.Revision != unit.LoadMap(files, "main.bot").Digest {
+	if out.Unit == nil || out.Unit.Main != "main.bot" || out.Unit.Root != "" || len(out.Unit.Files) != 2 || out.Unit.Revision != unittest.Whole(unit.LoadMap(files, "main.bot")).Digest {
 		t.Fatalf("unit %+v", out.Unit)
 	}
 	var doc map[string]any

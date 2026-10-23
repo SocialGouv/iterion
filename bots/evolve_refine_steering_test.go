@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"maps"
 	"slices"
 	"strings"
@@ -51,7 +52,7 @@ func TestEvolveInvestigateTakesItsSteeringFromEveryIncomingEdge(t *testing.T) {
 		node = "investigate"
 	)
 
-	u := unit.LoadDir(bot)
+	u := unittest.Whole(unit.LoadDir(bot))
 	if u.Merged == nil {
 		t.Fatalf("%s: the bundle did not parse: %v", bot, u.Diagnostics)
 	}

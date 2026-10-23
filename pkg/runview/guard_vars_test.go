@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"slices"
 	"strings"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -202,7 +202,7 @@ func TestASubbotChildNeverDeclaresItsWayToTheParentsGrant(t *testing.T) {
 	if _, err := st.CreateRun(context.Background(), "run-parent", "parent", map[string]any{store.ForgePublishTokenVar: grant}); err != nil {
 		t.Fatal(err)
 	}
-	res := ir.Compile(parser.Parse("child.bot", childDeclaringTheGrant).File)
+	res := ir.Compile(parsertest.Parse("child.bot", childDeclaringTheGrant).File)
 	if res.Workflow == nil {
 		t.Fatalf("compile: %v", res.Diagnostics)
 	}

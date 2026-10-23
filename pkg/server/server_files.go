@@ -51,6 +51,15 @@ type saveFileRequest struct {
 	// header from the claim; a save without it rebuilds every header from
 	// the stored files, and a header change is dropped.
 	UnitFiles []unitFileInfo `json:"unit_files,omitempty"`
+	// Digest is the sha256 the whole read that seeded this save's document
+	// issued for the file it replaces (the open response's digest): the
+	// stored file must still hash to it, or the save is a 409 naming what
+	// changed — another writer's edit is never overwritten in silence. An
+	// open that did not read the file whole issues no digest, and a save
+	// from it carries none. Required for an existing file; a creation (the
+	// file is not there, or create_only) decides on its absence and needs
+	// none.
+	Digest string `json:"digest,omitempty"`
 }
 
 type saveFileResponse struct {
@@ -61,6 +70,10 @@ type saveFileResponse struct {
 	// save rewrote (from the unit's root); both for a bot in several files.
 	Revision string   `json:"revision,omitempty"`
 	Files    []string `json:"files,omitempty"`
+	// Digest is the sha256 of the file as the save wrote it — a whole read
+	// issued (the answer holds the very bytes): what the next save of the
+	// file presents.
+	Digest string `json:"digest,omitempty"`
 }
 
 // --- Helpers ---
@@ -624,33 +637,46 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "file not found: %s", req.Path)
 		return
 	}
-	pr := parser.Parse(req.Path, string(data))
+	// A file the reader refuses whole — past the read budget or the size
+	// cap, or no text it reads (not UTF-8) — opens as its refusal: the
+	// file's bytes to look at, no document of it (the empty one), bindable
+	// false and the refusal said (read_refusal), so the author sees the file
+	// and why, and its remedy. No write takes such an open: the studio
+	// refuses a salvage, and every save reads the file as stored under its
+	// lock before it writes (checkStoredFile).
+	pr, err := parser.Parse(req.Path, string(data))
+	var refused *parser.ReadRefusal
+	if errors.As(err, &refused) {
+		writeRefusedOpen(w, openFileResponse{Source: string(data), Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, ReadRefusal: readRefusalOf(refused)}, refused.Diagnostic)
+		return
+	}
+	if pr.File == nil {
+		writeRefusedOpen(w, openFileResponse{Source: string(data), Path: req.Path, ConfirmedDiskPath: confirmedDiskPath}, firstErrorOf(pr.Diagnostics))
+		return
+	}
 	var diags []string
 	for _, d := range pr.Diagnostics {
 		diags = append(diags, d.Error())
-	}
-	if pr.File == nil {
-		writeJSON(w, parseResponse{Diagnostics: diags})
-		return
 	}
 	if confirmedDiskPath != "" && len(pr.File.Imports) > 0 {
 		// A bot in several files opens as its unit: the fragments read
 		// beside the main, merged into one document whose every declaration
 		// names its file, with the unit's revision for the save to present.
-		u := unit.LoadDirWithMain(absPath, absPath, data)
+		// A load the read budget cuts short opens as its salvage — the
+		// view of what was read (unit.Salvage), its document marked as one
+		// (ast.ErrSalvage at any decode of it): non-bindable, its refusal
+		// said, its revision another than any whole load's, so no save
+		// presenting it lands.
+		view := unit.Salvage(unit.LoadDirWithMain(absPath, absPath, data))
 		// The unit was read from disk and its diagnostics are answered to
 		// the client: they name the files by their unit-relative
 		// paths (#1934).
-		relUnitDiagnostics(u)
+		view.RelDiagnostics()
 		diags = diags[:0]
-		for _, d := range u.Diagnostics {
+		for _, d := range view.Diagnostics() {
 			diags = append(diags, d.Error())
 		}
-		if u.Merged == nil {
-			writeJSON(w, parseResponse{Diagnostics: diags})
-			return
-		}
-		docJSON, err := ast.MarshalFileWithProvenance(u.Merged, u.Root)
+		docJSON, err := view.MarshalDocument(view.Root())
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
@@ -666,7 +692,13 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		// then a salvage too, and Download, Copy source and the Source view
 		// have to be told, or they hand the author a program missing what
 		// the parser could not read.
-		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(u, req.Path), Bindable: !parseHasErrors(pr.Diagnostics)})
+		//
+		// A load that did not read the bot whole (unit.Salvaged.Whole) is a
+		// salvage too, the main's parse aside: the document lacks the files
+		// it did not read, and since the budget that cut it short is the
+		// reader's, no revision of the files tells a later save that a
+		// larger budget reads them all — binding it would write them away.
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(view, req.Path), Bindable: !parseHasErrors(pr.Diagnostics) && view.Whole(), ReadRefusal: unitReadRefusal(view)})
 		return
 	}
 	docJSON, err := ast.MarshalFile(pr.File)
@@ -683,7 +715,46 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		// The document is what the parser SALVAGED when the parse left
 		// errors — the file minus the region it could not read.
 		Bindable: !parseHasErrors(pr.Diagnostics),
+		// The digest rule: this open read the file whole, so it issues the
+		// digest a save of it presents. A refused open (writeRefusedOpen)
+		// issues none.
+		Digest: contentSHA256(string(data)),
 	})
+}
+
+// writeRefusedOpen answers the open of a file the reader refuses whole —
+// resp carrying the file's bytes and names — with no document of it (the
+// empty one, MARKED as the display of a refusal: every decode of it answers
+// ast.ErrSalvage, so no door can take it back as a program once the
+// refusal's remedy is applied), the refusal d as its one diagnostic and,
+// when the caller has not said otherwise, as its read refusal with d's
+// remedy: a file that is no text the reader reads (E006) is refused before
+// any bound, and its remedy is d's hint too. It issues no digest: no whole
+// read happened to issue one from.
+func writeRefusedOpen(w http.ResponseWriter, resp openFileResponse, d parser.Diagnostic) {
+	empty, err := ast.MarshalSalvageWithProvenance(&ast.File{}, "", "not read whole: "+string(d.Code))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+		return
+	}
+	resp.Document = json.RawMessage(empty)
+	resp.Diagnostics = []string{d.Error()}
+	resp.Bindable = false
+	if resp.ReadRefusal == nil {
+		resp.ReadRefusal = &readRefusalInfo{Message: d.Error(), Hint: d.Hint}
+	}
+	writeJSON(w, resp)
+}
+
+// firstErrorOf is the first error a reading reported (the zero diagnostic
+// for none).
+func firstErrorOf(diags []parser.Diagnostic) parser.Diagnostic {
+	for _, d := range diags {
+		if d.Severity == parser.SeverityError {
+			return d
+		}
+	}
+	return parser.Diagnostic{}
 }
 
 // openFileResponse is the open response of a bot in one file. The path is
@@ -693,12 +764,59 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 // the three sites that write a document refuse it; it lifts when a parse of
 // the buffer comes back whole.
 type openFileResponse struct {
-	Source            string          `json:"source"`
-	Document          json.RawMessage `json:"document"`
-	Diagnostics       []string        `json:"diagnostics,omitempty"`
-	Path              string          `json:"path,omitempty"`
-	ConfirmedDiskPath string          `json:"confirmed_disk_path,omitempty"`
-	Bindable          bool            `json:"bindable"`
+	Source            string           `json:"source"`
+	Document          json.RawMessage  `json:"document"`
+	Diagnostics       []string         `json:"diagnostics,omitempty"`
+	Path              string           `json:"path,omitempty"`
+	ConfirmedDiskPath string           `json:"confirmed_disk_path,omitempty"`
+	Bindable          bool             `json:"bindable"`
+	ReadRefusal       *readRefusalInfo `json:"read_refusal,omitempty"`
+	// Digest is the sha256 of the file's bytes as this open read them —
+	// issued only because the open read the file WHOLE: what a save of it
+	// presents (the digest rule, checkStoredFile). A file the reader
+	// refuses — past the read budget or the size cap, not UTF-8 — opens
+	// with no digest, and no save of it can present one.
+	Digest string `json:"digest,omitempty"`
+}
+
+// readRefusalInfo says why a salvage is one when the reader refused the text
+// rather than the author's text failing to parse: a bound of the reader —
+// the read budget a bot's files share, or a file's size cap — whose remedy
+// is no edit of the file but the operator's dial, or a file that is no text
+// the reader reads at all (not UTF-8, E006, the editor's open of one file),
+// whose remedy is the file's encoding, changed outside the studio. An
+// answer that left the client to infer either from the diagnostics would
+// have it tell the author to repair a file in the canvas. Set on every
+// answer that hands such a salvage over (the opens, /api/parse, the
+// examples); absent when the reading read everything.
+type readRefusalInfo struct {
+	// Message is the refusal as the answer's diagnostics spell it
+	// (parser.Diagnostic.Error), the unit's names for a bot on disk.
+	Message string `json:"message"`
+	// Hint is its remedy: the read budget's variable
+	// (parser.ReadBudgetEnv), the size cap's, or E006's.
+	Hint string `json:"hint,omitempty"`
+}
+
+// readRefusalOf is the answer's word for a source's refusal, nil when it
+// read.
+func readRefusalOf(r *parser.ReadRefusal) *readRefusalInfo {
+	if r == nil {
+		return nil
+	}
+	return &readRefusalInfo{Message: r.Diagnostic.Error(), Hint: r.Diagnostic.Hint}
+}
+
+// unitReadRefusal is the answer's word for a salvage's refusal
+// (unit.Salvaged.Refusal), nil for a unit read whole. The unit's
+// diagnostics are cut to its names (Salvaged.RelDiagnostics) before, for a
+// client.
+func unitReadRefusal(u *unit.Salvaged) *readRefusalInfo {
+	d, ok := u.Refusal()
+	if !ok {
+		return nil
+	}
+	return &readRefusalInfo{Message: d.Error(), Hint: d.Hint}
 }
 
 // parseHasErrors reports whether a parse left errors — the state in which the
@@ -739,13 +857,24 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A bot in several files saves through its unit: each declaration to
-	// the file its provenance names. A document with provenance headed for
-	// a file that is not such a bot's main would fold every file into one.
-	if current, readErr := os.ReadFile(absPath); readErr == nil && !req.CreateOnly {
-		if on := parser.Parse(absPath, string(current)); on.File != nil && len(on.File.Imports) > 0 {
-			s.saveUnit(w, r, req, absPath, f, current)
+	// the file its provenance names. The route follows the REQUEST — the
+	// revision the open answered (and the file list a per-file edit may
+	// have changed) — never a fresh reading of the stored file, whose
+	// import lines could only be re-derived here at a route-time read the
+	// digest rule does not ask for: what the open read decided the save,
+	// and the digest it issued holds the write to it.
+	if req.Revision != "" || len(req.UnitFiles) > 0 {
+		current, readErr := os.ReadFile(absPath)
+		if readErr != nil {
+			if errors.Is(readErr, fs.ErrNotExist) {
+				httpError(w, http.StatusConflict, "%s does not exist, and the document names the revision of a bot in several files: reopen the bot and redo the edit", req.Path)
+				return
+			}
+			httpError(w, http.StatusInternalServerError, "read error: %v", readErr)
 			return
 		}
+		s.saveUnit(w, r, req, absPath, f, current)
+		return
 	}
 	if hasProvenance(f) {
 		httpError(w, http.StatusUnprocessableEntity, "the document was opened from a bot in several files and names those files: it saves to that bot's main, not to %s", req.Path)
@@ -787,6 +916,23 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		}
 		current = nil
 	}
+	// The digest rule: what the write replaces, it holds the digest of the
+	// whole read that seeded its document. An existing file decides the
+	// save against those bytes — another writer's edit since the open is a
+	// 409 naming it, never an overwrite; a file that is not there is a
+	// creation, decided on its absence, no digest asked.
+	decided := storedFile{}
+	if current != nil && !req.CreateOnly {
+		if req.Digest == "" {
+			httpError(w, http.StatusConflict, "%s carries no digest of the read it replaces: a save of an existing file presents the digest its open issued (the open response's), and none came — reopen the file and redo the edit. This door holds a save to the file's own whole read alone; a save through the bot's unit document is held to the read budget the bot's files share, so a fragment whose own read passes while the shared budget refuses it lands here — the bot then opens short, the files it cut answering no digest", req.Path)
+			return
+		}
+		if req.Digest != contentSHA256(string(current)) {
+			httpError(w, http.StatusConflict, "%s changed since the document was opened — on disk, or by another writer: reopen it and redo the edit", req.Path)
+			return
+		}
+		decided = storedAt(current)
+	}
 	if current != nil {
 		if on := parser.ReadPreamble(parser.NormalizeSource(string(current))).Profile; on > f.EffectiveProfile() {
 			httpError(w, http.StatusUnprocessableEntity, "%s is written in dsl profile %d and the document would save it in profile %d: reopen the file in the studio (the document carries no profile — an older client dropped it)", req.Path, on, f.EffectiveProfile())
@@ -806,6 +952,16 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusUnprocessableEntity, "%s cannot be saved from the studio: %s. Leave the file as it is, or edit it directly", req.Path, canonReason(err))
 			return
 		}
+		// The file as the save would write it must read whole — the rule
+		// the files a unit save writes are held to (saveUnit): written past
+		// the read budget or the size cap, it would open as a salvage and
+		// launch as a refusal. The proof's own re-read (unparse.Verify)
+		// is what meets the bound.
+		var refusal *parser.ReadRefusal
+		if errors.As(err, &refusal) {
+			httpError(w, http.StatusUnprocessableEntity, "%s is not saved: written, it would not be read whole (%v)", req.Path, refusal)
+			return
+		}
 		httpError(w, http.StatusUnprocessableEntity, "the document cannot be saved as .bot source without changing it: %v", err)
 		return
 	}
@@ -815,7 +971,10 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		ignore = s.watcher.IgnorePath
 	}
 	s.stateMu.RUnlock()
-	writeErr := locks[0].writeEditorFile([]byte(source), req.CreateOnly, ignore, s.logWarn)
+	writeErr := locks[0].writeEditorFile(storedCheck{name: req.Path, decided: decided, presented: req.Digest}, []byte(source), req.CreateOnly, ignore, s.logWarn)
+	if s.writeStoredFileRefusal(w, r, writeErr) {
+		return
+	}
 	if req.CreateOnly && errors.Is(writeErr, fs.ErrExist) {
 		httpError(w, http.StatusConflict, "file already exists")
 		return
@@ -828,5 +987,6 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		Path:              req.Path,
 		Source:            source,
 		ConfirmedDiskPath: absPath,
+		Digest:            contentSHA256(source),
 	})
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 )
 
 func renderReviewPRBodyHealthNode(t *testing.T, node string, refs map[string]string) string {
@@ -113,7 +114,7 @@ func TestReviewPRPublishHealthBodyMissing(t *testing.T) {
 }
 
 func TestReviewPRPublishHealthMapsBodyMissing(t *testing.T) {
-	u := unit.LoadDir("review-pr/main.bot")
+	u := unittest.Whole(unit.LoadDir("review-pr/main.bot"))
 	if u.Merged == nil {
 		t.Fatalf("review-pr: the bundle did not parse: %v", u.Diagnostics)
 	}

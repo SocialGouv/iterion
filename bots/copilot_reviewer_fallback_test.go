@@ -1,11 +1,11 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 func TestCopilotReviewerUsesExternalFallbackOrder(t *testing.T) {
@@ -14,7 +14,7 @@ func TestCopilotReviewerUsesExternalFallbackOrder(t *testing.T) {
 		t.Fatalf("read copilot: %v", err)
 	}
 	src := string(raw)
-	pr := parser.Parse("copilot/main.bot", src)
+	pr := parsertest.Parse("copilot/main.bot", src)
 	if pr.File == nil {
 		t.Fatal("copilot/main.bot does not parse")
 	}

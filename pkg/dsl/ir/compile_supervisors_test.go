@@ -1,10 +1,9 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 	"time"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 const supervisorWF = `
@@ -27,7 +26,7 @@ workflow main:
 `
 
 func TestCompileSupervisorDeclaration(t *testing.T) {
-	pr := parser.Parse("t.bot", supervisorWF)
+	pr := parsertest.Parse("t.bot", supervisorWF)
 	if pr.File == nil {
 		t.Fatalf("parse returned nil: %v", pr.Diagnostics)
 	}
@@ -79,7 +78,7 @@ workflow main:
   entry: implement
   implement -> done
 `
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	res := Compile(pr.File)
 	var sawWarn bool
 	for _, d := range res.Diagnostics {
@@ -113,7 +112,7 @@ workflow main:
   entry: review
   review -> done
 `
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	res := Compile(pr.File)
 	for _, d := range res.Diagnostics {
 		if d.Code == DiagUnknownWatchedNode {

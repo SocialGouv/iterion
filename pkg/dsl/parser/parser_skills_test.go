@@ -12,7 +12,7 @@ func TestAgentSkills(t *testing.T) {
   model: "gpt-4"
   skills: ["changelog-writer", "semver-bump"]
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	if len(res.File.Agents) != 1 {
 		t.Fatalf("expected 1 agent, got %d", len(res.File.Agents))
@@ -27,7 +27,7 @@ func TestJudgeSkills(t *testing.T) {
   model: "gpt-4"
   skills: ["review-rubric"]
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	if len(res.File.Judges) != 1 {
 		t.Fatalf("expected 1 judge, got %d", len(res.File.Judges))
@@ -45,7 +45,7 @@ workflow main:
   entry: a
   skills: ["house-style"]
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 	if len(res.File.Workflows) != 1 {
 		t.Fatal("expected 1 workflow decl")

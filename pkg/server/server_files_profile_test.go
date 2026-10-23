@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // The studio saves a document through the JSON transport: a file opened in
@@ -20,7 +20,7 @@ import (
 func TestSaveFileKeepsTheProfileTwoHeader(t *testing.T) {
 	srv, hs := newTestServer(t)
 	src := "dsl: 2\n\ntool t:\n  command: \"a\\nb\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
-	res := parser.Parse("v2.bot", src)
+	res := parsertest.Parse("v2.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("fixture: %v", res.Diagnostics)
 	}
@@ -44,7 +44,7 @@ func TestSaveFileKeepsTheProfileTwoHeader(t *testing.T) {
 	if !strings.HasPrefix(string(written), "dsl: 2\n") {
 		t.Fatalf("the saved file lost its profile:\n%s", written)
 	}
-	back := parser.Parse("v2.bot", string(written))
+	back := parsertest.Parse("v2.bot", string(written))
 	if len(back.Diagnostics) != 0 || back.File.EffectiveProfile() != 2 {
 		t.Fatalf("the saved file does not read as profile 2: %v", back.Diagnostics)
 	}

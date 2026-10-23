@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 func TestMergeBundlePrompts_InjectsNewPrompts(t *testing.T) {
@@ -91,7 +91,7 @@ func TestMergeBundlePrompts_DiagnosticsPointAtThePromptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := "schema out:\n  ok: bool\n\nagent reviewer:\n  model: \"m\"\n  output: out\n  system: review\n\nworkflow w:\n  entry: reviewer\n  reviewer -> done\n"
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), src)
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("unexpected parse diagnostic: %s", d.Error())
 	}
@@ -138,7 +138,7 @@ func TestMergeBundlePrompts_IncludesResolveNextToThePromptFile(t *testing.T) {
 	t.Chdir(cwd)
 
 	src := "schema out:\n  ok: bool\n\nagent a:\n  model: \"m\"\n  output: out\n  system: helper\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), src)
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), src)
 	if err := MergeBundlePrompts(pr.File, &bundle.Bundle{PromptsDir: promptsDir}); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestMergeBundlePrompts_IncludesResolveNextToThePromptFile(t *testing.T) {
 	if err := os.Remove(filepath.Join(promptsDir, "sibling.md")); err != nil {
 		t.Fatal(err)
 	}
-	pr = parser.Parse(filepath.Join(dir, "main.bot"), src)
+	pr = parsertest.Parse(filepath.Join(dir, "main.bot"), src)
 	if err := MergeBundlePrompts(pr.File, &bundle.Bundle{PromptsDir: promptsDir}); err != nil {
 		t.Fatal(err)
 	}

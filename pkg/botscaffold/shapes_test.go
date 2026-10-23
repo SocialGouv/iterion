@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +18,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
@@ -32,7 +33,7 @@ func scaffoldAndCompile(t *testing.T, spec Spec) (string, *ir.Workflow, int) {
 	}
 	// The bundle's unit: main.bot and the fragments its imports reach —
 	// what every launch surface compiles.
-	u := unit.LoadDir(filepath.Join(dir, "main.bot"))
+	u := unittest.Whole(unit.LoadDir(filepath.Join(dir, "main.bot")))
 	if len(u.Diagnostics) != 0 {
 		t.Fatalf("%s: parse: %v", spec.Shape, u.Diagnostics)
 	}
@@ -459,7 +460,7 @@ func TestGalleryShapes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			pr := parser.Parse("main.bot", string(src))
+			pr := parsertest.Parse("main.bot", string(src))
 			var unknown int
 			for _, d := range ir.Compile(pr.File).Diagnostics {
 				if d.Code == ir.DiagUnknownPrompt {
@@ -491,7 +492,7 @@ func TestGalleryShapes(t *testing.T) {
 			if !strings.Contains(string(src), "import \"lib/schemas.bot\"") || !strings.Contains(string(src), "import \"lib/nodes.bot\"") {
 				t.Errorf("main.bot does not import both fragments:\n%s", src)
 			}
-			pr := parser.Parse("main.bot", string(src))
+			pr := parsertest.Parse("main.bot", string(src))
 			var unresolved int
 			for _, d := range ir.Compile(pr.File).Diagnostics {
 				if d.Code == ir.DiagUnresolvedImports {

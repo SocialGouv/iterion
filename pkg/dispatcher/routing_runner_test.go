@@ -275,10 +275,10 @@ func TestRoutingRunnerDynamicHonorsOverlay(t *testing.T) {
 	writeDispatcherBot(t, filepath.Join(botsDir, "offy", "main.bot"), stub)
 
 	no, yes := false, true
-	if err := botregistry.SetOverlayEnabled(dir, "customy", &no); err != nil {
+	if err := botregistry.SetOverlayEnabled(context.Background(), dir, "customy", &no); err != nil {
 		t.Fatal(err)
 	}
-	if err := botregistry.SetOverlayEnabled(dir, "offy", &yes); err != nil {
+	if err := botregistry.SetOverlayEnabled(context.Background(), dir, "offy", &yes); err != nil {
 		t.Fatal(err)
 	}
 

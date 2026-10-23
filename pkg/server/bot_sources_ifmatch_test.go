@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,12 +66,22 @@ func (f *ifMatchFixture) files(t *testing.T) map[string]string {
 	return bs.Files
 }
 
-// putFile writes one file. version 0 sends no token at all.
+// putFile writes one file. version 0 sends no token at all — the digest it
+// still presents: what the write replaces, it holds the digest of the stored
+// text it was read at, token or not (the digest rule).
 func (f *ifMatchFixture) putFile(t *testing.T, rel, content string, version int) *httptest.ResponseRecorder {
 	t.Helper()
 	body := map[string]any{"content": content}
 	if version != 0 {
+		// The digest rule, as the drawer plays it: the id its read
+		// answered, and the stored text's digest.
 		body["version"] = version
+		body["id"] = storedIDFor(f.s, f.ctx, f.slug)
+	}
+	if bs, err := f.s.botSources.GetBySlug(store.WithTenant(f.ctx, "t1"), "t1", f.slug); err == nil {
+		if held, ok := bs.Files[rel]; ok {
+			body["stored_sha256"] = contentSHA256(held)
+		}
 	}
 	raw, _ := json.Marshal(body)
 	r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/"+f.slug+"/files/"+rel, strings.NewReader(string(raw))).WithContext(f.ctx)
@@ -83,9 +94,14 @@ func (f *ifMatchFixture) putFile(t *testing.T, rel, content string, version int)
 }
 
 // deleteFile removes one file. query is appended verbatim so a malformed
-// token can be exercised as a client would send it.
+// token can be exercised as a client would send it. A query that pins a
+// version carries the bot's id beside it, the way the PUTs present theirs
+// (a delete pinned to a version names the bot that read answered).
 func (f *ifMatchFixture) deleteFile(t *testing.T, rel, query string) *httptest.ResponseRecorder {
 	t.Helper()
+	if strings.Contains(query, "version=") {
+		query += "&bot_id=" + storedIDFor(f.s, f.ctx, f.slug)
+	}
 	url := "/api/teams/t1/bot-sources/" + f.slug + "/files/" + rel + query
 	r := httptest.NewRequest("DELETE", url, nil).WithContext(f.ctx)
 	r.SetPathValue("id", "t1")
@@ -256,7 +272,7 @@ func TestAnIfMatchTokenOnADeletedBotIsRefusedAsGoneNotResurrected(t *testing.T) 
 		Slug:     "ghost",
 		Files:    map[string]string{botsource.MainBotFile: testBotMain},
 		Version:  7,
-	})
+	}, nil, "")
 	// 404 and not the version conflict: the bot was DELETED, and a client
 	// told "another editor wrote to it, reload to see" is given a false
 	// diagnosis and a reload that cannot succeed — the studio's drawer maps
@@ -277,7 +293,7 @@ func TestAnIfMatchTokenOnADeletedBotIsRefusedAsGoneNotResurrected(t *testing.T) 
 		TenantID: "t1",
 		Slug:     "ghost",
 		Files:    map[string]string{botsource.MainBotFile: testBotMain},
-	})
+	}, nil, "")
 	if w2.Code != http.StatusOK {
 		t.Fatalf("untokened create = %d: %s", w2.Code, w2.Body.String())
 	}

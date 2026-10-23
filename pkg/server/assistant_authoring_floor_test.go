@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -99,5 +100,100 @@ authoring:
 	}
 	if !strings.Contains(stored.Files["main.bot"], "contract pub:") {
 		t.Fatalf("the accepted edit was not stored:\n%s", stored.Files["main.bot"])
+	}
+}
+
+// The same commit holds an edit against the REQUIRES half of the floor: an
+// edit raising requires.iterion above the deployment's engine floor is
+// refused with the same bot_engine_floor code and nothing stored — the
+// assistant's write door lands nothing the push routes refuse. At or below
+// the floor, the same edit lands.
+func TestAuthoringCommitRefusesARequirementAboveTheFloor(t *testing.T) {
+	pinServerBuild(t, "v3.116.4+deadbeef")
+	s, editor, _ := newBotSourceTestServer(t)
+	ctx := auth.WithIdentity(t.Context(), editor)
+	manifest := `schema_version: 1
+name: rf
+requires:
+  iterion: ">= 3.112.14"
+authoring:
+  editable_files:
+    - {scope: bundle, path: main.bot}
+    - {scope: bundle, path: manifest.yaml}
+`
+	if _, err := s.botSources.Create(store.WithTenant(t.Context(), "t1"), botsource.BotSource{
+		TenantID: "t1",
+		Slug:     "rf",
+		Files: map[string]string{
+			botsource.MainBotFile: "workflow main:\n  entry: done\n",
+			"manifest.yaml":       manifest,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const editorPath = "botsource://t1/rf/manifest.yaml"
+	snapshot := func() (authoringFileSnapshot, int) {
+		body, _ := json.Marshal(authoringSnapshotRequest{EditorPath: editorPath})
+		req := httptest.NewRequest("POST", "/api/v1/assistant/authoring/snapshot", bytes.NewReader(body)).WithContext(ctx)
+		rec := httptest.NewRecorder()
+		s.handleAuthoringSnapshot(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("snapshot: %d %s", rec.Code, rec.Body.String())
+		}
+		var snap authoringSnapshotResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range snap.Files {
+			if f.Path == "manifest.yaml" {
+				return f, snap.Version
+			}
+		}
+		t.Fatal("snapshot names no manifest.yaml")
+		return authoringFileSnapshot{}, 0
+	}
+	commit := func(raiseTo string) *httptest.ResponseRecorder {
+		snap, version := snapshot()
+		edit := authoringFileChange{Scope: "bundle", Path: "manifest.yaml", ExpectedSHA256: snap.SHA256,
+			Replacements: []authoringReplacement{{Before: `">= 3.112.14"`, After: `"` + raiseTo + `"`}}}
+		body, _ := json.Marshal(authoringChangeRequest{EditorPath: editorPath, Version: version, Changes: []authoringFileChange{edit}})
+		req := httptest.NewRequest("POST", "/api/v1/assistant/authoring/commit", bytes.NewReader(body)).WithContext(ctx)
+		rec := httptest.NewRecorder()
+		s.handleAuthoringCommit(rec, req)
+		return rec
+	}
+
+	// An edit raising the requirement above the floor is refused with the
+	// code the push routes' refusal carries, and nothing is stored.
+	rec := commit(">= 999.0.0")
+	if rec.Code/100 == 2 || !strings.Contains(rec.Body.String(), "bot_engine_floor") || !strings.Contains(rec.Body.String(), "999.0.0") {
+		t.Fatalf("commit raising requires above the floor = %d %s, want a bot_engine_floor refusal naming the requirement", rec.Code, rec.Body.String())
+	}
+	stored, err := s.botSources.GetBySlug(store.WithTenant(t.Context(), "t1"), "t1", "rf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored.Files["manifest.yaml"], "999.0.0") {
+		t.Fatalf("the refused edit was stored:\n%s", stored.Files["manifest.yaml"])
+	}
+
+	// The push routes refuse the same edit — the doors stay consistent.
+	now, id, version, digests := getBundle(t, s, ctx, "rf")
+	raised := strings.Replace(now["manifest.yaml"], `">= 3.112.14"`, `">= 999.0.0"`, 1)
+	if rec := putFileWith(t, s, ctx, "rf", "manifest.yaml", raised, id, version, digests["manifest.yaml"]); rec.Code != http.StatusConflict {
+		t.Fatalf("the same edit through the per-file PUT = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+
+	// At the floor, the same edit lands.
+	rec = commit(">= 3.116.4")
+	if rec.Code/100 != 2 {
+		t.Fatalf("commit at the floor = %d %s, want success", rec.Code, rec.Body.String())
+	}
+	stored, err = s.botSources.GetBySlug(store.WithTenant(t.Context(), "t1"), "t1", "rf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored.Files["manifest.yaml"], ">= 3.116.4") {
+		t.Fatalf("the accepted edit was not stored:\n%s", stored.Files["manifest.yaml"])
 	}
 }

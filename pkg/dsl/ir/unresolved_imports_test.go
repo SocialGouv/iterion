@@ -1,10 +1,9 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A file that still carries `import` lines is not a program: its fragments
@@ -13,7 +12,7 @@ import (
 // the fragments, with no workflow.
 func TestAFileWithUnresolvedImportsDoesNotCompile(t *testing.T) {
 	src := "import \"lib/a.bot\"\nimport \"lib/b.bot\"\n\nagent a:\n  model: \"anthropic/claude-opus-4-8\"\n  description: \"d\"\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	res := parser.Parse("x.bot", src)
+	res := parsertest.Parse("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("fixture: %v", res.Diagnostics)
 	}

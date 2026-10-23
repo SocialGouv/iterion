@@ -33,7 +33,7 @@ func TestInlinePromptsWithACollidingPrefixKeepDistinctNames(t *testing.T) {
 	for i := 0; i < n; i++ {
 		fmt.Fprintf(&b, "agent a%d:\n  system: \"body %d\"\n\n", i, i)
 	}
-	res := Parse("x.bot", b.String())
+	res := parseLenient("x.bot", b.String())
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("diagnostics: %v", res.Diagnostics)
 	}
@@ -53,7 +53,7 @@ func TestInlinePromptsWithACollidingPrefixKeepDistinctNames(t *testing.T) {
 		}
 	}
 	// The same body twice is still one prompt, under the colliding regime too.
-	same := Parse("y.bot", "agent a:\n  system: \"same\"\n\nagent b:\n  system: \"same\"\n")
+	same := parseLenient("y.bot", "agent a:\n  system: \"same\"\n\nagent b:\n  system: \"same\"\n")
 	if len(same.File.Prompts) != 1 || same.File.Agents[0].System != same.File.Agents[1].System {
 		t.Fatalf("the same text made two prompts: %+v", same.File.Prompts)
 	}

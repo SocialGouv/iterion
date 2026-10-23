@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func compileCatalogBot(t *testing.T, bot string) *ir.Workflow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := unit.LoadDir(path)
+	u := unittest.Whole(unit.LoadDir(path))
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("parse %s: %s", path, d.Error())

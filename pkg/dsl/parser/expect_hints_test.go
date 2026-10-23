@@ -21,7 +21,7 @@ func TestExpectedTokenHintsNameTheWantedShape(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pr := parser.Parse("h.bot", tc.src)
+			pr := parser.ParseLenient("h.bot", tc.src)
 			var found bool
 			for _, d := range pr.Diagnostics {
 				if d.Code == parser.DiagExpectedToken && strings.Contains(d.Hint, tc.want) {

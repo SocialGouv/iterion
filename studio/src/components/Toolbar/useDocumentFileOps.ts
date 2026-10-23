@@ -28,7 +28,7 @@ import { downloadBlob } from "@/lib/download";
 import { DISCARD_CHANGES_PROMPT } from "@/lib/copy";
 import { errorMessage, toastError } from "@/lib/errorHints";
 import { openExampleIntoStore } from "@/lib/openExample";
-import { applyParsedSource, salvageRefusal } from "@/lib/salvage";
+import { applyParsedSource, refuseReadRefusal, salvageRefusal } from "@/lib/salvage";
 import { isSharedBundleFilePath } from "@/lib/sharedBundle";
 
 import type { ConfirmOptions } from "@/hooks/useConfirm";
@@ -80,6 +80,7 @@ export function useDocumentFileOps({
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
+  const setOpenedDigest = useDocumentStore((s) => s.setOpenedDigest);
   const unit = useDocumentStore((s) => s.unit);
   const setUnit = useDocumentStore((s) => s.setUnit);
   const markSaved = useDocumentStore((s) => s.markSaved);
@@ -190,7 +191,11 @@ export function useDocumentFileOps({
           file.name,
           async (signal) => {
             const text = await file.text();
-            return { text, result: await api.parseSource(text, { signal }) };
+            const result = await api.parseSource(text, { signal });
+            // Refused before the replacement applies anything: an import
+            // the server's reader cut short has no program to install.
+            refuseReadRefusal(result);
+            return { text, result };
           },
           ({ text, result }, s) => {
             s.setDiagnostics(result.diagnostics);
@@ -200,7 +205,8 @@ export function useDocumentFileOps({
             // put a file missing what the parser could not read under the name
             // the author chose.
             s.setCurrentFilePath(null);
-            applyParsedSource(result, s);
+            // The store as the unbinding left it: `s` is the state before.
+            applyParsedSource(result, documentStore.getState());
             // Imported files are off-disk; the original text is the source.
             s.setCurrentSource(text);
           },
@@ -266,7 +272,19 @@ export function useDocumentFileOps({
         // a per-file Apply may have changed a file's `import` lines or its
         // `dsl:` profile — the two header fields the document does not
         // carry — and the save writes them from the claim.
-        const result = await api.saveFile(path, document, unit ? { revision: unit.revision, unitFiles: unit.files } : undefined);
+        // The digest rule: a single-file save presents the digest its open
+        // issued; a unit save presents the revision (its files carry their
+        // own digests, judged with it).
+        const openedDigest = documentStore.getState().openedDigest;
+        const result = await api.saveFile(
+          path,
+          document,
+          unit
+            ? { revision: unit.revision, unitFiles: unit.files }
+            : openedDigest
+              ? { digest: openedDigest }
+              : undefined,
+        );
         pushRecent(path);
         // The answer is about the document it wrote. A tab that has moved to
         // another file meanwhile — or reopened this same one, which is a new
@@ -289,6 +307,13 @@ export function useDocumentFileOps({
           return;
         }
         setCurrentSource(result.source);
+        // The save's answer carries what the next save of this file
+        // presents (the digest rule): the file as THIS write left it. Held
+        // stale, the second save of an edit round presents the open's
+        // digest over bytes this very write replaced — a 409 against our
+        // own edit. A bot in several files takes none: its claim is the
+        // revision, settled just below.
+        setOpenedDigest(result.digest ?? null);
         // The revision goes onto the unit as it is NOW: a per-file Apply
         // during the write may have changed its files.
         if (now.unit) setUnit({ ...now.unit, revision: result.revision ?? now.unit.revision });
@@ -312,6 +337,7 @@ export function useDocumentFileOps({
     document,
     currentFilePath,
     setCurrentSource,
+    setOpenedDigest,
     unit,
     setUnit,
     markSaved,

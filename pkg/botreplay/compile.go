@@ -57,7 +57,10 @@ func CompileBot(bot string) (*ir.Workflow, error) {
 		path = abs // an include resolves beside the file named in full
 	}
 	// The bot's unit: the file and the fragments its imports reach.
-	u := unit.LoadDir(path)
+	u, err := unit.LoadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("botreplay: parse %s: %w", path, err)
+	}
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil, fmt.Errorf("botreplay: parse %s: %s", path, d.Error())

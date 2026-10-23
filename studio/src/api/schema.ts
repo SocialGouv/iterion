@@ -7482,6 +7482,8 @@ export interface components {
         };
         botSourceFilePutReq: {
             content: string;
+            id?: string;
+            stored_sha256?: string;
             version?: number;
         };
         botSourceForkReq: {
@@ -7515,12 +7517,19 @@ export interface components {
             files: {
                 [key: string]: string;
             };
+            id?: string;
+            stored_sha256?: {
+                [key: string]: string;
+            };
             version?: number;
         };
         botSourceView: {
             /** Format: date-time */
             created_at: string;
             created_by?: string;
+            file_sha256?: {
+                [key: string]: string;
+            };
             files: {
                 [key: string]: string;
             };
@@ -8102,6 +8111,8 @@ export interface operations {
             query?: {
                 /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
                 version?: number;
+                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. */
+                bot_id?: string;
             };
             header?: never;
             path: {
@@ -13601,6 +13612,8 @@ export interface operations {
             query?: {
                 /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
                 version?: number;
+                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. */
+                bot_id?: string;
             };
             header?: never;
             path: {

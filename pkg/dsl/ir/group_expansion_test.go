@@ -3,6 +3,7 @@ package ir
 import (
 	"bytes"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -246,7 +247,7 @@ func TestGroupPromptIncludesAreSpecializedBeforeValidation(t *testing.T) {
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	parsed := parser.Parse(path, src)
+	parsed := parsertest.Parse(path, src)
 	for _, d := range parsed.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatal(d)
@@ -370,7 +371,7 @@ func TestAnUnresolvableIncludeIsRefusedOncePerDeclaration(t *testing.T) {
 	}
 	src.WriteString("workflow w:\n  entry: g0.a\n  g0.a -> done\n")
 	// A RELATIVE source path: no include resolves beside it.
-	parsed := parser.Parse("t.bot", src.String())
+	parsed := parsertest.Parse("t.bot", src.String())
 	for _, d := range parsed.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("parse error: %s", d.Error())

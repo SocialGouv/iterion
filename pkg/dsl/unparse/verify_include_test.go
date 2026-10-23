@@ -1,13 +1,13 @@
 package unparse
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 const includeSource = "schema out:\n  ok: bool\n\nprompt p:\n  Before.\n  {{include \"rules.md\"}}\n  After.\n\nagent a:\n  model: \"m\"\n  output: out\n  system: p\n\nworkflow w:\n  entry: a\n  a -> done\n"
@@ -19,7 +19,7 @@ const includeSource = "schema out:\n  ok: bool\n\nprompt p:\n  Before.\n  {{incl
 // round-trip under a made-up name, so ITS side resolved the include against
 // the working directory and every bot with an include was refused at save.
 func TestVerifyAcceptsAnIncludeFromTheJSONTransport(t *testing.T) {
-	pr := parser.Parse("/elsewhere/main.bot", includeSource)
+	pr := parsertest.Parse("/elsewhere/main.bot", includeSource)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("parse: %s", d.Error())
 	}
@@ -56,7 +56,7 @@ func TestVerifyResolvesAnIncludeBesideTheDocumentsFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "rules.md"), []byte("RULES"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), includeSource)
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), includeSource)
 	t.Chdir(t.TempDir())
 	if err := Verify(pr.File, Unparse(pr.File)); err != nil {
 		t.Fatalf("Verify refused a file whose include resolves beside it: %v", err)

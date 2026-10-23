@@ -57,7 +57,7 @@ func TestReadPreambleKeepsTheDirectiveRuleOfProfileOne(t *testing.T) {
 		t.Fatalf("a directive on line 33 is NOT read — profile 1's rule is frozen")
 	}
 	// And the lexer reads that string exactly as before.
-	res := Parse("x.bot", beyond)
+	res := parseLenient("x.bot", beyond)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}
@@ -76,7 +76,7 @@ func TestReadPreambleKeepsTheDirectiveRuleOfProfileOne(t *testing.T) {
 // string reads standard escapes with no directive.
 func TestDSLHeaderSetsTheProfileAndTheEscapeMode(t *testing.T) {
 	src := "dsl: 2\n\ntool t:\n  command: \"a\\nb \\\"q\\\"\"\n\nworkflow w:\n  entry: t\n  t -> done\n"
-	res := Parse("x.bot", src)
+	res := parseLenient("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}
@@ -87,7 +87,7 @@ func TestDSLHeaderSetsTheProfileAndTheEscapeMode(t *testing.T) {
 		t.Fatalf("command read as %q, want standard escapes under profile 2", got)
 	}
 	// Without a header the same file is profile 1 and keeps the backslashes.
-	v1 := Parse("x.bot", strings.TrimPrefix(src, "dsl: 2\n"))
+	v1 := parseLenient("x.bot", strings.TrimPrefix(src, "dsl: 2\n"))
 	if v1.File.Profile != 0 || v1.File.EffectiveProfile() != 1 {
 		t.Fatalf("headerless profile = %d (effective %d), want 0 (effective 1)", v1.File.Profile, v1.File.EffectiveProfile())
 	}
@@ -95,7 +95,7 @@ func TestDSLHeaderSetsTheProfileAndTheEscapeMode(t *testing.T) {
 		t.Fatalf("command read as %q, want the verbatim escapes of profile 1", got)
 	}
 	// An explicit `dsl: 1` is profile 1.
-	if r := Parse("x.bot", "dsl: 1\n"+strings.TrimPrefix(src, "dsl: 2\n")); r.File.Profile != 1 || len(r.Diagnostics) != 0 {
+	if r := parseLenient("x.bot", "dsl: 1\n"+strings.TrimPrefix(src, "dsl: 2\n")); r.File.Profile != 1 || len(r.Diagnostics) != 0 {
 		t.Fatalf("explicit dsl: 1 → profile %d, diagnostics %v", r.File.Profile, r.Diagnostics)
 	}
 }
@@ -121,7 +121,7 @@ func TestDSLHeaderRefusals(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			res := Parse("x.bot", c.src)
+			res := parseLenient("x.bot", c.src)
 			var found *Diagnostic
 			for i := range res.Diagnostics {
 				if res.Diagnostics[i].Code == c.code {
@@ -155,7 +155,7 @@ func TestDSLHeaderRefusals(t *testing.T) {
 	}
 	// The unknown-profile remedy names the manifest floor that keeps the
 	// file off an older build.
-	res := Parse("x.bot", "dsl: 3\n")
+	res := parseLenient("x.bot", "dsl: 3\n")
 	if !strings.Contains(res.Diagnostics[0].Hint, "requires") {
 		t.Fatalf("E040 hint does not name requires.iterion: %q", res.Diagnostics[0].Hint)
 	}
@@ -166,7 +166,7 @@ func TestDSLHeaderRefusals(t *testing.T) {
 // endpoint.
 func TestDSLIsAKeywordAndStillAName(t *testing.T) {
 	src := "dsl: 2\n\nschema s:\n  dsl: string\n\nagent dsl:\n  description: \"x\"\n\nworkflow w:\n  entry: dsl\n  dsl -> done\n"
-	res := Parse("x.bot", src)
+	res := parseLenient("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}

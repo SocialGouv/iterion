@@ -36,6 +36,13 @@ describe("saveFile of a cloud bot in several files", () => {
         "lib/nodes.bot": "agent worker:\n  model: \"m\"\n",
         "manifest.yaml": "name: demo\n",
       },
+      // The digests the open issues (the digest rule): the save presents
+      // them back for the files it rewrites.
+      file_sha256: {
+        "main.bot": "d1",
+        "lib/nodes.bot": "d2",
+        "manifest.yaml": "d3",
+      },
     };
     const calls = mockFetch(({ url, init }) => {
       if (url.endsWith("/unparse")) {
@@ -45,7 +52,11 @@ describe("saveFile of a cloud bot in several files", () => {
       return {};
     });
     const document = { agents: [] } as unknown as IterDocument;
-    const result = await saveFile(`${BOTSOURCE_SCHEME}t1/demo/main.bot`, document, { revision: "r1" });
+    const editorPath = `${BOTSOURCE_SCHEME}t1/demo/main.bot`;
+    // The save presents the read it was decided on: the open fills the
+    // snapshot (id, version, per-file digests) the save carries.
+    await openFile(editorPath);
+    const result = await saveFile(editorPath, document, { revision: "r1" });
 
     const unparse = calls.find((c) => c.url.endsWith("/unparse"));
     expect(unparse).toBeTruthy();
@@ -58,6 +69,8 @@ describe("saveFile of a cloud bot in several files", () => {
     expect(put).toBeTruthy();
     const putBody = JSON.parse(String(put?.init?.body));
     expect(putBody.version).toBe(3);
+    expect(putBody.id).toBe("b1");
+    expect(putBody.stored_sha256).toEqual({ "lib/nodes.bot": "d2" });
     expect(putBody.files["manifest.yaml"]).toBe("name: demo\n");
     expect(putBody.files["lib/nodes.bot"]).toContain("m2");
     expect(putBody.files["main.bot"]).toBe(bundle.files["main.bot"]);
@@ -69,14 +82,16 @@ describe("saveFile of a cloud bot in several files", () => {
   it("takes the unit path on the document's revision, never on the stored text", async () => {
     // The stored main lost its import since the open: the document is
     // still a unit, and says so through its revision.
-    const bundle = { id: "b1", slug: "demo", version: 4, files: { "main.bot": "workflow w:\n  entry: done\n", "lib/nodes.bot": "agent a:\n  model: \"m\"\n" } };
+    const bundle = { id: "b1", slug: "demo", version: 4, files: { "main.bot": "workflow w:\n  entry: done\n", "lib/nodes.bot": "agent a:\n  model: \"m\"\n" }, file_sha256: { "main.bot": "d1", "lib/nodes.bot": "d2" } };
     const calls = mockFetch(({ url, init }) => {
       if (url.endsWith("/unparse")) return { source: "workflow w:\n  entry: done\n", files: {}, revision: "r9" };
       if (url.includes("/bot-sources/demo") && (init?.method ?? "GET") === "GET") return bundle;
       return {};
     });
     const document = { agents: [] } as unknown as IterDocument;
-    await saveFile(`${BOTSOURCE_SCHEME}t1/demo/main.bot`, document, { revision: "r1" });
+    const editorPath = `${BOTSOURCE_SCHEME}t1/demo/main.bot`;
+    await openFile(editorPath);
+    await saveFile(editorPath, document, { revision: "r1" });
     expect(calls.some((c) => c.url.endsWith("/unparse") && JSON.parse(String(c.init?.body)).revision === "r1")).toBe(true);
     expect(calls.some((c) => c.init?.method === "PUT" && c.url.endsWith("/files/main.bot"))).toBe(false);
 

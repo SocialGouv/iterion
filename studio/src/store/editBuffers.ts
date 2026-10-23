@@ -24,6 +24,10 @@ export interface BundleBuffer {
   rel: string;
   value: string;
   original: string;
+  /** The server's sha256 of `original` as it answered it: what a save
+   *  presents back to replace exactly that text (absent from a server that
+   *  answers none, and for a file that does not exist yet). */
+  originalSha256?: string;
   /** A file that does not exist yet: Save is offered on it even empty. */
   created: boolean;
 }
@@ -31,6 +35,8 @@ export interface BundleBuffer {
 export interface RunFileBuffer {
   value: string;
   original: string;
+  /** The server's sha256 of `original`, presented back by a save. */
+  originalSha256?: string;
 }
 
 export const bundleBufferKey = (teamID: string, slug: string): string => `${teamID}\u0000${slug}`;

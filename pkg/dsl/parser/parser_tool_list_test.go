@@ -11,7 +11,7 @@ import (
 // to be dropped in silence, so a document carrying one could never be saved.
 func TestToolListAcceptsAQuotedElement(t *testing.T) {
 	src := "agent a:\n  model: \"m\"\n  artifact_labels: [\"review-ledger\", plan]\n  tools: [bash, \"my-tool\", mcp.srv.*]\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	pr := Parse("x.bot", src)
+	pr := parseLenient("x.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Errorf("unexpected diagnostic: %s", d.Error())
 	}

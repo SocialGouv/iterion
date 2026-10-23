@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -16,7 +17,7 @@ import (
 // escaped `"…\n…"` line.
 func TestStrictRenderWritesBlockScalars(t *testing.T) {
 	src := "dsl: 2\n\ntool t:\n  command: |\n    echo a\n    echo b\n\nworkflow w:\n  entry: t\n  t -> done\n"
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	if parseErrsOf(pr) != "" {
 		t.Fatalf("fixture: %s", parseErrsOf(pr))
 	}
@@ -28,7 +29,7 @@ func TestStrictRenderWritesBlockScalars(t *testing.T) {
 		t.Fatalf("Verify: %v\n%s", err, text)
 	}
 	// A fixed point: the render of the render is the render.
-	pr2 := parser.Parse("t.bot", text)
+	pr2 := parsertest.Parse("t.bot", text)
 	if again := unparse.Unparse(pr2.File); again != text {
 		t.Fatalf("not a fixed point:\n%s\n---\n%s", text, again)
 	}
@@ -70,7 +71,7 @@ func TestMultiLineFormsDivideAndFoldAllOrNothing(t *testing.T) {
 			if err := unparse.Verify(f, text); err != nil {
 				t.Fatalf("Verify: %v\n%s", err, text)
 			}
-			pr := parser.Parse("t.bot", text)
+			pr := parsertest.Parse("t.bot", text)
 			if parseErrsOf(pr) != "" {
 				t.Fatalf("does not parse back: %s\n%s", parseErrsOf(pr), text)
 			}
@@ -129,14 +130,14 @@ func TestABlockScalarIsNotFedTheSeparatorBlank(t *testing.T) {
 	if err := unparse.Verify(f, text); err != nil {
 		t.Fatalf("Verify: %v\n%s", err, text)
 	}
-	pr := parser.Parse("t.bot", text)
+	pr := parsertest.Parse("t.bot", text)
 	if got := pr.File.Tools[0].Command; got != "echo a\necho b\n" {
 		t.Fatalf("the separator blank was absorbed into the value: %q\n%s", got, text)
 	}
 	if !strings.Contains(text, "## the file's tail") {
 		t.Fatalf("the tail comment is gone:\n%s", text)
 	}
-	pr2 := parser.Parse("t.bot", text)
+	pr2 := parsertest.Parse("t.bot", text)
 	if why := ir.SameProgram(ir.Compile(pr.File), ir.Compile(pr2.File)); why != "" {
 		t.Fatalf("not the same program: %s", why)
 	}
@@ -151,7 +152,7 @@ func TestABlockScalarIsNotFedTheSeparatorBlank(t *testing.T) {
 // continuation lines would not.
 func TestAGroupMemberKeepsItsScriptOverLines(t *testing.T) {
 	src := "dsl: 2\n\ngroup g:\n  tool t:\n    command: |\n      echo a\n      echo b\n  t -> done\n\nuse g as r\n\nworkflow w:\n  entry: r.t\n  r.t -> done\n"
-	pr := parser.Parse("g.bot", src)
+	pr := parsertest.Parse("g.bot", src)
 	if parseErrsOf(pr) != "" {
 		t.Fatalf("fixture: %s", parseErrsOf(pr))
 	}
@@ -181,7 +182,7 @@ func TestABlockScalarAtFileEndKeepsItsTailComment(t *testing.T) {
 	if !strings.Contains(text, "## the file's tail") {
 		t.Fatalf("the tail comment is gone:\n%s", text)
 	}
-	pr := parser.Parse("t.bot", text)
+	pr := parsertest.Parse("t.bot", text)
 	if got := pr.File.Tools[0].Command; got != "echo a\necho b\n" {
 		t.Fatalf("the tail's blank was absorbed into the value: %q\n%s", got, text)
 	}
@@ -197,7 +198,7 @@ func TestABlockScalarAtFileEndKeepsItsTailComment(t *testing.T) {
 	if err := unparse.Verify(f, text); err != nil {
 		t.Fatalf("Verify with a trailing blank body line: %v\n%s", err, text)
 	}
-	pr = parser.Parse("t.bot", text)
+	pr = parsertest.Parse("t.bot", text)
 	if got := pr.File.Tools[0].Command; got != "echo a\n\n" {
 		t.Fatalf("the body's own trailing blank was trimmed: %q\n%s", got, text)
 	}
@@ -222,7 +223,7 @@ func TestAFirstLineIndentIsNoBlockScalarOnSandboxFields(t *testing.T) {
 	if strings.Contains(text, "SETUP: |") {
 		t.Fatalf("a first line with its own indent took the block scalar form:\n%s", text)
 	}
-	pr := parser.Parse("t.bot", text)
+	pr := parsertest.Parse("t.bot", text)
 	if parseErrsOf(pr) != "" {
 		t.Fatalf("does not parse back: %s\n%s", parseErrsOf(pr), text)
 	}
@@ -240,7 +241,7 @@ func TestAFirstLineIndentIsNoBlockScalarOnSandboxFields(t *testing.T) {
 // block scalar carries it.
 func TestProfile1WritesABlockScalarForAValueTheRawStringCannotHold(t *testing.T) {
 	src := "tool t:\n  command: |\n    echo `date`\n    echo done\n\nworkflow w:\n  entry: t\n  t -> done\n"
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	if parseErrsOf(pr) != "" {
 		t.Fatalf("fixture: %s", parseErrsOf(pr))
 	}
@@ -292,7 +293,7 @@ func TestATrailingCommentOnABlockScalarGoesOnTheOpenerLine(t *testing.T) {
 	if err := unparse.Verify(f, text); err != nil {
 		t.Fatalf("Verify: %v\n%s", err, text)
 	}
-	pr := parser.Parse("t.bot", text)
+	pr := parsertest.Parse("t.bot", text)
 	if got := pr.File.Tools[0].Command; got != "echo a\necho b\n" {
 		t.Fatalf("the comment became value text: %q\n%s", got, text)
 	}

@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func TestExampleCursorCatalogueCompiles(t *testing.T) {
 	}
 	program := catalogue + "\nschema verdict:\n  rationale: string\n\nprompt sys:\n  Review.\n\nagent reviewer:\n  model: \"anthropic/claude-sonnet-4-6\"\n  system: sys\n  output: verdict\n  cursors:\n    enabled: true\n" +
 		strings.Join(activations, "\n") + "\n\nworkflow main:\n  entry: reviewer\n  reviewer -> done\n"
-	pr := parser.Parse("cursors-catalogue.bot", program)
+	pr := parsertest.Parse("cursors-catalogue.bot", program)
 	if pr.File == nil {
 		t.Fatalf("the pasted catalogue does not parse: %v", pr.Diagnostics)
 	}

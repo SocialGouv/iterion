@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestUnparseReInlinesAGroupMembersPrompt(t *testing.T) {
 	if !strings.Contains(text, "    system: \"Same text\"\n") || strings.Contains(text, "prompt _inline_") || strings.Contains(text, "system: _inline_") {
 		t.Fatalf("the member's prompt is not written inline:\n%s", text)
 	}
-	pr := parser.Parse("g.bot", text)
+	pr := parsertest.Parse("g.bot", text)
 	if len(pr.Diagnostics) != 0 || len(pr.File.Prompts) != 1 || pr.File.Groups[0].Agents[0].System != name {
 		t.Fatalf("read back: %v %+v", pr.Diagnostics, pr.File.Prompts)
 	}

@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestUnparseReInlinesAnInlinePrompt(t *testing.T) {
 				if !strings.Contains(text, "  system: ") {
 					t.Fatalf("no system property written:\n%s", text)
 				}
-				pr := parser.Parse("x.bot", text)
+				pr := parsertest.Parse("x.bot", text)
 				if len(pr.Diagnostics) != 0 {
 					t.Fatalf("does not parse back: %v\n%s", pr.Diagnostics, text)
 				}
@@ -59,7 +60,7 @@ func TestUnparseReInlinesAnInlinePrompt(t *testing.T) {
 // shape.
 func TestInlineMarkSurvivesTheJSONTransport(t *testing.T) {
 	src := "agent a:\n  system: \"Review the diff\"\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	pr := parser.Parse("x.bot", src)
+	pr := parsertest.Parse("x.bot", src)
 	data, err := ast.MarshalFile(pr.File)
 	if err != nil {
 		t.Fatal(err)

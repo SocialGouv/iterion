@@ -52,6 +52,17 @@ var ifMatchVersionParam = queryParam{
 	schemaType:  "integer",
 }
 
+// botIDParam is the identity a delete presents beside its version — the same
+// echo the PUTs carry in their bodies. Required when version is presented; a
+// bot deleted and re-created is a new id and takes no old client's delete.
+// Omit BOTH for last-write-wins; presented without a version, the id is
+// still honored (the identity is judged, the freshest version is deleted).
+var botIDParam = queryParam{
+	name:        "bot_id",
+	description: "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted.",
+	schemaType:  "string",
+}
+
 // routeSchemas maps "METHOD /pattern" (matching the recorded route key) to the
 // Go types of its request/response bodies. Seeded with the high-value,
 // CLI-driven surface; extend it route-by-route as schemas are needed.
@@ -189,7 +200,7 @@ func routeSchemas() map[string]routeOp {
 		},
 		"DELETE /api/teams/{id}/bot-sources/{slug}/files/{path...}": {
 			response: botSourceView{},
-			query:    []queryParam{ifMatchVersionParam},
+			query:    []queryParam{ifMatchVersionParam, botIDParam},
 		},
 		"PUT /api/admin/bots/{slug}/files/{path...}": {
 			request:  botSourceFilePutReq{},
@@ -197,7 +208,7 @@ func routeSchemas() map[string]routeOp {
 		},
 		"DELETE /api/admin/bots/{slug}/files/{path...}": {
 			response: botSourceView{},
-			query:    []queryParam{ifMatchVersionParam},
+			query:    []queryParam{ifMatchVersionParam, botIDParam},
 		},
 
 		// Forge integrations (connections + self-service OAuth/GitHub apps).

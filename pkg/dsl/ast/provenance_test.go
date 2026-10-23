@@ -2,6 +2,7 @@ package ast_test
 
 import (
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -85,7 +86,7 @@ func itoa(i int) string { return strconv.Itoa(i) }
 // every comment, the file it came from — the fragment's for what the
 // fragment declared, the main's for the rest.
 func TestProvenanceIsOnEveryCarrier(t *testing.T) {
-	u := unit.LoadMap(provenanceFixture, "main.bot")
+	u := unittest.Whole(unit.LoadMap(provenanceFixture, "main.bot"))
 	if u.HasErrors() {
 		t.Fatalf("diagnostics: %v", u.Diagnostics)
 	}
@@ -127,7 +128,7 @@ func TestProvenanceIsOnEveryCarrier(t *testing.T) {
 // into an AST whose spans name their files, on declarations and on block
 // entries alike — what a save routes on.
 func TestProvenanceIsReadBack(t *testing.T) {
-	u := unit.LoadMap(provenanceFixture, "main.bot")
+	u := unittest.Whole(unit.LoadMap(provenanceFixture, "main.bot"))
 	raw, err := ast.MarshalFileWithProvenance(u.Merged, "")
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +164,7 @@ func TestProvenanceIsReadBack(t *testing.T) {
 // runner, what the studio's parse endpoint returns — has no "file" key
 // anywhere, so it stays byte-identical to what it always was.
 func TestTheTransportCarriesNoProvenance(t *testing.T) {
-	u := unit.LoadMap(provenanceFixture, "main.bot")
+	u := unittest.Whole(unit.LoadMap(provenanceFixture, "main.bot"))
 	raw := mustMarshal(t, u.Merged)
 	var doc any
 	if err := json.Unmarshal(raw, &doc); err != nil {
@@ -191,7 +192,7 @@ func TestProvenanceIsRelativeToTheRoot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	u := unit.LoadDir(filepath.Join(root, "main.bot"))
+	u := unittest.Whole(unit.LoadDir(filepath.Join(root, "main.bot")))
 	if u.HasErrors() {
 		t.Fatalf("diagnostics: %v", u.Diagnostics)
 	}

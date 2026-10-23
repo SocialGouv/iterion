@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,7 @@ import (
 
 func parseFile(t *testing.T, src string) *ast.File {
 	t.Helper()
-	res := parser.Parse("test.bot", src)
+	res := parsertest.Parse("test.bot", src)
 	for _, d := range res.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("parse error: %s", d.Error())
@@ -1477,7 +1478,7 @@ func TestCompileReferenceFixture(t *testing.T) {
 				t.Skipf("fixture not found: %v", err)
 			}
 
-			res := parser.Parse(fixture, string(src))
+			res := parsertest.Parse(fixture, string(src))
 			for _, d := range res.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Fatalf("parse error: %s", d.Error())
@@ -1569,8 +1570,8 @@ func TestCompileDeterminism(t *testing.T) {
 		t.Skipf("fixture not found: %v", err)
 	}
 
-	res1 := parser.Parse("test.bot", string(src))
-	res2 := parser.Parse("test.bot", string(src))
+	res1 := parsertest.Parse("test.bot", string(src))
+	res2 := parsertest.Parse("test.bot", string(src))
 
 	cr1 := Compile(res1.File)
 	cr2 := Compile(res2.File)
@@ -1623,7 +1624,7 @@ func TestCompileReferenceFixtureDetailed(t *testing.T) {
 		t.Skipf("fixture not found: %v", err)
 	}
 
-	res := parser.Parse("test.bot", string(src))
+	res := parsertest.Parse("test.bot", string(src))
 	cr := Compile(res.File)
 
 	if cr.HasErrors() {

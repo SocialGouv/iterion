@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -43,7 +43,7 @@ func TestValidate_BotSourcePathMergesItsPrompts(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	pr := parser.Parse("main.bot", botSourceMainWithExternalPrompt)
+	pr := parsertest.Parse("main.bot", botSourceMainWithExternalPrompt)
 	if len(pr.Diagnostics) != 0 {
 		t.Fatalf("parse: %v", pr.Diagnostics)
 	}

@@ -38,26 +38,26 @@ func ParseEdgeLine(profile int, line string) ([]*ast.Edge, []Diagnostic) {
 	if profile < 1 {
 		profile = ast.DefaultProfile
 	}
-	p := &parser{lex: newLexer(name, line+"\n", profile, true), file: name}
+	p := &parser{lex: newLexer(name, line+"\n", profile, true, sourceBudget()), file: name}
 	if t := p.peek(); t.Type == TokenIndent {
 		p.addError(DiagExpectedToken, t, "an edge line starts with its source node, not with indentation")
-		return nil, p.diags
+		return nil, p.report.Diagnostics()
 	}
 	if !p.edgeAhead() {
 		p.addError(DiagExpectedToken, p.peek(), "expected an edge line `src -> dst …` — a node reference, dotted for a group instance's node, then `->`")
-		return nil, p.diags
+		return nil, p.report.Diagnostics()
 	}
 	edges := p.parseEdge()
 	for {
 		t := p.peek()
 		switch t.Type {
 		case TokenEOF:
-			return edges, p.diags
+			return edges, p.report.Diagnostics()
 		case TokenNewline, TokenComment, TokenDedent:
 			p.next()
 		default:
 			p.addError(DiagExpectedToken, t, "an edge line ends after its clauses, got "+strconv.Quote(t.Value))
-			return edges, p.diags
+			return edges, p.report.Diagnostics()
 		}
 	}
 }

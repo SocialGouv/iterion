@@ -2,13 +2,13 @@ package unit
 
 import (
 	"bytes"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // The AST a caller hands to LoadDirWithMainAST is read, never written: the
@@ -26,7 +26,7 @@ func TestLoadDirWithMainASTLeavesTheCallersASTUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := strings.Join([]string{`import "lib/helper.bot"`, "", "vars:", "  own: string", "", "schema s:", "  ok: bool", ""}, nl)
-	pr := parser.Parse("main.bot", src)
+	pr := parsertest.Parse("main.bot", src)
 	if len(pr.Diagnostics) > 0 {
 		t.Fatal(pr.Diagnostics)
 	}
@@ -34,7 +34,7 @@ func TestLoadDirWithMainASTLeavesTheCallersASTUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := LoadDirWithMainAST(filepath.Join(root, "main.bot"), "main.bot.yaml", pr.File, []byte(src))
+	u := salvageUnit(LoadDirWithMainAST(filepath.Join(root, "main.bot"), "main.bot.yaml", pr.File, []byte(src), pr.Spent))
 	after, err := ast.MarshalFile(pr.File)
 	if err != nil {
 		t.Fatal(err)

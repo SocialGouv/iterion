@@ -73,7 +73,7 @@ func TestAuthoringLocalSameFilesystemPreflightAndInPlaceSymlinkStorage(t *testin
 		t.Fatalf("replacement did not preflight cross-device storage: %v", err)
 	}
 	authoringBytes(t, path, "original")
-	if err := locks[0].writeEditorFile([]byte("ordinary save"), false, nil, nil); err != nil {
+	if err := locks[0].writeEditorFile(storedCheck{name: "file.txt", decided: storedAt([]byte("original"))}, []byte("ordinary save"), false, nil, nil); err != nil {
 		t.Fatalf("in-place save unnecessarily required same-device recovery: %v", err)
 	}
 	authoringBytes(t, path, "ordinary save")

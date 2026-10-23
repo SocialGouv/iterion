@@ -2,6 +2,7 @@ package bots
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/docfences"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runops"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
@@ -546,7 +546,7 @@ func TestEveryDocumentedSupervisorPolicyCarriesTheBoundary(t *testing.T) {
 		if strings.HasPrefix(f.Info, "invalid") {
 			continue
 		}
-		res := parser.Parse(f.File, f.Body)
+		res := parsertest.Parse(f.File, f.Body)
 		if res.File == nil {
 			continue
 		}

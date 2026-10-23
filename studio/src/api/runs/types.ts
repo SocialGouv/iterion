@@ -1259,6 +1259,9 @@ export interface RunFileContent {
   content: string;
   binary: boolean;
   exists: boolean;
+  /** sha256 of `content` as answered: what a save presents back to replace
+   *  exactly that text. */
+  sha256?: string;
 }
 
 // Mirror of pkg/git.CommitInfo. The frontend formats `date` relatively

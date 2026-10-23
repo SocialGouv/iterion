@@ -1,9 +1,8 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // An `mcp:` block that only DISABLES a server is wiring all the same: the
@@ -15,7 +14,7 @@ func TestMCPBlockThatOnlyDisablesAServerIsWiring(t *testing.T) {
 		"on the node":     "agent a:\n  backend: \"claw\"\n  model: \"m\"\n  tools: [list_files]\n  mcp:\n    disable: [noisy]\n\nworkflow w:\n  entry: a\n  a -> done\n",
 		"on the workflow": "agent a:\n  backend: \"claw\"\n  model: \"m\"\n  tools: [list_files]\n\nworkflow w:\n  entry: a\n  mcp:\n    disable: [noisy]\n  a -> done\n",
 	} {
-		pr := parser.Parse("x.bot", src)
+		pr := parsertest.Parse("x.bot", src)
 		for _, d := range pr.Diagnostics {
 			t.Fatalf("%s: parse: %s", name, d.Error())
 		}
@@ -44,7 +43,7 @@ func TestBareMCPBlockDoesNotDisarmTheToolNameError(t *testing.T) {
 	without := "agent a:\n  backend: \"claw\"\n  model: \"m\"\n  tools: [list_files]\n\nworkflow w:\n  entry: a\n  a -> done\n"
 	with := "agent a:\n  backend: \"claw\"\n  model: \"m\"\n  tools: [list_files]\n  mcp:\n\nworkflow w:\n  entry: a\n  a -> done\n"
 	for name, src := range map[string]string{"without mcp block": without, "with a bare mcp block": with} {
-		pr := parser.Parse("x.bot", src)
+		pr := parsertest.Parse("x.bot", src)
 		for _, d := range pr.Diagnostics {
 			t.Fatalf("%s: parse: %s", name, d.Error())
 		}

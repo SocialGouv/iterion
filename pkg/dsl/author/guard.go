@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -19,14 +21,165 @@ import (
 
 // The bounds of a document the converter reads, the twins of the `.bot`
 // lexer's own (10 MiB of source, 100 levels of nesting): a YAML file is not
-// a way around them. The node count bounds the work a small file can ask
-// for (a billion-laughs document has few bytes and many nodes) — anchors
-// and aliases are refused outright, so the count is the honest one.
+// a way around them. Its reading is held to the lexer's read budget
+// (parser.ReadBudget, 2^20 unless the operator moved it) as the .bot's is —
+// every value, every node of the tree, spends one record, every comment line
+// two (pastReadBudget) — which bounds the work a small file can ask for (a
+// billion-laughs document has few bytes and many nodes; anchors and aliases
+// are refused outright, so a node is a value written once).
+//
+// yaml.v3 builds a document's whole tree before any caller sees a node and
+// offers no hook to count while it builds, so before the decode runs its
+// cost is bounded off the text (workflowfile.CheckYAMLDecode): the values
+// the indicators outside the text of `|` and `>` blocks can open, at most
+// twice the budget (decodeCeiling). The values themselves are counted on
+// the tree, against the budget. Every decode of a document's YAML goes
+// through both (readFirst), and the .bot the document spells is then read
+// on the budget too (spell.go, author.Parse).
 const (
 	maxSourceSize   = 10 * 1024 * 1024
 	maxNestingDepth = 100
-	maxNodes        = 1 << 20
 )
+
+// The remedies of a document past a bound. Such a document breaks no rule
+// of YAML, so E050's catalogued hint — about separators, anchors and tags —
+// would send its author to the wrong place.
+const (
+	docSizeHint  = "A document this large reads in parts: move declarations into .bot fragments under lib/, listed under `imports:`, each read on its own 10 MiB — the read budget stays the bot's."
+	docDepthHint = "Nest a value at most 100 levels deep, the .bot's own bound: flatten it."
+	// docDecodeHint is the remedy of a document refused before its decode
+	// (decodeCeiling): what is counted, where text is not, and the hatch.
+	docDecodeHint = "Before a document is decoded, the `:` `,` `?` `-` `[` `{` and `#` it holds — in its keys, its comments, its plain and quoted values, never in the text of a `|` or `>` block — are counted as the values and comments they can open, which may reach twice the read budget; its values and comment lines are then held to the budget itself. A long text written as a `|` block is never counted. The budget is " + parser.ReadBudgetEnv + " wherever the document is read: a larger count raises it, 0 removes it."
+	// docReadBudgetHint is the remedy of a document whose .bot spelling is
+	// past the read budget (spell.go, author.Parse): the reader's refusal,
+	// with the document's remedy rather than the .bot's — the twin is read
+	// by its author's iterion, and the fragments it imports share the
+	// budget with it, so moving declarations there is no way past it.
+	docReadBudgetHint = "The budget is " + parser.ReadBudgetEnv + " wherever the document is read, and the .bot fragments it imports share it with the document: a larger count raises it, 0 removes it."
+)
+
+// decodeCeiling is the most values a document's decode may build, counted
+// before it runs (workflowfile.CheckYAMLDecode): twice the read budget. The
+// count of a document's indicators reaches about one and a half times its
+// values on a mapping of `key: value` lines, so a document within the
+// budget is not refused before its values are counted. The decode costs
+// about 200 bytes a value, and up to about 350 bytes a unit of the count
+// when every value carries comments — each `#` weighed two. Measured at the
+// ceiling of the default budget (2,097,152 units), the peak memory of one
+// process each, over several runs of the same input: 396-423 MiB on
+// a flow mapping of one-letter keys, the densest values; 535-692 MiB on
+// the densest comments, a `- a #l` entry with a blank-line-wrapped `#f`
+// after it (three comment readings a value), the worst shape found; and
+// 481-676 MiB for those comments read through author.Parse, the CLI's door
+// (the 676 in one of nine runs of the same input). No ceiling with no
+// budget.
+func decodeCeiling(budget int) int {
+	if budget > math.MaxInt/2 {
+		return math.MaxInt
+	}
+	return 2 * budget
+}
+
+// pastReadBudget is the node of the document — doc its DocumentNode — at
+// which its reading passes the read budget: every value spends one record,
+// every line of a comment yaml.v3 holds on a node two, as the .bot's own
+// reading charges a comment (a comment yaml.v3 drops costs the tree
+// nothing). nil within the budget.
+func pastReadBudget(doc *yaml.Node, budget int) *yaml.Node {
+	spent := 0
+	var at *yaml.Node
+	var walk func(n *yaml.Node) bool
+	walk = func(n *yaml.Node) bool {
+		if n.Kind != yaml.DocumentNode {
+			spent++
+		}
+		spent += 2 * (commentLineCount(n.HeadComment) + commentLineCount(n.LineComment) + commentLineCount(n.FootComment))
+		if spent > budget {
+			at = n
+			return false
+		}
+		for _, c := range n.Content {
+			if !walk(c) {
+				return false
+			}
+		}
+		return true
+	}
+	walk(doc)
+	return at
+}
+
+// commentLineCount counts the lines of a comment yaml.v3 holds on a node,
+// the blank ones aside — what Comments lists of it (commentLines), with
+// nothing allocated.
+func commentLineCount(c string) int {
+	n := 0
+	for len(c) > 0 {
+		line, rest, _ := strings.Cut(c, "\n")
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+		c = rest
+	}
+	return n
+}
+
+// errNotRead is the cause of a document readFirst does not decode: past a
+// bound of its reader, or not UTF-8.
+var errNotRead = errors.New("not read")
+
+// readFirst decodes the first YAML document of src within its reader's
+// bounds — the size cap, UTF-8, the decode's ceiling before it runs and the
+// read budget after it — the one way this package reads a document's YAML
+// besides decode, which says why it refuses one. nil and no error for a
+// text that holds no document; the decoder, for a caller that asks what
+// follows.
+func readFirst(src []byte) (*yaml.Node, *yaml.Decoder, error) {
+	if len(src) > maxSourceSize {
+		return nil, nil, fmt.Errorf("%w: the text exceeds the maximum size (%d bytes > %d)", errNotRead, len(src), maxSourceSize)
+	}
+	if at := invalidUTF8(src); at >= 0 {
+		return nil, nil, fmt.Errorf("%w: the text is not UTF-8 (byte %d)", errNotRead, at)
+	}
+	budget := parser.ReadBudget()
+	if r := workflowfile.CheckYAMLDecode(src, decodeCeiling(budget), true); r != nil {
+		return nil, nil, fmt.Errorf("%w: %v", errNotRead, r)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(src))
+	var doc yaml.Node
+	if err := dec.Decode(&doc); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, dec, nil
+		}
+		return nil, nil, err
+	}
+	if at := pastReadBudget(&doc, budget); at != nil {
+		return nil, nil, fmt.Errorf("%w: line %d: the text is past the read budget of %d", errNotRead, at.Line, budget)
+	}
+	return &doc, dec, nil
+}
+
+// ReadOne decodes src as one YAML document, within the bounds every reading
+// of a document is held to (readFirst): its DocumentNode — nil for a text
+// that holds nothing but blanks — or an error for a text that is not one
+// YAML document, comments alone included, or that passes a bound. The
+// door for a reader of a document's YAML outside this package.
+func ReadOne(src []byte) (*yaml.Node, error) {
+	if len(bytes.TrimSpace(bytes.TrimPrefix(src, []byte("\ufeff")))) == 0 {
+		return nil, nil
+	}
+	doc, dec, err := readFirst(src)
+	if err != nil {
+		return nil, err
+	}
+	if doc == nil {
+		return nil, errors.New("no YAML document")
+	}
+	if err := dec.Decode(&yaml.Node{}); !errors.Is(err, io.EOF) {
+		return nil, errors.New("a second YAML document follows")
+	}
+	return doc, nil
+}
 
 // yamlLineRe reads the line number a reader writes into its own errors
 // ("yaml: line 3: mapping values are not allowed in this context"), where
@@ -93,31 +246,45 @@ func documentEndLine(src []byte, from, to int) int {
 // is not YAML, no document at all, a second document (a `---` separator
 // among them), and — on the tree — every construct guardTree refuses.
 // When the document reads, the second return carries the guard's warnings,
-// never refusals.
-func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
+// never refusals, and the third every comment reading of them, reported
+// or not (Result.CommentReadings).
+func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic, []parser.Diagnostic) {
 	if len(src) > maxSourceSize {
-		return nil, []parser.Diagnostic{docDiag(name, 1, 1, fmt.Sprintf("the document exceeds the maximum size (%d bytes > %d)", len(src), maxSourceSize))}
+		d := docDiag(name, 1, 1, fmt.Sprintf("the document exceeds the maximum size (%d bytes > %d)", len(src), maxSourceSize))
+		d.Hint = docSizeHint
+		return nil, []parser.Diagnostic{d}, nil
 	}
 	// yaml.v3 also reads UTF-16; every reader of the source at a node's
 	// position reads UTF-8 (sourceLines), as the .bot it stands for is.
 	if at := invalidUTF8(src); at >= 0 {
-		return nil, []parser.Diagnostic{docDiag(name, len(sourceLines(src[:at])), 1, fmt.Sprintf("the document is not UTF-8 text (byte %d): write it in UTF-8, as the .bot it stands for is", at))}
+		return nil, []parser.Diagnostic{docDiag(name, len(sourceLines(src[:at])), 1, fmt.Sprintf("the document is not UTF-8 text (byte %d): write it in UTF-8, as the .bot it stands for is", at))}, nil
+	}
+	budget := parser.ReadBudget()
+	if r := workflowfile.CheckYAMLDecode(src, decodeCeiling(budget), true); r != nil {
+		d := docDiag(name, r.Line, r.Column, fmt.Sprintf("the document may hold more values than its reader decodes, %d: counted before it is read, %s as the values and comments it can open — the reader stops here", r.Ceiling, r.Counted()))
+		d.Hint = docDecodeHint
+		return nil, []parser.Diagnostic{d}, nil
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(src))
 	var doc yaml.Node
 	if err := dec.Decode(&doc); err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, []parser.Diagnostic{docDiag(name, 1, 1, "the document is empty: nothing to read")}
+			return nil, []parser.Diagnostic{docDiag(name, 1, 1, "the document is empty: nothing to read")}, nil
 		}
 		cause := workflowfile.YAMLCauses(workflowfile.YAMLv3, err)[0]
 		line := 1
 		if cause.Line > 0 {
 			line = cause.Line
 		}
-		return nil, []parser.Diagnostic{docDiag(name, line, 1, "not YAML: "+err.Error()+YAMLRemedy(cause))}
+		return nil, []parser.Diagnostic{docDiag(name, line, 1, "not YAML: "+err.Error()+YAMLRemedy(cause))}, nil
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return nil, []parser.Diagnostic{docDiag(name, 1, 1, "the document is empty: nothing to read")}
+		return nil, []parser.Diagnostic{docDiag(name, 1, 1, "the document is empty: nothing to read")}, nil
+	}
+	if at := pastReadBudget(&doc, budget); at != nil {
+		d := docDiag(name, at.Line, at.Column, fmt.Sprintf("the document is past the read budget of %d — every value spends one record, a comment line two, as the .bot's reading does: the reader stops here", budget))
+		d.Hint = docReadBudgetHint
+		return nil, []parser.Diagnostic{d}, nil
 	}
 	var second yaml.Node
 	if err := dec.Decode(&second); !errors.Is(err, io.EOF) {
@@ -164,12 +331,12 @@ func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 		if err != nil {
 			msg += ", and it is not YAML: " + yamlErrorAtLine(err.Error(), line) + YAMLRemedy(cause)
 		}
-		return nil, []parser.Diagnostic{docDiag(name, line, 1, msg)}
+		return nil, []parser.Diagnostic{docDiag(name, line, 1, msg)}, nil
 	}
 	root := doc.Content[0]
-	errs, warns := guardTree(name, root, src)
+	errs, warns, readings := guardTree(name, root, src)
 	if len(errs) > 0 {
-		return nil, errs
+		return nil, errs, nil
 	}
 	// The document reads: the guard's warnings ride back beside the
 	// converter's and the parser's (a warning never refuses), and the
@@ -178,7 +345,7 @@ func decode(name string, src []byte) (*yaml.Node, []parser.Diagnostic) {
 	if n := separatorNotice(name, src); n != nil {
 		warns = append(warns, *n)
 	}
-	return root, warns
+	return root, warns, readings
 }
 
 // yamlContextProblems are the problem strings a YAML parser raises with a
@@ -569,10 +736,10 @@ func yamlPositionNote(cause workflowfile.YAMLCause) string {
 // starts a comment at a plain text value's tail — the one placement where
 // the comment may be a value cut short — and carries the warnings back
 // apart from the refusals: a warning never refuses a document.
-func guardTree(name string, root *yaml.Node, src []byte) (diags, warns []parser.Diagnostic) {
+func guardTree(name string, root *yaml.Node, src []byte) (diags, warns, readings []parser.Diagnostic) {
 	g := &guard{name: name, lines: sourceLines(src), rawLines: strings.Split(strings.TrimPrefix(string(src), "\ufeff"), "\n")}
 	g.walk(root, 0)
-	return g.diags, g.warns
+	return g.errs.Diagnostics(), g.warns.Diagnostics(), g.readings
 }
 
 // sourceLines cuts src into the lines yaml.v3's positions count: a UTF-8
@@ -602,22 +769,64 @@ type guard struct {
 	// rawLines is the source split on "\n" only: a raw CR, NEL, LS or PS
 	// stays in its line's bytes, where sourceLines had folded it away.
 	rawLines []string
-	count    int
-	diags    []parser.Diagnostic
-	warns    []parser.Diagnostic
+	// linesAt and rawAt find node positions on lines and rawLines.
+	linesAt, rawAt lineCursor
+	// errs and warns are the refusals and the warnings, apart: a warning
+	// never refuses the document. readings is every comment reading of
+	// them, reported or not: the canonical form compares them all between
+	// a document and its written form.
+	errs, warns parser.Report
+	readings    []parser.Diagnostic
+}
+
+// lineCursor finds a rune column on a line of the source and remembers
+// where it found the last one. The walk visits nodes in document order, so
+// on a line holding many of them — a flow sequence written on one line —
+// each search starts where the previous one ended, and the line is read
+// once rather than once per node.
+type lineCursor struct {
+	line, col, off int // the last position found: 1-based line and rune column, its byte offset
+}
+
+// readSteps counts the characters the position readers decode — the line
+// cursor and the character cache (charLines) — for a test to hold the work
+// of reading a long line to the line's length. It is the process's, so a
+// witness reading it measures every reading running beside its own: no
+// test of this package runs in parallel or reads from a goroutine, which
+// TestTheStepWitnessesRunAlone holds.
+var readSteps atomic.Int64
+
+// tail is lines[line-1] from rune column col (1-based) to the end of the
+// line — a substring, never a copy, "" at the line's end — and whether the
+// column is on the line or just past its last character; false for a
+// position off the source.
+func (c *lineCursor) tail(lines []string, line, col int) (string, bool) {
+	if line < 1 || line > len(lines) || col < 1 {
+		return "", false
+	}
+	s := lines[line-1]
+	at, off := 1, 0
+	if c.line == line && c.col <= col {
+		at, off = c.col, c.off
+	}
+	from := at
+	defer func() { readSteps.Add(int64(at - from)) }()
+	for ; at < col; at++ {
+		if off >= len(s) {
+			return "", false
+		}
+		_, size := utf8.DecodeRuneInString(s[off:])
+		off += size
+	}
+	c.line, c.col, c.off = line, col, off
+	return s[off:], true
 }
 
 // at is the source from node n's position to the end of its line, "" when
 // the position is not on a line of the source.
 func (g *guard) at(n *yaml.Node) string {
-	if n.Line < 1 || n.Line > len(g.lines) {
-		return ""
-	}
-	line := []rune(g.lines[n.Line-1])
-	if col := n.Column - 1; col >= 0 && col < len(line) {
-		return string(line[col:])
-	}
-	return ""
+	rest, _ := g.linesAt.tail(g.lines, n.Line, n.Column)
+	return rest
 }
 
 // droppedBang reports whether YAML read a `!` at scalar n's position as a
@@ -631,17 +840,47 @@ func (g *guard) droppedBang(n *yaml.Node) bool {
 	return n.Kind == yaml.ScalarNode && n.Style&yaml.TaggedStyle == 0 && strings.HasPrefix(g.at(n), "!")
 }
 
-// excerpt is v cut short for a message: its first line, 60 characters at most.
+// excerpt is v cut short for a message: its first line, 60 characters at
+// most. It reads no further than it keeps: v may be the rest of a line
+// holding a million values, and a caller hands it no more than
+// excerptWindow bytes of it.
 func excerpt(v string) string {
-	v, _, _ = strings.Cut(v, "\n")
-	if r := []rune(v); len(r) > 60 {
-		return string(r[:60]) + "\u2026"
+	n := 0
+	for i, r := range v {
+		switch {
+		case r == '\n':
+			return v[:i]
+		case n == 60:
+			return v[:i] + "\u2026"
+		}
+		n++
+	}
+	return v
+}
+
+// excerptWindow is the most of a line excerpt is handed: its 60 characters
+// and the one that says there are more, four bytes at most each.
+const excerptWindow = 61 * utf8.UTFMax
+
+// window is v cut to excerptWindow bytes: what excerpt reads of it, and no
+// more however long the line.
+func window(v string) string {
+	if len(v) > excerptWindow {
+		return v[:excerptWindow]
 	}
 	return v
 }
 
 func (g *guard) refuse(n *yaml.Node, msg string) {
-	g.diags = append(g.diags, docDiag(g.name, n.Line, n.Column, msg))
+	g.errs.Add(docDiag(g.name, n.Line, n.Column, msg))
+}
+
+// refuseBound refuses a document past one of the reader's bounds, with the
+// bound's own remedy (docDepthHint).
+func (g *guard) refuseBound(n *yaml.Node, msg, hint string) {
+	d := docDiag(g.name, n.Line, n.Column, msg)
+	d.Hint = hint
+	g.errs.Add(d)
 }
 
 // warn says what the document reads otherwise without refusing it: the
@@ -655,10 +894,14 @@ func (g *guard) warn(n *yaml.Node, msg string) {
 	if col < 1 {
 		col = 1
 	}
-	g.warns = append(g.warns, parser.Diagnostic{
+	d := parser.Diagnostic{
 		Code: parser.DiagAuthorPromptBody, Severity: parser.SeverityWarning,
 		Message: msg, File: g.name, Line: line, Column: col,
-	})
+	}
+	g.warns.Add(d)
+	if IsCommentReading(d) {
+		g.readings = append(g.readings, d)
+	}
 }
 
 // rawFoldBreak refuses a quoted scalar whose SOURCE line carries a raw
@@ -667,15 +910,11 @@ func (g *guard) warn(n *yaml.Node, msg string) {
 // else says so (#1814). An LS or a PS is kept as written: it reads back
 // byte for byte, and stays the author's.
 func (g *guard) rawFoldBreak(n *yaml.Node) {
-	if n.Line < 1 || n.Line > len(g.rawLines) {
+	rest, _ := g.rawAt.tail(g.rawLines, n.Line, n.Column)
+	tail := strings.TrimSuffix(rest, "\r")
+	if tail == "" {
 		return
 	}
-	line := strings.TrimSuffix(g.rawLines[n.Line-1], "\r")
-	runes := []rune(line)
-	if n.Column < 1 || n.Column-1 >= len(runes) {
-		return
-	}
-	tail := string(runes[n.Column-1:])
 	// The scan stops at the value's closing quote: everything past it is
 	// the rest of the document, and a CR or NEL there is a LINE TERMINATOR
 	// yaml.v3 honours, not a fold inside the value.
@@ -735,15 +974,8 @@ func (g *guard) walk(n *yaml.Node, depth int) {
 	if n == nil {
 		return
 	}
-	g.count++
-	if g.count > maxNodes {
-		if g.count == maxNodes+1 {
-			g.refuse(n, fmt.Sprintf("the document holds more than %d values", maxNodes))
-		}
-		return
-	}
 	if depth > maxNestingDepth {
-		g.refuse(n, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth))
+		g.refuseBound(n, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth), docDepthHint)
 		return
 	}
 	if n.Anchor != "" {
@@ -753,7 +985,7 @@ func (g *guard) walk(n *yaml.Node, depth int) {
 		g.refuse(n, "an explicit tag ("+n.Tag+") is not read: the value's shape decides its type")
 	}
 	if g.droppedBang(n) {
-		g.refuse(n, "YAML reads a `!` before a value as a tag and drops it — `"+excerpt(g.at(n))+"` would be read without it: quote the whole value if the `!` is part of it")
+		g.refuse(n, "YAML reads a `!` before a value as a tag and drops it — `"+excerpt(window(g.at(n)))+"` would be read without it: quote the whole value if the `!` is part of it")
 	}
 	if n.Kind == yaml.ScalarNode && n.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) != 0 {
 		g.rawFoldBreak(n)
@@ -764,10 +996,13 @@ func (g *guard) walk(n *yaml.Node, depth int) {
 		return
 	case yaml.MappingNode:
 		seen := map[string]int{}
+		// Read where the mapping starts, before its entries move the
+		// cursor past it.
+		template := strings.HasPrefix(g.at(n), "{{")
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
 			switch {
-			case k.Kind == yaml.MappingNode && strings.HasPrefix(g.at(n), "{{"):
+			case k.Kind == yaml.MappingNode && template:
 				// `user: {{input.task}}` reads as a mapping whose key is a
 				// mapping: a template written unquoted.
 				g.refuse(k, "a key is a plain word, not a mapping — a value that starts with `{{` (a template) is read by YAML as a mapping: quote the whole value")

@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,7 +45,7 @@ func compileAt(t *testing.T, botPath, src string) *CompileResult {
 	if err := os.WriteFile(botPath, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res := parser.Parse(botPath, src)
+	res := parsertest.Parse(botPath, src)
 	for _, d := range res.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("parse error: %s", d.Error())

@@ -85,10 +85,16 @@ export async function captureActiveEditorDocument(
   const state = store.getState();
   if (!state.document) return null;
 
+  // A salvage the server's READER made (a read budget, a size cap) is no
+  // document of the file: what it holds is what was read — nothing, or a
+  // bot's files short of the cut — and Copi would write its proposal from
+  // it as from the file. Withheld, as a document past the size limit is,
+  // with the refusal said.
+  const readRefusal = state.salvaged ? state.readRefusal : null;
   // Unparse the AST snapshot, not currentSource: currentSource is a cache of
   // the last open/save/source-edit operation and can lag canvas mutations.
-  const { source } = await api.unparse(state.document);
-  const complete = source.length <= activeEditorSourceLimit();
+  const source = readRefusal ? "" : (await api.unparse(state.document)).source;
+  const complete = !readRefusal && source.length <= activeEditorSourceLimit();
   const sessionId = tokenForTab(tabId);
   let authoring: AssistantAuthoringSnapshot | undefined;
   let sharedBundle: api.SharedBundleFileMetadata | undefined;
@@ -126,6 +132,7 @@ export async function captureActiveEditorDocument(
     sourceLength: source.length,
     dirty: state.hasUnsavedWork(),
     ...(complete ? { source } : {}),
+    ...(readRefusal ? { readRefusal } : {}),
     ...(authoring ? { authoring } : {}),
     ...(sharedBundle ? { sharedBundle } : {}),
   };

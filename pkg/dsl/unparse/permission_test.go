@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -60,7 +61,7 @@ workflow minimal:
   gate -> ship
   ship -> done
 `
-	pr1 := parser.Parse("permission.bot", src)
+	pr1 := parsertest.Parse("permission.bot", src)
 	for _, d := range pr1.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("original parse error: %s", d.Error())
@@ -88,7 +89,7 @@ workflow minimal:
 		}
 	}
 
-	pr2 := parser.Parse("permission.bot.roundtrip", unparsed)
+	pr2 := parsertest.Parse("permission.bot.roundtrip", unparsed)
 	for _, d := range pr2.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("re-parse error: %s\nUnparsed:\n%s", d.Error(), unparsed)

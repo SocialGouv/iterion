@@ -3,6 +3,7 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -54,7 +55,7 @@ workflow feature_dev:
 func compileContractProgram(t *testing.T, contract, named string) *CompileResult {
 	t.Helper()
 	src := fmt.Sprintf(contractProgramFmt, contract, named)
-	pr := parser.Parse("x.bot", src)
+	pr := parsertest.Parse("x.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("fixture does not parse: %s\n%s", d.Error(), src)
@@ -258,7 +259,7 @@ func TestAnUnregisteredCriterionKindIsAWarning(t *testing.T) {
 // number — is refused where it is declared, so the writer never meets it.
 func TestAContractDefaultTheTextCannotWriteIsRefusedAtCompile(t *testing.T) {
 	src := fmt.Sprintf(contractProgramFmt, "contract c:\n  inputs:\n    depth: int\n      required: false\n      default: 1\n", "c")
-	pr := parser.Parse("x.bot", src)
+	pr := parsertest.Parse("x.bot", src)
 	pr.File.Contracts[0].Inputs[0].Default = json.RawMessage("-1")
 	cr := Compile(pr.File)
 	if diagWith(cr, DiagContractCriterion, "no signed number and no exponent") == nil {
@@ -333,7 +334,7 @@ func TestAnInputMirrorsItsVar(t *testing.T) {
 // binds; an unknown producer names the instance rule.
 func TestAContractBindsToAGroupInstance(t *testing.T) {
 	src := "vars:\n  goal: string\n\nschema report:\n  summary: string\n\nprompt inspect_prompt:\n  Inspect {{vars.goal}}.\n\ngroup check(rule):\n  agent inspect:\n    model: \"anthropic/claude-sonnet-4-6\"\n    user: inspect_prompt\n    output: report\n\nuse check as security with {\n  rule: \"security\"\n}\n\ncontract c:\n  inputs:\n    goal: string\n  outputs:\n    summary: string\n      from: security.inspect.summary\n\nworkflow grouped:\n  contract: c\n  entry: security.inspect\n  security.inspect -> done\n"
-	pr := parser.Parse("x.bot", src)
+	pr := parsertest.Parse("x.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("fixture: %s", d.Error())
@@ -346,7 +347,7 @@ func TestAContractBindsToAGroupInstance(t *testing.T) {
 	if out := cr.Workflow.Contract.Outputs[0]; out.FromNode != "security.inspect" || out.FromField != "summary" {
 		t.Fatalf("the instance binding came out as %+v", out)
 	}
-	cr = Compile(parser.Parse("x.bot", strings.Replace(src, "from: security.inspect.summary", "from: security.nope.summary", 1)).File)
+	cr = Compile(parsertest.Parse("x.bot", strings.Replace(src, "from: security.inspect.summary", "from: security.nope.summary", 1)).File)
 	if diagWith(cr, DiagContractOutput, "an instance of a group is named") == nil {
 		t.Fatalf("an unknown instance was not named: %v", cr.Diagnostics)
 	}
@@ -358,7 +359,7 @@ func TestAContractBindsToAGroupInstance(t *testing.T) {
 func TestAContractBindsToAnImplicitOutputField(t *testing.T) {
 	base := "vars:\n  goal: string\n\nschema out:\n  text: string\n\nprompt work:\n  Ask about {{vars.goal}}.\n\nprompt reader:\n  The answers were {{outputs.gate.answers}}.\n\nagent asker:\n  model: \"anthropic/claude-sonnet-4-6\"\n  user: work\n  output: out\n  interaction: async\n\nawait_answers gate:\n  from: asker\n  timeout: \"10m\"\n\nagent reads:\n  model: \"anthropic/claude-sonnet-4-6\"\n  user: reader\n  output: out\n\ncontract c:\n  inputs:\n    goal: string\n  outputs:\n    answers: %s\n      from: %s\n\nworkflow w:\n  contract: c\n  entry: asker\n  asker -> gate\n  gate -> reads\n  reads -> done\n"
 	compile := func(typ, from string) *CompileResult {
-		pr := parser.Parse("x.bot", fmt.Sprintf(base, typ, from))
+		pr := parsertest.Parse("x.bot", fmt.Sprintf(base, typ, from))
 		return Compile(pr.File)
 	}
 	if cr := compile("json", "gate.answers"); len(errorCodes(cr)) != 0 || cr.Workflow.Contract.Outputs[0].FromField != "answers" {
@@ -379,7 +380,7 @@ func TestAContractBindsToAnImplicitOutputField(t *testing.T) {
 // bot fails: a warning names the node, and the contract still compiles.
 func TestAnOutputProducedOnlyOnFailureIsAWarning(t *testing.T) {
 	src := "vars:\n  goal: string\n\nschema report:\n  summary: string\n  ok: bool\n\nprompt build_user:\n  Implement {{vars.goal}}.\n\nprompt rescue_user:\n  Explain the failure.\n\nagent build:\n  model: \"anthropic/claude-sonnet-4-6\"\n  user: build_user\n  output: report\n\nagent rescue:\n  model: \"anthropic/claude-sonnet-4-6\"\n  user: rescue_user\n  output: report\n\ncontract c:\n  inputs:\n    goal: string\n  outputs:\n    summary: string\n      from: %s.summary\n\nworkflow w:\n  contract: c\n  entry: build\n  build -> done when ok\n  build -> rescue else\n  rescue -> fail\n"
-	cr := Compile(parser.Parse("x.bot", fmt.Sprintf(src, "rescue")).File)
+	cr := Compile(parsertest.Parse("x.bot", fmt.Sprintf(src, "rescue")).File)
 	if len(errorCodes(cr)) != 0 {
 		t.Fatalf("errors: %v", cr.Diagnostics)
 	}
@@ -387,7 +388,7 @@ func TestAnOutputProducedOnlyOnFailureIsAWarning(t *testing.T) {
 	if d == nil || d.Severity != SeverityWarning || d.Line == 0 {
 		t.Fatalf("no positioned C304 warning: %v", cr.Diagnostics)
 	}
-	if cr := Compile(parser.Parse("x.bot", fmt.Sprintf(src, "build")).File); diagWith(cr, DiagContractOutputOffSuccess, "") != nil {
+	if cr := Compile(parsertest.Parse("x.bot", fmt.Sprintf(src, "build")).File); diagWith(cr, DiagContractOutputOffSuccess, "") != nil {
 		t.Fatalf("a producer on the success path drew C304: %v", cr.Diagnostics)
 	}
 }
@@ -397,11 +398,11 @@ func TestAnOutputProducedOnlyOnFailureIsAWarning(t *testing.T) {
 // workflow's own line.
 func TestAContractCarriesTheVarEnumAndPositionsTheWorkflowRefusal(t *testing.T) {
 	src := "vars:\n  mode: string [enum: \"fast\", \"slow\"]\n\ncontract c:\n  inputs:\n    mode: string\n\nagent a:\n  model: \"m\"\n  description: \"d\"\n\nworkflow w:\n  contract: %s\n  entry: a\n  a -> done\n"
-	cr := Compile(parser.Parse("x.bot", fmt.Sprintf(src, "c")).File)
+	cr := Compile(parsertest.Parse("x.bot", fmt.Sprintf(src, "c")).File)
 	if got := cr.Workflow.Contract.Inputs[0].EnumValues; len(got) != 2 || got[0] != "fast" {
 		t.Fatalf("the enum came out as %v (%v)", got, cr.Diagnostics)
 	}
-	cr = Compile(parser.Parse("x.bot", fmt.Sprintf(src, "nope")).File)
+	cr = Compile(parsertest.Parse("x.bot", fmt.Sprintf(src, "nope")).File)
 	d := diagWith(cr, DiagContractInput, `names contract "nope"`)
 	if d == nil || d.Line != 12 {
 		t.Fatalf("the workflow refusal is not at the workflow's line (12): %+v", d)
@@ -418,7 +419,7 @@ func TestAContractCarriesTheVarEnumAndPositionsTheWorkflowRefusal(t *testing.T) 
 // reddens.
 func TestAnOutputBoundInsideAFanOutBodyIsAWarning(t *testing.T) {
 	src := "vars:\n  goal: string\n\nschema report:\n  summary: string\n  ok: bool\n\nprompt build_user:\n  Work toward {{vars.goal}} on {{outputs.pick.item}}.\n\nprompt lane_user:\n  Lane work toward {{vars.goal}}.\n\nprompt merge_user:\n  Lane summaries: {{outputs.left.summary}} and {{outputs.right.summary}}.\n\nagent build:\n  model: \"m\"\n  user: build_user\n  output: report\n\nagent left:\n  model: \"m\"\n  user: lane_user\n  output: report\n\nagent right:\n  model: \"m\"\n  user: lane_user\n  output: report\n\nagent merge:\n  model: \"m\"\n  user: merge_user\n  output: report\n\nrouter pick:\n  mode: fan_out_each\n  over: \"[\\\"a\\\", \\\"b\\\"]\"\n  as: item\n\ncontract c:\n  inputs:\n    goal: string\n  outputs:\n    summary: string\n      from: %s.summary\n\nworkflow w:\n  contract: c\n  entry: pick\n  pick -> build\n  build -> left when ok\n  build -> right else\n  left -> merge\n  right -> merge\n  merge -> done\n"
-	cr := Compile(parser.Parse("x.bot", fmt.Sprintf(src, "build")).File)
+	cr := Compile(parsertest.Parse("x.bot", fmt.Sprintf(src, "build")).File)
 	if len(errorCodes(cr)) != 0 {
 		t.Fatalf("errors: %v", cr.Diagnostics)
 	}
@@ -428,7 +429,7 @@ func TestAnOutputBoundInsideAFanOutBodyIsAWarning(t *testing.T) {
 	}
 	// The convergence node is where the branches join and execution is
 	// single again: the deterministic answer, no warning.
-	if cr := Compile(parser.Parse("x.bot", fmt.Sprintf(src, "merge")).File); diagWith(cr, DiagContractOutputOffFanOut, "") != nil {
+	if cr := Compile(parsertest.Parse("x.bot", fmt.Sprintf(src, "merge")).File); diagWith(cr, DiagContractOutputOffFanOut, "") != nil {
 		t.Fatalf("a producer at the convergence drew C310: %v", cr.Diagnostics)
 	}
 }
@@ -439,7 +440,7 @@ func TestAnOutputBoundInsideAFanOutBodyIsAWarning(t *testing.T) {
 // the foreach case reddens.
 func TestAnOutputBoundInsideAForeachBodyIsAWarning(t *testing.T) {
 	src := "vars:\n  goal: string\n\nschema report:\n  summary: string\n  ok: bool\n\nprompt build_user:\n  Work toward {{vars.goal}}.\n\nprompt merge_user:\n  Summaries: {{outputs.build.summary}}.\n\nagent build:\n  model: \"m\"\n  user: build_user\n  output: report\n\nagent merge:\n  model: \"m\"\n  user: merge_user\n  output: report\n\ncontract c:\n  inputs:\n    goal: string\n  outputs:\n    summary: string\n      from: build.summary\n\nworkflow w:\n  contract: c\n  entry: build\n  build -> merge when ok as foreach scan(item in \"[\\\"a\\\", \\\"b\\\"]\")\n  build -> merge\n  merge -> done\n"
-	cr := Compile(parser.Parse("x.bot", src).File)
+	cr := Compile(parsertest.Parse("x.bot", src).File)
 	if len(errorCodes(cr)) != 0 {
 		t.Fatalf("errors: %v", cr.Diagnostics)
 	}

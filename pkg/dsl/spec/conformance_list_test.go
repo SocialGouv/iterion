@@ -3,11 +3,11 @@ package spec_test
 import (
 	"bytes"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 )
 
@@ -41,8 +41,8 @@ func TestEveryListPropertyReadsBothForms(t *testing.T) {
 			for _, it := range strings.Split(items, ",") {
 				dash.WriteString("\n" + indent + "  - " + strings.TrimSpace(it))
 			}
-			a := parser.Parse("inline.bot", fmt.Sprintf(line, inline))
-			b := parser.Parse("dash.bot", fmt.Sprintf(line, dash.String()))
+			a := parsertest.Parse("inline.bot", fmt.Sprintf(line, inline))
+			b := parsertest.Parse("dash.bot", fmt.Sprintf(line, dash.String()))
 			if len(a.Diagnostics) != 0 || len(b.Diagnostics) != 0 {
 				t.Errorf("%s.%s (%s): inline %v, dash %v\n%s", kind, p.Name, p.Form, a.Diagnostics, b.Diagnostics, fmt.Sprintf(line, dash.String()))
 				continue

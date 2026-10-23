@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
@@ -10,7 +11,7 @@ import (
 // than one file with no error: the embedded bot landed with its fragments.
 func wholeUnitAt(t *testing.T, p string) {
 	t.Helper()
-	u := unit.LoadDir(p)
+	u := unittest.Whole(unit.LoadDir(p))
 	if u.HasErrors() {
 		for _, d := range u.Diagnostics {
 			t.Errorf("%s", d.Error())

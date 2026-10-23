@@ -61,8 +61,11 @@ func (e *Engine) recordedSources() (string, []store.WorkflowSourceFile) {
 	if e.filePath == "" {
 		return "", nil
 	}
-	u := unit.LoadDir(e.filePath)
-	if len(u.Files) == 0 || u.HasErrors() {
+	// A unit the read budget cuts short is no unit to record: the main's
+	// text alone is, as for one that does not load — the readers of a
+	// unit run recorded main-only refuse it.
+	u, err := unit.LoadDir(e.filePath)
+	if err != nil || len(u.Files) == 0 || u.HasErrors() {
 		info, err := os.Stat(e.filePath)
 		if err != nil || info.Size() > maxPersistedWorkflowSource {
 			return "", nil

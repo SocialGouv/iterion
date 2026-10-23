@@ -98,11 +98,41 @@ describe("EditorChangeOffer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Save current file" }));
     await screen.findByText("Editor change saved");
+    // The digest rule: the save presents the digest the tab's open issued
+    // (none in this fixture — the store's openedDigest is null — so the
+    // options are absent and the server refuses an existing file's save).
     expect(api.saveFile).toHaveBeenCalledWith(
       "bots/demo/main.bot",
       store.getState().document,
+      undefined,
     );
     expect(store.getState().isDirty()).toBe(false);
+  });
+
+  it("the save's answer refreshes the tab's write claim", async () => {
+    const { store } = await liveProposal();
+    store.getState().setOpenedDigest("sha-open");
+    api.saveFile.mockResolvedValueOnce({
+      path: "bots/demo/main.bot",
+      source: "workflow changed:\n  entry: b\n",
+      digest: "sha-saved",
+    });
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    const apply = await screen.findByRole("button", { name: "Apply to editor" });
+    await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(apply);
+    await screen.findByText(/nothing has been written to disk/i);
+    fireEvent.click(screen.getByRole("button", { name: "Save current file" }));
+    await screen.findByText("Editor change saved");
+    // The save presented the tab's digest; the store now holds what the
+    // save answered, so the offer's second save presents that one.
+    expect(api.saveFile).toHaveBeenCalledWith(
+      "bots/demo/main.bot",
+      expect.anything(),
+      { digest: "sha-open" },
+    );
+    expect(store.getState().openedDigest).toBe("sha-saved");
   });
 
   it("refuses a proposal after the operator changed the captured document", async () => {

@@ -14,7 +14,10 @@ import (
 // shipped as a "draft the operator will fix". Non-error diagnostics
 // are folded into the report so warnings stay visible.
 func validateDraft(srcFile, botSrc string, rep *Report) error {
-	pr := parser.Parse(srcFile+".bot", botSrc)
+	pr, err := parser.Parse(srcFile+".bot", botSrc)
+	if err != nil {
+		return fmt.Errorf("the generated draft is not read: %w", err)
+	}
 	var errs []string
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {

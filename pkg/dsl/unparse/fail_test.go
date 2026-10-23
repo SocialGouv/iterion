@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -30,7 +31,7 @@ workflow w:
   gate -> plan_exhausted when too_slow
   gate -> not_actionable else
 `
-	first := parser.Parse("t.bot", src)
+	first := parsertest.Parse("t.bot", src)
 	for _, d := range first.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("parse error: %s", d.Error())
@@ -42,7 +43,7 @@ workflow w:
 		t.Fatalf("unparse dropped the fail declaration:\n%s", out)
 	}
 
-	second := parser.Parse("t.bot", out)
+	second := parsertest.Parse("t.bot", out)
 	for _, d := range second.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("re-parse error: %s\n--- unparsed ---\n%s", d.Error(), out)

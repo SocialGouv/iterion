@@ -80,7 +80,7 @@ func TestBotSource_EndToEnd(t *testing.T) {
 	body2, _ := json.Marshal(botSourcePutReq{Files: map[string]string{
 		botsource.MainBotFile: testBotMain,
 		"skills/help.md":      "# help\n",
-	}, Version: 1})
+	}, Version: 1, ID: created.ID, StoredSHA256: map[string]string{botsource.MainBotFile: contentSHA256(testBotMain)}})
 	w2 := put("reviewer", string(body2))
 	if w2.Code != http.StatusOK {
 		t.Fatalf("update = %d: %s", w2.Code, w2.Body.String())

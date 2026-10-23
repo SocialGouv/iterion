@@ -32,7 +32,7 @@ workflow flow:
 }
 
 func TestSandbox_ShortFormAuto(t *testing.T) {
-	res := parser.Parse("test.bot", agentWithSandbox("  sandbox: auto"))
+	res := parser.ParseLenient("test.bot", agentWithSandbox("  sandbox: auto"))
 	assertNoDiags(t, res)
 	sb := res.File.Agents[0].Sandbox
 	if sb == nil {
@@ -43,13 +43,13 @@ func TestSandbox_ShortFormAuto(t *testing.T) {
 }
 
 func TestSandbox_ShortFormNone(t *testing.T) {
-	res := parser.Parse("test.bot", agentWithSandbox("  sandbox: none"))
+	res := parser.ParseLenient("test.bot", agentWithSandbox("  sandbox: none"))
 	assertNoDiags(t, res)
 	assertEq(t, "Mode", res.File.Agents[0].Sandbox.Mode, "none")
 }
 
 func TestSandbox_BlockFormImageOnly(t *testing.T) {
-	res := parser.Parse("test.bot", agentWithSandbox(`  sandbox:
+	res := parser.ParseLenient("test.bot", agentWithSandbox(`  sandbox:
     image: "iterion-sandbox-slim:1.2.3"
     user: "iterion"
     workspace_folder: "/workspace"`))
@@ -66,7 +66,7 @@ func TestSandbox_BlockFormImageOnly(t *testing.T) {
 }
 
 func TestSandbox_BlockFormBuild(t *testing.T) {
-	res := parser.Parse("test.bot", agentWithSandbox(`  sandbox:
+	res := parser.ParseLenient("test.bot", agentWithSandbox(`  sandbox:
     build:
       dockerfile: "Containerfile"
       context: ".devcontainer"
@@ -89,7 +89,7 @@ func TestSandbox_BlockFormBuild(t *testing.T) {
 }
 
 func TestSandbox_BlockFormNetwork(t *testing.T) {
-	res := parser.Parse("test.bot", agentWithSandbox(`  sandbox:
+	res := parser.ParseLenient("test.bot", agentWithSandbox(`  sandbox:
     image: "iterion-sandbox-slim:1.2.3"
     network:
       mode: allowlist
@@ -114,7 +114,7 @@ func TestSandbox_BlockFormNetwork(t *testing.T) {
 }
 
 func TestSandbox_HostStateNone(t *testing.T) {
-	res := parser.Parse("test.bot", agentWithSandbox(`  sandbox:
+	res := parser.ParseLenient("test.bot", agentWithSandbox(`  sandbox:
     image: "iterion-sandbox-slim:1.2.3"
     host_state: none`))
 	assertNoDiags(t, res)
@@ -123,7 +123,7 @@ func TestSandbox_HostStateNone(t *testing.T) {
 
 func TestSandbox_EnvInlineAndBlock(t *testing.T) {
 	// Inline form
-	res := parser.Parse("test.bot", agentWithSandbox(`  sandbox:
+	res := parser.ParseLenient("test.bot", agentWithSandbox(`  sandbox:
     image: "iterion-sandbox-slim:1.2.3"
     env: { FOO: "bar", BAZ: "qux" }`))
 	assertNoDiags(t, res)
@@ -133,7 +133,7 @@ func TestSandbox_EnvInlineAndBlock(t *testing.T) {
 	}
 
 	// Block form
-	res = parser.Parse("test.bot", agentWithSandbox(`  sandbox:
+	res = parser.ParseLenient("test.bot", agentWithSandbox(`  sandbox:
     image: "iterion-sandbox-slim:1.2.3"
     env:
       FOO: "bar"
@@ -146,7 +146,7 @@ func TestSandbox_EnvInlineAndBlock(t *testing.T) {
 }
 
 func TestSandbox_MountsList(t *testing.T) {
-	res := parser.Parse("test.bot", agentWithSandbox(`  sandbox:
+	res := parser.ParseLenient("test.bot", agentWithSandbox(`  sandbox:
     image: "iterion-sandbox-slim:1.2.3"
     mounts: ["type=bind,src=/host/cache,dst=/cache", "type=volume,src=nx-state,dst=/state"]`))
 	assertNoDiags(t, res)
@@ -157,7 +157,7 @@ func TestSandbox_MountsList(t *testing.T) {
 }
 
 func TestSandbox_UnknownProperty(t *testing.T) {
-	res := parser.Parse("test.bot", agentWithSandbox(`  sandbox:
+	res := parser.ParseLenient("test.bot", agentWithSandbox(`  sandbox:
     image: "iterion-sandbox-slim:1.2.3"
     bogus: "x"`))
 	if !hasDiagCode(res, parser.DiagUnknownProperty) {
@@ -170,7 +170,7 @@ func TestSandbox_UnknownProperty(t *testing.T) {
 }
 
 func TestSandbox_BuildUnknownProperty(t *testing.T) {
-	res := parser.Parse("test.bot", agentWithSandbox(`  sandbox:
+	res := parser.ParseLenient("test.bot", agentWithSandbox(`  sandbox:
     build:
       dockerfile: "Containerfile"
       bogus_build_prop: "x"
@@ -188,7 +188,7 @@ func TestSandbox_BuildUnknownProperty(t *testing.T) {
 }
 
 func TestSandbox_NetworkUnknownProperty(t *testing.T) {
-	res := parser.Parse("test.bot", agentWithSandbox(`  sandbox:
+	res := parser.ParseLenient("test.bot", agentWithSandbox(`  sandbox:
     image: "iterion-sandbox-slim:1.2.3"
     network:
       mode: allowlist

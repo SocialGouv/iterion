@@ -40,6 +40,19 @@ export interface IterDocument {
  *  document, each declaration naming its file (`file`), and a save must
  *  present the revision the document was opened at — the digest of every
  *  file's path and content — or it is refused as a conflict. */
+/** Why a document is a salvage when the SERVER's reader refused the text
+ *  rather than the author's text failing to parse: a bound of the reader —
+ *  the read budget a bot's files share (ITERION_DSL_READ_BUDGET), or a
+ *  file's size cap — or a file that is no text it reads (not UTF-8, E006).
+ *  No edit in the canvas is the remedy; the hint is. Mirrors the server's
+ *  `read_refusal`. */
+export interface ReadRefusal {
+  /** The refusal, as the answer's diagnostics spell it — positioned. */
+  message: string;
+  /** Its remedy: the variable that moves the budget, or the size cap's. */
+  hint?: string;
+}
+
 export interface UnitInfo {
   /** The directory the paths below are named from, as the file that was
    *  opened was named: `root` and `main` compose back into it. Empty for a
@@ -956,6 +969,12 @@ export interface SaveFileResponse {
   source: string;
   /** Present only after a real local on-disk write, never for cloud/bundle sources. */
   confirmed_disk_path?: string;
+  /** The sha256 of the file as this save wrote it — a whole read issued,
+   *  the answer holds the very bytes: what the next save of the file
+   *  presents (the digest rule). Absent for a bot in several files (its
+   *  claim is `revision`) and for a cloud source (the opened bundle
+   *  snapshot is refreshed from the PUT answer). */
+  digest?: string;
 }
 
 // WebSocket file watching events

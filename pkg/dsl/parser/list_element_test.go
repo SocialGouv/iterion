@@ -61,7 +61,7 @@ func TestAListElementThatIsNotANameIsRefusedNotDropped(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			res := Parse("x.bot", c.src)
+			res := parseLenient("x.bot", c.src)
 			if len(res.Diagnostics) != 1 {
 				t.Fatalf("want exactly one diagnostic, got %v", res.Diagnostics)
 			}
@@ -82,7 +82,7 @@ func TestAListElementThatIsNotANameIsRefusedNotDropped(t *testing.T) {
 // A refused fallback action takes the rest of its line with it: `action: 123
 // 456` is ONE diagnostic, never one plus a phantom route property `456`.
 func TestARefusedFallbackActionTakesItsLine(t *testing.T) {
-	res := Parse("x.bot", "agent a:\n  model: \"m\"\n  fallbacks:\n    r:\n      on: [any]\n      action: 123 456\n      metered: true\n")
+	res := parseLenient("x.bot", "agent a:\n  model: \"m\"\n  fallbacks:\n    r:\n      on: [any]\n      action: 123 456\n      metered: true\n")
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Line != 6 {
 		t.Fatalf("want one diagnostic on line 6, got %v", res.Diagnostics)
 	}
@@ -118,7 +118,7 @@ func TestARefusedStringOrIdentValueTakesItsLine(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			res := Parse("x.bot", c.src)
+			res := parseLenient("x.bot", c.src)
 			if len(res.Diagnostics) != 1 {
 				t.Fatalf("want exactly one diagnostic, got %v", res.Diagnostics)
 			}
@@ -145,7 +145,7 @@ func TestATrailingCommaClosesTheList(t *testing.T) {
 		{"rules", "workflow w:\n  entry: done\n  sandbox:\n    network:\n      rules: [github.com,]\n", func(r *ParseResult) []string { return r.File.Workflows[0].Sandbox.Network.Rules }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			res := Parse("x.bot", c.src)
+			res := parseLenient("x.bot", c.src)
 			if len(res.Diagnostics) != 0 || len(c.pick(res)) != 1 {
 				t.Fatalf("diagnostics %v, list %v", res.Diagnostics, c.pick(res))
 			}
@@ -153,7 +153,7 @@ func TestATrailingCommaClosesTheList(t *testing.T) {
 	}
 	// An empty element between two commas is still a refusal, said once,
 	// and both neighbours are read.
-	res := Parse("x.bot", "agent a:\n  tools: [bash, , read_file]\n")
+	res := parseLenient("x.bot", "agent a:\n  tools: [bash, , read_file]\n")
 	if got := res.File.Agents[0].Tools; !reflect.DeepEqual(got, []string{"bash", "read_file"}) || len(res.Diagnostics) == 0 {
 		t.Fatalf("tools %v, diagnostics %v", got, res.Diagnostics)
 	}
@@ -163,7 +163,7 @@ func TestATrailingCommaClosesTheList(t *testing.T) {
 // its residue on the line is the same mistake, not a second one, and the
 // next items are read.
 func TestADashFormElementThatOpensABracketIsSaidOnce(t *testing.T) {
-	res := Parse("x.bot", "supervisor s:\n  watches:\n    - a\n    - [b]\n    - c\n  cooldown: \"2m\"\n")
+	res := parseLenient("x.bot", "supervisor s:\n  watches:\n    - a\n    - [b]\n    - c\n  cooldown: \"2m\"\n")
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Line != 4 {
 		t.Fatalf("want one diagnostic on line 4, got %v", res.Diagnostics)
 	}
@@ -171,7 +171,7 @@ func TestADashFormElementThatOpensABracketIsSaidOnce(t *testing.T) {
 		t.Fatalf("watches %v, cooldown %q", s.Watches, s.Cooldown)
 	}
 	// A GOOD element followed by residue is still the mistake it was.
-	res = Parse("x.bot", "supervisor s:\n  watches:\n    - a b\n")
+	res = parseLenient("x.bot", "supervisor s:\n  watches:\n    - a b\n")
 	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Message, "one `- item` per line") {
 		t.Fatalf("got %v", res.Diagnostics)
 	}
@@ -196,7 +196,7 @@ func TestAMissingCommaInAListIsSaidAndTheElementsAreRead(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			res := Parse("x.bot", c.src)
+			res := parseLenient("x.bot", c.src)
 			if len(res.Diagnostics) != c.diags {
 				t.Fatalf("want %d diagnostics, got %v", c.diags, res.Diagnostics)
 			}
@@ -228,7 +228,7 @@ func TestAGroupParameterThatIsNotANameIsRefusedNotDropped(t *testing.T) {
 		"group g(\"a\", b):\n  agent x:\n    model: \"m\"\n",
 		"group g(b, 1):\n  agent x:\n    model: \"m\"\n",
 	} {
-		res := Parse("x.bot", src)
+		res := parseLenient("x.bot", src)
 		if len(res.Diagnostics) != 1 {
 			t.Fatalf("%q: want exactly one diagnostic, got %v", src, res.Diagnostics)
 		}

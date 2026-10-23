@@ -47,10 +47,12 @@ func Read(dir, parent string, w *ir.Workflow) map[string]*ir.PublicContract {
 }
 
 // compiledContract is the contract a child's workflow keeps — nil when the
-// child does not load or compile clean, or keeps none.
+// child does not load or compile clean, or keeps none. A child the read
+// budget cuts short is not read, and is left out like an unreadable one:
+// the floor walk names it (C256).
 func compiledContract(path string, src []byte) *ir.PublicContract {
-	u := unit.LoadDirWithMain(path, path, src)
-	if u.HasErrors() || u.Merged == nil {
+	u, err := unit.LoadDirWithMain(path, path, src)
+	if err != nil || u.HasErrors() || u.Merged == nil {
 		return nil
 	}
 	child := ir.Compile(u.Merged)

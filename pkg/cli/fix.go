@@ -95,18 +95,27 @@ func unitFiles(files []string) []string {
 	}
 	out := append([]string(nil), files...)
 	for _, f := range files {
-		u := unit.LoadDir(f)
-		if u == nil || len(u.Files) < 2 || u.Files[0].Rel != filepath.Base(f) {
+		// The membership off the files' import lines (unit.MembersDir), which
+		// no read budget moves: a bot past the budget lists every fragment
+		// its imports reach, each then refused by its own fix with the
+		// cause, rather than the ones a load cut short happened to read.
+		abs, err := filepath.Abs(f)
+		if err != nil {
+			continue
+		}
+		rels, err := unit.MembersDir(abs, nil)
+		if err != nil || len(rels) < 2 || rels[0] != filepath.Base(f) {
 			continue // not a main with fragments
 		}
-		for _, fr := range u.Files[1:] {
-			if seen[fr.Name] {
+		for _, rel := range rels[1:] {
+			name := filepath.Join(filepath.Dir(abs), filepath.FromSlash(rel))
+			if seen[name] {
 				continue
 			}
-			seen[fr.Name] = true
-			p := fr.Name
+			seen[name] = true
+			p := name
 			if cwd, err := os.Getwd(); err == nil {
-				if r, err := filepath.Rel(cwd, fr.Name); err == nil && !strings.HasPrefix(r, "..") {
+				if r, err := filepath.Rel(cwd, name); err == nil && !strings.HasPrefix(r, "..") {
 					p = r
 				}
 			}

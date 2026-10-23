@@ -2,17 +2,17 @@ package e2e
 
 import (
 	"context"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // compileSource compiles an inline .bot source for engine-level tests.
 func compileSource(t *testing.T, name, src string) *ir.Workflow {
 	t.Helper()
-	pr := parser.Parse(name, src)
+	pr := parsertest.Parse(name, src)
 	cr := ir.Compile(pr.File)
 	if cr.HasErrors() {
 		for _, d := range cr.Diagnostics {

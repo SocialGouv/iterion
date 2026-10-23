@@ -1,6 +1,7 @@
 package author
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestAnyQuotedRuntimeEffortRoundTrips(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			src := strings.Join([]string{"dsl: 2", "", "agent a:", "  model: m", `  reasoning_effort: "` + tc.value + `"`, "", "workflow w:", "  entry: a", "  a -> done", ""}, nl)
-			pr := parser.Parse("x.bot", src)
+			pr := parsertest.Parse("x.bot", src)
 			if len(pr.Diagnostics) > 0 {
 				t.Fatalf("the .bot refuses the value: %v", pr.Diagnostics)
 			}

@@ -22,6 +22,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // Code identifies a bundle-consistency diagnostic (C2xx family).
@@ -153,6 +154,12 @@ const (
 	// speak for that source. A warning: a source written in a newer
 	// profile than a runner reads fails at that runner's parse.
 	DiagProfileChildUnread Code = "C253"
+	// DiagProfileSourceShort: an executable source's unit is past a bound
+	// of the reader — the read budget its files share, a file's size cap —
+	// so the files past the cut are not read and what they use is not
+	// known: no floor read off the rest certifies the bundle. An error, as
+	// the push admission refuses it (bundle.SyntaxRequirements.Short).
+	DiagProfileSourceShort Code = "C256"
 
 	// Bot navigation vocabulary (C270–C271 — the C2xx bands below 270 are
 	// claimed by ir and by the manifest/workflow checks above; these start
@@ -273,6 +280,7 @@ func CheckConsistency(in Input) []Diag {
 	// manifest that would carry its floor.
 	checkSyntaxFloor(&diags, m, in.Syntax, in.EngineBuild)
 	checkProfileUnread(&diags, in.Syntax.Unread)
+	checkProfileShort(&diags, in.Syntax.Short)
 	checkSubbotContracts(&diags, in.Workflow, in.SubbotContracts)
 	if m != nil {
 		checkContractManifest(&diags, m, in.Workflow)
@@ -772,6 +780,21 @@ func checkProfileUnread(diags *[]Diag, unread []string) {
 		Field:   "requires.iterion",
 		Message: fmt.Sprintf("executable source(s) not read for their syntax profile, resolving beyond the bundle's collection: %s", strings.Join(unread, ", ")),
 		Hint:    "a source written in a newer profile than a runner reads fails at that runner's parse: declare `requires.iterion` for the newest profile among them, or make the source resolve inside the bundle",
+	})
+}
+
+// checkProfileShort reports the executable sources whose unit a bound of
+// the reader cut short (C256): the floor walk reads no file past the cut,
+// so the syntax those files use is not known.
+func checkProfileShort(diags *[]Diag, short []string) {
+	if len(short) == 0 {
+		return
+	}
+	*diags = append(*diags, Diag{
+		Code: DiagProfileSourceShort, Severity: SeverityError,
+		Field:   "requires.iterion",
+		Message: fmt.Sprintf("executable source(s) not read whole, so the syntax they use is not known: %s", strings.Join(short, "; ")),
+		Hint:    "raise " + parser.ReadBudgetEnv + " wherever the bot is read (the CLI, the server, the runner) — a bot's files share the budget, so splitting is no way past it — or shrink the source; the push admission refuses the bundle until it reads whole",
 	})
 }
 

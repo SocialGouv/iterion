@@ -18,7 +18,7 @@ func TestAKeywordNamedNodeIsAnEdgeSourceInEveryContainer(t *testing.T) {
 		n++
 		t.Run(k, func(t *testing.T) {
 			src := "agent " + k + ":\n  description: \"x\"\n\nworkflow w:\n  entry: " + k + "\n  " + k + " -> done\n"
-			res := Parse("w.bot", src)
+			res := parseLenient("w.bot", src)
 			if len(res.Diagnostics) != 0 {
 				t.Fatalf("workflow: %v", res.Diagnostics)
 			}
@@ -28,7 +28,7 @@ func TestAKeywordNamedNodeIsAnEdgeSourceInEveryContainer(t *testing.T) {
 			}
 
 			src = "group g:\n  agent " + k + ":\n    description: \"x\"\n  agent b:\n    description: \"y\"\n  " + k + " -> b\n\nuse g as " + k + "\n\nworkflow w:\n  entry: " + k + "." + k + "\n  " + k + ".b -> done\n"
-			res = Parse("g.bot", src)
+			res = parseLenient("g.bot", src)
 			if len(res.Diagnostics) != 0 {
 				t.Fatalf("group: %v", res.Diagnostics)
 			}
@@ -51,7 +51,7 @@ func TestAKeywordNamedNodeIsAnEdgeSourceInEveryContainer(t *testing.T) {
 // workflow's `entry:` stays a property, a group's `agent x:` a member.
 func TestPropertiesAndDeclarationsStillWinWithoutAnArrow(t *testing.T) {
 	src := "agent entry:\n  description: \"x\"\n\nworkflow w:\n  entry: entry\n  budget:\n    max_cost_usd: 1\n  entry -> done\n"
-	res := Parse("w.bot", src)
+	res := parseLenient("w.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("%v", res.Diagnostics)
 	}
@@ -60,7 +60,7 @@ func TestPropertiesAndDeclarationsStillWinWithoutAnArrow(t *testing.T) {
 		t.Fatalf("entry %q budget %v edges %d", wf.Entry, wf.Budget != nil, len(wf.Edges))
 	}
 	src = "group g:\n  agent agent:\n    description: \"x\"\n  agent tool:\n    description: \"y\"\n  agent -> tool\n"
-	res = Parse("g.bot", src)
+	res = parseLenient("g.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("%v", res.Diagnostics)
 	}

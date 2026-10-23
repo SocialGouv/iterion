@@ -2,20 +2,20 @@ package cli
 
 import (
 	"context"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // compileSourceForTest compiles inline .bot source to an IR workflow.
 func compileSourceForTest(t *testing.T, src string) *ir.Workflow {
 	t.Helper()
-	pr := parser.Parse("test.bot", src)
+	pr := parsertest.Parse("test.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("parse: %s", d.Error())
 	}

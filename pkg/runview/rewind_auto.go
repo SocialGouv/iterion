@@ -120,7 +120,10 @@ func resolveAutoPivotForRun(run *store.Run, sourcePath string, sourcePathNamedBy
 		for _, f := range run.WorkflowSources {
 			files[f.Path] = f.Text
 		}
-		u := unit.LoadMap(files, run.WorkflowSources[0].Path)
+		u, err := unit.LoadMap(files, run.WorkflowSources[0].Path)
+		if err != nil {
+			return "", nil, fmt.Errorf("parse the source this run executed: %w", err)
+		}
 		if d := firstErrorDiagnostic(u.Diagnostics); d != "" {
 			return "", nil, fmt.Errorf("parse the source this run executed: %s", d)
 		}
@@ -135,7 +138,10 @@ func resolveAutoPivotForRun(run *store.Run, sourcePath string, sourcePathNamedBy
 		}
 		oldFile = f
 	}
-	current := unit.LoadDir(sourcePath)
+	current, err := unit.LoadDir(sourcePath)
+	if err != nil {
+		return "", nil, fmt.Errorf("parse the current source: %w", err)
+	}
 	if len(current.Files) == 0 {
 		if _, err := os.ReadFile(sourcePath); err != nil {
 			return "", nil, fmt.Errorf("read current workflow source %s: %w", sourcePath, err)
@@ -198,7 +204,10 @@ func resolveAutoPivotFiles(oldFile, newFile *ast.File, wf *ir.Workflow, executed
 // a failure here means the CURRENT file is broken — worth surfacing
 // before the operator resumes into it.
 func parseForDiff(src, label string) (*ast.File, error) {
-	pr := parser.Parse(label, src)
+	pr, err := parser.Parse(label, src)
+	if err != nil {
+		return nil, err
+	}
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil, fmt.Errorf("%s", d.Error())

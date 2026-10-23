@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -83,7 +83,7 @@ func TestToolAliasesThroughRealEngineAndClawTools(t *testing.T) {
 	pinEngineBuild(t, "v"+bundle.ToolAliasesSince)
 	for _, floor := range []string{"", ">= 3.143.0", ">= " + bundle.ToolAliasesSince} {
 		t.Run(floor, func(t *testing.T) {
-			pr := parser.Parse("aliases.bot", aliasesEngineSource)
+			pr := parsertest.Parse("aliases.bot", aliasesEngineSource)
 			if len(pr.Diagnostics) > 0 {
 				t.Fatalf("parse: %v", pr.Diagnostics)
 			}
@@ -141,7 +141,7 @@ func TestToolAliasesThroughRealEngineAndClawTools(t *testing.T) {
 
 func aliasEngineForSource(t *testing.T, source, workspace string, st store.RunStore, backend *aliasToolBackend, primary delegate.Backend) *Engine {
 	t.Helper()
-	parsed := parser.Parse("aliases.bot", source)
+	parsed := parsertest.Parse("aliases.bot", source)
 	if len(parsed.Diagnostics) > 0 {
 		t.Fatalf("parse: %v", parsed.Diagnostics)
 	}
@@ -278,7 +278,7 @@ workflow probe:
   worktree: none
   readproof -> done
 `
-			parsed := parser.Parse("toolnode.bot", source)
+			parsed := parsertest.Parse("toolnode.bot", source)
 			if len(parsed.Diagnostics) > 0 {
 				t.Fatalf("parse: %v", parsed.Diagnostics)
 			}
@@ -361,7 +361,7 @@ workflow probe:
   worktree: none
   call_issue -> done
 `
-	parsed := parser.Parse("shorthand.bot", source)
+	parsed := parsertest.Parse("shorthand.bot", source)
 	if len(parsed.Diagnostics) > 0 {
 		t.Fatalf("parse: %v", parsed.Diagnostics)
 	}

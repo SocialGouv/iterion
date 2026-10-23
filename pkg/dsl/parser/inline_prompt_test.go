@@ -21,7 +21,7 @@ func TestAStringOnAPromptPropertyIsAnInlinePrompt(t *testing.T) {
 	// the host can detect a credential, which a bare CI cannot — the test
 	// measures the prompt references, not the host.
 	src := "agent a:\n  model: \"anthropic/claude-opus-4-8\"\n  system: \"Review the diff\"\n  user: |\n    First paragraph.\n\n    Second paragraph.\n\nhuman h:\n  instructions: `Decide.`\n\nrouter r:\n  mode: llm\n  system: \"Route it\"\n\nsupervisor s:\n  watches: [a]\n  system: \"Watch.\"\n\nworkflow w:\n  entry: a\n  a -> r\n  r -> h\n  r -> done\n  h -> done\n"
-	res := parser.Parse("x.bot", src)
+	res := parser.ParseLenient("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}
@@ -68,7 +68,7 @@ func TestAStringOnAPromptPropertyIsAnInlinePrompt(t *testing.T) {
 // prompt.
 func TestInlinePromptsAreNamedByTheirBody(t *testing.T) {
 	src := "group g:\n  agent worker:\n    system: \"Same text\"\n  worker -> done\n\ngroup h:\n  agent worker:\n    system: \"Same text\"\n  worker -> done\n\nagent b:\n  system: \"Same text\"\n\nprompt p:\n  Declared.\n\nagent c:\n  system: p\n\nworkflow w:\n  entry: b\n  b -> c\n  c -> done\n"
-	res := parser.Parse("x.bot", src)
+	res := parser.ParseLenient("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}
@@ -91,13 +91,13 @@ func TestInlinePromptsAreNamedByTheirBody(t *testing.T) {
 		t.Fatalf("a bare name no longer refers to the declared prompt: %q", res.File.Agents[1].System)
 	}
 	// Renaming the node does not change the prompt's name.
-	renamed := parser.Parse("y.bot", strings.ReplaceAll(src, "agent b:", "agent renamed:"))
+	renamed := parser.ParseLenient("y.bot", strings.ReplaceAll(src, "agent b:", "agent renamed:"))
 	if renamed.File.Agents[0].System != want {
 		t.Fatalf("a rename changed the inline prompt's name to %q", renamed.File.Agents[0].System)
 	}
 	// And two different texts are two prompts, under two names — the name
 	// comes from the body, not from a counter or a constant.
-	two := parser.Parse("z.bot", "agent a:\n  system: \"one\"\n\nagent b:\n  system: \"two\"\n")
+	two := parser.ParseLenient("z.bot", "agent a:\n  system: \"one\"\n\nagent b:\n  system: \"two\"\n")
 	if len(two.Diagnostics) != 0 || len(two.File.Prompts) != 2 {
 		t.Fatalf("two texts: %v, %d prompts", two.Diagnostics, len(two.File.Prompts))
 	}
@@ -114,7 +114,7 @@ func TestInlinePromptsAreNamedByTheirBody(t *testing.T) {
 func TestAnInlineNameCollidingWithADeclarationIsRefused(t *testing.T) {
 	name := parser.InlinePromptName("x")
 	src := "prompt " + name + ":\n  Mine.\n\nagent a:\n  system: \"x\"\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	res := parser.Parse("x.bot", src)
+	res := parser.ParseLenient("x.bot", src)
 	c := ir.Compile(res.File)
 	var dup bool
 	for _, d := range c.Diagnostics {

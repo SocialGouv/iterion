@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +26,7 @@ import (
 func parkingRunMessage(t *testing.T, runID string) *queue.RunMessage {
 	t.Helper()
 	const src = "schema answer:\n  ok: bool\nhuman gate:\n  output: answer\nworkflow main:\n  entry: gate\n  gate -> done\n"
-	pr := parser.Parse("main.bot", src)
+	pr := parsertest.Parse("main.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("parse: %s", d.Error())

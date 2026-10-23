@@ -34,6 +34,10 @@ export default function DiagnosticBadge({
   if (diagnostics.length === 0) return null;
   const sev = dominantSeverity(diagnostics);
   if (!sev) return null;
+  // The ones listed here, at least: a reading that stopped reporting a code
+  // past its cap counted more, wherever they stand (unreportedBehind).
+  const more = diagnostics.some((d) => d.unreported > 0);
+  const shown = `${diagnostics.length}${more ? "+" : ""}`;
 
   // Errors get a subtle pulse to pull the eye on a busy canvas; warnings
   // stay static — they're plenty visible without animation, and pulsing
@@ -53,14 +57,14 @@ export default function DiagnosticBadge({
         <button
           type="button"
           className={`inline-flex items-center justify-center gap-1 rounded-full border ${colorClass} ${sizeClasses[size]} font-semibold leading-none shadow-[var(--shadow-sm)] cursor-pointer`}
-          aria-label={`${diagnostics.length} ${sev}${diagnostics.length === 1 ? "" : "s"}`}
+          aria-label={`${more ? "at least " : ""}${diagnostics.length} ${sev}${diagnostics.length === 1 && !more ? "" : "s"}`}
           onClick={(e) => {
             // Don't let the click propagate to underlying node/edge selection.
             e.stopPropagation();
           }}
         >
           <Icon />
-          <span>{diagnostics.length}</span>
+          <span>{shown}</span>
         </button>
       }
     >

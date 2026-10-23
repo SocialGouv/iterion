@@ -39,7 +39,7 @@ func TestParseEdgeLineReadsWhatAWorkflowBodyReads(t *testing.T) {
 				if len(diags) > 0 {
 					t.Fatalf("diagnostics on a valid line: %v", diags)
 				}
-				pr := Parse("w.bot", profile.head+"workflow w:\n  entry: a\n  "+line+"\n")
+				pr := parseLenient("w.bot", profile.head+"workflow w:\n  entry: a\n  "+line+"\n")
 				if len(pr.Diagnostics) > 0 {
 					t.Fatalf("the workflow body refuses the line: %v", pr.Diagnostics)
 				}

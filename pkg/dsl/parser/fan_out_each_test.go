@@ -17,7 +17,7 @@ func TestRouterDeclFanOutEach(t *testing.T) {
   key: id
   depends_on: deps
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	r := res.File.Routers[0]
@@ -36,7 +36,7 @@ func TestRouterDeclFanOutEachPlain(t *testing.T) {
   mode: fan_out_each
   over: "{{outputs.plan.items}}"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	r := res.File.Routers[0]

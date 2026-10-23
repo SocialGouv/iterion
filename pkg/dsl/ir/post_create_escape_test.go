@@ -1,10 +1,9 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A `"…"` DSL string is lexed in legacy escape mode unless the file opts into
@@ -32,7 +31,7 @@ import (
 // tree (Revi R1d1a9f).
 func compileSrc(t *testing.T, src string) *CompileResult {
 	t.Helper()
-	pr := parser.Parse("test.bot", src)
+	pr := parsertest.Parse("test.bot", src)
 	if pr.File == nil {
 		t.Fatalf("parse produced no File for:\n%s", src)
 	}

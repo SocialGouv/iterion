@@ -27,10 +27,22 @@ type speller struct {
 	name    string
 	profile int
 	// src is the document's text, line by line: what a position computed
-	// from a value is checked against before it is claimed (edgeAt).
+	// from a value is checked against before it is claimed (edgeAt), found
+	// on its line by srcAt.
 	src   []string
+	srcAt lineCursor
+	// lines is the spelled text, one record per line. A value of many
+	// lines — a prompt, the catalog's text — writes one per line, so those
+	// lines spend the read budget as they are split (spendLines), before
+	// any is recorded: a prompt of a million blank lines is refused, not
+	// spelled.
 	lines []line
-	diags []parser.Diagnostic
+	// budget is the read budget (parser.ReadBudget) and spent the lines of
+	// multi-line values written so far.
+	budget, spent int
+	// report is every diagnostic of the spelling, the one place each is
+	// recorded (diag, edges).
+	report parser.Report
 }
 
 // line is one line of the spelled text and where it came from: the node of
@@ -74,7 +86,7 @@ var yamlBreaks = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\u0085", "\n", "
 // line map, the converter's diagnostics and the profile the document
 // declares (1 when it declares none, or one the build cannot read).
 func spell(name string, src []byte, root *yaml.Node) (text string, lines []line, diags []parser.Diagnostic, profile int) {
-	s := &speller{name: name, profile: 1, src: sourceLines(src)}
+	s := &speller{name: name, profile: 1, src: sourceLines(src), budget: parser.ReadBudget()}
 	s.document(root)
 	if s.refused() {
 		s.closeEmptyBodies()
@@ -84,7 +96,7 @@ func spell(name string, src []byte, root *yaml.Node) (text string, lines []line,
 		b.WriteString(l.text)
 		b.WriteByte('\n')
 	}
-	return b.String(), s.lines, s.diags, s.profile
+	return b.String(), s.lines, s.report.Diagnostics(), s.profile
 }
 
 // ---- output ----
@@ -162,14 +174,28 @@ func (s *speller) closeEmptyBodies() {
 	s.lines = out
 }
 
+// spendLines takes the lines a multi-line value writes — a prompt's body,
+// the catalog's frontmatter — off the read budget before the value is split
+// into them: the .bot reader spends at least one record on each of those
+// lines, a prompt's blank ones included, so past the budget the .bot would
+// be refused anyway, and the speller would have recorded every line first.
+// Past it, the document is refused where the budget runs out (E001, the
+// reader's own refusal, with the document's remedy) and the value is not
+// written. lineOf is the document line a value's i-th line stands on.
+func (s *speller) spendLines(n int, lineOf func(i int) pos) bool {
+	if n <= s.budget-s.spent {
+		s.spent += n
+		return true
+	}
+	p := lineOf(s.budget - s.spent)
+	s.diag(&yaml.Node{Line: p.line, Column: p.col}, parser.DiagUnexpectedToken, parser.SeverityError, parser.ReadBudgetMessage(s.budget), docReadBudgetHint)
+	s.spent = s.budget
+	return false
+}
+
 // refused reports whether the speller refused anything.
 func (s *speller) refused() bool {
-	for _, d := range s.diags {
-		if d.Severity == parser.SeverityError {
-			return true
-		}
-	}
-	return false
+	return s.report.Count(parser.SeverityError) > 0
 }
 
 // bare writes a header with nothing under it and the blank line the
@@ -199,7 +225,7 @@ func (s *speller) diag(n *yaml.Node, code parser.DiagCode, severity parser.Sever
 	if hint == "" {
 		hint = parser.HintFor(code)
 	}
-	s.diags = append(s.diags, parser.Diagnostic{
+	s.report.Add(parser.Diagnostic{
 		Code: code, Severity: severity, Message: msg,
 		File: s.name, Line: p.line, Column: p.col, Hint: hint,
 	})
@@ -1127,7 +1153,12 @@ func (s *speller) frontmatter(cat *yaml.Node) {
 		return
 	}
 	_ = enc.Close()
-	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	encoded := strings.TrimRight(buf.String(), "\n")
+	// The two fences and a comment line per line of the encoded keys.
+	if !s.spendLines(strings.Count(encoded, "\n")+3, func(int) pos { return at(cat) }) {
+		return
+	}
+	lines := strings.Split(encoded, "\n")
 	for _, l := range lines {
 		// Every reader of the frontmatter closes the block at the first
 		// comment line that reads as the fence, indentation aside — a
@@ -1237,6 +1268,19 @@ func (s *speller) prompt(k, v *yaml.Node) {
 		if body, ok = s.blockBreaks(what, v, body); !ok {
 			return
 		}
+	}
+	// Every reading below splits the body into its lines: they are
+	// spent first. A literal block keeps its lines (line i of the body is
+	// line i after the indicator's); any other body is positioned at the
+	// scalar's start.
+	lineOf := func(i int) pos {
+		if v.Style == yaml.LiteralStyle {
+			return pos{v.Line + 1 + i, v.Column}
+		}
+		return at(v)
+	}
+	if !s.spendLines(strings.Count(body, "\n")+1, lineOf) {
+		return
 	}
 	if err := parser.CheckPromptBody(body); err != nil {
 		s.refuseHint(v, parser.DiagAuthorPromptBody, what+"'s body has no written form: "+err.Error(), "")
@@ -1495,8 +1539,8 @@ func (s *speller) sequenceEntries(body spec.Kind, what string, k, v *yaml.Node, 
 	e := body.Entries
 	items, ok := s.sequence(v, what)
 	if !ok {
-		if v != nil && v.Kind == yaml.MappingNode {
-			s.diags[len(s.diags)-1].Message = what + " is a list of routes (order is the try order), each `{" + e.SequenceKey + ": <name>, …}`, not a mapping"
+		if d := s.report.Latest(); d != nil && v != nil && v.Kind == yaml.MappingNode {
+			d.Message = what + " is a list of routes (order is the try order), each `{" + e.SequenceKey + ": <name>, …}`, not a mapping"
 		}
 		return
 	}
@@ -1925,24 +1969,11 @@ func (s *speller) subEntry(kind spec.Kind, k, v *yaml.Node, indent int) {
 	// behind would have the compiler add a second refusal of its own —
 	// the C302 a criterion without its required params draws (#1814).
 	mark := len(s.lines)
-	errs := 0
-	for _, d := range s.diags {
-		if d.Severity == parser.SeverityError {
-			errs++
-		}
-	}
+	errs := s.report.Count(parser.SeverityError)
 	s.header(indent, k.Value+":", k)
 	s.body(body, pairs, indent+2, kind.Name)
-	if len(s.lines) > mark {
-		now := 0
-		for _, d := range s.diags {
-			if d.Severity == parser.SeverityError {
-				now++
-			}
-		}
-		if now > errs {
-			s.lines = s.lines[:mark]
-		}
+	if len(s.lines) > mark && s.report.Count(parser.SeverityError) > errs {
+		s.lines = s.lines[:mark]
 	}
 }
 
@@ -2134,7 +2165,7 @@ func (s *speller) edges(v *yaml.Node, indent int) {
 		if _, diags := parser.ParseEdgeLine(s.profile, text); len(diags) > 0 {
 			for _, d := range diags {
 				line, col := s.edgeAt(it, text, d.Column)
-				s.diags = append(s.diags, parser.Diagnostic{
+				s.report.Add(parser.Diagnostic{
 					Code: d.Code, Severity: d.Severity, Message: d.Message,
 					File: s.name, Line: line, Column: col, Hint: d.Hint,
 				})
@@ -2158,11 +2189,10 @@ func (s *speller) edgeAt(it *yaml.Node, text string, dcol int) (line, col int) {
 	if dcol <= 1 || line < 1 || line > len(s.src) || col < 1 {
 		return line, col
 	}
-	raw := []rune(s.src[line-1])
-	if col-1 > len(raw) {
+	rest, ok := s.srcAt.tail(s.src, line, col)
+	if !ok {
 		return line, col
 	}
-	rest := string(raw[col-1:])
 	lead := utf8.RuneCountInString(it.Value[:strings.Index(it.Value, text)])
 	switch {
 	case it.Style == 0 && strings.HasPrefix(rest, it.Value):

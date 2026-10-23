@@ -25,6 +25,26 @@ func MarshalFileWithProvenance(f *File, root string) ([]byte, error) {
 	return json.MarshalIndent(jf, "", "  ")
 }
 
+// MarshalSalvageWithProvenance is MarshalFileWithProvenance for the display
+// of a load a bound of the reader cut short: the document carries why
+// (salvage, a short phrase naming no path; "not read whole" when empty),
+// and UnmarshalFile refuses it (ErrSalvage) wherever the decode runs — the
+// display lacks what was not read, and is no program to decode.
+func MarshalSalvageWithProvenance(f *File, root, salvage string) ([]byte, error) {
+	jf, err := toJSON(f)
+	if err != nil {
+		return nil, err
+	}
+	stampProvenance(reflect.ValueOf(f), reflect.ValueOf(jf), func(name string) string {
+		return provenanceRel(root, name)
+	})
+	if salvage == "" {
+		salvage = "not read whole"
+	}
+	jf.Salvage = salvage
+	return json.MarshalIndent(jf, "", "  ")
+}
+
 // provenanceRel names a file by its slash path from root, or by its own
 // name (slashed) when there is no root or the file lies outside it.
 func provenanceRel(root, name string) string {

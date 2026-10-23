@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,20 +26,21 @@ import (
 // embedded bot, or a bot outside the working directory: text and document,
 // no unit, no disk path.
 type oneProgram struct {
-	Source            string          `json:"source"`
-	Document          json.RawMessage `json:"document"`
-	Diagnostics       []string        `json:"diagnostics"`
-	Path              string          `json:"path"`
-	ConfirmedDiskPath string          `json:"confirmed_disk_path"`
-	Bindable          bool            `json:"bindable"`
-	Unit              *unitInfo       `json:"unit"`
+	Source            string           `json:"source"`
+	Document          json.RawMessage  `json:"document"`
+	Diagnostics       []string         `json:"diagnostics"`
+	Path              string           `json:"path"`
+	ConfirmedDiskPath string           `json:"confirmed_disk_path"`
+	Bindable          bool             `json:"bindable"`
+	Unit              *unitInfo        `json:"unit"`
+	ReadRefusal       *readRefusalInfo `json:"read_refusal"`
 }
 
 // parseFlat parses a served text as the one program it claims to be: no
 // import left, no error, a workflow compiled.
 func parseFlat(t *testing.T, name, source string) *ir.CompileResult {
 	t.Helper()
-	pr := parser.Parse(name, source)
+	pr := parsertest.Parse(name, source)
 	if pr.File == nil {
 		t.Fatalf("the served text does not parse: %v", pr.Diagnostics)
 	}
@@ -95,7 +98,7 @@ func assertWholeFlatProgram(t *testing.T, name string, got oneProgram, wantPath 
 	if !ok {
 		t.Fatalf("%s is not embedded", name)
 	}
-	u := unit.LoadMap(files, main)
+	u := unittest.Whole(unit.LoadMap(files, main))
 	if len(u.Files) < 2 {
 		t.Fatalf("%s is embedded as %d file(s): the test lost its witness", name, len(u.Files))
 	}

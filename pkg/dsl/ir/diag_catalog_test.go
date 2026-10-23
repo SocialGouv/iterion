@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -76,7 +77,7 @@ workflow w:
   a -> b when ok
   b -> a
 `
-	pr := parser.Parse("hint.bot", src)
+	pr := parsertest.Parse("hint.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("unexpected parse diagnostic: %s", d.Error())
 	}
@@ -111,7 +112,7 @@ workflow w:
 
 // TestParseDiagnosticsCarryHint checks the parser side of the same contract.
 func TestParseDiagnosticsCarryHint(t *testing.T) {
-	pr := parser.Parse("hint.bot", "agent a:\n  temperature: 0.2\n")
+	pr := parsertest.Parse("hint.bot", "agent a:\n  temperature: 0.2\n")
 	if len(pr.Diagnostics) == 0 {
 		t.Fatal("expected an unknown-property diagnostic")
 	}

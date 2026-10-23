@@ -1,10 +1,9 @@
 package unparse
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // The writer puts the imports back where the parser reads them — after the
@@ -16,7 +15,7 @@ func TestImportsAreWrittenAtTheHead(t *testing.T) {
 		"profile 1": "## a bot\n\nimport \"lib/a.bot\"\n\nagent a:\n  description: \"d\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := parser.Parse("x.bot", src)
+			res := parsertest.Parse("x.bot", src)
 			if len(res.Diagnostics) != 0 {
 				t.Fatalf("fixture: %v", res.Diagnostics)
 			}

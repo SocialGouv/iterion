@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -374,7 +376,7 @@ func TestAPerFileRequestOnACloudBundleReadsItsFilesMap(t *testing.T) {
 // JSON `null`, and the studio's UnitFileInfo[] declares itself non-nullable
 // (#1581: the transport erases nil-from-empty, so prove the round trip).
 func TestAUnitAlwaysCarriesAFilesArray(t *testing.T) {
-	raw, err := json.Marshal(unitInfoOf(&unit.Unit{Main: "main.bot"}, "main.bot"))
+	raw, err := json.Marshal(unitInfoOf(unit.Salvage(&unit.Unit{Main: "main.bot"}, nil), "main.bot"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,12 +413,12 @@ func TestRenderingOneFileRefusesADocumentWithoutProvenance(t *testing.T) {
 // test whose subject is something else.
 func TestPerFileFixturesParse(t *testing.T) {
 	for name, src := range map[string]string{"foldNodes": foldNodes, "foldMain": foldMain, "foldPlain": foldPlain, "foldMainTwo": foldMainTwo} {
-		pr := parser.Parse(name, src)
+		pr := parsertest.Parse(name, src)
 		if parseHasErrors(pr.Diagnostics) {
 			t.Fatalf("%s: %v", name, pr.Diagnostics)
 		}
 	}
-	if _, err := ast.MarshalFile(parser.Parse("f", foldNodes).File); err != nil {
+	if _, err := ast.MarshalFile(parsertest.Parse("f", foldNodes).File); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -447,9 +449,17 @@ func TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("seed: %d %s", w.Code, w.Body.String())
 	}
-	putFile := func(path, content string) *httptest.ResponseRecorder {
-		b, _ := json.Marshal(map[string]any{"content": content})
-		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/folded/files/"+path, strings.NewReader(string(b))).WithContext(edCtx)
+	putFold := func(path, content string) *httptest.ResponseRecorder {
+		t.Helper()
+		// The drawer's flow: the id and the stored digest its read answered.
+		body := map[string]any{"content": content, "version": 1, "id": storedIDFor(s, edCtx, "folded")}
+		if bs, err := s.botSources.GetBySlug(context.Background(), "t1", "folded"); err == nil {
+			if held, ok := bs.Files[path]; ok {
+				body["stored_sha256"] = contentSHA256(held)
+			}
+		}
+		b, _ := json.Marshal(body)
+		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/folded/files/"+path, bytes.NewReader(b)).WithContext(edCtx)
 		r.SetPathValue("id", "t1")
 		r.SetPathValue("slug", "folded")
 		r.SetPathValue("path", path)
@@ -461,7 +471,7 @@ func TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	// the studio's own renderer produces for this file, and what the
 	// compile check happily accepts.
 	folded := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: \"line one\\nline\\r two\\n\"\n"
-	if w := putFile("lib/nodes.bot", folded); w.Code != http.StatusUnprocessableEntity {
+	if w := putFold("lib/nodes.bot", folded); w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("a write that folds a stored value: %d %s", w.Code, w.Body.String())
 	}
 	after, err := s.botSources.GetBySlug(context.Background(), "t1", "folded")
@@ -475,7 +485,7 @@ func TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	// Without it the test would pass just as well on a route that refuses
 	// every write.
 	kept := "dsl: 2\n\ntool t:\n  description: \"probe, edited\"\n  command: `line one\nline two`\n"
-	if w := putFile("lib/nodes.bot", kept); w.Code != http.StatusOK {
+	if w := putFold("lib/nodes.bot", kept); w.Code != http.StatusOK {
 		t.Fatalf("an edit that folds nothing was refused: %d %s", w.Code, w.Body.String())
 	}
 }
@@ -534,7 +544,7 @@ func TestPuttingAWholeBundleRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 		"manifest.yaml": "name: whole\nversion: 1.0.0\nrequires:\n  iterion: \">= " + parser.ImportSince + "\"\n",
 	}
 	put := func(f map[string]string) *httptest.ResponseRecorder {
-		body, _ := json.Marshal(botSourcePutReq{Files: f})
+		body, _ := json.Marshal(botSourcePutReq{Files: f, Version: versionIfStored(s), ID: storedIDFor(s, edCtx, "whole"), StoredSHA256: storedDigestsFor(s, edCtx, "whole")})
 		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/whole", strings.NewReader(string(body))).WithContext(edCtx)
 		r.SetPathValue("id", "t1")
 		r.SetPathValue("slug", "whole")
@@ -728,7 +738,7 @@ func TestThePerFileEditorCarriesAnAddedImport(t *testing.T) {
 	}
 	// The saved unit holds three files now: the revision moved, and covers
 	// the fragment the import joined.
-	if want := unit.LoadDir(filepath.Join(workdir, "demo", "main.bot")).Digest; saved.Revision != want || saved.Revision == opened.Unit.Revision {
+	if want := unittest.Whole(unit.LoadDir(filepath.Join(workdir, "demo", "main.bot"))).Digest; saved.Revision != want || saved.Revision == opened.Unit.Revision {
 		t.Fatalf("revision after save %q, want the new unit's digest %q", saved.Revision, want)
 	}
 }
@@ -824,6 +834,97 @@ func TestTheRenderFollowsTheClaimPastAStaleAddedFile(t *testing.T) {
 	}
 	if !strings.Contains(main.Source, "import \"lib/more.bot\"") {
 		t.Fatalf("the render dropped the claimed header:\n%s", main.Source)
+	}
+}
+
+// TestASaveRewritesAnAddedFileItsClaimReadWhole: a fragment the edit's
+// claim newly imports is written when the document's edits to it say so.
+// Its whole-read provenance rides the claim — finishClaimed held the
+// probe's bytes to the digest the apply's read issued, and the save
+// re-reads them under the locks — so the staged write carries that
+// provenance instead of the digest-less refusal a file nobody read earns.
+// Without the provenance travelling, this save was always a 409 ("carries
+// no digest of the read it replaces"), and the apply→edit→save round of a
+// bot that had just grown a fragment could never land.
+func TestASaveRewritesAnAddedFileItsClaimReadWhole(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/more.bot":  "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	// The author edits what the NEW fragment declares from the canvas, so
+	// the save rewrites the claim-added file itself — the exact write the
+	// digest rule guards.
+	edited := editDocument(t, applied.Document, func(m map[string]any) {
+		for _, p := range m["prompts"].([]any) {
+			if pm, _ := p.(map[string]any); pm["name"] == "extra" {
+				pm["body"] = "Edited from the canvas after the apply."
+			}
+		}
+	})
+	rec, saved := savePathClaimed(t, s, "demo/main.bot", edited, opened.Unit.Revision, applied.Unit.Files)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save rewriting a claim-added fragment: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/more.bot"); !strings.Contains(got, "Edited from the canvas after the apply.") {
+		t.Fatalf("the edit to the newly imported fragment did not land:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); !strings.Contains(got, "import \"lib/more.bot\"") {
+		t.Fatalf("the applied import line was dropped by the save:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); got != unitFixtureNodes {
+		t.Fatalf("the untouched fragment was rewritten:\n%s", got)
+	}
+	if saved.Revision == "" || saved.Revision == opened.Unit.Revision {
+		t.Fatalf("revision after save %q, want the grown unit's new digest", saved.Revision)
+	}
+}
+
+// TestASaveStillRefusesAnAddedFileClaimedWithoutARead — the guard the
+// provenance ride must not weaken: the only added file a save carries is
+// one its claim read whole. A file claimed without the digest of the read
+// it was seen in is refused, not trusted, and nothing is written.
+func TestASaveStillRefusesAnAddedFileClaimedWithoutARead(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/more.bot":  "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	stripped := make([]unitFileInfo, len(applied.Unit.Files))
+	copy(stripped, applied.Unit.Files)
+	for i := range stripped {
+		if stripped[i].Rel == "lib/more.bot" {
+			stripped[i].Digest = ""
+		}
+	}
+	onDisk := readFixture(t, workdir, "demo/lib/more.bot")
+	rec, _ = savePathClaimed(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision, stripped)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save of an added file claimed without its digest: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "lib/more.bot") {
+		t.Fatalf("the refusal does not name the file: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/more.bot"); got != onDisk {
+		t.Fatalf("the digest-less claim was written:\n%s", got)
 	}
 }
 

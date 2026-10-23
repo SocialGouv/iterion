@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,8 +95,8 @@ func TestTheCanonicalFormOfEveryShippedBotIsTheSameProgram(t *testing.T) {
 			refusals++
 			continue
 		}
-		before := parser.Parse(path, string(src))
-		after := parser.Parse(path, string(out))
+		before := parsertest.Parse(path, string(src))
+		after := parsertest.Parse(path, string(out))
 		for _, d := range after.Diagnostics {
 			if d.Severity == parser.SeverityError {
 				t.Errorf("%s: the canonical form does not parse: %s", path, d.Error())

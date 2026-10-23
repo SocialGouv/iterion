@@ -2,10 +2,10 @@ package runtime
 
 import (
 	"context"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -61,7 +61,7 @@ workflow w:
   entry: work
   work -> done
 `
-	pr := parser.Parse("w.bot", src)
+	pr := parsertest.Parse("w.bot", src)
 	if pr.File == nil {
 		t.Fatalf("parse: %v", pr.Diagnostics)
 	}

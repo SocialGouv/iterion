@@ -25,6 +25,12 @@ type botEntryView struct {
 	// deployment-wide override (super-admin-pushed, managed via
 	// /api/admin/bots), "catalog" for a baked one.
 	Origin string `json:"origin"`
+	// Installed is true for a package installed into the workspace's .botz/
+	// (bots install, the marketplace, an upload; isInstalledBundle). Its
+	// manifest is the package's: an update replaces the directory whole, so
+	// the manifest edit refuses it and its visibility in this workspace is
+	// the overlay's, which an update leaves alone.
+	Installed bool `json:"installed,omitempty"`
 	// CatalogError is the rendered cause of a catalog refresh that failed
 	// after this route's change landed. The rendered table holds one row
 	// per ENABLED bot, so a manifest save or visibility toggle whose
@@ -47,7 +53,13 @@ func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, []botreg
 	var diags []botregistry.DiscoveryError
 	if len(s.effectivePaths()) > 0 {
 		var err error
-		catalog, diags, err = botregistry.ListWithSchemaDiagnostics(s.botListOptions())
+		// The gallery shows the catalogue past an overlay its reader
+		// refused — every bot listed disabled, the refusal among the
+		// diagnostics it renders — where every door that routes, launches or
+		// dispatches refuses (botregistry.ListOptions.ListPastAnUnreadOverlay).
+		opts := s.botListOptions()
+		opts.ListPastAnUnreadOverlay = true
+		catalog, diags, err = botregistry.ListWithSchemaDiagnostics(opts)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -59,7 +71,7 @@ func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, []botreg
 			if _, seen := byName[e.Name]; !seen {
 				order = append(order, e.Name)
 			}
-			byName[e.Name] = botEntryView{EntryWithSchema: e, Editable: editable, Origin: origin}
+			byName[e.Name] = botEntryView{EntryWithSchema: e, Editable: editable, Origin: origin, Installed: origin == "catalog" && s.isInstalledBundle(e.Path)}
 		}
 	}
 	add(catalog, false, "catalog")

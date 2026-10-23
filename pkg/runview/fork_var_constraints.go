@@ -177,17 +177,23 @@ func environmentDependent(text string, vt ir.VarType) bool {
 // on since.
 func recordedWorkflow(run *store.Run) (*ir.Workflow, error) {
 	var merged *unit.Unit
+	var err error
 	switch {
 	case len(run.WorkflowSources) > 0:
 		files := make(map[string]string, len(run.WorkflowSources))
 		for _, f := range run.WorkflowSources {
 			files[f.Path] = f.Text
 		}
-		merged = unit.LoadMap(files, recordedMain(run))
+		merged, err = unit.LoadMap(files, recordedMain(run))
 	case strings.TrimSpace(run.WorkflowSource) != "":
-		merged = unit.LoadMap(map[string]string{"<recorded>": run.WorkflowSource}, "<recorded>")
+		merged, err = unit.LoadMap(map[string]string{"<recorded>": run.WorkflowSource}, "<recorded>")
 	default:
 		return nil, errors.New("this run recorded no workflow source")
+	}
+	if err != nil {
+		// The recorded files past the read budget in force here: no
+		// constraint is read off what was read of them.
+		return nil, fmt.Errorf("parse: %w", err)
 	}
 	for _, d := range merged.Diagnostics {
 		if d.Severity == parser.SeverityError {

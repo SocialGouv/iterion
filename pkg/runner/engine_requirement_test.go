@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -193,7 +193,7 @@ func TestExecuteRun_GuardsTheEngineRequirement(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	const src = "workflow main:\n  entry: a\n  a -> done\nagent a:\n  backend: \"claw\"\n  model: \"openai/gpt-5.4-mini\"\n  system: sys\nprompt sys:\n  hi\n"
-	pr := parser.Parse("main.bot", src)
+	pr := parsertest.Parse("main.bot", src)
 	body, err := ast.MarshalFile(pr.File)
 	if err != nil {
 		t.Fatalf("marshal AST: %v", err)

@@ -3,11 +3,11 @@ package migrate
 import (
 	"bytes"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 func mustMigrate(t *testing.T, src string) *Result {
@@ -34,8 +34,8 @@ func TestMigrationTouchesOnlyWhatChangesMeaning(t *testing.T) {
 		t.Fatalf("changes: %+v", res.Changes)
 	}
 	// The value is the same in both readings.
-	before := parser.Parse("x.bot", src).File.Tools[0].Command
-	after := parser.Parse("x.bot", string(res.Migrated)).File.Tools[0].Command
+	before := parsertest.Parse("x.bot", src).File.Tools[0].Command
+	after := parsertest.Parse("x.bot", string(res.Migrated)).File.Tools[0].Command
 	if before != after || before != `printf 'a\nb' \"q\"` {
 		t.Fatalf("command before %q, after %q", before, after)
 	}
@@ -54,7 +54,7 @@ func TestMigrationHandlesTheHeaderAndTheDirective(t *testing.T) {
 	if strings.Contains(string(res.Migrated), `\\n`) {
 		t.Fatalf("a strict literal was re-spelled:\n%s", res.Migrated)
 	}
-	if parser.Parse("x.bot", string(res.Migrated)).File.Tools[0].Command != "a\nb" {
+	if parsertest.Parse("x.bot", string(res.Migrated)).File.Tools[0].Command != "a\nb" {
 		t.Fatalf("value changed")
 	}
 
@@ -84,13 +84,13 @@ func TestMigrationPreservesTheOriginalBytes(t *testing.T) {
 	if !strings.Contains(out, `command: "a\\tb"`) {
 		t.Fatalf("literal not re-spelled:\n%q", out)
 	}
-	if fb, fa := bundle.ParseFrontmatter([]byte(src)), bundle.ParseFrontmatter(res.Migrated); fb == nil || fa == nil || fb.Name != "probe" || fa.Name != "probe" || len(fa.Triggers) != 1 {
+	if fb, fa := testFrontmatter(t, []byte(src)), testFrontmatter(t, res.Migrated); fb == nil || fa == nil || fb.Name != "probe" || fa.Name != "probe" || len(fa.Triggers) != 1 {
 		t.Fatalf("the identity behind a BOM is not read on both sides: %+v / %+v", fb, fa)
 	}
 	// Without the BOM the identity is the same, visible on both sides.
 	plain := strings.TrimPrefix(src, "\ufeff")
 	res = mustMigrate(t, plain)
-	fb, fa := bundle.ParseFrontmatter([]byte(plain)), bundle.ParseFrontmatter(res.Migrated)
+	fb, fa := testFrontmatter(t, []byte(plain)), testFrontmatter(t, res.Migrated)
 	if fb == nil || fa == nil || fb.Name != fa.Name || len(fa.Triggers) != 1 {
 		t.Fatalf("frontmatter: %+v / %+v", fb, fa)
 	}
@@ -134,13 +134,21 @@ func TestMigrationRefusesWhatItCannotRewrite(t *testing.T) {
 func TestCatalogueIdentityOracleSeesAChange(t *testing.T) {
 	a := []byte("## ---\n## name: one\n## ---\nagent a:\n  description: \"x\"\n")
 	b := []byte("## ---\n## name: two\n## ---\nagent a:\n  description: \"x\"\n")
-	if sameCatalogueIdentity(a, b) {
+	same := func(x, y []byte) bool {
+		t.Helper()
+		ok, err := sameCatalogueIdentity("probe.bot", x, y)
+		if err != nil {
+			t.Fatalf("the identities are not read: %v", err)
+		}
+		return ok
+	}
+	if same(a, b) {
 		t.Fatalf("two frontmatter names read as the same identity")
 	}
-	if !sameCatalogueIdentity(a, a) || !sameCatalogueIdentity([]byte("\ufeff"+string(a)), []byte("\ufeff"+string(a))) {
+	if !same(a, a) || !same([]byte("\ufeff"+string(a)), []byte("\ufeff"+string(a))) {
 		t.Fatalf("equal identities read as different")
 	}
-	if sameCatalogueIdentity([]byte("\ufeff"+string(a)), []byte("\ufeff"+string(b))) {
+	if same([]byte("\ufeff"+string(a)), []byte("\ufeff"+string(b))) {
 		t.Fatalf("two identities behind a BOM read as the same")
 	}
 }
@@ -153,7 +161,18 @@ func TestTheOracleComparesDocumentsNotOnlyPrograms(t *testing.T) {
 	if !strings.Contains(string(res.Migrated), `"a\\nb"`) {
 		t.Fatalf("fragment:\n%s", res.Migrated)
 	}
-	if why := sameDocument(parser.Parse("a", "tool t:\n  command: \"x\"\n").File, parser.Parse("b", "tool t:\n  command: \"y\"\n").File); why == "" {
+	if why := sameDocument(parsertest.Parse("a", "tool t:\n  command: \"x\"\n").File, parsertest.Parse("b", "tool t:\n  command: \"y\"\n").File); why == "" {
 		t.Fatalf("two different documents read as the same")
 	}
+}
+
+// testFrontmatter is bundle.ParseFrontmatter of a text whose block the
+// reader reads: a refusal fails the test.
+func testFrontmatter(t testing.TB, raw []byte) *bundle.Frontmatter {
+	t.Helper()
+	fm, err := bundle.ParseFrontmatter("main.bot", raw)
+	if err != nil {
+		t.Fatalf("the frontmatter is refused: %v", err)
+	}
+	return fm
 }

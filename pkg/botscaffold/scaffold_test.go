@@ -2,6 +2,7 @@ package botscaffold
 
 import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,7 +102,7 @@ func TestScaffold_SpecMatrix(t *testing.T) {
 				t.Fatal(err)
 			}
 			// The bundle's unit: main.bot and the fragments its imports reach.
-			u := unit.LoadDir(filepath.Join(dir, "main.bot"))
+			u := unittest.Whole(unit.LoadDir(filepath.Join(dir, "main.bot")))
 			for _, d := range u.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Errorf("parse: %s", d.Error())

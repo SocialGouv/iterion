@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -85,7 +85,7 @@ func TestExecuteRun_givesTheEngineTheScratchsConsent(t *testing.T) {
 			}}); err != nil {
 				t.Fatal(err)
 			}
-			pr := parser.Parse("main.bot", "workflow main:\n  entry: done\n")
+			pr := parsertest.Parse("main.bot", "workflow main:\n  entry: done\n")
 			body, err := ast.MarshalFile(pr.File)
 			if err != nil {
 				t.Fatal(err)
@@ -133,7 +133,7 @@ func TestExecuteRun_aDeliveryClaimsItsOwnAttemptOnly(t *testing.T) {
 			}}); err != nil {
 				t.Fatal(err)
 			}
-			pr := parser.Parse("main.bot", "workflow main:\n  entry: done\n")
+			pr := parsertest.Parse("main.bot", "workflow main:\n  entry: done\n")
 			body, err := ast.MarshalFile(pr.File)
 			if err != nil {
 				t.Fatal(err)
@@ -220,7 +220,7 @@ func TestExecuteRun_aDeliveryResumesARunNoLongerQueued(t *testing.T) {
 	if err := st.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "swept"); err != nil {
 		t.Fatal(err)
 	}
-	pr := parser.Parse("main.bot", "workflow main:\n  entry: done\n")
+	pr := parsertest.Parse("main.bot", "workflow main:\n  entry: done\n")
 	body, err := ast.MarshalFile(pr.File)
 	if err != nil {
 		t.Fatal(err)

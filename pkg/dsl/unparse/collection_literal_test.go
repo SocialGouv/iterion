@@ -1,6 +1,7 @@
 package unparse_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -42,14 +43,14 @@ workflow w:
   entry: shape
   shape -> done
 `
-			pr1 := parser.Parse("lit.bot", src)
+			pr1 := parsertest.Parse("lit.bot", src)
 			for _, d := range pr1.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Fatalf("header %q expr %q: original parse error: %s", header, e.text, d.Error())
 				}
 			}
 			unparsed := unparse.Unparse(pr1.File)
-			pr2 := parser.Parse("lit.roundtrip.bot", unparsed)
+			pr2 := parsertest.Parse("lit.roundtrip.bot", unparsed)
 			for _, d := range pr2.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Fatalf("header %q expr %q: re-parse error: %s\nUnparsed:\n%s", header, e.text, d.Error(), unparsed)

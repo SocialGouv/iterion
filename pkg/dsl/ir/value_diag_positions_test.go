@@ -2,9 +2,8 @@ package ir
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // A refused switch value names its line: the `workflow <name>:` header for
@@ -59,7 +58,7 @@ func TestValueDiagnosticsCarryASourcePosition(t *testing.T) {
 		{"mcp_server s:\n  transport: stdio\n  command: \"x\"\n  auth:\n    type: \"basic\"\nagent a:\n  model: \"m\"\n  mcp:\n    servers: [s]\nworkflow w:\n  entry: a\n  a -> done\n", DiagUnsupportedMCPAuth, 1},
 	}
 	for _, tc := range cases {
-		pr := parser.Parse("p.bot", tc.src)
+		pr := parsertest.Parse("p.bot", tc.src)
 		if len(pr.Diagnostics) != 0 {
 			t.Fatalf("%q: parse: %v", tc.src, pr.Diagnostics)
 		}

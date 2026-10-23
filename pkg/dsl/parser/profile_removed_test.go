@@ -12,14 +12,14 @@ import (
 // axes; C171 only refuses their combination).
 func TestProjectRootIsRefusedInProfileTwo(t *testing.T) {
 	body := "agent a:\n  description: \"x\"\n  memory:\n    enabled: true\n    project_root: true\n"
-	v1 := Parse("x.bot", body)
+	v1 := parseLenient("x.bot", body)
 	if len(v1.Diagnostics) != 0 {
 		t.Fatalf("profile 1: %v", v1.Diagnostics)
 	}
 	if mb := v1.File.Agents[0].Memory; mb == nil || mb.ProjectRoot == nil || !*mb.ProjectRoot {
 		t.Fatalf("profile 1 did not keep project_root: %+v", v1.File.Agents[0].Memory)
 	}
-	v2 := Parse("x.bot", "dsl: 2\n"+body)
+	v2 := parseLenient("x.bot", "dsl: 2\n"+body)
 	if len(v2.Diagnostics) != 1 {
 		t.Fatalf("profile 2: want exactly one diagnostic, got %v", v2.Diagnostics)
 	}
@@ -43,7 +43,7 @@ func TestJoinIsAnOrdinaryIdentifier(t *testing.T) {
 		t.Fatalf("join is still a keyword")
 	}
 	src := "compute join:\n  expr:\n    lines: \"join(input.files, ',')\"\n\nworkflow w:\n  entry: join\n  join -> done\n"
-	res := Parse("x.bot", src)
+	res := parseLenient("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}

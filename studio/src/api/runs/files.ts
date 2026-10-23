@@ -62,14 +62,19 @@ export async function getRunFileContent(
 
 // saveRunFileContent writes operator-edited content back into the run's live
 // worktree. Path-traversal is enforced server-side (never escapes work_dir).
+// storedSha256 is the digest of the text the edit was made from (the read's
+// `sha256`): the server writes only over those bytes (409 otherwise), and it
+// is what lets the edit replace a `.bot` the server's reader refuses as
+// stored.
 export async function saveRunFileContent(
   runId: string,
   path: string,
   content: string,
+  storedSha256?: string,
 ): Promise<RunFileContent> {
   return request(`/runs/${encodeURIComponent(runId)}/files/content`, {
     method: "PUT",
-    body: JSON.stringify({ path, content }),
+    body: JSON.stringify({ path, content, ...(storedSha256 ? { stored_sha256: storedSha256 } : {}) }),
   });
 }
 

@@ -383,6 +383,15 @@ func regenerateCatalogs(workdir, onlyBundleDir string) (string, error) {
 	for _, d := range diags {
 		switch d.Kind {
 		case DiscoveryErrorFile:
+		case DiscoveryErrorIdentity:
+			// A source listed without the identity its frontmatter declares:
+			// a loose .bot contributes no card either way, while a bundle's
+			// card would carry the manifest's triggers and capabilities
+			// where the unread frontmatter overrides them — content the
+			// catalog must not take. The same stat as below decides.
+			if info, err := os.Stat(resolveDiagPath(abs, d.Path)); err != nil || info.IsDir() {
+				blocking = append(blocking, d)
+			}
 		case DiscoveryErrorShadowed:
 			// A shadowed source loaded; whether its card survives depends on
 			// WHAT it is. A loose .bot contributes none either way, and the

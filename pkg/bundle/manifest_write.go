@@ -90,13 +90,35 @@ type ManifestPatch struct {
 //     atomic temp+rename, so a structurally-broken or
 //     schema-incompatible result aborts without clobbering the original.
 //
+// It takes no lock: a write another writer lands between its read and its
+// rename is replaced. The server's manifest edit patches through
+// PatchManifest under its authoring lock instead.
+//
 // Returns the canonical, re-parsed Manifest on success.
 func WriteManifest(path string, patch ManifestPatch) (*Manifest, error) {
 	body, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("bundle: read manifest %s: %w", path, err)
 	}
+	out, m, err := PatchManifest(path, body, patch)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.WriteFileAtomic(path, out, 0o644); err != nil {
+		return nil, fmt.Errorf("bundle: write manifest %s: %w", path, err)
+	}
+	return m, nil
+}
 
+// PatchManifest is WriteManifest without its reading and its writing: the
+// bytes the manifest body becomes once patch is applied — empty body
+// scaffolds a minimal manifest — held to every gate WriteManifest holds them
+// to, with their decoded Manifest. path names the file in errors only. A
+// writer that must write the bytes it patched under its own lock, over the
+// very bytes it read there (pkg/server's manifest edit), patches through it
+// and writes the result itself.
+func PatchManifest(path string, body []byte, patch ManifestPatch) ([]byte, *Manifest, error) {
+	var err error
 	// The icon is stored in its loader-normalized form: decodeManifest
 	// trims it on every read (manifest.go), so rendering the trimmed value
 	// is a fixed point where the padded one would read back as another
@@ -114,24 +136,23 @@ func WriteManifest(path string, patch ManifestPatch) (*Manifest, error) {
 		out, err = scaffoldManifest(patch)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("bundle: parse manifest %s: %w", path, err)
+		return nil, nil, fmt.Errorf("bundle: parse manifest %s: %w", path, err)
 	}
 
 	// Validate the rewritten bytes through the SAME decoder LoadManifest
-	// uses (strict v2 + schema + attachment safety) before committing, so a
-	// structurally-broken or schema-incompatible result can never land on
-	// disk. Then write durably via the shared atomic writer (temp + fsync +
-	// rename + dir fsync).
+	// uses (strict v2 + schema + attachment safety) before they are
+	// written, so a structurally-broken or schema-incompatible result can
+	// never land on disk.
 	m, err := decodeManifest(out, path)
 	if err != nil {
-		return nil, fmt.Errorf("bundle: rewritten manifest invalid: %w", err)
+		return nil, nil, fmt.Errorf("bundle: rewritten manifest invalid: %w", err)
 	}
 	// Decoding cleanly is not enough: the bytes must READ BACK as the patch
 	// (the round-1 lesson — a block-valued key's old body survived the
 	// splice and decoded INTO the new value, valid YAML and all). The gate
 	// turns any span misread into a loud refusal, never a corrupted file.
 	if err := manifestPatchReadBack(m, patch); err != nil {
-		return nil, fmt.Errorf("bundle: rewritten manifest does not read back the patch: %w", err)
+		return nil, nil, fmt.Errorf("bundle: rewritten manifest does not read back the patch: %w", err)
 	}
 	// And the patched fields are not the whole story: a patch ADDS and
 	// REPLACES keys, it never deletes one. Comparing only the patched
@@ -141,18 +162,15 @@ func WriteManifest(path string, patch ManifestPatch) (*Manifest, error) {
 	if beforeKeys != nil {
 		afterKeys, err := manifestTopKeys(out)
 		if err != nil {
-			return nil, fmt.Errorf("bundle: rewritten manifest does not re-parse: %w", err)
+			return nil, nil, fmt.Errorf("bundle: rewritten manifest does not re-parse: %w", err)
 		}
 		for k := range beforeKeys {
 			if !afterKeys[k] {
-				return nil, fmt.Errorf("bundle: rewritten manifest lost top-level key %q", k)
+				return nil, nil, fmt.Errorf("bundle: rewritten manifest lost top-level key %q", k)
 			}
 		}
 	}
-	if err := store.WriteFileAtomic(path, out, 0o644); err != nil {
-		return nil, fmt.Errorf("bundle: write manifest %s: %w", path, err)
-	}
-	return m, nil
+	return out, m, nil
 }
 
 // manifestTopKeys is the set of a manifest's top-level keys.

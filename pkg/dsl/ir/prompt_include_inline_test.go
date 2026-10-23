@@ -1,12 +1,11 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // InlinePromptIncludes makes an AST self-contained: the markers are
@@ -21,7 +20,7 @@ func TestInlinePromptIncludes_MakesTheASTSelfContained(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), src)
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("parse: %s", d.Error())
 	}
@@ -52,7 +51,7 @@ func TestInlinePromptIncludes_RefusesAPromptWhoseSourceIsNotOnThisHost(t *testin
 		t.Fatal(err)
 	}
 	t.Chdir(cwd)
-	pr := parser.Parse("<inline>", "prompt p:\n  {{include \"leak.md\"}}\n")
+	pr := parsertest.Parse("<inline>", "prompt p:\n  {{include \"leak.md\"}}\n")
 	err := InlinePromptIncludes(pr.File)
 	if err == nil || !strings.Contains(err.Error(), "not an absolute path to a file on this host") {
 		t.Fatalf("want a refusal naming the absent source file, got %v", err)
@@ -81,7 +80,7 @@ func TestInlinePromptIncludes_ExpandsNestedIncludes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), src)
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), src)
 	if err := InlinePromptIncludes(pr.File); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +103,7 @@ func TestInlinePromptIncludes_RefusesACycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), src)
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), src)
 	err := InlinePromptIncludes(pr.File)
 	if err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("want a cycle refusal, got %v", err)
@@ -124,7 +123,7 @@ func TestInlinePromptIncludes_RefusesARelativeSourcePath(t *testing.T) {
 		}
 	}
 	t.Chdir(cwd)
-	pr := parser.Parse("main.bot", "prompt p:\n  {{include \"rules.md\"}}\n")
+	pr := parsertest.Parse("main.bot", "prompt p:\n  {{include \"rules.md\"}}\n")
 	err := InlinePromptIncludes(pr.File)
 	if err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("want a refusal of the relative path, got %v", err)
@@ -142,7 +141,7 @@ func TestInlinePromptIncludes_ReportsAMissingFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pr := parser.Parse(filepath.Join(dir, "main.bot"), src)
+	pr := parsertest.Parse(filepath.Join(dir, "main.bot"), src)
 	err := InlinePromptIncludes(pr.File)
 	if err == nil || !strings.Contains(err.Error(), `prompt "p"`) || !strings.Contains(err.Error(), "absent.md") {
 		t.Fatalf("want an error naming the prompt and the file, got %v", err)

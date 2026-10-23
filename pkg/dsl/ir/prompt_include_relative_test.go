@@ -1,12 +1,11 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 const relativeIncludeSource = "prompt p:\n  {{include \"rules.md\"}}\n\nagent a:\n  model: \"m\"\n  system: p\n\nworkflow w:\n  entry: a\n  a -> done\n"
@@ -26,7 +25,7 @@ func TestCompilePromptInclude_RefusesARelativeSourceName(t *testing.T) {
 	}
 	t.Chdir(dir)
 
-	pr := parser.Parse("main.bot", relativeIncludeSource) // a name that exists in the cwd
+	pr := parsertest.Parse("main.bot", relativeIncludeSource) // a name that exists in the cwd
 	cr := Compile(pr.File)
 	var refused bool
 	for _, d := range cr.Diagnostics {
@@ -41,7 +40,7 @@ func TestCompilePromptInclude_RefusesARelativeSourceName(t *testing.T) {
 		t.Fatalf("a relative source name resolved its include against the working directory: %v", cr.Diagnostics)
 	}
 
-	prAbs := parser.Parse(filepath.Join(dir, "main.bot"), relativeIncludeSource)
+	prAbs := parsertest.Parse(filepath.Join(dir, "main.bot"), relativeIncludeSource)
 	crAbs := Compile(prAbs.File)
 	for _, d := range crAbs.Diagnostics {
 		if d.Code == DiagBadPromptInclude {

@@ -4,6 +4,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,12 +27,16 @@ import (
 // fmt` compares this list for the source and the written form before it
 // rewrites a document in its canonical form, refusing when one would be
 // lost; `fmt --to bot` counts them and names the first. A source that is
-// not YAML has no comments to report.
+// not YAML has no comments to report, nor one past its reader's bounds — the
+// size cap, the decode's ceiling, the read budget (readFirst): nil, as for a
+// text without a comment, so a caller that must tell the two apart reads
+// the text first (ReadOne).
 func Comments(src []byte) []string {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(src, &doc); err != nil {
+	read, _, err := readFirst(src)
+	if err != nil || read == nil {
 		return nil
 	}
+	doc := *read
 	lines := sourceLines(src)
 	// The document's foot is taken off the node and handed to the one
 	// reader of the trailing region's source, which is where every line of
@@ -181,15 +186,20 @@ func walkFlow(n *yaml.Node, lines []string) (out []string, hungFoot int) {
 		sourcedText[c.text] = true
 	}
 	for i, hung := range []string{n.LineComment, n.FootComment} {
+		texts := commentLines(hung)
+		var region map[string]int
 		written := map[string]int{}
-		for _, t := range commentLines(hung) {
+		for _, t := range texts {
 			if sourcedText[t] {
 				// The slot holds the inside comment yaml.v3 moved onto the
 				// node AND the ones written after the close: of a text the
 				// sourced read already listed, emit as many copies as the
 				// region the slot is filled from writes, and no more.
+				if region == nil {
+					region = commentsAfterClose(texts, sourcedText, lines, closeLine, i == 1)
+				}
 				written[t]++
-				if written[t] > commentsAfterClose(t, lines, closeLine, i == 1) {
+				if written[t] > region[t] {
 					continue
 				}
 			}
@@ -202,53 +212,72 @@ func walkFlow(n *yaml.Node, lines []string) (out []string, hungFoot int) {
 	return out, hungFoot
 }
 
-// commentsAfterClose counts the comments of this text the source writes in
-// the region the slot it hangs from is filled from — physical comments the
-// sourced read, which stops at the closing bracket, never saw. yaml.v3 fills
-// those two slots from two places and no other: a flow collection's LINE
-// comment from the closing bracket's own line, its FOOT comment from the
-// own-line comment block written below that line (blank lines in between
-// included). A hung copy beyond that count is the inside comment yaml.v3
-// moved onto the node's line (#1814), which the sourced read already listed.
-// With no closing line in the source — closeLine 0, or one past the last
-// line — the count is 0: the sourced read then ran to the end of the source,
-// so every hung copy of a text it emitted is that moved comment.
-func commentsAfterClose(text string, lines []string, closeLine int, foot bool) int {
+// commentsAfterClose counts, for each of the slot's texts the sourced read
+// already listed (sourced), the comments of that text the source writes in
+// the region the slot is filled from — physical comments the sourced read,
+// which stops at the closing bracket, never saw. yaml.v3 fills those two
+// slots from two places and no other: a flow collection's LINE comment from
+// the closing bracket's own line, its FOOT comment from the own-line
+// comment block written below that line (blank lines in between included).
+// A hung copy beyond that count is the inside comment yaml.v3 moved onto
+// the node's line (#1814), which the sourced read already listed. With no
+// closing line in the source — closeLine 0, or one past the last line — the
+// count is 0: the sourced read then ran to the end of the source, so every
+// hung copy of a text it emitted is that moved comment.
+//
+// The region is read once for all the texts: a foot of a thousand lines
+// asking about a thousand copies is a thousand lines read, not a million.
+func commentsAfterClose(texts []string, sourced map[string]bool, lines []string, closeLine int, foot bool) map[string]int {
+	counts := map[string]int{}
+	lengths := map[int]bool{}
+	for _, t := range texts {
+		if sourced[t] {
+			counts[t] = 0
+			lengths[len(t)] = true
+		}
+	}
 	if closeLine < 1 || closeLine > len(lines) {
-		return 0
+		return counts
 	}
 	if !foot {
-		if lineComment(lines[closeLine-1], text) {
-			return 1
-		}
-		return 0
+		countLineComments(lines[closeLine-1], counts, lengths)
+		return counts
 	}
-	n := 0
 	for li := closeLine; li < len(lines); li++ {
 		if t := strings.TrimSpace(lines[li]); t != "" && !strings.HasPrefix(t, "#") {
 			break
 		}
-		if lineComment(lines[li], text) {
-			n++
-		}
+		countLineComments(lines[li], counts, lengths)
 	}
-	return n
+	return counts
 }
 
-// lineComment reports whether line carries a comment of exactly this text.
-// EVERY `#` written after a blank is a candidate, the last character of the
-// line included: the first one may sit inside a quoted value
-// (`b: "a # b"} # c`) and the comment after it, and a comment may be a bare
-// `#`.
-func lineComment(line, text string) bool {
-	r := []rune(line)
-	for ci := 0; ci < len(r); ci++ {
-		if r[ci] == '#' && (ci == 0 || r[ci-1] == ' ' || r[ci-1] == '\t') &&
-			strings.TrimSpace(string(r[ci:])) == text {
-			return true
+// countLineComments adds one to counts[text] for each text of counts line
+// carries a comment of. EVERY `#` written after a blank is a candidate, the
+// last character of the line included: the first one may sit inside a
+// quoted value (`b: "a # b"} # c`) and the comment after it, and a comment
+// may be a bare `#`. Two candidates of a line never read the same — each
+// runs to the line's end from another `#` — so a line counts once a text.
+//
+// The line is read once, byte by byte: `#`, a blank and a tab are single
+// bytes no other UTF-8 character contains; its end is trimmed once, so a
+// candidate is the substring from its `#` on, never copied, and only one of
+// a text's length (lengths) is looked up — a line may carry a million.
+func countLineComments(line string, counts map[string]int, lengths map[int]bool) {
+	line = strings.TrimRightFunc(line, unicode.IsSpace)
+	steps := 0
+	for i := 0; i < len(line); i++ {
+		steps++
+		if line[i] != '#' || (i > 0 && line[i-1] != ' ' && line[i-1] != '\t') {
+			continue
+		}
+		if tail := line[i:]; lengths[len(tail)] {
+			if _, ok := counts[tail]; ok {
+				counts[tail]++
+			}
 		}
 	}
-	return false
+	readSteps.Add(int64(steps))
 }
 
 // trailingComments lists, in written order, every comment written below the
@@ -306,6 +335,7 @@ func contentEnd(lines []string, doc *yaml.Node) int {
 // the document's root, where the scanner starts.
 func multiLineScalarEnd(lines []string, doc *yaml.Node) int {
 	end := 0
+	chars := &charLines{lines: lines}
 	var walk func(n *yaml.Node, block int)
 	walk = func(n *yaml.Node, block int) {
 		if n == nil {
@@ -316,7 +346,7 @@ func multiLineScalarEnd(lines []string, doc *yaml.Node) int {
 			case n.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0:
 				end = max(end, blockBodyEnd(lines, n.Line, n.Column, block))
 			case n.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) != 0:
-				end = max(end, quotedScalarEnd(lines, n))
+				end = max(end, quotedScalarEnd(chars, n))
 			}
 		}
 		inner := block
@@ -383,20 +413,20 @@ func blockBodyEnd(lines []string, indicator, col, block int) int {
 // scalar while a doubled `'` is a literal quote inside a single-quoted one,
 // as in flowComments' scan. Answering 0 leaves the region where the backward
 // scan put it: the conservative end, never one below a comment.
-func quotedScalarEnd(lines []string, n *yaml.Node) int {
-	if n.Line < 1 || n.Line > len(lines) {
+func quotedScalarEnd(chars *charLines, n *yaml.Node) int {
+	if n.Line < 1 || n.Line > len(chars.lines) {
 		return 0
 	}
 	quote := '"'
 	if n.Style&yaml.SingleQuotedStyle != 0 {
 		quote = '\''
 	}
-	li, ci := openingQuote(lines, n.Line-1, max(n.Column-1, 0), quote)
+	li, ci := openingQuote(chars, n.Line-1, max(n.Column-1, 0), quote)
 	if li < 0 {
 		return 0
 	}
-	for ; li < len(lines); li++ {
-		line := []rune(lines[li])
+	for ; li < len(chars.lines); li++ {
+		line := chars.at(li)
 		for ; ci < len(line); ci++ {
 			switch {
 			case quote == '"' && line[ci] == '\\':
@@ -423,9 +453,9 @@ func quotedScalarEnd(lines []string, n *yaml.Node) int {
 // form `!<…>` ending at its `>` — and a `#` opening a line or written after a
 // blank runs to the end of its line and is skipped too, so a quote inside
 // either is not taken for the scalar's. Line -1 when no line holds one.
-func openingQuote(lines []string, li, ci int, quote rune) (int, int) {
-	for ; li < len(lines); li++ {
-		line := []rune(lines[li])
+func openingQuote(chars *charLines, li, ci int, quote rune) (int, int) {
+	for ; li < len(chars.lines); li++ {
+		line := chars.at(li)
 		for ; ci < len(line); ci++ {
 			switch {
 			case line[ci] == quote:
@@ -439,6 +469,27 @@ func openingQuote(lines []string, li, ci int, quote rune) (int, int) {
 		ci = 0
 	}
 	return -1, 0
+}
+
+// charLines reads the lines of the source as characters — what yaml.v3's
+// columns count — converting a line once however many scalars a walk reads
+// off it: the walk visits scalars in document order, so the scalars of a
+// flow sequence written on one line, a million of them, share one
+// conversion of that line rather than each making its own.
+type charLines struct {
+	lines []string
+	li    int
+	chars []rune
+	read  bool
+}
+
+// at is line li (0-based) as characters.
+func (c *charLines) at(li int) []rune {
+	if !c.read || c.li != li {
+		c.li, c.chars, c.read = li, []rune(c.lines[li]), true
+		readSteps.Add(int64(len(c.chars)))
+	}
+	return c.chars
 }
 
 // declaredBlockIndent is the indentation the block scalar header at the

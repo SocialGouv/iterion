@@ -1,12 +1,12 @@
 package runview
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // declFingerprints lists the declaration kinds by hand: a kind added to
@@ -52,7 +52,7 @@ func TestDeclFingerprintsCoverEveryDeclarationKind(t *testing.T) {
 func TestRewindAutoSeesAContractEdit(t *testing.T) {
 	const before = "contract c:\n  inputs:\n    goal: string\n      default: \"x\"\n\nagent worker:\n  model: \"m\"\n  description: \"d\"\n\nworkflow w:\n  contract: c\n  entry: worker\n  worker -> done\n"
 	after := strings.Replace(before, `default: "x"`, `default: "y"`, 1)
-	a, b := parser.Parse("a.bot", before), parser.Parse("b.bot", after)
+	a, b := parsertest.Parse("a.bot", before), parsertest.Parse("b.bot", after)
 	if len(a.Diagnostics) != 0 || len(b.Diagnostics) != 0 {
 		t.Fatalf("fixture: %v %v", a.Diagnostics, b.Diagnostics)
 	}

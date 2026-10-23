@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The push guard: `iterion remote admin bots push` must refuse a bundle the
@@ -49,6 +50,30 @@ func pushBundle(requires string) string {
 		"manifest.yaml":       manifest,
 	}})
 	return string(body)
+}
+
+// adminStoredIDFor is the platform override's id, what an update presents
+// (the digest rule); a bot that is not there has none.
+func adminStoredIDFor(s *Server, slug string) string {
+	bs, err := s.botSources.GetBySlug(store.WithTenant(context.Background(), botsource.PlatformTenantID), botsource.PlatformTenantID, slug)
+	if err != nil {
+		return ""
+	}
+	return bs.ID
+}
+
+// adminStoredDigestsFor is the platform override's per-file digests as
+// stored — what an update presents for the files it rewrites.
+func adminStoredDigestsFor(s *Server, slug string) map[string]string {
+	bs, err := s.botSources.GetBySlug(store.WithTenant(context.Background(), botsource.PlatformTenantID), botsource.PlatformTenantID, slug)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(bs.Files))
+	for path, content := range bs.Files {
+		out[path] = contentSHA256(content)
+	}
+	return out
 }
 
 func adminBotsPutQuery(s *Server, id auth.Identity, slug, query, body string) *httptest.ResponseRecorder {
@@ -146,8 +171,22 @@ func TestAdminBotsPush_AdmitsWhatTheFleetCanRun(t *testing.T) {
 	s, admin, _ := adminBotsServer(t)
 	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.116.4+deadbeef"}}
 
-	for _, requires := range []string{">= 3.112.14", ""} {
-		w := adminBotsPutQuery(s, admin, "needy", "", pushBundle(requires))
+	for i, requires := range []string{">= 3.112.14", ""} {
+		body := pushBundle(requires)
+		if i > 0 {
+			// The digest rule: an update presents the id and the stored
+			// digests its read answered — the manifest this push rewrites
+			// among them.
+			var m map[string]any
+			if err := json.Unmarshal([]byte(body), &m); err != nil {
+				t.Fatal(err)
+			}
+			m["id"] = adminStoredIDFor(s, "needy")
+			m["stored_sha256"] = adminStoredDigestsFor(s, "needy")
+			bodyBytes, _ := json.Marshal(m)
+			body = string(bodyBytes)
+		}
+		w := adminBotsPutQuery(s, admin, "needy", "", body)
 		if w.Code != http.StatusOK {
 			t.Fatalf("push with requires %q = %d %s, want 200", requires, w.Code, w.Body.String())
 		}

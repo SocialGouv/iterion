@@ -3,11 +3,12 @@ package ast_test
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 )
 
@@ -66,7 +67,7 @@ agent a:
 // distinct through the transport; the empty `file:` block survives as a
 // block; the workflow keeps the contract it names.
 func TestContractSurvivesTheTransport(t *testing.T) {
-	pr := parser.Parse("x.bot", contractTransportFixture)
+	pr := parsertest.Parse("x.bot", contractTransportFixture)
 	if len(pr.Diagnostics) != 0 {
 		t.Fatalf("fixture: %v", pr.Diagnostics)
 	}
@@ -161,10 +162,10 @@ func TestContractJSONFromTheTransportIsCanonicalOrRefused(t *testing.T) {
 // A contract declared in a fragment carries the fragment as its
 // provenance, on the way out and on the way back.
 func TestContractCarriesItsProvenance(t *testing.T) {
-	u := unit.LoadMap(map[string]string{
+	u := unittest.Whole(unit.LoadMap(map[string]string{
 		"main.bot":         "dsl: 2\nimport \"lib/contract.bot\"\n\nworkflow w:\n  contract: c\n  entry: a\n  a -> done\n\nagent a:\n  description: \"d\"\n",
 		"lib/contract.bot": "contract c:\n  inputs:\n    goal: string\n",
-	}, "main.bot")
+	}, "main.bot"))
 	if u.HasErrors() {
 		t.Fatalf("diagnostics: %v", u.Diagnostics)
 	}

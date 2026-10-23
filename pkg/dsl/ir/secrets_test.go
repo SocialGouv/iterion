@@ -1,9 +1,8 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 func TestSecretsBlockCompiles(t *testing.T) {
@@ -25,7 +24,7 @@ workflow w:
   entry: x
   x -> done
 `
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	if len(pr.Diagnostics) > 0 {
 		t.Fatalf("parser diagnostics: %+v", pr.Diagnostics)
 	}
@@ -70,7 +69,7 @@ workflow w:
   entry: x
   x -> done
 `
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	if len(pr.Diagnostics) > 0 {
 		t.Fatalf("parser diagnostics: %+v", pr.Diagnostics)
 	}
@@ -149,7 +148,7 @@ workflow w:
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			pr := parser.Parse("t.bot", tc.src)
+			pr := parsertest.Parse("t.bot", tc.src)
 			if len(pr.Diagnostics) > 0 {
 				t.Fatalf("parser diagnostics: %+v", pr.Diagnostics)
 			}
@@ -206,7 +205,7 @@ workflow w:
   entry: a
   a -> done
 `
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	if len(pr.Diagnostics) > 0 {
 		t.Fatalf("parser diagnostics: %+v", pr.Diagnostics)
 	}
@@ -233,7 +232,7 @@ workflow w:
   entry: a
   a -> done
 `
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	cr := Compile(pr.File)
 	if !hasDiag(cr.Diagnostics, DiagDuplicateSecret) {
 		t.Fatalf("expected DiagDuplicateSecret (C090), got %+v", cr.Diagnostics)

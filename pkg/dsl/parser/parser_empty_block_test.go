@@ -18,7 +18,7 @@ func TestEmptyBlocksParse(t *testing.T) {
 		"agent b:\n  model: \"m\"\n  sandbox:\n    image: \"img\"\n    build:\n\n    network:\n\n" +
 		"tool t:\n  command: \"true\"\n  recovery:\n\n" +
 		"workflow w:\n  entry: a\n  vars:\n\n  attachments:\n\n  mcp:\n\n  budget:\n\n  resources:\n\n  compaction:\n\n  a -> done\n"
-	pr := Parse("blocks.bot", src)
+	pr := parseLenient("blocks.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Errorf("unexpected diagnostic: %s", d.Error())
 	}
@@ -65,7 +65,7 @@ func TestEmptyBlockAtADedentOrAtEOFNeedsNoBlankLine(t *testing.T) {
 		"agent a:\n  model: \"m\"\n  memory:\n",
 		"agent a:\n  model: \"m\"\n  memory:",
 	} {
-		pr := Parse("dedent.bot", src)
+		pr := parseLenient("dedent.bot", src)
 		for _, d := range pr.Diagnostics {
 			t.Errorf("%q: unexpected diagnostic: %s", src, d.Error())
 		}
@@ -80,7 +80,7 @@ func TestEmptyBlockAtADedentOrAtEOFNeedsNoBlankLine(t *testing.T) {
 // empty block — it is an error that says what is missing, instead of the
 // E002 about indentation it used to be.
 func TestBareFallbacksIsAnErrorNamingTheRoute(t *testing.T) {
-	pr := Parse("fb.bot", "agent a:\n  model: \"m\"\n  fallbacks:\n\nworkflow w:\n  entry: a\n  a -> done\n")
+	pr := parseLenient("fb.bot", "agent a:\n  model: \"m\"\n  fallbacks:\n\nworkflow w:\n  entry: a\n  a -> done\n")
 	for _, d := range pr.Diagnostics {
 		if strings.Contains(d.Message, "route") {
 			return
@@ -98,7 +98,7 @@ func TestUnindentedBlockBodyIsStillTheIndentError(t *testing.T) {
 		"agent a:\n  memory:\n  model: \"m\"\n",
 		"vars:\nx: string\n",
 	} {
-		if pr := Parse("bad.bot", src); !indentError(pr) {
+		if pr := parseLenient("bad.bot", src); !indentError(pr) {
 			t.Errorf("%q: an unindented block body parsed without the indentation error: %v", src, pr.Diagnostics)
 		}
 	}

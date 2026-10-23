@@ -35,7 +35,12 @@ func embeddedRecipe(name string) (source string, ok bool, err error) {
 // main alone — that text would carry imports nothing can resolve wherever
 // it lands.
 func recipeFromSources(name string, files map[string]string, main string) (string, error) {
-	u := unit.LoadMap(files, main)
+	u, err := unit.LoadMap(files, main)
+	if err != nil {
+		// Past the read budget: whether the main imports — and so whether
+		// its own bytes are the program — cannot be told.
+		return "", fmt.Errorf("bot %s is not read: %w", name, err)
+	}
 	if len(u.Files) == 0 || u.Files[0].AST == nil || len(u.Files[0].AST.Imports) == 0 {
 		return files[main], nil
 	}

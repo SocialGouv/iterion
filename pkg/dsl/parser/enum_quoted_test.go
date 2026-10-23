@@ -31,8 +31,8 @@ var enumReaders = []struct {
 // author could not tell from one property what the next one accepted.
 func TestAnEnumWordReadsQuotedAsWellAsBare(t *testing.T) {
 	for _, r := range enumReaders {
-		bare := Parse("b.bot", strings.ReplaceAll(r.tmpl, "%s", r.word))
-		quoted := Parse("q.bot", strings.ReplaceAll(r.tmpl, "%s", `"`+r.word+`"`))
+		bare := parseLenient("b.bot", strings.ReplaceAll(r.tmpl, "%s", r.word))
+		quoted := parseLenient("q.bot", strings.ReplaceAll(r.tmpl, "%s", `"`+r.word+`"`))
 		if len(bare.Diagnostics) != 0 || len(quoted.Diagnostics) != 0 {
 			t.Errorf("%s: bare %v, quoted %v", r.name, bare.Diagnostics, quoted.Diagnostics)
 			continue
@@ -51,7 +51,7 @@ func TestAnEnumWordReadsQuotedAsWellAsBare(t *testing.T) {
 func TestAnEnumRefusesAnUnlistedWordQuotedOrBare(t *testing.T) {
 	for _, r := range enumReaders {
 		for _, v := range []string{"zz_bogus", `"zz_bogus"`, "1", "[" + r.word + "]"} {
-			res := Parse("x.bot", strings.ReplaceAll(r.tmpl, "%s", v))
+			res := parseLenient("x.bot", strings.ReplaceAll(r.tmpl, "%s", v))
 			if len(res.Diagnostics) == 0 {
 				t.Errorf("%s: %s accepted", r.name, v)
 				continue

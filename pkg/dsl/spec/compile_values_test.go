@@ -2,12 +2,12 @@ package spec_test
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 )
 
@@ -140,7 +140,7 @@ var warningOnly = map[string]bool{"fallback.on": true}
 // earlier, which is a refusal, not a broken probe).
 func compileDiags(t *testing.T, doc, value string, warnCounts, bogus bool) (errs, refusing []string) {
 	t.Helper()
-	pr := parser.Parse("probe.bot", doc)
+	pr := parsertest.Parse("probe.bot", doc)
 	if len(pr.Diagnostics) != 0 {
 		if !bogus {
 			t.Fatalf("probe does not parse: %q: %v", doc, pr.Diagnostics)

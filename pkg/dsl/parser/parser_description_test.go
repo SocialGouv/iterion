@@ -46,7 +46,7 @@ wait w:
   event: "ready"
   timeout: "30s"
 `
-	res := parser.Parse("test.bot", src)
+	res := parser.ParseLenient("test.bot", src)
 	assertNoDiags(t, res)
 
 	f := res.File

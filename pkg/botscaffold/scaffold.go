@@ -20,14 +20,17 @@ package botscaffold
 import (
 	"bytes"
 	"embed"
+	"errors"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -135,14 +138,21 @@ type Spec struct {
 // or, for a dev build, the release that reads the newest profile — raised
 // to the release the RENDERED sources need when that is later (a shape
 // that imports needs the release that reads `import`, whatever build
-// scaffolds it), and to category/tags' strict-decoding release when the
-// manifest declares a category.
-func defaultEngineFloor(sources map[string]string, category string) string {
+// scaffolds it), so a fresh scaffold never draws C252 on its own floor —
+// and to category/tags' strict-decoding release when the manifest
+// declares a category.
+func defaultEngineFloor(sources map[string]string, category string) (string, error) {
 	floor := strings.TrimPrefix(strings.SplitN(appinfo.Version, "+", 2)[0], "v")
 	if _, ok := bundle.CompareVersions(floor, "0"); !ok {
 		floor = parser.ProfileSince[parser.MaxProfile]
 	}
-	if need, _ := bundle.RequiredRelease(bundle.MaxSyntaxRequirements(sources)); need != "" {
+	syntax := bundle.MaxSyntaxRequirements(sources)
+	if len(syntax.Short) > 0 {
+		// A rendered source the walk could not read whole: its floor is
+		// told by nothing, and no manifest is written with one.
+		return "", fmt.Errorf("botscaffold: the floor of the rendered sources cannot be told — not read whole (C256): %s", strings.Join(syntax.Short, "; "))
+	}
+	if need, _ := bundle.RequiredRelease(syntax); need != "" {
 		if c, ok := bundle.CompareVersions(need, floor); !ok || c > 0 {
 			floor = need
 		}
@@ -153,7 +163,7 @@ func defaultEngineFloor(sources map[string]string, category string) string {
 			floor = categorySince
 		}
 	}
-	return floor
+	return floor, nil
 }
 
 // WorkflowName is the Slug as a DSL identifier — the DSL grammar has no
@@ -276,10 +286,104 @@ func checkVarDefault(typ, def string) error {
 	return nil
 }
 
-// Scaffold renders the bundle into dir (created; must not already
-// contain a main.bot). The rendered main.bot is parsed and compiled and
+// stagingInfix is the middle of a staging directory's name
+// ("."+slug+".scaffold-"+random, MkdirTemp's pattern below): what a
+// leftover of a create killed between its staging and its publish is
+// recognised by.
+const stagingInfix = ".scaffold-"
+
+// StagingMarkerName is the file Scaffold writes as the very first entry
+// of a staging directory it creates — the proof the directory is the
+// scaffold's own. SweepStale removes a stale, staging-shaped directory
+// only when it carries this marker, so a lookalike a user made (a
+// dot-directory holding their files, named with the ".scaffold-" infix)
+// is never taken for one of ours. Exported so tests and the sweep share
+// the one name.
+const StagingMarkerName = ".iterion-scaffold-staging"
+
+// stagingMarkerBody is the marker's fixed content: whatever a human who
+// opens one of these directories finds tells them what it is and that
+// deleting it loses nothing of theirs.
+const stagingMarkerBody = `This directory is an iterion scaffold staging area.
+It holds a bot bundle mid-creation (botscaffold.Scaffold); a create that
+finished renamed it into place without this file. It is safe to delete:
+iterion's sweep removes it once it is stale, and nothing here is a bot.
+`
+
+// IsStagingDir reports whether a directory NAME is one of Scaffold's
+// staging directories, whatever the slug. One left beside the discovery
+// roots by a create that died mid-way — a kill, a power loss, a server
+// restart — is no bot: discovery skips it (it would otherwise be listed,
+// enabled and routable under the slug, and shadow the operator's own
+// bots/<slug>), and SweepStale removes the stale ones.
+func IsStagingDir(name string) bool {
+	return strings.HasPrefix(name, ".") && strings.Contains(name, stagingInfix)
+}
+
+// SweepStale removes the staging directories of creates that died before
+// their publish that parent holds, when ALL of it holds: the name is one
+// IsStagingDir recognises, the directory is older than age, and it carries
+// Scaffold's marker (StagingMarkerName) — provenance, not a name pattern.
+// The marker is written before anything else lands, so a create killed
+// mid-way is marked too. What is never removed: a lookalike holding user
+// files (a dot-directory named .archive.scaffold-2024), and a leftover
+// written by a binary older than the marker — both survive. Migration:
+// pre-marker leftovers are no longer swept; discovery still skips them
+// (IsStagingDir is unchanged) and an operator removes them by hand. An
+// in-flight Scaffold's staging is fresh by construction, so the age keeps
+// a sweep from racing a concurrent create on a shared checkout; anything
+// younger is left for the next sweep. Each removal is counted and
+// returned: a sweep that removed nothing is the common case, and the
+// caller logs the rest. Paths are matched INSIDE parent, never walked
+// beyond it.
+func SweepStale(parent string, age time.Duration) (removed []string) {
+	cutoff := time.Now().Add(-age)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !IsStagingDir(e.Name()) {
+			continue
+		}
+		path := filepath.Join(parent, e.Name())
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		// Provenance before deletion: shape and age alone are a name
+		// pattern, and a name pattern is not ours to act on.
+		if !hasStagingMarker(path) {
+			continue
+		}
+		if err := os.RemoveAll(path); err == nil {
+			removed = append(removed, path)
+		}
+	}
+	return removed
+}
+
+// hasStagingMarker reports whether dir carries the scaffold's own marker:
+// a regular file named StagingMarkerName directly inside it. Lstat, not
+// Stat: a symlink by that name points wherever its maker pointed it and
+// proves nothing.
+func hasStagingMarker(dir string) bool {
+	info, err := os.Lstat(filepath.Join(dir, StagingMarkerName))
+	return err == nil && info.Mode().IsRegular()
+}
+
+// Scaffold renders the bundle into dir, which it creates: dir must not
+// exist. The rendered main.bot is parsed and compiled and
 // the manifest decoded BEFORE any file lands, so a generation bug can
 // never write a broken bundle.
+//
+// The bundle is built in a staging directory beside dir and published with
+// one rename that replaces nothing (store.RenameNoReplace): until then
+// nothing of it is under dir, so a create refused or cut short midway
+// leaves no bot to list or route, and a name another writer took since the
+// check above — a Save As of its main.bot, a README — keeps its files: the
+// scaffold answers fs.ErrExist (a 409 at the studio's door) and removes its
+// staging directory.
 func Scaffold(dir string, s Spec) (Result, error) {
 	if err := s.Validate(); err != nil {
 		return Result{}, err
@@ -297,7 +401,11 @@ func Scaffold(dir string, s Spec) (Result, error) {
 				sources[rel] = string(body)
 			}
 		}
-		s.EngineFloor = defaultEngineFloor(sources, s.Category)
+		floor, err := defaultEngineFloor(sources, s.Category)
+		if err != nil {
+			return Result{}, err
+		}
+		s.EngineFloor = floor
 	}
 	if err := checkAnnexPaths(annexes); err != nil {
 		return Result{}, err
@@ -339,12 +447,39 @@ func Scaffold(dir string, s Spec) (Result, error) {
 	}
 
 	if _, err := os.Stat(filepath.Join(dir, "main.bot")); err == nil {
-		return Result{}, fmt.Errorf("botscaffold: %s already contains a main.bot", dir)
+		return Result{}, fmt.Errorf("botscaffold: %s already contains a main.bot: %w", dir, fs.ErrExist)
+	}
+	parent := filepath.Dir(dir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return Result{}, fmt.Errorf("botscaffold: mkdir %s: %w", parent, err)
+	}
+	stagePrefix := "." + filepath.Base(dir) + ".scaffold-"
+	stage, err := os.MkdirTemp(parent, stagePrefix+"*")
+	if err != nil {
+		return Result{}, fmt.Errorf("botscaffold: staging directory: %w", err)
+	}
+	published := false
+	defer func() {
+		// The staging directory is this call's own (MkdirTemp): removed
+		// unless it became dir, and only once its name is checked to be
+		// that one, beside dir.
+		if !published && filepath.Dir(stage) == parent && strings.HasPrefix(filepath.Base(stage), stagePrefix) {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+	if err := os.Chmod(stage, 0o755); err != nil {
+		return Result{}, fmt.Errorf("botscaffold: staging directory: %w", err)
+	}
+	// The marker is the staging's provenance and its first file: any death
+	// from here on leaves a marked staging SweepStale can recognise as
+	// ours, and no bundle file has landed yet.
+	if err := store.WriteFileAtomicNew(filepath.Join(stage, StagingMarkerName), []byte(stagingMarkerBody), 0o644); err != nil {
+		return Result{}, fmt.Errorf("botscaffold: staging marker: %w", err)
 	}
 	// The full .botz layout, so `bundle pack` works on the result as-is
 	// and each resource kind has an obvious home.
 	for _, sub := range bundle.LayoutDirs {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(stage, sub), 0o755); err != nil {
 			return Result{}, fmt.Errorf("botscaffold: mkdir %s: %w", sub, err)
 		}
 	}
@@ -376,14 +511,30 @@ func Scaffold(dir string, s Spec) (Result, error) {
 	}
 	res := Result{Dir: dir}
 	for _, f := range files {
-		path := filepath.Join(dir, f.name)
+		path := filepath.Join(stage, f.name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return Result{}, fmt.Errorf("botscaffold: mkdir for %s: %w", path, err)
+			return Result{}, fmt.Errorf("botscaffold: mkdir for %s: %w", f.name, err)
 		}
-		if err := store.WriteFileAtomic(path, f.data, 0o644); err != nil {
-			return Result{}, fmt.Errorf("botscaffold: write %s: %w", path, err)
+		if err := store.WriteFileAtomicNew(path, f.data, 0o644); err != nil {
+			return Result{}, fmt.Errorf("botscaffold: write %s: %w", f.name, err)
 		}
-		res.Files = append(res.Files, path)
+		res.Files = append(res.Files, filepath.Join(dir, f.name))
+	}
+	// The published bundle must not carry the marker: it comes off before
+	// the rename. A failed remove refuses the publish, and the deferred
+	// cleanup then takes the whole staging away.
+	if err := os.Remove(filepath.Join(stage, StagingMarkerName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return Result{}, fmt.Errorf("botscaffold: staging marker: %w", err)
+	}
+	if err := store.RenameNoReplace(stage, dir); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return Result{}, fmt.Errorf("botscaffold: %s was created since its absence was checked: %w", dir, fs.ErrExist)
+		}
+		return Result{}, fmt.Errorf("botscaffold: publish %s: %w", dir, err)
+	}
+	published = true
+	if err := store.SyncDir(parent); err != nil {
+		return Result{}, fmt.Errorf("botscaffold: sync %s: %w", parent, err)
 	}
 	return res, nil
 }

@@ -1,10 +1,9 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // An edge inside a group body is cloned for every `use`; an edge-attributed
@@ -33,7 +32,7 @@ func TestExpandedEdgeFindingsPointAtTheGroupBodyLine(t *testing.T) {
 		/* 17 */ "  entry: g1.a",
 		/* 18 */ "  g1.b -> done",
 	}
-	pr := parser.Parse("grp.bot", strings.Join(lines, "\n")+"\n")
+	pr := parsertest.Parse("grp.bot", strings.Join(lines, "\n")+"\n")
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("unexpected parse diagnostic: %s", d.Error())
 	}

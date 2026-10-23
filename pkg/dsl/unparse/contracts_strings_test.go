@@ -3,6 +3,7 @@ package unparse
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -40,7 +41,7 @@ func TestAJSONStringValueSurvivesTheWriter(t *testing.T) {
 				Criteria: []*ast.CriterionDecl{{Name: "k", Kind: "pattern", Port: "input.goal", Params: params}},
 			}}}
 			out := Unparse(f)
-			back := parser.Parse("x.bot", out)
+			back := parsertest.Parse("x.bot", out)
 			for _, d := range back.Diagnostics {
 				if d.Severity == parser.SeverityError {
 					t.Fatalf("the written text does not parse: %s\n%s", d.Error(), out)

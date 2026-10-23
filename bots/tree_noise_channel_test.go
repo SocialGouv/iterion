@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -50,7 +51,7 @@ func TestRunTreeNoiseNeverRendersInAnExecutableBody(t *testing.T) {
 	}
 	promptSide := 0
 	for _, path := range targets {
-		u := unit.LoadDir(path)
+		u := unittest.Whole(unit.LoadDir(path))
 		if u.Merged == nil {
 			continue // the parse/compile test reports it
 		}

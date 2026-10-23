@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"strings"
 	"testing"
 
@@ -25,7 +26,7 @@ func fallbackWorkflow(nodeProps, fallbacks string) string {
 
 func compileFallbackSrc(t *testing.T, src string) *CompileResult {
 	t.Helper()
-	pr := parser.Parse("t.bot", src)
+	pr := parsertest.Parse("t.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("parse error: %s\n--- source ---\n%s", d.Error(), src)

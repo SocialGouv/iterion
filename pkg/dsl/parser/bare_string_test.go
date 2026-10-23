@@ -7,7 +7,7 @@ import "testing"
 // the dot.
 func TestSandboxRulesReadABareDottedHost(t *testing.T) {
 	src := "workflow w:\n  entry: a\n  sandbox:\n    network:\n      mode: allowlist\n      rules: [github.com, \"!**.evil.site\", api.github.com]\n  a -> done\n"
-	res := Parse("x.bot", src)
+	res := parseLenient("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}
@@ -21,7 +21,7 @@ func TestSandboxRulesReadABareDottedHost(t *testing.T) {
 // writes bare, and a keyword is a word like any other there.
 func TestABareWordIsAStringValue(t *testing.T) {
 	src := "agent a:\n  backend: claw\n  provider: anthropic\n  description: agent\n  memory:\n    enabled: true\n    scope: shared\n    visibility: project\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	res := Parse("x.bot", src)
+	res := parseLenient("x.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %v", res.Diagnostics)
 	}

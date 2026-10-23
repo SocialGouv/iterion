@@ -307,6 +307,12 @@ export interface BotEntryWithSchema extends BotEntry {
    *  override (super-admin-pushed — see /admin/bots), "catalog" for a
    *  baked one. */
   origin?: "tenant" | "platform" | "catalog";
+  /** True for a package installed into the workspace's .botz/ (bots
+   *  install, the marketplace, an upload). Its manifest is the package's —
+   *  an update replaces it whole — so the server refuses its manifest edit
+   *  (409) and its visibility here is the workspace overlay's
+   *  (setBotOverlay), which an update leaves alone. Absent otherwise. */
+  installed?: boolean;
   /** Rendered cause of the catalog refresh that followed the last metadata
    *  save or visibility toggle, present only when that refresh failed. The
    *  table the orchestrator routes on holds one row per ENABLED bot, so a
@@ -328,9 +334,16 @@ export interface BotDiscoveryError {
   /** What the skipped source is known to be. "bundle" and "file" name a
    *  source that failed to load; "shadowed" one that loads but whose name
    *  another source claimed, so nothing routes to it; "walk" an
-   *  unreadable path whose contents are unknown. Optional on older
-   *  servers. */
-  kind?: "bundle" | "file" | "shadowed" | "walk";
+   *  unreadable path whose contents are unknown. Two kinds name a source
+   *  that IS listed, short of something the reader did not read:
+   *  "identity" a bot whose frontmatter (its name, triggers, capabilities)
+   *  is past the read budget, "overlay" the workspace's
+   *  .iterion/bot-overrides.yaml its reader refused, every bot then listed
+   *  DISABLED — the operator's visibility decisions are unread, and the
+   *  doors that read bot visibility (card launch, slash-command discovery,
+   *  the catalogue's regeneration) route none until it is read; the other
+   *  launch doors do not read it (#2676). Optional on older servers. */
+  kind?: "bundle" | "file" | "shadowed" | "walk" | "identity" | "overlay";
 }
 
 interface ListResponse {
@@ -372,8 +385,8 @@ export function getBot(name: string): Promise<BotEntryWithSchema> {
 }
 
 /** updateBot writes a bot's manifest metadata (Bot metadata panel) and
- *  returns the refreshed entry. Bundle-only — the server rejects loose
- *  .bot files with 409. */
+ *  returns the refreshed entry. Authored bundles only — the server rejects
+ *  loose .bot files and installed packages (`installed`) with 409. */
 export function updateBot(name: string, patch: BotPatch): Promise<BotEntryWithSchema> {
   return apiRequest<BotEntryWithSchema>(`${BASE}/${encodeURIComponent(name)}`, {
     method: "PUT",

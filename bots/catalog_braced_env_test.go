@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 )
 
 // The catalogue floor for the C188 class (ADR-130): no shipped workflow holds
@@ -48,7 +49,7 @@ func TestCatalogHasNoBracedReadOfItsOwnAssignment(t *testing.T) {
 	judged := map[string]bool{} // bundle-relative tool node id → compiled
 	bodies, declined := 0, 0
 	for _, path := range targets {
-		u := unit.LoadDir(path)
+		u := unittest.Whole(unit.LoadDir(path))
 		if u.Merged == nil {
 			// The parse/compile floor reports the parse failure itself; say
 			// it here too, because an unreadable file is a file this floor
@@ -193,7 +194,11 @@ func fragmentToolNodeNames(t *testing.T, path string) []string {
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	pr := parser.Parse(path, string(data))
+	pr, err := parser.Parse(path, string(data))
+	if err != nil {
+		t.Errorf("%s: not read whole — its tool nodes are unchecked here: %v", path, err)
+		return nil
+	}
 	if pr.File == nil {
 		t.Errorf("%s: parser produced no file — its tool nodes are unchecked here", path)
 		return nil

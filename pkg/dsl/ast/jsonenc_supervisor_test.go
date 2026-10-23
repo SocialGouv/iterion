@@ -1,12 +1,12 @@
 package ast_test
 
 import (
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"reflect"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // The AST JSON codec is the wire format of the cloud queue: a launch
@@ -78,7 +78,7 @@ workflow w:
   entry: work
   work -> done
 `
-	res := parser.Parse("test.bot", src)
+	res := parsertest.Parse("test.bot", src)
 	if len(res.Diagnostics) != 0 {
 		t.Fatalf("parse: %+v", res.Diagnostics)
 	}
