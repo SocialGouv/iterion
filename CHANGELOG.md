@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.285.1](https://github.com/SocialGouv/iterion/compare/v3.285.0...v3.285.1) (2026-10-23)
+
+### Bug Fixes
+
+* **dsl,server,studio:** the DSL reader refuses early and every bot-source write carries what a whole read issued ([#2712](https://github.com/SocialGouv/iterion/issues/2712)) ([b49fbed](https://github.com/SocialGouv/iterion/commit/b49fbeddccebaeec7dacfd3246c2c3132304033a)), closes [#1690](https://github.com/SocialGouv/iterion/issues/1690), references [#2678](https://github.com/SocialGouv/iterion/issues/2678)
+
+    <details><summary>why</summary>
+
+    The reader of a bot no longer loads what it could not read whole. The budget bounds one bot's files together at 2^20 records — every word, value, punctuation mark, prompt line and line end is one, a comment two (commentRecords) — moved with ITERION_DSL_READ_BUDGET (classified infra in platformcfg), 0 removing the bound; the lexer spends it as it reads, so a bot past it is refused before the work it asks for, and the files of one bot share it (NewUnitBudget), so splitting a bot into fragments…
+
+    </details>
+
 ## [3.285.0](https://github.com/SocialGouv/iterion/compare/v3.284.1...v3.285.0) (2026-10-23)
 
 ### Features
