@@ -20,6 +20,7 @@ import (
 // the pod it actually applies can be read back.
 func kubectlCaptureShim(t *testing.T) (capture string) {
 	t.Helper()
+	isolateExecEnvironment(t)
 	dir := t.TempDir()
 	capture = filepath.Join(dir, "applied.jsonl")
 	script := "#!/bin/sh\n" +
@@ -185,6 +186,7 @@ func TestStartAppliesNoPolicyByDefault(t *testing.T) {
 }
 
 func TestNodeLabelCoverageCountsLabelledNodes(t *testing.T) {
+	isolateExecEnvironment(t)
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
 		"case \"$*\" in\n" +
@@ -208,6 +210,7 @@ func TestNodeLabelCoverageCountsLabelledNodes(t *testing.T) {
 // The chart's runner Role cannot list nodes; the error must carry kubectl's
 // reason, not a bare exit status the doctor cannot explain.
 func TestNodeLabelCoverageReportsKubectlStderr(t *testing.T) {
+	isolateExecEnvironment(t)
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
 		"case \"$*\" in\n" +
@@ -224,27 +227,25 @@ func TestNodeLabelCoverageReportsKubectlStderr(t *testing.T) {
 	}
 }
 
-// A cancelled context kills kubectl but not a child holding its pipes (a
-// credential plugin, here `sleep` under `sh`); the wait must still end near
-// the deadline, not when the child exits.
-func TestNodeLabelCoverageTimeoutIsBoundedWhenAChildHoldsThePipes(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+// Cancellation stops node discovery within its caller's deadline. The separate
+// WaitDelay witness covers escalation when cancellation cannot stop kubectl.
+func TestNodeLabelCoverageTimeoutIsBounded(t *testing.T) {
+	// The fixture also ends on its own if production ignores cancellation;
+	// the synchronous call reaps it before reporting the failed assertion.
+	stalledKubectl(t, 6)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	_, _, err := NodeLabelCoverage(ctx, "topology.kubernetes.io/zone")
-	if elapsed := time.Since(start); err == nil || elapsed > 4*time.Second {
-		t.Fatalf("the wait must end within the deadline plus WaitDelay, took %s (err %v)", elapsed, err)
+	if elapsed := time.Since(start); err == nil || ctx.Err() != context.DeadlineExceeded || elapsed > 4*time.Second {
+		t.Fatalf("node discovery must fail at its deadline within 4s, took %s (error %v, context %v)", elapsed, err, ctx.Err())
 	}
 }
 
 // A failure with nothing on stderr (a killed probe) must not end in a
 // dangling separator.
 func TestNodeLabelCoverageWithoutStderrKeepsTheExitError(t *testing.T) {
+	isolateExecEnvironment(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)

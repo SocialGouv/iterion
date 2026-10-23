@@ -93,6 +93,7 @@ func TestClassifyPodStart(t *testing.T) {
 // out and whose `get pod` answers with the given pod JSON.
 func kubectlPodJSONShim(t *testing.T, podJSON string) {
 	t.Helper()
+	isolateExecEnvironment(t)
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +
 		"case \"$*\" in\n" +

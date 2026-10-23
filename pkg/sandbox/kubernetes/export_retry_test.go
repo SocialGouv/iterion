@@ -33,6 +33,7 @@ func exportShim(t *testing.T, src string, failFor int, stderr string) (calls fun
 // test can change what the pod holds between two attempts.
 func exportShimSeq(t *testing.T, srcs []string, failFor int, stderr string) (calls func() int) {
 	t.Helper()
+	isolateExecEnvironment(t)
 	if _, err := exec.LookPath("tar"); err != nil {
 		t.Skip("tar not on PATH")
 	}
@@ -78,6 +79,7 @@ func srcCases(srcs []string) string {
 // stops the test.
 func exportTarget(t *testing.T) string {
 	t.Helper()
+	isolateExecEnvironment(t)
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -260,6 +262,7 @@ func TestExportWorkspace_DropsWhatOnlyTheRacedArchiveWrote(t *testing.T) {
 
 // TestOnlyTarRaceWarnings pins the one failure the export retries.
 func TestOnlyTarRaceWarnings(t *testing.T) {
+	isolateExecEnvironment(t)
 	exitWith := func(code int) error {
 		err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
 		var exitErr *exec.ExitError
@@ -328,6 +331,7 @@ func TestDropRacedGitLeftoversNeverRemovesAnExcludedMember(t *testing.T) {
 // returns what kubectl was called with.
 func exportShimRecording(t *testing.T, src string) (args func() string) {
 	t.Helper()
+	isolateExecEnvironment(t)
 	if _, err := exec.LookPath("tar"); err != nil {
 		t.Skip("tar not on PATH")
 	}

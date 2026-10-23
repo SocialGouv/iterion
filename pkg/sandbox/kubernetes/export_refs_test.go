@@ -73,6 +73,7 @@ func muteGitBackground(t *testing.T, repo string) {
 // Returns (host, pod, base, podHead).
 func gcShadowFixture(t *testing.T) (string, string, string, string) {
 	t.Helper()
+	isolateExecEnvironment(t)
 	tmp := t.TempDir()
 	origin := filepath.Join(tmp, "origin")
 	trun(t, tmp, "git", "init", "-q", origin)

@@ -13,6 +13,7 @@ import (
 // unreadable), so the wait error path can be exercised without a cluster.
 func kubectlShim(t *testing.T, podJSON string) {
 	t.Helper()
+	isolateExecEnvironment(t)
 	dir := t.TempDir()
 	exit := "0"
 	if strings.TrimSpace(podJSON) == "" {

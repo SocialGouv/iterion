@@ -27,6 +27,7 @@ import (
 // Driven through the REAL applyManifest with a kubectl shim that never
 // exits — the wedged-apiserver shape as the driver sees it.
 func TestApplyManifest_StallIsBoundedAndTyped(t *testing.T) {
+	isolateExecEnvironment(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not on PATH")
 	}
@@ -76,6 +77,7 @@ func TestApplyManifest_StallIsBoundedAndTyped(t *testing.T) {
 // Killing the process on the phase deadline is what bounds a wedged
 // apiserver here. This row exists so the flag is not reintroduced.
 func TestApplyManifest_PassesNoRequestTimeoutToKubectl(t *testing.T) {
+	isolateExecEnvironment(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not on PATH")
 	}
@@ -108,6 +110,7 @@ func TestApplyManifest_PassesNoRequestTimeoutToKubectl(t *testing.T) {
 // nothing to show for it. Bounded by the same budget, but on a plain
 // deadline: a cleanup is not a setup phase.
 func TestDeleteResource_StallIsBounded(t *testing.T) {
+	isolateExecEnvironment(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not on PATH")
 	}

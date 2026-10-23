@@ -86,6 +86,7 @@ func TestResolveWorkspaceCopyTimeout_GarbageEnvIsWarnedOnce(t *testing.T) {
 // the enforcement the doc comment promises), and the error must carry
 // the sentinel, the deadline and the real cause.
 func TestRunWithPhaseTimeout_RealWorkspaceCopyStallIsClassified(t *testing.T) {
+	isolateExecEnvironment(t)
 	if _, err := exec.LookPath("tar"); err != nil {
 		t.Skip("tar not on PATH")
 	}
@@ -134,6 +135,7 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyStallIsClassified(t *testing.T) {
 // copy bound already closed. Driven through the REAL runPostCreate with
 // a kubectl shim that never exits.
 func TestRunPostCreate_StallIsBoundedAndTyped(t *testing.T) {
+	isolateExecEnvironment(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not on PATH")
 	}
