@@ -489,7 +489,7 @@ agent synthesize:
   output: synthesize_output
   system: synthesize_system
   user: synthesize_user
-  tools: [web_fetch]
+  tools: [web_fetch, todo_write]
   tool_max_steps: 30
   reasoning_effort: "${FEED_WATCH_EFFORT:-medium}"
   fallbacks:
@@ -1758,7 +1758,7 @@ workflow feed_watch:
   ## grounding the article URLs is the job; the deterministic verify_message
   ## node below is what keeps injected/invented URLs out of the digest.)
   permission: deny
-  allow: ["WebFetch(*)"]
+  allow: ["WebFetch(*)", "TodoWrite"]
 
   entry: plan
 

@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // The bot-level witness of #2381: secured-renovacy's ledger exit carries the
@@ -22,30 +20,36 @@ func TestTheSecuredRenovacyLedgerExitCarriesTheGuard(t *testing.T) {
 		t.Fatalf("the shipped bot is unreadable: %v", err)
 	}
 	wf := compileBotText(t, string(src))
-	var out []*ir.Edge
+	// The exact three-edge contract, conditions in their simple form: an
+	// Expression substitute (e.g. `outputs.write_audit_md.was_batch != true`,
+	// which a MISSING field satisfies) must fail here as loudly as a lost
+	// edge — the malformed-producer case is the one the guard exists for.
+	want := map[string]struct {
+		cond string
+		neg  bool
+	}{
+		"select_candidate": {"was_batch", true},
+		"bucket_families":  {"was_batch", false},
+		"solo_banked":      {"was_batch", true},
+	}
+	seen := 0
 	for _, e := range wf.Edges {
-		if e.From == "write_audit_md" {
-			out = append(out, e)
+		if e.From != "write_audit_md" {
+			continue
+		}
+		seen++
+		w, ok := want[e.To]
+		if !ok {
+			t.Fatalf("unexpected outgoing edge write_audit_md -> %s", e.To)
+		}
+		if e.Condition != w.cond || e.Negated != w.neg {
+			t.Fatalf("write_audit_md -> %s guarded by %q (negated=%v), want the simple %q (negated=%v)", e.To, e.Condition, e.Negated, w.cond, w.neg)
+		}
+		if e.Expression != nil {
+			t.Fatalf("write_audit_md -> %s carries an Expression where the simple was_batch guard belongs", e.To)
 		}
 	}
-	if len(out) < 3 {
-		t.Fatalf("write_audit_md has %d outgoing edges, want the three the #2381 round mapped (back-edge, bucket, ledger exit)", len(out))
-	}
-	for _, e := range out {
-		if !e.IsConditional() {
-			t.Fatalf("write_audit_md -> %s is a bare edge: a malformed was_batch would be routed onward (the #2381 hazard)", e.To)
-		}
-	}
-	var ledger *ir.Edge
-	for _, e := range out {
-		if e.To == "solo_banked" {
-			ledger = e
-		}
-	}
-	if ledger == nil {
-		t.Fatal("the solo_banked ledger edge is gone — the #2381 guard moved")
-	}
-	if ledger.Condition != "was_batch" || !ledger.Negated {
-		t.Fatalf("solo_banked is guarded by %q (negated=%v), want the negated was_batch of the #2381 guard", ledger.Condition, ledger.Negated)
+	if seen != len(want) {
+		t.Fatalf("write_audit_md has %d outgoing edges, want exactly the three of the #2381 contract", seen)
 	}
 }

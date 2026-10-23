@@ -100,7 +100,7 @@ feature-gap-fill/plan	no `tools:` list declared on claude_code, the full native 
 feature-gap-fill/plan_review	tools: bash
 feature-gap-fill/plan_revise	no `tools:` list declared on claude_code, the full native toolset
 feature-gap-fill/verify_build	no `tools:` list declared on claude_code, the full native toolset
-feed-watch/synthesize	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+feed-watch/synthesize	tools: todo_write
 gitops-warden/classify	no `tools:` list declared on claude_code, the full native toolset
 golden-master/extend:extend_campaign	no `tools:` list declared on claude_code, the full native toolset
 golden-master/mutants_adversary	no `tools:` list declared on claude_code, the full native toolset
