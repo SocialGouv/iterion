@@ -108,7 +108,7 @@ erDiagram
     bot_secret_bindings }o..o| "FS: baked catalog" : "bot_id"
     teams }o--o| orgs : "org_id"
     run_secrets }o--|| runs : "run_id"
-    run_secrets }o..o{ api_keys : "bundle.api_keys / bundle.pinned_api_keys - plaintext"
+    run_secrets }o..o{ api_keys : "bundle.api_keys / bundle.pinned_api_keys - plaintext, with base_url beside a gateway key"
     run_secrets }o..o{ oauth_credentials : "bundle.oauth_record_refs"
     cred_pools }o--|| orgs : "org_id"
     cred_pledges }o--|| cred_pools : "pool_id"

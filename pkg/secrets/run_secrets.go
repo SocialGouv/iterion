@@ -45,6 +45,31 @@ type RunBundle struct {
 	// `<provider>/` prefix. Metering still stamps its fingerprint, so its
 	// own usage windows are attributed to it like any other credential.
 	PinnedAPIKeys map[Provider]string `json:"pinned_api_keys,omitempty"`
+	// APIBaseURLs and PinnedAPIBaseURLs carry, for an openai_compatible
+	// key in the matching key map, the gateway root it authenticates
+	// against — the record's base_url, canonical (ValidateGatewayBaseURL).
+	// A gateway key never travels without its URL: SealRunBundle refuses
+	// the pair one half short, and a reader that finds the key with no URL
+	// gets a typed error (Credentials.GatewayCredentialForRoute), never
+	// "use the environment's gateway". The URL is not secret. Absent on
+	// every bundle a server before #2005 PR-C' seals, so an older runner
+	// decodes such a bundle unchanged.
+	APIBaseURLs       map[Provider]string `json:"api_base_urls,omitempty"`
+	PinnedAPIBaseURLs map[Provider]string `json:"pinned_api_base_urls,omitempty"`
+	// APIKeyFingerprints carries the server-computed audit identity of
+	// each key in APIKeys and PinnedAPIKeys (APIKeyFingerprint): the
+	// runner stamps what the server stamped, which matters for a gateway
+	// key whose identity folds its URL in and cannot be recomputed from
+	// the secret alone. Absent on older bundles — the runner then
+	// recomputes sha256 of the secret, as it always has.
+	APIKeyFingerprints map[Provider]string `json:"api_key_fingerprints,omitempty"`
+	// AmbientLLMRefused, set by the publisher, tells the runner that this
+	// run's LLM routes are funded by the credentials of this bundle ONLY:
+	// every fallback to the pod environment (a vendor key, the
+	// deployment's gateway) answers a typed refusal instead of a call on
+	// somebody else's account. Absent (false) on every bundle a server
+	// before #2005 PR-C' seals.
+	AmbientLLMRefused bool `json:"ambient_llm_refused,omitempty"`
 	// GenericSecrets maps workflow secret names to plaintext payloads
 	// resolved from the tenant/user secret store at publish time.
 	GenericSecrets map[string]string `json:"generic_secrets,omitempty"`
@@ -202,6 +227,9 @@ func SealRunBundle(sealer Sealer, tenantID, pool, runID string, b RunBundle) ([]
 	if pool != "" && !validPoolName(pool) {
 		return nil, "", fmt.Errorf("secrets: pool %q is not a valid runner pool name", pool)
 	}
+	if err := b.checkGatewayCarriage(); err != nil {
+		return nil, "", err
+	}
 	body, err := json.Marshal(b)
 	if err != nil {
 		return nil, "", fmt.Errorf("secrets: marshal bundle: %w", err)
@@ -259,6 +287,48 @@ func openLegacyBundle(sealer Sealer, runID string, sealed []byte) ([]byte, error
 		return keyed.Open(sealed, legacyRunBundleAAD(runID))
 	}
 	return sealer.Open(sealed, legacyRunBundleAAD(runID))
+}
+
+// ErrGatewayKeyWithoutURL is the typed refusal of a gateway credential
+// travelling incomplete: an openai_compatible key with no base URL beside
+// it, a base URL with no key, a URL that is not the canonical form the
+// record stores, or a key without the server's fingerprint. The pair is one credential; a reader that met
+// the key alone would have to guess the host, and the only guess
+// available is the environment's gateway — somebody else's account.
+var ErrGatewayKeyWithoutURL = errors.New("secrets: a gateway key travels with its base URL")
+
+// checkGatewayCarriage enforces the pair on both key maps. It runs at the
+// seal (SealRunBundle) so the error names the producer; the runner's
+// accessor (Credentials.GatewayCredentialForRoute) refuses the same shape
+// on the consuming side.
+func (b RunBundle) checkGatewayCarriage() error {
+	for _, m := range []struct {
+		name string
+		keys map[Provider]string
+		urls map[Provider]string
+	}{{"api_keys", b.APIKeys, b.APIBaseURLs}, {"pinned_api_keys", b.PinnedAPIKeys, b.PinnedAPIBaseURLs}} {
+		key, u := m.keys[ProviderOpenAICompatible], m.urls[ProviderOpenAICompatible]
+		switch {
+		case key == "" && u == "":
+			continue
+		case key == "":
+			return fmt.Errorf("%w: %s carries a base URL without a key", ErrGatewayKeyWithoutURL, m.name)
+		case u == "":
+			return fmt.Errorf("%w: %s carries a key without a base URL", ErrGatewayKeyWithoutURL, m.name)
+		}
+		if canon, err := ValidateGatewayBaseURL(u); err != nil {
+			return fmt.Errorf("%w: %s carries a base URL the record would have refused (%v)", ErrGatewayKeyWithoutURL, m.name, err)
+		} else if canon != u {
+			return fmt.Errorf("%w: %s carries a base URL that is not the canonical form", ErrGatewayKeyWithoutURL, m.name)
+		}
+		// The identity the server computed is the only one a runner can
+		// stamp for a gateway key (it folds the URL in): it travels with
+		// the pair or the pair does not travel.
+		if b.APIKeyFingerprints[ProviderOpenAICompatible] == "" {
+			return fmt.Errorf("%w: %s carries a gateway key without the server's fingerprint", ErrGatewayKeyWithoutURL, m.name)
+		}
+	}
+	return nil
 }
 
 // RunBundleAAD binds a sealed bundle to its run identity: tenant, pool

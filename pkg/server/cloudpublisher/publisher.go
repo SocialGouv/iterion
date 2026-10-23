@@ -665,6 +665,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	skips := &skipTracker{}
 	// Audit identity of the API key that filled each provider slot, for
 	// the run-document stamp (the OAuth side rides bundle.OAuthFingerprints).
+	// ONE identity per provider, in either channel: the fills skip a
+	// provider the other channel holds, so the stamp and the bundle's own
+	// fingerprint map agree by construction. A future policy that seals a
+	// provider in BOTH channels needs per-channel stamps (schema 27's
+	// vocabulary) before it can meter honestly — PR-C' owns that.
 	apiKeyFPs := map[secrets.Provider]string{}
 
 	skippedForfaits := map[string]skippedForfait{}
@@ -777,7 +782,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 						if !policy.sealableSlot(slotOfProvider(prov)) {
 							continue
 						}
-						bundle.APIKeys[prov] = string(r.Plaintext)
+						setAPIKey(&bundle, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, false)
 						apiKeyFPs[prov] = r.Fingerprint
 						usedIDs = append(usedIDs, r.KeyID)
 					}
@@ -799,7 +804,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							if len(r.Plaintext) == 0 {
 								continue
 							}
-							skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID, fingerprint: r.Fingerprint}
+							skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID, fingerprint: r.Fingerprint}
 						}
 					}
 					// Bumping last_used_at is best-effort observability, not on
@@ -1018,13 +1023,16 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, bundle.PinnedAPIKeys); grant != nil {
 						// The lent credential goes in the slot its KIND belongs to, so
 						// the runner cannot tell a donation from the tenant's own.
+						// A grant the walk does not SEAL — its slot refused by the
+						// adaptive-routing whitelist, or a gateway key the pool
+						// never lends — is released here and never retained: a
+						// lease held on an unsealed grant would skip the platform
+						// tier (poolGranted), clamp the budget to the donor's
+						// allowance and charge the donor for a key the run never
+						// carried. Only a sealed grant is the run's.
+						sealed := false
 						switch grant.Source {
 						case credpool.SourceOAuth:
-							// The adaptive-routing whitelist: an unlisted slot
-							// refuses the GRANT (the donation returns to the
-							// pool's own accounting — acquireFromPool leased it,
-							// and the lease's release reads the bundle, so an
-							// unsealed grant releases cleanly).
 							if policy.sealableSlot(slotOfKind(grant.Ref)) {
 								// The donor's own credential identity, so the borrower's
 								// meter follows the lent subscription rather than the slot
@@ -1034,31 +1042,45 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 								// follows it instead of exchanging the donor's token.
 								setOAuthCredential(&bundle, grant.Ref, grant.Payload, grant.Fingerprint, grant.RecordID, grant.RecordConnectedAt)
 								bundle.PoolSourced[grant.Ref] = true
+								sealed = true
 							}
 						case credpool.SourceAPIKey:
 							prov := secrets.Provider(grant.Ref)
-							// The adaptive-routing whitelist (same gate as its
-							// OAuth sibling above): an unlisted slot refuses the
-							// grant, and the unsealed lease releases cleanly.
-							if policy.sealableSlot(slotOfProvider(prov)) {
-								bundle.APIKeys[prov] = string(grant.Payload)
+							// A gateway key is bound to its tenant's endpoint and
+							// the pool never lends one (ADR-131 §5): a grant that
+							// names the provider — a pledge written before the
+							// refusal, or a pool vocabulary that drifted — is
+							// refused by name, never sealed.
+							if prov == secrets.ProviderOpenAICompatible {
+								p.logger.Warn("cloudpublisher: run %s — pool grant for an openai_compatible key REFUSED: a gateway key authenticates against its own tenant's endpoint and is never lent; the lease is released", runID)
+							} else if policy.sealableSlot(slotOfProvider(prov)) {
+								// The lent key's own audit identity — the donor record's
+								// stamp, falling back to the hash the runner derives for a
+								// record stored before stamping — so the GRANTED line, the
+								// run-document stamp and the metering-time last_used_at
+								// bump all name the donor's key, not an unstamped slot.
+								fp := grant.Fingerprint
+								if fp == "" {
+									fp = secrets.FingerprintSHA256(string(grant.Payload))
+								}
+								setAPIKey(&bundle, prov, string(grant.Payload), "", fp, false)
+								apiKeyFPs[prov] = fp
+								// The lent key's row lives in the DONOR's tenant: the
+								// runner's metering bump must reach it without the run's
+								// tenant filter.
+								bundle.PoolSourced[string(prov)] = true
+								sealed = true
 							}
-							// The lent key's own audit identity — the donor record's
-							// stamp, falling back to the hash the runner derives for a
-							// record stored before stamping — so the GRANTED line, the
-							// run-document stamp and the metering-time last_used_at
-							// bump all name the donor's key, not an unstamped slot.
-							fp := grant.Fingerprint
-							if fp == "" {
-								fp = secrets.FingerprintSHA256(string(grant.Payload))
-							}
-							apiKeyFPs[prov] = fp
-							// The lent key's row lives in the DONOR's tenant: the
-							// runner's metering bump must reach it without the run's
-							// tenant filter.
-							bundle.PoolSourced[string(prov)] = true
 						}
-						res.grant = grant
+						if sealed {
+							res.grant = grant
+						} else {
+							p.logger.Info("cloudpublisher: run %s — pool grant %s not sealed (slot refused by the routing whitelist, or a key the pool never lends): lease released, the walk continues", runID, grant.String())
+							p.credPool.ReleaseGrant(ctx, grant)
+							// The acquisition superseded a previous lease all
+							// the same: the rollback must reopen it.
+							res.releasedGrants = append(res.releasedGrants, grant)
+						}
 					}
 				}
 
@@ -1126,7 +1148,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					}
 					natives := map[restoreTier]*tierNative{restoreTierOrg: orgNative, restoreTierPlatform: platformNative}
 					restoreKey := func(prov secrets.Provider, sk skippedAPIKey, outcome sealOutcome) {
-						pinnedOnly := fillAPIKeySlotAs(&bundle, taken, prov, sk.plaintext, outcome)
+						pinnedOnly := fillAPIKeySlotAs(&bundle, taken, prov, sk.plaintext, sk.baseURL, sk.fingerprint, outcome)
 						apiKeyFPs[prov] = sk.fingerprint
 						if sk.platform {
 							bundle.PlatformSourced[string(prov)] = true
@@ -1248,7 +1270,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key stays out: a shared key serves the routes naming it, and no route reads the wire's default", runID, prov)
 							continue
 						}
-						delete(bundle.PinnedAPIKeys, prov)
+						clearAPIKey(&bundle, prov, true)
 						delete(bundle.PlatformSourced, string(prov))
 						delete(bundle.OrgSourced, string(prov))
 						p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key comes back as the default, over the shared key sealed for its routes: nothing else holds the wire", runID, prov)
@@ -1274,7 +1296,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// untouched: this runs only after it declined (res.grant == nil), and
 	// never on an env-funded run or an empty bundle (the pool tier's own
 	// condition — a run with nothing acquires through it, not the door).
-	res.doorGrant = p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, apiKeyFPs, policy.sealableSlot)
+	doorGrantSealed, doorReleased := p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, apiKeyFPs, policy.sealableSlot)
+	if doorReleased != nil {
+		res.releasedGrants = append(res.releasedGrants, doorReleased)
+	}
+	res.doorGrant = doorGrantSealed
 
 	// The adaptive-routing ladder (ADR-121 §1, slice 3): the held pairs in
 	// policy order, materialized onto the program through the SAME screen
@@ -1575,6 +1601,13 @@ type credResolution struct {
 	// whole-bundle-only, while the LEASE semantics ("a pool lease serves
 	// this attempt") read both via poolLease.
 	doorGrant *credpool.Grant
+	// releasedGrants are the grants the walk refused to seal (a slot the
+	// routing whitelist refused, a gateway key the pool never lends) and
+	// released in place. They are carried because their ACQUISITION
+	// superseded a previous lease: a failed launch or resume that reopens
+	// what its grant superseded must reopen these too — a released grant
+	// superseded the previous donor's slot all the same.
+	releasedGrants []*credpool.Grant
 	// families is the set of review families the sealed credentials back
 	// (reviewtopology), so the launch can resolve the credential-derived
 	// topology vars for a queued run. Empty = nothing resolved (env
@@ -1752,16 +1785,13 @@ func derivePinnedProviders(view model.RouteView) []string {
 // default-precedence reader looks, and does NOT mark the family: it did
 // not fill it, and a later tier must still be able to serve a DIFFERENT
 // pinned slot on the same wire.
-func fillAPIKeySlot(bundle *secrets.RunBundle, taken map[string]bool, prov secrets.Provider, plaintext string) (pinnedOnly bool) {
+func fillAPIKeySlot(bundle *secrets.RunBundle, taken map[string]bool, prov secrets.Provider, plaintext, baseURL, fingerprint string) (pinnedOnly bool) {
 	family := secrets.WireFamily(string(prov))
 	if taken[family] {
-		if bundle.PinnedAPIKeys == nil {
-			bundle.PinnedAPIKeys = map[secrets.Provider]string{}
-		}
-		bundle.PinnedAPIKeys[prov] = plaintext
+		setAPIKey(bundle, prov, plaintext, baseURL, fingerprint, true)
 		return true
 	}
-	bundle.APIKeys[prov] = plaintext
+	setAPIKey(bundle, prov, plaintext, baseURL, fingerprint, false)
 	taken[family] = true
 	return false
 }
@@ -2115,7 +2145,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 						if outcome == sealNone {
 							continue
 						}
-						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), outcome)
+						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, outcome)
 						bundle.PlatformSourced[string(prov)] = true
 						apiKeyFPs[prov] = r.Fingerprint
 						usedIDs = append(usedIDs, r.KeyID)
@@ -2154,7 +2184,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 						if _, seen := skippedAPIKeys[prov]; seen {
 							continue
 						}
-						skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), keyID: r.KeyID, fingerprint: r.Fingerprint, platform: true}
+						skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID, fingerprint: r.Fingerprint, platform: true}
 					}
 				}
 			}
@@ -2223,7 +2253,10 @@ type skippedForfait struct {
 // platform marks the deployment's own key so the restore keeps its
 // PlatformSourced metering scope.
 type skippedAPIKey struct {
-	plaintext   string
+	plaintext string
+	// baseURL is the gateway root an openai_compatible key is sealed for;
+	// "" on every other provider. Restored with the key, as one credential.
+	baseURL     string
 	keyID       string
 	fingerprint string
 	platform    bool
@@ -3369,9 +3402,9 @@ func (p *Publisher) acquireDoorGrant(
 	sharedTiersBlocked bool,
 	apiKeyFPs map[secrets.Provider]string,
 	sealable func(slot string) bool,
-) *credpool.Grant {
+) (*credpool.Grant, *credpool.Grant) {
 	if p.credPool == nil || routePolicy == nil || view.Workflow == nil || len(routePolicy.Triggers) == 0 || len(routePolicy.PairOrder) == 0 {
-		return nil
+		return nil, nil
 	}
 	if sharedTiersBlocked {
 		// D13 (a pool team) and llm_fallback=none: the pool tier itself is
@@ -3379,10 +3412,10 @@ func (p *Publisher) acquireDoorGrant(
 		// another coat — a donor's consent does not un-block the shared
 		// tiers, and a sealed donation would both contradict the policy and
 		// fund the pinned providers the strict refusal is there to name.
-		return nil
+		return nil, nil
 	}
 	if wholeGrant != nil || envFunded || !holdsDefaultLLMCredential(*bundle) {
-		return nil
+		return nil, nil
 	}
 
 	wants, unmapped, ok := doorWantsFor(routePolicy, view, launchVars, doorServes(*bundle))
@@ -3392,7 +3425,7 @@ func (p *Publisher) acquireDoorGrant(
 		}
 	}
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	doorReq := credpool.Request{RunID: runID, OrgID: orgID, TenantID: tenantID, UserID: ownerID, BotID: botID, Wants: wants, FallbackOnly: true}
@@ -3400,7 +3433,7 @@ func (p *Publisher) acquireDoorGrant(
 		if p.logger != nil {
 			p.logger.Info("cloudpublisher: fallback door NOT CONSULTED for run %s — no opted-in donor serves wants=%s (reason=%v)", runID, wantsSummary(doorReq.Wants), err)
 		}
-		return nil
+		return nil, nil
 	}
 	if p.logger != nil {
 		p.logger.Info("cloudpublisher: fallback door consulted for run %s — wants=%s (donor-consented only)", runID, wantsSummary(doorReq.Wants))
@@ -3413,40 +3446,58 @@ func (p *Publisher) acquireDoorGrant(
 				p.logger.Warn("cloudpublisher: fallback door declined for run %s — reason=%s pledges_considered=%d skips=%s wants=%s",
 					runID, nd.Reason, nd.PledgesConsidered, pledgeSkipSummary(nd.Skips), wantsSummary(doorReq.Wants))
 			}
-			return nil
+			return nil, nil
 		}
 		if p.logger != nil {
 			p.logger.Warn("cloudpublisher: fallback door failed for run %s: %v", runID, err)
 		}
-		return nil
+		return nil, nil
 	}
 	// Seal — the whole-bundle path's mechanics, so the runner cannot tell
 	// a door donation from any other pool-funded slot. The whitelist never
 	// refuses here (a ladder slot is a pair-order slot by construction);
 	// kept as the belt.
+	// Only a SEALED grant is the run's: an unsealed one — its slot refused
+	// by the whitelist, or a gateway key the pool never lends — is released
+	// and not returned, or the lease would outlive a credential the run
+	// never carried (see the pool lane).
+	sealed := false
 	switch grant.Source {
 	case credpool.SourceOAuth:
 		if sealable(slotOfKind(grant.Ref)) {
 			setOAuthCredential(bundle, grant.Ref, grant.Payload, grant.Fingerprint, grant.RecordID, grant.RecordConnectedAt)
 			bundle.PoolSourced[grant.Ref] = true
+			sealed = true
 		}
 	case credpool.SourceAPIKey:
 		prov := secrets.Provider(grant.Ref)
-		if sealable(slotOfProvider(prov)) {
-			bundle.APIKeys[prov] = string(grant.Payload)
+		if prov == secrets.ProviderOpenAICompatible {
+			if p.logger != nil {
+				p.logger.Warn("cloudpublisher: run %s — fallback door grant for an openai_compatible key REFUSED: a gateway key is never lent; the lease is released", runID)
+			}
+		} else if sealable(slotOfProvider(prov)) {
+			fp := grant.Fingerprint
+			if fp == "" {
+				fp = secrets.FingerprintSHA256(string(grant.Payload))
+			}
+			setAPIKey(bundle, prov, string(grant.Payload), "", fp, false)
+			apiKeyFPs[prov] = fp
+			bundle.PoolSourced[string(prov)] = true
+			sealed = true
 		}
-		fp := grant.Fingerprint
-		if fp == "" {
-			fp = secrets.FingerprintSHA256(string(grant.Payload))
+	}
+	if !sealed {
+		if p.logger != nil {
+			p.logger.Info("cloudpublisher: fallback door grant %s for run %s not sealed: lease released", grant.String(), runID)
 		}
-		apiKeyFPs[prov] = fp
-		bundle.PoolSourced[string(prov)] = true
+		p.credPool.ReleaseGrant(ctx, grant)
+		return nil, grant
 	}
 	if p.logger != nil {
 		p.logger.Info("cloudpublisher: fallback door granted for run %s — %s (donor %s); the granted kind's rungs materialize with the held pairs",
 			runID, grant.String(), grant.DonorID)
 	}
-	return grant
+	return grant, nil
 }
 
 func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, cs *runview.CompiledSource) (pos int, retErr error) {
@@ -4044,6 +4095,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// owns the run and the lease stays superseded.
 	republished := false
 	var grant *credpool.Grant
+	// releasedGrants are the walk's released (refused-unsealed) grants, set
+	// once the resolution returns: their acquisition superseded a previous
+	// lease, which the rollback reopens beside the sealed grant's.
+	var releasedGrants []*credpool.Grant
 	defer func() {
 		if republished {
 			return
@@ -4066,6 +4121,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			}
 			if reverted {
 				p.credPool.ReopenSuperseded(rollbackCtx, grant)
+				for _, g := range releasedGrants {
+					p.credPool.ReopenSuperseded(rollbackCtx, g)
+				}
 			}
 			return
 		}
@@ -4080,6 +4138,17 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		}
 		if rolledBack {
 			p.credPool.ReopenSuperseded(rollbackCtx, grant)
+			// A grant the walk released (refused unsealed) superseded the
+			// previous lease all the same: its acquisition is undone with
+			// the sealed grant's. This branch RUNS under test — a flip-less
+			// store (retryStoreSpy) lands here — but with a nil grant and an
+			// empty releasedGrants, so the loop below is unasserted: PR-C'
+			// wires a credPool and a refused grant into that fixture, and
+			// witnesses the door's append beside it (publisher.go's
+			// acquireDoorGrant call site).
+			for _, g := range releasedGrants {
+				p.credPool.ReopenSuperseded(rollbackCtx, g)
+			}
 		}
 		// The rewind baseline goes back with the status — and ONLY with it.
 		// The source is stamped just before the publish, so a publish that
@@ -4170,6 +4239,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	secretsCtx = secrets.WithLaunchRepo(secretsCtx, prior.ProjectPath)
 	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy)
 	grant = creds.poolLease()
+	releasedGrants = creds.releasedGrants
 	// Armed before the error check — see SubmitLaunch. Runs before the
 	// rollback above (defers unwind in reverse): the grant's own lease is
 	// closed before the one it superseded can be reopened.

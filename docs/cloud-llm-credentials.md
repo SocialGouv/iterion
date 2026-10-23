@@ -258,7 +258,16 @@ learns the provider (#2005 PR-C'), a gateway key is storable but never sealed in
 run: a gateway route is still served from the deployment's environment, `none`
 included; a webhook pin on such a key is refused at write; the pool never lends one.
 Moving a key's `base_url` is a rotation — the secret is re-sent and sealed under the
-new URL — so a mutator who never held the secret cannot redirect it.
+new URL — so a mutator who never held the secret cannot redirect it. In the sealed run
+bundle the key is ONE credential with its URL: `RunBundle.APIBaseURLs` beside
+`APIKeys` (`PinnedAPIBaseURLs` beside `PinnedAPIKeys`), the seal refusing the pair one
+half short; the publisher writes its key maps through one chokepoint
+(`setAPIKey`/`clearAPIKey`), so the URL and the server's fingerprint
+(`APIKeyFingerprints`, which the runner stamps rather than recomputing — a gateway
+key's identity folds its URL in) always travel with the key. The runner reads the pair
+(`Credentials.GatewayCredentialForRoute`) and honours `AmbientLLMRefused` — the run's
+LLM routes spend these credentials only — from #2005 PR-B'2; the walk sets them from
+PR-C'.
 
 A refusal answers `400` with the reason, and leaves a trace an operator can
 find after the fact: a `Warn` in the server log and an audit event naming the

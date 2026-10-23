@@ -393,3 +393,46 @@ func TestValidateGatewayBaseURL_Guarantees(t *testing.T) {
 		}
 	}
 }
+
+// The resolution of a gateway key carries its base URL: the publisher
+// seals the pair, never the key alone.
+func TestResolve_AGatewayKeyResolvesWithItsBaseURL(t *testing.T) {
+	st := NewMemoryApiKeyStore()
+	sealer := newSealer(t)
+	k := ApiKey{ID: NewApiKeyID(), ScopeTeamID: "team-a", Provider: ProviderOpenAICompatible, BaseURL: "https://gw.example.test", Name: "gw", IsDefault: true}
+	sealed, err := SealAPIKeyFor(sealer, k, []byte("sk-litellm-virtual-key-1234567890"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.SealedSecret = sealed
+	if err := st.Create(context.Background(), k); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Resolve(context.Background(), st, "team-a", "", "review-pr", []Provider{ProviderOpenAICompatible}, nil, sealer, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := out[ProviderOpenAICompatible]
+	if !ok || r.BaseURL != "https://gw.example.test" || string(r.Plaintext) != "sk-litellm-virtual-key-1234567890" {
+		t.Fatalf("resolution = %+v (ok=%v), want the key with its base URL", r, ok)
+	}
+	// A vendor row carrying a base_url column (refused by the routes, written
+	// by hand in the store) resolves WITHOUT it: no AAD binds that URL and
+	// it must never reach a run.
+	v := ApiKey{ID: NewApiKeyID(), ScopeTeamID: "team-a", Provider: ProviderAnthropic, BaseURL: "https://attacker.example.test", Name: "ant", IsDefault: true}
+	sealedV, err := SealAPIKey(sealer, v.ID, []byte("sk-ant-vendor-0000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.SealedSecret = sealedV
+	if err := st.Create(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	out, err = Resolve(context.Background(), st, "team-a", "", "review-pr", []Provider{ProviderAnthropic}, nil, sealer, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rv := out[ProviderAnthropic]; rv.BaseURL != "" || string(rv.Plaintext) != "sk-ant-vendor-0000" {
+		t.Fatalf("a vendor row's base_url reached the resolution: %+v", rv)
+	}
+}

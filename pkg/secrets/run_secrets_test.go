@@ -315,3 +315,74 @@ func TestKeyRingOpenFallsBackAfterRotation(t *testing.T) {
 		t.Fatal("a record whose key left the ring must refuse")
 	}
 }
+
+// A bundle a server before #2005 PR-C' seals serialises byte for byte as
+// it did: the new carriage fields are absent when zero, so an older runner
+// reads such a bundle unchanged (inert at v25).
+func TestRunBundle_TodaysBundleSerialisesUnchanged(t *testing.T) {
+	b := RunBundle{APIKeys: map[Provider]string{ProviderAnthropic: "sk-ant-x"}, PinnedAPIKeys: map[Provider]string{ProviderZAI: "sk-zai"}, GenericSecrets: map[string]string{"forge_token": "t"}}
+	body, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, absent := range []string{"api_base_urls", "pinned_api_base_urls", "api_key_fingerprints", "ambient_llm_refused"} {
+		if strings.Contains(string(body), absent) {
+			t.Fatalf("a bundle with no gateway credential carries %q: %s", absent, body)
+		}
+	}
+	var back RunBundle
+	if err := json.Unmarshal(body, &back); err != nil || back.AmbientLLMRefused || back.APIBaseURLs != nil {
+		t.Fatalf("round trip: %+v %v", back, err)
+	}
+}
+
+// A gateway key travels with its base URL, or not at all: the seal refuses
+// a key without a URL, a URL without a key, and a URL that is not the
+// canonical form the record stores — on both key maps. The pair round-trips
+// with the server's fingerprint and the ambient flag.
+func TestSealRunBundle_RefusesAGatewayKeyTravellingAlone(t *testing.T) {
+	s, err := NewKeyRingSealer(testRing(t, "k1"), "k1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal := func(b RunBundle) error {
+		_, _, err := SealRunBundle(s, "tenant", "", "run", b)
+		return err
+	}
+	gw := map[Provider]string{ProviderOpenAICompatible: "sk-litellm-virtual-key-1234567890"}
+	url := map[Provider]string{ProviderOpenAICompatible: "https://gw.example.test"}
+	fp := map[Provider]string{ProviderOpenAICompatible: "fp-server"}
+	for name, b := range map[string]RunBundle{
+		"key without url":               {APIKeys: gw},
+		"pinned key without url":        {PinnedAPIKeys: gw},
+		"url without key":               {APIBaseURLs: url},
+		"pinned url without key":        {PinnedAPIBaseURLs: url},
+		"key with url of the other map": {APIKeys: gw, PinnedAPIBaseURLs: url},
+		"non-canonical url":             {APIKeys: gw, APIBaseURLs: map[Provider]string{ProviderOpenAICompatible: "https://GW.example.test/v1/"}, APIKeyFingerprints: fp},
+		"pinned non-canonical url":      {PinnedAPIKeys: gw, PinnedAPIBaseURLs: map[Provider]string{ProviderOpenAICompatible: "https://gw.example.test/v1/"}, APIKeyFingerprints: fp},
+		"refused url":                   {APIKeys: gw, APIBaseURLs: map[Provider]string{ProviderOpenAICompatible: "https://127.0.0.1"}, APIKeyFingerprints: fp},
+		"no server fingerprint":         {APIKeys: gw, APIBaseURLs: url},
+		"pinned, no server fingerprint": {PinnedAPIKeys: gw, PinnedAPIBaseURLs: url},
+	} {
+		if err := seal(b); !errors.Is(err, ErrGatewayKeyWithoutURL) {
+			t.Errorf("%s: sealed, err=%v, want ErrGatewayKeyWithoutURL", name, err)
+		}
+	}
+	// A vendor key never needs a URL; a URL on a vendor slot is not a pair.
+	if err := seal(RunBundle{APIKeys: map[Provider]string{ProviderAnthropic: "sk-ant"}}); err != nil {
+		t.Fatalf("a vendor key refused: %v", err)
+	}
+	full := RunBundle{APIKeys: gw, APIBaseURLs: url, PinnedAPIKeys: map[Provider]string{ProviderOpenAICompatible: "sk-pinned-1234567890"}, PinnedAPIBaseURLs: map[Provider]string{ProviderOpenAICompatible: "https://gw2.example.test"},
+		APIKeyFingerprints: map[Provider]string{ProviderOpenAICompatible: "fp-server"}, AmbientLLMRefused: true}
+	sealed, keyID, err := SealRunBundle(s, "tenant", "", "run", full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := OpenRunBundle(s, "tenant", "", "run", keyID, sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.APIBaseURLs[ProviderOpenAICompatible] != "https://gw.example.test" || back.PinnedAPIBaseURLs[ProviderOpenAICompatible] != "https://gw2.example.test" || back.APIKeyFingerprints[ProviderOpenAICompatible] != "fp-server" || !back.AmbientLLMRefused {
+		t.Fatalf("the carriage did not round-trip: %+v", back)
+	}
+}

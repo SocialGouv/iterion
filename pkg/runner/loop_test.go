@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1844,5 +1845,124 @@ func TestLLMRouteCrossHarnessDerivation(t *testing.T) {
 	}
 	if got := llmRouteCrossHarness(&queue.RunMessage{}); got != "" {
 		t.Fatalf("no-policy posture = %q, want empty (no recorder constructed)", got)
+	}
+}
+
+// The carriage the server adds for a gateway credential reaches the run's
+// context as it was sealed: the base URL paired with the key, the ambient
+// refusal flag, and the SERVER's fingerprint for the key it names (a
+// gateway key's identity folds its URL in; the runner must stamp what the
+// server stamped). A key without a server fingerprint keeps today's
+// recompute, so an older bundle meters exactly as before.
+func TestInjectCredentials_CarriesTheGatewayPairAndTheServerFingerprint(t *testing.T) {
+	rs := secrets.NewMemoryRunSecretsStore()
+	gw := secrets.ProviderOpenAICompatible
+	bundle := secrets.RunBundle{
+		APIKeys:            map[secrets.Provider]string{gw: "sk-litellm-virtual-key-1234567890", "anthropic": "sk-live-1"},
+		APIBaseURLs:        map[secrets.Provider]string{gw: "https://gw.example.test"},
+		APIKeyFingerprints: map[secrets.Provider]string{gw: "fp-from-server"},
+		AmbientLLMRefused:  true,
+	}
+	sealed, dek := sealDekFixture(t, "team-a", "run-gw", bundle)
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-gw", TenantID: "team-a", RunID: "run-gw", KeyID: secrets.DEKKeyID, SealedBundle: sealed}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs}}
+	ctx, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-gw", TenantID: "team-a", SecretsRef: "ref-gw", BundleDEK: dek})
+	if err != nil {
+		t.Fatalf("injectCredentials: %v", err)
+	}
+	defer cleanup()
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		t.Fatal("no credentials on the context")
+	}
+	key, url, err := creds.GatewayCredentialForRoute(gw)
+	if err != nil || key != "sk-litellm-virtual-key-1234567890" || url != "https://gw.example.test" {
+		t.Fatalf("gateway pair = %q %q %v", key, url, err)
+	}
+	if !creds.AmbientRefused {
+		t.Fatal("AmbientRefused did not reach the context")
+	}
+	if got := creds.Fingerprints[string(gw)]; got != "fp-from-server" {
+		t.Fatalf("gateway fingerprint = %q, want the server's fp-from-server (the runner cannot recompute a URL-folded identity)", got)
+	}
+	if got, want := creds.Fingerprints["anthropic"], secrets.FingerprintSHA256("sk-live-1"); got != want {
+		t.Fatalf("a key without a server fingerprint must keep the recompute: %q, want %q", got, want)
+	}
+	cleanup()
+	if creds.APIKey(gw) != "" || creds.APIBaseURLs[gw] != "https://gw.example.test" {
+		t.Fatalf("cleanup must zero the key and leave the URL: key=%q url=%q", creds.APIKey(gw), creds.APIBaseURLs[gw])
+	}
+
+	// The pinned channel: the pair is read from the pinned maps, the
+	// server's fingerprint is stamped for it, and a bundle that says nothing
+	// about ambient refusal leaves the flag false.
+	pinned := secrets.RunBundle{
+		PinnedAPIKeys:      map[secrets.Provider]string{gw: "sk-litellm-pinned-key-1234567890"},
+		PinnedAPIBaseURLs:  map[secrets.Provider]string{gw: "https://gw2.example.test"},
+		APIKeyFingerprints: map[secrets.Provider]string{gw: "fp-pinned-from-server"},
+	}
+	sealedP, dekP := sealDekFixture(t, "team-a", "run-gw-pinned", pinned)
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-gw-pinned", TenantID: "team-a", RunID: "run-gw-pinned", KeyID: secrets.DEKKeyID, SealedBundle: sealedP}); err != nil {
+		t.Fatal(err)
+	}
+	ctxP, cleanupP, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-gw-pinned", TenantID: "team-a", SecretsRef: "ref-gw-pinned", BundleDEK: dekP})
+	if err != nil {
+		t.Fatalf("injectCredentials (pinned): %v", err)
+	}
+	defer cleanupP()
+	credsP, _ := secrets.CredentialsFromContext(ctxP)
+	if key, url, err := credsP.GatewayCredentialForRoute(gw); err != nil || key != "sk-litellm-pinned-key-1234567890" || url != "https://gw2.example.test" {
+		t.Fatalf("pinned gateway pair = %q %q %v", key, url, err)
+	}
+	if credsP.Fingerprints[string(gw)] != "fp-pinned-from-server" || credsP.AmbientRefused {
+		t.Fatalf("pinned fingerprint = %q, ambient = %v; want the server's fingerprint and the flag false", credsP.Fingerprints[string(gw)], credsP.AmbientRefused)
+	}
+}
+
+// A gateway key met WITHOUT the server's fingerprint — a hand-built or an
+// older-server bundle, which no seal guard protects — keeps an identity the
+// row carries: the runner recomputes the URL-folded form, not sha256 of the
+// secret, which no row names for a gateway key.
+func TestInjectCredentials_AGatewayKeyWithoutAServerFingerprint(t *testing.T) {
+	gw := secrets.ProviderOpenAICompatible
+	bundle := secrets.RunBundle{
+		APIKeys:     map[secrets.Provider]string{gw: "sk-litellm-virtual-key-1234567890"},
+		APIBaseURLs: map[secrets.Provider]string{gw: "https://gw.example.test"},
+	}
+	body, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dek, err := secrets.NewRunBundleDEK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds, err := secrets.NewAESGCMSealer(dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := ds.Seal(body, secrets.RunBundleAAD("team-a", "", "run-gw-nofp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := secrets.NewMemoryRunSecretsStore()
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-nofp", TenantID: "team-a", RunID: "run-gw-nofp", KeyID: secrets.DEKKeyID, SealedBundle: sealed}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs}}
+	ctx, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-gw-nofp", TenantID: "team-a", SecretsRef: "ref-nofp", BundleDEK: dek})
+	if err != nil {
+		t.Fatalf("injectCredentials: %v", err)
+	}
+	defer cleanup()
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		t.Fatal("no credentials on the context")
+	}
+	want := secrets.APIKeyFingerprint(gw, "sk-litellm-virtual-key-1234567890", "https://gw.example.test")
+	if got := creds.Fingerprints[string(gw)]; got != want {
+		t.Fatalf("gateway fingerprint = %q, want the URL-folded identity %q", got, want)
 	}
 }

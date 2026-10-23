@@ -25,6 +25,19 @@ type Credentials struct {
 	// that already knows the route names the provider: the default
 	// precedence must never see them.
 	PinnedAPIKeys map[Provider]string
+	// APIBaseURLs and PinnedAPIBaseURLs pair, map for map, with APIKeys and
+	// PinnedAPIKeys: the gateway root an openai_compatible key in the same
+	// map authenticates against (RunBundle.APIBaseURLs). Read them through
+	// GatewayCredentialForRoute, which keeps key and URL from ONE map and
+	// refuses a key met without its URL. Not secret: the cleanup that
+	// zeroes the keys leaves them; a predicate "does this run hold a
+	// gateway credential" reads the KEY, never the URL.
+	APIBaseURLs       map[Provider]string
+	PinnedAPIBaseURLs map[Provider]string
+	// AmbientRefused mirrors RunBundle.AmbientLLMRefused: the run's LLM
+	// routes are funded by these credentials only, and every fallback to
+	// the pod environment must answer a typed refusal.
+	AmbientRefused bool
 	// Generic maps workflow/user secret names to plaintext values. It is
 	// populated by the cloud runner from sealed per-run bundles and used
 	// by declared workflow secrets whose value is intentionally empty
@@ -223,6 +236,36 @@ func (c Credentials) APIKeyForRoute(p Provider) string {
 		return k
 	}
 	return c.PinnedAPIKey(p)
+}
+
+// GatewayCredentialForRoute returns the key a route that NAMES p may
+// spend together with the base URL it was sealed for, taken from ONE map
+// (the run's own first, then the pinned one — the order of APIKeyForRoute),
+// so a key is never paired with another map's URL. A gateway key met
+// without its URL is ErrGatewayKeyWithoutURL, never a key to send to the
+// environment's gateway; no key at all is ("", "", nil): the caller's env
+// path, or its ambient refusal, decides. For a provider that is not a
+// gateway the URL is always "": a vendor endpoint is compiled in, and a
+// URL that reached the bundle beside a vendor key is not read. This is the
+// only accessor for the pair — a reader that took the key from
+// APIKeyForRoute and the URL from somewhere else would hand out the key
+// unpaired.
+func (c Credentials) GatewayCredentialForRoute(p Provider) (key, baseURL string, err error) {
+	switch {
+	case c.APIKey(p) != "":
+		key, baseURL = c.APIKey(p), c.APIBaseURLs[p]
+	case c.PinnedAPIKey(p) != "":
+		key, baseURL = c.PinnedAPIKey(p), c.PinnedAPIBaseURLs[p]
+	default:
+		return "", "", nil
+	}
+	if p != ProviderOpenAICompatible {
+		return key, "", nil
+	}
+	if baseURL == "" {
+		return "", "", fmt.Errorf("%w: the run carries an %s key with no base URL", ErrGatewayKeyWithoutURL, p)
+	}
+	return key, baseURL, nil
 }
 
 // EveryKeyForRedaction returns every API-key VALUE the run carries, in any

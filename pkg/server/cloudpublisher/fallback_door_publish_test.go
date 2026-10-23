@@ -26,17 +26,20 @@ import (
 // SubmitResume seam.
 
 type doorPublishFixture struct {
-	sealer    secrets.Sealer
-	rs        *store.FilesystemRunStore
-	pub       *Publisher
-	broker    *credpool.Broker
-	pools     *credpool.MemoryPoolStore
-	pledges   *credpool.MemoryPledgeStore
-	leases    *credpool.MemoryLeaseStore
-	tenantKey string
-	logs      *bytes.Buffer
-	published []*queue.RunMessage
-	publishOK *bool
+	sealer secrets.Sealer
+	// donorGatewayKeyID names the gateway key row seeded in the donor
+	// store: a drifted gateway pledge's KeyID points at it.
+	donorGatewayKeyID string
+	rs                *store.FilesystemRunStore
+	pub               *Publisher
+	broker            *credpool.Broker
+	pools             *credpool.MemoryPoolStore
+	pledges           *credpool.MemoryPledgeStore
+	leases            *credpool.MemoryLeaseStore
+	tenantKey         string
+	logs              *bytes.Buffer
+	published         []*queue.RunMessage
+	publishOK         *bool
 }
 
 // newDoorPublishFixture wires the whole launch path: a tenant with ONLY an
@@ -64,6 +67,24 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	}
 	// The DONOR's zai key, pledged through the broker's own store.
 	donorKeys := secrets.NewMemoryApiKeyStore()
+	// The gateway donor key a DRIFTED gateway pledge would name: seeded so
+	// the release witnesses can drive a real acquisition to the refusal.
+	gwURL, gwErr := secrets.ValidateGatewayBaseURL("https://gw.example.test")
+	if gwErr != nil {
+		t.Fatalf("gateway url: %v", gwErr)
+	}
+	gwKeyID := secrets.NewApiKeyID()
+	gwSealed, gwSealErr := secrets.SealAPIKeyFor(sealer, secrets.ApiKey{ID: gwKeyID, TenantID: "donor-gw", ScopeTeamID: "donor-gw",
+		ScopeUserID: "donor-gw", Provider: secrets.ProviderOpenAICompatible, BaseURL: gwURL, Name: "gw",
+		Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderOpenAICompatible, "sk-gw-donated", gwURL)}, []byte("sk-gw-donated"))
+	if gwSealErr != nil {
+		t.Fatalf("seal donor gateway key: %v", gwSealErr)
+	}
+	if err := donorKeys.Create(store.WithTenant(ctx, "donor-gw"), secrets.ApiKey{ID: gwKeyID, TenantID: "donor-gw", ScopeTeamID: "donor-gw",
+		ScopeUserID: "donor-gw", Provider: secrets.ProviderOpenAICompatible, BaseURL: gwURL, Name: "gw",
+		SealedSecret: gwSealed, Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderOpenAICompatible, "sk-gw-donated", gwURL), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed donor gateway key: %v", gwErr)
+	}
 	dkid := secrets.NewApiKeyID()
 	dsealed, _ := secrets.SealAPIKey(sealer, dkid, []byte("zai-donated-key"))
 	if err := donorKeys.Create(store.WithTenant(ctx, "donor-team"), secrets.ApiKey{ID: dkid, TenantID: "donor-team",
@@ -106,7 +127,8 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	})
 	logs := &bytes.Buffer{}
 	f := &doorPublishFixture{
-		sealer: sealer, rs: rs, broker: broker, pools: pools, pledges: pledges, leases: leases, tenantKey: kid,
+		donorGatewayKeyID: gwKeyID,
+		sealer:            sealer, rs: rs, broker: broker, pools: pools, pledges: pledges, leases: leases, tenantKey: kid,
 		logs: logs, published: []*queue.RunMessage{}, publishOK: new(bool),
 	}
 	*f.publishOK = true
@@ -301,3 +323,12 @@ func TestFallbackDoorPreview_parity(t *testing.T) {
 		t.Fatalf("door_wants = %v, want the missing zai kind (door_reason = %q)", preview.Pool.DoorWants, preview.Pool.DoorReason)
 	}
 }
+
+// The door's refused-gateway path is unreachable at v25 (the door's wants
+// map slots through allKnownProviders, which excludes the provider until
+// #2005 PR-C'): the released-grant carry is witnessed at the unit level
+// (TestAcquireDoorGrant_AnUnsealedGrantIsReleased) and the pool lane's
+// release-reopen chain by TestFailedResumeWithARefusedGrantReopens (the
+// pool lane is drift-reachable by mutating poolWantOrder, whose contents
+// nothing pins — its gateway arm is exactly as unreachable in production
+// as the door's until PR-C'). PR-C' lifts this.
