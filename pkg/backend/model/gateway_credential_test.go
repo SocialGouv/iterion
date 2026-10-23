@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -229,20 +230,26 @@ func TestResolveWithContext_GatewayCredentialAndAmbientRefusal(t *testing.T) {
 func TestResolveWithContext_GLMUnderStampTakesTheVendorEndpoint(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "https://pod-gateway.example/meter")
 	// The dispatch wires the widened hint (RouteProviderHint: zai for a GLM
-	// id on the anthropic wire) beside the run's credentials.
+	// id on the anthropic wire) beside the run's credentials, and a pod has
+	// the lookups installed — this is the production shape.
+	installRunLookups(t)
 	ctx := WithProviderHint(secrets.WithCredentials(context.Background(), secrets.Credentials{
 		AmbientRefused: true,
 		APIKeys:        map[secrets.Provider]string{secrets.ProviderZAI: "sk-run-zai"},
 	}), "zai")
-	_, err := NewRegistry().ResolveWithContext(ctx, "anthropic/glm-5.2")
-	// Reachable doctrine: under the stamp the route is REFUSED, not served
-	// from the pod env. Two latent defects sit behind this gate (rva r1
-	// F1): the funding gate does not credit the run's z.ai key for a glm id
-	// (a false refusal once a producer stamps), and the GLM branch's base
-	// URL now ignores the pod env (guarded, latent) — both close in PR-C'
-	// when the producer lands and this path wakes.
-	if err == nil {
-		t.Fatal("a hinted glm route on a stamped run resolved — the funding gate should refuse it until PR-C' credits the zai key")
+	cl, err := NewRegistry().ResolveWithContext(ctx, "anthropic/glm-5.2")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	v := reflect.ValueOf(cl)
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+	if got := v.FieldByName("BaseURL").String(); got != secrets.ZAIDefaultBaseURL {
+		t.Fatalf("BaseURL = %q, want z.ai's own endpoint — the pod's ANTHROPIC_BASE_URL is outside the run's trust domain", got)
+	}
+	if got := v.FieldByName("APIKey").String(); got != "sk-run-zai" {
+		t.Fatalf("APIKey = %q, want the run's z.ai key", got)
 	}
 }
 
