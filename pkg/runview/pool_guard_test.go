@@ -29,25 +29,39 @@ import (
 // its past runs' content.
 func TestPoolContentRefusalTable(t *testing.T) {
 	const pool = "honorabilite"
+	teamGW := &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway, GatewayHost: "gw.example"}
+	ownKeys := &store.RunContentBoundary{Kind: store.ContentBoundaryOwnKeys}
 	cases := []struct {
-		name   string
-		pool   string
-		spec   string
-		refuse bool
+		name     string
+		boundary *store.RunContentBoundary
+		pool     string
+		spec     string
+		refuse   bool
 	}{
-		{"no stamp, any spec passes", "", "anthropic/claude-opus-4-8", false},
-		{"gateway pin escapes", pool, "openai_compatible/glm-5.2", false},
-		{"vendor pin refused", pool, "anthropic/claude-opus-4-8", true},
-		{"auto-detect (empty spec) refused", pool, "", true},
+		{"no stamp, any spec passes", nil, "", "anthropic/claude-opus-4-8", false},
+		{"gateway pin escapes", nil, pool, "openai_compatible/glm-5.2", false},
+		{"vendor pin refused", nil, pool, "anthropic/claude-opus-4-8", true},
+		{"auto-detect (empty spec) refused", nil, pool, "", true},
+		{"team_gateway refuses a vendor spec", teamGW, "", "anthropic/claude-opus-4-8", true},
+		{"team_gateway refuses a gateway spec — no escape", teamGW, "", "openai_compatible/glm-5.2", true},
+		{"team_gateway refuses without any pool stamp", teamGW, "", "openai_compatible/glm-5.2", true},
+		{"own_keys keeps the pool gateway escape", ownKeys, pool, "openai_compatible/glm-5.2", false},
+		{"own_keys keeps the pool vendor refusal", ownKeys, pool, "anthropic/claude-opus-4-8", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := poolContentRefusal(tc.pool, tc.spec)
+			err := contentRefusal(tc.boundary, tc.pool, tc.spec)
 			if tc.refuse && !errors.Is(err, ErrPoolContentRefused) {
-				t.Fatalf("poolContentRefusal(%q, %q) = %v, want ErrPoolContentRefused", tc.pool, tc.spec, err)
+				t.Fatalf("contentRefusal(%v, %q, %q) = %v, want ErrPoolContentRefused", tc.boundary, tc.pool, tc.spec, err)
 			}
 			if !tc.refuse && err != nil {
-				t.Fatalf("poolContentRefusal(%q, %q) = %v, want nil", tc.pool, tc.spec, err)
+				t.Fatalf("contentRefusal(%v, %q, %q) = %v, want nil", tc.boundary, tc.pool, tc.spec, err)
+			}
+			if tc.refuse && tc.boundary != nil && tc.boundary.Kind == store.ContentBoundaryTeamGateway {
+				if !strings.Contains(err.Error(), tc.boundary.GatewayHost) {
+					t.Fatalf("refusal %q does not name the boundary's gateway %q", err, tc.boundary.GatewayHost)
+				}
+				return
 			}
 			if tc.refuse && !strings.Contains(err.Error(), pool) {
 				t.Fatalf("refusal %q does not name the pool %q", err, pool)
@@ -71,11 +85,11 @@ func TestPoolSurvivingSpecs(t *testing.T) {
 		{Name: "env-form gateway", Model: "${ITERION_GLM:-openai_compatible/glm-5.2}"},
 		{Name: "auto", Model: ""},
 	}
-	kept := PoolSurvivingSpecs(all, "", logger)
+	kept := PoolSurvivingSpecs(all, nil, "", logger)
 	if len(kept) != 4 {
 		t.Fatalf("no stamp: %d specs kept, want 4", len(kept))
 	}
-	kept = PoolSurvivingSpecs(all, "honorabilite", logger)
+	kept = PoolSurvivingSpecs(all, nil, "honorabilite", logger)
 	if len(kept) != 2 || kept[0].Name != "gateway-pinned" || kept[1].Name != "env-form gateway" {
 		t.Fatalf("pool run: %v kept, want both gateway forms", kept)
 	}
@@ -213,7 +227,7 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(agent), "poolContentRefusal(r.RunnerPool, spec)") {
+	if !strings.Contains(string(agent), "contentRefusal(r.ContentBoundary, r.RunnerPool, spec)") {
 		t.Fatal("the conflict resolver no longer consults the run's frozen pool stamp")
 	}
 	observe, err := os.ReadFile("service_observe.go")
@@ -221,8 +235,8 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, pin := range []string{
-		"specs = PoolSurvivingSpecs(specs, pool, logger)",
-		"poolContentRefusal(pool, sessionboard.ModelFromEnv())",
+		"specs = PoolSurvivingSpecs(specs, boundary, pool, logger)",
+		"contentRefusal(boundary, pool, sessionboard.ModelFromEnv())",
 	} {
 		if !strings.Contains(string(observe), pin) {
 			t.Fatalf("service_observe.go lost its D12 guard pin: %q", pin)
@@ -232,7 +246,7 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(loop), "runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.RunnerPool, runLogger)") {
+	if !strings.Contains(string(loop), "runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger)") {
 		t.Fatal("the runner pod no longer filters declared supervisors by the frozen pool stamp (D12)")
 	}
 }

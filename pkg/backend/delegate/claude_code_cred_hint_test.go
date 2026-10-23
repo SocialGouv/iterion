@@ -1,6 +1,7 @@
 package delegate
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestAnthropicCredEnv_FacadeHintIsFoldedBeforeRouting(t *testing.T) {
 			if fp := providerFingerprint(got); fp != "anthropic-suppressed" {
 				t.Errorf("hint %q: providerFingerprint = %q, want %q", hint, fp, "anthropic-suppressed")
 			}
-			err := facadeHintRefusal(hint, got)
+			err := facadeHintRefusal(context.Background(), hint, got)
 			if err == nil {
 				t.Fatalf("hint %q: no refusal — an unfunded moonshot node must be refused by name, whatever the spelling", hint)
 			}
@@ -63,7 +64,7 @@ func TestAnthropicCredEnv_FacadeHintIsFoldedBeforeRouting(t *testing.T) {
 			if got["ANTHROPIC_BASE_URL"] != secrets.MoonshotDefaultBaseURL {
 				t.Errorf("hint %q: ANTHROPIC_BASE_URL = %q, want %q", hint, got["ANTHROPIC_BASE_URL"], secrets.MoonshotDefaultBaseURL)
 			}
-			if err := facadeHintRefusal(hint, got); err != nil {
+			if err := facadeHintRefusal(context.Background(), hint, got); err != nil {
 				t.Errorf("hint %q: funded node refused: %v", hint, err)
 			}
 		})

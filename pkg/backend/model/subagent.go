@@ -236,7 +236,7 @@ func NewSubagentRunner(
 			return "", fmt.Errorf("subagent: no model specified, no host default and no parent node model")
 		}
 
-		client, err := modelReg.Resolve(modelSpec)
+		client, err := modelReg.ResolveWithContext(ctx, modelSpec)
 		if err != nil {
 			return "", fmt.Errorf("subagent: resolve model %q: %w", modelSpec, err)
 		}

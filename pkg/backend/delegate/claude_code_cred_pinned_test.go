@@ -33,7 +33,7 @@ func TestFacadeHint_SpendsAPinnedKey(t *testing.T) {
 	if got["ANTHROPIC_BASE_URL"] != secrets.MoonshotDefaultBaseURL {
 		t.Errorf("ANTHROPIC_BASE_URL = %q, want Moonshot's endpoint", got["ANTHROPIC_BASE_URL"])
 	}
-	if err := facadeHintRefusal("moonshot", got); err != nil {
+	if err := facadeHintRefusal(context.Background(), "moonshot", got); err != nil {
 		t.Errorf("a node funded by a pinned key was refused: %v", err)
 	}
 }
@@ -129,7 +129,7 @@ func TestFacadeHint_NoPinnedKeyStillRefuses(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ambient-anthropic")
 	ctx := ctxWithPinnedCreds(t, nil, map[secrets.Provider]string{secrets.ProviderZAI: "platform-zai"}, nil)
 
-	err := facadeHintRefusal("moonshot", anthropicCredEnvForCLI(ctx, "moonshot", false))
+	err := facadeHintRefusal(ctx, "moonshot", anthropicCredEnvForCLI(ctx, "moonshot", false))
 	var refusal *ErrNoFacadeCredential
 	if !errors.As(err, &refusal) {
 		t.Fatalf("a moonshot node funded by nobody (the pinned key is z.ai's) must be refused by name, got %v", err)

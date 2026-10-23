@@ -55,7 +55,7 @@ var clawSandboxCredentialEnvKeys = []string{
 // would fail at dispatch on that error anyway, and a refusal naming the
 // credential gap is the more honest failure for an untrusted run.
 func ClawSandboxCredential(ctx context.Context, model string, home delegate.SandboxHomeState) (channel string, ok bool) {
-	env, _, err := forwardableProviderEnv(ctx, model)
+	env, _, err := forwardableProviderEnv(ctx, model, "")
 	if err == nil {
 		for _, key := range clawSandboxCredentialEnvKeys {
 			if env[key] != "" {

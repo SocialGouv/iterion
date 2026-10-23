@@ -34,7 +34,7 @@ func TestTheSandboxCrossingRefusesAnAmbientCredentialHeaderLine(t *testing.T) {
 	const ambient = "sk-ambient-operator-gateway"
 	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "x-tenant: acme\nAuthorization: Bearer "+ambient+"\nUser-Agent: my-tool/1.0")
 
-	env, refused, err := forwardableProviderEnv(context.Background(), "anthropic/claude-haiku-4-5")
+	env, refused, err := forwardableProviderEnv(context.Background(), "anthropic/claude-haiku-4-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestEveryHeaderBlockForwardCrossesFilteredAndExplicit(t *testing.T) {
 							t.Fatalf("os.Unsetenv(%s): %v", name, err)
 						}
 					}
-					env, _, err := forwardableProviderEnv(context.Background(), "anthropic/claude-haiku-4-5")
+					env, _, err := forwardableProviderEnv(context.Background(), "anthropic/claude-haiku-4-5", "")
 					if err != nil {
 						t.Fatalf("forwardableProviderEnv: %v", err)
 					}
@@ -175,7 +175,7 @@ func TestOnlyAHeaderBlockIsFilteredOnTheWayIn(t *testing.T) {
 	for _, name := range providerCredentialEnvVars {
 		t.Setenv(name, value(name))
 	}
-	env, _, err := forwardableProviderEnv(context.Background(), "anthropic/claude-haiku-4-5")
+	env, _, err := forwardableProviderEnv(context.Background(), "anthropic/claude-haiku-4-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestHeaderBlockEnvNameReadsASegment(t *testing.T) {
 func TestAHeaderBlockWithNoCredentialCrossesUntouched(t *testing.T) {
 	const block = "x-tenant: acme\r\nUser-Agent: my-tool/1.0"
 	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", block)
-	env, refused, err := forwardableProviderEnv(context.Background(), "anthropic/claude-haiku-4-5")
+	env, refused, err := forwardableProviderEnv(context.Background(), "anthropic/claude-haiku-4-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}

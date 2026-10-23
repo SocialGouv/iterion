@@ -6,6 +6,10 @@ import "errors"
 // with when the cloud publisher refused it for want of an LLM credential.
 const NoLLMCredentialErrorCode = "NO_LLM_CREDENTIAL"
 
+// ContentBoundaryRefusedErrorCode is the stable API code an auxiliary LLM
+// surface answers with when it refuses a stamped run's content.
+const ContentBoundaryRefusedErrorCode = "CONTENT_BOUNDARY_REFUSED"
+
 // ErrNoLLMCredential is the publish-time refusal of a run that cannot start:
 // every LLM route it may take pins a provider the deployment knows, and no
 // credential tier holds one for any of them. Wrapped by the cloud publisher

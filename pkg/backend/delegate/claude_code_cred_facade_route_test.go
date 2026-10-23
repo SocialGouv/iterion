@@ -170,3 +170,29 @@ func TestShouldDropSessionFork_FacadeLabelAcrossTheSlotStamp(t *testing.T) {
 		}
 	}
 }
+
+// Under the AmbientRefused stamp a run-held facade key authenticates to the
+// VENDOR's own endpoint, never to the pod's ANTHROPIC_BASE_URL: the stamp
+// declares the pod's wiring outside the run's trust domain, and the base URL
+// is routing, not credential. An unstamped run keeps the operator's routing
+// choice (the philosophy zaiEnv documents).
+func TestFacadeRoute_AmbientRefusedRunKeyUsesTheVendorDefault(t *testing.T) {
+	resetClaudeCredEnv(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "https://pod-gw.example")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "oat-ambient")
+	for k := range hostileAnthropicChannels {
+		t.Setenv(k, "")
+	}
+	creds := secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderZAI: "zai-run-held"},
+	}
+	ctx := secrets.WithCredentials(context.Background(), creds)
+	got := anthropicCredEnvForCLI(ctx, "zai", false)
+	if got["ANTHROPIC_BASE_URL"] != secrets.ZAIDefaultBaseURL {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q, want the vendor default %q — the pod's routing must not apply to a run-held key under the stamp", got["ANTHROPIC_BASE_URL"], secrets.ZAIDefaultBaseURL)
+	}
+	if got["ANTHROPIC_AUTH_TOKEN"] != "zai-run-held" {
+		t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q, want the run-held key", got["ANTHROPIC_AUTH_TOKEN"])
+	}
+}

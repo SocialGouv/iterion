@@ -214,6 +214,15 @@ func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
 	return true
 }
 
+// addRoute is the locked entry the OnUsage sink calls from the
+// coordinator goroutine — a different one than the event stream's, so it
+// takes the mutex observe holds on the same maps and totals.
+func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float64, in, out, aggregate int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.addRouteLocked(backend, modelName, source, cost, in, out, aggregate)
+}
+
 // addRouteLocked folds one observation into its (backend, model) bucket.
 // Called with m.mu held, alongside the run-total accumulation it mirrors —
 // the two must never diverge, so they are updated in the same critical

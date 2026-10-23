@@ -76,6 +76,35 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 		// a route iterion names exactly. Once per route, same as the
 		// declines, so an operator sees the shape and only once.
 		if modelroute.Parse(route.model).Gateway() {
+			// A STAMPED run's gateway route books on the run's own held
+			// credential: the stamp declares the deployment's env gateway
+			// outside the run's trust domain, so the spend is the tenant
+			// key's, metered and fingerprinted like any vendor route.
+			// Unstamped, the decline below keeps the env gateway's
+			// books-on-nobody semantics.
+			if creds.AmbientRefused {
+				if slot := heldForRoute(creds, string(secrets.ProviderOpenAICompatible)); slot != "" {
+					spend := credusage.Spend{
+						Key: credusage.Key{
+							Fingerprint: creds.Fingerprint(slot),
+							Provider:    slot,
+							Tier:        credentialTier(creds, slot),
+							TenantID:    msg.TenantID,
+							RepoID:      repoID,
+						},
+						Nature:          credentialNature(slot),
+						Backend:         route.backend,
+						CostUSD:         totals.costUSD,
+						InputTokens:     totals.inputTokens,
+						OutputTokens:    totals.outputTokens,
+						AggregateTokens: totals.aggregateTokens,
+					}
+					if err := r.cfg.CredUsage.AddSpend(bg, at, spend); err != nil && r.cfg.Logger != nil {
+						r.cfg.Logger.Warn("runner: credential spend record for %s (run %s): %v", creds.Fingerprint(slot), msg.RunID, err)
+					}
+					continue
+				}
+			}
 			if r.cfg.Logger != nil && usage.noteDeclinedRoute(route) {
 				r.cfg.Logger.Info("runner: run %s spent %d tokens on %s/%s — env-funded (the deployment's gateway), not metered per credential",
 					msg.RunID, totals.tokens(), route.backend, route.model)

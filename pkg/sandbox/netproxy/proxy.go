@@ -52,6 +52,13 @@ type Proxy struct {
 
 	// hooks for observability (event emission)
 	onBlocked func(host, reason string)
+	onTunnel  func(host string)
+
+	// tunnelMu guards the per-run tally of admitted requests that Shutdown
+	// flushes to onTunnelsDone.
+	tunnelMu      sync.Mutex
+	tunnels       map[string]int
+	onTunnelsDone func(tally map[string]int)
 
 	// dialer used for upstream connections; tests can swap it.
 	dial func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -97,6 +104,18 @@ type Options struct {
 	// rejects. Engine integration uses this to emit the
 	// `network_blocked` event into events.jsonl.
 	OnBlocked func(host, reason string)
+
+	// OnTunnel, when non-nil, is called for every request the policy
+	// ADMITS — taken at the admission choke, before any dial, so it counts
+	// admitted requests, not successful egress. A panicking hook never
+	// takes the proxy down.
+	OnTunnel func(host string)
+
+	// OnTunnelsDone, when non-nil, is called ONCE per proxy lifetime from
+	// Shutdown with a copy of the per-host tally OnTunnel aggregated — one
+	// event per run of the sandbox, not one per request. An empty tally
+	// calls nothing.
+	OnTunnelsDone func(tally map[string]int)
 
 	// Dial overrides the upstream dialer — and with it the proxy's own
 	// refusal of a loopback, link-local or unspecified destination: the
@@ -170,6 +189,16 @@ type Options struct {
 	// host adds none.
 	PinSource func() (host string, allowPrivate bool)
 
+	// PinRunSource, when set, is read like PinSource for the run's own
+	// gateway credential: the host it names is pinned at the operator's
+	// INHERITED strictness (the process environment's escape hatch admits
+	// a private answer for a self-hosted tenant gateway; a value a
+	// project .env planted does not — envtrust answers it), and the
+	// admission follows its source, live; a withdrawn source leaves the
+	// entry at its last admission. The refusal names the run's
+	// credential, whatever the strictness. An empty host adds none.
+	PinRunSource func() (host string, allowPrivate bool)
+
 	// PinResolver answers the pin's lookups; nil is net.DefaultResolver. A
 	// test injects one so a pinned name resolves without live DNS.
 	PinResolver httpdial.HostResolver
@@ -220,17 +249,20 @@ func New(opts Options) (*Proxy, error) {
 		return nil, err
 	}
 	p := &Proxy{
-		policy:    opts.Policy,
-		token:     opts.Token,
-		onBlocked: opts.OnBlocked,
+		policy:        opts.Policy,
+		token:         opts.Token,
+		onBlocked:     opts.OnBlocked,
+		onTunnel:      opts.OnTunnel,
+		tunnels:       map[string]int{},
+		onTunnelsDone: opts.OnTunnelsDone,
 	}
 	dial, hostDial := opts.Dial, opts.Dial
 	if dial == nil {
 		dial = (&net.Dialer{Timeout: dialTimeout, Control: refuseLocalDestination}).DialContext
 		hostDial = (&net.Dialer{Timeout: dialTimeout}).DialContext
 	}
-	if len(pinned) > 0 || opts.PinSource != nil {
-		p.pins = newPinSet(pinned, opts.PinAllowPrivate, opts.PinSource)
+	if len(pinned) > 0 || opts.PinSource != nil || opts.PinRunSource != nil {
+		p.pins = newPinSet(pinned, opts.PinAllowPrivate, opts.PinSource, opts.PinRunSource)
 		dial = p.pinDial(dial, p.pins, opts.PinResolver)
 	}
 	// host.docker.internal is the container-side alias for the host
@@ -318,7 +350,7 @@ func (p *Proxy) isPinned(host string) bool {
 	if p.pins == nil {
 		return false
 	}
-	pinned, _ := p.pins.lookup(host)
+	_, pinned := p.pins.lookup(host)
 	return pinned
 }
 
@@ -424,6 +456,7 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 	if p.forwardTransport != nil {
 		p.forwardTransport.CloseIdleConnections()
 	}
+	p.flushTunnels()
 	return nil
 }
 
@@ -456,6 +489,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host '"+host+"' blocked by sandbox network policy", http.StatusForbidden)
 		return
 	}
+	p.countTunnel(host)
 	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r)
 		return
@@ -582,6 +616,40 @@ func (p *Proxy) reportBlocked(host, reason string) {
 		defer func() { _ = recover() }()
 		p.onBlocked(host, reason)
 	}
+}
+
+// countTunnel records an admitted request in the per-run tally the Shutdown
+// flush hands OnTunnelsDone, and fires OnTunnel — admitted requests, not
+// successful egress: the count is taken where the policy admits, before any
+// dial. A panicking hook never takes the proxy down.
+func (p *Proxy) countTunnel(host string) {
+	p.tunnelMu.Lock()
+	p.tunnels[host]++
+	p.tunnelMu.Unlock()
+	if p.onTunnel != nil {
+		defer func() { _ = recover() }()
+		p.onTunnel(host)
+	}
+}
+
+// flushTunnels hands the per-run tally to OnTunnelsDone once, at shutdown —
+// one event per run, not one per request; nothing ran, nothing is called. A
+// panicking hook never takes the shutdown down.
+func (p *Proxy) flushTunnels() {
+	if p.onTunnelsDone == nil {
+		return
+	}
+	p.tunnelMu.Lock()
+	tally := make(map[string]int, len(p.tunnels))
+	for h, n := range p.tunnels {
+		tally[h] = n
+	}
+	p.tunnelMu.Unlock()
+	if len(tally) == 0 {
+		return
+	}
+	defer func() { _ = recover() }()
+	p.onTunnelsDone(tally)
 }
 
 // handleConnect tunnels TCP traffic between the client and the
