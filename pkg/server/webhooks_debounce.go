@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -223,7 +224,11 @@ func (s *Server) deferSyncLaunch(
 	// a run reviewing a head this push just obsoleted stops burning
 	// tokens immediately.
 	for _, t := range targets {
-		s.supersedeLiveRuns(ctx, cfg, meta, t.BotID)
+		// The accepted payload stays parked during maintenance; its
+		// predecessor remains useful until the sweep can admit a new run.
+		if s.gateMaintenance(ctx, launchSubject{BotID: t.BotID, Repo: meta.ProjectPath}) == nil {
+			s.supersedeLiveRuns(ctx, cfg, meta, t.BotID)
+		}
 	}
 	s.markWebhookOutcome(cfg.Provider, webhooks.StatusDeferred)
 	if s.logger != nil {
@@ -416,6 +421,15 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 		}
 	}
 	if failed != "" {
+		if denial != nil && errors.Is(denial.err(), trigger.ErrMaintenanceHold) {
+			// A 202 promised this work. Maintenance has no exhaustion horizon
+			// and spends no attempt; preserve the generation and let ordinary
+			// sweeps resume it once the fence is disarmed (or readable again).
+			if err := s.webhookDeferred.Reschedule(ctx, d.SubjectKey, d.Generation, now.Add(webhookDeferSweepInterval), d.Attempts); err != nil {
+				s.warnf("webhook debounce sweeper: maintenance hold for %s: %v", d.SubjectID, err)
+			}
+			return
+		}
 		if wait, ok := deferRetryWait(denial, d.Attempts, now); ok {
 			// NOT delete: the forge was answered `202 deferred` minutes ago,
 			// so it will never redeliver, and the immediate lane's recovery —

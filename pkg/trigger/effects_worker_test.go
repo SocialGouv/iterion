@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -79,6 +80,41 @@ func directConsumeSub() Subscription {
 		ID: "s1", TenantID: "t1", BotID: "triage-bot", Enabled: true,
 		Mode: bundle.ExecutionDirect, ConsumeLabels: true,
 		Match: Matcher{Sources: []Source{SourceBoard}, Labels: []string{"triage:auto"}},
+	}
+}
+
+// A maintenance hold preserves both earlier real failures and the consumed
+// one-shot. Releasing it must execute once without re-consuming the labels.
+func TestEffectWorker_MaintenanceHoldPreservesBudgetAndOneShot(t *testing.T) {
+	launcher := &stubEffectLauncher{errs: []error{errors.New("queue unavailable")}}
+	for i := 0; i < MaxEffectAttempts+3; i++ {
+		launcher.errs = append(launcher.errs, fmt.Errorf("launch: %w", ErrMaintenanceHold))
+	}
+	board := &stubConsumingBoard{consumeLeft: 1}
+	w, out, ev := effectWorld(t, directConsumeSub(), board, launcher)
+	now := time.Now().UTC()
+	w.Now = func() time.Time { return now }
+	w.Tick(context.Background(), 10) // one real failure before maintenance
+	for i := 0; i < MaxEffectAttempts+3; i++ {
+		row, _ := out.Row(EffectID(ev.ID, "s1"))
+		now = row.NotBefore.Add(time.Second)
+		if n := w.Tick(context.Background(), 10); n != 1 {
+			t.Fatalf("cycle %d: claimed=%d", i, n)
+		}
+		row, _ = out.Row(row.ID)
+		if row.State != EffectPending || row.Attempts != 1 || !row.ConsumeMarked || board.consumes != 1 {
+			t.Fatalf("cycle %d: row=%+v consumes=%d", i, row, board.consumes)
+		}
+	}
+	row, _ := out.Row(EffectID(ev.ID, "s1"))
+	now = row.NotBefore.Add(time.Second)
+	w.Tick(context.Background(), 10) // maintenance ended: launcher now succeeds
+	row, _ = out.Row(row.ID)
+	if row.State != EffectDone || board.consumes != 1 || launcher.launches != MaxEffectAttempts+5 {
+		t.Fatalf("released: row=%+v consumes=%d launches=%d", row, board.consumes, launcher.launches)
+	}
+	if w.Tick(context.Background(), 10) != 0 {
+		t.Fatal("completed work was claimed again")
 	}
 }
 

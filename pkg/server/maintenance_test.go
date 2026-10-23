@@ -14,10 +14,12 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 func armTestFence(t *testing.T, s *Server) *platformcfg.MemoryStore[platformcfg.Maintenance] {
@@ -75,7 +77,7 @@ func TestFenceBoardAndTrigger(t *testing.T) {
 		armTestFence(t, s)
 		err := s.processBoardCard(boundedCtx(t), "t1", native.Issue{ID: "native:1", Bot: "probe", State: native.StateReady})
 		var denial *launchDeniedError
-		if !errors.As(err, &denial) || denial.Reason != denyMaintenanceFence || pub.count() != 0 {
+		if !errors.As(err, &denial) || denial.Reason != denyMaintenanceFence || !errors.Is(err, trigger.ErrMaintenanceHold) || pub.count() != 0 {
 			t.Fatalf("board: %v, publishes %d", err, pub.count())
 		}
 	})
@@ -85,7 +87,7 @@ func TestFenceBoardAndTrigger(t *testing.T) {
 		armTestFence(t, s)
 		_, err := s.triggerLauncher().Launch(spineCtx(t), spinePlan("t1"))
 		var denial *launchDeniedError
-		if !errors.As(err, &denial) || denial.Reason != denyMaintenanceFence || pub.count() != 0 {
+		if !errors.As(err, &denial) || denial.Reason != denyMaintenanceFence || !errors.Is(err, trigger.ErrMaintenanceHold) || pub.count() != 0 {
 			t.Fatalf("trigger: %v, publishes %d", err, pub.count())
 		}
 	})
@@ -138,7 +140,7 @@ func (brokenMaintenanceStore) Put(context.Context, platformcfg.Maintenance) erro
 
 func TestFenceReadFailure(t *testing.T) {
 	s := &Server{maintenanceStore: brokenMaintenanceStore{}}
-	if d := s.gateMaintenance(context.Background(), launchSubject{}); d == nil || d.status != 503 {
+	if d := s.gateMaintenance(context.Background(), launchSubject{}); d == nil || d.status != 503 || !errors.Is(d.err(), trigger.ErrMaintenanceHold) {
 		t.Fatalf("read failure: %+v", d)
 	}
 	if d := s.gateMaintenance(context.Background(), launchSubject{ExistingRun: true}); d != nil {
@@ -147,13 +149,13 @@ func TestFenceReadFailure(t *testing.T) {
 }
 
 func TestFenceSettingsAuthorizationAndDate(t *testing.T) {
-	s := newOrgTestServer(t)
-	s.maintenanceStore = platformcfg.NewMemoryStore[platformcfg.Maintenance]()
+	st := platformcfg.NewMemoryStore[platformcfg.Maintenance]()
 	signer, err := auth.NewJWTSigner(base64.RawStdEncoding.EncodeToString(make([]byte, 32)), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.signer = signer
+	s := New(Config{Mode: "cloud", MaintenanceSettings: st,
+		AuthService: newOrgTestServer(t).authSvc, AuthSigner: signer}, iterlog.Nop())
 	adminToken, _, err := signer.IssueAccess(auth.Identity{UserID: "admin", IsSuperAdmin: true})
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +165,6 @@ func TestFenceSettingsAuthorizationAndDate(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+adminToken)
 		return req
 	}
-	s.registerAdminSettingsFamilyRoutes()
 	memberToken, _, err := signer.IssueAccess(auth.Identity{UserID: "member", TeamID: "team"})
 	if err != nil {
 		t.Fatal(err)
@@ -197,9 +198,24 @@ func TestFenceSettingsAuthorizationAndDate(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("put: %d %s", w.Code, w.Body.String())
 	}
-	rec, err := s.maintenanceStore.Get(context.Background())
+	rec, err := st.Get(context.Background())
 	if err != nil || rec == nil || rec.UpdatedAt.IsZero() || rec.UpdatedBy != "admin" || !rec.FenceLaunches {
 		t.Fatalf("record = %+v, %v", rec, err)
+	}
+	get := httptest.NewRequest("GET", "/api/admin/settings/maintenance", nil)
+	get.Header.Set("Authorization", "Bearer "+adminToken)
+	w = httptest.NewRecorder()
+	s.mux.ServeHTTP(w, get)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"fence_launches":true`) {
+		t.Fatalf("get: %d %s", w.Code, w.Body.String())
+	}
+	if d := s.gateMaintenance(context.Background(), launchSubject{}); d == nil {
+		t.Fatal("API-armed fence did not reach admission through New(Config)")
+	}
+	w = httptest.NewRecorder()
+	s.mux.ServeHTTP(w, adminReq(`{"fence_launches":false,"reason":"rollout done"}`))
+	if w.Code != 200 || s.gateMaintenance(context.Background(), launchSubject{}) != nil {
+		t.Fatalf("API disarm: %d %s", w.Code, w.Body.String())
 	}
 }
 

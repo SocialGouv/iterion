@@ -1290,6 +1290,15 @@ func (s *Server) launchWebhookTarget(
 		}
 	}
 
+	// Maintenance must be consulted before cancelling useful live work.
+	// Keep the final gate below: this preflight neither meters nor reserves
+	// admission, and a fence armed meanwhile must still stop the new run.
+	if d := s.gateMaintenance(ctx, launchSubject{BotID: botID, Repo: meta.ProjectPath}); d != nil {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
+		out.Status, out.Error, out.denial = webhooks.StatusLaunchError, d.reason, d
+		return out
+	}
+
 	// 1b. Supersede: this delivery's input makes the live run for the same
 	// subject obsolete (a newer commit on the same PR). Cancel before
 	// metering, so the superseded run's slot is freed for the fresh one.

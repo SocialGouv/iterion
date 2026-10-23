@@ -73,4 +73,4 @@ in the commands/paths that actually worked.
 - [brand](../../brand.md) — the mascot assets and which forge identity gets the avatar how.
 - [groups-iteration-subbots](../../groups-iteration-subbots.md#child-bundle-resources) — child skills/devbox missing or leaking into a parent.
 
-- [Admission maintenance and local contracts](../../cloud-deployment.md#local-contracts-and-admission-maintenance) — stop new launches without blocking existing-run resumes; inspect binary contracts offline.
+- [Admission maintenance and local contracts](../../cloud-deployment.md#local-contracts-and-admission-maintenance) — hold new launches without exhausting durable work or cancelling predecessors; preserve resumes and inspect binary contracts offline.

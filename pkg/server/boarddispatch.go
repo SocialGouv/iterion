@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -429,7 +430,10 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 		// A replica can also drain during the forge lookup, before the
 		// run service can return its own ErrServerDraining. The typed
 		// pre-launch marker still proves that returning the card is safe.
-		if ctx.Err() == nil && !errors.Is(runErr, runtime.ErrServerDraining) {
+		// Maintenance postpones work; like draining it cannot exhaust the
+		// card's failure budget. Returning it releases the claim for a later
+		// tick, which consults the fence again after disarming.
+		if ctx.Err() == nil && !errors.Is(runErr, runtime.ErrServerDraining) && !errors.Is(runErr, trigger.ErrMaintenanceHold) {
 			ledger = dispatcher.NextLaunchRefusal(c.Issue.LaunchRefusal, time.Now().UTC(), launchRefusalReason(runErr))
 			if ledger.Attempts >= d.launchAttemptCap {
 				final, finalReason = d.blockedState, tracker.ReasonLaunchGivenUp

@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // OrgLimitDefaults are the platform-wide launch limits applied when a
@@ -55,6 +56,15 @@ func (e *launchDeniedError) Error() string {
 		return "launch gate: " + e.Reason
 	}
 	return "launch gate: " + e.Reason + ": " + e.Detail
+}
+
+// Preserve the HTTP denial details while giving durable consumers a typed
+// postponement, distinct from a launch failure with a bounded retry budget.
+func (e *launchDeniedError) Unwrap() error {
+	if e.Reason == denyMaintenanceFence {
+		return trigger.ErrMaintenanceHold
+	}
+	return nil
 }
 
 // err converts a denial for a caller that reports through an error chain.

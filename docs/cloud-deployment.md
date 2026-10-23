@@ -694,6 +694,15 @@ with `error: maintenance_fence` and a `detail` naming
 `maintenance.fence_launches`, the reason and its timestamp. A failed settings
 read also refuses new admissions with 503 until the store recovers.
 
+For durable consumers this is a `maintenance_hold`, not a failed execution:
+trigger effects stay pending, board cards return to their launch column, and
+deferred webhooks keep their accepted payload. Repeated holds consume no
+failure attempts. After disarming, the ordinary worker/dispatcher sweeps launch
+the preserved work (subject to its other admission rules). A webhook with
+`overlap: supersede` checks maintenance before cancelling a live predecessor,
+both at immediate admission and when parking a debounced delivery; the final
+launch admission still rechecks the fence.
+
 Existing runs continue: HTTP/WebSocket resumes and automatic retries remain
 allowed by this fence, while retaining their ordinary authorization and quota
 checks. Already admitted launches can finish admission; arming is not an

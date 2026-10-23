@@ -28,6 +28,11 @@ type EffectWorker struct {
 // one-shot was spent by another event — terminal success for THIS row.
 var errEffectOneShotSpent = errors.New("trigger: one-shot already spent")
 
+// ErrMaintenanceHold reports a launch postponed by platform maintenance.
+// No execution was attempted: durable consumers must keep the work pending
+// without spending its failure budget. Launchers may wrap it with details.
+var ErrMaintenanceHold = errors.New("maintenance_hold")
+
 // Tick claims up to limit due rows and executes each. Returns the number of
 // rows it acted on (tests + callers pacing on activity).
 func (w *EffectWorker) Tick(ctx context.Context, limit int) int {
@@ -69,6 +74,13 @@ func (w *EffectWorker) executeOne(ctx context.Context, row *EffectRow) {
 			// The effect ran; a failed done-write means one redundant retry
 			// of an idempotent/one-shot-guarded effect, not a loss.
 			w.warn("trigger: effect %s done-write failed (will re-run idempotently): %v", row.ID, merr)
+		}
+	case errors.Is(err, ErrMaintenanceHold):
+		// Release this claim using the same CAS as retries, but preserve the
+		// count (including any real failures before maintenance). The next
+		// sweep reads the fence again, so disarming needs no manual replay.
+		if merr := w.Outbox.MarkRetry(ctx, row.ID, row.ClaimID, row.Attempts, w.now().Add(EffectRetryBase), err.Error()); merr != nil {
+			w.warn("trigger: effect %s maintenance-hold write: %v", row.ID, merr)
 		}
 	default:
 		attempts := row.Attempts + 1
