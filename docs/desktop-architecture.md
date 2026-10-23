@@ -98,8 +98,74 @@ scope) in a pane.
 Auth in a cloud pane is desktop-owned: the demux strips the request Cookie
 and injects a Bearer refreshed off the OS-held jar, so a pane never runs its
 own `/auth/refresh` (it can't — no cookie); a 401 that reaches the pane means
-the desktop's refresh already failed, and recovery is driven from the shell
-(`cloud:auth-expired` → re-login → reload). The Browser-Live (CDP) pane
+the cloud refused the desktop's session — or the desktop holds none: the OS
+keychain answered that nothing is stored — and recovery is driven from the
+shell (`cloud:auth-expired` → re-login → reload). A renewal the cloud could
+not serve is answered `503 {"error":"session renewal unavailable"}` instead:
+the session stands, the desktop presents its token again at once, and the
+pane's failure wakes the background refresh loop so its floor-bounded
+retries follow it. A keychain the desktop could not READ — a locked keyring,
+a dismissed unlock prompt, a Secret Service not up yet — is answered
+`503 {"error":"keychain locked: unlock your system keychain to use this connection","error_code":"keychain_locked"}`
+instead, never as a sign-out: the stored session is kept, and the keychain
+is asked again on a back-off (15 s, doubling to 4 minutes) six times, then
+only when a user action asks — a pane request carrying
+`X-Iterion-Keychain-Retry: 1` (the pane's own retry on that screen), a
+sign-in, or a sign-out still held, whose presentations keep asking on the
+back-off past that count. Every read of a locked keyring is one OS unlock
+prompt. The pane's "Sign out" (`POST /auth/logout`) crosses the same
+tunnel, which presents the jar's refresh token (the pane holds none) and
+clears the jar and its keychain entry only once the cloud answered 2xx — a
+204 carrying `X-Iterion-Logout: other-session` signed nothing out (the
+pane named another session than this connection's): the mark the ask
+wrote before the wire is dropped again, the entry is rewritten without
+it, and the jar keeps its token; any other answer, or none, keeps the
+token — the only thing that can still
+end the session — and the sign-out stands: the mark was written to the
+entry BEFORE the ask was sent, so a crash between the send and the answer
+leaves the ask standing on the entry instead of lost, the jar presents no
+access token and renews nothing, the background loop presents the sign-out
+instead (back-off to 5 minutes) until a 2xx, and the mark travels with the
+keychain entry, so a restart does not adopt the session either. A new
+sign-in reads the connection's keychain entry BEFORE the cloud mints its
+session — a sign-in whose entry cannot be read is refused before anything
+is minted, so a refused read leaves nothing minted, and a minted session
+whose sign-in then cannot land is revoked (a logout over the cloud, whose
+failure mode is a cloud that does not confirm — the keychain is not asked
+anything); a revoke that itself fails
+(the cloud does not confirm the logout) leaves the session live until the
+refresh TTL, and the log says so — and it seeds the jar the connection
+registry already hands its pane
+(one jar per connection: the replaced jar retires, its writes stand down,
+and the entry has a single writer). A pending sign-out is presented first:
+confirmed, it clears; not confirmed, its token stays in the connection's
+keychain entry beside the new session and the loop keeps presenting it
+until a 2xx. A sign-out held in memory while the keychain was locked is
+bound to the entry, not to a token: the next read adopts it, and it
+presents only the token it named — never a token a sign-in wrote after the
+hold. Removing a connection presents what it owes first (the pending mark,
+the held sign-outs) and deletes the entry only then; when a presentation
+cannot be made, the removal is refused and names why. Closing a pane
+obeys the same rule: a hold the jar owes that the keychain entry does not
+carry is written to the entry first, and a write that still fails is
+presented — confirmed, the pane closes clean; not confirmed, the close is
+refused and names the hold. While a
+sign-out stands, a pane request reaches the cloud with no credential and is
+answered 401. The pane also says the sign-out is not confirmed and offers
+to sign out again; it asks the shell to reconnect only once a sign-out is
+confirmed. A keychain that could not be read answers
+`503 {"error":"sign-out unavailable: the stored session could not be read; this connection uses it no more and the sign-out is sent once the keychain answers"}`
+without contacting the cloud, and holds that pending sign-out in memory
+until the first presentation whose keychain read answers writes it: a
+restart before that loses it. A refresh still in flight when the jar is
+signed out — confirmed or held — does not sign it back in: the loop
+presents the held sign-out instead of asking for a sign-in. Every entry
+write runs under the jar's write lock with the epoch re-checked inside it,
+so a refresh that passed its check before the hold can never write the
+keychain after it. A refresh REFUSED for a token the jar no longer holds —
+the session was replaced under it — is not an expiry: the jar keeps the
+replaced session's entry and the loop renews on; only a refusal naming the
+token still held clears the jar. The Browser-Live (CDP) pane
 resolves its WS through the same `_ws/*` path as every other pane, so it
 works for a local pane; a cloud CDP pane additionally needs the CDP endpoint
 to accept the `?ticket=` WS credential (follow-up).
@@ -213,7 +279,7 @@ flips the right CGO/cross flags).
 | `cmd/iterion-desktop/daemon_spawn.go` + `daemon_discovery.go` | Per-project studio daemon: spawn (logs to `~/.iterion/daemons/<key>.log`) + registry discovery, so a GUI pane attaches to a running `iterion studio` daemon |
 | `cmd/iterion-desktop/cloud.go` + `cloud_client.go` + `connections.go` | Multi-connection workspace: cloud-connection bindings + per-account token jar, and per-connection iframe panes served at `/x/<connID>/` |
 | `cmd/iterion-desktop/config.go` | User config (no build tag — testable) |
-| `cmd/iterion-desktop/keychain.go` | go-keyring wrapper |
+| `cmd/iterion-desktop/keychain.go` | go-keyring wrapper (no build tag — testable): nothing stored reads as empty, a failed read as an error |
 | `cmd/iterion-desktop/external_cli.go` | claude/codex/git detection |
 | `cmd/iterion-desktop/path_fix_darwin.go` | macOS PATH fix |
 | `cmd/iterion-desktop/path_fix_other.go` | No-op on non-darwin |

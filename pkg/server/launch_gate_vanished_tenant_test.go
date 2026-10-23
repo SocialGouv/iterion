@@ -118,7 +118,7 @@ func TestPATIdentity_DegradedTeamReadRefusesInsteadOfDroppingOrgScope(t *testing
 	}); err != nil {
 		t.Fatalf("seed membership: %v", err)
 	}
-	authed := auth.WithIdentity(ctx, auth.Identity{UserID: "u1", Email: "u1@x", TeamID: "t1", Role: identity.RoleMember})
+	authed := auth.WithIdentity(ctx, auth.Identity{UserID: "u1", Email: "u1@x", TeamID: "t1", Role: identity.RoleMember, Credential: auth.CredentialAccessToken})
 	_, plaintext := createPAT(t, s, authed, `{"name":"ci"}`)
 
 	degrade.Store(true)

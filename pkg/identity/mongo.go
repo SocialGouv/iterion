@@ -227,6 +227,9 @@ func userPatchFilter(id string, p UserPatch) bson.M {
 		}
 		filter["status"] = bson.M{"$nin": blocked}
 	}
+	if p.IfPasswordHash != nil {
+		filter["password_hash"] = *p.IfPasswordHash
+	}
 	return filter
 }
 
@@ -285,12 +288,18 @@ func userPatchSet(p UserPatch, at time.Time) bson.M {
 // path only. A store error from that read propagates: it is never flattened
 // into either verdict.
 func (s *MongoStore) userPatchMiss(ctx context.Context, id string, p UserPatch) error {
-	if len(p.IfNotStatus) == 0 {
+	if !p.hasPrecondition() {
 		return ErrNotFound
 	}
-	if _, err := s.GetUser(ctx, id); err != nil {
+	u, err := s.GetUser(ctx, id)
+	if err != nil {
 		return err
 	}
+	if err := p.precondition(u); err != nil {
+		return err
+	}
+	// The row read back admits the write the filter refused: it moved
+	// between the two reads. The refusal stands, under its broadest name.
 	return ErrUserStatusChanged
 }
 
@@ -677,6 +686,78 @@ func (s *MongoStore) ListOIDCLinksByUser(ctx context.Context, userID string) ([]
 
 func (s *MongoStore) DeleteOIDCLink(ctx context.Context, provider, providerUserID string) error {
 	return mongoutil.DeleteOneChecked(ctx, s.oidcLinks, bson.M{"provider": provider, "provider_user_id": providerUserID}, ErrNotFound, "identity: delete oidc link")
+}
+
+// DeleteSessionOIDCLinks removes the SSO identity links a signed-in session
+// wrote (SessionLineage set), all of them or one lineage's — with the
+// keep-one rule the memory twin runs: an account with no password of which
+// EVERY link matches keeps its OLDEST link, so the cleanup cannot lock its
+// owner out of an account that signs in through SSO only.
+func (s *MongoStore) DeleteSessionOIDCLinks(ctx context.Context, userID, lineageID string) (int64, error) {
+	if userID == "" {
+		return 0, errors.New("identity: delete session oidc links: no user id")
+	}
+	filter := bson.M{"user_id": userID, "session_lineage": bson.M{"$exists": true, "$ne": ""}}
+	if lineageID != "" {
+		filter = bson.M{"user_id": userID, "session_lineage": lineageID}
+	}
+	candidates, err := s.oidcLinks.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("identity: count the session oidc links of user %s: %w", userID, err)
+	}
+	if candidates == 0 {
+		return 0, nil
+	}
+	deleteFilter := filter
+	total, err := s.oidcLinks.CountDocuments(ctx, bson.M{"user_id": userID})
+	if err != nil {
+		return 0, fmt.Errorf("identity: count the oidc links of user %s: %w", userID, err)
+	}
+	if total == candidates {
+		// Every link the removal matches: the account may be left with none.
+		if u, err := mongoutil.FindOne[User](ctx, s.users, bson.M{"_id": userID}, ErrNotFound, "identity: get user"); err == nil && u.PasswordHash == "" {
+			kept, err := s.oldestOIDCLink(ctx, filter)
+			if err != nil {
+				return 0, err
+			}
+			if kept != nil {
+				// The candidates' own scope, minus the kept link: the account
+				// is in the filter already, and the kept link is named by its
+				// own provider and subject.
+				deleteFilter = bson.M{
+					"user_id":         userID,
+					"session_lineage": filter["session_lineage"],
+					"$nor":            []bson.M{{"provider": kept.Provider, "provider_user_id": kept.ProviderUserID}},
+				}
+			}
+		} else if err != nil && !errors.Is(err, ErrNotFound) {
+			return 0, fmt.Errorf("identity: read the account of the oidc links of user %s: %w", userID, err)
+		}
+	}
+	res, err := s.oidcLinks.DeleteMany(ctx, deleteFilter)
+	if err != nil {
+		return 0, fmt.Errorf("identity: delete the session oidc links of user %s: %w", userID, err)
+	}
+	return res.DeletedCount, nil
+}
+
+// oldestOIDCLink answers the oldest link matching filter (created_at, then
+// provider and subject for ties), or nil.
+func (s *MongoStore) oldestOIDCLink(ctx context.Context, filter bson.M) (*OIDCLink, error) {
+	link, err := mongoutil.FindOne[OIDCLink](ctx, s.oidcLinks, filter, ErrNotFound,
+		"identity: find the oldest session oidc link",
+		options.FindOne().SetSort(bson.D{
+			{Key: "created_at", Value: 1},
+			{Key: "provider", Value: 1},
+			{Key: "provider_user_id", Value: 1},
+		}))
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &link, nil
 }
 
 // duplicatePoolHolders reports the teams that share a non-empty

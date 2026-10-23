@@ -132,6 +132,9 @@ func loadEnv(cfg *Config) error {
 	if err := lookupDuration("ITERION_REFRESH_TTL", &cfg.Auth.RefreshTTL); err != nil {
 		return err
 	}
+	if err := lookupDuration("ITERION_REFRESH_REUSE_GRACE", &cfg.Auth.RefreshReuseGrace); err != nil {
+		return err
+	}
 	if v, ok := lookup("ITERION_BOOTSTRAP_ADMIN_EMAIL"); ok {
 		cfg.Auth.BootstrapAdminEmail = strings.ToLower(strings.TrimSpace(v))
 	}

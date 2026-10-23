@@ -116,6 +116,11 @@ type Store interface {
 	GetOIDCLink(ctx context.Context, provider, providerUserID string) (OIDCLink, error)
 	ListOIDCLinksByUser(ctx context.Context, userID string) ([]OIDCLink, error)
 	DeleteOIDCLink(ctx context.Context, provider, providerUserID string) error
+	// DeleteSessionOIDCLinks deletes the links of userID a signed-in session
+	// wrote (OIDCLink.SessionLineage): every one when lineageID is empty,
+	// only that lineage's otherwise. A link an SSO sign-in wrote itself is
+	// never selected. It answers how many it deleted.
+	DeleteSessionOIDCLinks(ctx context.Context, userID, lineageID string) (int64, error)
 }
 
 // Page is a simple offset/limit cursor used by list endpoints.

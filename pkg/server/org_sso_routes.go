@@ -23,9 +23,11 @@ import (
 // secrets, admin-gated, audited.
 func (s *Server) registerOrgSSORoutes() {
 	s.mux.Handle("GET /api/orgs/{id}/sso/providers", s.requireAuth(http.HandlerFunc(s.handleListOrgSSOProviders)))
-	s.mux.Handle("POST /api/orgs/{id}/sso/providers", s.requireAuth(http.HandlerFunc(s.handleCreateOrgSSOProvider)))
-	s.mux.Handle("PATCH /api/orgs/{id}/sso/providers/{provider_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateOrgSSOProvider)))
-	s.mux.Handle("DELETE /api/orgs/{id}/sso/providers/{provider_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteOrgSSOProvider)))
+	// The writes change how the org's accounts sign in: they ask the
+	// chokepoint first (gateDerivation).
+	s.mux.Handle("POST /api/orgs/{id}/sso/providers", s.requireAuth(s.gateDerivation(auth.ChangeSignIn, s.handleCreateOrgSSOProvider)))
+	s.mux.Handle("PATCH /api/orgs/{id}/sso/providers/{provider_id}", s.requireAuth(s.gateDerivation(auth.ChangeSignIn, s.handleUpdateOrgSSOProvider)))
+	s.mux.Handle("DELETE /api/orgs/{id}/sso/providers/{provider_id}", s.requireAuth(s.gateDerivation(auth.ChangeSignIn, s.handleDeleteOrgSSOProvider)))
 	s.mux.Handle("POST /api/orgs/{id}/sso/providers/{provider_id}/test", s.requireAuth(http.HandlerFunc(s.handleTestOrgSSOProvider)))
 }
 

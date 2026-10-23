@@ -294,8 +294,7 @@ func (s *Server) handleMarketplaceInstall(w http.ResponseWriter, r *http.Request
 		// Plugins land in ~/.iterion/plugins/ (host-global, affects every
 		// workspace this binary serves) — super-admin only. No workspace
 		// is required for this branch.
-		if !s.isSuperAdmin(r) {
-			s.httpErrorFor(w, r, http.StatusForbidden, "marketplace: plugin install requires a super-admin")
+		if !s.platformAuthorityStands(w, r) {
 			return
 		}
 		name, err := plugin.InstallWith(r.Context(), plugin.InstallOptions{
@@ -401,8 +400,7 @@ func (s *Server) handleMarketplaceUninstall(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if marketplace.EffectiveKind(*entry) == marketplace.KindPlugin {
-		if !s.isSuperAdmin(r) {
-			s.httpErrorFor(w, r, http.StatusForbidden, "marketplace: plugin uninstall requires a super-admin")
+		if !s.platformAuthorityStands(w, r) {
 			return
 		}
 		// Plugins install under their manifest name (entry.Name), not

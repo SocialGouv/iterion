@@ -26,8 +26,9 @@ func newOrgTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("signer: %v", err)
 	}
+	mem := identity.NewMemoryStore()
 	svc, err := auth.NewService(auth.Config{
-		Store:      identity.NewMemoryStore(),
+		Store:      mem,
 		Sessions:   auth.NewMemorySessionStore(),
 		Signer:     signer,
 		SignupMode: auth.SignupOpen,
@@ -36,13 +37,20 @@ func newOrgTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("auth service: %v", err)
 	}
+	// The super-admin behind superAdminCtx(): a claim is re-read from the
+	// account at the identity (revokeSuperAdminClaim), so the row exists.
+	if _, err := mem.CreateUser(context.Background(), identity.User{
+		ID: "admin", Email: "admin@fixture", Status: identity.UserStatusActive, IsSuperAdmin: true,
+	}); err != nil {
+		t.Fatalf("seed the fixture super-admin: %v", err)
+	}
 	s := New(Config{}, iterlog.New(iterlog.LevelError, nil))
 	s.authSvc = svc
 	return s
 }
 
 func superAdminCtx() context.Context {
-	return auth.WithIdentity(context.Background(), auth.Identity{UserID: "admin", IsSuperAdmin: true})
+	return auth.WithIdentity(context.Background(), auth.Identity{UserID: "admin", IsSuperAdmin: true, Credential: auth.CredentialAccessToken})
 }
 
 func orgReq(ctx context.Context, method, path, body, id string) *http.Request {

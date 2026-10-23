@@ -44,6 +44,309 @@ issued access token (users get a fresh one via the next refresh
 within 30 days; refresh tokens stored in Mongo are unaffected and can
 be force-revoked by clearing the `sessions` collection).
 
+`ITERION_REFRESH_REUSE_GRACE` (a Go duration, YAML
+`auth.refresh_reuse_grace`, default `30s`) is the refresh-token reuse
+grace window. A refresh rotates the token it is presented and hands out
+its successor; the rotated token presented again within the window
+receives that same successor instead of reading as reuse — what two
+browser tabs, a desktop retrying an answer it lost, or two concurrent
+refreshes of one token present. Outside the window, a rotated token
+presented again is reuse: its lineage — every session rotated from the
+same login, the legitimate holder's and a thief's alike — is revoked, and
+the account's other logins keep theirs. The window is measured on the
+database's clock (`$$NOW` stamps the rotation, and the presentation is
+compared with the same clock, read from the primary whatever read
+preference `ITERION_MONGO_URI` names), so the replicas' clocks do not move
+it. `0` disables the window (every retired token presented again is
+reuse). Keep it at the default or above: it covers the shipped clients'
+retries of an answer they lost — the studio presents the token again 2, 7
+and 17 s after its first attempt failed, the desktop at once, within its
+30-second retry deadline — and a window shorter than those turns them into
+reuse. A later presentation can still fall past it: when the desktop's own
+retry also loses its answer after the server handed the successor out, its
+next presentation comes from its background loop 15 s or more later, can
+come more than 30 s after the rotation, and then reads as reuse, which
+signs that device out. A value at or above `ITERION_REFRESH_TTL` is
+refused at boot, and one above 5 minutes is logged as a warning. The price of the window: a stolen refresh token
+replayed within it receives the same successor the legitimate holder
+received — both then hold the same lineage, and the first rotated token
+either of them presents outside its window revokes that lineage.
+
+A successor counts as handed out once the refresh that writes it has
+checked it and claimed it (`delivered_at`), the last step before it
+answers; no refresh deletes a session it wrote. A rotation whose successor
+was handed to nobody — never written, or written and never claimed,
+whatever step failed after the rotation — leaves the retired token its
+lineage's only credential: the token's next presentation writes or claims
+that successor, if it comes within five minutes of the rotation (the
+window instead, when that is longer) and before the token expires — an
+outage that strikes after a rotation costs no session when the client
+presents its token again within those five minutes, and signs that one
+device out when it comes back later. A refresh is bounded at 20 seconds as
+a whole and each of its session-store steps at 5 seconds: a store slower
+than that answers the refresh with a `5xx`, without rotating the token
+when the failure precedes the rotation, and leaving the rotation to the
+token's next presentation within those five minutes when it follows it; a
+claim whose answer is lost is a successor handed out, redelivered within
+the window only. A refusal that revokes waits for its revocation's record,
+at most 5 seconds — reuse detection's, or the retirement of the presented
+session of an account that is disabled or pending a password change; the
+pass over the other sessions runs after the answer.
+
+A sign-out ends the lineage of the token it presents and never re-opens
+its window; one whose session read or revocation record fails answers
+`500` and leaves the cookies, for the client to present the token again. A
+sign-out may name the session it means (`?lineage=`,
+[REST API](cloud-rest-api.md)): a token of another session then signs
+nothing out.
+
+Every revocation — a sign-out, reuse detection, "sign out everywhere", a
+password change, a password reset (by email or by an administrator), the
+rotation an administrator forces, an administrator's disable — first
+records itself in `session_revocations`: a revoked lineage, or the
+account's session generation raised. That record is the revocation's
+commit point, the one write it waits for and answers from: from then on
+every session it covers is refused at its next refresh, and every access
+token minted for one of them at its next derivation (below). A pass then
+marks the covered sessions that are still live as revoked; it runs after
+the answer, retried, and its cost follows the live sessions, not the
+account's refresh history — a pass that fails, or that a restart cuts,
+changes no answer, and the next revocation of the same lineage or account
+runs it again. The records are kept for good (one small row per
+signed-out lineage and per account signed out everywhere, never reaped): a
+record is what covers a session its pass did not reach, for as long as
+that session lives — and every successor is checked against the records
+before it is delivered and again once it is claimed, so a refresh racing
+the revocation cannot outlive it; a restore of `sessions` brings
+`session_revocations` with it.
+
+A password change, a password reset (by email or by an administrator) and
+the rotation an administrator forces run one at a time per account (a
+second waits up to 20 seconds for the first, then answers `409`
+`credential_change_busy`), end every session of the account before the new
+credential lands, and again once it landed: a sign-in reads the account's
+session generation before it records itself under the password it
+verified, and a password replaced since refuses it, so a sign-in with the
+old password that raced the change is covered too. A failure before the
+new password is committed answers `500` and leaves the password — and an
+emailed reset's link — as it was; the sessions may already have ended,
+since a record can land even when its answer is lost. Once the new
+password is committed, a failure answers `409` `password_changed_sign_in`:
+the password is changed, the link spent, the account's earlier sessions
+ended, and the user signs in with the new password — and so does a change
+an administrator's disable lands under: the change opens its session only
+for an account still active once its last revocation is recorded, so a
+re-enable later revives no session opened while the account was disabled.
+A commit whose answer is lost (a request cut, a connection dropped) may
+have landed: the revocation that follows a commit runs anyway, the request
+answers `500`, and an emailed reset's link stays spent. An account an administrator sets pending a
+password change refreshes nothing and mints nothing; a password sign-in is
+sent to the forced change, and an SSO sign-in is refused until the
+password is changed — by the emailed reset for an account that signs in
+through SSO only. An administrator's disable lands the status first, then
+ends every session, revokes every personal access token of the account and
+removes every SSO identity a signed-in session connected from the account
+settings; a revocation that fails there answers `500` with the account
+disabled, and the console's retry revokes. "Sign out everywhere" does the
+same two things too — revokes every personal access token of the account
+and removes every SSO identity a signed-in session connected — the
+compromise response, and the one way to end a credential minted from a
+session before its revocation; a step that fails after the record answers
+`503` `signout_cleanup_failed`, and the user signs in again and repeats the
+request — every step is idempotent
+([cloud-user §7](cloud-user.md)). The SSO identity the account was created
+with, or first signed in with through SSO, stays; and the removal never
+leaves an account without a sign-in method it had: an account with no
+password whose every remaining identity was session-written keeps its
+oldest one, so the cleanup cannot lock
+its owner out of an account that signs in through SSO only (an
+administrator sees the kept identity in the account's file, and the
+account owner disconnects it once a password is set). Disconnecting the LAST sign-in
+method of an account with no password is refused outright (`409`
+`last_sign_in_method`): another provider or a password comes first. A
+password change and a reset keep the
+tokens and the identities, so a CI token survives a password change; a
+reuse detection removes the SSO identities the reused lineage connected;
+a sign-out keeps them.
+
+An access token names the session it was minted for, and stays a
+stateless credential: it authenticates every request until its own expiry
+(the access TTL, 15 minutes by default), whatever happened to its session
+since. Only the routes that mint a credential, grant or exercise platform
+authority, or change or remove a credential first check the credential
+presented to them (`auth.Service.CheckDerivation`):
+
+- the team and org switches, and the creation of a personal access token
+  (asked again once the token exists);
+- the WebSocket ticket — at its mint and again at its redemption;
+- the SSO link from the account settings — at its start and in its
+  callback, before and again after the link is written;
+- the removal of an SSO identity, the revocation of a personal access
+  token, the in-app password change and "sign out everywhere";
+- how an org's accounts sign in: its SSO providers and its verified email
+  domains (create, update, delete, verify);
+- every platform-admin route (`/api/admin/…`, the plugin routes — enable,
+  disable, install, uninstall, and a marketplace plugin's install and
+  uninstall, and the marketplace moderation of a public or instance-wide
+  entry), which reads the super-admin flag from the account as it stands,
+  not from the token: an administrator's demotion takes effect there at
+  once;
+- the platform acts outside the admin prefix: placing an existing account
+  in an organisation (`PUT /api/orgs/{id}/members/{user_id}`), writing or
+  deleting the instance-wide (`global`) memory space, and revoking another
+  account's personal access token;
+- the desktop SSO exchange, which hands out no session revoked since the
+  IdP callback.
+
+The super-admin claim itself is re-derived where every request's identity
+is established, before any route runs: a token that claims the flag keeps
+it only while the credential stands and the account still is a
+super-admin, so a demotion — or a revocation — takes the platform
+authority away at once, everywhere: the admin routes, and the
+super-admin's reach over every team's and org's routes
+(`auth_authz`'s escape hatches), and every route above that reads the
+flag. A read of the account that fails answers an explicit `5xx` — the
+request is never judged on an unchecked claim. Everything else the token
+of a revoked or demoted super-admin does in its remaining minutes is
+ordinary access and persists, as below.
+
+There, it refuses the access token of a session signed out or
+reuse-revoked, of an account signed out everywhere, whose password
+changed, disabled or pending a password change, and an access token that
+names no session asking for an SSO link; it refuses a personal access token
+revoked, expired or gone, and any personal access token asking for a
+credential of its own account — a switch, another token, an SSO link, a
+temporary password (`403`: a token is pinned to its team and its own
+expiry); and what a route mints for the same use never outlives the
+presented credential — a switched access token expires when the presented
+one does, and a WebSocket ticket opens no WebSocket past it.
+Everything else the access token of a revoked session does in its
+remaining minutes is done and persists: it reads what its account may
+read, launches, steers and cancels runs, edits bots and configurations, and
+creates team and org state — a webhook and its token, a share link, an
+invitation, a membership or a role, a team secret, an API key, a forge or
+OAuth connection — that outlives it, listed and revocable in the team's,
+the org's or the account's settings. A WebSocket opened before the
+revocation is asked again: every envelope that changes a run (cancel,
+pause, answer, queue a message or cancel a queued one, bump a loop, raise a
+budget) checks the standing of the credential the socket was opened with —
+its account, its session, a personal access token's row, its expiry left
+out — AND re-derives the scope the upgrade resolved once: the run's team,
+the caller's standing there, the super-admin reach — read from the account
+as it stands now. A refused credential answers an error and closes the
+socket (close code `1008`, a reason starting `credential_refused`); a
+lost scope — a
+membership removed, a demotion — answers `forbidden` on that envelope and
+leaves the socket's reads alone; a read that does not complete refuses
+that envelope (`standing_unavailable`, `scope_unavailable`) and keeps the
+socket. A run socket that only reads stops at
+its absolute lifetime — 2 hours, `ITERION_RUN_WS_MAX_LIFETIME` — and its
+client opens another, presenting a credential again (close code `1000`, a
+reason starting `lifetime_reached`). The post-mortem shell and the Browser-Live CDP
+bridge ask the same question every 30 seconds while they are open
+(`ITERION_RUN_SHELL_WATCH_PERIOD`, `ITERION_RUN_BROWSER_STANDING_PERIOD`):
+the standing of the credential AND the scope the upgrade resolved, read
+from the account as it stands now. A refused credential closes either
+surface (close code `1008`, a reason starting `credential_refused`); a
+scope the
+caller no longer holds — a membership removed, a demotion, a run whose
+team is gone — closes it too (close code `1008`, a reason starting
+`scope_lost`): every such reason is its token followed by the cause,
+never the bare token, and neither surface has an envelope to refuse, so a
+lost scope closes it, the shell saying so on an error frame before the
+close. A standing read that does not complete is no verdict: it keeps the
+surface open. The bridge counts its incomplete reads and closes after
+three consecutive ones (close code `1008`, a reason starting
+`standing_unavailable`)
+instead of driving the run's Chromium on a credential nobody could
+re-check; the shell counts nothing and has no envelope to refuse — it
+stays open until its idle or lifetime cap ends it. The duration knobs honour a stated
+override, and one they cannot parse or stand behind a non-positive value
+is named in the boot log — never silently replaced
+([environment variables](environment-variables.md)). A session written before
+lineages were recorded is its own root, and a retired one presented again
+names no family: its reuse revokes the whole account, as reuse detection
+did before.
+
+`sessions` stores no refresh token: the successor is re-derived from the
+presented token under a key derived from `ITERION_JWT_SECRET`, so rotating
+that secret also ends the window for the tokens rotated just before. A
+plaintext refresh token does rest in `desktop_sso_tickets`: a desktop SSO
+ticket carries the whole minted login, its refresh token in plaintext,
+until the desktop redeems it or two minutes pass; an unredeemed ticket
+then stays in the collection until Mongo's TTL monitor reaps it (a pass
+every 60 seconds, later under load), its insert rests in the oplog for
+the oplog's retention window, and every backup taken while it exists
+holds it too — the whole-database `mongodump --oplog` archives of
+[cloud-backup.md](cloud-backup.md), kept 7 days, 35 days and 13 months
+under its recommended retention.
+The ticket's expiry does not end the session it carries: a refresh token
+read from any of those copies stays usable until it is rotated — the
+desktop's first refresh of a redeemed ticket's session retires it, and the
+copy presented after that is reuse, which ends the session — or its
+session is signed out, or `ITERION_REFRESH_TTL` passes; an unredeemed
+ticket's session is never rotated, so its copy is usable for the whole TTL
+unless its account is signed out everywhere — treat those archives as
+credential stores. Ending the session with its ticket is tracked in
+[#2635](https://github.com/SocialGouv/iterion/issues/2635).
+
+Upgrading from a release without session lineages (before #1668) is a
+rollout constraint: pods of both releases serve the same `sessions` while
+a rolling update overlaps them (the chart's default, `server.strategy`
+RollingUpdate with `maxSurge: 100%`). For the sessions an old pod touches
+during the overlap, guarantees above do not hold:
+
+- a refresh served by an old pod writes a successor outside any lineage,
+  so a reuse a new pod detects later revokes the lineage without that
+  successor, which stays live — it and every successor rotated from it,
+  each refresh extending it by `ITERION_REFRESH_TTL` — for as long as it
+  keeps being refreshed, until its account is signed out everywhere;
+- a sign-out served by an old pod moves the retired token's `revoked_at`
+  and keeps its rotation record, so a new pod still completes that
+  token's successor afterwards;
+- "sign out everywhere", a password change or a reset served by an old
+  pod revokes the sessions it finds and records nothing, so it reaches
+  neither a successor a new pod writes afterwards nor a refresh of a new
+  pod racing it;
+- after a "sign out everywhere" served by a new pod, a session an old pod
+  writes is born under generation zero, refused at its first refresh on a
+  new pod;
+- a credential an old pod mints skips the derivation checks above — a
+  personal access token presented there still switches team and mints
+  another token, a revoked session's access token still mints one — an old
+  pod's platform-admin and credential-removal routes check nothing but the
+  token, and a "sign out everywhere" an old pod serves revokes no personal
+  access token and removes no SSO identity;
+- an access token an old pod mints names no session: a new pod checks it
+  for its account alone, and refuses it an SSO link (`403`);
+- an SSO identity an old pod links records no session, and neither does one
+  linked before this release: "sign out everywhere" and a disable keep it,
+  like the identity an account was created with. Review the identities
+  connected to the accounts used during the overlap (the account's file in
+  the console lists them): only the ACCOUNT OWNER can remove one — Account
+  → Connected SSO, with a live session — except an account's last sign-in
+  method, which the server refuses to remove until another provider or a
+  password is in place; there is no admin route that removes another
+  account's identity. For an identity nobody can account for, disable the
+  account and reset its password: the owner then signs in with the
+  temporary password and disconnects the identity, and an account with a
+  password loses every session-written identity at the next "sign out
+  everywhere".
+
+A rollback to a release before #1668 runs the old code over the new rows:
+they keep working as plain sessions, and every guarantee of this section
+that rests on the records ends with it. Upgrade with
+`server.strategy: {type: Recreate, rollingUpdate: null}` — Helm merges the
+chart's default `rollingUpdate` block into a `type: Recreate` given alone,
+and Kubernetes refuses a Recreate strategy that carries one — so no old
+pod serves once a new one does, at the cost of the rollout's downtime; or
+accept those effects for the overlap and sign the accounts used during it
+out everywhere afterwards: those with a `sessions` row the overlap wrote
+without a `lineage`
+(`db.sessions.distinct("user_id", {lineage: {$exists: false}, issued_at: {$gte: <overlap start>}})`),
+and those an old pod revoked during it — on a small deployment, every
+account.
+
 ## 3. Bootstrap the first super-admin
 
 Set `ITERION_BOOTSTRAP_ADMIN_EMAIL=ops@example.com` on a fresh
@@ -169,6 +472,10 @@ First-time login behaviour depends on `ITERION_SIGNUP_MODE`:
   refused — the OIDC paths read no invitation token — and the callback
   redirects to `/login?sso_error=login_failed`; a GitHub login whose
   teams match a configured allow-list is admitted whatever the mode.
+  Whatever the mode, an SSO login of an account an administrator set
+  pending a password change is refused with
+  `/login?sso_error=password_change_required`, and the login page names
+  the exits.
   Invitations gate `POST /api/auth/register`, where the token must
   match the email.
 - `open`: the server auto-provisions a personal team and lets them

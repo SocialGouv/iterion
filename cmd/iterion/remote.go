@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -36,19 +38,25 @@ var remoteCmd = &cobra.Command{
 }
 
 var (
-	remoteToken    string
-	remoteEmail    string
-	remotePassword string
-	remoteAPIData  string
+	remoteToken     string
+	remoteEmail     string
+	remotePassword  string
+	remoteLoginTeam string
+	remoteAPIData   string
 )
 
 var remoteLoginCmd = &cobra.Command{
 	Use:   "login <url>",
 	Short: "Log in to a remote instance (browser by default; --token/--email for headless)",
 	Long: "Log in to a remote iterion instance and store a token under ~/.iterion.\n\n" +
-		"By default it opens your browser to authorize (you approve in the studio).\n" +
+		"By default it opens your browser to authorize (you approve in the studio),\n" +
+		"and the token is pinned to the team active in the studio at that moment.\n" +
 		"For headless use: --token <iap_…> (a personal access token), or --email <e>\n" +
-		"--password <p> (mints a CLI token for you).",
+		"--password <p> (mints a CLI token for you).\n\n" +
+		"--team <id> pins the minted token to a team, with --email. A token's team\n" +
+		"is fixed when it is minted, so this is how the CLI changes team: log in\n" +
+		"again. --team is refused with --token (that token's team is already set)\n" +
+		"and with the browser flow (the approval pins the studio's active team).",
 	Args: cobra.ExactArgs(1),
 	RunE: runRemoteLogin,
 }
@@ -61,11 +69,24 @@ func runRemoteLogin(cmd *cobra.Command, args []string) error {
 	cfg := cli.RemoteConfig{BaseURL: base}
 
 	token := remoteToken
+	// selfMinted marks a token this command made exist: only such a token has
+	// a server-side row to orphan when the login refuses it, and only it is
+	// known to belong to the instance at base.
+	selfMinted := false
+	team := strings.TrimSpace(remoteLoginTeam)
 	if token == "" {
 		token = os.Getenv("ITERION_TOKEN")
 	}
 	switch {
 	case token != "":
+		// A token already exists, and its team was fixed when it was minted:
+		// nothing here can move it, and pretending otherwise would store a
+		// credential whose scope is not the one asked for.
+		if team != "" {
+			return fmt.Errorf("--team cannot be used with --token: a token's team is fixed when it is minted.\n"+
+				"Pin a new one instead: `iterion remote login %s --email <you> --team %s`,\n"+
+				"or mint it in the studio (Account → Access tokens) and log in with that token", base, team)
+		}
 		// direct PAT, validated below
 	case remoteEmail != "":
 		pw := remotePassword
@@ -75,45 +96,196 @@ func runRemoteLogin(cmd *cobra.Command, args []string) error {
 		if pw == "" {
 			return fmt.Errorf("--email requires --password or ITERION_PASSWORD")
 		}
-		minted, err := cli.NewRemoteClientFor(cfg).LoginWithPassword(cmd.Context(), remoteEmail, pw, cliTokenName())
+		// The team the token is PINNED to is what gets persisted: `--team` takes
+		// a slug as well as a UUID, and the scope every later command sends is
+		// the one the mint pinned, not the argument as typed.
+		minted, pinned, err := cli.NewRemoteClientFor(cfg).LoginWithPassword(cmd.Context(), remoteEmail, pw, cliTokenName(), team)
 		if err != nil {
 			return err
 		}
-		token, cfg.Email = minted, remoteEmail
+		token, cfg.Email, selfMinted = minted, remoteEmail, true
+		cfg.TeamID = pinned
 	default:
+		if team != "" {
+			return fmt.Errorf("--team is not supported by the browser login: the approval pins the token to the team active in the studio.\n"+
+				"Switch to team %s in the studio and run `iterion remote login %s`,\n"+
+				"or log in headless: `iterion remote login %s --email <you> --team %s`", team, base, base, team)
+		}
 		minted, err := loginViaBrowser(cmd.Context(), base)
 		if err != nil {
 			return err
 		}
-		token = minted
+		token, selfMinted = minted, true
 	}
 
 	cfg.Token = token
-	client := cli.NewRemoteClientFor(cfg)
-	code, body, err := client.API(cmd.Context(), "GET", "/api/auth/me", nil)
+	answer, err := probeIdentity(cmd.Context(), base, token)
 	if err != nil {
 		return fmt.Errorf("reach %s: %w", base, err)
 	}
+	code := answer.code
 	if code == 401 || code == 403 {
 		return fmt.Errorf("the token was rejected by %s (HTTP %d)", base, code)
 	}
-	if code/100 != 2 {
-		return fmt.Errorf("%s: %w", base, &cli.APIError{Status: code, Method: "GET", Path: "/api/auth/me", Body: string(body)})
+	me, idErr := answer.identity(base)
+	// A token this command minted is known-good — the instance at base just
+	// issued it — so an identity it cannot read right now is its failure and
+	// not a verdict on the token, which would otherwise be thrown away with
+	// its row left behind on the server.
+	//
+	// A token the operator supplied (--token / ITERION_TOKEN) has no such row
+	// to orphan, and this probe is the only check the URL they typed ever
+	// gets: only an iterion identity — a 2xx whose JSON names the account —
+	// accepts it, so a typo'd host's 404 page, a proxy's 502, a static host
+	// answering its index page for every path or an unrelated API never
+	// becomes the credential every later `iterion remote` command sends there.
+	if idErr != nil && !selfMinted {
+		return tokenLoginRefusal(base, code, idErr)
 	}
 	if err := cli.SaveRemoteConfig(cfg); err != nil {
 		return err
 	}
-	var me struct {
-		User struct {
-			Email string `json:"email"`
-		} `json:"user"`
-	}
-	_ = json.Unmarshal(body, &me)
 	p, _ := cli.RemoteConfigPath()
 	out := cli.NewPrinter(cli.OutputHuman)
-	out.Line("Logged in to %s as %s", base, me.User.Email)
+	if idErr != nil {
+		if asIdentityRedirect(idErr) != nil {
+			// Not "right now": a redirect is where the API is served, and the
+			// next attempt meets the same one.
+			out.Line("Logged in to %s; the account could not be described: %v", base, idErr)
+		} else {
+			out.Line("Logged in to %s; the server could not describe the account right now (%v)", base, idErr)
+		}
+		out.Line("(token saved to %s)", p)
+		return nil
+	}
+	account := me.User.Email
+	if account == "" {
+		account = me.User.ID
+	}
+	out.Line("Logged in to %s as %s", base, account)
 	out.Line("(token saved to %s)", p)
 	return nil
+}
+
+// identityProbeTimeout bounds the login's identity probe, as the remote
+// client bounds every request.
+const identityProbeTimeout = 120 * time.Second
+
+// identityAnswer is what GET /api/auth/me answered the login's probe.
+type identityAnswer struct {
+	code     int
+	body     []byte
+	location string
+}
+
+// probeIdentity asks base who token belongs to (GET /api/auth/me). It follows
+// no redirect: a 3xx — an SSO proxy sending to its sign-in page, a host that
+// moved — is the probe's answer, and the token is never sent on to the
+// redirect's target.
+func probeIdentity(ctx context.Context, base, token string) (identityAnswer, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/auth/me", nil)
+	if err != nil {
+		return identityAnswer{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	hc := &http.Client{
+		Timeout:       identityProbeTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return identityAnswer{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return identityAnswer{}, fmt.Errorf("read GET /api/auth/me: %w", err)
+	}
+	return identityAnswer{code: resp.StatusCode, body: body, location: resp.Header.Get("Location")}, nil
+}
+
+// identity reads the answer as an iterion identity: a 2xx whose JSON body
+// names an account by id. Anything else is the error that says what came
+// back instead.
+func (a identityAnswer) identity(base string) (cli.RemoteMe, error) {
+	var me cli.RemoteMe
+	switch {
+	case a.code/100 == 3:
+		return me, &identityRedirect{code: a.code, base: base, location: a.location}
+	case a.code/100 != 2:
+		return me, &cli.APIError{Status: a.code, Method: "GET", Path: "/api/auth/me", Body: string(a.body)}
+	}
+	if err := json.Unmarshal(a.body, &me); err != nil {
+		return me, fmt.Errorf("HTTP %d GET /api/auth/me answered no iterion identity (%v)", a.code, err)
+	}
+	if me.User.ID == "" {
+		return me, fmt.Errorf("HTTP %d GET /api/auth/me answered no iterion identity (no user id)", a.code)
+	}
+	return me, nil
+}
+
+// identityRedirect is the answer of a probe whose GET /api/auth/me was
+// redirected. An iterion instance answers that route itself, so the redirect
+// is a front in the way: the URL the operator typed is not the one that
+// serves the API. The message names the target's own base URL, because a
+// login pinned to THAT is the one every later command can use — the probe
+// follows nothing and the token is not sent on.
+//
+// A target on the same base (a trailing-slash normaliser, a front rewriting
+// the path) names no other instance to try, so it is reported as what it is.
+type identityRedirect struct {
+	code     int
+	base     string
+	location string
+}
+
+func (e *identityRedirect) Error() string {
+	if origin := redirectOrigin(e.base, e.location); origin != "" {
+		return fmt.Sprintf("HTTP %d GET /api/auth/me redirects to %q: if that is this iterion instance, log in to %s instead (the token was not sent there)", e.code, e.location, origin)
+	}
+	return fmt.Sprintf("HTTP %d GET /api/auth/me redirects to %q, not an iterion API answer (the token was not sent there)", e.code, e.location)
+}
+
+// asIdentityRedirect extracts an *identityRedirect from err, or nil.
+func asIdentityRedirect(err error) *identityRedirect {
+	var ir *identityRedirect
+	if errors.As(err, &ir) {
+		return ir
+	}
+	return nil
+}
+
+// redirectOrigin is the scheme://host of a redirect's target, resolved
+// against base, when it names an instance OTHER than base. Empty when the
+// target is on base itself (nothing else to log in to) or unparseable.
+func redirectOrigin(base, location string) string {
+	if location == "" {
+		return ""
+	}
+	b, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	t, err := b.Parse(location)
+	if err != nil || t.Scheme == "" || t.Host == "" {
+		return ""
+	}
+	origin := t.Scheme + "://" + t.Host
+	if origin == b.Scheme+"://"+b.Host {
+		return ""
+	}
+	return origin
+}
+
+// tokenLoginRefusal is the error of a login with a token the operator
+// supplied that the probe did not accept. It says that nothing was saved,
+// and — for a server error, which a later attempt may not meet — to retry.
+func tokenLoginRefusal(base string, code int, idErr error) error {
+	if code/100 == 5 {
+		return fmt.Errorf("%s: %w — nothing was saved; retry when the server answers", base, idErr)
+	}
+	return fmt.Errorf("%s: %w — nothing was saved", base, idErr)
 }
 
 // loginViaBrowser runs the loopback browser flow: start a local server, open the
@@ -273,6 +445,7 @@ func init() {
 	remoteLoginCmd.Flags().StringVar(&remoteToken, "token", "", "Personal access token (iap_…) — or set ITERION_TOKEN")
 	remoteLoginCmd.Flags().StringVar(&remoteEmail, "email", "", "Email for headless password login (mints a CLI token)")
 	remoteLoginCmd.Flags().StringVar(&remotePassword, "password", "", "Password (or ITERION_PASSWORD); used with --email")
+	remoteLoginCmd.Flags().StringVar(&remoteLoginTeam, "team", "", "Pin the minted token to this team id (with --email)")
 	remoteAPICmd.Flags().StringVar(&remoteAPIData, "data", "", "Request body JSON (literal, @file, or @- for stdin)")
 	remoteCmd.AddCommand(remoteLoginCmd, remoteLogoutCmd, remoteStatusCmd, remoteAPICmd, remoteOpenAPICmd, remoteRoutesCmd)
 	rootCmd.AddCommand(remoteCmd)

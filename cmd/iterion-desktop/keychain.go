@@ -1,8 +1,12 @@
-//go:build desktop
-
 package main
 
+// keychain.go carries NO build tag: it imports go-keyring, not Wails, so the
+// contract the cloud token jar rests on (Get: nothing stored is ("", nil), an
+// error is a failed read) is unit-tested against go-keyring's own providers.
+
 import (
+	"errors"
+
 	"github.com/zalando/go-keyring"
 )
 
@@ -40,11 +44,17 @@ type Keychain struct{}
 // individual operations.
 func NewKeychain() *Keychain { return &Keychain{} }
 
-// Get returns the stored secret for `key`, or an error. A missing key is
-// returned as the underlying go-keyring "secret not found" error — callers
-// typically treat this as an empty value (no shadow injection).
+// Get returns the stored secret for `key`: ("", nil) when nothing is stored
+// under it (go-keyring's ErrNotFound), an error only when the keychain could
+// not be read — a locked collection, a dismissed unlock prompt, a Secret
+// Service that is not running. The cloud token jar relies on the difference
+// (refreshStore): a failed read must not look like a missing session.
 func (*Keychain) Get(key string) (string, error) {
-	return keyring.Get(keychainService, key)
+	v, err := keyring.Get(keychainService, key)
+	if errors.Is(err, keyring.ErrNotFound) {
+		return "", nil
+	}
+	return v, err
 }
 
 // Set stores `value` under `key`. Overwrites silently.

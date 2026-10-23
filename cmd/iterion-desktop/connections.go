@@ -135,29 +135,42 @@ func (a *App) openLocalConn(p *Project) error {
 	return nil
 }
 
-// openCloudConn hydrates the cloud connection's token jar, mints a fresh
-// access token, starts an independent background refresh loop, and registers
-// it. A failed rehydrate leaves the entry unauthenticated: the demux proxy has
-// no Bearer, the cloud 401s, and the pane's SPA shows its login view.
+// openCloudConn opens a cloud connection into the workspace registry: it
+// resolves the connection's ONE jar (the current connection's active jar
+// when that is this connection — a pane reuses it instead of building a
+// second jar over the same keychain entry), hydrates a jar it just built,
+// mints a fresh access token through it, and registers it with the loop
+// that renews it. A failed rehydrate leaves the entry unauthenticated: the
+// demux proxy has no Bearer, the cloud 401s, and the pane's SPA shows its
+// login view.
 func (a *App) openCloudConn(ctx context.Context, p *Project) error {
 	// Reuse an already-open jar so re-opening doesn't spawn a second refresh
 	// loop or drop a live token.
 	if existing := a.lookupConn(p.ID); existing != nil && existing.jar != nil {
 		return nil
 	}
-	jar := newCloudTokenJar(p.ID, p.CloudURL, a.keychain)
-	hydrated, err := jar.hydrate()
-	if err != nil {
-		log.Printf("desktop: cloud hydrate for %s failed: %v", p.ID, err)
-	}
-	if hydrated {
-		if err := jar.refreshNow(ctx); err != nil {
-			log.Printf("desktop: cloud rehydrate refresh for %s failed: %v", p.ID, err)
+	// ONE jar per connection: resolveConnectionJar hands back the live jar
+	// when the connection has one (a cloud connection already current —
+	// activated at startup or by a switch — holds its jar outside this
+	// registry), so opening its pane neither builds a second jar over the
+	// entry nor spawns a second presenter over the session.
+	prev := a.cloudJarFor(p.ID)
+	jar := resolveConnectionJar(prev, p.ID, p.CloudURL, a.keychain)
+	if prev == nil {
+		hydrated, err := jar.hydrate()
+		if err != nil {
+			log.Printf("desktop: cloud hydrate for %s failed: %v (the session is kept: its refreshes read the keychain again)", p.ID, err)
+		}
+		if hydrated {
+			logCloudRehydrate(p.ID, jar.refreshNow(ctx))
 		}
 	}
 	a.mu.Lock()
 	c := &activeConn{id: p.ID, kind: ProjectKindCloud, serverURL: cloudServerURL(p.CloudURL), jar: jar}
-	if a.ctx != nil {
+	if a.ctx != nil && jar != a.cloudJar {
+		// A jar of its own gets a loop of its own; the active jar is renewed
+		// by the active loop and the entry borrows it (as the startup
+		// registration does).
 		rctx, cancel := context.WithCancel(a.ctx)
 		c.cancel = cancel
 		go a.runCloudRefreshLoop(rctx, jar)
@@ -172,16 +185,33 @@ func (a *App) openCloudConn(ctx context.Context, p *Project) error {
 // runs survive — other panes or a later re-open re-attach to them (matching
 // the pre-workspace SwitchProject policy). A cloud connection's background
 // refresh loop is stopped, but the persisted refresh token is kept (closing a
-// pane is not a logout).
+// pane is not a logout). The machine's PANE CLOSED transition runs first
+// (cloudTokenJar.closeForPane): a connection that owes the cloud a sign-out
+// presentation either leaves it on its keychain entry — what a reopen
+// presents before it adopts — or, when the keychain cannot carry it, presents
+// it; a close that would DROP it (the keychain refuses both) is refused and
+// the pane stays open with its jar.
 func (a *App) CloseConnection(id string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.conns == nil {
+	a.mu.RLock()
+	c := a.conns[id]
+	a.mu.RUnlock()
+	if c == nil {
 		return nil
 	}
-	if c, ok := a.conns[id]; ok {
-		if c.cancel != nil {
-			c.cancel()
+	if c.jar != nil {
+		// The presentation is a network call: it must not hold the app lock,
+		// and a close it refuses leaves the entry — jar and loop — in place.
+		if err := c.jar.closeForPane(a.ctx); err != nil {
+			return err
+		}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// The entry the close was decided for is the entry that goes: a sign-in
+	// that replaced it while the presentation ran keeps its own close.
+	if cur, ok := a.conns[id]; ok && cur == c {
+		if cur.cancel != nil {
+			cur.cancel()
 		}
 		delete(a.conns, id)
 	}

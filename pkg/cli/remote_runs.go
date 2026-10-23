@@ -93,7 +93,11 @@ func RemoteRunsList(ctx context.Context, c *RemoteClient, p *Printer, opts Remot
 		q["limit"] = fmt.Sprintf("%d", opts.Limit)
 	}
 	if opts.Team != "" {
-		q["team_id"] = opts.Team
+		team, err := ResolveRemoteRunScopeTeam(ctx, c, opts.Team)
+		if err != nil {
+			return err
+		}
+		q["team_id"] = team
 	}
 	path := "/api/runs" + QueryString(q)
 	var out struct {
@@ -962,7 +966,11 @@ func RemoteRunsResumeUsageBlocked(ctx context.Context, c *RemoteClient, p *Print
 		"status": opts.Status,
 	}
 	if opts.Team != "" {
-		q["team_id"] = opts.Team
+		team, err := ResolveRemoteRunScopeTeam(ctx, c, opts.Team)
+		if err != nil {
+			return err
+		}
+		q["team_id"] = team
 	}
 	var out struct {
 		Runs []remoteRunSummary `json:"runs"`

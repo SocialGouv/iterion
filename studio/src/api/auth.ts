@@ -52,9 +52,36 @@ export interface OrgTreeView {
   teams: MembershipView[];
 }
 
-export interface AuthResponse {
+// AuthIdentity is GET /api/auth/me: the account, its org→teams tree and the
+// active context. /api/auth/me is the one route that answers the tree.
+export interface AuthIdentity {
   user: UserView;
   orgs: OrgTreeView[];
+  active_org_id?: string;
+  active_org_role?: OrgRole | "";
+  active_team_id?: string;
+  active_role?: Role | "";
+  // The refresh session the presented access token belongs to. Absent when
+  // the credential names no session — a personal access token, an access
+  // token minted before sessions carried a lineage, local/dev mode — and a
+  // sign-out then ends whatever session the browser holds, as it always did.
+  // What it buys: a pending sign-out is bound to THIS session, so a logout
+  // presented later (a reload, the landing of a sign-in made since) ends the
+  // session it was asked about and no other.
+  session_lineage?: string;
+  // That session's bound, as the server holds it — never the access token's
+  // short-lived exp. A pending sign-out's record names it: the notices show
+  // a date instead of "its expiry", and the machine drops the record past it
+  // (nothing live is being hidden). Absent for a credential that names no session, and when the session is gone.
+  expires_at?: string;
+}
+
+// AuthSession is what every route that mints a credential answers (login,
+// register, refresh, password change or reset, team/org switch): the
+// account and the active context of the new access token — never the org
+// tree, which is read from getMe().
+export interface AuthSession {
+  user: UserView;
   active_org_id?: string;
   active_org_role?: OrgRole | "";
   active_team_id?: string;
@@ -105,7 +132,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function login(email: string, password: string): Promise<AuthResponse> {
+export async function login(email: string, password: string): Promise<AuthSession> {
   return send("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
@@ -117,33 +144,94 @@ export async function register(input: {
   password: string;
   name?: string;
   invitation?: string;
-}): Promise<AuthResponse> {
+}): Promise<AuthSession> {
   return send("/auth/register", {
     method: "POST",
     body: JSON.stringify(input),
   });
 }
 
-export async function refresh(): Promise<AuthResponse> {
-  return send("/auth/refresh", { method: "POST" });
+// The refresh and the logout are not here: they belong to the client module
+// (@/api/client), which owns the session's lifecycle — every presentation of
+// the refresh token goes through its one guarded path, and the logout through
+// its bounded sign-out.
+
+// KEYCHAIN_RETRY_HEADER asks a desktop connection to read the system keychain
+// NOW, whatever back-off it is on: the user pressed the retry of the
+// keychain-locked screen, so the unlock prompt this read raises is one they
+// asked for. Only a user action may set it — an automatic read carrying it
+// would be the prompt loop the back-off exists to stop.
+export const KEYCHAIN_RETRY_HEADER = "X-Iterion-Keychain-Retry";
+
+// KEYCHAIN_LOCKED_CODE is the error code a desktop connection answers (503)
+// when it could not read the token because the system keychain is locked.
+export const KEYCHAIN_LOCKED_CODE = "keychain_locked";
+
+export interface GetMeOptions {
+  // keychainRetry sends KEYCHAIN_RETRY_HEADER: a user-driven retry of a
+  // connection whose keychain is locked.
+  keychainRetry?: boolean;
 }
 
-export async function logout(): Promise<void> {
-  await send("/auth/logout", { method: "POST" });
+export async function getMe(options?: GetMeOptions): Promise<AuthIdentity> {
+  return send("/auth/me", options?.keychainRetry ? { headers: { [KEYCHAIN_RETRY_HEADER]: "1" } } : undefined);
 }
 
-export async function getMe(): Promise<AuthResponse> {
-  return send("/auth/me");
+// errorCodeOf is the stable machine code of an error envelope, "" when there
+// is none. The envelope carries it as `error_code` — the key every coded
+// refusal of this API uses — and it is what a caller branches on instead of
+// matching the human message, which is free to be rewritten.
+export function errorCodeOf(err: unknown): string {
+  if (!(err instanceof ApiError)) return "";
+  return typeof err.body?.error_code === "string" ? err.body.error_code : "";
 }
 
-export async function switchTeam(teamID: string): Promise<AuthResponse> {
-  return send(`/auth/me/team/${encodeURIComponent(teamID)}`, { method: "POST" });
+// PASSWORD_CHANGED_SIGN_IN_CODE is the 409 a password change answers when the
+// new password IS committed but no session could be opened for it: the auth
+// cookies are cleared, so the browser is signed out and the user signs in with
+// the new password. Retrying the same request is pointless — the old password
+// it carries is no longer the account's.
+export const PASSWORD_CHANGED_SIGN_IN_CODE = "password_changed_sign_in";
+
+// SIGNOUT_CLEANUP_FAILED_CODE is the 503 a "sign out everywhere" answers when
+// a cleanup step failed AFTER the sign-out landed: the sessions are ended and
+// the caller's cookies are cleared, but something on the account may be left
+// half-done. The studio renders its own actionable text for it (the user must
+// sign in again and repeat the sign-out everywhere) instead of the plain
+// transport message.
+export const SIGNOUT_CLEANUP_FAILED_CODE = "signout_cleanup_failed";
+
+export const SIGNOUT_CLEANUP_FAILED_TEXT =
+  "Sign-out done; cleanup incomplete — sign in again and repeat sign out everywhere.";
+
+// CREDENTIAL_CHANGE_BUSY_CODE is the other 409 a password change answers:
+// another change of the same account is in progress. Nothing happened, the
+// password is unchanged, and the user retries — so it must NOT be read as
+// "the password changed", which is why the code decides and not the status.
+export const CREDENTIAL_CHANGE_BUSY_CODE = "credential_change_busy";
+
+// passwordChangedSignIn answers the server's message when err is the 409 that
+// COMMITTED the new password without a session, and null otherwise — a 409
+// credential_change_busy included. One helper for the three forms that change
+// a password, so the next one cannot forget the case or confuse the two.
+export function passwordChangedSignIn(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  if (errorCodeOf(err) !== PASSWORD_CHANGED_SIGN_IN_CODE) return null;
+  // send() already puts the envelope's `error` on the message.
+  return err.message;
+}
+
+// switchTeam and switchOrg mint a credential (the access cookie of the new
+// context); the signal is the sign-out's, which cancels a switch in flight so
+// its answer never sets that cookie after the logout cleared the jar.
+export async function switchTeam(teamID: string, signal?: AbortSignal): Promise<AuthSession> {
+  return send(`/auth/me/team/${encodeURIComponent(teamID)}`, { method: "POST", signal });
 }
 
 // switchOrg changes the active organization. The server picks an active
-// team within the new org and returns the full org tree + active context.
-export async function switchOrg(orgID: string): Promise<AuthResponse> {
-  return send(`/auth/me/org/${encodeURIComponent(orgID)}`, { method: "POST" });
+// team within the new org and returns the new active context.
+export async function switchOrg(orgID: string, signal?: AbortSignal): Promise<AuthSession> {
+  return send(`/auth/me/org/${encodeURIComponent(orgID)}`, { method: "POST", signal });
 }
 
 // listProviders returns the global SSO providers, plus — when an email or org
@@ -169,6 +257,13 @@ export interface SSOLink {
   provider_user_id: string;
   email?: string;
   created_at?: string;
+  // True when a signed-in session wrote the link from the account settings —
+  // the links "Sign out everywhere" and an admin disable remove, so an
+  // account never loses the sign-in method it started with (a passwordless
+  // account whose every link matches keeps its oldest). The link the
+  // sign-out KEEPS is the one without the flag. Absent from an older server:
+  // the distinction is then unknown and shown as such.
+  session_linked?: boolean;
 }
 
 export async function listSSOLinks(): Promise<{ links: SSOLink[] }> {
@@ -229,7 +324,7 @@ export async function requestPasswordReset(email: string): Promise<void> {
 export async function confirmPasswordReset(
   token: string,
   password: string,
-): Promise<AuthResponse> {
+): Promise<AuthSession> {
   return send("/auth/password/reset/confirm", {
     method: "POST",
     body: JSON.stringify({ token, password }),
@@ -243,7 +338,7 @@ export async function completePendingPasswordChange(
   email: string,
   currentPassword: string,
   newPassword: string,
-): Promise<AuthResponse> {
+): Promise<AuthSession> {
   return send("/auth/password/change", {
     method: "POST",
     body: JSON.stringify({
@@ -259,7 +354,7 @@ export async function completePendingPasswordChange(
 export async function changeMyPassword(
   currentPassword: string,
   newPassword: string,
-): Promise<AuthResponse> {
+): Promise<AuthSession> {
   return send("/me/password", {
     method: "POST",
     body: JSON.stringify({
@@ -269,8 +364,11 @@ export async function changeMyPassword(
   });
 }
 
-// "Sign out everywhere": every live refresh dies now; the caller's own
-// cookies are cleared too.
+// "Sign out everywhere" is the compromise response: every live refresh session
+// dies now, every personal access token of the account is revoked (the CLI's
+// and CI's included), and the caller's own cookies are cleared too. A password
+// change, an emailed reset and an admin password reset keep the tokens — this
+// route is the one that does not.
 export async function revokeAllMySessions(): Promise<void> {
   await send("/me/sessions/revoke-all", { method: "POST" });
 }

@@ -53,7 +53,8 @@ func TestSwitchTeamAdmitsOrgAdmin(t *testing.T) {
 	svc := newTestService(t, SignupOpen)
 	uid, orgID, teamID := orgAdminFixture(t, svc, "orgadmin@example.com", identity.OrgRoleAdmin)
 
-	id, _, _, err := svc.SwitchTeam(ctx, uid, teamID)
+	idRes, err := svc.SwitchTeam(ctx, Identity{Credential: CredentialAccessToken, UserID: uid}, teamID)
+	id := idRes.Identity
 	if err != nil {
 		t.Fatalf("SwitchTeam as org admin: %v", err)
 	}
@@ -75,7 +76,7 @@ func TestSwitchTeamAdmitsOrgOwner(t *testing.T) {
 	svc := newTestService(t, SignupOpen)
 	uid, _, teamID := orgAdminFixture(t, svc, "orgowner@example.com", identity.OrgRoleOwner)
 
-	if _, _, _, err := svc.SwitchTeam(ctx, uid, teamID); err != nil {
+	if _, err := svc.SwitchTeam(ctx, Identity{Credential: CredentialAccessToken, UserID: uid}, teamID); err != nil {
 		t.Fatalf("SwitchTeam as org owner: %v", err)
 	}
 }
@@ -89,7 +90,7 @@ func TestSwitchTeamRefusesPlainOrgMember(t *testing.T) {
 	svc := newTestService(t, SignupOpen)
 	uid, _, teamID := orgAdminFixture(t, svc, "orgmember@example.com", identity.OrgRoleMember)
 
-	if _, _, _, err := svc.SwitchTeam(ctx, uid, teamID); !errors.Is(err, ErrNotAMember) {
+	if _, err := svc.SwitchTeam(ctx, Identity{Credential: CredentialAccessToken, UserID: uid}, teamID); !errors.Is(err, ErrNotAMember) {
 		t.Fatalf("expected ErrNotAMember for a plain org member, got %v", err)
 	}
 }
@@ -102,7 +103,7 @@ func TestSwitchTeamRefusesForeignOrgAdmin(t *testing.T) {
 	uid, _, _ := orgAdminFixture(t, svc, "admin-a@example.com", identity.OrgRoleAdmin)
 	_, _, foreignTeam := orgAdminFixture(t, svc, "admin-b@example.com", identity.OrgRoleAdmin)
 
-	if _, _, _, err := svc.SwitchTeam(ctx, uid, foreignTeam); !errors.Is(err, ErrNotAMember) {
+	if _, err := svc.SwitchTeam(ctx, Identity{Credential: CredentialAccessToken, UserID: uid}, foreignTeam); !errors.Is(err, ErrNotAMember) {
 		t.Fatalf("org admin of A must not reach a team of B, got %v", err)
 	}
 }
@@ -116,8 +117,8 @@ func TestSwitchTeamHidesTeamExistenceFromStrangers(t *testing.T) {
 	uid, _, _ := orgAdminFixture(t, svc, "stranger@example.com", identity.OrgRoleAdmin)
 	_, _, realTeam := orgAdminFixture(t, svc, "owner-of-real@example.com", identity.OrgRoleAdmin)
 
-	_, _, _, realErr := svc.SwitchTeam(ctx, uid, realTeam)
-	_, _, _, fakeErr := svc.SwitchTeam(ctx, uid, "team-that-does-not-exist")
+	_, realErr := svc.SwitchTeam(ctx, Identity{Credential: CredentialAccessToken, UserID: uid}, realTeam)
+	_, fakeErr := svc.SwitchTeam(ctx, Identity{Credential: CredentialAccessToken, UserID: uid}, "team-that-does-not-exist")
 	if !errors.Is(realErr, ErrNotAMember) || !errors.Is(fakeErr, ErrNotAMember) {
 		t.Fatalf("existing and missing team must answer alike: real=%v missing=%v", realErr, fakeErr)
 	}
@@ -132,7 +133,8 @@ func TestSwitchOrgLandsOrgAdminOnATeam(t *testing.T) {
 	svc := newTestService(t, SignupOpen)
 	uid, orgID, teamID := orgAdminFixture(t, svc, "landing@example.com", identity.OrgRoleAdmin)
 
-	id, _, _, err := svc.SwitchOrg(ctx, uid, orgID)
+	idRes, err := svc.SwitchOrg(ctx, Identity{Credential: CredentialAccessToken, UserID: uid}, orgID)
+	id := idRes.Identity
 	if err != nil {
 		t.Fatalf("SwitchOrg: %v", err)
 	}
@@ -150,7 +152,8 @@ func TestSwitchOrgLeavesPlainMemberTeamless(t *testing.T) {
 	svc := newTestService(t, SignupOpen)
 	uid, orgID, _ := orgAdminFixture(t, svc, "landing-member@example.com", identity.OrgRoleMember)
 
-	id, _, _, err := svc.SwitchOrg(ctx, uid, orgID)
+	idRes, err := svc.SwitchOrg(ctx, Identity{Credential: CredentialAccessToken, UserID: uid}, orgID)
+	id := idRes.Identity
 	if err != nil {
 		t.Fatalf("SwitchOrg: %v", err)
 	}

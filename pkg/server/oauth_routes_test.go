@@ -36,14 +36,22 @@ func oauthTestServer(t *testing.T) (*Server, *httptest.Server, *auth.JWTSigner, 
 	}
 	// The routes only mount when the OAuth store, the sealer AND the auth
 	// service are all wired (server_routes.go) -- the same gating as BYOK.
+	mem := identity.NewMemoryStore()
 	authSvc, err := auth.NewService(auth.Config{
-		Store:      identity.NewMemoryStore(),
+		Store:      mem,
 		Sessions:   auth.NewMemorySessionStore(),
 		Signer:     signer,
 		RefreshTTL: time.Hour,
 	})
 	if err != nil {
 		t.Fatalf("auth service: %v", err)
+	}
+	// The super-admin the tests mint bearers for: a claim is re-read from
+	// the account at the identity (revokeSuperAdminClaim), so the row exists.
+	if _, err := mem.CreateUser(context.Background(), identity.User{
+		ID: "root", Email: "root@x", Status: identity.UserStatusActive, IsSuperAdmin: true,
+	}); err != nil {
+		t.Fatalf("seed root: %v", err)
 	}
 	oauthStore := secrets.NewMemoryOAuthStore()
 	srv := New(Config{

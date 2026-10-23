@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -37,32 +38,60 @@ import (
 // caps the window a leaked loopback URL could be replayed.
 const desktopTicketTTL = 2 * time.Minute
 
+// desktopExchangeReq is the body of POST /api/auth/desktop/exchange.
+type desktopExchangeReq struct {
+	Ticket string `json:"ticket"`
+}
+
 // handleDesktopExchange redeems a single-use SSO ticket for tokens. Public
 // (no session yet) and used ONLY by the desktop native client. The response
-// shape is identical to a password login (renderAuthResponse), so the desktop
-// reuses the same parsing: access token in the JSON body (non-browser client),
-// refresh token in the Set-Cookie it harvests.
+// is a password login's (writeSession, an AuthSessionResponse), so the
+// desktop reuses the same parsing: access token in the JSON body (non-browser
+// client), refresh token in the Set-Cookie it harvests.
 func (s *Server) handleDesktopExchange(w http.ResponseWriter, r *http.Request) {
 	if s.authSvc == nil || s.desktopTickets == nil {
 		httpError(w, http.StatusNotFound, "desktop exchange not available")
 		return
 	}
-	var req struct {
-		Ticket string `json:"ticket"`
-	}
+	var req desktopExchangeReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil || req.Ticket == "" {
 		httpError(w, http.StatusBadRequest, "missing ticket")
 		return
 	}
 	res, err := s.desktopTickets.Redeem(r.Context(), req.Ticket)
-	if err != nil {
-		if !errors.Is(err, desktopsso.ErrTicketNotFound) && s.logger != nil {
-			s.logger.Warn("desktop exchange redeem error: %v", err)
-		}
+	if errors.Is(err, desktopsso.ErrTicketNotFound) {
 		httpError(w, http.StatusUnauthorized, "invalid or expired ticket")
 		return
 	}
-	s.renderAuthResponse(w, r, res)
+	if err != nil {
+		// The ticket store failed: the ticket may be valid, and the desktop
+		// reads a 401 as "redo the sign-in".
+		s.identityFailure(w, r, fmt.Errorf("redeem the desktop ticket: %w", err))
+		return
+	}
+	// The session the ticket carries was opened at the IdP callback, up to
+	// desktopTicketTTL ago: a sign-out, "sign out everywhere", a password
+	// change or a disable landing since covers it, and it is asked about as
+	// any presented credential is (auth.Service.CheckStanding) before its
+	// tokens are handed out — 401 when it no longer stands.
+	if s.signer == nil {
+		s.identityFailure(w, r, errors.New("redeem the desktop ticket: no access-token verifier configured"))
+		return
+	}
+	carried, err := s.signer.Verify(res.AccessToken)
+	if err != nil {
+		httpError(w, http.StatusUnauthorized, "invalid or expired ticket")
+		return
+	}
+	if _, err := s.authSvc.CheckStanding(r.Context(), carried); err != nil {
+		if mapAuthErrorStatus(err) >= http.StatusInternalServerError {
+			s.identityFailure(w, r, fmt.Errorf("check the session a desktop ticket carries: %w", err))
+			return
+		}
+		s.authError(w, r, err)
+		return
+	}
+	s.writeSession(w, r, loginSession(res))
 }
 
 // safeDesktopRedirect validates a desktop loopback redirect target: it must be

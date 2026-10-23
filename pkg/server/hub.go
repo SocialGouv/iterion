@@ -24,6 +24,45 @@ const (
 	sendBufferSize = 256
 )
 
+// The reason tokens an open WebSocket of this server sends in its close
+// frame. The token is the first word of the reason, so a client matches on it
+// without parsing the cause behind it: a refused credential never comes back
+// by redialing with the same one, a reached lifetime does.
+const (
+	// wsCloseCredentialRefused closes a socket whose credential no longer
+	// stands — its account disabled or pending a password change, its session
+	// revoked, its personal access token revoked. Its holder signs in again.
+	wsCloseCredentialRefused = "credential_refused"
+	// wsCloseScopeLost closes a socket whose scope no longer holds — the run
+	// it watches is gone, or the caller no longer holds a member standing in
+	// the run's team. The scope is re-derived live on open command surfaces,
+	// so the loss is honored without waiting for a redial; the holder
+	// rejoins through the front door their standing now allows.
+	wsCloseScopeLost = "scope_lost"
+	// wsCloseLifetimeReached closes a socket that reached its absolute
+	// lifetime. Its holder reopens one and presents a credential again.
+	wsCloseLifetimeReached = "lifetime_reached"
+)
+
+// wsCloseReasonMax is what a close frame's reason carries: a control frame's
+// payload is 125 bytes and the close code takes the first two.
+const wsCloseReasonMax = 125 - 2
+
+// writeWSClose sends a close frame naming why the socket goes down, through
+// the one write gorilla allows concurrently with the connection's own writer
+// (WriteControl). The reason is cut to what a control frame carries and kept
+// valid UTF-8, so a long cause never becomes a frame the peer must fail.
+func writeWSClose(conn *websocket.Conn, code int, token, cause string) error {
+	reason := token
+	if cause != "" {
+		reason = token + ": " + cause
+	}
+	if len(reason) > wsCloseReasonMax {
+		reason = strings.ToValidUTF8(reason[:wsCloseReasonMax], "")
+	}
+	return conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(writeWait))
+}
+
 // FileEvent is the JSON message sent to WebSocket clients when a file changes.
 type FileEvent struct {
 	Type string `json:"type"` // file_created, file_modified, file_deleted

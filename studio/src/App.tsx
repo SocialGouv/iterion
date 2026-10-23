@@ -1,9 +1,12 @@
-import { Suspense, lazy, useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
 import { Redirect, Route, Router, Switch, useLocation } from "wouter";
 
 import AppShell from "@/components/shared/AppShell";
 import BootLoading from "@/components/shared/BootLoading";
+import KeychainLocked from "@/components/shared/KeychainLocked";
 import ServerUnreachable from "@/components/shared/ServerUnreachable";
+import SignedOutNotice from "@/components/shared/SignedOutNotice";
+import SignOutUnconfirmed from "@/components/shared/SignOutUnconfirmed";
 
 // Routes are React.lazy'd so each view ships its own chunk and the
 // initial download covers only the shell + AuthGate. The eager imports
@@ -78,6 +81,7 @@ import { DesktopEvent } from "@/lib/desktopEvents";
 import { STUDIO_BASE, isScopedPane, scopePrefix } from "@/lib/scope";
 import { showRunAlertNotification, type RunAlertPayload } from "@/lib/desktopNotify";
 import { AuthProvider, useAuth } from "@/auth/AuthContext";
+import type { ServerInfo } from "@/api/types";
 import { signInURL } from "@/auth/returnTo";
 import { setUnauthorizedHandler } from "@/api/client";
 import { getOrCreateDocumentStore } from "@/store/document";
@@ -97,6 +101,11 @@ export default function App() {
   return (
     <AuthProvider>
       <AuthGate />
+      {/* Pinned over whatever the gate renders, and mutually exclusive by
+          construction: a sign-out sets no notice, and a notice sets no
+          sign-out mark (AuthContext). */}
+      <SignOutUnconfirmed />
+      <SignedOutNotice />
     </AuthProvider>
   );
 }
@@ -144,6 +153,84 @@ function isUnderStudioBase(location: string): boolean {
   return location === STUDIO_BASE || location.startsWith(STUDIO_BASE + "/");
 }
 
+// PasswordDoors are the password side-doors: they authenticate on the token
+// in the URL, not on the session, so they answer whatever the session is.
+// otherwise renders for an /auth/ path that names none of them.
+function PasswordDoors({ otherwise }: { otherwise: ReactNode }) {
+  return (
+    <Suspense fallback={<BootLoading />}>
+      <Switch>
+        <Route path="/auth/password/change" component={ForcedPasswordChange} />
+        <Route path="/auth/forgot-password" component={ForgotPassword} />
+        <Route path="/auth/reset" component={ResetPassword} />
+        <Route>{otherwise}</Route>
+      </Switch>
+    </Suspense>
+  );
+}
+
+// ConfigShareDoor is the shell-less config-share editor, which authenticates
+// on the share token alone.
+function ConfigShareDoor() {
+  return (
+    <Suspense fallback={<BootLoading />}>
+      {/* Wrapped in its Route, because ConfigShareView reads the share id
+          with useParams(), which only a matching <Route> supplies — rendered
+          bare, a perfectly good /config/<id> link reported "The share id is
+          missing from the URL". The anonymous arm has always been wrapped;
+          this one never was.
+          The fall-through matters as much as the route: that message is
+          ConfigShareView's own, correct answer to a link with NO id, and a
+          bare <Switch> with one route renders NOTHING when it misses —
+          /config/ and /config/a/b became an empty page with no way out. */}
+      <Switch>
+        <Route path="/config/:id">
+          <ErrorBoundary area="Config share editor">
+            <ConfigShareView />
+          </ErrorBoundary>
+        </Route>
+        <Route>
+          <ErrorBoundary area="Config share editor">
+            <ConfigShareView />
+          </ErrorBoundary>
+        </Route>
+      </Switch>
+    </Suspense>
+  );
+}
+
+// PublicMarketplace is the public catalogue, outside the AppShell, with its
+// own slim top bar.
+function PublicMarketplace() {
+  return (
+    <div className="min-h-screen bg-surface-0 text-fg-default">
+      <PublicTopBar />
+      <ErrorBoundary area="Marketplace view">
+        <MarketplaceView />
+      </ErrorBoundary>
+    </div>
+  );
+}
+
+// identityIndependentDoor is what a browser whose session's identity the
+// server cannot read right now may still open: the doors that do not rest on
+// that identity. null for every other address.
+function identityIndependentDoor(location: string, serverInfo: ServerInfo | null): ReactNode | null {
+  if (location === "/login") {
+    return <Suspense fallback={<BootLoading />}><Login /></Suspense>;
+  }
+  if (location === "/auth/password/change" || location === "/auth/forgot-password" || location === "/auth/reset") {
+    return <PasswordDoors otherwise={null} />;
+  }
+  if (location.startsWith("/config/")) {
+    return <ConfigShareDoor />;
+  }
+  if (serverInfo?.marketplace_enabled && (location === "/marketplace" || location === `${STUDIO_BASE}/marketplace`)) {
+    return <PublicMarketplace />;
+  }
+  return null;
+}
+
 // AuthGate decides between the Login view and the full editor based
 // on the AuthProvider's status. It also wires the global 401
 // interceptor so editor API calls bounce the user back to /login on
@@ -154,7 +241,7 @@ function isUnderStudioBase(location: string): boolean {
 // session so the AuthGate consults the URL when it sees the
 // "anonymous" state and dispatches to the matching public view.
 function AuthGate() {
-  const { status, signOut, isRestricted, activeRole, retryConnection } = useAuth();
+  const { status, signOut, isRestricted, activeRole, retryConnection, retryKeychainUnlock, signOutUnconfirmed } = useAuth();
   const [location] = useLocation();
   const serverInfo = useServerInfoStore((s) => s.info);
 
@@ -168,17 +255,56 @@ function AuthGate() {
   if (status === "loading") {
     return <BootLoading />;
   }
+  // A sign-out on the wire shows nothing of the account — not the shell, not
+  // the identity-unavailable screen and its auto-retry — until its logout
+  // settled.
+  if (status === "signing_out") {
+    return <BootLoading label="Signing out" />;
+  }
   // Backend down ≠ signed out: show the reconnect screen, never the
   // sign-in form (a local no-auth operator has no credentials to give).
   if (status === "unreachable") {
     return <ServerUnreachable onRetry={retryConnection} />;
+  }
+  // Identity unavailable ≠ signed out, and ≠ "you belong to nothing": the
+  // session is valid, the server could not say whose it is right now. The
+  // doors that do not rest on that identity stay open — a password link and
+  // a config-share link authenticate on the token in their URL, /login signs
+  // in as another account, the marketplace is public — and the screen offers
+  // a way out of the state: signing out.
+  // A locked system keychain is neither of the two above: the session is fine,
+  // the server is fine, and the credential is in a keychain this computer will
+  // not open. It gets its own screen — and its own retry, the only one that
+  // reads the keychain, since every read raises an OS unlock prompt. The
+  // identity-independent doors stay open here as well: a /login, a password
+  // link or a config share does not rest on that credential.
+  if (status === "keychain_locked") {
+    const door = identityIndependentDoor(location, serverInfo);
+    if (door) return door;
+    return <KeychainLocked onRetry={retryKeychainUnlock} />;
+  }
+  if (status === "identity_unavailable") {
+    const door = identityIndependentDoor(location, serverInfo);
+    if (door) return door;
+    return (
+      <ServerUnreachable
+        onRetry={retryConnection}
+        title="Your identity is unavailable"
+        message="You are still signed in, but the server could not load your account and organizations right now. Retrying automatically…"
+        secondaryAction={{ label: "Sign out", onClick: signOut }}
+      />
+    );
   }
   if (status === "anonymous") {
     // A workspace pane (iframe) can't run its own auth — the desktop owns the
     // token jar. On expiry, ask the shell (parent frame) to prompt re-login,
     // then reload us; don't render the pane's own Login/landing.
     if (isScopedPane()) {
-      return <ScopedPaneReauth />;
+      // A sign-out the desktop did not confirm left this connection's session
+      // where it was: the pane says so (SignOutUnconfirmed, pinned over this
+      // page) and signs out again from there, instead of asking the shell to
+      // reconnect a session that is not over.
+      return signOutUnconfirmed ? <div className="h-screen bg-surface-0" /> : <ScopedPaneReauth />;
     }
     return (
       <Suspense fallback={<BootLoading />}>
@@ -206,12 +332,7 @@ function AuthGate() {
               AppShell, so it carries its own slim top bar. */}
           {serverInfo?.marketplace_enabled && (
             <Route path="/marketplace">
-              <div className="min-h-screen bg-surface-0 text-fg-default">
-                <PublicTopBar />
-                <ErrorBoundary area="Marketplace view">
-                  <MarketplaceView />
-                </ErrorBoundary>
-              </div>
+              <PublicMarketplace />
             </Route>
           )}
           {/* The SAME public catalogue at the address a signed-in operator's
@@ -221,12 +342,7 @@ function AuthGate() {
               becomes a login wall for every link an operator shares. */}
           {serverInfo?.marketplace_enabled && (
             <Route path={`${STUDIO_BASE}/marketplace`}>
-              <div className="min-h-screen bg-surface-0 text-fg-default">
-                <PublicTopBar />
-                <ErrorBoundary area="Marketplace view">
-                  <MarketplaceView />
-                </ErrorBoundary>
-              </div>
+              <PublicMarketplace />
             </Route>
           )}
           {/* LAST before the product home, so every public route above —
@@ -264,16 +380,7 @@ function AuthGate() {
   // which the /studio redirect below did — destroys the only copy of that
   // token the operator has: the mail link re-opens and is eaten again.
   if (location.startsWith("/auth/")) {
-    return (
-      <Suspense fallback={<BootLoading />}>
-        <Switch>
-          <Route path="/auth/password/change" component={ForcedPasswordChange} />
-          <Route path="/auth/forgot-password" component={ForgotPassword} />
-          <Route path="/auth/reset" component={ResetPassword} />
-          <Route><Redirect to={STUDIO_BASE} replace /></Route>
-        </Switch>
-      </Suspense>
-    );
+    return <PasswordDoors otherwise={<Redirect to={STUDIO_BASE} replace />} />;
   }
   // Browser half of `iterion remote login` — approve + mint a CLI token. Any
   // authenticated user (incl. the restricted tier) can authorize the CLI.
@@ -290,31 +397,7 @@ function AuthGate() {
   // isolated fetch client at @/api/configShare pins credentials: "omit", so
   // the operator's cookie is never sent even though same-origin.
   if (location.startsWith("/config/")) {
-    return (
-      <Suspense fallback={<BootLoading />}>
-        {/* Wrapped in its Route, because ConfigShareView reads the share id
-            with useParams(), which only a matching <Route> supplies — rendered
-            bare, a perfectly good /config/<id> link reported "The share id is
-            missing from the URL". The anonymous arm has always been wrapped;
-            this one never was.
-            The fall-through matters as much as the route: that message is
-            ConfigShareView's own, correct answer to a link with NO id, and a
-            bare <Switch> with one route renders NOTHING when it misses —
-            /config/ and /config/a/b became an empty page with no way out. */}
-        <Switch>
-          <Route path="/config/:id">
-            <ErrorBoundary area="Config share editor">
-              <ConfigShareView />
-            </ErrorBoundary>
-          </Route>
-          <Route>
-            <ErrorBoundary area="Config share editor">
-              <ConfigShareView />
-            </ErrorBoundary>
-          </Route>
-        </Switch>
-      </Suspense>
-    );
+    return <ConfigShareDoor />;
   }
   // "/" is the product home for EVERYONE, signed in or not — that is what the
   // studio moving under a prefix buys. A deployment with no product home

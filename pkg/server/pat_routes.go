@@ -21,7 +21,7 @@ import (
 func (s *Server) registerPATRoutes() {
 	s.mux.Handle("GET /api/me/tokens", s.requireAuth(http.HandlerFunc(s.handleListPATs)))
 	s.mux.Handle("POST /api/me/tokens", s.requireAuth(http.HandlerFunc(s.handleCreatePAT)))
-	s.mux.Handle("DELETE /api/me/tokens/{token_id}", s.requireAuth(http.HandlerFunc(s.handleRevokePAT)))
+	s.mux.Handle("DELETE /api/me/tokens/{token_id}", s.requireAuth(s.gateDerivation(auth.ChangeCredential, s.handleRevokePAT)))
 }
 
 type createPATReq struct {
@@ -50,6 +50,16 @@ func (s *Server) handleListPATs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreatePAT(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
+	// A token is minted from a live session only: never from a personal
+	// access token (403 — it is pinned, and a child would escape its pin and
+	// its expiry), never from the access token of a revoked session, a
+	// disabled or a pending account (401). The token is the one credential a
+	// session mints that is meant to outlive it: its own expiry and the
+	// account's "sign out everywhere" bound it, not the session's.
+	if _, err := s.checkDerivation(r.Context(), id, auth.MintPAT); err != nil {
+		s.derivationError(w, r, err)
+		return
+	}
 	var req createPATReq
 	if !decodeJSON(w, r, &req) {
 		return
@@ -134,6 +144,20 @@ func (s *Server) handleCreatePAT(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	// Asked again once the row exists: a "sign out everywhere" or a disable
+	// whose record landed after the check above and before this row was
+	// written may have run its token revocation without seeing it. A
+	// revocation recorded after this second check sees the row. A refusal —
+	// or a check that could not complete — revokes the token before its
+	// plaintext is ever shown.
+	if _, err := s.checkDerivation(r.Context(), id, auth.MintPAT); err != nil {
+		if rerr := s.pats.Revoke(context.WithoutCancel(r.Context()), t.ID, time.Now().UTC()); rerr != nil {
+			s.identityFailure(w, r, fmt.Errorf("revoke the personal access token %s minted from a credential refused since: %w (refusal: %v)", t.ID, rerr, err))
+			return
+		}
+		s.derivationError(w, r, err)
+		return
+	}
 	s.auditTenant(r, id.TeamID, "pat.created", "token", t.ID, map[string]any{"name": t.Name, "team_pin": t.TeamID, "expires_at": expiresAt})
 	// A team-pinned token binds the caller's future org scope too — the
 	// server owns the team→org fact, so state it in the response instead
@@ -185,18 +209,51 @@ func (s *Server) handleRevokePAT(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// patIdentityFailure marks a PAT resolution that FAILED — a row the server
+// could not read — as opposed to one that REFUSED the credential. The
+// middleware answers a refusal 401 with its own message and a failure
+// through identityFailure (500, the generic body, the cause logged): a store
+// outage answered 401 says "this token is dead" to a client that then throws
+// away a valid credential (cmd/iterion runRemoteLogin discards the token it
+// just minted on a 401 from /api/auth/me), and the driver's text names the
+// identity cluster's hosts to anyone holding any token.
+type patIdentityFailure struct{ err error }
+
+func (e patIdentityFailure) Error() string { return e.err.Error() }
+func (e patIdentityFailure) Unwrap() error { return e.err }
+
+// patReadFailure wraps a store error as a failure unless the store answered
+// "no such row", which IS a fact about the credential: that stays a refusal,
+// and carries `refusal` as its message.
+func patReadFailure(what string, err error, refusal string) error {
+	if errors.Is(err, identity.ErrNotFound) || errors.Is(err, pat.ErrNotFound) {
+		return errors.New(refusal)
+	}
+	return patIdentityFailure{fmt.Errorf("%s: %w", what, err)}
+}
+
 // identityFromPAT resolves an `iap_` bearer into an authenticated
 // Identity: hash lookup → usable (not revoked/expired) → owning user
 // must be active → team resolution (pin or default team) with the
 // membership re-checked at every use so a removed member's PAT dies
 // with the membership. Inherits the user's role + super-admin flag —
 // the v1 PAT security model documented on pkg/pat.
+//
+// Four rows are read, and each read has two outcomes the caller must keep
+// apart: a row the store says is NOT THERE (or a hash that does not verify,
+// a revoked token, an inactive owner) refuses the credential; a row the
+// store could not READ is a patIdentityFailure, the server's own failure.
 func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Identity, error) {
 	if s.pats == nil {
 		return auth.Identity{}, errors.New("personal access tokens not enabled")
 	}
 	t, err := s.pats.GetByTokenHash(ctx, pat.HashToken(presented))
-	if err != nil || !pat.VerifyToken(presented, t.TokenHash) {
+	if err != nil {
+		// Same message either way: the refusal says nothing about whether a
+		// row exists for this hash.
+		return auth.Identity{}, patReadFailure("read the token row", err, "token invalid")
+	}
+	if !pat.VerifyToken(presented, t.TokenHash) {
 		return auth.Identity{}, errors.New("token invalid")
 	}
 	now := time.Now().UTC()
@@ -208,7 +265,10 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 		return auth.Identity{}, errors.New("auth not configured")
 	}
 	u, err := st.GetUser(ctx, t.UserID)
-	if err != nil || u.Status != identity.UserStatusActive {
+	if err != nil {
+		return auth.Identity{}, patReadFailure(fmt.Sprintf("read the owner %s of token %s", t.UserID, t.ID), err, "token owner unavailable")
+	}
+	if u.Status != identity.UserStatusActive {
 		return auth.Identity{}, errors.New("token owner unavailable")
 	}
 	teamID := t.TeamID
@@ -229,7 +289,7 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 	if teamID != "" {
 		mb, err := st.GetMembership(ctx, u.ID, teamID)
 		if err != nil {
-			return auth.Identity{}, fmt.Errorf("token team unavailable")
+			return auth.Identity{}, patReadFailure(fmt.Sprintf("read the membership of %s in team %s", u.ID, teamID), err, "token team unavailable")
 		}
 		role = mb.Role
 		// The parent org, which the browser path carries on the JWT. A PAT
@@ -241,7 +301,7 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 		// identity than the token was granted.
 		team, err := st.GetTeam(ctx, teamID)
 		if err != nil {
-			return auth.Identity{}, fmt.Errorf("token org scope unavailable: %w", err)
+			return auth.Identity{}, patReadFailure(fmt.Sprintf("read the org scope of team %s", teamID), err, "token org scope unavailable")
 		}
 		orgID = team.OrgID
 	}
@@ -252,6 +312,10 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 		defer cancel()
 		_ = s.pats.MarkUsed(bg, tokenID, now)
 	})
+	var expires time.Time
+	if t.ExpiresAt != nil {
+		expires = t.ExpiresAt.UTC()
+	}
 	return auth.Identity{
 		UserID: u.ID,
 		Email:  u.Email,
@@ -261,5 +325,43 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 		OrgID:        orgID,
 		Role:         role,
 		IsSuperAdmin: u.IsSuperAdmin,
+		Credential:   auth.CredentialPAT,
+		CredentialID: t.ID,
+		ExpiresAt:    expires,
 	}, nil
+}
+
+// wirePATState registers, on the auth service this server is built on, the
+// reader its chokepoint asks about a personal access token (auth.PATState):
+// the row as this server's token store reads it now, so a token revoked or
+// expired since it was presented — or since it minted a WS ticket — is
+// refused. A row that is gone is a revoked token; a read that fails is
+// returned.
+func (s *Server) wirePATState() {
+	if s.authSvc == nil {
+		return
+	}
+	s.authSvc.SetPATState(func(ctx context.Context, id string, now time.Time) (bool, error) {
+		if s.pats == nil {
+			return false, errors.New("personal access tokens not enabled")
+		}
+		t, err := s.pats.Get(ctx, id)
+		if errors.Is(err, pat.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return t.Usable(now), nil
+	})
+}
+
+// revokeAccountPATs revokes every personal access token of userID ("sign
+// out everywhere", an admin disable) and returns how many it revoked; none
+// when personal access tokens are not enabled.
+func (s *Server) revokeAccountPATs(ctx context.Context, userID string) (int64, error) {
+	if s.pats == nil {
+		return 0, nil
+	}
+	return s.pats.RevokeAllByUser(ctx, userID, time.Now().UTC())
 }

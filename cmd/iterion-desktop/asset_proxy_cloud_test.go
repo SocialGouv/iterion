@@ -83,6 +83,46 @@ func TestAssetProxy_CloudBearerInjectionAndRotation(t *testing.T) {
 	}
 }
 
+// TestAssetProxy_APendingSignOutInjectsNoBearer: the proxy's Rewrite is the
+// site that signs every pane request, and it asks the jar for the token. A
+// jar whose sign-out the cloud did not confirm answers none, so the request
+// reaches the cloud unauthenticated and is answered 401 — the session the
+// operator ended is not served to the pane that reloads.
+func TestAssetProxy_APendingSignOutInjectsNoBearer(t *testing.T) {
+	tok := mkJWT(time.Now().Add(15 * time.Minute).Unix())
+	var sawAuth string
+	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer cloud.Close()
+
+	store := newFakeStore()
+	jar := newCloudTokenJar("conn-pending", cloud.URL, store)
+	if err := jar.seed(cloudAuthResult{AccessToken: tok, RefreshToken: "refresh-seed"}); err != nil {
+		t.Fatalf("seed jar: %v", err)
+	}
+	if err := jar.markSignOutPending(); err != nil {
+		t.Fatalf("mark the sign-out pending: %v", err)
+	}
+
+	app := &App{serverURL: cloud.URL + "/", cloudJar: jar}
+	h := &assetProxyHandler{app: app}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/auth/me", nil))
+
+	if sawAuth != "" {
+		t.Errorf("the proxy signed a pane request with %q while the sign-out was pending", sawAuth)
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("the pane was answered %d, want the cloud's 401", rec.Code)
+	}
+}
+
 // TestAssetProxy_LocalNoInjection confirms the historical local path is
 // unchanged: with no cloud jar, no Authorization header is added.
 func TestAssetProxy_LocalNoInjection(t *testing.T) {

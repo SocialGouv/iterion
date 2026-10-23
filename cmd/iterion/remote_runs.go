@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -470,12 +471,20 @@ var remoteRunsScopeTeam string
 
 // remoteRunsScopedPath appends the team scope the server's
 // resolveTenantScope reads (?team_id= beats the X-Iterion-Team header;
-// the query keeps the scope visible in the URL the operator typed).
-func remoteRunsScopedPath(path string) string {
+// the query keeps the scope visible in the URL the operator typed). The
+// flag is resolved first (ResolveRemoteRunScopeTeam): the server reads
+// team_id as an id verbatim, so the slug an operator types reaches it as
+// the UUID it names, and one that resolves to nothing is refused before
+// anything is sent.
+func remoteRunsScopedPath(ctx context.Context, c *cli.RemoteClient, path string) (string, error) {
 	if remoteRunsScopeTeam == "" {
-		return path
+		return path, nil
 	}
-	return path + "?team_id=" + url.QueryEscape(remoteRunsScopeTeam)
+	team, err := cli.ResolveRemoteRunScopeTeam(ctx, c, remoteRunsScopeTeam)
+	if err != nil {
+		return "", err
+	}
+	return path + "?team_id=" + url.QueryEscape(team), nil
 }
 
 var remoteRunsStatsCmd = &cobra.Command{
@@ -483,7 +492,11 @@ var remoteRunsStatsCmd = &cobra.Command{
 	Short: "Cross-run statistics",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemoteGetPrint(cmd.Context(), c, p, remoteRunsScopedPath("/api/v1/runs/stats"))
+		path, err := remoteRunsScopedPath(cmd.Context(), c, "/api/v1/runs/stats")
+		if err != nil {
+			return err
+		}
+		return cli.RemoteGetPrint(cmd.Context(), c, p, path)
 	}),
 }
 
@@ -492,7 +505,11 @@ var remoteRunsReposCmd = &cobra.Command{
 	Short: "Distinct repositories seen across runs",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemoteGetPrint(cmd.Context(), c, p, remoteRunsScopedPath("/api/v1/runs/repos"))
+		path, err := remoteRunsScopedPath(cmd.Context(), c, "/api/v1/runs/repos")
+		if err != nil {
+			return err
+		}
+		return cli.RemoteGetPrint(cmd.Context(), c, p, path)
 	}),
 }
 
@@ -649,9 +666,9 @@ func init() {
 		remoteRunsPreviewCostCmd, remoteRunsUploadCmd, remoteRunsStatsCmd, remoteRunsReposCmd,
 		remoteRunsMissionCmd,
 	)
-	remoteRunsStatsCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the aggregation to a team id you can view (default: your active team)")
-	remoteRunsReposCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the listing to a team id you can view (default: your active team)")
-	remoteRunsListCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the listing to a team id you can view (default: your active team)")
-	remoteRunsResumeCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "With --usage-blocked: sweep this team's blocked runs instead of your active team's (a team id you can view)")
+	remoteRunsStatsCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the aggregation to a team id or slug you can view (default: your active team)")
+	remoteRunsReposCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the listing to a team id or slug you can view (default: your active team)")
+	remoteRunsListCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "Scope the listing to a team id or slug you can view (default: your active team)")
+	remoteRunsResumeCmd.Flags().StringVar(&remoteRunsScopeTeam, "team", "", "With --usage-blocked: sweep this team's blocked runs instead of your active team's (a team id or slug you can view)")
 	remoteCmd.AddCommand(remoteRunsCmd)
 }

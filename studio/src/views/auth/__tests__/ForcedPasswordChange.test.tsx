@@ -9,18 +9,17 @@ vi.mock("@/api/auth", async () => {
     ...actual,
     completePendingPasswordChange: vi.fn(async () => ({
       user: { id: "u", email: "a@b", status: "active", is_super_admin: false },
-      teams: [],
       active_team_id: "",
       active_role: "",
     })),
   };
 });
 
-const reloadIdentity = vi.fn(async () => undefined);
+const completeSignIn = vi.fn(async () => undefined);
 const navigate = vi.fn();
 
 vi.mock("@/auth/AuthContext", () => ({
-  useAuth: () => ({ reloadIdentity }),
+  useAuth: () => ({ completeSignIn }),
 }));
 
 vi.mock("wouter", () => ({
@@ -83,7 +82,10 @@ describe("ForcedPasswordChange", () => {
         "ChangedAt#1",
       );
     });
-    expect(reloadIdentity).toHaveBeenCalled();
+    // The forced rotation is a credential change, not a chosen sign-in: the
+    // machine's record stays OWED and resolves GONE — never ABANDONED
+    // unpresented.
+    expect(completeSignIn).toHaveBeenCalledWith(undefined, "delivery");
     expect(navigate).toHaveBeenCalledWith(STUDIO_BASE, { replace: true });
   });
 

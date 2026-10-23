@@ -32,7 +32,12 @@ var (
 var remoteTokensCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Mint a token (--name required; plaintext shown once)",
-	Args:  cobra.NoArgs,
+	Long: "Mint a personal access token (--name required; the plaintext is shown once).\n\n" +
+		"A token mints no token: the instance refuses it, and the CLI's stored\n" +
+		"credential IS one. So this runs from a session credential only — create\n" +
+		"the token in the studio (Account → Access tokens), or run it right after\n" +
+		"`iterion remote login <url> --email <you>`.",
+	Args: cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if remoteTokenName == "" {
 			return fmt.Errorf("--name is required")

@@ -274,37 +274,60 @@ func (c *RemoteClient) API(ctx context.Context, method, path string, body []byte
 }
 
 // LoginWithPassword exchanges email+password for an access JWT, then mints a
-// long-lived PAT and returns it (the credential to store).
-func (c *RemoteClient) LoginWithPassword(ctx context.Context, email, password, patName string) (string, error) {
+// long-lived PAT and returns it (the credential to store) with the team it is
+// pinned to. teamID, when set, pins the minted token to that team: the mint
+// runs under the LOGIN's JWT, which is the only credential allowed to derive
+// another one, so a login is also the only way for the CLI to change the team
+// its token carries.
+//
+// teamID may be a team UUID or a team SLUG. The mint pins the value verbatim,
+// so a slug is resolved against the account's own org tree first — under the
+// login's JWT, before anything is stored — the way every other command that
+// sends a team_id resolves it: the slug `teams switch` prints in its advice is
+// the slug this login takes. The RESOLVED id comes back, so the caller
+// persists the scope the token actually carries and not the argument as typed.
+func (c *RemoteClient) LoginWithPassword(ctx context.Context, email, password, patName, teamID string) (string, string, error) {
 	loginBody, _ := json.Marshal(map[string]string{"email": email, "password": password})
 	code, body, err := c.do(ctx, "POST", "/api/auth/login", loginBody, "")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if code/100 != 2 {
-		return "", fmt.Errorf("login failed (HTTP %d): %s", code, describeErrorBody(body))
+		return "", "", fmt.Errorf("login failed (HTTP %d): %s", code, describeErrorBody(body))
 	}
 	var lr struct {
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.Unmarshal(body, &lr); err != nil || lr.AccessToken == "" {
-		return "", fmt.Errorf("login succeeded but no access token was returned (cloud-mode instance required)")
+		return "", "", fmt.Errorf("login succeeded but no access token was returned (cloud-mode instance required)")
 	}
-	patBody, _ := json.Marshal(map[string]any{"name": patName, "expires_in_days": 0})
+	patReq := map[string]any{"name": patName, "expires_in_days": 0}
+	if teamID != "" {
+		resolved, rerr := resolveRemoteTeamIDAs(ctx, c, lr.AccessToken, teamID)
+		if rerr != nil {
+			return "", "", rerr
+		}
+		teamID = resolved
+		patReq["team_id"] = teamID
+	}
+	patBody, _ := json.Marshal(patReq)
 	code, body, err = c.do(ctx, "POST", "/api/me/tokens", patBody, lr.AccessToken)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if code/100 != 2 {
-		return "", fmt.Errorf("could not mint a token (HTTP %d): %s", code, describeErrorBody(body))
+		if teamID != "" {
+			return "", "", fmt.Errorf("could not mint a token pinned to team %s (HTTP %d): %s — check the team id with `iterion remote teams list` after a login without --team", teamID, code, describeErrorBody(body))
+		}
+		return "", "", fmt.Errorf("could not mint a token (HTTP %d): %s", code, describeErrorBody(body))
 	}
 	var pr struct {
 		Token string `json:"token"`
 	}
 	if err := json.Unmarshal(body, &pr); err != nil || pr.Token == "" {
-		return "", fmt.Errorf("token endpoint returned no token")
+		return "", "", fmt.Errorf("token endpoint returned no token")
 	}
-	return pr.Token, nil
+	return pr.Token, teamID, nil
 }
 
 // firstLine is a body's first line, made fit for a terminal and bounded

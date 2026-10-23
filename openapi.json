@@ -61,9 +61,6 @@
       },
       "AuthMeResponse": {
         "properties": {
-          "access_token": {
-            "type": "string"
-          },
           "active_org_id": {
             "type": "string"
           },
@@ -85,6 +82,9 @@
             },
             "type": "array"
           },
+          "session_lineage": {
+            "type": "string"
+          },
           "user": {
             "$ref": "#/components/schemas/UserView"
           }
@@ -92,6 +92,35 @@
         "required": [
           "user",
           "orgs"
+        ],
+        "type": "object"
+      },
+      "AuthSessionResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "active_org_id": {
+            "type": "string"
+          },
+          "active_org_role": {
+            "type": "string"
+          },
+          "active_role": {
+            "type": "string"
+          },
+          "active_team_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserView"
+          }
+        },
+        "required": [
+          "user"
         ],
         "type": "object"
       },
@@ -4324,6 +4353,40 @@
         ],
         "type": "object"
       },
+      "changeMyPasswordReq": {
+        "properties": {
+          "current_password": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "type": "object"
+      },
+      "changePasswordReq": {
+        "properties": {
+          "current_password": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "current_password",
+          "new_password"
+        ],
+        "type": "object"
+      },
       "createApiKeyReq": {
         "properties": {
           "base_url": {
@@ -4501,6 +4564,17 @@
           "output_tokens",
           "aggregate_tokens",
           "runs"
+        ],
+        "type": "object"
+      },
+      "desktopExchangeReq": {
+        "properties": {
+          "ticket": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket"
         ],
         "type": "object"
       },
@@ -5067,6 +5141,21 @@
         ],
         "type": "object"
       },
+      "passwordResetConfirmReq": {
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "password"
+        ],
+        "type": "object"
+      },
       "pipelineBoardReadyRequest": {
         "properties": {
           "ready": {
@@ -5498,6 +5587,27 @@
         ],
         "type": "object"
       },
+      "registerReq": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "invitation": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "type": "object"
+      },
       "routingPolicyView": {
         "properties": {
           "origin": {
@@ -5552,6 +5662,31 @@
         },
         "required": [
           "status"
+        ],
+        "type": "object"
+      },
+      "ssoLinkView": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_user_id": {
+            "type": "string"
+          },
+          "session_linked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "provider",
+          "provider_user_id",
+          "session_linked"
         ],
         "type": "object"
       },
@@ -5751,8 +5886,11 @@
       "get": {
         "operationId": "getAdminAudit",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/audit",
@@ -5774,6 +5912,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/bots",
@@ -5786,8 +5930,11 @@
       "delete": {
         "operationId": "deleteAdminBotsBySlug",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/bots/{slug}",
@@ -5807,6 +5954,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/bots/{slug}",
@@ -5846,6 +5999,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/bots/{slug}",
@@ -5887,6 +6046,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/bots/{slug}/files/{path...}",
@@ -5934,6 +6099,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/bots/{slug}/files/{path...}",
@@ -5975,6 +6146,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/bots/{slug}/fork",
@@ -5996,6 +6173,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/credentials/usage",
@@ -6028,6 +6211,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/forge/oauth-apps",
@@ -6057,6 +6246,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/forge/oauth-apps",
@@ -6069,8 +6264,11 @@
       "delete": {
         "operationId": "deleteAdminForgeOauthAppsByAppId",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/forge/oauth-apps/{app_id}",
@@ -6113,6 +6311,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/llm/api-keys",
@@ -6142,6 +6346,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/llm/api-keys",
@@ -6154,8 +6364,11 @@
       "delete": {
         "operationId": "deleteAdminLlmApiKeysByKeyId",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/llm/api-keys/{key_id}",
@@ -6195,6 +6408,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PATCH /api/admin/llm/api-keys/{key_id}",
@@ -6216,6 +6435,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/llm/oauth/connections",
@@ -6228,8 +6453,11 @@
       "delete": {
         "operationId": "deleteAdminLlmOauthByKind",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/llm/oauth/{kind}",
@@ -6250,8 +6478,11 @@
       "patch": {
         "operationId": "patchAdminLlmOauthByKind",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PATCH /api/admin/llm/oauth/{kind}",
@@ -6274,8 +6505,11 @@
       "post": {
         "operationId": "postAdminLlmOauthByKindAuthorizeComplete",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/llm/oauth/{kind}/authorize/complete",
@@ -6298,8 +6532,11 @@
       "post": {
         "operationId": "postAdminLlmOauthByKindAuthorizeStart",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/llm/oauth/{kind}/authorize/start",
@@ -6322,8 +6559,11 @@
       "post": {
         "operationId": "postAdminLlmOauthByKindCredentials",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/llm/oauth/{kind}/credentials",
@@ -6346,8 +6586,11 @@
       "post": {
         "operationId": "postAdminLlmOauthByKindRefresh",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/llm/oauth/{kind}/refresh",
@@ -6380,6 +6623,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/orgs",
@@ -6409,6 +6658,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/orgs",
@@ -6430,6 +6685,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/orgs/{id}",
@@ -6449,6 +6710,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/orgs/{id}",
@@ -6488,6 +6755,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PATCH /api/admin/orgs/{id}",
@@ -6519,6 +6792,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/orgs/{id}/restore",
@@ -6560,6 +6839,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/orgs/{id}/status",
@@ -6592,6 +6877,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/orgs/{id}/teams",
@@ -6614,8 +6905,11 @@
       "get": {
         "operationId": "getAdminOrgsByIdUsage",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/orgs/{id}/usage",
@@ -6638,8 +6932,11 @@
       "get": {
         "operationId": "getAdminRunnerPools",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/runner-pools",
@@ -6650,8 +6947,11 @@
       "put": {
         "operationId": "putAdminRunnerPools",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/runner-pools",
@@ -6673,6 +6973,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/bot-roles",
@@ -6692,6 +6998,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/bot-roles",
@@ -6713,6 +7025,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/bot-vars",
@@ -6732,6 +7050,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/bot-vars",
@@ -6744,8 +7068,11 @@
       "get": {
         "operationId": "getAdminSettingsBudgetFloor",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/budget-floor",
@@ -6756,8 +7083,11 @@
       "put": {
         "operationId": "putAdminSettingsBudgetFloor",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/budget-floor",
@@ -6829,6 +7159,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/platform-credentials",
@@ -6848,6 +7184,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/platform-credentials",
@@ -6869,6 +7211,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/sandbox",
@@ -6888,6 +7236,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/sandbox",
@@ -6909,6 +7263,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/usage-caps",
@@ -6928,6 +7288,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/usage-caps",
@@ -6950,8 +7316,11 @@
       "put": {
         "operationId": "putAdminTeamsByIdLlmFallback",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/teams/{id}/llm-fallback",
@@ -6974,8 +7343,11 @@
       "put": {
         "operationId": "putAdminTeamsByIdRunnerPool",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/teams/{id}/runner-pool",
@@ -6988,8 +7360,11 @@
       "delete": {
         "operationId": "deleteAdminTenantsByTenantBotSourcesBySlugHistory",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/tenants/{tenant}/bot-sources/{slug}/history",
@@ -7029,6 +7404,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/usage-readings/{fingerprint}",
@@ -7082,6 +7463,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/users",
@@ -7103,6 +7490,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/users/{id}",
@@ -7142,6 +7535,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PATCH /api/admin/users/{id}",
@@ -7164,8 +7563,11 @@
       "post": {
         "operationId": "postAdminUsersByIdResetPassword",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/users/{id}/reset-password",
@@ -7201,9 +7603,26 @@
     "/api/auth/desktop/exchange": {
       "post": {
         "operationId": "postAuthDesktopExchange",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/desktopExchangeReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionResponse"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/auth/desktop/exchange",
@@ -7258,7 +7677,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AuthMeResponse"
+                  "$ref": "#/components/schemas/AuthSessionResponse"
                 }
               }
             },
@@ -7320,8 +7739,21 @@
       "post": {
         "operationId": "postAuthMeOrgByOrgId",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/auth/me/org/{org_id}",
@@ -7344,8 +7776,21 @@
       "post": {
         "operationId": "postAuthMeTeamByTeamId",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/auth/me/team/{team_id}",
@@ -7419,9 +7864,26 @@
     "/api/auth/password/change": {
       "post": {
         "operationId": "postAuthPasswordChange",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/changePasswordReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionResponse"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/auth/password/change",
@@ -7433,9 +7895,26 @@
     "/api/auth/password/reset/confirm": {
       "post": {
         "operationId": "postAuthPasswordResetConfirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/passwordResetConfirmReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionResponse"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/auth/password/reset/confirm",
@@ -7476,8 +7955,15 @@
       "post": {
         "operationId": "postAuthRefresh",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionResponse"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/auth/refresh",
@@ -7489,9 +7975,26 @@
     "/api/auth/register": {
       "post": {
         "operationId": "postAuthRegister",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/registerReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionResponse"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/auth/register",
@@ -8065,9 +8568,38 @@
     "/api/me/password": {
       "post": {
         "operationId": "postMePassword",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/changeMyPasswordReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          },
+          "409": {
+            "description": "The change conflicts with the account's state (see the error code in the body)."
+          },
+          "429": {
+            "description": "The proof is throttled like the sign-in it stands for; Retry-After names the wait."
           }
         },
         "summary": "POST /api/me/password",
@@ -8214,8 +8746,14 @@
       "post": {
         "operationId": "postMeSessionsRevokeAll",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          },
+          "503": {
+            "description": "The request's record landed but a later step failed; sign in again and repeat the request (every step is idempotent)."
           }
         },
         "summary": "POST /api/me/sessions/revoke-all",
@@ -8228,8 +8766,26 @@
       "get": {
         "operationId": "getMeSsoLinks",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "links": {
+                      "items": {
+                        "$ref": "#/components/schemas/ssoLinkView"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "links"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/me/sso/links",
@@ -8242,8 +8798,14 @@
       "delete": {
         "operationId": "deleteMeSsoLinksByProviderBySubject",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          },
+          "409": {
+            "description": "The change conflicts with the account's state (see the error code in the body)."
           }
         },
         "summary": "DELETE /api/me/sso/links/{provider}/{subject}",
@@ -8274,8 +8836,11 @@
       "get": {
         "operationId": "getMeSsoByProviderLinkStart",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/me/sso/{provider}/link/start",
@@ -8359,6 +8924,12 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/me/tokens",
@@ -8371,8 +8942,11 @@
       "delete": {
         "operationId": "deleteMeTokensByTokenId",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/me/tokens/{token_id}",
@@ -9263,8 +9837,11 @@
       "post": {
         "operationId": "postOrgsByIdSsoDomains",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/orgs/{id}/sso/domains",
@@ -9277,8 +9854,11 @@
       "delete": {
         "operationId": "deleteOrgsByIdSsoDomainsByDomainId",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/orgs/{id}/sso/domains/{domain_id}",
@@ -9327,8 +9907,11 @@
       "post": {
         "operationId": "postOrgsByIdSsoDomainsByDomainIdVerify",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/orgs/{id}/sso/domains/{domain_id}/verify",
@@ -9363,8 +9946,11 @@
       "post": {
         "operationId": "postOrgsByIdSsoProviders",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/orgs/{id}/sso/providers",
@@ -9377,8 +9963,11 @@
       "delete": {
         "operationId": "deleteOrgsByIdSsoProvidersByProviderId",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/orgs/{id}/sso/providers/{provider_id}",
@@ -9407,8 +9996,11 @@
       "patch": {
         "operationId": "patchOrgsByIdSsoProvidersByProviderId",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PATCH /api/orgs/{id}/sso/providers/{provider_id}",
@@ -14907,8 +15499,11 @@
       "post": {
         "operationId": "postV1PluginsInstall",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/v1/plugins/install",
@@ -14921,8 +15516,11 @@
       "delete": {
         "operationId": "deleteV1PluginsByName",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/v1/plugins/{name}",
@@ -14967,8 +15565,11 @@
       "put": {
         "operationId": "putV1PluginsByNameConfig",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/v1/plugins/{name}/config",
@@ -14991,8 +15592,11 @@
       "post": {
         "operationId": "postV1PluginsByNameDisable",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/v1/plugins/{name}/disable",
@@ -15015,8 +15619,11 @@
       "post": {
         "operationId": "postV1PluginsByNameEnable",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/v1/plugins/{name}/enable",
@@ -15047,8 +15654,11 @@
       "post": {
         "operationId": "postV1PluginsByNameLifecycleByPhase",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/v1/plugins/{name}/lifecycle/{phase}",
@@ -15432,8 +16042,11 @@
       "post": {
         "operationId": "postWsTicket",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/ws/ticket",

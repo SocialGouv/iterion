@@ -66,7 +66,8 @@ func TestSwitchOrgAndTeam(t *testing.T) {
 	}
 
 	// Switch to org2 → lands on a team within org2.
-	id, _, _, err := svc.SwitchOrg(ctx, uid, org2.ID)
+	idRes, err := svc.SwitchOrg(ctx, Identity{Credential: CredentialAccessToken, UserID: uid}, org2.ID)
+	id := idRes.Identity
 	if err != nil {
 		t.Fatalf("SwitchOrg: %v", err)
 	}
@@ -82,7 +83,8 @@ func TestSwitchOrgAndTeam(t *testing.T) {
 	}
 
 	// SwitchTeam to the landed team populates the org context too.
-	id2, _, _, err := svc.SwitchTeam(ctx, uid, id.TeamID)
+	id2Res, err := svc.SwitchTeam(ctx, Identity{Credential: CredentialAccessToken, UserID: uid}, id.TeamID)
+	id2 := id2Res.Identity
 	if err != nil {
 		t.Fatalf("SwitchTeam: %v", err)
 	}
@@ -100,7 +102,7 @@ func TestSwitchOrgNotMember(t *testing.T) {
 	b, _ := svc.Register(ctx, "b@example.com", "correcthorse", "B", "", "ua", "ip")
 
 	// B tries to switch into A's personal org.
-	if _, _, _, err := svc.SwitchOrg(ctx, b.User.ID, a.ActiveOrgID); !errors.Is(err, ErrNotAnOrgMember) {
+	if _, err := svc.SwitchOrg(ctx, Identity{Credential: CredentialAccessToken, UserID: b.User.ID}, a.ActiveOrgID); !errors.Is(err, ErrNotAnOrgMember) {
 		t.Fatalf("expected ErrNotAnOrgMember, got %v", err)
 	}
 }

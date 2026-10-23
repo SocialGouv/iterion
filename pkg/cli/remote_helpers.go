@@ -264,13 +264,26 @@ type RemoteMe = server.AuthMeResponse
 
 // Me fetches the authenticated account's identity view.
 func (c *RemoteClient) Me(ctx context.Context) (RemoteMe, error) {
+	return c.MeAs(ctx, "")
+}
+
+// MeAs is Me under an explicit bearer — a login's own access JWT, read before
+// any credential is stored. An empty bearer sends the client's own.
+func (c *RemoteClient) MeAs(ctx context.Context, bearer string) (RemoteMe, error) {
 	var me RemoteMe
-	_, err := c.Call(ctx, "GET", "/api/auth/me", nil, &me)
-	// The aliased response type carries an AccessToken field the login
-	// path uses; /api/auth/me never populates it. Zero it regardless so
-	// no future caller can serialize a token out of this struct.
-	me.AccessToken = ""
-	return me, err
+	code, body, err := c.do(ctx, "GET", "/api/auth/me", nil, bearer)
+	if err != nil {
+		return me, err
+	}
+	if code/100 != 2 {
+		return me, &APIError{Status: code, Method: "GET", Path: "/api/auth/me", Body: string(body)}
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &me); err != nil {
+			return me, fmt.Errorf("decode GET /api/auth/me response: %w", err)
+		}
+	}
+	return me, nil
 }
 
 // ParseAttachFlags parses repeated "name=path" attachment flags.

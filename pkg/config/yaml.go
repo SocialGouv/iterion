@@ -69,6 +69,7 @@ type yamlAuthConfig struct {
 	SecretsKey          *string                 `yaml:"secrets_key"`
 	AccessTTL           *string                 `yaml:"access_ttl"`
 	RefreshTTL          *string                 `yaml:"refresh_ttl"`
+	RefreshReuseGrace   *string                 `yaml:"refresh_reuse_grace"`
 	BootstrapAdminEmail *string                 `yaml:"bootstrap_admin_email"`
 	SignupMode          *string                 `yaml:"signup_mode"`
 	PublicURL           *string                 `yaml:"public_url"`
@@ -295,6 +296,13 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 				return fmt.Errorf("auth.refresh_ttl: %w", err)
 			}
 			cfg.Auth.RefreshTTL = d
+		}
+		if y.Auth.RefreshReuseGrace != nil {
+			d, err := time.ParseDuration(*y.Auth.RefreshReuseGrace)
+			if err != nil {
+				return fmt.Errorf("auth.refresh_reuse_grace: %w", err)
+			}
+			cfg.Auth.RefreshReuseGrace = d
 		}
 		applyString(y.Auth.BootstrapAdminEmail, &cfg.Auth.BootstrapAdminEmail)
 		applyString(y.Auth.SignupMode, &cfg.Auth.SignupMode)

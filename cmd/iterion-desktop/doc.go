@@ -13,13 +13,13 @@
 // Build tags:
 //
 //   - The Wails-importing files (main.go, app.go, menu.go, window_state.go,
-//     server_host.go, single_instance.go, embed.go, keychain.go, updater.go)
-//     carry `//go:build desktop` so the default `go test ./...` does not
-//     require Wails as a Go module dep. Run `task desktop:build` (which
-//     passes -tags desktop) on a host with the Wails CLI installed.
-//   - Platform-neutral pieces (config.go, external_cli.go, path_fix.go) and
-//     their tests build under the default tag set so CI always exercises
-//     them.
+//     server_host.go, single_instance.go, embed.go, updater.go) carry
+//     `//go:build desktop` so the default `go test ./...` does not require
+//     Wails as a Go module dep. Run `task desktop:build` (which passes
+//     -tags desktop) on a host with the Wails CLI installed.
+//   - Platform-neutral pieces (config.go, external_cli.go, keychain.go,
+//     path_fix.go, the cloud_*.go core) and their tests build under the
+//     default tag set so CI always exercises them.
 //
 // See docs/desktop-architecture.md for the full design rationale.
 package main

@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
@@ -24,14 +26,19 @@ const jwtIssuer = "iterion"
 const jwtAudience = "iterion-api"
 
 // AccessClaims is the body of the access JWT. Embeds RegisteredClaims
-// so iat/exp/jti/iss/aud/sub round-trip via golang-jwt.
+// so iat/exp/jti/iss/aud/sub round-trip via golang-jwt. SessionID (sid) is
+// the lineage id of the refresh session the token was minted for and
+// SessionGeneration (sgen) the account session generation that lineage was
+// born under (Identity.SessionLineage, Identity.SessionGeneration).
 type AccessClaims struct {
-	Email        string `json:"email,omitempty"`
-	OrgID        string `json:"org_id,omitempty"`
-	OrgRole      string `json:"org_role,omitempty"`
-	TeamID       string `json:"team_id,omitempty"`
-	Role         string `json:"role,omitempty"`
-	IsSuperAdmin bool   `json:"is_super_admin,omitempty"`
+	Email             string `json:"email,omitempty"`
+	OrgID             string `json:"org_id,omitempty"`
+	OrgRole           string `json:"org_role,omitempty"`
+	TeamID            string `json:"team_id,omitempty"`
+	Role              string `json:"role,omitempty"`
+	IsSuperAdmin      bool   `json:"is_super_admin,omitempty"`
+	SessionID         string `json:"sid,omitempty"`
+	SessionGeneration int64  `json:"sgen,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -150,20 +157,33 @@ func NewJWTSignerMulti(keys []JWTKey, activeKID string, accessTTL time.Duration,
 }
 
 // IssueAccess produces a freshly-signed access token for the given
-// principal. The JTI is a UUIDv4 captured back into the returned
-// Identity for audit purposes; the kid header is the signer's active
-// key id so Verify can dispatch correctly after rotation.
+// principal, valid for the signer's access TTL. The JTI is a UUIDv4
+// captured back into the returned Identity for audit purposes; the kid
+// header is the signer's active key id so Verify can dispatch correctly
+// after rotation.
 func (s *JWTSigner) IssueAccess(id Identity) (token string, exp time.Time, err error) {
+	return s.IssueAccessUntil(id, time.Time{})
+}
+
+// IssueAccessUntil is IssueAccess for a token that must not outlive
+// notAfter: it expires at notAfter when that comes before the access TTL
+// does. A zero notAfter bounds nothing.
+func (s *JWTSigner) IssueAccessUntil(id Identity, notAfter time.Time) (token string, exp time.Time, err error) {
 	now := s.now().UTC()
 	exp = now.Add(s.accessTTL)
+	if !notAfter.IsZero() && notAfter.Before(exp) {
+		exp = notAfter.UTC()
+	}
 	jti := uuid.NewString()
 	claims := AccessClaims{
-		Email:        id.Email,
-		OrgID:        id.OrgID,
-		OrgRole:      string(id.OrgRole),
-		TeamID:       id.TeamID,
-		Role:         string(id.Role),
-		IsSuperAdmin: id.IsSuperAdmin,
+		Email:             id.Email,
+		OrgID:             id.OrgID,
+		OrgRole:           string(id.OrgRole),
+		TeamID:            id.TeamID,
+		Role:              string(id.Role),
+		IsSuperAdmin:      id.IsSuperAdmin,
+		SessionID:         id.SessionLineage,
+		SessionGeneration: id.SessionGeneration,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    jwtIssuer,
 			Subject:   id.UserID,
@@ -233,15 +253,23 @@ func (s *JWTSigner) Verify(raw string) (Identity, error) {
 	if c.ID != "" && s.denylist.IsDenied(c.ID) {
 		return Identity{}, ErrTokenRevoked
 	}
+	var exp time.Time
+	if c.ExpiresAt != nil {
+		exp = c.ExpiresAt.UTC()
+	}
 	return Identity{
-		UserID:       c.Subject,
-		Email:        c.Email,
-		OrgID:        c.OrgID,
-		OrgRole:      identity.OrgRole(c.OrgRole),
-		TeamID:       c.TeamID,
-		Role:         identity.Role(c.Role),
-		IsSuperAdmin: c.IsSuperAdmin,
-		JTI:          c.ID,
+		UserID:            c.Subject,
+		Email:             c.Email,
+		OrgID:             c.OrgID,
+		OrgRole:           identity.OrgRole(c.OrgRole),
+		TeamID:            c.TeamID,
+		Role:              identity.Role(c.Role),
+		IsSuperAdmin:      c.IsSuperAdmin,
+		JTI:               c.ID,
+		Credential:        CredentialAccessToken,
+		ExpiresAt:         exp,
+		SessionLineage:    c.SessionID,
+		SessionGeneration: c.SessionGeneration,
 	}, nil
 }
 
@@ -253,6 +281,23 @@ func (s *JWTSigner) AccessTTL() time.Duration { return s.accessTTL }
 // (via /authz/diagnostics, for example) which key the server is
 // currently minting tokens with.
 func (s *JWTSigner) ActiveKID() string { return s.activeKID }
+
+// derivedKey returns a key for one purpose other than signing JWTs, derived
+// from the signing key kid as HMAC-SHA256(secret, label). The label
+// separates the purposes: a JWT's signing input is the base64url
+// "header.payload", which never equals a label, so no derived key is a value
+// the signer computes for a token. Every replica holds the same key set, so
+// a key derived on one replica is derived identically on the others. ok is
+// false when kid is not in the key set.
+func (s *JWTSigner) derivedKey(kid, label string) (key []byte, ok bool) {
+	k, found := s.keys[kid]
+	if !found {
+		return nil, false
+	}
+	mac := hmac.New(sha256.New, k.Secret)
+	mac.Write([]byte(label))
+	return mac.Sum(nil), true
+}
 
 // JWT-related sentinel errors.
 var (

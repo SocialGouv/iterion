@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/identity"
 )
@@ -29,6 +30,34 @@ type Identity struct {
 	// revocation later (we don't revoke access tokens today; we
 	// rely on short TTL + refresh rotation).
 	JTI string
+	// Credential names the credential the identity was read from (an access
+	// token, a personal access token, a WS ticket, the dev-mode principal);
+	// empty for an identity no credential reader built, which mints nothing
+	// (CheckDerivation).
+	Credential CredentialKind
+	// ExpiresAt is the instant the credential the identity was read from
+	// stops authenticating: an access token's expiry, a personal access
+	// token's own expiry (zero when it has none), and for a WS ticket the
+	// expiry of the credential that minted it. Zero for a synthetic
+	// principal.
+	ExpiresAt time.Time
+	// SessionLineage and SessionGeneration name the refresh session an
+	// access token was minted for: the lineage id of its login and the
+	// account session generation that lineage was born under (SessionRoot) —
+	// carried by a WS ticket minted from it. CheckDerivation checks them
+	// against the session's revocations. Empty for a credential that names
+	// no session.
+	SessionLineage    string
+	SessionGeneration int64
+	// CredentialID names the row of a revocable credential the identity was
+	// read from: a personal access token's id — carried by a WS ticket minted
+	// from it. CheckDerivation and CheckStanding read the row through it.
+	// Empty for a credential with no row.
+	CredentialID string
+	// MintedBy is, for a WS ticket, the kind of the credential that minted
+	// it (whose session, expiry and row the ticket carries): CheckStanding
+	// asks the ticket's standing as that credential's. Empty otherwise.
+	MintedBy CredentialKind
 	// Via names how this identity's team was resolved when it does NOT
 	// come from the credential's own pin: the run-by-id resolution
 	// (run_scope.go) re-scopes an identity to the RUN's team and records

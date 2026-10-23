@@ -45,6 +45,26 @@ func (s *MemoryStore) Revoke(_ context.Context, id string, at time.Time) error {
 	return err
 }
 
+func (s *MemoryStore) RevokeAllByUser(_ context.Context, userID string, at time.Time) (int64, error) {
+	var n int64
+	for _, t := range s.kit.List(func(t Token) bool { return t.UserID == userID && t.RevokedAt == nil }) {
+		changed, err := s.kit.Mutate(t.ID, func(t *Token) bool {
+			if t.RevokedAt != nil {
+				return false
+			}
+			t.RevokedAt = &at
+			return true
+		})
+		if err != nil {
+			return n, err
+		}
+		if changed {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (s *MemoryStore) MarkUsed(_ context.Context, id string, at time.Time) error {
 	_, err := s.kit.Mutate(id, func(t *Token) bool {
 		t.LastUsedAt = &at

@@ -53,7 +53,7 @@ flowchart LR
 
 | Page | What it draws |
 |---|---|
-| [erd-complete.md](erd-complete.md) | The whole database in ONE diagram: all 79 collections, every relationship, no attributes — the at-a-glance answer to "what relates to what". Drawn from the six data-model pages by construction. |
+| [erd-complete.md](erd-complete.md) | The whole database in ONE diagram: all 80 collections and every relationship in its Mermaid source, no attributes — the at-a-glance answer to "what relates to what", kept in step with the six data-model pages by hand. Its rendered SVG lags the source; the page lists what the image misses. |
 | [data-model-identity.md](data-model-identity.md) | Orgs, teams, users and their memberships; invitations; the credentials a person holds (sessions, PATs, reset tokens, SSO state); org-level SSO config; the audit trail. |
 | [data-model-forge-bots.md](data-model-forge-bots.md) | A forge connection, the repositories it binds, the webhooks it provisions and the bots it enables — the worked example *Revi bound to a repository, inside a team*; the inbound delivery lifecycle; the bot-definition tiers (team, platform, baked); the board binding and the provisioning gate. |
 | [data-model-runs.md](data-model-runs.md) | A run and its per-run streams (events, logs, turns, plans, notes, interactions), the run tree (parents, sub-bots, forks) and delegations, assistant supervision; the run status machine. |

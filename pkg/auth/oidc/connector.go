@@ -109,6 +109,13 @@ type PendingAuth struct {
 	// resolved external identity to this user instead of running the normal
 	// login/signup logic. Empty for an ordinary sign-in flow.
 	LinkUserID string
+	// LinkSessionLineage and LinkSessionGeneration name the session whose
+	// access token started the link flow (the token's lineage and the
+	// account session generation it was born under): the callback links
+	// only while that session is still live. Empty for a sign-in flow, and
+	// for an access token that names no session.
+	LinkSessionLineage    string
+	LinkSessionGeneration int64
 
 	// Desktop marks a flow initiated by the DESKTOP app. Instead of setting
 	// browser cookies and redirecting to an SPA path, the callback mints a

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/SocialGouv/iterion/internal/httpx"
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 )
 
@@ -31,6 +33,32 @@ const browserCDPWriteDeadline = 5 * time.Second
 // events should never exceed a few hundred bytes, so 64 KiB is more
 // than generous and protects against accidental flooding.
 const browserCDPMaxFrame = 64 * 1024
+
+// defaultBrowserCDPStandingPeriod is how often an open bridge re-asks whether
+// the credential it was opened with still stands. The bridge drives the run's
+// Chromium (navigate, evaluate, read the page), so the question the upgrade
+// asked is owed again while it is open; one store read per period per
+// connection bounds its cost. A tick rather than a per-frame check because
+// the bridge is a dumb pump whose inbound frames are mouse moves at
+// screencast rate.
+const defaultBrowserCDPStandingPeriod = 30 * time.Second
+
+// browserCDPStandingTimeout bounds that read.
+const browserCDPStandingTimeout = 10 * time.Second
+
+// browserCDPStandingFailureLimit is how many consecutive standing reads that
+// did not complete close an open CDP bridge. The bridge has no envelope to
+// refuse, so a read the server could not complete would otherwise drive the
+// run's Chromium indefinitely; after this many, the bridge closes and the
+// studio reconnects (a fresh upgrade re-judges the credential).
+const browserCDPStandingFailureLimit = 3
+
+// wsCloseStandingUnavailable names that close on the wire.
+const wsCloseStandingUnavailable = "standing_unavailable"
+
+func browserCDPStandingPeriod() time.Duration {
+	return envDurationOrDefault("ITERION_RUN_BROWSER_STANDING_PERIOD", defaultBrowserCDPStandingPeriod)
+}
 
 // handleBrowserCDP serves GET /api/runs/{id}/browser/cdp?session=<id>.
 // It bridges the studio's WebSocket to the in-process Chromium CDP
@@ -105,6 +133,63 @@ func (s *Server) handleBrowserCDP(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() { close(stop) })
 	}
 
+	// The credential AND the scope the bridge was opened with, re-asked while
+	// it is open: a session revoked or an account disabled after the upgrade
+	// stops driving the run's Chromium, and so does a lost scope — a removed
+	// membership, a demoted super-admin, a deleted run (runSocketStanding,
+	// the run console's own per-envelope computation). r.Context() dies with
+	// the upgrade, so the identity is snapshotted here. A bridge carrying no
+	// credential is one no auth context ever reached (a server built without
+	// the middleware) and has nothing to be asked about.
+	if opener, ok := auth.FromContext(r.Context()); ok && opener.Credential != "" {
+		go func() {
+			defer closeOnce()
+			tick := time.NewTicker(browserCDPStandingPeriod())
+			defer tick.Stop()
+			unreadable := 0
+			for {
+				select {
+				case <-stop:
+					return
+				case <-tick.C:
+					ctx, cancel := context.WithTimeout(context.Background(), browserCDPStandingTimeout)
+					verdict := s.runSocketStanding(ctx, runID, opener)
+					cancel()
+					switch verdict.outcome {
+					case socketStands:
+						unreadable = 0
+					case socketUnreadable:
+						// The bridge is a command surface with no envelope
+						// to refuse, so a standing nobody could re-check
+						// keeps it only while the failures are isolated:
+						// past the limit it closes fail-closed.
+						unreadable++
+						if unreadable < browserCDPStandingFailureLimit {
+							continue
+						}
+						if s.logger != nil {
+							s.logger.Warn("server: cdp bridge of run %s closed: %d consecutive standing reads failed", runID, unreadable)
+						}
+						_ = writeWSClose(conn, websocket.ClosePolicyViolation, wsCloseStandingUnavailable, "the standing of this connection could not be re-checked — reconnect")
+						return
+					case socketCredentialRefused:
+						if s.logger != nil {
+							s.logger.Warn("server: cdp bridge of run %s closed: %v", runID, verdict.cause)
+						}
+						_ = writeWSClose(conn, websocket.ClosePolicyViolation, wsCloseCredentialRefused, verdict.cause)
+						return
+					case socketScopeLost:
+						if s.logger != nil {
+							s.logger.Warn("server: cdp bridge of run %s closed: %v", runID, verdict.cause)
+						}
+						_ = writeWSClose(conn, websocket.ClosePolicyViolation, wsCloseScopeLost, verdict.cause)
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	// CDP → studio: re-frame the null-terminated pipe stream into
 	// one WS BinaryMessage per CDP message. The pipe contract from
 	// `--remote-debugging-pipe` is: one JSON-RPC object followed by
@@ -142,13 +227,12 @@ func (s *Server) handleBrowserCDP(w http.ResponseWriter, r *http.Request) {
 			}
 			if readErr != nil {
 				if !errors.Is(readErr, io.EOF) {
-					_ = conn.WriteMessage(
-						websocket.CloseMessage,
-						websocket.FormatCloseMessage(
-							websocket.CloseInternalServerErr,
-							readErr.Error(),
-						),
-					)
+					// The pipe error is the close reason, cut to what a
+					// control frame carries (writeWSClose): an unbounded
+					// reason makes the frame the client never receives, and
+					// a dead pane reads as an abnormal transport drop
+					// instead of the pipe's death.
+					_ = writeWSClose(conn, websocket.CloseInternalServerErr, readErr.Error(), "")
 				}
 				return
 			}

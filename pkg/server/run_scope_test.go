@@ -35,8 +35,10 @@ import (
 func newRunScopeServer(t *testing.T) (*Server, *tenantGuardStore) {
 	t.Helper()
 	srv, _ := newTestServer(t)
-	orig := srv.runs
-	t.Cleanup(func() { srv.runs = orig })
+	// srv.runs stays swapped for the test's whole life and the Server is not
+	// shared beyond it: no restore here — a cleanup write would race the
+	// standing tick an open bridge or shell keeps running after the test's
+	// sockets close.
 
 	realStore, err := store.New(t.TempDir())
 	if err != nil {
@@ -82,6 +84,19 @@ func newRunScopeServer(t *testing.T) (*Server, *tenantGuardStore) {
 	for _, mb := range seeds {
 		if err := mem.UpsertMembership(ctx, mb); err != nil {
 			t.Fatalf("seed membership: %v", err)
+		}
+	}
+	// The accounts behind the memberships: a WS ticket's redemption asks the
+	// minting credential's account again (auth.Service.CheckDerivation), and
+	// a super-admin CLAIM is re-read from the account at the identity
+	// (revokeSuperAdminClaim) — so the fixture's super-admin has a row.
+	for _, uid := range []string{"u-member-a", "u-member-b", "u-both", "u-viewer-a", "u-configed-a", "u-orgadmin", "root", "sre"} {
+		u := identity.User{ID: uid, Email: uid + "@x", Status: identity.UserStatusActive}
+		if uid == "root" || uid == "sre" {
+			u.IsSuperAdmin = true
+		}
+		if _, err := mem.CreateUser(ctx, u); err != nil {
+			t.Fatalf("seed user %s: %v", uid, err)
 		}
 	}
 	if err := mem.UpsertOrgMembership(ctx, identity.OrgMembership{UserID: "u-orgadmin", OrgID: "org-1", Role: identity.OrgRoleAdmin}); err != nil {
@@ -145,7 +160,7 @@ func scoped(t *testing.T, srv *Server, method, target string, id auth.Identity) 
 }
 
 func caller(userID string, teamID string) auth.Identity {
-	return auth.Identity{UserID: userID, Email: userID + "@x", TeamID: teamID, Role: identity.RoleMember}
+	return auth.Identity{UserID: userID, Email: userID + "@x", TeamID: teamID, Role: identity.RoleMember, Credential: auth.CredentialAccessToken}
 }
 
 // The choke point serves a run from the RUN's team: a caller whose
@@ -622,5 +637,34 @@ func TestListRunsScopedByExplicitTeam(t *testing.T) {
 	srv.handleListRuns(rec, req)
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "team_id") {
 		t.Fatalf("invisible override: %d %s, want a 403 naming team_id", rec.Code, rec.Body.String())
+	}
+}
+
+// TestIdentityInTeam_KeepsTheCredentialFacts: an identity re-scoped to a
+// run's team is still the credential that was presented — its kind, its
+// expiry and its session travel with it, whichever standing carried it — so
+// what it may mint, and until when, does not change with the team it acts in.
+func TestIdentityInTeam_KeepsTheCredentialFacts(t *testing.T) {
+	srv, _ := newRunScopeServer(t)
+	expires := time.Now().UTC().Add(7 * time.Minute).Truncate(time.Second)
+	for _, tc := range []struct {
+		name string
+		id   auth.Identity
+	}{
+		{"membership", caller("u-both", "tenant-B")},
+		{"super-admin", auth.Identity{UserID: "root", IsSuperAdmin: true}},
+		{"org-admin lineage", caller("u-orgadmin", "")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := tc.id
+			id.Credential, id.ExpiresAt, id.SessionLineage, id.SessionGeneration = auth.CredentialPAT, expires, "lineage-1", 3
+			got, ok, err := identityInTeamOn(srv.authStore(), context.Background(), id, "tenant-A")
+			if err != nil || !ok {
+				t.Fatalf("re-scope: ok=%t err=%v", ok, err)
+			}
+			if got.Credential != auth.CredentialPAT || !got.ExpiresAt.Equal(expires) || got.SessionLineage != "lineage-1" || got.SessionGeneration != 3 {
+				t.Fatalf("the re-scoped identity lost the credential's facts: credential=%q expires=%v session=%q/%d", got.Credential, got.ExpiresAt, got.SessionLineage, got.SessionGeneration)
+			}
+		})
 	}
 }

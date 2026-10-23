@@ -7,9 +7,17 @@ This runbook covers the durable state iterion owns in cloud-mode:
 | Run docs + checkpoints | Mongo (`runs` collection) | Authoritative for resume | Runs un-resumable; events orphan |
 | Events stream | Mongo (`events` collection, TTL) | Observability replay | Editor "run console" goes blank for affected runs |
 | Interactions | Mongo (`interactions`) | Pause/resume answers | Affected runs stuck at `paused_waiting_human` |
-| Identity + auth | Mongo (`users`/`teams`/`memberships`/`sessions`/`oidc_links`) | Login + RBAC | All users logged out, RBAC lost |
+| Identity + auth | Mongo (`users`/`teams`/`memberships`/`sessions`/`session_revocations`/`oidc_links`) | Login + RBAC | All users logged out, RBAC lost |
 | Secrets (BYOK, OAuth, run secrets) | Mongo, encrypted with `ITERION_SECRETS_KEY` | Per-tenant credentials | Secrets unrecoverable if the secrets key is also lost |
 | Artifact bodies | S3 / blob | Versioned `artifacts/<run-id>/<node>/<v>.json` | Artifacts lost; checkpoints reference dead keys |
+
+A Mongo dump is also a credential store: it holds the plaintext refresh
+token of every desktop SSO ticket (`desktop_sso_tickets`) in the
+collection when it ran, each usable until it is rotated, its session or
+account is signed out, or `ITERION_REFRESH_TTL` passes — an unredeemed
+ticket's for the whole TTL unless its account is signed out everywhere
+([cloud-admin.md](cloud-admin.md) §2). Store, restrict and destroy the
+archives accordingly.
 
 **Critical invariant:** the Mongo backup and the blob backup must
 overlap in time. A Mongo restore that references blob keys deleted

@@ -1,6 +1,26 @@
 import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse, ReadRefusal, UnitInfo, UnitFileInfo } from "./types";
 import { apiBase, isScopedPane, scopePrefix } from "@/lib/scope";
 import { isWorkflowFile } from "@/lib/workflowFile";
+import {
+  ensureLoop,
+  fetchWithin,
+  present as presentSignOut,
+  recordSessionIdentity,
+  renewedSince,
+  SESSION_RENEWED_AT_KEY,
+  signOutInProgress,
+  signOutRequested,
+  type PresentOutcome,
+  type SignOutResult,
+} from "./signOutMachine";
+
+// The sign-out state machine (./signOutMachine) owns the pending record and
+// every presentation of its logout; this module keeps the refresh machinery
+// that has to stand still while a sign-out is owed. The keys are re-exported
+// for the callers that have always imported them from here: the renewal stamp
+// is the refresh path's evidence (written below, read by renewedSince), and
+// the pending record is the machine's one key.
+export { SESSION_RENEWED_AT_KEY, SIGN_OUT_PENDING_KEY } from "./signOutMachine";
 
 const BASE_URL = apiBase();
 
@@ -14,26 +34,470 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn;
 }
 
-// refreshInFlight dedupes concurrent refresh attempts: when several calls
-// 401 at once (the access JWT just expired), they all await the same single
-// POST /auth/refresh instead of racing — refresh rotates the refresh token,
-// so concurrent rotations would invalidate each other and bounce the user to
-// login. Resolves true when the session was renewed.
-let refreshInFlight: Promise<boolean> | null = null;
+// RefreshOutcome is what a silent refresh tells the request it was run for:
+// "renewed" — replay the request; "rejected" — the server refused the
+// session (401/403), it is over; "unavailable" — the server could not renew
+// it right now (a 5xx, a rate limit, a network error), and the session the
+// browser holds is still its own to present again.
+export type RefreshOutcome =
+  | { kind: "renewed" }
+  | { kind: "rejected" }
+  | { kind: "unavailable"; status: number | null };
 
-function tryRefreshSession(): Promise<boolean> {
-  if (!refreshInFlight) {
-    refreshInFlight = fetch(`${BASE_URL}/auth/refresh`, {
-      method: "POST",
-      credentials: "include",
-    })
-      .then((r) => r.ok)
-      .catch(() => false)
-      .finally(() => {
-        refreshInFlight = null;
-      });
+export function refreshOutcomeOf(status: number): RefreshOutcome {
+  if (status >= 200 && status < 300) return { kind: "renewed" };
+  if (status === 401 || status === 403) return { kind: "rejected" };
+  return { kind: "unavailable", status };
+}
+
+// browserStorage is localStorage, or null where there is none: storage the
+// browser refuses (its access throws), or a runtime without it.
+function browserStorage(): Storage | null {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
   }
-  return refreshInFlight;
+}
+
+// recordRenewal stamps the moment the browser's session cookies were replaced
+// — a refresh that renewed them, a session a credential route delivered — for
+// every tab to compare its evidence with (renewedSince). A stamp that cannot
+// be written is removed, so no tab takes an older one for the latest.
+function recordRenewal(): void {
+  const storage = browserStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(SESSION_RENEWED_AT_KEY, String(Date.now()));
+  } catch (err) {
+    console.warn(`auth: the session renewal could not be recorded for the other tabs: ${String(err)}`);
+    try {
+      storage.removeItem(SESSION_RENEWED_AT_KEY);
+    } catch (removeErr) {
+      console.warn(`auth: the previous renewal stamp could not be removed either: ${String(removeErr)}`);
+    }
+  }
+}
+
+// The pending sign-out is the machine's record (./signOutMachine): written
+// BEFORE the logout it guards, read by every tab, kept as OWED until a
+// presentation confirms it, the presented credential turns out dead, or the
+// session it names is past its own expiry — and kept as ABANDONED, with its
+// notice, when the user chooses to go on without it. This module delegates the
+// record to the machine; the refresh discipline around a sign-out stays here.
+
+// recordSessionLineage records which refresh session the browser's credential
+// belongs to, from the identity read that named it — the machine's HELD/GONE
+// evidence. Kept as the name the AuthProvider has always called.
+export function recordSessionLineage(lineage: string | undefined): void {
+  recordSessionIdentity({ lineage });
+}
+
+export type {
+  Heldness,
+  PresentOutcome,
+  SignOutRecord,
+  SignOutResult,
+} from "./signOutMachine";
+export {
+  abandon,
+  expireStale,
+  signOutPending,
+  externalChange,
+  heldnessOf,
+  readRecord,
+  recordSessionIdentity,
+  renewedSince,
+  resolveDelivered,
+  SignOutHeldError,
+  subscribe,
+  snapshotVersion,
+  unnamedRecordWasReplaced,
+} from "./signOutMachine";
+
+// sessionGeneration numbers the session this tab acts for. A sign-out opens a
+// new one when it STARTS, and so does a session a credential route delivered
+// (sessionDelivered): a request sent under an older generation belongs to a
+// session the tab has left, so its 401 renews nothing and signs nothing out —
+// the session it would renew, or sign out, is the one that replaced it.
+let sessionGeneration = 0;
+
+export function currentSessionGeneration(): number {
+  return sessionGeneration;
+}
+
+// signOutRun is the sign-out this tab is running, from its start until its
+// logout settled; null outside one.
+let signOutRun: Promise<SignOutResult> | null = null;
+
+// signOutInProgress is the machine's window (a presentation on the wire, or an
+// OWED record this browser can still present): every identity load, renewal
+// and switch consults it when it starts and when its answer arrives. Kept on
+// this module's surface for the callers that have always imported it here.
+export { signOutInProgress };
+
+// signOutOfServer is the USER's sign-out ask, wrapped in this module's refresh
+// discipline: a session generation opens (a request sent under an older one
+// renews nothing and signs nobody out), the retry series is dropped and its
+// epoch ended (an answer already in flight re-arms nothing), a refresh in
+// flight is waited out inside the bound and aborted past it (its late answer
+// must not reach the cookie jar), and no new one starts until the logout
+// settled. The machine writes the record BEFORE the logout goes on the wire,
+// keeps its lineage even when a presentation fails (naming is not lost), and
+// answers for the record's outcome. A sign-out already running is joined, not
+// doubled.
+export function signOutOfServer(): Promise<SignOutResult> {
+  if (signOutRun) return signOutRun;
+  sessionGeneration++;
+  signOutRequested();
+  cancelScheduledRefresh();
+  const run = settleRefreshInFlight()
+    .then(() => presentSignOut())
+    .then(mapOutcome)
+    .finally(() => {
+      signOutRun = null;
+    });
+  signOutRun = run;
+  return run;
+}
+
+// mapOutcome folds the machine's answer into the SignOutResult callers know: a
+// credential the logout's own answer names dead (401/403) is a session that is
+// over — as confirmed as a 2xx. An unconfirmed presentation arms the machine's
+// retry loop.
+function mapOutcome(outcome: PresentOutcome): SignOutResult {
+  switch (outcome) {
+    case "confirmed":
+    case "dead-credential":
+      return "confirmed";
+    case "other-session":
+      return "other-session";
+    case "unconfirmed":
+      ensureLoop();
+      return "unconfirmed";
+    default:
+      return "unconfirmed";
+  }
+}
+
+// settlePendingSignOut presents the logout again for a sign-out still pending
+// — this tab's or another's, owed or abandoned — and answers what it came to,
+// or "none" when no record stands or the record's session is no longer held
+// here (a GONE record only warns). A sign-out running in this tab is joined;
+// the record is never rewritten by a replay.
+export function settlePendingSignOut(): Promise<SignOutResult | "none"> {
+  if (signOutRun) return signOutRun;
+  return presentSignOut().then((outcome) => (outcome === "none" ? "none" : mapOutcome(outcome)));
+}
+
+// beforeSignIn readies the browser for the session a sign-in is about to
+// deliver: a pending sign-out is presented first — once the new cookies
+// replace the old ones nothing here can end that session — and a refresh of
+// the session being replaced is let go, so its late answer cannot set that
+// session's cookies over the new ones. The caller holds the sign-in when the
+// answer leaves an unconfirmed record standing (SignOutHeldError, the
+// AuthProvider's gate).
+export async function beforeSignIn(): Promise<SignOutResult | "none"> {
+  const settled = await settlePendingSignOut();
+  cancelScheduledRefresh();
+  abortRefreshInFlight();
+  return settled;
+}
+
+// sessionDelivered records that a credential route delivered a session: its
+// cookies replaced the ones the browser held. Requests sent before it belong
+// to the previous session, and the lineage this module held names the session
+// that was replaced, so it is dropped until an identity read names the new
+// one. The record is NOT touched here — resolving it against the delivery is
+// the machine's resolveDelivered, which the AuthProvider runs with the kind of
+// the delivery (a sign-in the user chose, or a credential change) BEFORE the
+// new identity is read, so the read is not blocked by a record whose session
+// is already gone from the jar.
+export function sessionDelivered(): void {
+  sessionGeneration++;
+  cancelScheduledRefresh();
+  recordRenewal();
+}
+
+// RefreshFlight is the POST /auth/refresh in flight. Concurrent callers share
+// it: when several calls 401 at once (the access JWT just expired), they all
+// await one presentation of the refresh token. Its abort settles every caller
+// at once as "unavailable", and cancels the request, so its answer never
+// reaches the cookie jar. sentAt is when it presented the token the jar held.
+interface RefreshFlight {
+  abort: AbortController;
+  sentAt: number;
+  answer: Promise<RefreshOutcome>;
+}
+
+let refreshInFlight: RefreshFlight | null = null;
+
+// REFRESH_RETRY_DELAYS_MS is when a refresh the server could not serve is
+// presented again on its own, counted from the previous attempt: the refresh
+// may have rotated the token before failing. The server completes a successor
+// it handed to nobody (its write or its claim failed) for a presentation
+// within five minutes, but redelivers one it handed out — the answer was lost
+// on the way — only inside its reuse window (30 s by default), and the user's
+// next click may come after it. The series stops at the first answer the
+// server gives (renewed or refused) or after its last delay; a request that
+// fails its own refresh starts it again.
+export const REFRESH_RETRY_DELAYS_MS: readonly number[] = [2000, 5000, 10000];
+
+let refreshRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let refreshRetryAttempt = 0;
+
+// refreshEpoch numbers the series a refresh belongs to. Every attempt carries
+// the epoch it STARTED under, and an answer from an epoch that is over arms
+// nothing and signs nobody out. Three things end one:
+//   - cancelScheduledRefresh() from a sign-out. Without the epoch a refresh
+//     already in flight when the user signed out schedules a re-presentation
+//     that reaches the server AFTER /logout: it presents a token the sign-out
+//     revoked, or — when the logout never reached the server, the same
+//     incident that made the refresh fail — renews the very session the user
+//     left; and its own 401 signs out whatever session the browser holds by
+//     then.
+//   - a session a credential route delivered: the series belongs to the
+//     session it replaced.
+//   - an answer (renewed or refused). The series exists for an answer the
+//     server could not give; once it gave one there is nothing to re-present,
+//     and an attempt still between its own steps must not present the token a
+//     renewal has already retired.
+let refreshEpoch = 0;
+
+// cancelScheduledRefresh drops a pending re-presentation and ends the epoch —
+// a signed-out browser presents nothing, including through an answer that was
+// already in flight when it signed out.
+export function cancelScheduledRefresh(): void {
+  if (refreshRetryTimer !== null) clearTimeout(refreshRetryTimer);
+  refreshRetryTimer = null;
+  refreshRetryAttempt = 0;
+  refreshEpoch++;
+}
+
+// SIGNOUT_REFRESH_SETTLE_MS bounds the wait for a refresh found already in
+// flight when the sign-out starts. The wait is what makes the cookies the
+// logout clears the ones the browser ends up with: a rotation that answers
+// while the logout is on the wire sets the successor's cookies AFTER that
+// clear, leaving a signed-out browser holding a session's credential. The
+// bound is what keeps a refresh that never answers from holding the sign-out
+// open, and the abort past it is what keeps that refresh's answer — a 401
+// clearing the cookies of whoever signs in next, a 200 setting the previous
+// session's over them — from landing after the sign-out.
+const SIGNOUT_REFRESH_SETTLE_MS = 2000;
+
+// settleRefreshInFlight waits out the refresh in flight, if any, up to
+// SIGNOUT_REFRESH_SETTLE_MS, and aborts it past that. It never throws: the
+// flight already turns a failure into an outcome.
+async function settleRefreshInFlight(): Promise<void> {
+  const flight = refreshInFlight;
+  if (!flight) return;
+  let cap: ReturnType<typeof setTimeout> | undefined;
+  const answered = await Promise.race([
+    flight.answer.then(() => true),
+    new Promise<boolean>((resolve) => {
+      cap = setTimeout(() => resolve(false), SIGNOUT_REFRESH_SETTLE_MS);
+    }),
+  ]);
+  clearTimeout(cap);
+  if (!answered) abortRefreshInFlight();
+}
+
+function abortRefreshInFlight(): void {
+  const flight = refreshInFlight;
+  if (!flight) return;
+  refreshInFlight = null;
+  flight.abort.abort();
+}
+
+// SessionLiveness is what an authenticated read says about the credential the
+// browser holds: "live" — the access cookie still works; "expired" — the
+// server refused it (401/403); "unknown" — it could not answer (5xx, rate
+// limit, no answer).
+type SessionLiveness = "live" | "expired" | "unknown";
+
+// LIVENESS_READ_TIMEOUT_MS bounds that read. It exists to AVOID a rotation
+// another tab already made, and a read that cannot answer in time says
+// nothing ("unknown"), so waiting on it only pushes the re-presentation
+// further from the rotation it has to reach inside the server's reuse window.
+// Measured with every answer taking the server's 5 s store-op timeout: an
+// unbounded read moves the series' last re-presentation from 27 s to 42 s
+// after the first answer; bounded here it costs 1.5 s per attempt, and
+// nothing at all when the read answers (the common case — it is a cheap
+// authenticated read, not a rotation).
+const LIVENESS_READ_TIMEOUT_MS = 1500;
+
+// readSessionLiveness asks GET /auth/me, which presents the ACCESS cookie and
+// no refresh token, so it rotates nothing.
+//
+// The refresh token is shared by every open tab of the browser while each
+// tab's evidence is its own: each holds its own copy of this module, its own
+// timers, and reads the one cookie jar. A tab presenting a token another tab
+// has already rotated is reuse, which the server answers by revoking the
+// token's lineage: every tab of this browser signs out. So before presenting,
+// a tab checks its evidence is still current: the renewal stamp first
+// (renewedSince — a renewal after the evidence makes it stale), and this read
+// where the stamp cannot tell — a scheduled re-presentation, whose evidence is
+// an answer the server could not give, and a request with no stamp to compare
+// its 401 with. "unknown" presents the token anyway: a server that cannot
+// serve this read served no sibling tab's rotation either, so the tabs are
+// still on the same token — which the server answers with one shared
+// successor — and skipping would lose the renewal the series exists for.
+//
+// A read rather than a BroadcastChannel announcement: it needs no API that
+// jsdom and older browsers lack, and it answers about the credential the
+// browser actually holds instead of relaying another document's claim, so it
+// also covers a tab that was suspended while the renewal happened.
+async function readSessionLiveness(): Promise<SessionLiveness> {
+  try {
+    const res = await fetchWithin(`${BASE_URL}/auth/me`, { credentials: "include" }, LIVENESS_READ_TIMEOUT_MS);
+    if (res.ok) return "live";
+    return res.status === 401 || res.status === 403 ? "expired" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+// scheduleRefreshRetry arms the series' next attempt for a presentation the
+// server could not answer, sent at evidenceAt: what that presentation was
+// about is the token the jar held THEN, so a renewal recorded since — even
+// before its failure arrived — means the browser already holds a session at
+// least as new as the one its lost answer carried.
+function scheduleRefreshRetry(evidenceAt: number): void {
+  if (refreshRetryTimer !== null) return;
+  const delay = REFRESH_RETRY_DELAYS_MS[refreshRetryAttempt];
+  if (delay === undefined) return;
+  refreshRetryAttempt++;
+  const epoch = refreshEpoch;
+  refreshRetryTimer = setTimeout(() => {
+    refreshRetryTimer = null;
+    void runScheduledRefresh(epoch, evidenceAt);
+  }, delay);
+}
+
+// runScheduledRefresh is the series' attempt: it re-presents the refresh token
+// only while its epoch is the current one, no sign-out is in progress, and
+// the session the browser holds was not renewed since the presentation that
+// armed it was sent (evidenceAt).
+async function runScheduledRefresh(epoch: number, evidenceAt: number): Promise<void> {
+  if (epoch !== refreshEpoch || signOutInProgress()) return;
+  if (
+    renewedSince(evidenceAt) === true ||
+    (await readSessionLiveness()) === "live" ||
+    // A renewal recorded while the read was out: its "expired" is stale.
+    renewedSince(evidenceAt) === true
+  ) {
+    // Renewed since this series was armed — by another tab, or by a request
+    // of this one: the browser holds the successor, and presenting the token
+    // the series kept would rotate a retired one.
+    if (epoch === refreshEpoch) cancelScheduledRefresh();
+    return;
+  }
+  if (epoch !== refreshEpoch) return;
+  // A re-presentation the server refuses ends the session as a request's own
+  // refusal does (origin "retry"); one it could not serve schedules the next.
+  await presentRefreshToken("retry");
+}
+
+// RefreshOrigin is who presents the refresh token: a request's 401, the retry
+// series, or an identity load (the bootstrap, the stale tree's re-read), which
+// handles its own outcome — it arms no series and signs nobody out.
+type RefreshOrigin = "request" | "retry" | "identity";
+
+// presentRefreshToken presents the refresh token — joining the presentation
+// in flight, if any — and acts on the answer: an answer the server could not
+// give arms the series, any other ends it, and a refusal of the series' own
+// re-presentation signs out. A presentation is refused while a sign-out is in
+// progress (the logout is about to end this session, and a rotation would
+// hand the browser a successor after the logout cleared the jar), and an
+// answer from an epoch that is over — a sign-out ends the epoch when it starts
+// — acts on nothing.
+function presentRefreshToken(origin: RefreshOrigin): Promise<RefreshOutcome> {
+  if (signOutInProgress()) return Promise.resolve({ kind: "unavailable", status: null });
+  const epoch = refreshEpoch;
+  const flight = refreshInFlight ?? startRefreshFlight();
+  return flight.answer.then((outcome) => {
+    if (epoch !== refreshEpoch) return outcome;
+    if (outcome.kind === "unavailable") {
+      if (origin === "identity") return outcome;
+      if (origin === "request" && refreshRetryTimer === null) refreshRetryAttempt = 0;
+      scheduleRefreshRetry(flight.sentAt);
+      return outcome;
+    }
+    cancelScheduledRefresh();
+    if (outcome.kind === "rejected" && origin === "retry" && onUnauthorized) onUnauthorized();
+    return outcome;
+  });
+}
+
+function startRefreshFlight(): RefreshFlight {
+  const abort = new AbortController();
+  const aborted = new Promise<RefreshOutcome>((resolve) => {
+    abort.signal.addEventListener("abort", () => resolve({ kind: "unavailable", status: null }), { once: true });
+  });
+  const sentAt = Date.now();
+  const answered = fetch(`${BASE_URL}/auth/refresh`, {
+    method: "POST",
+    credentials: "include",
+    signal: abort.signal,
+  })
+    .then((r): RefreshOutcome => {
+      const outcome = refreshOutcomeOf(r.status);
+      if (outcome.kind === "renewed" && !abort.signal.aborted) recordRenewal();
+      return outcome;
+    })
+    .catch((): RefreshOutcome => ({ kind: "unavailable", status: null }));
+  const flight: RefreshFlight = {
+    abort,
+    sentAt,
+    answer: Promise.race([answered, aborted]).finally(() => {
+      if (refreshInFlight === flight) refreshInFlight = null;
+    }),
+  };
+  refreshInFlight = flight;
+  return flight;
+}
+
+// Renewal is what a refused credential (a 401) came to: a RefreshOutcome, or
+// "superseded" — the session was renewed after the evidence was sent (by
+// another tab, or by this one), so the evidence is stale and nothing was
+// presented: the caller asks again with the cookie the browser holds now.
+type Renewal = RefreshOutcome | { kind: "superseded" };
+
+// renewAfterRefusal renews the session for a 401 sent at evidenceSentAt. A 401
+// is evidence about the access cookie the request was SENT with, not about the
+// one the browser holds when the 401 arrives: another tab may have renewed in
+// between, and presenting the refresh token then rotates the successor that
+// tab just received — which turns any presentation of the previous token still
+// in flight into reuse, and the lineage is revoked. So a renewal recorded at or
+// after the send supersedes the evidence; where no stamp can tell, a request
+// checks the cookie it holds now (readSessionLiveness) — an identity read does
+// not, being that very check. That read is evidence of the same kind — about
+// the cookie it was sent with — so the stamp is asked again once it answered:
+// a renewal recorded while it was out supersedes its "expired" too. And the
+// session the read was for may be over by then (a sign-out began, a session
+// was delivered): nothing is presented for it.
+async function renewAfterRefusal(evidenceSentAt: number, origin: "request" | "identity"): Promise<Renewal> {
+  if (signOutInProgress()) return { kind: "unavailable", status: null };
+  const generation = sessionGeneration;
+  let since = renewedSince(evidenceSentAt);
+  if (since === null && origin === "request") {
+    if ((await readSessionLiveness()) === "live") return { kind: "superseded" };
+    if (generation !== sessionGeneration) return { kind: "unavailable", status: null };
+    since = renewedSince(evidenceSentAt);
+  }
+  if (since === true) return { kind: "superseded" };
+  return presentRefreshToken(origin);
+}
+
+// renewSession renews the session for an identity read the server refused
+// (401) — the bootstrap's, the stale tree's re-read — through the same guarded
+// path a request takes: deduped with every other presentation (so a sign-out
+// settles it), refused while a sign-out is in progress, superseded by a
+// renewal made after the read was sent. "renewed" covers that last case too:
+// the caller reads again either way.
+export async function renewSession(evidenceSentAt: number): Promise<RefreshOutcome> {
+  const renewal = await renewAfterRefusal(evidenceSentAt, "identity");
+  return renewal.kind === "superseded" ? { kind: "renewed" } : renewal;
 }
 
 // ApiError is the typed error thrown by request/apiRequest when the
@@ -54,6 +518,23 @@ export class ApiError extends Error {
     this.errorCode = errorCode;
     this.detail = detail;
     this.name = "ApiError";
+  }
+}
+
+// SessionRenewalUnavailableError is what a request throws when its access
+// token expired and the silent refresh could not renew the session right
+// now: a 5xx, a rate limit or a network error on POST /auth/refresh. It is
+// transient — the browser still holds its session, nothing signed it out,
+// and the next request tries the renewal again. status is 503 (the server
+// could not serve the request now); refreshStatus is what the refresh
+// answered, null when it never answered.
+export class SessionRenewalUnavailableError extends ApiError {
+  refreshStatus: number | null;
+  constructor(refreshStatus: number | null) {
+    const cause = refreshStatus === null ? "no answer" : `HTTP ${refreshStatus}`;
+    super(503, `API error 503: the session could not be renewed (${cause}); retry shortly`, "session_renewal_unavailable");
+    this.refreshStatus = refreshStatus;
+    this.name = "SessionRenewalUnavailableError";
   }
 }
 
@@ -114,7 +595,8 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // path. Used by /api/v1/dispatcher/* and /api/v1/native/* clients that
 // don't sit under the BASE_URL /api root. 204 No Content returns
 // `undefined as T` so DELETE-style endpoints don't trip over an empty
-// body.
+// body. isRetry: the request is a replay after its session was renewed, so a
+// 401 renews nothing more.
 export async function apiRequest<T>(
   fullPath: string,
   init?: RequestInit,
@@ -126,17 +608,40 @@ export async function apiRequest<T>(
   // from BASE_URL = apiBase(), i.e. "/x/<id>/api/…") don't start with "/api",
   // so they're never double-prefixed. No-op outside a pane (scopePrefix() "").
   if (fullPath.startsWith("/api")) fullPath = scopePrefix() + fullPath;
+  return sendRequest<T>(fullPath, init, isRetry ? "refreshed" : "fresh");
+}
+
+// RenewalStage is what a request already did about a 401: nothing ("fresh"),
+// replayed itself because the session was renewed after it was sent
+// ("replayed"), or had the session renewed for it ("refreshed").
+type RenewalStage = "fresh" | "replayed" | "refreshed";
+
+async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, stage: RenewalStage): Promise<T> {
+  const generation = sessionGeneration;
+  const sentAt = Date.now();
   const res = await fetch(fullPath, {
     credentials: "include",
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     ...init,
   });
-  // 401 → the access JWT likely just expired. Try ONE silent refresh
-  // (POST /auth/refresh, rotating the long-lived refresh token) and replay
-  // the request; only sign out if the refresh itself fails. Without this the
-  // first call after the 15-minute access-token TTL bounces the user to
-  // login even though their refresh token is valid for weeks. Skip the retry
-  // for the refresh endpoint itself (avoid a loop) and when already retried.
+  // 401 → the access JWT likely just expired. Renew the session and replay
+  // the request: without that the first call after the 15-minute access-token
+  // TTL bounces the user to login even though their refresh token is valid
+  // for weeks.
+  //   - A 401 is evidence about the access cookie the request was sent with:
+  //     when the session was renewed after the send — by another tab, or by
+  //     this one — the request is replayed on the renewed cookie instead
+  //     (renewAfterRefusal), once; a 401 to that replay is current evidence.
+  //   - Only a refresh the server REFUSES (401/403) signs out; one it could
+  //     not serve (5xx, rate limit, network) fails this request as transient
+  //     and leaves the session alone.
+  //   - A request sent for a session this tab has since left (a sign-out
+  //     began, or another session was delivered: sessionGeneration) renews
+  //     nothing and signs nothing out, whenever its 401 or its renewal's
+  //     answer arrives — what it would renew, or sign out, is the session
+  //     that replaced it. It fails with its own 401.
+  //   - Not for the refresh endpoint itself (no loop), nor after the session
+  //     was already renewed for this request.
   // In a workspace pane the desktop owns the token lifecycle: the demux proxy
   // strips the request Cookie and injects a Bearer (refreshed off the OS-held
   // jar by the cloudRoundTripper + background loop), so a pane-side
@@ -144,13 +649,18 @@ export async function apiRequest<T>(
   // reaching the pane means the desktop's refresh already failed, and recovery
   // is driven from the shell (cloud:auth-expired → re-login → reload). We still
   // fire onUnauthorized so the pane's AuthGate can surface the expired state.
-  if (res.status === 401 && !isRetry && !isScopedPane() && !fullPath.endsWith("/auth/refresh")) {
-    if (await tryRefreshSession()) {
-      return apiRequest<T>(fullPath, init, true);
+  if (res.status === 401 && generation === sessionGeneration) {
+    if (stage !== "refreshed" && !isScopedPane() && !fullPath.endsWith("/auth/refresh")) {
+      const renewal = stage === "replayed" ? await presentRefreshToken("request") : await renewAfterRefusal(sentAt, "request");
+      if (generation === sessionGeneration) {
+        if (renewal.kind === "superseded") return sendRequest<T>(fullPath, init, "replayed");
+        if (renewal.kind === "renewed") return sendRequest<T>(fullPath, init, "refreshed");
+        if (renewal.kind === "unavailable") throw new SessionRenewalUnavailableError(renewal.status);
+        if (onUnauthorized) onUnauthorized();
+      }
+    } else if (onUnauthorized) {
+      onUnauthorized();
     }
-    if (onUnauthorized) onUnauthorized();
-  } else if (res.status === 401 && onUnauthorized) {
-    onUnauthorized();
   }
   if (!res.ok) {
     throw apiErrorFrom(res.status, await extractErrorDetail(res));

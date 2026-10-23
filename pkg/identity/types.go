@@ -524,6 +524,12 @@ type OIDCLink struct {
 	UserID         string    `bson:"user_id" json:"user_id"`
 	Email          string    `bson:"email,omitempty" json:"email,omitempty"`
 	CreatedAt      time.Time `bson:"created_at" json:"created_at"`
+	// SessionLineage is the lineage of the signed-in session that linked
+	// the identity from the account settings; empty for a link an SSO
+	// sign-in wrote itself (the account's sign-up through the IdP, its first
+	// SSO sign-in) and for a link written before links recorded it.
+	// DeleteSessionOIDCLinks selects on it.
+	SessionLineage string `bson:"session_lineage,omitempty" json:"session_lineage,omitempty"`
 }
 
 // Sentinel errors returned by every Store implementation. Handlers
@@ -546,6 +552,9 @@ var (
 	// from ErrNotFound — the account exists, its state moved — so a caller
 	// can tell "no such user" from "an admin disabled it under me".
 	ErrUserStatusChanged = errors.New("identity: user status no longer admits this write")
+	// ErrUserPasswordChanged is UserPatch.IfPasswordHash refusing the write:
+	// the row's password hash is no longer the one the caller verified.
+	ErrUserPasswordChanged = errors.New("identity: user password changed under this write")
 )
 
 // NormalizeEmail lower-cases and trims whitespace from an email.
@@ -621,6 +630,12 @@ type UserPatch struct {
 	// a credential or status write refuse a snapshot an admin has disabled
 	// since — re-reading before the write cannot, it only moves the window.
 	IfNotStatus []UserStatus
+	// IfPasswordHash, when non-nil, is a second precondition evaluated with
+	// the write: the row's password hash must still equal it, or the row is
+	// left untouched and the call returns ErrUserPasswordChanged. A login
+	// stamps under the hash it verified, so a sign-in whose password was
+	// replaced while it was being checked is refused rather than recorded.
+	IfPasswordHash *string
 }
 
 // UserLockout is the brute-force lockout pair UserPatch.Lockout writes
@@ -650,6 +665,23 @@ func (p UserPatch) statusRefused(status UserStatus) bool {
 		}
 	}
 	return false
+}
+
+// hasPrecondition reports whether the patch names a precondition.
+func (p UserPatch) hasPrecondition() bool {
+	return len(p.IfNotStatus) > 0 || p.IfPasswordHash != nil
+}
+
+// precondition is the refusal the patch's preconditions give the row u: nil
+// when u admits the write. The status arm is read first, as both twins do.
+func (p UserPatch) precondition(u User) error {
+	if p.statusRefused(u.Status) {
+		return ErrUserStatusChanged
+	}
+	if p.IfPasswordHash != nil && u.PasswordHash != *p.IfPasswordHash {
+		return ErrUserPasswordChanged
+	}
+	return nil
 }
 
 // TeamPatch is a PARTIAL team update: only the non-nil fields are written.

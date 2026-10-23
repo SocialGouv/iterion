@@ -82,6 +82,9 @@ func newPlacementE2E(t *testing.T) *placementE2E {
 		if withPassword {
 			u.PasswordHash = "$2a$10$notarealhash"
 		}
+		// The super-admin the tests' root token names is one in the store
+		// too: the platform-admin routes read the flag from the account.
+		u.IsSuperAdmin = id == "root"
 		if _, err := s.authStore().CreateUser(ctx, u); err != nil {
 			t.Fatalf("create %s: %v", id, err)
 		}
@@ -285,7 +288,8 @@ func TestAdminPlacement_FindReadPlaceAndGainAccess(t *testing.T) {
 		// placement would not be in the causal chain. SwitchTeam reads the
 		// membership, so it refuses outright when the grant is missing, which
 		// is what makes this assertion redden if either PUT fails to persist.
-		_, access, _, err := p.s.authSvc.SwitchTeam(context.Background(), "sub1", "t1")
+		sw, err := p.s.authSvc.SwitchTeam(context.Background(), auth.Identity{Credential: auth.CredentialAccessToken, UserID: "sub1"}, "t1")
+		access := sw.AccessToken
 		if err != nil {
 			t.Fatalf("SwitchTeam after placement: %v — the grant did not persist", err)
 		}

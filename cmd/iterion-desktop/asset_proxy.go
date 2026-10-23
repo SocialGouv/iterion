@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -57,51 +56,6 @@ type cachedProxy struct {
 	target *url.URL
 	jar    *cloudTokenJar // nil for a local connection; set for cloud
 	proxy  *httputil.ReverseProxy
-}
-
-// cloudRoundTripper wraps the base transport for a CLOUD connection with a
-// single refresh-and-retry on 401. The background refresh loop is the
-// primary defense (it refreshes before expiry); this is the safety net for
-// the race where a token lapses between refreshes. On a second failure it
-// emits cloud:auth-expired and passes the 401 through so the SPA re-logs in.
-type cloudRoundTripper struct {
-	base http.RoundTripper
-	app  *App
-	jar  *cloudTokenJar
-}
-
-func (t *cloudRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Buffer the body so the request can be replayed after a refresh.
-	var body []byte
-	if req.Body != nil {
-		b, err := io.ReadAll(req.Body)
-		req.Body.Close()
-		if err != nil {
-			return nil, err
-		}
-		body = b
-		req.Body = io.NopCloser(bytes.NewReader(body))
-	}
-	resp, err := t.base.RoundTrip(req)
-	if err != nil || resp.StatusCode != http.StatusUnauthorized {
-		return resp, err
-	}
-	// 401 → refresh once, then replay the request with the new token.
-	if rerr := t.jar.refreshNow(req.Context()); rerr != nil {
-		if ae := asCloudAuthError(rerr); ae != nil && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden) {
-			t.app.emitCloudAuthExpired(t.jar.connID)
-		}
-		return resp, nil // pass the original 401 through
-	}
-	resp.Body.Close()
-	req2 := req.Clone(req.Context())
-	if body != nil {
-		req2.Body = io.NopCloser(bytes.NewReader(body))
-	}
-	if tok := t.jar.AccessToken(); tok != "" {
-		req2.Header.Set("Authorization", "Bearer "+tok)
-	}
-	return t.base.RoundTrip(req2)
 }
 
 func newAssetProxyHandler(app *App) *assetProxyHandler {
@@ -174,7 +128,7 @@ func (h *assetProxyHandler) proxyFor(serverURL string, jar *cloudTokenJar) (*htt
 		},
 	}
 	if jar != nil {
-		proxy.Transport = &cloudRoundTripper{base: http.DefaultTransport, app: h.app, jar: jar}
+		proxy.Transport = &cloudRoundTripper{base: http.DefaultTransport, jar: jar, onExpired: h.app.emitCloudAuthExpired}
 		proxy.ModifyResponse = func(resp *http.Response) error {
 			// Harvest tokens rotated by SPA-driven auth mutations (e.g. an
 			// org/team switch) from the Set-Cookie header, then strip those

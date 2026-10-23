@@ -56,6 +56,7 @@ func newAdminSettingsServer(t *testing.T) (*usagecap.MemorySettingsStore, audit.
 		UsageCapSettings:        settings,
 	}, iterlog.New(iterlog.LevelError, nil))
 
+	seedPlatformAdmin(t, s.authStore(), "root")
 	adminTok, _, err := signer.IssueAccess(auth.Identity{UserID: "root", IsSuperAdmin: true, TeamID: "team-root"})
 	if err != nil {
 		t.Fatalf("issue admin token: %v", err)

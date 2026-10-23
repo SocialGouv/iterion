@@ -106,7 +106,10 @@ var remoteAdminUsersCmd = &cobra.Command{
 		"search, so the server can answer it from the index on email.\n\n" +
 		"`reset-password` mints a one-shot temporary password (printed ONCE) and\n" +
 		"revokes every live session. It is the recovery path on a deployment with\n" +
-		"no outbound email; hand the password over out-of-band.",
+		"no outbound email; hand the password over out-of-band. The instance\n" +
+		"refuses it (403) on YOUR OWN account when the CLI presents a personal\n" +
+		"access token — which is what a login stores: change your own password\n" +
+		"from the studio (Account → Profile → Change password).",
 	Args: cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if len(args) == 0 {

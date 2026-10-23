@@ -89,6 +89,13 @@ func newTwoReplicas(t *testing.T) *twoReplicas {
 	}); err != nil {
 		t.Fatalf("seed team-1: %v", err)
 	}
+	// The super-admin behind adminToken: a claim is re-read from the account
+	// at the identity (revokeSuperAdminClaim), so the row exists.
+	if _, err := idStore.CreateUser(context.Background(), identity.User{
+		ID: "root", Email: "root@x", Status: identity.UserStatusActive, IsSuperAdmin: true,
+	}); err != nil {
+		t.Fatalf("seed root: %v", err)
+	}
 	sealKey := make([]byte, 32)
 	if _, err := rand.Read(sealKey); err != nil {
 		t.Fatalf("rand: %v", err)

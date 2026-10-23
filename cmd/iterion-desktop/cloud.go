@@ -36,6 +36,23 @@ func (a *App) activeCloudJar() *cloudTokenJar {
 	return a.cloudJar
 }
 
+// cloudJarFor returns the live jar of one cloud connection — the current
+// connection's, or an open pane's — or nil when no jar of it is loaded. It is
+// the one resolver: a sign-out and a sign-in must both find the jar that
+// holds what this connection owes the cloud (a pending sign-out and its
+// token), whichever way the connection is open.
+func (a *App) cloudJarFor(connID string) *cloudTokenJar {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.cloudJar != nil && a.cloudJar.connID == connID {
+		return a.cloudJar
+	}
+	if c := a.conns[connID]; c != nil && c.jar != nil {
+		return c.jar
+	}
+	return nil
+}
+
 // setActiveCloudLocked installs a cloud jar as the current connection and
 // points the proxy/WS target at the remote. Caller holds a.mu.
 func (a *App) setActiveCloudLocked(jar *cloudTokenJar, cloudURL string) {
@@ -62,9 +79,112 @@ func (a *App) startCloudRefreshLoopLocked(jar *cloudTokenJar) {
 	go a.runCloudRefreshLoop(ctx, jar)
 }
 
+// cloudConnIDForURL returns the id of the cloud connection this app holds at
+// cloudURL — its MRU one when several accounts' connections share the URL —
+// or "" when none is registered yet. The add paths resolve their sign-in's
+// keychain entry with it: AddCloudConnection keys a connection on
+// (URL, account), and the account is only known after the mint.
+func (a *App) cloudConnIDForURL(cloudURL string) string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for i := range a.config.RecentProjects {
+		p := &a.config.RecentProjects[i]
+		if p.IsCloud() && p.CloudURL == cloudURL {
+			// RecentProjects is MRU-ordered (sortByMRU): the first hit is the
+			// connection the shell is most likely signing back into.
+			return p.ID
+		}
+	}
+	return ""
+}
+
+// prepareSignInJar is the machine's pre-mint half of SIGN-IN: it resolves the
+// connection's ONE jar — the live jar the registry holds (the pane tunnel's),
+// or a fresh one over the same keychain entry — and runs prepareForSignIn:
+// the entry is read BEFORE the cloud mints the new session (a keychain that
+// cannot be read refuses here, and a refused sign-in leaves no minted
+// session — F7), and the sign-out the entry owes is presented, or carried
+// beside the new session when the cloud does not confirm it. connID is ""
+// for a connection the sign-in cannot name yet (an add path): the MRU cloud
+// connection at cloudURL stands in for it, and an empty one reads a key that
+// does not exist — which still refuses a locked keychain before the mint.
+func (a *App) prepareSignInJar(connID, cloudURL string) (*cloudTokenJar, error) {
+	if connID == "" {
+		connID = a.cloudConnIDForURL(cloudURL)
+	}
+	prev := a.cloudJarFor(connID)
+	jar := resolveConnectionJar(prev, connID, cloudURL, a.keychain)
+	if err := jar.prepareForSignIn(a.ctx, prev); err != nil {
+		return nil, err
+	}
+	return jar, nil
+}
+
+// installSignInJarLocked makes jar the connection's ONE jar: the active jar
+// when the connection is current, and the registry entry's — the pane
+// tunnel's — either way. The jar it replaces in the registry is retired (its
+// writes stand down; an answer of its own still in flight cannot land on the
+// entry the sign-in wrote) and its loop stops, so no second jar of this
+// connection writes one keychain key or presents from a session the sign-in
+// replaced (F4). Caller holds a.mu.
+func (a *App) installSignInJarLocked(jar *cloudTokenJar, cloudURL string) {
+	c := a.conns[jar.connID]
+	isCurrent := false
+	if cur := a.config.CurrentProject(); cur != nil && cur.ID == jar.connID {
+		isCurrent = true
+	}
+	if c != nil && c.jar != nil && c.jar != jar {
+		c.jar.retire()
+		if c.cancel != nil {
+			c.cancel()
+			c.cancel = nil
+		}
+	}
+	if isCurrent {
+		a.setActiveCloudLocked(jar, cloudURL)
+		a.startCloudRefreshLoopLocked(jar)
+		if c != nil {
+			// The active loop is this connection's one renewal loop: the
+			// entry borrows it (cancel nil, as the startup registration
+			// does), so its own loop — a pane's — stops with it.
+			if c.cancel != nil {
+				c.cancel()
+				c.cancel = nil
+			}
+			c.jar = jar
+			c.serverURL = cloudServerURL(cloudURL)
+		}
+		return
+	}
+	if c != nil {
+		c.jar = jar
+		c.serverURL = cloudServerURL(cloudURL)
+		// One renewal loop per connection: the entry's own loop — a pane's —
+		// stops before the fresh one starts, or the loop it replaced runs
+		// untracked until app exit.
+		if c.cancel != nil {
+			c.cancel()
+			c.cancel = nil
+		}
+		if a.ctx != nil {
+			rctx, cancel := context.WithCancel(a.ctx)
+			c.cancel = cancel
+			go a.runCloudRefreshLoop(rctx, jar)
+		}
+	}
+}
+
 // deactivateCloud tears down the active cloud session (stops the refresh
-// loop, drops the jar). Called when switching to a local connection. Does
-// NOT clear the persisted refresh token — switching away is not logout.
+// loop, drops the jar). Called when switching to a local connection. Does NOT
+// clear the persisted refresh token — switching away is not logout.
+//
+// The current connection's registry entry borrows the active loop (its own
+// cancel is nil), so the teardown leaves its open pane without renewal and
+// without the presenter its sign-out presentation rides on. Every registered
+// cloud connection whose entry holds a jar of its own, no loop of its own,
+// and something to renew or present gets its own loop back here: one renewal
+// loop per open pane. A jar with nothing to do holds no loop — a renewal of
+// an empty jar would answer an expiry the shell would prompt on.
 func (a *App) deactivateCloud() {
 	a.mu.Lock()
 	if a.cloudCancel != nil {
@@ -72,41 +192,27 @@ func (a *App) deactivateCloud() {
 		a.cloudCancel = nil
 	}
 	a.cloudJar = nil
+	if a.ctx != nil {
+		for _, c := range a.conns {
+			if c == nil || c.kind != ProjectKindCloud || c.jar == nil || c.cancel != nil {
+				continue
+			}
+			jar := c.jar
+			if !jar.owesRenewalOrPresentation() {
+				continue
+			}
+			rctx, cancel := context.WithCancel(a.ctx)
+			c.cancel = cancel
+			go a.runCloudRefreshLoop(rctx, jar)
+		}
+	}
 	a.mu.Unlock()
 }
 
-// runCloudRefreshLoop refreshes the access token slightly before it expires.
-// On a transient error it retries after a short floor; on an auth error
-// (refresh revoked/expired) it emits cloud:auth-expired and stops — the SPA
-// shell then prompts for re-login.
+// runCloudRefreshLoop runs cloudRefreshLoop (cloud_refresh_loop.go, untagged
+// so its cadence is unit-testable) against this App's event emitter.
 func (a *App) runCloudRefreshLoop(ctx context.Context, jar *cloudTokenJar) {
-	const floor = 15 * time.Second
-	for {
-		wait := time.Until(jar.Expiry().Add(-cloudRefreshSkew))
-		if wait < floor {
-			wait = floor
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-		if err := jar.refreshNow(ctx); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			if ae := asCloudAuthError(err); ae != nil && (ae.Status == 401 || ae.Status == 403) {
-				log.Printf("desktop: cloud refresh rejected for %s: %v", jar.connID, err)
-				a.emitCloudAuthExpired(jar.connID)
-				return
-			}
-			log.Printf("desktop: cloud refresh transient error for %s: %v (will retry)", jar.connID, err)
-			// Expiry is unchanged (still past), so the next iteration floors
-			// to `floor` and retries.
-		}
-	}
+	cloudRefreshLoop(ctx, jar, a.emitCloudAuthExpired)
 }
 
 func (a *App) emitCloudAuthExpired(connID string) {
@@ -117,28 +223,25 @@ func (a *App) emitCloudAuthExpired(connID string) {
 }
 
 // activateCloudConnection points the desktop at an existing cloud connection
-// (used by the project switcher). It hydrates the stored refresh token and
-// mints a fresh access token; if none is stored or the refresh fails, the
-// connection is left unauthenticated (serverURL points at the cloud, the
-// proxy has no Bearer, the cloud 401s, and the SPA shell shows login).
+// (used by the project switcher, and at startup). The machine's ONE JAR PER
+// CONNECTION runs first: activateConnectionJar resolves the connection's
+// ONE jar — the live jar the registry holds (the pane tunnel's) when the
+// connection is open, else a fresh one over the same keychain entry — and
+// renews the session through IT; a switch that built its own jar would let
+// the registry jar's next presentation land outside the rotation's reuse
+// grace, which revokes the switched-to lineage and deletes the entry. The
+// jar is then installed everywhere the connection lives
+// (installSignInJarLocked): the active jar, the registry entry's, its one
+// loop restarted. If nothing is stored or the refresh fails, the connection
+// is left unauthenticated (serverURL points at the cloud, the proxy has no
+// Bearer, the cloud 401s, and the SPA shell shows login).
 func (a *App) activateCloudConnection(ctx context.Context, p *Project) error {
 	if p == nil || !p.IsCloud() {
 		return fmt.Errorf("activateCloudConnection: not a cloud connection")
 	}
-	jar := newCloudTokenJar(p.ID, p.CloudURL, a.keychain)
-	hydrated, err := jar.hydrate()
-	if err != nil {
-		log.Printf("desktop: cloud hydrate for %s failed: %v", p.ID, err)
-	}
-	if hydrated {
-		if err := jar.refreshNow(ctx); err != nil {
-			// Non-fatal: fall through unauthenticated so the shell can prompt.
-			log.Printf("desktop: cloud rehydrate refresh for %s failed: %v", p.ID, err)
-		}
-	}
+	jar := activateConnectionJar(ctx, a.cloudJarFor(p.ID), p.ID, p.CloudURL, a.keychain)
 	a.mu.Lock()
-	a.setActiveCloudLocked(jar, p.CloudURL)
-	a.startCloudRefreshLoopLocked(jar)
+	a.installSignInJarLocked(jar, p.CloudURL)
 	a.mu.Unlock()
 	return nil
 }
@@ -149,6 +252,9 @@ func (a *App) activateCloudConnection(ctx context.Context, p *Project) error {
 // registers (or refreshes) the cloud connection, makes it current, and
 // reloads the SPA against it. This is the one-shot "add + login + switch"
 // the shell's Connect-to-Cloud modal calls for password auth.
+//
+// The machine's SIGN-IN runs its pre-mint half first (prepareSignInJar): the
+// keychain entry is read before the cloud mints (F7).
 func (a *App) ConnectCloud(cloudURL, email, password string) (*Project, error) {
 	cloudURL = strings.TrimSpace(cloudURL)
 	if cloudURL == "" {
@@ -165,18 +271,32 @@ func (a *App) ConnectCloud(cloudURL, email, password string) (*Project, error) {
 		return nil, fmt.Errorf("%s is not an authenticated cloud instance (auth_required=false)", cloudURL)
 	}
 
+	prepared, err := a.prepareSignInJar("", cloudURL)
+	if err != nil {
+		return nil, err
+	}
 	res, err := cloudLogin(a.ctx, hc, cloudURL, email, password)
 	if err != nil {
 		return nil, mapCloudLoginError(err)
 	}
-	return a.finishCloudConnect(cloudURL, res)
+	return a.finishCloudConnect(cloudURL, res, prepared)
 }
 
 // finishCloudConnect registers/refreshes a cloud connection from an auth
 // result, persists it, seeds + activates its token jar, and reloads the SPA
 // against it. Shared by the password (ConnectCloud) and SSO (ConnectCloudSSO)
-// entry points.
-func (a *App) finishCloudConnect(cloudURL string, res cloudAuthResult) (*Project, error) {
+// entry points, which ran the machine's pre-mint half first (prepareSignInJar)
+// and hand the jar it prepared in: when the mint landed on the connection
+// that jar was resolved for, it IS the jar the sign-in seeds — one jar per
+// connection (F4); otherwise the mint opened a connection that had none.
+//
+// Like LoginCloud, it presents the sign-out this connection holds before the
+// new session replaces its keychain entry (prepareForSignIn): the entry is
+// the only copy of the token that can end the session the operator signed out
+// of. A post-mint refusal (the keychain degraded between the two moments)
+// revokes the minted session: a sign-in that cannot land leaves no session
+// live behind it (F7).
+func (a *App) finishCloudConnect(cloudURL string, res cloudAuthResult, prepared *cloudTokenJar) (*Project, error) {
 	a.mu.Lock()
 	p := a.config.AddCloudConnection(cloudURL, res.User.ID, res.User.Email, "")
 	if res.User.ActiveOrgID != "" || res.User.ActiveTeamID != "" {
@@ -189,21 +309,52 @@ func (a *App) finishCloudConnect(cloudURL string, res cloudAuthResult) (*Project
 	saveErr := a.config.Save()
 	a.mu.Unlock()
 	if saveErr != nil {
+		a.abandonMintedSession(cloudURL, res, prepared)
 		return nil, saveErr
 	}
 
-	jar := newCloudTokenJar(p.ID, cloudURL, a.keychain)
+	jar := prepared
+	if jar == nil || jar.connID != p.ID {
+		// The mint landed on a connection the pre-mint half could not name
+		// (its MRU stand-in resolved another connection at the URL): resolve
+		// THIS connection's ONE jar — the live one the registry holds, else a
+		// fresh one over its entry — and seed that.
+		jar = resolveConnectionJar(a.cloudJarFor(p.ID), p.ID, cloudURL, a.keychain)
+	}
+	if err := jar.prepareForSignIn(a.ctx, a.cloudJarFor(p.ID)); err != nil {
+		a.abandonMintedSession(cloudURL, res, jar)
+		return nil, err
+	}
 	if err := jar.seed(res); err != nil {
+		a.abandonMintedSession(cloudURL, res, jar)
 		return nil, err
 	}
 	a.mu.Lock()
-	a.setActiveCloudLocked(jar, cloudURL)
-	a.startCloudRefreshLoopLocked(jar)
+	a.installSignInJarLocked(jar, cloudURL)
 	a.mu.Unlock()
 
 	wruntime.EventsEmit(a.ctx, eventProjectsChanged)
 	a.reloadWindowApp(a.ctx)
 	return &p, nil
+}
+
+// abandonMintedSession ends the session a sign-in minted when the sign-in
+// cannot land on the connection: its refresh token is presented to the
+// cloud's logout (nothing here holds it any more, and a session nobody
+// presents stays live until the refresh TTL — F7's leftover), and the jar
+// that may have taken it drops it.
+func (a *App) abandonMintedSession(cloudURL string, res cloudAuthResult, jar *cloudTokenJar) {
+	if res.RefreshToken == "" {
+		return
+	}
+	lctx, cancel := context.WithTimeout(a.ctx, cloudSignOutTimeout)
+	defer cancel()
+	if err := cloudLogout(lctx, newCloudHTTPClient(), cloudURL, res.RefreshToken); err != nil {
+		log.Printf("desktop: a refused sign-in's minted session could not be revoked: %v (it stays live until the refresh TTL)", err)
+	}
+	if jar != nil {
+		jar.clearIfStillHolds(res.RefreshToken)
+	}
 }
 
 // ConnectCloudSSO connects to a remote cloud via SSO: it starts a transient
@@ -276,7 +427,13 @@ func (a *App) ConnectCloudSSO(cloudURL, provider string) (*Project, error) {
 	select {
 	case ticket = <-ticketCh:
 	case <-time.After(5 * time.Minute):
-		return nil, fmt.Errorf("timed out waiting for SSO sign-in")
+		// The cloud hands this listener a ticket only for a sign-in it
+		// ACCEPTED: a refusal (an account whose administrator requires a
+		// password change, an identity linked to no account, a cancelled
+		// consent) redirects the browser to the instance's own sign-in page
+		// with the reason, and nothing reaches the desktop. So the only true
+		// thing to say is that no sign-in came back, and where the reason is.
+		return nil, fmt.Errorf("no SSO sign-in came back from the browser within 5 minutes — the browser tab says whether %s refused it (an account that must change its password, an identity to link first) or the sign-in was left unfinished", cloudURL)
 	case <-a.ctx.Done():
 		return nil, a.ctx.Err()
 	}
@@ -284,11 +441,17 @@ func (a *App) ConnectCloudSSO(cloudURL, provider string) (*Project, error) {
 		return nil, fmt.Errorf("SSO sign-in did not complete")
 	}
 
+	// The machine's pre-mint half, before the ticket is exchanged for tokens:
+	// the keychain entry this sign-in will land on is read first (F7).
+	prepared, err := a.prepareSignInJar("", cloudURL)
+	if err != nil {
+		return nil, err
+	}
 	res, err := cloudDesktopExchange(a.ctx, hc, cloudURL, ticket)
 	if err != nil {
 		return nil, mapCloudLoginError(err)
 	}
-	return a.finishCloudConnect(cloudURL, res)
+	return a.finishCloudConnect(cloudURL, res, prepared)
 }
 
 // ssoClosePage renders the minimal HTML the system browser shows after the SSO
@@ -302,6 +465,14 @@ func ssoClosePage(msg string) string {
 // LoginCloud re-authenticates an EXISTING cloud connection (e.g. after
 // cloud:auth-expired) with a password, re-seeding its jar. It does not
 // change the current connection or reload — the shell decides when to.
+//
+// The machine's SIGN-IN: the connection's ONE jar — the live one the registry
+// holds (the pane tunnel's) — is resolved first and the machine's pre-mint
+// half runs on it (prepareSignInJar): the keychain entry is read before the
+// cloud mints (F7), and the sign-out it owes is presented, or carried beside
+// the new session when the cloud does not confirm it (I4). The minted
+// session is then seeded into that SAME jar, which installSignInJarLocked
+// makes the one jar everywhere the connection lives (F4).
 func (a *App) LoginCloud(connID, email, password string) (*cloudUserSummary, error) {
 	a.mu.RLock()
 	p := a.config.ProjectByID(connID)
@@ -309,22 +480,24 @@ func (a *App) LoginCloud(connID, email, password string) (*cloudUserSummary, err
 	if p == nil || !p.IsCloud() {
 		return nil, fmt.Errorf("cloud connection not found: %s", connID)
 	}
+	jar, err := a.prepareSignInJar(connID, p.CloudURL)
+	if err != nil {
+		return nil, err
+	}
 	res, err := cloudLogin(a.ctx, newCloudHTTPClient(), p.CloudURL, email, password)
 	if err != nil {
 		return nil, mapCloudLoginError(err)
 	}
-	jar := newCloudTokenJar(connID, p.CloudURL, a.keychain)
 	if err := jar.seed(res); err != nil {
+		a.abandonMintedSession(p.CloudURL, res, jar)
 		return nil, err
 	}
 	a.mu.Lock()
-	// Only replace the active jar if this connection is the current one.
 	isCurrent := false
 	if cur := a.config.CurrentProject(); cur != nil && cur.ID == connID {
-		a.setActiveCloudLocked(jar, p.CloudURL)
-		a.startCloudRefreshLoopLocked(jar)
 		isCurrent = true
 	}
+	a.installSignInJarLocked(jar, p.CloudURL)
 	a.mu.Unlock()
 	// Re-authenticating the CURRENT connection (the cloud:auth-expired recovery
 	// path) reloads the SPA so any views stuck on 401s during the lapse
@@ -342,27 +515,19 @@ func (a *App) LoginCloud(connID, email, password string) (*cloudUserSummary, err
 // its local session (jar + keychain). If it was the current connection the
 // SPA will start 401ing until the operator switches away or logs back in;
 // the shell typically follows LogoutCloud with a switch to a local project.
+// It fails, and keeps the session, when the token could not be read or the
+// cloud did not confirm the sign-out (cloudTokenJar.logout).
 func (a *App) LogoutCloud(connID string) error {
 	a.mu.RLock()
 	p := a.config.ProjectByID(connID)
 	isCurrent := a.cloudJar != nil && a.cloudJar.connID == connID
-	jar := a.cloudJar
 	a.mu.RUnlock()
+	jar := a.cloudJarFor(connID)
 	if p == nil || !p.IsCloud() {
 		return fmt.Errorf("cloud connection not found: %s", connID)
 	}
-
-	// Best-effort server-side revoke using whatever refresh token we hold.
-	if jar == nil || jar.connID != connID {
-		jar = newCloudTokenJar(connID, p.CloudURL, a.keychain)
-		_, _ = jar.hydrate()
-	}
-	if refresh := jar.storedRefresh(); refresh != "" {
-		if err := cloudLogout(a.ctx, newCloudHTTPClient(), p.CloudURL, refresh); err != nil {
-			log.Printf("desktop: cloud logout revoke for %s failed (clearing locally anyway): %v", connID, err)
-		}
-	}
-	if err := jar.clear(); err != nil {
+	jar = resolveConnectionJar(jar, connID, p.CloudURL, a.keychain)
+	if err := jar.logout(a.ctx); err != nil {
 		return err
 	}
 	if isCurrent {
@@ -371,24 +536,30 @@ func (a *App) LogoutCloud(connID string) error {
 	return nil
 }
 
-// RemoveConnection removes a cloud connection: it clears the keychain refresh
-// token and then delegates to RemoveProject for the config/MRU/daemon
-// cascade. For a local project it is a straight alias of RemoveProject.
+// RemoveConnection removes a cloud connection: the machine's CONNECTION
+// REMOVED transition runs first — the connection's jar reads its entry and
+// presents what it owes the cloud (its pending sign-out, and the sign-outs
+// held for sessions it replaced; a presentation that cannot be made refuses
+// the removal with the reason) — then the keychain entry is deleted and the
+// config/MRU/daemon cascade of RemoveProject follows. For a local project it
+// is a straight alias of RemoveProject.
 func (a *App) RemoveConnection(id string) error {
 	a.mu.RLock()
 	p := a.config.ProjectByID(id)
 	a.mu.RUnlock()
-	if p != nil && p.IsCloud() {
-		jar := newCloudTokenJar(id, p.CloudURL, a.keychain)
-		if err := jar.clear(); err != nil {
-			log.Printf("desktop: clearing keychain for removed cloud connection %s failed: %v", id, err)
-		}
-		a.mu.RLock()
-		isCurrent := a.cloudJar != nil && a.cloudJar.connID == id
-		a.mu.RUnlock()
-		if isCurrent {
-			a.deactivateCloud()
-		}
+	if p == nil || !p.IsCloud() {
+		return a.RemoveProject(id)
+	}
+	jar := a.cloudJarFor(id)
+	jar = resolveConnectionJar(jar, id, p.CloudURL, a.keychain)
+	if err := jar.removeConnection(a.ctx); err != nil {
+		return err
+	}
+	a.mu.RLock()
+	isCurrent := a.cloudJar != nil && a.cloudJar.connID == id
+	a.mu.RUnlock()
+	if isCurrent {
+		a.deactivateCloud()
 	}
 	return a.RemoveProject(id)
 }

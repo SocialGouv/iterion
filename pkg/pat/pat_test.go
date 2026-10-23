@@ -76,6 +76,45 @@ func runStoreSuite(t *testing.T, s Store) {
 			t.Fatalf("Get(ghost) err = %v, want ErrNotFound", err)
 		}
 	})
+
+	t.Run("revoking every token of an account takes the live ones and nothing else", func(t *testing.T) {
+		for _, tk := range []Token{
+			{ID: "ra-1", UserID: "ra", Name: "ci", TokenHash: "h-ra-1", CreatedAt: now},
+			{ID: "ra-2", UserID: "ra", Name: "laptop", TokenHash: "h-ra-2", CreatedAt: now},
+			{ID: "rb-1", UserID: "rb", Name: "other account", TokenHash: "h-rb-1", CreatedAt: now},
+		} {
+			if err := s.Create(ctx, tk); err != nil {
+				t.Fatalf("Create %s: %v", tk.ID, err)
+			}
+		}
+		earlier := now.Add(time.Minute)
+		if err := s.Revoke(ctx, "ra-2", earlier); err != nil {
+			t.Fatalf("Revoke: %v", err)
+		}
+		at := now.Add(time.Hour)
+		n, err := s.RevokeAllByUser(ctx, "ra", at)
+		if err != nil {
+			t.Fatalf("RevokeAllByUser: %v", err)
+		}
+		if n != 1 {
+			t.Fatalf("RevokeAllByUser revoked %d token(s), want the one still live", n)
+		}
+		live, _ := s.Get(ctx, "ra-1")
+		if live.RevokedAt == nil || !live.RevokedAt.Equal(at) || live.Usable(at.Add(time.Second)) {
+			t.Fatalf("the live token after RevokeAllByUser: %+v", live)
+		}
+		kept, _ := s.Get(ctx, "ra-2")
+		if kept.RevokedAt == nil || !kept.RevokedAt.Equal(earlier) {
+			t.Fatalf("RevokeAllByUser moved a revocation instant: %+v, want %v", kept.RevokedAt, earlier)
+		}
+		other, _ := s.Get(ctx, "rb-1")
+		if other.RevokedAt != nil {
+			t.Fatal("RevokeAllByUser revoked another account's token")
+		}
+		if n, err := s.RevokeAllByUser(ctx, "ra", at.Add(time.Hour)); err != nil || n != 0 {
+			t.Fatalf("a second RevokeAllByUser revoked %d (err %v), want 0", n, err)
+		}
+	})
 }
 
 func TestMemoryStore(t *testing.T) { runStoreSuite(t, NewMemoryStore()) }

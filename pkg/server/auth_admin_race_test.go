@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -357,11 +358,11 @@ func TestAdminDisableRevokesSessionsEvenWhenTheReadIsStale(t *testing.T) {
 // records a privilege change from the REQUEST's shape — so a dropped field
 // ships as a success whose audit trail claims a change that never landed.
 //
-// The forced rotation is deliberate, not an omission: the route blocks the
-// next SIGN-IN and redirects it to the rotation flow
-// (docs/cloud-admin-guide.md §1.6, witnessed in auth_admin_password_test.go),
-// while the two transitions that cut live sessions are the disable above and
-// the reset-password route below, which replaces the credential too.
+// The forced rotation is a row of its own below: it revokes no session
+// either, but refuses their next refresh
+// (TestAdminForcedRotationEndsTheSessionsAtTheirNextRefresh), while the two
+// transitions that revoke live sessions are the disable above and the
+// reset-password route below, which replaces the credential too.
 func TestAdminEditThatDoesNotDisableKeepsTheSessionsAlive(t *testing.T) {
 	const password = "keep-my-session-123"
 	hash, err := auth.HashPassword(password)
@@ -405,15 +406,6 @@ func TestAdminEditThatDoesNotDisableKeepsTheSessionsAlive(t *testing.T) {
 			landed: func(t *testing.T, u identity.User) {
 				if u.Status != identity.UserStatusActive {
 					t.Errorf("status = %q, want active", u.Status)
-				}
-			},
-		},
-		{
-			name: "a forced rotation",
-			body: `{"status":"pending_password_change"}`,
-			landed: func(t *testing.T, u identity.User) {
-				if u.Status != identity.UserStatusPendingPasswordChange {
-					t.Errorf("status = %q, want pending_password_change", u.Status)
 				}
 			},
 		},
@@ -473,5 +465,41 @@ func TestAdminPasswordResetRevokesTheLiveSessions(t *testing.T) {
 	}
 	if sess.RevokedAt == nil {
 		t.Error("the reset left alive the session minted on the credential it replaced")
+	}
+}
+
+// TestAdminForcedRotationEndsTheSessionsAtTheirNextRefresh: a console edit
+// to pending_password_change revokes no session row, but no session of the
+// account renews any more — the refresh is refused and clears the cookies,
+// the next sign-in goes through the rotation flow — and the rotation itself
+// ends every session born before it, so none comes back once the account is
+// active again.
+func TestAdminForcedRotationEndsTheSessionsAtTheirNextRefresh(t *testing.T) {
+	const password = "rotate-me-please-123"
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newPlacementE2E(t)
+	seedUser(t, p.s, identity.User{ID: "force1", Email: "force1@example.org", PasswordHash: hash})
+	refresh := signInOverTheRoute(t, p, "force1@example.org", password)
+	root := p.jwt(t, auth.Identity{UserID: "root", IsSuperAdmin: true})
+	if status, body := p.call(t, http.MethodPatch, "/api/admin/users/force1", root, `{"status":"pending_password_change"}`); status != http.StatusOK {
+		t.Fatalf("the forced rotation = %d body=%s, want 200", status, body)
+	}
+	if sess, err := p.sessions.GetSessionByTokenHash(t.Context(), auth.HashRefreshToken(refresh)); err != nil || sess.RevokedAt != nil {
+		t.Fatalf("the forced rotation's PATCH revoked the session row (err=%v) — it must only refuse its renewal", err)
+	}
+	if _, err := p.s.authSvc.Refresh(t.Context(), refresh, "ua", "ip"); !errors.Is(err, auth.ErrSessionRevoked) {
+		t.Fatalf("the refresh of an account pending a password change: got %v, want a refusal", err)
+	}
+	if _, err := p.s.authSvc.Login(t.Context(), "force1@example.org", password, "ua", "ip"); !errors.Is(err, auth.ErrPasswordChangeRequired) {
+		t.Fatalf("the sign-in after the forced rotation: got %v, want ErrPasswordChangeRequired", err)
+	}
+	if _, err := p.s.authSvc.ChangePasswordPending(t.Context(), "force1@example.org", password, "a-rotated-password-456", "ua", "ip"); err != nil {
+		t.Fatalf("the rotation: %v", err)
+	}
+	if _, err := p.s.authSvc.Refresh(t.Context(), refresh, "ua", "ip"); !errors.Is(err, auth.ErrSessionRevoked) {
+		t.Fatalf("a session born before the rotation, once the account is active again: got %v, want a refusal", err)
 	}
 }

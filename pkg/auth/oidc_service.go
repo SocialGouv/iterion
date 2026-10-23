@@ -41,8 +41,8 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 		if err != nil {
 			return LoginResult{}, err
 		}
-		if u.Status == identity.UserStatusDisabled {
-			return LoginResult{}, ErrAccountDisabled
+		if refusal := ssoRefusal(u); refusal != nil {
+			return LoginResult{}, refusal
 		}
 		// Returning user: re-evaluate GitHub grants — pick up newly-matched
 		// orgs AND revoke github_sso memberships in orgs no longer matched
@@ -65,7 +65,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 		// deactivation committed since refuses the write, and the login with
 		// it. Any other store error leaves LastLoginAt — cosmetic — unwritten
 		// and surfaces at the session write on the next line.
-		u, err = s.stampLogin(ctx, u, now, identity.UserPatch{})
+		u, err = s.stampLogin(ctx, u, now, ssoStamp())
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
@@ -78,8 +78,8 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 	email := identity.NormalizeEmail(ext.Email)
 	u, err := s.store.GetUserByEmail(ctx, email)
 	if err == nil {
-		if u.Status == identity.UserStatusDisabled {
-			return LoginResult{}, ErrAccountDisabled
+		if refusal := ssoRefusal(u); refusal != nil {
+			return LoginResult{}, refusal
 		}
 		// Auto-link the new external identity onto the existing user
 		// only when the operator has explicitly trusted this OIDC
@@ -108,7 +108,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 		}
 		// The stamp commits to the status checked above — see the returning
 		// -user path.
-		u, err = s.stampLogin(ctx, u, now, identity.UserPatch{})
+		u, err = s.stampLogin(ctx, u, now, ssoStamp())
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
@@ -141,6 +141,15 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	// Every read the grants need runs BEFORE the account is written, as
+	// registerWithInvitation does: a read that fails then leaves no account,
+	// no SSO link and no grant behind, and the user retries into the same
+	// first login instead of into a half-provisioned one. The id is minted
+	// above, so the plan can name the rows it will write.
+	plans, err := s.planNewAccountGrants(ctx, u.ID, gh, ext, now)
+	if err != nil {
+		return LoginResult{}, err
+	}
 	u, err = s.store.CreateUser(ctx, u)
 	if err != nil {
 		return LoginResult{}, err
@@ -156,7 +165,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 	}
 	// GitHub-gated users join the allow-listed org(s) and land there (no
 	// personal team); every other SSO signup gets a personal team as before.
-	granted, err := s.applyGitHubGrants(ctx, u.ID, gh, ext, now)
+	granted, err := s.applyNewAccountGrants(ctx, plans, identity.MembershipSourceGitHubSSO, now)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -168,21 +177,24 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 	if len(granted) > 0 {
 		preferredTeam = granted[0]
 		patch.DefaultTeamID = &granted[0]
-		if orgID, derr := s.resolveOrgIDForTeam(ctx, granted[0]); derr == nil && orgID != "" {
+		// The default org comes from the grant's OWN team read — no second
+		// read of a row this call already resolved, and no window between
+		// the two for the team to change under.
+		if orgID := plans[0].org.orgID; orgID != "" {
 			patch.DefaultOrgID = &orgID
 		}
 	} else {
-		orgID, teamID, terr := s.createPersonalTeam(ctx, u)
+		space, terr := s.createPersonalTeam(ctx, u)
 		if terr != nil {
 			return LoginResult{}, terr
 		}
-		patch.DefaultOrgID = &orgID
-		patch.DefaultTeamID = &teamID
+		patch.DefaultOrgID = &space.orgID
+		patch.DefaultTeamID = &space.teamID
 	}
 	if u, err = s.store.PatchUser(ctx, u.ID, patch); err != nil {
 		return LoginResult{}, err
 	}
-	return s.issueLoginInTeam(ctx, u, preferredTeam, userAgent, ip)
+	return s.issueNewAccountLogin(ctx, u, preferredTeam, userAgent, ip)
 }
 
 // provisionSubmitter creates a teamless account for a GitHub login that is
@@ -217,8 +229,8 @@ func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser,
 	if u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{LastLoginAt: &now}); err != nil {
 		return LoginResult{}, err
 	}
-	// No team: issueLogin issues a session with an empty active team.
-	return s.issueLogin(ctx, u, userAgent, ip)
+	// No team: the login lands with an empty active team.
+	return s.issueNewAccountLogin(ctx, u, "", userAgent, ip)
 }
 
 // LoginWithExternalForOrg completes a per-org OIDC flow (a tenant's own
@@ -241,8 +253,11 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		return LoginResult{}, oidc.ErrEmailMissing
 	}
 	row, err := s.orgSSO.Get(ctx, providerID)
-	if err != nil {
+	if errors.Is(err, orgsso.ErrNotFound) {
 		return LoginResult{}, oidc.ErrUnknownProvider
+	}
+	if err != nil {
+		return LoginResult{}, fmt.Errorf("auth: read SSO provider %s: %w", providerID, err)
 	}
 	// Defence in depth: the provider must belong to the claimed tenant and be
 	// an enabled OIDC row. The resolver already checked, but the login path
@@ -263,15 +278,15 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		if err != nil {
 			return LoginResult{}, err
 		}
-		if u.Status == identity.UserStatusDisabled {
-			return LoginResult{}, ErrAccountDisabled
+		if refusal := ssoRefusal(u); refusal != nil {
+			return LoginResult{}, refusal
 		}
 		if err := s.grantMembership(ctx, u.ID, tenantID, role, identity.MembershipSourceOIDCSSO, now); err != nil {
 			return LoginResult{}, err
 		}
 		// The stamp commits to the status checked above — see
 		// LoginWithExternal's returning-user path.
-		u, err = s.stampLogin(ctx, u, now, identity.UserPatch{})
+		u, err = s.stampLogin(ctx, u, now, ssoStamp())
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
@@ -288,8 +303,8 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 	email := identity.NormalizeEmail(ext.Email)
 	existing, err := s.store.GetUserByEmail(ctx, email)
 	if err == nil {
-		if existing.Status == identity.UserStatusDisabled {
-			return LoginResult{}, ErrAccountDisabled
+		if refusal := ssoRefusal(existing); refusal != nil {
+			return LoginResult{}, refusal
 		}
 		if !s.canAutoLink(ctx, row, existing, email) {
 			return LoginResult{}, ErrLinkRequiresConsent
@@ -308,7 +323,7 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		}
 		// The stamp commits to the status checked above — see
 		// LoginWithExternal's returning-user path.
-		existing, err = s.stampLogin(ctx, existing, now, identity.UserPatch{})
+		existing, err = s.stampLogin(ctx, existing, now, ssoStamp())
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
@@ -328,6 +343,12 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		UpdatedAt:     now,
 		DefaultTeamID: tenantID,
 	}
+	// The grant's read runs before the account exists — see
+	// LoginWithExternal's new-user path: a failure here commits nothing.
+	grant, err := s.planOrgGrantForNewAccount(ctx, u.ID, tenantID, role, now)
+	if err != nil {
+		return LoginResult{}, err
+	}
 	u, err = s.store.CreateUser(ctx, u)
 	if err != nil {
 		return LoginResult{}, err
@@ -341,7 +362,9 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 	}); err != nil {
 		return LoginResult{}, err
 	}
-	if err := s.grantMembership(ctx, u.ID, tenantID, role, identity.MembershipSourceOIDCSSO, now); err != nil {
+	if _, err := s.applyNewAccountGrants(ctx, []newAccountGrant{
+		{userID: u.ID, teamID: tenantID, role: role, org: grant},
+	}, identity.MembershipSourceOIDCSSO, now); err != nil {
 		return LoginResult{}, err
 	}
 	// The stamp alone, on the account this call just created. Best-effort:
@@ -350,7 +373,7 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 	if patched, uerr := s.store.PatchUser(ctx, u.ID, identity.UserPatch{LastLoginAt: &now}); uerr == nil {
 		u = patched
 	}
-	return s.issueLoginInTeam(ctx, u, tenantID, userAgent, ip)
+	return s.issueNewAccountLogin(ctx, u, tenantID, userAgent, ip)
 }
 
 // LinkExternalToUser attaches a freshly-authenticated external identity to an
@@ -359,33 +382,61 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 // from settings). Idempotent if the identity is already this user's; refuses
 // with ErrLinkAlreadyOwned if it belongs to a different account so an SSO
 // identity can never be silently re-pointed.
-func (s *Service) LinkExternalToUser(ctx context.Context, ext oidc.ExternalUser, userID string) error {
+//
+// sessionLineage names the signed-in session that links it: the link records
+// it (OIDCLink.SessionLineage), so "sign out everywhere", an admin disable and
+// a reuse revocation of that lineage remove it (RemoveSessionSSOLinks). created
+// reports whether this call wrote the link — false when the identity was
+// already this account's.
+func (s *Service) LinkExternalToUser(ctx context.Context, ext oidc.ExternalUser, userID, sessionLineage string) (created bool, err error) {
 	if ext.Subject == "" {
-		return fmt.Errorf("auth: external user missing subject")
+		return false, fmt.Errorf("auth: external user missing subject")
 	}
 	if ext.Email == "" {
-		return oidc.ErrEmailMissing
+		return false, oidc.ErrEmailMissing
 	}
 	if _, err := s.store.GetUser(ctx, userID); err != nil {
-		return err
+		return false, err
 	}
 	existing, err := s.store.GetOIDCLink(ctx, ext.Provider, ext.Subject)
 	if err == nil {
 		if existing.UserID != userID {
-			return ErrLinkAlreadyOwned
+			return false, ErrLinkAlreadyOwned
 		}
-		return nil // already linked to this user — no-op
+		return false, nil // already linked to this user — no-op
 	}
 	if !errors.Is(err, identity.ErrNotFound) {
-		return err
+		return false, err
 	}
-	return s.store.UpsertOIDCLink(ctx, identity.OIDCLink{
+	if err := s.store.UpsertOIDCLink(ctx, identity.OIDCLink{
 		Provider:       ext.Provider,
 		ProviderUserID: ext.Subject,
 		UserID:         userID,
 		Email:          identity.NormalizeEmail(ext.Email),
 		CreatedAt:      s.now().UTC(),
-	})
+		SessionLineage: sessionLineage,
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ErrLastSignInMethod refuses the removal of an account's last sign-in
+// method: an account with no password and no other SSO identity would have
+// no way back in.
+var ErrLastSignInMethod = errors.New("auth: this is the account's last sign-in method — connect another provider or set a password first")
+
+// RemoveSessionSSOLinks removes every SSO link of userID a signed-in session
+// wrote from the account settings ("sign out everywhere", an admin disable): a
+// link an SSO sign-in wrote itself — the account's sign-up through the IdP, its
+// first SSO sign-in — stays, so an account that signs in through SSO only keeps
+// its sign-in. It answers how many it removed; a failure is returned.
+func (s *Service) RemoveSessionSSOLinks(ctx context.Context, userID string) (int64, error) {
+	n, err := s.store.DeleteSessionOIDCLinks(ctx, userID, "")
+	if err != nil {
+		return 0, fmt.Errorf("auth: remove the SSO links the sessions of user %s wrote: %w", userID, err)
+	}
+	return n, nil
 }
 
 // ListSSOLinks returns the SSO identities linked to a user, for the "connected
@@ -395,7 +446,10 @@ func (s *Service) ListSSOLinks(ctx context.Context, userID string) ([]identity.O
 }
 
 // UnlinkExternal removes one SSO identity from a user. Ownership is enforced:
-// the link must belong to userID (a user can only detach their own identities).
+// the link must belong to userID (a user can only detach their own
+// identities). An account with no password and this one identity keeps its
+// sign-in method: the caller connects another provider or sets a password
+// first (ErrLastSignInMethod).
 func (s *Service) UnlinkExternal(ctx context.Context, userID, provider, providerUserID string) error {
 	link, err := s.store.GetOIDCLink(ctx, provider, providerUserID)
 	if err != nil {
@@ -404,7 +458,40 @@ func (s *Service) UnlinkExternal(ctx context.Context, userID, provider, provider
 	if link.UserID != userID {
 		return identity.ErrNotFound
 	}
+	if u, err := s.store.GetUser(ctx, userID); err == nil && u.PasswordHash == "" {
+		links, lerr := s.store.ListOIDCLinksByUser(ctx, userID)
+		if lerr != nil {
+			return lerr
+		}
+		if len(links) <= 1 {
+			return ErrLastSignInMethod
+		}
+	} else if err != nil {
+		return err
+	}
 	return s.store.DeleteOIDCLink(ctx, provider, providerUserID)
+}
+
+// RemoveFlowSSOLink removes an SSO identity link only when it is the row the
+// CALLING FLOW wrote: same account, the flow's session lineage on the row.
+// The link callback's undo runs it — a session refused once the link was
+// written, or a write whose answer was lost — so the row the flow wrote
+// never survives while a row anyone else wrote (another lineage, the
+// account's sign-up link) is not ours to remove. The last-sign-in-method
+// guard does not apply here: what is undone is the flow's own write, not a
+// sign-in method the account chose to keep.
+func (s *Service) RemoveFlowSSOLink(ctx context.Context, userID, provider, subject, lineage string) error {
+	link, err := s.store.GetOIDCLink(ctx, provider, subject)
+	if errors.Is(err, identity.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if link.UserID != userID || lineage == "" || link.SessionLineage != lineage {
+		return nil
+	}
+	return s.store.DeleteOIDCLink(ctx, provider, subject)
 }
 
 // grantMembership ensures userID has at least `role` in teamID. Grant-only: an
@@ -433,14 +520,85 @@ func (s *Service) grantMembership(ctx context.Context, userID, teamID string, ro
 	return s.store.UpsertMembership(ctx, existing)
 }
 
-// resolveOrgIDForTeam returns the parent org id of a team (empty if the
-// team is missing or has no parent org yet).
-func (s *Service) resolveOrgIDForTeam(ctx context.Context, teamID string) (string, error) {
+// newAccountGrant is one team grant an SSO login writes for an account the
+// same call creates: the team, the role, and the org membership the grant is
+// mirrored up to — all decided from reads taken before the account row.
+type newAccountGrant struct {
+	userID string
+	teamID string
+	role   identity.Role
+	org    orgGrant
+}
+
+// planNewAccountGrants decides every grant the matched GitHub rows take for
+// an account this call is about to create. Reads only: nothing is written
+// yet, so a read that fails leaves the store as it was.
+func (s *Service) planNewAccountGrants(ctx context.Context, userID string, gh githubGate, ext oidc.ExternalUser, now time.Time) ([]newAccountGrant, error) {
+	if !gh.provider || len(gh.rows) == 0 {
+		return nil, nil
+	}
+	plans := make([]newAccountGrant, 0, len(gh.rows))
+	for _, row := range gh.rows {
+		role, ok := row.RoleForGroups(ext.Groups)
+		if !ok {
+			continue
+		}
+		grant, err := s.planOrgGrantForNewAccount(ctx, userID, row.TenantID, role, now)
+		if err != nil {
+			return nil, err
+		}
+		plans = append(plans, newAccountGrant{userID: userID, teamID: row.TenantID, role: role, org: grant})
+	}
+	return plans, nil
+}
+
+// planOrgGrantForNewAccount is planOrgGrantForTeam for an account THIS call
+// creates: the org-membership read is skipped, because a uuid minted a
+// moment ago holds no membership row — the read can only answer "not found"
+// or fail, and a read that can only fail is one no path should owe its
+// outcome to. The team read stays: it resolves the parent org, which the
+// landing defaults need too.
+func (s *Service) planOrgGrantForNewAccount(ctx context.Context, userID, teamID string, teamRole identity.Role, now time.Time) (orgGrant, error) {
 	t, err := s.store.GetTeam(ctx, teamID)
 	if err != nil {
-		return "", err
+		return orgGrant{}, err
 	}
-	return t.OrgID, nil
+	if t.OrgID == "" {
+		return orgGrant{}, nil
+	}
+	want := identity.OrgRoleForTeamRole(teamRole)
+	if want == "" {
+		// A team capability outside the ladder (config_editor) confers no org
+		// membership — see planOrgGrantForTeam. ADR-078.
+		return orgGrant{orgID: t.OrgID}, nil
+	}
+	return orgGrant{orgID: t.OrgID, write: &identity.OrgMembership{
+		UserID:   userID,
+		OrgID:    t.OrgID,
+		Role:     want,
+		JoinedAt: now,
+	}}, nil
+}
+
+// applyNewAccountGrants writes the planned grants, org membership first —
+// the order registerWithInvitation states: a grant left standing by a
+// failure between the two is live access to a team of an org its holder is
+// not a member of. It reads nothing: the account is this call's own, so
+// there is no role to preserve and no grant to keep.
+func (s *Service) applyNewAccountGrants(ctx context.Context, plans []newAccountGrant, source string, now time.Time) ([]string, error) {
+	granted := make([]string, 0, len(plans))
+	for _, p := range plans {
+		if err := s.applyOrgGrant(ctx, p.org); err != nil {
+			return granted, err
+		}
+		if err := s.store.UpsertMembership(ctx, identity.Membership{
+			UserID: p.userID, TeamID: p.teamID, Role: p.role, Source: source, JoinedAt: now,
+		}); err != nil {
+			return granted, err
+		}
+		granted = append(granted, p.teamID)
+	}
+	return granted, nil
 }
 
 // reconcileGitHubGrants revokes the user's github_sso-sourced memberships in
@@ -590,4 +748,26 @@ func (s *Service) canAutoLink(ctx context.Context, row orgsso.OrgSSOProvider, ta
 		return false
 	}
 	return true
+}
+
+// ssoRefusal is the answer of an SSO sign-in for an account no session may be
+// opened on: a disabled one, and one pending a password change — whose exit
+// is the forced change for an account that has a password, and the emailed
+// reset (or its administrator) for one that signs in through SSO only. Nil
+// for an active account.
+func ssoRefusal(u identity.User) error {
+	switch u.Status {
+	case identity.UserStatusDisabled:
+		return ErrAccountDisabled
+	case identity.UserStatusPendingPasswordChange:
+		return ErrPasswordChangeRequired
+	}
+	return nil
+}
+
+// ssoStamp is the precondition an SSO sign-in stamps under: the statuses
+// ssoRefusal refused at read time (stampLogin adds disabled), refused again at
+// write time.
+func ssoStamp() identity.UserPatch {
+	return identity.UserPatch{IfNotStatus: []identity.UserStatus{identity.UserStatusPendingPasswordChange}}
 }

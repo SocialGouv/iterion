@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useLocation } from "wouter";
 
-import { ApiError, completePendingPasswordChange } from "@/api/auth";
+import { ApiError, completePendingPasswordChange, passwordChangedSignIn } from "@/api/auth";
 import { useAuth } from "@/auth/AuthContext";
 import { defaultReturnTo, signInReturnTo, signInURL } from "@/auth/returnTo";
 
@@ -15,7 +15,7 @@ import { defaultReturnTo, signInReturnTo, signInURL } from "@/auth/returnTo";
 // The Login view navigates here carrying the email + the rejected
 // password as query params so the user only types the new password.
 export default function ForcedPasswordChange() {
-  const { reloadIdentity } = useAuth();
+  const { completeSignIn, credentialSignedOut } = useAuth();
   const [, navigate] = useLocation();
   const [returnTo] = useState(() => signInReturnTo(window.location));
 
@@ -58,9 +58,22 @@ export default function ForcedPasswordChange() {
     setBusy(true);
     try {
       await completePendingPasswordChange(email, currentPassword, newPassword);
-      await reloadIdentity();
+      // kind "delivery": the rotation is a credential change the server
+      // committed, not a sign-in the user chose — a pending sign-out stays
+      // OWED and resolves GONE instead of being abandoned unpresented.
+      await completeSignIn(undefined, "delivery");
       navigate(returnTo, { replace: true });
     } catch (e) {
+      // The rotation WAS applied; only the session could not be opened. The
+      // temporary password this form carries is no longer the account's, so
+      // re-submitting it would be refused: the browser goes to the sign-in
+      // form with the server's sentence pinned over it.
+      const changed = passwordChangedSignIn(e);
+      if (changed) {
+        credentialSignedOut(changed);
+        navigate(signInURL(returnTo), { replace: true });
+        return;
+      }
       const msg = e instanceof ApiError ? e.message : errorMessage(e);
       setErr(msg);
     } finally {

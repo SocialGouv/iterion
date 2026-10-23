@@ -14,27 +14,59 @@ import (
 
 // ---- Authorization helpers ----
 
+// canViewTeam is canViewTeamOrFail's fail-closed form: a read it could not
+// complete grants nothing, and the caller is told nothing about it. It is
+// what a GATE wants — no privilege from a read nobody made, nothing written
+// — and it is what every caller but one takes.
 func (s *Server) canViewTeam(ctx context.Context, id auth.Identity, teamID string) bool {
+	allowed, _ := s.canViewTeamOrFail(ctx, id, teamID)
+	return allowed
+}
+
+// canViewTeamOrFail resolves whether id may read teamID, and reports the
+// read that stopped a "no". Only a REFUSAL carries the error: a read that
+// failed beside a row which GRANTS access changes no verdict, so a "yes"
+// never carries one. The route whose published contract says a store failure
+// answers the generic 500 and is logged (GET /api/teams/{id}/members,
+// docs/cloud-rest-api.md) takes this form; the fail-closed canViewTeam above
+// is what every other caller takes, and a "not a member" that rests on a
+// read the store could not complete is the state this exists to keep out of
+// that one route's answers.
+func (s *Server) canViewTeamOrFail(ctx context.Context, id auth.Identity, teamID string) (bool, error) {
 	// Synthetic principals (webhook / config-share) never authorize an
 	// operator team action, even if a future bug set a role on one.
 	if id.IsSynthetic() {
-		return false
+		return false, nil
 	}
 	if id.IsSuperAdmin {
-		return true
+		return true, nil
 	}
 	// AtLeast(RoleViewer) is equivalent to the old Valid() for the four ladder
 	// roles, but excludes the orthogonal config_editor capability (rank 0) — a
 	// config editor is not a team viewer (ADR-078); it reaches only its own
 	// endpoints via canEditConfigShares.
 	if id.TeamID == teamID && id.Role.AtLeast(identity.RoleViewer) {
-		return true
+		return true, nil
 	}
-	if mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID); err == nil && mb.Role.AtLeast(identity.RoleViewer) {
-		return true
+	var unread error
+	mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID)
+	switch {
+	case err == nil:
+		if mb.Role.AtLeast(identity.RoleViewer) {
+			return true, nil
+		}
+	case !errors.Is(err, identity.ErrNotFound):
+		unread = fmt.Errorf("read the team grant of %s in %s: %w", id.UserID, teamID, err)
 	}
 	// An org admin/owner can view every team in their org.
-	return s.orgAdminOfTeam(ctx, id, teamID)
+	allowed, oerr := s.orgAdminOfTeamOrFail(ctx, id, teamID)
+	if allowed {
+		return true, nil
+	}
+	if unread == nil {
+		unread = oerr
+	}
+	return false, unread
 }
 
 // canEditConfigShares reports whether the principal may read/write this team's
@@ -86,12 +118,27 @@ func (s *Server) canManageTeam(ctx context.Context, id auth.Identity, teamID str
 
 // orgAdminOfTeam reports whether the principal is an admin/owner of the
 // team's parent org (so org admins implicitly manage every team in it).
+// Fail-closed form of orgAdminOfTeamOrFail.
 func (s *Server) orgAdminOfTeam(ctx context.Context, id auth.Identity, teamID string) bool {
+	allowed, _ := s.orgAdminOfTeamOrFail(ctx, id, teamID)
+	return allowed
+}
+
+// orgAdminOfTeamOrFail is orgAdminOfTeam reporting the read that stopped a
+// "no": a team the store says is NOT THERE, or one with no parent org, is a
+// fact and no failure; a team row it could not read is.
+func (s *Server) orgAdminOfTeamOrFail(ctx context.Context, id auth.Identity, teamID string) (bool, error) {
 	t, err := s.authStore().GetTeam(ctx, teamID)
-	if err != nil || t.OrgID == "" {
-		return false
+	if err != nil {
+		if errors.Is(err, identity.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read team %s: %w", teamID, err)
 	}
-	return s.canManageOrg(ctx, id, t.OrgID)
+	if t.OrgID == "" {
+		return false, nil
+	}
+	return s.canManageOrgOrFail(ctx, id, t.OrgID)
 }
 
 // canViewOrg reports whether the principal may read an org's settings /
@@ -115,18 +162,30 @@ func (s *Server) canViewOrg(ctx context.Context, id auth.Identity, orgID string)
 
 // canManageOrg reports whether the principal may mutate an org (members,
 // SSO, settings, teams). Super-admins and org admins/owners pass.
+// Fail-closed form of canManageOrgOrFail.
 func (s *Server) canManageOrg(ctx context.Context, id auth.Identity, orgID string) bool {
+	allowed, _ := s.canManageOrgOrFail(ctx, id, orgID)
+	return allowed
+}
+
+// canManageOrgOrFail is canManageOrg reporting the read that stopped a "no":
+// a standing the store says is NOT THERE, or one below admin, is a fact and
+// no failure; a membership row it could not read is.
+func (s *Server) canManageOrgOrFail(ctx context.Context, id auth.Identity, orgID string) (bool, error) {
 	if id.IsSynthetic() {
-		return false
+		return false, nil
 	}
 	if id.IsSuperAdmin {
-		return true
+		return true, nil
 	}
 	om, err := s.authStore().GetOrgMembership(ctx, id.UserID, orgID)
 	if err != nil {
-		return false
+		if errors.Is(err, identity.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read the org standing of %s in %s: %w", id.UserID, orgID, err)
 	}
-	return om.Role.AtLeast(identity.OrgRoleAdmin)
+	return om.Role.AtLeast(identity.OrgRoleAdmin), nil
 }
 
 // requireRankToInvite applies the two caps a mint owes on the role it hands

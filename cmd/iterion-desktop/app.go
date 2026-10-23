@@ -534,7 +534,11 @@ func (a *App) applyKeychainToEnv() {
 			continue
 		}
 		v, err := a.keychain.Get(k)
-		if err != nil || v == "" {
+		if err != nil {
+			log.Printf("desktop: reading %s from the keychain failed: %v (not injected for this launch)", k, err)
+			continue
+		}
+		if v == "" {
 			continue
 		}
 		_ = os.Setenv(k, v)

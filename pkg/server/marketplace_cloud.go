@@ -117,8 +117,9 @@ func (s *Server) handleMarketplaceConfig(w http.ResponseWriter, r *http.Request)
 
 // marketplaceModerateGate authorizes a moderation action on entry by the
 // request's principal: org-scoped entries are moderated by that org's
-// admins, instance/public entries by a platform super-admin. Returns the
-// identity on success, or writes the error response and returns ok=false.
+// admins, instance/public entries by a platform super-admin (platformAuthority:
+// the claim re-derived at the identity). Returns the identity on success, or
+// writes the error response and returns ok=false.
 func (s *Server) marketplaceModerateGate(w http.ResponseWriter, r *http.Request, entry *marketplace.Entry) (auth.Identity, bool) {
 	id, ok := auth.FromContext(r.Context())
 	if !ok || id.UserID == "" {
@@ -132,8 +133,7 @@ func (s *Server) marketplaceModerateGate(w http.ResponseWriter, r *http.Request,
 			return auth.Identity{}, false
 		}
 	default: // public / instance
-		if !id.IsSuperAdmin {
-			s.httpErrorFor(w, r, http.StatusForbidden, "platform admin required")
+		if !s.platformAuthority(w, r) {
 			return auth.Identity{}, false
 		}
 	}

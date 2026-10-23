@@ -152,9 +152,13 @@ For CI jobs, SDKs and curl — anywhere the 15-minute browser session is
 impractical. `/account` → Tokens → create: the `iap_…` value is shown
 **once**. Use it as `Authorization: Bearer iap_…`. A PAT authenticates
 as *you* (your role, your team — optionally pinned to one team at
-creation) and dies instantly on revoke, on account disable, or when
-you leave the pinned team. The operator may cap token lifetimes
-(`ITERION_PAT_MAX_TTL`). Details: [secrets-reference.md](secrets-reference.md).
+creation) and dies instantly on revoke, on **Sign out everywhere**, on
+account disable, or when you leave the pinned team; a password change
+keeps it, so your CI keeps working. A PAT is pinned: it switches no team
+or org and mints no other token (the server answers `403` — create the
+new token here, or from the CLI after `iterion remote login`). The
+operator may cap token lifetimes (`ITERION_PAT_MAX_TTL`). Details:
+[secrets-reference.md](secrets-reference.md).
 
 ## 7. Password & account security
 
@@ -164,8 +168,33 @@ you leave the pinned team. The operator may cap token lifetimes
   admin to force a password rotation on your account.
 - **Change password** — `/account` → Profile: rotating your password
   signs out every *other* session; yours continues seamlessly.
-- **Sign out everywhere** — same page; kills every refresh session
-  (active browser tabs lose access within ≤15 minutes).
+- **Sign out everywhere** — same page; ends every signed-in session,
+  revokes every personal access token of your account, your CLI and CI
+  tokens included — issue new ones afterwards — and disconnects every SSO
+  identity you connected from that page; the identity you signed up or
+  first signed in with stays, and if it was your ONLY way in, your oldest
+  connected identity stays too — you keep a way to sign in, and can
+  disconnect it from Account → Connected SSO once a password or another
+  provider is in place. Disconnecting your last sign-in method while you
+  have no password is refused: connect another provider or set a password
+  first. If a step of the cleanup fails after your sessions are already
+  ended, the page says so: sign in again and repeat **Sign out
+  everywhere** — every step is safe to repeat. Account → Connected SSO
+  marks each row for this: the ones **removed when you sign out
+  everywhere** (each identity a signed-in session connected) and the one
+  **kept** — so you can see what a sign-out everywhere would leave you
+  before you press it. One corner the marks cannot see: a password-less
+  account that would be left with no identity at all keeps its oldest
+  one, and that surviving row still reads **removed** — the mark says how
+  the identity was made, and only the sign-out itself shows which one
+  stays. An open browser tab
+  elsewhere keeps the access it
+  holds for at most 15 minutes, and what it does with it then — a run
+  launched, a setting changed, an API key added — stays done; but it signs
+  no one in as you: it mints no token, connects no SSO identity, and
+  changes or removes none of what you sign in with (your password, your
+  tokens, your connected identities). The other tabs of this browser sign
+  out at once, for a plain **Sign out** too.
 
 ## 8. My org's usage
 
@@ -184,6 +213,8 @@ is at `GET /api/orgs/{id}/usage`. Denial semantics when a cap is hit:
 | "Anthropic subscription extra-usage balance is empty" | A `claw` call (or pi with ambient/local subscription auth) reached Anthropic after that separate balance was exhausted. Enable/replenish extra usage at `claude.ai/settings/usage`, add an API key, or use `backend: claude_code` to spend the plan itself. |
 | "invitation expired" / "invitation already accepted" | Ask the inviter to issue a new one. |
 | Login redirects you back to `/login` after the OIDC bounce | The IdP and iterion disagree on the redirect URI; ping your operator with the URL bar contents at the moment of the bounce. |
+| "Sign-out not confirmed" after clicking Sign out | The server did not answer the sign-out (an incident, a network or proxy error), so this browser may still hold your session. Where the browser keeps site data, the studio signs no one back into it and presents the sign-out again before the next sign-in and at the next page load — and a sign-out this browser presents again names that session, so a session you opened since is never the one it ends. A **Sign out** you click ends the session named when you clicked. If that session had been replaced since it was read (a password change, a sign-in in another tab), the server answers that it ended nothing, the sign-out stays with a warning, and a second **Sign out** — which names the session this browser holds by then — ends it. While a sign-out stays unconfirmed and this browser still holds the session it named, the SSO buttons and the sign-in form are held — signing in would replace the session you asked to end — and the page says so and offers **Continue with <provider> anyway** (or **Sign in anyway**), which moves that sign-out to abandoned: the record stays with a notice in every tab, and the session you asked to end stays active until its expiry (named when known). Where the browser keeps no site data, the note dies with the tab: a reload or a new tab before a confirmed retry may sign you back in, which the message says. In the desktop app, the desktop keeps the pending sign-out, stops using the session and presents the sign-out until the server confirms it — including when you sign in again: the new session does not replace it. Click **Retry sign-out** (or reload once the server answers); on a shared computer, do it before you leave. |
+| "Sign-out done; cleanup incomplete" after **Sign out everywhere** | A cleanup step failed after your sessions were already ended. Sign in again and repeat **Sign out everywhere** — every step is safe to repeat. |
 
 ## 10. Where the data lives
 
