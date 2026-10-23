@@ -171,6 +171,12 @@ export function useDocumentSaveAs() {
           else after.setSourceBuffer(carried);
         }
         after.setCurrentSource(result.source);
+        // The creation's answer is the claim the next save presents (the
+        // digest rule): setCurrentFilePath above cleared the open's — there
+        // is no open; the file begins with THIS write. Without it the first
+        // save of the newly named file presents no digest over a file that
+        // now exists, and is refused.
+        after.setOpenedDigest(result.digest ?? null);
         if (clean) after.markSaved();
       }
       pushRecent(result.path);

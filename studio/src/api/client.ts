@@ -720,7 +720,7 @@ export async function saveFile(
       for (const rel of Object.keys(rewritten.files)) {
         digests[rel] = opened.digests[rel] ?? "";
       }
-      await apiRequest(
+      const updated = await apiRequest<BotSourceFilesResponse>(
         `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
         {
           method: "PUT",
@@ -732,10 +732,21 @@ export async function saveFile(
           }),
         },
       );
+      // The write's answer is the bundle as it now stands — what the NEXT
+      // save presents (the version CAS, the per-file digests). Held stale,
+      // the second save of an edit round is a 409 against this tab's own
+      // write. A concurrent editor's write after this one still conflicts:
+      // the snapshot is this write's own answer, never a fresh fetch.
+      openedBotSources.set(path, {
+        id: updated.id,
+        version: updated.version,
+        files: updated.files ?? files,
+        digests: updated.file_sha256 ?? {},
+      });
       return { path, source: rewritten.source, files: Object.keys(rewritten.files).sort(), revision: rewritten.revision };
     }
     const { source } = await unparse(document);
-    await apiRequest(
+    const updated = await apiRequest<BotSourceFilesResponse>(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}/files/${bs.rel}`,
       {
         method: "PUT",
@@ -747,6 +758,14 @@ export async function saveFile(
         }),
       },
     );
+    // Same refresh: the answer carries the claim the next save of this
+    // file presents.
+    openedBotSources.set(path, {
+      id: updated.id,
+      version: updated.version,
+      files: updated.files ?? {},
+      digests: updated.file_sha256 ?? {},
+    });
     return { path, source };
   }
   return request("/files/save", {

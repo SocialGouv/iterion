@@ -29,6 +29,9 @@ const sha = (s: string): string => {
 
 const MAIN = 'import "lib/nodes.bot"\n\nworkflow w:\n  entry: worker\n  worker -> done\n';
 const NODES = 'agent worker:\n  model: "m"\n';
+// A bot in ONE file: the open takes the single-file path, and its save is
+// the per-file PUT.
+const MAIN_SOLO = "workflow w:\n  entry: worker\n  worker -> done\n";
 
 function contractServer(bundle: Bundle, opts?: { onPut?: (body: Record<string, unknown>) => void }) {
   const calls: Array<{ method: string; url: string; body: unknown }> = [];
@@ -99,12 +102,16 @@ function contractServer(bundle: Bundle, opts?: { onPut?: (body: Record<string, u
     if (url.endsWith("/unparse")) {
       // The unit write-back: the render answers the rewritten files and the
       // revision they will have, and refuses a render whose revision it
-      // does not know.
-      const b = body as { files: Record<string, string>; main: string; revision: string };
-      if (b.revision !== `rev${bundle.version}`) {
-        return new Response(JSON.stringify({ error: "the files changed since the document was opened" }), { status: 409 });
+      // does not know. A plain render — a single-file save's source —
+      // carries no revision and is never staleness-checked here.
+      const b = body as { files?: Record<string, string>; main?: string; revision?: string };
+      if (b.revision !== undefined) {
+        if (b.revision !== `rev${bundle.version}`) {
+          return new Response(JSON.stringify({ error: "the files changed since the document was opened" }), { status: 409 });
+        }
+        return json({ source: b.files?.["main.bot"], files: { "lib/nodes.bot": NODES + "\nprompt kept:\n  by the render\n" }, revision: `rev${bundle.version + 1}` });
       }
-      return json({ source: b.files["main.bot"], files: { "lib/nodes.bot": NODES + "\nprompt kept:\n  by the render\n" }, revision: `rev${bundle.version + 1}` });
+      return json({ source: b.files?.["main.bot"] ?? "rendered\n" });
     }
     return json({});
   });
@@ -195,5 +202,78 @@ describe("the studio edit round trip under the digest rule", () => {
     ).rejects.toThrow(/changed since|carries no digest|version conflict/i);
     // The other editor's bytes stand.
     expect(bundle.files["main.bot"]).toBe(theirs);
+  });
+
+  it("the save's answer refreshes the write claim: the second save of the edit round lands", async () => {
+    const bundle: Bundle = {
+      id: "b-4",
+      slug: "demo",
+      version: 3,
+      files: { "main.bot": MAIN_SOLO },
+      file_sha256: { "main.bot": sha(MAIN_SOLO) },
+    };
+    contractServer(bundle);
+    const editorPath = `${BOTSOURCE_SCHEME}t1/demo/main.bot`;
+    await openFile(editorPath);
+    const document = { agents: [] } as unknown as IterDocument;
+    await saveFile(editorPath, document);
+    // The edit→save→edit→save round: the second save presents what the
+    // FIRST save answered — its version, its digest. The claim held stale,
+    // it is a 409 against this tab's own write.
+    const second = await saveFile(editorPath, document);
+    expect(second.path).toBe(editorPath);
+    expect(bundle.version).toBe(5);
+  });
+
+  it("a concurrent editor between the two saves still conflicts on the refreshed claim", async () => {
+    const bundle: Bundle = {
+      id: "b-5",
+      slug: "demo",
+      version: 3,
+      files: { "main.bot": MAIN_SOLO },
+      file_sha256: { "main.bot": sha(MAIN_SOLO) },
+    };
+    contractServer(bundle);
+    const editorPath = `${BOTSOURCE_SCHEME}t1/demo/main.bot`;
+    await openFile(editorPath);
+    const document = { agents: [] } as unknown as IterDocument;
+    await saveFile(editorPath, document);
+    // Another editor writes AFTER our save: the refreshed claim is THIS
+    // write's own answer, never a fresh fetch, so their version is not
+    // ours and the write is a conflict, not an overwrite.
+    const theirs = MAIN_SOLO + "\nprompt theirs:\n  by the other editor\n";
+    bundle.files["main.bot"] = theirs;
+    bundle.file_sha256["main.bot"] = sha(theirs);
+    bundle.version += 1;
+    await expect(saveFile(editorPath, document)).rejects.toThrow(/conflict/i);
+    expect(bundle.files["main.bot"]).toBe(theirs);
+  });
+
+  it("the unit save's answer refreshes the claim too: the second unit save lands", async () => {
+    const bundle: Bundle = {
+      id: "b-6",
+      slug: "demo",
+      version: 3,
+      files: { "main.bot": MAIN, "lib/nodes.bot": NODES },
+      file_sha256: { "main.bot": sha(MAIN), "lib/nodes.bot": sha(NODES) },
+    };
+    contractServer(bundle);
+    const editorPath = `${BOTSOURCE_SCHEME}t1/demo/main.bot`;
+    const opened = await openFile(editorPath);
+    const document = { agents: [] } as unknown as IterDocument;
+    const first = await saveFile(editorPath, document, {
+      revision: opened.unit!.revision,
+      unitFiles: opened.unit!.files,
+    });
+    expect(first.revision).toBe("rev4");
+    // The store threads the save's revision to the next save (the hook's
+    // setUnit); the bundle claim behind the PUT must have moved with the
+    // write, or the second save of the round is a version conflict.
+    const second = await saveFile(editorPath, document, {
+      revision: first.revision,
+      unitFiles: opened.unit!.files,
+    });
+    expect(second.revision).toBe("rev5");
+    expect(bundle.version).toBe(5);
   });
 });

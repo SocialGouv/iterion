@@ -969,6 +969,12 @@ export interface SaveFileResponse {
   source: string;
   /** Present only after a real local on-disk write, never for cloud/bundle sources. */
   confirmed_disk_path?: string;
+  /** The sha256 of the file as this save wrote it — a whole read issued,
+   *  the answer holds the very bytes: what the next save of the file
+   *  presents (the digest rule). Absent for a bot in several files (its
+   *  claim is `revision`) and for a cloud source (the opened bundle
+   *  snapshot is refreshed from the PUT answer). */
+  digest?: string;
 }
 
 // WebSocket file watching events

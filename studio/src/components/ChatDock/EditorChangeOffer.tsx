@@ -165,6 +165,10 @@ export default function EditorChangeOffer({
       ) {
         const savedState = afterSave.store.getState();
         savedState.setCurrentSource(result.source);
+        // The answer carries what the next save of this file presents (the
+        // digest rule): held stale, the offer's second save is a 409
+        // against its own first.
+        savedState.setOpenedDigest(result.digest ?? null);
         savedState.markSaved();
         setAction("saved");
       } else {

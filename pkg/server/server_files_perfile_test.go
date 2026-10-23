@@ -837,6 +837,97 @@ func TestTheRenderFollowsTheClaimPastAStaleAddedFile(t *testing.T) {
 	}
 }
 
+// TestASaveRewritesAnAddedFileItsClaimReadWhole: a fragment the edit's
+// claim newly imports is written when the document's edits to it say so.
+// Its whole-read provenance rides the claim — finishClaimed held the
+// probe's bytes to the digest the apply's read issued, and the save
+// re-reads them under the locks — so the staged write carries that
+// provenance instead of the digest-less refusal a file nobody read earns.
+// Without the provenance travelling, this save was always a 409 ("carries
+// no digest of the read it replaces"), and the apply→edit→save round of a
+// bot that had just grown a fragment could never land.
+func TestASaveRewritesAnAddedFileItsClaimReadWhole(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/more.bot":  "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	// The author edits what the NEW fragment declares from the canvas, so
+	// the save rewrites the claim-added file itself — the exact write the
+	// digest rule guards.
+	edited := editDocument(t, applied.Document, func(m map[string]any) {
+		for _, p := range m["prompts"].([]any) {
+			if pm, _ := p.(map[string]any); pm["name"] == "extra" {
+				pm["body"] = "Edited from the canvas after the apply."
+			}
+		}
+	})
+	rec, saved := savePathClaimed(t, s, "demo/main.bot", edited, opened.Unit.Revision, applied.Unit.Files)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save rewriting a claim-added fragment: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/more.bot"); !strings.Contains(got, "Edited from the canvas after the apply.") {
+		t.Fatalf("the edit to the newly imported fragment did not land:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/main.bot"); !strings.Contains(got, "import \"lib/more.bot\"") {
+		t.Fatalf("the applied import line was dropped by the save:\n%s", got)
+	}
+	if got := readFixture(t, workdir, "demo/lib/nodes.bot"); got != unitFixtureNodes {
+		t.Fatalf("the untouched fragment was rewritten:\n%s", got)
+	}
+	if saved.Revision == "" || saved.Revision == opened.Unit.Revision {
+		t.Fatalf("revision after save %q, want the grown unit's new digest", saved.Revision)
+	}
+}
+
+// TestASaveStillRefusesAnAddedFileClaimedWithoutARead — the guard the
+// provenance ride must not weaken: the only added file a save carries is
+// one its claim read whole. A file claimed without the digest of the read
+// it was seen in is refused, not trusted, and nothing is written.
+func TestASaveStillRefusesAnAddedFileClaimedWithoutARead(t *testing.T) {
+	workdir := t.TempDir()
+	writeUnitFixture(t, workdir, map[string]string{
+		"demo/main.bot":      unitFixtureMain,
+		"demo/lib/nodes.bot": unitFixtureNodes,
+		"demo/lib/more.bot":  "prompt extra:\n  More.\n",
+	})
+	s := &Server{cfg: Config{WorkDir: workdir}}
+	_, opened := openPath(t, s, "demo/main.bot")
+
+	added := strings.Replace(unitFixtureMain, "import \"lib/nodes.bot\"\n", "import \"lib/nodes.bot\"\nimport \"lib/more.bot\"\n", 1)
+	rec, applied := parseCall(t, s, map[string]any{"path": "demo/main.bot", "file": "main.bot", "source": added})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+	}
+	stripped := make([]unitFileInfo, len(applied.Unit.Files))
+	copy(stripped, applied.Unit.Files)
+	for i := range stripped {
+		if stripped[i].Rel == "lib/more.bot" {
+			stripped[i].Digest = ""
+		}
+	}
+	onDisk := readFixture(t, workdir, "demo/lib/more.bot")
+	rec, _ = savePathClaimed(t, s, "demo/main.bot", applied.Document, opened.Unit.Revision, stripped)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save of an added file claimed without its digest: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "lib/more.bot") {
+		t.Fatalf("the refusal does not name the file: %s", rec.Body.String())
+	}
+	if got := readFixture(t, workdir, "demo/lib/more.bot"); got != onDisk {
+		t.Fatalf("the digest-less claim was written:\n%s", got)
+	}
+}
+
 // TestTheProbeStubKeepsTheRealWorkflowsName: the claim's probe stages the
 // main as its claimed header plus a STUB workflow (so a main below a lib/
 // directory keeps its main-ness). An error that names the stub — a newly

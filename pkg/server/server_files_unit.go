@@ -746,10 +746,20 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 	// Each file is written over the bytes the save read of it — a file of
 	// the unit loaded whole above, or one the claim newly imports, read when
 	// the document was built — and the transaction holds each to those bytes
-	// under its lock (checkStoredFile): the unit's files were read whole, the
-	// others are read again there. Their names are all that is kept.
-	whole := make(map[string]bool, len(u.Files))
+	// under its lock (checkStoredFile): the unit's files were read whole, and
+	// the claim's own new files carry their whole-read provenance (below).
+	// Their names are all that is kept.
+	whole := make(map[string]bool, len(u.Files)+len(added))
 	for _, f := range u.Files {
+		whole[f.Rel] = true
+	}
+	// A file the claim newly imports was read whole too — by the probe the
+	// claim was validated against (finishClaimed held its bytes to the
+	// digest the apply's read issued), and the save re-reads those bytes
+	// under the locks below. Without its provenance here, the write of
+	// exactly that fragment — the edit that imported it, edited further on
+	// the canvas — is refused as one nobody read.
+	for _, f := range added {
 		whole[f.Rel] = true
 	}
 	// The files as the save would leave them must read whole too: written

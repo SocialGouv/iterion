@@ -80,6 +80,7 @@ export function useDocumentFileOps({
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
+  const setOpenedDigest = useDocumentStore((s) => s.setOpenedDigest);
   const unit = useDocumentStore((s) => s.unit);
   const setUnit = useDocumentStore((s) => s.setUnit);
   const markSaved = useDocumentStore((s) => s.markSaved);
@@ -306,6 +307,13 @@ export function useDocumentFileOps({
           return;
         }
         setCurrentSource(result.source);
+        // The save's answer carries what the next save of this file
+        // presents (the digest rule): the file as THIS write left it. Held
+        // stale, the second save of an edit round presents the open's
+        // digest over bytes this very write replaced — a 409 against our
+        // own edit. A bot in several files takes none: its claim is the
+        // revision, settled just below.
+        setOpenedDigest(result.digest ?? null);
         // The revision goes onto the unit as it is NOW: a per-file Apply
         // during the write may have changed its files.
         if (now.unit) setUnit({ ...now.unit, revision: result.revision ?? now.unit.revision });
@@ -329,6 +337,7 @@ export function useDocumentFileOps({
     document,
     currentFilePath,
     setCurrentSource,
+    setOpenedDigest,
     unit,
     setUnit,
     markSaved,
