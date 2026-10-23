@@ -6,11 +6,50 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/repomap"
 )
 
 // repoRoot is where this package sits relative to the module root.
 const repoRoot = "../.."
+
+func TestUntrackedDocDoesNotChangeMapFreshness(t *testing.T) {
+	root := syntheticTree(t)
+	gittest.Run(t, root, "commit", "-m", "seed")
+	if _, err := repomap.Write(root); err != nil {
+		t.Fatal(err)
+	}
+	// Track generated pages too: the docs map indexes its own pages.
+	gittest.Run(t, root, "add", ".")
+	if _, err := repomap.Write(root); err != nil {
+		t.Fatal(err)
+	}
+	assertFresh := func() {
+		t.Helper()
+		stale, err := repomap.Stale(root)
+		if err != nil || len(stale) != 0 {
+			t.Fatalf("freshness verdict changed: stale=%v err=%v", stale, err)
+		}
+	}
+	assertFresh()
+	const draft = "docs/agents/local draft.md"
+	writeTreeFile(t, root, draft, "# Local draft\n\nNot ready for review.\n")
+	assertFresh()
+	gittest.Run(t, root, "add", draft)
+	stale, err := repomap.Stale(root)
+	if err != nil || !contains(stale, "docs/references/map-docs.md") {
+		t.Fatalf("staged page must stale the docs map: stale=%v err=%v", stale, err)
+	}
+	if _, err := repomap.Write(root); err != nil {
+		t.Fatal(err)
+	}
+	assertFresh()
+	writeTreeFile(t, root, draft, "# Revised draft\n\nAn unstaged edit to an indexed page.\n")
+	stale, err = repomap.Stale(root)
+	if err != nil || !contains(stale, "docs/references/map-docs.md") {
+		t.Fatalf("unstaged edit to an indexed page must stale the map: stale=%v err=%v", stale, err)
+	}
+}
 
 // The committed commons must describe the tree that is committed beside
 // them. This is the gate: it rides the required `test` check, so a stale
@@ -63,6 +102,7 @@ func TestTheFreshnessGateBites(t *testing.T) {
 			if err := os.RemoveAll(filepath.Join(scratch, tc.remove)); err != nil {
 				t.Fatal(err)
 			}
+			gittest.Run(t, scratch, "add", "-A")
 			after, err := repomap.Generate(scratch)
 			if err != nil {
 				t.Fatal(err)
@@ -112,6 +152,8 @@ func syntheticTree(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Join(root, repomap.OutputDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	gittest.Run(t, root, "init")
+	gittest.Run(t, root, "add", ".")
 	return root
 }
 
@@ -126,5 +168,54 @@ func TestArtifactPathsStayUnderTheCommonsDirectory(t *testing.T) {
 		if !strings.HasSuffix(p, ".md") {
 			t.Errorf("%s renders to %q, which is not markdown", e.Stem(), p)
 		}
+	}
+}
+
+// An indexed page deleted from the WORKING TREE without staging the
+// deletion must not abort the generation (before the fix, readDocRow's
+// not-exist error aborted Generate and the map could never be rebuilt):
+// the generation succeeds and OMITS the page — the same invisibility an
+// untracked draft gets — and the generated map on disk carries the
+// omission, verifiable by reading it.
+func TestAnUnstagedDeletionDoesNotAbortTheGeneration(t *testing.T) {
+	root := syntheticTree(t)
+	gittest.Run(t, root, "commit", "-m", "seed")
+	const page = "docs/agents/doomed page.md"
+	const mapFile = "docs/references/map-docs.md"
+	writeTreeFile(t, root, page, "# Doomed\n\nTracked, then deleted without staging the deletion.\n")
+	gittest.Run(t, root, "add", page)
+	if _, err := repomap.Write(root); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, root, "add", ".")
+	if _, err := repomap.Write(root); err != nil {
+		t.Fatal(err)
+	}
+	committed, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(mapFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(committed), filepath.Base(page)) {
+		t.Fatalf("the seeded map lost the page before the deletion: %s", mapFile)
+	}
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(page))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repomap.Write(root); err != nil {
+		t.Fatalf("an unstaged deletion aborted the generation: %v", err)
+	}
+	omitted, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(mapFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(omitted), filepath.Base(page)) {
+		t.Fatalf("the regenerated map still carries the deleted page — the omission must be visible on disk")
+	}
+	gittest.Run(t, root, "add", page)
+	if _, err := repomap.Write(root); err != nil {
+		t.Fatal(err)
+	}
+	if stale, err := repomap.Stale(root); err != nil || len(stale) != 0 {
+		t.Fatalf("staging the deletion must make everything fresh again: stale=%v err=%v", stale, err)
 	}
 }

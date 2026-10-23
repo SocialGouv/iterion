@@ -88,6 +88,7 @@ func generated(t *testing.T, a, b func(*testing.T, string)) map[string]string {
 			change(t, root)
 		}
 	}
+	gittest.Run(t, root, "add", "-A")
 	maps, err := repomap.Generate(root)
 	if err != nil {
 		t.Fatal(err)

@@ -21,6 +21,7 @@ env:
   ITERION_LIVE_LEDGER_TARGET: "{{.TASK}}"
 
 vars:
+  DISPATCH_BOTS: feature-dev whole-improve-loop branch-improve-loop whats-next docs-refresh sec-audit-source sec-audit-deps secured-renovacy review-pr
   BINARY: iterion
   CMD: ./cmd/iterion
   VERSION:
@@ -62,28 +63,23 @@ tasks:
       - find pkg/cli/templates/dispatch_bots -mindepth 1 ! -name .gitkeep -exec rm -rf {} +
       - mkdir -p pkg/cli/templates/dispatch_bots/default
       - cp pkg/cli/templates/dispatch_bots_default.bot pkg/cli/templates/dispatch_bots/default/main.bot
-      - cp -R bots/feature-dev pkg/cli/templates/dispatch_bots/feature-dev
-      - cp -R bots/whole-improve-loop pkg/cli/templates/dispatch_bots/whole-improve-loop
-      - cp -R bots/branch-improve-loop pkg/cli/templates/dispatch_bots/branch-improve-loop
-      - cp -R bots/whats-next pkg/cli/templates/dispatch_bots/whats-next
-      - cp -R bots/docs-refresh pkg/cli/templates/dispatch_bots/docs-refresh
-      - cp -R bots/sec-audit-source pkg/cli/templates/dispatch_bots/sec-audit-source
-      - cp -R bots/sec-audit-deps pkg/cli/templates/dispatch_bots/sec-audit-deps
-      - cp -R bots/secured-renovacy pkg/cli/templates/dispatch_bots/secured-renovacy
-      - cp -R bots/review-pr pkg/cli/templates/dispatch_bots/review-pr
-    sources:
-      - pkg/cli/templates/dispatch_bots_default.bot
-      - bots/feature-dev/**
-      - bots/whole-improve-loop/**
-      - bots/branch-improve-loop/**
-      - bots/whats-next/**
-      - bots/docs-refresh/**
-      - bots/sec-audit-source/**
-      - bots/sec-audit-deps/**
-      - bots/secured-renovacy/**
-      - bots/review-pr/**
-    generates:
-      - pkg/cli/templates/dispatch_bots/**
+      - for bot in {{.DISPATCH_BOTS}}; do cp -R "bots/$bot" "pkg/cli/templates/dispatch_bots/$bot"; done
+
+  templates:dispatch-bots:check:
+    desc: Fail if the embedded dispatcher catalogue differs from its sources (without rewriting it)
+    cmds:
+      - |
+        expected=$(mktemp -d)
+        trap 'rm -rf "$expected"' EXIT
+        mkdir -p "$expected/default"
+        cp pkg/cli/templates/dispatch_bots_default.bot "$expected/default/main.bot"
+        for bot in {{.DISPATCH_BOTS}}; do
+          cp -R "bots/$bot" "$expected/$bot"
+        done
+        if ! diff -qr --exclude=.gitkeep "$expected" pkg/cli/templates/dispatch_bots; then
+          echo "Dispatcher catalogue drift — run 'task gen' and commit generated artifacts."
+          exit 1
+        fi
 
   test:
     desc: Run all unit tests
@@ -628,6 +624,7 @@ tasks:
   check:
     desc: Run all checks (lint + test + golden replay + studio + pi extension)
     cmds:
+      - task: gen:check
       - task: lint
       - task: test
       - task: test:goldens
@@ -652,6 +649,24 @@ tasks:
       - task: map:check
       - task: brand:positioning
       - golangci-lint run --fast-only
+
+  # The reading golden is review-only at the release cut (corpus-reading --cut).
+  # Never include corpus/golden rewrites in these everyday generators.
+  gen:
+    desc: Regenerate repository maps, OpenAPI and the embedded dispatcher catalogue
+    cmds:
+      # The Go CLI embeds the catalogue, so sync it before running generators.
+      - task: templates:dispatch-bots
+      - task: map:gen
+      - task: openapi:gen
+
+  gen:check:
+    desc: Check maps, OpenAPI, chart version and dispatcher catalogue freshness (openapi:check repairs-then-verifies — a checker that mutates; making it non-mutating is the ci-gate stream's)
+    cmds:
+      - task: map:check
+      - task: openapi:check
+      - task: chart:check-version
+      - task: templates:dispatch-bots:check
 
   map:gen:
     desc: Regenerate the committed repository maps (packages, docs + ADR, bots + skills)

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/docsguard"
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/internal/mdcode"
 )
 
@@ -76,47 +77,53 @@ func firstBudget(budgets []agentTreeBudget, rel string) (agentTreeBudget, bool) 
 func agentTreeFiles(t *testing.T, root string) []string {
 	t.Helper()
 	files := []string{"AGENTS.md", "CLAUDE.md"}
-	err := filepath.WalkDir(filepath.Join(root, "docs", "agents"), func(p string, d os.DirEntry, err error) error {
+	for _, rel := range indexedAgentFiles(t, root) {
+		info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			return nil
+		if info.Mode().IsRegular() && strings.HasSuffix(rel, ".md") {
+			files = append(files, rel)
 		}
-		if !d.IsDir() && strings.HasSuffix(p, ".md") {
-			rel, err := filepath.Rel(root, p)
-			if err != nil {
-				return err
-			}
-			files = append(files, filepath.ToSlash(rel))
-		}
-		return nil
-	})
+	}
+	return files
+}
+
+// The index selects entries; local drafts must not affect a CI verdict.
+func indexedAgentFiles(t *testing.T, root string) []string {
+	t.Helper()
+	out, err := gittest.Cmd(root, "ls-files", "--cached", "-z", "--", "docs/agents").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return files
+	if len(out) == 0 {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")
 }
 
 func symlinkViolations(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
-	err := filepath.WalkDir(filepath.Join(root, "docs", "agents"), func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+	seen := map[string]bool{}
+	for _, rel := range indexedAgentFiles(t, root) {
+		// An indexed directory can be replaced by a local symlink while
+		// its leaves remain in the index. Inspect ancestors before leaves.
+		parts := strings.Split(rel, "/")
+		for n := 2; n <= len(parts); n++ {
+			p := path.Join(parts[:n]...)
+			info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(p)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode()&fs.ModeSymlink != 0 {
+				if !seen[p] {
+					out = append(out, fmt.Sprintf("%s is a symlink: the agent tree is read without following links, make it a real file or directory", p))
+					seen[p] = true
+				}
+				break
+			}
 		}
-		if d.Type()&fs.ModeSymlink == 0 {
-			return nil
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return err
-		}
-		out = append(out, fmt.Sprintf("%s is a symlink: the agent tree is read without following links, make it a real file or directory", filepath.ToSlash(rel)))
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	sort.Strings(out)
 	return out
@@ -333,6 +340,8 @@ func TestTheAgentTreeGuardBites(t *testing.T) {
 				writeTreeFile(t, root, rel, body)
 			}
 		}
+		gittest.Run(t, root, "init")
+		gittest.Run(t, root, "add", ".")
 		return root
 	}
 
@@ -390,6 +399,7 @@ func TestTheAgentTreeGuardBites(t *testing.T) {
 		if err := os.Symlink(filepath.Join(root, "docs", "agents", "a.md"), filepath.Join(root, "docs", "agents", "linked.md")); err != nil {
 			t.Fatal(err)
 		}
+		gittest.Run(t, root, "add", "docs/agents/linked.md")
 		got := symlinkViolations(t, root)
 		if !strings.Contains(strings.Join(got, "\n"), "docs/agents/linked.md is a symlink") {
 			t.Fatalf("not reported: want a symlink violation, got %v", got)
@@ -404,6 +414,21 @@ func TestTheAgentTreeGuardBites(t *testing.T) {
 		over := tree(t, map[string]string{"CLAUDE.md": strings.Repeat("x", 1537)})
 		if v := budgetViolations(t, over); !strings.Contains(strings.Join(v, "\n"), "CLAUDE.md is 1537 bytes") {
 			t.Fatalf("not reported: one byte over the budget, got %v", v)
+		}
+	})
+
+	t.Run("an indexed directory replaced by a symlink", func(t *testing.T) {
+		root := tree(t, nil)
+		dir := filepath.Join(root, "docs", "agents", "sub")
+		if err := os.Rename(dir, filepath.Join(root, "saved-sub")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("../../saved-sub", dir); err != nil {
+			t.Fatal(err)
+		}
+		got := symlinkViolations(t, root)
+		if len(got) != 1 || !strings.Contains(got[0], "docs/agents/sub is a symlink") {
+			t.Fatalf("an indexed directory's symlink replacement was missed: %v", got)
 		}
 	})
 
@@ -433,5 +458,46 @@ func writeTreeFile(t *testing.T, root, rel, body string) {
 	}
 	if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Local drafts must not enter the CI corpus; staging them must still make
+// the guards bite, and unstaged edits to tracked pages remain visible.
+func TestUntrackedAgentDraftDoesNotChangeTheVerdict(t *testing.T) {
+	root := t.TempDir()
+	writeTreeFile(t, root, "AGENTS.md", "# Root\n\n[tree](docs/agents/README.md)\n")
+	writeTreeFile(t, root, "CLAUDE.md", agentsImport+"\n")
+	writeTreeFile(t, root, "docs/agents/README.md", "# Tree\n")
+	gittest.Run(t, root, "init")
+	gittest.Run(t, root, "add", ".")
+	gittest.Run(t, root, "commit", "-m", "seed")
+	for _, check := range []func(*testing.T, string) []string{budgetViolations, unindexedPages, symlinkViolations} {
+		if got := check(t, root); len(got) != 0 {
+			t.Fatalf("invalid baseline: %v", got)
+		}
+	}
+	const draft = "docs/agents/local draft.md"
+	writeTreeFile(t, root, draft, "# Draft\n\n"+strings.Repeat("x", 11000))
+	for _, check := range []func(*testing.T, string) []string{budgetViolations, unindexedPages} {
+		if got := check(t, root); len(got) != 0 {
+			t.Errorf("untracked draft changed the verdict: %v", got)
+		}
+	}
+	gittest.Run(t, root, "add", draft)
+	for _, check := range []func(*testing.T, string) []string{budgetViolations, unindexedPages} {
+		if got := check(t, root); len(got) == 0 {
+			t.Error("staging the broken draft did not redden the guard")
+		}
+	}
+	const link = "docs/agents/local-link.md"
+	if err := os.Symlink("README.md", filepath.Join(root, link)); err != nil {
+		t.Fatal(err)
+	}
+	if got := symlinkViolations(t, root); len(got) != 0 {
+		t.Fatalf("untracked symlink changed the verdict: %v", got)
+	}
+	gittest.Run(t, root, "add", link)
+	if got := symlinkViolations(t, root); len(got) != 1 {
+		t.Fatalf("staged symlink must be refused: %v", got)
 	}
 }

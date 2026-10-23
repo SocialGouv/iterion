@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/internal/mdcode"
 )
 
@@ -163,6 +164,8 @@ func TestEveryMapCellGoesThroughTheCellRenderer(t *testing.T) {
 			if ex == nil {
 				t.Fatalf("no extractor with stem %q", tc.stem)
 			}
+			gittest.Run(t, root, "init")
+			gittest.Run(t, root, "add", ".")
 			out, err := ex.Extract(root)
 			if err != nil {
 				t.Fatal(err)

@@ -11,3 +11,5 @@
 
 Board mechanics live in [../../board-epics.md](../../board-epics.md); the
 work-tracking contract is the root [AGENTS.md](../../../AGENTS.md).
+
+After a change that affects generated artifacts, STAGE your doc additions and deletions first — the generators read the index (`git ls-files`), so an unstaged page is invisible to them — then run `task gen`, then commit the artifacts; `task gen:check` checks freshness (the reading golden stays review-only at the release cut via `cmd/corpus-reading --cut`).

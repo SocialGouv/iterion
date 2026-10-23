@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/internal/mdcode"
 	"github.com/SocialGouv/iterion/pkg/repomap"
 )
@@ -224,6 +225,8 @@ func TestADirectoryQuotedInAPageStaysADirectoryOnTheMap(t *testing.T) {
 	if docs == nil {
 		t.Fatal("no docs extractor — this test would prove nothing")
 	}
+	gittest.Run(t, root, "init")
+	gittest.Run(t, root, "add", ".")
 	body, err := docs.Extract(root)
 	if err != nil {
 		t.Fatal(err)
@@ -267,6 +270,8 @@ func TestAPageQuotingALinkFormStillRendersItsRow(t *testing.T) {
 	if docs == nil {
 		t.Fatal("no docs extractor — this test would prove nothing")
 	}
+	gittest.Run(t, root, "init")
+	gittest.Run(t, root, "add", ".")
 	body, err := docs.Extract(root)
 	if err != nil {
 		t.Fatalf("the docs map refused a page whose links are all sound: %v", err)

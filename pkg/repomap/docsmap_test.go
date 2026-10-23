@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/internal/mdcode"
 )
 
@@ -370,6 +371,8 @@ func TestAFenceShownInsideAFenceDoesNotEndIt(t *testing.T) {
 					docs = e
 				}
 			}
+			gittest.Run(t, root, "init")
+			gittest.Run(t, root, "add", ".")
 			out, err := docs.Extract(root)
 			if err != nil {
 				t.Fatalf("the extractor refused a page whose links are sound: %v", err)
@@ -418,6 +421,8 @@ func TestFrontMatterIsNotThePagesOpeningSentence(t *testing.T) {
 			docs = e
 		}
 	}
+	gittest.Run(t, root, "init")
+	gittest.Run(t, root, "add", ".")
 	out, err := docs.Extract(root)
 	if err != nil {
 		t.Fatal(err)
@@ -483,6 +488,8 @@ func TestAFenceAContainerIndentsIsStillAFence(t *testing.T) {
 					docs = e
 				}
 			}
+			gittest.Run(t, root, "init")
+			gittest.Run(t, root, "add", ".")
 			out, err := docs.Extract(root)
 			if err != nil {
 				t.Fatalf("the extractor refused a page whose links are sound: %v", err)
@@ -522,6 +529,8 @@ func TestOnlyAColumnZeroDelimiterClosesFrontMatter(t *testing.T) {
 			docs = e
 		}
 	}
+	gittest.Run(t, root, "init")
+	gittest.Run(t, root, "add", ".")
 	out, err := docs.Extract(root)
 	if err != nil {
 		t.Fatal(err)

@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -12,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/internal/mdcode"
+	"github.com/SocialGouv/iterion/internal/treeskip"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // docsPages maps docs/ — 300-odd pages and 100-odd ADRs whose only index
@@ -37,24 +41,63 @@ type docRow struct {
 }
 
 func (d docsPages) Extract(root string) (string, error) {
-	var rows []docRow
-	err := walkDirs(filepath.Join(root, "docs"), func(rel string, entries []os.DirEntry) error {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-				continue
-			}
-			relPath := filepath.ToSlash(filepath.Join("docs", filepath.Join(rel, e.Name())))
-			relPath = strings.ReplaceAll(relPath, "docs/./", "docs/")
-			row, err := readDocRow(filepath.Join(root, relPath), relPath)
+	// The index chooses the corpus; the working tree supplies its current
+	// contents. Local drafts stay out, staged additions and unstaged edits
+	// to tracked pages participate before the contributor commits them.
+	// Outside a repository (a bare fixture, a non-git tree) the filesystem
+	// IS the corpus: the ls-files failure falls back to the walk.
+	var files []byte
+	cmd := exec.Command("git", gitlib.NoRunHooks("ls-files", "--cached", "-z", "--", "docs")...)
+	cmd.Dir = root
+	cmd.Env = gitlib.SanitizeEnv(os.Environ())
+	if out, err := cmd.Output(); err == nil {
+		files = out
+	} else {
+		var walked []string
+		walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
-			rows = append(rows, row)
+			if d.IsDir() {
+				return nil
+			}
+			rel, relErr := filepath.Rel(root, p)
+			if relErr != nil {
+				return relErr
+			}
+			if strings.HasSuffix(rel, ".md") && !treeskip.Path(filepath.ToSlash(rel)) {
+				walked = append(walked, filepath.ToSlash(rel))
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return "", fmt.Errorf("list indexed docs: %w (and the filesystem fallback: %w)", err, walkErr)
 		}
-		return nil
-	})
-	if err != nil {
-		return "", err
+		sort.Strings(walked)
+		for _, rel := range walked {
+			files = append(files, []byte(rel)...)
+			files = append(files, 0)
+		}
+	}
+	var rows []docRow
+	for _, relPath := range strings.Split(string(files), "\x00") {
+		if !strings.HasSuffix(relPath, ".md") || treeskip.Path(relPath) {
+			continue
+		}
+		row, err := readDocRow(filepath.Join(root, filepath.FromSlash(relPath)), relPath)
+		if err != nil {
+			// An indexed page deleted from the WORKING TREE (an unstaged
+			// deletion) must not abort the generation: the map regenerates
+			// without it, and the freshness check flags the index/tree
+			// mismatch the deletion still is. Any other read error is real.
+			// errors.Is, not os.IsNotExist: the latter does not unwrap the
+			// %w chain readDocRow wraps its PathError in.
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return "", err
+		}
+		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Path < rows[j].Path })
 
