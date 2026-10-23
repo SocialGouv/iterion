@@ -373,8 +373,6 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/references/external-methodologies.md`](external-methodologies.md) | External Methodologies Cross-Check — IACDM & AI-DLC 2026 | Two independent 2026 methodology papers mapped onto iterion's mechanisms: | — |
 | [`docs/references/map-bots.md`](map-bots.md) | Bot and skill map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
 | [`docs/references/map-docs.md`](map-docs.md) | Docs and ADR map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
-| [`docs/references/map-docs.md`](map-docs.md) | Docs and ADR map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
-| [`docs/references/map-docs.md`](map-docs.md) | Docs and ADR map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
 | [`docs/references/map-packages.md`](map-packages.md) | Package map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
 | [`docs/references/patterns.md`](patterns.md) | Iterion DSL — Common Workflow Patterns | Reusable patterns for building `.bot` workflows. | — |
 | [`docs/references/productive-session-patterns.md`](productive-session-patterns.md) | Productive-Session Patterns | What a *productive* human-driven agent session actually looks like — measured, | — |
