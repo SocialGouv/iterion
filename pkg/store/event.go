@@ -633,16 +633,25 @@ const (
 	//     devcontainer.json path)
 	//   - run_id: the run scope
 	EventSandboxEnvDenied EventType = "sandbox_env_denied"
-	// EventSandboxNetworkDefaulted fires when a repo-defined sandbox
-	// (mode auto and a devcontainer.json found) runs on an
-	// iterion-default base the runtime chose because the workflow
-	// named none: no network: block, an empty one, or rules without a
-	// preset (#2303). Open egress on such a run is the repository's
-	// choice, not the operator's; a workflow block naming a preset (or
-	// a mode) is the override and never triggers this event. Data:
+	// EventSandboxNetworkDefaulted fires in TWO shapes. First: a
+	// repo-defined sandbox (mode auto and a devcontainer.json found)
+	// runs on an iterion-default base the runtime chose because the
+	// workflow named none: no network: block, an empty one, or rules
+	// without a preset (#2303). Open egress on such a run is the
+	// repository's choice, not the operator's; a workflow block naming
+	// a preset (or a mode) is the override and never triggers this
+	// shape. Data (first shape):
 	//   - mode: "allowlist"
 	//   - preset: "iterion-default"
 	//   - source: the resolution source label
+	//   - run_id: the run scope
+	//
+	// Second: the workflow's rules refuse the run's own gateway
+	// admission — the engine had prepended an exact rule for the host
+	// the run's sealed credential names, and a workflow rule overrode
+	// it. Data (second shape):
+	//   - kind: "run_gateway_refused"
+	//   - host: the refused gateway host
 	//   - run_id: the run scope
 	EventSandboxNetworkDefaulted EventType = "sandbox_network_defaulted"
 	// EventNetworkBlocked fires every time the iterion CONNECT proxy
@@ -651,6 +660,12 @@ const (
 	//   - reason: rule that fired
 	//   - run_id: the run scope
 	EventNetworkBlocked EventType = "network_blocked"
+	// EventSandboxNetworkTunneled fires ONCE per run, when its egress
+	// proxy shuts down, carrying the tally of requests the policy
+	// admitted per host — one event, not one per request. Data:
+	//   - hosts: map of admitted host -> request count
+	//   - run_id: the run scope
+	EventSandboxNetworkTunneled EventType = "sandbox_network_tunneled"
 	// EventPersistDegraded fires when session: persist could not pack or
 	// store the CLI session (sandbox without host_state, empty config
 	// dir, Put failure). The node succeeded; the next visit runs fresh.

@@ -330,12 +330,26 @@ func WithTrust(trust store.RunTrust, repoSHAExpected string) EngineOption {
 // to onto the persisted run document. The wire message carries the field
 // (child := *msg), but the DOCUMENT is built from a named field list — the
 // same trap WithTrust's subbot wiring closes for Trust. Empty means the
-// shared default pool and stamps nothing (never cleared: the stores hold
-// the stamp write-once).
+// shared default pool and stamps nothing (never cleared: the lanes replay
+// the stamp verbatim, and the store-level conformance test witnesses a
+// re-stamp surviving).
 func WithRunnerPool(pool string) EngineOption {
 	return func(e *Engine) {
 		if pool != "" {
 			e.runnerPool = pool
+		}
+	}
+}
+
+// WithContentBoundary replays the run's frozen gateway stamp (ADR-131) onto
+// the persisted run document: the credential that funds the run travels
+// with it, and a lane holding the pair passes it through exactly as frozen
+// — never re-derived. Nil stamps nothing (the document keeps its own value;
+// the lanes replay the stamp verbatim).
+func WithContentBoundary(b *store.RunContentBoundary) EngineOption {
+	return func(e *Engine) {
+		if b != nil {
+			e.contentBoundary = b
 		}
 	}
 }

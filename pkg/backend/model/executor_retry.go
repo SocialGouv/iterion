@@ -875,7 +875,7 @@ func (e *ClawExecutor) newElementBuilder(
 			return "", nil, nil, fmt.Errorf("model: node %q: %w", nodeID, err)
 		}
 		if modelroute.Parse(task.Model).Gateway() {
-			if err := checkGatewayEnv(!secrets.LLMEndpointAllowPrivate()); err != nil {
+			if err := checkGatewaySource(ctx, task.Model, !secrets.LLMEndpointAllowPrivate()); err != nil {
 				return "", nil, nil, fmt.Errorf("model: node %q: %w", nodeID, err)
 			}
 		}

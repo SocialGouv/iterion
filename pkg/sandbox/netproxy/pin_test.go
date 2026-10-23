@@ -615,13 +615,19 @@ func TestThePinSourceIsReadAtNewAndAtEveryConnection(t *testing.T) {
 	}
 	_ = connectVia(t, prx, "other.test:443")
 	set("gw-b.test", true)
-	_ = connectVia(t, prx, "gw-a.test:443")
-	if got, want := dialed(), []string{"other.test:443", "10.0.0.7:443"}; strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Errorf("the dialer was asked for %q; want %q — another host by name, then gw-a on its private answer once the source admits one", got, want)
+	// The strictness travels with the host: gw-b, named under the lifted
+	// answer, dials its private answer; gw-a, named while the answer had to
+	// be public, stays refused — one host's admission is not another's.
+	_ = connectVia(t, prx, "gw-b.test:443")
+	if !refused("gw-a.test:443") {
+		t.Error("gw-a, named before the source admitted a private answer, was dialed on one — a host's strictness is its own")
+	}
+	if got, want := dialed(), []string{"other.test:443", "10.0.0.8:443"}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("the dialer was asked for %q; want %q — gw-b on the answer it was named with, gw-a never dialed", got, want)
 	}
 	set("", false)
 	if !refused("gw-a.test:443") {
-		t.Error("a source naming no host withdrew the escape hatch, yet gw-a's private answer was not refused")
+		t.Error("a source naming no host left gw-a unpinned")
 	}
 	// A request to the host alias, which no pin dials, reads the source too.
 	set("gw-x.test", false)
@@ -630,7 +636,7 @@ func TestThePinSourceIsReadAtNewAndAtEveryConnection(t *testing.T) {
 	if !refused("gw-x.test:443") {
 		t.Error("gw-x, named while the only request was to the host alias: not pinned")
 	}
-	if got, want := dialed(), []string{"other.test:443", "10.0.0.7:443", "127.0.0.1:8080"}; strings.Join(got, " ") != strings.Join(want, " ") {
+	if got, want := dialed(), []string{"other.test:443", "10.0.0.8:443", "127.0.0.1:8080"}; strings.Join(got, " ") != strings.Join(want, " ") { // gw-b dialed in the act above
 		t.Errorf("the dialer was asked for %q; want %q", got, want)
 	}
 }
@@ -826,5 +832,95 @@ func TestAPinnedHostResolvesThroughTheSystemResolverByDefault(t *testing.T) {
 	}
 	if n := hits.Load(); n != 0 {
 		t.Errorf("the local service took %d connection(s); want none", n)
+	}
+}
+
+// The run's own credential pins its host at the OPERATOR's inherited
+// strictness: the process environment's lift admits a private answer for a
+// self-hosted tenant gateway, the refusal still says whose pin it is, and a
+// withdrawn source leaves the pin following its source, live.
+func TestARunHeldPinFollowsTheOperatorHatch(t *testing.T) {
+	const runGW = "gw-run.test"
+	res := &scriptedResolver{script: map[string][]string{runGW: {"10.0.0.9"}}, count: map[string]int{}}
+	dial, dialed := recordingDial("127.0.0.1:9")
+	lift := false
+	prx := startPinProxy(t, Options{
+		PinRunSource: func() (string, bool) { return runGW, lift },
+		PinResolver:  res, Dial: dial,
+	})
+	got := connectVia(t, prx, runGW+":443")
+	if !strings.HasPrefix(got, "502") || !strings.Contains(got, "the run's gateway credential") {
+		t.Fatalf("closed hatch: %q; want the strict refusal naming the credential's pin", got)
+	}
+	if len(dialed()) != 0 {
+		t.Fatalf("the dialer was asked for %q; want nothing — a private answer behind the run's key is refused", dialed())
+	}
+
+	lift = true
+	_ = connectVia(t, prx, runGW+":443")
+	if got := dialed(); len(got) != 1 || got[0] != "10.0.0.9:443" {
+		t.Errorf("the dialer was asked for %q; want [10.0.0.9:443] — the operator's inherited lift admits the private answer", got)
+	}
+
+	lift = false
+	if got := connectVia(t, prx, runGW+":443"); !strings.Contains(got, "the run's gateway credential") {
+		t.Errorf("withdrawn lift: %q; want the strict refusal again — the admission follows the source, live", got)
+	}
+}
+
+// OnTunnel fires once per admitted request with the host the policy
+// admitted — a blocked host never fires it — and Shutdown flushes the
+// per-host tally to OnTunnelsDone once.
+func TestOnTunnelFiresPerAdmittedRequestAndShutdownFlushesTheTally(t *testing.T) {
+	const gw = "tunneled.test"
+	pol, err := Compile(ModeAllowlist, []string{gw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dial, _ := recordingDial("127.0.0.1:9")
+	var mu sync.Mutex
+	var fired []string
+	var tally map[string]int
+	prx := startPinProxy(t, Options{
+		Policy: pol, Dial: dial,
+		OnTunnel:      func(host string) { mu.Lock(); fired = append(fired, host); mu.Unlock() },
+		OnTunnelsDone: func(t map[string]int) { mu.Lock(); tally = t; mu.Unlock() },
+	})
+	_ = connectVia(t, prx, gw+":443")
+	_ = connectVia(t, prx, gw+":443")
+	if answer := connectVia(t, prx, "blocked.test:443"); !strings.HasPrefix(answer, "403") {
+		t.Fatalf("the blocked host: %q; want 403", answer)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := prx.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(fired, ",") != gw+","+gw {
+		t.Errorf("OnTunnel fired %v; want the admitted host twice, the blocked one never", fired)
+	}
+	if len(tally) != 1 || tally[gw] != 2 {
+		t.Errorf("the flushed tally = %v; want {%s: 2} — admitted requests counted once each", tally, gw)
+	}
+}
+
+// A panicking OnTunnel hook does not take the proxy down: the admitted
+// request is answered, and the proxy serves the next one.
+func TestAPanickingTunnelHookLeavesTheProxyServing(t *testing.T) {
+	pol, err := Compile(ModeAllowlist, []string{"ok.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dial, _ := recordingDial("127.0.0.1:9")
+	prx := startPinProxy(t, Options{
+		Policy: pol, Dial: dial,
+		OnTunnel: func(string) { panic("hook") },
+	})
+	for i := 0; i < 2; i++ {
+		if answer := connectVia(t, prx, "ok.test:443"); answer == "" {
+			t.Fatalf("request %d: no answer — a panicking tunnel hook took the proxy down", i)
+		}
 	}
 }

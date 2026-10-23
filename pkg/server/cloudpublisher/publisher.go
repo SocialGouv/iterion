@@ -3838,6 +3838,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		OrgID:           orgID,
 		OwnerID:         ownerID,
 		RunnerPool:      runnerPool,
+		// The frozen gateway stamp mirrors the document it was frozen on —
+		// never re-derived on the wire path. Nil until the producer lands;
+		// a nil pointer serialises as absent.
+		ContentBoundary: r.ContentBoundary,
 		// Cap. 3 sharding: when this run is a child shard, the runner
 		// pod that picks it up sees its place in the set so the studio
 		// can group siblings and so a future event-based aggregator
@@ -4358,6 +4362,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		OwnerID:  prior.OwnerID,
 		// The FROZEN pool stamp, verified equal to the current mapping above.
 		RunnerPool: prior.RunnerPool,
+		// The FROZEN gateway stamp, replayed exactly as the prior document
+		// froze it: the credential that funded the launch funds the resume.
+		ContentBoundary: prior.ContentBoundary,
 		// Preserve webhook/cloud source metadata so a resumed runner can
 		// reconstruct the same workspace as the original launch. ProjectPath
 		// is carried by the persisted run doc, not the wire.

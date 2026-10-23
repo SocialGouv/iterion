@@ -14,6 +14,7 @@ package compatgw
 import (
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"net/url"
 	"strings"
 
@@ -76,7 +77,7 @@ func (c Config) Validate(strict bool) error {
 			return fmt.Errorf("openai_compatible: %w", err)
 		}
 		if !httpdial.IsPublicUnicast(ip) {
-			return remedyPrivate(fmt.Errorf("%s host is not a public address", BaseURLEnv))
+			return RemedyPrivate(fmt.Errorf("%s host is not a public address", BaseURLEnv))
 		}
 	}
 	return nil
@@ -122,9 +123,15 @@ func (c Config) url() *url.URL {
 	return parsed
 }
 
-// remedyPrivate names the escape hatch on every private-address refusal —
+// RemedyPrivate names the escape hatch on every private-address refusal —
 // an IP-literal endpoint's refusal would otherwise come back from the
-// resolver with no hint that a self-hosted gateway has a way through.
-func remedyPrivate(err error) error {
+// resolver with no hint that a self-hosted gateway has a way through. When
+// the hatch value came from a project .env, the refusal says so: that value
+// does not speak for the operator, and re-reading it in the same file
+// teaches the wrong remedy.
+func RemedyPrivate(err error) error {
+	if envtrust.Planted("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE") {
+		return fmt.Errorf("openai_compatible: %w — ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1 was set by a project .env, which does not speak for the operator: export it in your shell", err)
+	}
 	return fmt.Errorf("openai_compatible: %w (self-hosted gateway? set ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1)", err)
 }

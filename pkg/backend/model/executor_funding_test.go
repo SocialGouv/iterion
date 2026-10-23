@@ -169,3 +169,24 @@ func TestAnthropicFunding_ReadsWhatTheFactoryReads(t *testing.T) {
 		t.Errorf("a real ctx forfait token read %q, want it funding", got)
 	}
 }
+
+// Under the AmbientRefused stamp the env pair is not the run's money: the
+// probe answers "" so the default-model guards refuse by name instead of
+// blessing a dispatch the pod env would fund.
+func TestAnthropicFunding_AmbientRefusedIgnoresTheEnvPair(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ambient")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "oat-ambient")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
+	if got := anthropicFunding(ctx); got != "" {
+		t.Fatalf("anthropicFunding = %q under the stamp, want \"\"", got)
+	}
+	// A sealed credential still counts: the probe exists to name it.
+	ctx = secrets.WithCredentials(ctx, secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-sealed"},
+	})
+	if got := anthropicFunding(ctx); got == "" {
+		t.Fatal("a sealed anthropic key must count as funding under the stamp")
+	}
+}

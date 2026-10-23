@@ -328,6 +328,10 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			// fail every subbot node of a pool-team run the day it ships.
 			// (The runner MAIN loop will need the same option then.)
 			runtime.WithRunnerPool(child.RunnerPool),
+			// Same carriage for the frozen gateway stamp: the child's
+			// document must name the credential that funds it, replayed from
+			// the wire, never re-derived at the child.
+			runtime.WithContentBoundary(child.ContentBoundary),
 			runtime.WithParentNodeID(req.NodeID),
 			// The node's `isolated:` assertion: the child keeps a worktree of
 			// its own instead of working in the tree this request lends it.

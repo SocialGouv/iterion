@@ -38,6 +38,11 @@ func anthropicFunding(ctx context.Context) string {
 			}
 		}
 	}
+	// Under the ambient stamp the env pair is not the run's money: the
+	// probe answers "" so the default-model guards refuse by name.
+	if ambientRefused(ctx) {
+		return ""
+	}
 	// The env pair, with the factory's own shape: AUTH_TOKEN is spent via
 	// the OAuth branch, which a z.ai/bigmodel base URL gates OFF — counting
 	// it there would bless a dispatch the factory sends out credential-less.

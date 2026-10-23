@@ -52,6 +52,10 @@ type runCredKeys struct {
 	moonshotFP  string
 	anthropicFP string
 	oauthFP     string
+	// gatewayFP is the run's openai_compatible credential's fingerprint —
+	// the server's URL-folded stamp, carried by the bundle (PR-B'1). ""
+	// when the run holds no gateway credential.
+	gatewayFP string
 	// pinnedSlots are the slots funded ONLY by a key a shared tier filled
 	// because a route pins that provider (secrets.Credentials.PinnedAPIKeys).
 	// Their fingerprint is real — a reading that NAMES such a slot is charged
@@ -96,6 +100,8 @@ func (k runCredKeys) bySlot(slot string) string {
 		return k.anthropicFP
 	case string(secrets.OAuthKindClaudeCode):
 		return k.oauthFP
+	case string(secrets.ProviderOpenAICompatible):
+		return k.gatewayFP
 	}
 	return ""
 }
@@ -169,6 +175,10 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 	k.moonshotFP = creds.Fingerprint(string(secrets.ProviderMoonshot))
 	k.anthropicFP = creds.Fingerprint(string(secrets.ProviderAnthropic))
 	k.oauthFP = creds.Fingerprint(delegate.BackendClaudeCode)
+	// The gateway slot: the server's URL-folded stamp travels in the bundle
+	// (PR-B'1) and the runner stamps it verbatim — its identity cannot be
+	// recomputed from the secret alone.
+	k.gatewayFP = creds.Fingerprint(string(secrets.ProviderOpenAICompatible))
 	for _, slot := range secrets.AnthropicWireSlotOrder {
 		if !creds.IsPinnedSlot(slot) {
 			continue
@@ -730,7 +740,11 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 		return nil
 	}
 	var out []supervisorRoute
-	for i, spec := range runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, vars, logger), msg.RunnerPool, logger) {
+	ambientRefusedWalk := false
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		ambientRefusedWalk = creds.AmbientRefused
+	}
+	for i, spec := range runview.AmbientSurvivingSpecs(runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, vars, logger), msg.ContentBoundary, msg.RunnerPool, logger), ambientRefusedWalk, logger) {
 		if !supervisorArms(wf, open, spec.Watches) {
 			continue
 		}
@@ -825,6 +839,11 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string
 			slot = string(secrets.OAuthKindClaudeCode)
 		}
 	case secrets.ProviderZAI, secrets.ProviderMoonshot:
+		slot = heldForRoute(creds, provider)
+	case secrets.ProviderOpenAICompatible:
+		// The run's gateway slot: a held pair meters on the credential the
+		// registry serves (the uncached arm), the same rule the vendor
+		// slots follow.
 		slot = heldForRoute(creds, provider)
 	default:
 		return "", false

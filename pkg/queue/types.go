@@ -349,6 +349,13 @@ type RunMessage struct {
 	// execute the run outside the team's pool, which is the leak the pool
 	// exists to make impossible.
 	RunnerPool string `json:"runner_pool,omitempty"`
+	// ContentBoundary mirrors the run document's frozen gateway stamp
+	// (ADR-131) so the claiming runner knows which tenant credential funds
+	// the run without a second store read. Never set at v26: the producer
+	// and the v27 schema bump land with a later change. A nil pointer
+	// serialises as absent, so messages published today are byte-identical
+	// to yesterday's.
+	ContentBoundary *store.RunContentBoundary `json:"content_boundary,omitempty"`
 	// ParentRunID is set on child runs spawned by a parent workflow
 	// (e.g. by `iterion __scan-shards`). Empty for root runs. When
 	// non-empty, the runner copies it into the persisted Run document

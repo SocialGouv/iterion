@@ -14,35 +14,60 @@ import (
 // dialFunc is the shape of the proxy's upstream dialer.
 type dialFunc = func(ctx context.Context, network, addr string) (net.Conn, error)
 
-// pinSet is what the pin holds: the pinned hosts, keyed by pinKey, and
-// whether a private answer is admitted. Options.PinSource grows it while the
-// proxy runs, so it is read and written under its lock.
-type pinSet struct {
-	mu           sync.Mutex
-	hosts        map[string]bool
-	allowPrivate bool
-	source       func() (host string, allowPrivate bool)
+// pinEntry is one pinned host: how strictly its answers are judged, and
+// whether the pin serves the run's own credential — a strictness the
+// operator's escape hatch does not lift.
+type pinEntry struct {
+	strict  bool
+	runHeld bool
 }
 
-// newPinSet builds the pin over hosts and reads its source once, so the host
-// the source names when the proxy is built is pinned from the start.
-func newPinSet(hosts map[string]bool, allowPrivate bool, source func() (string, bool)) *pinSet {
-	s := &pinSet{hosts: hosts, allowPrivate: allowPrivate, source: source}
+// pinSet is what the pin holds: the pinned hosts, keyed by pinKey, each with
+// its own strictness. Options.PinSource and Options.PinRunSource grow it
+// while the proxy runs, so it is read and written under its lock.
+type pinSet struct {
+	mu        sync.Mutex
+	hosts     map[string]pinEntry
+	source    func() (host string, allowPrivate bool)
+	runSource func() (host string, allowPrivate bool)
+}
+
+// newPinSet builds the pin over hosts (each at the given default
+// strictness) and reads its sources once, so the hosts they name when the
+// proxy is built are pinned from the start.
+func newPinSet(hosts map[string]bool, allowPrivate bool, source func() (string, bool), runSource func() (string, bool)) *pinSet {
+	entries := make(map[string]pinEntry, len(hosts))
+	for key := range hosts {
+		entries[key] = pinEntry{strict: !allowPrivate}
+	}
+	s := &pinSet{hosts: entries, source: source, runSource: runSource}
 	s.refresh()
 	return s
 }
 
-// refresh adds the host the source names to the set and takes the source's
-// strictness. The caller holds the lock, or has not shared the set yet.
+// refresh takes the hosts the sources name, each at ITS source's
+// strictness: the environment gateway's entry tracks the hatch answer it
+// was named with — the source re-names it at every connection, so the entry
+// follows the hatch while the environment keeps serving it, and freezes at
+// its last value when the source names nothing; a run-held credential's
+// entry follows its source's answer, live — the operator's inherited lift
+// admits and withdraws it — and freezes at its last admission when the
+// source names nothing. The caller holds the lock, or has not shared the
+// set yet.
 func (s *pinSet) refresh() {
-	if s.source == nil {
-		return
+	if s.source != nil {
+		named, allowPrivate := s.source()
+		if key, ok := pinEntryKey(named); ok {
+			s.hosts[key] = pinEntry{strict: !allowPrivate}
+		}
 	}
-	named, allowPrivate := s.source()
-	if key, ok := pinEntryKey(named); ok {
-		s.hosts[key] = true
+	if s.runSource != nil {
+		if named, allowPrivate := s.runSource(); named != "" {
+			if key, ok := pinEntryKey(named); ok {
+				s.hosts[key] = pinEntry{strict: !allowPrivate, runHeld: true}
+			}
+		}
 	}
-	s.allowPrivate = allowPrivate
 }
 
 // sync refreshes the set from its source.
@@ -52,14 +77,15 @@ func (s *pinSet) sync() {
 	s.refresh()
 }
 
-// lookup refreshes the set from its source, then reports whether host — bare
-// or with its port — is pinned and how strictly. A host the source has named
-// once stays pinned.
-func (s *pinSet) lookup(host string) (pinned, strict bool) {
+// lookup refreshes the set from its sources, then reports whether host —
+// bare or with its port — is pinned, and its own entry. A host a source has
+// named once stays pinned.
+func (s *pinSet) lookup(host string) (pinEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refresh()
-	return s.hosts[pinKey(host)], !s.allowPrivate
+	entry, pinned := s.hosts[pinKey(host)]
+	return entry, pinned
 }
 
 // pinDial wraps dial with the pin (Options.PinnedHosts, Options.PinSource):
@@ -81,21 +107,36 @@ func (p *Proxy) pinDial(dial dialFunc, pins *pinSet, res httpdial.HostResolver) 
 		if err != nil {
 			return dial(ctx, network, addr)
 		}
-		pinned, strict := pins.lookup(host)
+		entry, pinned := pins.lookup(host)
 		if !pinned {
 			return dial(ctx, network, addr)
 		}
 		bounded, cancel := context.WithTimeout(ctx, dialTimeout)
 		defer cancel()
-		ip, err := httpdial.ResolvePublicHostWith(bounded, res, host, strict)
+		ip, err := httpdial.ResolvePublicHostWith(bounded, res, host, entry.strict)
 		if err != nil {
 			if ctx.Err() == nil {
-				p.reportBlocked(pinKey(host), "pinned host: "+err.Error())
+				kind := "pinned host"
+				if entry.runHeld {
+					kind = "pinned host (the run's gateway credential)"
+				}
+				p.reportBlocked(pinKey(host), kind+": "+err.Error())
+			}
+			if entry.runHeld {
+				return nil, fmt.Errorf("netproxy: pinned host %q serves the run's gateway credential — its pin answers the operator's inherited lift, never a planted one: %w", host, err)
 			}
 			return nil, fmt.Errorf("netproxy: pinned host %q: %w", host, err)
 		}
 		return dial(bounded, network, net.JoinHostPort(ip.String(), port))
 	}
+}
+
+// CanonicalHost is the canonical form of a host name — the form the pin,
+// the policy and the dial all match in (lowercase, no root dot, IDN folded,
+// an IP literal in its standard spelling). A guard that judges a host in
+// any other form is judged by the spelling its caller happened to write.
+func CanonicalHost(host string) string {
+	return canonicalHost(host)
 }
 
 // pinKey is the form a host is pinned and matched in: the policy's canonical

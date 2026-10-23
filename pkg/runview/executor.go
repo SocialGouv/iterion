@@ -627,7 +627,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 
 	checker := buildToolChecker(spec.Workflow)
-	classifier, classErr := newLLMClassifierFromEnv(reg, spec.Logger)
+	classifier, classErr := newLLMClassifierFromEnv(spec.Ctx, reg, spec.Logger)
 	if classErr != nil {
 		return nil, fmt.Errorf("runview: build LLM classifier: %w", classErr)
 	}
@@ -1283,12 +1283,25 @@ func buildToolChecker(wf *ir.Workflow) tool.ToolChecker {
 // default RuleClassifier and uses a 30-minute TTL cache.
 //
 // Returns (nil, nil) when the env var is empty.
-func newLLMClassifierFromEnv(reg *model.Registry, logger *iterlog.Logger) (permissions.Classifier, error) {
+func newLLMClassifierFromEnv(ctx context.Context, reg *model.Registry, logger *iterlog.Logger) (permissions.Classifier, error) {
+	// Four production surfaces construct an ExecutorSpec with a nil Ctx
+	// (the studio launch and resume, both CLI paths): the classifier
+	// resolves under the run's credentials when there are any, under a
+	// background ctx when there are not — a nil dereference is not one of
+	// the answers.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	spec := strings.TrimSpace(ir.LookupEnv("ITERION_LLM_CLASSIFIER_MODEL"))
 	if spec == "" {
 		return nil, nil
 	}
-	client, err := reg.Resolve(spec)
+	// ResolveWithContext, never Resolve: an ambient-refused run funds its
+	// LLM routes from the sealed credentials only, so the classifier's
+	// env fallback is the typed ambient refusal — and a gateway spec
+	// resolves from the run's pair, uncached (ResolveWithContext builds
+	// the client per call).
+	client, err := reg.ResolveWithContext(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("resolve classifier model %q: %w", spec, err)
 	}

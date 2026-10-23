@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"io"
 	"os"
@@ -2710,6 +2711,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// the admission compares document ≡ message, and a doc the engine
 		// rebuilt without the stamp would contradict its own message.
 		runtime.WithRunnerPool(msg.RunnerPool),
+		// The frozen content boundary rides beside the pool stamp: the
+		// same doc ≡ message rule, and a doc the engine rebuilt without it
+		// would read unstamped to every server-side guard.
+		runtime.WithContentBoundary(msg.ContentBoundary),
 		// Sandbox defaults from the operator config (ITERION_SANDBOX_DEFAULT /
 		// ITERION_SANDBOX_HOST_STATE). pkg/cli/run.go wires these for `iterion
 		// run`; the cloud runner must too — else cfg.Sandbox.* is read and
@@ -2924,7 +2929,34 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 				spawnVars = run.Inputs
 			}
 		}
-		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.RunnerPool, runLogger)
+		// The ambient stamp's twin of the pool filter: on a run whose
+		// credentials refuse the pod environment, only gateway-model
+		// supervisors spawn — a vendor-family supervisor would spin
+		// refusal-per-evaluation for a run that must not spend it.
+		ambientRefusedRun := false
+		if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+			ambientRefusedRun = creds.AmbientRefused
+		}
+		specs := runview.AmbientSurvivingSpecs(runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger), ambientRefusedRun, runLogger)
+		// F12: a supervisor's evaluations are the run's money — each one
+		// books its tokens on its own route (source supervisor:<name>), the
+		// same route totals recordCredentialSpend meters per credential at
+		// the run's end.
+		for i := range specs {
+			spec := specs[i]
+			// Book on the route the evaluation will actually resolve —
+			// the pin, the env default, the ctx-funded detector family —
+			// the same resolution preflightSupervisors judged; a private
+			// re-derivation would file tokens under a name neither the
+			// walk nor the rates recognise.
+			resolved, rerr := supervise.ResolveModel(ctx, spec.Model, spec.ProviderHint)
+			if rerr != nil {
+				resolved = ""
+			}
+			spec.OnUsage = func(in, out int) {
+				usage.addRoute(delegate.BackendClaw, resolved, "supervisor:"+spec.Name, 0, int64(in), int64(out), int64(in)+int64(out))
+			}
+		}
 		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
 			msg.RunID, specs, runLogger)
 		defer stopSup()

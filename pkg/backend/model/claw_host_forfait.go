@@ -56,6 +56,9 @@ func hostCodexForfait(ctx context.Context, model string) (payload []byte, refuse
 		return nil, ""
 	}
 	creds, _ := secrets.CredentialsFromContext(ctx)
+	if creds.AmbientRefused {
+		return nil, "the run refuses the ambient environment — the host's ChatGPT login is the pod's instrument, not this run's"
+	}
 	if creds.APIKeyForRoute(secrets.ProviderOpenAI) != "" || OpenAIForfaitServes(creds) {
 		return nil, ""
 	}

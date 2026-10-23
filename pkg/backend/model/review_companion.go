@@ -49,7 +49,10 @@ func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.Huma
 	}
 
 	modelSpec := e.resolveRoutingField(node.Model)
-	client, err := e.registry.Resolve(modelSpec)
+	// ResolveWithContext, never Resolve: under the ambient stamp the env
+	// fallback is the typed refusal, and a gateway companion spec resolves
+	// from the run's sealed pair, uncached.
+	client, err := e.registry.ResolveWithContext(ctx, modelSpec)
 	if err != nil {
 		return nil, fmt.Errorf("model: review node %q: %w", node.ID, err)
 	}

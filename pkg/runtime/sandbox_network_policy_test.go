@@ -150,7 +150,7 @@ func TestSandboxNetworkAllowlist_DeclarationStartsAnEnforcingProxy(t *testing.T)
 		return nil
 	}
 
-	prx, endpoint, caPEM, err := startNetworkProxy(spec, drv, "run-net", nil, emit, nil)
+	prx, endpoint, caPEM, err := startNetworkProxy(spec, drv, "run-net", nil, emit, nil, "")
 	if err != nil {
 		t.Fatalf("startNetworkProxy: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestSandboxNetworkOpen_StartsNoProxy(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := compileSandboxSpec(t, netPolicySource(tc.block))
-			prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-open", nil, emit, nil)
+			prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-open", nil, emit, nil, "")
 			if err != nil {
 				t.Fatalf("startNetworkProxy: %v", err)
 			}
@@ -280,7 +280,7 @@ func TestSandboxNetworkDenylist_BlocksOnlyTheListedHosts(t *testing.T) {
 		}
 		return nil
 	}
-	prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-deny", nil, emit, nil)
+	prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-deny", nil, emit, nil, "")
 	if err != nil {
 		t.Fatalf("startNetworkProxy: %v", err)
 	}

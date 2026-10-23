@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sessionboard"
@@ -135,7 +136,12 @@ func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf
 		logger.Warn("supervisors: pool stamp unreadable for run %s — refusing to start (%v)", runID, err)
 		return func() {}
 	}
-	specs = PoolSurvivingSpecs(specs, pool, logger)
+	boundary, err := s.frozenContentBoundary(ctx, runID)
+	if err != nil {
+		logger.Warn("supervisors: content boundary unreadable for run %s — refusing to start (%v)", runID, err)
+		return func() {}
+	}
+	specs = PoolSurvivingSpecs(specs, boundary, pool, logger)
 	return startDeclaredImpl(ctx, s, s, runID, specs, logger)
 }
 
@@ -152,7 +158,11 @@ var startDeclaredImpl = supervise.StartDeclared
 // same fallback: a gateway env pin keeps unpinned supervisors alive; a
 // vendor env pin or no env at all refuses them. A nil pool keeps every
 // spec.
-func PoolSurvivingSpecs(specs []supervise.Spec, pool string, logger *iterlog.Logger) []supervise.Spec {
+func PoolSurvivingSpecs(specs []supervise.Spec, boundary *store.RunContentBoundary, pool string, logger *iterlog.Logger) []supervise.Spec {
+	if boundary != nil && boundary.Kind == store.ContentBoundaryTeamGateway {
+		logger.Warn("supervisors: the run's content boundary is the team gateway %q — every supervisor spec is refused, no escape", boundary.GatewayHost)
+		return nil
+	}
 	if pool == "" {
 		return specs
 	}
@@ -166,8 +176,37 @@ func PoolSurvivingSpecs(specs []supervise.Spec, pool string, logger *iterlog.Log
 		if model == "" {
 			model = envDefault
 		}
-		if err := poolContentRefusal(pool, model); err != nil {
+		if err := contentRefusal(boundary, pool, model); err != nil {
 			logger.Warn("supervisor %q: %v", spec.Name, err)
+			continue
+		}
+		kept = append(kept, spec)
+	}
+	return kept
+}
+
+// AmbientSurvivingSpecs is the ambient twin of PoolSurvivingSpecs: on a run
+// whose credentials carry the AmbientRefused stamp (ADR-131), only
+// supervisors whose effective model is a gateway spec (openai_compatible/…)
+// survive — a vendor-family supervisor resolves through the pod environment,
+// which the stamp refuses, and would spin refusal-per-evaluation for a run
+// that must not spend it. Every other run keeps every spec. Dropped specs
+// are named, so a dropped monitor is a decision, not a silence.
+func AmbientSurvivingSpecs(specs []supervise.Spec, ambientRefused bool, logger *iterlog.Logger) []supervise.Spec {
+	if !ambientRefused {
+		return specs
+	}
+	envDefault := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
+	kept := specs[:0]
+	for _, spec := range specs {
+		model := strings.TrimSpace(ir.ExpandEnvWithDefault(spec.Model))
+		if model == "" {
+			model = envDefault
+		}
+		if !modelroute.Parse(model).Gateway() {
+			if logger != nil {
+				logger.Warn("supervisor %q: dropped on an ambient-refused run — its model %q resolves through the pod environment, which the run's credentials refuse; pin %q to an openai_compatible model to supervise here", spec.Name, model, spec.Name)
+			}
 			continue
 		}
 		kept = append(kept, spec)
@@ -213,7 +252,12 @@ func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, lo
 		logger.Warn("session board: pool stamp unreadable for run %s — refusing to start (%v)", runID, err)
 		return func() {}
 	}
-	if err := poolContentRefusal(pool, sessionboard.ModelFromEnv()); err != nil {
+	boundary, err := s.frozenContentBoundary(ctx, runID)
+	if err != nil {
+		logger.Warn("session board: content boundary unreadable for run %s — refusing to start (%v)", runID, err)
+		return func() {}
+	}
+	if err := contentRefusal(boundary, pool, sessionboard.ModelFromEnv()); err != nil {
 		logger.Warn("session board: %v", err)
 		return func() {}
 	}
