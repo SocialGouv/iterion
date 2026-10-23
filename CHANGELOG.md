@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.285.0](https://github.com/SocialGouv/iterion/compare/v3.284.1...v3.285.0) (2026-10-23)
+
+### Features
+
+* **secrets,runner,cloudpublisher:** the runner serves a run-held gateway credential and refuses ambient credentials on a stamped run ([#2709](https://github.com/SocialGouv/iterion/issues/2709)) ([abc3f71](https://github.com/SocialGouv/iterion/commit/abc3f71cf6280c527c7ba743ab8163b238704262)), references [#2005](https://github.com/SocialGouv/iterion/issues/2005) [#2652](https://github.com/SocialGouv/iterion/issues/2652)
+
+    <details><summary>why</summary>
+
+    PR-B'1 of #2005 (ADR-131) — the consumer half of the carriage, "consumer first, inert at v25": every change is a no-op on the bundles sealed today, and the queue schema is untouched (the bump to 27 ships with the producer, PR-C').
+
+    </details>
+
+### Bug Fixes
+
+* **model:** the claw recovery pass retries once at a lowered reasoning effort ([#2716](https://github.com/SocialGouv/iterion/issues/2716)) ([7c25d46](https://github.com/SocialGouv/iterion/commit/7c25d466d0ca8ada16f7fd021f9b29050833e092)), references [SocialGouv/iterion#2710](https://github.com/SocialGouv/iterion/issues/2710)
+
+    <details><summary>why</summary>
+
+    A long tool loop's structured recovery on a gateway model can come back empty at a high reasoning effort — four identical deaths on the vao pool (SocialGouv/iterion#2710), ~$5 of diff reading lost per death, the whole review restarting from scratch on every node recovery. The recovery pass now runs ONCE MORE at the lowered effort (the existing effortAfterCut lever, which refuses an already-lowered recovery) before the node fails: one billed call against a full restart. The first recovery's…
+
+    </details>
+
 ## [3.284.1](https://github.com/SocialGouv/iterion/compare/v3.284.0...v3.284.1) (2026-10-22)
 
 ### Bug Fixes
