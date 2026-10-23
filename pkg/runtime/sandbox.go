@@ -664,7 +664,19 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// workflow named no network base of its own was already completed
 	// to the iterion-default allowlist at resolution time
 	// (fuseDevcontainerSpec).
-	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger)
+	// The run's own gateway credential names the host its proxy pins
+	// strictly — read once here, where the ctx lives; the proxy start has
+	// no credential access.
+	runGatewayHost := ""
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		if _, baseURL, gerr := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible); gerr == nil && baseURL != "" {
+			runGatewayHost = (compatgw.Config{BaseURL: baseURL}).Host()
+			if err := refuseRunGatewayAlias(runGatewayHost); err != nil {
+				return nil, err
+			}
+		}
+	}
+	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger, runGatewayHost)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
@@ -855,6 +867,18 @@ func sandboxModelHosts() []string {
 	})
 }
 
+// refuseRunGatewayAlias refuses a credential whose gateway host is the
+// engine-owned alias in ANY spelling: the dial rewrites casings and a root
+// dot away before its own local-destination guard, so the alias's road to
+// the host's loopback — sanctioned for the per-run MCP listeners — would be
+// opened to a credential that named it, the pin never consulted.
+func refuseRunGatewayAlias(host string) error {
+	if netproxy.CanonicalHost(host) == "host.docker.internal" {
+		return fmt.Errorf("runtime: sandbox: the run's gateway credential names %s — the alias is the engine's own road to the host, never a credential's endpoint", host)
+	}
+	return nil
+}
+
 // gatewayPin is the run's proxy's PinSource: the host of the
 // OpenAI-compatible gateway the environment serves (OPENAI_COMPATIBLE_BASE_URL)
 // — "" when it serves none, or names one no request reaches — and whether
@@ -922,6 +946,7 @@ func startNetworkProxy(
 	rewriter netproxy.SecretRewriter,
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
+	runGatewayHost string,
 ) (*netproxy.Proxy, string, []byte, error) {
 	mode, rules := ResolveNetworkPolicy(spec)
 
@@ -939,14 +964,35 @@ func startNetworkProxy(
 	}
 
 	// With no host filtering AND no secret inspection there is nothing
-	// for the proxy to do — keep the zero-overhead open path.
-	if mode == netproxy.ModeOpen && rewriter == nil {
+	// for the proxy to do — keep the zero-overhead open path. A run
+	// holding a gateway credential is the exception: the pin is that
+	// credential's egress guard, and it needs the proxy running even
+	// where the policy admits everything.
+	if mode == netproxy.ModeOpen && rewriter == nil && runGatewayHost == "" {
 		return nil, "", nil, nil
+	}
+
+	// The run's own gateway is admitted by an EXACT rule prepended ahead
+	// of the spec's: a workflow naming no rule for it still reaches its
+	// credential's endpoint, and a workflow rule refusing it still wins
+	// (last match) — loudly, below.
+	if runGatewayHost != "" {
+		rules = append([]string{runGatewayHost}, rules...)
 	}
 
 	policy, err := netproxy.Compile(mode, rules)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("compile policy: %w", err)
+	}
+	if runGatewayHost != "" && !policy.Allow(runGatewayHost) {
+		_ = emitEvent(store.EventSandboxNetworkDefaulted, map[string]any{
+			"kind":   "run_gateway_refused",
+			"host":   runGatewayHost,
+			"run_id": runID,
+		})
+		if logger != nil {
+			logger.Warn("runtime: sandbox: the workflow's network rules refuse the run's gateway %s (run %s) — the credential's endpoint stays refused", runGatewayHost, runID)
+		}
 	}
 
 	token, err := netproxy.NewToken()
@@ -989,6 +1035,19 @@ func startNetworkProxy(
 	// reloaded mid-run names (the desktop's refresh) is pinned from the next
 	// connection on. A gateway named and replaced again before any
 	// connection is made through the proxy is not.
+	// The run's own credential pins its gateway strictly, whatever the
+	// operator's hatch admits for the environment's gateway.
+	if runGatewayHost != "" {
+		opts.PinRunSource = func() (string, bool) { return runGatewayHost, secrets.LLMEndpointAllowPrivate() }
+	}
+	// One tunneled-egress event per run, at shutdown: the tally of
+	// requests the policy admitted, host by host.
+	opts.OnTunnelsDone = func(tally map[string]int) {
+		_ = emitEvent(store.EventSandboxNetworkTunneled, map[string]any{
+			"hosts":  tally,
+			"run_id": runID,
+		})
+	}
 	opts.PinSource = gatewayPin
 
 	// TLS-inspection mode (Layer 2): mint a per-run CA so the proxy can
@@ -2058,7 +2117,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	// A subbot child under a sandboxed parent executes in the PARENT's
 	// sandbox — never in one of its own (see SubbotRequest.ParentSandbox).
 	if e.sharedSandbox != nil && e.sharedSandbox.Run != nil {
-		adopt, err := e.shouldAdoptSharedSandbox(emitForSandbox)
+		adopt, err := e.shouldAdoptSharedSandbox(ctx, emitForSandbox)
 		if err != nil {
 			return noopCleanup, err
 		}
@@ -2432,7 +2491,7 @@ func nodeGateCanAsk(n ir.Node, wf *ir.Workflow) bool {
 //     under a copy-based parent: a parked child is resumed outside its
 //     parent, in an engine with no handle to adopt, i.e. in a pod of its
 //     own — the loss this mechanism exists to prevent.
-func (e *Engine) shouldAdoptSharedSandbox(emitForSandbox func(store.EventType, map[string]any) error) (bool, error) {
+func (e *Engine) shouldAdoptSharedSandbox(ctx context.Context, emitForSandbox func(store.EventType, map[string]any) error) (bool, error) {
 	shared := e.sharedSandbox
 	copyBased := sharedSandboxIsCopyBased(shared.Run)
 	if declared := declaredSandboxFields(e.workflow); len(declared) > 0 {
@@ -2456,6 +2515,23 @@ func (e *Engine) shouldAdoptSharedSandbox(emitForSandbox func(store.EventType, m
 	}
 	if shared.ScratchContainerLocal && e.childCanPause() {
 		return false, fmt.Errorf("subbot child with a human gate, an interactive node or a permission gate that asks cannot execute in its parent's sandbox (%s), whose ${PROJECT_SCRATCH_DIR} lives in the container: a parked child is resumed outside its parent, in a sandbox of its own, without that scratch — declare the gate in the parent, or give the parent a host-backed scratch", shared.Run.Driver())
+	}
+	// A child holding a sealed gateway credential cannot borrow the
+	// parent's sandbox: the parent's proxy pins the PARENT's gateway host,
+	// and the child's key would egress past a pin set that never named it
+	// (an open parent: no proxy at all). NOT an error: the child falls
+	// through to a sandbox of its own, whose proxy pins its own
+	// credential — a refusal here would kill the run instead.
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		if key, baseURL, err := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible); err == nil && key != "" && baseURL != "" {
+			if emitErr := emitForSandbox(store.EventSandboxShared, map[string]any{
+				"adopted": false, "driver": shared.Run.Driver(), "parent_run": e.parentRunID,
+				"reason": "the child holds a sealed gateway credential for " + (compatgw.Config{BaseURL: baseURL}).Host() + "; the parent's proxy pins the parent's gateway",
+			}); emitErr != nil && e.logger != nil {
+				e.logger.Warn("runtime: emit sandbox_shared: %v", emitErr)
+			}
+			return false, nil
+		}
 	}
 	return true, nil
 }

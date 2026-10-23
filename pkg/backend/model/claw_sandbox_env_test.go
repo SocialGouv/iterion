@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -39,18 +40,34 @@ func TestForwardableProviderEnv_runCredentialsBeatTheAmbientOnes(t *testing.T) {
 		}
 	})
 
-	t.Run("a tenant's BYOK key overrides the platform's", func(t *testing.T) {
+	// The node-aware crossing: a run's key rides only the nodes its
+	// provider serves. An anthropic node never sees the run's openai key —
+	// the ambient platform value still speaks there, because the pod's own
+	// provisioning is not the run's money and the node cannot spend the
+	// run's key on a wire its model does not name.
+	t.Run("a run's key crosses only the nodes its provider serves", func(t *testing.T) {
 		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 			APIKeys: map[secrets.Provider]string{secrets.ProviderOpenAI: "tenant-key"},
 		})
 		env := envFor(t, ctx)
-		if env["OPENAI_API_KEY"] != "tenant-key" {
-			t.Errorf("OPENAI_API_KEY = %q, want the tenant's own key — a sandboxed node billed the platform instead", env["OPENAI_API_KEY"])
+		if env["OPENAI_API_KEY"] != "platform-key" {
+			t.Errorf("OPENAI_API_KEY = %q, want the ambient value — the run's openai key must not cross an anthropic node", env["OPENAI_API_KEY"])
 		}
-		// Providers the run resolved nothing for keep the ambient value:
-		// the run is not asserting anything about them.
 		if env["ANTHROPIC_API_KEY"] != "platform-anthropic" {
 			t.Errorf("ANTHROPIC_API_KEY = %q, want the ambient value untouched", env["ANTHROPIC_API_KEY"])
+		}
+	})
+
+	// The override itself is provider-scoped, not lost: on the node the
+	// key's provider serves, the run's instrument still outranks the
+	// platform's.
+	t.Run("the override survives, scoped to its provider's nodes", func(t *testing.T) {
+		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+			APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "tenant-anthropic"},
+		})
+		env := envFor(t, ctx)
+		if env["ANTHROPIC_API_KEY"] != "tenant-anthropic" {
+			t.Errorf("ANTHROPIC_API_KEY = %q, want the tenant's own key on the node its provider serves", env["ANTHROPIC_API_KEY"])
 		}
 	})
 
@@ -192,7 +209,7 @@ func forfaitDirForTest(t *testing.T) string {
 // fails the test on error.
 func envFor(t *testing.T, ctx context.Context) map[string]string {
 	t.Helper()
-	env, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	env, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -213,7 +230,7 @@ func TestForwardableProviderEnv_GLMNodeKeepsItsZAIKey(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
 	})
-	env, err := forwardableProviderEnv(ctx, "anthropic/glm-5.2")
+	env, err := forwardableProviderEnv(ctx, "anthropic/glm-5.2", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -241,7 +258,7 @@ func TestForwardableProviderEnv_OtherProviderIgnoresTheForfait(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): dir},
 	})
-	env, err := forwardableProviderEnv(ctx, "openrouter/anthropic/claude-sonnet-5")
+	env, err := forwardableProviderEnv(ctx, "openrouter/anthropic/claude-sonnet-5", "")
 	if err != nil {
 		t.Fatalf("an openrouter node failed on the run's expired Claude forfait: %v", err)
 	}
@@ -268,7 +285,7 @@ func TestForwardableProviderEnv_ExpiredForfaitRefusesInsteadOfBlinding(t *testin
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): dir},
 	})
-	_, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	_, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5", "")
 	if !errors.Is(err, secrets.ErrAnthropicForfaitExpired) {
 		t.Fatalf("expected a named expiry refusal, got %v", err)
 	}
@@ -290,7 +307,7 @@ func TestForwardableProviderEnv_CarriesTheMoonshotRoute(t *testing.T) {
 	t.Setenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/anthropic")
 	hostBase := moonshotBaseURL()
 
-	env, err := forwardableProviderEnv(context.Background(), "moonshot/kimi-k2")
+	env, err := forwardableProviderEnv(context.Background(), "moonshot/kimi-k2", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -314,7 +331,7 @@ func TestForwardableProviderEnv_CarriesTheStreamUsageKnob(t *testing.T) {
 	t.Setenv("OPENAI_BASE_URL", "https://gateway.operator.example/v1")
 	t.Setenv("ITERION_OPENAI_STREAM_USAGE", "1")
 
-	env, err := forwardableProviderEnv(context.Background(), "openai/gpt-5")
+	env, err := forwardableProviderEnv(context.Background(), "openai/gpt-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -337,7 +354,7 @@ func TestForwardableProviderEnv_CarriesTheXAIRoute(t *testing.T) {
 	t.Setenv("XAI_BASE_URL", "https://xai-proxy.operator.example/v1")
 	hostBase := xaiBaseURL()
 
-	env, err := forwardableProviderEnv(context.Background(), "xai/grok-4")
+	env, err := forwardableProviderEnv(context.Background(), "xai/grok-4", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -480,7 +497,7 @@ func TestForwardableProviderEnv_MoonshotBYOKBeatsTheAmbientKey(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		APIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-tenant-key"},
 	})
-	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -530,7 +547,7 @@ func TestForwardableProviderEnv_ForfaitCrossingKeepsAMoonshotNodesKey(t *testing
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
 	})
-	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -558,7 +575,7 @@ func TestForwardableProviderEnv_APinnedKeyCrossesOnlyForTheNodeThatNamesIt(t *te
 		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "platform-moonshot"},
 	})
 
-	pinnedNode, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	pinnedNode, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -572,7 +589,7 @@ func TestForwardableProviderEnv_APinnedKeyCrossesOnlyForTheNodeThatNamesIt(t *te
 	}
 	t.Setenv("MOONSHOT_API_KEY", "")
 
-	other, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	other, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -617,5 +634,80 @@ func TestForwardableProviderEnv_ForfaitCrossingKeepsThisNodesPinnedAnthropicKey(
 	}
 	if _, present := env["CLAUDE_CONFIG_DIR"]; present {
 		t.Error("CLAUDE_CONFIG_DIR set although this node holds its own pinned key — the sandbox would spend the forfait while the in-process path spends the pin")
+	}
+}
+
+// The widened provider hint is a bare-id node's routing knowledge
+// (dispatchWithProviderFallback sets it per chain element, RouteProviderHint
+// widens GLM-on-anthropic to zai): the run's keys narrow to it too. No hint,
+// no narrowing — a bare id with nothing to read would otherwise starve.
+func TestForwardableProviderEnv_BareIDNarrowsToTheHint(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "platform-openai")
+	t.Setenv("ZAI_API_KEY", "platform-zai")
+
+	runKeys := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{
+			secrets.ProviderOpenAI: "tenant-openai",
+			secrets.ProviderZAI:    "tenant-zai",
+		},
+	})
+
+	env, err := forwardableProviderEnv(runKeys, "glm-5.2", "zai")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if env["ZAI_API_KEY"] != "tenant-zai" {
+		t.Errorf("ZAI_API_KEY = %q, want the run's key — the hint's provider is the node's own", env["ZAI_API_KEY"])
+	}
+	if env["OPENAI_API_KEY"] != "platform-openai" {
+		t.Errorf("OPENAI_API_KEY = %q, want the ambient value — the run's openai key must not cross a zai-narrowed node", env["OPENAI_API_KEY"])
+	}
+
+	env, err = forwardableProviderEnv(runKeys, "glm-5.2", "")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if env["OPENAI_API_KEY"] != "tenant-openai" || env["ZAI_API_KEY"] != "tenant-zai" {
+		t.Fatalf("hintless bare id = %v, want every run key (no narrowing without a provider to narrow to)", env)
+	}
+}
+
+// A gateway-primary node's wire is the gateway: no run-held vendor key may
+// ride its env — the ambient platform provisioning still crosses, but the
+// run's money stays on the wire the node names.
+func TestForwardableProviderEnv_GatewayNodeCarriesNoVendorRunKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "platform-anthropic")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://93.184.216.34/v1")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-secret")
+	compatgw.ResetCatalogCaches()
+
+	runVendor := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "tenant-anthropic"},
+	})
+	env, err := forwardableProviderEnv(runVendor, "openai_compatible/m", "")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if env["ANTHROPIC_API_KEY"] != "platform-anthropic" {
+		t.Errorf("ANTHROPIC_API_KEY = %q, want the ambient value — the run's vendor key must not cross a gateway node", env["ANTHROPIC_API_KEY"])
+	}
+	if env["OPENAI_COMPATIBLE_API_KEY"] != "gw-secret" {
+		t.Errorf("gateway key = %q, want the operator's env gateway (the run holds no pair)", env["OPENAI_COMPATIBLE_API_KEY"])
+	}
+}
+
+// The host's ChatGPT forfait is the POD's instrument, not the run's: a
+// stamped run without an openai instrument of its own is refused the
+// delivery, namedly — it never crosses into the container.
+func TestHostCodexForfait_AStampedRunIsRefusedTheHostLogin(t *testing.T) {
+	hostCodexHome(t, `{"auth_mode":"chatgpt","tokens":{"id_token":"idt","access_token":"sk-host-chatgpt","refresh_token":"rt","account_id":"acct"},"last_refresh":"2026-10-11T09:00:00Z"}`)
+	t.Setenv("ITERION_OPENAI_USE_OAUTH", "1")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
+	payload, refused := hostCodexForfait(ctx, "openai/gpt-5.5")
+	if payload != nil {
+		t.Fatal("the host's ChatGPT login was delivered into a stamped run's sandbox")
+	}
+	if refused == "" {
+		t.Fatal("the refusal is silent — the operator must learn why nothing crossed")
 	}
 }

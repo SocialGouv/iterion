@@ -309,3 +309,24 @@ func TestModelServedByZAI_PrefixAnchored(t *testing.T) {
 		t.Error("GLMOnAnthropicWire(anthropic/glm-5.3) = false, want true")
 	}
 }
+
+// Under the AmbientRefused stamp the direct-anthropic resolution refuses
+// the pod environment: the env key and the host-disk forfait are not the
+// run's funds, and the hint's single contradiction (unfunded) is the
+// answer — never an env-funded client.
+func TestResolveAnthropicDirect_AmbientRefusedSkipsThePodEnvironment(t *testing.T) {
+	isolateHintTest(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ambient-anthropic")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://pod-gw.example")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "oat-ambient")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
+	r := NewRegistry()
+	client, err := r.resolveAnthropicDirect(ctx, "claude-sonnet-4-6")
+	if err == nil {
+		t.Fatalf("an ambient-refused run resolved an env-funded client %+v", client)
+	}
+	var unfunded *ErrProviderHintUnfunded
+	if !errors.As(err, &unfunded) {
+		t.Fatalf("err = %v, want *ErrProviderHintUnfunded (the hint path's single contradiction)", err)
+	}
+}

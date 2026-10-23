@@ -558,6 +558,11 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	defer c.persistCursor()
 	c.inTokens += usage.InputTokens
 	c.outTokens += usage.OutputTokens
+	// The sink fires before the error check: a FAILED evaluation was billed
+	// for the turns it made (the usage rides beside the error).
+	if c.spec.OnUsage != nil {
+		c.spec.OnUsage(usage.InputTokens, usage.OutputTokens)
+	}
 	if err != nil {
 		// An eval in flight when the run tears down is cancelled with it
 		// — a normal shutdown, not a supervisor malfunction: no warn

@@ -1,8 +1,13 @@
 package model
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	httpdial "github.com/SocialGouv/iterion/pkg/secure/httpdial"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -51,6 +56,48 @@ func refuseGatewayCrossing(backend, hint, model string) error {
 // and the sandbox forward will make, refused here — with the variable
 // named, the value never printed — while the chain can still walk to a
 // fallback.
+// checkGatewaySource validates that A source exists for a gateway-served
+// element before it is dispatched anywhere: a run holding its own gateway
+// pair (the sealed credential the registry's uncached arm serves) is
+// validated at the same dispatch-time standard the env pair gets — syntax
+// here, and the public-address rule under strict, resolved fresh per
+// attempt — while a run holding no pair reads the pod environment exactly
+// as before. Under the ambient stamp with neither source, the refusal
+// names the stamp: the run's LLM routes are funded by its sealed
+// credentials only (#2005, ADR-131 §7).
+func checkGatewaySource(ctx context.Context, spec string, strict bool) error {
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		key, baseURL, err := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible)
+		if err != nil {
+			// A key held without its URL is the typed pairing refusal —
+			// the registry answers the same state with the same error;
+			// never the pod's env gateway.
+			return fmt.Errorf("openai_compatible: %w", err)
+		}
+		if key != "" && baseURL != "" {
+			// Syntax at the seam; the address class for a LITERAL host —
+			// a private literal was refused at the seal, but the ctx
+			// credentials may be hand-built. A NAME resolves at dial time
+			// (PR-C'): the resolver's answer is the dial guard's to judge.
+			if err := (compatgw.Config{BaseURL: baseURL}).Validate(false); err != nil {
+				return err
+			}
+			if strict {
+				if u, uerr := url.Parse(baseURL); uerr == nil {
+					if ip := net.ParseIP(u.Hostname()); ip != nil && !httpdial.IsPublicUnicast(ip) {
+						return compatgw.RemedyPrivate(fmt.Errorf("the run-held gateway endpoint is a private or non-public address"))
+					}
+				}
+			}
+			return nil
+		}
+	}
+	if ambientRefused(ctx) {
+		return &ErrAmbientCredentialRefused{Provider: string(secrets.ProviderOpenAICompatible), Spec: spec}
+	}
+	return checkGatewayEnv(strict)
+}
+
 func checkGatewayEnv(strict bool) error {
 	// The operator table is judged HERE (not only inside the catalog
 	// resolution): a malformed table must REFUSE the route — naming the

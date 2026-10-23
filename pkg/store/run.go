@@ -885,6 +885,29 @@ type RunCredStamp struct {
 	SkippedReopensAt *time.Time
 }
 
+// RunContentBoundary identifies the tenant gateway credential a run is
+// funded through (ADR-131). Frozen on the run at launch and replayed by
+// every resume/fork lane exactly as frozen, never re-derived.
+type RunContentBoundary struct {
+	// Kind names the credential class that funds the run.
+	Kind string `json:"kind" bson:"kind"`
+	// KeyID is the id of the key that answered. Optional: a kind whose
+	// funding needs no key row leaves it empty.
+	KeyID string `json:"key_id,omitempty" bson:"key_id,omitempty"`
+	// GatewayHost is the canonical host of the tenant gateway serving
+	// the key. Optional for the same reason.
+	GatewayHost string `json:"gateway_host,omitempty" bson:"gateway_host,omitempty"`
+}
+
+// The content boundary kinds.
+const (
+	// ContentBoundaryTeamGateway stamps a run whose LLM spend is funded by
+	// the tenant team's gateway credential.
+	ContentBoundaryTeamGateway = "team_gateway"
+	// ContentBoundaryOwnKeys stamps a run funded by keys of its own.
+	ContentBoundaryOwnKeys = "own_keys"
+)
+
 type Run struct {
 	FormatVersion int    `json:"format_version" bson:"format_version"`
 	ID            string `json:"id" bson:"_id"`
@@ -1491,6 +1514,16 @@ type Run struct {
 	// compares it against the team's CURRENT mapping and refuses the
 	// difference; a deliberate move is a new launch, never a re-stamp.
 	RunnerPool string `json:"runner_pool,omitempty" bson:"runner_pool,omitempty"`
+	// ContentBoundary records WHICH tenant gateway credential funds this
+	// run (ADR-131): the credential's kind, the id of the key that
+	// answered, and the canonical gateway host it serves. A frozen
+	// credential fact under the PinnedProviders doctrine: it travels with
+	// the run, is replayed by every resume/fork lane exactly as frozen,
+	// and is never re-derived — a lane that re-derived it would silently
+	// move a running run onto whichever key answers today. Nil on runs
+	// launched before the stamp existed (a pre-existing document decodes
+	// nil, and the producer lands with a later change).
+	ContentBoundary *RunContentBoundary `json:"content_boundary,omitempty" bson:"content_boundary,omitempty"`
 
 	// Attachments holds the metadata for binary inputs declared in
 	// the workflow's `attachments:` block and uploaded at launch.

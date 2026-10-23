@@ -184,6 +184,10 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// the parent would, and a child doc reading unmapped would later hit the
 	// resume refusal (team mapping ≠ child stamp) with no recovery path.
 	child.RunnerPool = parent.RunnerPool
+	// The frozen gateway stamp rides the same carriage: the child is funded
+	// by the credential that funded the parent, and a child doc left
+	// unstamped would re-derive (or lose) the pair on resume.
+	child.ContentBoundary = parent.ContentBoundary
 	if spec.ForkName != "" {
 		child.Name = spec.ForkName
 	} else {

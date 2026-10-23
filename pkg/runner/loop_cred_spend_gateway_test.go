@@ -91,3 +91,40 @@ func TestRecordCredentialSpend_GatewayRouteIsSkippedAsEnvFunded(t *testing.T) {
 		t.Errorf("the skip said env-funded %d times, want once per route:\n%q", n, logged)
 	}
 }
+
+// The ambient-stamp twin: a STAMPED run holding the gateway pair books its
+// gateway route on the run's own held credential — the stamp declares the
+// deployment's env gateway outside the run's trust domain, so the spend is
+// the tenant key's, metered and fingerprinted like any vendor route.
+func TestRecordCredentialSpend_AmbientRefusedBooksOnTheHeldPair(t *testing.T) {
+	var buf bytes.Buffer
+	counter := credusage.NewMemoryCounter()
+	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelInfo, &buf), CredUsage: counter}}
+	usage := newMetricsEmitter(nil, nil)
+	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "gw",
+		Data: map[string]any{"model": "openai_compatible/m"}})
+	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "gw",
+		Data: map[string]any{"backend": delegate.BackendClaw, "tokens": float64(1200), "cost_usd": 0.1}})
+
+	creds := secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-gw"},
+		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://run-gw.example"},
+		Fingerprints:   map[string]string{string(secrets.ProviderOpenAICompatible): "fp-run-gw"},
+	}
+	ctx := secrets.WithCredentials(context.Background(), creds)
+	now := time.Now().UTC()
+	r.recordCredentialSpend(ctx, &queue.RunMessage{RunID: "gw-run-stamped", TenantID: "team-a"}, usage, now)
+
+	rows, err := counter.List(ctx, now, "team-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("a stamped run's gateway route books on its own held credential: %d row(s): %+v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.Fingerprint != "fp-run-gw" || row.Provider != string(secrets.ProviderOpenAICompatible) || row.Tier != credusage.TierTeam {
+		t.Fatalf("booked on the wrong credential: fingerprint %q provider %q tier %q", row.Fingerprint, row.Provider, row.Tier)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // Credentials carries the resolved per-run BYOK plaintext keyed by
@@ -390,7 +392,7 @@ func ForbidSubscriptionOAuth() bool {
 // infrastructure. Off, the dial (and the pre-flight validation) refuse a
 // private, loopback or metadata address.
 func LLMEndpointAllowPrivate() bool {
-	return strings.TrimSpace(os.Getenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE")) == "1"
+	return envtrust.Inherited("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE") == "1"
 }
 
 // anthropicOAuthTokenPrefix is the shape Anthropic mints subscription OAuth

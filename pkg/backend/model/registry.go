@@ -649,7 +649,33 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	}
 	creds, hasCreds := credentialsLookup(ctx)
 	if !hasCreds {
+		if ambientRefused(ctx) {
+			return nil, &ErrAmbientCredentialRefused{Provider: providerName, Spec: spec}
+		}
 		return r.Resolve(spec)
+	}
+	// A run holding a tenant gateway credential serves `openai_compatible/…`
+	// from ITS gateway, sealed as a pair: the key and the base URL leave
+	// GatewayCredentialForRoute together, and a key met without its URL is
+	// the typed secrets.ErrGatewayKeyWithoutURL — never a key sent to the
+	// environment's gateway. The client is built fresh per call, never
+	// through r.cache: the cache key is the spec alone, and one runner pod
+	// serially serves many tenants (the multi-tenant safety of the BYOK
+	// keys below). An empty key in the run's channels falls through to the
+	// env path — or to the ambient refusal under the stamp
+	// (#2005, ADR-131 §7).
+	if providerName == modelroute.OpenAICompatible {
+		if runCreds, ok := secrets.CredentialsFromContext(ctx); ok {
+			key, baseURL, err := runCreds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible)
+			if err != nil {
+				return nil, fmt.Errorf("model: provider %q (spec %q): %w", providerName, spec, err)
+			}
+			if key != "" {
+				// Same construction as the env factory, the credential as
+				// the only difference.
+				return compatgw.NewClient(compatgw.Config{BaseURL: baseURL, APIKey: key}, modelID, !secrets.LLMEndpointAllowPrivate())
+			}
+		}
 	}
 	// `anthropic/glm-*` is served by z.ai, not by the anthropic credential
 	// its prefix names: spend the run's z.ai key against z.ai's endpoint —
@@ -658,10 +684,18 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	// and api.anthropic.com refused a model it does not serve.
 	if providerName == "anthropic" && modelServedByZAI(modelID) {
 		if zai := creds(string(secrets.ProviderZAI)); zai != "" {
+			operatorBase := os.Getenv("ANTHROPIC_BASE_URL")
+			if runCreds, ok := secrets.CredentialsFromContext(ctx); ok && runCreds.AmbientRefused {
+				// The pod's routing env is outside a stamped run's trust
+				// domain: the run's z.ai key authenticates to z.ai's own
+				// endpoint. Latent until a producer stamps — the funding
+				// gate above refuses this shape first.
+				operatorBase = ""
+			}
 			return anthropicprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
 				APIKey:  zai,
 				Model:   modelID,
-				BaseURL: glmBaseURL(os.Getenv("ANTHROPIC_BASE_URL")),
+				BaseURL: glmBaseURL(operatorBase),
 			}))
 		}
 	}
@@ -700,7 +734,11 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 			}
 		}
 		// No tenant-scoped credential for this provider — fall back to the
-		// shared resolver (env vars + cache).
+		// shared resolver (env vars + cache), unless the run refuses the
+		// environment: its routes are funded by the sealed credentials only.
+		if ambientRefused(ctx) {
+			return nil, &ErrAmbientCredentialRefused{Provider: providerName, Spec: spec}
+		}
 		return r.Resolve(spec)
 	}
 	r.mu.Lock()
@@ -708,6 +746,9 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	r.mu.Unlock()
 	if !hasFactory {
 		// Provider doesn't expose a BYOK factory; fall back.
+		if ambientRefused(ctx) {
+			return nil, &ErrAmbientCredentialRefused{Provider: providerName, Spec: spec}
+		}
 		return r.Resolve(spec)
 	}
 	return factory(modelID, overrideKey)
@@ -735,6 +776,16 @@ func SetCredentialsLookup(fn func(ctx context.Context) (func(provider string) st
 		f, ok := fn(ctx)
 		return credentialsResolver(f), ok
 	}
+}
+
+// ambientRefused reports whether the run's credentials carry the
+// AmbientRefused stamp: its LLM routes are funded by the sealed
+// credentials only, and every fallback to the pod environment is refused
+// (#2005, ADR-131 §7). No credentials on the context is not a refusal —
+// it is the env path's own case.
+func ambientRefused(ctx context.Context) bool {
+	c, ok := secrets.CredentialsFromContext(ctx)
+	return ok && c.AmbientRefused
 }
 
 func credentialsLookup(ctx context.Context) (credentialsResolver, bool) {

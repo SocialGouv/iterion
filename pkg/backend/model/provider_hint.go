@@ -77,6 +77,25 @@ func (e *ErrGLMHintUnfunded) Error() string {
 		e.Model)
 }
 
+// ErrAmbientCredentialRefused is the refusal of a route whose run carries
+// AmbientRefused credentials: the run's own credentials fund its LLM
+// routes, and every fallback to the pod environment — the env factories
+// behind Resolve — answers this refusal instead of spending the pod
+// operator's gateway or vendor key on a run sealed against it
+// (#2005, ADR-131 §7). Credentials sealed in the run still resolve; only
+// the environment is refused.
+type ErrAmbientCredentialRefused struct {
+	Provider string
+	Spec     string
+}
+
+func (e *ErrAmbientCredentialRefused) Error() string {
+	return fmt.Sprintf("model: provider %q (spec %q) is not funded by the pod environment: "+
+		"the run's own credentials are the only funds for its LLM routes, so the environment fallback is refused — "+
+		"attach a credential for this route to the run",
+		e.Provider, e.Spec)
+}
+
 // glmKeyReachableUnderHint reports whether a GLM route has anything to spend
 // under the hint: the run's z.ai key (the channel ResolveWithContext's GLM
 // branch reads), the ZAI_API_KEY env-fallback the env factory synthesises
@@ -116,6 +135,12 @@ func (r *Registry) resolveAnthropicDirect(ctx context.Context, modelID string) (
 	// refuse a forfait because of a z.ai value the hint already overruled.
 	if client, ok, err := r.anthropicFromCtxForfaitOnWire(ctx, modelID, ""); ok {
 		return client, err
+	}
+	// Under the ambient stamp the pod environment is not the run's money:
+	// the env key and the host-disk forfait are skipped, and the hint's
+	// single contradiction (unfunded) is the answer.
+	if ambientRefused(ctx) {
+		return nil, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
 	}
 	if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
 		return p.NewClient(withClientIdentity(api.ProviderConfig{APIKey: k, Model: modelID}))

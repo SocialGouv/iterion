@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -401,5 +402,42 @@ func TestCoordinatorDoneThenMonitorRearm(t *testing.T) {
 	waitFor(t, func() bool { return len(inj.snapshot()) == 1 })
 	if got := inj.snapshot(); !strings.Contains(got[0].text, "back to work") {
 		t.Errorf("text = %q; want the second scripted message", got[0].text)
+	}
+}
+
+// The usage sink: the coordinator reports every evaluation's token cost to
+// the spec's OnUsage — on the success path AND beside a failed evaluation's
+// error (the tokens were spent whether the decision landed or not). Nil
+// OnUsage never panics: today's shape, the counters-only accounting.
+type usageErrEval struct {
+	usage EvalUsage
+}
+
+func (e *usageErrEval) Evaluate(ctx context.Context, in EvalInput) (*Decision, EvalUsage, error) {
+	return nil, e.usage, errors.New("evaluation failed")
+}
+
+func TestEvaluateReportsUsageToTheSpecSink(t *testing.T) {
+	var got []struct{ in, out int }
+	eval := &scriptedEval{decisions: []*Decision{{Intervene: false}}}
+	c := newBareCoordinator(t, Spec{
+		Cooldown: time.Nanosecond,
+		OnUsage:  func(in, out int) { got = append(got, struct{ in, out int }{in, out}) },
+	}, eval, nil)
+	c.evaluate("wake 1", true)
+	if len(got) != 1 || got[0].in != 1 || got[0].out != 1 {
+		t.Fatalf("the sink saw %+v, want one (1, 1) report", got)
+	}
+
+	// The error path: a failed evaluation still spent its turns.
+	failed := &usageErrEval{usage: EvalUsage{InputTokens: 7, OutputTokens: 3}}
+	c2 := newBareCoordinator(t, Spec{
+		Cooldown: time.Nanosecond,
+		OnUsage:  func(in, out int) { got = append(got, struct{ in, out int }{in, out}) },
+	}, failed, nil)
+	c2.evaluate("wake 2", true)
+	last := got[len(got)-1]
+	if last.in != 7 || last.out != 3 {
+		t.Fatalf("a failed evaluation's usage = %+v, want (7, 3)", last)
 	}
 }

@@ -144,7 +144,7 @@ func TestAnthropicCredEnv_HintMoonshotNoKeyRefusesAndNeverReachesAnthropic(t *te
 			}
 
 			// The refusal itself, and what it says.
-			err := facadeHintRefusal("moonshot", got)
+			err := facadeHintRefusal(context.Background(), "moonshot", got)
 			if err == nil {
 				t.Fatal("facadeHintRefusal returned nil — an unfunded moonshot node must be refused, not spawned against a suppressed env")
 			}
@@ -173,13 +173,13 @@ func TestAnthropicCredEnv_HintMoonshotNoKeyRefusesAndNeverReachesAnthropic(t *te
 func TestFacadeHintRefusal_FundedNodeIsNotRefused(t *testing.T) {
 	resetClaudeCredEnv(t)
 	ctx := ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-test"}, nil)
-	if err := facadeHintRefusal("moonshot", anthropicCredEnvForCLI(ctx, "moonshot", false)); err != nil {
+	if err := facadeHintRefusal(ctx, "moonshot", anthropicCredEnvForCLI(ctx, "moonshot", false)); err != nil {
 		t.Fatalf("funded moonshot node refused: %v", err)
 	}
 	// And a node that is not facade-pinned at all keeps the old behaviour:
 	// an unfunded `provider: anthropic` node still spawns and lets the CLI's
 	// own resolution (and its own error) decide.
-	if err := facadeHintRefusal("anthropic", anthropicCredEnvForCLI(context.Background(), "anthropic", false)); err != nil {
+	if err := facadeHintRefusal(context.Background(), "anthropic", anthropicCredEnvForCLI(context.Background(), "anthropic", false)); err != nil {
 		t.Fatalf("non-facade hint refused: %v", err)
 	}
 }
@@ -190,7 +190,7 @@ func TestFacadeHintRefusal_FundedNodeIsNotRefused(t *testing.T) {
 func TestAnthropicCredEnv_HintZAINoKeyIsRefusedByName(t *testing.T) {
 	resetClaudeCredEnv(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ambient-anthropic")
-	err := facadeHintRefusal("zai", anthropicCredEnvForCLI(context.Background(), "zai", false))
+	err := facadeHintRefusal(context.Background(), "zai", anthropicCredEnvForCLI(context.Background(), "zai", false))
 	if err == nil {
 		t.Fatal("an unfunded zai node must be refused by name too")
 	}

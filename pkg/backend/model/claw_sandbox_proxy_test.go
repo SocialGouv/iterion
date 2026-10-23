@@ -10,11 +10,14 @@ package model
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // proxiedFakeRun satisfies sandbox.Run and answers ProxyEndpoint only when
@@ -105,4 +108,71 @@ func (f nonProxiedFakeRun) ExportWorkspace(ctx context.Context) error { return n
 
 func (f nonProxiedFakeRun) CaptureWorkspaceHead(ctx context.Context) (string, error) {
 	return "", nil
+}
+
+// hostRunFakeRun is the noop passthrough shape: commands resolve on the
+// operator's host, where no container network policy exists to bypass.
+type hostRunFakeRun struct{ nonProxiedFakeRun }
+
+func (f hostRunFakeRun) HostExecutesCommands() bool { return true }
+
+// A sandboxed, gateway-routed node on a run that holds a sealed gateway
+// credential is refused a sandbox whose handle carries no proxy endpoint:
+// the credential's egress guard is the proxy's pin, and without one the key
+// dials the gateway directly, past the network policy. The host passthrough
+// is exempt — nothing of the run executes in a container, and the host's own
+// dial guard judged the URL at the dispatch seam. A credential-less run is
+// today's behaviour, refused by nobody here.
+func TestRefuseUnproxiedGatewayCrossing_Table(t *testing.T) {
+	runPair := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:     map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-gw"},
+		APIBaseURLs: map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://run-gw.example"},
+	})
+
+	t.Run("a run pair on a non-proxied container is refused", func(t *testing.T) {
+		task := delegate.Task{NodeID: "gw-node", Model: "openai_compatible/m", Sandbox: nonProxiedFakeRun{}}
+		err := refuseUnproxiedGatewayCrossing(runPair, task)
+		var refused *delegate.ErrCapabilityUnsupported
+		if !errors.As(err, &refused) {
+			t.Fatalf("err = %v, want *ErrCapabilityUnsupported — the sealed key would dial direct, past the policy", err)
+		}
+	})
+
+	t.Run("a proxied container serves the pair", func(t *testing.T) {
+		task := delegate.Task{NodeID: "gw-node", Model: "openai_compatible/m", Sandbox: proxiedFakeRun{endpoint: "http://tok@10.2.200.59:41625"}}
+		if err := refuseUnproxiedGatewayCrossing(runPair, task); err != nil {
+			t.Fatalf("a proxied sandbox is the guard's satisfied condition: %v", err)
+		}
+	})
+
+	t.Run("the host passthrough is exempt", func(t *testing.T) {
+		task := delegate.Task{NodeID: "gw-node", Model: "openai_compatible/m", Sandbox: hostRunFakeRun{}}
+		if err := refuseUnproxiedGatewayCrossing(runPair, task); err != nil {
+			t.Fatalf("the noop passthrough executes on the host, not in a container: %v", err)
+		}
+	})
+
+	t.Run("a credential-less run is today's behaviour", func(t *testing.T) {
+		task := delegate.Task{NodeID: "gw-node", Model: "openai_compatible/m", Sandbox: nonProxiedFakeRun{}}
+		if err := refuseUnproxiedGatewayCrossing(context.Background(), task); err != nil {
+			t.Fatalf("an env-gateway node on a run without a sealed pair is unchanged: %v", err)
+		}
+	})
+
+	t.Run("credentials without a gateway pair are not a holding", func(t *testing.T) {
+		vendorOnly := secrets.WithCredentials(context.Background(), secrets.Credentials{
+			APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-an"},
+		})
+		task := delegate.Task{NodeID: "gw-node", Model: "openai_compatible/m", Sandbox: nonProxiedFakeRun{}}
+		if err := refuseUnproxiedGatewayCrossing(vendorOnly, task); err != nil {
+			t.Fatalf("a run holding no gateway pair crosses no gateway key: %v", err)
+		}
+	})
+
+	t.Run("a vendor node is not the guard's business", func(t *testing.T) {
+		task := delegate.Task{NodeID: "an-node", Model: "anthropic/claude-x", Sandbox: nonProxiedFakeRun{}}
+		if err := refuseUnproxiedGatewayCrossing(runPair, task); err != nil {
+			t.Fatalf("a vendor node spends no gateway key: %v", err)
+		}
+	})
 }

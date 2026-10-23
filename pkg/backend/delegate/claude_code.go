@@ -1807,7 +1807,7 @@ func settleLedger(l SessionLedger, sessionID string, told, terminated []string) 
 // that was missing, and only after paying for the spawn.
 func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, credSpawn, error) {
 	credEnv, selected := anthropicCredRouteForTask(ctx, task)
-	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
+	if err := facadeHintRefusal(ctx, task.ProviderHint, credEnv); err != nil {
 		return opts, "", credSpawn{}, err
 	}
 	// A facade route clears ANTHROPIC_CUSTOM_HEADERS (the ambient header
@@ -2376,7 +2376,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// omitted --setting-sources would load every scope, `local` included.
 	opts = append(opts, claudeAmbient(task).settingSourcesOption())
 	credEnv, selected := anthropicCredRouteForTask(ctx, task)
-	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
+	if err := facadeHintRefusal(ctx, task.ProviderHint, credEnv); err != nil {
 		return nil, credSpawn{}, nil, err
 	}
 	// Read HERE, not beside the result: the record describes the env this

@@ -1041,6 +1041,22 @@ func facadeEnvFor(slot, key string) map[string]string {
 	return nil
 }
 
+// facadeEnvForRunHeld is the run-held twin of facadeEnvFor: the same
+// carriage with the VENDOR's own endpoint instead of the pod's
+// ANTHROPIC_BASE_URL / MOONSHOT_BASE_URL wiring — under the ambient stamp
+// the pod's routing env is outside the run's trust domain, and routing is
+// not credential. The vendor default is what the CLI would reach with no
+// env at all, so nothing of the pod's wiring rides a run-held key.
+func facadeEnvForRunHeld(slot, key string) map[string]string {
+	switch slot {
+	case string(secrets.ProviderZAI):
+		return facadeRouteEnv(secrets.ProviderZAI, secrets.ZAIDefaultBaseURL, key)
+	case string(secrets.ProviderMoonshot):
+		return facadeRouteEnv(secrets.ProviderMoonshot, secrets.MoonshotDefaultBaseURL, key)
+	}
+	return nil
+}
+
 // suppressAnthropicWireEnv is the refusal: the env handed to the CLI when a
 // node is pinned to a facade provider and NO key for it is reachable. Every
 // channel the CLI could otherwise resolve to reach Anthropic-direct is
@@ -1138,6 +1154,12 @@ func facadeEnvKey(slot string) string {
 func facadeCredEnvForHint(slot string, creds secrets.Credentials, hasCreds bool) map[string]string {
 	if hasCreds {
 		if k := creds.APIKey(secrets.Provider(slot)); k != "" {
+			// Under the ambient stamp the pod's routing env is outside the
+			// run's trust domain: a run-held key authenticates to the
+			// vendor's own endpoint, never to the pod's ANTHROPIC_BASE_URL.
+			if creds.AmbientRefused {
+				return facadeEnvForRunHeld(slot, k)
+			}
 			return facadeEnvFor(slot, k)
 		}
 		// Then a key a shared tier funded BECAUSE a route pins this
@@ -1147,12 +1169,19 @@ func facadeCredEnvForHint(slot string, creds secrets.Credentials, hasCreds bool)
 		// carries. After the run's own key, never before it — a tenant's
 		// instrument outranks the deployment's.
 		if k := creds.PinnedAPIKey(secrets.Provider(slot)); k != "" {
+			if creds.AmbientRefused {
+				return facadeEnvForRunHeld(slot, k)
+			}
 			return facadeEnvFor(slot, k)
 		}
 	}
-	if envKey := facadeEnvKey(slot); envKey != "" {
-		if k := os.Getenv(envKey); k != "" {
-			return facadeEnvFor(slot, k)
+	// The pod's env key is the deployment's money, not a stamped run's:
+	// no credential is the answer, and the caller's refusal names it.
+	if !hasCreds || !creds.AmbientRefused {
+		if envKey := facadeEnvKey(slot); envKey != "" {
+			if k := os.Getenv(envKey); k != "" {
+				return facadeEnvFor(slot, k)
+			}
 		}
 	}
 	return suppressAnthropicWireEnv()
@@ -1168,9 +1197,17 @@ func facadeCredEnvForHint(slot string, creds secrets.Credentials, hasCreds bool)
 type ErrNoFacadeCredential struct {
 	Provider string
 	EnvVar   string
+	// Because, when set, replaces the "no X in the environment" clause:
+	// the environment the message would send the operator to check may be
+	// exactly what a stamped run refused.
+	Because string
 }
 
 func (e *ErrNoFacadeCredential) Error() string {
+	if e.Because != "" {
+		return fmt.Sprintf("delegate: node pinned to provider %q but no %s credential is reachable (%s) — refusing rather than routing to Anthropic, which is a different account and a different bill",
+			e.Provider, e.Provider, e.Because)
+	}
 	return fmt.Sprintf("delegate: node pinned to provider %q but no %s credential is reachable "+
 		"(no BYOK key for this run, no %s in the environment) — refusing rather than routing to Anthropic, "+
 		"which is a different account and a different bill",
@@ -1185,13 +1222,23 @@ func (e *ErrNoFacadeCredential) Error() string {
 // resolution: a second copy of "is there a key?" is free to disagree with the
 // one that routes, and the disagreement would be invisible — the node would
 // either run suppressed (opaque 401) or be refused while funded.
-func facadeHintRefusal(providerHint string, env map[string]string) error {
+func facadeHintRefusal(ctx context.Context, providerHint string, env map[string]string) error {
 	providerHint = normalizeProviderHint(providerHint)
 	envVar := facadeEnvKey(providerHint)
 	if envVar == "" || !isForfaitSuppressed(env) {
 		return nil
 	}
-	return &ErrNoFacadeCredential{Provider: providerHint, EnvVar: envVar}
+	refused := &ErrNoFacadeCredential{Provider: providerHint, EnvVar: envVar}
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok && creds.AmbientRefused {
+		// The generic message ("no X in the environment") can be a lie
+		// under the stamp: the variable may be set and REFUSED.
+		if os.Getenv(envVar) != "" {
+			refused.Because = "the run refuses the ambient environment — " + envVar + " is set here and the run does not spend it: fund it with a run-held key"
+		} else {
+			refused.Because = "the run refuses the ambient environment — fund it with a run-held key"
+		}
+	}
+	return refused
 }
 
 // AnthropicRouteSource names the usage-meter source a claude_code session on a
@@ -1207,7 +1254,7 @@ func facadeHintRefusal(providerHint string, env map[string]string) error {
 func AnthropicRouteSource(ctx context.Context, providerHint string) (source string, refused bool) {
 	task := Task{ProviderHint: providerHint}
 	env, selected := anthropicCredRouteForTask(ctx, task)
-	if facadeHintRefusal(providerHint, env) != nil {
+	if facadeHintRefusal(ctx, providerHint, env) != nil {
 		return "", true
 	}
 	return providerFingerprint(anthropicFingerprintEnvForTask(task, env, selected)), false

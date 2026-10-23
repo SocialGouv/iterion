@@ -1045,7 +1045,7 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 		e.logger.Warn("[%s] structured-output recovery skipped: %v", nodeID, err)
 		return delegate.Result{}, delegate.Result{}, false
 	}
-	client, err := e.registry.Resolve(modelSpec)
+	client, err := e.registry.ResolveWithContext(ctx, modelSpec)
 	if err != nil {
 		e.logger.Warn("[%s] structured-output recovery: resolve %q: %v", nodeID, modelSpec, err)
 		return delegate.Result{}, delegate.Result{}, false

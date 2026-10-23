@@ -95,7 +95,7 @@ func gatewayPinChild(t *testing.T) {
 			t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "")
 			dns.script(c.host, "203.0.113.7", "10.255.255.1")
 			events := &blockedEvents{}
-			client := startGatewayRunProxy(t, drv, c.mode, []string{c.host}, c.inspect, events)
+			client := startGatewayRunProxy(t, drv, c.mode, []string{c.host}, c.inspect, events, "")
 
 			runnerCheck(t, c.host, true)
 			outcome := fetch(client, c.scheme+"://"+c.host+"/v1/chat/completions")
@@ -121,7 +121,7 @@ func gatewayPinChild(t *testing.T) {
 		dns.script(before, "10.255.255.2")
 		dns.script(after, "203.0.113.7", "10.255.255.3")
 		events := &blockedEvents{}
-		client := startGatewayRunProxy(t, drv, "allowlist", []string{before, after}, false, events)
+		client := startGatewayRunProxy(t, drv, "allowlist", []string{before, after}, false, events, "")
 		_ = fetch(client, "http://"+before+"/v1/models")
 
 		t.Setenv(compatgw.BaseURLEnv, "https://"+after)
@@ -147,7 +147,7 @@ func gatewayPinChild(t *testing.T) {
 		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
 		dns.script(private, "203.0.113.7", "127.0.0.2")
 		events := &blockedEvents{}
-		client := startGatewayRunProxy(t, drv, "allowlist", []string{private, missing}, false, events)
+		client := startGatewayRunProxy(t, drv, "allowlist", []string{private, missing}, false, events, "")
 
 		runnerCheck(t, private, false)
 		outcome := fetch(client, "http://"+private+"/v1/chat/completions")
@@ -178,7 +178,7 @@ func gatewayPinChild(t *testing.T) {
 		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
 		dns.script(host, "203.0.113.7", "10.255.255.4")
 		events := &blockedEvents{}
-		client := startGatewayRunProxy(t, drv, "allowlist", []string{host}, false, events)
+		client := startGatewayRunProxy(t, drv, "allowlist", []string{host}, false, events, "")
 
 		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "")
 		runnerCheck(t, host, true)
@@ -196,21 +196,25 @@ func gatewayPinChild(t *testing.T) {
 		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
 		dns.script(host, "10.255.255.5")
 		events := &blockedEvents{}
-		client := startGatewayRunProxy(t, drv, "allowlist", []string{host}, false, events)
+		client := startGatewayRunProxy(t, drv, "allowlist", []string{host}, false, events, "")
 
 		t.Setenv(compatgw.BaseURLEnv, "")
 		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "")
+		// The admission the host was named under survives the environment
+		// stopping to name it: a per-host entry freezes at its last value.
 		outcome := fetch(client, "http://"+host+"/v1/chat/completions")
-		if !events.refused(host, "10.255.255.5", "not a public unicast IP") {
-			t.Errorf("the gateway the environment stopped naming was dialed on its private answer (events: %v; dns: %s; client: %s)", events.all(), dns.log(host), outcome)
+		if !strings.HasPrefix(outcome, "502") || strings.Contains(outcome, "not a public unicast IP") {
+			t.Errorf("the gateway the environment stopped naming did not keep its admission (events: %v; dns: %s; client: %s)", events.all(), dns.log(host), outcome)
 		}
 	})
+
+	gatewayPinRunHeldChild(t, dns, drv, runnerCheck)
 }
 
 // startGatewayRunProxy starts the run's proxy as the engine does — its
 // network mode, naming the gateways in an allowlist, inspecting when asked —
 // and returns a client crossing it.
-func startGatewayRunProxy(t *testing.T, drv sandbox.Driver, mode string, gateways []string, inspect bool, events *blockedEvents) *http.Client {
+func startGatewayRunProxy(t *testing.T, drv sandbox.Driver, mode string, gateways []string, inspect bool, events *blockedEvents, runGatewayHost string) *http.Client {
 	t.Helper()
 	block := "    network:\n      mode: " + mode
 	switch mode {
@@ -224,7 +228,7 @@ func startGatewayRunProxy(t *testing.T, drv sandbox.Driver, mode string, gateway
 	if inspect {
 		rewriter, drv = &recordingRewriter{}, inspectingDriver{drv}
 	}
-	prx, endpoint, caPEM, err := startNetworkProxy(spec, drv, "run-gateway-pin", rewriter, events.emit, nil)
+	prx, endpoint, caPEM, err := startNetworkProxy(spec, drv, "run-gateway-pin", rewriter, events.emit, nil, runGatewayHost)
 	if err != nil {
 		t.Fatalf("startNetworkProxy: %v", err)
 	}
@@ -261,19 +265,61 @@ func fetch(client *http.Client, rawURL string) string {
 	return fmt.Sprintf("%d %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
-// blockedEvents records the network_blocked events a run's proxy emits.
+// blockedEvents records the network_blocked events a run's proxy emits, and
+// the defaulted events that name an admission the workflow overrode.
 type blockedEvents struct {
-	mu   sync.Mutex
-	seen []map[string]any
+	mu        sync.Mutex
+	seen      []map[string]any
+	defaulted []map[string]any
+	tunneled  []map[string]any
 }
 
 func (e *blockedEvents) emit(typ store.EventType, data map[string]any) error {
-	if typ == store.EventNetworkBlocked {
-		e.mu.Lock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch typ {
+	case store.EventNetworkBlocked:
 		e.seen = append(e.seen, data)
-		e.mu.Unlock()
+	case store.EventSandboxNetworkDefaulted:
+		e.defaulted = append(e.defaulted, data)
+	case store.EventSandboxNetworkTunneled:
+		e.tunneled = append(e.tunneled, data)
 	}
 	return nil
+}
+
+// tunnelCount merges the hosts tallies of every tunneled event into one
+// count for host.
+func (e *blockedEvents) tunnelCount(host string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	n := 0
+	for _, ev := range e.tunneled {
+		if hosts, ok := ev["hosts"].(map[string]int); ok {
+			n += hosts[host]
+		}
+	}
+	return n
+}
+
+// tunneledAll reports the tunneled events seen.
+func (e *blockedEvents) tunneledAll() []map[string]any {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]map[string]any(nil), e.tunneled...)
+}
+
+// defaultedFor counts the defaulted events naming host.
+func (e *blockedEvents) defaultedFor(host string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	n := 0
+	for _, ev := range e.defaulted {
+		if ev["host"] == host {
+			n++
+		}
+	}
+	return n
 }
 
 // refused reports whether an event refused host for a reason naming every
@@ -439,4 +485,105 @@ func (d *scriptedDNS) answer(query []byte) []byte {
 		reply = append(reply, ip...)
 	}
 	return reply
+}
+
+// The run's OWN credential, appended to the rebinding child's twins: the
+// host it names is admitted without any workflow rule naming it (the
+// engine's prepended exact rule), resolved through the STRICT pin whatever
+// the operator's hatch — and a workflow rule refusing it overrides the
+// admission loudly. These run inside gatewayPinChild: the scripted DNS
+// answers the pin's lookups there.
+func gatewayPinRunHeldChild(t *testing.T, dns *scriptedDNS, drv sandbox.Driver, runnerCheck func(t *testing.T, host string, strict bool)) {
+	t.Helper()
+
+	t.Run("run-held gateway admitted and pinned strict", func(t *testing.T) {
+		const runGW = "run-held.rebind.test"
+		t.Setenv(compatgw.BaseURLEnv, "")
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "")
+		dns.script(runGW, "203.0.113.7", "10.255.255.5")
+		events := &blockedEvents{}
+		client := startGatewayRunProxy(t, drv, "allowlist", []string{"unrelated.example"}, false, events, runGW)
+		runnerCheck(t, runGW, true)
+		outcome := fetch(client, "http://"+runGW+"/v1/chat/completions")
+		if !events.refused(runGW, "10.255.255.5", "not a public unicast IP") {
+			t.Errorf("the run-held gateway was not admitted and pinned strict without a rule naming it (events: %v; dns: %s; client: %s)", events.all(), dns.log(runGW), outcome)
+		}
+	})
+
+	t.Run("run-held gateway on open egress starts the proxy", func(t *testing.T) {
+		const runGW = "run-open.rebind.test"
+		t.Setenv(compatgw.BaseURLEnv, "")
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "")
+		dns.script(runGW, "203.0.113.7", "10.255.255.6")
+		events := &blockedEvents{}
+		client := startGatewayRunProxy(t, drv, "open", nil, false, events, runGW)
+		runnerCheck(t, runGW, true)
+		outcome := fetch(client, "http://"+runGW+"/v1/chat/completions")
+		if !events.refused(runGW, "10.255.255.6", "not a public unicast IP") {
+			t.Errorf("the run-held gateway on open egress was not pinned strict (events: %v; dns: %s; client: %s)", events.all(), dns.log(runGW), outcome)
+		}
+	})
+
+	t.Run("the operator's inherited lift admits the run-held gateway", func(t *testing.T) {
+		const runGW = "run-lift.rebind.test"
+		t.Setenv(compatgw.BaseURLEnv, "")
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+		dns.script(runGW, "203.0.113.7", "10.255.255.8")
+		events := &blockedEvents{}
+		client := startGatewayRunProxy(t, drv, "allowlist", []string{"unrelated.example"}, false, events, runGW)
+		runnerCheck(t, runGW, false)
+		outcome := fetch(client, "http://"+runGW+"/v1/chat/completions")
+		if strings.Contains(outcome, "not a public unicast IP") {
+			t.Errorf("the operator's inherited lift did not reach the run's pin (events: %v; dns: %s; client: %s)", events.all(), dns.log(runGW), outcome)
+		}
+	})
+
+	t.Run("a workflow refusal of the run gateway overrides loudly", func(t *testing.T) {
+		const runGW = "run-vetoed.rebind.test"
+		t.Setenv(compatgw.BaseURLEnv, "")
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "")
+		events := &blockedEvents{}
+		client := startGatewayRunProxy(t, drv, "allowlist", []string{"!" + runGW}, false, events, runGW)
+		outcome := fetch(client, "http://"+runGW+"/v1/chat/completions")
+		if strings.HasPrefix(outcome, "200") {
+			t.Errorf("the workflow's refusal of the run gateway did not stop the request: %s", outcome)
+		}
+		if events.defaultedFor(runGW) == 0 {
+			t.Errorf("no defaulted event names the overridden admission (events: %v; client: %s)", events.all(), outcome)
+		}
+	})
+
+	// The egress tally is ONE event per run, flushed when the proxy shuts
+	// down: the requests the policy admitted, host by host — not one event
+	// per request. The CONNECTs are answered 502 (the scripted name
+	// resolves to nothing); the count is taken at admission, before any
+	// dial.
+	t.Run("the tunnel tally is one event at shutdown", func(t *testing.T) {
+		const gw = "run-tunnel.rebind.test"
+		dns.script(gw, "NX")
+		events := &blockedEvents{}
+		spec := compileSandboxSpec(t, netPolicySource("    network:\n      mode: allowlist\n      rules: [\""+gw+"\"]"))
+		prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-tunnel", nil, events.emit, nil, "")
+		if err != nil || prx == nil {
+			t.Fatalf("startNetworkProxy: %v", err)
+		}
+		token := tokenFromEndpoint(t, endpoint)
+		for i := 0; i < 2; i++ {
+			line, _ := connect(t, prx.Addr().String(), gw+":443", token)
+			if line == "" {
+				t.Fatalf("CONNECT %d: no answer", i)
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := prx.Shutdown(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := events.tunnelCount(gw); got != 2 {
+			t.Errorf("the tunnel tally for %s = %d, want 2 — admitted requests counted, one event", gw, got)
+		}
+		if n := len(events.tunneledAll()); n != 1 {
+			t.Errorf("%d tunneled events, want 1 — one event per run, not one per request", n)
+		}
+	})
 }
