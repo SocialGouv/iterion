@@ -1199,7 +1199,7 @@ agent copi:
   session_slot: assistant_conversation
   ## The permission block below is the security boundary. This declaration
   ## limits the real Claw tool surface to bounded read/diagnostic operations.
-  tools: [read_file, glob, workspace_grep, diagnostic_shell, skill]
+  tools: [read_file, glob, workspace_grep, diagnostic_shell, skill, tool_search]
   capabilities: [runs.read]
   ## One per posture (info / design / debug) plus the playbook, and a
   ## SECOND design skill: iterion-dsl-authoring is how to spell a .bot,
@@ -1232,7 +1232,7 @@ agent reflect:
   user: reflect_user
   session: persist
   session_slot: assistant_reflection
-  tools: [read_file, glob, workspace_grep, diagnostic_shell, skill]
+  tools: [read_file, glob, workspace_grep, diagnostic_shell, skill, tool_search]
   capabilities: [runs.read]
   skills: ["copi-conversation", "iterion-concepts", "iterion-dsl-authoring", "iterion-bot-architecture", "iterion-run-debug"]
   ## A bound on sequential evidence calls, not the declared tool surface.
@@ -1255,7 +1255,7 @@ judge judge:
   output: judge_out
   system: judge_system
   user: judge_user
-  tools: [read_file, glob]
+  tools: [read_file, glob, tool_search]
   capabilities: [runs.read]
   tool_max_steps: 24
   reasoning_effort: "${ITERION_COPILOT_REVIEWER_EFFORT:-medium}"

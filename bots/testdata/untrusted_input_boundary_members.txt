@@ -43,9 +43,9 @@ branch-improve-loop/plan_revise	no `tools:` list declared on claude_code, the fu
 branch-improve-loop/review	no `tools:` list declared on claude_code, the full native toolset
 branch-improve-loop/verify_build	no `tools:` list declared on claude_code, the full native toolset
 cli/dispatch_bots_default:triage	no `tools:` list declared on claude_code, the full native toolset
-copilot/copi	tools: workspace_grep, diagnostic_shell, skill
-copilot/judge	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
-copilot/reflect	tools: workspace_grep, diagnostic_shell, skill
+copilot/copi	tools: workspace_grep, diagnostic_shell, skill, tool_search
+copilot/judge	tools: tool_search
+copilot/reflect	tools: workspace_grep, diagnostic_shell, skill, tool_search
 dep-update-guard/align	no `tools:` list declared on claude_code, the full native toolset
 dep-update-guard/commit	no `tools:` list declared on claude_code, the full native toolset
 dep-update-guard/security_audit	no `tools:` list declared on claude_code, the full native toolset
@@ -191,7 +191,7 @@ test-coverage/plan	no `tools:` list declared on claude_code, the full native too
 test-coverage/plan_review	tools: bash
 test-coverage/plan_revise	no `tools:` list declared on claude_code, the full native toolset
 test-coverage/verify_build	no `tools:` list declared on claude_code, the full native toolset
-whats-next/nexie	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
+whats-next/nexie	tools: skill
 whole-improve-loop/campaign	no `tools:` list declared on claude_code, the full native toolset
 whole-improve-loop/finalize_mr	capability board.comment
 whole-improve-loop/finalize_mr	tools: bash

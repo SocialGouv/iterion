@@ -292,8 +292,8 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if reflect.ToolMaxSteps != 12 {
 		t.Errorf("reflect tool_max_steps = %d, want 12 bounded evidence calls before schema finalization", reflect.ToolMaxSteps)
 	}
-	if want := []string{"read_file", "glob", "workspace_grep", "diagnostic_shell", "skill"}; !slices.Equal(reflect.Tools, want) {
-		t.Errorf("reflect tools = %v, want the bounded evidence surface %v", reflect.Tools, want)
+	if want := []string{"read_file", "glob", "workspace_grep", "diagnostic_shell", "skill", "tool_search"}; !slices.Equal(reflect.Tools, want) {
+		t.Errorf("reflect tools = %v, want the bounded evidence surface + the schema loader the author argued for (#1653) %v", reflect.Tools, want)
 	}
 	if reflect.SessionSlot == copi.SessionSlot {
 		t.Error("Terra and Sol share a session slot — private planning would contaminate the user-facing conversation")

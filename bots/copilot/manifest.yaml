@@ -1,7 +1,7 @@
 name: copilot
 display_name: Copi
 icon: 💬
-version: 0.2.12
+version: 0.2.13
 ## 0.2.12 — copi reads its own copi_input (exactly the values its prompts render) instead of the shared turn_input, and reflect drops the clarification counter no step of Sol's procedure consumes; the per-turn graph state stays on turn_state.
 ## 0.2.11 — two prompts stop reasoning about values nothing hands them: the
 ## posture Copi sets is no longer introduced as the `input.mode` it never

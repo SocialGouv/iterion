@@ -1758,7 +1758,7 @@ workflow feed_watch:
   ## grounding the article URLs is the job; the deterministic verify_message
   ## node below is what keeps injected/invented URLs out of the digest.)
   permission: deny
-  allow: ["WebFetch(*)", "TodoWrite"]
+  allow: ["WebFetch(*)"]
 
   entry: plan
 

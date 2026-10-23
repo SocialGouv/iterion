@@ -21,22 +21,21 @@ func TestSecuredRenovacyExhaustionExitsShape(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "secured-renovacy/main.bot")
 
-	plain := func(e *ir.Edge) bool {
-		return e.Condition == "" && e.Expression == nil && !e.IsElse && e.LoopName == "" && e.ForeachName == ""
-	}
+	// (#2381) the ledger exit now carries the guard its back-edge shares, so
+	// the matcher keys on From/To alone — the guard is asserted, not skipped.
 	exit := func(from, to string) *ir.Edge {
 		t.Helper()
 		var found *ir.Edge
 		for _, e := range wf.Edges {
-			if e.From == from && e.To == to && plain(e) {
+			if e.From == from && e.To == to {
 				if found != nil {
-					t.Fatalf("two plain edges %s -> %s", from, to)
+					t.Fatalf("two edges %s -> %s", from, to)
 				}
 				found = e
 			}
 		}
 		if found == nil {
-			t.Fatalf("no plain edge %s -> %s: the loop's exhaustion exit is missing", from, to)
+			t.Fatalf("no edge %s -> %s: the loop's exhaustion exit is missing", from, to)
 		}
 		return found
 	}
@@ -117,7 +116,12 @@ func TestSecuredRenovacyExhaustionExitsShape(t *testing.T) {
 	}
 
 	// The committed solo: the pick is counted in before the decider reads it.
+	// (#2381) it carries the exhaustion guard: a producer output with no
+	// was_batch field matches no outgoing edge and dies NO_OUTGOING_EDGE.
 	banked := exit("write_audit_md", "solo_banked")
+	if banked.Condition != "was_batch" || !banked.Negated {
+		t.Errorf("write_audit_md -> solo_banked guard = %q (negated=%v), want the negated was_batch the back-edge shares", banked.Condition, banked.Negated)
+	}
 	if got := mapping(banked, "attempted_count"); got != "{{outputs.select_candidate.attempted_count}}" {
 		t.Errorf("write_audit_md -> solo_banked attempted_count = %q", got)
 	}

@@ -1,7 +1,7 @@
 name: secured-renovacy
 display_name: Renovacy
 icon: ⬆️
-version: 0.3.4
+version: 0.3.5
 ## 0.3.4 — the operator's `update_scope` reaches the agents the scope
 ## filter delegates to: detect_stack and discover_outdated render
 ## `{{vars.update_scope}}`, which no prompt showed while three texts and

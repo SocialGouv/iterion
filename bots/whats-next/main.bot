@@ -351,7 +351,7 @@ agent nexie:
   ## conversation instead of N one-shot invocations. inherit_if_available
   ## (not inherit) so turn 1 starts fresh instead of erroring.
   session: inherit_if_available
-  tools: [read_file, glob, grep]
+  tools: [read_file, glob, grep, skill]
   capabilities: [board.read]
   ## A study's board-execution turn alone runs 30-40 board calls
   ## (epic + framed tickets + labels + set_bot + promotions) on top
@@ -408,7 +408,7 @@ workflow whats_next:
   ## removed at the runtime gate. Internal board.read and ask_user tools are
   ## infrastructure and remain available through their own contracts.
   permission: deny
-  allow: ["Read(**)", "Glob", "Grep", "Task", "TodoWrite", "Skill"]
+  allow: ["Read(**)", "Glob", "Grep", "Skill"]
   deny: ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch"]
 
   entry: seed

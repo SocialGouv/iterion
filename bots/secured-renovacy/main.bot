@@ -5365,7 +5365,10 @@ workflow secured_renovacy:
   ## on the batch path select_candidate never ran, solo_banked's `null + 1`
   ## fails EXPRESSION_FAILED and the run parks failed_resumable naming the
   ## node — measured, never a silent success.
-  write_audit_md -> solo_banked with {
+  ## Guarded (#2381): a malformed producer output missing was_batch dies
+  ## NO_OUTGOING_EDGE here instead of walking into Phase 2 on the solo ledger.
+  ## C011 accepts it because the iteration back-edge above is declared first.
+  write_audit_md -> solo_banked when not was_batch with {
     attempted_count: "{{outputs.select_candidate.attempted_count}}",
     only_patches_attempted: "{{outputs.select_candidate.only_patches_attempted}}",
   }
