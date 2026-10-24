@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.286.1](https://github.com/SocialGouv/iterion/compare/v3.286.0...v3.286.1) (2026-10-24)
+
+### Bug Fixes
+
+* **proc,runview,runtime:** the fixed install-path tier is injectable, and the sandbox resolver delegates to it ([e40def0](https://github.com/SocialGouv/iterion/commit/e40def0715d8a3c1841c504c984c1f4ddd1a158b))
+
+    <details><summary>why</summary>
+
+    TestLaunchDetached_NamesTheDroppedOverrides isolated PATH, but the production resolver reads the fixed install paths before PATH: on a host with ~/.local/bin/iterion the witness spawned the operator's real binary (proctest forgave the settling child) instead of refusing. The fixed tier moves behind proc.SetInstallPathCandidates — a test seam the witness holds empty — with ITERION_BIN and HOME pinned beside it. The duplicated locateHostIterionBinary in pkg/runtime now delegates to…
+
+    </details>
+
 ## [3.286.0](https://github.com/SocialGouv/iterion/compare/v3.285.1...v3.286.0) (2026-10-23)
 
 ### Features
