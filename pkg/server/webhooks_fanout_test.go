@@ -160,19 +160,19 @@ func TestFanOut_BothMatchLaunchesBoth(t *testing.T) {
 	var body struct {
 		Status   string `json:"status"`
 		Launches []struct {
-			Bot    string `json:"bot"`
-			Status string `json:"status"`
-			RunID  string `json:"run_id"`
+			Bot        string `json:"bot"`
+			Status     string `json:"status"`
+			DeliveryID string `json:"delivery_id"`
 		} `json:"launches"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v (%s)", err, w.Body.String())
 	}
-	if body.Status != webhooks.StatusLaunched || len(body.Launches) != 2 {
+	if body.Status != webhooks.StatusAccepted || len(body.Launches) != 2 {
 		t.Fatalf("aggregate response: %s", w.Body.String())
 	}
-	if body.Launches[0].RunID == body.Launches[1].RunID {
-		t.Fatalf("each bot must get its own run: %s", w.Body.String())
+	if body.Launches[0].DeliveryID == body.Launches[1].DeliveryID {
+		t.Fatalf("each bot must get its own claim: %s", w.Body.String())
 	}
 }
 

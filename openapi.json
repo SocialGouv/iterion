@@ -5864,6 +5864,21 @@
           "deleted"
         ],
         "type": "object"
+      },
+      "webhookAcceptedResponse": {
+        "properties": {
+          "delivery_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "delivery_id"
+        ],
+        "type": "object"
       }
     }
   },
@@ -15895,6 +15910,56 @@
         "summary": "POST /api/validate",
         "tags": [
           "validate"
+        ]
+      }
+    },
+    "/api/webhooks/deliveries/{id}/retry": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Super-admin only. Claims a launch_error delivery for retry under its original tenant and idempotency key. Bypasses the scheduled delay, never the attempt limit or a prior run.",
+        "operationId": "postWebhooksDeliveriesByIdRetry",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/webhookAcceptedResponse"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Super-admin required"
+          },
+          "404": {
+            "description": "delivery_not_found"
+          },
+          "409": {
+            "description": "delivery_not_retryable; status names the stored delivery state"
+          },
+          "500": {
+            "description": "Delivery store unavailable"
+          },
+          "503": {
+            "description": "server_draining or webhooks unavailable"
+          }
+        },
+        "summary": "POST /api/webhooks/deliveries/{id}/retry",
+        "tags": [
+          "webhooks"
         ]
       }
     },

@@ -613,16 +613,20 @@ type Delivery struct {
 	// very runs it exists to end. Empty when the subject has no parent
 	// (the PR/MR event itself, an issue comment).
 	ParentSubjectID string `bson:"parent_subject_id,omitempty" json:"parent_subject_id,omitempty"`
-	SubjectSHA      string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
-	PayloadHash     string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
+	// ClosesSubject records the provider parser's proven PR/MR close event.
+	ClosesSubject bool   `bson:"closes_subject,omitempty" json:"-"`
+	SubjectSHA    string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
+	PayloadHash   string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
 
-	Status     string     `bson:"status" json:"status"`
-	BotID      string     `bson:"bot_id,omitempty" json:"bot_id,omitempty"`
-	RunID      string     `bson:"run_id,omitempty" json:"run_id,omitempty"`
-	Error      string     `bson:"error,omitempty" json:"error,omitempty"`
-	SourceIP   string     `bson:"source_ip,omitempty" json:"source_ip,omitempty"`
-	ReceivedAt time.Time  `bson:"received_at" json:"received_at"`
-	LaunchedAt *time.Time `bson:"launched_at,omitempty" json:"launched_at,omitempty"`
+	Status     string    `bson:"status" json:"status"`
+	BotID      string    `bson:"bot_id,omitempty" json:"bot_id,omitempty"`
+	RunID      string    `bson:"run_id,omitempty" json:"run_id,omitempty"`
+	Error      string    `bson:"error,omitempty" json:"error,omitempty"`
+	SourceIP   string    `bson:"source_ip,omitempty" json:"source_ip,omitempty"`
+	ReceivedAt time.Time `bson:"received_at" json:"received_at"`
+	// ReceiptOrder retains submillisecond ordering across BSON persistence.
+	ReceiptOrder int64      `bson:"receipt_order,omitempty" json:"-"`
+	LaunchedAt   *time.Time `bson:"launched_at,omitempty" json:"launched_at,omitempty"`
 	// Attempts counts the launches tried under this idempotency key: 1 on
 	// the first, one more each time a launch_error row is retried. The
 	// unattended gate lanes read it as their failure budget — it lives on
@@ -631,6 +635,11 @@ type Delivery struct {
 	// only); the same lanes measure their backoff from it.
 	Attempts int        `bson:"attempts,omitempty" json:"attempts,omitempty"`
 	FailedAt *time.Time `bson:"failed_at,omitempty" json:"failed_at,omitempty"`
+	// RetryTarget is the resolved launch, before per-run grants are minted.
+	// It stays internal: vars can contain issue/comment text or operator pins.
+	RetryTarget   *DeferredTarget `bson:"retry_target,omitempty" json:"-"`
+	PublicBase    string          `bson:"public_base,omitempty" json:"-"`
+	NextAttemptAt *time.Time      `bson:"next_attempt_at,omitempty" json:"next_attempt_at,omitempty"`
 	// ClaimedAt is when the current attempt claimed the row (insert or retry claim).
 	ClaimedAt *time.Time `bson:"claimed_at,omitempty" json:"claimed_at,omitempty"`
 }
@@ -648,14 +657,16 @@ func (d Delivery) ClaimStart() time.Time {
 
 // Delivery status values.
 const (
-	StatusAccepted      = "accepted"
-	StatusDuplicate     = "duplicate"
-	StatusRateLimited   = "rate_limited"
-	StatusQuotaExceeded = "quota_exceeded"
-	StatusInvalid       = "invalid"
-	StatusFiltered      = "filtered"
-	StatusLaunched      = "launched"
-	StatusLaunchError   = "launch_error"
+	StatusAccepted        = "accepted"
+	StatusDuplicate       = "duplicate"
+	StatusRateLimited     = "rate_limited"
+	StatusQuotaExceeded   = "quota_exceeded"
+	StatusInvalid         = "invalid"
+	StatusFiltered        = "filtered"
+	StatusLaunched        = "launched"
+	StatusLaunchError     = "launch_error"
+	StatusLaunchExhausted = "launch_exhausted"
+	StatusLaunchUncertain = "launch_uncertain"
 	// StatusDeferred is an HTTP-response-only status (never a stored
 	// Delivery row): the delivery is parked for a quiet window and will
 	// launch — as its own delivery, under its own idempotency key — when

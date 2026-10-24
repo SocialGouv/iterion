@@ -111,6 +111,7 @@ type webhookEventMeta struct {
 	// Persisted on the delivery so "every run this pull request launched"
 	// is answerable across the comment lanes.
 	ParentSubjectID string
+	ClosesSubject   bool   // the provider parser proves a PR/MR close or merge
 	SubjectURL      string // the subject's own web URL/ref (the issue/MR the comment is on) — back-linked as source_issue_ref for opens_mr commands
 	SubjectSHA      string // head SHA, when known
 	SenderHandle    string // username for audit (logged only, never in delivery audit row v1)
@@ -656,6 +657,7 @@ func (s *Server) checkBotPermitted(
 // StatusFiltered; the happy path passes StatusAccepted and updates the
 // row to StatusLaunched once the launch returns.
 func newWebhookDelivery(cfg webhooks.Config, meta webhookEventMeta, status, payloadHash, srcIP string) webhooks.Delivery {
+	now := time.Now().UTC()
 	return webhooks.Delivery{
 		ID:              uuid.NewString(),
 		TenantID:        cfg.TenantID,
@@ -666,11 +668,13 @@ func newWebhookDelivery(cfg webhooks.Config, meta webhookEventMeta, status, payl
 		ProjectPath:     meta.ProjectPath,
 		SubjectID:       meta.SubjectID,
 		ParentSubjectID: meta.ParentSubjectID,
+		ClosesSubject:   meta.ClosesSubject,
 		SubjectSHA:      meta.SubjectSHA,
 		PayloadHash:     payloadHash,
 		Status:          status,
 		SourceIP:        srcIP,
-		ReceivedAt:      time.Now().UTC(),
+		ReceivedAt:      now,
+		ReceiptOrder:    now.UnixNano(),
 	}
 }
 
@@ -699,25 +703,9 @@ func (s *Server) recordTerminalWebhookDelivery(ctx context.Context, cfg webhooks
 	_ = s.webhookDeliveries.Insert(ctx, d)
 }
 
-// insertAndLaunchWebhook is the shared idempotency + launch + delivery
-// update + response-writing tail every provider handler runs once it
-// has resolved (cfg, meta, idemKey, botID, vars, repoURL, repoRef).
-//
-// Flow:
-//  1. gateLaunch (per-org run quota / cost cap / concurrency) — denial
-//     records a launch_error delivery and writes the standard denial
-//     response, returning early.
-//  2. Insert the delivery row keyed by idemKey. A duplicate idempotency
-//     key writes a 200 replay response keyed on the existing row's
-//     run_id and returns early.
-//  3. Hand off to s.webhookLaunchBot (test seam) or its real
-//     counterpart. A launch failure records launch_error and writes
-//     502; success updates the row to StatusLaunched and writes 202.
-//
-// Provider handlers stay thin and DRY by funnelling everything through
-// this single function. Behaviour is exactly the same as the GitLab
-// handler shipped on main before this refactor — see the original
-// commit for the contract.
+// insertAndLaunchWebhook admits and claims one resolved target, acknowledges
+// its delivery ID, then launches on the bounded detached context. The delivery
+// row records the eventual result; the HTTP receipt does not predict it.
 func (s *Server) insertAndLaunchWebhook(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -733,14 +721,10 @@ func (s *Server) insertAndLaunchWebhook(
 	srcIP string,
 	prov launchProvenance,
 ) {
-	res := s.launchWebhookTarget(ctx, r, cfg, meta, forgeLaunchTarget{
+	s.acceptWebhookTargets(ctx, w, r, cfg, meta, []forgeLaunchTarget{{
 		BotID: botID, IdemKey: idemKey, Vars: vars, RepoURL: repoURL, RepoRef: repoRef,
 		Trust: prov.Trust, ExpectedSHA: prov.ExpectedSHA,
-	}, payloadHash, srcIP)
-	if res.Status == webhooks.StatusLaunched {
-		s.scheduleForgeBoardProjection(meta.ProjectPath)
-	}
-	s.writeSingleLaunchResult(w, r, res)
+	}}, payloadHash, srcIP)
 }
 
 // writeSingleLaunchResult reproduces, byte for byte, the response the
@@ -801,11 +785,16 @@ type launchProvenance struct {
 // place, so a map shared across bots would hand every run the same publish
 // grant.
 type forgeLaunchTarget struct {
-	BotID   string
-	IdemKey string
-	Vars    map[string]string
-	RepoURL string
-	RepoRef string
+	// retryAttempt pins a sweep/manual snapshot: an older offer must not
+	// bypass the backoff of a newer failed attempt.
+	retryAttempt *int
+	// durableRetry is set by intake; internal gate/debounce launches keep their own recovery owner.
+	durableRetry bool
+	BotID        string
+	IdemKey      string
+	Vars         map[string]string
+	RepoURL      string
+	RepoRef      string
 	// Trust says who wrote the code at (RepoURL, RepoRef). The zero value is
 	// the trusted default, so every target built before the fork lane existed
 	// keeps its meaning. launchWebhookTarget cross-checks it against the
@@ -1104,9 +1093,8 @@ func (s *Server) scheduleForgeBoardProjection(repo string) {
 }
 
 // insertAndLaunchWebhookMulti runs one target per bot and writes ONE
-// aggregated response. Every target gets an entry — a fan-out never drops a
-// bot silently. On an org-scoped denial it stops (the next bot would be denied
-// identically) and marks the untried bots "skipped".
+// aggregated receipt. Every target gets an entry; execution confirms capacity
+// again after earlier siblings occupy their slots.
 func (s *Server) insertAndLaunchWebhookMulti(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -1117,78 +1105,7 @@ func (s *Server) insertAndLaunchWebhookMulti(
 	payloadHash string,
 	srcIP string,
 ) {
-	if len(targets) == 1 {
-		t := targets[0]
-		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, t.IdemKey, t.BotID, t.Vars, t.RepoURL, t.RepoRef, payloadHash, srcIP,
-			launchProvenance{Trust: t.Trust, ExpectedSHA: t.ExpectedSHA})
-		return
-	}
-
-	results := make([]webhookLaunchResult, 0, len(targets))
-	var firstDenial *launchDenial
-	for i, t := range targets {
-		res := s.launchWebhookTarget(ctx, r, cfg, meta, t, payloadHash, srcIP)
-		results = append(results, res)
-		if res.denial == nil {
-			continue
-		}
-		// Denials are org-scoped (concurrency, launch rate, monthly quota,
-		// cost cap) — retrying the next bot would deny identically and
-		// re-record the same terminal row.
-		firstDenial = res.denial
-		for _, skipped := range targets[i+1:] {
-			results = append(results, webhookLaunchResult{BotID: skipped.BotID, Status: "skipped"})
-		}
-		break
-	}
-
-	launched := 0
-	var firstRunID, firstDeliveryID string
-	for _, res := range results {
-		if res.Status != webhooks.StatusLaunched {
-			continue
-		}
-		launched++
-		if firstRunID == "" {
-			firstRunID, firstDeliveryID = res.RunID, res.DeliveryID
-		}
-	}
-	if launched > 0 {
-		s.scheduleForgeBoardProjection(meta.ProjectPath)
-	}
-
-	switch {
-	case launched > 0:
-		// A sibling failure is not fatal: its row is StatusLaunchError, which
-		// the replay check treats as retryable, so a redelivery relaunches
-		// exactly the bots that failed.
-		writeJSONStatus(w, http.StatusAccepted, map[string]any{
-			"status": webhooks.StatusLaunched, "run_id": firstRunID,
-			"delivery_id": firstDeliveryID, "launches": results,
-		})
-	case firstDenial != nil:
-		s.writeLaunchDenial(w, r, firstDenial)
-	default:
-		// The aggregate starts at "duplicate" because a fan-out where nothing
-		// launched was historically a replay. It is not, once the tail can
-		// REFUSE: a fan-out refused on lane kind or a missing commit pin
-		// reported itself as a replay, which is the one reading that makes an
-		// operator stop looking. Filtered wins over duplicate; a launch error
-		// still wins over both.
-		status, code := webhooks.StatusDuplicate, http.StatusOK
-		for _, res := range results {
-			if res.Status == webhooks.StatusFiltered && status == webhooks.StatusDuplicate {
-				status = webhooks.StatusFiltered
-			}
-			if res.Status == webhooks.StatusLaunchError || res.httpStatus >= 500 {
-				status, code = webhooks.StatusLaunchError, http.StatusBadGateway
-				break
-			}
-		}
-		writeJSONStatus(w, code, map[string]any{
-			"status": status, "run_id": firstRunID, "delivery_id": firstDeliveryID, "launches": results,
-		})
-	}
+	s.acceptWebhookTargets(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }
 
 // launchWebhookTarget is the per-bot core of the tail: replay check →
@@ -1204,6 +1121,24 @@ func (s *Server) launchWebhookTarget(
 	payloadHash string,
 	srcIP string,
 ) webhookLaunchResult {
+	out, launch := s.prepareWebhookTarget(ctx, r, cfg, meta, t, payloadHash, srcIP)
+	if launch == nil {
+		return out
+	}
+	launchCtx, cancel := launchBookingContext(ctx)
+	defer cancel()
+	return launch(launchCtx)
+}
+
+func (s *Server) prepareWebhookTarget(
+	ctx context.Context,
+	r *http.Request,
+	cfg webhooks.Config,
+	meta webhookEventMeta,
+	t forgeLaunchTarget,
+	payloadHash string,
+	srcIP string,
+) (webhookLaunchResult, func(context.Context) webhookLaunchResult) {
 	idemKey, botID, vars := t.IdemKey, t.BotID, t.Vars
 	out := webhookLaunchResult{BotID: botID}
 
@@ -1238,7 +1173,7 @@ func (s *Server) launchWebhookTarget(
 		}
 		out.Status = webhooks.StatusFiltered
 		out.Error = reason
-		return out
+		return out, nil
 	}
 
 	// An untrusted launch MUST carry the commit its admission proved. The
@@ -1255,7 +1190,7 @@ func (s *Server) launchWebhookTarget(
 		}
 		out.Status = webhooks.StatusFiltered
 		out.Error = reason
-		return out
+		return out, nil
 	}
 
 	// 1. Idempotency replay check — BEFORE metering. gateLaunch performs the
@@ -1277,13 +1212,39 @@ func (s *Server) launchWebhookTarget(
 	var reusePriorFailure *webhooks.Delivery
 	if s.webhookDeliveries != nil {
 		if existing, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); err == nil {
-			if existing.Status != webhooks.StatusLaunchError {
+			if t.retryAttempt != nil && existing.Attempts != *t.retryAttempt {
+				out.duplicateOf(existing)
+				return out, nil
+			}
+			if existing.Status != webhooks.StatusLaunchError || existing.RunID != "" {
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
 				out.duplicateOf(existing)
-				return out
+				return out, nil
 			}
 			ex := existing
 			reusePriorFailure = &ex
+		} else if !errors.Is(err, webhooks.ErrNotFound) {
+			out.Status, out.Error, out.httpStatus = webhooks.StatusLaunchError, err.Error(), http.StatusInternalServerError
+			return out, nil
+		} else if t.retryAttempt != nil {
+			out.Status, out.Error, out.httpStatus = webhooks.StatusLaunchError, "delivery_not_found", http.StatusNotFound
+			return out, nil
+		}
+	}
+	if reusePriorFailure != nil && reusePriorFailure.RetryTarget != nil && reusePriorFailure.Attempts >= webhookMaxAttempts() {
+		return s.failWebhookRetry(ctx, *reusePriorFailure, "webhook_retry_exhausted", true), nil
+	}
+
+	if reusePriorFailure != nil && reusePriorFailure.RetryTarget != nil {
+		// A stored retry must not revive closed work or supersede a newer run.
+		// Read the durable subject audit, including a close received while the
+		// original launch was still in flight. Forge redeliveries share this gate.
+		obsolete, err := s.webhookDeliveries.RetryObsolete(ctx, *reusePriorFailure, overlapSupersedes(cfg))
+		if err != nil {
+			return s.failWebhookRetry(ctx, *reusePriorFailure, fmt.Sprintf("check retry subject: %v", err), false), nil
+		}
+		if obsolete {
+			return s.failWebhookRetry(ctx, *reusePriorFailure, "webhook_retry_obsolete", true), nil
 		}
 	}
 
@@ -1292,11 +1253,16 @@ func (s *Server) launchWebhookTarget(
 	predecessors := s.supersededRunIDs(ctx, cfg, meta, botID)
 	adm, d := s.gateLaunch(ctx, launchSubject{BotID: botID, Repo: meta.ProjectPath, ReplacingRunIDs: predecessors})
 	if d != nil {
+		if reusePriorFailure != nil {
+			out = s.failWebhookRetry(ctx, *reusePriorFailure, d.reason, false)
+			out.denial = d
+			return out, nil
+		}
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
 		out.Status = webhooks.StatusLaunchError
 		out.Error = d.reason
 		out.denial = d
-		return out
+		return out, nil
 	}
 
 	// 3. Idempotency insert (durable dedupe backstop for concurrent
@@ -1305,6 +1271,13 @@ func (s *Server) launchWebhookTarget(
 	delivery := newWebhookDelivery(cfg, meta, webhooks.StatusAccepted, payloadHash, srcIP)
 	delivery.IdempotencyKey = idemKey
 	delivery.BotID = botID
+	if t.durableRetry {
+		delivery.RetryTarget = &webhooks.DeferredTarget{
+			BotID: t.BotID, IdemKey: t.IdemKey, Vars: cloneWebhookVars(t.Vars),
+			RepoURL: t.RepoURL, RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
+		}
+		delivery.PublicBase = s.publicBaseURL(r)
+	}
 	delivery.Attempts = 1
 	claimNow := s.gateNow()
 	delivery.ClaimedAt = &claimNow
@@ -1319,6 +1292,7 @@ func (s *Server) launchWebhookTarget(
 		// concurrent-insert loser below does.
 		delivery.ID = reusePriorFailure.ID
 		delivery.ReceivedAt = reusePriorFailure.ReceivedAt
+		delivery.ReceiptOrder = reusePriorFailure.ReceiptOrder
 		delivery.Attempts = reusePriorFailure.Attempts + 1
 		if s.webhookDeliveries != nil {
 			claimed, err := s.webhookDeliveries.ClaimFailedRetry(ctx, delivery, reusePriorFailure.Attempts)
@@ -1327,7 +1301,7 @@ func (s *Server) launchWebhookTarget(
 				out.Status = webhooks.StatusLaunchError
 				out.Error = fmt.Sprintf("reset failed delivery: %v", err)
 				out.httpStatus = http.StatusInternalServerError
-				return out
+				return out, nil
 			}
 			if !claimed {
 				// Somebody else is retrying this event right now. Release
@@ -1340,7 +1314,7 @@ func (s *Server) launchWebhookTarget(
 				if existing, gerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); gerr == nil {
 					out.duplicateOf(existing)
 				}
-				return out
+				return out, nil
 			}
 		}
 	} else if s.webhookDeliveries != nil {
@@ -1361,164 +1335,184 @@ func (s *Server) launchWebhookTarget(
 					out.Status = webhooks.StatusLaunchError
 					out.Error = fmt.Sprintf("lookup duplicate delivery: %v", gerr)
 					out.httpStatus = http.StatusInternalServerError
-					return out
+					return out, nil
 				}
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
 				out.duplicateOf(existing)
-				return out
+				return out, nil
 			}
 			adm.rollback(s.logger)
 			out.Status = webhooks.StatusLaunchError
 			out.Error = fmt.Sprintf("record delivery: %v", err)
 			out.httpStatus = http.StatusInternalServerError
+			return out, nil
+		}
+	}
+
+	out.Status, out.DeliveryID = webhooks.StatusAccepted, delivery.ID
+	return out, func(ctx context.Context) webhookLaunchResult {
+
+		// 3. Launch.
+		launch := s.webhookLaunchBot
+		if launch == nil {
+			// A closure over cfg rather than a bare method reference: the real
+			// launcher needs the webhook's own retry policy, and threading it
+			// as a ninth positional parameter would churn every test fake of
+			// this seam for one field.
+			launch = s.webhookLauncherFor(cfg, t)
+		}
+		// Hand the run any prior review of the same PR, if it asked for one. Done
+		// HERE, in the tail every lane funnels through, rather than per provider
+		// handler: the two comment lanes had it and nothing else did, so the
+		// merge-queue auto-heal — which launches a fixer on a PR a reviewer has
+		// almost always already read — started from nothing. The PR context comes
+		// from the vars the lane already built, so a lane with no pr_url no-ops.
+		s.stampHandoffs(ctx, cfg, botID, vars, handoffQuery{
+			PRURL:   vars["pr_url"],
+			HeadSHA: vars["head_sha"],
+		})
+		// Deterministic forge review publishing: a review-shaped delivery
+		// carries a pr_url var — mint a per-run publish grant scoped to the
+		// webhook's tenant so the bot's deterministic publish node posts
+		// through the server's live forge client (never a workspace token).
+		vars, minted, verr := s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r, t.Trust)
+		if verr != nil {
+			// Two refusals reach here: a launch pinning another team's publish
+			// grant (errForgePublishGrantTenant) — the run would carry a
+			// credential that speaks as that team — and the server's own grant
+			// capacity (errForgePublishGrantUnavailable). An untrusted workspace
+			// is NOT one of them: it loses the grant vars and launches without
+			// them, because a grant-less review is what that lane is.
+			// The delivery row is already
+			// claimed, so it is marked failed like a launch that could not
+			// start — a redelivery re-enters, and the operator's pin still
+			// refuses until it is corrected.
+			failedAt := s.gateNow()
+			delivery.Status = webhooks.StatusLaunchError
+			delivery.Error = verr.Error()
+			delivery.FailedAt = &failedAt
+			setWebhookRetry(&delivery, failedAt)
+			bookCtx, cancelBook := launchBookingContext(ctx)
+			defer cancelBook()
+			s.updateWebhookDelivery(bookCtx, delivery)
+			s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
+			adm.rollback(s.logger)
+			out.Status = webhooks.StatusLaunchError
+			out.Error = verr.Error()
+			out.DeliveryID = delivery.ID
+			out.attempts = delivery.Attempts
+			out.httpStatus = http.StatusUnprocessableEntity
 			return out
 		}
-	}
-
-	// 3. Launch.
-	launch := s.webhookLaunchBot
-	if launch == nil {
-		// A closure over cfg rather than a bare method reference: the real
-		// launcher needs the webhook's own retry policy, and threading it
-		// as a ninth positional parameter would churn every test fake of
-		// this seam for one field.
-		launch = s.webhookLauncherFor(cfg, t)
-	}
-	// Hand the run any prior review of the same PR, if it asked for one. Done
-	// HERE, in the tail every lane funnels through, rather than per provider
-	// handler: the two comment lanes had it and nothing else did, so the
-	// merge-queue auto-heal — which launches a fixer on a PR a reviewer has
-	// almost always already read — started from nothing. The PR context comes
-	// from the vars the lane already built, so a lane with no pr_url no-ops.
-	s.stampHandoffs(ctx, cfg, botID, vars, handoffQuery{
-		PRURL:   vars["pr_url"],
-		HeadSHA: vars["head_sha"],
-	})
-	// Deterministic forge review publishing: a review-shaped delivery
-	// carries a pr_url var — mint a per-run publish grant scoped to the
-	// webhook's tenant so the bot's deterministic publish node posts
-	// through the server's live forge client (never a workspace token).
-	vars, minted, verr := s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r, t.Trust)
-	if verr != nil {
-		// Two refusals reach here: a launch pinning another team's publish
-		// grant (errForgePublishGrantTenant) — the run would carry a
-		// credential that speaks as that team — and the server's own grant
-		// capacity (errForgePublishGrantUnavailable). An untrusted workspace
-		// is NOT one of them: it loses the grant vars and launches without
-		// them, because a grant-less review is what that lane is.
-		// The delivery row is already
-		// claimed, so it is marked failed like a launch that could not
-		// start — a redelivery re-enters, and the operator's pin still
-		// refuses until it is corrected.
-		failedAt := s.gateNow()
-		delivery.Status = webhooks.StatusLaunchError
-		delivery.Error = verr.Error()
-		delivery.FailedAt = &failedAt
+		s.cancelSupersededRuns(predecessors)
+		// meta.ProjectPath is the forge slug already parsed by the provider
+		// handler — thread it onto the launch so the run is filterable by
+		// repository in the studio.
+		var runID string
+		var lerr error
+		if adm != nil && adm.confirmReplacement != nil {
+			// Cancel may fail or merely request asynchronous termination. The
+			// predecessor's slot is not ours until the active count permits it.
+			d = adm.confirmReplacement(ctx)
+			lerr = d.err()
+		} else {
+			// Fan-out claims before ACK; earlier siblings can occupy capacity
+			// between this target's admission and its execution. Recheck the
+			// read-only concurrency gate without charging another quota unit.
+			d = s.webhookLaunchConcurrency(ctx, cfg, botID, meta.ProjectPath)
+			lerr = d.err()
+		}
+		if lerr == nil {
+			runID, lerr = launch(ctx, botID, vars, t.RepoURL, t.RepoRef, meta.ProjectPath, cfg.KeyOverrides, cfg.SecretOverrides)
+		}
 		bookCtx, cancelBook := launchBookingContext(ctx)
 		defer cancelBook()
+		if lerr != nil {
+			failedAt := s.gateNow()
+			delivery.Status = webhooks.StatusLaunchError
+			delivery.Error = lerr.Error()
+			delivery.RunID = runID
+			var persisted *runview.RunPersistedError
+			if errors.As(lerr, &persisted) {
+				delivery.RunID = persisted.RunID
+			}
+			if runview.RunMayHaveStarted(lerr) && delivery.RunID == "" {
+				delivery.Status = webhooks.StatusLaunchUncertain
+			}
+			delivery.FailedAt = &failedAt
+			setWebhookRetry(&delivery, failedAt)
+			s.updateWebhookDelivery(bookCtx, delivery)
+			s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
+			// The metered slot follows the error's own fact, read with
+			// RunMayHaveStarted (#1725) — never inferred from err != nil. A
+			// launch PROVEN not to have started (a compile refusal, a sealing
+			// failure: nothing durable exists) hands the slot back, so a
+			// repeatable failure does not burn the org's month one delivery at
+			// a time — the idempotency key carries the head SHA, so every push
+			// is a fresh charge. A publish that LANDED but reported failure
+			// keeps it: cloudpublisher.SubmitLaunch deliberately leaves the row
+			// in place (flipped to `failed` with a typed code — a vanished row
+			// explains nothing to the studio or to an operator), and refunding
+			// the unit of a run that exists or may still be claimed is the
+			// under-count the launch gate exists to prevent. The delivery row
+			// retains the run ID, or is marked uncertain, so neither can relaunch.
+			if !runview.RunMayHaveStarted(lerr) {
+				adm.rollback(s.logger)
+				s.revokeUnlaunchedGrant(minted)
+			}
+			out.Status = webhooks.StatusLaunchError
+			out.Error = fmt.Sprintf("launch failed: %v", lerr)
+			out.DeliveryID = delivery.ID
+			out.attempts = delivery.Attempts
+			out.httpStatus = http.StatusBadGateway
+			if d != nil {
+				out.denial = d
+				out.httpStatus = d.status
+			}
+			return out
+		}
+		launchedAt := time.Now().UTC()
+		delivery.Status = webhooks.StatusLaunched
+		delivery.RunID = runID
+		delivery.LaunchedAt = &launchedAt
 		s.updateWebhookDelivery(bookCtx, delivery)
-		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
-		adm.rollback(s.logger)
-		out.Status = webhooks.StatusLaunchError
-		out.Error = verr.Error()
-		out.DeliveryID = delivery.ID
-		out.attempts = delivery.Attempts
-		out.httpStatus = http.StatusUnprocessableEntity
+		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunched)
+
+		// Claim the repo's gate context on the revision this run is about to
+		// review, so the minutes between the push and the verdict read as
+		// "running" instead of as the absence they are indistinguishable from.
+		// After the launch, because the marker carries the run's URL.
+		// Both of these WRITE to the forge, through the SERVER's connection rather
+		// than the run's grant — which is why withdrawing the grant vars does not
+		// stop them. An untrusted run must make no forge mutation at all: the
+		// pending status it would claim is one it can never answer (it has no
+		// grant to publish a verdict with, and the reconciler abstains on a run
+		// whose grant is absent), so a required check would stay pending forever
+		// and the pull request would be permanently unmergeable. One predicate
+		// for both writes, not a copy on each.
+		if t.Trust.Trusted() {
+			s.markGateInFlight(bookCtx, cfg.TenantID, botID, vars, runID)
+
+			// And, for a FIXER, claim a context of its own. It holds no gate_context
+			// — it answers a review rather than gating the merge — so the line above
+			// is silent for it, and a fixer rewriting the branch was visible nowhere
+			// until it reported. A push in that window collides with its push-back and
+			// costs the pass. Separate context on purpose: never the gate's.
+			s.markFixInFlight(bookCtx, cfg.TenantID, cfg.TenantID, botID, vars, runID)
+		}
+
+		// Mirror the launch onto the trigger spine (observational; carries
+		// launched_run_id so the evaluator never re-launches). Unifies forge with
+		// board/run/schedule sources; no-op without the spine wired.
+		s.emitForgeTriggerEvent(ctx, cfg, meta, botID, vars, t.RepoURL, t.RepoRef, runID)
+
+		if s.logger != nil {
+			s.logger.Info("webhooks: %s/%s %s launched %s run=%s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, runID)
+		}
+		out.Status = webhooks.StatusLaunched
+		out.RunID, out.DeliveryID = runID, delivery.ID
 		return out
 	}
-	s.cancelSupersededRuns(predecessors)
-	// meta.ProjectPath is the forge slug already parsed by the provider
-	// handler — thread it onto the launch so the run is filterable by
-	// repository in the studio.
-	var runID string
-	var lerr error
-	if adm != nil && adm.confirmReplacement != nil {
-		// Cancel may fail or merely request asynchronous termination. The
-		// predecessor's slot is not ours until the active count permits it.
-		d = adm.confirmReplacement(ctx)
-		lerr = d.err()
-	}
-	if lerr == nil {
-		runID, lerr = launch(ctx, botID, vars, t.RepoURL, t.RepoRef, meta.ProjectPath, cfg.KeyOverrides, cfg.SecretOverrides)
-	}
-	bookCtx, cancelBook := launchBookingContext(ctx)
-	defer cancelBook()
-	if lerr != nil {
-		failedAt := s.gateNow()
-		delivery.Status = webhooks.StatusLaunchError
-		delivery.Error = lerr.Error()
-		delivery.FailedAt = &failedAt
-		s.updateWebhookDelivery(bookCtx, delivery)
-		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
-		// The metered slot follows the error's own fact, read with
-		// RunMayHaveStarted (#1725) — never inferred from err != nil. A
-		// launch PROVEN not to have started (a compile refusal, a sealing
-		// failure: nothing durable exists) hands the slot back, so a
-		// repeatable failure does not burn the org's month one delivery at
-		// a time — the idempotency key carries the head SHA, so every push
-		// is a fresh charge. A publish that LANDED but reported failure
-		// keeps it: cloudpublisher.SubmitLaunch deliberately leaves the row
-		// in place (flipped to `failed` with a typed code — a vanished row
-		// explains nothing to the studio or to an operator), and refunding
-		// the unit of a run that exists or may still be claimed is the
-		// under-count the launch gate exists to prevent. The delivery row
-		// stays StatusLaunchError and stays RETRYABLE either way.
-		if !runview.RunMayHaveStarted(lerr) {
-			adm.rollback(s.logger)
-			s.revokeUnlaunchedGrant(minted)
-		}
-		out.Status = webhooks.StatusLaunchError
-		out.Error = fmt.Sprintf("launch failed: %v", lerr)
-		out.DeliveryID = delivery.ID
-		out.attempts = delivery.Attempts
-		out.httpStatus = http.StatusBadGateway
-		if d != nil {
-			out.denial = d
-			out.httpStatus = d.status
-		}
-		return out
-	}
-	launchedAt := time.Now().UTC()
-	delivery.Status = webhooks.StatusLaunched
-	delivery.RunID = runID
-	delivery.LaunchedAt = &launchedAt
-	s.updateWebhookDelivery(bookCtx, delivery)
-	s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunched)
-
-	// Claim the repo's gate context on the revision this run is about to
-	// review, so the minutes between the push and the verdict read as
-	// "running" instead of as the absence they are indistinguishable from.
-	// After the launch, because the marker carries the run's URL.
-	// Both of these WRITE to the forge, through the SERVER's connection rather
-	// than the run's grant — which is why withdrawing the grant vars does not
-	// stop them. An untrusted run must make no forge mutation at all: the
-	// pending status it would claim is one it can never answer (it has no
-	// grant to publish a verdict with, and the reconciler abstains on a run
-	// whose grant is absent), so a required check would stay pending forever
-	// and the pull request would be permanently unmergeable. One predicate
-	// for both writes, not a copy on each.
-	if t.Trust.Trusted() {
-		s.markGateInFlight(bookCtx, cfg.TenantID, botID, vars, runID)
-
-		// And, for a FIXER, claim a context of its own. It holds no gate_context
-		// — it answers a review rather than gating the merge — so the line above
-		// is silent for it, and a fixer rewriting the branch was visible nowhere
-		// until it reported. A push in that window collides with its push-back and
-		// costs the pass. Separate context on purpose: never the gate's.
-		s.markFixInFlight(bookCtx, cfg.TenantID, cfg.TenantID, botID, vars, runID)
-	}
-
-	// Mirror the launch onto the trigger spine (observational; carries
-	// launched_run_id so the evaluator never re-launches). Unifies forge with
-	// board/run/schedule sources; no-op without the spine wired.
-	s.emitForgeTriggerEvent(ctx, cfg, meta, botID, vars, t.RepoURL, t.RepoRef, runID)
-
-	if s.logger != nil {
-		s.logger.Info("webhooks: %s/%s %s launched %s run=%s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, runID)
-	}
-	out.Status = webhooks.StatusLaunched
-	out.RunID, out.DeliveryID = runID, delivery.ID
-	return out
 }
 
 // prClosedRunReason names the cancel so the run list, and the merge-gate

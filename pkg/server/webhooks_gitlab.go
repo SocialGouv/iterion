@@ -32,7 +32,7 @@ import (
 // MR opens and `/revi` note commands share one provider URL — exactly
 // the path the operator pastes into GitLab's "Webhook URL" field.
 func (s *Server) registerGitLabWebhookRoute() {
-	s.mux.Handle("POST /api/webhooks/gitlab/{id}", s.webhookAuth(webhooks.ProviderGitLab, http.HandlerFunc(s.handleGitLabWebhook)))
+	s.mux.Handle("POST /api/webhooks/gitlab/{id}", s.webhookAuth(webhooks.ProviderGitLab, s.acknowledgeWebhookLaunch(http.HandlerFunc(s.handleGitLabWebhook))))
 }
 
 // handleGitLabWebhook is the entry point for every GitLab delivery on
@@ -1143,6 +1143,7 @@ func gitlabMRMeta(p gitlab.Parsed) webhookEventMeta {
 		Action:         p.Action,
 		ProjectPath:    p.ProjectPath,
 		SubjectID:      subject,
+		ClosesSubject:  p.IsClosed(),
 		SubjectSHA:     p.HeadSHA,
 		SenderHandle:   p.SenderUsername,
 		EventUpdatedAt: p.UpdatedAt,

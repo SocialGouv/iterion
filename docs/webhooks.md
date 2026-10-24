@@ -1018,10 +1018,14 @@ and the `launch_error` rows written as their own audit row rather than a
 claimed delivery — get a **random UUID** as their idempotency key, so they never
 collide with the real dedup key
 ([pkg/server/webhooks_common.go:recordTerminalWebhookDelivery](../pkg/server/webhooks_common.go)).
-A launch whose failure is recorded keeps the real key and turns the row
-`launch_error`: the next
-delivery of the same event re-enters on that row rather than reading as a
-duplicate.
+A claimed launch failure with no run keeps the real key and becomes
+`launch_error`. Its saved target allows a bounded periodic sweep or a
+super-admin `POST /api/webhooks/deliveries/{id}/retry` to claim the same row.
+A replay that already produced a run never launches again. Intake now answers
+`202 {"status":"accepted","delivery_id":"…"}` immediately after the claim;
+launch continues on a bounded context detached from the connection.
+See [receipts and retry](webhooks/retry.md) for backoff, attempt limits,
+shutdown behavior and terminal refusals.
 
 ## The path a delivery takes
 
@@ -1112,12 +1116,12 @@ flowchart TD
     ADM -- "denied" --> LE2["the denial's own 402, 403 or 429, plus a launch_error row under a RANDOM key so a retry after the reset still launches"]
     ADM -- "admitted" --> CLM{"claim the row at accepted - Insert, or ClaimFailedRetry on a prior failure"}
     CLM -- "a duplicate key, or the CAS lost" --> ROLL["roll the metered unit back, then 200 duplicate"]
-    CLM -- "claimed" --> SEED{"seed the hand-offs, then mint the per-run forge publish grant"}
-    SEED -- "another team's grant, or grant capacity exhausted" --> LE3["422 launch_error and a rollback, with the row left retryable"]
+    CLM -- "claimed: ACK 202 accepted + delivery_id" --> SEED{"seed the hand-offs, then mint the per-run forge publish grant"}
+    SEED -- "another team's grant, or grant capacity exhausted" --> LE3["record launch_error and a rollback; retry if eligible"]
     SEED -- "minted, or withheld from an untrusted workspace" --> RES["resolve the bot - the team's bot_sources row, then the platform row, then the baked catalog - and build the LaunchSpec with the trust and the admitted commit"]
     RES --> LCH{"runs.Launch"}
-    LCH -- "failed" --> LE4["502 launch_error; the metered slot comes back only when RunMayHaveStarted is false"]
-    LCH -- "a run exists" --> OK["the row flips to launched with its run id, then 202"]
+    LCH -- "failed" --> LE4["record launch_error; refund only when RunMayHaveStarted is false"]
+    LCH -- "a run exists" --> OK["the already-acknowledged row flips to launched with its run id"]
     OK --> MARK["trusted only: claim the gate and fixer contexts on the forge, so the minutes before the verdict read as running"]
     MARK --> SPN["publish the launch on the trigger bus, carrying launched_run_id - observational, so the spine's evaluator never relaunches it"]
 ```
@@ -1162,20 +1166,23 @@ statuses ([pkg/webhooks/types.go status constants](../pkg/webhooks/types.go)):
 | Status | Meaning |
 |---|---|
 | `accepted` | Auth/quota passed, awaiting launch result (intermediate state) |
+| `launch_exhausted` | Retry budget exhausted or the current config permanently refuses the saved target |
+| `launch_uncertain` | Publication may have landed without a known run ID; no retry that could create a second run |
 | `launched` | Run published to the queue; `run_id` set, `launched_at` stamped |
 | `filtered` | Refused before any launch — by a selection filter, the hold-label gate, the fork guard or another pre-launch check |
 | `invalid` | Refused as unprocessable — for example a pull-request, issue or generic payload that does not decode, on the generic lane an unnamed bot, on the issue and generic lanes an out-of-scope one, or an event kind the GitLab handler does not take |
 | `launch_error` | The launch-admission gate refused (cost cap / run quota / repo quota / launch rate / concurrency / org suspended, for example) OR the launch failed before or after admission (a PR head that does not resolve, an authorization check, bot resolution, contribution payload, queue publish, the LLM-route resolution, for example). A run row the failed launch had already persisted is flipped to `failed` with `failure_code: LAUNCH_FAILED` by the publisher itself — never left `queued` with no queue message behind it |
 
-Delivery rows never carry the raw payload — only a SHA-256 hash, the
+Delivery rows never carry the raw payload. They carry a SHA-256 hash, the
 selected fields (`event_kind`, `event_action`, `project_path`,
 `subject_id`, `subject_sha`), the source IP, and (for launched rows)
-the resulting `run_id`. A row under a real idempotency key also counts
+the resulting `run_id`. Direct launch rows also retain an internal resolved retry
+target, excluded from JSON. A row under a real idempotency key also counts
 its launch `attempts` (1 on the first, +1 each time a `launch_error` row
 is retried under the same key) and stamps `failed_at` on a failed one —
 the unattended gate lanes read those two as their failure budget (see
-[merge-gate.md](merge-gate.md#autofix)); a forge redelivery is never
-refused on their account. Read them at
+[merge-gate.md](merge-gate.md#autofix)); direct-launch retries stop at the configured attempt ceiling
+([retry policy](webhooks/retry.md)). Read them at
 `GET /api/teams/{id}/webhooks/{webhook_id}/deliveries` (last 100 by
 default).
 

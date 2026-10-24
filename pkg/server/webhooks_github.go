@@ -17,7 +17,7 @@ import (
 // the middleware just admits the call — this handler MUST verify the
 // signature itself before any side effect.
 func (s *Server) registerGitHubWebhookRoute() {
-	s.mux.Handle("POST /api/webhooks/github/{id}", s.webhookAuth(webhooks.ProviderGitHub, http.HandlerFunc(s.handleGitHubWebhook)))
+	s.mux.Handle("POST /api/webhooks/github/{id}", s.webhookAuth(webhooks.ProviderGitHub, s.acknowledgeWebhookLaunch(http.HandlerFunc(s.handleGitHubWebhook))))
 }
 
 // handleGitHubWebhook handles a verified-by-middleware inbound GitHub
@@ -565,6 +565,7 @@ func prforgePRMeta(p prforge.Parsed) webhookEventMeta {
 		Action:         p.Action,
 		ProjectPath:    p.ProjectPath,
 		SubjectID:      subject,
+		ClosesSubject:  p.IsClosed(),
 		SubjectSHA:     p.HeadSHA,
 		SenderHandle:   p.SenderLogin,
 		EventUpdatedAt: p.UpdatedAt,

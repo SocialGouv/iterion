@@ -95,7 +95,7 @@ func TestGitHubWebhook_HappyPath(t *testing.T) {
 	}
 	var resp map[string]string
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != webhooks.StatusLaunched || resp["run_id"] != "run-7" {
+	if resp["status"] != webhooks.StatusAccepted || resp["delivery_id"] == "" {
 		t.Fatalf("resp: %v", resp)
 	}
 	if calls != 1 || gotBot != "review-pr" {
@@ -482,8 +482,8 @@ func TestGitHubWebhook_RequiredSecretUnresolvedRecordsLaunchError(t *testing.T) 
 
 	w := httptest.NewRecorder()
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("launch failure should be a 502, got code=%d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("claimed delivery should be acknowledged before launch, got code=%d body=%s", w.Code, w.Body.String())
 	}
 	list, err := s.webhookDeliveries.ListByWebhook(context.Background(), "t1", "ghw", 10)
 	if err != nil {
@@ -677,7 +677,7 @@ func TestGitHubWebhook_RelaunchAfterFailure(t *testing.T) {
 
 	w1 := httptest.NewRecorder()
 	s.handleGitHubWebhook(w1, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
-	if w1.Code != http.StatusBadGateway {
+	if w1.Code != http.StatusAccepted {
 		t.Fatalf("first (failed launch): code=%d body=%s", w1.Code, w1.Body.String())
 	}
 
@@ -689,7 +689,7 @@ func TestGitHubWebhook_RelaunchAfterFailure(t *testing.T) {
 	}
 	var resp map[string]string
 	json.Unmarshal(w2.Body.Bytes(), &resp)
-	if resp["status"] != webhooks.StatusLaunched || resp["run_id"] != "run-ok" {
+	if resp["status"] != webhooks.StatusAccepted || resp["delivery_id"] == "" {
 		t.Fatalf("relaunch resp: %v", resp)
 	}
 	if calls != 2 {

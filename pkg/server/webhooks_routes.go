@@ -27,6 +27,7 @@ const defaultOrgMonthlyWebhookCalls = 10000
 // registerWebhookRoutes wires the per-org webhook-token CRUD. Inbound
 // delivery routes are registered per provider (registerGitLabWebhookRoute).
 func (s *Server) registerWebhookRoutes() {
+	s.mux.Handle("POST /api/webhooks/deliveries/{id}/retry", s.requireSuperAdmin(s.acknowledgeWebhookLaunch(http.HandlerFunc(s.handleRetryWebhookDelivery))))
 	if s.authLimiter == nil {
 		s.authLimiter = newAuthRateLimiter()
 	}

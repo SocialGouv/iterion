@@ -23,8 +23,11 @@ import (
 // routeOp names the request/response Go types for a single route, by zero
 // value. nil means "no body" (e.g. a GET with no request, or a 204).
 type routeOp struct {
-	request  any
-	response any
+	request        any
+	response       any
+	responseStatus int
+	description    string
+	errors         map[int]string
 	// requestOptional marks a body the handler accepts EMPTY (every field has
 	// a default); the spec must not declare it required.
 	requestOptional bool
@@ -69,6 +72,11 @@ var botIDParam = queryParam{
 // CLI-driven surface; extend it route-by-route as schemas are needed.
 func routeSchemas() map[string]routeOp {
 	return map[string]routeOp{
+		"POST /api/webhooks/deliveries/{id}/retry": {
+			response: webhookAcceptedResponse{}, responseStatus: 202,
+			description: "Super-admin only. Claims a launch_error delivery for retry under its original tenant and idempotency key. Bypasses the scheduled delay, never the attempt limit or a prior run.",
+			errors:      map[int]string{401: "Authentication required", 403: "Super-admin required", 404: "delivery_not_found", 409: "delivery_not_retryable; status names the stored delivery state", 500: "Delivery store unavailable", 503: "server_draining or webhooks unavailable"},
+		},
 		// Auth + identity. Every route that mints a credential answers the
 		// session alone (AuthSessionResponse); the identity view with its
 		// org tree is GET /api/auth/me's (AuthMeResponse).

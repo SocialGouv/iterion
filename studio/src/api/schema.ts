@@ -6076,6 +6076,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/webhooks/deliveries/{id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/webhooks/deliveries/{id}/retry
+         * @description Super-admin only. Claims a launch_error delivery for retry under its original tenant and idempotency key. Bypasses the scheduled delay, never the attempt limit or a prior run.
+         */
+        post: operations["postWebhooksDeliveriesByIdRetry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/webhooks/forgejo/{id}": {
         parameters: {
             query?: never;
@@ -8013,6 +8035,10 @@ export interface components {
         usageReadingsClearedView: {
             deleted: number;
             fingerprint: string;
+        };
+        webhookAcceptedResponse: {
+            delivery_id: string;
+            status: string;
         };
     };
     responses: never;
@@ -17481,6 +17507,70 @@ export interface operations {
         responses: {
             /** @description Response */
             default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postWebhooksDeliveriesByIdRetry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["webhookAcceptedResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Super-admin required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description delivery_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description delivery_not_retryable; status names the stored delivery state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery store unavailable */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description server_draining or webhooks unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

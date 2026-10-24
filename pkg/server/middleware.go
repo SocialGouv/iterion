@@ -243,6 +243,14 @@ func tenantFreePath(p string) bool {
 // one (gate F2 — the choke used to 403 before the routing bypass could
 // apply). The handlers are tenant-agnostic for a caller with no tenant.
 func tenantFreePathMethod(method, p string) bool {
+	// This platform-admin operation resolves its tenant from the delivery,
+	// not the operator's active team. requireSuperAdmin guards the route.
+	if method == http.MethodPost && strings.HasPrefix(p, "/api/webhooks/deliveries/") && strings.HasSuffix(p, "/retry") {
+		id := strings.TrimSuffix(strings.TrimPrefix(p, "/api/webhooks/deliveries/"), "/retry")
+		if id != "" && !strings.Contains(id, "/") {
+			return true
+		}
+	}
 	if isPublicMarketplaceRead(method, p) {
 		return true
 	}

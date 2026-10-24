@@ -17,7 +17,7 @@ import (
 // run iterion behind something that already signs the body (a custom
 // CI runner, an inter-service hook) can switch to hmac via the CRUD.
 func (s *Server) registerGenericWebhookRoute() {
-	s.mux.Handle("POST /api/webhooks/generic/{id}", s.webhookAuth(webhooks.ProviderGeneric, http.HandlerFunc(s.handleGenericWebhook)))
+	s.mux.Handle("POST /api/webhooks/generic/{id}", s.webhookAuth(webhooks.ProviderGeneric, s.acknowledgeWebhookLaunch(http.HandlerFunc(s.handleGenericWebhook))))
 }
 
 // handleGenericWebhook is the inbound handler for the generic webhook.

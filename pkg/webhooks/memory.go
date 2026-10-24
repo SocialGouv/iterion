@@ -2,6 +2,7 @@ package webhooks
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -58,6 +59,59 @@ func NewMemoryDeliveryStore() *MemoryDeliveryStore {
 	return &MemoryDeliveryStore{kit: storekit.NewMemory[Delivery](ErrNotFound)}
 }
 
+func (s *MemoryDeliveryStore) Get(_ context.Context, id string) (Delivery, error) {
+	return s.kit.Get(id)
+}
+
+func (s *MemoryDeliveryStore) ListRetryDue(_ context.Context, now time.Time, limit int) ([]Delivery, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	out := s.kit.List(func(d Delivery) bool {
+		return d.Status == StatusLaunchError && d.RunID == "" && d.RetryTarget != nil &&
+			d.NextAttemptAt != nil && !d.NextAttemptAt.After(now)
+	})
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].NextAttemptAt.Equal(*out[j].NextAttemptAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].NextAttemptAt.Before(*out[j].NextAttemptAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *MemoryDeliveryStore) RetryObsolete(_ context.Context, d Delivery, supersede bool) (bool, error) {
+	if d.SubjectID == "" {
+		return false, nil
+	}
+	parent := d.ParentSubjectID
+	if parent == "" {
+		parent = d.SubjectID
+	}
+	_, err := s.kit.Find(func(e Delivery) bool {
+		if e.ID == d.ID || e.TenantID != d.TenantID || e.WebhookID != d.WebhookID ||
+			e.ProjectPath != d.ProjectPath {
+			return false
+		}
+		if d.ReceiptOrder != 0 && e.ReceiptOrder != 0 {
+			if e.ReceiptOrder <= d.ReceiptOrder {
+				return false
+			}
+		} else if e.ReceivedAt.Truncate(time.Millisecond).Before(d.ReceivedAt.Truncate(time.Millisecond)) {
+			return false
+		}
+		return (e.ClosesSubject && e.SubjectID == parent) ||
+			(supersede && (e.RunID != "" || e.RetryTarget != nil) && e.BotID == d.BotID && e.SubjectID == d.SubjectID)
+	})
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (s *MemoryDeliveryStore) Insert(_ context.Context, d Delivery) error {
 	// The idempotency key is the unique constraint (when present) — the
 	// durable dedupe MongoDeliveryStore enforces with a unique index.
@@ -80,7 +134,7 @@ func (s *MemoryDeliveryStore) Update(_ context.Context, d Delivery) error {
 // DeliveryStore). Keep its semantics in lock-step with the Mongo twin.
 func (s *MemoryDeliveryStore) ClaimFailedRetry(_ context.Context, d Delivery, expectAttempts int) (bool, error) {
 	return s.kit.Mutate(d.ID, func(cur *Delivery) bool {
-		if cur.Status != StatusLaunchError || cur.Attempts != expectAttempts {
+		if cur.Status != StatusLaunchError || cur.RunID != "" || cur.Attempts != expectAttempts {
 			return false
 		}
 		*cur = d

@@ -124,7 +124,7 @@ func (s *Server) dropReplayedTargets(ctx context.Context, targets []forgeLaunchT
 	fresh := make([]forgeLaunchTarget, 0, len(targets))
 	for _, t := range targets {
 		if prior, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, t.IdemKey); err == nil &&
-			prior.Status != webhooks.StatusLaunchError {
+			(prior.Status != webhooks.StatusLaunchError || prior.RunID != "") {
 			continue
 		}
 		fresh = append(fresh, t)

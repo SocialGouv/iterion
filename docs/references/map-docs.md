@@ -421,6 +421,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/visual-editor.md`](../visual-editor.md) | Visual Editor (web) | Iterion includes a browser-based visual workflow editor built with React and XYFlow. | — |
 | [`docs/web-search.md`](../web-search.md) | Web search & fetch | How agents discover and read the web in iterion. | — |
 | [`docs/webhooks.md`](../webhooks.md) | Inbound webhooks | and operators reviewing the auth + rate-limit + audit story before | — |
+| [`docs/webhooks/retry.md`](../webhooks/retry.md) | Webhook receipts and launch retries | A claimed inbound delivery answers **202** with | — |
 | [`docs/why-iterion.md`](../why-iterion.md) | Why Iterion? | Organisations are about to run **fleets of AI agents** — reviewing code, shipping | — |
 | [`docs/why-not-prompt-orchestration.md`](../why-not-prompt-orchestration.md) | Why not just prompt-orchestration? | A recurring question when someone first sees Iterion is: *"why a DSL? Can't I get the same thing with a single Claude Code session that… | — |
 | [`docs/workflow-reliability-1006.md`](../workflow-reliability-1006.md) | Workflow reliability rollout (#1006) | This document is the compatibility ledger for the reliability work. | — |

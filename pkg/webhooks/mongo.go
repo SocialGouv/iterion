@@ -58,6 +58,7 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 	if _, err := deliveries.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "idempotency_key", Value: 1}}, Options: options.Index().SetUnique(true).SetName("idempotency_unique")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "webhook_id", Value: 1}, {Key: "received_at", Value: -1}}, Options: options.Index().SetName("tenant_webhook_recent")},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "next_attempt_at", Value: 1}, {Key: "_id", Value: 1}}, Options: options.Index().SetName("delivery_retry_due")},
 		{Keys: bson.D{{Key: "received_at", Value: 1}}, Options: options.Index().SetName("deliveries_ttl").SetExpireAfterSeconds(int32(DeliveryTTLDays * 24 * 60 * 60))},
 	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("webhooks: ensure delivery indexes: %w", err)
@@ -108,6 +109,52 @@ func (s *MongoConfigStore) MarkUsed(ctx context.Context, id string, t time.Time)
 
 type MongoDeliveryStore struct{ kit *storekit.Mongo[Delivery] }
 
+func (s *MongoDeliveryStore) Get(ctx context.Context, id string) (Delivery, error) {
+	return s.kit.GetByID(ctx, id, "get delivery")
+}
+
+func (s *MongoDeliveryStore) ListRetryDue(ctx context.Context, now time.Time, limit int) ([]Delivery, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	return s.kit.List(ctx, bson.M{
+		"status": StatusLaunchError, "run_id": bson.M{"$in": bson.A{"", nil}},
+		"retry_target": bson.M{"$ne": nil}, "next_attempt_at": bson.M{"$lte": now, "$ne": nil},
+	}, "list retry deliveries", "decode retry deliveries",
+		options.Find().SetSort(bson.D{{Key: "next_attempt_at", Value: 1}, {Key: "_id", Value: 1}}).SetLimit(int64(limit)))
+}
+
+func (s *MongoDeliveryStore) RetryObsolete(ctx context.Context, d Delivery, supersede bool) (bool, error) {
+	if d.SubjectID == "" {
+		return false, nil
+	}
+	parent := d.ParentSubjectID
+	if parent == "" {
+		parent = d.SubjectID
+	}
+	outcomes := bson.A{bson.M{"closes_subject": true, "subject_id": parent}}
+	if supersede {
+		outcomes = append(outcomes, bson.M{"bot_id": d.BotID, "subject_id": d.SubjectID, "$or": bson.A{
+			bson.M{"run_id": bson.M{"$nin": bson.A{nil, ""}}}, bson.M{"retry_target": bson.M{"$ne": nil}},
+		}})
+	}
+	newer := bson.M{"received_at": bson.M{"$gte": d.ReceivedAt.Truncate(time.Millisecond)}}
+	if d.ReceiptOrder != 0 {
+		newer = bson.M{"$or": bson.A{
+			bson.M{"receipt_order": bson.M{"$gt": d.ReceiptOrder}},
+			bson.M{"receipt_order": bson.M{"$in": bson.A{nil, 0}}, "received_at": bson.M{"$gte": d.ReceivedAt.Truncate(time.Millisecond)}},
+		}}
+	}
+	_, err := s.kit.FindOne(ctx, bson.M{
+		"_id": bson.M{"$ne": d.ID}, "tenant_id": d.TenantID, "webhook_id": d.WebhookID,
+		"project_path": d.ProjectPath, "$and": bson.A{newer, bson.M{"$or": outcomes}},
+	}, "check retry subject")
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (s *MongoDeliveryStore) Insert(ctx context.Context, d Delivery) error {
 	return s.kit.Insert(ctx, d, ErrDuplicate, "insert delivery")
 }
@@ -131,7 +178,7 @@ func (s *MongoDeliveryStore) ClaimFailedRetry(ctx context.Context, d Delivery, e
 		attempts = bson.M{"$in": bson.A{0, nil}}
 	}
 	res, err := s.kit.Coll().ReplaceOne(ctx, bson.M{
-		"_id": d.ID, "status": StatusLaunchError, "attempts": attempts,
+		"_id": d.ID, "status": StatusLaunchError, "attempts": attempts, "run_id": bson.M{"$in": bson.A{"", nil}},
 	}, d)
 	if err != nil {
 		return false, fmt.Errorf("webhooks: claim failed delivery %s: %w", d.ID, err)

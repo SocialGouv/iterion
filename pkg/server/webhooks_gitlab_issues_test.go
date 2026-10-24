@@ -48,7 +48,7 @@ func TestGitLabWebhook_IssueLabeled_HappyPath(t *testing.T) {
 	}
 	var resp map[string]string
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != webhooks.StatusLaunched || resp["run_id"] != "run-gl42" {
+	if resp["status"] != webhooks.StatusAccepted || resp["delivery_id"] == "" {
 		t.Fatalf("resp: %v", resp)
 	}
 	if calls != 1 || gotBot != "feature-dev" {

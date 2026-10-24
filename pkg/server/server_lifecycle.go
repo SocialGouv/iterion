@@ -382,6 +382,9 @@ func (s *Server) ListenAndServe() error {
 		s.warnf("merge-gate sweeper NOT started: the store does not implement ListNotifiableRuns — " +
 			"a review whose outcome event is dropped will leave its required check absent forever")
 	}
+	if s.webhookDeliveries != nil && s.webhookConfigs != nil {
+		s.goUntilShutdown("server.webhookRetrySweeper", s.runWebhookRetrySweeper)
+	}
 	// Webhook push-debounce sweeper: launches synchronize reviews parked for
 	// their quiet window (webhooks_debounce.go). Multi-replica-safe via the
 	// store lease. Absent when no deferred store is wired or the window is 0.

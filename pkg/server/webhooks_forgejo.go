@@ -12,7 +12,7 @@ import (
 // so the middleware admits the call and this handler is responsible for
 // the signature gate.
 func (s *Server) registerForgejoWebhookRoute() {
-	s.mux.Handle("POST /api/webhooks/forgejo/{id}", s.webhookAuth(webhooks.ProviderForgejo, http.HandlerFunc(s.handleForgejoWebhook)))
+	s.mux.Handle("POST /api/webhooks/forgejo/{id}", s.webhookAuth(webhooks.ProviderForgejo, s.acknowledgeWebhookLaunch(http.HandlerFunc(s.handleForgejoWebhook))))
 }
 
 // forgejoSignatureHeader returns the presented HMAC value, preferring

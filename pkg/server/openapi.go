@@ -88,15 +88,32 @@ func (s *Server) buildOpenAPI() map[string]any {
 						},
 					}
 				}
+				if rs.description != "" {
+					op["description"] = rs.description
+				}
 				if rs.response != nil {
+					status := rs.responseStatus
+					if status == 0 {
+						status = http.StatusOK
+					}
 					op["responses"] = map[string]any{
-						"200": map[string]any{
-							"description": "OK",
+						strconv.Itoa(status): map[string]any{
+							"description": http.StatusText(status),
 							"content": map[string]any{
 								"application/json": map[string]any{"schema": gen.schema(rs.response)},
 							},
 						},
 					}
+				}
+				if len(rs.errors) > 0 {
+					responses, _ := op["responses"].(map[string]any)
+					if responses == nil {
+						responses = map[string]any{}
+					}
+					for code, description := range rs.errors {
+						responses[strconv.Itoa(code)] = map[string]any{"description": description}
+					}
+					op["responses"] = responses
 				}
 			}
 			// The credential-derivation chokepoint's refusal statuses: the

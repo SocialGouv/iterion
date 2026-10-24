@@ -120,6 +120,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 | [forge-permissions.md](forge-permissions.md) | Least-privilege forge permissions and minted-token scopes. |
 | [forge-conversations.md](forge-conversations.md) | Command/reply routing for PR/MR conversations. |
 | [webhooks.md](webhooks.md) | Inbound provider/generic webhooks, authentication, idempotency, and CRUD. |
+| [webhooks/retry.md](webhooks/retry.md) | Early delivery receipts, bounded launch retry sweep, super-admin retry API and terminal outcomes. |
 | [outbound-callbacks.md](outbound-callbacks.md) | Signed run-result callbacks to launchers. |
 | [byok.md](byok.md) | Bring-your-own LLM API keys. |
 | [oauth-forfait.md](oauth-forfait.md) | Delegated subscription/OAuth credentials. |

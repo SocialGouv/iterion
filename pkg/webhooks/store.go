@@ -30,6 +30,16 @@ type ConfigStore interface {
 // suppression. Insert returns ErrDuplicate when IdempotencyKey already
 // exists — that unique constraint is the durable dedupe.
 type DeliveryStore interface {
+	Get(ctx context.Context, id string) (Delivery, error)
+	// ListRetryDue returns a bounded oldest-due batch. ClaimFailedRetry must
+	// still win before a caller launches; listing alone grants no ownership.
+	ListRetryDue(ctx context.Context, now time.Time, limit int) ([]Delivery, error)
+	// RetryObsolete reports a later recorded closure of the subject (or its
+	// parent), or, when supersede is set, a later claim/run of the same bot/subject.
+	// Exact within tenant/webhook/project, not limited to recent deliveries.
+	// ReceiptOrder retains nanosecond ordering in Mongo. Legacy rows fall
+	// back to ReceivedAt, conservatively invalidating millisecond ties.
+	RetryObsolete(ctx context.Context, d Delivery, supersede bool) (bool, error)
 	Insert(ctx context.Context, d Delivery) error
 	GetByIdempotencyKey(ctx context.Context, key string) (Delivery, error)
 	Update(ctx context.Context, d Delivery) error
@@ -41,7 +51,7 @@ type DeliveryStore interface {
 	// and both would otherwise go on to launch a run for one event.
 	//
 	// The replacement lands iff the stored row is STILL that failure at the
-	// attempt count the caller read. claimed=false with a NIL error means
+	// attempt count the caller read, with no RunID. claimed=false with a NIL error means
 	// another caller got there first, and the loser must answer as a
 	// duplicate rather than launch. ErrNotFound when the row is gone.
 	ClaimFailedRetry(ctx context.Context, d Delivery, expectAttempts int) (claimed bool, err error)

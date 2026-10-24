@@ -87,7 +87,7 @@ func TestGitLabWebhook_HappyPath(t *testing.T) {
 	}
 	var resp map[string]string
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != webhooks.StatusLaunched || resp["run_id"] != "run-123" {
+	if resp["status"] != webhooks.StatusAccepted || resp["delivery_id"] == "" {
 		t.Fatalf("resp: %v", resp)
 	}
 	if calls != 1 || gotBot != "review-pr" {
@@ -703,15 +703,16 @@ func TestGitLabNoteHook_ConverseRouteWithUnresolvableBotFailsExplicitly(t *testi
 	body := strings.Replace(glNoteRevi, `"note": "/revi"`, `"note": "/revi why is the SSRF critical?"`, 1)
 	w := httptest.NewRecorder()
 	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(cfg), body))
-	if w.Code != http.StatusBadGateway || calls != 1 {
-		t.Fatalf("an unresolvable routed bot must fail explicitly, never silently: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	if w.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("the claimed delivery must be acknowledged: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
 	}
 	var resp map[string]string
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(resp["error"], "bundle not found") {
-		t.Fatalf("expected the launch failure surfaced explicitly, got %v", resp)
+	delivery, err := s.webhookDeliveries.Get(context.Background(), resp["delivery_id"])
+	if err != nil || delivery.Status != webhooks.StatusLaunchError || !strings.Contains(delivery.Error, "bundle not found") {
+		t.Fatalf("expected the launch failure in the delivery audit, got %+v (%v)", delivery, err)
 	}
 }
 
