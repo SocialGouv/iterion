@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
@@ -30,7 +31,7 @@ const handoffForkBot = "schema out:\n  ok: bool\n\nvars:\n  gate_context: string
 
 const handoffBakedManifest = "name: reviewer-bot\nversion: 1.0.0\nretry:\n  usage_window: resume\n  max_attempts: 9\nconsumes:\n  - kind: review\n    var: prior_review\n    scope: pr\n"
 
-const handoffForkManifest = "name: reviewer-bot\nversion: 1.0.0\nretry:\n  usage_window: off\n  max_attempts: 2\nconsumes:\n  - kind: review\n    var: prior_review_fork\n    scope: pr\n"
+const handoffForkManifest = "name: reviewer-bot\nversion: 1.0.0\nretry:\n  usage_window: off\n  max_attempts: 2\nconsumes:\n  - kind: review\n    var: prior_review_fork\n    scope: pr\n    from: upstream-reviewer\n"
 
 // newHandoffTeamServer bakes `reviewer-bot` into the catalog and gives team
 // t1 a fork of it whose manifest and vars BOTH differ from the origin's.
@@ -69,8 +70,36 @@ func TestWebhookMetadataReadsTheTeamsFork(t *testing.T) {
 	t.Run("hand-off seeds come from the fork's manifest", func(t *testing.T) {
 		s := newHandoffTeamServer(t)
 		got := s.handoffConsumersFor(ctx, "t1", "reviewer-bot")
-		if len(got) != 1 || got[0].Var != "prior_review_fork" || got[0].Kind != bundle.HandoffKindReview {
-			t.Fatalf("consumes = %+v, want the FORK's `prior_review_fork` — the launch runs the fork, so the seed must be stamped under the var the fork actually declares", got)
+		if len(got) != 1 || got[0].Var != "prior_review_fork" || got[0].Kind != bundle.HandoffKindReview || got[0].From != "upstream-reviewer" {
+			t.Fatalf("consumes = %+v, want the FORK's `prior_review_fork` and producer binding — the launch runs the fork, so the seed must follow the fork's declaration", got)
+		}
+		var gotFrom string
+		s.webhookHandoff = func(_ context.Context, _ webhooks.Config, _ bundle.HandoffKind, q handoffQuery) string {
+			gotFrom = q.From
+			return ""
+		}
+		s.stampHandoffs(ctx, webhooks.Config{TenantID: "t1"}, "reviewer-bot", map[string]string{}, handoffQuery{PRURL: "https://forge.example/acme/widgets/pull/1"})
+		if gotFrom != "upstream-reviewer" {
+			t.Errorf("lookup producer = %q, want the fork's binding", gotFrom)
+		}
+	})
+
+	t.Run("a custom binding with surrounding whitespace is refused", func(t *testing.T) {
+		s := newHandoffTeamServer(t)
+		_, err := s.botSources.Create(store.WithTenant(ctx, "t1"), botsource.BotSource{
+			TenantID: "t1", Slug: "custom-consumer",
+			Files: map[string]string{
+				botsource.MainBotFile: handoffForkBot,
+				"manifest.yaml":       "name: custom-consumer\nversion: 1.0.0\nconsumes:\n  - kind: review\n    var: prior_review\n    scope: pr\n    from: \"teamonly-bot \"\n",
+			},
+		})
+		if err == nil || !strings.Contains(err.Error(), `consumes: from "teamonly-bot " must equal its trimmed form`) {
+			t.Fatalf("Create error = %v, want the malformed producer binding refused before launch", err)
+		}
+		vars := map[string]string{}
+		s.stampHandoffs(ctx, webhooks.Config{TenantID: "t1"}, "custom-consumer", vars, handoffQuery{PRURL: "https://forge.example/acme/widgets/pull/1"})
+		if len(vars) != 0 {
+			t.Errorf("the refused custom bot still received a hand-off: %v", vars)
 		}
 	})
 

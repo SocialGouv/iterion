@@ -26,13 +26,14 @@ the BOT, keyed on generic context the engine already provides:**
   (board tools), `contributes:` (plugins), skills. The `Subscription` binds
   (event) → (a bot) generically.
 - Manifest **`produces:` / `consumes:`** — the run-to-run hand-off, matched by
-  KIND (`review`, `review_ledger`), never by bot id. A bot declares what it
-  leaves behind for a later run (naming nodes in its OWN graph) and what it
-  wants stamped into a launch var; the engine knows the shape of each role and
-  nothing about who fills it. This is how a reviewer seeds a fixer, and how the
-  fixer's per-finding answer reaches the next review, with neither manifest
-  naming the other bot. Adding a second reviewer or a second fixer is a bundle,
-  not an engine PR. See [pkg/server/webhooks_handoff.go](../../../pkg/server/webhooks_handoff.go).
+  KIND (`review`, `review_ledger`) by default. A consumer may declare
+  `from: <producer-bot-id>` to restrict eligibility; the engine applies that
+  binding generically to `Run.BotID` and never substitutes another producer on
+  a miss. A bot declares what it leaves behind (naming nodes in its OWN graph)
+  and what it wants stamped into a launch var; the engine knows the payload
+  shapes and generic filters, never a specific bot. Adding a second reviewer or
+  fixer is a bundle, not an engine PR; kind-only consumers can use it, while
+  `from:` is a deliberate pin. See [pkg/server/webhooks_handoff.go](../../../pkg/server/webhooks_handoff.go).
 
 **Known debt (extract when touched, don't extend):** the webhook role bot
 ids are no longer read as constants — they resolve through
