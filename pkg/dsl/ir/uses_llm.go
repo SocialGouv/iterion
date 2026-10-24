@@ -110,6 +110,9 @@ type EdgeFilter func(*Edge) bool
 // paths reach a terminal around the walls, so a run whose remaining paths all
 // cross one is refused in advance instead of being stopped at the call. That
 // is sound only for a filter whose dropped edges the run could not have taken.
+// A node whose exits the filter excludes has its own end (walkNode.stopped),
+// which is free unless the node itself is a wall. A bounded iteration ceases
+// to be a crossing when spent; its retained edge cannot erase that end.
 func (w *Workflow) AlwaysReachesVia(open EdgeFilter, wall func(Node) bool) bool {
 	out, ok := w.walkable(open)
 	if !ok {
@@ -126,10 +129,10 @@ func (w *Workflow) AlwaysReachesVia(open EdgeFilter, wall func(Node) bool) bool 
 			if free[id] || walled[id] {
 				continue
 			}
-			next := out[id]
+			next := out[id].successors()
 			var isFree bool
 			switch {
-			case isTerminal(n):
+			case isTerminal(n), out[id].stopped:
 				isFree = true
 			case runsEveryBranch(n):
 				isFree = len(next) > 0
@@ -163,7 +166,9 @@ func (w *Workflow) CanReach(target func(Node) bool) bool {
 }
 
 // CanReachVia is CanReach over the executions open allows: a target only the
-// dropped transitions led to is not one this run can reach.
+// dropped transitions led to is not one this run can reach. It consumes the
+// same walkNode annotation as AlwaysReachesVia: the dying node still runs,
+// and its iteration body may run before exhaustion, but no excluded exit does.
 func (w *Workflow) CanReachVia(open EdgeFilter, target func(Node) bool) bool {
 	out, ok := w.walkable(open)
 	if !ok {
@@ -177,7 +182,7 @@ func (w *Workflow) CanReachVia(open EdgeFilter, target func(Node) bool) bool {
 		if target(w.Nodes[id]) {
 			return true
 		}
-		for _, to := range out[id] {
+		for _, to := range out[id].successors() {
 			if !seen[to] {
 				seen[to] = true
 				stack = append(stack, to)
@@ -187,9 +192,26 @@ func (w *Workflow) CanReachVia(open EdgeFilter, target func(Node) bool) bool {
 	return false
 }
 
-// walkable returns the graph's successor lists, or false when a walk from the
-// entry cannot conclude anything: no nodes, no entry, or an edge from a node
-// the entry reaches into a node the workflow does not define.
+// walkNode describes both crossings and an end caused by the node itself.
+// stopped means the filter excludes every exit: once its bounded iterations
+// are spent, the run dies here rather than crossing a wall. Iteration work
+// remains reachable while it has budget.
+type walkNode struct {
+	next       []string
+	iterations []string
+	stopped    bool
+}
+
+func (n walkNode) successors() []string {
+	if n.stopped {
+		return n.iterations
+	}
+	return n.next
+}
+
+// walkable returns the graph's annotated successor lists, or false when a
+// walk from the entry cannot conclude anything: no nodes, no entry, or an
+// edge from a node the entry reaches into a node the workflow does not define.
 //
 // open, when given, keeps only the edges it accepts — except an edge into a
 // node the workflow does not define, which stays in its source's successor
@@ -198,26 +220,44 @@ func (w *Workflow) CanReachVia(open EdgeFilter, target func(Node) bool) bool {
 // malformed edge itself. A filter that puts the SOURCE off the run's paths
 // does conclude, on the run the filter describes: the malformed node is one
 // it never reaches.
-func (w *Workflow) walkable(open EdgeFilter) (map[string][]string, bool) {
+func (w *Workflow) walkable(open EdgeFilter) (map[string]walkNode, bool) {
 	if w == nil || len(w.Nodes) == 0 || w.Entry == "" || w.Nodes[w.Entry] == nil {
 		return nil, false
 	}
-	out := map[string][]string{}
+	out := map[string]walkNode{}
+	excluded := map[string]bool{}
+	keptExit := map[string]bool{}
 	for _, e := range w.Edges {
 		if e == nil {
 			continue
 		}
 		if open != nil && w.Nodes[e.To] != nil && !open(e) {
+			excluded[e.From] = true
 			continue
 		}
-		out[e.From] = append(out[e.From], e.To)
+		n := out[e.From]
+		n.next = append(n.next, e.To)
+		if e.IsBoundedIteration() {
+			n.iterations = append(n.iterations, e.To)
+		} else {
+			keptExit[e.From] = true
+		}
+		out[e.From] = n
+	}
+	// This is the single classification shared by both walks. An unknown
+	// guard or a malformed target keeps an exit, and an unfiltered dead end
+	// stays conservative. A bounded back-edge is not an exit after exhaustion.
+	for id := range excluded {
+		n := out[id]
+		n.stopped = !keptExit[id]
+		out[id] = n
 	}
 	seen := map[string]bool{w.Entry: true}
 	stack := []string{w.Entry}
 	for len(stack) > 0 {
 		id := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		for _, to := range out[id] {
+		for _, to := range out[id].successors() {
 			if w.Nodes[to] == nil {
 				return nil, false
 			}

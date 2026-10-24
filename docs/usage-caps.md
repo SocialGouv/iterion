@@ -533,15 +533,21 @@ pre-flight that decides whether a cap applies at all (`AlwaysReachesLLM`) is
 deliberately NOT narrowed: it refuses rather than admits, so a launch
 excluding a model-free branch must not make it refuse.
 
-Two prunes are refused outright, because a walk that reaches no terminal reads
-as "every path is walled" — true for any wall, including one no execution
-crosses. A node never loses its last transition: dropped, they would make it
-read as a wall, and a hard cap would take the blame for a death that is the
-node's own missing edge. Keeping them is all that refusal buys — they also
-keep the routes BEHIND that node on the walk, so a route only it led to still
-parks the run under a soft cap, exactly as it does with no prune at all. And a
-prune that leaves the entry unable to reach ANY terminal is dropped whole: the
-whole-graph answer stands for that run.
+A node whose launch excludes every exit is a **node's own end**, not a cap
+wall. Both walks consume the same annotation in `ir.Workflow.walkable`:
+`CanReachVia` crosses no excluded exit, so a soft cap behind the node parks
+nothing; `AlwaysReachesVia` counts the node's death as an end without a wall,
+so a hard cap beside it cannot take the blame (#1828, #2468). The node itself
+still executes, so a cap ON it counts before its death.
+
+A bounded-iteration fallback (`loop` or `foreach`) does not supply an exit
+once spent, even though C012 accepts it as a fallback. The walk still reaches
+the iteration body while it has budget; after exhaustion the node's own end
+keeps the prune valid. This prevents a retained back-edge from manufacturing
+an endless cycle, discarding the entire prune and restoring an impossible
+capped route. Unknown guards and malformed reachable targets stay
+conservative. A prune with neither a reachable terminal nor a node's own end
+is still discarded: an unannotated cycle proves no path around a wall.
 
 The retry is armed for the **earliest reopening after which the run could
 start**: on alternative branches the first hard-capped route to reopen is

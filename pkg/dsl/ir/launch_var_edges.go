@@ -59,23 +59,18 @@ const varsNamespace = "vars"
 //     at all, so each is taken in turn whatever a guarded sibling decides
 //     (edgeSelectionAt).
 //
-// Two refusals keep the walks out of vacuity, and each buys its own half:
+// A node may lose every exit. Both walks consume walkable's stopped
+// annotation: CanReachVia crosses no excluded exit, and AlwaysReachesVia
+// reads the node's own death as an end without a wall. A bounded iteration
+// is not an exit once spent; its body remains reachable before exhaustion.
+// Thus a C012-accepted iteration fallback does not turn a death into an
+// endless cycle and discard the prune. A wall on the dying node itself
+// still counts: the node executes before it tries to leave.
 //
-//   - a NODE never loses its last transition: dropped, they would leave it
-//     with no successor, which AlwaysReachesVia reads as a path that reaches
-//     no terminal — "every path is walled" — and a hard cap would take the
-//     blame for a death that is the node's own missing edge. Keeping them is
-//     ALL that refusal buys: they also keep the routes BEHIND that node on
-//     the walk, so a soft cap still parks the run for a route only that node
-//     led to — the whole-graph answer, which is what a run gets today with no
-//     prune at all (runner.TestUsageCapPreflight_ASoftCapStillParksBehindAnEmptiedNode);
-//   - the GRAPH never loses its terminals. A prune that leaves the entry
-//     unable to reach one makes AlwaysReachesVia's "no path reaches a
-//     terminal" read as "every path is walled" — true for ANY wall, including
-//     one no execution crosses — so there is no filter at all then.
-//
-// The per-node refusal does not imply the per-graph one: every node can keep
-// a transition while the kept ones form a cycle no terminal leaves.
+// The GRAPH refusal remains for a prune with neither a reachable terminal
+// nor a node's own end (for example an unbounded, unannotated cycle). No
+// such end means no evidence that a path avoids the walls, so the whole
+// graph's answer stands.
 //
 // This narrows a walk; it never widens one. A caller asking "can this run
 // avoid X" gets a smaller set of executions to avoid it in, so the answer is
@@ -137,14 +132,6 @@ func (w *Workflow) LaunchVarEdgeFilter(launch map[string]any) EdgeFilter {
 		if !guardedHolds || !sel.fallbacksLoseToAGuard {
 			fallbacks = nil
 		}
-		// Never leave a node without a transition: a walk whose paths reach no
-		// terminal reads as "every path is walled", so a hard cap would park
-		// the run for a death that is the node's own missing edge. The
-		// whole-graph answer stands for that node — routes behind it
-		// included, where a soft cap still parks on one.
-		if len(excluded)+len(fallbacks) == len(edges) {
-			continue
-		}
 		for _, e := range excluded {
 			dropped[e] = true
 		}
@@ -156,9 +143,8 @@ func (w *Workflow) LaunchVarEdgeFilter(launch map[string]any) EdgeFilter {
 		return nil
 	}
 	open := func(e *Edge) bool { return !dropped[e] }
-	// A prune that leaves the entry unable to reach ANY terminal makes
-	// "every path is walled" true for nothing: AlwaysReachesVia would park
-	// the run on a wall no execution crosses. The whole-graph answer stands.
+	// Keep a prune that reaches either a terminal or the node's own end.
+	// Only a topology with neither restores the whole-graph answer.
 	if w.AlwaysReachesVia(open, noWall) {
 		return nil
 	}
@@ -167,7 +153,7 @@ func (w *Workflow) LaunchVarEdgeFilter(launch map[string]any) EdgeFilter {
 
 // noWall accepts no node, so AlwaysReachesVia under it answers the one
 // question that has nothing to do with a wall: does the entry still reach a
-// terminal at all?
+// terminal or a node's own end at all?
 func noWall(Node) bool { return false }
 
 // varReadingConsultsEnv reports whether reading this var's launch text

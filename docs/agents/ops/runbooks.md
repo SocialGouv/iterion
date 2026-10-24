@@ -21,7 +21,7 @@ in the commands/paths that actually worked.
 ## Credentials & spend
 
 - [cloud-llm-credentials](../../cloud-llm-credentials.md) — provisioning a cloud run's LLM credential: BYOK vs OAuth-forfaits, org/platform tiers, `--keys-first`/`--facade-default`, connecting a Claude forfait, "which key paid for a run", `credentials preview`. Read on 401/429 on cloud runs.
-- [usage-caps](../../usage-caps.md) — capping a subscription below the provider's wall; runtime-mutable caps; a reading is trusted 3 h, not until its reset instant, and `usage-readings clear` cuts it. Read when bots eat the operator's forfait or runs are refused at admission.
+- [usage-caps](../../usage-caps.md) — capping a subscription below the provider's wall; runtime-mutable caps; a reading is trusted 3 h, not until its reset instant, and `usage-readings clear` cuts it. Read when bots eat the operator's forfait or runs are refused at admission; shared walk semantics distinguish a node's own end from a cap wall.
 - [credential-pool](../../credential-pool.md) — mutualising contributors' unused quota: the pledge, the audience policy, why `max_cost_usd` enforces.
 - [web-search](../../web-search.md) — sovereign search tiers and the `ITERION_WEB_SEARCH` resolver.
 - [models](../../models.md) — the model registry, launch-time overrides, the studio assistant's model.

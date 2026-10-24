@@ -869,15 +869,10 @@ func TestARunsLaunchInputsAreWrittenOnlyFromTheLaunchMap(t *testing.T) {
 	}
 }
 
-// A prune that leaves the run's topology unable to reach a terminal decides
-// nothing: AlwaysReachesVia reads "no path reaches a terminal" as "every path
-// is walled", which is true for ANY wall — including a capped route the same
-// filter says the run cannot reach. So there is no filter at all then, and the
-// run is judged on the whole graph: a hard cap may not read that vacuity as a
-// wall every execution crosses, nor arm a retry for a reopening that frees
-// nothing. That is all the refusal buys — the whole-graph answer keeps every
-// capped route the graph can reach on the walk, which is where a soft cap
-// still parks (TestUsageCapPreflight_ASoftCapStillParksBehindAnEmptiedNode).
+// An unannotated cycle reaches neither a terminal nor a node's own end.
+// The graph safeguard still refuses that prune: no path ending without a
+// wall is proven, so the whole-graph answer stands. Declared bounded
+// iterations are different (TestUsageCapPreflight_SpentIterationKeepsThePrune).
 func TestUsageCapPreflight_AVacuousPruneDoesNotPark(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	caps := usagecap.NewMemStore()
@@ -936,24 +931,15 @@ func TestUsageCapPreflight_AVacuousPruneDoesNotPark(t *testing.T) {
 	}
 }
 
-// The per-node half of that refusal, at the same site: a node whose EVERY
-// transition the launch excluded keeps them all. Dropping them would leave it
-// with no successor, which AlwaysReachesVia reads as a path that never reaches
-// a terminal — "every path is walled" — and the run would be parked for a cap,
-// and a retry armed for a reopening, over a death that is its own missing edge
-// (ErrCodeNoOutgoingEdge). `capped` is what makes this case decide: the entry
-// reaches a terminal through it whatever `pass` loses, so the graph-level
-// refusal stays silent and the per-node one is the only thing answering.
-//
-// Here the capped route sits BESIDE the emptied node. What the refusal does
-// not buy, one hop behind it, is measured by
-// TestUsageCapPreflight_ASoftCapStillParksBehindAnEmptiedNode.
+// W3 (#1828): a node whose launch excludes every exit is its own end,
+// not a cap wall. The capped sibling keeps a terminal reachable, so the
+// graph-level safeguard cannot hide a missing stopped annotation.
+// Mutation: remove `out[id].stopped` from AlwaysReachesVia's free-end case.
 func TestUsageCapPreflight_ANodeWithNoTransitionLeftDoesNotPark(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	caps := usagecap.NewMemStore()
 	resets := time.Now().UTC().Add(30 * time.Hour).Truncate(time.Second)
 	weekCapped(t, caps, platformKey("fp-forfait"), resets)
-	ctx := forfaitBesidePinnedKeys()
 
 	// `pick` offers the capped route behind its own output, the scan behind
 	// the family var, and `stale` as the fallback the family guard pre-empts.
@@ -997,20 +983,17 @@ func TestUsageCapPreflight_ANodeWithNoTransitionLeftDoesNotPark(t *testing.T) {
 	if wf.AlwaysReachesVia(open, isCapped) {
 		t.Error("this run's topology reads the capped route as unavoidable: `pass` lost every transition, and a path that reaches no terminal counts as walled")
 	}
-	if err := preflightWithVars(t, caps, ctx, wf, gpt); err != nil {
-		t.Errorf("parked a run on a hard cap it can avoid: %v — `pass` dies of its own missing edge, and the walk may not read that as a wall every path crosses", err)
+	for _, id := range []string{"scan", "wrap"} {
+		if reaches(wf, open, id) {
+			t.Errorf("CanReachVia crosses the stopped node to %s", id)
+		}
 	}
+	assertNodeDeathPark(t, caps, wf, gpt, false)
 }
 
-// emptiedNodeGraph is that shape with the capped route one hop BEHIND the node
-// the launch empties instead of beside it: `pass` routes on two families this
-// launch is not, and the capped one is among the transitions the refusal keeps.
-//
-// `side` is what makes the case decide the per-node refusal rather than the
-// per-graph one: it hangs off the entry behind the router's own output, so no
-// launch can exclude it, and the entry reaches a terminal even when `pass`
-// keeps nothing. Without it, emptying `pass` would leave the entry walled and
-// the GRAPH-level refusal would answer instead.
+// emptiedNodeGraph puts the capped route behind the node whose exits the
+// launch excludes. The side path keeps a terminal reachable independently,
+// so the graph-level safeguard cannot conceal the per-node behavior.
 func emptiedNodeGraph(vars map[string]*ir.Var) *ir.Workflow {
 	return &ir.Workflow{
 		Name: "capped_behind", Entry: "pick", Vars: vars,
@@ -1037,49 +1020,24 @@ func emptiedNodeGraph(vars map[string]*ir.Var) *ir.Workflow {
 	}
 }
 
-// What the per-node refusal does NOT buy, measured beside what it does: the
-// transitions it keeps also keep the routes BEHIND the emptied node on the
-// walk, so a SOFT cap — which parks on what the run may reach at all — still
-// parks the run for a route only that node led to. The run would have died at
-// `pass` of its own missing edge; the cap answers first, and a retry is armed
-// for a reopening that changes nothing about that death.
-//
-// That is the whole-graph answer the refusal restores, not a reading this
-// prune invented: the control runs the same graph with nothing a launch
-// settles — no filter at all — and the same cap parks the same run. Narrowing
-// it would take a notion neither walk has, a node the run DIES at, which
-// CanReachVia must not walk through while AlwaysReachesVia must not read as a
-// wall: a seam, not a predicate. So this pins the conservative answer, and a
-// change that improves it reddens here — with the two places the doctrine is
-// written (LaunchVarEdgeFilter's comment, docs/usage-caps.md).
-func TestUsageCapPreflight_ASoftCapStillParksBehindAnEmptiedNode(t *testing.T) {
+// W1 (#2468): a soft cap behind a node whose exits are all false cannot
+// park this launch or arm a retry. Mutation: restore LaunchVarEdgeFilter's
+// old `if len(excluded)+len(fallbacks) == len(edges) { continue }`.
+func TestUsageCapPreflight_ASoftCapBehindAStoppedNodeDoesNotPark(t *testing.T) {
 	blankAnthropicWireEnv(t)
-	ctx := forfaitBesidePinnedKeys()
 	wf := emptiedNodeGraph(monoFamilyVar("claude"))
 	gpt := map[string]any{"mono_family": "gpt"}
-
 	if !wf.AlwaysReachesLLM() {
-		t.Fatal("premise: every path makes a model call, so the cap applies")
+		t.Fatal("premise: every unfiltered path spends, so the cap applies")
 	}
 	open := wf.LaunchVarEdgeFilter(gpt)
-	if open == nil {
-		t.Fatal("premise: this launch prunes the topology (the fallback `stale`) and the entry still reaches a terminal — without both, the per-graph refusal is what answers")
+	if open == nil || reaches(wf, open, "capped") || reaches(wf, open, "wrap") {
+		t.Error("the launch must keep its prune and stop at pass")
 	}
-	if !reaches(wf, open, "capped") {
-		t.Error("the refusal no longer keeps `pass`'s excluded transitions: the capped route left this run's walk, which is narrowing on a death the doctrine says it cannot speak for — rewrite the doctrine, here and where it is written")
-	} else if err := preflightWithVars(t, softCappedForfait(t), ctx, wf, gpt); err == nil {
-		t.Error("the soft cap admitted a run that reaches the capped route only through `pass` — something now narrows what this refusal keeps: say so where the doctrine is written")
-	}
-	// The control: nothing a launch settles, so there is no filter and the
-	// walk is the whole graph's. The same park proves the conservatism is
-	// today's, not this prune's.
-	plain := emptiedNodeGraph(nil)
-	if open := plain.LaunchVarEdgeFilter(nil); open != nil {
-		t.Fatal("premise: with no var declared or supplied, no edge is decidable and there is no filter")
-	}
-	if err := preflightWithVars(t, softCappedForfait(t), ctx, plain, nil); err == nil {
-		t.Error("unfiltered, the same soft cap no longer parks the same run — the control no longer measures today's answer")
-	}
+	assertNodeDeathPark(t, softCappedForfait(t), wf, gpt, false)
+	// An undecided launch retains the whole-graph answer and the same cap
+	// really does arm a retry: the no-retry witness has a live control.
+	assertNodeDeathPark(t, softCappedForfait(t), emptiedNodeGraph(nil), nil, true)
 }
 
 // twoClaudeWorkflow carries two capped claude routes: `early_claude` behind

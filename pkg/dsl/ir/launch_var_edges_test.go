@@ -225,17 +225,13 @@ func TestLaunchVarEdgeFilterDropsOnlyWhatTheLaunchDecided(t *testing.T) {
 			want: nil,
 		},
 		{
-			// Dropping a node's LAST transition would have the walk judge a
-			// run that cannot leave it: the engine dies there of a missing
-			// edge, and `AlwaysReachesVia` — which reads "no path reaches a
-			// terminal" as "every path is walled" — would let a hard cap take
-			// the blame. Both walks keep the whole-graph answer instead,
-			// routes behind that node included.
+			// The node's own end is shared by both walks; it keeps no
+			// excluded transition merely to manufacture a terminal path.
 			name: "a node whose every transition the launch excluded",
 			wf: pickGraph(RouterCondition, family("claude"),
 				whenEdge("pick", "a", "vars.f == 'gpt'"),
 				whenEdge("pick", "b", "vars.f == 'other'")),
-			want: nil,
+			want: []string{"a", "b"},
 		},
 		{
 			name: "a predicate reading an artifact",
@@ -439,11 +435,8 @@ func TestLaunchVarEdgeFilterDropsOnlyWhatTheLaunchDecided(t *testing.T) {
 			want:   []string{"a"},
 		},
 		{
-			// A prune that leaves the entry unable to reach a terminal is no
-			// prune at all: AlwaysReachesVia would then answer "every path is
-			// walled" for any wall, including one no execution crosses. Each
-			// node here keeps a transition, so the per-node refusal does not
-			// fire — the graph's does.
+			// No terminal or node's own end survives this unannotated cycle:
+			// the graph safeguard still restores the whole-graph answer.
 			name: "a prune that leaves the entry no terminal to reach",
 			wf:   cycleGraph(family("loop")),
 			want: nil,
@@ -523,14 +516,9 @@ func escapeGraph(vars map[string]*Var, suspect ...*Edge) *Workflow {
 	}
 }
 
-// Each refusal is measured where the other one cannot answer for it. A
-// suspect node on the entry's ONLY way out — pickGraph, iterationGraph — puts
-// the graph-level refusal first: strip that node's transitions and no path
-// reaches a terminal, so there is no filter at all and a case built there
-// holds whatever the per-node refusal and the iteration carve-out do. With an
-// escape beside it, the filter stands and what the suspect node keeps is what
-// is measured.
-func TestLaunchVarEdgeFilterRefusalsAreIsolated(t *testing.T) {
+// An independent escape keeps the graph-level safeguard silent, so these
+// cases measure the node's own end and the iteration's exhaustion exit.
+func TestLaunchVarEdgeFilterNodeEndsAndIterationExits(t *testing.T) {
 	family := map[string]*Var{"f": varDecl("f", VarString, "claude")}
 	gpt := map[string]any{"f": "gpt"}
 	for _, tc := range []struct {
@@ -555,17 +543,13 @@ func TestLaunchVarEdgeFilterRefusalsAreIsolated(t *testing.T) {
 			want:    []string{"stale"},
 		},
 		{
-			// A node whose EVERY transition the launch excluded keeps them
-			// all: the engine dies there of its own missing edge, and a walk
-			// reading that node as a wall would let a hard cap take the blame
-			// for that death. The transitions kept keep the routes behind it
-			// on the walk too, which is the half this buys nothing for.
-			name: "a node whose every transition the launch excluded keeps them",
+			// The dying node keeps no route behind it on the walk.
+			name: "a node whose every transition the launch excluded stops",
 			suspect: []*Edge{
 				whenEdge("judge", "x", "vars.f == 'claude'"),
 				whenEdge("judge", "y", "vars.f == 'other'"),
 			},
-			want: []string{"stale"},
+			want: []string{"stale", "x", "y"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

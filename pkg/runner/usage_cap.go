@@ -870,6 +870,8 @@ func (r *Runner) launchReading(ctx context.Context, msg *queue.RunMessage, logge
 // through: a branch the run's own launch vars exclude is not a branch it may
 // take, so a capped route standing on one parks nothing
 // (ir.Workflow.LaunchVarEdgeFilter decides which transitions qualify).
+// Both Via walks derive the same node-end annotation from this filter; an
+// excluded exit is never restored to disguise a node's own death as progress.
 // launch is the pre-flight's shared reading (launchReading); !have keeps the
 // whole-graph answer — folding declared defaults would speak for a launch
 // that may have overridden them.
