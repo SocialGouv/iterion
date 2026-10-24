@@ -622,11 +622,10 @@ repo permission ≥ the route's `min_replier_role`), so a non-collaborator
 cannot invoke it. Billy then commits its hardening onto the PR's own
 branch (or opens a separate PR with `branch_improve_as_pr`). When Revi has
 already reviewed that PR, the handler seeds Billy's run with Revi's most
-recent readable findings under the **`prior_review`** var — so Billy starts
-from that review instead of re-deriving it. Billy's `from: review-pr`
-declaration means no readable Revi review leaves the seed empty rather than
-substituting another producer's review
-([pkg/server/webhooks_handoff.go](../pkg/server/webhooks_handoff.go)).
+recent findings under the **`prior_review`** var — so Billy starts from
+that review instead of re-deriving it (best-effort: with no prior review,
+Billy reviews the diff from scratch;
+[pkg/server/webhooks_handoff.go](../pkg/server/webhooks_handoff.go)).
 
 ### <a name="re-request-review"></a>On-demand re-review: the "Re-request review" button
 

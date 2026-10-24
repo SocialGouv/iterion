@@ -40,12 +40,10 @@ const (
 // handoffQuery identifies the pull request a prior review is sought for.
 // HeadSHA is the PR's CURRENT head when the caller knows it (empty otherwise):
 // a review anchors to the tree it read, so a review of an older head must be
-// handed over LABELLED as such, never presented as current. From optionally
-// restricts eligible producers to one Run.BotID; empty keeps kind-only lookup.
+// handed over LABELLED as such, never presented as current.
 type handoffQuery struct {
 	PRURL   string
 	HeadSHA string
-	From    string
 }
 
 // findHandoff resolves the most recent run PRODUCING the given kind for this PR
@@ -66,10 +64,10 @@ func (s *Server) findHandoff(ctx context.Context, cfg webhooks.Config, kind bund
 //
 // Which bot receives what, into which var, and from whose artifact are all
 // DECLARED, not hardcoded: the launched bot's manifest asks (`consumes:`) and
-// a bot whose manifest offers the same kind (`produces:`) supplies it. The
-// consumer may restrict that producer by id with `from`; the engine applies the
-// binding generically and never falls back to another producer on a miss. An
-// operator-pinned var always wins; a miss is silent by design.
+// any bot whose manifest offers the same kind (`produces:`) supplies it. That is
+// what lets a reviewer and a fixer cooperate — in BOTH directions, the review
+// forward and the ledger back — without the engine, or either manifest, naming
+// the other bot. An operator-pinned var always wins; a miss is silent by design.
 func (s *Server) stampHandoffs(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, q handoffQuery) {
 	// Every hand-off is PR-scoped, so a lane without one has nothing to resolve —
 	// checked before the catalog is read, or every push event and every bot that
@@ -85,9 +83,7 @@ func (s *Server) stampHandoffs(ctx context.Context, cfg webhooks.Config, botID s
 		// dispatch and the launch tail, since neither covers every path), and a
 		// miss leaves the PR's runs to be listed and walked again by the
 		// second. An empty value is what the bot would have defaulted to anyway.
-		query := q
-		query.From = want.From
-		vars[want.Var] = s.findHandoff(ctx, cfg, want.Kind, query)
+		vars[want.Var] = s.findHandoff(ctx, cfg, want.Kind, q)
 	}
 }
 
@@ -157,9 +153,6 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 		scanned++
 		run, lerr := rs.LoadRun(ctx, ids[i])
 		if lerr != nil {
-			continue
-		}
-		if q.From != "" && run.BotID != q.From {
 			continue
 		}
 		// Each run is described by the tier it was SERVED from, which it

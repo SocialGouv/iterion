@@ -1,9 +1,7 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.9.8
-## 1.9.8 — the prior-review hand-off is bound to review-pr, so another bot's
-## review of the same PR is never substituted for Revi's.
+version: 1.9.7
 ## 1.9.7 — plan_revise renders the triage plan's own stated assumptions and
 ## risks: the plan and the critique ride its prompt instead of an inherited
 ## session, which `inherit_if_available` does not promise.
@@ -256,15 +254,14 @@ forge:
                              # what gets the head this run created re-reviewed.
   secret: forge_token
 
-# Start from Revi's review of the same PR when one exists, instead of
-# re-deriving it. The explicit producer binding keeps another bot's review from
-# being substituted; with no readable Revi review the var stays empty and the
-# campaign reviews from scratch.
+# Start from a review of the same PR when one exists, instead of re-deriving
+# it. Matched BY KIND, so whichever bot reviewed supplies it — Billy's manifest
+# names no reviewer, and Billy still runs perfectly well with no prior review
+# (the var defaults to empty and the campaign reviews from scratch).
 consumes:
   - kind: review
     var: prior_review
     scope: pr
-    from: review-pr
 
 # The reply half: what became of each finding it was handed. A later review of
 # the same PR is given this, so a finding it already contested (with an

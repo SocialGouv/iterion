@@ -222,10 +222,11 @@ type Manifest struct {
 
 	// Produces / Consumes declare the RUN-TO-RUN hand-off: what a bot leaves
 	// behind that a later run can start from, and what a bot wants handed to it
-	// at launch. They match BY KIND by default, and a consumer may narrow that
-	// match to one producer bot id with `from`. Both are declarative, so the
-	// engine knows no specific bot; kind-only consumers accept another reviewer
-	// or fixer that declares the same kind.
+	// at launch. They are matched BY KIND — a shared vocabulary, never a bot id
+	// — so a reviewer and a fixer cooperate without either manifest naming the
+	// other, and a second reviewer or a second fixer joins by declaring the same
+	// kind. Same shape as the merge gate's `gate_context`: one agreed name,
+	// filled by whoever plays the role.
 	Produces []ProducedArtifact `yaml:"produces,omitempty"`
 	Consumes []ConsumedArtifact `yaml:"consumes,omitempty"`
 
@@ -496,9 +497,6 @@ type ConsumedArtifact struct {
 	Var string `yaml:"var" json:"var"`
 	// Scope selects the upstream run. Defaults to HandoffScopePR.
 	Scope HandoffScope `yaml:"scope,omitempty" json:"scope,omitempty"`
-	// From optionally restricts eligible upstream runs to this producer bot id.
-	// Empty preserves the kind-only lookup; a miss never falls back to another bot.
-	From string `yaml:"from,omitempty" json:"from,omitempty"`
 }
 
 // BundleExports is the public workflow surface of a bundle.
@@ -1315,9 +1313,6 @@ func validateHandoff(produces []ProducedArtifact, consumes []ConsumedArtifact) e
 		}
 		if strings.TrimSpace(c.Var) == "" {
 			return fmt.Errorf("consumes: kind %q declares no var to stamp the result into", c.Kind)
-		}
-		if c.From != strings.TrimSpace(c.From) {
-			return fmt.Errorf("consumes: from %q must equal its trimmed form", c.From)
 		}
 		if c.EffectiveScope() != HandoffScopePR {
 			return fmt.Errorf("consumes: unknown scope %q (known: %s)", c.Scope, HandoffScopePR)

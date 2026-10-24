@@ -125,9 +125,8 @@ as such:
 
 - **The engine stays bot-agnostic.** A new bot is a bundle, never an engine
   PR. Run-to-run hand-off is declared with `produces:` / `consumes:` and
-  matched **by kind** (`review`, `review_ledger`) by default; an optional
-  `consumes.from` pins a producer through the same generic seam. Adding a
-  second reviewer is a bundle, and kind-only consumers can use it.
+  matched **by kind** (`review`, `review_ledger`), so neither manifest names
+  the other bot. Adding a second reviewer is a bundle.
 - **Stack knowledge lives in skills.** A universal code bot adds a language by
   dropping `skills/lang-<id>.md` — zero DSL edits, with a deterministic gate
   verifying the coverage actually happened.
