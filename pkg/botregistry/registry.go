@@ -97,8 +97,8 @@ type Entry struct {
 	// Produces / Consumes mirror the manifest's run-to-run hand-off blocks:
 	// what this bot leaves behind for a later run, and what it wants handed to
 	// it at launch. Carried by discovery because the hand-off is resolved AT
-	// LAUNCH. Kind matching and the optional ConsumedArtifact.From producer
-	// binding are data, so the engine never names a specific bot.
+	// LAUNCH, when the only thing known is the bot's name — matching a consumer
+	// to a producer by KIND is what keeps the engine from naming either bot.
 	Produces []bundle.ProducedArtifact `json:"produces,omitempty" yaml:"produces,omitempty"`
 	Consumes []bundle.ConsumedArtifact `json:"consumes,omitempty" yaml:"consumes,omitempty"`
 

@@ -714,16 +714,15 @@ re-derives it from three scattered sections. This is that place
   gates merges ([`pkg/forge/orchestrator.go`](../pkg/forge/orchestrator.go)),
   so this is the default posture, not something each repo has to remember
   to enable for the loop to close.
-- **Hand-off by declaration: KIND by default, optional producer binding.**
-  Revi produces a `review`; Billy consumes that kind with `from: review-pr`,
-  so another bot's review is never substituted and no readable Revi review
-  means an empty seed. In reply, Billy produces a `review_ledger` that Revi
-  consumes by kind. The generic mechanism is documented in
+- **Hand-off by KIND, never by bot id.** A reviewer's `produces: kind:
+  review` and a fixer's `consumes: kind: review_ledger` are what let Billy
+  start from Revi's findings and answer them back, with neither manifest
+  naming the other bot — the generic mechanism documented in
   [agents/bots/bot-authoring.md](agents/bots/bot-authoring.md)'s "The ENGINE stays
   bot-agnostic" section and exercised end to end in
   [revi-billy-loop.md](revi-billy-loop.md#what-the-command-seeds).
-  Adding a second reviewer or fixer is a bundle, never an engine PR; kind-only
-  consumers can use it, while an explicit `from:` opts out of substitution.
+  Adding a second reviewer or a second fixer is a bundle, never an engine
+  PR.
 
 - **The pause notice names the parked run's role.** A run that parks on a
   provider quota gets [a comment naming when it resumes](#a-paused-review-says-so-on-the-pr),
