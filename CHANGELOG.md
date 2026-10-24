@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.286.2](https://github.com/SocialGouv/iterion/compare/v3.286.1...v3.286.2) (2026-10-24)
+
+### Bug Fixes
+
+* preserve the deepsec export schema ([#2592](https://github.com/SocialGouv/iterion/issues/2592)) ([bd9f649](https://github.com/SocialGouv/iterion/commit/bd9f649a03ee6d39e18c0cc7c83857a400e54a03))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 7 local (announced 6, ceiling 20) Adversarial-Model: kimi-code
+
+    </details>
+
 ## [3.286.1](https://github.com/SocialGouv/iterion/compare/v3.286.0...v3.286.1) (2026-10-24)
 
 ### Bug Fixes
