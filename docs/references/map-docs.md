@@ -186,7 +186,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/testing/README.md`](../agents/testing/README.md) | Testing — the domain | — | — |
 | [`docs/agents/testing/engine-contracts.md`](../agents/testing/engine-contracts.md) | Engine contracts — testing an external CLI against the real pinned binary | for rgaa-audit today; deepsec for sec-audit-source was the counter-example), | — |
 | [`docs/agents/testing/flakes.md`](../agents/testing/flakes.md) | Machine-dependent tests — annotate, measure, re-check | A machine-dependent failure stays visible. | — |
-| [`docs/agents/testing/testing.md`](../agents/testing/testing.md) | Testing patterns — the helpers, and the traps that ejected PRs | How tests are written here, and the four failure modes that cost real merge-queue | — |
+| [`docs/agents/testing/testing.md`](../agents/testing/testing.md) | Testing patterns — the helpers, and the traps that ejected PRs | Testing patterns and failure modes: a git subprocess that outlives its temp dir, a run whose workspace is the | — |
 | [`docs/agents/workflow/README.md`](../agents/workflow/README.md) | Workflow — how work reaches `main` | Board mechanics live in [../../board-epics.md](../board-epics.md); the | — |
 | [`docs/agents/workflow/adversarial-review-loop.md`](../agents/workflow/adversarial-review-loop.md) | The local adversarial round — what iterion requires, and who pays for it | scoping a round, the seven things the subagent prompt must carry, verifying the | — |
 | [`docs/agents/workflow/billy.md`](../agents/workflow/billy.md) | Billy is paused — the zero-touch fixer lane, and its re-arm | State and re-arm procedure for this repository. | — |
@@ -201,6 +201,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/async-interaction.md`](../async-interaction.md) | Async human interaction — ask, keep working, sync later | ADR: [081-async-human-interaction](../adr/081-async-human-interaction.md) | — |
 | [`docs/attachments.md`](../attachments.md) | Attachments — file & image inputs | The `attachments:` block lets a workflow declare binary inputs (files, | — |
 | [`docs/auto-maintenance.md`](../auto-maintenance.md) | Auto-maintenance — wiring a repository so its dependencies update themselves | The goal: a repository receives its dependency updates, aligns its own code | — |
+| [`docs/backend-capability-registry.md`](../backend-capability-registry.md) | Backend capability registry — seed and review contract | `pkg/backend/backendcaps` is the declarative leaf shared by compiler and runtime. | — |
 | [`docs/backends.md`](../backends.md) | 🤝 Backends and credential auto-detection | A backend is the executor iterion routes a node to — either the in-process | — |
 | [`docs/board-epics.md`](../board-epics.md) | 🗂️ Runbook — the GitHub board's epics | anchor, and a leading emoji slugs differently on GitHub than in VitePress. | — |
 | [`docs/bot-bundle-snapshots.md`](../bot-bundle-snapshots.md) | Cloud bot bundle snapshots | A cloud launch resolved through the server's bot authority freezes one bundle | — |

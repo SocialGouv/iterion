@@ -59,7 +59,7 @@ func restrictedPATH(t *testing.T, tools ...string) string {
 				if os.Getenv("CI") != "" {
 					t.Fatalf("%s — the modernize guard tests would skip into a green no-op", msg)
 				}
-				t.Skip(msg)
+				t.Skipf("[tool] restricted PATH cannot run the host shim: %s", msg)
 			}
 		}
 		if err := os.Symlink(p, filepath.Join(dir, tool)); err != nil {

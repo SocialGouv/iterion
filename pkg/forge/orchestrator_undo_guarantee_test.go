@@ -391,7 +391,7 @@ func TestProvision_UndoGuaranteeMatrix(t *testing.T) {
 	for _, p := range undoFailurePoints() {
 		for _, k := range undoFailureKinds() {
 			if why, skip := p.skips[k.name]; skip {
-				t.Run(p.name+"/"+k.name, func(t *testing.T) { t.Skip(why) })
+				t.Run(p.name+"/"+k.name, func(t *testing.T) { t.Skipf("[fixture] matrix combination is inapplicable: %s", why) })
 				continue
 			}
 			t.Run(p.name+"/"+k.name, func(t *testing.T) {

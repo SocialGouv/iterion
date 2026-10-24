@@ -293,6 +293,24 @@ jobs:
       - name: go vet
         run: go vet -mod=vendor ./...
 
+      - name: Test capability census
+        if: always()
+        # Static inventory is identical locally; runner observations contain
+        # boolean prerequisite presence only, never credential values.
+        run: |
+          go run -mod=vendor ./scripts/ci/testcaps -observe
+          cat .iterion/test-capabilities/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish test capabilities
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-capabilities-unit
+          path: .iterion/test-capabilities/
+          include-hidden-files: true # the census lives under .iterion
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Unit tests
         # `./...` includes the e2e package, which has its own job (test-e2e)
         # with its own budget; running it here too doubled the wall-clock AND

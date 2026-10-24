@@ -1,13 +1,12 @@
 # Testing patterns — the helpers, and the traps that ejected PRs
 
-How tests are written here, and the four failure modes that cost real merge-queue
-time: a git subprocess that outlives its temp dir, a run whose workspace is the
+Testing patterns and failure modes: a git subprocess that outlives its temp dir, a run whose workspace is the
 operator's own checkout, Mongo conformance that only runs in CI, and a UI suite
 that touches the operator's store.
 
-**Before anything else, read [The proof discipline](#the-proof-discipline)
-below**: which layer proves your change, and when a session is expected to
-spend LLM money to find out.
+**Read [The proof discipline](#the-proof-discipline)** before choosing a layer.
+[Capability census](../../test-capability-ledger.md): generate skip reasons,
+sleep bounds and runner observations with `task test:capabilities`.
 
 ## The proof discipline
 

@@ -91,6 +91,11 @@ tasks:
       ## review stage that refuses to read a red tree).
       - go test -timeout 1200s ./...
 
+  test:capabilities:
+    desc: Generate the deterministic skip and sleep census (.iterion/test-capabilities); pass -- -observe for runner prerequisites
+    cmds:
+      - go run -mod=vendor ./scripts/ci/testcaps {{.CLI_ARGS}}
+
   test:verbose:
     desc: Run all unit tests with verbose output
     deps: [templates:dispatch-bots]
