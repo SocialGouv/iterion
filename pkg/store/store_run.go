@@ -502,6 +502,11 @@ func (s *FilesystemRunStore) UpdateRunStatusIfCoded(ctx context.Context, id stri
 	if !matched {
 		return false, nil
 	}
+	// A cancel cannot prove that an undecided command stopped. Keep its
+	// failure and checkpoint atomically, including when the caller read running.
+	if status == RunStatusCancelled && r.FailureCode == FailureAmbiguousEffect {
+		return false, nil
+	}
 	if err := s.applyStatusTransition(r, status, runErr, code); err != nil {
 		return false, err
 	}
@@ -625,6 +630,11 @@ func (s *FilesystemRunStore) UpdateRunOutcome(_ context.Context, id string, stat
 		if !matched {
 			return false, nil
 		}
+	}
+	// A cancel cannot prove that an undecided command stopped. Keep its
+	// failure and checkpoint atomically, including when the caller read running.
+	if status == RunStatusCancelled && r.FailureCode == FailureAmbiguousEffect {
+		return false, nil
 	}
 	if err := s.applyStatusTransitionOutcome(r, status, runErr, meta); err != nil {
 		return false, err
@@ -798,6 +808,9 @@ func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, run
 // its own flip replaced (RevertQueuedFlip), the episode and continuation
 // included.
 func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStatus, runErr string, meta RunOutcomeMeta) error {
+	if status == RunStatusCancelled && r.FailureCode == FailureAmbiguousEffect {
+		return nil
+	}
 	transitionRunStatus(r, status, runErr, meta)
 	return s.writeRun(r)
 }
@@ -974,7 +987,8 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 // outranks a failure racing in behind it — the two race whenever an
 // interruption and a cancel arrive together, and the failure would win
 // simply by writing last, auto-resuming a run somebody deliberately
-// stopped.
+// stopped. An ambiguous effect is the exception: it cannot auto-resume, and
+// a cancel is no evidence that the command stopped.
 func (s *FilesystemRunStore) failRunCheckpointed(id string, status RunStatus, cp *Checkpoint, runErr string, code FailureCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -983,7 +997,7 @@ func (s *FilesystemRunStore) failRunCheckpointed(id string, status RunStatus, cp
 	if err != nil {
 		return err
 	}
-	if r.Status == RunStatusCancelled {
+	if r.Status == RunStatusCancelled && code != FailureAmbiguousEffect {
 		return nil
 	}
 	r.Checkpoint = cp

@@ -540,16 +540,10 @@ func (s *Service) Stop(ctx context.Context) {
 //     runtime.ErrServerDraining.
 //  2. Snapshots active handles and cancels each one.
 //  3. Waits on each handle's done channel up to ctx's deadline.
-//  4. For every run that was active at the moment of Drain — whether
-//     its goroutine exited cleanly within the deadline or not —
-//     emits EventRunInterrupted and flips the persisted status to
-//     failed_resumable with reason "server drained".
-//
-// The status flip happens regardless of clean exit so the on-disk
-// state is unambiguous; the runtime's own failure event (typically
-// EventRunFailed with cause "context canceled") may also land in
-// the same events.jsonl, which is acceptable telemetry noise — both
-// events accurately describe what happened.
+//  4. For each snapshot run still running or cancelled by the local stop,
+//     atomically writes failed_resumable with reason "server drained" and
+//     emits EventRunInterrupted. A verdict the engine already recorded — in
+//     particular an undecided effect — keeps its own classification.
 //
 // Drain is intended to be called once during process shutdown. After
 // it returns, the service should not be used to launch new work.
@@ -581,9 +575,8 @@ func (s *Service) Drain(ctx context.Context) {
 
 // markRemainingInterrupted marks every snapshot handle as interrupted.
 // Used on the deadline-exceeded path where we can't tell which
-// individual handles are still live without re-snapshotting; flipping
-// all of them is idempotent (UpdateRunStatus tolerates the run already
-// being in a terminal state — it just rewrites the status).
+// individual handles are still live without re-snapshotting. The same CAS
+// preserves a verdict that arrived while shutdown waited.
 func (s *Service) markRemainingInterrupted(handles []HandleSnapshot) {
 	for _, h := range handles {
 		s.markInterrupted(h.RunID)
@@ -611,8 +604,8 @@ const (
 	ReasonProcessOrphaned = "process orphaned: server restart found run in 'running' state"
 )
 
-// markInterrupted emits EventRunInterrupted and flips the run's status
-// to failed_resumable with reason "server drained". Errors are logged
+// markInterrupted flips a running or locally cancelled run to failed_resumable
+// with reason "server drained", then emits EventRunInterrupted if changed. Errors are logged
 // at warn level — drain must not abort over a single run's bookkeeping.
 //
 // Drain is a system-level operation that writes housekeeping events
@@ -623,15 +616,24 @@ const (
 func (s *Service) markInterrupted(runID string) {
 	const reason = ReasonServerDrained
 	ctx := store.WithoutTenantFilter(context.Background())
+	// A local cancel stops the engine as cancelled; a running handle may
+	// have outlived the drain deadline. Only those two need the interruption
+	// verdict. A failure written during the wait already explains its end.
+	changed, err := s.store.UpdateRunStatusIfCoded(ctx, runID, store.RunStatusFailedResumable, reason, store.FailureInterrupted,
+		[]store.RunStatus{store.RunStatusRunning, store.RunStatusCancelled})
+	if err != nil {
+		s.logger.Warn("runview: drain: update status for %s: %v", runID, err)
+		return
+	}
+	if !changed {
+		return
+	}
 	if _, err := s.store.AppendEvent(ctx, runID, store.Event{
 		Type:  store.EventRunInterrupted,
 		RunID: runID,
 		Data:  map[string]any{"reason": reason},
 	}); err != nil {
 		s.logger.Warn("runview: drain: append run_interrupted for %s: %v", runID, err)
-	}
-	if err := s.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, reason, store.FailureInterrupted); err != nil {
-		s.logger.Warn("runview: drain: update status for %s: %v", runID, err)
 	}
 }
 

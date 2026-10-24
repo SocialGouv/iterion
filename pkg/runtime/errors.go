@@ -86,10 +86,43 @@ type AmbiguousEffect interface {
 
 // IsAmbiguousEffect reports whether err — or any error it wraps — declares
 // its remote effect undecided. It is the ONE reading of the interface, so a
-// second call site cannot drift into a different rule.
+// second call site cannot drift into a different rule. A RuntimeError read
+// from a run document also carries this fact in its persisted code.
 func IsAmbiguousEffect(err error) bool {
 	var amb AmbiguousEffect
-	return errors.As(err, &amb) && amb.AmbiguousEffect()
+	if errors.As(err, &amb) && amb.AmbiguousEffect() {
+		return true
+	}
+	var rt *RuntimeError
+	if errors.As(err, &rt) && rt != nil && rt.Code == ErrCodeAmbiguousEffect {
+		return true
+	}
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, cause := range wrapped.Unwrap() {
+			if IsAmbiguousEffect(cause) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return IsAmbiguousEffect(wrapped.Unwrap())
+	case interface{ As(any) bool }:
+		// Redaction hides Unwrap from reporters but preserves As. Read the
+		// represented error's structure without exposing its unredacted text.
+		var many interface{ Unwrap() []error }
+		if wrapped.As(&many) && many != nil {
+			for _, cause := range many.Unwrap() {
+				if IsAmbiguousEffect(cause) {
+					return true
+				}
+			}
+		}
+		var one interface{ Unwrap() error }
+		if wrapped.As(&one) && one != nil {
+			return IsAmbiguousEffect(one.Unwrap())
+		}
+	}
+	return false
 }
 
 // RuntimeError is a structured error carrying a machine-readable code,

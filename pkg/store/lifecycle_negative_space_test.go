@@ -267,6 +267,7 @@ var negativeSpaceAllowlist = map[string]allowEntry{
 	"pkg/runview/rewind.go :: Cancelled+Failed+FailedResumable+PausedOperator+PausedWaitingHuman+Queued": {[]string{"<pkg-level>"}, "rewindableStatuses: deliberately wider than CanOperatorResume (failed stays rewindable, queued claimable)"},
 	"pkg/runview/service_control.go :: FailedResumable+PausedOperator+PausedWaitingHuman":                {[]string{"CancelInactiveCtx"}, "flippable arm: queued has its own case, failed deliberately excluded, no running"},
 	"pkg/runview/service_control.go :: Cancelled+Failed+Finished":                                        {[]string{"QueueMessage"}, "inbox refuse set: failed_resumable deliberately ACCEPTED (drained on resume)"},
+	"pkg/runview/service_lifecycle.go :: Cancelled+Running":                                              {[]string{"markInterrupted"}, "drain owns a still-running handle or its local cancel; a recorded engine verdict wins"},
 	"pkg/runview/service_lifecycle.go :: PausedWaitingHuman+Running":                                     {[]string{"sandboxContainerReapable"}, "keep-set: documented wider-than-IsTerminal reaping (paused_operator reapable)"},
 	"pkg/runview/subbot.go :: Cancelled+Failed+FailedResumable":                                          {[]string{"AwaitSubbotTerminal", "ReattachSubbotChild"}, "subbot outcome routing: failure-trio → clear + rerun fresh"},
 

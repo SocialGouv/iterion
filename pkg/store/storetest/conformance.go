@@ -74,6 +74,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("ParallelCheckpointRoundTrip", func(t *testing.T) { testParallelCheckpointRoundTrip(t, factory(t)) })
+	t.Run("AmbiguousCancellation", func(t *testing.T) { testAmbiguousCancellation(t, factory(t)) })
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
 	t.Run("EndReasonLifecycle", func(t *testing.T) { testEndReasonLifecycle(t, factory(t)) })
 	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })

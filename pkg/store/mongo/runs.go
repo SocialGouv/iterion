@@ -1332,6 +1332,16 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 // UpdateRunStatusCoded is UpdateRunStatus carrying the typed failure
 // classification in the same atomic write.
 func (s *Store) UpdateRunStatusCoded(ctx context.Context, id string, status store.RunStatus, runErr string, code store.FailureCode) error {
+	if status == store.RunStatusCancelled {
+		changed, err := s.UpdateRunOutcome(ctx, id, status, runErr, store.RunOutcomeMeta{Code: code}, nil)
+		if err != nil || changed {
+			return err
+		}
+		// No match can mean an undecided effect, or a missing run. Preserve
+		// the former without concealing the latter.
+		_, err = s.LoadRun(ctx, id)
+		return err
+	}
 	pipeline := statusTransitionPipeline(statusTransitionSet(status, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC()))
 	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), pipeline,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: update status %s", id))
@@ -1345,6 +1355,9 @@ func (s *Store) UpdateRunOutcome(ctx context.Context, id string, status store.Ru
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
 	if len(expectedFrom) > 0 {
 		filter["status"] = bson.M{"$in": expectedFrom}
+	}
+	if status == store.RunStatusCancelled {
+		filter["failure_code"] = bson.M{"$ne": store.FailureAmbiguousEffect}
 	}
 	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(pipeline))
 	if err != nil {
@@ -1375,6 +1388,9 @@ func (s *Store) UpdateRunStatusIfCoded(ctx context.Context, id string, status st
 	pipeline := statusTransitionPipeline(statusTransitionSet(status, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC()))
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
 	filter["status"] = bson.M{"$in": expectedFrom}
+	if status == store.RunStatusCancelled {
+		filter["failure_code"] = bson.M{"$ne": store.FailureAmbiguousEffect}
+	}
 	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(pipeline))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: update status if %s: %w", id, err)
@@ -1735,7 +1751,8 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 // checkpoint, guarded by the atomic cancelled-wins filter — an
 // operator cancel is terminal and outranks a failure racing in behind
 // it, and the failure would win simply by writing last, auto-resuming
-// a run somebody deliberately stopped.
+// a run somebody deliberately stopped. An ambiguous effect cannot auto-resume
+// and must stay visible even if the cancel was written first.
 func (s *Store) failRunCheckpointed(ctx context.Context, id string, status store.RunStatus, cp *store.Checkpoint, runErr string, code store.FailureCode, opName string) error {
 	set := statusTransitionSet(status, runErr, store.RunOutcomeMeta{Code: code}, time.Now().UTC())
 	// The whole-checkpoint $set replaces statusTransitionSet's
@@ -1757,7 +1774,10 @@ func (s *Store) failRunCheckpointed(ctx context.Context, id string, status store
 	} else {
 		set["checkpoint"] = nil
 	}
-	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}}))
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	if code != store.FailureAmbiguousEffect {
+		filter["status"] = bson.M{"$ne": store.RunStatusCancelled}
+	}
 	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(statusTransitionPipeline(set)))
 	if err != nil {
 		return fmt.Errorf("store/mongo: %s %s: %w", opName, id, err)

@@ -429,6 +429,9 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 
 // wrapContextErr wraps a context error for branch-level reporting.
 func (e *Engine) wrapContextErr(ctxErr error) error {
+	if IsAmbiguousEffect(ctxErr) {
+		return ctxErr
+	}
 	if errors.Is(ctxErr, context.Canceled) {
 		return fmt.Errorf("%w: %v", ErrRunCancelled, ctxErr)
 	}

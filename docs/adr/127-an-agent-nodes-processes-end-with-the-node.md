@@ -285,6 +285,45 @@ client, and nothing in the pod.
 8. **A tool node that backgrounds work and exits 0 stays legitimate:** a
    proven end sweeps nothing, on a cancel too.
 
+### Classification through cancellation and reattachment (#2660)
+
+The existing `AMBIGUOUS_EFFECT` classification reaches these boundaries too:
+
+- **Fan-out** (`fan_out_all`, `fan_out_each`, an LLM router's `multi`): the
+  collector classifies its results before returning a parent cancel, drain or
+  deadline. An undecided result keeps its code through `wrapContextErr`. A
+  branch that has not returned after the cancellation grace is also undecided;
+  its `branch_abandoned` event carries the code, and the run stops before the
+  join, even under `best_effort` or beside a human pause. This includes every
+  branch cancellation: parent stop, sibling failure, budget refusal and pause.
+  The grace remains five seconds (`ITERION_BRANCH_CANCEL_GRACE` overrides it);
+  a cancelled sandbox sweep can take ten seconds plus two for its client.
+  Increasing the grace can let the sweep settle; expiry never proves it did.
+  The service's drain also preserves the engine's recorded failure rather
+  than replacing its code with `INTERRUPTED`.
+- **A subbot read from its run document** keeps its `FailureCode` in a
+  `RuntimeError`. `IsAmbiguousEffect` reads the persisted code as well as
+  the original cause, including ordinary wrappers, joined errors and the
+  executor's redaction wrapper (which preserves `As` but hides `Unwrap`).
+  Recovery therefore refuses a retry. Reattachment returns that failure and
+  keeps the child binding; it does not start a fresh child beside it. Ordinary
+  failed children keep their existing fresh-child behaviour.
+- **Cloud cancellation**, in either write order: the filesystem and Mongo
+  stores let an ambiguous failure replace `cancelled`, with its checkpoint,
+  and atomically refuse cancellation over the ambiguous failure. The publisher
+  treats that refusal as a settled result, including a failure written between
+  its read and its CAS. An ordinary failure still loses to an operator cancel.
+- **Other engine execs** remain an explicit residual, inventoried below the
+  sandbox reference. A `WriteFileExec` receipt proves delivery but its missing
+  receipt alone does not run a sweep or declare an `AmbiguousEffect`.
+
+Witnesses: `TestFanOutStopsOnUndecidedEffects` crosses the three fan-out forms,
+six stop causes and both sides of the grace; `TestAwaitSubbotPreservesFailureCode`
+and `TestReattachSubbotKeepsUndecidedChild` exercise the stored-child boundary;
+`AmbiguousCancellation` in the shared store conformance suite and
+`TestCloudCancelPreservesUndecidedFailure` exercise both write orders and the
+publisher's read/CAS race. Their comments name the production mutations.
+
 ### Consequences
 
 - A gate whose exec session is lost fails loudly, and the command it started
@@ -296,29 +335,11 @@ client, and nothing in the pod.
 - Cost: one `sh` per sandboxed tool command; for an unknown end, one exec per
   sweep attempt; one line on the writer's stdout.
 - Residuals:
-  - a fan-out drops an undecided branch in two cases: the parent's own cancel,
-    drain or deadline ends the fan-out before it reads its branches' results
-    (the fan-out, the per-item fan-out, a router's `multi`); and any cancel
-    the fan-out sends its branches — a `wait_all` sibling's failure, a budget
-    refusal in any await mode, a sibling's human pause — abandons a branch
-    whose sweep outlasts the branch cancel grace (five seconds, where a
-    cancelled sweep may take its ten, and two more for its client). The run
-    then records the other end — a failure, a budget wall, a pause — which a
-    resume, a raised cap or an answer re-drives;
-  - a subbot child read back from its record — one that paused at a human
-    gate, was resumed and then ended undecided — reaches its parent as plain
-    text: the parent records `EXECUTION_FAILED`, and recovery may run a fresh
-    child. The runner's, the CLI's and the dispatcher's subbot waits rebuild
-    the child's error the same way;
-  - an operator cancel in the cloud: the publisher writes `cancelled` before
-    the engine sees the cancel, and the resumable failure write skips a
-    cancelled run, so the run's record says `CANCELLED` while its events say
-    `AMBIGUOUS_EFFECT`. Nothing resumes a cancelled run on its own; a human
-    reading the record alone does not see the undecided effect;
-  - the engine's other execs into the sandbox — the workspace checkpoints
-    (`git add -A` and the commit), the scratch bank, the capture of the
-    workspace head, the git fixups — still take the client's status for the
-    command's end. Closing them takes the same completion at the drivers' exec;
+  - the engine's other execs into the sandbox still take the client's status
+    for the command's end. The [inventory](../sandbox.md#engine-exec-inventory-2660)
+    names 20 internal `Run.Exec` sites and two direct tar execs, their readers,
+    and the remaining proof obligations; adding completion at `Run.Exec` alone
+    does not cover the tar transports or readers that discard the error;
   - a run whose end stayed ambiguous is torn down as any failed run: its
     workspace is exported and banked while the command may still be writing.
     A human reconciles it before reusing the bank;

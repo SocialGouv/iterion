@@ -3942,7 +3942,7 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: load run %s: %w", runID, err)
 	}
-	if !r.Status.CanBeCancelled() {
+	if !r.Status.CanBeCancelled() || r.FailureCode == store.FailureAmbiguousEffect {
 		return nil // already settled
 	}
 	// CAS on the cancellable statuses. A SubmitResume that races this
@@ -3977,7 +3977,7 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 		// should surface for the operator to retry.
 		r2, _ := p.store.LoadRun(ctx, runID)
 		if r2 != nil {
-			if !r2.Status.CanBeCancelled() {
+			if !r2.Status.CanBeCancelled() || r2.FailureCode == store.FailureAmbiguousEffect {
 				return nil
 			}
 			return fmt.Errorf("cloudpublisher: cancel raced (status now %s) — retry", r2.Status)

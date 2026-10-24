@@ -13,10 +13,10 @@ import (
 
 // branchCancelGracePeriod bounds how long the fan-out collector waits,
 // after cancellation, for still-running branches to honour ctx and
-// return. Branches that observe ctx (the production backends kill their
-// subprocess / abort the stream) return well within this; the bound only
-// matters for a branch wedged in executor.Execute that ignores ctx —
-// without it the collector would block forever on that branch's result.
+// return. A cancelled sandbox sweep can outlast this grace. A branch that
+// has not returned when it expires is an ambiguous effect: the collector
+// cannot prove its command stopped. The bound keeps a wedged executor from
+// holding the collector forever; it never makes a missing result safe.
 // A package var so tests can shorten it; operators tune it via
 // ITERION_BRANCH_CANCEL_GRACE (a Go duration, e.g. "30s") when their
 // backends need longer to unwind on cancellation.
@@ -317,7 +317,8 @@ func pausedBranchError(results []*branchResult) error {
 
 // collectBranches drains one result per expected branch. It observes both the
 // parent ctx and the fan-out's internal branchCtx. Parent cancellation is
-// surfaced to the caller as ctx.Err(); internal cancellation (sibling failure,
+// surfaced to the caller as ctx.Err(), unless a branch is undecided. Internal
+// cancellation (sibling failure,
 // budget trip) only starts the bounded grace drain so the original branch
 // result is preserved. After cancellation it bounds the wait by
 // branchCancelGracePeriod, then abandons any still-running branches (their
@@ -365,10 +366,30 @@ func (e *Engine) collectBranches(ctx context.Context, branchCtx context.Context,
 			startGrace()
 		case <-graceCh:
 			if abandoned := total - collected; abandoned > 0 {
-				e.recordAbandonedBranches(rs, routerNodeID, mode, expected, results)
+				// Consume results already delivered at the grace boundary before
+				// declaring the remaining branches undecided.
+				for len(results) < total {
+					select {
+					case r := <-resultsCh:
+						results = append(results, r)
+					default:
+						goto drained
+					}
+				}
+			drained:
+				results = e.recordAbandonedBranches(rs, routerNodeID, mode, expected, results)
 			}
 			collected = total
 		}
+	}
+	if amb := firstAmbiguousBranchErr(byBranchID(results)); amb != nil {
+		return results, &RuntimeError{
+			Code: ErrCodeAmbiguousEffect, NodeID: routerNodeID,
+			Message: "fan-out stops on an undecided branch", Cause: amb,
+		}
+	}
+	if ctxErr == nil {
+		ctxErr = ctx.Err()
 	}
 	return results, ctxErr
 }
@@ -378,7 +399,7 @@ func (e *Engine) collectBranches(ctx context.Context, branchCtx context.Context,
 // non-cancellable ctx: abandonment happens precisely when the run/fan-out
 // context is already cancelled, and a ctx-sensitive store (Mongo) would
 // otherwise drop the very event that documents the leak.
-func (e *Engine) recordAbandonedBranches(rs *runState, routerNodeID, mode string, expected []string, results []*branchResult) {
+func (e *Engine) recordAbandonedBranches(rs *runState, routerNodeID, mode string, expected []string, results []*branchResult) []*branchResult {
 	returned := make(map[string]bool, len(results))
 	for _, r := range results {
 		if r != nil {
@@ -390,10 +411,18 @@ func (e *Engine) recordAbandonedBranches(rs *runState, routerNodeID, mode string
 		if returned[branchID] {
 			continue
 		}
+		results = append(results, &branchResult{
+			branchID: branchID,
+			err: &RuntimeError{
+				Code: ErrCodeAmbiguousEffect, NodeID: branchID,
+				Message: fmt.Sprintf("branch %s has no result after cancellation grace %s; its effect is undecided", branchID, branchCancelGracePeriod),
+			},
+		})
 		if e.logger != nil {
-			e.logger.Warn("%s from %s: abandoning branch %s still running %s after cancellation (wedged in executor.Execute?)", mode, routerNodeID, branchID, branchCancelGracePeriod)
+			e.logger.Warn("%s from %s: abandoning branch %s still running %s after cancellation without a settled result", mode, routerNodeID, branchID, branchCancelGracePeriod)
 		}
 		if err := e.emit(emitCtx, rs.runID, store.EventBranchAbandoned, branchID, map[string]any{
+			"code":         string(ErrCodeAmbiguousEffect),
 			"router":       routerNodeID,
 			"mode":         mode,
 			"grace_period": branchCancelGracePeriod.String(),
@@ -402,6 +431,7 @@ func (e *Engine) recordAbandonedBranches(rs *runState, routerNodeID, mode string
 			e.logger.Warn("%s from %s: emit branch_abandoned for %s: %v", mode, routerNodeID, branchID, err)
 		}
 	}
+	return results
 }
 
 // resolveConvergence picks the node the fan-out continues from and processes

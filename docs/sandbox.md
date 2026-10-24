@@ -1717,11 +1717,13 @@ Architecture:
   again, within three minutes, while its exec cannot reach the pod — and
   fails the node with `ExecStatusUnknownError`; when no sweep settles it, the
   failure is recorded as `AMBIGUOUS_EFFECT`, which recovery never retries and
-  the runner never redelivers, save on the paths the amendment lists as
-  residuals (a fan-out that drops the branch, a subbot child read back from
-  its record, an operator cancel in the cloud). Files
-  written into the pod (`WriteFileExec`) are size-checked and proven the same
-  way ([ADR-127 amendment](adr/127-an-agent-nodes-processes-end-with-the-node.md#amendment-2026-10-21--a-sandboxed-tool-node-proves-its-end)).
+  the runner never redelivers. The classification survives parent and branch
+  cancellation in every fan-out form, a child read from its run document, and
+  an operator cancel racing the cloud failure write. A branch abandoned after
+  cancellation grace is also undecided. Other engine execs remain inventoried
+  [residuals](#engine-exec-inventory-2660). Files written into the pod
+  (`WriteFileExec`) have a size-checked delivery receipt; a missing receipt
+  fails the write but does not itself sweep or classify an ambiguous effect ([ADR-127 amendment](adr/127-an-agent-nodes-processes-end-with-the-node.md#amendment-2026-10-21--a-sandboxed-tool-node-proves-its-end)).
 - Workspace is provided by an `emptyDir` volume mounted at
   `/workspace`, populated at pod start (V2) by tar-streaming the run's
   workspace (`RunInfo.WorkspacePath`) in via `kubectl exec` — the driver
@@ -2109,3 +2111,72 @@ Docker Desktop (macOS/Windows). For workflows with many short nodes
 the overhead is meaningful. Mitigation: run multiple delegate calls
 through the same long-lived container (already the case — iterion
 creates one container per *run*, not per node).
+
+
+## Engine exec inventory (#2660)
+
+The ADR-127 tool-command proof does not yet cover all engine commands in a
+container. This inventory lists the residuals explicitly; it does not claim
+that an exec client's exit status proves the remote command ended. Both
+`docker.Run.Exec` and `kubernetes.Run.Exec` call `sandbox.ExecCmd`, which reads
+only the client's `ProcessState.ExitCode` and normalizes `*exec.ExitError` into
+`ExecResult.ExitCode`. The `childPathRun` decorator forwards to these seams.
+
+The 20 internal `Run.Exec` call sites, excluding the driver implementations
+and forwarding decorator, are:
+
+| File and call-site line | Operation | Evidence and current error handling |
+|---|---|---|
+| `pkg/runner/loop_checkpoint.go:121` | `checkpointWorkspaceOnce`: add/commit | HEAD/tree/SHA tuple; error or missing tuple abandons the tick. |
+| `pkg/runner/loop_checkpoint.go:165` | Push checkpoint | Client status; error logged/emitted, a later tick can retry. |
+| `pkg/runner/loop_checkpoint.go:211` | `preserveSupersededCheckpoint`: ls-remote | Client status; empty stdout means absent; warning on error lets push continue. |
+| `pkg/runner/loop_checkpoint.go:230` | Fetch/push prior checkpoint | Client status; error logged/emitted. |
+| `pkg/runtime/scratch_bank.go:314` | `bankScratch`: list scratch | Client status; empty stdout can delete the previous bank. |
+| `pkg/runtime/scratch_bank.go:348` | Quiesce scratch writers | Client statuses 0/3/4; failure becomes an `unquiesced` reason. |
+| `pkg/runtime/scratch_bank.go:367` | Resume scratch writers | Client status; failure becomes `resumeFailed` text. |
+| `pkg/runtime/scratch_bank.go:419` | Archive scratch | Client status, tar warnings, size/cap; retries, no completion receipt. |
+| `pkg/runtime/scratch_bank.go:1064` | `restoreScratch` | Client status; 0 accepted, 5 is local refusal. |
+| `pkg/runtime/child_sandbox_resources.go:163` | `snapshotSharedChildResources`: snapshot **and** restore | Client status via `sharedResourceScriptError`. |
+| `pkg/runtime/child_sandbox_resources.go:228` | Clear borrowed resources | Client status; ordinary returned error. |
+| `pkg/runtime/child_sandbox_resources.go:287` | Install child devbox | Client status; failure recorded as provisioning diagnostic, otherwise PATH attached. |
+| `pkg/runtime/child_sandbox_resources.go:299` | Remove devbox staging | Client status; error only logged. |
+| `pkg/runtime/sandbox_secret_files.go:270` | Seed Claude/Codex forfait config | Client status; ordinary setup error. |
+| `pkg/backend/model/claw_host_forfait.go:144` | Remove forfait copy | Client status; error only logged. |
+| `pkg/backend/model/executor_tool.go:695` | Remove copied script | Result and error ignored. |
+| `pkg/sandbox/exec_helpers.go:77` | `RunPostCreate`, both drivers and runtime devbox provisioning | Client status; phase timeout, no completion receipt. |
+| `pkg/sandbox/execwrite.go:61` | `WriteFileExec` | Size + `iterion-written` receipt already checked; missing receipt returns bare `ErrExecStatusUnknown`, without sweep or ambiguous classification. |
+| `pkg/sandbox/kubernetes/driver.go:1217` | `CaptureWorkspaceHead` | Client status + nonempty stdout; failure becomes `WorkspaceIntegrity.CaptureErr`. |
+| `pkg/sandbox/kubernetes/driver.go:1539` | `fixupWorkspaceGit` | Client status only. |
+
+Two more execs **bypass `Run.Exec`**: Kubernetes `populateWorkspace`
+(`driver.go:1175`, pod tar extraction) and `exportOnce` (`driver.go:1476`, pod
+tar archive). Both call `kubectlCmdContext` directly and wait for the client;
+archive validation does not prove the remote process ended. Completion must
+preserve binary/streamed stdout rather than insert a line into an archive.
+
+Other `Run.Command` calls already have distinct protocols: the tool command
+builder in `pkg/backend/model/executor_tool.go` uses `Completion`; the sweeps
+in `pkg/sandbox/completion.go` and
+`pkg/backend/delegate/claude_code_sandbox_kill.go` parse explicit sweep reports.
+The delegated sessions (`claude_code.go`, `pi_rpc.go`, `cliagent.go`) and claw's
+in-container runner (`claw_backend.go`) retain ADR-127 session marking and
+teardown. A sweep must not recursively wrap itself in completion.
+
+The remaining `CommandContext` calls are not commands executed inside the
+sandbox: Docker build/create/remove/inspect/probes; Kubernetes
+apply/delete/wait/get/probes; host tar and git in the copy driver; host git in
+`pkg/runtime/worktree.go`, `pkg/runner/loop_gitws.go` and `pkg/git`; host devbox
+in `pkg/runtime/devbox_host.go`; and the noop driver's real host process.
+`childPathRun.Command` only forwards. Their host process exit status has a
+different meaning from a container exec client's status.
+
+A deterministic residual witness uses a fake `kubectl` whose entire body is
+`exit 0`. Calling `fixupWorkspaceGit` then leaves `.git/worktrees` untouched
+while returning nil; calling `runPostCreate` with `touch <owned marker>` leaves
+the marker absent while returning nil. Requiring `ErrExecStatusUnknown` makes
+both cases red. A production-path mutation that wraps `kubernetes.Run.Exec`
+with `Completion.Wrap` and checks `Settle` makes that witness green. That is a
+proof of the missing guard, **not** a complete fix: the sweep, streaming and
+binary stdout, direct tar execs, and consumers that discard or flatten errors
+remain to be implemented together before these routes claim
+`AMBIGUOUS_EFFECT` propagation.

@@ -168,3 +168,50 @@ func TestService_Stop_DoesNotFlipStatus(t *testing.T) {
 		t.Errorf("draining flag set after Stop, want false")
 	}
 }
+
+// Mutation: replace markInterrupted's CAS with an unconditional status write.
+func TestDrainRetainsUndecidedEffect(t *testing.T) {
+	t.Setenv("ITERION_ORPHAN_RECONCILE_INTERVAL", "0")
+	dir := t.TempDir()
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const id = "ambiguous-at-drain"
+	if _, err := svc.store.CreateRun(ctx, id, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, err := svc.manager.Register(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := make(chan error, 1)
+	go func() {
+		<-runCtx.Done()
+		failed <- svc.store.FailRunResumable(ctx, id, &store.Checkpoint{NodeID: "effect"}, "command still runs", store.FailureAmbiguousEffect)
+		svc.manager.Deregister(id)
+	}()
+	drainCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	svc.Drain(drainCtx)
+	if err := <-failed; err != nil {
+		t.Fatal(err)
+	}
+	events, err := svc.store.LoadEvents(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if ev.Type == store.EventRunInterrupted {
+			t.Error("drain emits interruption over an undecided effect")
+		}
+	}
+	r, err := svc.store.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.FailureCode != store.FailureAmbiguousEffect {
+		t.Fatalf("drain replaced undecided effect: status=%s code=%s error=%q", r.Status, r.FailureCode, r.Error)
+	}
+}

@@ -388,12 +388,16 @@ func ClearSubbotChild(ctx context.Context, rs store.RunStore, req runtime.Subbot
 //
 // Terminal semantics mirror AwaitSubbotTerminal: finished → its output;
 // paused/running/queued → park on it (external resume drives it to terminal);
-// failed/cancelled or a vanished child → spawn fresh.
+// ordinary failed/cancelled or a vanished child → spawn fresh; an undecided
+// child or a failed store read → preserve the binding and return the error.
 func ReattachSubbotChild(ctx context.Context, rs store.RunStore, req runtime.SubbotRequest, logger *iterlog.Logger) (out map[string]any, err error, handled bool) {
 	if req.ReattachKey == "" || req.ParentRunID == "" {
 		return nil, nil, false
 	}
 	parent, perr := rs.LoadRun(ctx, req.ParentRunID)
+	if perr != nil && !store.RunAbsent(perr) {
+		return nil, fmt.Errorf("subbot parent %s: load reattachment: %w", req.ParentRunID, perr), true
+	}
 	if perr != nil || parent == nil {
 		return nil, nil, false
 	}
@@ -402,6 +406,11 @@ func ReattachSubbotChild(ctx context.Context, rs store.RunStore, req runtime.Sub
 		return nil, nil, false
 	}
 	child, cerr := rs.LoadRun(ctx, childRunID)
+	if cerr != nil && !store.RunAbsent(cerr) {
+		// A failed read is no evidence that the child vanished. Keep its
+		// binding and refuse a fresh execution until its outcome is readable.
+		return nil, fmt.Errorf("subbot child %s: load reattachment: %w", childRunID, cerr), true
+	}
 	if cerr != nil || child == nil {
 		// The recorded child vanished (pruned) — drop the stale record and
 		// spawn fresh.
@@ -426,6 +435,10 @@ func ReattachSubbotChild(ctx context.Context, rs store.RunStore, req runtime.Sub
 		ClearSubbotChild(ctx, rs, req)
 		return out, nil, true
 	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
+		if child.FailureCode == store.FailureAmbiguousEffect {
+			// Keep the binding: a fresh child could duplicate its effect.
+			return nil, subbotChildFailure(child), true
+		}
 		// The prior child ended badly; the documented behaviour is to re-run
 		// the subbot fresh. Drop the record so the fresh child is re-recorded.
 		ClearSubbotChild(ctx, rs, req)
@@ -492,13 +505,22 @@ func AwaitSubbotTerminal(ctx context.Context, rs store.RunStore, childRunID stri
 		case store.RunStatusFinished:
 			return subbotChildOutput(ctx, rs, run)
 		case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
-			msg := run.Error
-			if msg == "" {
-				msg = string(run.Status)
-			}
-			return nil, fmt.Errorf("subbot child run %s ended %s after its pause: %s", childRunID, run.Status, msg)
+			return nil, subbotChildFailure(run)
 		}
 		// queued / running / paused_* → keep waiting.
+	}
+}
+
+// subbotChildFailure reconstructs the child's persisted classification, not
+// just its text: recovery and reattachment must still see an undecided effect.
+func subbotChildFailure(run *store.Run) error {
+	msg := run.Error
+	if msg == "" {
+		msg = string(run.Status)
+	}
+	return &runtime.RuntimeError{
+		Code:    run.FailureCode,
+		Message: fmt.Sprintf("subbot child run %s ended %s: %s", run.ID, run.Status, msg),
 	}
 }
 

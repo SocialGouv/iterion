@@ -84,7 +84,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [merge-policy.md](merge-policy.md) | The merge queue guarding `main`: how it works, the admin bypass and the incident fast lane, releases, measuring the queue, reverting. |
 | [review-merge-gate.md](review-merge-gate.md) | Review-environment conversation and final merge gate. |
 | [merge-gate.md](merge-gate.md) | The deterministic merge-gate check: verdicts, gate contexts, refusal and interruption repair, and the gate-switch procedure. |
-| [sandbox.md](sandbox.md) | Docker, Podman, and Kubernetes isolation, bot/repository `devbox.json` tool provisioning, and egress proxy policy. |
+| [sandbox.md](sandbox.md) | Docker, Podman, and Kubernetes isolation, devbox provisioning, egress policy, and ADR-127 undecided-effect propagation/engine-exec inventory. |
 | [scheduling.md](scheduling.md) | Cron schedules, sub-minute keepalive, overlap guards, and audit history. |
 | [dispatcher.md](dispatcher.md) | Tracker polling, leases, retries, hooks, and per-issue bot dispatch. |
 | [native-tracker.md](native-tracker.md) | File-backed kanban tracker used by the dispatcher and studio. |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -1302,21 +1303,16 @@ func TestFanOutInternalCancellationAbandonsWedgedBranch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: abandoned branch vs continuing main loop — runState contract
+// Test: abandoned branch vs terminal parent — runState contract
 // ---------------------------------------------------------------------------
 
-// TestFanOutAbandonedBranchDoesNotRaceRunState exercises the window the
-// runState concurrency contract calls out: after collectBranches
-// abandons a wedged branch on INTERNAL cancellation (best_effort, so
-// ctxErr is nil and the run continues), the main loop keeps executing —
-// including a loop-edge traversal that mutates rs.loopCounters — while
-// the abandoned branch goroutine is still alive and reading rs through
-// the resolution scope (branch.go currentLoopIteration). The test's
-// functional assertions are minimal; its value is running exactly this
-// interleaving under the CI -race job.
+// TestFanOutAbandonedBranchDoesNotRaceRunState keeps the abandoned branch
+// alive past the parent's failure checkpoint. The parent no longer continues
+// through best_effort beside an undecided branch (#2660); the late result must
+// neither replace its checkpoint nor permit the join to execute.
+// Mutation: remove the synthetic ambiguous result in recordAbandonedBranches;
+// the parent then executes the join instead of preserving its failure checkpoint.
 func TestFanOutAbandonedBranchDoesNotRaceRunState(t *testing.T) {
-	// Virtual time measures a blocked workflow, not how quickly the host
-	// schedules its goroutines or writes its temporary store.
 	synctest.Test(t, testFanOutAbandonedBranchDoesNotRaceRunState)
 }
 
@@ -1325,93 +1321,44 @@ func testFanOutAbandonedBranchDoesNotRaceRunState(t *testing.T) {
 	branchCancelGracePeriod = 100 * time.Millisecond
 	defer func() { branchCancelGracePeriod = oldGrace }()
 
-	wf := &ir.Workflow{
-		Name:  "abandoned_vs_mainloop",
-		Entry: "entry",
-		Nodes: map[string]ir.Node{
-			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
-			"router":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
-			"agent_a":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
-			"agent_b":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
-			"finalize": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "finalize"}, AwaitMode: ir.AwaitBestEffort, Publish: "verdict"},
-			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
-			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
-		},
-		Edges: []*ir.Edge{
-			{From: "entry", To: "router"},
-			{From: "router", To: "agent_a"}, {From: "router", To: "agent_b"},
-			{From: "agent_a", To: "finalize"}, {From: "agent_b", To: "finalize"},
-			{From: "finalize", To: "done", Condition: "stop"},
-			// The loop edge is the WRITE: traversing it increments
-			// rs.loopCounters on the main loop while the abandoned branch
-			// may still be reading.
-			{From: "finalize", To: "entry", Condition: "stop", Negated: true, LoopName: "again"},
-		},
-		Schemas: map[string]*ir.Schema{},
-		Prompts: map[string]*ir.Prompt{},
-		Vars:    map[string]*ir.Var{},
-		Loops: map[string]*ir.Loop{
-			"again": {Name: "again", MaxIterations: 2},
-		},
-		Budget: &ir.Budget{MaxParallelBranches: 2},
-	}
-
+	wf := fanOutWorkflow(ir.AwaitBestEffort)
 	wedgedStarted := make(chan struct{})
 	release := make(chan struct{})
-	var startedOnce, releaseOnce sync.Once
-	var pass atomic.Int64
-
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
-		return map[string]any{}, nil
-	})
-	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
-		if pass.Load() > 0 {
-			return map[string]any{}, nil // later iterations succeed
-		}
+	exec.on("agent_a", func(map[string]any) (map[string]any, error) {
 		<-wedgedStarted
-		// Budget errors cancel siblings even under best_effort — the
-		// internal-cancellation trigger that leads to abandonment.
 		return nil, ErrBudgetExceeded
 	})
-	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
-		if pass.Load() > 0 {
-			return map[string]any{}, nil
-		}
-		startedOnce.Do(func() { close(wedgedStarted) })
-		<-release // wedged: ignores ctx until released
+	exec.on("agent_b", func(map[string]any) (map[string]any, error) {
+		close(wedgedStarted)
+		<-release
+		return map[string]any{"late": true}, nil
+	})
+	exec.on("finalize", func(map[string]any) (map[string]any, error) {
+		t.Error("best_effort executes beside an abandoned branch")
 		return map[string]any{}, nil
 	})
-	exec.on("finalize", func(_ map[string]any) (map[string]any, error) {
-		stop := pass.Add(1) >= 2
-		// Wake the abandoned branch WHILE the main loop is mid-node —
-		// it resumes its per-node scope reads as the main loop goes on
-		// to traverse the loop edge (the loopCounters write).
-		releaseOnce.Do(func() { close(release) })
-		return map[string]any{"stop": stop}, nil
-	})
-
 	s := tmpStore(t)
-	eng := New(wf, s, exec)
-
-	done := make(chan error, 1)
-	go func() { done <- eng.Run(context.Background(), "run-abandoned-race", nil) }()
-	select {
-	case <-done:
-		// Outcome (success or budget failure) is secondary — the
-		// interleaving must simply complete without deadlock or race.
-	case <-time.After(5 * time.Second):
-		releaseOnce.Do(func() { close(release) })
-		t.Fatal("run hung: abandoned-branch continuation deadlocked the main loop")
+	err := New(wf, s, exec).Run(context.Background(), "run-abandoned-race", nil)
+	var rt *RuntimeError
+	if !errors.As(err, &rt) || rt.Code != ErrCodeAmbiguousEffect {
+		t.Errorf("abandonment returns %v, want AMBIGUOUS_EFFECT", err)
 	}
-	waitBranchFinished(t, s, "run-abandoned-race", "branch_router_agent_b")
-	run, err := s.LoadRun(context.Background(), "run-abandoned-race")
+	before, err := s.LoadRun(context.Background(), "run-abandoned-race")
+	close(release) // always reap the branch before a fatal assertion/cleanup
+	synctest.Wait()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ADR-095 keeps the trunk's last checkpoint after termination. The
-	// abandoned branch must not replace it with its retired parallel epoch.
-	if run.Checkpoint != nil && run.Checkpoint.Parallel != nil {
-		t.Fatalf("late abandoned branch restored stale parallel checkpoint: %+v", run.Checkpoint)
+	waitBranchFinished(t, s, "run-abandoned-race", "branch_router_agent_b")
+	after, err := s.LoadRun(context.Background(), "run-abandoned-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Checkpoint == nil || !reflect.DeepEqual(before.Checkpoint, after.Checkpoint) {
+		t.Fatal("late abandoned branch changes the parent's failure checkpoint")
+	}
+	if after.Status != store.RunStatusFailedResumable || after.FailureCode != ErrCodeAmbiguousEffect {
+		t.Fatalf("late abandoned branch changes the verdict: %s/%s", after.Status, after.FailureCode)
 	}
 }
