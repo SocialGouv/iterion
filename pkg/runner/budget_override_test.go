@@ -2,9 +2,11 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -156,4 +158,24 @@ type unusedExecutor struct{}
 
 func (unusedExecutor) Execute(context.Context, ir.Node, map[string]any) (map[string]any, error) {
 	return nil, errors.New("no node of this workflow should execute")
+}
+
+// W1/W4: removing the existing env routing or the donor wire conversion
+// loses the numeric ceiling even though the declared cap is unchanged.
+func TestRunnerRecordsAbsoluteCeilingsBelowAndAtCaps(t *testing.T) {
+	clearCloudCeilingEnv(t)
+	t.Setenv("ITERION_CLOUD_MAX_DURATION", "2h")
+	t.Setenv("ITERION_CLOUD_MAX_COST_USD", "12")
+	var wire queue.BudgetOverrides
+	if err := json.Unmarshal([]byte(`{"max_cost_usd":9.5,"max_duration":"2h","cap_imposed":true,"donor_max_cost_usd":10}`), &wire); err != nil {
+		t.Fatal(err)
+	}
+	wf := &ir.Workflow{}
+	if err := applyBudgetOverrides(wf, &wire, iterlog.Nop()); err != nil {
+		t.Fatal(err)
+	}
+	applyCloudBudgetCeiling(wf, iterlog.Nop())
+	if wf.Budget.MaxCostUSD != 9.5 || wf.Budget.MaxDuration != "2h" || !wf.Budget.CapImposed || wf.Budget.Ceiling.MaxCostUSD != 10 || wf.Budget.Ceiling.MaxDuration != 2*time.Hour {
+		t.Fatalf("runner lost absolute ceiling: %+v", wf.Budget)
+	}
 }

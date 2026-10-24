@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -56,7 +57,7 @@ func budgetExitGraceRatio() float64 {
 		return 0
 	}
 	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil || v < 0 || v > 1 {
+	if err != nil || math.IsNaN(v) || v < 0 || v > 1 {
 		// Fail CLOSED on a spend control: an operator reaching for this
 		// variable wants a TIGHTER policy ("off", "10" meaning percent…);
 		// silently granting the permissive default instead would spend
@@ -109,12 +110,6 @@ func (e *Engine) withinSharedBudgetGrace(b *SharedBudget) (dimension string, ok 
 	if !e.loopBudgetGuardEnabled() {
 		return "", false
 	}
-	// An externally-imposed cap (platform ceiling, pool donor allowance —
-	// ir.Budget.CapImposed) is an absolute promise to a third party: no
-	// grace, the declared figure IS the wall.
-	if b.capIsImposed() {
-		return "", false
-	}
 	ratio := budgetExitGraceRatio()
 	if ratio <= 0 {
 		return "", false
@@ -123,7 +118,7 @@ func (e *Engine) withinSharedBudgetGrace(b *SharedBudget) (dimension string, ok 
 }
 
 // GracedRemainingDuration is the wall-clock room left before the GRACED
-// duration ceiling (maxDuration × (1+ratio)). It bounds a node that runs
+// duration ceiling (min(maxDuration × (1+ratio), external ceiling)). It bounds a node that runs
 // under a duration grace: the plain RemainingDuration is already ≤ 0
 // there, and running deadline-less would un-bound exactly the axis the
 // grace promises to keep proportional.
@@ -133,13 +128,15 @@ func (b *SharedBudget) GracedRemainingDuration(ratio float64) (remaining time.Du
 	if b.maxDuration <= 0 {
 		return 0, false
 	}
-	ceiling := time.Duration(float64(b.maxDuration) * (1 + ratio))
+	ceiling := boundedBudgetLimit(time.Duration(float64(b.maxDuration)*(1+ratio)), b.ceiling.MaxDuration)
 	return ceiling - b.elapsed(), true
 }
 
-// capIsImposed reports whether any of this budget's limits was clamped
-// by an authority outside the run. Lock-free read of an immutable-after-
-// construction field.
-func (b *SharedBudget) capIsImposed() bool {
-	return b != nil && b.capImposed
+// boundedBudgetLimit keeps both grace and raises inside a positive ceiling.
+// An absent ceiling leaves the workflow-owned limit unchanged.
+func boundedBudgetLimit[T ~int | ~int64 | ~float64](limit, ceiling T) T {
+	if ceiling > 0 && limit > ceiling {
+		return ceiling
+	}
+	return limit
 }

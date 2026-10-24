@@ -4926,6 +4926,7 @@ func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.
 	// not spend past it, so the imposed-cap marker travels with the
 	// override (ir.Budget.CapImposed on the runner side).
 	effective.CapImposed = effective.CapImposed || resolved.CapImposed
+	effective.DonorMaxCostUSD = allowance
 	return budgetForWire(&effective)
 }
 
@@ -4944,6 +4945,7 @@ func budgetForWire(o *ir.BudgetOverrides) *queue.BudgetOverrides {
 		MaxParallelBranches: o.MaxParallelBranches,
 		UnlimitedWorkflow:   o.UnlimitedWorkflow,
 		CapImposed:          o.CapImposed,
+		DonorMaxCostUSD:     o.DonorMaxCostUSD,
 	}
 }
 

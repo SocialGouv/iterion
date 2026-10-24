@@ -113,15 +113,36 @@ declared budget, the allowance) wins. A donor who set no spend cap grants an
 allowance of `0`, which means *no ceiling*, not "nothing left" (an exhausted
 donor is never selected in the first place).
 
-A cap the allowance actually lowered is marked **imposed** — the clamp runs
-through the same `Budget.ClampToCeiling` primitive as the platform ceiling,
-which sets the marker whenever it changes something, and the marker travels
-onto the queue as `BudgetOverrides.cap_imposed`. That matters because the
-runtime otherwise grants a spent run a bounded **exit grace** (up to 10%
-past its cap, to walk forward to a terminal node — see
-[dsl.md](dsl.md#budget-and-loop-back-edges)). On a donor's allowance the
-grace is **refused**: someone else's money is an absolute promise, so the
-clamped figure is the wall, not a soft target.
+A positive allowance marks the budget **imposed**, even when the declared
+cap already fits below it. Both the donor and the platform use
+`Budget.ClampToCeiling`, which retains the tightest numeric ceiling on each
+axis. `BudgetOverrides.cap_imposed` carries the marker;
+`BudgetOverrides.donor_max_cost_usd` carries the donor's absolute cost ceiling
+on queue schema **27**. On resume this cumulative ceiling includes the run's
+checkpoint spend plus the donor's remaining allowance; it is recalculated
+from the new grant, not persisted as the operator's ask.
+
+The runtime's bounded **exit grace** (see
+[dsl.md](dsl.md#budget-and-loop-back-edges)) ends at
+`min(declared cap × (1 + grace ratio), external ceiling)`. A $9.50 cap under
+a $10 allowance therefore has a $10 graced limit, and a cap already at $10
+gets no extra room. A ceiling on another axis does not remove cost grace.
+Live `raise_budget` requests, through both HTTP and WebSocket, clamp to the
+same retained ceilings before acknowledgement and persistence. The platform
+amounts still come from the runner's existing `ITERION_CLOUD_MAX_*` process
+environment (`ITERION_CLOUD_MAX_DURATION`, `ITERION_CLOUD_MAX_COST_USD`,
+`ITERION_CLOUD_MAX_TOKENS`, `ITERION_CLOUD_MAX_ITERATIONS`, and
+`ITERION_CLOUD_MAX_PARALLEL_BRANCHES`). With Helm, `config.extraEnv` writes
+the shared ConfigMap and the runner consumes it through `envFrom`;
+`applyCloudBudgetCeiling` resolves it at admission before engine construction.
+The donor amount comes only from the wire, never from a new environment key.
+
+Pre-v27 messages can lack even the marker when their ask fits the allowance.
+Their missing donor ceiling cannot be reconstructed safely: both queue schema
+bounds are 27. Drain before deployment or park and **resume** these runs to
+re-publish a fresh grant; see the [rollout runbook](cloud-queue-schema-rollout.md).
+These are admission and grace bounds; a node's usage reported after execution
+can still overshoot before the next budget check stops the run.
 
 ## Availability rules
 

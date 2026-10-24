@@ -1620,69 +1620,68 @@ type Budget struct {
 	// precedent) — the v1 contract: raising the child is the child run's
 	// operator's act, and the parent's await has no bound of its own.
 	OnExceeded string
-	// CapImposed marks a budget at least one of whose limits was CLAMPED
-	// by an authority outside the run — the platform ceiling, a credential
-	// pool donor's remaining allowance. Set by ClampToCeiling when it
-	// actually changes something. An imposed cap is an absolute promise to
-	// a third party: the runtime's exit grace must not spend past it.
+	// CapImposed means an external authority sets at least one ceiling,
+	// even when the declared budget already fits below it.
 	CapImposed bool
+	// Ceiling retains the tightest external limits, independently of the
+	// declared caps. Exit grace and live raises never exceed these values.
+	Ceiling BudgetCeiling
 }
 
-// ClampToCeiling lowers each numeric limit so it never EXCEEDS the
-// corresponding ceiling (a non-zero ceiling field). Unlike applyBudgetOverrides
-// (which lets a value rise), this only ever shrinks — it is the multitenant
-// safeguard a cloud runner applies so a tenant's bot, however large its
-// declared budget (especially `as X(unbounded)` whose fuel falls back to
-// budget.MaxIterations), can never exceed the platform's hard ceiling. A zero
-// ceiling field means "no platform limit on this dimension" and is ignored. A
-// zero workflow field means "unlimited" and is RAISED to the ceiling (so an
-// unbudgeted bot still inherits the platform cap). Duration is compared by
-// parsed seconds; an unparseable, zero or negative value is replaced by the
-// ceiling, itself expanded from the process env, never from a stored bot var.
-// It reports whether it imposed a cap.
-func (b *Budget) ClampToCeiling(ceiling *Budget) (imposed bool) {
+// BudgetCeiling holds resolved, absolute limits imposed outside the run.
+// Zero means no ceiling on that axis. Duration is frozen at admission;
+// a later run variable cannot change the authority's decision.
+type BudgetCeiling struct {
+	MaxCostUSD          float64
+	MaxTokens           int
+	MaxIterations       int
+	MaxDuration         time.Duration
+	MaxParallelBranches int
+}
+
+// ClampToCeiling records the tightest external ceiling and clamps the budget
+// to it. A positive ceiling marks CapImposed even when no cap changes. Zero
+// ceiling fields impose nothing; zero budget fields are unlimited and inherit
+// the ceiling. The return value reports changed caps, for admission logging.
+// Ceiling duration templates resolve only against the process environment.
+func (b *Budget) ClampToCeiling(ceiling *Budget) bool {
 	if b == nil || ceiling == nil {
 		return false
 	}
 	before := *b
-	var judged string
-	defer func() {
-		// One choke point marks every externally-imposed cap: both the
-		// platform ceiling and the pool-grant clamp go through here.
-		before.CapImposed = b.CapImposed
-		if *b != before {
-			b.CapImposed = true
-			imposed = true
-		}
-		// The duration the ceiling judged is the one that runs: the budget
-		// re-expands MaxDuration later, and a ${…} read again then could
-		// see a stored bot var changed since. Frozen after the comparison
-		// above — keeping the bot's own value is no imposed cap.
-		if judged != "" {
-			b.MaxDuration = judged
-		}
-	}()
-	b.MaxIterations = clampToCeiling(b.MaxIterations, ceiling.MaxIterations)
-	b.MaxTokens = clampToCeiling(b.MaxTokens, ceiling.MaxTokens)
-	b.MaxParallelBranches = clampToCeiling(b.MaxParallelBranches, ceiling.MaxParallelBranches)
-	b.MaxCostUSD = clampToCeiling(b.MaxCostUSD, ceiling.MaxCostUSD)
-	if ceiling.MaxDuration != "" {
-		ceil := ExpandWithDefault(ceiling.MaxDuration, os.Getenv)
-		cd, cerr := time.ParseDuration(ceil)
-		// A zero ceiling is no platform limit, as for the numeric
-		// dimensions; a zero or negative bot duration is unlimited to the
-		// runtime, so it is raised to the ceiling like an absent one.
-		if cerr == nil && cd > 0 {
-			expanded := ExpandEnvWithDefault(b.MaxDuration)
-			vd, verr := time.ParseDuration(expanded)
-			if verr != nil || vd <= 0 || vd > cd {
-				b.MaxDuration = ceil
-			} else {
-				judged = expanded
-			}
+	c := &b.Ceiling
+	c.MaxIterations = clampToCeiling(c.MaxIterations, ceiling.MaxIterations)
+	c.MaxTokens = clampToCeiling(c.MaxTokens, ceiling.MaxTokens)
+	c.MaxParallelBranches = clampToCeiling(c.MaxParallelBranches, ceiling.MaxParallelBranches)
+	c.MaxCostUSD = clampToCeiling(c.MaxCostUSD, ceiling.MaxCostUSD)
+	ceilingDuration := ExpandWithDefault(ceiling.MaxDuration, os.Getenv)
+	if cd, err := time.ParseDuration(ceilingDuration); err == nil && cd > 0 {
+		if c.MaxDuration <= 0 || cd < c.MaxDuration {
+			c.MaxDuration = cd
 		}
 	}
-	return imposed
+	b.CapImposed = b.CapImposed || *c != (BudgetCeiling{})
+	b.MaxIterations = clampToCeiling(b.MaxIterations, c.MaxIterations)
+	b.MaxTokens = clampToCeiling(b.MaxTokens, c.MaxTokens)
+	b.MaxParallelBranches = clampToCeiling(b.MaxParallelBranches, c.MaxParallelBranches)
+	b.MaxCostUSD = clampToCeiling(b.MaxCostUSD, c.MaxCostUSD)
+	if c.MaxDuration > 0 {
+		expanded := ExpandEnvWithDefault(b.MaxDuration)
+		vd, err := time.ParseDuration(expanded)
+		if err != nil || vd <= 0 || vd > c.MaxDuration {
+			b.MaxDuration = c.MaxDuration.String()
+			if cd, err := time.ParseDuration(ceilingDuration); err == nil && cd == c.MaxDuration {
+				b.MaxDuration = ceilingDuration
+			}
+		} else {
+			// Freeze even an unchanged cap: a later variable expansion must
+			// not escape the ceiling that judged it.
+			b.MaxDuration = expanded
+			before.MaxDuration = expanded
+		}
+	}
+	before.CapImposed, before.Ceiling = b.CapImposed, b.Ceiling
+	return *b != before
 }
 
 // clampToCeiling lowers v to max when max is a real ceiling (>0) and v either

@@ -271,19 +271,17 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// dropped, a stale runner expands the braced environment forms of a body
 	// the author declared verbatim — the engine answering a read the body
 	// means for its own shell, on a runner and only there.
-	if SchemaVersion != 26 {
-		t.Errorf("SchemaVersion = %d, want 26 (bump intentionally)", SchemaVersion)
+	if SchemaVersion != 27 {
+		t.Errorf("SchemaVersion = %d, want 27 (bump intentionally)", SchemaVersion)
 	}
-	if MinSchemaVersion != 10 {
-		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)
+	if MinSchemaVersion != 27 {
+		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)
 	}
 }
 
-// TestValidate_DualAcceptWindow pins the rollout guarantee the latest bump
-// relies on: a v10 payload (published by a not-yet-upgraded server, or
-// queued before the deploy) still validates on a v12 consumer, while
-// anything outside [MinSchemaVersion, SchemaVersion] is rejected as the
-// TRANSIENT ErrSchemaVersion.
+// TestValidate_DualAcceptWindow pins the explicit compatibility window.
+// At v27 the bounds coincide: pre-v27 donor messages lack the ceiling needed
+// for safe grace and live raises. Refusals remain TRANSIENT ErrSchemaVersion.
 func TestValidate_DualAcceptWindow(t *testing.T) {
 	base := func(v int) *RunMessage {
 		return &RunMessage{
@@ -318,8 +316,8 @@ func TestRunMessage_LegacyEpochDefaultsToZero(t *testing.T) {
 		if msg.RunnerEpoch != 0 {
 			t.Errorf("v%d RunnerEpoch = %d, want bootstrap epoch 0", version, msg.RunnerEpoch)
 		}
-		if err := msg.Validate(); err != nil {
-			t.Errorf("v%d validate: %v", version, err)
+		if err := msg.Validate(); !errors.Is(err, ErrSchemaVersion) {
+			t.Errorf("v%d must be republished with an explicit donor ceiling: %v", version, err)
 		}
 	}
 }
@@ -532,13 +530,13 @@ func TestRunMessage_RunnerPoolWireContract(t *testing.T) {
 			t.Fatalf("Validate accepted pool %q: %v", bad, err)
 		}
 	}
-	// A v21 message (pre-pool) with no pool still validates: the field is
-	// additive-with-intent only when set.
+	// The stable envelope still identifies a pre-pool message, but v27
+	// requires republication with explicit donor-ceiling semantics.
 	base.RunnerPool = ""
 	old := base
 	old.V = 21
-	if err := old.Validate(); err != nil {
-		t.Fatalf("a pre-pool message must still validate: %v", err)
+	if err := old.Validate(); !errors.Is(err, ErrSchemaVersion) {
+		t.Fatalf("a pre-ceiling message must be republished: %v", err)
 	}
 	// The envelope mirrors the pool so a version-rejecting consumer can park
 	// the message against the right pool without decoding the payload.
@@ -644,5 +642,17 @@ func TestRunMessage_BundleDEKWireContract(t *testing.T) {
 	m.BundleDEK = make([]byte, 16)
 	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "32 bytes") {
 		t.Fatalf("short dek: err = %v", err)
+	}
+}
+
+// A pre-v27 donor can publish $9.50 under a $10 allowance without even the
+// marker. Accepting those bytes cannot recover the ceiling; resume must
+// republish them. Mutation: lower MinSchemaVersion to 26.
+func TestPreAbsoluteCeilingMessagesRequireRepublication(t *testing.T) {
+	for _, imposed := range []bool{false, true} {
+		msg := &RunMessage{V: 26, RunID: "old-donor", WorkflowName: "wf", IRCompiled: json.RawMessage(`{}`), Budget: &BudgetOverrides{MaxCostUSD: 9.5, CapImposed: imposed}}
+		if err := msg.Validate(); !errors.Is(err, ErrSchemaVersion) {
+			t.Fatalf("pre-v27 donor message accepted (marker %v): %v", imposed, err)
+		}
 	}
 }

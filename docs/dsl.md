@@ -1092,7 +1092,7 @@ outside `[0,1]`, or one that is not a number, also means 0, with a one-time
 stderr warning — an operator reaching for this variable wants a *tighter*
 policy, so an unreadable value must never grant the permissive default.
 
-The grace is **refused** in two cases:
+The grace is **refused** in these cases:
 
 - **the loop budget guard is off** — the "no further iteration" half of the
   safety argument belongs to that guard, and with it lifted a graced run
@@ -1103,12 +1103,21 @@ The grace is **refused** in two cases:
   inside a `foreach` body keeps iterating until the proportional ceiling
   stops it — the spend bound holds either way, but "it cannot iterate
   again" is a promise only the declared-`loop` form makes.
-- **the cap was imposed from outside the run** — a limit clamped by the
-  platform ceiling or by a credential-pool donor's remaining allowance is an
-  absolute promise to a third party, so the declared figure *is* the wall.
-  The marker is set at one choke point (`Budget.ClampToCeiling`, only when
-  it actually lowers something) and travels the cloud queue as
-  `BudgetOverrides.cap_imposed`, so a runner pod enforces it too.
+- **a parallel branch is executing** — sibling spend shares the same tracker,
+  so a branch cannot reserve the run-wide allowance for itself.
+
+An external ceiling is absolute even when the declared cap is lower. Each
+axis ends its grace at `min(cap × (1 + ratio), ceiling)`: 2h under a 2h
+platform ceiling remains 2h; $9.50 under a $10 donor allowance stops at $10,
+not $10.45. `Budget.ClampToCeiling` marks `CapImposed` whenever a positive
+ceiling exists and keeps its amount independently of the declared cap.
+Platform amounts come from the runner's existing `ITERION_CLOUD_MAX_*`
+environment, while queue schema 27 carries the donor amount as
+`BudgetOverrides.donor_max_cost_usd`. An unrelated axis keeps its normal
+grace. Both HTTP `raise-budget` and WebSocket `raise_budget` clamp live raises
+to these same ceilings; replayed raises on resume obey the newly admitted
+ceilings too. A legacy imposed budget with no amounts retains its absolute
+cap behavior.
 
 Both *exceeded* stop-paths — the check before a node runs and the overrun
 noticed after one succeeds — go through the same decision, so a node is

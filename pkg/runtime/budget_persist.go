@@ -91,6 +91,13 @@ func BudgetOverridesFromWire(b *queue.BudgetOverrides) *ir.BudgetOverrides {
 	if b == nil {
 		return nil
 	}
+	// Pre-v27 donor messages carry only the imposed marker and the clamped
+	// ask. Freeze that cost before the runner adds any platform ceiling:
+	// a known duration ceiling must not erase an unknown donor cost bound.
+	donor := b.DonorMaxCostUSD
+	if donor <= 0 && b.CapImposed {
+		donor = b.MaxCostUSD
+	}
 	return &ir.BudgetOverrides{
 		MaxCostUSD:          b.MaxCostUSD,
 		MaxTokens:           b.MaxTokens,
@@ -99,6 +106,7 @@ func BudgetOverridesFromWire(b *queue.BudgetOverrides) *ir.BudgetOverrides {
 		MaxParallelBranches: b.MaxParallelBranches,
 		UnlimitedWorkflow:   b.UnlimitedWorkflow,
 		CapImposed:          b.CapImposed,
+		DonorMaxCostUSD:     donor,
 	}
 }
 

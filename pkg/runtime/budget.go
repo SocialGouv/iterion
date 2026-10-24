@@ -34,10 +34,9 @@ type SharedBudget struct {
 	// warnTokens is advisory-only: crossing it emits a single
 	// budget_warning (advisory=true) but never hard-limits the run.
 	warnTokens int
-	// capImposed mirrors ir.Budget.CapImposed: at least one limit was
-	// clamped by an external authority, so the exit grace is refused.
-	// Immutable after construction.
+	// External authority is frozen at admission, independently of live caps.
 	capImposed bool
+	ceiling    ir.BudgetCeiling
 
 	// Consumed.
 	tokensUsed     int
@@ -111,6 +110,14 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		return nil
 	}
 
+	ceiling := b.Ceiling
+	if b.CapImposed && ceiling == (ir.BudgetCeiling{}) {
+		// Legacy IR has the marker but no amounts. Retain its absolute-cap
+		// contract rather than inventing room for grace or live raises.
+		ceiling = ir.BudgetCeiling{MaxTokens: b.MaxTokens, MaxCostUSD: b.MaxCostUSD,
+			MaxIterations: b.MaxIterations, MaxDuration: maxDur}
+	}
+
 	return &SharedBudget{
 		logger:          logger,
 		maxTokens:       b.MaxTokens,
@@ -119,6 +126,7 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		maxIterations:   b.MaxIterations,
 		maxDuration:     maxDur,
 		capImposed:      b.CapImposed,
+		ceiling:         ceiling,
 		startedAt:       time.Now(),
 		now:             time.Now,
 		warningsEmitted: make(map[string]bool),
@@ -163,6 +171,12 @@ func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverr
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// Clamp every request at the shared tracker, so HTTP, WS and resume
+	// cannot raise an externally imposed ceiling.
+	o.MaxCostUSD = boundedBudgetLimit(o.MaxCostUSD, b.ceiling.MaxCostUSD)
+	o.MaxTokens = boundedBudgetLimit(o.MaxTokens, b.ceiling.MaxTokens)
+	o.MaxIterations = boundedBudgetLimit(o.MaxIterations, b.ceiling.MaxIterations)
+
 	// An axis at 0 means UNLIMITED: "raising" it to a number would in
 	// fact constrain the run, so each clause requires a currently-set
 	// (> 0) limit before applying a strictly-greater value.
@@ -188,8 +202,8 @@ func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverr
 		raised = true
 	}
 	if b.maxDuration > 0 && o.MaxDuration != "" {
-		if d, err := time.ParseDuration(ir.ExpandEnvWithDefault(o.MaxDuration)); err == nil && d > b.maxDuration {
-			b.maxDuration = d
+		if d, err := time.ParseDuration(ir.ExpandEnvWithDefault(o.MaxDuration)); err == nil && boundedBudgetLimit(d, b.ceiling.MaxDuration) > b.maxDuration {
+			b.maxDuration = boundedBudgetLimit(d, b.ceiling.MaxDuration)
 			delete(b.warningsEmitted, "duration")
 			raised = true
 		}
@@ -245,6 +259,7 @@ func (b *SharedBudget) capsLocked() ir.BudgetOverrides {
 		MaxCostUSD:    b.maxCostUSD,
 		MaxTokens:     b.maxTokens,
 		MaxIterations: b.maxIterations,
+		CapImposed:    b.capImposed,
 	}
 	if b.maxDuration > 0 {
 		caps.MaxDuration = b.maxDuration.String()
@@ -534,7 +549,7 @@ func (b *SharedBudget) Axes() map[string]budgetAxis {
 }
 
 // exitGraceRoom reports whether every enforced dimension is still under
-// (1 + ratio) x its limit — the bounded allowance a run may spend to
+// min((1 + ratio) x its limit, external ceiling) — the room a run may spend to
 // reach its own exit path once the cap is gone. It returns the FIRST
 // dimension already past its plain limit, so the caller can name what is
 // being graced; ok is false as soon as any dimension is past the graced
@@ -545,11 +560,11 @@ func (b *SharedBudget) exitGraceRoom(ratio float64) (string, bool) {
 	defer b.mu.Unlock()
 
 	graced := ""
-	room := func(dimension string, used, limit float64) bool {
+	room := func(dimension string, used, limit, ceiling float64) bool {
 		if limit <= 0 {
 			return true
 		}
-		if used >= limit*(1+ratio) {
+		if used >= boundedBudgetLimit(limit*(1+ratio), ceiling) {
 			return false
 		}
 		if used >= limit && graced == "" {
@@ -557,10 +572,10 @@ func (b *SharedBudget) exitGraceRoom(ratio float64) (string, bool) {
 		}
 		return true
 	}
-	ok := room("iterations", float64(b.iterationsUsed), float64(b.maxIterations)) &&
-		room("tokens", float64(b.tokensUsed), float64(b.maxTokens)) &&
-		room("cost_usd", b.costUsed, b.maxCostUSD) &&
-		room("duration", float64(b.elapsed()), float64(b.maxDuration))
+	ok := room("iterations", float64(b.iterationsUsed), float64(b.maxIterations), float64(b.ceiling.MaxIterations)) &&
+		room("tokens", float64(b.tokensUsed), float64(b.maxTokens), float64(b.ceiling.MaxTokens)) &&
+		room("cost_usd", b.costUsed, b.maxCostUSD, b.ceiling.MaxCostUSD) &&
+		room("duration", float64(b.elapsed()), float64(b.maxDuration), float64(b.ceiling.MaxDuration))
 	return graced, ok && graced != ""
 }
 

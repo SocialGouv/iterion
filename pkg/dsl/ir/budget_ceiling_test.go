@@ -1,6 +1,9 @@
 package ir
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestBudgetClampToCeiling(t *testing.T) {
 	ceiling := &Budget{MaxIterations: 100, MaxTokens: 1000, MaxCostUSD: 5.0, MaxDuration: "1h", MaxParallelBranches: 4}
@@ -40,6 +43,8 @@ func TestBudgetClampToCeiling(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b := tc.in
 			b.ClampToCeiling(ceiling)
+			tc.want.CapImposed = true
+			tc.want.Ceiling = BudgetCeiling{MaxIterations: 100, MaxTokens: 1000, MaxCostUSD: 5, MaxDuration: time.Hour, MaxParallelBranches: 4}
 			if b != tc.want {
 				t.Errorf("ClampToCeiling = %+v, want %+v", b, tc.want)
 			}
@@ -60,9 +65,8 @@ func TestBudgetClampToCeiling_PartialCeiling(t *testing.T) {
 }
 
 // TestBudgetClampToCeilingMarksImposedCap pins the marker the runtime's
-// exit grace keys on: a clamp that actually changes something records
-// that the resulting cap was imposed from outside the run; a no-op clamp
-// (already under every ceiling) records nothing.
+// exit grace keys on: the existence of an external ceiling marks the
+// budget even when its declared cap already fits.
 func TestBudgetClampToCeilingMarksImposedCap(t *testing.T) {
 	b := &Budget{MaxCostUSD: 100}
 	b.ClampToCeiling(&Budget{MaxCostUSD: 10})
@@ -72,8 +76,8 @@ func TestBudgetClampToCeilingMarksImposedCap(t *testing.T) {
 
 	under := &Budget{MaxCostUSD: 5}
 	under.ClampToCeiling(&Budget{MaxCostUSD: 10})
-	if under.CapImposed {
-		t.Fatal("a no-op clamp must not mark the cap imposed")
+	if !under.CapImposed {
+		t.Fatal("an existing ceiling must mark even an unchanged cap imposed")
 	}
 
 	unbudgeted := &Budget{}
@@ -133,8 +137,8 @@ func TestClampToCeilingFreezesTheJudgedDuration(t *testing.T) {
 	if b.ClampToCeiling(&Budget{MaxDuration: "2h"}) {
 		t.Error("ClampToCeiling reported a cap for the bot's own 1h under a 2h ceiling")
 	}
-	if b.CapImposed {
-		t.Error("CapImposed = true — keeping the bot's own 1h under a 2h ceiling imposes no cap")
+	if !b.CapImposed {
+		t.Error("CapImposed = false despite the platform 2h ceiling")
 	}
 	stored = "12h"
 	if got := ExpandEnvWithDefault(b.MaxDuration); got != "1h" {

@@ -2,12 +2,15 @@ package cloudpublisher
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -171,7 +174,7 @@ func TestSubmitResume_AskLessResumeRestampsTheDocWhenTheAllowanceRecovers(t *tes
 		t.Fatalf("SubmitResume: %v", err)
 	}
 	msg := lastPublished(t, published)
-	if msg.Budget == nil || msg.Budget.MaxCostUSD != 120 || msg.Budget.CapImposed {
+	if msg.Budget == nil || msg.Budget.MaxCostUSD != 120 || !msg.Budget.CapImposed {
 		t.Fatalf("wire budget = %+v, want {120, no clamp} (the premise)", msg.Budget)
 	}
 	got, err := st.LoadRun(tctx, runID)
@@ -180,5 +183,50 @@ func TestSubmitResume_AskLessResumeRestampsTheDocWhenTheAllowanceRecovers(t *tes
 	}
 	if got.Budget == nil || got.Budget.MaxCostUSD != 120 {
 		t.Fatalf("doc Budget = %+v after an ask-less resume onto a $500 donor, want 120 — the studio shows $5 while the run may spend $120", got.Budget)
+	}
+}
+
+// W4: deleting either donor amount assignment (publisher or wire decoder)
+// loses the $10 authority while preserving the $9.50 ask, and fails this test.
+func TestDonorCeilingWireRoundTrip(t *testing.T) {
+	for _, spent := range []float64{0, 6} {
+		t.Run(fmt.Sprint(spent), func(t *testing.T) {
+			p, st, published := donorClampedPublisher(t, 10)
+			const runID = "donor-ceiling-wire"
+			ctx := seedDonorRun(t, st, runID, nil, nil)
+			prior, err := st.LoadRun(ctx, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prior.Checkpoint = &store.Checkpoint{BudgetCostUSD: spent}
+			if err := st.SaveRun(ctx, prior); err != nil {
+				t.Fatal(err)
+			}
+			wf := &ir.Workflow{Name: "wf", Budget: &ir.Budget{MaxCostUSD: 9.5}}
+			spec := runview.ResumeSpec{RunID: runID, FilePath: "wf.bot", Source: "workflow wf:\n  entry: done\n"}
+			if err := p.SubmitResume(ctx, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(lastPublished(t, published))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded queue.RunMessage
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if err := decoded.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.V != 27 || decoded.Budget == nil || !decoded.Budget.CapImposed || decoded.Budget.DonorMaxCostUSD != 10+spent {
+				t.Fatalf("wire lost absolute donor ceiling: %+v", decoded.Budget)
+			}
+			// This is the same decoder and IR application the runner invokes.
+			received := &ir.Workflow{}
+			ir.ApplyBudgetOverrides(received, *runtime.BudgetOverridesFromWire(decoded.Budget))
+			if received.Budget.MaxCostUSD != 9.5 || received.Budget.Ceiling.MaxCostUSD != 10+spent || !received.Budget.CapImposed {
+				t.Fatalf("runner budget loses donor amount: %+v", received.Budget)
+			}
+		})
 	}
 }

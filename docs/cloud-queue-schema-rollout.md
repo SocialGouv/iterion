@@ -28,8 +28,8 @@ for the dated super-admin API, existing-run resume exemption and local
 
 - **Explicit compatibility window.** A consumer accepts only
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
-  directions. The current v24 consumer accepts v10–v23 backlog explicitly;
-  this is not implicit forward compatibility.
+  directions. The current v27 consumer accepts only v27: older donor messages can
+  omit their absolute ceiling and cannot be migrated safely.
 - **Server first by default.** Both orders can park a message, and a resume
   recovers the run either way — but not at the same moment. Old runners
   rejecting the new version park runs a resume recovers as soon as the fleet
@@ -85,6 +85,24 @@ Since #481, a version mismatch is transient and recoverable:
    the run re-publishes it at that version and a runner picks it up. A DLQ
    replay of the parked bytes is refused: a runner drops a `DLQ_PARKED` run's
    redelivery on admission.
+
+## v27 absolute budget ceilings
+
+`BudgetOverrides.donor_max_cost_usd` carries the donor's cumulative absolute
+cost ceiling independently of the declared cap. The publisher writes it;
+the runner records it alongside the platform ceilings already read from
+`ITERION_CLOUD_MAX_*`. Grace and live raises cannot exceed either authority.
+
+Both `SchemaVersion` and `MinSchemaVersion` are **27**. Earlier messages may
+carry a $9.50 ask under a $10 donation without even `cap_imposed`; neither
+that missing marker nor the missing amount admits a safe migration. Old
+payloads therefore receive the ordinary typed schema refusal. A resume
+re-publishes the run using a newly resolved grant and the explicit ceiling.
+
+Use **server-first**, with Path A (drain before cutover) or Path B (park and
+resume). Runner-first without a drain is unsafe because the minimum moves.
+The historical versions below remain in their original chronological order;
+their compatibility windows describe those releases, not the v27 consumer.
 
 ## v12 runner-epoch bootstrap
 

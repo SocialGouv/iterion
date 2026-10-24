@@ -28,21 +28,23 @@ type BudgetOverrides struct {
 	// after this override (cloud platform / credential-pool grant), so this is
 	// not authority to bypass an externally imposed cap.
 	UnlimitedWorkflow bool
-	// CapImposed travels with an override whose value was clamped by an
-	// external authority (pool-grant allowance) so the runtime knows the
-	// resulting cap is absolute — see ir.Budget.CapImposed.
+	// CapImposed records an external ceiling even when the ask is below it.
+	// See ir.Budget.CapImposed.
 	CapImposed bool
+	// DonorMaxCostUSD is the cumulative ceiling granted by the publisher,
+	// including checkpoint spend on resume. It is authority, not a user ask.
+	DonorMaxCostUSD float64
 }
 
 // IsZero reports whether no override was supplied. CapImposed alone is
-// not an override: it marks a clamp that already lowered a cap, so it
-// only ever travels next to that cap — a value carrying nothing but the
+// not an override: it marks an external ceiling and travels next to a cap
+// or the explicit donor amount — a value carrying nothing but the
 // marker has nothing to apply, nothing to put on the wire and nothing to
 // persist (it used to persist as an empty `budget_overrides: {}`).
 func (o BudgetOverrides) IsZero() bool {
 	return o.MaxCostUSD <= 0 && o.MaxTokens <= 0 && o.MaxDuration == "" &&
 		o.MaxIterations <= 0 && o.MaxParallelBranches <= 0 &&
-		!o.UnlimitedWorkflow
+		!o.UnlimitedWorkflow && o.DonorMaxCostUSD <= 0
 }
 
 // Validate rejects a malformed MaxDuration early with an actionable
@@ -84,6 +86,7 @@ func ApplyBudgetOverrides(wf *Workflow, o BudgetOverrides) {
 		// The clear happens before a donor/platform authority gets its turn, so
 		// the old workflow snapshot cannot make a later host cap look imposed.
 		wf.Budget.CapImposed = false
+		wf.Budget.Ceiling = BudgetCeiling{}
 	}
 	if o.MaxCostUSD > 0 {
 		wf.Budget.MaxCostUSD = o.MaxCostUSD
@@ -99,6 +102,9 @@ func ApplyBudgetOverrides(wf *Workflow, o BudgetOverrides) {
 	}
 	if o.MaxParallelBranches > 0 {
 		wf.Budget.MaxParallelBranches = o.MaxParallelBranches
+	}
+	if o.DonorMaxCostUSD > 0 {
+		wf.Budget.ClampToCeiling(&Budget{MaxCostUSD: o.DonorMaxCostUSD})
 	}
 	if o.CapImposed {
 		wf.Budget.CapImposed = true

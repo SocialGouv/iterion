@@ -172,13 +172,17 @@ import (
 // Same direction as v=21's ambient_context, the other IR-carried node
 // policy. Server-first rollout; MinSchemaVersion unchanged, so a stale
 // runner parks the message with a delayed Nak and a resume recovers it.
-const SchemaVersion = 26
+// v=27: BudgetOverrides.DonorMaxCostUSD carries the absolute donor ceiling
+// separately from the declared cap. Dropping it loses the bound on exit grace
+// and live raises. Both schema bounds move to 27: older donor payloads may
+// omit even CapImposed when the ask fits below the allowance, so no safe
+// migration can recover their ceiling. Drain or park/resume; server first.
+const SchemaVersion = 27
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
-// v10 → v12 is additive from the new consumer's perspective: its custom
-// decoder promotes the v10 fallback object to a one-stage chain and a missing
-// runner_epoch decodes to the bootstrap epoch 0.
-const MinSchemaVersion = 10
+// Pre-v27 messages cannot prove an absolute donor ceiling. Resume republishes
+// them with a fresh grant and its explicit amount; replaying old bytes cannot.
+const MinSchemaVersion = 27
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -437,6 +441,7 @@ type BudgetOverrides struct {
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
 	UnlimitedWorkflow   bool    `json:"unlimited_workflow,omitempty"`
 	CapImposed          bool    `json:"cap_imposed,omitempty"`
+	DonorMaxCostUSD     float64 `json:"donor_max_cost_usd,omitempty"`
 }
 
 // ModelOverride is one launch-time retargeting rule: every LLM node matching
