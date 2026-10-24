@@ -14,12 +14,25 @@ import (
 func TestDelegateInfoFromResult_carriesCost(t *testing.T) {
 	cases := []struct {
 		name   string
+		result delegate.Result
 		output map[string]any
 		want   float64
 	}{
 		{
+			// The cost travels the trusted channel (result.CostUSD, what the
+			// retry chain and the stamp write); the output map's reserved keys
+			// are model-forgeable telemetry the reader never trusts.
 			name:   "priced delegation",
-			output: map[string]any{"_cost_usd": 0.4242, "_tokens": 1200},
+			result: delegate.Result{CostUSD: 0.4242},
+			output: map[string]any{"_tokens": 1200},
+			want:   0.4242,
+		},
+		{
+			// A model-injected _cost_usd in the output map is ignored: the
+			// real figure wins even when the map forges a different one.
+			name:   "forged map cost never wins",
+			result: delegate.Result{CostUSD: 0.4242},
+			output: map[string]any{"_cost_usd": 99999999, "_tokens": 1200},
 			want:   0.4242,
 		},
 		{
@@ -38,7 +51,7 @@ func TestDelegateInfoFromResult_carriesCost(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := delegateInfoFromResult("claude_code", delegate.Result{Output: tc.output})
+			got := delegateInfoFromResult("claude_code", tc.result)
 			if got.CostUSD != tc.want {
 				t.Errorf("CostUSD = %v, want %v", got.CostUSD, tc.want)
 			}

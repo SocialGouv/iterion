@@ -86,6 +86,8 @@ func TestClawRunner_OversizedPendingConversationEmitsNonResumableFallback(t *tes
 func TestOversizedResultFallbackKeepsOnlyAccountingAndScalarMetadata(t *testing.T) {
 	writeErr := errors.New("the original line refusal")
 	original := delegate.IOResult{
+		UnreportedCalls: 2,
+		CostUSD:         0.25,
 		Output: map[string]any{
 			"text": "business output", "_needs_interaction": true,
 			"_tokens": 1500, "_cost_usd": 0.25, "_model": "openai/gpt-5", "_usage_unreported_calls": 2,
@@ -97,6 +99,8 @@ func TestOversizedResultFallbackKeepsOnlyAccountingAndScalarMetadata(t *testing.
 		PendingConversation: json.RawMessage(`[{"role":"assistant"}]`), PendingToolUseID: "toolu_1",
 	}
 	want := delegate.IOResult{
+		UnreportedCalls: 2,
+		CostUSD:         0.25,
 		Output: map[string]any{
 			"_tokens": 1500, "_cost_usd": 0.25, "_model": "openai/gpt-5", "_usage_unreported_calls": 2,
 		},
@@ -153,6 +157,7 @@ func TestClawRunner_OversizedResultFallbackBoundsLargeSessionID(t *testing.T) {
 func TestOversizedResultFallbackBoundsLargeSessionFingerprint(t *testing.T) {
 	fingerprint := strings.Repeat("f", delegate.MaxEnvelopeLineBytes)
 	original := delegate.IOResult{
+		CostUSD: 0.01,
 		Output: map[string]any{
 			"text":    strings.Repeat("x", delegate.MaxEnvelopeLineBytes+1),
 			"_tokens": 7, "_cost_usd": 0.01, "_model": "openai/gpt-5",
@@ -212,6 +217,7 @@ func TestClawRunner_OversizedResultFallbackBoundsLargeModel(t *testing.T) {
 func TestEmitOversizedResultFallbackJoinsAndLogsTheBoundedBackendError(t *testing.T) {
 	backendError := "provider exploded: " + strings.Repeat("e", oversizedResultBackendErrorBytes-len("provider exploded: "))
 	original := delegate.IOResult{
+		CostUSD: 0.01,
 		Output: map[string]any{
 			"text":    strings.Repeat("x", delegate.MaxEnvelopeLineBytes+1),
 			"_tokens": 7, "_cost_usd": 0.01, "_model": "openai/gpt-5",
@@ -259,6 +265,7 @@ func TestEmitOversizedResultFallbackOmitsAnOverboundBackendError(t *testing.T) {
 	backendError := strings.Repeat("a", oversizedResultBackendErrorBytes-len(leakedPrefix)) +
 		secret + strings.Repeat("b", 512)
 	original := delegate.IOResult{
+		CostUSD: 0.01,
 		Output: map[string]any{
 			"text":    strings.Repeat("x", delegate.MaxEnvelopeLineBytes+1),
 			"_tokens": 7, "_cost_usd": 0.01, "_model": "openai/gpt-5",

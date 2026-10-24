@@ -31,6 +31,7 @@ func (b *backendScriptedBackend) Execute(_ context.Context, task delegate.Task) 
 	res := delegate.Result{
 		BackendName: b.name,
 		Tokens:      b.tokens,
+		CostUSD:     b.costUSD,
 		Output:      map[string]any{"served_by": b.name},
 	}
 	if b.costUSD > 0 {
@@ -1006,6 +1007,7 @@ func (b *sessionScriptedBackend) Execute(_ context.Context, _ delegate.Task) (de
 		i = len(b.tokens) - 1
 	}
 	res := delegate.Result{
+		CostUSD:     b.cost[i],
 		BackendName: b.name, Tokens: b.tokens[i], Duration: time.Millisecond,
 		CostIsSessionTotal: true,
 		Output: map[string]any{

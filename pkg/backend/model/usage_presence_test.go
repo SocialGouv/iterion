@@ -144,7 +144,7 @@ func TestSpendFolds_CarryUnreportedCalls(t *testing.T) {
 	unreported := func(n, tokens int) delegate.Result {
 		out := map[string]any{}
 		cost.SetUnreportedCalls(out, n)
-		return delegate.Result{Tokens: tokens, Output: out}
+		return delegate.Result{Tokens: tokens, UnreportedCalls: n, Output: out}
 	}
 	if got := foldSpend(unreported(1, 0), unreported(0, 50), false); cost.UnreportedCalls(got.Output) != 1 {
 		t.Errorf("foldSpend dropped a marker-only attempt: %v", got.Output)
@@ -213,7 +213,7 @@ func TestValidateAndRetry_ARescuedNodeKeepsItsUnreportedCalls(t *testing.T) {
 	}
 	delegateReg := delegate.NewRegistry()
 	delegateReg.Register("test_backend", &capturingBackend{results: []delegate.Result{{
-		Output: unreported(), Tokens: 500, ParseFallback: true, BackendName: "test_backend",
+		Output: unreported(), Tokens: 500, UnreportedCalls: 1, ParseFallback: true, BackendName: "test_backend",
 	}}})
 	exec := NewClawExecutor(clawReg,
 		&ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{"out_schema": schema}},
@@ -224,7 +224,7 @@ func TestValidateAndRetry_ARescuedNodeKeepsItsUnreportedCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backend: %v", err)
 	}
-	first := delegate.Result{Output: unreported(), Tokens: 1_000, ParseFallback: true, BackendName: "test_backend"}
+	first := delegate.Result{Output: unreported(), Tokens: 1_000, UnreportedCalls: 1, ParseFallback: true, BackendName: "test_backend"}
 	out, err := exec.validateAndRetry(context.Background(), backendFields{id: "answerer", outputSchema: "out_schema"},
 		"test_backend", backend, &delegate.Task{OutputSchema: schemaJSON}, first, schema)
 	if err != nil {

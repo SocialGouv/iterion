@@ -246,6 +246,7 @@ func (b *cancellingDegradeBackend) Execute(ctx context.Context, task delegate.Ta
 	b.calls++
 	if task.SessionID != "" {
 		return delegate.Result{
+			CostUSD:     1.25,
 			BackendName: delegate.BackendClaudeCode,
 			Tokens:      500,
 			Output:      map[string]any{"_tokens": 500, "_cost_usd": 1.25},

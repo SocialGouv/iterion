@@ -11,11 +11,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
-// meteredHumanFailure renders what a FAILED human-node generation burned, in
-// the shape the engine books from. Nil when nothing was served: an output map
-// carrying only meta keys would read as an answer on a path whose caller
-// degrades to a human pause, and the engine's own guard already skips a
-// spendless failure. A call whose usage went unreported is no such zero.
+// meteredHumanFailure renders a human-node generation's spend, on success or
+// failure, in the shape the engine books from. Nil when nothing was served.
+// Keeping this map separate from answers lets interaction callers strip the
+// reserved namespace without losing the bill. Unreported usage is not zero.
 func meteredHumanFailure(modelSpec string, result *ObjectResult[map[string]any]) map[string]any {
 	if result == nil || (result.TotalUsage.InputTokens == 0 && result.TotalUsage.OutputTokens == 0 && result.TotalUsage.UnreportedCalls == 0) {
 		return nil
@@ -36,8 +35,25 @@ func meteredHumanFailure(modelSpec string, result *ObjectResult[map[string]any])
 // e.schemas map — eliminating a concurrent-map-write race when multiple
 // fan-out branches dispatch interaction LLMs in parallel.
 func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, input map[string]any, schemaOverride *ir.Schema) (map[string]any, error) {
+	output, spend, err := e.executeHumanLLMWithSpend(ctx, node, input, schemaOverride)
+	if err != nil {
+		return spend, err
+	}
+	// The standalone node projects the bill into its output. Clear stale
+	// model-written cost and usage markers even when the provider reports zero.
+	delete(output, "_cost_usd")
+	delete(output, "_usage_unreported_calls")
+	for key, value := range spend {
+		output[key] = value
+	}
+	return output, nil
+}
+
+// executeHumanLLMWithSpend keeps the model's answers and the provider's usage
+// independent. The interaction path passes only answers to the next turn.
+func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.HumanNode, input map[string]any, schemaOverride *ir.Schema) (map[string]any, map[string]any, error) {
 	if node.Interaction == ir.InteractionHuman || node.Interaction == ir.InteractionNone {
-		return nil, fmt.Errorf("model: human node %q in %s interaction mode should not be executed by the model layer", node.ID, node.Interaction)
+		return nil, nil, fmt.Errorf("model: human node %q in %s interaction mode should not be executed by the model layer", node.ID, node.Interaction)
 	}
 
 	// Resolve API client: the model is a routing field — `{{vars.…}}` then
@@ -46,7 +62,7 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	modelSpec := e.resolveRoutingField(node.Model)
 	client, err := e.registry.Resolve(modelSpec)
 	if err != nil {
-		return nil, fmt.Errorf("model: human node %q: %w", node.ID, err)
+		return nil, nil, fmt.Errorf("model: human node %q: %w", node.ID, err)
 	}
 
 	// Build GenerationOptions.
@@ -102,7 +118,7 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 		var ok bool
 		schema, ok = e.schemas[node.OutputSchema]
 		if !ok {
-			return nil, fmt.Errorf("model: human node %q references unknown schema %q", node.ID, node.OutputSchema)
+			return nil, nil, fmt.Errorf("model: human node %q references unknown schema %q", node.ID, node.OutputSchema)
 		}
 	}
 
@@ -113,7 +129,7 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 
 	jsonSchema, err := SchemaToJSON(schema)
 	if err != nil {
-		return nil, fmt.Errorf("model: human node %q: schema conversion: %w", node.ID, err)
+		return nil, nil, fmt.Errorf("model: human node %q: schema conversion: %w", node.ID, err)
 	}
 	genOpts.ExplicitSchema = jsonSchema
 
@@ -124,7 +140,7 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 		// then degrades to the human pause). A bare nil made that booking
 		// inert: the attempt is over — the human answers next, and a human
 		// reports no tokens — so this figure is final or lost.
-		return meteredHumanFailure(modelSpec, result), fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
+		return nil, meteredHumanFailure(modelSpec, result), fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
 	}
 
 	output := result.Object
@@ -132,13 +148,14 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 		output = make(map[string]any)
 	}
 
-	// Attach usage metadata. Going through annotateUsage rather than
-	// stamping the keys by hand is what puts `_cost_usd` on this path: an
-	// `interaction: llm` human node is a real LLM call, and hand-stamping
-	// left it invisible to max_cost_usd on every model, priced or not.
-	annotateUsage(output, modelSpec, result.TotalUsage)
-
-	return output, nil
+	spend := meteredHumanFailure(modelSpec, result)
+	if spend == nil {
+		// A reported zero still replaces any model-written counters on a
+		// standalone human node; the booking guard ignores this zero bill.
+		spend = map[string]any{}
+		annotateUsage(spend, modelSpec, result.TotalUsage)
+	}
+	return output, spend, nil
 }
 
 // ExecuteHumanLLMForInteraction handles delegate interaction requests by
@@ -148,12 +165,11 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 // question keys.
 //
 // Returns:
-//   - answers: LLM-generated answers for each question — and, when err is
-//     non-nil, the failed generation's SPEND instead (a `_tokens`/`_cost_usd`
-//     map, nil when nothing was observed). The interaction LLM is a real,
-//     billed model call, and this is the last frame that still holds the
-//     figure; the callers read `answers` as answers only on success, and book
-//     it on failure.
+//   - answers: LLM-generated answers on success, nil on failure. Reserved
+//     metadata is stripped except for keys the delegate actually asks.
+//   - spend: the generation's `_tokens`/`_cost_usd` map, independent of the
+//     answers, nil when nothing was observed. Callers book it on BOTH success
+//     and failure, including a successful decision to escalate to a human.
 //   - needsHuman: true if the LLM decided to escalate (llm_or_human mode only)
 //   - err: any error from model execution
 func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
@@ -161,7 +177,7 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 	nodeID string,
 	ni *ErrNeedsInteraction,
 	fields ir.InteractionFields,
-) (answers map[string]any, needsHuman bool, err error) {
+) (answers, spend map[string]any, needsHuman bool, err error) {
 	// Build synthetic schema from question keys.
 	schemaFields := make([]*ir.SchemaField, 0, len(ni.Questions))
 	for key := range ni.Questions {
@@ -204,13 +220,9 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 		input[sanitizeSchemaKey(k)] = v
 	}
 
-	output, err := e.executeHumanLLM(ctx, node, input, syntheticSchema)
+	output, spend, err := e.executeHumanLLMWithSpend(ctx, node, input, syntheticSchema)
 	if err != nil {
-		// output is the spend map on this path, not answers — see the doc
-		// comment. Passing it up is what lets the engine book a failed
-		// auto-answer; dropping it here would waste the capture one frame
-		// short, which is the whole defect this seam exists to close.
-		return output, false, fmt.Errorf("model: interaction LLM for node %q: %w", nodeID, err)
+		return nil, spend, false, fmt.Errorf("model: interaction LLM for node %q: %w", nodeID, err)
 	}
 
 	// Check if the LLM decided to escalate (llm_or_human mode).
@@ -223,7 +235,7 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 
 	stripInteractionMetadata(output, input)
 
-	return output, needsHuman, nil
+	return output, spend, needsHuman, nil
 }
 
 // stripInteractionMetadata drops the reserved `_`-prefixed namespace from an

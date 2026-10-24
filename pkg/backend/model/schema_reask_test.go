@@ -586,12 +586,15 @@ func TestLLMRouter_ReasksOnceOnAnIncompleteVerdict(t *testing.T) {
 // The re-ask's own delegate_finished carries what the re-ask ADDED: on a
 // backend whose cost is a session total, the difference; elsewhere its own.
 func TestReaskMarginalCost(t *testing.T) {
-	first := delegate.Result{Output: map[string]any{"_cost_usd": 1.50}, CostIsSessionTotal: true}
-	reask := delegate.Result{Output: map[string]any{"_cost_usd": 1.90}, CostIsSessionTotal: true}
+	first := delegate.Result{
+		CostUSD: 1.50, Output: map[string]any{"_cost_usd": 1.50}, CostIsSessionTotal: true}
+	reask := delegate.Result{
+		CostUSD: 1.90, Output: map[string]any{"_cost_usd": 1.90}, CostIsSessionTotal: true}
 	if got := reaskMarginalCost(first, reask, true); got < 0.399 || got > 0.401 {
 		t.Errorf("session-total re-ask: marginal = %v, want 0.40", got)
 	}
-	perCall := delegate.Result{Output: map[string]any{"_cost_usd": 0.30}}
+	perCall := delegate.Result{
+		CostUSD: 0.30, Output: map[string]any{"_cost_usd": 0.30}}
 	if got := reaskMarginalCost(first, perCall, true); got != 0.30 {
 		t.Errorf("per-call re-ask: marginal = %v, want its own 0.30", got)
 	}

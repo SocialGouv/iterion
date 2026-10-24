@@ -167,12 +167,21 @@ func TestIOTaskRoundTrip(t *testing.T) {
 
 func TestIOResultRoundTrip(t *testing.T) {
 	original := Result{
-		Output:      map[string]any{"text": "hello"},
-		Tokens:      1234,
-		Duration:    5 * time.Second,
-		ExitCode:    0,
-		BackendName: "claw",
-		SessionID:   "sess-xyz",
+		Output:             map[string]any{"text": "hello"},
+		Tokens:             1234,
+		CostUSD:            0.25,
+		UnreportedCalls:    2,
+		CostIsSessionTotal: true,
+		EffectiveModel:     "measured",
+		ContextWindow:      200000,
+		MaxOutputTokens:    8192,
+		PeakInputTokens:    1500,
+		ThinkingTokens:     50,
+		ThinkingMs:         20,
+		Duration:           5 * time.Second,
+		ExitCode:           0,
+		BackendName:        "claw",
+		SessionID:          "sess-xyz",
 	}
 	ioRes := ToIOResult(original)
 	data, _ := json.Marshal(ioRes)
@@ -181,6 +190,12 @@ func TestIOResultRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	got := FromIOResult(decoded)
+	if got.CostUSD != original.CostUSD || got.UnreportedCalls != original.UnreportedCalls ||
+		got.CostIsSessionTotal != original.CostIsSessionTotal || got.EffectiveModel != original.EffectiveModel ||
+		got.ContextWindow != original.ContextWindow || got.MaxOutputTokens != original.MaxOutputTokens ||
+		got.PeakInputTokens != original.PeakInputTokens || got.ThinkingTokens != original.ThinkingTokens || got.ThinkingMs != original.ThinkingMs {
+		t.Fatalf("relay loses typed accounting or provenance: %+v", got)
+	}
 
 	if got.Tokens != original.Tokens {
 		t.Errorf("Tokens = %d, want %d", got.Tokens, original.Tokens)

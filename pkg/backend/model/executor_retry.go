@@ -375,8 +375,8 @@ func foldSameSession(prev, next delegate.Result, sharedSession bool) bool {
 // first attempt's usage "broke budget enforcement at the margins".
 func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	pt, nt := prev.Tokens, next.Tokens
-	pc, nc := cost.USDFromOutput(prev.Output), cost.USDFromOutput(next.Output)
-	pu, nu := cost.UnreportedCalls(prev.Output), cost.UnreportedCalls(next.Output)
+	pc, nc := prev.CostUSD, next.CostUSD
+	pu, nu := prev.UnreportedCalls, next.UnreportedCalls
 
 	tokens := pt + nt
 	usd := pc + nc
@@ -409,6 +409,8 @@ func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 		return next
 	}
 	next.Tokens = tokens
+	next.CostUSD = usd
+	next.UnreportedCalls = pu + nu
 	// An unallocated map records nothing, and the map is what the caps read.
 	if next.Output == nil {
 		next.Output = map[string]any{}
@@ -682,8 +684,8 @@ type spendLabel struct {
 func (s *chainSpend) add(r delegate.Result) {
 	s.tokens += r.Tokens
 	s.duration += r.Duration
-	s.costUSD += cost.USDFromOutput(r.Output)
-	s.unreported += cost.UnreportedCalls(r.Output)
+	s.costUSD += r.CostUSD
+	s.unreported += r.UnreportedCalls
 }
 
 // applyTo folds the accumulated spend into the winning result.
@@ -698,6 +700,8 @@ func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
 		return r
 	}
 	r.Tokens += s.tokens
+	r.CostUSD += s.costUSD
+	r.UnreportedCalls += s.unreported
 	r.Duration += s.duration
 	// An unallocated map records nothing, and the map is what the caps read
 	// — so the shape that loses the most is the one that had no output at
@@ -712,9 +716,9 @@ func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
 			r.Output["_tokens"] = r.Tokens
 		}
 		if s.costUSD > 0 {
-			r.Output["_cost_usd"] = cost.USDFromOutput(r.Output) + s.costUSD
+			r.Output["_cost_usd"] = r.CostUSD
 		}
-		cost.SetUnreportedCalls(r.Output, cost.UnreportedCalls(r.Output)+s.unreported)
+		cost.SetUnreportedCalls(r.Output, r.UnreportedCalls)
 	}
 	return r
 }
@@ -1051,7 +1055,7 @@ func (e *ClawExecutor) dispatchChain(
 		spender spendLabel
 	)
 	noteSpend := func(backendName, model string, r delegate.Result) {
-		if r.Tokens > 0 || cost.USDFromOutput(r.Output) > 0 {
+		if r.Tokens > 0 || r.CostUSD > 0 {
 			spender = spendLabel{
 				backend:     firstNonEmpty(r.BackendName, backendName),
 				model:       model,

@@ -41,7 +41,7 @@ func TestAnInteractionPromptRendersTheQuestionsNotTheNodesInput(t *testing.T) {
 
 	// The generation itself ends on the mock's stream; the prompt is built
 	// and reported before the call, which is what this pins.
-	_, _, _ = e.ExecuteHumanLLMForInteraction(context.Background(), "worker",
+	_, _, _, _ = e.ExecuteHumanLLMForInteraction(context.Background(), "worker",
 		&ErrNeedsInteraction{NodeID: "worker", Questions: map[string]any{"q1": "How many ADRs?"}},
 		ir.InteractionFields{Interaction: ir.InteractionLLM, InteractionPrompt: "ask", InteractionModel: "anthropic/claude-sonnet-4-6"})
 

@@ -8,7 +8,6 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
-	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
@@ -217,9 +216,9 @@ func answeredText(result delegate.Result) string {
 // each call is priced on its own tokens and the re-ask's figure is its own.
 // Tokens need no such care — every backend reports its own turn's.
 func reaskMarginalCost(first, reask delegate.Result, sameSession bool) float64 {
-	usd := cost.USDFromOutput(reask.Output)
+	usd := reask.CostUSD
 	if sameSession && first.CostIsSessionTotal && reask.CostIsSessionTotal {
-		usd -= cost.USDFromOutput(first.Output)
+		usd -= first.CostUSD
 		if usd < 0 {
 			usd = 0
 		}

@@ -118,7 +118,8 @@ func TestSkip_ADegradedAttemptIsTheSpender(t *testing.T) {
 		return &delegate.ErrRateLimited{Provider: "x", Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)}
 	}
 	cc := &sequencedBackend{
-		withSession: &scriptedCall{res: delegate.Result{BackendName: delegate.BackendClaudeCode, Tokens: 4000, SessionFingerprint: "anthropic-oauth", EffectiveModel: "claude-opus-4-5",
+		withSession: &scriptedCall{res: delegate.Result{
+			CostUSD: 0.4, BackendName: delegate.BackendClaudeCode, Tokens: 4000, SessionFingerprint: "anthropic-oauth", EffectiveModel: "claude-opus-4-5",
 			Output: map[string]any{"_tokens": 4000, "_cost_usd": 0.4}}, err: errors.New("error_during_execution: session not found")},
 		seq: []scriptedCall{{res: delegate.Result{BackendName: delegate.BackendClaudeCode}, err: wall()}},
 	}

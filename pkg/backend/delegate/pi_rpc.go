@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/piext"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -277,7 +276,7 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	result.Output = output
 	result.RawOutputLen = rawLen
 	result.ParseFallback = fallback
-	cost.AnnotateWithUSD(result.Output, task.Model, inTok, outTok, costUSD)
+	AnnotateResultUsage(&result, task.Model, inTok, outTok, costUSD)
 
 	for _, notice := range collector.notices() {
 		if b.Logger != nil {

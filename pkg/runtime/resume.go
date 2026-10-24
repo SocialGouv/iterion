@@ -3078,13 +3078,11 @@ func (e *Engine) handleInteractionLLM(ctx context.Context, rs *runState, nodeID 
 	}
 
 	fields := interactionFields(node)
-	answers, _, err := clawExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
+	answers, spend, _, err := clawExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
+	// This generation ends here on every outcome. Book its independent bill
+	// before re-invoking the delegate or persisting a failure checkpoint.
+	e.recordFailedNodeSpend(rs, nodeID, spend)
 	if err != nil {
-		// The auto-answer is a billed model call of its own, and on this
-		// exit `answers` carries its spend rather than answers. Terminal for
-		// the attempt, so book before failRunWithCheckpoint writes the
-		// checkpoint a resume reads its carry from.
-		e.recordFailedNodeSpend(rs, nodeID, answers)
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("interaction LLM for node %q failed: %v", nodeID, err))
 	}
@@ -3103,11 +3101,10 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 	}
 
 	fields := interactionFields(node)
-	answers, needsHuman, err := clawExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
+	answers, spend, needsHuman, err := clawExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
+	// An auto-answer and an escalation both consume a real generation.
+	e.recordFailedNodeSpend(rs, nodeID, spend)
 	if err != nil {
-		// Same as handleInteractionLLM: `answers` is the failed call's spend
-		// on this exit, and this is the last frame that holds it.
-		e.recordFailedNodeSpend(rs, nodeID, answers)
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("interaction LLM for node %q failed: %v", nodeID, err))
 	}

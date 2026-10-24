@@ -138,6 +138,16 @@ type IOToolDef struct {
 // but the structured Error lets the launcher surface a typed
 // message without re-parsing stderr).
 type IOResult struct {
+	CostUSD            float64 `json:"cost_usd,omitempty"`
+	UnreportedCalls    int     `json:"usage_unreported_calls,omitempty"`
+	CostIsSessionTotal bool    `json:"cost_is_session_total,omitempty"`
+	EffectiveModel     string  `json:"effective_model,omitempty"`
+	ContextWindow      int     `json:"context_window,omitempty"`
+	MaxOutputTokens    int     `json:"max_output_tokens,omitempty"`
+	PeakInputTokens    int     `json:"peak_input_tokens,omitempty"`
+	ThinkingTokens     int     `json:"thinking_tokens,omitempty"`
+	ThinkingMs         int     `json:"thinking_ms,omitempty"`
+
 	Output              map[string]any  `json:"output,omitempty"`
 	Tokens              int             `json:"tokens,omitempty"`
 	DurationMS          int64           `json:"duration_ms,omitempty"`
@@ -294,8 +304,18 @@ func FromIOTask(t IOTask) Task {
 // ToIOResult converts a [Result] to its wire form.
 func ToIOResult(r Result) IOResult {
 	return IOResult{
-		Output:              r.Output,
-		Tokens:              r.Tokens,
+		Output:             r.Output,
+		Tokens:             r.Tokens,
+		CostUSD:            r.CostUSD,
+		UnreportedCalls:    r.UnreportedCalls,
+		CostIsSessionTotal: r.CostIsSessionTotal,
+		EffectiveModel:     r.EffectiveModel,
+		ContextWindow:      r.ContextWindow,
+		MaxOutputTokens:    r.MaxOutputTokens,
+		PeakInputTokens:    r.PeakInputTokens,
+		ThinkingTokens:     r.ThinkingTokens,
+		ThinkingMs:         r.ThinkingMs,
+
 		DurationMS:          r.Duration.Milliseconds(),
 		ExitCode:            r.ExitCode,
 		Stderr:              r.Stderr,
@@ -315,8 +335,18 @@ func ToIOResult(r Result) IOResult {
 // return value, not by populating the Result.
 func FromIOResult(r IOResult) Result {
 	return Result{
-		Output:              r.Output,
-		Tokens:              r.Tokens,
+		Output:             r.Output,
+		Tokens:             r.Tokens,
+		CostUSD:            r.CostUSD,
+		UnreportedCalls:    r.UnreportedCalls,
+		CostIsSessionTotal: r.CostIsSessionTotal,
+		EffectiveModel:     r.EffectiveModel,
+		ContextWindow:      r.ContextWindow,
+		MaxOutputTokens:    r.MaxOutputTokens,
+		PeakInputTokens:    r.PeakInputTokens,
+		ThinkingTokens:     r.ThinkingTokens,
+		ThinkingMs:         r.ThinkingMs,
+
 		Duration:            time.Duration(r.DurationMS) * time.Millisecond,
 		ExitCode:            r.ExitCode,
 		Stderr:              r.Stderr,

@@ -204,8 +204,13 @@ func (e *ClawExecutor) GateCanAsk(node ir.Node) bool {
 	return err == nil && p.CanAsk()
 }
 
-// stampDelegateOutputMeta writes per-call observability keys onto the
-// output map: _tokens, _backend, _session_id, plus the effective
+// stampDelegateOutputMeta owns the reserved `_` output namespace. It removes
+// model-written metadata and projects harness counters from Result, including
+// zero tokens. Unknown reserved keys never survive. The only model-authored
+// exception is the documented interaction request protocol, consumed by
+// executeBackend before returning an answer to the runtime.
+//
+// It writes _tokens, _cost_usd, _backend, _session_id, plus the effective
 // model / context window / peak load / output cap (claude_code; left
 // unset by backends that don't report them). The four "_model" /
 // "_context_*" / "_max_output_tokens" keys drive the run-view's
@@ -226,8 +231,18 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	if output == nil {
 		return
 	}
-	if output["_tokens"] == nil {
-		output["_tokens"] = result.Tokens
+	for key := range output {
+		if strings.HasPrefix(key, "_") && key != "_needs_interaction" && key != "_interaction_questions" {
+			delete(output, key)
+		}
+	}
+	output["_tokens"] = result.Tokens
+	if result.CostUSD > 0 {
+		output["_cost_usd"] = result.CostUSD
+	}
+	cost.SetUnreportedCalls(output, result.UnreportedCalls)
+	if result.ParseFallback {
+		output["_parse_fallback"] = true
 	}
 	if result.BackendName != "" {
 		output["_backend"] = result.BackendName
@@ -272,7 +287,7 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 func meteredFailureOutput(out chainOutcome, backendName string) map[string]any {
 	output := out.Result.Output
 	if output == nil {
-		if out.Result.Tokens <= 0 {
+		if out.Result.Tokens <= 0 && out.Result.CostUSD <= 0 && out.Result.UnreportedCalls == 0 {
 			return nil
 		}
 		output = map[string]any{}
@@ -687,11 +702,6 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		servingTask = &task
 	}
 
-	// Flag if structured output parsing fell back to text wrapper.
-	if result.ParseFallback {
-		result.Output["_parse_fallback"] = true
-	}
-
 	// Attach metadata.
 	stampDelegateOutputMeta(result.Output, result, servingBackendName)
 	stampFallbackMeta(result.Output, out)
@@ -1078,18 +1088,10 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	if out.Output == nil {
 		out.Output = map[string]any{}
 	}
-	// The delegation's own `_cost_usd` rode the map the extracted object just
-	// replaced, and stampDelegateOutputMeta restores `_tokens` but never the
-	// cost — so without this a rescued node is priced at the recovery call
-	// alone. Re-attached rather than folded: it is the SAME reading, moved to
-	// the map that now carries the answer, so CostIsSessionTotal still
-	// describes it and the caller's session-rule fold stays valid.
-	if usd := cost.USDFromOutput(primary.Output); usd > 0 {
-		out.Output["_cost_usd"] = usd
-	}
-	cost.SetUnreportedCalls(out.Output, cost.UnreportedCalls(primary.Output))
+	// Replacing the answer does not replace its bill: the primary's typed
+	// counters survive the map swap. The stamp restores tokens AND cost;
+	// CostIsSessionTotal still describes that same reading for the fold.
 	stampDelegateOutputMeta(out.Output, out, sourceBackend)
-	cost.SetUnreportedCalls(out.Output, cost.UnreportedCalls(primary.Output))
 	e.logger.Info("[%s] structured output recovered via claw (%s) — %s produced free-form text but no schema JSON (forfait structured-output gap)",
 		nodeID, modelSpec, sourceBackend)
 	return out, meteredFailure(recoveryTask, obj.TotalUsage), true

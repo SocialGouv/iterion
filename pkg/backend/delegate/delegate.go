@@ -1853,7 +1853,12 @@ type Result struct {
 	// disjoint token counts and their totals SUM.
 	Tokens int
 
-	// CostIsSessionTotal reports that the `_cost_usd` on Output came from a
+	// CostUSD and UnreportedCalls come from harness usage, never model JSON.
+	// Output's reserved counters are projections of these fields.
+	CostUSD         float64
+	UnreportedCalls int
+
+	// CostIsSessionTotal reports that CostUSD came from a
 	// provider figure covering the WHOLE session, not this call alone —
 	// claude_code's ResultMessage.TotalCostUSD being the one shipped case
 	// (annotateCost, which MAXes it across a session's result messages for

@@ -331,6 +331,12 @@ func boundOversizedResultFallback(fallback delegate.IOResult) delegate.IOResult 
 	if model, ok := fallback.Output["_model"].(string); ok && len(model) > oversizedResultScalarBytes {
 		fallback.Output["_model"] = omittedOversizedResultField("model", len(model))
 	}
+	if len(fallback.EffectiveModel) > oversizedResultScalarBytes {
+		fallback.EffectiveModel = omittedOversizedResultField("effective_model", len(fallback.EffectiveModel))
+	}
+	if len(fallback.BackendName) > oversizedResultScalarBytes {
+		fallback.BackendName = omittedOversizedResultField("backend", len(fallback.BackendName))
+	}
 	if oversizedResultFits(fallback) {
 		return fallback
 	}

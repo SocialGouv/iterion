@@ -236,12 +236,14 @@ func (b *sessionCumulativeBackend) Execute(_ context.Context, _ delegate.Task) (
 	b.calls++
 	if b.calls == 1 {
 		return delegate.Result{
+			CostUSD:     1.00,
 			Output:      map[string]any{"_tokens": 5_000, "_cost_usd": 1.00},
 			Tokens:      5_000,
 			BackendName: "cumulative_stub",
 		}, errors.New("stream closed mid-session")
 	}
 	return delegate.Result{
+		CostUSD:     1.60,
 		Output:      map[string]any{"ok": true, "_tokens": 8_000, "_cost_usd": 1.60},
 		Tokens:      8_000,
 		BackendName: "cumulative_stub",
@@ -348,6 +350,7 @@ type meteredFailingBackend struct {
 func (b *meteredFailingBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
 	b.calls++
 	return delegate.Result{
+		CostUSD:     4.75,
 		Output:      map[string]any{"_tokens": 31_000, "_cost_usd": 4.75},
 		Tokens:      31_000,
 		BackendName: "metered_stub",
@@ -428,6 +431,7 @@ type meteredInvalidBackend struct {
 func (b *meteredInvalidBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
 	b.calls++
 	return delegate.Result{
+		CostUSD:     3.30,
 		Output:      map[string]any{"verdict": "not-a-bool", "_tokens": 22_000, "_cost_usd": 3.30},
 		Tokens:      22_000,
 		BackendName: "metered_stub",
@@ -512,6 +516,7 @@ type meteredUnparseableBackend struct {
 func (b *meteredUnparseableBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
 	b.calls++
 	return delegate.Result{
+		CostUSD:       3.30,
 		Output:        map[string]any{"text": "I think we should go left.", "_tokens": 22_000, "_cost_usd": 3.30},
 		Tokens:        22_000,
 		ParseFallback: true,

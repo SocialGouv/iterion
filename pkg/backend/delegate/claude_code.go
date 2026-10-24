@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
@@ -1518,7 +1517,7 @@ func annotateCost(result *Result, task Task, totalIn, totalOut int, rms ...*clau
 	// forfait falls back to. AnnotateWithUSD degrades to Annotate when
 	// cliCost is zero, so the flag tracks the value it describes.
 	result.CostIsSessionTotal = cliCost > 0
-	cost.AnnotateWithUSD(result.Output, model, totalIn, totalOut, cliCost)
+	AnnotateResultUsage(result, model, totalIn, totalOut, cliCost)
 }
 
 // buildAskUserPendingResult packages the Result returned when the native

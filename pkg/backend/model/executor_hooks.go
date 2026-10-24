@@ -3,7 +3,6 @@ package model
 import (
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
@@ -91,8 +90,8 @@ type DelegateInfo struct {
 	// itself pays (told apart from the announcement by their backoff delay
 	// and error); empty on every other delegation.
 	Reask string
-	// CostUSD is the delegation's LLM spend, read back from the `_cost_usd`
-	// the backend annotated onto its output — the CLI's own figure when it
+	// CostUSD is the delegation's LLM spend, read from the typed Result
+	// counters — the CLI's own figure when it
 	// reports one, else the token estimate. Zero means the price table did
 	// not know the model, NOT a free call: observers must skip rather than
 	// record a $0 sample.
@@ -133,7 +132,7 @@ func delegateInfoFromResult(backendName string, result delegate.Result) Delegate
 		RawOutputLen:       result.RawOutputLen,
 		ParseFallback:      result.ParseFallback,
 		FormattingPassUsed: result.FormattingPassUsed,
-		CostUSD:            cost.USDFromOutput(result.Output),
+		CostUSD:            result.CostUSD,
 		EffectiveModel:     result.EffectiveModel,
 		ContextWindow:      result.ContextWindow,
 		MaxOutputTokens:    result.MaxOutputTokens,

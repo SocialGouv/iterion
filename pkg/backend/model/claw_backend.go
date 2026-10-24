@@ -814,11 +814,14 @@ func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
 	output := map[string]any{}
 	tokens := annotateUsage(output, task.Model, usage)
 	return delegate.Result{
-		Output:         output,
-		Tokens:         tokens,
-		BackendName:    delegate.BackendClaw,
-		ThinkingTokens: usage.ReasoningTokens,
-		ThinkingMs:     usage.ThinkingMs,
+		CostUSD:         cost.EstimateUSD(task.Model, usage.InputTokens, usage.OutputTokens),
+		UnreportedCalls: usage.UnreportedCalls,
+		EffectiveModel:  task.Model,
+		Output:          output,
+		Tokens:          tokens,
+		BackendName:     delegate.BackendClaw,
+		ThinkingTokens:  usage.ReasoningTokens,
+		ThinkingMs:      usage.ThinkingMs,
 	}
 }
 
@@ -873,11 +876,14 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 	tokens := annotateUsage(output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
-		Output:         output,
-		Tokens:         tokens,
-		BackendName:    delegate.BackendClaw,
-		ThinkingTokens: result.TotalUsage.ReasoningTokens,
-		ThinkingMs:     result.TotalUsage.ThinkingMs,
+		CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+		UnreportedCalls: result.TotalUsage.UnreportedCalls,
+		EffectiveModel:  task.Model,
+		Output:          output,
+		Tokens:          tokens,
+		BackendName:     delegate.BackendClaw,
+		ThinkingTokens:  result.TotalUsage.ReasoningTokens,
+		ThinkingMs:      result.TotalUsage.ThinkingMs,
 	}, nil
 }
 
@@ -902,11 +908,14 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 	tokens := annotateUsage(output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
-		Output:         output,
-		Tokens:         tokens,
-		BackendName:    delegate.BackendClaw,
-		ThinkingTokens: result.TotalUsage.ReasoningTokens,
-		ThinkingMs:     result.TotalUsage.ThinkingMs,
+		CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+		UnreportedCalls: result.TotalUsage.UnreportedCalls,
+		EffectiveModel:  task.Model,
+		Output:          output,
+		Tokens:          tokens,
+		BackendName:     delegate.BackendClaw,
+		ThinkingTokens:  result.TotalUsage.ReasoningTokens,
+		ThinkingMs:      result.TotalUsage.ThinkingMs,
 	}, nil
 }
 
@@ -1066,11 +1075,14 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		if err := json.Unmarshal([]byte(text), &output); err == nil {
 			tokens := annotateUsage(output, task.Model, result.TotalUsage)
 			return delegate.Result{
-				Output:         output,
-				Tokens:         tokens,
-				BackendName:    delegate.BackendClaw,
-				ThinkingTokens: result.TotalUsage.ReasoningTokens,
-				ThinkingMs:     result.TotalUsage.ThinkingMs,
+				CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+				UnreportedCalls: result.TotalUsage.UnreportedCalls,
+				EffectiveModel:  task.Model,
+				Output:          output,
+				Tokens:          tokens,
+				BackendName:     delegate.BackendClaw,
+				ThinkingTokens:  result.TotalUsage.ReasoningTokens,
+				ThinkingMs:      result.TotalUsage.ThinkingMs,
 			}, nil
 		}
 	}
@@ -1092,11 +1104,14 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 			b.logger.Warn("[%s] structured output read from the %s of the tool loop's final turn — its text held no JSON object to parse", task.NodeID, source)
 			tokens := annotateUsage(output, task.Model, result.TotalUsage)
 			return delegate.Result{
-				Output:         output,
-				Tokens:         tokens,
-				BackendName:    delegate.BackendClaw,
-				ThinkingTokens: result.TotalUsage.ReasoningTokens,
-				ThinkingMs:     result.TotalUsage.ThinkingMs,
+				CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+				UnreportedCalls: result.TotalUsage.UnreportedCalls,
+				EffectiveModel:  task.Model,
+				Output:          output,
+				Tokens:          tokens,
+				BackendName:     delegate.BackendClaw,
+				ThinkingTokens:  result.TotalUsage.ReasoningTokens,
+				ThinkingMs:      result.TotalUsage.ThinkingMs,
 			}, nil
 		}
 	}
@@ -1158,6 +1173,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		accumulateUsage(&both, obj.TotalUsage)
 		tokens := annotateUsage(obj.Object, task.Model, both)
 		return delegate.Result{
+			CostUSD:            cost.EstimateUSD(task.Model, both.InputTokens, both.OutputTokens),
+			UnreportedCalls:    both.UnreportedCalls,
+			EffectiveModel:     task.Model,
 			Output:             obj.Object,
 			Tokens:             tokens,
 			BackendName:        delegate.BackendClaw,
@@ -1205,6 +1223,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 			accumulateUsage(&both, obj2.TotalUsage)
 			tokens := annotateUsage(obj2.Object, task.Model, both)
 			return delegate.Result{
+				CostUSD:            cost.EstimateUSD(task.Model, both.InputTokens, both.OutputTokens),
+				UnreportedCalls:    both.UnreportedCalls,
+				EffectiveModel:     task.Model,
 				Output:             obj2.Object,
 				Tokens:             tokens,
 				BackendName:        delegate.BackendClaw,
@@ -1256,12 +1277,15 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	output := map[string]any{"text": text}
 	tokens := annotateUsage(output, task.Model, billed)
 	return delegate.Result{
-		Output:         output,
-		Tokens:         tokens,
-		BackendName:    delegate.BackendClaw,
-		ParseFallback:  true,
-		ThinkingTokens: billed.ReasoningTokens,
-		ThinkingMs:     billed.ThinkingMs,
+		CostUSD:         cost.EstimateUSD(task.Model, billed.InputTokens, billed.OutputTokens),
+		UnreportedCalls: billed.UnreportedCalls,
+		EffectiveModel:  task.Model,
+		Output:          output,
+		Tokens:          tokens,
+		BackendName:     delegate.BackendClaw,
+		ParseFallback:   true,
+		ThinkingTokens:  billed.ReasoningTokens,
+		ThinkingMs:      billed.ThinkingMs,
 	}, nil
 }
 
@@ -1843,18 +1867,21 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	if waitErr != nil && ioRes.Error == "" {
 		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, runnerStderr())
 	}
+	res := delegate.FromIOResult(ioRes)
+	// The relay carries model JSON and harness counters separately. Apply
+	// the same reserved-namespace boundary on success and runner failure.
+	stampDelegateOutputMeta(res.Output, res, delegate.BackendClaw)
 	if ioRes.Error != "" {
 		// Preserve waitErr for errors.Is / errors.As consumers when
 		// the runner emitted a structured error AND exited non-zero
 		// (the normal error path). Without %w on waitErr, downstream
 		// classifiers would lose the exec.ExitError typing.
 		if waitErr != nil {
-			return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %s (exit: %w)", runnerError, waitErr)
+			return res, fmt.Errorf("claw backend: runner: %s (exit: %w)", runnerError, waitErr)
 		}
-		return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %s", runnerError)
+		return res, fmt.Errorf("claw backend: runner: %s", runnerError)
 	}
 
-	res := delegate.FromIOResult(ioRes)
 	if res.BackendName == "" {
 		res.BackendName = delegate.BackendClaw
 	}

@@ -52,10 +52,12 @@ func TestInProcessRetryResumesTheSessionTheDeadAttemptOpened(t *testing.T) {
 			// every shipped backend, but the CLI's cost figure is the
 			// session's running total — CostIsSessionTotal says which.
 			if calls == 1 {
-				return delegate.Result{SessionID: "s-live", Tokens: 9000, CostIsSessionTotal: true,
+				return delegate.Result{
+					CostUSD: 0.42, SessionID: "s-live", Tokens: 9000, CostIsSessionTotal: true,
 					Output: map[string]any{"_tokens": 9000, "_cost_usd": 0.42}}, &delegate.ErrTransient{Reason: "stream closed"}
 			}
-			return delegate.Result{SessionID: "s-live", Tokens: 1300, CostIsSessionTotal: true,
+			return delegate.Result{
+				CostUSD: 0.55, SessionID: "s-live", Tokens: 1300, CostIsSessionTotal: true,
 				Output: map[string]any{"_tokens": 1300, "_cost_usd": 0.55}}, nil
 		},
 		"", func(prev delegate.Result) {

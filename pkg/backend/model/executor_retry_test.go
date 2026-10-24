@@ -138,6 +138,7 @@ func TestRetryDelegateLoop_KeepsTheSpendItDiscards(t *testing.T) {
 	calls := 0
 	billed := func(tokens int, usd float64) delegate.Result {
 		return delegate.Result{
+			CostUSD:  usd,
 			Tokens:   tokens,
 			Duration: time.Second,
 			Output:   map[string]any{"_tokens": tokens, "_cost_usd": usd},
@@ -192,6 +193,7 @@ func TestRetryDelegateLoop_SessionTotalCostIsNotDoubled(t *testing.T) {
 			tokens, usd = 300, 0.13
 		}
 		r := delegate.Result{
+			CostUSD:            usd,
 			Tokens:             tokens,
 			CostIsSessionTotal: true,
 			Output:             map[string]any{"_tokens": tokens, "_cost_usd": usd},
@@ -237,6 +239,7 @@ func TestRetryDelegateLoop_SessionTotalKeepsTheLargestReading(t *testing.T) {
 			tokens, usd = 300, 0.05
 		}
 		r := delegate.Result{
+			CostUSD:            usd,
 			Tokens:             tokens,
 			CostIsSessionTotal: true,
 			Output:             map[string]any{"_tokens": tokens, "_cost_usd": usd},
@@ -274,7 +277,8 @@ func TestRetryDelegateLoop_EstimatedCostSumsEvenInOneSession(t *testing.T) {
 		if calls > 1 {
 			tokens, usd = 1300, 0.13
 		}
-		r := delegate.Result{Tokens: tokens, Output: map[string]any{"_tokens": tokens, "_cost_usd": usd}}
+		r := delegate.Result{
+			CostUSD: usd, Tokens: tokens, Output: map[string]any{"_tokens": tokens, "_cost_usd": usd}}
 		if calls < 2 {
 			return r, &delegate.ErrTransient{Reason: "stream closed"}
 		}
@@ -307,8 +311,9 @@ func TestRetryDelegateLoop_FreshSessionsEachSpendTheirOwn(t *testing.T) {
 		if calls > 1 {
 			tokens = 1300
 		}
-		r := delegate.Result{Tokens: tokens, Output: map[string]any{
-			"_tokens": tokens, "_cost_usd": float64(tokens) / 10000}}
+		r := delegate.Result{
+			CostUSD: float64(tokens) / 10000, Tokens: tokens, Output: map[string]any{
+				"_tokens": tokens, "_cost_usd": float64(tokens) / 10000}}
 		if calls < 2 {
 			return r, &delegate.ErrTransient{Reason: "stream closed"}
 		}
@@ -335,7 +340,8 @@ func TestRetryDelegateLoop_CancelledKeepsTheSpend(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	got, err := e.retryDelegateLoop(ctx, "node1", "claw", false, func() (delegate.Result, error) {
 		cancel()
-		return delegate.Result{Tokens: 500, Output: map[string]any{"_tokens": 500, "_cost_usd": 0.05}},
+		return delegate.Result{
+				CostUSD: 0.05, Tokens: 500, Output: map[string]any{"_tokens": 500, "_cost_usd": 0.05}},
 			&delegate.ErrTransient{Reason: "stream closed"}
 	})
 	if !errors.Is(err, context.Canceled) {

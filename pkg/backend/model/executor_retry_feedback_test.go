@@ -131,6 +131,7 @@ func TestExecuteBackendKeepsSpendOnInvalidStructuredOutput(t *testing.T) {
 		// A type mismatch is the model returning the WRONG shape; no retry
 		// is bought for it, so the bill is exactly the first generation's.
 		exec := newExec(&capturingBackend{results: []delegate.Result{{
+			CostUSD:     1.50,
 			Output:      map[string]any{"answer": 42, "_cost_usd": 1.50},
 			Tokens:      1_000,
 			BackendName: "test_backend",
@@ -155,8 +156,10 @@ func TestExecuteBackendKeepsSpendOnInvalidStructuredOutput(t *testing.T) {
 		// second generation, and when that one is invalid too the node owes
 		// the sum. Booking only one of the two halves the bill.
 		exec := newExec(&capturingBackend{results: []delegate.Result{
-			{Output: map[string]any{"other": "x", "_cost_usd": 1.50}, Tokens: 1_000, BackendName: "test_backend"},
-			{Output: map[string]any{"other": "y", "_cost_usd": 0.90}, Tokens: 700, BackendName: "test_backend"},
+			{
+				CostUSD: 1.50, Output: map[string]any{"other": "x", "_cost_usd": 1.50}, Tokens: 1_000, BackendName: "test_backend"},
+			{
+				CostUSD: 0.90, Output: map[string]any{"other": "y", "_cost_usd": 0.90}, Tokens: 700, BackendName: "test_backend"},
 		}})
 		output, err := exec.executeBackend(context.Background(), node(), map[string]any{})
 		if err == nil {
@@ -178,8 +181,10 @@ func TestExecuteBackendKeepsSpendOnInvalidStructuredOutput(t *testing.T) {
 		// not run up. No "text" on either output, so the last-resort claw
 		// extraction bails before any provider lookup.
 		exec := newExec(&capturingBackend{results: []delegate.Result{
-			{Output: map[string]any{"other": "x", "_cost_usd": 1.50}, Tokens: 1_000, BackendName: "test_backend"},
-			{Output: map[string]any{"other": "y", "_cost_usd": 0.90}, Tokens: 700, ParseFallback: true, BackendName: "test_backend"},
+			{
+				CostUSD: 1.50, Output: map[string]any{"other": "x", "_cost_usd": 1.50}, Tokens: 1_000, BackendName: "test_backend"},
+			{
+				CostUSD: 0.90, Output: map[string]any{"other": "y", "_cost_usd": 0.90}, Tokens: 700, ParseFallback: true, BackendName: "test_backend"},
 		}})
 		output, err := exec.executeBackend(context.Background(), node(), map[string]any{})
 		if err == nil {
@@ -249,6 +254,7 @@ func TestValidateAndRetry_BooksTheClawRecoveryCall(t *testing.T) {
 			// sends the executor into the claw recovery.
 			delegateReg := delegate.NewRegistry()
 			delegateReg.Register("test_backend", &capturingBackend{results: []delegate.Result{{
+				CostUSD:       0.50,
 				Output:        map[string]any{"text": "the answer is blue", "_cost_usd": 0.50},
 				Tokens:        500,
 				ParseFallback: true,
@@ -267,6 +273,7 @@ func TestValidateAndRetry_BooksTheClawRecoveryCall(t *testing.T) {
 			// OutputSchema is what lets the recovery run at all.
 			task := &delegate.Task{OutputSchema: schemaJSON}
 			first := delegate.Result{
+				CostUSD:       1.00,
 				Output:        map[string]any{"text": "the answer is blue", "_cost_usd": 1.00},
 				Tokens:        1_000,
 				ParseFallback: true,
@@ -312,6 +319,7 @@ func TestValidateAndRetry_AbandonedRetryFoldsASharedSession(t *testing.T) {
 	// bill for both generations. $2.40 is the session total AFTER the retry,
 	// i.e. it already contains the first attempt's $1.50.
 	backend := &capturingBackend{results: []delegate.Result{{
+		CostUSD:            2.40,
 		Output:             map[string]any{"other": "y", "_cost_usd": 2.40},
 		Tokens:             700,
 		ParseFallback:      true,
@@ -334,6 +342,7 @@ func TestValidateAndRetry_AbandonedRetryFoldsASharedSession(t *testing.T) {
 	// before any provider lookup and the abandoned exit is the one taken.
 	task := &delegate.Task{SessionID: "s1"}
 	first := delegate.Result{
+		CostUSD:            1.50,
 		Output:             map[string]any{"other": "x", "_cost_usd": 1.50},
 		Tokens:             1_000,
 		CostIsSessionTotal: true,
@@ -369,6 +378,7 @@ func TestValidateAndRetry_KeepsTheFirstAttemptsSpend(t *testing.T) {
 		results: []delegate.Result{
 			// A full turn, billed, then rejected for a missing field.
 			{
+				CostUSD:     0.90,
 				Output:      map[string]any{"other": "x", "_tokens": 9000, "_cost_usd": 0.90},
 				Tokens:      9000,
 				BackendName: "test_backend",
@@ -376,6 +386,7 @@ func TestValidateAndRetry_KeepsTheFirstAttemptsSpend(t *testing.T) {
 			// The correction is cheap — and taking only its figure is how
 			// a 9300-token node reported 300.
 			{
+				CostUSD:     0.03,
 				Output:      map[string]any{"answer": "blue", "_tokens": 300, "_cost_usd": 0.03},
 				Tokens:      300,
 				BackendName: "test_backend",

@@ -504,6 +504,7 @@ func TestLLMRouterKeepsSpendOnPostGenerationFailure(t *testing.T) {
 			// read out.Result, not the local variable.
 			name: "unparseable parse-fallback text",
 			result: delegate.Result{
+				CostUSD:       0.75,
 				Output:        map[string]any{"text": "I think agent_a is best", "_cost_usd": 0.75},
 				ParseFallback: true,
 				Tokens:        3_000,
@@ -513,8 +514,9 @@ func TestLLMRouterKeepsSpendOnPostGenerationFailure(t *testing.T) {
 			// Well-formed JSON naming no route: schema validation refuses it.
 			name: "output the router schema refuses",
 			result: delegate.Result{
-				Output: map[string]any{"reasoning": "undecided", "_cost_usd": 0.75},
-				Tokens: 3_000,
+				CostUSD: 0.75,
+				Output:  map[string]any{"reasoning": "undecided", "_cost_usd": 0.75},
+				Tokens:  3_000,
 			},
 		},
 	}

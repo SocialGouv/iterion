@@ -38,6 +38,7 @@ func (b *reaskBackend) Execute(_ context.Context, task delegate.Task) (delegate.
 	b.tasks = append(b.tasks, task)
 	if len(b.tasks) == 1 {
 		return delegate.Result{
+			CostUSD:     0.63,
 			Output:      map[string]any{"reply": "here is my answer", "_tokens": 83_000, "_cost_usd": 0.63},
 			Tokens:      83_000,
 			SessionID:   "sess-copi",
@@ -45,6 +46,7 @@ func (b *reaskBackend) Execute(_ context.Context, task delegate.Task) (delegate.
 		}, nil
 	}
 	return delegate.Result{
+		CostUSD:     0.01,
 		Output:      map[string]any{"reply": "here is my answer", "requires_authoring_context": false, "_tokens": 900, "_cost_usd": 0.01},
 		Tokens:      900,
 		SessionID:   "sess-copi",

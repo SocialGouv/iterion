@@ -15,7 +15,6 @@ import (
 
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
-	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -241,7 +240,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			result.Output = output
 			result.RawOutputLen = rawLen
 			result.ParseFallback = fallback
-			cost.Annotate(result.Output, task.Model, totalIn, totalOut)
+			AnnotateResultUsage(&result, task.Model, totalIn, totalOut, 0)
 			return result, nil
 		}
 		return result, fmt.Errorf("delegate: codex formatting pass exhausted without a result")
@@ -256,7 +255,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		return result, fmt.Errorf("delegate: codex returned empty output")
 	}
 
-	cost.Annotate(result.Output, task.Model, totalIn, totalOut)
+	AnnotateResultUsage(&result, task.Model, totalIn, totalOut, 0)
 	return result, nil
 }
 

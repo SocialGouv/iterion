@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/permissionhook"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
@@ -451,7 +450,7 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	result.RawOutputLen = rawLen
 	result.ParseFallback = fallback
 
-	cost.AnnotateWithUSD(result.Output, task.Model, parsed.InputTokens, parsed.OutputTokens, parsed.CostUSD)
+	AnnotateResultUsage(&result, task.Model, parsed.InputTokens, parsed.OutputTokens, parsed.CostUSD)
 
 	// A failure the CLI encoded in its stream while exiting zero. Reported
 	// after the Result is filled in so the partial transcript, tokens and

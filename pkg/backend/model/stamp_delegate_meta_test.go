@@ -53,13 +53,13 @@ func TestStampDelegateOutputMeta(t *testing.T) {
 			notKeys:  []string{"_session_id", "_model", "_context_window", "_context_used", "_max_output_tokens"},
 		},
 		{
-			name: "pre-existing _tokens — not overwritten",
+			name: "model-written _tokens is overwritten",
 			result: delegate.Result{
 				Output: map[string]any{"_tokens": 999},
 				Tokens: 42,
 			},
 			backend:  "claude_code",
-			wantKeys: map[string]any{"_tokens": 999, "_backend": "claude_code"},
+			wantKeys: map[string]any{"_tokens": 42, "_backend": "claude_code"},
 		},
 		{
 			name: "effective model without window — model written, window skipped",
