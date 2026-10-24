@@ -19,6 +19,7 @@ workflow walk_node_death:
   sandbox: none
   entry: warmup
   warmup -> pass
+<<<<<<< HEAD
   pass -> capped when vars.family == "claude"
   pass -> warmup as retry(2)
   capped -> done
@@ -811,6 +812,8 @@ workflow walk_node_death:
   sandbox: none
   entry: warmup
   warmup -> pass
+=======
+>>>>>>> 6e2ff151c (test(runner,dsl): restore the node-death witnesses and fixture the walk landing dropped)
   pass -> capped when "vars.family == 'claude'"
   pass -> warmup as retry(2)
   capped -> done
