@@ -79,12 +79,14 @@ flight force-pushes the branch.
 
 The webhook tail resolves everything from the PR and the repo integration:
 
-- **`prior_review`** — the latest review of this PR, findings + ready-made
-  replacements, seeded through the kind-matched hand-off
-  (`consumes: kind: review` in Billy's manifest ←
-  `produces:` in Revi's; [pkg/server/webhooks_handoff.go](../pkg/server/webhooks_handoff.go)).
-  Billy **re-checks every finding against the current diff** rather than
-  trusting a stale verdict, and still runs fine when no review exists.
+- **`prior_review`** — the latest readable review of this PR **produced by
+  `review-pr`**, findings + ready-made replacements, seeded through Billy's
+  `consumes: { kind: review, from: review-pr }` declaration
+  ([pkg/server/webhooks_handoff.go](../pkg/server/webhooks_handoff.go)). An
+  unreadable newest artifact makes the scan continue to an older Revi run;
+  with no readable Revi review the seed stays empty rather than falling back
+  to another producer. Billy **re-checks every finding against the current
+  diff** rather than trusting a stale verdict.
 - **`push_branch` / `pr_url`** — his commits are pushed onto the PR's source
   branch, and his finding **ledger** (per finding id: fixed /
   refused-with-argument / deferred) is posted as a comment ON the PR.
