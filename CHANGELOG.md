@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.286.3](https://github.com/SocialGouv/iterion/compare/v3.286.2...v3.286.3) (2026-10-24)
+
+### Bug Fixes
+
+* bind consumed reviews to their producer ([#2589](https://github.com/SocialGouv/iterion/issues/2589)) ([efc89e9](https://github.com/SocialGouv/iterion/commit/efc89e9ea328cac07d71dcfef4b7eb699ede798b)), references [#2592](https://github.com/SocialGouv/iterion/issues/2592)
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 7 local (announced 6, ceiling 20) Adversarial-Model: kimi-code
+
+    </details>
+* **delegate,secretguard,bots:** undeclared ITERION literals pass tools byte-identical, and a placeholder-shaped review never gates ([c9fc1c9](https://github.com/SocialGouv/iterion/commit/c9fc1c9e27d40ea05fb7757d58babee3066b293b))
+
+    <details><summary>why</summary>
+
+    ResolveSecretRef built a placeholder from any name it received: an unknown or normalized alias could resolve against a declared secret, and RedactOnly values leaked into that table. Resolution now consults the exact declared-name table; unknown names refuse. The witnesses run the real rewrite chain and pin the invariant - an undeclared ITERION literal survives a tool command byte for byte, and reintroducing a per-occurrence shape match reddens them.
+
+    </details>
+
 ## [3.286.2](https://github.com/SocialGouv/iterion/compare/v3.286.1...v3.286.2) (2026-10-24)
 
 ### Bug Fixes
