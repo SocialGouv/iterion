@@ -42,6 +42,23 @@ func TestReviewHandoffIsDeclaredBySomeone(t *testing.T) {
 	t.Logf("review producers: %v · consumers: %v", producers, consumers)
 }
 
+func TestShippedBillyReviewHandoffBindsRevi(t *testing.T) {
+	manifests := loadCatalogManifests(t)
+	billy := manifests["branch-improve-loop"]
+	if billy == nil {
+		t.Fatal("branch-improve-loop manifest is missing")
+	}
+	for _, c := range billy.Consumes {
+		if c.Kind == bundle.HandoffKindReview {
+			if c.From != "review-pr" {
+				t.Errorf("branch-improve-loop consumes review from %q, want review-pr", c.From)
+			}
+			return
+		}
+	}
+	t.Fatal("branch-improve-loop no longer consumes a review")
+}
+
 // TestConsumedVarIsDeclaredByTheWorkflow: the engine stamps the consumed digest
 // into a launch var, and the IR silently DROPS a var the workflow never
 // declared. A typo in `consumes.var` would therefore cost the whole hand-off
