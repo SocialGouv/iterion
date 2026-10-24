@@ -666,7 +666,7 @@ iterion schedule audit --name weekly --since 24h
 | `list`, `remove` | Inspect or delete manifest entries. |
 | `run <name>` | Execute now; `--dry-run` prints the resolved command. |
 | `audit` | Filter tick decisions with `--name`, `--since`, `--surface`, `--tail`. |
-| `install`, `uninstall` | Synchronize/remove the managed crontab block; install also accepts `--print` and `--tz`. |
+| `install`, `uninstall` | Synchronize/remove the managed crontab block; install writes an atomic `<manifest>.sh` wrapper carrying the sanitized PATH and accepts `--print` (block preview only) and `--tz`. See [PATH capture and limits](scheduling.md#the-managed-crontab-block). |
 
 See [scheduling](scheduling.md), including sub-minute keepalive behavior.
 

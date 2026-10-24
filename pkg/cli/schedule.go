@@ -639,6 +639,10 @@ func RunScheduleInstall(p *Printer, opts ScheduleInstallOptions) error {
 	if err != nil {
 		return err
 	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve schedules manifest: %w", err)
+	}
 	m, err := loadScheduleManifest(path)
 	if err != nil {
 		return err
@@ -655,10 +659,17 @@ func RunScheduleInstall(p *Printer, opts ScheduleInstallOptions) error {
 		tz = "UTC"
 	}
 	logDir := filepath.Join(filepath.Dir(path), "logs")
+	wrapperPath := path + ".sh"
+	pathLimit, err := schedulePathLimit()
+	if err != nil {
+		return err
+	}
+	pathEnv := os.Getenv("PATH")
+	cleanPath, dropped := sanitizeSchedulePath(pathEnv, pathLimit)
+	wrapper := renderScheduleWrapper(bin, pathEnv, cleanPath, pathLimit)
 	block := renderCronBlock(m, cronBlockParams{
-		binPath:      bin,
+		wrapperPath:  wrapperPath,
 		manifestPath: path,
-		pathEnv:      os.Getenv("PATH"),
 		logDir:       logDir,
 		tz:           tz,
 	})
@@ -675,7 +686,7 @@ func RunScheduleInstall(p *Printer, opts ScheduleInstallOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := crontabWriter(spliceManagedBlock(existing, block)); err != nil {
+	if err := installScheduleCron(wrapperPath, wrapper, spliceManagedBlock(existing, block)); err != nil {
 		return err
 	}
 
@@ -687,6 +698,10 @@ func RunScheduleInstall(p *Printer, opts ScheduleInstallOptions) error {
 	}
 	p.Line("✓ installed %d schedule(s) into the host crontab (CRON_TZ=%s)", enabled, tz)
 	p.Line("  manifest: %s", path)
+	p.Line("  wrapper:  %s (PATH: %d -> %d bytes)", wrapperPath, len(pathEnv), len(cleanPath))
+	for _, entry := range dropped {
+		p.Line("  PATH dropped %q (%s)", entry.path, entry.reason)
+	}
 	p.Line("  logs:     %s/schedule-<name>.log", logDir)
 	p.Line("  verify:   crontab -l")
 	return nil
@@ -718,15 +733,14 @@ func RunScheduleUninstall(p *Printer, opts ScheduleCommonOptions) error {
 // ---------------------------------------------------------------------------
 
 type cronBlockParams struct {
-	binPath      string
+	wrapperPath  string
 	manifestPath string
-	pathEnv      string
 	logDir       string
 	tz           string
 }
 
 // stripCRLF removes carriage returns and newlines so an env value written
-// into the crontab block (PATH, CRON_TZ) can't inject additional cron lines.
+// into the crontab block (CRON_TZ) can't inject additional cron lines.
 func stripCRLF(s string) string {
 	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
 }
@@ -746,12 +760,8 @@ func renderCronBlock(m *ScheduleManifest, prm cronBlockParams) string {
 		// default) regardless of the host's local time.
 		b.WriteString("CRON_TZ=" + stripCRLF(prm.tz) + "\n")
 	}
-	if prm.pathEnv != "" {
-		// cron runs with a minimal PATH; capture the install-time PATH so
-		// docker/git/the scanners are reachable. Strip CR/LF so a hostile
-		// PATH (or TZ) value can't inject extra crontab lines.
-		b.WriteString("PATH=" + stripCRLF(prm.pathEnv) + "\n")
-	}
+	// PATH lives in the POSIX wrapper: cron silently truncates long env lines.
+	// b.WriteString("PATH=" + os.Getenv("PATH") + "\n") // Uncomment to redden W1.
 	for _, e := range m.Schedules {
 		if e.Disabled {
 			fmt.Fprintf(&b, "# (disabled) %s — %s %s\n", e.Name, e.Cron, e.Bot)
@@ -761,10 +771,10 @@ func renderCronBlock(m *ScheduleManifest, prm cronBlockParams) string {
 			b.WriteString("# " + e.Description + "\n")
 		}
 		logFile := filepath.Join(prm.logDir, "schedule-"+e.Name+".log")
-		fmt.Fprintf(&b, "%s cd %s && %s schedule run %s --manifest %s >> %s 2>&1\n",
+		fmt.Fprintf(&b, "%s cd %s && /bin/sh %s schedule run %s --manifest %s >> %s 2>&1\n",
 			e.Cron,
 			shellQuote(e.Workdir),
-			shellQuote(prm.binPath),
+			shellQuote(prm.wrapperPath),
 			shellQuote(e.Name),
 			shellQuote(prm.manifestPath),
 			shellQuote(logFile),

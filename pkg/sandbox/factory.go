@@ -79,11 +79,12 @@ type Factory struct {
 	host      HostKind
 	preferred string
 
-	mu         sync.Mutex
-	registry   map[string]DriverConstructor
-	cached     Driver // memoised result of [Factory.Driver]
-	cachedErr  error  // memoised error
-	cacheValid bool
+	mu            sync.Mutex
+	registry      map[string]DriverConstructor
+	cached        Driver // memoised result of [Factory.Driver]
+	cachedErr     error  // memoised error
+	cacheValid    bool
+	searchContext string // captured with the cached selection, never from a later environment
 }
 
 // NewFactory builds a Factory. The factory inspects the environment
@@ -143,6 +144,11 @@ func (f *Factory) Driver() (Driver, error) {
 	if f.cacheValid {
 		return f.cached, f.cachedErr
 	}
+	cwd, cwdErr := os.Getwd()
+	if cwdErr != nil {
+		cwd = "unavailable: " + cwdErr.Error()
+	}
+	f.searchContext = fmt.Sprintf("host process driver search: host=%q, cwd=%q, PATH=%s", f.host, cwd, describeSearchPath(os.Getenv("PATH")))
 
 	var d Driver
 	var err error
@@ -158,7 +164,7 @@ func (f *Factory) Driver() (Driver, error) {
 			// and parks the run under EXECUTION_FAILED, where the
 			// schedule's non-retry contract (#1426) cannot see it.
 			cause := fmt.Errorf("%w: %w", ErrDriverUnavailable, err)
-			f.cached, f.cachedErr, f.cacheValid = nil, fmt.Errorf("preferred driver %q: %w", f.preferred, cause), true
+			f.cached, f.cachedErr, f.cacheValid = nil, fmt.Errorf("preferred driver %q (%s): %w", f.preferred, f.searchContext, cause), true
 			return f.cached, f.cachedErr
 		}
 		f.cached, f.cachedErr, f.cacheValid = d, nil, true
@@ -171,6 +177,7 @@ func (f *Factory) Driver() (Driver, error) {
 			f.cached, f.cachedErr, f.cacheValid = d, nil, true
 			return d, nil
 		}
+		f.searchContext += fmt.Sprintf("; %s: %s", name, err)
 	}
 
 	// Same sentinel as the preferred-driver branch above, so every way
@@ -178,7 +185,7 @@ func (f *Factory) Driver() (Driver, error) {
 	// `errors.Is`. Reached only when the registry has no constructible
 	// driver at all — noop is always constructible, so a caller has to
 	// hand in a registry without it.
-	f.cached, f.cachedErr, f.cacheValid = nil, fmt.Errorf("%w: no usable sandbox driver found (registry: %v)", ErrDriverUnavailable, f.availableLocked()), true
+	f.cached, f.cachedErr, f.cacheValid = nil, fmt.Errorf("%w: no usable sandbox driver found (registry: %v; %s)", ErrDriverUnavailable, f.availableLocked(), f.searchContext), true
 	return f.cached, f.cachedErr
 }
 
@@ -222,9 +229,26 @@ func (f *Factory) DriverForSpec(spec *Spec) (Driver, error) {
 		return d, nil
 	}
 	if d != nil && d.Name() == "noop" {
-		return nil, fmt.Errorf("sandbox: mode %q requested but no container runtime is available (install Docker or Podman, or run with --sandbox none to execute on the host): %w", spec.Mode, ErrDriverUnavailable)
+		searchContext := f.searchContext
+		// searchContext = "" // Uncomment to redden W3.
+		return nil, fmt.Errorf("sandbox: mode %q requested but no container runtime is available (%s; check this process's PATH, install Docker or Podman, or run with --sandbox none to execute on the host): %w", spec.Mode, searchContext, ErrDriverUnavailable)
 	}
 	return d, nil
+}
+
+// describeSearchPath keeps both ends visible: a truncated cron environment
+// often loses system directories at the tail. Quote before bounding so control
+// characters cannot forge log lines and the diagnostic remains small.
+func describeSearchPath(path string) string {
+	quoted := fmt.Sprintf("%q", path)
+	const maxBytes = 1024
+	if len(quoted) > maxBytes {
+		return fmt.Sprintf("%s ... [truncated, %d bytes total] ... %s", quoted[:maxBytes/2], len(path), quoted[len(quoted)-maxBytes/2:])
+	}
+	if path == "" {
+		return quoted + " (empty; no directories searched)"
+	}
+	return quoted
 }
 
 // preferenceOrder returns the driver-name precedence for a host.

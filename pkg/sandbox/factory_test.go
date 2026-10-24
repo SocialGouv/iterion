@@ -2,6 +2,11 @@ package sandbox
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -176,6 +181,65 @@ func TestErrUnavailableMessage(t *testing.T) {
 	got := e.Error()
 	if got != `sandbox driver "docker" unavailable: binary not in PATH` {
 		t.Errorf("Error() = %q", got)
+	}
+}
+
+// W3: remove f.searchContext from the no-runtime refusal in DriverForSpec:
+// PATH and cwd assertions fail. Reading the environment at refusal time instead
+// of selection time also fails after the fixture changes PATH and cwd.
+func TestDriverForSpecRefusalNamesSearchedPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "bin") + ":./relative-bin"
+	t.Setenv("PATH", path)
+	registry := map[string]DriverConstructor{
+		"noop": func() (Driver, error) { return mkDriver("noop"), nil },
+	}
+	for _, name := range []string{"docker", "podman"} {
+		registry[name] = func() (Driver, error) {
+			_, err := exec.LookPath(name)
+			if err == nil {
+				t.Fatalf("owned PATH unexpectedly contains %s", name)
+			}
+			return nil, &ErrUnavailable{Driver: name, Reason: err.Error()}
+		}
+	}
+	f := NewFactory(FactoryOptions{Host: HostLocal, AvailableDrivers: registry})
+	if _, err := f.Driver(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "/changed-after-selection")
+	t.Chdir(t.TempDir())
+	_, err = f.DriverForSpec(&Spec{Mode: ModeAuto})
+	if !errors.Is(err, ErrDriverUnavailable) {
+		t.Fatalf("want typed refusal, got %v", err)
+	}
+	for _, want := range []string{fmt.Sprintf("PATH=%q", path), fmt.Sprintf("cwd=%q", cwd), `host="local"`, "host process", "docker", "podman", "--sandbox none"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal must name the actual search context; missing %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "/changed-after-selection") {
+		t.Errorf("cached selection reported an environment it never searched: %v", err)
+	}
+}
+
+func TestDescribeSearchPathBoundsAndQuotes(t *testing.T) {
+	path := "/first/bin:" + strings.Repeat("/many/bin:", 300) + "/usr/bin:/bin"
+	got := describeSearchPath(path)
+	if len(got) > 1150 || !strings.Contains(got, "truncated") || !strings.Contains(got, "/first/bin") || !strings.Contains(got, "/usr/bin:/bin") {
+		t.Fatalf("long PATH must retain both ends with bounded output: %s", got)
+	}
+	if got := describeSearchPath("/bad\nline:/bin"); strings.Contains(got, "\n") || !strings.Contains(got, `\n`) {
+		t.Errorf("PATH diagnostic must quote control characters: %q", got)
+	}
+	if got := describeSearchPath(""); !strings.Contains(got, "empty; no directories searched") {
+		t.Errorf("empty PATH must be explicit: %q", got)
 	}
 }
 

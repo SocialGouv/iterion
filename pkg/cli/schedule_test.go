@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -132,9 +133,8 @@ func sampleManifest() *ScheduleManifest {
 
 func sampleBlock() string {
 	return renderCronBlock(sampleManifest(), cronBlockParams{
-		binPath:      "/usr/local/bin/iterion",
+		wrapperPath:  "/home/jo/.iterion/schedules.yaml.sh",
 		manifestPath: "/home/jo/.iterion/schedules.yaml",
-		pathEnv:      "/usr/bin:/bin",
 		logDir:       "/home/jo/.iterion/logs",
 		tz:           "UTC",
 	})
@@ -146,15 +146,17 @@ func TestRenderCronBlock(t *testing.T) {
 		cronBlockBegin,
 		cronBlockEnd,
 		"CRON_TZ=UTC",
-		"PATH=/usr/bin:/bin",
 		"# Weekly SAST self-audit",
-		"0 2 * * 1 cd /home/jo/lab/ai/iterion && /usr/local/bin/iterion schedule run sec-audit-source-weekly --manifest /home/jo/.iterion/schedules.yaml >> /home/jo/.iterion/logs/schedule-sec-audit-source-weekly.log 2>&1",
+		"0 2 * * 1 cd /home/jo/lab/ai/iterion && /bin/sh /home/jo/.iterion/schedules.yaml.sh schedule run sec-audit-source-weekly --manifest /home/jo/.iterion/schedules.yaml >> /home/jo/.iterion/logs/schedule-sec-audit-source-weekly.log 2>&1",
 		"0 3 * * 1 cd /home/jo/lab/ai/iterion",
 		"# (disabled) paused-one — 0 4 * * 1 x.bot",
 	} {
 		if !strings.Contains(block, want) {
 			t.Errorf("rendered block missing %q\n---\n%s", want, block)
 		}
+	}
+	if strings.Contains(block, "PATH=") {
+		t.Errorf("PATH belongs in the wrapper, not the crontab:\n%s", block)
 	}
 	// a disabled entry must not produce an active cron line
 	if strings.Contains(block, "schedule run paused-one") {
@@ -285,6 +287,9 @@ func TestRunScheduleAddListRemove(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRunScheduleInstallUninstall_SeamRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv(schedulePathLimitEnv, "")
 	path := filepath.Join(t.TempDir(), "schedules.yaml")
 	if err := saveScheduleManifest(path, sampleManifest()); err != nil {
 		t.Fatalf("seed manifest: %v", err)
@@ -329,6 +334,9 @@ func TestRunScheduleInstallUninstall_SeamRoundTrip(t *testing.T) {
 }
 
 func TestRunScheduleInstall_PrintDoesNotTouchCrontab(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv(schedulePathLimitEnv, "")
 	path := filepath.Join(t.TempDir(), "schedules.yaml")
 	if err := saveScheduleManifest(path, sampleManifest()); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -348,6 +356,9 @@ func TestRunScheduleInstall_PrintDoesNotTouchCrontab(t *testing.T) {
 	}
 	if wrote {
 		t.Errorf("--print must not write the crontab")
+	}
+	if _, err := os.Stat(path + ".sh"); !os.IsNotExist(err) {
+		t.Errorf("--print must not write a wrapper: %v", err)
 	}
 	if !strings.Contains(buf.String(), cronBlockBegin) {
 		t.Errorf("--print did not emit the block:\n%s", buf.String())
