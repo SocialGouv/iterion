@@ -17,19 +17,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/internal/clilocate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
-// Backend names. Values must stay in sync with the delegate.Backend*
-// constants — kept as plain strings here so the dsl/ir compiler can
-// import detect without pulling in delegate (and its transitive deps).
+// Backend names come from the shared leaf without importing the execution stack.
 const (
-	BackendClaudeCode = "claude_code"
-	BackendCodex      = "codex"
-	BackendClaw       = "claw"
-	BackendPi         = "pi"
-	BackendOpenCode   = "opencode"
+	BackendClaudeCode = backendcaps.ClaudeCode
+	BackendCodex      = backendcaps.Codex
+	BackendClaw       = backendcaps.Claw
+	BackendPi         = backendcaps.Pi
+	BackendOpenCode   = backendcaps.OpenCode
 )
 
 // Auth kinds.
@@ -49,7 +48,7 @@ type Report struct {
 	// ResolvedDefault is the first available backend in PreferenceOrder,
 	// or "" when none are available.
 	ResolvedDefault string `json:"resolved_default"`
-	// Backends lists status for the three delegate backends.
+	// Backends lists status for the backends with registered detection probes.
 	Backends []BackendStatus `json:"backends"`
 	// Providers lists claw provider availability (anthropic, openai, …).
 	Providers []ProviderStatus `json:"providers"`
@@ -84,7 +83,7 @@ type ProviderStatus struct {
 
 // DefaultPreferenceOrder is the compiled-in fallback order.
 // codex is intentionally absent — explicit opt-in only.
-var DefaultPreferenceOrder = []string{BackendClaudeCode, BackendClaw}
+var DefaultPreferenceOrder = backendcaps.DefaultPreference()
 
 // Detect runs the probes synchronously. ctx is honored for timed probes:
 // most are local stat / env reads, but the claude_code fallback may shell
@@ -122,19 +121,29 @@ func PreferenceFromEnv() []string {
 }
 
 func detectBackends(ctx context.Context, prov []ProviderStatus) []BackendStatus {
-	return []BackendStatus{
-		detectClaudeCode(ctx),
-		detectClaw(prov),
-		detectOAuthCLI(
-			BackendCodex, findCodexBinary, codexHomeDir,
-			[]string{"auth.json"},
-			nil, // codex OAuth lives only in auth.json (no OS-credential-store path)
-			"codex CLI",
-			"$CODEX_HOME/auth.json (Codex OAuth)",
-		),
-		detectPi(prov),
-		detectOpenCode(prov),
+	// Probe implementations stay with their credential adapters. Membership and
+	// order come from the registry; missing wiring is a programmer error.
+	probes := map[string]func() BackendStatus{
+		BackendClaudeCode: func() BackendStatus { return detectClaudeCode(ctx) },
+		BackendClaw:       func() BackendStatus { return detectClaw(prov) },
+		BackendCodex: func() BackendStatus {
+			return detectOAuthCLI(
+				BackendCodex, findCodexBinary, codexHomeDir, []string{"auth.json"}, nil,
+				"codex CLI", "$CODEX_HOME/auth.json (Codex OAuth)",
+			)
+		},
+		BackendPi:       func() BackendStatus { return detectPi(prov) },
+		BackendOpenCode: func() BackendStatus { return detectOpenCode(prov) },
 	}
+	var statuses []BackendStatus
+	for _, name := range backendcaps.DetectionNames() {
+		probe, ok := probes[name]
+		if !ok {
+			panic("detect: missing registered probe for " + name)
+		}
+		statuses = append(statuses, probe())
+	}
+	return statuses
 }
 
 // detectOpenCode probes for the opencode backend.

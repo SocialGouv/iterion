@@ -1,0 +1,2026 @@
+{
+  "schema": 1,
+  "source_commit": "9e5a31e2de75da413077bf5146432f6a470d77b3",
+  "epic": 1404,
+  "backends": [
+    {
+      "name": "claude_code",
+      "default_preference": 1,
+      "detection_order": 1,
+      "native_tools": [
+        "Bash",
+        "Read",
+        "Glob",
+        "Grep",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+        "Task",
+        "WebFetch",
+        "WebSearch",
+        "ToolSearch",
+        "TodoWrite",
+        "Skill"
+      ],
+      "cells": [
+        {
+          "name": "auto-memory",
+          "axis": "memory",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "auto-memory-prompt",
+          "axis": "memory",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "bundle-skills",
+          "axis": "bundle-skills",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/skills_test.go:TestBuildSystemPromptSkillsSection"
+          ],
+          "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "command-override",
+          "axis": "workspace-commands",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_command.go:16"
+          ]
+        },
+        {
+          "name": "detection",
+          "axis": "detection",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/detect/detect.go:124"
+          ]
+        },
+        {
+          "name": "fork",
+          "axis": "fork",
+          "verdict": "shipped",
+          "evidence": [
+            "docs/backends.md:108"
+          ],
+          "detail": "Implementation availability is separate from the verbatim session-resume-fork proof cell."
+        },
+        {
+          "name": "image-presence",
+          "axis": "image/presence",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:108"
+          ],
+          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+        },
+        {
+          "name": "interaction-async",
+          "axis": "interaction",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:7"
+          ]
+        },
+        {
+          "name": "interaction-sync",
+          "axis": "interaction",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:50"
+          ]
+        },
+        {
+          "name": "mcp-forwarding",
+          "axis": "MCP",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/executor_build_task.go:1561"
+          ],
+          "detail": "This predicate is Task.MCPServers delivery, not in-process MCP support (claw resolves MCP separately)."
+        },
+        {
+          "name": "metering",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/model/trusted_metering_test.go:TestDelegateMetadataUsesOnlyHarnessCounters"
+          ],
+          "detail": "Trusted-result accounting is distinct from a live proof for every backend; the published proof cell is preserved separately."
+        },
+        {
+          "name": "native-tool-roster",
+          "axis": "allowed-tools",
+          "verdict": "partial",
+          "evidence": [
+            "pkg/backend/delegate/claude_code.go:78"
+          ],
+          "detail": "The 14-name legacy exclusion roster is unchanged (#1651); MCP and other native names are outside it."
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-deny",
+          "axis": "permission",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-external-hook",
+          "axis": "permission",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:163"
+          ]
+        },
+        {
+          "name": "provider-chain",
+          "axis": "provider",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_provider.go:57"
+          ]
+        },
+        {
+          "name": "proxy-ssrf",
+          "axis": "proxy/SSRF",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:1186"
+          ],
+          "detail": "Shared network controls are not a per-backend full-matrix proof."
+        },
+        {
+          "name": "reasoning-effort",
+          "axis": "reasoning-effort",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:67"
+          ]
+        },
+        {
+          "name": "session-id-resume",
+          "axis": "resume",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/executor_retry.go:520"
+          ]
+        },
+        {
+          "name": "session-persist",
+          "axis": "session",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/executor_persist.go:44"
+          ]
+        },
+        {
+          "name": "subagents",
+          "axis": "subagents",
+          "verdict": "shipped",
+          "evidence": [
+            "docs/agents/backends/fallbacks-and-parity.md:95"
+          ],
+          "detail": "No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
+        },
+        {
+          "name": "tool-list",
+          "axis": "allowed-tools",
+          "verdict": "partial",
+          "evidence": [
+            "pkg/backend/toolcatalog/declared.go:56"
+          ],
+          "detail": "Arrival does not imply an effective empty surface or a security boundary."
+        },
+        {
+          "name": "tool-resolution",
+          "axis": "allowed-tools",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/toolcatalog/toolcatalog.go:48"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "shipped",
+          "evidence": [
+            "docs/backends.md:108"
+          ]
+        }
+      ],
+      "proof": [
+        {
+          "name": "structured-output",
+          "axis": "structured-output",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:108"
+          ]
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:108"
+          ]
+        },
+        {
+          "name": "session-resume-fork",
+          "axis": "session",
+          "verdict": "proven (resume) \u00b7 unknown (fork)",
+          "evidence": [
+            "docs/backends.md:108"
+          ]
+        },
+        {
+          "name": "tool-events-cost",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:108"
+          ]
+        },
+        {
+          "name": "template-context",
+          "axis": "templates",
+          "verdict": "proven",
+          "evidence": [
+            "docs/backends.md:108"
+          ]
+        },
+        {
+          "name": "sandbox",
+          "axis": "sandbox",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:108"
+          ]
+        },
+        {
+          "name": "mcp",
+          "axis": "MCP",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:108"
+          ]
+        },
+        {
+          "name": "ask-user",
+          "axis": "interaction",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:108"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "proven",
+          "evidence": [
+            "docs/backends.md:108"
+          ]
+        }
+      ],
+      "system_prompt": "append-to-native"
+    },
+    {
+      "name": "claw",
+      "default_preference": 2,
+      "detection_order": 2,
+      "native_tools": [],
+      "cells": [
+        {
+          "name": "auto-memory",
+          "axis": "memory",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "auto-memory-prompt",
+          "axis": "memory",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "bundle-skills",
+          "axis": "bundle-skills",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/skills_test.go:TestBuildSystemPromptSkillsSection"
+          ],
+          "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "command-override",
+          "axis": "workspace-commands",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_command.go:16"
+          ]
+        },
+        {
+          "name": "detection",
+          "axis": "detection",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/detect/detect.go:124"
+          ]
+        },
+        {
+          "name": "fork",
+          "axis": "fork",
+          "verdict": "shipped",
+          "evidence": [
+            "docs/backends.md:109"
+          ],
+          "detail": "Implementation availability is separate from the verbatim session-resume-fork proof cell."
+        },
+        {
+          "name": "image-presence",
+          "axis": "image/presence",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:109"
+          ],
+          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+        },
+        {
+          "name": "interaction-async",
+          "axis": "interaction",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:7"
+          ]
+        },
+        {
+          "name": "interaction-sync",
+          "axis": "interaction",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:50"
+          ]
+        },
+        {
+          "name": "mcp-forwarding",
+          "axis": "MCP",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/model/executor_build_task.go:1561"
+          ],
+          "detail": "This predicate is Task.MCPServers delivery, not in-process MCP support (claw resolves MCP separately)."
+        },
+        {
+          "name": "metering",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/model/trusted_metering_test.go:TestDelegateMetadataUsesOnlyHarnessCounters"
+          ],
+          "detail": "Trusted-result accounting is distinct from a live proof for every backend; the published proof cell is preserved separately."
+        },
+        {
+          "name": "native-tool-roster",
+          "axis": "allowed-tools",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/claude_code.go:78"
+          ],
+          "detail": "No closed native roster is seeded for this backend."
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-deny",
+          "axis": "permission",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-external-hook",
+          "axis": "permission",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:163"
+          ]
+        },
+        {
+          "name": "provider-chain",
+          "axis": "provider",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_provider.go:57"
+          ]
+        },
+        {
+          "name": "proxy-ssrf",
+          "axis": "proxy/SSRF",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:1186"
+          ],
+          "detail": "Shared network controls are not a per-backend full-matrix proof."
+        },
+        {
+          "name": "reasoning-effort",
+          "axis": "reasoning-effort",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:67"
+          ]
+        },
+        {
+          "name": "session-id-resume",
+          "axis": "resume",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/model/executor_retry.go:520"
+          ]
+        },
+        {
+          "name": "session-persist",
+          "axis": "session",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/executor_persist.go:44"
+          ]
+        },
+        {
+          "name": "subagents",
+          "axis": "subagents",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/backend/tool/claw_subagent_refusal_test.go:TestTheProductionClawRegistryRefusesTheAgentTool"
+          ],
+          "detail": "No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
+        },
+        {
+          "name": "tool-list",
+          "axis": "allowed-tools",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/toolcatalog/declared.go:56"
+          ],
+          "detail": "Arrival does not imply an effective empty surface or a security boundary."
+        },
+        {
+          "name": "tool-resolution",
+          "axis": "allowed-tools",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/toolcatalog/toolcatalog.go:48"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "shipped",
+          "evidence": [
+            "docs/backends.md:109"
+          ]
+        }
+      ],
+      "proof": [
+        {
+          "name": "structured-output",
+          "axis": "structured-output",
+          "verdict": "proven",
+          "evidence": [
+            "docs/backends.md:109"
+          ]
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "proven",
+          "evidence": [
+            "docs/backends.md:109"
+          ]
+        },
+        {
+          "name": "session-resume-fork",
+          "axis": "session",
+          "verdict": "proven (fork) \u00b7 unknown (resume)",
+          "evidence": [
+            "docs/backends.md:109"
+          ]
+        },
+        {
+          "name": "tool-events-cost",
+          "axis": "metering",
+          "verdict": "proven",
+          "evidence": [
+            "docs/backends.md:109"
+          ]
+        },
+        {
+          "name": "template-context",
+          "axis": "templates",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:109"
+          ]
+        },
+        {
+          "name": "sandbox",
+          "axis": "sandbox",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:109"
+          ]
+        },
+        {
+          "name": "mcp",
+          "axis": "MCP",
+          "verdict": "proven",
+          "evidence": [
+            "docs/backends.md:109"
+          ]
+        },
+        {
+          "name": "ask-user",
+          "axis": "interaction",
+          "verdict": "proven",
+          "evidence": [
+            "docs/backends.md:109"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "proven",
+          "evidence": [
+            "docs/backends.md:109"
+          ]
+        }
+      ],
+      "system_prompt": "authored-base"
+    },
+    {
+      "name": "codex",
+      "default_preference": 0,
+      "detection_order": 3,
+      "native_tools": [],
+      "cells": [
+        {
+          "name": "auto-memory",
+          "axis": "memory",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "auto-memory-prompt",
+          "axis": "memory",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "bundle-skills",
+          "axis": "bundle-skills",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/skills_test.go:TestBuildSystemPromptSkillsSection"
+          ],
+          "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "command-override",
+          "axis": "workspace-commands",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_command.go:16"
+          ]
+        },
+        {
+          "name": "detection",
+          "axis": "detection",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/detect/detect.go:124"
+          ]
+        },
+        {
+          "name": "fork",
+          "axis": "fork",
+          "verdict": "shipped",
+          "evidence": [
+            "docs/backends.md:110"
+          ],
+          "detail": "Implementation availability is separate from the verbatim session-resume-fork proof cell."
+        },
+        {
+          "name": "image-presence",
+          "axis": "image/presence",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:110"
+          ],
+          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+        },
+        {
+          "name": "interaction-async",
+          "axis": "interaction",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:7"
+          ]
+        },
+        {
+          "name": "interaction-sync",
+          "axis": "interaction",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:50"
+          ]
+        },
+        {
+          "name": "mcp-forwarding",
+          "axis": "MCP",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/model/executor_build_task.go:1561"
+          ],
+          "detail": "This predicate is Task.MCPServers delivery, not in-process MCP support (claw resolves MCP separately)."
+        },
+        {
+          "name": "metering",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/model/trusted_metering_test.go:TestDelegateMetadataUsesOnlyHarnessCounters"
+          ],
+          "detail": "Trusted-result accounting is distinct from a live proof for every backend; the published proof cell is preserved separately."
+        },
+        {
+          "name": "native-tool-roster",
+          "axis": "allowed-tools",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/claude_code.go:78"
+          ],
+          "detail": "No closed native roster is seeded for this backend."
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-deny",
+          "axis": "permission",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-external-hook",
+          "axis": "permission",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:163"
+          ]
+        },
+        {
+          "name": "provider-chain",
+          "axis": "provider",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_provider.go:57"
+          ]
+        },
+        {
+          "name": "proxy-ssrf",
+          "axis": "proxy/SSRF",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:1186"
+          ],
+          "detail": "Shared network controls are not a per-backend full-matrix proof."
+        },
+        {
+          "name": "reasoning-effort",
+          "axis": "reasoning-effort",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:67"
+          ]
+        },
+        {
+          "name": "session-id-resume",
+          "axis": "resume",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/executor_retry.go:520"
+          ]
+        },
+        {
+          "name": "session-persist",
+          "axis": "session",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/executor_persist.go:44"
+          ]
+        },
+        {
+          "name": "subagents",
+          "axis": "subagents",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/agents/backends/fallbacks-and-parity.md:95"
+          ],
+          "detail": "No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
+        },
+        {
+          "name": "tool-list",
+          "axis": "allowed-tools",
+          "verdict": "partial",
+          "evidence": [
+            "pkg/backend/toolcatalog/declared.go:56"
+          ],
+          "detail": "Arrival does not imply an effective empty surface or a security boundary."
+        },
+        {
+          "name": "tool-resolution",
+          "axis": "allowed-tools",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/toolcatalog/toolcatalog.go:48"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:110"
+          ]
+        }
+      ],
+      "proof": [
+        {
+          "name": "structured-output",
+          "axis": "structured-output",
+          "verdict": "proven",
+          "evidence": [
+            "docs/backends.md:110"
+          ]
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "refused (C176)",
+          "evidence": [
+            "docs/backends.md:110"
+          ]
+        },
+        {
+          "name": "session-resume-fork",
+          "axis": "session",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:110"
+          ]
+        },
+        {
+          "name": "tool-events-cost",
+          "axis": "metering",
+          "verdict": "proven (events) \u00b7 unknown (cost)",
+          "evidence": [
+            "docs/backends.md:110"
+          ]
+        },
+        {
+          "name": "template-context",
+          "axis": "templates",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:110"
+          ]
+        },
+        {
+          "name": "sandbox",
+          "axis": "sandbox",
+          "verdict": "proven (readonly)",
+          "evidence": [
+            "docs/backends.md:110"
+          ]
+        },
+        {
+          "name": "mcp",
+          "axis": "MCP",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:110"
+          ]
+        },
+        {
+          "name": "ask-user",
+          "axis": "interaction",
+          "verdict": "refused (C267, async) \u00b7 warned (C271, sync)",
+          "evidence": [
+            "docs/backends.md:110"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:110"
+          ]
+        }
+      ],
+      "system_prompt": "standalone"
+    },
+    {
+      "name": "pi",
+      "default_preference": 0,
+      "detection_order": 4,
+      "native_tools": [],
+      "cells": [
+        {
+          "name": "auto-memory",
+          "axis": "memory",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "auto-memory-prompt",
+          "axis": "memory",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "bundle-skills",
+          "axis": "bundle-skills",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/pi.go:405"
+          ],
+          "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "command-override",
+          "axis": "workspace-commands",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_command.go:16"
+          ]
+        },
+        {
+          "name": "detection",
+          "axis": "detection",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/detect/detect.go:124"
+          ]
+        },
+        {
+          "name": "fork",
+          "axis": "fork",
+          "verdict": "shipped",
+          "evidence": [
+            "docs/backends.md:111"
+          ],
+          "detail": "Implementation availability is separate from the verbatim session-resume-fork proof cell."
+        },
+        {
+          "name": "image-presence",
+          "axis": "image/presence",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:111"
+          ],
+          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+        },
+        {
+          "name": "interaction-async",
+          "axis": "interaction",
+          "verdict": "partial",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:7"
+          ],
+          "detail": "RPC transport only."
+        },
+        {
+          "name": "interaction-sync",
+          "axis": "interaction",
+          "verdict": "partial",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:50"
+          ],
+          "detail": "RPC transport only."
+        },
+        {
+          "name": "mcp-forwarding",
+          "axis": "MCP",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/executor_build_task.go:1561"
+          ],
+          "detail": "The task builder forwards Task.MCPServers; only RPC serves them, while print warns and drops them."
+        },
+        {
+          "name": "metering",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/model/trusted_metering_test.go:TestDelegateMetadataUsesOnlyHarnessCounters"
+          ],
+          "detail": "Trusted-result accounting is distinct from a live proof for every backend; the published proof cell is preserved separately."
+        },
+        {
+          "name": "native-tool-roster",
+          "axis": "allowed-tools",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/claude_code.go:78"
+          ],
+          "detail": "No closed native roster is seeded for this backend."
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "partial",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "RPC transport only; print refuses gated nodes."
+        },
+        {
+          "name": "permission-deny",
+          "axis": "permission",
+          "verdict": "partial",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "RPC transport only; print refuses gated nodes."
+        },
+        {
+          "name": "permission-external-hook",
+          "axis": "permission",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:163"
+          ]
+        },
+        {
+          "name": "provider-chain",
+          "axis": "provider",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_provider.go:57"
+          ]
+        },
+        {
+          "name": "proxy-ssrf",
+          "axis": "proxy/SSRF",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:1186"
+          ],
+          "detail": "Shared network controls are not a per-backend full-matrix proof."
+        },
+        {
+          "name": "reasoning-effort",
+          "axis": "reasoning-effort",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:67"
+          ]
+        },
+        {
+          "name": "session-id-resume",
+          "axis": "resume",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/executor_retry.go:520"
+          ]
+        },
+        {
+          "name": "session-persist",
+          "axis": "session",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/executor_persist.go:44"
+          ]
+        },
+        {
+          "name": "subagents",
+          "axis": "subagents",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/agents/backends/fallbacks-and-parity.md:95"
+          ],
+          "detail": "No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
+        },
+        {
+          "name": "tool-list",
+          "axis": "allowed-tools",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/toolcatalog/declared.go:56"
+          ],
+          "detail": "Arrival does not imply an effective empty surface or a security boundary."
+        },
+        {
+          "name": "tool-resolution",
+          "axis": "allowed-tools",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/toolcatalog/toolcatalog.go:48"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:111"
+          ]
+        }
+      ],
+      "proof": [
+        {
+          "name": "structured-output",
+          "axis": "structured-output",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:111"
+          ]
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:111"
+          ]
+        },
+        {
+          "name": "session-resume-fork",
+          "axis": "session",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:111"
+          ]
+        },
+        {
+          "name": "tool-events-cost",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:111"
+          ]
+        },
+        {
+          "name": "template-context",
+          "axis": "templates",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:111"
+          ]
+        },
+        {
+          "name": "sandbox",
+          "axis": "sandbox",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:111"
+          ]
+        },
+        {
+          "name": "mcp",
+          "axis": "MCP",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:111"
+          ]
+        },
+        {
+          "name": "ask-user",
+          "axis": "interaction",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:111"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:111"
+          ]
+        }
+      ],
+      "system_prompt": "append-to-native"
+    },
+    {
+      "name": "grok",
+      "default_preference": 0,
+      "detection_order": 0,
+      "native_tools": [],
+      "cells": [
+        {
+          "name": "auto-memory",
+          "axis": "memory",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "auto-memory-prompt",
+          "axis": "memory",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "bundle-skills",
+          "axis": "bundle-skills",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/skills_test.go:TestBuildSystemPromptSkillsSection"
+          ],
+          "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "command-override",
+          "axis": "workspace-commands",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_command.go:16"
+          ]
+        },
+        {
+          "name": "detection",
+          "axis": "detection",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "pkg/backend/detect/detect.go:124"
+          ]
+        },
+        {
+          "name": "fork",
+          "axis": "fork",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:113"
+          ],
+          "detail": "Implementation availability is separate from the verbatim session-resume-fork proof cell."
+        },
+        {
+          "name": "image-presence",
+          "axis": "image/presence",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:113"
+          ],
+          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+        },
+        {
+          "name": "interaction-async",
+          "axis": "interaction",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:7"
+          ]
+        },
+        {
+          "name": "interaction-sync",
+          "axis": "interaction",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:50"
+          ]
+        },
+        {
+          "name": "mcp-forwarding",
+          "axis": "MCP",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/model/executor_build_task.go:1561"
+          ],
+          "detail": "This predicate is Task.MCPServers delivery, not in-process MCP support (claw resolves MCP separately)."
+        },
+        {
+          "name": "metering",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/model/trusted_metering_test.go:TestDelegateMetadataUsesOnlyHarnessCounters"
+          ],
+          "detail": "Trusted-result accounting is distinct from a live proof for every backend; the published proof cell is preserved separately."
+        },
+        {
+          "name": "native-tool-roster",
+          "axis": "allowed-tools",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/claude_code.go:78"
+          ],
+          "detail": "No closed native roster is seeded for this backend."
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-deny",
+          "axis": "permission",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-external-hook",
+          "axis": "permission",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:163"
+          ]
+        },
+        {
+          "name": "provider-chain",
+          "axis": "provider",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_provider.go:57"
+          ]
+        },
+        {
+          "name": "proxy-ssrf",
+          "axis": "proxy/SSRF",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:1186"
+          ],
+          "detail": "Shared network controls are not a per-backend full-matrix proof."
+        },
+        {
+          "name": "reasoning-effort",
+          "axis": "reasoning-effort",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:67"
+          ]
+        },
+        {
+          "name": "session-id-resume",
+          "axis": "resume",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/model/executor_retry.go:520"
+          ]
+        },
+        {
+          "name": "session-persist",
+          "axis": "session",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "pkg/backend/model/executor_persist.go:44"
+          ]
+        },
+        {
+          "name": "subagents",
+          "axis": "subagents",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/agents/backends/fallbacks-and-parity.md:95"
+          ],
+          "detail": "No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
+        },
+        {
+          "name": "tool-list",
+          "axis": "allowed-tools",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/toolcatalog/declared.go:56"
+          ],
+          "detail": "Arrival does not imply an effective empty surface or a security boundary."
+        },
+        {
+          "name": "tool-resolution",
+          "axis": "allowed-tools",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/toolcatalog/toolcatalog.go:48"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:113"
+          ]
+        }
+      ],
+      "proof": [
+        {
+          "name": "structured-output",
+          "axis": "structured-output",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:113"
+          ]
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "refused (C176)",
+          "evidence": [
+            "docs/backends.md:113"
+          ]
+        },
+        {
+          "name": "session-resume-fork",
+          "axis": "session",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:113"
+          ]
+        },
+        {
+          "name": "tool-events-cost",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:113"
+          ]
+        },
+        {
+          "name": "template-context",
+          "axis": "templates",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:113"
+          ]
+        },
+        {
+          "name": "sandbox",
+          "axis": "sandbox",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:113"
+          ]
+        },
+        {
+          "name": "mcp",
+          "axis": "MCP",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:113"
+          ]
+        },
+        {
+          "name": "ask-user",
+          "axis": "interaction",
+          "verdict": "refused (C267, async) \u00b7 warned (C271, sync)",
+          "evidence": [
+            "docs/backends.md:113"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:113"
+          ]
+        }
+      ],
+      "system_prompt": "append-to-native"
+    },
+    {
+      "name": "kimi",
+      "default_preference": 0,
+      "detection_order": 0,
+      "native_tools": [],
+      "cells": [
+        {
+          "name": "auto-memory",
+          "axis": "memory",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "auto-memory-prompt",
+          "axis": "memory",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "bundle-skills",
+          "axis": "bundle-skills",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/skills_test.go:TestBuildSystemPromptSkillsSection"
+          ],
+          "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "command-override",
+          "axis": "workspace-commands",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_command.go:16"
+          ]
+        },
+        {
+          "name": "detection",
+          "axis": "detection",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "pkg/backend/detect/detect.go:124"
+          ]
+        },
+        {
+          "name": "fork",
+          "axis": "fork",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:112"
+          ],
+          "detail": "Implementation availability is separate from the verbatim session-resume-fork proof cell."
+        },
+        {
+          "name": "image-presence",
+          "axis": "image/presence",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:112"
+          ],
+          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+        },
+        {
+          "name": "interaction-async",
+          "axis": "interaction",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:7"
+          ]
+        },
+        {
+          "name": "interaction-sync",
+          "axis": "interaction",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:50"
+          ]
+        },
+        {
+          "name": "mcp-forwarding",
+          "axis": "MCP",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/model/executor_build_task.go:1561"
+          ],
+          "detail": "This predicate is Task.MCPServers delivery, not in-process MCP support (claw resolves MCP separately)."
+        },
+        {
+          "name": "metering",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/model/trusted_metering_test.go:TestDelegateMetadataUsesOnlyHarnessCounters"
+          ],
+          "detail": "Trusted-result accounting is distinct from a live proof for every backend; the published proof cell is preserved separately."
+        },
+        {
+          "name": "native-tool-roster",
+          "axis": "allowed-tools",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/claude_code.go:78"
+          ],
+          "detail": "No closed native roster is seeded for this backend."
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-deny",
+          "axis": "permission",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-external-hook",
+          "axis": "permission",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:163"
+          ]
+        },
+        {
+          "name": "provider-chain",
+          "axis": "provider",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_provider.go:57"
+          ]
+        },
+        {
+          "name": "proxy-ssrf",
+          "axis": "proxy/SSRF",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:1186"
+          ],
+          "detail": "Shared network controls are not a per-backend full-matrix proof."
+        },
+        {
+          "name": "reasoning-effort",
+          "axis": "reasoning-effort",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:67"
+          ]
+        },
+        {
+          "name": "session-id-resume",
+          "axis": "resume",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/model/executor_retry.go:520"
+          ]
+        },
+        {
+          "name": "session-persist",
+          "axis": "session",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "pkg/backend/model/executor_persist.go:44"
+          ]
+        },
+        {
+          "name": "subagents",
+          "axis": "subagents",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/agents/backends/fallbacks-and-parity.md:95"
+          ],
+          "detail": "No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
+        },
+        {
+          "name": "tool-list",
+          "axis": "allowed-tools",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/toolcatalog/declared.go:56"
+          ],
+          "detail": "Arrival does not imply an effective empty surface or a security boundary."
+        },
+        {
+          "name": "tool-resolution",
+          "axis": "allowed-tools",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/toolcatalog/toolcatalog.go:48"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:112"
+          ]
+        }
+      ],
+      "proof": [
+        {
+          "name": "structured-output",
+          "axis": "structured-output",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:112"
+          ]
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "refused (C176)",
+          "evidence": [
+            "docs/backends.md:112"
+          ]
+        },
+        {
+          "name": "session-resume-fork",
+          "axis": "session",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:112"
+          ]
+        },
+        {
+          "name": "tool-events-cost",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:112"
+          ]
+        },
+        {
+          "name": "template-context",
+          "axis": "templates",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:112"
+          ]
+        },
+        {
+          "name": "sandbox",
+          "axis": "sandbox",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:112"
+          ]
+        },
+        {
+          "name": "mcp",
+          "axis": "MCP",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:112"
+          ]
+        },
+        {
+          "name": "ask-user",
+          "axis": "interaction",
+          "verdict": "refused (C267, async) \u00b7 warned (C271, sync)",
+          "evidence": [
+            "docs/backends.md:112"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:112"
+          ]
+        }
+      ],
+      "system_prompt": "standalone"
+    },
+    {
+      "name": "opencode",
+      "default_preference": 0,
+      "detection_order": 5,
+      "native_tools": [],
+      "cells": [
+        {
+          "name": "auto-memory",
+          "axis": "memory",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "auto-memory-prompt",
+          "axis": "memory",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/automemory/automemory.go:57"
+          ]
+        },
+        {
+          "name": "bundle-skills",
+          "axis": "bundle-skills",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/skills_test.go:TestBuildSystemPromptSkillsSection"
+          ],
+          "detail": "Prompt hints alone do not prove native skill delivery on this backend."
+        },
+        {
+          "name": "command-override",
+          "axis": "workspace-commands",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_command.go:16"
+          ]
+        },
+        {
+          "name": "detection",
+          "axis": "detection",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/detect/detect.go:124"
+          ]
+        },
+        {
+          "name": "fork",
+          "axis": "fork",
+          "verdict": "shipped",
+          "evidence": [
+            "docs/backends.md:114"
+          ],
+          "detail": "Implementation availability is separate from the verbatim session-resume-fork proof cell."
+        },
+        {
+          "name": "image-presence",
+          "axis": "image/presence",
+          "verdict": "unwired (no image)",
+          "evidence": [
+            "docs/backends.md:114"
+          ],
+          "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+        },
+        {
+          "name": "interaction-async",
+          "axis": "interaction",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:7"
+          ]
+        },
+        {
+          "name": "interaction-sync",
+          "axis": "interaction",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_async_backend.go:50"
+          ]
+        },
+        {
+          "name": "mcp-forwarding",
+          "axis": "MCP",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/model/executor_build_task.go:1561"
+          ],
+          "detail": "This predicate is Task.MCPServers delivery, not in-process MCP support (claw resolves MCP separately)."
+        },
+        {
+          "name": "metering",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/model/trusted_metering_test.go:TestDelegateMetadataUsesOnlyHarnessCounters"
+          ],
+          "detail": "Trusted-result accounting is distinct from a live proof for every backend; the published proof cell is preserved separately."
+        },
+        {
+          "name": "native-tool-roster",
+          "axis": "allowed-tools",
+          "verdict": "unknown",
+          "evidence": [
+            "pkg/backend/delegate/claude_code.go:78"
+          ],
+          "detail": "No closed native roster is seeded for this backend."
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-deny",
+          "axis": "permission",
+          "verdict": "typed-refused",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:52"
+          ],
+          "detail": "C176 preserves the existing compiler gate membership."
+        },
+        {
+          "name": "permission-external-hook",
+          "axis": "permission",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:163"
+          ]
+        },
+        {
+          "name": "provider-chain",
+          "axis": "provider",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/dsl/ir/validate_provider.go:57"
+          ]
+        },
+        {
+          "name": "proxy-ssrf",
+          "axis": "proxy/SSRF",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:1186"
+          ],
+          "detail": "Shared network controls are not a per-backend full-matrix proof."
+        },
+        {
+          "name": "reasoning-effort",
+          "axis": "reasoning-effort",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/dsl/ir/validate_fallbacks.go:67"
+          ]
+        },
+        {
+          "name": "session-id-resume",
+          "axis": "resume",
+          "verdict": "shipped",
+          "evidence": [
+            "pkg/backend/model/executor_retry.go:520"
+          ]
+        },
+        {
+          "name": "session-persist",
+          "axis": "session",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "pkg/backend/model/executor_persist.go:44"
+          ]
+        },
+        {
+          "name": "subagents",
+          "axis": "subagents",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/agents/backends/fallbacks-and-parity.md:95"
+          ],
+          "detail": "No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
+        },
+        {
+          "name": "tool-list",
+          "axis": "allowed-tools",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/toolcatalog/declared.go:56"
+          ],
+          "detail": "Arrival does not imply an effective empty surface or a security boundary."
+        },
+        {
+          "name": "tool-resolution",
+          "axis": "allowed-tools",
+          "verdict": "inert",
+          "evidence": [
+            "pkg/backend/toolcatalog/toolcatalog.go:48"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:114"
+          ]
+        }
+      ],
+      "proof": [
+        {
+          "name": "structured-output",
+          "axis": "structured-output",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:114"
+          ]
+        },
+        {
+          "name": "permission-ask",
+          "axis": "permission",
+          "verdict": "refused (C176)",
+          "evidence": [
+            "docs/backends.md:114"
+          ]
+        },
+        {
+          "name": "session-resume-fork",
+          "axis": "session",
+          "verdict": "proven (resume \u00b7 fork) \u00b7 unwired (persist)",
+          "evidence": [
+            "docs/backends.md:114"
+          ]
+        },
+        {
+          "name": "tool-events-cost",
+          "axis": "metering",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:114"
+          ]
+        },
+        {
+          "name": "template-context",
+          "axis": "templates",
+          "verdict": "unknown",
+          "evidence": [
+            "docs/backends.md:114"
+          ]
+        },
+        {
+          "name": "sandbox",
+          "axis": "sandbox",
+          "verdict": "unwired (no image)",
+          "evidence": [
+            "docs/backends.md:114"
+          ]
+        },
+        {
+          "name": "mcp",
+          "axis": "MCP",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:114"
+          ]
+        },
+        {
+          "name": "ask-user",
+          "axis": "interaction",
+          "verdict": "refused (C267, async) \u00b7 warned (C271, sync)",
+          "evidence": [
+            "docs/backends.md:114"
+          ]
+        },
+        {
+          "name": "workspace-commands",
+          "axis": "workspace-commands",
+          "verdict": "unwired (gap)",
+          "evidence": [
+            "docs/backends.md:114"
+          ]
+        }
+      ],
+      "system_prompt": "standalone"
+    }
+  ]
+}

@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
@@ -75,11 +76,7 @@ const defaultClaudeCodeEffort = "xhigh"
 // --allowedTools only auto-approves matching calls; it does not hide the
 // other native tools. Keep this closed list deliberately small and explicit:
 // MCP tools are supplied separately and must not be guessed here.
-var claudeNativeTools = []string{
-	"Bash", "Read", "Glob", "Grep", "Write", "Edit", "MultiEdit",
-	"NotebookEdit", "Task", "WebFetch", "WebSearch", "ToolSearch",
-	"TodoWrite", "Skill",
-}
+var claudeNativeTools = backendcaps.NativeTools(backendcaps.ClaudeCode)
 
 // claudeNativeToolsForAllowed maps Iterion declarations to the corresponding
 // Claude Code tool names.

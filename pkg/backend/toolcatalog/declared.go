@@ -1,6 +1,10 @@
 package toolcatalog
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+)
 
 // ToolsDeclared reports whether the author declared a tool surface on the
 // node — the ONE definition of that fact, so no reader re-derives it.
@@ -54,10 +58,5 @@ func ToolsDeclared(tools []string) bool { return tools != nil }
 // registry resolve these bare names) and stays claw-only: widening that one
 // turns advisory CLI-backend names into blocking C135 errors on shipped bots.
 func ReceivesToolList(backend string) bool {
-	switch strings.TrimSpace(backend) {
-	case ClawBackend, "claude_code", "codex":
-		return true
-	default:
-		return false
-	}
+	return backendcaps.Offers(strings.TrimSpace(backend), backendcaps.ToolList)
 }

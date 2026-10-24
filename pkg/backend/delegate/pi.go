@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -41,7 +42,7 @@ import (
 // provider env vars; ResolveEnv only layers per-run BYOK keys on top and, by
 // default, strips the Anthropic OAuth subscription (see piGuardForfait). See
 // ADR-065 for the CLI-agent seam and ADR-085 for this backend.
-const BackendPi = "pi"
+const BackendPi = backendcaps.Pi
 
 // piProtocol describes pi's headless invocation.
 var piProtocol = CLIAgentProtocol{

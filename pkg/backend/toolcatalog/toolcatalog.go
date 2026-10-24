@@ -9,7 +9,7 @@
 // already under stress. The name is right there in the .bot source, so the
 // answer was knowable before a single token was spent.
 //
-// The package is deliberately a LEAF — stdlib only, literals only. pkg/dsl/ir
+// The package is deliberately a LEAF — depends only on the declarative backendcaps leaf. pkg/dsl/ir
 // may not depend on the execution stack (see the note on KnownFallbackTriggers
 // in pkg/dsl/ir/validate_fallbacks.go), and the compiler is the main consumer.
 // The literals are guarded against drift from the other side instead:
@@ -18,12 +18,14 @@
 // breaks CI here rather than in someone's run.
 package toolcatalog
 
-import "strings"
+import (
+	"strings"
 
-// ClawBackend is the in-process backend's literal name — the one backend
-// whose tool list is a real constraint. Hardcoded rather than imported from
-// pkg/backend/delegate for the layering reason above.
-const ClawBackend = "claw"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+)
+
+// ClawBackend aliases the in-process backend name from the shared leaf.
+const ClawBackend = backendcaps.Claw
 
 // ConstrainsTools reports whether a node's `tools:` list actually restricts
 // what the backend can call — the precondition for saying anything about the
@@ -46,7 +48,7 @@ const ClawBackend = "claw"
 // So a name that is meaningless on those backends is dead config, not a
 // failure — flagging it would train authors to ignore the diagnostic.
 func ConstrainsTools(backend string) bool {
-	return strings.TrimSpace(backend) == ClawBackend
+	return backendcaps.Offers(strings.TrimSpace(backend), backendcaps.ToolResolution)
 }
 
 // IsBuiltin reports whether name is a bare built-in tool the registry can

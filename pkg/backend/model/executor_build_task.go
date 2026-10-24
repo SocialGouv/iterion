@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
@@ -1558,10 +1559,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 // rather than resolving them in-process (claw) or running a tool set iterion
 // does not configure (kimi, grok). A backend added here without a consumer is
 // harmless; a consumer missing from here is silently toolless.
-var mcpForwardingBackends = map[string]bool{
-	delegate.BackendClaudeCode: true,
-	delegate.BackendPi:         true,
-}
+var mcpForwardingBackends = backendcaps.Set(backendcaps.MCPForwarding)
 
 // resolveSystemPrompt returns the {{vars}}-resolved body of the named
 // prompt block, or "" when the name is empty or unknown. Kept as a

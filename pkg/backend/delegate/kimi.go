@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -17,7 +18,7 @@ import (
 // `-p <prompt>`, not `--print` with the prompt on stdin), so neither
 // `backend: "claude_code"` nor a per-node `command:` override (#76) can run
 // it. See ADR-065.
-const BackendKimi = "kimi"
+const BackendKimi = backendcaps.Kimi
 
 // kimiProtocol describes Moonshot's kimi-code CLI:
 //

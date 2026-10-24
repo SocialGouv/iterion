@@ -1,5 +1,7 @@
 package ir
 
+import "github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+
 // Per-node CLI-command diagnostics.
 const (
 	DiagCommandIgnored DiagCode = "C174" // `command:` set on a backend that does not consume it (warning)
@@ -13,14 +15,7 @@ const (
 // resolves its own binary; and every CLI-agent backend resolves argv[0]
 // from the binary its REGISTRY entry was constructed with, which the
 // default registry builds empty — so a `command:` on any of them is inert.
-var commandIgnoringBackends = map[string]bool{
-	"claw":     true,
-	"codex":    true,
-	"kimi":     true,
-	"grok":     true,
-	"pi":       true,
-	"opencode": true,
-}
+var commandIgnoringBackends = backendcaps.Set(backendcaps.CommandOverride, backendcaps.Inert)
 
 // validateCommand walks every LLM-capable node (agent, judge) and warns
 // when the per-node `command:` CLI-binary override is set on a backend

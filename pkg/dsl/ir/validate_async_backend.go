@@ -1,5 +1,7 @@
 package ir
 
+import "github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+
 // validateAsyncBackends diagnoses the built-in routes whose lack of async
 // tools is knowable before launch. A route the source does not decide —
 // empty, `auto`, a `{{vars.x}}` the launch may override — is checked
@@ -12,8 +14,7 @@ func (c *compiler) validateAsyncBackends(w *Workflow) {
 		}
 		primary := effectiveNodeBackend(n.GetLLMFields().Backend, w.DefaultBackend)
 		check := func(backend, route string) {
-			switch backend {
-			case "codex", "kimi", "grok", "opencode":
+			if backendcaps.Verdict(backend, backendcaps.InteractionAsync) == backendcaps.TypedRefused {
 				c.errorfAt(DiagAsyncBackendUnsupported, node.NodeID(), "",
 					"%s %q: %s backend %q cannot serve interaction: async — ask_user_async and await_answers are unavailable", node.NodeKind(), node.NodeID(), route, backend)
 			}
@@ -59,8 +60,7 @@ func (c *compiler) validateSyncInteractionBackends(w *Workflow) {
 		}
 		primary := effectiveNodeBackend(n.GetLLMFields().Backend, w.DefaultBackend)
 		check := func(backend, route string) {
-			switch backend {
-			case "codex", "kimi", "grok", "opencode":
+			if backendcaps.Verdict(backend, backendcaps.InteractionSync) == backendcaps.Inert {
 				c.warnfAt(DiagSyncInteractionInert, node.NodeID(), "",
 					"%s %q: %s backend %q cannot serve interaction: %s — no ask_user tool reaches the agent there, so the node runs to completion without ever pausing (the interaction protocol is prompt text only on that backend)",
 					node.NodeKind(), node.NodeID(), route, backend, interaction)

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
@@ -49,13 +50,7 @@ var KnownFallbackTriggers = map[string]bool{
 // an EXTERNAL process, so it can hard-deny but cannot pause the parent
 // iterion run the way claude_code's in-process hook does, and `ask` would
 // therefore silently become `deny`.
-var gateEnforcingModes = map[string]map[string]bool{
-	"claude_code": {"ask": true, "deny": true},
-	"claw":        {"ask": true, "deny": true},
-	"pi":          {"ask": true, "deny": true},
-	"grok":        {"deny": true},
-	"kimi":        {"deny": true},
-}
+var gateEnforcingModes = backendcaps.PermissionModes()
 
 // reasoningEffortBackends are the backends that carry a
 // reasoning-effort dial. Deliberately its OWN set rather than a reuse
@@ -64,14 +59,7 @@ var gateEnforcingModes = map[string]map[string]bool{
 // `--reasoning-effort` and codex has `model_reasoning_effort`, so
 // reusing the gate set made C177 assert a fact the engine contradicts.
 // A diagnostic that is wrong teaches authors to ignore it.
-var reasoningEffortBackends = map[string]bool{
-	"claude_code": true,
-	"claw":        true,
-	"pi":          true,
-	"grok":        true,
-	"codex":       true,
-	"opencode":    true,
-}
+var reasoningEffortBackends = backendcaps.Set(backendcaps.ReasoningEffort)
 
 // EffortDialBackends returns the names of the backends carrying a
 // reasoning-effort dial — the set C177 screens fallback routes against,
@@ -88,9 +76,8 @@ func EffortDialBackends() []string {
 	return names
 }
 
-// clawBackendName is the literal value of the in-process backend.
-// Hardcoded because ir must not import pkg/backend/delegate.
-const clawBackendName = "claw"
+// clawBackendName comes from the shared leaf; ir never imports delegate.
+const clawBackendName = backendcaps.Claw
 
 // validateFallbacks checks every LLM node's `fallbacks:` block.
 //
@@ -160,7 +147,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 // out-of-process CLI hook, and which therefore need a host-side run. Kept
 // separate from gateEnforcingModes: that set answers "can this backend enforce
 // the gate at all", this one answers "what does enforcing it cost the run".
-var externalHookGateBackends = map[string]bool{"grok": true, "kimi": true}
+var externalHookGateBackends = backendcaps.Set(backendcaps.PermissionExternalHook)
 
 // checkGatedCLIBackendSandbox warns when a gated node routes to an
 // external-hook backend on a workflow that has not opted out of the sandbox.

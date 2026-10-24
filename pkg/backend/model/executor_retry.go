@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -496,7 +497,7 @@ func chainLabel(chain []chainElement) string {
 // construction, so the collapse must not apply. chainIsHintOnly is the
 // discriminator.
 func providerFallbackEligible(backendName string) bool {
-	return backendName == delegate.BackendClaudeCode
+	return backendcaps.Offers(backendName, backendcaps.ProviderChain)
 }
 
 // sessionResumeBackends are the backends that actually CONSUME
@@ -517,12 +518,7 @@ func providerFallbackEligible(backendName string) bool {
 // Deliberately its own set rather than a reuse of
 // providerFallbackEligible: that one answers "does this backend honour
 // the provider HINT", a different question with a different answer.
-var sessionResumeBackends = map[string]bool{
-	delegate.BackendClaudeCode: true,
-	delegate.BackendCodex:      true,
-	delegate.BackendPi:         true,
-	delegate.BackendOpenCode:   true,
-}
+var sessionResumeBackends = backendcaps.Set(backendcaps.SessionIDResume)
 
 // sessionResumeEligible reports whether dropping Task.SessionID can
 // plausibly change the outcome of a retry on this backend.

@@ -40,6 +40,14 @@ built on. They grade **evidence**, not ambition:
 The rest of the detail (resolution chain, detection rules, fallback routes)
 lives in [backends.md](backends.md); this is the maturity read.
 
+The declarative inventory is
+[`pkg/backend/backendcaps`](../pkg/backend/backendcaps/registry.json), with
+[its seed and mutation witnesses](backend-capability-registry.md). Its seven
+backend rows preserve implementation facts separately from the published
+proof cells and the live ledger: at seed commit `9e5a31e2de75`, **57 targets,
+55 `never`, 2 `pass`**. A target's `pass` does not prove a backend's entire
+matrix. Changes to a verdict require an explicit golden diff.
+
 | backend | mark | proven by | not proven |
 |---|---|---|---|
 | `claude_code` | 🟢 | the default implementation harness — every catalog bot has run on it in production | — |
@@ -60,7 +68,7 @@ on the proven path.
 The parity doctrine is settled and pre-arbitrated for `claw` ↔ `claude_code`
 ([philosophy.md](philosophy.md#backend-parity--claw--claude_code-pre-arbitrated)):
 a capability wired for one is wired — or **typed-refused** — for the other. It
-says nothing yet about the four CLI-agent backends, and closing that silence
+says nothing yet about the five CLI-agent backends, and closing that silence
 is the work tracked in the Backends epic.
 
 > **Adding a backend is a class, not a file.** The seam is

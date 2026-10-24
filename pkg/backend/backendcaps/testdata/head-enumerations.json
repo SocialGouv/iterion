@@ -1,0 +1,143 @@
+{
+  "source_commit": "9e5a31e2de75da413077bf5146432f6a470d77b3",
+  "gates": {
+    "claude_code": [
+      "ask",
+      "deny"
+    ],
+    "claw": [
+      "ask",
+      "deny"
+    ],
+    "pi": [
+      "ask",
+      "deny"
+    ],
+    "grok": [
+      "deny"
+    ],
+    "kimi": [
+      "deny"
+    ]
+  },
+  "sets": {
+    "reasoning-effort": [
+      "claude_code",
+      "claw",
+      "codex",
+      "grok",
+      "opencode",
+      "pi"
+    ],
+    "permission-external-hook": [
+      "grok",
+      "kimi"
+    ],
+    "command-ignored": [
+      "claw",
+      "codex",
+      "grok",
+      "kimi",
+      "opencode",
+      "pi"
+    ],
+    "provider-chain-ignored": [
+      "claw",
+      "codex",
+      "grok",
+      "kimi",
+      "opencode",
+      "pi"
+    ],
+    "session-id-resume": [
+      "claude_code",
+      "codex",
+      "opencode",
+      "pi"
+    ],
+    "mcp-forwarding": [
+      "claude_code",
+      "pi"
+    ],
+    "session-persist": [
+      "claude_code",
+      "claw",
+      "codex",
+      "pi"
+    ],
+    "async-refused": [
+      "codex",
+      "grok",
+      "kimi",
+      "opencode"
+    ],
+    "sync-inert": [
+      "codex",
+      "grok",
+      "kimi",
+      "opencode"
+    ],
+    "tool-list": [
+      "claude_code",
+      "claw",
+      "codex"
+    ],
+    "tool-resolution": [
+      "claw"
+    ],
+    "auto-memory": [
+      "claude_code",
+      "claw",
+      "pi"
+    ],
+    "auto-memory-prompt": [
+      "claw",
+      "pi"
+    ]
+  },
+  "native_tools": [
+    "Bash",
+    "Read",
+    "Glob",
+    "Grep",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "Task",
+    "WebFetch",
+    "WebSearch",
+    "ToolSearch",
+    "TodoWrite",
+    "Skill"
+  ],
+  "default_preference": [
+    "claude_code",
+    "claw"
+  ],
+  "detection_order": [
+    "claude_code",
+    "claw",
+    "codex",
+    "pi",
+    "opencode"
+  ],
+  "harness_order": [
+    "claude_code",
+    "claw",
+    "codex",
+    "pi",
+    "grok",
+    "kimi",
+    "opencode"
+  ],
+  "system_prompt": {
+    "claude_code": "append-to-native",
+    "claw": "authored-base",
+    "codex": "standalone",
+    "pi": "append-to-native",
+    "grok": "append-to-native",
+    "kimi": "standalone",
+    "opencode": "standalone"
+  }
+}

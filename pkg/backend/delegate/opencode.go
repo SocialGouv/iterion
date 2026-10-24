@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -21,7 +22,7 @@ import (
 //	         [--session <id> [--fork=true]] run
 //
 // with the prompt on stdin. See ADR-065 for the CLI-agent seam.
-const BackendOpenCode = "opencode"
+const BackendOpenCode = backendcaps.OpenCode
 
 // openCodeTrustProjectEnv opts into the target repository's own `.opencode/`
 // resources. Refused by default — see openCodeProjectTrusted.

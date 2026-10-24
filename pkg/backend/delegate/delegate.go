@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/plugin"
@@ -26,9 +27,9 @@ import (
 
 // Backend name constants used for registration and dispatch.
 const (
-	BackendClaw       = "claw"
-	BackendClaudeCode = "claude_code"
-	BackendCodex      = "codex"
+	BackendClaw       = backendcaps.Claw
+	BackendClaudeCode = backendcaps.ClaudeCode
+	BackendCodex      = backendcaps.Codex
 )
 
 // interactionSystemInstruction is appended to the system prompt when
@@ -240,27 +241,12 @@ const (
 // composition mode. Centralised here so the executor and any other Task
 // constructor stay consistent.
 func SystemPromptModeForBackend(backend string) SystemPromptMode {
-	switch backend {
-	case BackendClaudeCode:
+	switch backendcaps.SystemPrompt(backend) {
+	case "append-to-native":
 		return SystemPromptAppendToNative
-	case BackendGrok:
-		// Grok Build CLI: node's system: is delivered via --rules (append to
-		// the CLI's native agentic baseline). Override would strip that
-		// baseline — same trap as claude_code --system-prompt.
-		return SystemPromptAppendToNative
-	case BackendPi:
-		// pi assembles its native agentic prompt from the ACTIVE tool set,
-		// and reads AGENTS.md/CLAUDE.md and skills on its own. The node's
-		// system: is delivered via --append-system-prompt so that baseline
-		// survives. Prepending iterion's agenticOperatingPosture on top
-		// would duplicate read-before-edit / plan-then-act / converge-and-
-		// stop against pi's own wording — see ADR-061 and ADR-085.
-		return SystemPromptAppendToNative
-	case BackendClaw:
+	case "authored-base":
 		return SystemPromptAuthoredBase
 	default:
-		// codex, kimi, and any future standalone backend: author text is the
-		// whole prompt (kimi folds it into -p; codex replaces).
 		return SystemPromptStandalone
 	}
 }

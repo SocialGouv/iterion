@@ -3,6 +3,8 @@ package ir
 import (
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 )
 
 // Provider-routing diagnostics.
@@ -54,14 +56,7 @@ func KnownProviderList() string {
 // first element is a no-op the author should be told about. A multi-element provider chain on these
 // is a no-op fall-through (the executor collapses it to the head), so C088
 // tells the author the chain won't do anything there.
-var hintIgnoringBackends = map[string]bool{
-	"claw":     true,
-	"codex":    true,
-	"kimi":     true,
-	"grok":     true,
-	"pi":       true,
-	"opencode": true,
-}
+var hintIgnoringBackends = backendcaps.Set(backendcaps.ProviderChain, backendcaps.Inert)
 
 // validateProviders walks every LLM-capable node (agent, judge, llm
 // router) and validates the `provider:` field's fallback-chain form:

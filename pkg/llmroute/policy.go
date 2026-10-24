@@ -27,6 +27,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 )
 
 // RefusedPinnedKey policy values. A shared-tier key refused or capped at
@@ -74,32 +76,20 @@ const (
 	CredChatGPTForfait = "chatgpt_forfait"
 )
 
-// Harness names a pair, an override cell's backend or a providers
-// allowlist's world may name. Must stay in sync with the backend names the
-// DSL accepts (pkg/dsl/ir validate_fallbacks.go) — that file is the
-// authority; a backend added there joins here. Exported as a slice so the
-// drift tests against the executor side iterate the SAME enumeration
-// instead of a copy of it.
-var Harnesses = []string{
-	HarnessClaudeCode,
-	HarnessClaw,
-	HarnessCodex,
-	HarnessPi,
-	HarnessGrok,
-	HarnessKimi,
-	HarnessOpencode,
-}
+// Harnesses is the built-in backend inventory in its established presentation
+// order. Names come from the shared declarative leaf, also used by the compiler.
+var Harnesses = backendcaps.Names()
 
 // The harness name constants, kept as constants for the call sites that
 // name one harness directly.
 const (
-	HarnessClaudeCode = "claude_code"
-	HarnessClaw       = "claw"
-	HarnessCodex      = "codex"
-	HarnessPi         = "pi"
-	HarnessGrok       = "grok"
-	HarnessKimi       = "kimi"
-	HarnessOpencode   = "opencode"
+	HarnessClaudeCode = backendcaps.ClaudeCode
+	HarnessClaw       = backendcaps.Claw
+	HarnessCodex      = backendcaps.Codex
+	HarnessPi         = backendcaps.Pi
+	HarnessGrok       = backendcaps.Grok
+	HarnessKimi       = backendcaps.Kimi
+	HarnessOpencode   = backendcaps.OpenCode
 )
 
 // Pair joins a harness and a credential slot with '+' — the wire spelling
@@ -332,7 +322,7 @@ func validHarness(h string) bool {
 }
 
 // ReasoningEfforts is the closed effort vocabulary an override cell may pin.
-// Kept local because pkg/llmroute imports nothing of iterion by design; the
+// Kept local because llmroute cannot import its compiler consumer; the
 // drift test against ir.ValidReasoningEfforts lives in projections_test.go
 // (package llmroute_test — the in-package test cannot import ir, which
 // imports llmroute).
@@ -371,8 +361,9 @@ func ValidProviderHint(p string) bool {
 // model.ConsumesProviderHint: how a backend consumes the per-node provider
 // hint. chains=true walks a multi-step chain (claude_code); single=true
 // honours one step and derives the rest from the model prefix (claw); both
-// false = the backend ignores the hint. Kept local for the same import
-// reason as the effort list; the drift test lives in projections_test.go.
+// false = the backend ignores the hint. This value-sensitive policy remains
+// separate from backendcaps provider-chain eligibility; the drift test lives
+// in projections_test.go.
 func ConsumesProviderHint(backend string) (chains, single bool) {
 	switch backend {
 	case HarnessClaudeCode:
@@ -393,7 +384,7 @@ func ConsumesProviderHint(backend string) (chains, single bool) {
 // force-Anthropic-direct branch, wired to the model twin) and ignores
 // every other value there — the spend then follows the default
 // precedence, the silent misroute a policy pin must not certify. Kept
-// local for the same import reason as the classes; the drift test lives
+// local to avoid importing the model executor; the drift test lives
 // in projections_test.go.
 func HonoursProviderHintValue(backend, provider string) bool {
 	switch backend {
@@ -515,7 +506,7 @@ func validateOverride(o Override) error {
 		}
 	}
 	if o.Backend != "" && !validHarness(o.Backend) {
-		return fmt.Errorf("backend %q is not a harness (want one of claude_code, claw, codex, pi, grok, kimi, opencode)", o.Backend)
+		return fmt.Errorf("backend %q is not a harness (want one of %s)", o.Backend, strings.Join(Harnesses, ", "))
 	}
 	if o.Effort != "" && !ValidEffort(o.Effort) {
 		return fmt.Errorf("effort %q is not in the vocabulary (want one of %s)", o.Effort, strings.Join(ReasoningEfforts, ", "))
@@ -586,7 +577,7 @@ func Validate(p Policy) error {
 			return err
 		}
 		if !validHarness(h) {
-			return fmt.Errorf("llmroute: pair_order %q — unknown harness %q (want one of claude_code, claw, codex, pi, grok, kimi, opencode)", pair, h)
+			return fmt.Errorf("llmroute: pair_order %q — unknown harness %q (want one of %s)", pair, h, strings.Join(Harnesses, ", "))
 		}
 		if !validCredential(c) {
 			return fmt.Errorf("llmroute: pair_order %q — unknown credential %q (want claude_forfait, chatgpt_forfait, pool, or <provider>_key like anthropic_key)", pair, c)

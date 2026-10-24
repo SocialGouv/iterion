@@ -1,0 +1,214 @@
+// Package backendcaps owns the declarative inventory of built-in backends.
+// It is a leaf: the compiler and execution adapters read the same facts without
+// importing each other. Implementation, published proof, and live target
+// outcomes are separate observations; none implies either of the others.
+package backendcaps
+
+import (
+	_ "embed"
+	"encoding/json"
+	"slices"
+)
+
+// Built-in registration names. Custom registries remain open to other names.
+const (
+	ClaudeCode = "claude_code"
+	Claw       = "claw"
+	Codex      = "codex"
+	Grok       = "grok"
+	Kimi       = "kimi"
+	OpenCode   = "opencode"
+	Pi         = "pi"
+)
+
+// Capability keys name the precise predicate consumed by an adapter. In
+// particular, receiving a tool list is not resolving it, and consuming a
+// SessionID is not packing a persistent conversation.
+const (
+	PermissionAsk          = "permission-ask"
+	PermissionDeny         = "permission-deny"
+	PermissionExternalHook = "permission-external-hook"
+	ReasoningEffort        = "reasoning-effort"
+	CommandOverride        = "command-override"
+	ProviderChain          = "provider-chain"
+	InteractionAsync       = "interaction-async"
+	InteractionSync        = "interaction-sync"
+	ToolList               = "tool-list"
+	ToolResolution         = "tool-resolution"
+	SessionIDResume        = "session-id-resume"
+	SessionPersist         = "session-persist"
+	MCPForwarding          = "mcp-forwarding"
+	AutoMemory             = "auto-memory"
+	AutoMemoryPrompt       = "auto-memory-prompt"
+)
+
+// Implementation verdicts describe existing wiring, not live maturity.
+const (
+	Shipped      = "shipped"
+	Partial      = "partial"
+	TypedRefused = "typed-refused"
+	Inert        = "inert"
+	Unknown      = "unknown"
+)
+
+// Cell records one scoped fact. Proof cells retain the published vocabulary
+// verbatim, including compound verdicts; Evidence names repository lines or
+// tests. An unknown is explicit, never an empty cell.
+type Cell struct {
+	Name     string   `json:"name"`
+	Axis     string   `json:"axis"`
+	Verdict  string   `json:"verdict"`
+	Evidence []string `json:"evidence"`
+	Detail   string   `json:"detail,omitempty"`
+}
+
+// Backend is one declarative row. Zero ranks mean absent from that selection
+// surface, not absent from the registry. NativeTools is the existing exclusion
+// roster, not a promise to enumerate everything an upstream CLI can execute.
+type Backend struct {
+	Name              string   `json:"name"`
+	DefaultPreference int      `json:"default_preference"`
+	DetectionOrder    int      `json:"detection_order"`
+	NativeTools       []string `json:"native_tools"`
+	Cells             []Cell   `json:"cells"`
+	Proof             []Cell   `json:"proof"`
+	SystemPrompt      string   `json:"system_prompt"`
+}
+
+// Inventory keeps the seed provenance reviewable. SourceCommit is the original
+// observation, not an assertion that every later cell was measured there.
+type Inventory struct {
+	Schema       int       `json:"schema"`
+	SourceCommit string    `json:"source_commit"`
+	Epic         int       `json:"epic"`
+	Backends     []Backend `json:"backends"`
+}
+
+//go:embed registry.json
+var registryJSON []byte
+
+//go:embed live_seed.json
+var liveSeedJSON []byte
+
+var inventory = decodeInventory()
+
+func decodeInventory() Inventory {
+	var v Inventory
+	if err := json.Unmarshal(registryJSON, &v); err != nil {
+		panic(err) // A malformed compiled-in declaration is a build defect.
+	}
+	return v
+}
+
+// Snapshot returns an independent copy, including nested slices.
+func Snapshot() Inventory { return decodeInventory() }
+
+// LiveSeed returns the complete target-level ledger observation. The ledger
+// has no backend dimension: assigning its passes to a backend would invent
+// evidence. Callers receive a copy of the JSON, including run metadata.
+func LiveSeed() json.RawMessage { return slices.Clone(liveSeedJSON) }
+
+// Names returns all built-in names in stable order.
+func Names() []string {
+	names := make([]string, 0, len(inventory.Backends))
+	for _, b := range inventory.Backends {
+		names = append(names, b.Name)
+	}
+	return names
+}
+
+// SystemPrompt reports the existing composition mode; unknown/custom backends
+// retain the standalone default. It does not normalize registration names.
+func SystemPrompt(backend string) string {
+	for _, b := range inventory.Backends {
+		if b.Name == backend {
+			return b.SystemPrompt
+		}
+	}
+	return "standalone"
+}
+
+// Verdict returns the implementation verdict, or unknown for an unregistered
+// name/key. Lookup is exact: callers retain their own normalization policy.
+func Verdict(backend, capability string) string {
+	for _, b := range inventory.Backends {
+		if b.Name == backend {
+			for _, c := range b.Cells {
+				if c.Name == capability {
+					return c.Verdict
+				}
+			}
+		}
+	}
+	return Unknown
+}
+
+// Offers reports existing wiring, including conditional wiring. A partial
+// capability still requires the adapter's runtime transport/context checks.
+// Never use its negation to reject custom backends; test an explicit refusal.
+func Offers(backend, capability string) bool {
+	v := Verdict(backend, capability)
+	return v == Shipped || v == Partial
+}
+
+// Set projects a fresh membership map for an existing enumerating consumer.
+// No verdicts selects shipped/partial; explicit verdicts select those only.
+func Set(capability string, verdicts ...string) map[string]bool {
+	if len(verdicts) == 0 {
+		verdicts = []string{Shipped, Partial}
+	}
+	set := make(map[string]bool)
+	for _, b := range inventory.Backends {
+		if slices.Contains(verdicts, Verdict(b.Name, capability)) {
+			set[b.Name] = true
+		}
+	}
+	return set
+}
+
+// PermissionModes projects the existing compiler gate table.
+func PermissionModes() map[string]map[string]bool {
+	modes := make(map[string]map[string]bool)
+	for _, b := range inventory.Backends {
+		for _, mode := range []string{"ask", "deny"} {
+			if Offers(b.Name, "permission-"+mode) {
+				if modes[b.Name] == nil {
+					modes[b.Name] = make(map[string]bool)
+				}
+				modes[b.Name][mode] = true
+			}
+		}
+	}
+	return modes
+}
+
+// NativeTools returns a copy of the seeded exclusion roster in legacy order.
+func NativeTools(backend string) []string {
+	for _, b := range inventory.Backends {
+		if b.Name == backend {
+			return slices.Clone(b.NativeTools)
+		}
+	}
+	return nil
+}
+
+// DefaultPreference preserves the opt-in-only status of the other backends.
+func DefaultPreference() []string {
+	return rankedNames(func(b Backend) int { return b.DefaultPreference })
+}
+
+// DetectionNames preserves probe membership and presentation order. A backend
+// absent here still exists; wiring a new probe is a separate verdict change.
+func DetectionNames() []string { return rankedNames(func(b Backend) int { return b.DetectionOrder }) }
+
+func rankedNames(rank func(Backend) int) []string {
+	rows := slices.Clone(inventory.Backends)
+	slices.SortFunc(rows, func(a, b Backend) int { return rank(a) - rank(b) })
+	var names []string
+	for _, b := range rows {
+		if rank(b) > 0 {
+			names = append(names, b.Name)
+		}
+	}
+	return names
+}

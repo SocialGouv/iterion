@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -22,7 +23,7 @@ import (
 // Credentials and model access are resolved by the CLI itself (OAuth / xAI
 // account config under ~/.grok/), so ResolveEnv is nil — same posture as
 // kimi. See ADR-065.
-const BackendGrok = "grok"
+const BackendGrok = backendcaps.Grok
 
 // grokMaxTurnsCeiling keeps workflow-provided limits within the same
 // defensive bound used by the Claude CLI delegate.

@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 )
 
 // ModeEnv sets the process-wide default for the backends' auto-memory when
@@ -36,42 +37,20 @@ const SpaceName = "auto-memory"
 // StateDirName is the Task.StateDir component the mirror materialises under.
 const StateDirName = "auto-memory"
 
-// supportedBackends maps each backend that consumes a materialised MEMORY.md
-// directory to whether ITERION must render the prompt section describing it.
-//
-//   - false — the CLI has auto-memory of its own and iterion only has to point
-//     it at the right directory (claude_code, via --settings). Rendering a
-//     section there would describe the mechanism twice.
-//   - true — the backend has no auto-memory concept, so the section iterion
-//     renders IS the mechanism: it tells the model the directory exists and
-//     how to maintain it, and the model's ordinary file tools do the rest.
-//
-// Any backend absent from the map ignores the directory entirely, so
-// materialising one would write files nobody reads — and asking for it there
-// is worth a compile-time warning (C132).
-//
-// The map lives here, not at each consumer, because it has three in different
-// layers: the compiler (which warns), the executor (which materialises), and
-// the prompt assembly. Copies would drift the moment a backend gains support,
-// and the failure is silent — a warning that no longer matches the engine.
-var supportedBackends = map[string]bool{
-	"claude_code": false,
-	"claw":        true,
-	"pi":          true,
-}
-
-// SupportsBackend reports whether a backend consumes the auto-memory
-// directory. The names are delegate.Backend* values, spelled literally so
-// this package stays a leaf the DSL compiler can import.
+// SupportsBackend reports whether the backend consumes the materialised
+// MEMORY.md directory. The shared registry also records whether iterion must
+// render its prompt section: Claude Code has a native mechanism, while claw
+// and pi need the authored section. Unsupported backends still earn C132.
 func SupportsBackend(name string) bool {
-	_, ok := supportedBackends[name]
-	return ok
+	return backendcaps.Offers(name, backendcaps.AutoMemory)
 }
 
 // NeedsPromptSection reports whether iterion must render the auto-memory
 // section into this backend's system prompt, rather than pointing a native
 // mechanism at the directory.
-func NeedsPromptSection(name string) bool { return supportedBackends[name] }
+func NeedsPromptSection(name string) bool {
+	return backendcaps.Offers(name, backendcaps.AutoMemoryPrompt)
+}
 
 // Mode is the resolved auto-memory setting for a node or run.
 type Mode int

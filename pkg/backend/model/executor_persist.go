@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/sessionpack"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -43,12 +44,7 @@ type clawPersistEnvelope struct {
 // would always degrade to a fresh session.
 func (e *ClawExecutor) SessionResumeCapability(node ir.Node) (string, bool) {
 	name := e.EffectiveBackendName(node)
-	switch name {
-	case delegate.BackendClaw, delegate.BackendClaudeCode, delegate.BackendPi, delegate.BackendCodex:
-		return name, true
-	default:
-		return name, false
-	}
+	return name, backendcaps.Offers(name, backendcaps.SessionPersist)
 }
 
 func (e *ClawExecutor) packerTask() delegate.Task {
