@@ -26,9 +26,11 @@ matchers on a small set of curated categories; slower; depends on
 Node 22+.
 
 - Upstream: https://github.com/vercel-labs/deepsec
-- Local clone: `~/lab/ai/references/deepsec/` (override via
-  `ITERION_REFERENCES_ROOT`).
-- Node 22+ required. Earlier versions silently fail.
+- Runtime requirement: the global `deepsec` CLI on `PATH`, running on
+  Node 22+.
+- Optional reference clone: `~/lab/ai/references/deepsec/` (override via
+  `ITERION_REFERENCES_ROOT`, or `--var deepsec_root=...`). It is used only
+  to report a missing CLI precisely; Seki never executes it as a fallback.
 
 ### defending-code-reference-harness (Anthropic)
 
@@ -58,44 +60,42 @@ sub-tool inflates run time and complicates failure modes.
 
 ## Clone location
 
-Both tools live under `~/lab/ai/references/` by default. Override
-with the env var:
+The harness reference lives under `~/lab/ai/references/` by default;
+override the root with:
 
 ```bash
 export ITERION_REFERENCES_ROOT=~/path/to/your/refs
 ```
 
-Seki resolves them as:
-
-```
-$ITERION_REFERENCES_ROOT/deepsec
-$ITERION_REFERENCES_ROOT/defending-code-reference-harness
-```
-
-If a directory is absent, Seki logs a one-line WARN and continues
-without it (see "Graceful degrade" below).
+Seki resolves the harness as
+`$ITERION_REFERENCES_ROOT/defending-code-reference-harness`. For deepsec,
+the same lookup (or `deepsec_root`) only locates an optional reference
+checkout used in the unavailable message. The executable contract remains
+`deepsec` on `PATH`: an existing clone without the global CLI does not run.
+A missing harness directory logs a one-line WARN and continues (see
+"Graceful degrade" below).
 
 ## Headless invocation
 
 ### deepsec — claude-code provider fallback
 
 deepsec normally drives a hosted LLM. For local subscription-based
-use (no API key), the bundled fallback drives the local `claude`
-CLI:
+use (no API key), Seki runs the global CLI with its claude fallback. The
+shape is:
 
 ```bash
-DEEPSEC_PROVIDER=claude-code \
-  node $ITERION_REFERENCES_ROOT/deepsec/cli.mjs \
-  scan \
-  --target {{vars.workspace_dir}} \
-  --output {{vars.scan_dir}}/deepsec.json \
-  --record-dir {{vars.workspace_dir}}/.sec-audit/deepsec-records
+DSW={{vars.scan_dir}}/deepsec-workspace
+deepsec init "$DSW" {{vars.workspace_dir}} --force
+(cd "$DSW" && deepsec scan)
+(cd "$DSW" && deepsec process --concurrency {{vars.deepsec_concurrency}} \
+  --limit {{vars.deepsec_process_limit}} --agent claude)
+(cd "$DSW" && deepsec export --format json --out {{vars.deepsec_out}})
 ```
 
-Seki's own pipeline does not read that path: the `run_deepsec_scanner`
-tool node exports to a per-run file
-(`{{vars.scan_dir}}/deepsec-out-<run.id>/deepsec.json`) and publishes it
-in `json_paths.deepsec`, the only route by which triage, `scan_health`,
+`run_deepsec_scanner` wraps those calls with its provider, timeout, retry,
+coverage and per-run path guards. It derives the exported file as
+`{{vars.scan_dir}}/deepsec-out-<run.id>/deepsec.json` and publishes it in
+`json_paths.deepsec`, the only route by which triage, `scan_health`,
 `bank_deepsec_findings` and `cap_findings` reach a deep-scan export. A
 flat `{{vars.scan_dir}}/deepsec.json` is the pre-0.1.4 shared slot — the
 scanner node removes it once a pass gets past its preflight, and no node
@@ -103,15 +103,42 @@ harvests it — so a hand-run export reaches triage only through
 `json_paths`, never by sitting under `scan_dir`.
 
 Requirements:
+- `deepsec` is on `$PATH` (for example through the pinned sec image).
 - `node --version` reports 22.x or higher.
-- `claude` is on `$PATH` and authenticated.
-- `claude` is the model-side authentication, not Anthropic's
-  hosted API. No `ANTHROPIC_API_KEY` needed.
+- `claude` is on `$PATH` and authenticated for the fallback, or a gateway
+  credential selects the hosted provider.
+- `claude` is the model-side authentication, not Anthropic's hosted API.
+  No `ANTHROPIC_API_KEY` is needed for that fallback.
+- `deepsec_root` is NOT a runtime prerequisite: it only points at an
+  optional reference checkout so a missing CLI can be diagnosed precisely.
 
-deepsec writes JSON in its native schema; Seki normalizes it into
-the triage candidate shape via the same path the lang-specific
-scanners use. Map deepsec categories to `[[finding-taxonomy]]`
-during triage.
+deepsec 2.3.9 exports a bare findings array. Each finding carries a
+`[SEVERITY]`-prefixed `title`, `description`, `severity` and `labels` at
+the root. `labels` always begins with `security`, `project:<projectId>`,
+`severity:<severity>`, `slug:<vulnSlug>` and `confidence:<confidence>`;
+`owning-team:<slug>` entries appear only when the exporter supplied teams.
+`filePath`, `lineNumbers`, `vulnSlug`, `confidence`, `runId`, `projectId`,
+`severity`, `discoveredAt` and `owners` live under `metadata`; `owners` is
+an OwnerSummary object whose arrays may be empty: `teams[]` objects
+`{name, slug}`, `oncall[]` objects `{name, email, …}`, `managers[]`
+objects with at least `{email}`, `contributors[]` objects
+`{name, email, score, …}`, and `recentCommitters[]` objects
+`{name, email, date}`. Root/owner assignee fields exist only as
+exporter-derived data when oncall exists. `description` starts with
+`**File:** \`<path>\` (lines n, n, …)`, `**Project:**`, a
+`**Severity:** / **Confidence:** / **Slug:**` line, then an
+exporter-supplied `## Owners` section only when owner data exists, before
+`## Finding` and `## Recommendation`; there is no separate root
+recommendation field and no Evidence section. Seki maps that shape to its
+candidate schema and maps `metadata.vulnSlug` to `[[finding-taxonomy]]`;
+see `[[scanner-deepsec]]`.
+
+`cap_findings` recognizes the export by the inode identity of the path
+published in `DEEPSEC_PATHS`, never by filename, realpath spelling, or
+array shape. Deepsec findings keep their metadata and full long
+descriptions through severity sorting and capping, both inline and on
+disk; other scanners retain the standard trimming. Triage applies the
+same mapping to either transport.
 
 ### harness — `claude --print` invocation
 
@@ -149,14 +176,16 @@ than letting it litter the workspace root.
 
 ## Graceful degrade
 
-Seki MUST handle each external tool being absent. The bot logs a
-WARN once per run, then continues:
+Seki MUST handle each external tool being absent. deepsec's scanner node
+always exits 0 and reports the fact as DATA in its `scanner_output.errors[]`
+(not as a WARN): `json_paths` stays empty, coverage is marked
+`deepsec_unavailable`, and `scan_health`/`report_card` surface that state.
+The harness path can still log a WARN when its reference clone is absent:
 
 ```
-deepsec: not found at $ITERION_REFERENCES_ROOT/deepsec (skipping)
-harness: not found at $ITERION_REFERENCES_ROOT/defending-code-reference-harness (skipping)
-node 22+ not on PATH (deepsec disabled)
-claude CLI not on PATH (deepsec --provider claude-code disabled; harness skill invocation disabled)
+deepsec unavailable: deepsec CLI not on PATH (reference clone exists at <path>...)   # scanner_output.errors[]
+deepsec unavailable: node <N> < 22 (deepsec requires Node 22+)                     # scanner_output.errors[]
+harness: not found at $ITERION_REFERENCES_ROOT/defending-code-reference-harness   # WARN
 ```
 
 The degrade rules:
@@ -166,16 +195,16 @@ The degrade rules:
   finding's `scanner_rationale` when a category that would have
   benefited from it was scanned with only the bundled scanners —
   so a human reading the report knows precision was lower.
-- `[[sec-audit-source]]` phase 2's branch list is fixed; deepsec
-  is an OPTIONAL sub-branch inside the per-language `tool` nodes,
-  not a top-level branch.
+- deepsec is an OPTIONAL, separately gated scanner branch alongside
+  `run_generic_scanners`, not a sub-branch of the per-language tools;
+  disabling or losing it leaves those language branches unchanged.
 
 ## Determinism considerations
 
-- deepsec's `--record-dir` adds a non-deterministic warm/cold
-  cache layer. Put it under `.sec-audit/deepsec-records/`
-  (gitignore-able) so it sits beside the file-record store in the
-  repo's `.sec-audit/` dotdir instead of littering the source tree.
+- deepsec's shared data workspace (`scan_dir/deepsec-workspace`) adds a
+  non-deterministic warm/cold cache layer by design; the per-run export and
+  logs stay keyed on `run.id` beside it, so reused records never change
+  attribution.
 - The harness's `/triage` interview is interactive by default —
   always pass `--auto` from a headless Seki invocation.
 - `claude --print` flushes once; capture stdout and stderr

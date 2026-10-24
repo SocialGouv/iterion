@@ -38,7 +38,7 @@ The bundles under `bots/`, then the skills they carry.
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.9.17 |
 | `rgaa-audit` | ♿ Acci | RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y engine. | 3.0.3 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 0.1.5 |
-| `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 0.1.10 |
+| `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 0.1.11 |
 | `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 0.3.5 |
 | `supply-shield` | ⛓️ Shieldy | Global supply-chain MALWARE shield. | 0.1.6 |
 | `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 0.1.6 |
@@ -197,7 +197,7 @@ The pair a model sees before it decides to open the file.
 | `sec-audit-source` | `reproducer-go` | How to write a focused Go regression test per finding_type — one that FAILS on unpatched code and PASSES after the fix. |
 | `sec-audit-source` | `reproducer-ts` | How to write a focused TS/JS regression test per finding_type — one that FAILS on unpatched code and PASSES after the fix. |
 | `sec-audit-source` | `reviewer-isolation` | The reviewer-isolation contract enforced by Seki's verification ladder. |
-| `sec-audit-source` | `scanner-deepsec` | Field mapping and triage contract for the optional deepsec scanner backend (Enhancement 4). |
+| `sec-audit-source` | `scanner-deepsec` | Field mapping and triage contract for the optional deepsec 2.3.9 scanner backend (Enhancement 4). |
 | `sec-audit-source` | `sec-audit-source` | Operating playbook for the sec-audit-source bot. |
 | `sec-audit-source` | `threat-model` | Build (or refresh) the project threat model that Seki consumes before triage and ranking. |
 | `sec-audit-source` | `triage` | Adversarial triage of raw scanner output: N-vote majority verification, two-pass dedup (deterministic + semantic), exclusion… |

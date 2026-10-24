@@ -44,9 +44,37 @@ remediation** bot. Six new capabilities, all in `bots/sec-audit-source/main.bot`
 | 1 | **Project security context** — `.sec-audit/context.md` (threat model + auth model + known-FP sources). Loaded or auto-generated on first run; injected into triage + every voter prompt as authoritative scoping (NOT instructions). | `enable_project_context=true`, `context_path=…/.sec-audit/context.md`, `context_ttl_days=90`, `force_context_refresh=false` | [`project-context.md`](../bots/sec-audit-source/skills/project-context.md), [`threat-model.md`](../bots/sec-audit-source/skills/threat-model.md) |
 | 2 | **N-vote adversarial revalidation** — the single judge becomes a **fixed pool of 3 independent "disprove" voters** (all three default to `claude_code` + `claude-opus-5` — opus-first out of the box; restore cross-family diversity by overriding the per-voter model/backend env vars, or the opt-in `ITERION_SEC_AUDIT_PROVIDER_CHAIN` GLM lane). Majority drives the verdict; `await: best_effort` tolerates one crashed voter. Voters consult `git log`/`git blame` for `fixed_recently` / `introduced_recently` signals. Unanimous dismiss with a cited guard appends to `fp-known.yaml`. | `confirm_threshold=2`, `fp_append_policy="unanimous_dismiss"` | [`disprove-voting.md`](../bots/sec-audit-source/skills/disprove-voting.md) |
 | 3 | **Diff/incremental mode** — when set, scopes triage to files changed between the working tree and `git merge-base <diff_base> HEAD` (mirrors `code-review` `diff_precheck` shape). Scanners still walk the whole tree; the narrowing happens at triage via `file_filter`. Empty = full scan. | `diff_base=""` (try `main`, `origin/main`, or `HEAD` for uncommitted-only) | (handled by `diff_scope` tool node) |
-| 4 | **Optional deepsec scanner backend** — runs `deepsec init/scan/process/export` headlessly from the workspace; the JSON is ingested by triage like any other scanner. Reuses the local `claude` subscription when no AI Gateway key is set. Requires Node 22 + a deepsec clone. ALWAYS exits 0 — a missing binary degrades gracefully. | `enable_deepsec=false`, `deepsec_concurrency=4`, `deepsec_process_limit=50`, `deepsec_root="${HOME}/lab/ai/references/deepsec"` | [`scanner-deepsec.md`](../bots/sec-audit-source/skills/scanner-deepsec.md), see also [references-bootstrap.md](references-bootstrap.md) |
+| 4 | **Optional deepsec scanner backend** — runs `deepsec init/scan/process/export` headlessly from the workspace; the JSON is ingested by triage like any other scanner. Reuses the local `claude` subscription when no AI Gateway key is set. Requires the `deepsec` CLI on `PATH` and Node 22+. `deepsec_root` only names an optional reference clone used to diagnose a missing CLI; it is never executed as a fallback. ALWAYS exits 0 — a missing binary degrades gracefully. | `enable_deepsec=false`, `deepsec_concurrency=4`, `deepsec_process_limit=50`, `deepsec_root="${HOME}/lab/ai/references/deepsec"` | [`scanner-deepsec.md`](../bots/sec-audit-source/skills/scanner-deepsec.md), see also [references-bootstrap.md](references-bootstrap.md) |
 | 5 | **Integrated remediation phase** — per confirmed finding: `patch_author` → `build_rung` → `reproduce_rung` (original scanner rule no longer fires) → `regress_rung` (tests pass) → `reattack` (fresh judge probes the vuln CLASS across the package) → `reviewer_isolation` (judge sees only `{file, line, category, diff}` — schema-enforced) → `aggregate_verdict`. In apply modes, verified patches commit to a temp branch `iterion/sec-fix/<run-id>`; `apply_gated` PAUSES on a human gate (`iterion resume --run-id <id> --answer approved=true\|false`) before merging `--no-ff` to the user's branch; `apply_auto` skips the gate; `propose` only writes diffs. Crypto + secrets are always hard-stopped. | `remediate=false` (opt-in), `remediation_mode="apply_gated"`, `hard_stop_categories="crypto,secrets"`, `max_fix_per_run=10`, `patch_attempts=1`, `patch_dir=…/.sec-audit/patches` | [`security-patcher.md`](security-patcher.md), [`patch.md`](../bots/sec-audit-source/skills/patch.md), [`reattack-oracles.md`](../bots/sec-audit-source/skills/reattack-oracles.md), [`reviewer-isolation.md`](../bots/sec-audit-source/skills/reviewer-isolation.md), [`crypto-handling.md`](../bots/sec-audit-source/skills/crypto-handling.md) |
 | 6 | **Env-overridable cost-tier backend** — the whole bot runs on a Claude Code subscription with no API key **by default** (`ITERION_SEC_AUDIT_BACKEND` defaults to `claude_code`, models to `claude-opus-5` — opus-first out of the box, so triage stops stalling on the heavy input). Flip the spine (triage/voters/report) to the metered `claw` + `openai/gpt-5.5` / GLM lane via the env vars (or the opt-in `ITERION_SEC_AUDIT_PROVIDER_CHAIN`). `detect_tech` keeps its own cheap `claw`/`gpt-5.5` default so flipping the spine can't drag the classifier onto an incompatible model. | `ITERION_SEC_AUDIT_BACKEND` (`claude_code`), `ITERION_SEC_AUDIT_MODEL` (`claude-opus-5`), `ITERION_SEC_AUDIT_VOTER_V1_MODEL` / `_V2_MODEL` / `_V3_MODEL` (`claude-opus-5`), `ITERION_SEC_AUDIT_DETECT_BACKEND` (`claw`) / `ITERION_SEC_AUDIT_DETECT_MODEL` (`openai/gpt-5.5`), `ITERION_SEC_PATCH_MODEL` (`claude-opus-5`) | (env overrides on `agent`/`judge` declarations in `main.bot`) |
+
+### Deepsec 2.3.9 export ingestion
+
+The real export is a bare array whose findings carry a
+`[SEVERITY]`-prefixed `title`, `description`, `severity` and `labels` at the
+root. `labels` begins with `security`, `project:<projectId>`,
+`severity:<severity>`, `slug:<vulnSlug>`, `confidence:<confidence>`;
+`owning-team:<slug>` entries exist only when the exporter supplied teams.
+`filePath`, `lineNumbers`, `vulnSlug`, `confidence`, `runId`, `projectId`,
+`severity`, `discoveredAt` and an OwnerSummary `owners` object are under
+`metadata`; every owner array may be empty (`teams[] {name, slug}`,
+`oncall[] {name, email, …}`, `managers[] {email, …}`, `contributors[]
+{name, email, score, …}`, and `recentCommitters[] {name, email, date}`).
+Root/owner assignee fields are exporter-derived only when oncall exists.
+Description starts with `**File:** \`<path>\` (lines n, n, …)`,
+`**Project:**`, a `**Severity:** / **Confidence:** / **Slug:**` line, and
+an exporter-supplied `## Owners` section only when owner data exists,
+before `## Finding` and `## Recommendation`.
+Seki's [`scanner-deepsec` skill](../bots/sec-audit-source/skills/scanner-deepsec.md)
+maps that schema to candidates from either the inline group or the published
+file.
+
+`cap_findings` selects deepsec by the inode identity of the path in
+`DEEPSEC_PATHS`, not by basename, realpath spelling, or JSON shape. It
+severity-sorts and caps the export without trimming it, so metadata and
+descriptions over 300 characters survive both transports. `HIGH_BUG` sorts
+with `HIGH`, `BUG` with `MEDIUM`; all other scanners retain their existing
+trimming.
 
 End-to-end on the subscription, no API key, with the default gated remediation:
 
@@ -55,7 +83,6 @@ ITERION_SEC_AUDIT_BACKEND=claude_code \
 ITERION_SEC_AUDIT_MODEL=claude-opus-5 \
 ITERION_SEC_AUDIT_VOTER_V1_MODEL=claude-opus-5 \
 ITERION_SEC_AUDIT_VOTER_V3_MODEL=claude-opus-5 \
-ITERION_REFERENCES_ROOT=$HOME/lab/ai/references \
   devbox run -- iterion run bots/sec-audit-source/main.bot \
   --var workspace_dir=$(pwd) \
   --var enable_deepsec=true \
@@ -68,7 +95,8 @@ ITERION_REFERENCES_ROOT=$HOME/lab/ai/references \
 See [`security-patcher.md`](security-patcher.md) for the remediation phase in
 depth (ladder rungs, modes, temp-branch + human-gate flow, crypto/secrets
 hard-stop) and [`references-bootstrap.md`](references-bootstrap.md) for the
-deepsec + harness clone setup and `ITERION_REFERENCES_ROOT`.
+optional deepsec/harness reference checkouts and `ITERION_REFERENCES_ROOT`.
+The executable prerequisites are the `deepsec` CLI on `PATH` and Node 22+.
 
 The budget headroom is `max_cost_usd: 150` per run (bumped 25 → 70 → 150) to
 absorb the 3-voter pool + a full remediation ladder on large repos; lower
@@ -100,13 +128,13 @@ Rationale:
 - Coverage attribution: a missed vuln is traceable to a ruleset.
 - Cost: scanners are free; LLM tokens are not.
 
-### Two-phase judge for FP reduction
+### Three-voter majority for FP reduction
 
-`sec-audit-source.revalidate` runs the deepsec-inspired pass-1
-(promote/dismiss/uncertain) followed by pass-2 self-critique that
-specifically hunts for façades and over-relied dismissals. See
-the `revalidate_system` prompt and
-[memory `feedback_judge_two_phase`](../README.md).
+`sec-audit-source` sends fresh candidates through three independent
+adversarial `disprove` voters. `majority_verdict` confirms at
+`confirm_threshold` (2 of 3 by default), while a unanimous dismissal backed
+by a cited guard can append a reviewed false positive. See
+[`disprove-voting.md`](../bots/sec-audit-source/skills/disprove-voting.md).
 
 ### Cross-run memory
 
@@ -142,14 +170,12 @@ runtime error.
 
 ### Per-language extensibility
 
-Both bots structure their language coverage as **one skill +
-one router branch per language**. Adding a language:
-
-1. Add `skills/lang-<id>.md` describing scanners / heuristics for
-   the language.
-2. Add a `run_<id>_scanners` (or `_heuristics`) tool node in
-   `main.bot`.
-3. Wire the router with a `when has_<id>` condition.
+Both bots use **skill-driven language coverage**: one deterministic node
+enumerates detected ids and reads the machine block from each
+`skills/lang-<id>.md`. Adding a language or ecosystem means dropping a skill
+with its `iterion:scanners` (Seki) or `iterion:heuristics` (Depsy) block —
+no new tool node, router branch, or `when has_<id>` DSL edit. Depsy needs a
+parser only when the scanner's output shape is new.
 
 V1 ships:
 - `sec-audit-source`: JS/TS, Go, Python + always-on generic (gitleaks

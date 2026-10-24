@@ -731,10 +731,17 @@ npm audit) plus language-agnostic scanners (gitleaks for secrets,
 trivy fs for filesystem misconfig, semgrep --config=auto), triages
 the raw output with an LLM against a finding taxonomy, confronts
 candidates against `.sec-audit/fp-known.yaml` to suppress
-curated false positives, revalidates surviving candidates with a
-two-phase judge (anti-façade), then writes findings to the iterion
-native kanban board (one issue per finding, labelled by severity +
-type) and exports a markdown summary.
+curated false positives, revalidates surviving candidates through three
+independent disprove voters and a deterministic majority, then writes
+findings to the iterion native kanban board (one issue per finding,
+labelled by severity + type) and exports a markdown summary.
+
+Optional deepsec 2.3.9 ingestion preserves ordered labels, nested
+metadata (including the OwnerSummary object) and full preamble /
+Finding / Recommendation descriptions through severity sorting and
+capping, on both inline and file transports. It requires the deepsec
+CLI on PATH plus Node 22+; deepsec_root only points at an optional
+reference clone for diagnostics.
 
 Cross-run memory: false positives confirmed by the operator (or by
 the revalidate judge after explicit human reasoning) are written
@@ -744,7 +751,8 @@ humans.
 
 Per-language extensibility: ships JS/TS, Go, Python and a
 language-agnostic baseline. Add a language by dropping a
-`skills/lang-<id>.md` and an entry in the `lang_scan` router.
+`skills/lang-<id>.md` with its `iterion:scanners` block; no
+`lang_scan` router or DSL edit is needed.
 
 - **Use when**:
   Use for a READ-ONLY security audit of the source itself (injection,

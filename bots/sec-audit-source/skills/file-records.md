@@ -51,7 +51,7 @@ prefer per-environment caching.
     {
       "content_hash":    "sha256:abc123...",
       "analysed_at":     "2026-05-19T11:00:00Z",
-      "scanner_version": "sec-audit-source@0.1.0",
+      "scanner_version": "sec-audit-source@0.1.11",
       "candidates": [
         {"id": "C-001", "finding_type": "ssrf", "line_range": [120,145], "matcher": "..."}
       ],
@@ -79,8 +79,11 @@ a candidate is **cache-hit** when all of:
 
 1. The file at `candidate.file` exists and its current sha256 ==
    `history[-1].content_hash`.
-2. `history[-1].scanner_version` ≥ `S` (lexical compare on the
-   `vMAJOR.MINOR.PATCH` part; ties broken on full string).
+2. `history[-1].scanner_version` ≥ `S`. Exact string equality replays.
+   Otherwise compare the part after the last `@` as a numeric dotted tuple
+   (optional leading `v`; short forms are padded), so `0.1.9 < 0.1.11`. If
+   either side does not parse, the order is unknown and the cache fails
+   closed: the entry is fresh, never replayed.
 3. `now - history[-1].analysed_at < T * 24h`.
 
 Cache-hit candidates DO NOT go to revalidate. Their cached verdicts

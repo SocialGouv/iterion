@@ -366,7 +366,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/quickstart.md`](../quickstart.md) | 🚀 Quickstart | For developers who already live in AI coding tools. | — |
 | [`docs/quotas-and-limits.md`](../quotas-and-limits.md) | Quotas and limits | set on a paying org, or debugging "why did this run get denied". | — |
 | [`docs/recipes.md`](../recipes.md) | Recipes | A recipe pins one `.bot` to a named configuration — preset vars, prompt overrides, a budget, and a success metric — so you can… | — |
-| [`docs/references-bootstrap.md`](../references-bootstrap.md) | References bootstrap — deepsec + harness clones | Seki's `--var enable_deepsec=true` and its `external-security-tools` | — |
+| [`docs/references-bootstrap.md`](../references-bootstrap.md) | References bootstrap — deepsec + harness clones | Seki's `external-security-tools` skill uses a local references directory | — |
 | [`docs/references/author-schema.md`](author-schema.md) | The author document — keys and values | An author document (`x.bot.yaml`) is the YAML twin a `.bot` can be written as: the same declarations under the same names, with YAML's own… | — |
 | [`docs/references/context-retrieval-state-of-the-art.md`](context-retrieval-state-of-the-art.md) | Context retrieval — the state of the art, mapped onto iterion | or an embedding store — for the agents that work *on* this repository, or | — |
 | [`docs/references/diagnostics.md`](diagnostics.md) | Iterion DSL — Validation Diagnostics | All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`ir.Validate`), plus the bundle-consistency codes (`C2xx`)… | — |

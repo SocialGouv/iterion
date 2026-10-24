@@ -1,8 +1,9 @@
 # References bootstrap — deepsec + harness clones
 
-Seki's `--var enable_deepsec=true` and its `external-security-tools`
-skill both reach into a local references directory that holds two
-upstream projects:
+Seki's `external-security-tools` skill uses a local references directory
+for two upstream projects; `--var enable_deepsec=true` itself requires the
+`deepsec` CLI on `PATH`, while its optional reference checkout only improves
+the missing-CLI diagnostic:
 
 - [`vercel-labs/deepsec`](https://github.com/vercel-labs/deepsec)
   — Apache-2.0. The optional scanner backend (`scanner-deepsec` skill).
@@ -11,8 +12,9 @@ upstream projects:
   `threat-model`, `vuln-scan`, `triage`, `patch` skills (see
   [`HARNESS-ATTRIBUTION.md`](../bots/sec-audit-source/skills/HARNESS-ATTRIBUTION.md)).
 
-This page covers how to clone them, where Seki looks for them, and
-what `--var enable_deepsec=true` actually does with them.
+This page covers how to clone them and where Seki looks for them. The
+deepsec clone is optional documentation/diagnostics; the runtime executable
+is the installed CLI.
 
 ## Default location
 
@@ -41,7 +43,10 @@ the bot var `deepsec_root`, which defaults to
 `"${HOME}/lab/ai/references/deepsec"` (override with
 `--var deepsec_root=...`). The variable is read from the environment the
 tool node runs in: the engine's on a non-sandboxed runner, the sandbox
-container's when tool nodes run sandboxed.
+container's when tool nodes run sandboxed. It is consulted only after
+`command -v deepsec` fails, to name the reference checkout in the graceful
+degradation envelope; the node never executes `cli.mjs`, `dist/cli.mjs`, or
+another file from that clone.
 
 ## Bootstrap
 
@@ -50,11 +55,15 @@ container's when tool nodes run sandboxed.
 mkdir -p ~/lab/ai/references
 cd ~/lab/ai/references
 
-# 2. Clone both
+# 2. Clone both references (optional for deepsec, useful for inspection)
 git clone https://github.com/vercel-labs/deepsec.git
 git clone https://github.com/anthropics/defending-code-reference-harness.git
 
-# 3. (Optional but recommended) pin to a known-good sha for reproducibility
+# 3. Ensure the executable Seki actually calls is present (the pinned sec
+# sandbox image provides it); install the matching version only deliberately
+command -v deepsec
+
+# 4. (Optional but recommended) pin the reference clones to known-good shas
 git -C deepsec checkout e3c8f05a0a72e3466e82bdcdda86e7c65fc2ad3b
 git -C defending-code-reference-harness checkout 9e0f6c6cd54fc3b8ce79708e8208d862634a2624
 ```
@@ -64,13 +73,14 @@ written against. Bumping them is fine but treat it as a Seki-affecting
 change: deepsec's CLI surface or the harness's slash-command shape can
 shift between commits.
 
-## Node 22 requirement (deepsec only)
+## CLI and Node 22 requirements (deepsec only)
 
-deepsec is a pnpm/TypeScript monorepo that requires **Node ≥ 22**.
-Earlier versions silently fail to install or run. Check:
+Seki calls the installed `deepsec` executable, which requires **Node ≥ 22**.
+The reference clone does not satisfy either requirement. Check:
 
 ```bash
-node --version       # must report v22.x or higher
+command -v deepsec  # must resolve
+node --version      # must report v22.x or higher
 ```
 
 The `run_deepsec_scanner` tool node checks the Node major version
@@ -237,8 +247,8 @@ for the full mapping.
 |---|---|---|
 | `deepsec unavailable: node binary not found on PATH` | Node 22 not in the sandbox image | `node --version` inside the sec sandbox; rebuild `iterion-sandbox-sec` |
 | `deepsec unavailable: node <N> < 22 (deepsec requires Node 22+)` | Old Node | Upgrade Node ≥ 22 |
-| `deepsec unavailable: deepsec CLI not on PATH (reference clone exists at <path>…)` | The clone is there but no global install | `npm install -g deepsec`, or rebuild the sec sandbox |
-| `deepsec unavailable: neither global deepsec CLI on PATH nor reference clone at <path>` | Neither path resolves | Clone deepsec into `$ITERION_REFERENCES_ROOT/deepsec` (or set the env var) |
+| `deepsec unavailable: deepsec CLI not on PATH (reference clone exists at <path>…)` | The clone is there but no global install | Put `deepsec` on `PATH`, normally by rebuilding the sec sandbox image; install globally only as a deliberate host override |
+| `deepsec unavailable: neither global deepsec CLI on PATH nor reference clone at <path>` | Neither path resolves | Put `deepsec` on `PATH` / rebuild the image; a clone under `$ITERION_REFERENCES_ROOT/deepsec` only makes the diagnostic more precise |
 | `claude CLI not on PATH` when invoking the harness skills | `@anthropic-ai/claude-code` not installed | The sec sandbox's `post_create` hook auto-installs it; outside the sandbox, `npm install -g @anthropic-ai/claude-code` |
 
 ## See also
