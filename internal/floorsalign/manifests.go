@@ -36,6 +36,25 @@ type shipped struct {
 	err      error
 }
 
+// symbolicManifestActions joins uncut manifest floors to the same staged
+// rewrite as Go pins. Numeric manifest floors retain their own contract.
+func symbolicManifestActions(root, version string) []Action {
+	var actions []Action
+	for _, s := range shippedManifests(root) {
+		if s.err != nil {
+			continue // The existing stale-manifest report names unreadable bundles.
+		}
+		c, err := bundle.ParseEngineConstraint(s.manifest.Requires.Iterion)
+		if err != nil || !c.Next {
+			continue
+		}
+		p := Pin{Name: s.path + ":requires.iterion", File: s.path, Value: "next", Index: -1}
+		actions = append(actions, Action{Pin: p, Kind: Realign, To: version,
+			Detail: fmt.Sprintf("%s = next → %s (realigned to the release being cut)", p.Name, version)})
+	}
+	return actions
+}
+
 // staleManifestWarnings is the warning lines the cut's report carries after
 // a downward realignment: one per shipped manifest whose `requires.iterion`
 // still names the realigned pin's old value, and one per manifest the sweep
@@ -125,30 +144,6 @@ func namesTheRelease(m *bundle.Manifest, release string) bool {
 	if err != nil {
 		return false
 	}
-	r, err := bundle.ParseEngineConstraint(release)
-	if err != nil {
-		return false
-	}
-	return compareMins(c.Min, r.Min) == 0
-}
-
-// compareMins orders two parsed version components, zero-padded, so a
-// floor written `3.180` names the same release as one written `3.180.0`.
-func compareMins(a, b []int) int {
-	for i := 0; i < len(a) || i < len(b); i++ {
-		var ca, cb int
-		if i < len(a) {
-			ca = a[i]
-		}
-		if i < len(b) {
-			cb = b[i]
-		}
-		if ca != cb {
-			if ca < cb {
-				return -1
-			}
-			return 1
-		}
-	}
-	return 0
+	cmp, ok := c.CompareFloor(release)
+	return ok && cmp == 0
 }

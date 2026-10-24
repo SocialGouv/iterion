@@ -8,8 +8,11 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
 - **Floor pins** — a syntax floor (`bundle.SyntaxFloors`:
   `parser.ProfileSince`, `ImportSince`, `ContractSince`,
   `bundle.ToolAliasesSince`) is pinned by the lot that ships the syntax to
-  the next minor above the release main carries — a guess written before the
-  number is known. The cut writes the real one: release-it's
+  `"next"` while its release is uncut. It stays strictly above every numeric
+  release, including when main advances while a branch waits. A numeric pin
+  at exactly the next minor above the newest release still works; the
+  `release-floors` report warns **C168**, pointing to `"next"`. The cut writes
+  the real number: release-it's
   `before:git:beforeRelease` hook runs `go run ./cmd/release-floors --apply`
   ([internal/floorsalign](../../../internal/floorsalign)) in the one slot where
   `package.json` is bumped and `CHANGELOG.md` is rendered while nothing is
@@ -17,8 +20,11 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
   measured there and not against the version being cut, since a major bump
   leaves the pin below it — is rewritten to the version being released
   **inside the `chore: release` commit itself**. A pin already at a released
-  version is left alone. Every other shape aborts the release before that
-  commit: a pin that is not the next minor above the previous release (an
+  version is left alone. Every `requires: {iterion: ">= next"}` in the shipped
+  bot and example manifests joins the same staged rewrite; numeric manifest
+  floors keep their own contract. Two symbolic pins in one cut receive the
+  same version. Every other shape aborts the release before that
+  commit: a numeric pin that is not the next minor above the previous release (an
   over-pin, or one a release overtook), a pin naming a release never cut, an
   unorderable pin, a floor with no entry in `releaseNotesMarkers`, and — the
   #1154 shape — a floor whose word the notes just rendered do not carry,
@@ -27,8 +33,8 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
   `TestSyntaxFloorsNameReleasesThatExist` runs on every tree — the cut runs
   the test's predicate plus the resolution its rewrite needs (the pin's
   identifier declared in exactly one non-test file under `pkg/`, bound to a
-  plain release literal), so it can refuse what the test lets pass, never
-  the reverse. Either refusal is loud, and `devbox run -- task
+  plain release literal or `"next"`), so it can refuse what the test lets pass,
+  never the reverse. Either refusal is loud, and `devbox run -- task
   release:floors` previews the whole verdict on any checkout and writes
   nothing (`--apply` belongs to the hook and refuses to run unless
   `package.json`'s version differs from the one HEAD carries). The hatch is
@@ -50,8 +56,11 @@ ships or reviews one ([merge and gate](review-and-merge.md)).
   floor from one pin while naming another, or that keys a collapse case on a
   profile pin read by a literal index. The hatch is a `floortest:exempt`
   comment NAMING the pin it covers, with the reason: it reaches that pin and
-  no other, so one case cannot vouch for a sibling pin spliced in beside it —
-  and
+  no other, so one case cannot vouch for a sibling pin spliced in beside it.
+  The sweep rejects literal symbolic test floors too (`"next"`, `">= next"`),
+  unless `floortest:exempt next` explains a test of the symbolic contract
+  itself. `Below(t, "next")` derives a numeric probe below the uncut floor.
+  Also,
   `TestEveryShippedBundleDeclaresAFloorThatReachesWhatItNeeds` (pkg/bundle)
   walks the 41 shipped `bots/*/` and `examples/*/` manifests and refuses one
   whose `requires.iterion` no longer reaches what its own sources need —

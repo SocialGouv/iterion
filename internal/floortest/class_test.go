@@ -1,9 +1,12 @@
 package floortest
 
 import (
+	"go/scanner"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -18,6 +21,37 @@ var pinNames = []string{"ProfileSince", "ImportSince", "ContractSince", "VarMatc
 // so a file that spells the floor a case is AT as that floor's own pin does
 // not thereby vouch for a sibling pin spliced in beside it.
 const exemptMarker = "floortest:exempt"
+
+// floortest:exempt next — this file tests the symbolic-pin guard itself.
+var symbolicConstraint = regexp.MustCompile(`>=\s*next\b`)
+var symbolicPinName = regexp.MustCompile(`\bnext\b`)
+
+// symbolicFloorLiteral reads decoded Go strings, including escaped YAML and
+// raw literals. Comments and identifiers named next are not floor literals.
+func symbolicFloorLiteral(body string) bool {
+	var scan scanner.Scanner
+	fset := token.NewFileSet()
+	scan.Init(fset.AddFile("probe.go", -1, len(body)), []byte(body), nil, 0)
+	lastIdent := ""
+	hasPin := pinReference.MatchString(body)
+	for {
+		_, tok, lit := scan.Scan()
+		if tok == token.EOF {
+			return false
+		}
+		if tok != token.STRING {
+			if tok == token.IDENT {
+				lastIdent = lit
+			}
+			continue
+		}
+		value, err := strconv.Unquote(lit)
+		floorContext := hasPin || lastIdent == "Iterion" || strings.HasSuffix(strings.ToLower(lastIdent), "floor")
+		if err == nil && ((value == "next" && floorContext) || symbolicConstraint.MatchString(value)) {
+			return true
+		}
+	}
+}
 
 var (
 	pinAlternatives = strings.Join(pinNames, "|")
@@ -71,6 +105,15 @@ func exemptedPins(body string) map[string]bool {
 func floorPinComplaints(body string) []string {
 	exempt := exemptedPins(body)
 	var out []string
+	symbolicExempt := false
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, exemptMarker) && symbolicPinName.MatchString(line) {
+			symbolicExempt = true
+		}
+	}
+	if !symbolicExempt && symbolicFloorLiteral(body) {
+		out = append(out, "spells a symbolic floor as next; derive the below-floor probe with floortest.Below, or exempt next with its reason")
+	}
 	if named := matched(pinReference, body); len(named) > 1 {
 		var uncovered []string
 		for _, pin := range matched(pinSplicedIn, body) {
@@ -194,6 +237,30 @@ func TestTheSweepReadsEachShapeThatRestsAFloorOnAPin(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTheSweepRefusesSymbolicFloorLiterals(t *testing.T) {
+	for _, body := range []string{
+		`m := Requires{Iterion: ">= next"}`,
+		"m := `requires: {iterion: \">= next\"}`",
+		`m := "requires:\n  iterion: \">= next\"\n"`,
+		`floor := "next"`,
+	} {
+		if got := floorPinComplaints(body); len(got) != 1 || !strings.Contains(got[0], "symbolic floor") {
+			t.Fatalf("symbolic floor escaped: %s: %v", body, got)
+		}
+		if got := floorPinComplaints("// " + exemptMarker + " ImportSince — another pin\n" + body); len(got) != 1 {
+			t.Fatalf("a numeric pin's exemption hid next: %v", got)
+		}
+		if got := floorPinComplaints("// " + exemptMarker + " next — exercises the symbolic contract\n" + body); len(got) != 0 {
+			t.Fatalf("explicit symbolic exemption was ignored: %v", got)
+		}
+	}
+	for _, body := range []string{`// floor := "next"`, `next := floortest.Below(t, floor)`, `cursor := "next"`} {
+		if got := floorPinComplaints(body); len(got) != 0 {
+			t.Fatalf("non-floor literal was refused: %s: %v", body, got)
+		}
 	}
 }
 

@@ -2,20 +2,20 @@
 //
 // A syntax floor (bundle.SyntaxFloors — parser.ProfileSince, ImportSince,
 // ContractSince, bundle.ToolAliasesSince) is pinned by the lot that ships
-// the syntax to the next minor above the release main carries, and
-// bundle.HoldSyntaxFloor holds that guess on every tree (the release test).
+// the syntax to "next" (or the legacy next minor above main's release), and
+// bundle.HoldSyntaxFloor holds it on every tree (the release test).
 // The cut is the one place that knows the number actually released:
 // release-it runs `cmd/release-floors --apply` from its
 // before:git:beforeRelease hook — package.json bumped, CHANGELOG.md
-// rendered, nothing staged yet — and every pin at the next minor above the
-// previous release is rewritten to the version being cut, inside the
+// rendered, nothing staged yet — and every symbolic or next-minor pin above
+// the previous release is rewritten to the version being cut, inside the
 // `chore: release` commit. Without it a patch cut that ships the syntax
 // leaves the pin one minor above the build that first reads it — a shape
 // the release test's ahead arm accepts, and that reddens one release later,
 // on the pinned release's silent notes.
 //
 // Every other shape refuses the release before anything is committed: a
-// pin ahead of the cut that is not the next minor above the previous
+// numeric pin ahead of the cut that is not the next minor above the previous
 // release; and, for every pin the cut leaves at or below itself —
 // realigned or long released — the release test's own released arm, run
 // on the notes just rendered: the pinned section must exist and carry the
@@ -208,7 +208,7 @@ const (
 	// Realign: the cut claims the pin — it is rewritten to the version
 	// being cut.
 	Realign
-	// Pending: preview only — the pin is ahead at the next minor, the next
+	// Pending: preview only — the pin is symbolic or ahead at the next minor; the next
 	// cut realigns it.
 	Pending
 	// Refuse: a shape the cut does not realign; the release aborts.
@@ -243,7 +243,7 @@ type Action struct {
 //
 // A cut claims a pin no release carries yet — strictly above the release
 // that preceded the cut, and not already the cut's own number: realigned
-// when it is exactly the next minor above that previous release, the pin
+// when it is symbolic or exactly the next minor above that previous release, the pin
 // its lot wrote, and refused otherwise. The claim is measured against the
 // PREVIOUS release, not against the version being cut: a major or a
 // multi-step bump leaves the lot's pin below the number being released
@@ -273,7 +273,7 @@ func plan(p Pin, version, prev, changelog string, cutting bool) Action {
 		return Action{Pin: p, Kind: Refuse, Detail: fmt.Sprintf("%s has no entry in releaseNotesMarkers (pkg/bundle): name the word its release notes carry, or exempt it with its reason", p.Name)}
 	}
 	c, ok := bundle.CompareVersions(p.Value, version)
-	if !ok {
+	if !ok || version == "next" {
 		return Action{Pin: p, Kind: Refuse, Detail: fmt.Sprintf("%s = %q or package.json = %q is not an orderable version", p.Name, p.Value, version)}
 	}
 	if cutting && c != 0 && claimedByTheCut(p.Value, prev, c) {
@@ -281,10 +281,10 @@ func plan(p Pin, version, prev, changelog string, cutting bool) Action {
 		if prev != "" {
 			want, ok = bundle.NextMinor(prev)
 		}
-		if !ok {
+		if !ok && p.Value != "next" {
 			return Action{Pin: p, Kind: Refuse, Detail: fmt.Sprintf("%s = %s is ahead of the release being cut (%s), and CHANGELOG.md carries no release below %s to tell the next minor from", p.Name, p.Value, version, version)}
 		}
-		if p.Value != want {
+		if p.Value != "next" && p.Value != want {
 			return Action{Pin: p, Kind: Refuse, Detail: fmt.Sprintf("%s = %s names no release the cut (%s) or the changelog carries, and is not the next minor above the previous release (%s → %s): below that, a release overtook the pin and it names a build that does not read the syntax; above it, the pin refuses every build in between that does — re-pin by hand to the release that first reads the syntax", p.Name, p.Value, version, prev, want)}
 		}
 		if err := bundle.HoldSyntaxFloor(p.Name, version, version, changelog, marker); err != nil {
@@ -300,7 +300,11 @@ func plan(p Pin, version, prev, changelog string, cutting bool) Action {
 	}
 	switch {
 	case c > 0:
-		return Action{Pin: p, Kind: Pending, Detail: fmt.Sprintf("%s = %s is ahead at the next minor: the next cut realigns it to the version it releases", p.Name, p.Value)}
+		position := "ahead at the next minor"
+		if p.Value == "next" {
+			position = "symbolically ahead of every released version"
+		}
+		return Action{Pin: p, Kind: Pending, Detail: fmt.Sprintf("%s = %s is %s: the next cut realigns it to the version it releases", p.Name, p.Value, position)}
 	case cutting && c == 0:
 		return Action{Pin: p, Kind: Holds, Detail: fmt.Sprintf("%s = %s names the release being cut, and its notes carry %q", p.Name, p.Value, marker)}
 	}
@@ -338,8 +342,9 @@ func cutRefusal(p Pin, version, marker string, err error) string {
 	return fmt.Sprintf("%s would name %s, the release being cut, whose notes do not carry %q — the commit that ships the syntax was merged under a subject the changelog does not render (#1154), or under one without that word: in releaseNotesMarkers (pkg/bundle), name a word these notes do carry, or exempt the floor with its reason (parser.ProfileSince[2] is the precedent), then cut again", p.Name, version, marker)
 }
 
-// ApplyPin rewrites the pin's release literal in src to to. Only the
-// literal's bytes move — the file keeps everything else byte for byte.
+// ApplyPin rewrites a Go floor's release literal (numeric or "next"), or a
+// manifest's requires.iterion through the lossless manifest patcher. Go
+// literal rewrites keep everything else byte for byte.
 //
 // The literal is located through the file's syntax tree, not by matching
 // source text: a comment inside the map literal spelling an entry, a string
@@ -348,6 +353,10 @@ func cutRefusal(p Pin, version, marker string, err error) string {
 // registry names is an error — guessing would write a pin into a
 // declaration nobody checked.
 func ApplyPin(src []byte, p Pin, to string) ([]byte, error) {
+	if filepath.Ext(p.File) == ".yaml" {
+		out, _, err := bundle.PatchManifest(p.File, src, bundle.ManifestPatch{Requires: &bundle.Requires{Iterion: ">= " + to}})
+		return out, err
+	}
 	fset := token.NewFileSet()
 	name := p.File
 	if name == "" {
@@ -446,7 +455,7 @@ func plainRelease(value ast.Expr, p Pin) (*ast.BasicLit, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %s = %s is not a readable string literal: %v", p.Name, p.Ident, lit.Value, err)
 	}
-	if !releaseLiteralRe.MatchString(unquoted) {
+	if unquoted != "next" && !releaseLiteralRe.MatchString(unquoted) {
 		return nil, fmt.Errorf("%s: %s = %q is not a release number — the cut refuses to rewrite it", p.Name, p.Ident, unquoted)
 	}
 	return lit, nil

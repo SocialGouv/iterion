@@ -7,7 +7,7 @@
 | [push-to-main.md](push-to-main.md) | Preparing a fresh worktree and landing an operator train: peer notice, full local gate, review, trailers and CI witnesses. |
 | [adversarial-review-loop.md](adversarial-review-loop.md) | Before any push: why the round is required, budget, who pays, trailers. |
 | [billy.md](billy.md) | The paused fixer lane, and its re-arm procedure. |
-| [release.md](release.md) | Floors, mirrors, refused cuts, the changelog pipeline. |
+| [release.md](release.md) | Symbolic `next` floors, C168, mirrors, refused cuts, the changelog pipeline. |
 | [dogfood.md](dogfood.md) | Launching a catalog bot against this repo for real. |
 
 Board mechanics live in [../../board-epics.md](../../board-epics.md); the

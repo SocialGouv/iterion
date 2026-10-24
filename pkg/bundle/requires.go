@@ -40,7 +40,7 @@ import (
 // requirement and ALL of them must hold; an unknown key is refused by the
 // strict manifest decoder.
 type Requires struct {
-	// Iterion is the minimum engine build, as an `>= X.Y.Z` floor (the
+	// Iterion is the minimum engine build, as an `>= X.Y.Z` or `>= next` floor (the
 	// operator is optional — a bare version means the same thing).
 	Iterion string `yaml:"iterion,omitempty"`
 }
@@ -56,10 +56,12 @@ type EngineConstraint struct {
 	Raw string
 	// Min is the floor's dotted numeric components.
 	Min []int
+	// Next names the uncut release and orders strictly above numeric floors.
+	Next bool
 }
 
 // ParseEngineConstraint reads the `requires.iterion` grammar: an optional
-// `>=`, then a dotted numeric version with an optional `v` prefix. Every
+// `>=`, then "next" or a dotted numeric version with an optional `v` prefix. Every
 // other shape is an explicit error naming what is accepted — a constraint
 // this build cannot enforce must not be mistaken for one it satisfies.
 func ParseEngineConstraint(s string) (EngineConstraint, error) {
@@ -71,13 +73,39 @@ func ParseEngineConstraint(s string) (EngineConstraint, error) {
 	if strings.HasPrefix(rest, atLeast) {
 		rest = strings.TrimSpace(strings.TrimPrefix(rest, atLeast))
 	}
+	if rest == "next" {
+		return EngineConstraint{Raw: raw, Next: true}, nil
+	}
 	parts, ok := numericVersionParts(rest)
 	if !ok {
 		return EngineConstraint{}, fmt.Errorf(
-			"engine requirement %q is not a version floor: expected %q or a bare version (dotted numbers, optional leading %q) — no other operator is enforced, so accepting one would promise a check that never runs",
+			"engine requirement %q is not a version floor: expected %q, >= next or a bare version (dotted numbers, optional leading %q) — no other operator is enforced, so accepting one would promise a check that never runs",
 			raw, atLeast+" X.Y.Z", "v")
 	}
 	return EngineConstraint{Raw: raw, Min: parts}, nil
+}
+
+// CompareFloor orders the requirement against a floor, including "next".
+// Callers must not compare Min alone: a symbolic floor has no numeric parts.
+func (c EngineConstraint) CompareFloor(floor string) (int, bool) {
+	other, err := ParseEngineConstraint(floor)
+	if err != nil {
+		return 0, false
+	}
+	return compareFloors(c.Min, c.Next, other.Min, other.Next), true
+}
+
+func compareFloors(a []int, nextA bool, b []int, nextB bool) int {
+	if nextA && nextB {
+		return 0
+	}
+	if nextA {
+		return 1
+	}
+	if nextB {
+		return -1
+	}
+	return compareVersionParts(a, b)
 }
 
 // Validate parses every declared requirement, so a manifest carrying one
@@ -138,7 +166,7 @@ func (r *Requires) CheckEngine(build string) (EngineVerdict, string) {
 			"bot requires iterion %s but the running build %q carries no orderable version — the requirement could not be checked",
 			c.Raw, build)
 	}
-	if compareVersionParts(got, c.Min) < 0 {
+	if compareFloors(got, false, c.Min, c.Next) < 0 {
 		return EngineTooOld, fmt.Sprintf(
 			"bot requires iterion %s but this build is %s — upgrade the engine (or the image this bot runs on), or relax the manifest's requires.iterion",
 			c.Raw, build)
@@ -160,6 +188,7 @@ func CheckManifestEngine(m *Manifest, build string) (EngineVerdict, string) {
 // ordered. A leading "v" is tolerated, a shorter version is zero-padded
 // (1.2 == 1.2.0), and components compare numerically so 0.10.0 > 0.9.0
 // (which a string compare gets backwards).
+// The uncut floor "next" orders above every numeric version and equals itself.
 //
 // KNOWN BLIND SPOT, shared by every caller: a suffixed version (0.8.0-rc1,
 // a build metadata tail) is unorderable. Widening this to full semver
@@ -169,10 +198,11 @@ func CheckManifestEngine(m *Manifest, build string) (EngineVerdict, string) {
 func CompareVersions(a, b string) (int, bool) {
 	pa, okA := numericVersionParts(a)
 	pb, okB := numericVersionParts(b)
-	if !okA || !okB {
+	nextA, nextB := a == "next", b == "next"
+	if (!okA && !nextA) || (!okB && !nextB) {
 		return 0, false
 	}
-	return compareVersionParts(pa, pb), true
+	return compareFloors(pa, nextA, pb, nextB), true
 }
 
 // compareVersionParts orders two already-parsed component lists.

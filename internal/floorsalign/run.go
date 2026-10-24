@@ -75,8 +75,18 @@ func Run(opts Options) error {
 	}
 	fmt.Fprintf(out, "release-floors: %s %s (newest release in CHANGELOG.md: %s)\n", mode, version, bundle.NewestChangelogRelease(string(changelog)))
 	actions := Plan(pins, version, string(changelog), opts.Apply)
+	newest := bundle.NewestChangelogRelease(string(changelog))
+	if opts.Apply {
+		newest = bundle.NewestChangelogReleaseBelow(string(changelog), version)
+		actions = append(actions, symbolicManifestActions(root, version)...)
+	}
 	var refusals []string
 	for _, a := range actions {
+		if a.Kind != Refuse {
+			if warning := bundle.NumericSyntaxFloorWarning(a.Pin.Name, a.Pin.Value, newest); warning != "" {
+				fmt.Fprintln(out, warning)
+			}
+		}
 		switch a.Kind {
 		case Refuse:
 			refusals = append(refusals, a.Detail)

@@ -458,12 +458,12 @@ func CheckSyntaxFloor(m *Manifest, req SyntaxRequirements) ProfileFloor {
 	if err != nil {
 		return pf
 	}
-	needParts, ok := numericVersionParts(pf.Need)
+	cmp, ok := c.CompareFloor(pf.Need)
 	if !ok {
 		pf.OK = true // no release on record: a declared floor is what can be asked
 		return pf
 	}
-	pf.OK = compareVersionParts(c.Min, needParts) >= 0
+	pf.OK = cmp >= 0
 	return pf
 }
 
@@ -615,15 +615,14 @@ func RequiredRelease(req SyntaxRequirements) (release, reason string) {
 // laterRelease reports whether a orders after b; a release not on record
 // (unorderable) is earlier than any that is.
 func laterRelease(a, b string) bool {
-	pa, okA := numericVersionParts(a)
-	pb, okB := numericVersionParts(b)
-	if !okA {
+	if _, ok := CompareVersions(a, a); !ok {
 		return false
 	}
-	if !okB {
+	if _, ok := CompareVersions(b, b); !ok {
 		return true
 	}
-	return compareVersionParts(pa, pb) > 0
+	cmp, _ := CompareVersions(a, b)
+	return cmp > 0
 }
 
 // CheckProfileFloor is CheckSyntaxFloor for a profile alone.

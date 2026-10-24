@@ -171,7 +171,7 @@ func TestBelowRefusesAFloorItCannotOrder(t *testing.T) {
 // arithmetic refuses, and say so at the first probe.
 func TestEveryPinOfTheRegistryIsAShapeBelowTakes(t *testing.T) {
 	for name, release := range bundle.SyntaxFloors() {
-		if _, err := components(release); err != nil {
+		if _, err := below(release); err != nil {
 			t.Errorf("%s = %q: %v", name, release, err)
 		}
 	}

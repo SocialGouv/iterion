@@ -2,7 +2,6 @@ package botscaffold
 
 import (
 	"path/filepath"
-	"slices"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -44,8 +43,7 @@ func TestEveryTemplateDeclaresTheFloorItsSourcesNeed(t *testing.T) {
 				if err != nil {
 					t.Fatalf("the categorized template declares %q: %v", m.Requires.Iterion, err)
 				}
-				need, _ := bundle.ParseEngineConstraint(">= 3.225.0")
-				if slices.Compare(c.Min, need.Min) < 0 {
+				if cmp, ok := c.CompareFloor("3.225.0"); !ok || cmp < 0 {
 					t.Fatalf("the categorized template declares %q, below the release that reads category/tags (3.225.0)", m.Requires.Iterion)
 				}
 			}
@@ -57,8 +55,7 @@ func TestEveryTemplateDeclaresTheFloorItsSourcesNeed(t *testing.T) {
 				if err != nil {
 					t.Fatalf("the library template declares %q: %v", m.Requires.Iterion, err)
 				}
-				need, _ := bundle.ParseEngineConstraint(">= " + parser.ImportSince)
-				if slices.Compare(c.Min, need.Min) < 0 {
+				if cmp, ok := c.CompareFloor(parser.ImportSince); !ok || cmp < 0 {
 					t.Fatalf("the library template declares %q, below the release that reads import (%s)", m.Requires.Iterion, parser.ImportSince)
 				}
 			}

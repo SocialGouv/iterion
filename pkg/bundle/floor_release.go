@@ -48,8 +48,9 @@ func ReleaseNotesMarker(name string) (marker string, known bool) {
 // runs it on every tree; the release cut (internal/floorsalign) runs it on
 // the tree it is about to commit, so the two never disagree.
 //
-// Ahead of the checkout — the pin above version — the pin must be exactly
-// the next minor above the newest release the changelog carries: at or
+// The symbolic pin "next" stays strictly above every released version; the
+// cut resolves it before checking its release notes. A numeric pin ahead of
+// the checkout must be exactly the next minor above the newest release: at or
 // below that release, a release overtook the pin, which then names a build
 // that does not read the syntax; above the next minor, the pin refuses
 // every build in between that does. On a pull request's merge ref the
@@ -60,12 +61,15 @@ func ReleaseNotesMarker(name string) (marker string, known bool) {
 // one checked.
 func HoldSyntaxFloor(name, floor, version, changelog, marker string) error {
 	c, ok := CompareVersions(version, floor)
-	if !ok {
+	if !ok || version == "next" {
 		return fmt.Errorf("%s = %q or package.json = %q is not an orderable version", name, floor, version)
 	}
 	newest := NewestChangelogRelease(changelog)
 	if newest == "" {
 		return fmt.Errorf("CHANGELOG.md carries no `## [x.y.z]` release heading")
+	}
+	if floor == "next" {
+		return nil // The cut resolves it before checking the released arm's marker.
 	}
 	if c < 0 {
 		want, ok := NextMinor(newest)
@@ -87,6 +91,18 @@ func HoldSyntaxFloor(name, floor, version, changelog, marker string) error {
 	return nil
 }
 
+// NumericSyntaxFloorWarning names a pending numeric pin that can go stale as
+// main releases. It is advisory: HoldSyntaxFloor still decides admission.
+func NumericSyntaxFloorWarning(name, floor, newest string) string {
+	if floor == "next" {
+		return ""
+	}
+	if cmp, ok := CompareVersions(floor, newest); ok && cmp > 0 {
+		return fmt.Sprintf("warning C168: %s = %s is a numeric ahead pin; use \"next\" so it follows the release train without re-pinning", name, floor)
+	}
+	return ""
+}
+
 // SilentNotesError is the released arm's verdict on a pin whose release was
 // cut without the syntax: the section exists, the word does not. It is the
 // one arm a release can still repair at the cut, so the aligner tells it
@@ -102,8 +118,8 @@ func (e *SilentNotesError) Error() string {
 	return fmt.Sprintf("%s names %s, whose release notes do not carry %q: that release was cut without the syntax (another feature took the number) — move the pin to the release that first reads it", e.Name, e.Floor, e.Marker)
 }
 
-// NextMinor is major.(minor+1).0 of a release number — the pin a lot writes
-// while its release is uncut, and the one shape the release cut realigns.
+// NextMinor is major.(minor+1).0 of a release number — the legacy numeric
+// pending pin. New syntax uses "next" until the cut knows its release.
 func NextMinor(v string) (string, bool) {
 	parts := strings.Split(strings.TrimPrefix(v, "v"), ".")
 	if len(parts) != 3 {

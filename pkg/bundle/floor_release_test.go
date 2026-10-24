@@ -37,6 +37,9 @@ func TestSyntaxFloorsNameReleasesThatExist(t *testing.T) {
 		if err := HoldSyntaxFloor(name, floor, version, string(changelog), marker); err != nil {
 			t.Fatal(err)
 		}
+		if warning := NumericSyntaxFloorWarning(name, floor, NewestChangelogRelease(string(changelog))); warning != "" {
+			t.Log(warning)
+		}
 		t.Logf("%s = %s holds against package.json %s", name, floor, version)
 	}
 }
@@ -237,8 +240,8 @@ func checkCatalogTaxonomyFloor(keys map[string]bool, m *Manifest) error {
 	if err != nil {
 		return err
 	}
-	need, _ := numericVersionParts(catalogTaxonomySince)
-	if compareVersionParts(constraint.Min, need) < 0 {
+	cmp, ok := constraint.CompareFloor(catalogTaxonomySince)
+	if !ok || cmp < 0 {
 		return errors.New("top-level category/tags require requires.iterion >= " + catalogTaxonomySince + "; got " + strings.TrimSpace(m.Requires.Iterion))
 	}
 	return nil

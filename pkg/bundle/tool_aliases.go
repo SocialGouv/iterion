@@ -7,8 +7,8 @@ package bundle
 // The pin is held by TestSyntaxFloorsNameReleasesThatExist, the same release
 // test that holds the parser floors, and realigned by the release cut itself
 // (internal/floorsalign, release-it's before:git:beforeRelease hook):
-// while the release is uncut the constant must be exactly the next minor above the changelog's
-// newest release, and once cut, the release's notes must carry the syntax's
+// while the release is uncut the constant is "next" (the legacy numeric
+// next minor is accepted with C168), and once cut its notes carry the syntax's
 // word ("alias") — so the number cannot rot the way 3.144.0 and 3.146.0 did
 // while the resolver waited on a branch, and a release taken without the
 // resolver turns the test red instead of shipping a floor that admits a
@@ -31,6 +31,6 @@ func AllowsToolAliases(m *Manifest) bool {
 	if err != nil {
 		return false
 	}
-	minimum, ok := numericVersionParts(ToolAliasesSince)
-	return ok && compareVersionParts(c.Min, minimum) >= 0
+	cmp, ok := c.CompareFloor(ToolAliasesSince)
+	return ok && cmp >= 0
 }

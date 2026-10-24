@@ -25,6 +25,7 @@ import (
 // floor that is not a dotted numeric version, that has no component to
 // decrement, or whose decrement does not read back as a release under it, is
 // refused rather than turned into a version whose order is a guess.
+// For "next", every numeric release is below it, so the probe is 0.0.0.
 func Below(t *testing.T, floor string) string {
 	t.Helper()
 	low, err := below(floor)
@@ -83,7 +84,7 @@ func EachPinOrder(t *testing.T, release string, fn func(t *testing.T)) {
 // table built at package init and keeps the number the pin had then.
 func CollapseProfilePin(t *testing.T, release string) bool {
 	t.Helper()
-	if _, err := components(release); err != nil {
+	if _, err := components(release); err != nil && release != "next" {
 		t.Fatalf("floortest.CollapseProfilePin: %v", err)
 	}
 	profile := parser.MaxProfile
@@ -108,6 +109,9 @@ func CollapseProfilePin(t *testing.T, release string) bool {
 // from, so what a call site splices into a manifest is a release under that
 // floor or an error — never a string the floor predicate reads as nothing.
 func below(version string) (string, error) {
+	if version == "next" {
+		return "0.0.0", nil // Every numeric release is strictly below an uncut pin.
+	}
 	parts, err := components(version)
 	if err != nil {
 		return "", err
