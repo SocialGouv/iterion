@@ -775,7 +775,7 @@ const LogBlockRow = memo(function LogBlockRow({
   return (
     <div className={`font-mono text-caption py-0.5 ${cls}`}>
       <div
-        {...clickableRowProps(toggle, open ? "Collapse log line" : "Expand log line")}
+        {...clickableRowProps(toggle)}
         aria-expanded={open}
         title={open ? "Collapse body" : "Expand body"}
         className="flex items-baseline gap-2 pr-3 rounded cursor-pointer hover:bg-surface-2"

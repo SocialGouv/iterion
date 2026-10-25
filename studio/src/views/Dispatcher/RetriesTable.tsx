@@ -97,7 +97,7 @@ export default function RetriesTable({
                 className={`cursor-pointer focus-visible:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
                   isDue ? "bg-warning-soft" : ""
                 }`}
-                {...clickableRowProps(() => onFocusIssue(r.issue_id), `Open issue ${r.identifier || r.issue_id} on the board`)}
+                {...clickableRowProps(() => onFocusIssue(r.issue_id))}
               >
                 <Td className="font-mono whitespace-nowrap">{r.identifier || r.issue_id}</Td>
                 <Td>{r.attempt}</Td>

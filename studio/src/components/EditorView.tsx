@@ -10,8 +10,13 @@ import DiagnosticsPanel from "@/components/Diagnostics/DiagnosticsPanel";
 import LibraryPanel from "@/components/Library/LibraryPanel";
 import SubNodePalette from "@/components/Canvas/SubNodePalette";
 import SourceView from "@/components/SourceView/SourceView";
-import { DesktopOnlyNotice, IconButton } from "@/components/ui";
-import { useUIStore } from "@/store/ui";
+import { DesktopOnlyNotice, IconButton, ResizeSeparator } from "@/components/ui";
+import {
+  INSPECTOR_WIDTH_DEFAULT,
+  INSPECTOR_WIDTH_MAX,
+  INSPECTOR_WIDTH_MIN,
+  useUIStore,
+} from "@/store/ui";
 import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useAutoValidation } from "@/hooks/useAutoValidation";
@@ -263,7 +268,7 @@ export default function EditorView({ active = true }: EditorViewProps) {
     };
   }, [setInspectorWidth]);
 
-  const startResize = (e: React.MouseEvent) => {
+  const startResize = (e: React.PointerEvent) => {
     e.preventDefault();
     draggingRef.current = true;
     document.body.style.cursor = "col-resize";
@@ -358,13 +363,21 @@ export default function EditorView({ active = true }: EditorViewProps) {
               </IconButton>
             ) : (
               <>
-                <div
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label="Resize inspector"
-                  onMouseDown={startResize}
-                  className="absolute left-0 top-0 bottom-0 w-1 -translate-x-1/2 cursor-col-resize hover:bg-accent/50 z-[var(--z-canvas)]"
-                  title="Drag to resize"
+                <ResizeSeparator
+                  label="Resize inspector"
+                  axes={{
+                    x: {
+                      value: effectiveInspectorWidth,
+                      min: INSPECTOR_WIDTH_MIN,
+                      max: INSPECTOR_WIDTH_MAX,
+                      grow: "start",
+                      onResize: setInspectorWidth,
+                    },
+                  }}
+                  onPointerResizeStart={startResize}
+                  onReset={() => setInspectorWidth(INSPECTOR_WIDTH_DEFAULT)}
+                  title="Drag to resize — ←/→ to adjust, double-click to reset"
+                  className="absolute left-0 top-0 bottom-0 w-1 -translate-x-1/2 cursor-col-resize hover:bg-accent/50 focus-visible:bg-accent/60 focus-visible:outline-none z-[var(--z-canvas)]"
                 />
                 <div className="flex items-center justify-end px-1 py-0.5 border-b border-border-default shrink-0 bg-surface-1">
                   <IconButton

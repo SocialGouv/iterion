@@ -38,7 +38,7 @@ export const RunListCard = memo(function RunListCard({
   // keyboard semantics are restored via clickableRowProps (role + Enter/Space).
   return (
     <div
-      {...clickableRowProps(() => onOpen(run.id), friendlyLabel(run))}
+      {...clickableRowProps(() => onOpen(run.id))}
       className="w-full text-left px-4 py-3 flex flex-col gap-1 min-h-[44px] cursor-pointer hover:bg-surface-2 active:bg-surface-3"
     >
       <div className="flex items-center gap-2 min-w-0 flex-wrap">

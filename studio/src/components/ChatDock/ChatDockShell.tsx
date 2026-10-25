@@ -17,12 +17,14 @@ import {
   PinRightIcon,
 } from "@radix-ui/react-icons";
 
-import { IconButton } from "@/components/ui";
+import { IconButton, ResizeSeparator } from "@/components/ui";
 import {
   DOCKED_WIDTH_DEFAULT_PX,
+  DOCK_MIN_WIDTH_PX,
   FLOATING_MIN_HEIGHT_PX,
   FLOATING_MIN_WIDTH_PX,
   clampDockSize,
+  maxDockWidthPx,
   openedDock,
   readDockSize,
   writeDockSize,
@@ -427,25 +429,35 @@ function FloatingResizeHandle({
     window.addEventListener("pointercancel", onUp);
     teardownRef.current = teardown;
   };
+  const viewport =
+    typeof window === "undefined"
+      ? { width: size.width, height: size.height }
+      : { width: window.innerWidth, height: window.innerHeight };
   return (
-    <div
-      role="separator"
-      aria-label="Resize the assistant panel"
-      tabIndex={0}
-      onPointerDown={onPointerDown}
-      onKeyDown={(e) => {
-        const step = e.shiftKey ? 64 : 16;
-        const delta: Partial<DockSize> = {};
-        if (e.key === "ArrowLeft") delta.width = size.width + step;
-        else if (e.key === "ArrowRight") delta.width = size.width - step;
-        else if (e.key === "ArrowUp") delta.height = size.height + step;
-        else if (e.key === "ArrowDown") delta.height = size.height - step;
-        else return;
-        e.preventDefault();
-        onResize({ ...size, ...delta });
+    <ResizeSeparator
+      label="Resize the assistant panel"
+      axes={{
+        x: {
+          value: size.width,
+          min: FLOATING_MIN_WIDTH_PX,
+          max: viewport.width,
+          grow: "start",
+          onResize: (width) => onResize({ ...size, width }),
+        },
+        y: {
+          value: size.height,
+          min: FLOATING_MIN_HEIGHT_PX,
+          max: viewport.height,
+          grow: "start",
+          onResize: (height) => onResize({ ...size, height }),
+        },
       }}
-      title="Drag to resize"
-      className="absolute left-0 top-0 z-10 h-5 w-5 cursor-nwse-resize focus:outline-none group"
+      onPointerResizeStart={onPointerDown}
+      onReset={() =>
+        onResize({ width: FLOATING_WIDTH_PX, height: FLOATING_HEIGHT_PX })
+      }
+      title="Drag to resize — arrows to adjust, double-click to reset"
+      className="absolute left-0 top-0 z-10 h-5 w-5 cursor-nwse-resize focus-visible:outline-none group"
     >
       {/* A visible grip. The previous corner was a 16px hitbox that only
           appeared on hover, in the same corner as the title — findable only by
@@ -463,7 +475,7 @@ function FloatingResizeHandle({
           strokeLinecap="round"
         />
       </svg>
-    </div>
+    </ResizeSeparator>
   );
 }
 
@@ -662,24 +674,21 @@ function DockResizeHandle({
     teardownRef.current = teardown;
   };
   return (
-    <div
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Resize the assistant panel"
-      tabIndex={0}
-      onPointerDown={onPointerDown}
-      onKeyDown={(e) => {
-        const step = e.shiftKey ? 64 : 16;
-        if (e.key === "ArrowLeft") {
-          e.preventDefault();
-          onWidthChange(width + step);
-        } else if (e.key === "ArrowRight") {
-          e.preventDefault();
-          onWidthChange(width - step);
-        }
+    <ResizeSeparator
+      label="Resize the assistant panel"
+      axes={{
+        x: {
+          value: width,
+          min: DOCK_MIN_WIDTH_PX,
+          max: maxDockWidthPx(),
+          grow: "start",
+          onResize: onWidthChange,
+        },
       }}
-      title="Drag to resize"
-      className="absolute left-0 top-0 bottom-0 z-10 w-1.5 -ml-0.5 cursor-col-resize hover:bg-accent/40 focus:bg-accent/60 focus:outline-none"
+      onPointerResizeStart={onPointerDown}
+      onReset={() => onWidthChange(DOCKED_WIDTH_DEFAULT_PX)}
+      title="Drag to resize — ←/→ to adjust, double-click to reset"
+      className="absolute left-0 top-0 bottom-0 z-10 w-1.5 -ml-0.5 cursor-col-resize hover:bg-accent/40 focus-visible:bg-accent/60 focus-visible:outline-none"
     />
   );
 }

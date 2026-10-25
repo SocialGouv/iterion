@@ -35,3 +35,34 @@ export function labelForStatus(s: RunStatus): string {
 export function isActiveStatus(s: RunStatus): boolean {
   return s === "running" || s === "queued";
 }
+
+// STATUS_ORDER fixes the tally's read-out order, so two chips with the
+// same census always read the same sentence whatever order the child
+// runs arrived in.
+const STATUS_ORDER: RunStatus[] = [
+  "running",
+  "queued",
+  "paused_waiting_human",
+  "paused_operator",
+  "finished",
+  "failed",
+  "failed_resumable",
+  "cancelled",
+];
+
+// subRunStatusSummary enumerates a group of sub-run statuses as text —
+// the second channel the status dots cannot carry alone (RGAA 3.1:
+// information must not ride on colour only). Plain text also survives
+// stylesheets-off (RGAA 10.2) and reaches the accessible name as
+// content, not as an override. Rendered through sr-only beside the
+// dots it narrates.
+export function subRunStatusSummary(statuses: RunStatus[]): string {
+  const tally = new Map<RunStatus, number>();
+  for (const s of statuses) tally.set(s, (tally.get(s) ?? 0) + 1);
+  const parts = STATUS_ORDER.filter((s) => tally.has(s)).map(
+    (s) => `${tally.get(s)} ${labelForStatus(s).toLowerCase()}`,
+  );
+  const n = statuses.length;
+  const head = `${n} sub-run${n === 1 ? "" : "s"}`;
+  return parts.length > 0 ? `${head}: ${parts.join(", ")}` : head;
+}

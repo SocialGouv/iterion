@@ -173,8 +173,8 @@ function ExamplesPicker({
               onClick={() => onPick(name)}
               className="w-full text-left rounded border border-border-default px-3 py-2 hover:bg-surface-2 transition-colors"
             >
-              <div className="font-medium text-sm text-fg-default">{label}</div>
-              <div className="text-caption text-fg-subtle font-mono">{subline}</div>
+              <span className="block font-medium text-sm text-fg-default">{label}</span>
+              <span className="block text-caption text-fg-subtle font-mono">{subline}</span>
             </button>
           );
         })}

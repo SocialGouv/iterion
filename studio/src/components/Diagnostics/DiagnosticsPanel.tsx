@@ -180,11 +180,12 @@ function DiagnosticList({
             ? `edge ${d.edgeId}`
             : `node ${d.nodeId}`
           : null;
-        const ariaLabel = `${codeLabel}: ${titleText}${attributionText ? ` (${attributionText})` : ""}`;
         return (
           <li
             key={stableKey || i}
-            {...clickableRowProps(() => onClick(d), ariaLabel)}
+            // No aria-label: the visible row IS the accessible name
+            // (RGAA 7.1 — a label must contain what is rendered).
+            {...clickableRowProps(() => onClick(d))}
             className={`flex items-start gap-2 cursor-pointer hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded px-1 -mx-1 py-0.5 ${sevColor}`}
           >
             <span className="shrink-0 font-mono text-caption mt-0.5 px-1 rounded bg-surface-2">

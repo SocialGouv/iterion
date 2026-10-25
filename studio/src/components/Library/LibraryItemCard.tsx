@@ -40,7 +40,7 @@ export default function LibraryItemCard({ item, onAdd }: Props) {
     <div
       draggable
       onDragStart={onDragStart}
-      {...clickableRowProps(() => onAdd(item), `Add ${item.name} to canvas`)}
+      {...clickableRowProps(() => onAdd(item))}
       className="flex items-start gap-2 px-2 py-2 rounded cursor-grab hover:bg-surface-2/50 transition-colors border-l-2 group focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
       style={{ borderLeftColor: color }}
       title={item.description}

@@ -174,10 +174,10 @@ export default function RepoSwitcher({ collapsed = false }: { collapsed?: boolea
           onClick={pick(null)}
           className={`w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 ${overview ? "bg-surface-2" : ""}`}
         >
-          <div className="font-medium">All repos</div>
-          <div className="text-xs text-fg-muted">
+          <span className="block font-medium">All repos</span>
+          <span className="block text-xs text-fg-muted">
             Overview — aggregate every connected repo
-          </div>
+          </span>
         </button>
       </PopoverClose>
       {Array.from(byProvider.entries()).map(([provider, list]) => (
@@ -196,7 +196,7 @@ export default function RepoSwitcher({ collapsed = false }: { collapsed?: boolea
                     onClick={pick(key)}
                     className={`min-w-0 flex-1 text-left px-2 py-1.5 rounded hover:bg-surface-2 ${active ? "bg-surface-2" : ""}`}
                   >
-                    <div className="flex items-center gap-1.5 font-medium">
+                    <span className="flex items-center gap-1.5 font-medium">
                       <span className="truncate">{r.repo_full_name}</span>
                       {rowTone && (
                         <span
@@ -204,12 +204,12 @@ export default function RepoSwitcher({ collapsed = false }: { collapsed?: boolea
                           title={`Connection ${r.connection_status}`}
                         />
                       )}
-                    </div>
-                    <div className="text-xs text-fg-muted">
+                    </span>
+                    <span className="block text-xs text-fg-muted">
                       {r.bot_ids.length > 0
                         ? `${r.bot_ids.length} bot${r.bot_ids.length > 1 ? "s" : ""} enabled`
                         : "no bots enabled"}
-                    </div>
+                    </span>
                   </button>
                 </PopoverClose>
                 <PopoverClose asChild>

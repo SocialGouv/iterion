@@ -493,7 +493,7 @@ function BotCard({
         className="flex h-full flex-col items-start gap-2 rounded-[var(--radius-lg)] p-4 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
         title={`Open ${label}'s bot page`}
       >
-        <div className="flex w-full items-center gap-2">
+        <span className="flex w-full items-center gap-2">
           {/* Scope dragging to a grip so paths and labels remain natively
               selectable/copyable. The reference uses the workspace-relative
               path because that is what an assistant can actually read. */}
@@ -519,13 +519,13 @@ function BotCard({
               {enabled ? "Enabled" : "Disabled"}
             </Badge>
           </span>
-        </div>
+        </span>
         {bot.description ? (
           <p className="line-clamp-2 text-xs text-fg-muted">{bot.description}</p>
         ) : (
           <p className="text-xs italic text-fg-subtle">No description.</p>
         )}
-        <div className="mt-auto flex flex-wrap items-center gap-1">
+        <span className="mt-auto flex flex-wrap items-center gap-1">
           {(bot.tags ?? []).map((t) => (
             <Badge key={t}>{t}</Badge>
           ))}
@@ -557,7 +557,7 @@ function BotCard({
             <Badge variant="warning">platform override</Badge>
           )}
           {!bot.is_bundle && <Badge>single file</Badge>}
-        </div>
+        </span>
       </button>
     </li>
   );

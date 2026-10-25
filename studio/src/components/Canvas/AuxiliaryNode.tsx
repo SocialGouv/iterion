@@ -29,7 +29,7 @@ export default function AuxiliaryNode({ data, selected }: NodeProps) {
   const openEditor = () => setEditingItem({ kind: LAYER_TO_ITEM_KIND[layerKind], name: label });
   return (
     <div
-      {...clickableRowProps(openEditor, `Edit ${label}`)}
+      {...clickableRowProps(openEditor)}
       className="rounded-full border px-3 py-1.5 min-w-[100px] text-center shadow-[var(--shadow-sm)] cursor-pointer focus:outline-none focus:ring-2 focus:ring-accent"
       style={{
         borderColor: selected ? SELECTED_BORDER : color,

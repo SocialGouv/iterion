@@ -224,7 +224,7 @@ export default function MemoryTab({ teamID: _teamID }: Props) {
                   className={`px-2 py-1.5 text-sm cursor-pointer hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:outline-none ${
                     selected?.path === d.path ? "bg-surface-2" : ""
                   }`}
-                  {...clickableRowProps(() => void open(d), `Open ${d.path}`)}
+                  {...clickableRowProps(() => void open(d))}
                 >
                   <div className="font-mono text-xs">{d.path}</div>
                   <div className="text-xs text-fg-muted">

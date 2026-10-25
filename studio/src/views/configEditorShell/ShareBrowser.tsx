@@ -8,6 +8,7 @@ import {
 } from "@radix-ui/react-icons";
 
 import type { EditorShare } from "@/api/configEditor";
+import { Icon } from "@/components/ui/Icon";
 import { EmptyState } from "@/components/ui";
 
 // ---------------------------------------------------------------------------
@@ -279,15 +280,19 @@ function ShareLeaf({
           : "border-transparent hover:border-border-default hover:bg-surface-1"
       }`}
     >
-      <div className="flex items-center justify-between gap-2">
+      <span className="flex items-center justify-between gap-2">
         <span className="truncate text-sm font-medium text-fg-default">
           {s.label || s.category || s.id}
         </span>
         {s.read_only && (
-          <LockClosedIcon className="h-3 w-3 shrink-0 text-fg-subtle" aria-label="read-only" />
+          <Icon
+            icon={LockClosedIcon}
+            label="read-only"
+            className="h-3 w-3 shrink-0 text-fg-subtle"
+          />
         )}
-      </div>
-      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-caption text-fg-subtle">
+      </span>
+      <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-caption text-fg-subtle">
         {s.category && <span className="truncate">{s.category}</span>}
         {s.config_path && (
           <>
@@ -295,7 +300,7 @@ function ShareLeaf({
             <span className="truncate font-mono">{s.config_path}</span>
           </>
         )}
-      </div>
+      </span>
     </button>
   );
 }

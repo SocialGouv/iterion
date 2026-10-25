@@ -1,5 +1,6 @@
 import { CheckCircledIcon, ReloadIcon, CrossCircledIcon } from "@radix-ui/react-icons";
 
+import { Icon } from "@/components/ui/Icon";
 import type { BannerMessage, BannerStatus } from "@/lib/runChat/types";
 
 interface Props {
@@ -82,27 +83,32 @@ export function BannerProgressLine({
 
 // BannerStatusIcon is the running-spinner / check / cross icon
 // shared between the generic BannerCard and the whats-next NodeBanner.
+// Icon puts the name and role="img" on the same element (RGAA 1.1) —
+// a bare Radix <svg> drops a lone aria-label.
 export function BannerStatusIcon({ status }: { status: BannerStatus }) {
   if (status === "running") {
     return (
-      <ReloadIcon
+      <Icon
+        icon={ReloadIcon}
+        label="In progress"
         className="w-3.5 h-3.5 text-accent-text animate-spin"
-        aria-label="In progress"
       />
     );
   }
   if (status === "done") {
     return (
-      <CheckCircledIcon
+      <Icon
+        icon={CheckCircledIcon}
+        label="Completed"
         className="w-3.5 h-3.5 text-success-fg"
-        aria-label="Completed"
       />
     );
   }
   return (
-    <CrossCircledIcon
+    <Icon
+      icon={CrossCircledIcon}
+      label="Failed"
       className="w-3.5 h-3.5 text-danger-fg"
-      aria-label="Failed"
     />
   );
 }

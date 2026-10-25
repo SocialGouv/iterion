@@ -54,7 +54,7 @@ export default function DetailSubNode({ data, selected }: NodeProps) {
 
   return (
     <div
-      {...clickableRowProps(handleClick, `Edit ${label}`)}
+      {...clickableRowProps(handleClick)}
       className="rounded-lg border px-3 py-2 min-w-[130px] max-w-[200px] text-center shadow-[var(--shadow-sm)] cursor-pointer hover:brightness-125 transition-all focus:outline-none focus:ring-2 focus:ring-accent"
       style={{
         borderColor: selected ? SELECTED_BORDER : color,

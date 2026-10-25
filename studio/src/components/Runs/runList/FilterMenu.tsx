@@ -18,6 +18,10 @@ export interface FilterMenuOption {
 // and, when a non-default value is selected, the active option's label
 // (and an accent highlight). The popover lists the options with a check
 // on the active one. Selecting closes the menu.
+//
+// The trigger's accessible name leads with the axis ("Since: Filter by
+// date") so it CONTAINS the visible label (RGAA 7.1) — pass `ariaLabel`
+// without repeating the axis.
 export function FilterMenu({
   axis,
   ariaLabel,
@@ -47,7 +51,7 @@ export function FilterMenu({
       trigger={
         <button
           type="button"
-          aria-label={ariaLabel}
+          aria-label={`${axis}: ${ariaLabel}`}
           className={`inline-flex items-center gap-1 rounded-md border text-xs h-7 px-2 ${triggerCls}`}
         >
           <span>{axis}</span>

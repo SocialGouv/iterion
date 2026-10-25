@@ -17,16 +17,13 @@ import {
   ExpandableValue,
   IconButton,
   InlineBanner,
+  ResizeSeparator,
   StatusBadge,
 } from "@/components/ui";
 import { trapTabKey } from "@/lib/a11y";
 
 import {
   DRAWER_WIDTH_DEFAULT,
-  DRAWER_WIDTH_MAX,
-  DRAWER_WIDTH_MIN,
-  DRAWER_WIDTH_STEP,
-  DRAWER_WIDTH_STEP_LARGE,
   clampDrawerWidth,
   drawerWidthBounds,
   readDrawerWidth,
@@ -657,7 +654,8 @@ export default function PipelineCardDetails({
 
   // Drag the left edge. The pointer is tracked on window (not the 6px handle)
   // so a fast drag that outruns the cursor keeps resizing. The drawer is
-  // right-anchored, so moving LEFT widens it.
+  // right-anchored, so moving LEFT widens it. The keyboard/screen-reader
+  // half of the splitter lives in the ResizeSeparator primitive.
   const startResize = useCallback(
     (e: React.PointerEvent) => {
       e.preventDefault();
@@ -682,25 +680,6 @@ export default function PipelineCardDetails({
       window.addEventListener("pointerup", onUp);
     },
     [width],
-  );
-
-  const onHandleKey = useCallback(
-    (e: React.KeyboardEvent) => {
-      const step = e.shiftKey ? DRAWER_WIDTH_STEP_LARGE : DRAWER_WIDTH_STEP;
-      let next: number;
-      // Right-anchored: ArrowLeft moves the handle left, i.e. widens.
-      if (e.key === "ArrowLeft") next = width + step;
-      else if (e.key === "ArrowRight") next = width - step;
-      else if (e.key === "Home") next = DRAWER_WIDTH_MIN;
-      else if (e.key === "End") next = DRAWER_WIDTH_MAX;
-      else return;
-      e.preventDefault();
-      // Escape-to-close listens on window; don't let resize keys travel to
-      // the board's own shortcut handlers either.
-      e.stopPropagation();
-      commitWidth(next);
-    },
-    [width, commitWidth],
   );
 
   // A viewport that shrinks below the persisted width (window resize, sidebar
@@ -868,22 +847,24 @@ export default function PipelineCardDetails({
         role="dialog"
         aria-modal="true"
       >
-        {/* Resize grip on the inner edge. Focusable window-splitter: drag it,
-            or tab to it and use ←/→ (Shift for a big step, Home/End for the
-            bounds, double-click to reset). */}
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize details drawer"
-          aria-valuenow={width}
-          aria-valuemin={bounds.min}
-          aria-valuemax={bounds.max}
-          aria-valuetext={`${width} pixels`}
-          tabIndex={0}
+        {/* Resize grip on the inner edge — the reference instance of the
+            ResizeSeparator primitive (drag it, or tab to it and use
+            ←/→, Shift for a big step, Home/End for the bounds,
+            double-click to reset). */}
+        <ResizeSeparator
+          label="Resize details drawer"
+          axes={{
+            x: {
+              value: width,
+              min: bounds.min,
+              max: bounds.max,
+              grow: "start",
+              onResize: commitWidth,
+            },
+          }}
+          onPointerResizeStart={startResize}
+          onReset={() => commitWidth(DRAWER_WIDTH_DEFAULT)}
           title="Drag to resize — ←/→ to adjust, double-click to reset"
-          onPointerDown={startResize}
-          onKeyDown={onHandleKey}
-          onDoubleClick={() => commitWidth(DRAWER_WIDTH_DEFAULT)}
           className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize transition-colors hover:bg-accent/60 focus-visible:bg-accent focus-visible:outline-none active:bg-accent"
         />
         {header}

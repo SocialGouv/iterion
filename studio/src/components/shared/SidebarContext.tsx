@@ -1,5 +1,6 @@
 import { MagnifyingGlassIcon, CaretSortIcon } from "@radix-ui/react-icons";
 
+import { Icon } from "@/components/ui/Icon";
 import { useProjectInfo } from "@/hooks/useProjectInfo";
 import { isMacOS } from "@/lib/keyboard";
 import { useUIStore } from "@/store/ui";
@@ -84,7 +85,10 @@ export default function SidebarContext({ collapsed }: Props) {
           >
             <FolderOpenGlyph className="h-3.5 w-3.5 text-fg-muted group-hover:text-fg-default" />
             <span className="truncate flex-1 text-left font-medium">{name}</span>
-            <CaretSortIcon className="h-3.5 w-3.5 text-fg-subtle group-hover:text-fg-muted shrink-0" />
+            <Icon
+              icon={CaretSortIcon}
+              className="h-3.5 w-3.5 text-fg-subtle group-hover:text-fg-muted shrink-0"
+            />
           </button>
         ))}
 
@@ -96,7 +100,7 @@ export default function SidebarContext({ collapsed }: Props) {
           aria-label={`Open command palette (${kbdK})`}
           className="flex items-center justify-center h-8 w-10 rounded border border-border-default bg-surface-2 text-fg-muted hover:text-fg-default hover:bg-surface-3 transition-colors"
         >
-          <MagnifyingGlassIcon className="h-3.5 w-3.5" />
+          <Icon icon={MagnifyingGlassIcon} className="h-3.5 w-3.5" />
         </button>
       ) : (
         <button
@@ -105,7 +109,10 @@ export default function SidebarContext({ collapsed }: Props) {
           title={`Open command palette (${kbdK})`}
           className="flex items-center gap-2 px-2 py-1.5 rounded border border-border-default bg-surface-2 text-xs text-fg-muted hover:text-fg-default hover:bg-surface-3 transition-colors group"
         >
-          <MagnifyingGlassIcon className="h-3.5 w-3.5 shrink-0 group-hover:text-fg-default" />
+          <Icon
+            icon={MagnifyingGlassIcon}
+            className="h-3.5 w-3.5 shrink-0 group-hover:text-fg-default"
+          />
           <span className="flex-1 text-left truncate">Search or run…</span>
           <kbd className="font-mono text-caption text-fg-subtle group-hover:text-fg-muted px-1 py-px rounded border border-border-default bg-surface-1 shrink-0">
             {kbdK}

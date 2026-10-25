@@ -311,14 +311,14 @@ function RepoStep({
                 onClick={() => onPick(forgeTeamRepoKey(r))}
                 className="w-full text-left rounded-[var(--radius-lg)] border border-border-default bg-surface-1 p-3 transition-colors hover:border-border-strong cursor-pointer"
               >
-                <div className="flex flex-wrap items-center gap-2">
+                <span className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-sm font-medium text-fg-default">
                     {r.repo_full_name}
                   </span>
                   <Badge variant="neutral" size="sm">
                     {r.provider}
                   </Badge>
-                </div>
+                </span>
                 <p className="text-caption text-fg-muted mt-1">
                   {count === 0
                     ? "No bots bound yet"

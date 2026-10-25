@@ -432,7 +432,7 @@ function DispatchSkipsTable({
             <Tr
               key={s.issue_id}
               className="cursor-pointer focus-visible:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-              {...clickableRowProps(() => onFocusIssue(s.issue_id), `Open issue ${s.identifier || s.issue_id} on the board to fix its bot`)}
+              {...clickableRowProps(() => onFocusIssue(s.issue_id))}
             >
               <Td className="font-mono whitespace-nowrap">
                 {s.identifier || s.issue_id}

@@ -50,9 +50,12 @@ export default function RunCanvasToolbar({
       : runningCount === 1
       ? "Center on the running node"
       : `Center on the ${runningCount} running nodes`;
+  // The visible "Live" leads the accessible name (RGAA 7.1): a name
+  // must CONTAIN the visible label, so voice control can say "Live"
+  // and land on this button.
   const followLabel = followLive
-    ? "Auto-follow running node is ON — click to pin manually"
-    : "Click to auto-follow the running node";
+    ? "Live — auto-follow running node is ON — click to pin manually"
+    : "Live — click to auto-follow the running node";
   return (
     <div className="flex items-center gap-1">
       <button

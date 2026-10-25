@@ -149,6 +149,9 @@ export default function SubbotRunFrame({ id, data }: NodeProps<SubbotRunFrameTyp
                   aria-hidden
                 />
                 <span className="truncate max-w-[16ch]">{childTabLabel(child, i)}</span>
+                {/* The dot beside the label is colour-only (RGAA 3.1):
+                    the status also rides as text in the tab's name. */}
+                <span className="sr-only"> · {labelForStatus(child.status)}</span>
               </button>
             );
           })}

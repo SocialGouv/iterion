@@ -11,7 +11,7 @@ import {
   ReaderIcon,
 } from "@radix-ui/react-icons";
 
-import { IconButton, Tabs } from "@/components/ui";
+import { IconButton, ResizeSeparator, Tabs } from "@/components/ui";
 import { readEnumFlag, writeStringFlag } from "@/lib/localStorageFlag";
 import type { RunFile, RunFilesMode, RunHeader } from "@/api/runs";
 
@@ -241,14 +241,23 @@ export default function LeftPanel({
           onMergeComplete={onMergeComplete}
         />
       </div>
-      {/* Drag handle on the right edge to resize the panel. */}
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize panel"
-        onPointerDown={startResize}
-        title="Drag to resize"
-        className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-accent/60 active:bg-accent transition-colors"
+      {/* Drag handle on the right edge to resize the panel; the
+          keyboard/screen-reader contract lives in ResizeSeparator. */}
+      <ResizeSeparator
+        label="Resize panel"
+        axes={{
+          x: {
+            value: width,
+            min: LEFT_WIDTH_MIN,
+            max: LEFT_WIDTH_MAX,
+            grow: "end",
+            onResize: onResize,
+          },
+        }}
+        onPointerResizeStart={startResize}
+        onReset={() => onResize(LEFT_WIDTH_DEFAULT)}
+        title="Drag to resize — ←/→ to adjust, double-click to reset"
+        className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-accent/60 active:bg-accent focus-visible:bg-accent focus-visible:outline-none transition-colors"
       />
     </aside>
   );

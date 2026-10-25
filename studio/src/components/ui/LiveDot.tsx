@@ -10,8 +10,12 @@ export interface LiveDotProps {
    *  states like a connected status that doesn't need to draw the eye. */
   pulse?: boolean;
   className?: string;
-  /** Screen-reader label. Pass when the dot is the only visual signal of
-   *  the state — omit when an adjacent text label already names it. */
+  /** Status label, rendered as sr-only TEXT inside the dot — not an
+   *  aria-label, which paints no pixels and vanishes with the
+   *  stylesheets (RGAA 10.2). sr-only keeps the text audible with CSS
+   *  on and VISIBLE with CSS off, so the state survives both. Pass
+   *  when the dot is the only visual signal of the state — omit when
+   *  an adjacent text label already names it. */
   label?: string;
 }
 
@@ -54,9 +58,10 @@ export function LiveDot({
   return (
     <span
       role={label ? "status" : undefined}
-      aria-label={label}
       aria-hidden={label ? undefined : true}
       className={`inline-block rounded-full ${toneClass[tone]} ${sizeClass[size]} ${pulse ? "animate-pulse" : ""} ${className}`.trim()}
-    />
+    >
+      {label ? <span className="sr-only">{label}</span> : null}
+    </span>
   );
 }

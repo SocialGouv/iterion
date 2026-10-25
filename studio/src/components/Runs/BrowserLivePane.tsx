@@ -235,9 +235,16 @@ export default function BrowserLivePane({ runId, sessionId }: BrowserLivePanePro
             Connecting to Chromium…
           </div>
         ) : null}
+        {/* The mirrored screen is an information-bearing image (RGAA
+            1.1): role="img" puts the name and the image role on the
+            same element, the label names WHAT is mirrored and follows
+            the live frame size, and the child text is the fallback the
+            canvas spec prescribes. */}
         <canvas
           ref={canvasRef}
           tabIndex={0}
+          role="img"
+          aria-label={`Live view of the run's browser session ${sessionId.slice(0, 8)}${frameSize ? ` — ${frameSize.w}×${frameSize.h}` : ""}`}
           onMouseDown={(e) => dispatchMouse("mousePressed", e)}
           onMouseUp={(e) => dispatchMouse("mouseReleased", e)}
           onMouseMove={(e) => dispatchMouse("mouseMoved", e)}
@@ -247,7 +254,10 @@ export default function BrowserLivePane({ runId, sessionId }: BrowserLivePanePro
           className={`max-h-full max-w-full bg-black focus:outline-2 focus:outline-accent ${
             status === "ready" ? "" : "hidden"
           }`}
-        />
+        >
+          Live mirror of the browser session the run's browser tools
+          drive. Your browser cannot display it.
+        </canvas>
       </div>
       <div className="border-t border-border-default px-3 py-1 text-micro text-fg-muted flex items-center gap-2">
         <span className="inline-block h-2 w-2 rounded-full bg-success" />

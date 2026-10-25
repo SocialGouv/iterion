@@ -44,7 +44,7 @@ export function MarketplaceCard({
         onClick={onOpen}
         className="flex flex-col items-start gap-1 text-left rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
       >
-        <div className="flex w-full items-baseline justify-between gap-2">
+        <span className="flex w-full items-baseline justify-between gap-2">
           <span className="flex min-w-0 items-baseline gap-1.5">
             {entry.icon && (
               <span aria-hidden className="shrink-0 text-base leading-none">
@@ -57,11 +57,11 @@ export function MarketplaceCard({
           <span className="shrink-0 text-caption text-fg-subtle">
             {entry.installs} install{entry.installs === 1 ? "" : "s"}
           </span>
-        </div>
+        </span>
         {entry.description && (
           <p className="line-clamp-2 text-xs text-fg-muted">{entry.description}</p>
         )}
-        <div className="flex flex-wrap items-center gap-1 text-caption text-fg-subtle">
+        <span className="flex flex-wrap items-center gap-1 text-caption text-fg-subtle">
           {entry.author && <span>by {entry.author}</span>}
           {entry.version && <span className="font-mono">v{entry.version}</span>}
           {entry.presets && entry.presets.length > 0 && (
@@ -69,9 +69,9 @@ export function MarketplaceCard({
               {entry.presets.length} preset{entry.presets.length === 1 ? "" : "s"}
             </span>
           )}
-        </div>
+        </span>
         {entry.tags && entry.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1">
+          <span className="flex flex-wrap gap-1">
             {entry.tags.map((t) => (
               <span
                 key={t}
@@ -80,7 +80,7 @@ export function MarketplaceCard({
                 {t}
               </span>
             ))}
-          </div>
+          </span>
         )}
       </button>
       <div className="flex items-center justify-between gap-2">

@@ -17,6 +17,7 @@ import { displayModel, modelTooltip } from "@/lib/modelLabel";
 import { useResolvedModel } from "@/hooks/useResolvedModel";
 
 import { statusClasses, type UnifiedStatus } from "./runStatusClasses";
+import { subRunStatusSummary } from "./runStatusMeta";
 
 // Maximum pips to show inline before condensing into a "+N" overflow
 // affordance. Tuned to match the 200px node width — beyond ~6 the strip
@@ -310,6 +311,12 @@ function SubRunChip({ children_ }: { children_: RunSummary[] }) {
         />
       ))}
       <span className="truncate">{label}</span>
+      {/* The statuses ride on the dot colours visually; the sr-only
+          enumeration is the second channel (RGAA 3.1) and stays real
+          text under stylesheets-off (RGAA 10.2). */}
+      <span className="sr-only">
+        {subRunStatusSummary(children_.map((c) => c.status))}
+      </span>
     </div>
   );
 }

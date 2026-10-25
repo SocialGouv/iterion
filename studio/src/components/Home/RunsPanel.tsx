@@ -114,16 +114,16 @@ export default function RunsPanel({ runs, loading, error, scope }: Props) {
                   className="w-full px-4 py-2.5 flex items-center gap-3 text-left bg-info-soft/30 hover:bg-info-soft/50 border-l-2 border-info"
                 >
                   <LiveDot tone="info" size="md" className="shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-semibold truncate">
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-semibold truncate">
                       {r.name || r.workflow_name}
-                    </div>
+                    </span>
                     {r.name && r.workflow_name !== r.name && (
-                      <div className="text-caption text-fg-subtle truncate">
+                      <span className="block text-caption text-fg-subtle truncate">
                         {r.workflow_name}
-                      </div>
+                      </span>
                     )}
-                  </div>
+                  </span>
                   <Badge variant={STATUS_VARIANT[r.status]}>
                     {labelForStatus(r.status)}
                     {r.status === "queued" && r.queue_position
@@ -142,16 +142,16 @@ export default function RunsPanel({ runs, loading, error, scope }: Props) {
                   onClick={() => goToRun(r.id)}
                   className="w-full px-4 py-2 flex items-center gap-3 hover:bg-surface-2 text-left"
                 >
-                  <div className="min-w-0 flex-1 pl-4">
-                    <div className="text-xs font-medium truncate">
+                  <span className="min-w-0 flex-1 pl-4">
+                    <span className="block text-xs font-medium truncate">
                       {r.name || r.workflow_name}
-                    </div>
+                    </span>
                     {r.name && r.workflow_name !== r.name && (
-                      <div className="text-caption text-fg-subtle truncate">
+                      <span className="block text-caption text-fg-subtle truncate">
                         {r.workflow_name}
-                      </div>
+                      </span>
                     )}
-                  </div>
+                  </span>
                   <Badge variant={STATUS_VARIANT[r.status]}>
                     {labelForStatus(r.status)}
                   </Badge>

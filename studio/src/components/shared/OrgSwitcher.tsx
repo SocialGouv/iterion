@@ -138,11 +138,11 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
               o.org_id === activeOrgID ? "bg-surface-2" : ""
             }`}
           >
-            <div className="font-medium">{o.org_name}</div>
-            <div className="text-xs text-fg-muted">
+            <span className="block font-medium">{o.org_name}</span>
+            <span className="block text-xs text-fg-muted">
               {o.org_role || "member"}
               {o.personal && " · personal"}
-            </div>
+            </span>
           </button>
         </PopoverClose>
       ))}
@@ -164,11 +164,11 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
                   t.team_id === activeTeamID ? "bg-surface-2" : ""
                 }`}
               >
-                <div className="font-medium">{t.team_name}</div>
-                <div className="text-xs text-fg-muted">
+                <span className="block font-medium">{t.team_name}</span>
+                <span className="block text-xs text-fg-muted">
                   {t.role}
                   {t.personal && " · personal"}
-                </div>
+                </span>
               </button>
             </PopoverClose>
           ))}

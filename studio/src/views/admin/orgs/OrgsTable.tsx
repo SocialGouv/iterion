@@ -43,7 +43,7 @@ export function OrgsTable({
                 <Tr
                   key={o.id}
                   className="cursor-pointer"
-                  {...clickableRowProps(() => onOpen(o), `Open ${o.name} (${status.label})`)}
+                  {...clickableRowProps(() => onOpen(o))}
                 >
                   <Td>
                     {o.name}

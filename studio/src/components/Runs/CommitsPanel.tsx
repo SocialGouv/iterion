@@ -147,14 +147,14 @@ function CommitRow({
           <code className="text-caption font-mono text-fg-subtle pt-0.5 shrink-0">
             {commit.short}
           </code>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-xs text-fg-default">
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-xs text-fg-default">
               {commit.subject}
-            </div>
-            <div className="truncate text-caption text-fg-subtle">
+            </span>
+            <span className="block truncate text-caption text-fg-subtle">
               {commit.author} · {relative}
-            </div>
-          </div>
+            </span>
+          </span>
         </button>
       </Tooltip>
     </li>

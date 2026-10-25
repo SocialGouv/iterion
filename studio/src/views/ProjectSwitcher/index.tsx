@@ -150,7 +150,7 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
                       }
                     }}
                   >
-                    <div className="font-semibold flex items-center gap-2 truncate">
+                    <span className="font-semibold flex items-center gap-2 truncate">
                       <span className="truncate">{p.name}</span>
                       {isCloudConnection(p) && (
                         <span className="text-caption uppercase tracking-wider text-fg-subtle border border-border-default rounded px-1 shrink-0">
@@ -167,12 +167,12 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
                           switching…
                         </span>
                       )}
-                    </div>
-                    <div className="text-xs text-fg-subtle truncate">
+                    </span>
+                    <span className="block text-xs text-fg-subtle truncate">
                       {isCloudConnection(p)
                         ? p.cloud_email || p.cloud_url
                         : p.dir}
-                    </div>
+                    </span>
                   </button>
                   {isPending ? (
                     <div className="flex items-center gap-1 text-micro shrink-0">

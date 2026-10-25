@@ -131,7 +131,6 @@ export default function Sidebar() {
             type="button"
             onClick={openSettings}
             className="flex w-full items-center gap-2 px-2 py-1 text-xs rounded text-fg-default hover:bg-surface-2 transition-colors"
-            aria-label="Open settings"
           >
             <GearIcon className="w-4 h-4 shrink-0" />
             <span>Preferences</span>

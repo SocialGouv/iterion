@@ -78,14 +78,14 @@ export default function ProviderStep({
                 disabled ? "cursor-not-allowed" : "cursor-pointer",
               ].join(" ")}
             >
-              <div className="flex items-center gap-2">
+              <span className="flex items-center gap-2">
                 <span className="font-medium text-sm">{p.title}</span>
                 {p.recommended && (
                   <Badge variant="accent" size="sm">
                     Recommended
                   </Badge>
                 )}
-              </div>
+              </span>
               <p className="text-caption text-fg-muted mt-1">{p.blurb}</p>
             </button>
           );

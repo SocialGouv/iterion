@@ -78,7 +78,7 @@ function DraggableItem({
   return (
     <div
       ref={ref}
-      {...clickableRowProps(activateFromKeyboard, `Add ${item.label}`)}
+      {...clickableRowProps(activateFromKeyboard)}
       draggable
       onDragStart={(e) => onDragStart(e, dragData)}
       onClick={(e) => onActivate(dragData, { x: e.clientX, y: e.clientY })}

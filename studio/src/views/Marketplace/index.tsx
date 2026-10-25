@@ -531,7 +531,7 @@ export default function MarketplaceView() {
                           onClick={() => setActiveSlug(e.slug)}
                           className="flex h-full w-full flex-col items-start gap-1 rounded-[var(--radius-lg)] border border-border-default bg-surface-1 p-3 text-left shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
                         >
-                          <div className="flex w-full min-w-0 items-center gap-1.5">
+                          <span className="flex w-full min-w-0 items-center gap-1.5">
                             {e.icon && (
                               <span aria-hidden className="shrink-0 text-base leading-none">
                                 {e.icon}
@@ -540,7 +540,7 @@ export default function MarketplaceView() {
                             <span className="truncate text-xs font-medium text-fg-default">
                               {e.display_name?.trim() || e.name}
                             </span>
-                          </div>
+                          </span>
                           <span className="text-caption text-fg-subtle">
                             {(e.kind ?? "bot") === "plugin" ? "Plugin · " : ""}
                             {e.installs} install{e.installs === 1 ? "" : "s"}

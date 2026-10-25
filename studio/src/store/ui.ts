@@ -34,9 +34,11 @@ export interface Toast {
 let toastIdCounter = 0;
 
 const INSPECTOR_WIDTH_KEY = "iterion.inspectorWidth";
-const INSPECTOR_WIDTH_DEFAULT = 360;
-const INSPECTOR_WIDTH_MIN = 280;
-const INSPECTOR_WIDTH_MAX = 600;
+// Exported for the inspector's ResizeSeparator: the keyboard path and
+// the double-click reset share the bounds the drag clamp honours.
+export const INSPECTOR_WIDTH_DEFAULT = 360;
+export const INSPECTOR_WIDTH_MIN = 280;
+export const INSPECTOR_WIDTH_MAX = 600;
 const INSPECTOR_COLLAPSED_KEY = "iterion.inspectorCollapsed";
 const SIDEBAR_COLLAPSED_KEY = "iterion.sidebarCollapsed";
 const CHAT_ENTER_SUBMITS_KEY = "iterion.chatEnterSubmits";

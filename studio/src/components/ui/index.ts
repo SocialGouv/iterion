@@ -138,3 +138,11 @@ export type { ThinkingIndicatorProps } from "./ThinkingIndicator";
 
 export { BrandWordmark } from "./BrandWordmark";
 export type { BrandWordmarkProps } from "./BrandWordmark";
+
+export { Icon } from "./Icon";
+export type { IconComponent } from "./Icon";
+
+export { ResizeSeparator } from "./ResizeSeparator";
+export type { ResizeAxis } from "./ResizeSeparator";
+
+export { VideoPreview } from "./VideoPreview";
