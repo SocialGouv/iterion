@@ -19,6 +19,6 @@ workflow walk_node_death:
   sandbox: none
   entry: warmup
   warmup -> pass
-  pass -> capped when vars.family == "claude"
+  pass -> capped when "vars.family == 'claude'"
   pass -> warmup as retry(2)
   capped -> done
