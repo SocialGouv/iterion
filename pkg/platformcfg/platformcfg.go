@@ -210,6 +210,9 @@ var botVarsInfraExact = map[string]bool{
 	// The schedule install's cron-line PATH bound (bytes): the process's
 	// own posture, never a bot variable.
 	"ITERION_SCHEDULE_PATH_MAX_BYTES": true,
+	// The schedule install's cron-line PATH bound (bytes): the process's
+	// own posture, never a bot variable.
+	"ITERION_SCHEDULE_PATH_MAX_BYTES": true,
 	// The pin list is the process's own: a stored record cannot choose
 	// which names it does not reach.
 	EnvBotVarsEnvPins:      true,
