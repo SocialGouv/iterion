@@ -2,7 +2,7 @@ import { DownloadIcon } from "@radix-ui/react-icons";
 
 import { artifactFileURL } from "@/api/runs";
 import type { PreviewState } from "@/components/Runs/usePreview";
-import { Dialog, Spinner } from "@/components/ui";
+import { Dialog, Spinner, VideoPreview } from "@/components/ui";
 import { formatBytes } from "@/lib/format";
 
 import type { ProducedFileKind } from "./fileKind";
@@ -14,6 +14,9 @@ interface Props {
   kind: ProducedFileKind;
   /** Human-readable description for review images; paths remain the fallback. */
   imageAlt?: string;
+  /** URL of a sibling WebVTT track, when the caller's media set carries
+   *  one. Without it the player states, visibly, that no captions exist. */
+  captionsHref?: string | null;
   onClose: () => void;
 }
 
@@ -24,6 +27,7 @@ export function ArtifactFilePreviewDialog({
   runId,
   kind,
   imageAlt,
+  captionsHref,
   onClose,
 }: Props) {
   const downloadHref = `${artifactFileURL(runId, preview.path)}?download=1`;
@@ -68,7 +72,12 @@ export function ArtifactFilePreviewDialog({
         </a>
       }
     >
-      <ArtifactPreviewBody preview={preview} kind={kind} imageAlt={imageAlt} />
+      <ArtifactPreviewBody
+        preview={preview}
+        kind={kind}
+        imageAlt={imageAlt}
+        captionsHref={captionsHref}
+      />
     </Dialog>
   );
 }
@@ -85,10 +94,13 @@ export function ArtifactPreviewBody({
   preview,
   kind,
   imageAlt,
+  captionsHref,
 }: {
   preview: PreviewState;
   kind: ProducedFileKind;
   imageAlt?: string;
+  /** URL of a sibling .vtt track, when the media set carries one. */
+  captionsHref?: string | null;
 }) {
   if (preview.loading) {
     return (
@@ -131,9 +143,12 @@ export function ArtifactPreviewBody({
     if (preview.contentType.startsWith("video/") || kind === "video") {
       return (
         <div className="flex items-center justify-center rounded bg-surface-0 p-3">
-          <video controls src={preview.blobURL} className="max-h-[70vh] max-w-full">
-            Your browser cannot play this video file.
-          </video>
+          <VideoPreview
+            src={preview.blobURL}
+            captionsHref={captionsHref}
+            label={imageAlt || preview.path}
+            className="max-h-[70vh] max-w-full"
+          />
         </div>
       );
     }

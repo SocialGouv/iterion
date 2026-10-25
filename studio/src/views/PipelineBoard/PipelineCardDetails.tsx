@@ -654,8 +654,7 @@ export default function PipelineCardDetails({
 
   // Drag the left edge. The pointer is tracked on window (not the 6px handle)
   // so a fast drag that outruns the cursor keeps resizing. The drawer is
-  // right-anchored, so moving LEFT widens it. The keyboard/screen-reader
-  // half of the splitter lives in the ResizeSeparator primitive.
+  // right-anchored, so moving LEFT widens it.
   const startResize = useCallback(
     (e: React.PointerEvent) => {
       e.preventDefault();

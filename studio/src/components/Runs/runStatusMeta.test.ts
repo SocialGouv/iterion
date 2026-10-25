@@ -4,6 +4,7 @@ import {
   isActiveStatus,
   labelForStatus,
   STATUS_VARIANT,
+  subRunStatusSummary,
 } from "./runStatusMeta";
 
 describe("labelForStatus", () => {
@@ -45,5 +46,25 @@ describe("isActiveStatus", () => {
     expect(isActiveStatus("failed")).toBe(false);
     expect(isActiveStatus("failed_resumable")).toBe(false);
     expect(isActiveStatus("cancelled")).toBe(false);
+  });
+});
+
+describe("subRunStatusSummary", () => {
+  it("enumerates a tally as text in the fixed status order (RGAA 3.1)", () => {
+    expect(subRunStatusSummary(["finished", "running", "failed", "finished"])).toBe(
+      "4 sub-runs: 1 running, 2 finished, 1 failed",
+    );
+  });
+
+  it("reads the same sentence whatever order the children arrived in", () => {
+    const a = subRunStatusSummary(["running", "failed", "queued"]);
+    const b = subRunStatusSummary(["queued", "failed", "running"]);
+    expect(a).toBe(b);
+    expect(a).toBe("3 sub-runs: 1 running, 1 queued, 1 failed");
+  });
+
+  it("singularises one child and stays bare with none", () => {
+    expect(subRunStatusSummary(["running"])).toBe("1 sub-run: 1 running");
+    expect(subRunStatusSummary([])).toBe("0 sub-runs");
   });
 });

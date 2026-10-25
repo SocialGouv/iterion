@@ -25,7 +25,15 @@ import {
   type RunFile,
   type RunFilesMode,
 } from "@/api/runs";
-import { Badge, Button, Dialog, EmptyState, IconButton, Spinner } from "@/components/ui";
+import {
+  Badge,
+  Button,
+  Dialog,
+  EmptyState,
+  IconButton,
+  Spinner,
+  VideoPreview,
+} from "@/components/ui";
 import { usePreview, type PreviewState } from "@/components/Runs/usePreview";
 import { formatBytes, formatRelative } from "@/lib/format";
 
@@ -62,6 +70,21 @@ function diffTargetFor(item: ProducedItem): DiffTarget {
     },
     mode: item.lifecycle === "committed" ? "branch" : "uncommitted",
   };
+}
+
+// siblingCaptionsHref finds the WebVTT track that accompanies a video
+// artifact — same directory, same stem, .vtt extension, within the
+// SAME run's artifact set — and returns its URL (RGAA 4.3). Null when
+// the set carries none: VideoPreview then says so, visibly.
+function siblingCaptionsHref(
+  item: ProducedItem,
+  sources: RunProducedSource[],
+): string | null {
+  if (item.source !== "artifact") return null;
+  const stem = item.path.replace(/\.[^./]+$/, "");
+  const src = sources.find((s) => s.runId === item.runId);
+  const vtt = (src?.artifacts ?? []).find((a) => a.path === `${stem}.vtt`);
+  return vtt ? artifactFileURL(item.runId, vtt.path) : null;
 }
 
 // Statuses past which the run's outputs no longer change — polling stops.
@@ -139,9 +162,14 @@ export function ProducedElements({ runIds, status }: Props) {
   // content type is generic (older stores serving application/octet-stream).
   const [previewRunId, setPreviewRunId] = useState("");
   const [previewKind, setPreviewKind] = useState<ProducedFileKind>("other");
+  // Captions track beside the video being previewed, when its run's
+  // artifact set carries one (RGAA 4.3) — resolved at open time from
+  // the fetched artifact lists.
+  const [previewCaptions, setPreviewCaptions] = useState<string | null>(null);
   const handlePreview = (item: ProducedItem) => {
     setPreviewRunId(item.runId);
     setPreviewKind(item.kind);
+    setPreviewCaptions(siblingCaptionsHref(item, sources));
     openPreview({ path: item.path, size: item.size ?? 0 }, item.runId);
   };
   // Worktree-change item being diffed (Monaco before/after), if any.
@@ -280,7 +308,11 @@ export function ProducedElements({ runIds, status }: Props) {
             </a>
           }
         >
-          <PreviewBody preview={preview} kind={previewKind} />
+          <PreviewBody
+            preview={preview}
+            kind={previewKind}
+            captionsHref={previewCaptions}
+          />
         </Dialog>
       ) : null}
     </section>
@@ -466,7 +498,16 @@ function ProducedRow({
 // the response Content-Type first, falling back to the extension-derived
 // `kind` — so a store serving application/octet-stream for a .wav/.mp4 still
 // gets a player (the browser sniffs the payload).
-function PreviewBody({ preview, kind }: { preview: PreviewState; kind: ProducedFileKind }) {
+function PreviewBody({
+  preview,
+  kind,
+  captionsHref,
+}: {
+  preview: PreviewState;
+  kind: ProducedFileKind;
+  /** URL of a sibling .vtt track, when the artifact set carries one. */
+  captionsHref?: string | null;
+}) {
   if (preview.loading) {
     return (
       <div className="flex h-48 items-center justify-center gap-2 text-xs text-fg-subtle">
@@ -504,9 +545,12 @@ function PreviewBody({ preview, kind }: { preview: PreviewState; kind: ProducedF
     if (preview.contentType.startsWith("video/") || kind === "video") {
       return (
         <div className="flex items-center justify-center rounded bg-surface-0 p-3">
-          <video controls src={preview.blobURL} className="max-h-[70vh] max-w-full">
-            Your browser cannot play this video file.
-          </video>
+          <VideoPreview
+            src={preview.blobURL}
+            captionsHref={captionsHref}
+            label={preview.path}
+            className="max-h-[70vh] max-w-full"
+          />
         </div>
       );
     }

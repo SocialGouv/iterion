@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { attachmentURL, fetchAttachment } from "@/api/runs";
 import { ImagePreviewDialog } from "@/views/PipelineBoard/ImagePreview";
-import { CopyButton, Spinner, VideoPreview } from "@/components/ui";
+import { CopyButton, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { formatBytes } from "@/lib/format";
 import type { GateInboundFileRef } from "@/lib/gateInbound";
@@ -162,9 +162,10 @@ export default function GateInboundFile({ runId, file }: Props) {
   if (blobURL && mime.startsWith("video/")) {
     return (
       <div className="space-y-1">
-        <video controls src={blobURL} className="max-h-64 max-w-full rounded">
-          Your browser cannot play this video file.
-        </video>
+        {/* Standalone attachments have no sibling file list to consult,
+            so VideoPreview states the no-captions fact visibly (RGAA
+            4.3). */}
+        <VideoPreview src={blobURL} className="max-h-64 max-w-full rounded" label={label} />
         {meta}
       </div>
     );

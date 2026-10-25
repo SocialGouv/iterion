@@ -4,7 +4,7 @@ import { ChevronRightIcon, DownloadIcon } from "@radix-ui/react-icons";
 
 import { getReviewScope, workspaceFileURL, type RunFile } from "@/api/runs";
 import FileDiffDialog from "@/components/Runs/FileDiffDialog";
-import { Dialog, InlineBanner, Spinner } from "@/components/ui";
+import { Dialog, InlineBanner, Spinner, VideoPreview } from "@/components/ui";
 
 import {
   classifyProducedFile,
@@ -44,6 +44,24 @@ function statusTone(status: string): string {
 
 function isMediaKind(kind: ProducedFileKind): boolean {
   return kind === "image" || kind === "audio" || kind === "video";
+}
+
+// siblingVttHref looks for a WebVTT track beside a review-scope video —
+// same directory, same stem, .vtt extension, within the reviewed range —
+// and returns its gated workspace URL (RGAA 4.3). Null when the range
+// carries none: VideoPreview then says so, visibly.
+function siblingVttHref(
+  runId: string,
+  path: string,
+  groups: { files: RunFile[] }[],
+  gate: number,
+): string | null {
+  const stem = path.replace(/\.[^./]+$/, "");
+  for (const g of groups) {
+    const vtt = g.files.find((f) => f.path === `${stem}.vtt`);
+    if (vtt) return workspaceFileURL(runId, vtt.path, { gate });
+  }
+  return null;
 }
 
 /**
@@ -252,6 +270,12 @@ export function ReviewScopePanel({ runId, live, pauseKey }: Props) {
           runId={runId}
           file={mediaFile}
           gate={data.gate_seq}
+          captionsHref={siblingVttHref(
+            runId,
+            mediaFile.path,
+            data.groups,
+            data.gate_seq,
+          )}
           onClose={() => setMediaFile(null)}
         />
       ) : null}
@@ -267,11 +291,14 @@ function WorkspaceMediaDialog({
   runId,
   file,
   gate,
+  captionsHref,
   onClose,
 }: {
   runId: string;
   file: RunFile;
   gate: number;
+  /** URL of a sibling .vtt track in the reviewed range, when one exists. */
+  captionsHref?: string | null;
   onClose: () => void;
 }) {
   const kind = classifyProducedFile(file.path);
@@ -345,17 +372,16 @@ function WorkspaceMediaDialog({
         </div>
       ) : kind === "video" ? (
         <div className="flex items-center justify-center rounded bg-surface-0 p-3">
-          <video
-            controls
-            autoPlay
+          <VideoPreview
             src={src}
+            autoPlay
+            captionsHref={captionsHref}
+            label={file.path}
             className="max-h-[70vh] max-w-full"
             onError={() =>
               setLoadError("Could not load this video file for playback.")
             }
-          >
-            Your browser cannot play this video file.
-          </video>
+          />
         </div>
       ) : (
         <div className="flex h-32 items-center justify-center gap-2 text-xs text-fg-subtle">
