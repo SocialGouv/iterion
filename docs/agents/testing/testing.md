@@ -17,7 +17,6 @@ change needs.
 |---|---|---|---|
 | **deterministic** | the real seams, credential-free, stub executor | free | **every push and PR** (`go test ./e2e/...` + `-race`, `mongo-conformance`, `nats-conformance`, `cloud-e2e` on kind) |
 
-| **studio-ui** | the real binary + the embedded SPA, real chromium | free | the **studio-e2e-advisory** workflow (Mondays 06:00 UTC) — 13 files / 39 specs; the local task skips loudly with the install hint |
 | **live** (`-tags live`) | what a real harness actually does | real LLM spend | only when a human or an agent asks — **no CI job carries the tag** |
 
 The free layer carries **361 of the 387 rows** of
