@@ -17,9 +17,9 @@ interactive sessions).
   `local_map_*` tools of the iterion MCP server (`engine` in this repo's
   `.mcp.json`); committed indexes in [`docs/references/`](docs/references/map-packages.md).
 - **Semantic** — how does X work, which docs explain this code: graphify —
-  `graphify-out/` lives in the operator's primary checkout (linked worktrees
-  read it there); `query_graph` narrow, then `get_node`/`get_neighbors` on
-  what it names; the raw dump truncates ([graph](docs/agents/orientation/graphify.md)).
+  the graph lives in the operator's primary checkout; `query_graph` narrow,
+  then `get_node`/`get_neighbors` on what it names
+  ([graph](docs/agents/orientation/graphify.md)).
 
 ## Setup and the gate you owe
 
