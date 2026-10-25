@@ -108,6 +108,10 @@ vars:
   ## target branch; with none, "clean" says nothing and a forge merges an armed
   ## PR straight away.
   arm_automerge: bool = false
+  ## Preserve another actor's deliberate arming, even on a refusal. Ownership
+  ## is enabledBy.login versus the forge_token's viewer.login; an unknown
+  ## owner is preserved too. False restores the historical takeover policy.
+  respect_human_arming: bool = true
   ## Merge method asked for when arming. Must be one the repo allows.
   automerge_method: string [enum: "squash", "merge", "rebase"] = "squash"
   ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER at
@@ -1858,6 +1862,7 @@ tool arm_automerge:
     import json, os, re, urllib.request, urllib.error
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     enabled = {{vars.arm_automerge}}
+    respect_human_arming = {{vars.respect_human_arming}}
     method = {{vars.automerge_method}}
     pr_url = {{input.pr_url}}
     verdict = {{input.verdict}}
@@ -1875,14 +1880,17 @@ tool arm_automerge:
     # Set once a prior arming has been taken down. Every exit runs through
     # out(), so the note reaches the reason whatever path refuses afterwards -
     # a PR left bare must never be silent about it.
-    state_note = {"disarmed": False, "dequeued": False, "stuck": ""}
+    state_note = {"disarmed": "", "dequeued": False, "stuck": "", "preserved": ""}
 
     def out(armed, reason=""):
         reason = reason or ""
         notes = []
+        if state_note["disarmed"]:
+            notes.append("the prior auto-merge arming by " + state_note["disarmed"] +
+                         " was disarmed" + ("" if armed else " and NOT replaced"))
+        if state_note["preserved"]:
+            notes.append(state_note["preserved"])
         if not bool(armed):
-            if state_note["disarmed"]:
-                notes.append("the prior auto-merge arming was disarmed and NOT replaced")
             if state_note["dequeued"]:
                 notes.append("the pull request was removed from the merge queue")
             # A commitment this run could NOT take down is the one the reader
@@ -1890,8 +1898,9 @@ tool arm_automerge:
             if state_note["stuck"]:
                 notes.append("STILL STANDING: " + state_note["stuck"])
         if notes:
-            reason = (reason + " | " if reason else "") + "; ".join(notes) + \
-                     " - re-arm by hand if it was wanted"
+            reason = (reason + " | " if reason else "") + "; ".join(notes)
+        if not bool(armed) and (state_note["disarmed"] or state_note["dequeued"]):
+            reason += " - re-arm by hand if it was wanted"
         print(json.dumps({"armed": bool(armed), "reason": reason}))
         raise SystemExit(0)
 
@@ -1901,10 +1910,10 @@ tool arm_automerge:
         out(False, "arm_automerge is off (default)")
 
     # The verdict and gate checks below no longer exit on the spot. A refusal
-    # has to DISARM what an earlier pass armed: a hold says this revision must
-    # not merge, and an arming outlives the run that placed it - the forge goes
-    # on waiting for the checks either way. So the reason is computed here and
-    # acted on once the forge is reachable.
+    # has to DISARM what an earlier pass under our identity armed: a hold says
+    # this revision must not merge, and an arming outlives the run that placed
+    # it - the forge goes on waiting for the checks either way. So the reason
+    # is computed here and acted on once the forge is reachable.
     refusal = ""
     if s(verdict) not in ("clean", "committed"):
         refusal = "verdict " + (s(verdict) or "(empty)") + " is not green"
@@ -1972,9 +1981,10 @@ tool arm_automerge:
     # whole query into something the API rejects.
     at = chr(36)
     q = ("query(@owner: String!, @name: String!, @number: Int!) { "
+         "viewer { login } "
          "repository(owner: @owner, name: @name) { "
          "pullRequest(number: @number) { id headRefOid baseRefName mergeable mergeStateStatus "
-         "autoMergeRequest { enabledAt } mergeQueueEntry { id } } "
+         "autoMergeRequest { enabledAt enabledBy { login } } mergeQueueEntry { id } } "
          "} }").replace("@", at)
     # A non-null mergeQueue on the PR's base branch is what makes this a
     # queue-protected repo: direct merges are rejected there, enqueueing is
@@ -1995,7 +2005,8 @@ tool arm_automerge:
     # enabledAt, enabledBy, mergeMethod and the commit message - and NOT
     # expectedHeadOid. "Already armed" therefore says nothing about which commit
     # the forge will merge. The only arming whose pin is known is the one this
-    # run places, so an existing one is REPLACED rather than trusted.
+    # run places. Replace only an arming we own, unless the operator explicitly
+    # opts into taking over another actor's decision (respect_human_arming=false).
     disarm_mut = ("mutation(@id: ID!) { "
                   "disablePullRequestAutoMerge(input: { pullRequestId: @id }) "
                   "{ clientMutationId } }").replace("@", at)
@@ -2017,8 +2028,12 @@ tool arm_automerge:
                    "enqueuePullRequest(input: { pullRequestId: @id, expectedHeadOid: @oid }) "
                    "{ clientMutationId } }").replace("@", at)
 
+    bot_login = ""
+
     def read_pr():
+        global bot_login
         data = graphql(q, {"owner": owner, "name": repo, "number": num})
+        bot_login = s((data.get("viewer") or {}).get("login"))
         return ((data.get("repository") or {}).get("pullRequest") or {})
 
     def base_has_merge_queue(pr):
@@ -2078,7 +2093,8 @@ tool arm_automerge:
         # cannot name what it read - so the current head may well still be the
         # audited one and nothing is taken down. The two BELOW are the opposite:
         # the head is demonstrably NOT what was audited, so any commitment
-        # standing on this PR would land an unaudited revision. Those disarm.
+        # standing on this PR would land an unaudited revision. Those stand
+        # down within the ownership policy (a human decision is preserved).
         if not same_commit(gated, mine):
             stand_down(pr)
             out(False, "the gate landed on " + gated[:12] + " but this run audited " +
@@ -2091,14 +2107,22 @@ tool arm_automerge:
 
     def merge_now(pr, why):
         gated = vouched_sha(pr, "merge")
+        # A re-read after a refused enable may observe a maintainer's NEW
+        # arming. Mutation W3/re-read: drop this check -> merge their decision.
+        if pr.get("autoMergeRequest") and preserve_arming(pr):
+            out(True)
         graphql(merge_mut, {"id": pr.get("id"), "method": s(method).upper() or "SQUASH",
                             "oid": gated})
-        out(True, why)
+        out(True, superseding_reason(pr, why))
 
     def enqueue_now(pr, why):
         gated = vouched_sha(pr, "enqueue")
+        # Same ownership check on the queue fallback, after vouching the head.
+        # Mutation W3/re-read: drop this check -> enqueue another actor's arming.
+        if pr.get("autoMergeRequest") and preserve_arming(pr):
+            out(True)
         graphql(enqueue_mut, {"id": pr.get("id"), "oid": gated})
-        out(True, why)
+        out(True, superseding_reason(pr, why))
 
     # Ready to merge means every required check the forge knows about is
     # already satisfied — the state auto-merge exists to wait for.
@@ -2106,16 +2130,48 @@ tool arm_automerge:
         return s(pr.get("mergeStateStatus")).upper() == "CLEAN" and \
                s(pr.get("mergeable")).upper() == "MERGEABLE"
 
-    def disarm(node_id):
+    def arming_owner(pr):
+        return s(((pr.get("autoMergeRequest") or {}).get("enabledBy") or {}).get("login"))
+
+    def superseding_reason(pr, why):
+        # A successful merge/enqueue can consume an arming observed on the
+        # fallback read. Name it even when no explicit disarm was needed.
+        if pr.get("autoMergeRequest"):
+            return why + " | superseded auto-merge arming by " + (arming_owner(pr) or "(unknown owner)")
+        return why
+
+    def preserve_arming(pr):
+        # A missing launch var renders null: keep the historical policy for
+        # those old inputs. New launches receive the declared true default.
+        # Mutation W4: ignore this opt-out -> legacy takedowns disappear.
+        if not bool(respect_human_arming):
+            return False
+        login = arming_owner(pr)
+        # Mutation W2: remove this ownership test -> the bot cannot stand down
+        # its own arming. Missing identity is NOT proof of ownership.
+        if login and bot_login and login.casefold() == bot_login.casefold():
+            return False
+        state_note["preserved"] = ("auto-merge arming by " + (login or "(unknown owner)") +
+                                   " preserved: respect_human_arming=true; "
+                                   "this decision is not owned by this bot")
+        return True
+
+    def disarm(pr):
         # Records the takedown BEFORE claiming it: out() appends the note to
         # every later refusal, and a disarm that half-succeeded must not read
         # as one that never happened.
-        graphql(disarm_mut, {"id": node_id})
-        state_note["disarmed"] = True
+        login = arming_owner(pr) or "(unknown owner)"
+        try:
+            graphql(disarm_mut, {"id": pr.get("id")})
+        except Exception as e:
+            state_note["stuck"] = "the auto-merge arming by " + login + \
+                                  " could not be removed (" + str(e)[:90] + ")"
+            raise
+        state_note["disarmed"] = login
 
     def stand_down(pr):
-        # ONE place that removes every standing commitment to merge this PR:
-        # the arming AND the queue entry. Two, because the forge nulls
+        # ONE place that stands down commitments within our mandate:
+        # the owned arming AND the queue entry. Two, because the forge nulls
         # autoMergeRequest once it moves an armed PR into the queue - taking
         # only the arming down there is a no-op while the queue still merges.
         # Best-effort and never masks the refusal it precedes: what could not
@@ -2123,11 +2179,12 @@ tool arm_automerge:
         node_id = pr.get("id")
         if not node_id:
             return
-        if pr.get("autoMergeRequest"):
+        # Mutation W1: drop `and not preserve_arming(pr)` -> human arming dies.
+        if pr.get("autoMergeRequest") and not preserve_arming(pr):
             try:
-                disarm(node_id)
-            except Exception as e:
-                state_note["stuck"] = "the arming could not be removed (" + str(e)[:90] + ")"
+                disarm(pr)
+            except Exception:
+                pass  # disarm recorded the owner and the failed takedown
         if pr.get("mergeQueueEntry"):
             try:
                 graphql(dequeue_mut, {"id": node_id})
@@ -2166,11 +2223,16 @@ tool arm_automerge:
         if pr.get("mergeQueueEntry"):
             out(True, "already in the merge queue")
         # An arming already on the PR is opaque - its expectedHeadOid cannot be
-        # read back - so it is replaced by one this run places and can vouch
-        # for, never accepted. Disarm first: enablePullRequestAutoMerge on an
-        # armed PR is refused, and re-arming is the whole point.
+        # read back - so an owned one is replaced by one this run can vouch
+        # for. Another actor's decision survives when respect_human_arming is
+        # on; reporting it as standing does not certify its pin. Disarm first:
+        # enablePullRequestAutoMerge on an armed PR is refused, and re-arming
+        # is the whole point.
         if pr.get("autoMergeRequest"):
-            disarm(node_id)
+            # Mutation W3: drop this early exit -> a human's arming is replaced.
+            if preserve_arming(pr):
+                out(True)
+            disarm(pr)
         # Arm FIRST, whatever the state. On a queue repo this is "merge when
         # ready" and covers CLEAN too; on a plain repo a CLEAN PR is refused
         # ("clean status") and falls through to the pinned direct merge. The

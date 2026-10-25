@@ -31,6 +31,14 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		t.Skip("python3 not on PATH")
 	}
 	script := toolScript(t, "dep-update-guard/main.bot", "arm_automerge")
+	// Mutation: change/remove the declaration's true default. Old node inputs
+	// may omit the var, but every NEW launch must respect the other actor.
+	t.Run("new launches respect human arming by default", func(t *testing.T) {
+		v := compilePlanPhaseBot(t, "dep-update-guard").Vars["respect_human_arming"]
+		if v == nil || !v.HasDefault || v.Default != true {
+			t.Fatalf("respect_human_arming must default to true, got %+v", v)
+		}
+	})
 
 	// The REST merge endpoint merges whatever the state; it must not appear at
 	// all. Asserted on each marker on its own — a conjunction with "does it
@@ -54,6 +62,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 
 	// The forge's own words when a PR has nothing left to wait for.
 	const cleanRefusal = "Pull request Pull request is in clean status"
+	const botLogin = "acme-vetty[bot]"
 
 	// blocked is the state where checks are still running: auto-merge is
 	// exactly what it is for.
@@ -198,25 +207,42 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 					"data": map[string]any{"repository": map[string]any{"mergeQueue": mq}},
 				})
 			default:
+				// D1 mutation: remove enabledBy { login } (or viewer { login })
+				// from the QUERY, leaving the explanatory comments intact. A
+				// stub that returns unqueried identity would hide that regression.
+				for _, field := range []string{
+					`autoMergeRequest\s*\{[^}]*enabledBy\s*\{\s*login\s*\}`,
+					`viewer\s*\{\s*login\s*\}`,
+				} {
+					if !regexp.MustCompile(field).MatchString(body.Query) {
+						t.Errorf("PR read does not request arming ownership (%s): %s", field, body.Query)
+					}
+				}
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"data": map[string]any{"repository": map[string]any{"pullRequest": state}},
+					"data": map[string]any{
+						"viewer":     map[string]any{"login": botLogin},
+						"repository": map[string]any{"pullRequest": state},
+					},
 				})
 			}
 		}))
 		defer srv.Close()
 
 		base := map[string]string{
-			"{{vars.arm_automerge}}":       "True",
-			"{{vars.automerge_method}}":    `"squash"`,
-			"{{input.pr_url}}":             `"https://github.com/acme/widgets/pull/7"`,
-			"{{input.verdict}}":            `"committed"`,
-			"{{input.gate_posted}}":        "True",
-			"{{input.gate_state}}":         `"success"`,
-			"{{input.gate_sha}}":           `"d34db33f"`,
-			"{{input.audited_sha}}":        `"d34db33f"`,
-			"{{input.committed_sha}}":      `""`,
-			"{{vars.gate_enabled}}":        "True",
-			"{{secrets.forge_token.path}}": `"ghs_test"`,
+			"{{vars.arm_automerge}}": "True",
+			// Legacy node input: missing refs render as null (the Python shim
+			// maps it to None). W1-W3 override this with the new-launch default.
+			"{{vars.respect_human_arming}}": "null",
+			"{{vars.automerge_method}}":     `"squash"`,
+			"{{input.pr_url}}":              `"https://github.com/acme/widgets/pull/7"`,
+			"{{input.verdict}}":             `"committed"`,
+			"{{input.gate_posted}}":         "True",
+			"{{input.gate_state}}":          `"success"`,
+			"{{input.gate_sha}}":            `"d34db33f"`,
+			"{{input.audited_sha}}":         `"d34db33f"`,
+			"{{input.committed_sha}}":       `""`,
+			"{{vars.gate_enabled}}":         "True",
+			"{{secrets.forge_token.path}}":  `"ghs_test"`,
 		}
 		for k, v := range subs {
 			base[k] = v
@@ -489,7 +515,207 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		}
 	})
 
-	// An arming placed by an EARLIER run — or by a human — cannot be trusted,
+	armedBy := func(login string) map[string]any {
+		return withState(map[string]any{"autoMergeRequest": map[string]any{
+			"enabledAt": "2026-09-22T09:00:00Z", "enabledBy": map[string]any{"login": login},
+		}})
+	}
+	mutations := func(calls []call) []string {
+		var names []string
+		for _, c := range calls {
+			for _, name := range []string{"disablePullRequestAutoMerge", "enablePullRequestAutoMerge", "dequeuePullRequest", "enqueuePullRequest", "mergePullRequest"} {
+				if strings.Contains(c.query, name) {
+					names = append(names, name)
+				}
+			}
+		}
+		return names
+	}
+	// D1/log mutation: replace state_note["disarmed"] = login with an unknown
+	// owner (or omit the owner from the preservation/superseding reason).
+	// The action still happens; these assertions must independently go red.
+	assertNamed := func(t *testing.T, res map[string]any, login, action string) {
+		t.Helper()
+		reason, _ := res["reason"].(string)
+		if !strings.Contains(reason, login) || !strings.Contains(reason, action) {
+			t.Errorf("reason must name %q and %q, got %q", login, action, reason)
+		}
+	}
+
+	// W1 mutation: remove `and not preserve_arming(pr)` from stand_down.
+	// The PR starts armed; ANY mutation would destroy or supersede that human
+	// decision. Exercise both verdict refusals and the vouched_sha refusals.
+	for _, tc := range []struct {
+		name string
+		subs map[string]string
+		head string
+	}{
+		{"hold", map[string]string{"{{input.verdict}}": `"hold_security"`}, ""},
+		{"red gate", map[string]string{"{{input.gate_state}}": `"failure"`}, ""},
+		{"missing gate", map[string]string{"{{input.gate_posted}}": "False"}, ""},
+		{"foreign gate sha", map[string]string{"{{input.gate_sha}}": `"b33fb33f"`}, ""},
+		{"moved head", nil, "b33fb33f"},
+	} {
+		t.Run("W1 human arming survives stand_down/"+tc.name, func(t *testing.T) {
+			subs := map[string]string{"{{vars.respect_human_arming}}": "True"}
+			for k, v := range tc.subs {
+				subs[k] = v
+			}
+			pr := armedBy("maintainer-alice")
+			if tc.head != "" {
+				pr["headRefOid"] = tc.head
+			}
+			res, calls, _ := runWith(t, subs, pr, "", nil)
+			if res["armed"] != false || len(mutations(calls)) != 0 {
+				t.Fatalf("a refusal must preserve the human arming without claiming its own: %v, mutations=%v", res, mutations(calls))
+			}
+			assertNamed(t, res, "maintainer-alice", "preserved")
+			if strings.Contains(res["reason"].(string), "re-arm by hand") {
+				t.Error("an arming left standing must not ask its owner to re-arm it")
+			}
+		})
+	}
+
+	// W2 mutation: delete the login == bot_login return in preserve_arming.
+	// Protecting everyone would pass W1 but leave the bot's own arming alive.
+	t.Run("W2 bot arming still stands down", func(t *testing.T) {
+		res, calls, _ := runWith(t, map[string]string{
+			"{{vars.respect_human_arming}}": "True", "{{input.verdict}}": `"hold_security"`,
+		}, armedBy(botLogin), "", nil)
+		if got := strings.Join(mutations(calls), ","); got != "disablePullRequestAutoMerge" || res["armed"] != false {
+			t.Fatalf("want exactly the usual disarm, got %s (%v)", got, res)
+		}
+		assertNamed(t, res, botLogin, "disarmed and NOT replaced")
+	})
+
+	// W3 mutation: remove the preserve_arming early exit in the arm path.
+	// The old disarm-then-arm sequence must not replace the maintainer's choice.
+	t.Run("W3 human arming survives the arm path", func(t *testing.T) {
+		res, calls, _ := runWith(t, map[string]string{"{{vars.respect_human_arming}}": "True"},
+			armedBy("maintainer-alice"), "", nil)
+		if res["armed"] != true || len(mutations(calls)) != 0 {
+			t.Fatalf("want the existing arming standing, no mutation: %v, mutations=%v", res, mutations(calls))
+		}
+		assertNamed(t, res, "maintainer-alice", "preserved")
+	})
+
+	// W3/re-read mutation: remove preserve_arming in merge_now or enqueue_now.
+	// An enable refusal can mean someone armed between reads: the owner now
+	// OBSERVED must survive the fallback too. W4 controls keep the old actions.
+	for _, queue := range []bool{false, true} {
+		fallback, armErr := "mergePullRequest", cleanRefusal
+		if queue {
+			fallback, armErr = "enqueuePullRequest", "Pull request already enabled for auto merge"
+		}
+		for _, policy := range []string{"True", "False", "null"} {
+			for _, login := range []string{"maintainer-alice", botLogin} {
+				t.Run("W3 re-read/"+fallback+"/"+policy+"/"+login, func(t *testing.T) {
+					after := armedBy(login)
+					if !queue {
+						after["mergeStateStatus"] = "CLEAN"
+					}
+					res, calls, _ := runWith(t, map[string]string{"{{vars.respect_human_arming}}": policy},
+						blocked, armErr, after, queue)
+					want := "enablePullRequestAutoMerge"
+					if policy != "True" || login == botLogin {
+						want += "," + fallback
+						assertNamed(t, res, login, "superseded")
+					} else {
+						assertNamed(t, res, login, "preserved")
+					}
+					if got := strings.Join(mutations(calls), ","); got != want || res["armed"] != true {
+						t.Fatalf("want %s, got %s (%v)", want, got, res)
+					}
+				})
+			}
+		}
+		t.Run("W3 re-read after own disarm/"+fallback, func(t *testing.T) {
+			after := armedBy("maintainer-alice")
+			after["mergeStateStatus"] = "CLEAN"
+			res, calls, _ := runWith(t, map[string]string{"{{vars.respect_human_arming}}": "True"},
+				armedBy(botLogin), armErr, after, queue)
+			if res["armed"] != true || strings.Join(mutations(calls), ",") != "disablePullRequestAutoMerge,enablePullRequestAutoMerge" {
+				t.Fatalf("want own disarm followed by preserving the new human arming: %v, %v", res, mutations(calls))
+			}
+			assertNamed(t, res, botLogin, "was disarmed")
+			assertNamed(t, res, "maintainer-alice", "preserved")
+			if strings.Contains(res["reason"].(string), "this run's merge commitment") {
+				t.Fatalf("this run placed no new commitment: %v", res)
+			}
+		})
+		// The ownership guard must not move BEFORE vouching: a head that
+		// changed is still refused, with the human arming preserved and named.
+		t.Run("W3 re-read moved head/"+fallback, func(t *testing.T) {
+			after := armedBy("maintainer-alice")
+			after["headRefOid"], after["mergeStateStatus"] = "b33fb33f", "CLEAN"
+			res, calls, _ := runWith(t, map[string]string{"{{vars.respect_human_arming}}": "True"},
+				blocked, armErr, after, queue)
+			if res["armed"] != false || strings.Join(mutations(calls), ",") != "enablePullRequestAutoMerge" {
+				t.Fatalf("a moved head must be refused without taking over the human arming: %v, %v", res, mutations(calls))
+			}
+			assertNamed(t, res, "maintainer-alice", "preserved")
+			if !strings.Contains(res["reason"].(string), "branch moved") {
+				t.Fatalf("missing moved-head refusal: %v", res)
+			}
+		})
+	}
+
+	// The same ownership comparison on the primary arm path, case-insensitive.
+	t.Run("bot arming is replaced with respect enabled", func(t *testing.T) {
+		login := strings.ToUpper(botLogin)
+		res, calls, _ := runWith(t, map[string]string{"{{vars.respect_human_arming}}": "True"}, armedBy(login), "", nil)
+		if got := strings.Join(mutations(calls), ","); got != "disablePullRequestAutoMerge,enablePullRequestAutoMerge" || res["armed"] != true {
+			t.Fatalf("want own arming replaced, got %s (%v)", got, res)
+		}
+		assertNamed(t, res, login, "was disarmed")
+	})
+
+	// W4 mutations: remove the respect_human_arming opt-out (false fails), or
+	// treat null as true (the absent-input row fails). Assert the exact ordered
+	// mutations, including a failed replacement, and name WHO was displaced.
+	for _, policy := range []string{"False", "null"} {
+		for _, path := range []string{"stand_down", "arm", "failed replacement"} {
+			t.Run("W4 legacy policy/"+policy+"/"+path, func(t *testing.T) {
+				subs := map[string]string{"{{vars.respect_human_arming}}": policy}
+				want, armed, armErr := "disablePullRequestAutoMerge,enablePullRequestAutoMerge", true, ""
+				switch path {
+				case "stand_down":
+					subs["{{input.verdict}}"] = `"hold_security"`
+					want, armed = "disablePullRequestAutoMerge", false
+				case "failed replacement":
+					armErr, armed = "Auto merge is not allowed for this repository", false
+				}
+				res, calls, _ := runWith(t, subs, armedBy("maintainer-alice"), armErr, nil)
+				if got := strings.Join(mutations(calls), ","); got != want || res["armed"] != armed {
+					t.Fatalf("want %s and armed=%v, got %s (%v)", want, armed, got, res)
+				}
+				assertNamed(t, res, "maintainer-alice", "was disarmed")
+			})
+		}
+	}
+
+	// Ownership is the forge identity, not a hard-coded App or a [bot] suffix.
+	// Mutation: classify every [bot] as ours, or compare empty owners as ours.
+	for _, login := range []string{"another-app[bot]", ""} {
+		for _, verdict := range []string{"clean", "hold_security"} {
+			t.Run("external or unknown arming survives/"+login+"/"+verdict, func(t *testing.T) {
+				res, calls, _ := runWith(t, map[string]string{
+					"{{vars.respect_human_arming}}": "True", "{{input.verdict}}": `"` + verdict + `"`,
+				}, armedBy(login), "", nil)
+				if len(mutations(calls)) != 0 {
+					t.Fatalf("unknown/external ownership permits no takeover, got %v", mutations(calls))
+				}
+				ownerLabel := login
+				if ownerLabel == "" {
+					ownerLabel = "(unknown owner)"
+				}
+				assertNamed(t, res, ownerLabel, "preserved")
+			})
+		}
+	}
+
+	// Under the legacy policy an arming placed by an earlier run — or by a
+	// human — cannot be trusted,
 	// because its pin cannot be read: `AutoMergeRequest` exposes enabledAt,
 	// enabledBy, mergeMethod and the commit message, and NOT expectedHeadOid.
 	// So "already armed" says nothing about which commit the forge will merge.

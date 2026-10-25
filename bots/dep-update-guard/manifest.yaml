@@ -2,6 +2,13 @@ name: dep-update-guard
 display_name: Vetty
 icon: 💂
 version: 2.11.0
+## Arming ownership (#1634): `respect_human_arming` is declared in main.bot's
+## vars, like `arm_automerge`, and defaults to true. Read enabledBy.login and
+## the forge_token's viewer.login together; preserve another actor's arming
+## on both refusal and replacement, naming that decision in the reason.
+## Unknown ownership is preserved too. False (or null on old node inputs)
+## keeps the historical disarm/replace policy, now naming the displaced owner.
+## This bounds the 2.9.x takeover policy below; merge-queue entries are unchanged.
 ## 2.11.0 — the delivery hold needs an ANSWERED refusal, and nothing else can
 ## reach it. Three rounds of hardening each found one more transport shape
 ## published as a blocking verdict on a third party's pull request: a
