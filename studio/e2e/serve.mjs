@@ -84,6 +84,11 @@ const childEnv = {
   // Keep the seeded runs' backend resolution offline: nothing in the
   // fixtures calls an LLM, and no host credential must leak into a run.
   ITERION_DEFAULT_BACKEND: "claw",
+  // Model labels and unknown prices come from the curated offline tables.
+  // Override inherited refresh/cache settings for BOTH registry layers:
+  // neither the network nor an operator's cached prices may change a spec.
+  ITERION_MODEL_SPECS: "off",
+  CLAW_DISABLE_LIVE_REGISTRY: "1",
   ...(copiDemoEnabled
     ? {
         // The demo's generated bot exercises the real Claw/OpenAI adapter

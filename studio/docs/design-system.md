@@ -139,7 +139,7 @@ Use [`ui/EmptyState`](../src/components/ui/EmptyState.tsx) for **every list, tre
 
 ```tsx
 {error ? <EmptyState message={<span className="text-danger">{error}</span>} />
- : loading ? <EmptyState message="Loading…" />
+ : loading ? <div className="flex items-center gap-2"><Spinner /> <span>Loading…</span></div>
  : items.length === 0 ? <EmptyState message="No commits yet" />
  : <List items={items} />}
 ```
@@ -313,7 +313,7 @@ pnpm -F iterion-studio test
 
 The jsdom environment is opt-in per file via `// @vitest-environment jsdom` so pure-function tests stay on the fast Node runner.
 
-Run a manual axe browser-extension sweep on `/`, `/editor`, `/runs/:id`, `/board`, `/dispatcher`, `/settings` before any large UI release — jsdom can't model the canvas, the WebSocket flows, or the full layout, so the unit suite is a floor not a ceiling.
+Run a manual axe browser-extension sweep on `/`, `/editor`, `/runs/:id`, `/board`, `/dispatcher` (application settings are a dialog, not a route) before any large UI release — jsdom can't model the canvas, the WebSocket flows, or the full layout, so the unit suite is a floor not a ceiling.
 
 Open items still requiring human / browser verification:
 - Light-mode canvas variants on `softColor(color, 10)` backgrounds (contrast).

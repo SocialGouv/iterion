@@ -1,0 +1,68 @@
+# The studio's Playwright e2e advisory (studio/e2e/specs, 13 files / 39
+# tests): serve the real iterion binary with the embedded SPA, run every
+# spec against it on the pinned chromium. No model in the loop.
+#
+# ADVISORY on purpose: drift fails THIS job, never a merge — the nightly
+# cron is the drumbeat that surfaces it (a green run means the studio e2e
+# suite still runs and passes on a normal machine).
+name: studio-e2e-advisory
+
+on:
+  schedule:
+    # Mondays 06:00 UTC — after the a11y advisory, before the European
+    # workday.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  advisory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install the Playwright chromium
+        run: corepack enable && cd studio && npx playwright install --with-deps chromium
+
+      - name: Build the iterion binary with the studio SPA embedded
+        # Mirror of test-e2e's build: the vite bundle IS the served SPA.
+        run: |
+          corepack enable
+          cd studio
+          pnpm install --frozen-lockfile --prefer-offline
+          pnpm exec vite build
+          rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
+          cp -r dist/* ../pkg/server/static/
+          cd ..
+          CGO_ENABLED=0 go build -o iterion ./cmd/iterion
+          echo "ITERION_BIN=$PWD/iterion" >> "$GITHUB_ENV"
+
+      - name: Run the studio e2e suite
+        id: e2e
+        continue-on-error: false
+        run: |
+          corepack enable
+          cd studio
+          pnpm exec playwright test
+
+      - name: Upload the Playwright report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: studio-e2e-report
+          path: studio/playwright-report/
+          retention-days: 14

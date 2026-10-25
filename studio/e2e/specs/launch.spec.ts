@@ -82,9 +82,13 @@ test("engine options expose the workflow's own LLM node for retargeting", async 
 // is most launches. Offline the spec aggregator contributes nothing, so the
 // assertion is on the curated context window and on the source that says the
 // answer can still improve; the published price needs a fetched table.
-test("the per-node model picker captions its model's capabilities", async ({
+test("the fallback section captions its model's capabilities", async ({
   page,
 }) => {
+  // The per-node model picker dropped ModelCapsCaption in 6eea0ce899 (the
+  // product chose the cleaner picker); the caption survives on the fallback
+  // section, which renders for a node whose model has no per-node override.
+  // This spec pins the caption where it actually renders.
   await page.goto(LAUNCH);
 
   await page.getByRole("button", { name: /^Engine options/ }).click();

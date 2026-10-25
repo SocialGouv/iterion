@@ -162,6 +162,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 | [architecture.md](architecture.md) | End-to-end compiler, runtime, backend, persistence, control-plane, automation, and extension architecture. |
 | [development.md](development.md) | Reproducible toolchain, task graph, tests, and repository structure. |
 | [e2e_coverage.md](e2e_coverage.md) | Stubbed end-to-end coverage map. |
+| [e2e-coverage-matrix.md](e2e-coverage-matrix.md) | Feature coverage inventory, Studio browser advisory lane, skip semantics and regression witnesses. |
 | [live-e2e-coverage.md](live-e2e-coverage.md) | Credentialed/live E2E coverage and compile guards. |
 
 ## Diagrams

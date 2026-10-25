@@ -78,7 +78,9 @@ test("run console renders the executed graph, log and outcome", async ({
   // routing decisions rather than scrolling — those are the two edges the
   // engine actually selected (the `fail` edge never fired).
   await page.getByRole("tab", { name: "Logs" }).click();
-  await expect(page.getByText("Run finished")).toBeVisible();
+  // exact: the log line is "Run finished"; the session-closed card renders
+  // "Run finished. Pick a node above..." — a bare text match hits both.
+  await expect(page.getByText("Run finished", { exact: true })).toBeVisible();
   await page.getByRole("textbox", { name: "Search log…" }).fill("Edge:");
   await expect(page.getByText("Edge:  → decide")).toBeVisible();
   await expect(page.getByText("Edge:  → done (condition: ok)")).toBeVisible();

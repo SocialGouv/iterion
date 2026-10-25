@@ -16,6 +16,8 @@ change needs.
 | layer | proves | cost | runs |
 |---|---|---|---|
 | **deterministic** | the real seams, credential-free, stub executor | free | **every push and PR** (`go test ./e2e/...` + `-race`, `mongo-conformance`, `nats-conformance`, `cloud-e2e` on kind) |
+
+| **studio-ui** | the real iterion binary serving the embedded SPA, real chromium | free | the **studio-e2e-advisory** workflow (scheduled Mondays 06:00 UTC + manual dispatch) — 13 files / 39 Playwright specs under `studio/e2e/specs/`; the local task is `task test:e2e:ui`, which **skips loudly** when no chromium is installed (the skip names the install command; a bare "skipped" means nothing ran) |
 | **live** (`-tags live`) | what a real harness actually does | real LLM spend | only when a human or an agent asks — **no CI job carries the tag** |
 
 The free layer carries **361 of the 387 rows** of

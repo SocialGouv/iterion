@@ -1,21 +1,24 @@
-// Exits 0 when a Playwright chromium build is present, 1 otherwise.
-// `task test:e2e:ui` uses it to skip cleanly (with the install hint)
-// instead of failing on a machine that never ran `playwright install`.
+// 0: Chromium is installed; 77: an explicit local skip; 1: missing in CI.
+// Only 77 may be translated into a successful task. Unexpected guard errors
+// must fail, and CI must never claim coverage without a browser.
 
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { chromium } from "@playwright/test";
 
-let exe = "";
-try {
-  exe = chromium.executablePath();
-} catch {
-  exe = "";
-}
+const exe = chromium.executablePath();
 
 if (!exe || !existsSync(exe)) {
-  console.error(
-    "[studio-e2e] no Playwright chromium found — install it with:\n" +
-      "  corepack pnpm -C studio exec playwright install chromium",
-  );
-  process.exit(1);
+  const ci = !!process.env.CI || process.env.GITHUB_ACTIONS === "true";
+  const message =
+    `[studio-e2e] ${ci ? "ERROR" : "SKIPPED"}: no Playwright Chromium browser installed; ` +
+    "the Studio UI e2e suite did not run. " +
+    "Install it with: devbox run -- task test:e2e:ui:install";
+  console.error(message);
+  if (process.env.GITHUB_ACTIONS === "true") {
+    console.error(`::error title=Studio UI e2e did not run::${message}`);
+  }
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${message}\n`);
+  }
+  process.exit(ci ? 1 : 77);
 }

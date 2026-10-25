@@ -54,8 +54,81 @@ This file supersedes the three partial coverage docs it reconciles:
   genuine artifacts — runs the engine actually executed (tool + compute
   fixtures, no LLM credential) and a board card created through the CLI. The
   suite asserts rendered content and interactions, never HTTP status codes.
-  It is deliberately NOT wired into the blocking CI job yet (the browser
-  download is opt-in; `task test:e2e:ui` skips cleanly without it).
+  Its CI execution lane is [studio-e2e-advisory.yml](../.github/workflows/studio-e2e-advisory.yml):
+  Mondays at 05:30 UTC and manual dispatch, on the same non-blocking pattern
+  as a11y-advisory. The job installs Chromium, builds the embedded SPA and
+  binary, runs the whole spec directory, and uploads the HTML report and
+  failure traces. A failure makes this advisory red; it does not block a
+  merge. The local browser download remains opt-in. Without it the task
+  prints **SKIPPED: no Playwright Chromium browser installed; the Studio UI
+  e2e suite did not run**. CI treats that absence as an error. A successful
+  local task exit after that message is **not** a browser pass.
+
+### Studio browser coverage and evidence (#1733, #2356)
+
+`covered-deterministic` describes the test layer, not the latest execution
+result. Previously these browser citations had no CI lane, and a local skip
+could be mistaken for coverage. The advisory above now supplies the lane;
+its run report is the execution evidence. Until the workflow is landed and
+has run, no scheduled green result is claimed.
+
+At this revision there are **13 spec files**, covering **12 browser-backed
+matrix rows**, not 13 executed rows. `assistant-demo.spec.ts` is the thirteenth
+file: it explicitly skips unless `ITERION_COPI_DEMO=1` (see
+[COPI_DEMO.md](../studio/e2e/COPI_DEMO.md)). The separate
+`studio-ui.dsl-vocabulary` row is deterministic unit/Go coverage, not a
+Playwright row. All 13 files are discovered by the advisory; the opt-in demo
+skip remains visible in its report.
+
+The #1733 product decision keeps the per-node `ModelPicker` compact: the
+registry options carry context and price, and the inherit option names the
+authored model. The launch spec checks that model's actual option and selects
+it. It no longer asks for `ModelCapsCaption`, which belongs to the fallback
+input, or restores a second fetch/caption per node after the registry-picker
+change in `6eea0ce899`. The fixture server pins `ITERION_MODEL_SPECS=off` and
+`CLAW_DISABLE_LIVE_REGISTRY=1` so neither registry's network/cache changes
+the curated context or introduces a price. Unknown prices remain unprinted.
+The run-console spec
+matches the exact log event `Run finished` (the conversation's closing card
+has a longer message) and the log search field's accessible name `Search log`.
+
+To run locally, use `devbox run -- task test:e2e:ui:install`, then
+`devbox run -- task test:e2e:ui`. Browser installation needs access to the
+Playwright CDN; execution needs permission to launch Chromium and bind the
+loopback test server. The 2026-10-25 implementation session verifies discovery
+(39 tests in 13 files) and the named-skip path, but cannot claim a browser pass:
+Chromium is absent, its
+download fails with `ENOTFOUND cdn.playwright.dev`, and a system-Chrome probe
+cannot bind `127.0.0.1:4899` (`socket: operation not permitted`).
+
+The three design-system drifts are corrected in
+[design-system.md](../studio/docs/design-system.md): the loading example,
+the loading entry in the Don'ts table, and the Settings dialog described as
+a route. #2356(c), the contrast-token mirror, is already enforced by
+`studio/src/__tests__/a11y/tokens-mirror.test.ts`; no new mirror is needed.
+
+Regression witnesses and how to falsify them:
+
+- `run-console.spec.ts`: restore the broad `Run finished` locator to expose
+  the log/card strict-mode collision; change the exact log event text to
+  prove the card cannot satisfy the assertion. Restore `Search log…` as the
+  accessible name to fail when filling the log search field.
+- `launch.spec.ts`: remove the authored model from the registry options or
+  change its context to `128K`; its unique option/context assertions must
+  fail. Print a `$0` price for unknown data to fail the no-price assertion.
+  Re-enable either registry with a differing cached context/price to expose
+  why the fixture pins both offline switches.
+- `guard.test.mjs`: return zero for a missing browser, remove the named
+  no-run message, or suppress the CI annotation/summary; each breaks the
+  missing-browser witness. Force `PLAYWRIGHT_BROWSERS_PATH` to an empty
+  directory to exercise the real task's local skip and its CI failure.
+- Advisory lane: on manual dispatch, break a Playwright assertion to get a
+  red job plus retained report/trace; remove the browser installation on a
+  clean runner to get the explicit no-run error. These CI probes require a
+  published workflow and are not claimed as executed locally.
+- Existing design-system nets: render an `EmptyState` with raw loading text
+  to fail `source-discipline.test.ts`; change a mirrored token in `app.css`
+  without updating `_tokens.ts` to fail `tokens-mirror.test.ts`.
 
 ## Scope of the current campaign
 

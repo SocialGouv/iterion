@@ -132,7 +132,7 @@ tasks:
       ## usable on a bare machine.
       - |
         if ! node e2e/guard.mjs; then
-          echo "task: [test:e2e:ui] skipped — no Playwright browser installed"
+          echo "task: [test:e2e:ui] SKIPPED — no Playwright chromium: run 'corepack pnpm -C studio exec playwright install chromium' to run the 13-spec studio e2e suite (39 tests). This line being the only output means NOTHING ran."
           exit 0
         fi
         ./node_modules/.bin/playwright test {{.CLI_ARGS}}
