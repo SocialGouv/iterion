@@ -252,6 +252,8 @@ export interface RunLogState {
 }
 
 export interface RunStoreState {
+  selectedAttemptID: string | null;
+  setSelectedAttemptID: (id: string | null) => void;
   runId: string | null;
   snapshot: RunSnapshot | null;
   events: RunEvent[];
@@ -399,6 +401,7 @@ const initialLogState: RunLogState = {
 // multiple stores).
 function freshInitial() {
   return {
+    selectedAttemptID: null as string | null,
     runId: null as string | null,
     snapshot: null as RunSnapshot | null,
     events: [] as RunEvent[],
@@ -438,6 +441,7 @@ export function createRunStore() {
 
     setRunId: (id) => set({ runId: id }),
   setWsState: (state) => set({ wsState: state }),
+  setSelectedAttemptID: (id) => set({ selectedAttemptID: id }),
   setFollowTail: (follow) => set({ followTail: follow }),
   requestWsReconnect: () =>
     set((s) => ({ wsReconnectToken: s.wsReconnectToken + 1 })),

@@ -37,8 +37,10 @@ export async function listAllArtifacts(
   return res.artifacts ?? [];
 }
 
-export async function getRunWorkflow(runId: string): Promise<WireWorkflow> {
-  const qs = withStoreParam(new URLSearchParams()).toString();
+export async function getRunWorkflow(runId: string, attemptId?: string): Promise<WireWorkflow> {
+  const params = new URLSearchParams();
+  if (attemptId) params.set("attempt", attemptId);
+  const qs = withStoreParam(params).toString();
   return request(`/runs/${encodeURIComponent(runId)}/workflow${qs ? `?${qs}` : ""}`);
 }
 

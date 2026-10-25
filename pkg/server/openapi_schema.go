@@ -282,7 +282,10 @@ func routeSchemas() map[string]routeOp {
 				Runs []runview.RunSummary `json:"runs"`
 			}{},
 		},
-		"GET /api/runs/{id}/workflow": {response: runview.WireWorkflow{}},
+		"GET /api/runs/{id}/workflow": {response: runview.WireWorkflow{},
+			query:  []queryParam{{name: "attempt", schemaType: "string", description: "Immutable attempt snapshot ID; omitted selects the current attempt."}},
+			errors: map[int]string{404: "Run, attempt snapshot, or legacy bot source is unavailable (error_code and source identify the missing provenance)."},
+		},
 		"POST /api/runs/preview-cost": {
 			request:  previewCostRequest{},
 			response: previewCostResponse{},

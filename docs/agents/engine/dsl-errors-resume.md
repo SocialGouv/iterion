@@ -15,6 +15,7 @@ Read it when a run fails, resumes or rewinds, or a checkpoint looks torn ([docs/
 ```
 <store-dir>/runs/<run_id>/
   run.json              # Run metadata (status, inputs, checkpoint)
+  attempts/<sha256>.json     # Immutable source/resources and effective budget per attempt
   events.jsonl          # Timestamped events (one per line, monotonic seq)
   artifacts/<node>/<v>.json   # Versioned node outputs
   interactions/<id>.json      # Human interaction records (questions/answers)
@@ -44,6 +45,8 @@ Common resumable failures: transient LLM errors (rate limit, timeout), budget ex
 **`--force` flag**: allows resume even when the `.bot` source has changed (e.g., bug fix). Without `--force`, a hash mismatch produces an error. It never accepts the loss of the run's scratch (`SCRATCH_NOT_PORTABLE`): `--accept-scratch-loss` does ([ADR-106](../../adr/106-resume-restores-the-scratch-banked-at-teardown.md)).
 
 See `docs/resume.md` for the current status, checkpoint, and override semantics.
+The console selects an [immutable attempt snapshot](run-provenance.md); a resume
+with edited source never replaces the previous attempt's graph.
 
 ### Concurrency
 

@@ -334,7 +334,16 @@ export type RunCheckpoint = CheckpointBudget & {
   [key: string]: unknown;
 };
 
+export interface RunAttempt {
+  id: string;
+  started_at: string;
+  workflow_hash?: string;
+  budget?: RunBudget;
+}
+
 export interface RunHeader {
+  attempts?: RunAttempt[];
+  subbot_children?: Record<string, string>;
   id: string;
   // The team the run belongs to (ADR-103): by-id reads are served from
   // the run's team, so the console can disclose that the run being viewed
@@ -772,6 +781,8 @@ export interface ToolBlobChunk {
 // "IR overlay" view. Heavier fields (schemas, prompts, vars, full
 // expression ASTs) intentionally omitted.
 export interface WireWorkflow {
+  attempt?: RunAttempt;
+  provenance?: string;
   name: string;
   entry: string;
   nodes: WireNode[];

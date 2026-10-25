@@ -2,9 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getRunWorkflow, type WireWorkflow } from "@/api/runs";
 import { errorMessage } from "@/lib/errorHints";
+import { useRunAttempt } from "@/hooks/useRunAttempt";
 
 // useWorkflowLoad fetches the IR for the run on mount + on runId change.
-// Shares the ["run-workflow", runId] cache with RunView / useNodeLabel so
+// Shares the ["run-workflow", runId, attemptKey] cache with RunView / useNodeLabel so
 // the canvas reuses an already-fetched IR (default staleTime still
 // refetches in the background on mount). Surfaces both the resolved
 // workflow and a string error so the canvas can swap between loading /
@@ -15,9 +16,10 @@ export interface WorkflowLoadResult {
 }
 
 export function useWorkflowLoad(runId: string): WorkflowLoadResult {
+  const { attempt, key } = useRunAttempt();
   const query = useQuery<WireWorkflow>({
-    queryKey: ["run-workflow", runId],
-    queryFn: () => getRunWorkflow(runId),
+    queryKey: ["run-workflow", runId, key],
+    queryFn: () => getRunWorkflow(runId, attempt?.id),
   });
   return {
     wf: query.data ?? null,

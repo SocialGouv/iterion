@@ -3103,6 +3103,10 @@ func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlob
 		errs := compileErrors(cr.Diagnostics)
 		return nil, fmt.Errorf("runner: %w: compile IR: %d error(s): %s", ErrIRUnloadable, len(errs), summariseDiagnostics(errs))
 	}
+	cr.Workflow.SourceSnapshot, err = runview.SourceSnapshotFromTransport(raw)
+	if err != nil {
+		return nil, fmt.Errorf("runner: decode source snapshot: %w", err)
+	}
 	return cr.Workflow, nil
 }
 

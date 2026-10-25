@@ -40,6 +40,7 @@ import { useEffortCapsPrefetch } from "./runCanvasIR/useEffortCapsPrefetch";
 import { useInitialRunningFocus } from "./runCanvasIR/useInitialRunningFocus";
 import { useSelectedNodeFocus } from "./runCanvasIR/useSelectedNodeFocus";
 import { useWorkflowLoad } from "./runCanvasIR/useWorkflowLoad";
+import { withExecutionNodes } from "@/lib/runAttempt";
 
 // Re-export so existing `import { defaultIterationFor } from
 // "./RunCanvasIR"` callers (RunView's selectedNodeIteration memo) keep
@@ -246,7 +247,8 @@ export default function RunCanvasIR({
   selectedChildByFrame,
   onSelectChild,
 }: Props) {
-  const { wf, error } = useWorkflowLoad(runId);
+  const { wf: loadedWorkflow, error } = useWorkflowLoad(runId);
+  const wf = useMemo(() => loadedWorkflow ? withExecutionNodes(loadedWorkflow, executions) : executions.some((e) => e.status === "running" || e.status === "paused_waiting_human") ? withExecutionNodes({ name: "Observed executions", entry: "", nodes: [], edges: [] }, executions) : null, [loadedWorkflow, executions]);
   const [nodes, setNodes] = useState<FlowNode[]>([]);
   const [edges, setEdges] = useState<FlowEdge[]>([]);
   // Bumped each time ELK layout settles so the centering effect below
@@ -710,7 +712,7 @@ export default function RunCanvasIR({
   // node is known, frame the viewport on the running node(s).
   useInitialRunningFocus({ runId, layoutEpoch, nodes, runningNodeIds });
 
-  if (error) {
+  if (error && !wf) {
     return (
       <div className="h-full p-4 text-xs text-danger-fg">
         Workflow view unavailable: {error}
@@ -727,6 +729,11 @@ export default function RunCanvasIR({
 
   return (
     <div className="h-full w-full relative">
+      {error && (
+        <div role="status" className="absolute top-2 left-2 z-[var(--z-canvas)] px-2 py-1 text-xs bg-warning-soft text-warning-fg">
+          Workflow source unavailable. Showing observed active nodes: {error}
+        </div>
+      )}
       {wf.stale_hash && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-[var(--z-canvas)] px-2 py-1 text-caption rounded bg-warning-soft text-warning-fg border border-warning/60 shadow">
           ⚠ The .bot source has changed since this run started; the

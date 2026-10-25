@@ -86,11 +86,9 @@ func TestResume_StampsThePostClampBudgetOnTheDoc(t *testing.T) {
 	}
 }
 
-// A resume whose workflow declares no budget at all (a --force resume of
-// an edited .bot that dropped the block) must PRESERVE the prior
-// snapshot rather than erase it — the same non-nil guard the launch
-// stamp carries in runResolveDoc.
-func TestResume_BudgetlessWorkflowKeepsThePriorSnapshot(t *testing.T) {
+// #2150: a budgetless attempt advertises no cap. Mutation: restore the
+// non-nil guard in stampEffectiveBudget; the old $42 denominator survives.
+func TestResume_BudgetlessWorkflowClearsPriorCaps(t *testing.T) {
 	s := tmpStore(t)
 	ctx := context.Background()
 	const runID = "run-resume-budget-none"
@@ -124,7 +122,7 @@ func TestResume_BudgetlessWorkflowKeepsThePriorSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRun after resume: %v", err)
 	}
-	if got.Budget == nil || got.Budget.MaxCostUSD != 42 {
-		t.Fatalf("run.Budget = %+v after a budgetless resume, want the prior $42 snapshot preserved", got.Budget)
+	if got.Budget != nil {
+		t.Fatalf("run.Budget = %+v after a budgetless resume, want no effective cap", got.Budget)
 	}
 }

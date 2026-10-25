@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { Meter } from "@/components/ui";
 import { useRunBudgetCaps } from "@/hooks/useRunBudgetCaps";
+import { useRunAttempt } from "@/hooks/useRunAttempt";
 import { useRunCheckpointBudget } from "@/hooks/useRunCheckpointBudget";
 import type { RunMetrics } from "@/hooks/useRunMetrics";
 import { formatCost, formatMs, formatTokens } from "@/lib/format";
@@ -23,18 +24,21 @@ interface BudgetSectionProps {
 // budget — without caps, the header vitals already carry raw cost/tokens
 // and a bare-stat repeat here would just be noise.
 export function BudgetSection({ run, metrics }: BudgetSectionProps) {
-  const caps = useRunBudgetCaps(run);
-  const cp = useRunCheckpointBudget(run);
+  const { attempt, isCurrent, events } = useRunAttempt();
+  const caps = useRunBudgetCaps(isCurrent ? run : { ...run, budget: attempt?.budget });
+  const cp = useRunCheckpointBudget(isCurrent ? run : null);
   const [raiseOpen, setRaiseOpen] = useState(false);
 
   if (!caps.hasAny) return null;
 
-  const steerable = isRunSteerable(run.status);
+  const steerable = isCurrent && isRunSteerable(run.status);
 
   const cost = cp?.costUsd ?? metrics.costUsd;
   const tokens = cp?.tokensUsed ?? metrics.totalTokens;
   const iters = cp?.iterationsUsed ?? 0;
-  const durationMs = metrics.durationMs;
+  const durationMs = isCurrent
+    ? Math.max(cp?.elapsedMs ?? 0, run.active_duration_ms ?? 0, (events[0]?.active_ms ?? 0) + metrics.durationMs)
+    : (events[0]?.active_ms ?? 0) + metrics.durationMs;
   const intFmt = (v: number) => String(Math.round(v));
 
   const rows = [

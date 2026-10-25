@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 
-import type { RunEvent } from "@/api/runs";
+import type { RunEvent, ExecutionState } from "@/api/runs";
 import { useRunStore } from "@/store/run";
+import { useRunAttempt } from "./useRunAttempt";
 
 // Metrics that depend on the events stream + executions map. Refreshing
 // these is O(events) so we want to recompute only when one of those
@@ -56,10 +57,12 @@ export interface RunMetrics extends EventDrivenMetrics {
 }
 
 export function useEventDrivenMetrics(): EventDrivenMetrics {
-  const events = useRunStore((s) => s.events);
-  const executionsById = useRunStore((s) => s.executionsById);
+  const { events, executionsById } = useRunAttempt();
 
-  return useMemo<EventDrivenMetrics>(() => {
+  return useMemo(() => computeEventDrivenMetrics(events, executionsById), [events, executionsById]);
+}
+
+export function computeEventDrivenMetrics(events: RunEvent[], executionsById: Map<string, ExecutionState>): EventDrivenMetrics {
     const m: EventDrivenMetrics = {
       costUsd: 0,
       totalTokens: 0,
@@ -150,7 +153,6 @@ export function useEventDrivenMetrics(): EventDrivenMetrics {
     }
 
     return m;
-  }, [events, executionsById]);
 }
 
 function pickString(data: Record<string, unknown>, key: string): string | null {
@@ -168,6 +170,7 @@ function pickNumber(data: Record<string, unknown>, key: string): number | null {
 // re-render doesn't refold the entire events stream.
 export function useRunMetrics(nowMs: number): RunMetrics {
   const snapshot = useRunStore((s) => s.snapshot);
+  const scope = useRunAttempt();
   const events = useEventDrivenMetrics();
 
   // Parse the anchor only when the WS pushes a new value, not on every
@@ -184,16 +187,40 @@ export function useRunMetrics(nowMs: number): RunMetrics {
   const base = snapshot?.run.active_duration_ms ?? 0;
 
   const durationMs = useMemo(() => {
+    if (scope.start) {
+      const first = scope.events[0];
+      const last = scope.events[scope.events.length - 1];
+      const running = scope.isCurrent && snapshot?.run.status === "running";
+      const baseActive = first?.active_ms ?? 0;
+      // Store-authored observations (e.g. child attachment) do not carry
+      // the engine clock. Use the last clock sample, not an absent tail field.
+      let clock = last;
+      for (let i = scope.events.length - 1; i >= 0; i--) {
+        if ((scope.events[i]?.active_ms ?? 0) > 0) { clock = scope.events[i]; break; }
+      }
+      let totalActive = clock?.active_ms ?? 0;
+      if (running && totalActive > 0) {
+        // The snapshot can predate a resume. Event clocks remain usable until
+        // a fresh header arrives; a header anchor must belong to this attempt.
+        const eventClock = totalActive + Math.max(0, nowMs - Date.parse(clock?.timestamp ?? scope.start));
+        const headerClock = anchorMs !== null && anchorMs >= Date.parse(scope.start)
+          ? base + Math.max(0, nowMs - anchorMs) : 0;
+        totalActive = Math.max(eventClock, headerClock);
+      }
+      if (totalActive > 0) return Math.max(0, totalActive - baseActive);
+      const endMs = running ? nowMs : Date.parse(last?.timestamp ?? scope.start);
+      return Math.max(0, endMs - Date.parse(scope.start));
+    }
     if (anchorMs === null) return base;
     // Math.max guards against backwards client/server clock skew —
     // without the clamp, a skewed client could see the timer tick down.
     return base + Math.max(0, nowMs - anchorMs);
-  }, [base, anchorMs, nowMs]);
+  }, [base, anchorMs, nowMs, scope, snapshot?.run.status]);
 
   return {
     ...events,
     durationMs,
-    isRunning: snapshot?.run.status === "running",
+    isRunning: scope.isCurrent && snapshot?.run.status === "running",
   };
 }
 

@@ -1,6 +1,7 @@
 import type {
   ExecutionState,
   RunEvent,
+  RunAttempt,
   RunHeader,
   RunSnapshot,
   UserMessageEvent,
@@ -21,11 +22,9 @@ import type {
 } from "../run";
 import type { TodoItem } from "@/components/Runs/toolFormatters";
 
-// MAX_EVENTS caps in-memory history so a long-running run with thousands
-// of events doesn't bloat the React store. Older events fall off the
-// front; the scrubber (Phase 5) will refetch via /events?from=&to= when
-// it needs them.
-const MAX_EVENTS = 5000;
+// The loaded event stream retains attempt boundaries and history. Truncating
+// its head silently changes costs and erases selectable historical attempts.
+
 
 // MAX_BROWSER_SCREENSHOTS bounds the in-memory history. The scrubber
 // re-fetches via attachment URLs, so dropping older frames is safe;
@@ -332,13 +331,24 @@ export function reduceEvents(
   let runErrorOverride: string | null = null;
 
   // Accumulate appended events in a separate array so we only build the
-  // final history slice once (capped at MAX_EVENTS).
+  // final history slice once.
   const appended: RunEvent[] = [];
 
   for (const evt of evts) {
     if (evt.seq <= lastSeq) continue;
     lastSeq = evt.seq;
     appended.push(evt);
+
+    if (snapshot && (evt.type === "run_started" || evt.type === "run_resumed")) {
+      const attempt = evt.data?.attempt as RunAttempt | undefined;
+      if (attempt?.id && !snapshot.run.attempts?.some((a) => a.id === attempt.id)) {
+        snapshot = { ...snapshot, run: { ...snapshot.run,
+          attempts: [...(snapshot.run.attempts ?? []), attempt],
+          workflow_hash: attempt.workflow_hash,
+          budget: attempt.budget,
+        } };
+      }
+    }
 
     const branch = evt.branch_id || "main";
     switch (evt.type) {
@@ -844,22 +854,7 @@ export function reduceEvents(
     return {};
   }
 
-  // Build the events array in a single allocation, applying the
-  // MAX_EVENTS cap once at the end of the batch.
-  let events: RunEvent[];
-  const total = state.events.length + appended.length;
-  if (total <= MAX_EVENTS) {
-    events = state.events.concat(appended);
-  } else {
-    const dropFromState = Math.min(state.events.length, total - MAX_EVENTS);
-    const carry = state.events.slice(dropFromState);
-    if (carry.length + appended.length > MAX_EVENTS) {
-      // Batch alone overshoots the cap — keep only its tail.
-      events = appended.slice(appended.length - MAX_EVENTS);
-    } else {
-      events = carry.concat(appended);
-    }
-  }
+  const events = state.events.concat(appended);
 
   const next: Partial<RunStoreState> = { events };
 

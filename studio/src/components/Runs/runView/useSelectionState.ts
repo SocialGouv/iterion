@@ -18,7 +18,7 @@ import { useCallback, useEffect, useState } from "react";
 // zustand store), so navigating run A → run B would otherwise drag
 // scrub position, selected node, pinned iterations, and any "ghost"
 // node selections (when B's IR doesn't contain A's nodes) into the
-// new run. The runId-keyed reset effect snaps everything back to
+// new run. The runId/attempt-keyed reset effect snaps everything back to
 // defaults; layout/dock preferences persisted to localStorage are
 // intentionally left alone (they live in useRunConsoleLayout).
 export interface SelectionState {
@@ -35,7 +35,7 @@ export interface SelectionState {
   handleToggleFollowLive: () => void;
 }
 
-export function useSelectionState(runId: string | null): SelectionState {
+export function useSelectionState(runId: string | null, attemptKey?: string): SelectionState {
   const [scrubSeq, setScrubSeq] = useState<number | null>(null);
   // Workflow view selects by IR node id (not execution id). The detail
   // panel is driven by the selected node's currently-picked iteration
@@ -114,7 +114,7 @@ export function useSelectionState(runId: string | null): SelectionState {
     setManualSelectedNodeId(null);
     setFollowLiveNode(true);
     setIterationByNode(new Map());
-  }, [runId]);
+  }, [runId, attemptKey]);
 
   return {
     scrubSeq,

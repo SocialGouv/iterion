@@ -3766,7 +3766,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//    would exceed the NATS max_payload. The runner side re-parses +
 	//    re-compiles, so the wire payload is the AST File, not the compiled
 	//    IR.
-	body, err := marshalIRFromSpec(spec.FilePath, spec.Source, spec.BundleDir)
+	body, err := marshalAttemptIR(wf, spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return 0, err
 	}
@@ -4019,7 +4019,7 @@ func publishInstant(now time.Time, marker time.Time, grant *credpool.Grant) time
 }
 
 func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, cs *runview.CompiledSource) (retErr error) {
-	body, err := marshalIRFromSpec(spec.FilePath, spec.Source, spec.BundleDir)
+	body, err := marshalAttemptIR(wf, spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
 	}
@@ -4698,6 +4698,13 @@ func (p *Publisher) queuePosition(ctx context.Context, runID string) (int, error
 // shared filesystem) → `path` on local disk (fallback for tests and
 // migration tooling). The runner re-parses + re-compiles, so the
 // wire payload is the AST File, not the compiled IR.
+func marshalAttemptIR(wf *ir.Workflow, path, source, bundleDir string) ([]byte, error) {
+	if wf != nil && wf.SourceSnapshot != nil {
+		return runview.MarshalSourceSnapshot(wf.SourceSnapshot)
+	}
+	return marshalIRFromSpec(path, source, bundleDir)
+}
+
 func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessage, error) {
 	var src string
 	parserPath := path

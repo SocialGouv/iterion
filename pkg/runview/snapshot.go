@@ -8,6 +8,7 @@ package runview
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -59,7 +60,9 @@ type ExecutionState struct {
 
 // RunHeader is the run-level metadata embedded in a snapshot.
 type RunHeader struct {
-	ID string `json:"id"`
+	SubbotChildren map[string]string  `json:"subbot_children,omitempty"`
+	Attempts       []store.RunAttempt `json:"attempts,omitempty"`
+	ID             string             `json:"id"`
 	// TenantID is the team the run belongs to (ADR-103): the by-id
 	// resolution serves a run from its own team, and this field lets a
 	// caller - the studio's run console above all - disclose that the
@@ -580,6 +583,24 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 	}
 
 	branch := evt.BranchID
+	if evt.Type == store.EventRunStarted || evt.Type == store.EventRunResumed {
+		if raw, err := json.Marshal(evt.Data["attempt"]); err == nil {
+			var a store.RunAttempt
+			if json.Unmarshal(raw, &a) == nil && a.ID != "" {
+				found := false
+				for _, prior := range b.header.Attempts {
+					if prior.ID == a.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					b.header.Attempts = append(b.header.Attempts, a)
+					b.header.Budget = a.Budget
+				}
+			}
+		}
+	}
 	if branch == "" {
 		branch = MainBranch
 	}
@@ -1528,6 +1549,8 @@ func ParseExecutionID(id string) (branch, nodeID string, iteration int, err erro
 
 func headerFromRun(r *store.Run) RunHeader {
 	h := RunHeader{
+		Attempts:             r.Attempts,
+		SubbotChildren:       r.SubbotChildren,
 		ID:                   r.ID,
 		TenantID:             r.TenantID,
 		ExecutionContext:     r.ExecutionContext,

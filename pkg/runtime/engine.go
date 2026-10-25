@@ -304,7 +304,10 @@ func (e *Engine) ActiveElapsed() time.Duration {
 // SubbotRunner: the child .bot source, the resolved input vars, and the
 // parent linkage so the runner can record a child run tied to the parent.
 type SubbotRequest struct {
-	Source string // child .bot path/ref (relative to the parent workdir)
+	// OnChildAttached records a reused child through the engine event sink,
+	// including the live observer. Direct callers may leave it nil.
+	OnChildAttached func(childRunID string) error
+	Source          string // child .bot path/ref (relative to the parent workdir)
 	// ParentSandbox is the live sandbox the PARENT run executes in, nil when
 	// it has none. A child must execute in it — not in a sandbox of its own:
 	// on a copy-based driver (kubernetes) a second pod is a second copy of

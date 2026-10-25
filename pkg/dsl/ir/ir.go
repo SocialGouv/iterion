@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/types"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,8 @@ import (
 // execute a workflow: resolved nodes, edges, schemas, prompts, vars,
 // loops and budget.
 type Workflow struct {
+	// SourceSnapshot is captured by the source compiler, before execution.
+	SourceSnapshot  *workflowfile.Snapshot
 	Name            string
 	Entry           string                 // entry node ID
 	Nodes           map[string]Node        // node ID → node

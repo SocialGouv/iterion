@@ -1,3 +1,4 @@
+import { useRunAttempt } from "@/hooks/useRunAttempt";
 import { useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 
@@ -26,7 +27,7 @@ import type { RunChatMessage } from "./types";
 export function useRunChatMessages(
   runId: string | null,
 ): RunChatMessage[] {
-  const events = useRunStore((s) => s.events);
+  const { events, attempt, key, executionsById } = useRunAttempt();
   // Snapshot is consumed by the fold as a fallback for `node_finished`
   // events missing the embedded output payload. We pass it via a ref
   // (not a useMemo dependency) so the fold doesn't refold on every
@@ -34,14 +35,13 @@ export function useRunChatMessages(
   // verbatim, so the snapshot path is a rare fallback.
   const snapshot = useRunStore((s) => s.snapshot);
   const snapshotRef = useRef(snapshot);
-  snapshotRef.current = snapshot;
+  snapshotRef.current = snapshot ? { ...snapshot, executions: [...executionsById.values()] } : null;
 
   const workflowQuery = useQuery<WireWorkflow>({
-    queryKey: ["run-workflow", runId],
-    queryFn: () => getRunWorkflow(runId!),
+    queryKey: ["run-workflow", runId, key],
+    queryFn: () => getRunWorkflow(runId!, attempt?.id),
     enabled: !!runId,
-    // The IR doesn't change during a run — once fetched, it's stable
-    // until the operator launches a new run (and so a new runId).
+    // Captured source is immutable within one attempt.
     staleTime: Infinity,
   });
 

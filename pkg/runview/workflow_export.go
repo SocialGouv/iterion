@@ -2,12 +2,17 @@ package runview
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -16,15 +21,17 @@ import (
 // MCP config, full expression ASTs) are intentionally omitted — the
 // overlay only needs the topology so it can layer execution counts.
 type WireWorkflow struct {
-	Name string `json:"name"`
+	Attempt      *store.RunAttempt `json:"attempt,omitempty"`
+	Provenance   string            `json:"provenance"`
+	Name         string            `json:"name"`
+	WorkflowHash string            `json:"workflow_hash,omitempty"`
 	// Entry is the first node ID the runtime picks. Useful so the
 	// frontend can mark it specially and start its layout from there.
 	Entry string     `json:"entry"`
 	Nodes []WireNode `json:"nodes"`
 	Edges []WireEdge `json:"edges"`
-	// StaleHash signals that the .bot source on disk no longer matches
-	// the hash captured at run launch. The frontend can warn the user
-	// that the IR they are viewing may diverge from what was executed.
+	// StaleHash flags a best-effort legacy reconstruction whose current
+	// source differs from the run hash. Immutable attempts never need it.
 	StaleHash bool `json:"stale_hash,omitempty"`
 }
 
@@ -88,158 +95,246 @@ type WireEdge struct {
 	Loop       string `json:"loop,omitempty"`
 }
 
-// wireWorkflowCache memoises projection results keyed by file path so
-// repeated /api/runs/{id}/workflow requests (multiple browser tabs,
-// snapshot replays) don't re-parse + re-compile + re-walk the .bot
-// source. The cached entry stores the hash used to compile it; on
-// each request we re-stat the file via CompileWorkflowWithHash's hash
-// computation and only return the cache entry when the hash matches.
-//
-// The cache is unbounded but small in practice (one entry per .bot
-// file in the workspace). Service holds it as a member rather than a
-// package var so multiple Service instances in tests don't share state.
+// wireWorkflowCache holds immutable projections by tenant and workflow_hash.
+// Mutable legacy sources are resolved before a cache lookup, so deletion is
+// still observable. The cached graph never contains run-specific metadata.
 type wireWorkflowCache struct {
 	mu    sync.Mutex
-	byKey map[string]wireWorkflowCacheEntry
+	byKey map[string]*WireWorkflow
 }
 
-type wireWorkflowCacheEntry struct {
-	wf   *WireWorkflow
-	hash string
-}
-
-func (c *wireWorkflowCache) get(filePath, hash string) *WireWorkflow {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.byKey == nil {
+func (c *wireWorkflowCache) get(key string) *WireWorkflow {
+	if c == nil || key == "" {
 		return nil
 	}
-	if e, ok := c.byKey[filePath]; ok && e.hash == hash {
-		return e.wf
-	}
-	return nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.byKey[key]
 }
-
-func (c *wireWorkflowCache) put(filePath, hash string, wf *WireWorkflow) {
+func (c *wireWorkflowCache) put(key string, wf *WireWorkflow) {
+	if c == nil || key == "" {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.byKey == nil {
-		c.byKey = make(map[string]wireWorkflowCacheEntry)
+		c.byKey = map[string]*WireWorkflow{}
 	}
-	c.byKey[filePath] = wireWorkflowCacheEntry{wf: wf, hash: hash}
+	c.byKey[key] = wf
 }
 
-// LoadWireWorkflow recompiles the .bot source for runID and projects
-// the resulting IR into WireWorkflow shape. Results are memoised by
-// (filePath, content hash) so repeated calls for the same revision
-// don't re-parse. The stale_hash flag is derived by comparing the
-// freshly-computed hash against the one persisted in run.json at
-// launch.
-//
-// Uses context.Background — does NOT carry caller identity. Cloud
-// HTTP handlers must use LoadWireWorkflowCtx.
+// LegacyWorkflowResolver supplies stored-bot resources only when no immutable
+// attempt exists. The server supplies its tenant-aware botsource resolver.
+type LegacyWorkflowResolver func(context.Context, *store.Run) (*workflowfile.Snapshot, error)
+
+// WorkflowUnavailable is the typed 404 for missing provenance. Source is a
+// logical bot name or attempt ID, never a server filesystem path.
+type WorkflowUnavailable struct {
+	Code    string `json:"error_code"`
+	Source  string `json:"source"`
+	Message string `json:"error"`
+}
+
+func (e *WorkflowUnavailable) Error() string { return e.Message }
+func unavailable(code, source string) error {
+	return &WorkflowUnavailable{Code: code, Source: source, Message: fmt.Sprintf("workflow source %q is unavailable (%s)", source, code)}
+}
+
 func (s *Service) LoadWireWorkflow(runID string) (*WireWorkflow, error) {
 	return s.LoadWireWorkflowCtx(context.Background(), runID)
 }
-
-// LoadWireWorkflowCtx is the tenant-aware variant of LoadWireWorkflow.
 func (s *Service) LoadWireWorkflowCtx(ctx context.Context, runID string) (*WireWorkflow, error) {
-	r, err := s.store.LoadRun(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-	return buildWireWorkflowFromRun(r, &s.wireWFCache)
+	return s.LoadWireWorkflowAttemptCtx(ctx, runID, "", nil)
+}
+func (s *Service) LoadWireWorkflowAttemptCtx(ctx context.Context, runID, attemptID string, resolve LegacyWorkflowResolver) (*WireWorkflow, error) {
+	return s.LoadWireWorkflowFromStoreCtx(ctx, s.store, runID, attemptID, resolve)
 }
 
-// BuildWireWorkflowFromStore is the store-agnostic projection used by
-// LoadWireWorkflow and by cross-store HTTP handlers that need to
-// surface a run living in a different iterion store than the daemon's
-// primary. The cache argument may be nil for one-shot reads where
-// memoisation isn't worth the lock contention.
+// LoadWireWorkflowFromStoreCtx shares the revision cache with cross-store
+// views while the owning store still authorizes every run/snapshot read.
+func (s *Service) LoadWireWorkflowFromStoreCtx(ctx context.Context, st store.RunStore, runID, attemptID string, resolve LegacyWorkflowResolver) (*WireWorkflow, error) {
+	return buildWireWorkflow(ctx, st, runID, attemptID, resolve, &s.wireWFCache)
+}
 func BuildWireWorkflowFromStore(ctx context.Context, s store.RunStore, runID string) (*WireWorkflow, error) {
-	r, err := s.LoadRun(ctx, runID)
+	return buildWireWorkflow(ctx, s, runID, "", nil, nil)
+}
+func BuildWireWorkflowAttemptFromStore(ctx context.Context, s store.RunStore, runID, attemptID string, resolve LegacyWorkflowResolver) (*WireWorkflow, error) {
+	return buildWireWorkflow(ctx, s, runID, attemptID, resolve, nil)
+}
+func buildWireWorkflow(ctx context.Context, st store.RunStore, runID, attemptID string, resolve LegacyWorkflowResolver, cache *wireWorkflowCache) (*WireWorkflow, error) {
+	r, err := st.LoadRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
-	return buildWireWorkflowFromRun(r, nil)
+	if len(r.Attempts) == 0 {
+		if attemptID != "" {
+			return nil, unavailable("attempt_not_found", attemptID)
+		}
+		return buildLegacyWireWorkflow(ctx, r, resolve, cache)
+	}
+	a := r.Attempts[len(r.Attempts)-1]
+	if attemptID != "" {
+		found := false
+		for _, candidate := range r.Attempts {
+			if candidate.ID == attemptID {
+				a = candidate
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, unavailable("attempt_not_found", attemptID)
+		}
+	}
+	snapshots := store.AsAttemptStore(st)
+	if snapshots == nil {
+		return nil, unavailable("attempt_snapshot_missing", a.ID)
+	}
+	captured, err := snapshots.LoadAttempt(ctx, r.ID, a.ID)
+	if errors.Is(err, store.ErrAttemptNotFound) {
+		return nil, unavailable("attempt_snapshot_missing", a.ID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if captured.Source == nil {
+		return nil, unavailable("attempt_snapshot_missing", a.ID)
+	}
+	graph, err := cachedSourceWorkflow(captured.Source, r.TenantID, captured.WorkflowHash, cache)
+	if err != nil {
+		return nil, fmt.Errorf("compile captured attempt %s: %w", a.ID, err)
+	}
+	out := *graph
+	out.Attempt = &a
+	out.WorkflowHash = captured.WorkflowHash
+	out.Provenance = "attempt_snapshot"
+	return &out, nil
 }
 
-// buildWireWorkflowFromRun centralises the IR-→-wire projection so both
-// the per-Service LoadWireWorkflow (cache-aware) and the cross-store
-// helper share the same shape. A nil cache disables memoisation.
-//
-// Two compile-source flavours:
-//   - r.FilePath set: a launched-from-`.bot` run. CompileWorkflowWithHash
-//     reads the file directly.
-//   - r.BundlePath set (FilePath empty): a launched-from-`.botz` run
-//     (e.g. `iterion run bots/secured-renovacy/` or any live test
-//     using bundle.OpenDir + runview.CompileBundleWorkflow). Open the
-//     bundle directory, compile via CompileBundleWorkflow so node-level
-//     prompt references resolve against the bundle's prompts/ resources.
-//
-// Cache key uses whichever path is set so bundle and file flavours
-// don't collide on the same logical workflow name.
+// Retained for local callers and tests that hold a legacy run document.
 func buildWireWorkflowFromRun(r *store.Run, cache *wireWorkflowCache) (*WireWorkflow, error) {
-	var (
-		wf       *ir.Workflow
-		hash     string
-		cacheKey string
-		err      error
-	)
+	return buildLegacyWireWorkflow(context.Background(), r, nil, cache)
+}
+func recordedSource(r *store.Run) *workflowfile.Snapshot {
+	if r.WorkflowSource == "" && len(r.WorkflowSources) == 0 {
+		return nil
+	}
+	source := &workflowfile.Snapshot{Main: "main.bot", Files: map[string]string{"main.bot": r.WorkflowSource}}
+	if len(r.WorkflowSources) > 0 {
+		source.Main = r.WorkflowSources[0].Path
+		source.Files = map[string]string{}
+		for _, f := range r.WorkflowSources {
+			source.Files[f.Path] = f.Text
+		}
+	}
+	return source
+}
+func buildLegacyWireWorkflow(ctx context.Context, r *store.Run, resolve LegacyWorkflowResolver, cache *wireWorkflowCache) (*WireWorkflow, error) {
+	recorded := recordedSource(r)
+	if recorded != nil {
+		wf, _, err := compileSourceSnapshot(recorded)
+		if err == nil {
+			out := projectWorkflow(wf)
+			out.Provenance = "recorded_source"
+			return out, nil
+		}
+		// A legacy source may lack its bundle prompts. Only legacy runs can
+		// acquire those resources from a current source below.
+		if !r.ServedByStoredBot() {
+			return nil, err
+		}
+	}
+	if r.ServedByStoredBot() {
+		name := r.BotID
+		if name == "" {
+			name = r.BundleName
+		}
+		if resolve == nil {
+			return nil, unavailable("bot_source_missing", name)
+		}
+		source, err := resolve(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		if source == nil {
+			return nil, unavailable("bot_source_missing", name)
+		}
+		// Keep the captured program when only resources were missing.
+		if recorded != nil {
+			for path, text := range recorded.Files {
+				if path == recorded.Main {
+					source.Files[source.Main] = text
+				} else {
+					source.Files[path] = text
+				}
+			}
+		}
+		graph, err := cachedSourceWorkflow(source, r.TenantID, r.WorkflowHash, cache)
+		if err != nil {
+			return nil, err
+		}
+		out := *graph
+		out.StaleHash = r.WorkflowHash != "" && graph.WorkflowHash != r.WorkflowHash
+		out.Provenance = "bot_source_legacy"
+		return &out, nil
+	}
+	var wf *ir.Workflow
+	var hash string
+	var err error
 	switch {
 	case r.FilePath != "":
-		path := resolveWorkflowPath(r)
-		cacheKey = path
-		wf, hash, _, err = CompileWorkflowPath(path)
+		wf, hash, _, err = CompileWorkflowPath(resolveWorkflowPath(r))
 	case r.BundlePath != "":
-		cacheKey = r.BundlePath
-		b, oerr := bundle.OpenDir(r.BundlePath)
-		if oerr != nil {
-			return nil, fmt.Errorf("open bundle %s: %w", r.BundlePath, oerr)
+		var b *bundle.Bundle
+		b, err = bundle.OpenDir(r.BundlePath)
+		if err == nil {
+			wf, hash, err = CompileBundleWorkflow(b.IterPath, b)
 		}
-		wf, hash, err = CompileBundleWorkflow(b.IterPath, b)
 	default:
-		return nil, fmt.Errorf("run %s has no persisted file_path or bundle_path", r.ID)
+		return nil, unavailable("workflow_source_missing", r.WorkflowName)
 	}
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, unavailable("workflow_source_missing", r.WorkflowName)
+		}
+		return nil, err
+	}
+	out := projectWorkflow(wf)
+	out.StaleHash = r.WorkflowHash != "" && hash != r.WorkflowHash
+	out.Provenance = "filesystem_legacy"
+	return out, nil
+}
+func cachedSourceWorkflow(source *workflowfile.Snapshot, tenant, hash string, cache *wireWorkflowCache) (*WireWorkflow, error) {
+	key := ""
+	if hash != "" {
+		body, err := json.Marshal(source)
+		if err != nil {
+			return nil, err
+		}
+		key = fmt.Sprintf("%s/%s/%x", tenant, hash, sha256.Sum256(body))
+	}
+	if cached := cache.get(key); cached != nil {
+		return cached, nil
+	}
+	wf, actualHash, err := compileSourceSnapshot(source)
 	if err != nil {
 		return nil, err
 	}
-	staleHash := r.WorkflowHash != "" && r.WorkflowHash != hash
-	if cache != nil {
-		if cached := cache.get(cacheKey, hash); cached != nil {
-			copied := *cached
-			copied.StaleHash = staleHash
-			return &copied, nil
-		}
-	}
-	out := &WireWorkflow{
-		Name:      wf.Name,
-		Entry:     wf.Entry,
-		Nodes:     make([]WireNode, 0, len(wf.Nodes)),
-		Edges:     make([]WireEdge, 0, len(wf.Edges)),
-		StaleHash: staleHash,
-	}
+	out := projectWorkflow(wf)
+	out.WorkflowHash = actualHash
+	cache.put(key, out)
+	return out, nil
+}
+func projectWorkflow(wf *ir.Workflow) *WireWorkflow {
+	out := &WireWorkflow{Name: wf.Name, Entry: wf.Entry, Nodes: make([]WireNode, 0, len(wf.Nodes)), Edges: make([]WireEdge, 0, len(wf.Edges))}
 	for id, n := range wf.Nodes {
 		out.Nodes = append(out.Nodes, projectNode(id, n, wf))
 	}
 	for _, e := range wf.Edges {
-		out.Edges = append(out.Edges, WireEdge{
-			From:       e.From,
-			To:         e.To,
-			Condition:  e.Condition,
-			Negated:    e.Negated,
-			Expression: e.ExpressionSrc,
-			Loop:       e.LoopName,
-		})
+		out.Edges = append(out.Edges, WireEdge{From: e.From, To: e.To, Condition: e.Condition, Negated: e.Negated, Expression: e.ExpressionSrc, Loop: e.LoopName})
 	}
-	// Note: nodes map iteration is non-deterministic in Go, but the
-	// frontend re-runs autoLayout (ELK) which is order-insensitive, so
-	// we don't need to sort here. Callers wanting a stable diff can
-	// post-process.
-	if cache != nil {
-		cache.put(cacheKey, hash, out)
-	}
-	return out, nil
+	sort.Slice(out.Nodes, func(i, j int) bool { return out.Nodes[i].ID < out.Nodes[j].ID })
+	return out
 }
 
 // IRWorkflowEndpointPath is exposed for symmetry with other runview

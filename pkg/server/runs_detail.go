@@ -209,22 +209,37 @@ func (s *Server) handleGetRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	} else if xs != nil {
 		// Cross-store: re-use the IR-→-wire projection so the studio
 		// receives the same shape it expects from the same-store path.
-		// One-shot — no cache (the daemon serves cross-store reads
-		// rarely; cache-hit ratio wouldn't justify the lock).
-		wf, err := runview.BuildWireWorkflowFromStore(r.Context(), xs, id)
+		// The same revision cache serves primary and cross-store views.
+		wf, err := s.runs.LoadWireWorkflowFromStoreCtx(r.Context(), xs, id, r.URL.Query().Get("attempt"), s.legacyRunWorkflowSource)
 		if err != nil {
-			s.httpErrorFor(w, r, http.StatusNotFound, "load workflow from cross-store: %v", err)
+			s.runWorkflowError(w, r, err)
 			return
 		}
 		s.writeJSONFor(w, r, wf)
 		return
 	}
-	wf, err := s.runs.LoadWireWorkflowCtx(r.Context(), id)
+	wf, err := s.runs.LoadWireWorkflowAttemptCtx(r.Context(), id, r.URL.Query().Get("attempt"), s.legacyRunWorkflowSource)
 	if err != nil {
-		s.httpErrorFor(w, r, http.StatusNotFound, "load workflow: %v", err)
+		s.runWorkflowError(w, r, err)
 		return
 	}
 	s.writeJSONFor(w, r, wf)
+}
+
+func (s *Server) runWorkflowError(w http.ResponseWriter, r *http.Request, err error) {
+	var missing *runview.WorkflowUnavailable
+	if errors.As(err, &missing) {
+		s.reflectAllowedOrigin(w, r)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		s.writeJSONFor(w, r, missing)
+		return
+	}
+	if errors.Is(err, store.ErrRunNotFound) {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found")
+		return
+	}
+	s.httpErrorFor(w, r, http.StatusInternalServerError, "load workflow: %v", err)
 }
 
 // handleListPlans returns the chronological plan snapshots captured for a

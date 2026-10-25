@@ -33,7 +33,7 @@ export function useDisplayedRunData(
   //
   // The range input on the Scrubber can fire onChange faster than 60 Hz
   // on drag, and `buildExecutionsAt` folds the full events array (up to
-  // MAX_EVENTS = 5000) on each call. useDeferredValue lets React keep
+  // selected attempt) on each call. useDeferredValue lets React keep
   // the slider responsive while the heavier downstream computations
   // (executions snapshot, filtered events) catch up one frame behind.
   const deferredScrubSeq = useDeferredValue(scrubSeq);

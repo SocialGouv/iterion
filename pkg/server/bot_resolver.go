@@ -11,10 +11,53 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// legacyRunWorkflowSource resolves exactly the tier recorded by the run.
+// It never promotes a deleted team source to a platform or baked namesake.
+func (s *Server) legacyRunWorkflowSource(ctx context.Context, r *store.Run) (*workflowfile.Snapshot, error) {
+	slug, tenant := r.BotID, r.BotSourceTenant
+	if slug == "" {
+		slug = r.BundleName
+	}
+	if tenant == "" && r.BotSourceTier == store.BotSourceTierTeam {
+		tenant = r.TenantID
+	}
+	if tenant == "" && r.BotSourceTier == store.BotSourceTierPlatform {
+		tenant = botsource.PlatformTenantID
+	}
+	missing := &runview.WorkflowUnavailable{Code: "bot_source_missing", Source: slug, Message: fmt.Sprintf("bot source %q is unavailable", slug)}
+	if s.botSources == nil || slug == "" || tenant == "" {
+		return nil, missing
+	}
+	row, err := s.botSources.GetBySlug(store.WithTenant(ctx, tenant), tenant, slug)
+	if errors.Is(err, botsource.ErrNotFound) {
+		return nil, missing
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read bot source %q: %w", slug, err)
+	}
+	files := make(map[string]string, len(row.Files))
+	for path, text := range row.Files {
+		files[path] = text
+	}
+	main := bundle.MainBotFile
+	if r.BundleWorkflow != "" {
+		if manifest := row.Manifest(); manifest != nil {
+			for _, exp := range manifest.Exports.Workflows {
+				if exp.ID == r.BundleWorkflow {
+					main = exp.Path
+					break
+				}
+			}
+		}
+	}
+	return &workflowfile.Snapshot{Main: main, Files: files, Bundle: true}, nil
+}
 
 // This file is the server's ONE bot-resolution authority. Every site that
 // turns a bot id into launchable source, a manifest, or catalog metadata goes

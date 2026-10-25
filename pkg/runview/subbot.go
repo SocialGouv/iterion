@@ -417,6 +417,21 @@ func ReattachSubbotChild(ctx context.Context, rs store.RunStore, req runtime.Sub
 		ClearSubbotChild(ctx, rs, req)
 		return nil, nil, false
 	}
+	// Persist the relationship inside this attempt's event window before
+	// consuming or awaiting the child. The operational map is cleared on
+	// success and cannot be the console's historical source of truth.
+	attach := func() error {
+		var err error
+		if req.OnChildAttached != nil {
+			err = req.OnChildAttached(childRunID)
+		} else {
+			_, err = rs.AppendEvent(ctx, req.ParentRunID, store.Event{Type: store.EventSubbotAttached, NodeID: req.NodeID, Data: map[string]any{"child_run_id": childRunID}})
+		}
+		if err != nil {
+			return fmt.Errorf("record subbot attachment: %w", err)
+		}
+		return nil
+	}
 	switch child.Status {
 	case store.RunStatusFinished:
 		out, oerr := subbotChildOutput(ctx, rs, child)
@@ -431,6 +446,9 @@ func ReattachSubbotChild(ctx context.Context, rs store.RunStore, req runtime.Sub
 		}
 		if logger != nil {
 			logger.Info("subbot: re-attaching to finished child run %s (answered while the parent was down)", childRunID)
+		}
+		if err := attach(); err != nil {
+			return nil, err, true
 		}
 		ClearSubbotChild(ctx, rs, req)
 		return out, nil, true
@@ -449,6 +467,9 @@ func ReattachSubbotChild(ctx context.Context, rs store.RunStore, req runtime.Sub
 		// `iterion resume --run-id <child>`) drives it to terminal.
 		if logger != nil {
 			logger.Info("subbot: re-attaching to in-flight child run %s (%s) after restart — no fresh child spawned", childRunID, child.Status)
+		}
+		if err := attach(); err != nil {
+			return nil, err, true
 		}
 		out, aerr := AwaitSubbotTerminal(ctx, rs, childRunID, logger)
 		if aerr == nil {

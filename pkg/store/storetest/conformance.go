@@ -54,6 +54,7 @@ type Opts struct {
 // RunWithOpts executes the full conformance suite with backend-
 // specific overrides.
 func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
+	t.Run("AttemptSnapshots", func(t *testing.T) { AttemptSnapshots(t, factory(t)) })
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("RunTrustRoundTrip", func(t *testing.T) { testRunTrustRoundTrip(t, factory(t)) })

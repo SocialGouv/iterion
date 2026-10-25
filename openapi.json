@@ -2854,6 +2854,28 @@
         ],
         "type": "object"
       },
+      "RunAttempt": {
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/RunBudget"
+          },
+          "id": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "workflow_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "started_at"
+        ],
+        "type": "object"
+      },
       "RunBudget": {
         "properties": {
           "max_cost_usd": {
@@ -2884,6 +2906,12 @@
           },
           "admission": {
             "$ref": "#/components/schemas/AdmissionDecision"
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/RunAttempt"
+            },
+            "type": "array"
           },
           "auto_merge": {
             "type": "boolean"
@@ -3079,6 +3107,12 @@
           },
           "status": {
             "type": "string"
+          },
+          "subbot_children": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "tenant_id": {
             "type": "string"
@@ -3748,6 +3782,9 @@
       },
       "WireWorkflow": {
         "properties": {
+          "attempt": {
+            "$ref": "#/components/schemas/RunAttempt"
+          },
           "edges": {
             "items": {
               "$ref": "#/components/schemas/WireEdge"
@@ -3766,11 +3803,18 @@
             },
             "type": "array"
           },
+          "provenance": {
+            "type": "string"
+          },
           "stale_hash": {
             "type": "boolean"
+          },
+          "workflow_hash": {
+            "type": "string"
           }
         },
         "required": [
+          "provenance",
           "name",
           "entry",
           "nodes",
@@ -12178,6 +12222,17 @@
     "/api/runs/{id}/workflow": {
       "get": {
         "operationId": "getRunsByIdWorkflow",
+        "parameters": [
+          {
+            "description": "Immutable attempt snapshot ID; omitted selects the current attempt.",
+            "in": "query",
+            "name": "attempt",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -12188,6 +12243,9 @@
               }
             },
             "description": "OK"
+          },
+          "404": {
+            "description": "Run, attempt snapshot, or legacy bot source is unavailable (error_code and source identify the missing provenance)."
           }
         },
         "summary": "GET /api/runs/{id}/workflow",

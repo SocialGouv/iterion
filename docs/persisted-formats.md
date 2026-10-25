@@ -532,3 +532,16 @@ This preservation takes effect only once every writer has this safeguard;
 binaries predating it can still truncate newer fields. It does not make an
 older runner capable of executing newer checkpoint semantics or relax the
 deployment ordering required for new consumers.
+
+### Immutable attempt provenance
+
+`Run.attempts` indexes immutable snapshots by content digest, opening time,
+workflow hash and effective budget. `run_started` and `run_resumed` carry the
+same entry in `data.attempt`; execution begins only after the snapshot is
+stored. The filesystem body lives in `attempts/<digest>.json` under the run;
+Mongo keeps the body in the run's blob lifecycle. The source unit and its
+compilation resources are authoritative even after the original files or
+bot-source row disappear. Legacy runs without this index use an ordered
+best-effort fallback. See [run provenance](agents/engine/run-provenance.md) for
+the transport envelope, selector API, typed missing-source responses and UI
+metric boundaries.

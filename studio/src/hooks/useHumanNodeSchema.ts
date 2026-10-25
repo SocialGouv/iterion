@@ -1,3 +1,4 @@
+import { useRunStore } from "@/store/run";
 import { errorMessage } from "@/lib/errorHints";
 import { useQuery } from "@tanstack/react-query";
 
@@ -48,14 +49,20 @@ export function useHumanNodeSchema(
   runId: string | null,
   nodeId: string | undefined,
 ): HumanNodeSchema {
+  const attempt = useRunStore((s) => {
+    if (s.runId !== runId) return undefined;
+    const attempts = s.snapshot?.run.attempts ?? [];
+    return attempts.find((a) => a.id === s.selectedAttemptID) ?? attempts[attempts.length - 1];
+  });
+  const key = attempt?.id ?? "current";
   const enabled = !!runId && !!nodeId;
   const query = useQuery<WireWorkflow>({
     // Shares the run console's workflow cache (useNodeLabel,
-    // useRunChatMessages, RunView). The IR is immutable per run, so a
+    // useRunChatMessages, RunView). The IR is immutable per attempt, so a
     // nodeId change re-derives fields from the cached workflow instead
     // of refetching.
-    queryKey: ["run-workflow", runId],
-    queryFn: () => getRunWorkflow(runId!),
+    queryKey: ["run-workflow", runId, key],
+    queryFn: () => getRunWorkflow(runId!, attempt?.id),
     enabled,
     staleTime: Infinity,
   });

@@ -109,6 +109,8 @@ type CompileResult struct {
 	// changes what the agent reads as surely as the prompt that includes
 	// it does.
 	IncludedFiles []string
+	// IncludedSources holds the bytes actually expanded, without a second read.
+	IncludedSources map[string]string
 }
 
 // HasErrors returns true if any diagnostic is an error.
@@ -548,9 +550,10 @@ func Compile(file *ast.File) *CompileResult {
 	w := c.compile()
 	c.attachPositions()
 	return &CompileResult{
-		Workflow:      w,
-		Diagnostics:   c.diags,
-		IncludedFiles: c.includedFiles,
+		Workflow:        w,
+		Diagnostics:     c.diags,
+		IncludedFiles:   c.includedFiles,
+		IncludedSources: c.promptIncludeBudget.sources,
 	}
 }
 

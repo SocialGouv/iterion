@@ -39,6 +39,13 @@ func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ sto
 	if typ == store.EventNodeFinished && nodeID != "" {
 		data = withFinishStamps(data, nodeMayWriteScratch(e.workflow, nodeID), onCycle(e.workflow, nodeID))
 	}
+	if typ == store.EventRunStarted || typ == store.EventRunResumed {
+		var err error
+		data, err = e.recordAttempt(ctx, runID, data)
+		if err != nil {
+			return err
+		}
+	}
 	evt := store.Event{
 		Type:     typ,
 		BranchID: branchID,

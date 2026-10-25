@@ -18,6 +18,9 @@ import "time"
 type EventType string
 
 const (
+	// EventSubbotAttached preserves an attempt's reused child after the
+	// operational reattachment pointer is cleared. Data: {child_run_id}.
+	EventSubbotAttached EventType = "subbot_attached"
 	EventRunStarted     EventType = "run_started"
 	EventBranchStarted  EventType = "branch_started"
 	EventBranchFinished EventType = "branch_finished"

@@ -216,15 +216,16 @@ export function deriveNextFrames(
 export function useInlineSubbotData(
   rootChildrenByNode: Map<string, RunSummary[]>,
   pickedByFrame: Map<string, string>,
+  historical = false,
 ): InlineSubbotData {
   const level1Frames = useMemo<FrameSpec[]>(
     () =>
-      Array.from(rootChildrenByNode)
+      Array.from(historical ? [] : rootChildrenByNode)
         .filter(([nodeId, list]) => nodeId !== "" && list.length > 0)
         .map(([nodeId, list]) => ({ frameId: nodeId, children: list }))
         .sort((a, b) => (a.frameId < b.frameId ? -1 : 1))
         .slice(0, MAX_FRAMES_PER_LEVEL),
-    [rootChildrenByNode],
+    [rootChildrenByNode, historical],
   );
 
   const l1 = useSubbotLevel(level1Frames, pickedByFrame);

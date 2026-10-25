@@ -994,8 +994,9 @@ type Run struct {
 	// Expiry bounds stale markers; a state transition ends their execution.
 	AwaitAnswersWaits map[string]AwaitAnswersWait `json:"await_answers_waits,omitempty" bson:"await_answers_waits,omitempty"`
 
-	WorkflowName string `json:"workflow_name" bson:"workflow_name"`
-	WorkflowHash string `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
+	WorkflowName string       `json:"workflow_name" bson:"workflow_name"`
+	Attempts     []RunAttempt `json:"attempts,omitempty" bson:"attempts,omitempty"`
+	WorkflowHash string       `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
 	// PublicContract is the bound `contract` of the program this run
 	// executes, in its wire form — the engine stamps it at launch and
 	// mirrors it on every pass (a resume whose program dropped the contract

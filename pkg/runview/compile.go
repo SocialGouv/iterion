@@ -43,7 +43,7 @@ type CompiledSource struct {
 	// its text.
 	Files map[string]string
 	// Included lists the files the {{include}} markers read, by slash path
-	// from the unit's root (absolute when outside it), sorted.
+	// from the bundle root when bundled, otherwise the unit root, sorted.
 	Included []string
 }
 
@@ -56,12 +56,12 @@ type CompiledSource struct {
 // the compiler read, each framed by its path, sorted — so a fragment or
 // an included file edited under a parked run is a source change the
 // resume gate sees.
-func workflowIdentity(u *unit.Unit, b *bundle.Bundle, includedFiles []string) (string, []string, error) {
+func workflowIdentity(u *unit.Unit, b *bundle.Bundle, includedSources map[string]string, source *workflowfile.Snapshot) (string, []string, error) {
 	h := sha256.New()
 	h.Write(u.Files[0].Source)
 	if b != nil {
-		hashBundleResourceDir(h, b.PromptsDir, "\x00bundle.prompt:")
-		hashBundleResourceDir(h, b.PresetsDir, "\x00bundle.preset:")
+		hashCapturedResourceDir(h, source.Files, "prompts", "\x00bundle.prompt:")
+		hashCapturedResourceDir(h, source.Files, "presets", "\x00bundle.preset:")
 	}
 	fragments := append([]unit.File(nil), u.Files[1:]...)
 	sort.Slice(fragments, func(i, j int) bool { return fragments[i].Rel < fragments[j].Rel })
@@ -71,17 +71,21 @@ func workflowIdentity(u *unit.Unit, b *bundle.Bundle, includedFiles []string) (s
 		h.Write([]byte{0})
 		h.Write(f.Source)
 	}
-	included := make([]string, 0, len(includedFiles))
-	bodies := make(map[string][]byte, len(includedFiles))
-	for _, full := range includedFiles {
-		body, err := os.ReadFile(full)
-		if err != nil {
-			return "", nil, fmt.Errorf("cannot read included file %s: %w", full, err)
-		}
-		rel := includeRel(u.Root, full)
-		included = append(included, rel)
-		bodies[rel] = body
+	included := make([]string, 0, len(includedSources))
+	bodies := make(map[string][]byte, len(includedSources))
+	root := u.Root
+	if b != nil {
+		root = b.Dir
 	}
+	if root == "" && len(u.Files) > 0 {
+		root = filepath.Dir(u.Files[0].Name)
+	}
+	for full, text := range includedSources {
+		rel := includeRel(root, full)
+		included = append(included, rel)
+		bodies[rel] = []byte(text)
+	}
+
 	sort.Strings(included)
 	for _, rel := range included {
 		h.Write([]byte("\x00include:"))
@@ -107,35 +111,21 @@ func includeRel(root, full string) string {
 	return filepath.ToSlash(rel)
 }
 
-// hashBundleResourceDir folds every *.md file under dir into h, in sorted
-// name order, framed as `<tag><name>\x00<body>`. No-op for an empty/missing
-// dir. Shared by computeWorkflowHash across bundle resource directories so
-// the framing stays identical and a new resource dir is one call, not a copy.
-func hashBundleResourceDir(h hash.Hash, dir, tag string) {
-	if dir == "" {
-		return
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
-			continue
+// hashCapturedResourceDir hashes the same bytes used by the compilation,
+// without re-reading files that can change between compile and publication.
+func hashCapturedResourceDir(h hash.Hash, files map[string]string, dir, tag string) {
+	names := []string{}
+	for rel := range files {
+		if filepath.ToSlash(filepath.Dir(rel)) == dir && strings.HasSuffix(strings.ToLower(rel), ".md") {
+			names = append(names, filepath.Base(rel))
 		}
-		names = append(names, e.Name())
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		body, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
 		h.Write([]byte(tag))
 		h.Write([]byte(name))
 		h.Write([]byte{0})
-		h.Write(body)
+		h.Write([]byte(files[dir+"/"+name]))
 	}
 }
 
@@ -514,6 +504,10 @@ func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle) (*ir.W
 // those names; the launch path's boundary cut is relLaunchError's, applied
 // by compileForLaunch (#1970).
 func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, error) {
+	return compileLoadedUnitMode(u, path, name, withHash, b, true)
+}
+
+func compileLoadedUnitMode(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, prepareExecution bool) (*ir.Workflow, *CompiledSource, error) {
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil, nil, fmt.Errorf("parse error: %s", d.Error())
@@ -526,11 +520,11 @@ func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle
 
 	// Bundle prompts must merge into the AST before ir.Compile so the
 	// validator sees them when resolving node-level prompt references.
-	if b != nil {
-		if err := MergeBundlePrompts(file, b); err != nil {
-			return nil, nil, err
-		}
+	promptFiles, promptRoot, err := BundlePromptFiles(b)
+	if err != nil {
+		return nil, nil, err
 	}
+	MergePromptFiles(file, promptFiles, promptRoot)
 
 	cr := ir.Compile(file)
 	if cr.HasErrors() {
@@ -544,12 +538,16 @@ func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle
 	for _, f := range u.Files {
 		cs.Files[f.Rel] = string(f.Source)
 	}
+	cr.Workflow.SourceSnapshot, err = captureWorkflowSource(u, b, promptFiles, cr.IncludedSources)
+	if err != nil {
+		return nil, nil, err
+	}
 	// The identity is taken after the compile — the include closure is what
 	// the compiler read — and after the bundle merge, so a bundle upgrade
 	// that swaps a prompt body invalidates `iterion resume`'s change
 	// detection as surely as an edit to the .bot does.
 	if withHash {
-		hash, included, err := workflowIdentity(u, b, cr.IncludedFiles)
+		hash, included, err := workflowIdentity(u, b, cr.IncludedSources, cr.Workflow.SourceSnapshot)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -559,8 +557,10 @@ func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle
 	if path != "" {
 		mcpDir = filepath.Dir(path)
 	}
-	if err := mcp.PrepareWorkflow(cr.Workflow, mcpDir); err != nil {
-		return nil, nil, err
+	if prepareExecution {
+		if err := mcp.PrepareWorkflow(cr.Workflow, mcpDir); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return cr.Workflow, cs, nil

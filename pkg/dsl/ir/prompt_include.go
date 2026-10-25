@@ -110,7 +110,8 @@ type includeBudget struct {
 	blown      bool
 	// files is every file read into a body, in expansion order: the
 	// closure a caller folds into the source's identity.
-	files []string
+	files   []string
+	sources map[string]string
 }
 
 // includedFiles is every file the expansion read, once each, sorted.
@@ -149,6 +150,10 @@ func expandPromptIncludesNested(body, baseDir string, stack []string, budget *in
 			return ""
 		}
 		budget.files = append(budget.files, full)
+		if budget.sources == nil {
+			budget.sources = make(map[string]string)
+		}
+		budget.sources[full] = content
 		budget.bytes += int64(len(content))
 		if budget.bytes > maxPromptIncludeTotalBytes {
 			budget.blown = true

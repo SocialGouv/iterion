@@ -1,3 +1,4 @@
+import { useRunAttempt } from "@/hooks/useRunAttempt";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
@@ -5,18 +6,19 @@ import { getRunWorkflow, type WireWorkflow } from "@/api/runs";
 import { useRunStore } from "@/store/run";
 import { humanizeNodeId } from "./nodeKindResolver";
 
-// useNodeLabel returns a labeller for the ACTIVE run's nodes: the
+// useNodeLabel returns a labeller for the selected attempt's nodes: the
 // authored `description:` when the workflow declares one, else the
-// humanizeNodeId heuristic. It shares the ["run-workflow", runId] query
+// humanizeNodeId heuristic. It shares the ["run-workflow", runId, key] query
 // (staleTime: Infinity) with useRunChatMessages, so components deep in
 // the run console (StatusHero, DetailHeader) get authored labels
 // without threading the workflow through props — before the workflow
 // loads, the heuristic answers.
 export function useNodeLabel(): (nodeId: string) => string {
   const runId = useRunStore((s) => s.runId);
+  const { attempt, key } = useRunAttempt();
   const workflowQuery = useQuery<WireWorkflow>({
-    queryKey: ["run-workflow", runId],
-    queryFn: () => getRunWorkflow(runId!),
+    queryKey: ["run-workflow", runId, key],
+    queryFn: () => getRunWorkflow(runId!, attempt?.id),
     enabled: !!runId,
     staleTime: Infinity,
   });

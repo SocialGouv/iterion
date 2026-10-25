@@ -261,6 +261,9 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 	}
 
 	output, err := e.subbotRunner(ctx, SubbotRequest{
+		OnChildAttached: func(childRunID string) error {
+			return e.emitBranch(ctx, rs.runID, branchID, store.EventSubbotAttached, nodeID, map[string]any{"child_run_id": childRunID})
+		},
 		Source:      sn.Source,
 		Vars:        vars,
 		ParentRunID: rs.runID,

@@ -7,6 +7,9 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getRunWorkflow, type ExecutionState } from "@/api/runs";
 import { useRunStore } from "@/store/run";
+import { attemptChildren } from "@/lib/runAttempt";
+import { useRunAttempt } from "@/hooks/useRunAttempt";
+import { AttemptPicker } from "./runView/AttemptPicker";
 import { useUIStore } from "@/store/ui";
 import { useInlineSubbotData } from "@/hooks/useInlineSubbotData";
 import { useRunChildren } from "@/hooks/useRunChildren";
@@ -74,8 +77,9 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   const setRunId = useRunStore((s) => s.setRunId);
   const reset = useRunStore((s) => s.reset);
   const snapshot = useRunStore((s) => s.snapshot);
-  const events = useRunStore((s) => s.events);
-  const executionsById = useRunStore((s) => s.executionsById);
+  const fullEvents = useRunStore((s) => s.events);
+  const attemptScope = useRunAttempt();
+  const { events, executionsById, attempt, key: attemptKey, isCurrent: isCurrentAttempt } = attemptScope;
   const wsState = useRunStore((s) => s.wsState);
   const followTail = useRunStore((s) => s.followTail);
   const setFollowTail = useRunStore((s) => s.setFollowTail);
@@ -100,7 +104,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     handleEventSelect,
     handleClearSelection,
     handleToggleFollowLive,
-  } = useSelectionState(runId);
+  } = useSelectionState(runId, attemptKey);
 
   // diffFile / diffMode / editFile dialogs + reset-on-runId.
   const {
@@ -272,16 +276,16 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   }, [runId, setBottomTabPinned]);
 
   const wsHandle = useRunWebSocket(runId);
-  useRunToasts(events, snapshot?.last_seq);
+  useRunToasts(fullEvents, snapshot?.last_seq);
 
   // --- Inline subbot expansion feeds ------------------------------------
   // Children of this run + the parent IR (for grouping children by
-  // their spawning subbot node). The IR is immutable per run → long
+  // their spawning subbot node). The IR is immutable per attempt → long
   // staleTime; RunCanvasIR keeps its own plain fetch (useWorkflowLoad),
   // so this adds one request, not a second lifecycle.
   const parentWfQuery = useQuery({
-    queryKey: ["run-workflow", runId],
-    queryFn: () => getRunWorkflow(runId!),
+    queryKey: ["run-workflow", runId, attemptKey],
+    queryFn: () => getRunWorkflow(runId!, attempt?.id),
     enabled: !!runId,
     staleTime: 5 * 60_000,
   });
@@ -294,8 +298,8 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   });
 
   const childrenByNode = useMemo(
-    () => groupChildrenByNode(childRuns, parentWf),
-    [childRuns, parentWf],
+    () => groupChildrenByNode(attemptChildren(childRuns, attemptScope, Object.values(snapshot?.run.subbot_children ?? {})), parentWf),
+    [childRuns, parentWf, attemptScope, snapshot?.run.subbot_children],
   );
   // Per-frame active tab picks (frameId -> child run id). Owned here so
   // the recursive data hook can follow the SELECTED chain into nested
@@ -305,7 +309,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   );
   useEffect(() => {
     setSubRunPicks(new Map());
-  }, [runId]);
+  }, [runId, attemptKey]);
   const handleSelectSubRunChild = useCallback(
     (frameId: string, childRunId: string) => {
       setSubRunPicks((prev) => {
@@ -326,7 +330,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     childWorkflowsByNode,
     childExecutionsByRun,
     selectedChildByFrame,
-  } = useInlineSubbotData(childrenByNode, subRunPicks);
+  } = useInlineSubbotData(childrenByNode, subRunPicks, !isCurrentAttempt);
 
   const liveExecutions = useMemo(
     () => Array.from(executionsById.values()),
@@ -341,11 +345,11 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
 
   // Live-follow node id with sticky fallback. See useFollowLiveNode.
   const { followLiveNodeId } = useFollowLiveNode({
-    runId,
+    runId: runId ? `${runId}:${attemptKey}` : null,
     scrubSeq,
     events,
     executionsById,
-    runStatus: snapshot?.run?.status,
+    runStatus: isCurrentAttempt ? snapshot?.run?.status : "finished",
   });
 
   const wfSelectedNodeId =
@@ -438,7 +442,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     return <RunViewSkeleton />;
   }
 
-  const active = snapshot.run.status === "running";
+  const active = isCurrentAttempt && snapshot.run.status === "running";
   // The inline Monaco file-editor writes back to the run's on-disk
   // worktree; that endpoint 409s when the worktree is gone (a cloud run's
   // worktree lives on the runner pod; a finalized/gc'd local run's is torn
@@ -450,7 +454,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   // Drive the EventLog filter from the canvas/detail selection so a
   // click on a node implicitly narrows the event stream.
   const eventLogSelection = detailExec?.execution_id ?? null;
-  const liveSeq = snapshot.last_seq;
+  const liveSeq = events[events.length - 1]?.seq ?? snapshot.last_seq;
   const scrubbing = scrubSeq !== null;
 
   // Pre-pickup state: the run sits on the NATS queue. RunMetrics and
@@ -640,6 +644,17 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                 onJumpToFailed={handleJumpToFailed}
                 bare
               />
+              <AttemptPicker />
+              {!isCurrentAttempt && childrenByNode.size > 0 && (
+                <div className="px-3 py-1 text-xs text-fg-muted">
+                  Sub-bots stay compact in historical attempts. Open child history:
+                  {[...childrenByNode.values()].flat().map((child) => (
+                    <a key={child.id} className="ml-2 text-accent underline" href={`/runs/${encodeURIComponent(child.id)}`}>
+                      {child.name || child.id}
+                    </a>
+                  ))}
+                </div>
+              )}
               {snapshot.run.status === "paused_operator" && (
                 <OperatorPauseBanner run={snapshot.run} />
               )}

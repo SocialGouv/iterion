@@ -527,11 +527,8 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// in cloud, the platform ceiling clamp — both mutate wf.Budget
 		// before the engine runs) so the studio Overview draws budget meters
 		// with a denominator. A resume re-stamps the same value through
-		// stampEffectiveBudget; the non-nil guard preserves a prior snapshot
-		// if a --force resume dropped the budget: block.
-		if b := e.effectiveBudgetSnapshot(); b != nil {
-			run.Budget = b
-		}
+		// stampEffectiveBudget, including an uncapped attempt.
+		run.Budget = e.effectiveBudgetSnapshot()
 		// The raw ask next to the effective caps: what a resume replays
 		// (Run.Budget is what it displays). Only ever set here, at launch;
 		// a raise on resume is persisted by the resume surface itself.
@@ -641,9 +638,6 @@ func (e *Engine) effectiveBudgetSnapshot() *store.RunBudget {
 // one puts the lie back.
 func (e *Engine) stampEffectiveBudget(ctx context.Context, runID string) {
 	b := e.effectiveBudgetSnapshot()
-	if b == nil {
-		return
-	}
 	if err := e.store.SetRunBudgetSnapshot(ctx, runID, b); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: resume: refresh effective budget snapshot on %s: %v (the doc keeps the caps of the previous attempt)", runID, err)
 	}

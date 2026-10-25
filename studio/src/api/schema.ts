@@ -7142,6 +7142,13 @@ export interface components {
             success_when: string;
             version: number;
         };
+        RunAttempt: {
+            budget?: components["schemas"]["RunBudget"];
+            id: string;
+            /** Format: date-time */
+            started_at: string;
+            workflow_hash?: string;
+        };
         RunBudget: {
             max_cost_usd?: number;
             max_duration?: string;
@@ -7153,6 +7160,7 @@ export interface components {
         RunHeader: {
             active_duration_ms: number;
             admission?: components["schemas"]["AdmissionDecision"];
+            attempts?: components["schemas"]["RunAttempt"][];
             auto_merge?: boolean;
             backends_used?: components["schemas"]["BackendUsage"][];
             bank_state?: string;
@@ -7220,6 +7228,9 @@ export interface components {
             skipped_cred_reopens_at?: string;
             source?: components["schemas"]["RunSource"];
             status: string;
+            subbot_children?: {
+                [key: string]: string;
+            };
             tenant_id?: string;
             /** Format: date-time */
             updated_at: string;
@@ -7427,11 +7438,14 @@ export interface components {
             type: string;
         };
         WireWorkflow: {
+            attempt?: components["schemas"]["RunAttempt"];
             edges: components["schemas"]["WireEdge"][];
             entry: string;
             name: string;
             nodes: components["schemas"]["WireNode"][];
+            provenance: string;
             stale_hash?: boolean;
+            workflow_hash?: string;
         };
         WorkflowContext: {
             bundle_revision?: string;
@@ -14150,7 +14164,10 @@ export interface operations {
     };
     getRunsByIdWorkflow: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Immutable attempt snapshot ID; omitted selects the current attempt. */
+                attempt?: string;
+            };
             header?: never;
             path: {
                 id: string;
@@ -14167,6 +14184,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["WireWorkflow"];
                 };
+            };
+            /** @description Run, attempt snapshot, or legacy bot source is unavailable (error_code and source identify the missing provenance). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

@@ -399,6 +399,7 @@ export interface AlertEvent extends RunEventBase {
 // so a comparison against a type the backend doesn't define is a
 // compile error. Extend this list in lockstep with pkg/store/event.go.
 export type PassthroughEventType =
+  | "subbot_attached"
   | "run_started"
   | "branch_started"
   | "branch_finished"
