@@ -58,18 +58,13 @@ var skillsListRe = regexp.MustCompile(`^\s+skills:\s*\[([^\]]*)\]`)
 var skillFrontmatterNameRe = regexp.MustCompile(`(?m)^name:\s*(\S+)\s*$`)
 
 func TestCatalogSkillReferencesResolve(t *testing.T) {
-	teamBots, err := filepath.Glob("*/main.bot")
-	if err != nil {
-		t.Fatalf("glob team bots: %v", err)
-	}
-	demoBots, err := filepath.Glob("../examples/*/main.bot")
-	if err != nil {
-		t.Fatalf("glob demo bots: %v", err)
-	}
-	all := append(teamBots, demoBots...)
-	if len(all) == 0 {
-		t.Fatal("no catalog bots found — the glob or the layout changed")
-	}
+	// Every shipped workflow, not only each entry: a skills: list resolves
+	// against the DECLARING file's directory, so a subbot child and a bundle
+	// sibling owe the gate exactly what a main.bot owes — and the guard that
+	// globbed mains alone passed over every child's declarations. The
+	// corpus table is floored per root, where the globs had an emptiness
+	// check.
+	all := catalogWorkflowFiles(t)
 
 	checked := 0
 	for _, botPath := range all {

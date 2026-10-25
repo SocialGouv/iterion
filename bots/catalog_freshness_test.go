@@ -11,30 +11,23 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 )
 
-// catalogTemplates finds every catalog template the way discovery walks —
-// recursively under bots/ AND examples/ — so the snapshot/restore set
-// covers everything RegenerateWhatsNextCatalog's own write set can reach.
-func catalogTemplates(repoRoot string) ([]string, error) {
-	var templates []string
-	for _, root := range []string{"bots", "examples"} {
-		rootDir := filepath.Join(repoRoot, root)
-		walkErr := filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				if os.IsNotExist(err) {
-					return filepath.SkipDir // examples/ may not exist
-				}
-				return err
-			}
-			if !d.IsDir() && d.Name() == "iterion-bot-catalog-static.md" {
-				templates = append(templates, path)
-			}
-			return nil
-		})
-		if walkErr != nil && !os.IsNotExist(walkErr) {
-			return nil, walkErr
-		}
-	}
-	return templates, nil
+// catalogTemplateRoot and exampleCatalogTemplateRoot are the two roots of
+// the snapshot/restore set — every catalog template
+// RegenerateWhatsNextCatalog's own write set can reach. The recursive walk
+// this replaced SkipDir'd a missing examples/, leaving the guard green over
+// a write set it no longer mirrored; catalogRootFiles floors the bots/ root
+// on its own. No example ships a template today, so the examples root
+// carries floor 0: a template added there must join the snapshot set, and
+// its presence is what the root tracks. A template nested one level deeper
+// than today's flat layout reddens the routing guard before it can reach
+// regen's write set unseen.
+var (
+	catalogTemplateRoot        = catalogRoot{"*/iterion-bot-catalog-static.md", 2, "every router bundle's generated-catalog template"}
+	exampleCatalogTemplateRoot = catalogRoot{"../examples/*/iterion-bot-catalog-static.md", 0, "catalog templates under examples/ — none ships today; a new one joins the snapshot set"}
+)
+
+func catalogTemplates(t *testing.T) []string {
+	return append(catalogRootFiles(t, catalogTemplateRoot), catalogRootFiles(t, exampleCatalogTemplateRoot)...)
 }
 
 // TestCommittedCatalogIsFresh fails when the committed generated catalog
@@ -53,21 +46,12 @@ func TestCommittedCatalogIsFresh(t *testing.T) {
 	}
 	// Every bundle shipping the static template owns a generated catalog
 	// (whats-next, issue-triage, …) — snapshot each committed copy, regen
-	// all of them, and compare in place. The snapshot set is derived the
-	// same way discovery walks (recursively under bots/ AND examples/):
-	// a template the snapshot misses is one regen rewrites without the
-	// guard ever snapshotting or restoring it.
-	templates, err := catalogTemplates(repoRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Both router bundles ship a template, and this package always runs
-	// from <repo>/bots: a walk that finds fewer is a walk that stopped
-	// reaching them, and skipping would leave the committed catalogs
-	// unchecked without saying so.
-	if len(templates) < 2 {
-		t.Fatalf("only %d catalog template(s) discovered — the walk is not reaching the router bundles", len(templates))
-	}
+	// all of them, and compare in place. The snapshot set is the corpus's
+	// template roots (catalogTemplateRoot, floored at two — both router
+	// bundles ship one), so a template the snapshot misses reddens there
+	// instead of being rewritten by regen without ever being snapshotted
+	// or restored.
+	templates := catalogTemplates(t)
 	committed := map[string][]byte{}
 	for _, tmpl := range templates {
 		genPath := filepath.Join(filepath.Dir(tmpl), "skills", "iterion-bot-catalog.md")

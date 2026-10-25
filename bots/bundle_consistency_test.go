@@ -34,18 +34,11 @@ func TestCatalogBotsBundleConsistencyClean(t *testing.T) {
 	// The bundle manifest (dispatch_vars, invocations) binds to the bundle's
 	// entry workflow — its main.bot — not to sibling workflows; the syntax
 	// floor (Input.Syntax) alone reads every root-level .bot of the bundle.
-	teamBots, err := filepath.Glob("*/main.bot")
-	if err != nil {
-		t.Fatalf("glob: %v", err)
-	}
-	demoBots, err := filepath.Glob("../examples/*/main.bot")
-	if err != nil {
-		t.Fatalf("glob examples: %v", err)
-	}
-	mainBots := append(teamBots, demoBots...)
-	if len(mainBots) == 0 {
-		t.Fatal("no catalog bots found under bots/*/main.bot or examples/*/main.bot")
-	}
+	// So the guard reads the ENTRY roots (teamEntryFiles/exampleEntryFiles),
+	// each floored under its own discovery: a rename that stops a main.bot
+	// spelling matching reddens there, naming the root, instead of leaving
+	// this cross-check green over nothing.
+	mainBots := append(teamEntryFiles(t), exampleEntryFiles(t)...)
 
 	checked := 0
 	for _, mainBot := range mainBots {

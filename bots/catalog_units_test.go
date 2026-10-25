@@ -45,9 +45,22 @@ func orphanFragments(botDirs []string) []string {
 // TestEveryFragmentIsImported: every lib/*.bot of a catalog bot or an
 // example is reached by that bot's imports.
 func TestEveryFragmentIsImported(t *testing.T) {
-	teamDirs, _ := filepath.Glob("*/")
-	demoDirs, _ := filepath.Glob("../examples/*/")
-	if orphans := orphanFragments(append(teamDirs, demoDirs...)); len(orphans) > 0 {
+	// The bot dirs come from the corpus table, floored per root — the two
+	// dir globs this replaced discarded their errors, so a layout rename
+	// that stopped one matching left that tree's fragments unguarded in
+	// silence. Every dir that holds a main.bot holds corpus files, so the
+	// derived set is the globbed one; a corpus dir without a main (smoke/)
+	// is skipped by orphanFragments itself.
+	seen := map[string]bool{}
+	var botDirs []string
+	for _, f := range catalogWorkflowFiles(t) {
+		dir := filepath.Dir(f)
+		if !seen[dir] {
+			seen[dir] = true
+			botDirs = append(botDirs, dir)
+		}
+	}
+	if orphans := orphanFragments(botDirs); len(orphans) > 0 {
 		t.Fatalf("fragments nothing imports: %v", orphans)
 	}
 }

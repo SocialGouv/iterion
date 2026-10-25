@@ -78,18 +78,11 @@ func isAllowed(bot, varName, pattern string) bool {
 }
 
 func TestCatalogBotsAreRepoAgnostic(t *testing.T) {
-	// The productised team lives under bots/ (this package's dir); the
-	// remaining single-file catalog bots (e.g. clarify) stay under
-	// examples/. Cover both so neither set can regress.
-	teamBots := teamBotFiles(t)
-	demoBots, err := filepath.Glob("../examples/*/main.bot")
-	if err != nil {
-		t.Fatalf("glob demo catalog bots: %v", err)
-	}
-	botPaths := append(teamBots, demoBots...)
-	if len(botPaths) == 0 {
-		t.Fatal("no catalog bots found under bots/*/main.bot or examples/*/main.bot")
-	}
+	// The whole corpus table, floored per root — the shipped examples and
+	// their subbot children included, whose var defaults the main-bot glob
+	// this replaces never read. A child hardcoding iterion's own layout is
+	// the same overfit as a main.
+	botPaths := catalogWorkflowFiles(t)
 
 	for _, botPath := range botPaths {
 		bot := filepath.Base(filepath.Dir(botPath))
@@ -275,12 +268,10 @@ func TestPerBotMemoryConsumersHaveStableBotID(t *testing.T) {
 }
 
 func TestCatalogBotsAreStackAgnostic(t *testing.T) {
-	teamBots := teamBotFiles(t)
-	demoBots, _ := filepath.Glob("../examples/*/main.bot")
-	botPaths := append(teamBots, demoBots...)
-	if len(botPaths) == 0 {
-		t.Fatal("no catalog bots found under bots/*/main.bot or examples/*/main.bot")
-	}
+	// The whole corpus table, floored per root — the children and loose
+	// examples the main-bot glob this replaces never read: stack knowledge
+	// hidden in a subbot's DSL is the same debt as in a main.
+	botPaths := catalogWorkflowFiles(t)
 
 	matched := map[string]bool{} // bot -> had >=1 stack pattern
 

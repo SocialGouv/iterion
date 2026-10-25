@@ -1,10 +1,7 @@
 package bots
 
 import (
-	"io/fs"
-	"path/filepath"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -33,23 +30,12 @@ var outputsRef = regexp.MustCompile(`\{\{\s*!?\s*outputs\.[A-Za-z0-9_.]+\s*\}\}`
 // required check, every PR on the repo became unmergeable with no error
 // anywhere. Found by reading a run log, not by any test.
 func TestCatalogToolCommandsResolveTheirRefs(t *testing.T) {
-	// Every .bot, not just each bundle's main: a subbot source is precisely
-	// where an unresolvable ref hides from a main.bot-only sweep.
-	var targets []string
-	for _, root := range []string{".", "../examples"} {
-		if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".bot") {
-				return nil
-			}
-			targets = append(targets, path)
-			return nil
-		}); err != nil {
-			t.Fatalf("walk %s: %v", root, err)
-		}
-	}
-	if len(targets) == 0 {
-		t.Fatal("no catalog workflows found — discovery likely broke")
-	}
+	// Every shipped workflow, not just each bundle's main: a subbot source
+	// is precisely where an unresolvable ref hides from a main-bot-only
+	// sweep. The corpus table carries it, floored per root — the unbounded
+	// walk this replaced had only a total emptiness check, and read the
+	// test fixtures beside the shipped corpus.
+	targets := catalogWorkflowFiles(t)
 
 	checked := 0
 	for _, path := range targets {

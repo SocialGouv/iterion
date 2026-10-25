@@ -29,19 +29,16 @@ var typingAllowlist = map[string]map[ir.DiagCode]bool{
 	"copilot": {ir.DiagWithLiteralTypeMismatch: true},
 }
 
-// TestCatalogBotsNoTypingRegressions compiles every catalog workflow (bundles
-// under bots/ + loose .bot files under examples/) and asserts none trips a
-// Phase-2 typing diagnostic. Prompts are not merged: the typing checks read
-// only schemas, edges and compute expressions, so an unresolved bundle prompt
-// is irrelevant here.
+// TestCatalogBotsNoTypingRegressions compiles every shipped workflow (the
+// catalogRoots table — bundles, examples, the subbot children and the loose
+// files included) and asserts none trips a Phase-2 typing diagnostic. Prompts
+// are not merged: the typing checks read only schemas, edges and compute
+// expressions, so an unresolved bundle prompt is irrelevant here.
 func TestCatalogBotsNoTypingRegressions(t *testing.T) {
-	teamBots := teamBotFiles(t)
-	demoMain, _ := filepath.Glob("../examples/*/main.bot")
-	demoLoose, _ := filepath.Glob("../examples/*.bot")
-	targets := append(append(teamBots, demoMain...), demoLoose...)
-	if len(targets) == 0 {
-		t.Fatal("no catalog workflows found")
-	}
+	// The whole corpus, floored per root: the two globs this replaces
+	// DISCARDED their errors, so a bad pattern read as an empty corpus and a
+	// green verdict.
+	targets := catalogWorkflowFiles(t)
 
 	checked := 0
 	for _, path := range targets {

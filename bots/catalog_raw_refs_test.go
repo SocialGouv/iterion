@@ -73,20 +73,10 @@ func TestCatalogToolCommandsDoNotOptOutOfShellEscaping(t *testing.T) {
 func TestCatalogHasNoAuthorQuotedRefs(t *testing.T) {
 	// The catalog AND the shipped examples: an example is copied by whoever
 	// starts a bot, so an injectable shape there propagates further than one
-	// in a catalog bot.
-	paths := teamBotFiles(t)
-	examples, err := filepath.Glob("../examples/*/*.bot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	more, err := filepath.Glob("../examples/*.bot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	paths = append(append(paths, examples...), more...)
-	if len(paths) == 0 {
-		t.Fatal("no bots found — the lint would pass vacuously")
-	}
+	// in a catalog bot. The whole corpus table, floored per root, carries
+	// both — the children and the loose files this guard used to glob for
+	// itself included.
+	paths := catalogWorkflowFiles(t)
 	for _, path := range paths {
 		pr := parseBotUnit(path)
 		if pr.File == nil {

@@ -100,21 +100,11 @@ func codeReading(t *testing.T, body string) (lines []string, code []bool) {
 // statement it copies, and a stale copy is what tells a reader the class is
 // closed.
 func TestGeneratedCatalogPreservesTheTemplateCodeReading(t *testing.T) {
-	repoRoot, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	templates, err := catalogTemplates(repoRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A walk that finds nothing is a green gate over 3500 committed lines of
-	// routing table — the shape a rename of the template would leave behind.
-	// Both router bundles ship one, and the package's working directory is
-	// always <repo>/bots, so the floor cannot false-positive.
-	if len(templates) < 2 {
-		t.Fatalf("only %d catalog template(s) discovered — the walk is not reaching the router bundles", len(templates))
-	}
+	// Every catalog template, floored per root: a walk that finds nothing is
+	// a green gate over 3500 committed lines of routing table — the shape a
+	// rename of the template would leave behind. Both router bundles ship
+	// one, and the floor saying so lives on the root (catalogTemplateRoot).
+	templates := catalogTemplates(t)
 	for _, tmpl := range templates {
 		genPath := filepath.Join(filepath.Dir(tmpl), "skills", catalogGeneratedFile)
 		tmplBody, err := os.ReadFile(tmpl)
@@ -214,29 +204,22 @@ func TestTheGatesCodeReadingBreaksLinesWhereTheRendererDoes(t *testing.T) {
 	}
 }
 
-// bundleManifests lists every bundle manifest the way discovery walks —
-// recursively under bots/ AND examples/ — so a bundle nested one level
-// deeper than today's flat layout is still read.
-func bundleManifests() ([]string, error) {
-	var manifests []string
-	for _, root := range []string{".", "../examples"} {
-		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				if os.IsNotExist(err) {
-					return filepath.SkipDir // examples/ may not exist
-				}
-				return err
-			}
-			if !d.IsDir() && d.Name() == "manifest.yaml" {
-				manifests = append(manifests, path)
-			}
-			return nil
-		})
-		if err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("walk %s for bundle manifests: %w", root, err)
-		}
-	}
-	return manifests, nil
+// bundleManifestRoot and exampleManifestRoot are the two manifest roots of
+// the shipped corpus. The recursive walk this replaces SkipDir'd a missing
+// examples/, and its one floor counted BOTH trees together — a rename that
+// stopped examples/ matching left this guard green over bots/ alone, which
+// still cleared the total. catalogRootFiles floors each root on its own. A
+// bundle nested one level deeper than today's flat layout is the routing
+// guard's business — TestEveryRoutableBotIsAShippedWorkflow forces its
+// workflows into the corpus or names them — so a manifest whose bundle
+// escapes these roots cannot escape that guard either.
+var (
+	bundleManifestRoot  = catalogRoot{"*/manifest.yaml", 30, "every bundle manifest under bots/"}
+	exampleManifestRoot = catalogRoot{"../examples/*/manifest.yaml", 2, "every example bundle's manifest"}
+)
+
+func bundleManifests(t *testing.T) []string {
+	return append(catalogRootFiles(t, bundleManifestRoot), catalogRootFiles(t, exampleManifestRoot)...)
 }
 
 // TestBotManifestProseLeavesNoFenceOpen fails when a shipped bundle's
@@ -246,17 +229,10 @@ func bundleManifests() ([]string, error) {
 // that repair: the field is word-wrapped prose, and a line that begins with
 // a fence marker is a wrap accident, not a code block anyone meant.
 func TestBotManifestProseLeavesNoFenceOpen(t *testing.T) {
-	manifests, err := bundleManifests()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A scan that finds nothing is a green gate over an unread tree. The
-	// floor is well under the shipped count, and the named bundle is the one
-	// whose description carried this defect — a walk that misses it is
-	// answering about a tree nobody ships.
-	if len(manifests) < 20 {
-		t.Fatalf("only %d bundle manifest(s) found under bots/ and examples/ — the walk is not reaching the bundles", len(manifests))
-	}
+	manifests := bundleManifests(t)
+	// The named bundle is the one whose description carried this defect — a
+	// walk that misses it is answering about a tree nobody ships. The floors
+	// live on the two roots (bundleManifestRoot/exampleManifestRoot).
 	if !slices.Contains(manifests, filepath.Join("review-pr", "manifest.yaml")) {
 		t.Fatalf("the walk did not reach review-pr/manifest.yaml; it found %v", manifests)
 	}

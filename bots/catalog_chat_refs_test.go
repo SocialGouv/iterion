@@ -41,18 +41,13 @@ import (
 // `iterion validate` catches it for ANY bundle, not just the catalog — is
 // tracked in #485. This test pins the shipped contracts until then.
 func TestCatalogChatManifestsMatchWorkflow(t *testing.T) {
-	teamBots, err := filepath.Glob("*/main.bot")
-	if err != nil {
-		t.Fatalf("glob: %v", err)
-	}
-	demoBots, err := filepath.Glob("../examples/*/main.bot")
-	if err != nil {
-		t.Fatalf("glob examples: %v", err)
-	}
-	mainBots := append(teamBots, demoBots...)
-	if len(mainBots) == 0 {
-		t.Fatal("no catalog bots found under bots/*/main.bot or examples/*/main.bot")
-	}
+	// The ENTRY roots (teamEntryFiles/exampleEntryFiles), not the whole
+	// corpus: a chat block names the nodes of the workflow its manifest
+	// launches — the entry — so a sibling or a subbot child would be judged
+	// against a contract that is not its own. Each root is floored under its
+	// own discovery: a rename that stops a main.bot spelling matching
+	// reddens there instead of leaving this cross-check green over nothing.
+	mainBots := append(teamEntryFiles(t), exampleEntryFiles(t)...)
 
 	checked := 0
 	for _, mainBot := range mainBots {

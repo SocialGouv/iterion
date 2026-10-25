@@ -1,11 +1,8 @@
 package bots
 
 import (
-	"io/fs"
-	"path/filepath"
 	"regexp"
 	"sort"
-	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -28,21 +25,10 @@ import (
 // exists, the field exists, the type is right. Only the ROUTE is wrong, so
 // only a test that reads the route catches it.
 func TestCatalogFailMessagesReadTheNodeThatFailed(t *testing.T) {
-	var targets []string
-	for _, root := range []string{".", "../examples"} {
-		if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".bot") {
-				return nil
-			}
-			targets = append(targets, path)
-			return nil
-		}); err != nil {
-			t.Fatalf("walk %s: %v", root, err)
-		}
-	}
-	if len(targets) == 0 {
-		t.Fatal("no catalog workflows found — discovery likely broke")
-	}
+	// Every shipped workflow — the corpus table, floored per root, where
+	// the unbounded walk this replaced had only a total emptiness check and
+	// read the test fixtures beside the shipped corpus.
+	targets := catalogWorkflowFiles(t)
 
 	outputsOf := regexp.MustCompile(`outputs\.([A-Za-z0-9_]+)\.`)
 	checked := 0

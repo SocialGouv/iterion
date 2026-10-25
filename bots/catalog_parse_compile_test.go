@@ -73,12 +73,32 @@ type catalogRoot struct {
 // spelling, so the two enumerators of this file cannot drift apart.
 var bundleRoot = catalogRoot{"*/*.bot", 35, "the catalogue bundles under bots/, every entrypoint of each — not only main.bot"}
 
+// bundleEntryRoot and exampleEntryRoot are the two trees' ENTRY workflows,
+// for the guards whose verdict binds ONE file to the bundle that ships it —
+// a manifest cross-check, a chat surface. The manifest names the entry
+// workflow, not every sibling, so widening those guards to the whole corpus
+// would judge a sibling against its neighbour's contract. They go through
+// catalogRootFiles like any root, so a rename that stops the main.bot
+// spelling matching reddens naming the root, instead of leaving the guard
+// green over nothing.
+var (
+	bundleEntryRoot  = catalogRoot{"*/main.bot", 30, "every bundle's entry workflow — the file its manifest binds to"}
+	exampleEntryRoot = catalogRoot{"../examples/*/main.bot", 5, "every example's entry workflow"}
+)
+
+// teamEntryFiles lists the bundles' entry workflows — teamBotFiles' root,
+// narrowed to the file a manifest binds to.
+func teamEntryFiles(t *testing.T) []string { return catalogRootFiles(t, bundleEntryRoot) }
+
+// exampleEntryFiles lists the examples' entry workflows.
+func exampleEntryFiles(t *testing.T) []string { return catalogRootFiles(t, exampleEntryRoot) }
+
 // catalogRoots is the one definition of "every shipped workflow" this package
 // has: catalogWorkflowFiles walks the whole table, teamBotFiles reads
 // bundleRoot alone, and TestEveryRoutableBotIsAShippedWorkflow holds the table
-// against the discovery production actually routes. (The sibling guards that
-// glob `../examples/**` themselves still read their own subsets behind an
-// emptiness check.)
+// against the discovery production actually routes. Every guard in this
+// package enumerates the corpus through this table or through
+// catalogRootFiles on a root of its own — none globs examples/ privately.
 //
 // The floor is PER ROOT because a total cannot see a root: the standalone
 // examples are 7 of the 70 files the walk keeps, so a layout rename that

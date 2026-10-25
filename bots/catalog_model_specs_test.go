@@ -1,8 +1,6 @@
 package bots
 
 import (
-	"io/fs"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -27,21 +25,10 @@ import (
 // `invalid spec "claude-opus-5"` instead of asking the human — the exact
 // moment the workflow existed to hand over.
 func TestCatalogHumanLLMModelSpecsCarryAProvider(t *testing.T) {
-	var targets []string
-	for _, root := range []string{".", "../examples"} {
-		if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".bot") {
-				return nil
-			}
-			targets = append(targets, path)
-			return nil
-		}); err != nil {
-			t.Fatalf("walk %s: %v", root, err)
-		}
-	}
-	if len(targets) == 0 {
-		t.Fatal("no catalog workflows found — discovery likely broke")
-	}
+	// Every shipped workflow — the corpus table, floored per root, where
+	// the unbounded walk this replaced had only a total emptiness check and
+	// read the test fixtures beside the shipped corpus.
+	targets := catalogWorkflowFiles(t)
 
 	inspected := 0
 	for _, path := range targets {
