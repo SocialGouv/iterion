@@ -410,6 +410,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/state-of-the-art.md`](../state-of-the-art.md) | State of the art — how proven is each surface | backends.md and board-epics.md, and a leading emoji slugs differently on | — |
 | [`docs/studio-ux-audit-2026-07.md`](../studio-ux-audit-2026-07.md) | Studio UX coherence audit — 2026-07 | Snapshot of the systematic UX audit run against the studio (cloud-first | — |
 | [`docs/supervisors.md`](../supervisors.md) | Supervisor agents | A **supervisor** is an LLM agent that watches another running agent and | — |
+| [`docs/test-capability-ledger.md`](../test-capability-ledger.md) | Test capability ledger | Generate the skip and sleep census from the working tree, without running tests | — |
 | [`docs/test-process-cleanup.md`](../test-process-cleanup.md) | Test helpers end with their test | Issue #956 exposed a sentinel loop in the dispatcher subbot lock fixture: | — |
 | [`docs/test-waits.md`](../test-waits.md) | Waiting for engine state in tests | Issue #930 separates the condition a test asserts from how quickly its host can | — |
 | [`docs/thinking-metrics.md`](../thinking-metrics.md) | Thinking (reasoning) metrics | Iterion surfaces two per-node extended-thinking metrics for LLM nodes: | — |
