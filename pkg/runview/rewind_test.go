@@ -456,7 +456,7 @@ func TestRewind_ArtifactContractSourceChanges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, currentRevision, err := CompileWorkflowWithHash(run.FilePath)
+		_, currentRevision, err := CompileWorkflowWithHash(run.FilePath, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1444,7 +1444,7 @@ func TestRewind_SkipsContractsOfTheSubgraphItInvalidates(t *testing.T) {
 	if latest.Contract != nil {
 		t.Errorf("the rewind tombstone carries a contract (%+v); the resume then re-checks the output the rewind just discarded", latest.Contract)
 	}
-	wf, err := CompileWorkflow(after.FilePath)
+	wf, err := CompileWorkflow(after.FilePath, "")
 	if err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}

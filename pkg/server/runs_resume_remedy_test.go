@@ -97,7 +97,7 @@ workflow scratch_ws:
 	if err := os.WriteFile(botPath, []byte(source), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, hash, err := runview.CompileWorkflowFromSource(botPath, source)
+	_, hash, err := runview.CompileWorkflowFromSource(botPath, source, "")
 	if err != nil {
 		t.Fatal(err)
 	}

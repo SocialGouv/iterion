@@ -22,13 +22,13 @@ func TestAnAuthorDocumentIsRefusedBeforeAnyRunExists(t *testing.T) {
 	if err := os.WriteFile(draft, []byte("dsl: 2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CompileWorkflow(draft); !errors.Is(err, bundle.ErrAuthorDocument) {
+	if _, err := CompileWorkflow(draft, ""); !errors.Is(err, bundle.ErrAuthorDocument) {
 		t.Fatalf("CompileWorkflow: %v, want ErrAuthorDocument", err)
 	}
-	if _, _, err := CompileWorkflowWithHash(draft); !errors.Is(err, bundle.ErrAuthorDocument) {
+	if _, _, err := CompileWorkflowWithHash(draft, ""); !errors.Is(err, bundle.ErrAuthorDocument) {
 		t.Fatalf("CompileWorkflowWithHash: %v, want ErrAuthorDocument", err)
 	}
-	if _, _, err := CompileWorkflowFromSource(draft, "dsl: 2\n"); !errors.Is(err, bundle.ErrAuthorDocument) {
+	if _, _, err := CompileWorkflowFromSource(draft, "dsl: 2\n", ""); !errors.Is(err, bundle.ErrAuthorDocument) {
 		t.Fatalf("CompileWorkflowFromSource: %v, want ErrAuthorDocument", err)
 	}
 

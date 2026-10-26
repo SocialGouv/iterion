@@ -45,7 +45,7 @@ func TestResume_aScratchLossIsShownBeforeAForceableRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	const runID = "run-stale-before-force"
-	_, hash, err := CompileWorkflowWithHash(botPath)
+	_, hash, err := CompileWorkflowWithHash(botPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}

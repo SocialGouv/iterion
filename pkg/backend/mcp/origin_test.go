@@ -29,7 +29,7 @@ func TestOriginTravelsFromEverySource(t *testing.T) {
 			"shadowed": {Name: "shadowed", Transport: ir.MCPTransportStdio, Command: "/bin/echo"},
 		},
 	}
-	if err := PrepareWorkflow(wf, dir); err != nil {
+	if err := PrepareWorkflow(wf, dir, dir); err != nil {
 		t.Fatalf("PrepareWorkflow: %v", err)
 	}
 

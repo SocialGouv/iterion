@@ -2544,9 +2544,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// must call it explicitly here, else wf.ResolvedMCPServers stays empty,
 	// buildMCPManager returns a nil manager, and every `mcp.<server>.*`
 	// wildcard resolves to zero tools (the firecrawl/repo-falcon plugins were
-	// silently inert in cloud runs). Fail loudly on a malformed catalog rather
-	// than run a bot missing the tools it declared.
-	if err := mcp.PrepareWorkflow(wf, workDir, r.cfg.Logger); err != nil {
+	// silently inert in cloud runs). The clone IS the project, so workDir is
+	// both the project dir (.mcp.json) and the run workspace ({{workspace}})
+	// — stated, never derived (#1800). Fail loudly on a malformed catalog
+	// rather than run a bot missing the tools it declared.
+	if err := mcp.PrepareWorkflow(wf, workDir, workDir, r.cfg.Logger); err != nil {
 		return fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err)
 	}
 

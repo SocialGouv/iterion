@@ -94,7 +94,7 @@ workflow operator_resume:
 	}
 
 	const runID = "run-operator-paused"
-	_, workflowHash, err := CompileWorkflowWithHash(botPath)
+	_, workflowHash, err := CompileWorkflowWithHash(botPath, "")
 	if err != nil {
 		t.Fatalf("CompileWorkflowWithHash: %v", err)
 	}
@@ -183,7 +183,7 @@ workflow operator_resume:
 		t.Fatalf("NewService: %v", err)
 	}
 	const runID = "run-operator-scratch"
-	_, workflowHash, err := CompileWorkflowWithHash(botPath)
+	_, workflowHash, err := CompileWorkflowWithHash(botPath, "")
 	if err != nil {
 		t.Fatalf("CompileWorkflowWithHash: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestResume_refusesALoneChildBeforePublishing(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 	const runID = "run-child-lone"
-	_, workflowHash, err := CompileWorkflowWithHash(botPath)
+	_, workflowHash, err := CompileWorkflowWithHash(botPath, "")
 	if err != nil {
 		t.Fatalf("CompileWorkflowWithHash: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestResume_theScratchRefusalComesBeforeTheSourceCheck(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 	const runID = "run-source-and-scratch"
-	_, hash, err := CompileWorkflowWithHash(botPath)
+	_, hash, err := CompileWorkflowWithHash(botPath, "")
 	if err != nil {
 		t.Fatalf("CompileWorkflowWithHash: %v", err)
 	}

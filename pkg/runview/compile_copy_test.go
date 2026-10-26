@@ -41,7 +41,7 @@ func TestACopyOfTheMainOutsideItsBundleCompilesAsTheBundlesMain(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The launch: source inline + the bundle dir.
-	wf, cs, b, err := compileForLaunch(copyPath, copyUnitMain, dir)
+	wf, cs, b, err := compileForLaunch(copyPath, copyUnitMain, dir, "")
 	if err != nil || wf == nil || b == nil {
 		t.Fatalf("launch of the copy: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestACopyOfTheMainOutsideItsBundleCompilesAsTheBundlesMain(t *testing.T) {
 		t.Fatalf("the compile did not hand its files over: %+v", cs)
 	}
 	// The resume: the copy's path alone + the recorded bundle dir.
-	_, rcs, _, err := compileForLaunch(copyPath, "", dir)
+	_, rcs, _, err := compileForLaunch(copyPath, "", dir, "")
 	if err != nil {
 		t.Fatalf("resume from the copy: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestACopyOfTheMainOutsideItsBundleCompilesAsTheBundlesMain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, want, err := CompileBundleWorkflow(opened.IterPath, opened); err != nil || want != cs.Hash {
+	if _, want, err := CompileBundleWorkflow(opened.IterPath, opened, ""); err != nil || want != cs.Hash {
 		t.Fatalf("bundle main: hash %s err %v, want %s", want, err, cs.Hash)
 	}
 	// A child INSIDE a bundle is its own unit, read beside itself.
@@ -75,7 +75,7 @@ func TestACopyOfTheMainOutsideItsBundleCompilesAsTheBundlesMain(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(child, "lib", "k.bot"), []byte("agent b:\n  backend: \"claude_code\"\n  model: \"anthropic/claude-opus-4-8\"\n  description: \"k\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, kcs, err := CompileBundleWorkflow(filepath.Join(child, "kid.bot"), opened); err != nil || kcs == "" {
+	if _, kcs, err := CompileBundleWorkflow(filepath.Join(child, "kid.bot"), opened, ""); err != nil || kcs == "" {
 		t.Fatalf("a child inside the bundle: %v", err)
 	}
 }
@@ -160,7 +160,7 @@ func TestAFileWithItsOwnFragmentsIsItsOwnUnit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(other, "lib", "nodes.bot"), []byte(foreign), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, cs, _, err := compileForLaunch(filepath.Join(other, "main.bot"), "", dir)
+	_, cs, _, err := compileForLaunch(filepath.Join(other, "main.bot"), "", dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}

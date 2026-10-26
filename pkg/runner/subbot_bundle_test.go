@@ -18,7 +18,7 @@ func TestPodSubbotBundleResourceScope(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			f := subbottest.New(t, kind)
 			r, st := subbotTestRunner(t)
-			wf, hash, b, err := runview.CompileWorkflowPath(f.Parent)
+			wf, hash, b, err := runview.CompileWorkflowPath(f.Parent, "")
 			if err != nil {
 				t.Fatal(err)
 			}

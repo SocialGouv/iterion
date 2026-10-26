@@ -29,7 +29,7 @@ func TestResume_inTheBackgroundARefusalBeforeTheClaimIsLogged(t *testing.T) {
 	if err := os.WriteFile(bot, []byte("\nworkflow stale:\n  entry: done\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, hash, err := runview.CompileWorkflowWithHash(bot)
+	_, hash, err := runview.CompileWorkflowWithHash(bot, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -175,6 +175,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/engine/dsl-quick-reference.md`](../agents/engine/dsl-quick-reference.md) | DSL quick reference — workflow dials, edges, budget | The exact syntax of the cross-cutting fields, one line each. | — |
 | [`docs/agents/engine/events-leases-and-schedules.md`](../agents/engine/events-leases-and-schedules.md) | Events, leases, queues and schedules — package invariants | One entry per package, verbatim from the engine map this tree replaces. | — |
 | [`docs/agents/engine/extensions-and-bot-sources.md`](../agents/engine/extensions-and-bot-sources.md) | Extensions, skills and bot sources — package invariants | One entry per package, verbatim from the engine map this tree replaces. | — |
+| [`docs/agents/engine/run-provenance.md`](../agents/engine/run-provenance.md) | Run provenance and execution attempts | A run keeps its ID across resumes. | — |
 | [`docs/agents/engine/tenancy-credentials-spend.md`](../agents/engine/tenancy-credentials-spend.md) | Tenancy, credentials and spend — package invariants | One entry per package, verbatim from the engine map this tree replaces. | — |
 | [`docs/agents/engine/workspace-and-review-scope.md`](../agents/engine/workspace-and-review-scope.md) | Workspace, review scope and sandboxes — package invariants | One entry per package, verbatim from the engine map this tree replaces. | — |
 | [`docs/agents/engine/worktree-finalization.md`](../agents/engine/worktree-finalization.md) | Worktree finalization (`worktree: auto`) | Read it when a run's workspace finalization misbehaves, or you touch `finalizeWorktree`. | — |
@@ -390,6 +391,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/review-merge-gate.md`](../review-merge-gate.md) | Review-&-merge gate (`interaction: review`) | A **review-&-merge gate** is a human node that walks the operator through | — |
 | [`docs/review-scope.md`](../review-scope.md) | 🔍 What a review gate shows | A human gate approves work. | — |
 | [`docs/reviews/codebase-2026-05-17.md`](../reviews/codebase-2026-05-17.md) | Iterion codebase review — 2026-05-17 | Author: deep review pass on `main` at commit `baa68ab8`. | — |
+| [`docs/reviews/impl-provenance.md`](../reviews/impl-provenance.md) | impl-provenance — delivery evidence | Worktree `run-provenance`, branch `leap/run-provenance`. | — |
 | [`docs/reviews/reliability-audit-2026-08-31.md`](../reviews/reliability-audit-2026-08-31.md) | Reliability audit 2026-08-31 — traceability matrix | Source: full-repo reliability inventory (docs + dogfood bilans + code) verified item-by-item | — |
 | [`docs/routers.md`](../routers.md) | Routers | Routers are the branch points of the graph — the difference between a linear script and a real workflow. | — |
 | [`docs/sandbox.md`](../sandbox.md) | 🛡️ iterion sandbox | The sandbox is the boundary that makes autonomous agents safe to run: every | — |

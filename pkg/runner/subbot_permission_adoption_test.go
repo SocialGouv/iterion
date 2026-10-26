@@ -66,7 +66,7 @@ func TestSubbotRunner_aGateThatCanAskKeepsTheChildOutOfACopyBasedParent(t *testi
 			childPath := writeSubbotFixture(t, parentDir, "child.bot", agentChildBot(tc.declared))
 			msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent", Permission: tc.runLevel}
 
-			childWf, _, _, err := runview.CompileWorkflowPath(childPath)
+			childWf, _, _, err := runview.CompileWorkflowPath(childPath, "")
 			if err != nil {
 				t.Fatal(err)
 			}

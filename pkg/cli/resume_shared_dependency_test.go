@@ -55,7 +55,7 @@ func TestResume_aSharedDependencyChangeComesAfterTheScratchLoss(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, hash, err := runview.CompileBundleWorkflow(child, b)
+			_, hash, err := runview.CompileBundleWorkflow(child, b, "")
 			if err != nil {
 				t.Fatal(err)
 			}

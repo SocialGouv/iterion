@@ -516,7 +516,21 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 				Message:  err.Error() + " — the tool sets reported here omit them",
 			})
 		}
-		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
+		// `iterion run` builds its engine with no WithWorkDir: the engine
+		// fills its own workDir with the process cwd and roots the run
+		// there. The tool sets predicted here are the ones a run launched
+		// from this directory resolves, so the {{workspace}} placeholders
+		// expand against the cwd — never the compiled file's directory,
+		// which is only where `.mcp.json` is read from (#1800).
+		workspace, wdErr := os.Getwd()
+		if wdErr != nil {
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "compile",
+				Severity: "warning",
+				Message:  fmt.Sprintf("cannot resolve the run workspace from the process cwd: %v — plugin {{workspace}} placeholders are reported unresolved", wdErr),
+			})
+		}
+		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path), workspace); err != nil {
 			result.CompileDiagnostics = append(result.CompileDiagnostics, err.Error())
 			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
 				Source:   "compile",

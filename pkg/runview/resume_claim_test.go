@@ -52,7 +52,7 @@ func TestResume_aRefusalBeforeTheClaimIsTheCallersError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, hash, err := CompileWorkflowWithHash(botPath)
+	_, hash, err := CompileWorkflowWithHash(botPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestResume_aClaimedResumeReturnsAtItsClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, hash, err := CompileWorkflowWithHash(botPath)
+	_, hash, err := CompileWorkflowWithHash(botPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +431,7 @@ func TestResume_doesNotWaitOnAnotherRunsNode(t *testing.T) {
 	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
 	ctx := context.Background()
 	ws, svc, holding := aWorkspaceHeldByAnotherRun(t, ctx, iterlog.Nop())
-	_, cs, b, err := compileForLaunch(ws.botPath, "", "")
+	_, cs, b, err := compileForLaunch(ws.botPath, "", "", "")
 	if err != nil || b == nil {
 		t.Fatalf("compile: bundle=%v err=%v", b != nil, err)
 	}
@@ -511,7 +511,7 @@ func TestResume_aPathsRefusalIsTheCallersError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, hash, err := CompileWorkflowWithHash(botPath)
+	_, hash, err := CompileWorkflowWithHash(botPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +560,7 @@ func TestResume_aLateRefusalIsSaidInTheRunsLog(t *testing.T) {
 	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
 	ctx := context.Background()
 	ws, svc, holding := aWorkspaceHeldByAnotherRun(t, ctx, iterlog.New(iterlog.LevelInfo, io.Discard))
-	_, cs, _, err := compileForLaunch(ws.botPath, "", "")
+	_, cs, _, err := compileForLaunch(ws.botPath, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -185,7 +185,7 @@ workflow passive_host_event:
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	_, hash, err := runview.CompileWorkflowFromSource(botPath, source)
+	_, hash, err := runview.CompileWorkflowFromSource(botPath, source, "")
 	if err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}

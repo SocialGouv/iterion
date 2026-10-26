@@ -70,7 +70,7 @@ func TestLaunchRecordsTheUnitFilesAndAForcedResumeRestampsThem(t *testing.T) {
 	if len(run.WorkflowSources) != 2 || run.WorkflowSources[1].Text != edited {
 		t.Fatalf("the forced resume did not restamp the fragment: %+v", run.WorkflowSources)
 	}
-	_, hash, _, err := CompileWorkflowPath(mainBot)
+	_, hash, _, err := CompileWorkflowPath(mainBot, "")
 	if err != nil {
 		t.Fatal(err)
 	}

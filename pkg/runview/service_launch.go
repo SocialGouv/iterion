@@ -209,7 +209,10 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// Budget overrides ride the RunMessage (queue.RunMessage.Budget);
 		// the runner applies them after loading the workflow, under its
 		// multitenant cloud ceiling.
-		wf, cs, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+		// The runner pod re-resolves the catalog against its own clone
+		// (loop.go's PrepareWorkflow); the expansion computed here carries
+		// the launch surface's answer for the pre-flight checks (#1800).
+		wf, cs, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, s.effectiveWorkDir(spec.WorkDir))
 		if err != nil {
 			return nil, err
 		}
@@ -255,7 +258,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// cap, or a backend that reports no readings, lets it finish
 		// (docs/usage-caps.md). The compile is paid ONLY on
 		// the blocked path, so the common case stays free.
-		if wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); err != nil || wf.AlwaysReachesLLM() {
+		if wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, s.effectiveWorkDir(spec.WorkDir)); err != nil || wf.AlwaysReachesLLM() {
 			return nil, fmt.Errorf("%w: %s", runtime.ErrUsageCapped, reason)
 		}
 	}
@@ -317,7 +320,12 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) error {
 // existing queued doc (the engine's runResolveDoc transitions it
 // queued→running), used when the concurrency gate deferred the launch.
 func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool) (*LaunchResult, error) {
-	wf, cs, launchBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	// The in-process engine roots at the effective workdir (the launch's
+	// override, else the service root) — the same directory the plugin
+	// `{{workspace}}` placeholders resolve against at compile time,
+	// which is why it is resolved BEFORE the compile (#1800).
+	workDir := s.effectiveWorkDir(spec.WorkDir)
+	wf, cs, launchBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +372,6 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// observers via ExecutorSpec.EventObservers; engine events fire them
 	// via runtime.WithEventObserver (wired in engineOptions from
 	// launchExtras.observers). The raw store keeps every capability.
-	workDir := s.effectiveWorkDir(spec.WorkDir)
 	executor, err := BuildExecutor(ExecutorSpec{
 		Workflow:       wf,
 		Vars:           spec.Vars,
@@ -580,7 +587,7 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 		return err
 	}
 	spec.BundleDir = resumeBundleDir(r, spec)
-	wf, pfSources, pfBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	wf, pfSources, pfBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, s.effectiveWorkDir(r.WorkDir))
 	if err != nil {
 		return err
 	}
@@ -722,7 +729,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// Engine.Resume repeats the same check after acquiring the run lock, so a
 	// source/status change between this point and execution still fails closed.
 	spec.BundleDir = resumeBundleDir(r, spec)
-	wf, cs, resumeBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	wf, cs, resumeBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, s.effectiveWorkDir(r.WorkDir))
 	if err != nil {
 		return nil, err
 	}

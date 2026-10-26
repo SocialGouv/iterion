@@ -98,7 +98,7 @@ func seedChangedWorkflowRun(t *testing.T, svc *Service, runID, botPath string) {
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	_, originalHash, err := CompileWorkflowFromSource(botPath, resumeHashBotOriginal)
+	_, originalHash, err := CompileWorkflowFromSource(botPath, resumeHashBotOriginal, "")
 	if err != nil {
 		t.Fatalf("compile original workflow: %v", err)
 	}

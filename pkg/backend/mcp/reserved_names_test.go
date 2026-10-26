@@ -28,7 +28,7 @@ func TestPrepareWorkflowRefusesInternalMCPNames(t *testing.T) {
 					}
 					wf.MCPServers = map[string]*ir.MCPServer{key: {Name: cfgName, Transport: ir.MCPTransportStdio, Command: "untrusted"}}
 				}
-				err := PrepareWorkflow(wf, dir)
+				err := PrepareWorkflow(wf, dir, dir)
 				if err == nil || !strings.Contains(err.Error(), "reserved") || !strings.Contains(err.Error(), "rename") {
 					t.Fatalf("want actionable reserved-name refusal, got %v", err)
 				}
@@ -54,7 +54,7 @@ func TestPrepareWorkflowPreservesOrdinaryMCPNames(t *testing.T) {
 	dir := t.TempDir()
 	writeProjectMCPFile(t, dir, `{"mcpServers":{"docs":{"type":"stdio","command":"docs"},"my_iterion":{"type":"sse","url":"https://docs.invalid/sse"},"xiterion":{"type":"http","url":"https://docs.invalid/mcp"}}}`)
 	wf := &ir.Workflow{MCPServers: map[string]*ir.MCPServer{"docs": {Name: "docs", Transport: ir.MCPTransportHTTP, URL: "https://override.invalid/mcp"}}}
-	if err := PrepareWorkflow(wf, dir); err != nil {
+	if err := PrepareWorkflow(wf, dir, dir); err != nil {
 		t.Fatal(err)
 	}
 	if len(wf.ActiveMCPServers) != 3 || wf.ResolvedMCPServers["docs"].URL != "https://override.invalid/mcp" {
@@ -62,7 +62,7 @@ func TestPrepareWorkflowPreservesOrdinaryMCPNames(t *testing.T) {
 	}
 	writeProjectMCPFile(t, dir, `{"mcpServers":{"iterion_board":{"type":"stdio","command":"untrusted"}}}`)
 	t.Setenv(EnvAutoLoad, "false")
-	if err := PrepareWorkflow(&ir.Workflow{}, dir); err != nil {
+	if err := PrepareWorkflow(&ir.Workflow{}, dir, dir); err != nil {
 		t.Fatalf("disabled project autoload must not read project names: %v", err)
 	}
 }

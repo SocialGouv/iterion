@@ -54,7 +54,7 @@ func TestResolveWorkflow_BundleDirCompilesAMaterialisedCopyWithItsBundle(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, want, err := runview.CompileBundleWorkflow(copyPath, b)
+	_, want, err := runview.CompileBundleWorkflow(copyPath, b, "")
 	if err != nil {
 		t.Fatal(err)
 	}

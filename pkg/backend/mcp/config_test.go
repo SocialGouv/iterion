@@ -63,7 +63,7 @@ func TestPrepareWorkflowProjectAutoloadAndOverrides(t *testing.T) {
 		},
 	}
 
-	if err := PrepareWorkflow(wf, projectDir); err != nil {
+	if err := PrepareWorkflow(wf, projectDir, projectDir); err != nil {
 		t.Fatalf("PrepareWorkflow: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestPrepareWorkflowPreservesExplicitServerAuth(t *testing.T) {
 		},
 	}
 
-	if err := PrepareWorkflow(wf, t.TempDir()); err != nil {
+	if err := PrepareWorkflow(wf, t.TempDir(), t.TempDir()); err != nil {
 		t.Fatalf("PrepareWorkflow: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestPrepareWorkflowAutoloadDisabledByEnv(t *testing.T) {
 		},
 	}
 
-	if err := PrepareWorkflow(wf, projectDir); err != nil {
+	if err := PrepareWorkflow(wf, projectDir, projectDir); err != nil {
 		t.Fatalf("PrepareWorkflow: %v", err)
 	}
 

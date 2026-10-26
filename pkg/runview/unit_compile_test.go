@@ -48,7 +48,7 @@ func TestAPathCompilesItsUnit(t *testing.T) {
 	writeUnit(t, root, map[string]string{"main.bot": unitMain, "lib/nodes.bot": unitNodes})
 	mainBot := filepath.Join(root, "main.bot")
 
-	wf, hash, b, err := CompileWorkflowPath(mainBot)
+	wf, hash, b, err := CompileWorkflowPath(mainBot, "")
 	if err != nil {
 		t.Fatalf("CompileWorkflowPath: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestAPathCompilesItsUnit(t *testing.T) {
 		t.Fatal("no identity recorded")
 	}
 	// What the compile read is reported file by file, for the run to record.
-	_, cs, _, err := compileUnit(mainBot, "", true, nil)
+	_, cs, _, err := compileUnit(mainBot, "", true, nil, "")
 	if err != nil {
 		t.Fatalf("compileUnit: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestAPathCompilesItsUnit(t *testing.T) {
 	}
 
 	writeUnit(t, root, map[string]string{"lib/nodes.bot": unitNodes + "\n## edited under the run\n"})
-	_, edited, _, err := CompileWorkflowPath(mainBot)
+	_, edited, _, err := CompileWorkflowPath(mainBot, "")
 	if err != nil {
 		t.Fatalf("CompileWorkflowPath after the fragment edit: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestAPathCompilesItsUnit(t *testing.T) {
 
 	// A file beside the unit that nothing imports is not the unit's.
 	writeUnit(t, root, map[string]string{"lib/unused.bot": "agent z:\n  description: \"z\"\n"})
-	_, same, _, err := CompileWorkflowPath(mainBot)
+	_, same, _, err := CompileWorkflowPath(mainBot, "")
 	if err != nil {
 		t.Fatalf("CompileWorkflowPath beside an unimported file: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestTheIdentityOfASingleFileIsUnchanged(t *testing.T) {
 	if err := os.WriteFile(botPath, []byte(pausingBot), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, hash, err := CompileWorkflowWithHash(botPath)
+	_, hash, err := CompileWorkflowWithHash(botPath, "")
 	if err != nil {
 		t.Fatalf("CompileWorkflowWithHash: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestTheIdentityOfASingleFileIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, promoted, err := CompileBundleWorkflow(opened.IterPath, opened)
+	_, promoted, err := CompileBundleWorkflow(opened.IterPath, opened, "")
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestTheIdentityFollowsTheIncludeClosure(t *testing.T) {
 	})
 	mainBot := filepath.Join(root, "main.bot")
 
-	_, cs, _, err := compileUnit(mainBot, "", true, nil)
+	_, cs, _, err := compileUnit(mainBot, "", true, nil, "")
 	if err != nil {
 		t.Fatalf("compileUnit: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestTheIdentityFollowsTheIncludeClosure(t *testing.T) {
 	}
 
 	writeUnit(t, root, map[string]string{"notes/b.md": "Beta, edited"})
-	_, edited, _, err := compileUnit(mainBot, "", true, nil)
+	_, edited, _, err := compileUnit(mainBot, "", true, nil, "")
 	if err != nil {
 		t.Fatalf("compileUnit after the nested include edit: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestTheIdentityFollowsTheIncludeClosure(t *testing.T) {
 	}
 
 	writeUnit(t, root, map[string]string{"notes/c.md": "nobody includes me"})
-	_, same, _, err := compileUnit(mainBot, "", true, nil)
+	_, same, _, err := compileUnit(mainBot, "", true, nil, "")
 	if err != nil {
 		t.Fatalf("compileUnit beside an unincluded file: %v", err)
 	}
@@ -182,16 +182,16 @@ func TestTheIdentityFollowsTheIncludeClosure(t *testing.T) {
 // of compiling a program with pieces missing.
 func TestAnInlineSourceThatImportsIsRefused(t *testing.T) {
 	label := filepath.Join(t.TempDir(), "a1b2c3-main.bot")
-	if _, _, err := CompileWorkflowFromSource(label, unitMain); !errors.Is(err, ErrInlineImport) {
+	if _, _, err := CompileWorkflowFromSource(label, unitMain, ""); !errors.Is(err, ErrInlineImport) {
 		t.Fatalf("CompileWorkflowFromSource: err = %v, want ErrInlineImport", err)
 	}
-	if _, _, _, err := compileForLaunch("", unitMain, ""); !errors.Is(err, ErrInlineImport) {
+	if _, _, _, err := compileForLaunch("", unitMain, "", ""); !errors.Is(err, ErrInlineImport) {
 		t.Fatalf("compileForLaunch without a bundle: err = %v, want ErrInlineImport", err)
 	}
 	// The same text, from its directory, is a program.
 	root := t.TempDir()
 	writeUnit(t, root, map[string]string{"main.bot": unitMain, "lib/nodes.bot": unitNodes})
-	if _, _, _, err := compileForLaunch(filepath.Join(root, "main.bot"), "", ""); err != nil {
+	if _, _, _, err := compileForLaunch(filepath.Join(root, "main.bot"), "", "", ""); err != nil {
 		t.Fatalf("the same unit from its directory: %v", err)
 	}
 }
@@ -208,7 +208,7 @@ func TestAnInlineDocumentWithItsBundleReadsTheFragmentsBesideTheMain(t *testing.
 	mainBot := filepath.Join(root, "main.bot")
 	copyPath := filepath.Join(t.TempDir(), "a1b2c3-main.bot")
 
-	wf, cs, b, err := compileForLaunch(copyPath, unitMain, root)
+	wf, cs, b, err := compileForLaunch(copyPath, unitMain, root, "")
 	if err != nil {
 		t.Fatalf("compileForLaunch(document, bundle): %v", err)
 	}
@@ -218,7 +218,7 @@ func TestAnInlineDocumentWithItsBundleReadsTheFragmentsBesideTheMain(t *testing.
 	if _, ok := wf.Nodes["worker"]; !ok {
 		t.Fatalf("the fragment's node is not in the workflow (%d nodes)", len(wf.Nodes))
 	}
-	_, fromPath, _, err := CompileWorkflowPath(mainBot)
+	_, fromPath, _, err := CompileWorkflowPath(mainBot, "")
 	if err != nil {
 		t.Fatalf("CompileWorkflowPath: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestAnInlineDocumentWithItsBundleReadsTheFragmentsBesideTheMain(t *testing.
 		t.Fatalf("the document's identity %s differs from the file's %s: a run launched from the studio would refuse a CLI resume", cs.Hash, fromPath)
 	}
 	// A document that differs from the file on disk is its own source.
-	_, doc, _, err := compileForLaunch(copyPath, unitMain+"\n## edited in the editor\n", root)
+	_, doc, _, err := compileForLaunch(copyPath, unitMain+"\n## edited in the editor\n", root, "")
 	if err != nil {
 		t.Fatalf("compileForLaunch(edited document, bundle): %v", err)
 	}

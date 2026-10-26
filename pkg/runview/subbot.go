@@ -102,7 +102,23 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			return out, aerr
 		}
 		childPath := resolvedSource.Path
-		childWf, hash, childBundle, err := CompileSubbotWorkflow(childPath, resolvedSource.Bundle)
+		// The directory the child's ENGINE is rooted at, resolved once for
+		// the compile's {{workspace}} placeholders, the executor and the
+		// engine below (#1800):
+		//
+		//   - the parent's EFFECTIVE workdir when it passed one (its worktree
+		//     when it swapped to one), not the service's repo root: that is
+		//     the tree the parent's sandbox mounts and the parent's gate
+		//     judges;
+		//   - else the child's own bot directory, so its mirrors, skills and
+		//     plugin files land beside the .bot they belong to — never in the
+		//     server's process cwd, where every child shared one mirror and a
+		//     test binary wrote into the checkout (#1803).
+		childWorkDir := filepath.Dir(childPath)
+		if req.WorkDir != "" {
+			childWorkDir = req.WorkDir
+		}
+		childWf, hash, childBundle, err := CompileSubbotWorkflow(childPath, resolvedSource.Bundle, childWorkDir)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -132,22 +148,6 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		if cerr != nil {
 			releaseChild()
 			return nil, cerr
-		}
-
-		// The directory the child's ENGINE is rooted at, resolved once for
-		// both the engine and the screen below:
-		//
-		//   - the parent's EFFECTIVE workdir when it passed one (its worktree
-		//     when it swapped to one), not the service's repo root: that is
-		//     the tree the parent's sandbox mounts and the parent's gate
-		//     judges;
-		//   - else the child's own bot directory, so its mirrors, skills and
-		//     plugin files land beside the .bot they belong to — never in the
-		//     server's process cwd, where every child shared one mirror and a
-		//     test binary wrote into the checkout (#1803).
-		childWorkDir := filepath.Dir(childPath)
-		if req.WorkDir != "" {
-			childWorkDir = req.WorkDir
 		}
 
 		childExec, err := BuildExecutor(ExecutorSpec{

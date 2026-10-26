@@ -143,13 +143,17 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 	if err != nil {
 		return nil, fmt.Errorf("engine runner: detect %s: %w", workflowPath, err)
 	}
+	// No run roots at construction — one EngineRunner dispatches many runs,
+	// each on its own workspace — so the MCP resolution compiled here is
+	// construction-time validation only: Dispatch recompiles against the
+	// run's workspace before anything executes (#1800).
 	switch kind {
 	case bundle.KindBundle:
 		opened, cleanup, openErr := bundle.Open(workflowPath, r.bundleCacheRoot)
 		if openErr != nil {
 			return nil, fmt.Errorf("engine runner: open bundle %s: %w", workflowPath, openErr)
 		}
-		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened)
+		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened, "")
 		if compileErr != nil {
 			_ = cleanup()
 			return nil, fmt.Errorf("engine runner: compile bundle %s: %w", workflowPath, compileErr)
@@ -165,7 +169,7 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 		if openErr != nil {
 			return nil, fmt.Errorf("engine runner: open bundle dir %s: %w", workflowPath, openErr)
 		}
-		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened)
+		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened, "")
 		if compileErr != nil {
 			return nil, fmt.Errorf("engine runner: compile bundle dir %s: %w", workflowPath, compileErr)
 		}
@@ -178,7 +182,7 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 		// A bare <bundle>/main.bot is promoted to its bundle: the hash and
 		// the prompts the other surfaces use, AND the handle, so the
 		// bundle's skills/ reach the run as they do from `iterion run`.
-		wf, h, promoted, compileErr := runview.CompileWorkflowPath(workflowPath)
+		wf, h, promoted, compileErr := runview.CompileWorkflowPath(workflowPath, "")
 		if compileErr != nil {
 			return nil, fmt.Errorf("engine runner: compile %s: %w", workflowPath, compileErr)
 		}
@@ -232,6 +236,19 @@ func (r *EngineRunner) Close() error {
 		}
 	})
 	return r.closeErr
+}
+
+// compileForDispatch recompiles the runner's workflow against ONE run's
+// workspace: the compiled IR is shared across concurrent dispatches, so the
+// plugin `{{workspace}}` placeholders resolve per run here, on the run's own
+// workflow, never by mutating the shared one (#1800). The bundle handle is
+// reused — only the AST is rebuilt.
+func (r *EngineRunner) compileForDispatch(workspace string) (*ir.Workflow, string, error) {
+	if r.bundle != nil {
+		return runview.CompileBundleWorkflow(r.workflowPath, r.bundle, workspace)
+	}
+	wf, hash, _, err := runview.CompileWorkflowPath(r.workflowPath, workspace)
+	return wf, hash, err
 }
 
 // Dispatch implements Runner. Opens the store, builds an executor for
@@ -317,9 +334,15 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		superviseHub = supervise.NewEventHub()
 	}
 
+	// The run's MCP catalog resolves against the workspace THIS dispatch
+	// roots at, on this run's own workflow — never on the shared IR (#1800).
+	runWf, runHash, compileErr := r.compileForDispatch(spec.WorkspacePath)
+	if compileErr != nil {
+		return fmt.Errorf("engine runner: compile workflow for workspace %s: %w", spec.WorkspacePath, compileErr)
+	}
 	execSpec := runview.ExecutorSpec{
 		Ctx:      ctx,
-		Workflow: r.workflow,
+		Workflow: runWf,
 		Store:    s,
 		// The dispatcher's engine sets neither sandbox tier, so the
 		// workflow's own `sandbox:` block decides — which is exactly what
@@ -366,7 +389,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// without this the SAME `.bot` that runs from the CLI fails on a board
 	// card. The workspace is the run's own (a per-issue worktree), so a
 	// project connector tier is the checkout's, not the daemon's cwd.
-	connectors, connectorClient, cerr := runview.LocalConnectors(r.workflow, spec.WorkspacePath, spec.StoreDir, r.sealer)
+	connectors, connectorClient, cerr := runview.LocalConnectors(runWf, spec.WorkspacePath, spec.StoreDir, r.sealer)
 	if cerr != nil {
 		return fmt.Errorf("engine runner: connector catalog: %w", cerr)
 	}
@@ -387,7 +410,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 
 	opts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
-		runtime.WithWorkflowHash(r.workflowHash),
+		runtime.WithWorkflowHash(runHash),
 		runtime.WithFilePath(r.workflowPath),
 		runtime.WithRunName(store.GenerateRunName(r.workflowPath + ":" + spec.RunID)),
 		// Without this, every transient hiccup (http2 timeout against
@@ -459,7 +482,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if len(r.runEnv) > 0 {
 		opts = append(opts, runtime.WithRunEnv(r.runEnv))
 	}
-	eng := runtime.New(r.workflow, s, exec, opts...)
+	eng := runtime.New(runWf, s, exec, opts...)
 
 	// Resume the prior run iff the dispatcher's scheduleRetry tagged
 	// this dispatch as a resume — the engine's Resume picks up at the

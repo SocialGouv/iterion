@@ -54,8 +54,9 @@ func RunDiagram(opts DiagramOptions, p *Printer) error {
 	} else {
 		// A bundle's main.bot is promoted to its bundle, as validate does: its
 		// prompts/*.md in scope, or the diagram of a multi-file bot fails C003.
+		// A diagram runs nothing: no workspace, no {{workspace}} resolution.
 		var err error
-		if wf, _, _, err = runview.CompileWorkflowPath(opts.File); err != nil {
+		if wf, _, _, err = runview.CompileWorkflowPath(opts.File, ""); err != nil {
 			return err
 		}
 	}

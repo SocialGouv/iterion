@@ -28,7 +28,7 @@ func TestResolveBundleFromFilePathPromotesASiblingEntry(t *testing.T) {
 	if err := os.WriteFile(sibling, src, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := CompileWorkflowWithHash(sibling); err == nil || !strings.Contains(err.Error(), "C003") {
+	if _, _, err := CompileWorkflowWithHash(sibling, ""); err == nil || !strings.Contains(err.Error(), "C003") {
 		t.Fatalf("the bare compile of the sibling did not fail on the prompt reference (err=%v); the fixture no longer arms the case", err)
 	}
 

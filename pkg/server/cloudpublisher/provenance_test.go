@@ -22,7 +22,7 @@ func TestAttemptQueueUsesSameRevision(t *testing.T) {
 	if err := os.WriteFile(path, []byte(src), 0600); err != nil {
 		t.Fatal(err)
 	}
-	wf, hash, err := runview.CompileWorkflowWithHash(path)
+	wf, hash, err := runview.CompileWorkflowWithHash(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}

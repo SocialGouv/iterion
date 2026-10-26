@@ -79,7 +79,7 @@ func TestResume_aSharedDependencyChangeComesAfterTheLossItWouldWaive(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, cs, _, err := compileForLaunch(child, "", bdir)
+			_, cs, _, err := compileForLaunch(child, "", bdir, "")
 			if err != nil {
 				t.Fatalf("compileForLaunch: %v", err)
 			}

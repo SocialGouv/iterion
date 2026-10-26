@@ -283,12 +283,12 @@ func buildLegacyWireWorkflow(ctx context.Context, r *store.Run, resolve LegacyWo
 	var err error
 	switch {
 	case r.FilePath != "":
-		wf, hash, _, err = CompileWorkflowPath(resolveWorkflowPath(r))
+		wf, hash, _, err = CompileWorkflowPath(resolveWorkflowPath(r), r.WorkDir)
 	case r.BundlePath != "":
 		var b *bundle.Bundle
 		b, err = bundle.OpenDir(r.BundlePath)
 		if err == nil {
-			wf, hash, err = CompileBundleWorkflow(b.IterPath, b)
+			wf, hash, err = CompileBundleWorkflow(b.IterPath, b, r.WorkDir)
 		}
 	default:
 		return nil, unavailable("workflow_source_missing", r.WorkflowName)

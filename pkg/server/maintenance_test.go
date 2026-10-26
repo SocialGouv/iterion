@@ -98,7 +98,7 @@ func TestFenceResumeExistingRun(t *testing.T) {
 	installQueueOutageTestPublisher(t, s, nil)
 	const source = "workflow fence_resume:\n  entry: done\n"
 	path := filepath.Join(s.cfg.WorkDir, "fence_resume.bot")
-	_, hash, err := runview.CompileWorkflowFromSource(path, source)
+	_, hash, err := runview.CompileWorkflowFromSource(path, source, "")
 	if err != nil {
 		t.Fatal(err)
 	}

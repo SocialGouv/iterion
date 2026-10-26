@@ -53,7 +53,9 @@ func ScreenPolicyOverrides(path, source, bundleDir string, pol *store.RunLLMRout
 	if pol == nil || len(pol.Overrides) == 0 {
 		return nil, nil
 	}
-	wf, _, _, err := compileForLaunch(path, source, bundleDir)
+	// A save-time screen that executes nothing: no run, no workspace — the
+	// plugin `{{workspace}}` placeholders stay unresolved (#1800).
+	wf, _, _, err := compileForLaunch(path, source, bundleDir, "")
 	if err != nil {
 		return nil, err
 	}

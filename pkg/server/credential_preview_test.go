@@ -64,7 +64,7 @@ func TestCredentialPreviewWebhookMatchesActualLaunchSourceAndIdentity(t *testing
 		t.Fatal(err)
 	}
 	t.Setenv("ITERION_PREVIEW_MODEL_TEST", "anthropic/claude-sonnet-4-6")
-	if _, _, err := runview.CompileWorkflowFromSource("probe.bot", row.Files[botsource.MainBotFile]); err != nil {
+	if _, _, err := runview.CompileWorkflowFromSource("probe.bot", row.Files[botsource.MainBotFile], ""); err != nil {
 		t.Fatalf("LLM fixture compile: %v", err)
 	}
 	pub := &credentialPreviewPublisher{}

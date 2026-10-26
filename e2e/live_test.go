@@ -301,7 +301,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	runID := "live-plan-impl-review"
 
 	// Prepare MCP server catalog (resolves any project-level .mcp.json).
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -650,7 +650,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 
 	runID := "live-session-review-fix"
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -921,7 +921,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 
 	runID := "live-exhaustive"
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -1253,7 +1253,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 
 	runID := "live-session-inherit"
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -1474,7 +1474,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 		"cache_filler":  cacheFiller,
 	})
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -1763,7 +1763,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 		"workspace_dir": workspaceDir,
 	})
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -1938,7 +1938,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 		"image_path": imagePath,
 	})
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -2076,7 +2076,7 @@ func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -2174,7 +2174,7 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 
 	runID := "live-claw-mcp"
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -2338,7 +2338,7 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 		"workspace_dir": workspaceDir,
 	})
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -2504,7 +2504,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 		"workspace_dir": workspaceDir,
 	})
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 

@@ -34,7 +34,7 @@ flowchart TD
     EXP --> VAL{"validate - 59 validator groups in one pass, plus the routing-field and supervisor checks beside it"}
     VAL -->|"any SeverityError diagnostic"| XCOMP["compile error - diagnostics, never a repair"]
     VAL --> ID["workflowIdentity over the main bytes, the bundle prompts and presets, the sorted fragments and the compiler's include closure"]
-    ID --> MCPP["mcp.PrepareWorkflow against the file's directory"]
+    ID --> MCPP["mcp.PrepareWorkflow - the project dir reads .mcp.json, the run workspace expands {{workspace}}"]
     MCPP --> PROG["an ir.Workflow, its source hash and the bundle handle"]
 ```
 

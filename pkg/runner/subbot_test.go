@@ -260,7 +260,7 @@ func TestPodEngineRunsSubbotNodes(t *testing.T) {
 	dir := t.TempDir()
 	parentPath := writeSubbotFixture(t, dir, "main.bot", subbotTestParent)
 	writeSubbotFixture(t, dir, "child.bot", subbotTestChild)
-	wf, hash, err := runview.CompileWorkflowWithHash(parentPath)
+	wf, hash, err := runview.CompileWorkflowWithHash(parentPath, "")
 	if err != nil {
 		t.Fatalf("compile parent: %v", err)
 	}

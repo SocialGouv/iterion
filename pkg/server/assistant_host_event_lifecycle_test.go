@@ -82,7 +82,7 @@ chat:
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	_, workflowHash, err := runview.CompileWorkflowFromSource(botPath, source)
+	_, workflowHash, err := runview.CompileWorkflowFromSource(botPath, source, "")
 	if err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}

@@ -133,10 +133,12 @@ func hashCapturedResourceDir(h hash.Hash, files map[string]string, dir, tag stri
 // the compiled workflow or an error with the first parse / compile
 // diagnostic encountered.
 //
-// MCP server resolution is finalised against the file's directory so
-// relative `command` paths in `mcp_server` blocks resolve correctly.
-func CompileWorkflow(path string) (*ir.Workflow, error) {
-	wf, _, err := compileWith(path, "", false, nil)
+// MCP server resolution reads the project `.mcp.json` beside the file, and
+// expands plugin `{{workspace}}` placeholders against the workspace the
+// caller names — the run's, on a surface that executes the result; "" for
+// an analysis that executes nothing (#1800).
+func CompileWorkflow(path, workspace string) (*ir.Workflow, error) {
+	wf, _, err := compileWith(path, "", false, nil, workspace)
 	return wf, err
 }
 
@@ -145,23 +147,28 @@ func CompileWorkflow(path string) (*ir.Workflow, error) {
 // can detect when the workflow file has changed under it (and require
 // --force to proceed). Use this everywhere a workflow is loaded for
 // execution; CompileWorkflow is for static-only callers (validate,
-// diagram).
-func CompileWorkflowWithHash(path string) (*ir.Workflow, string, error) {
-	return compileWith(path, "", true, nil)
+// diagram). workspace is the directory the run roots at — what plugin
+// `{{workspace}}` placeholders expand against, never assumed from path
+// (#1800).
+func CompileWorkflowWithHash(path, workspace string) (*ir.Workflow, string, error) {
+	return compileWith(path, "", true, nil, workspace)
 }
 
 // CompileBundleWorkflow is CompileWorkflowWithHash specialised for bundle
 // inputs: it merges the bundle's prompts/*.md into the AST File before
 // compilation, so node-level prompt references resolve against bundle
-// resources during static validation.
-func CompileBundleWorkflow(path string, b *bundle.Bundle) (*ir.Workflow, string, error) {
-	return compileWith(path, "", true, b)
+// resources during static validation. The workspace is the run's, for the
+// plugin `{{workspace}}` placeholders (#1800).
+func CompileBundleWorkflow(path string, b *bundle.Bundle, workspace string) (*ir.Workflow, string, error) {
+	return compileWith(path, "", true, b, workspace)
 }
 
 // CompileSubbotWorkflow compiles a resolved child with its bundle context.
 // bot:// supplies the bundle directly; local workflow paths are promoted when
 // they live anywhere inside a directory bundle, including workflows/ exports.
-func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle) (*ir.Workflow, string, *bundle.Bundle, error) {
+// workspace is the directory the CHILD's engine roots at — the parent's
+// effective workdir, never assumed from the child .bot's directory (#1800).
+func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle, workspace string) (*ir.Workflow, string, *bundle.Bundle, error) {
 	b := resolvedBundle
 	if b == nil {
 		var err error
@@ -171,10 +178,10 @@ func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle) (*ir.Work
 		}
 	}
 	if b != nil {
-		wf, hash, err := CompileBundleWorkflow(path, b)
+		wf, hash, err := CompileBundleWorkflow(path, b, workspace)
 		return wf, hash, b, err
 	}
-	wf, hash, err := CompileWorkflowWithHash(path)
+	wf, hash, err := CompileWorkflowWithHash(path, workspace)
 	return wf, hash, nil, err
 }
 
@@ -182,9 +189,10 @@ func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle) (*ir.Work
 // content is supplied verbatim (uploaded by the studio SPA). Path is
 // retained as a logical label for diagnostics + MCP relative-path
 // resolution; when empty, MCP resolution falls back to the current
-// working directory.
-func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error) {
-	return compileWith(path, source, true, nil)
+// working directory. workspace is the run's, for the plugin
+// `{{workspace}}` placeholders (#1800).
+func CompileWorkflowFromSource(path, source, workspace string) (*ir.Workflow, string, error) {
+	return compileWith(path, source, true, nil, workspace)
 }
 
 // compileForLaunch picks the right compile path for a Launch / Resume:
@@ -213,29 +221,33 @@ func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error
 // hands the engine the same handle it compiled against.
 //
 // Every refusal is cut by relLaunchError before it crosses to a client.
-func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
-	wf, cs, b, u, err := compileForLaunchUncut(path, source, bundleDir)
+// workspace is the directory the launched run roots at — what plugin
+// `{{workspace}}` placeholders expand against; the launch surface passes
+// the workdir its engine will be rooted at, and a check that executes
+// nothing passes "" (#1800).
+func compileForLaunch(path, source, bundleDir, workspace string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
+	wf, cs, b, u, err := compileForLaunchUncut(path, source, bundleDir, workspace)
 	return wf, cs, b, relLaunchError(path, bundleDir, u, err)
 }
 
-func compileForLaunchUncut(path, source, bundleDir string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, *unit.Unit, error) {
+func compileForLaunchUncut(path, source, bundleDir, workspace string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, *unit.Unit, error) {
 	if bundleDir != "" {
 		b, err := bundle.OpenDir(bundleDir)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("open stored bot bundle: %w", err)
 		}
-		wf, cs, u, err := compileUnit(path, source, true, b)
+		wf, cs, u, err := compileUnit(path, source, true, b, workspace)
 		return wf, cs, b, u, err
 	}
 	if source != "" {
-		wf, cs, u, err := compileUnit(path, source, true, nil)
+		wf, cs, u, err := compileUnit(path, source, true, nil, workspace)
 		return wf, cs, nil, u, err
 	}
 	b, err := bundleForPath(path)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	wf, cs, u, err := compileUnit(path, "", true, b)
+	wf, cs, u, err := compileUnit(path, "", true, b, workspace)
 	return wf, cs, b, u, err
 }
 
@@ -410,8 +422,8 @@ func EntrypointBundleError(subject, dir string, err error) error {
 	return fmt.Errorf("%s the entrypoint of bundle %q, which does not open: %w (a main.bot beside an iterion manifest or a skills/ is that bundle: fix the manifest, or give main.bot a directory of its own if this is not its bundle)", subject, filepath.Base(dir), err)
 }
 
-func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, string, error) {
-	wf, cs, _, err := compileUnit(path, inline, withHash, b)
+func compileWith(path, inline string, withHash bool, b *bundle.Bundle, workspace string) (*ir.Workflow, string, error) {
+	wf, cs, _, err := compileUnit(path, inline, withHash, b, workspace)
 	if err != nil {
 		return nil, "", err
 	}
@@ -430,8 +442,10 @@ func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 // alongside, so the launch path's boundary cut (relLaunchError) works
 // from the loader's own root rather than a re-derived one. Callers that
 // are not that boundary — the CLI's compiles — ignore it, and their
-// errors keep the absolute names the operator typed.
-func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, *unit.Unit, error) {
+// errors keep the absolute names the operator typed. workspace is the
+// run's, for the plugin `{{workspace}}` placeholders; "" on a surface
+// that executes nothing (#1800).
+func compileUnit(path, inline string, withHash bool, b *bundle.Bundle, workspace string) (*ir.Workflow, *CompiledSource, *unit.Unit, error) {
 	if workflowfile.IsAuthorDocument(path) {
 		// The floor under every compile entry: a draft never becomes a
 		// program here, whatever door named it — and it is refused by
@@ -480,7 +494,7 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 		// the load's root from it on the launch path).
 		return nil, nil, nil, fmt.Errorf("parse error: %w", loadErr)
 	}
-	wf, cs, err := compileLoadedUnit(u, path, parserPath, withHash, b)
+	wf, cs, err := compileLoadedUnit(u, path, parserPath, withHash, b, workspace)
 	return wf, cs, u, err
 }
 
@@ -492,9 +506,10 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 // taken. name is the file a refusal names. It is for a caller that loads
 // the unit itself — an author document's diagram, whose main is the
 // document's AST read as the .bot at path — so that what refuses the .bot
-// refuses the document read as it.
-func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle) (*ir.Workflow, error) {
-	wf, _, err := compileLoadedUnit(u, path, name, false, b)
+// refuses the document read as it. workspace is the run's, for the plugin
+// `{{workspace}}` placeholders; "" on an analysis that runs nothing (#1800).
+func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle, workspace string) (*ir.Workflow, error) {
+	wf, _, err := compileLoadedUnit(u, path, name, false, b, workspace)
 	return wf, err
 }
 
@@ -503,11 +518,11 @@ func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle) (*ir.W
 // names — the CLI's compile path runs through here and the operator typed
 // those names; the launch path's boundary cut is relLaunchError's, applied
 // by compileForLaunch (#1970).
-func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle) (*ir.Workflow, *CompiledSource, error) {
-	return compileLoadedUnitMode(u, path, name, withHash, b, true)
+func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, workspace string) (*ir.Workflow, *CompiledSource, error) {
+	return compileLoadedUnitMode(u, path, name, withHash, b, true, workspace)
 }
 
-func compileLoadedUnitMode(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, prepareExecution bool) (*ir.Workflow, *CompiledSource, error) {
+func compileLoadedUnitMode(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, prepareExecution bool, workspace string) (*ir.Workflow, *CompiledSource, error) {
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil, nil, fmt.Errorf("parse error: %s", d.Error())
@@ -553,12 +568,16 @@ func compileLoadedUnitMode(u *unit.Unit, path, name string, withHash bool, b *bu
 		}
 		cs.Hash, cs.Included = hash, included
 	}
+	// Two directories, two facts (#1800): mcpDir is the project's — where a
+	// project `.mcp.json` is read from; workspace is the run's — what plugin
+	// `{{workspace}}` placeholders expand against, passed through from the
+	// launch surface, never derived from path.
 	mcpDir := "."
 	if path != "" {
 		mcpDir = filepath.Dir(path)
 	}
 	if prepareExecution {
-		if err := mcp.PrepareWorkflow(cr.Workflow, mcpDir); err != nil {
+		if err := mcp.PrepareWorkflow(cr.Workflow, mcpDir, workspace); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -591,15 +610,18 @@ func BundleNameForPath(filePath string) string {
 // Every surface that derives a run's hash from a PATH — the dispatcher's
 // engine path, rewind, the export, a recipe's file — goes through it, so
 // a run launched on one surface resumes on another without `--force`.
-func CompileWorkflowPath(path string) (*ir.Workflow, string, *bundle.Bundle, error) {
+// workspace is the directory the run roots at — what plugin `{{workspace}}`
+// placeholders expand against; the launching surface passes the workdir its
+// engine roots at, an analysis passes "" (#1800).
+func CompileWorkflowPath(path, workspace string) (*ir.Workflow, string, *bundle.Bundle, error) {
 	b, err := bundleForPath(path)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	if b != nil {
-		wf, hash, err := CompileBundleWorkflow(path, b)
+		wf, hash, err := CompileBundleWorkflow(path, b, workspace)
 		return wf, hash, b, err
 	}
-	wf, hash, err := CompileWorkflowWithHash(path)
+	wf, hash, err := CompileWorkflowWithHash(path, workspace)
 	return wf, hash, nil, err
 }

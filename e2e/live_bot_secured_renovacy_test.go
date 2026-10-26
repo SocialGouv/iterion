@@ -53,7 +53,7 @@ func TestLive_SecuredRenovacy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundle.OpenDir: %v", err)
 	}
-	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b)
+	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b, "")
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestLive_SecuredRenovacy(t *testing.T) {
 	}
 	runID := "live-secured-renovacy"
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
@@ -170,7 +170,7 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundle.OpenDir: %v", err)
 	}
-	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b)
+	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b, "")
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 	}
 	runID := uniqueRunID("live-secured-renovacy-real")
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 	// Tee logger to <storeDir>/runs/<runID>/run.log so the desktop
@@ -291,7 +291,7 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundle.OpenDir: %v", err)
 	}
-	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b)
+	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b, "")
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 	}
 	runID := uniqueRunID("live-secured-renovacy-protestware")
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 	teeLogger := prepareLiveRunLog(t, storeDir, runID)

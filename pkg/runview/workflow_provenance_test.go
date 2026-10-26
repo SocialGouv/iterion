@@ -45,7 +45,7 @@ func TestAttemptProvenanceSurvivesResumeAndSourceDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wf, hash, err := CompileWorkflowWithHash(path)
+	wf, hash, err := CompileWorkflowWithHash(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestAttemptProvenanceSurvivesResumeAndSourceDeletion(t *testing.T) {
 	write(strings.Replace(provenanceSource, "workflow provenance:", "tool added:\n  command: `true`\n  output: out\n\nworkflow provenance:", 1))
 	edited, _ := os.ReadFile(path)
 	write(strings.Replace(string(edited), "work -> done", "work -> added\n  added -> done", 1))
-	wf, hash, err = CompileWorkflowWithHash(path)
+	wf, hash, err = CompileWorkflowWithHash(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestAttemptCapturesUnitAndBundleResources(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	wf, hash, _, err := CompileWorkflowPath(filepath.Join(root, "main.bot"))
+	wf, hash, _, err := CompileWorkflowPath(filepath.Join(root, "main.bot"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestAttemptProjectionDoesNotRebindHostMCP(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte(`{"mcpServers":{"testsrv":{"command":"true"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	wf, _, err := CompileWorkflowWithHash(path)
+	wf, _, err := CompileWorkflowWithHash(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestAttemptWithoutCompilerCaptureRefusesMutableDisk(t *testing.T) {
 	if err := os.WriteFile(path, []byte(provenanceSource), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	wf, hash, err := CompileWorkflowWithHash(path)
+	wf, hash, err := CompileWorkflowWithHash(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestAttemptBundleExportIdentitySurvivesMaterialization(t *testing.T) {
 		}
 	}
 	path := filepath.Join(root, "workflows/check.bot")
-	wf, hash, err := CompileBundleWorkflow(path, &bundle.Bundle{Dir: root, IterPath: path, PromptsDir: filepath.Join(root, "prompts")})
+	wf, hash, err := CompileBundleWorkflow(path, &bundle.Bundle{Dir: root, IterPath: path, PromptsDir: filepath.Join(root, "prompts")}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

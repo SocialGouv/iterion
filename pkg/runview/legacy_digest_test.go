@@ -28,7 +28,7 @@ func TestResume_AcceptsTheLegacyBareDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, promoted, err := CompileBundleWorkflow(opened.IterPath, opened)
+	_, promoted, err := CompileBundleWorkflow(opened.IterPath, opened, "")
 	if err != nil {
 		t.Fatal(err)
 	}

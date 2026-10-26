@@ -397,7 +397,7 @@ workflow main:
 		t.Fatal("precondition failed: ir.Compile resolved the firecrawl plugin server on its own — test no longer guards the runner's PrepareWorkflow call")
 	}
 
-	if err := mcp.PrepareWorkflow(wf, t.TempDir()); err != nil {
+	if err := mcp.PrepareWorkflow(wf, t.TempDir(), t.TempDir()); err != nil {
 		t.Fatalf("PrepareWorkflow: %v", err)
 	}
 

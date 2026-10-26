@@ -194,7 +194,7 @@ func (b *pipelineProjectionBuilder) totalNodes(filePath string) int {
 	// A bundle's main.bot is promoted to its bundle; one that does not
 	// open counts as a compile failure here, as it did — a node count of 0
 	// on a board card, never a refusal.
-	wf, _, _, err := runview.CompileWorkflowPath(filePath)
+	wf, _, _, err := runview.CompileWorkflowPath(filePath, "")
 	n := 0
 	if err == nil && wf != nil {
 		n = len(wf.Nodes)

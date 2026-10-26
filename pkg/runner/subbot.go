@@ -207,9 +207,19 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if err != nil {
 			return nil, err
 		}
+		// The child works in the parent's effective workdir when the parent
+		// passed one, else the parent's own. Resolved BEFORE the compile so
+		// the plugin `{{workspace}}` placeholders expand against the tree the
+		// child's engine roots at (runtime.WithWorkDir below), never the
+		// child .bot's directory (#1800) — and so the child's fallback screen
+		// probes the directory its engine gets, not the pod's cwd.
+		childWorkDir := req.WorkDir
+		if childWorkDir == "" {
+			childWorkDir = workDir
+		}
 		// The child compiles the way every path does: a bundle's main.bot
 		// promoted to its bundle, prompts/*.md in scope, the bundle's hash.
-		childWf, hash, childBundle, err := runview.CompileWorkflowPath(childPath)
+		childWf, hash, childBundle, err := runview.CompileWorkflowPath(childPath, childWorkDir)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -270,14 +280,8 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			childLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 		}
 
-		// The child works in the parent's effective workdir when the parent
-		// passed one, else the parent's own. Resolved before the executor so
-		// the child's fallback screen probes the directory its engine gets
-		// (runtime.WithWorkDir below), not the pod's cwd.
-		childWorkDir := req.WorkDir
-		if childWorkDir == "" {
-			childWorkDir = workDir
-		}
+		// childWorkDir was resolved before the compile, so the {{workspace}}
+		// placeholders and the engine option below name the same tree.
 
 		childExec, childUsage, err := r.buildExecutor(ctx, &child, childWf, childWorkDir, childLogger, nil)
 		if err != nil {

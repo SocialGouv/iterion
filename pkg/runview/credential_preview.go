@@ -147,7 +147,7 @@ func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreview
 	if !ok {
 		return CredentialPreview{}, ErrCredentialPreviewUnavailable
 	}
-	wf, _, _, err := compileForLaunch(spec.Launch.FilePath, spec.Launch.Source, spec.Launch.BundleDir)
+	wf, _, _, err := compileForLaunch(spec.Launch.FilePath, spec.Launch.Source, spec.Launch.BundleDir, s.effectiveWorkDir(spec.Launch.WorkDir))
 	if err != nil {
 		return CredentialPreview{}, err
 	}

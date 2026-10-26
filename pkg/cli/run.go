@@ -703,7 +703,19 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			return out, aerr
 		}
 		childPath := resolvedSource.Path
-		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle)
+		// The child's engine roots at the parent's effective workdir when the
+		// parent passed one, else at the process cwd — the same two cases
+		// buildRunExecutor probes below. The plugin `{{workspace}}`
+		// placeholders resolve against that same directory (#1800).
+		childWorkspace := req.WorkDir
+		if childWorkspace == "" {
+			wd, wdErr := os.Getwd()
+			if wdErr != nil {
+				return nil, fmt.Errorf("subbot %s: resolve child workspace: %w", req.Source, wdErr)
+			}
+			childWorkspace = wd
+		}
+		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle, childWorkspace)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -931,6 +943,14 @@ func buildEngine(
 // reserved for future per-run extraction modes).
 func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayName string, b *bundle.Bundle, cleanup func() error, err error) {
 	cleanup = func() error { return nil }
+	// `iterion run` builds its engine with NO runtime.WithWorkDir: the
+	// engine fills its own workDir with the process cwd and roots the run
+	// there. That directory — never the compiled file's — is what plugin
+	// `{{workspace}}` placeholders expand against (#1800).
+	workspace, wdErr := os.Getwd()
+	if wdErr != nil {
+		return nil, "", "", "", nil, cleanup, fmt.Errorf("resolve run workspace: %w", wdErr)
+	}
 	if opts.Recipe != "" {
 		spec, recipeErr := recipe.LoadFile(opts.Recipe)
 		if recipeErr != nil {
@@ -949,7 +969,7 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		}
 		// A recipe's `--file` may be a bare <bundle>/main.bot: promoted to
 		// its bundle, handle included, so its skills/ reach the run.
-		raw, h, promoted, compileErr := runview.CompileWorkflowPath(filePath)
+		raw, h, promoted, compileErr := runview.CompileWorkflowPath(filePath, workspace)
 		if compileErr != nil {
 			return nil, "", "", "", nil, cleanup, compileErr
 		}
@@ -977,7 +997,7 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		if openErr != nil {
 			return nil, "", "", "", nil, cleanup, fmt.Errorf("bundle dir %s: %w", opts.BundleDir, openErr)
 		}
-		raw, h, compileErr := runview.CompileBundleWorkflow(resolved, opened)
+		raw, h, compileErr := runview.CompileBundleWorkflow(resolved, opened, workspace)
 		if compileErr != nil {
 			return nil, "", "", "", opened, cleanup, compileErr
 		}
@@ -993,7 +1013,7 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 	}
 	if opened != nil {
 		cleanup = c
-		raw, h, compileErr := runview.CompileBundleWorkflow(iterPath, opened)
+		raw, h, compileErr := runview.CompileBundleWorkflow(iterPath, opened, workspace)
 		if compileErr != nil {
 			return nil, "", "", "", opened, cleanup, compileErr
 		}
@@ -1007,7 +1027,7 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 	// promoted to that bundle by openBundleOrFile (the skills/ mirrored
 	// into .claude/skills/, the prompts/*.md merged) — the same promotion
 	// every other surface gets; what reaches this line is a loose file.
-	raw, h, compileErr := runview.CompileWorkflowWithHash(resolved)
+	raw, h, compileErr := runview.CompileWorkflowWithHash(resolved, workspace)
 	if compileErr != nil {
 		return nil, "", "", "", nil, cleanup, compileErr
 	}

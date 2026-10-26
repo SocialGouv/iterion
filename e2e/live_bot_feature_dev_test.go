@@ -53,7 +53,7 @@ func TestLive_FeatureDev(t *testing.T) {
 	}
 	runID := "live-feature-dev"
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
@@ -155,7 +155,7 @@ func TestLive_FeatureDev_Real(t *testing.T) {
 	}
 	runID := uniqueRunID("live-feature-dev-real")
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 	teeLogger := prepareLiveRunLog(t, storeDir, runID)

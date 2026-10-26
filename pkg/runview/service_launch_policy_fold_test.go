@@ -20,7 +20,7 @@ import (
 // parity assertions can run the derivation both folded lists feed.
 func mustCompileFold(t *testing.T, source string) *ir.Workflow {
 	t.Helper()
-	wf, _, _, err := compileForLaunch("fold.bot", source, "")
+	wf, _, _, err := compileForLaunch("fold.bot", source, "", "")
 	if err != nil {
 		t.Fatalf("compile fixture: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestResume_ReplaysTheFoldedRowsNotThePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	const runID = "run-foldreplay"
-	_, hash, err := CompileWorkflowWithHash(botPath)
+	_, hash, err := CompileWorkflowWithHash(botPath, "")
 	if err != nil {
 		t.Fatalf("compile fixture: %v", err)
 	}

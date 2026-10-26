@@ -239,7 +239,7 @@ func TestQueueUnavailableLaunchAndResumeReturnRetryableServiceUnavailable(t *tes
 		installQueueOutageTestPublisher(t, srv, fmt.Errorf("cloudpublisher: republish: %w", queueErr))
 
 		logicalPath := filepath.Join(srv.cfg.WorkDir, "queue_outage.bot")
-		_, workflowHash, err := runview.CompileWorkflowFromSource(logicalPath, source)
+		_, workflowHash, err := runview.CompileWorkflowFromSource(logicalPath, source, "")
 		if err != nil {
 			t.Fatalf("compile workflow: %v", err)
 		}
@@ -325,7 +325,7 @@ workflow resume_hash:
 	if err := os.WriteFile(botPath, []byte(modifiedSource), 0o644); err != nil {
 		t.Fatalf("write modified workflow: %v", err)
 	}
-	_, originalHash, err := runview.CompileWorkflowFromSource(botPath, originalSource)
+	_, originalHash, err := runview.CompileWorkflowFromSource(botPath, originalSource, "")
 	if err != nil {
 		t.Fatalf("compile original workflow: %v", err)
 	}
@@ -427,7 +427,7 @@ workflow dispatcher_child:
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	_, workflowHash, err := runview.CompileWorkflowFromSource(outsidePath, source)
+	_, workflowHash, err := runview.CompileWorkflowFromSource(outsidePath, source, "")
 	if err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}
@@ -532,7 +532,7 @@ workflow scratch_consent:
 	if err := os.WriteFile(botPath, []byte(source), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, hash, err := runview.CompileWorkflowFromSource(botPath, source)
+	_, hash, err := runview.CompileWorkflowFromSource(botPath, source, "")
 	if err != nil {
 		t.Fatal(err)
 	}

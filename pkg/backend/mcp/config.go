@@ -124,11 +124,20 @@ func FromIRAuth(auth *ir.MCPAuth) *AuthConfig {
 // PrepareWorkflow resolves the final MCP catalog and active server sets for a
 // compiled workflow. It merges project .mcp.json, top-level `mcp_server`
 // declarations, and built-in presets, then applies workflow/node filters.
+//
+// projectDir and workspace are two different facts (#1800): projectDir is
+// the directory the .bot's PROJECT lives in, where a project `.mcp.json` is
+// read; workspace is the directory the RUN roots at, and is what plugin
+// `{{workspace}}` placeholders expand against. They coincide only when the
+// caller says so — a launch passes the engine's workDir as the workspace,
+// never the compiled file's directory, or a plugin server (codeindex,
+// repo-falcon) indexes the bundle instead of the code.
+//
 // The optional logger carries the one failure this function otherwise
 // swallows: a plugin registry that cannot load takes EVERY plugin MCP server
 // off every node of the run, and that must not look like "no plugins are
 // enabled". Callers that have a run-scoped logger should pass it.
-func PrepareWorkflow(wf *ir.Workflow, projectDir string, logger ...*iterlog.Logger) error {
+func PrepareWorkflow(wf *ir.Workflow, projectDir, workspace string, logger ...*iterlog.Logger) error {
 	if wf == nil {
 		return nil
 	}
@@ -147,7 +156,7 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir string, logger ...*iterlog.Logg
 	if len(logger) > 0 {
 		log = logger[0]
 	}
-	for name, cfg := range loadPluginServers(projectDir, log) {
+	for name, cfg := range loadPluginServers(workspace, log) {
 		if _, clash := projectServers[name]; clash {
 			continue // a project .mcp.json entry of the same name wins
 		}

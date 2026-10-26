@@ -70,7 +70,7 @@ func TestBundle_SecAuditDeps_PackOpenCompile(t *testing.T) {
 		t.Errorf("manifest.name = %q, want %q", b.Manifest.Name, "sec-audit-deps")
 	}
 
-	wf, wfHash, err := runview.CompileBundleWorkflow(b.IterPath, b)
+	wf, wfHash, err := runview.CompileBundleWorkflow(b.IterPath, b, "")
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestBundle_SecAuditDeps_OpenDirMatchesPack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenDir: %v", err)
 	}
-	wfDir, _, err := runview.CompileBundleWorkflow(bDir.IterPath, bDir)
+	wfDir, _, err := runview.CompileBundleWorkflow(bDir.IterPath, bDir, "")
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow (dir): %v", err)
 	}
@@ -110,7 +110,7 @@ func TestBundle_SecAuditDeps_OpenDirMatchesPack(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer cleanup()
-	wfArchive, _, err := runview.CompileBundleWorkflow(bArchive.IterPath, bArchive)
+	wfArchive, _, err := runview.CompileBundleWorkflow(bArchive.IterPath, bArchive, "")
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow (archive): %v", err)
 	}

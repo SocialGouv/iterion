@@ -36,7 +36,7 @@ func TestEngineRunnerPromotesBareMainBot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenDir: %v", err)
 	}
-	_, want, err := runview.CompileBundleWorkflow(b.IterPath, b)
+	_, want, err := runview.CompileBundleWorkflow(b.IterPath, b, "")
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}

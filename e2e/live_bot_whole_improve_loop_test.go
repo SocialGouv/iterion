@@ -82,7 +82,7 @@ func Multiply(a, b int) int {
 	}
 	runID := "live-whole-improve-loop"
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
@@ -177,7 +177,7 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 	}
 	runID := uniqueRunID("live-whole-improve-loop-real")
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 	teeLogger := prepareLiveRunLog(t, storeDir, runID)

@@ -230,7 +230,7 @@ func (s *Service) ResolveRewindPivot(ctx context.Context, spec RewindSpec) (*Rew
 	// below and the --auto diff. They must be the same artifact: a pivot
 	// named in one program and applied to another drops the wrong nodes.
 	currentPath := currentSourcePath(spec, sourcePath)
-	wf, _, err := CompileWorkflowWithHash(currentPath)
+	wf, _, err := CompileWorkflowWithHash(currentPath, run.WorkDir)
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w", currentPath, spec.NodeID, err)
 	}
@@ -429,7 +429,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// diverge exactly when a stored bot's current version had to be
 	// materialized somewhere else.
 	currentPath := currentSourcePath(spec, sourcePath)
-	wf, currentRevision, _, err := CompileWorkflowPath(currentPath)
+	wf, currentRevision, _, err := CompileWorkflowPath(currentPath, run.WorkDir)
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w",
 			currentPath, spec.NodeID, err)

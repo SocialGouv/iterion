@@ -368,7 +368,10 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// point (see server.resolveWorkflowPath), so the spawned subprocess
 	// can read it from disk; we use the inline copy here to avoid an
 	// extra ReadFile for the pre-flight compile.
-	wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	// Pre-flight only: the spawned runner compiles its own copy and the
+	// engine it roots resolves its own cwd. The service's effective workdir
+	// is the launch surface's answer for the synchronous checks (#1800).
+	wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, s.effectiveWorkDir(spec.WorkDir))
 	if err != nil {
 		return nil, err
 	}
