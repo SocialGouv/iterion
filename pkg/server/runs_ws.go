@@ -176,7 +176,7 @@ type wsErrorPayload struct {
 // owning daemon (or CLI process) does.
 func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	if s.runs == nil {
-		http.Error(w, "run console not configured", http.StatusServiceUnavailable)
+		httpError(w, http.StatusServiceUnavailable, "run console not configured")
 		return
 	}
 	runID := r.PathValue("id")

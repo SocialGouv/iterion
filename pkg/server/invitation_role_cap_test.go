@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -61,7 +60,7 @@ func TestTeamInvitations_aMintCannotCarryAnOrgRoleAboveItsCreators(t *testing.T)
 				stood, stoodErr := real.GetOrgMembership(ctx, racerID, "o1")
 
 				selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: racerID})
-				mint := httptest.NewRecorder()
+				mint := newErrorRecorder()
 				s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 					`{"email":"racer@example.com","role":"`+string(role)+`"}`, "t1", ""))
 				if mint.Code != http.StatusForbidden {
@@ -102,7 +101,7 @@ func TestTeamInvitations_aMintCannotCarryAnOrgRoleAboveItsCreators(t *testing.T)
 				// And the capability the accepted invitation would have
 				// yielded is still out of reach: the org's own admin keeps
 				// their membership.
-				rm := httptest.NewRecorder()
+				rm := newErrorRecorder()
 				s.handleRemoveOrgMember(rm, teamReq(selfCtx, "DELETE", "/api/orgs/o1/members/orgadmin", "", "o1", "orgadmin"))
 				if rm.Code != http.StatusForbidden {
 					t.Errorf("the refused minter removing the org's own admin: code=%d body=%s, want 403",
@@ -136,7 +135,7 @@ func TestTeamInvitations_anOrphanGrantHolderMintsNoWayBackIntoTheOrg(t *testing.
 				t.Fatal("the minter does not manage the team — then this is not the mint the test measures")
 			}
 
-			mint := httptest.NewRecorder()
+			mint := newErrorRecorder()
 			s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 				`{"email":"racer@example.com","role":"`+string(role)+`"}`, "t1", ""))
 			if mint.Code == http.StatusOK {
@@ -150,7 +149,7 @@ func TestTeamInvitations_anOrphanGrantHolderMintsNoWayBackIntoTheOrg(t *testing.
 				}
 				_, acceptErr := s.authSvc.AcceptInvitationForExistingUser(ctx, racerID, minted.Token)
 				om, omErr := real.GetOrgMembership(ctx, racerID, "o1")
-				roster := httptest.NewRecorder()
+				roster := newErrorRecorder()
 				s.handleListOrgMembers(roster, orgReq(selfCtx, "GET", "/api/orgs/o1/members", "", "o1"))
 				t.Fatalf("the orphan-grant holder minted a %s invitation to their own address and accepted it (err=%v): org membership %+v (err=%v), org roster code=%d — re-admitted to the org",
 					role, acceptErr, om, omErr, roster.Code)
@@ -197,7 +196,7 @@ func TestTeamInvitations_aRoleThatMirrorsUpToNothingIsNotCapped(t *testing.T) {
 			s := newOrgCredsTestServer(t)
 			c.seed(t, s)
 			selfCtx := auth.WithIdentity(context.Background(), auth.Identity{UserID: racerID})
-			mint := httptest.NewRecorder()
+			mint := newErrorRecorder()
 			s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 				`{"email":"newcomer@example.com","role":"`+string(c.role)+`"}`, "t1", ""))
 			if mint.Code != http.StatusOK {
@@ -223,7 +222,7 @@ func TestTeamInvitations_aMirrorTheMinterExactlyReachesStillMints(t *testing.T) 
 				t.Fatalf("%s mirrors up to %q, not the org role the minter holds — then this is not the equality rung", role, want)
 			}
 			selfCtx := auth.WithIdentity(context.Background(), auth.Identity{UserID: racerID})
-			mint := httptest.NewRecorder()
+			mint := newErrorRecorder()
 			s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 				`{"email":"newcomer@example.com","role":"`+string(role)+`"}`, "t1", ""))
 			if mint.Code != http.StatusOK {
@@ -270,7 +269,7 @@ func TestTeamInvitations_theStandingThatStillMints(t *testing.T) {
 		{"a platform admin", superAdminCtx(), identity.RoleOwner},
 	} {
 		t.Run(c.who+" mints "+string(c.role), func(t *testing.T) {
-			mint := httptest.NewRecorder()
+			mint := newErrorRecorder()
 			s.handleCreateInvitation(mint, teamReq(c.ctx, "POST", "/api/teams/t1/invitations",
 				`{"email":"newcomer@example.com","role":"`+string(c.role)+`"}`, "t1", ""))
 			if mint.Code != http.StatusOK {
@@ -285,7 +284,7 @@ func TestTeamInvitations_theStandingThatStillMints(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		mint := httptest.NewRecorder()
+		mint := newErrorRecorder()
 		s.handleCreateInvitation(mint, teamReq(auth.WithIdentity(ctx, auth.Identity{UserID: "hermit"}),
 			"POST", "/api/teams/solo/invitations", `{"email":"friend@example.com","role":"owner"}`, "solo", ""))
 		if mint.Code != http.StatusOK {
@@ -328,14 +327,14 @@ func TestTeamInvitations_aStandingThatCannotBeReadRefusesTheMint(t *testing.T) {
 			s.authSvc.SetStoreForTest(orgStandingErrorGate{Store: real, userID: racerID, orgID: "o1"})
 
 			selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: racerID})
-			mint := httptest.NewRecorder()
+			mint := newErrorRecorder()
 			s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 				`{"email":"racer@example.com","role":"`+string(role)+`"}`, "t1", ""))
 			if mint.Code != http.StatusInternalServerError {
 				t.Fatalf("minting a %s while the minter's standing cannot be read: code=%d body=%s, want 500",
-					role, mint.Code, mint.Body.String())
+					role, mint.Code, mint.Diagnostic(t))
 			}
-			if body := mint.Body.String(); !strings.Contains(body, "connection reset by peer") {
+			if body := mint.Diagnostic(t); !strings.Contains(body, "connection reset by peer") {
 				t.Errorf("the 500 does not carry the store's own error: %s", body)
 			}
 			s.authSvc.SetStoreForTest(real)
@@ -362,13 +361,13 @@ func TestOrgInvitations_aTeamOfAnotherOrgIsNotInvitedInto(t *testing.T) {
 	real := s.authStore()
 	for _, role := range []identity.Role{identity.RoleOwner, identity.RoleConfigEditor} {
 		t.Run("o1 admin mints "+string(role)+" into o2's team", func(t *testing.T) {
-			w := httptest.NewRecorder()
+			w := newErrorRecorder()
 			s.handleCreateOrgInvitation(w, orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/invitations",
 				`{"email":"outsider@example.com","role":"`+string(role)+`","team_id":"t9"}`, "o1"))
 			if w.Code != http.StatusNotFound {
-				t.Fatalf("minting into a team of another org: code=%d body=%s, want 404", w.Code, w.Body.String())
+				t.Fatalf("minting into a team of another org: code=%d body=%s, want 404", w.Code, w.Diagnostic(t))
 			}
-			if body := w.Body.String(); !strings.Contains(body, "team not in org") {
+			if body := w.Diagnostic(t); !strings.Contains(body, "team not in org") {
 				t.Errorf("the refusal does not say what it refused: %s", body)
 			}
 			invs, err := real.ListInvitationsByTeam(ctx, "t9")
@@ -381,11 +380,11 @@ func TestOrgInvitations_aTeamOfAnotherOrgIsNotInvitedInto(t *testing.T) {
 		})
 	}
 	t.Run("a team of the org in the path", func(t *testing.T) {
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleCreateOrgInvitation(w, orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/invitations",
 			`{"email":"newcomer@example.com","role":"owner","team_id":"t2"}`, "o1"))
 		if w.Code != http.StatusOK {
-			t.Fatalf("minting into a team of this org: code=%d body=%s, want 200", w.Code, w.Body.String())
+			t.Fatalf("minting into a team of this org: code=%d body=%s, want 200", w.Code, w.Diagnostic(t))
 		}
 		var minted struct {
 			TeamID string `json:"team_id"`
@@ -398,11 +397,11 @@ func TestOrgInvitations_aTeamOfAnotherOrgIsNotInvitedInto(t *testing.T) {
 		}
 	})
 	t.Run("no team named at all", func(t *testing.T) {
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleCreateOrgInvitation(w, orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/invitations",
 			`{"email":"newcomer2@example.com","role":"admin"}`, "o1"))
 		if w.Code != http.StatusOK {
-			t.Fatalf("minting into the org's first team: code=%d body=%s, want 200", w.Code, w.Body.String())
+			t.Fatalf("minting into the org's first team: code=%d body=%s, want 200", w.Code, w.Diagnostic(t))
 		}
 	})
 	// A team id that exists NOWHERE answers what a team of another org
@@ -411,13 +410,13 @@ func TestOrgInvitations_aTeamOfAnotherOrgIsNotInvitedInto(t *testing.T) {
 	// who can tell them apart can probe which team ids exist in the tenants
 	// they do not manage.
 	t.Run("a team that exists nowhere", func(t *testing.T) {
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleCreateOrgInvitation(w, orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/invitations",
 			`{"email":"newcomer3@example.com","role":"owner","team_id":"does-not-exist"}`, "o1"))
 		if w.Code != http.StatusNotFound {
-			t.Fatalf("minting into a team that exists nowhere: code=%d body=%s, want 404", w.Code, w.Body.String())
+			t.Fatalf("minting into a team that exists nowhere: code=%d body=%s, want 404", w.Code, w.Diagnostic(t))
 		}
-		if body := w.Body.String(); !strings.Contains(body, "team not in org") {
+		if body := w.Diagnostic(t); !strings.Contains(body, "team not in org") {
 			t.Errorf("the refusal does not answer what a team of another org answers: %s", body)
 		}
 	})
@@ -428,14 +427,14 @@ func TestOrgInvitations_aTeamOfAnotherOrgIsNotInvitedInto(t *testing.T) {
 		sick := newOrgCredsTestServer(t)
 		realStore := sick.authStore()
 		sick.authSvc.SetStoreForTest(teamReadErrorGate{Store: realStore, teamID: "t2"})
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		sick.handleCreateOrgInvitation(w, orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/invitations",
 			`{"email":"newcomer4@example.com","role":"owner","team_id":"t2"}`, "o1"))
 		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("minting while the team cannot be read: code=%d body=%s, want 500", w.Code, w.Body.String())
+			t.Fatalf("minting while the team cannot be read: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 		}
 		for _, want := range []string{"read the team", "connection reset by peer"} {
-			if body := w.Body.String(); !strings.Contains(body, want) {
+			if body := w.Diagnostic(t); !strings.Contains(body, want) {
 				t.Errorf("the 500 does not say %q: %s", want, body)
 			}
 		}
@@ -488,15 +487,15 @@ func TestOrgRoutes_orgTeamsThatCannotBeListedAreNotAnOrgWithoutATeam(t *testing.
 		s := newOrgCredsTestServer(t)
 		real := s.authStore()
 		s.authSvc.SetStoreForTest(listTeamsErrorGate{Store: real, orgID: "o1"})
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleCreateOrgInvitation(w, orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/invitations",
 			`{"email":"newcomer@example.com","role":"member"}`, "o1"))
 		if w.Code != http.StatusInternalServerError {
 			t.Fatalf("minting with no team_id while the org's teams cannot be listed: code=%d body=%s, want 500",
-				w.Code, w.Body.String())
+				w.Code, w.Diagnostic(t))
 		}
 		for _, want := range []string{"resolve the org's teams", "connection reset by peer"} {
-			if body := w.Body.String(); !strings.Contains(body, want) {
+			if body := w.Diagnostic(t); !strings.Contains(body, want) {
 				t.Errorf("the 500 does not say %q: %s", want, body)
 			}
 		}
@@ -512,14 +511,14 @@ func TestOrgRoutes_orgTeamsThatCannotBeListedAreNotAnOrgWithoutATeam(t *testing.
 	t.Run("the org's SSO providers", func(t *testing.T) {
 		s := newOrgCredsTestServer(t)
 		s.authSvc.SetStoreForTest(listTeamsErrorGate{Store: s.authStore(), orgID: "o1"})
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleListOrgSSOProviders(w, orgReq(orgAdminCtx(), "GET", "/api/orgs/o1/sso/providers", "", "o1"))
 		if w.Code != http.StatusInternalServerError {
 			t.Fatalf("listing the org's SSO providers while its teams cannot be listed: code=%d body=%s, want 500",
-				w.Code, w.Body.String())
+				w.Code, w.Diagnostic(t))
 		}
 		for _, want := range []string{"resolve the org's teams", "connection reset by peer"} {
-			if body := w.Body.String(); !strings.Contains(body, want) {
+			if body := w.Diagnostic(t); !strings.Contains(body, want) {
 				t.Errorf("the 500 does not say %q: %s", want, body)
 			}
 		}
@@ -527,14 +526,14 @@ func TestOrgRoutes_orgTeamsThatCannotBeListedAreNotAnOrgWithoutATeam(t *testing.
 	t.Run("the org's SSO domains", func(t *testing.T) {
 		s := newOrgCredsTestServer(t)
 		s.authSvc.SetStoreForTest(listTeamsErrorGate{Store: s.authStore(), orgID: "o1"})
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleListOrgSSODomains(w, orgReq(orgAdminCtx(), "GET", "/api/orgs/o1/sso/domains", "", "o1"))
 		if w.Code != http.StatusInternalServerError {
 			t.Fatalf("listing the org's SSO domains while its teams cannot be listed: code=%d body=%s, want 500",
-				w.Code, w.Body.String())
+				w.Code, w.Diagnostic(t))
 		}
 		for _, want := range []string{"resolve the org's teams", "connection reset by peer"} {
-			if body := w.Body.String(); !strings.Contains(body, want) {
+			if body := w.Diagnostic(t); !strings.Contains(body, want) {
 				t.Errorf("the 500 does not say %q: %s", want, body)
 			}
 		}
@@ -545,14 +544,14 @@ func TestOrgRoutes_orgTeamsThatCannotBeListedAreNotAnOrgWithoutATeam(t *testing.
 	t.Run("the org's pending invitations", func(t *testing.T) {
 		s := newOrgCredsTestServer(t)
 		s.authSvc.SetStoreForTest(listTeamsErrorGate{Store: s.authStore(), orgID: "o1"})
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleListOrgInvitations(w, orgReq(orgAdminCtx(), "GET", "/api/orgs/o1/invitations", "", "o1"))
 		if w.Code != http.StatusInternalServerError {
 			t.Fatalf("listing the org's invitations while its teams cannot be listed: code=%d body=%s, want 500",
-				w.Code, w.Body.String())
+				w.Code, w.Diagnostic(t))
 		}
 		for _, want := range []string{"resolve the org's teams", "connection reset by peer"} {
-			if body := w.Body.String(); !strings.Contains(body, want) {
+			if body := w.Diagnostic(t); !strings.Contains(body, want) {
 				t.Errorf("the 500 does not say %q: %s", want, body)
 			}
 		}
@@ -560,14 +559,14 @@ func TestOrgRoutes_orgTeamsThatCannotBeListedAreNotAnOrgWithoutATeam(t *testing.
 	t.Run("a team whose invitations cannot be listed", func(t *testing.T) {
 		s := newOrgCredsTestServer(t)
 		s.authSvc.SetStoreForTest(listInvitationsErrorGate{Store: s.authStore(), teamID: "t1"})
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleListOrgInvitations(w, orgReq(orgAdminCtx(), "GET", "/api/orgs/o1/invitations", "", "o1"))
 		if w.Code != http.StatusInternalServerError {
 			t.Fatalf("listing the org's invitations while a team's cannot be read: code=%d body=%s, want 500",
-				w.Code, w.Body.String())
+				w.Code, w.Diagnostic(t))
 		}
 		for _, want := range []string{"list the invitations of team t1", "connection reset by peer"} {
-			if body := w.Body.String(); !strings.Contains(body, want) {
+			if body := w.Diagnostic(t); !strings.Contains(body, want) {
 				t.Errorf("the 500 does not say %q: %s", want, body)
 			}
 		}
@@ -580,24 +579,24 @@ func TestOrgRoutes_orgTeamsThatCannotBeListedAreNotAnOrgWithoutATeam(t *testing.
 		}); err != nil {
 			t.Fatal(err)
 		}
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleCreateOrgInvitation(w, orgReq(orgAdminCtx(), "POST", "/api/orgs/o3/invitations",
 			`{"email":"newcomer@example.com","role":"member"}`, "o3"))
 		if w.Code != http.StatusBadRequest {
-			t.Fatalf("minting into an org with no team: code=%d body=%s, want 400", w.Code, w.Body.String())
+			t.Fatalf("minting into an org with no team: code=%d body=%s, want 400", w.Code, w.Diagnostic(t))
 		}
-		if body := w.Body.String(); !strings.Contains(body, "org has no team to invite into") {
+		if body := w.Diagnostic(t); !strings.Contains(body, "org has no team to invite into") {
 			t.Errorf("the 400 does not say the org has no team: %s", body)
 		}
-		sso := httptest.NewRecorder()
+		sso := newErrorRecorder()
 		s.handleListOrgSSOProviders(sso, orgReq(orgAdminCtx(), "GET", "/api/orgs/o3/sso/providers", "", "o3"))
 		if sso.Code != http.StatusNotFound {
-			t.Fatalf("listing the SSO providers of an org with no team: code=%d body=%s, want 404", sso.Code, sso.Body.String())
+			t.Fatalf("listing the SSO providers of an org with no team: code=%d body=%s, want 404", sso.Code, sso.Diagnostic(t))
 		}
-		dom := httptest.NewRecorder()
+		dom := newErrorRecorder()
 		s.handleListOrgSSODomains(dom, orgReq(orgAdminCtx(), "GET", "/api/orgs/o3/sso/domains", "", "o3"))
 		if dom.Code != http.StatusNotFound {
-			t.Fatalf("listing the SSO domains of an org with no team: code=%d body=%s, want 404", dom.Code, dom.Body.String())
+			t.Fatalf("listing the SSO domains of an org with no team: code=%d body=%s, want 404", dom.Code, dom.Diagnostic(t))
 		}
 	})
 }
@@ -639,7 +638,7 @@ func TestOrgInvitations_theDefaultTeamIsTheOrgsFirstNonPersonalTeam(t *testing.T
 		t.Fatal(err)
 	}
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleCreateOrgInvitation(w, orgReq(auth.WithIdentity(ctx, auth.Identity{UserID: "o4owner"}),
 		"POST", "/api/orgs/o4/invitations", `{"email":"newcomer@example.com","role":"owner"}`, "o4"))
 	if w.Code != http.StatusOK {
@@ -725,18 +724,18 @@ func TestTeamInvitations_aTeamThatCannotBeReadRefusesTheMint(t *testing.T) {
 			if !s.canManageTeam(context.Background(), mustIdentity(t, ctx), c.team) {
 				t.Fatal("the minter does not pass the team-management check — then this is not the caller class the test measures")
 			}
-			mint := httptest.NewRecorder()
+			mint := newErrorRecorder()
 			s.handleCreateInvitation(mint, teamReq(ctx, "POST", "/api/teams/"+c.team+"/invitations",
 				`{"email":"newcomer@example.com","role":"owner"}`, c.team, ""))
 			if mint.Code != http.StatusNotFound {
 				t.Fatalf("minting into a team that does not exist: code=%d body=%s, want 404",
-					mint.Code, mint.Body.String())
+					mint.Code, mint.Diagnostic(t))
 			}
 			// The route's own vocabulary, not the storage layer's: the service
 			// answers this read with the same error, and a client told
 			// "identity: not found" learns which layer failed instead of what
 			// it asked for.
-			if body := mint.Body.String(); !strings.Contains(body, auth.ErrTeamNotFound.Error()) {
+			if body := mint.Diagnostic(t); !strings.Contains(body, auth.ErrTeamNotFound.Error()) {
 				t.Errorf("the 404 does not name the team: %s", body)
 			}
 			invs, err := s.authStore().ListInvitationsByTeam(context.Background(), c.team)
@@ -753,15 +752,15 @@ func TestTeamInvitations_aTeamThatCannotBeReadRefusesTheMint(t *testing.T) {
 		seedRacerAsTeamAdmin(t, s)
 		real := s.authStore()
 		s.authSvc.SetStoreForTest(teamReadErrorGate{Store: real, teamID: "t1"})
-		mint := httptest.NewRecorder()
+		mint := newErrorRecorder()
 		s.handleCreateInvitation(mint, teamReq(auth.WithIdentity(context.Background(), auth.Identity{UserID: racerID}),
 			"POST", "/api/teams/t1/invitations", `{"email":"racer@example.com","role":"owner"}`, "t1", ""))
 		if mint.Code != http.StatusInternalServerError {
 			t.Fatalf("minting while the team cannot be read: code=%d body=%s, want 500",
-				mint.Code, mint.Body.String())
+				mint.Code, mint.Diagnostic(t))
 		}
 		for _, want := range []string{"read the team", "connection reset by peer"} {
-			if body := mint.Body.String(); !strings.Contains(body, want) {
+			if body := mint.Diagnostic(t); !strings.Contains(body, want) {
 				t.Errorf("the 500 does not say %q: %s", want, body)
 			}
 		}
@@ -798,15 +797,15 @@ func TestTeamInvitations_aTeamThatCannotBeReadRefusesTheMint(t *testing.T) {
 				if !s.canManageOrg(context.Background(), auth.Identity{UserID: "orgadmin"}, "o1") {
 					t.Fatal("the minter does not manage the org — then this is not the caller class the test measures")
 				}
-				mint := httptest.NewRecorder()
+				mint := newErrorRecorder()
 				s.handleCreateInvitation(mint, teamReq(orgAdminCtx(), "POST",
 					"/api/teams/"+c.teamID+"/invitations",
 					`{"email":"newcomer@example.com","role":"owner"}`, c.teamID, ""))
 				if mint.Code != http.StatusForbidden {
 					t.Fatalf("an org admin minting into %s: code=%d body=%s, want 403 — the team-management check reads the team too",
-						c.name, mint.Code, mint.Body.String())
+						c.name, mint.Code, mint.Diagnostic(t))
 				}
-				if body := mint.Body.String(); !strings.Contains(body, "admin or owner required") {
+				if body := mint.Diagnostic(t); !strings.Contains(body, "admin or owner required") {
 					t.Errorf("the 403 is not the team-management check's: %s", body)
 				}
 				s.authSvc.SetStoreForTest(real)
@@ -858,7 +857,7 @@ func TestOrgInvitations_theDefaultTeamOfAnOrgWhoseTeamsAreAllPersonal(t *testing
 		t.Fatal(err)
 	}
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleCreateOrgInvitation(w, orgReq(auth.WithIdentity(ctx, auth.Identity{UserID: "o5owner"}),
 		"POST", "/api/orgs/o5/invitations", `{"email":"newcomer5@example.com","role":"owner"}`, "o5"))
 	if w.Code != http.StatusOK {
@@ -900,7 +899,7 @@ func TestTeamInvitations_aTokenClaimingMoreThanTheRowDoesNotMint(t *testing.T) {
 	seedRacerAsTeamAdmin(t, s)
 	stale := auth.Identity{UserID: racerID, OrgID: "o1", OrgRole: identity.OrgRoleAdmin}
 
-	mint := httptest.NewRecorder()
+	mint := newErrorRecorder()
 	s.handleCreateInvitation(mint, teamReq(auth.WithIdentity(context.Background(), stale),
 		"POST", "/api/teams/t1/invitations", `{"email":"racer@example.com","role":"owner"}`, "t1", ""))
 	if mint.Code != http.StatusForbidden {
@@ -954,7 +953,7 @@ func TestOrgInvitations_aStandingThatVanishesAfterTheGateRefusesTheMint(t *testi
 	gate := &orgStandingVanishGate{Store: real, userID: "orgadmin", orgID: "o1"}
 	s.authSvc.SetStoreForTest(gate)
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleCreateOrgInvitation(w, orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/invitations",
 		`{"email":"newcomer@example.com","role":"owner","team_id":"t1"}`, "o1"))
 	if w.Code != http.StatusForbidden {
@@ -994,7 +993,7 @@ func TestTeamInvitations_aPendingInvitationOutlivesItsCreatorsStanding(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	mint := httptest.NewRecorder()
+	mint := newErrorRecorder()
 	s.handleCreateInvitation(mint, teamReq(orgAdminCtx(), "POST", "/api/teams/t1/invitations",
 		`{"email":"successor@example.com","role":"owner"}`, "t1", ""))
 	if mint.Code != http.StatusOK {
@@ -1030,7 +1029,7 @@ func TestTeamInvitations_aPendingInvitationOutlivesItsCreatorsStanding(t *testin
 	}
 	// The remedy, on the state above: a pending invitation is revoked
 	// before it is accepted, by whoever manages the org now.
-	second := httptest.NewRecorder()
+	second := newErrorRecorder()
 	s.handleCreateInvitation(second, teamReq(superAdminCtx(), "POST", "/api/teams/t1/invitations",
 		`{"email":"later@example.com","role":"owner"}`, "t1", ""))
 	if second.Code != http.StatusOK {
@@ -1042,7 +1041,7 @@ func TestTeamInvitations_aPendingInvitationOutlivesItsCreatorsStanding(t *testin
 	if err := json.Unmarshal(second.Body.Bytes(), &later); err != nil {
 		t.Fatal(err)
 	}
-	del := httptest.NewRecorder()
+	del := newErrorRecorder()
 	delReq := orgReq(auth.WithIdentity(ctx, auth.Identity{UserID: "successor"}),
 		"DELETE", "/api/orgs/o1/invitations/"+later.ID, "", "o1")
 	delReq.SetPathValue("invite_id", later.ID)

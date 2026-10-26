@@ -186,7 +186,7 @@ func TestRequireAuth_APATIdentityReadThatFailsIsAFailure(t *testing.T) {
 				t.Fatalf("a failed read of %s answered %d %s, want 500", tc.name, code, body)
 			}
 			var got map[string]string
-			if err := json.Unmarshal([]byte(body), &got); err != nil || got["error"] != identityUnavailable || len(got) != 1 {
+			if err := json.Unmarshal([]byte(body), &got); err != nil || got["error"] != identityUnavailable || got["request_id"] == "" || len(got) != 2+boolInt(got["trace_id"] != "") {
 				t.Fatalf("a failed read of %s answered the body %s, want {\"error\":%q}", tc.name, body, identityUnavailable)
 			}
 			if strings.Contains(body, internalHost) {

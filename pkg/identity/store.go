@@ -21,6 +21,8 @@ type Store interface {
 	// analogue of a per-id GetUser ErrNotFound — so callers resolving a
 	// reference list (member rosters, org trees) issue one query instead
 	// of a Get per row.
+	// A completed read containing corrupt rows returns the readable rows
+	// together with *BulkDecodeError. Other errors return no partial result.
 	GetUsersByIDs(ctx context.Context, ids []string) (map[string]User, error)
 	// UpdateUser replaces the WHOLE user document. Every production writer
 	// is a PatchUser (TestUpdateUserHasNoProductionCallers keeps it that

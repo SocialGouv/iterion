@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
 )
@@ -15,8 +16,8 @@ import (
 
 // AuthMeResponse is GET /api/auth/me: the caller's identity view — the
 // account, the org→teams tree, and the active context its access token
-// carries. /api/auth/me is the one route that builds the tree, and a tree
-// it cannot build is answered as an error, never as an empty tree.
+// carries. /api/auth/me marks individually corrupt orgs unavailable; a read
+// it cannot complete is answered as an error, never as an empty tree.
 type AuthMeResponse struct {
 	User          UserView      `json:"user"`
 	Orgs          []OrgTreeView `json:"orgs"`
@@ -70,6 +71,9 @@ type OrgTreeView struct {
 	OrgRole  string           `json:"org_role"`
 	Personal bool             `json:"personal,omitempty"`
 	Teams    []MembershipView `json:"teams"`
+	// Unavailable identifies a corrupt org document, not an empty org.
+	// Only the membership's org ID is known; no role or teams are asserted.
+	Unavailable bool `json:"unavailable,omitempty"`
 }
 
 type UserView struct {
@@ -249,32 +253,9 @@ func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, m mintedSe
 	writeJSON(w, resp)
 }
 
-// identityUnavailable is the body of every 5xx a store or server failure
-// causes on the identity routes, which answer through authError and
-// identityFailure: the /api/auth routes — the handlers of auth_sessions.go,
-// auth_views.go, auth_oidc.go, password_routes.go, desktop_sso.go, the
-// invitation lookup and accept, GET /api/auth/me and the two switches POST
-// /api/auth/me/team/{team_id} and POST /api/auth/me/org/{org_id}
-// (auth_teams.go), and GET /api/auth/oidc/github/callback/orgs
-// (forge_github_orgs_routes.go, a forge feature under the auth prefix for
-// its redirect URI, upstream exchange included) — plus POST
-// /api/me/password, POST /api/me/sessions/revoke-all, the /api/me/sso
-// routes, and GET and POST /api/teams and GET /api/teams/{id}/members, whose
-// authorization reads answer here too when a "no" rests on a read that
-// failed (canViewTeamOrFail, canManageOrgOrFail). An administrator's disable
-// and password reset answer here when the revocation of the account's
-// sessions fails. Any authenticated route reached with a personal access
-// token answers here as well when one of the rows the PAT middleware
-// resolves (up to four) cannot be read (identityFromPAT, patIdentityFailure),
-// and so does a WebSocket upgrade whose ?ticket= the ticket store could not
-// redeem (wsTicketIdentity). Such a failure's cause is a store or server error
-// whose text names internals — a cluster's hosts, user ids — so it goes to
-// the server log, never to the client. A deployment with no auth service
-// answers "auth not configured" instead: a configuration, not a failure.
-// The team-management routes (invitations, member changes) keep 500 bodies
-// that name the row a failure may have left standing, for the operator to
-// act on.
-const identityUnavailable = "identity unavailable"
+// Identity failures share the generic server-error message. Correlation IDs
+// connect the response to the cause logged by the shared HTTP writer.
+const identityUnavailable = httpx.InternalServerError
 
 // authError answers err with the status mapAuthErrorStatus gives it: a
 // refusal (4xx) carries its own message, a failure (5xx) is answered by
@@ -292,10 +273,7 @@ func (s *Server) authError(w http.ResponseWriter, r *http.Request, err error) {
 // identity route: its cause is logged, the client gets 500 and
 // identityUnavailable.
 func (s *Server) identityFailure(w http.ResponseWriter, r *http.Request, err error) {
-	if s.logger != nil {
-		s.logger.Error("auth: %s %s: %v", r.Method, r.URL.Path, err)
-	}
-	httpError(w, http.StatusInternalServerError, "%s", identityUnavailable)
+	s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
 }
 
 // buildOrgTree assembles the org→teams view for a user: every org they
@@ -303,14 +281,11 @@ func (s *Server) identityFailure(w http.ResponseWriter, r *http.Request, err err
 // grant), each carrying the teams in it they can access. Org admins see
 // every team in their org; plain members see only their granted teams.
 //
-// Every read here feeds the one tree, so the first store failure aborts
-// the build and returns the error: a read that failed is not a fact
-// about the user, and rendering it as an empty tree would answer
-// "you belong to no organization" for an account that may belong to
-// several. One org whose teams cannot be read fails the whole tree: no
-// partial tree is rendered. Only reads that SUCCEED and find nothing
-// render as empty — an org membership whose org row is gone is skipped,
-// since the store said that org is not there.
+// A query or cursor failure aborts the build: an incomplete read says nothing
+// about which organizations exist. Only a completed bulk read can name corrupt
+// org documents as unavailable while returning their readable siblings. Other
+// failures, including a team's list read, still fail the whole tree. A missing
+// org is skipped because the successful read says that row is absent.
 func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]OrgTreeView, error) {
 	st := s.authStore()
 	if st == nil {
@@ -337,15 +312,22 @@ func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]OrgTreeView
 		orgIDs = append(orgIDs, om.OrgID)
 	}
 	// One bulk fetch instead of a GetOrg per membership. An org absent
-	// from the map is skipped: the store said it is not there. A read
-	// that FAILED is not a fact about the user, so it aborts the build
-	// instead of rendering as an empty tree.
+	// from the map is skipped only when it is not named as corrupt. A read
+	// that cannot complete aborts the build instead of inventing an empty tree.
 	orgsByID, err := st.GetOrgsByIDs(ctx, orgIDs)
-	if err != nil {
+	partial, corrupt := err.(*identity.BulkDecodeError)
+	if err != nil && !corrupt {
 		return nil, fmt.Errorf("build org tree: bulk-load orgs for user %s: %w", userID, err)
+	}
+	if corrupt && s.logger != nil {
+		s.logger.Error("build org tree: %v", partial)
 	}
 	out := make([]OrgTreeView, 0, len(orgMems))
 	for _, om := range orgMems {
+		if corrupt && partial.Failures[om.OrgID] != nil {
+			out = append(out, OrgTreeView{OrgID: om.OrgID, Unavailable: true, Teams: []MembershipView{}})
+			continue
+		}
 		org, ok := orgsByID[om.OrgID]
 		if !ok {
 			continue

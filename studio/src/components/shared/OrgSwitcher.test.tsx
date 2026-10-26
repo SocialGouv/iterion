@@ -107,4 +107,19 @@ describe("OrgSwitcher", () => {
     expect(within(content).getByRole("button", { name: /Organization 2/ })).toBeTruthy();
     expect(within(content).getByRole("button", { name: "Organization settings" })).toBeTruthy();
   });
+
+  it("names unavailable organizations, refuses selection and keeps healthy siblings usable", () => {
+    mockOrgs = orgs(2);
+    mockOrgs[0] = { org_id: "org-1", org_name: "", org_slug: "org-1", org_role: "", teams: [], unavailable: true };
+    mockTeams = [];
+    const content = openSwitcher();
+    const unavailable = within(content).getByRole("button", { name: /Organization org-1 unavailable/ });
+    expect((unavailable as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(unavailable);
+    expect(mocks.selectOrg).not.toHaveBeenCalled();
+    expect(within(content).queryByText(/No teams in this organization/)).toBeNull();
+    expect(within(content).queryByRole("button", { name: "Organization settings" })).toBeNull();
+    fireEvent.click(within(content).getByRole("button", { name: /Organization 2/ }));
+    expect(mocks.selectOrg).toHaveBeenCalledWith("org-2");
+  });
 });

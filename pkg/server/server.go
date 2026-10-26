@@ -1183,7 +1183,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	s.handler = securityHeaders(
 		canonicalRedirect(cfg.CanonicalRedirect, cfg.PublicURL,
 			errtrack.HTTPMiddleware(errtrack.HTTPOptions{RouteName: s.routePattern})(
-				s.authMiddleware(s.mux),
+				errtrack.HTTPErrorMiddleware(s.logger)(s.authMiddleware(s.mux)),
 			),
 		),
 	)

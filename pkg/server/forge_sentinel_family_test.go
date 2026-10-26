@@ -270,13 +270,13 @@ func TestForgeConnectionAvatar_StoreFailureIsNotAForge404(t *testing.T) {
 	if gl.count() != 1 {
 		t.Fatalf("the upload did not happen (%d), so this is not the failure under test", gl.count())
 	}
-	if !strings.Contains(w.Body.String(), "avatar uploaded but could not be recorded") {
-		t.Fatalf("reached a different failure than the record one: code=%d body=%s", w.Code, w.Body.String())
+	if !strings.Contains(w.Diagnostic(t), "avatar uploaded but could not be recorded") {
+		t.Fatalf("reached a different failure than the record one: code=%d body=%s", w.Code, w.Diagnostic(t))
 	}
 	if w.Code == http.StatusNotFound {
 		t.Fatalf("a connection-store failure was answered 404: forge.ErrConnectionNotFound now satisfies "+
 			"errors.Is(_, forge.ErrNotFound), so forgeUpstreamStatus reads this wrap as the forge saying "+
-			"it has no such thing — for a write iterion failed, after an avatar that DID land. body=%s", w.Body.String())
+			"it has no such thing — for a write iterion failed, after an avatar that DID land. body=%s", w.Diagnostic(t))
 	}
 	// 5xx, not an exact code: what this guard proves is the CLASS — the store
 	// failed, so the answer belongs to iterion's side and not to the forge.
@@ -286,7 +286,7 @@ func TestForgeConnectionAvatar_StoreFailureIsNotAForge404(t *testing.T) {
 	// Tightening it is a behaviour change of its own — see #969.
 	if w.Code < 500 {
 		t.Fatalf("code=%d, want a 5xx: the store failed, which is iterion's side, not an answer the forge gave. body=%s",
-			w.Code, w.Body.String())
+			w.Code, w.Diagnostic(t))
 	}
 }
 

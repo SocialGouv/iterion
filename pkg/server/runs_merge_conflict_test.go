@@ -163,6 +163,7 @@ func TestMergeConflict_AgentResolverUnavailable(t *testing.T) {
 	t.Setenv("ITERION_OPENAI_USE_OAUTH", "0")
 
 	srv, hs := newTestServer(t)
+	logs := captureFailureLogs(srv)
 	repoDir := setupConflictingRepo(t)
 	runID := "run-agent-unavailable"
 	seedConflictRun(t, srv, repoDir, runID)
@@ -176,7 +177,7 @@ func TestMergeConflict_AgentResolverUnavailable(t *testing.T) {
 	if agentResp.StatusCode == 200 {
 		t.Fatalf("expected non-200 when no creds; got 200")
 	}
-	body := readBody(t, agentResp)
+	body := correlatedFailureLog(t, []byte(readBody(t, agentResp)), agentResp.Header.Get("X-Request-ID"), logs.String())
 	if !strings.Contains(body, "credential") && !strings.Contains(body, "no LLM") {
 		t.Errorf("error body should mention the missing credential; got %q", body)
 	}

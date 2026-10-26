@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"sort"
 	"strings"
 	"sync"
@@ -235,7 +234,7 @@ func TestOrgOffboarding_placementReadingBeforeTheRemovalLeavesNoGrant(t *testing
 	gate := newPlacementReadGate(real, racerID, "o1")
 	s.authSvc.SetStoreForTest(gate)
 
-	placed := httptest.NewRecorder()
+	placed := newErrorRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -243,7 +242,7 @@ func TestOrgOffboarding_placementReadingBeforeTheRemovalLeavesNoGrant(t *testing
 	}()
 	awaitGate(t, gate.reached, "the handler reaching the gated store call")
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if off.Code != http.StatusNoContent {
 		close(gate.release)
@@ -312,7 +311,7 @@ func TestOrgOffboarding_placementLandingAfterTheSweepLeavesNoGrant(t *testing.T)
 	gate := newOffboardingDeleteGate(real, racerID, "o1")
 	s.authSvc.SetStoreForTest(gate)
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -320,7 +319,7 @@ func TestOrgOffboarding_placementLandingAfterTheSweepLeavesNoGrant(t *testing.T)
 	}()
 	awaitGate(t, gate.reached, "the handler reaching the gated store call")
 
-	placed := httptest.NewRecorder()
+	placed := newErrorRecorder()
 	s.handlePutTeamMember(placed, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
 	if placed.Code != http.StatusOK {
 		close(gate.release)
@@ -367,7 +366,7 @@ func TestOrgOffboarding_aTeamCreatedInsideTheWindowIsSweptToo(t *testing.T) {
 	gate := newOffboardingDeleteGate(real, racerID, "o1")
 	s.authSvc.SetStoreForTest(gate)
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -425,7 +424,7 @@ func TestOrgOffboarding_theCascadeRevokesTheOrgsGrantsAndNoneOutside(t *testing.
 		}
 	}
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if off.Code != http.StatusNoContent {
 		t.Fatalf("off-boarding: code=%d body=%s, want 204", off.Code, off.Body.String())
@@ -544,7 +543,7 @@ func TestOrgOffboarding_aFailedFirstSweepLeavesTheMemberIntact(t *testing.T) {
 	}
 	s.authSvc.SetStoreForTest(&sweepErrorGate{Store: real, userID: racerID, failOnCall: 1})
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if off.Code != http.StatusInternalServerError {
 		t.Fatalf("off-boarding whose first sweep failed: code=%d body=%s, want 500", off.Code, off.Body.String())
@@ -586,10 +585,10 @@ func TestOrgOffboarding_aFirstSweepThatFailsMidWayNamesWhatItAlreadyRevoked(t *t
 	_, invID := invitationFor(t, s, "t1", "racer@example.com", identity.RoleMember)
 	s.authSvc.SetStoreForTest(&sweepErrorGate{Store: real, userID: racerID, failDeleteOnCall: 2})
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if off.Code != http.StatusInternalServerError {
-		t.Fatalf("off-boarding whose first sweep failed mid-way: code=%d body=%s, want 500", off.Code, off.Body.String())
+		t.Fatalf("off-boarding whose first sweep failed mid-way: code=%d body=%s, want 500", off.Code, off.Diagnostic(t))
 	}
 	if _, err := real.GetOrgMembership(ctx, racerID, "o1"); err != nil {
 		t.Errorf("the org membership was removed although the sweep before it failed: %v", err)
@@ -605,7 +604,7 @@ func TestOrgOffboarding_aFirstSweepThatFailsMidWayNamesWhatItAlreadyRevoked(t *t
 	} else if !errors.Is(err, identity.ErrNotFound) {
 		t.Errorf("reading the revoked invitation: %v, want ErrNotFound", err)
 	}
-	body := off.Body.String()
+	body := off.Diagnostic(t)
 	for _, want := range []string{"org membership stands", "stay revoked", "audit trail", "re-issue the removal"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the 500 hides the partial off-boarding it left (missing %q): %s", want, body)
@@ -620,10 +619,10 @@ func TestOrgOffboarding_aFirstSweepThatFailsMidWayNamesWhatItAlreadyRevoked(t *t
 		t.Errorf("the revoke row does not name the cascade that took the grant: meta=%v", revoke.Meta)
 	}
 	// And the advice works: the re-issued removal finishes the sweep.
-	again := httptest.NewRecorder()
+	again := newErrorRecorder()
 	s.handleRemoveOrgMember(again, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if again.Code != http.StatusNoContent {
-		t.Fatalf("re-issued removal: code=%d body=%s, want 204 — the error told the admin to re-issue it", again.Code, again.Body.String())
+		t.Fatalf("re-issued removal: code=%d body=%s, want 204 — the error told the admin to re-issue it", again.Code, again.Diagnostic(t))
 	}
 	if mb, err := real.GetMembership(ctx, racerID, "t2"); err == nil {
 		t.Errorf("team grant %+v survived the re-issued removal", mb)
@@ -640,12 +639,12 @@ func TestOrgOffboarding_aFailedSecondSweepNamesWhatMayBeLeft(t *testing.T) {
 	s.logger = iterlog.New(iterlog.LevelInfo, log)
 	s.authSvc.SetStoreForTest(&sweepErrorGate{Store: real, userID: racerID, failOnCall: 2, grantInWindow: "t1"})
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if off.Code != http.StatusInternalServerError {
-		t.Fatalf("off-boarding whose second sweep failed: code=%d body=%s, want 500", off.Code, off.Body.String())
+		t.Fatalf("off-boarding whose second sweep failed: code=%d body=%s, want 500", off.Code, off.Diagnostic(t))
 	}
-	body := off.Body.String()
+	body := off.Diagnostic(t)
 	for _, want := range []string{
 		"may still hold a team grant",
 		"re-issue the removal",
@@ -675,10 +674,10 @@ func TestOrgOffboarding_aFailedSecondSweepNamesWhatMayBeLeft(t *testing.T) {
 	}
 	// And the advice it gives works: the removal is idempotent, so the
 	// re-issued call finishes the sweep instead of answering 404.
-	again := httptest.NewRecorder()
+	again := newErrorRecorder()
 	s.handleRemoveOrgMember(again, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if again.Code != http.StatusNoContent {
-		t.Fatalf("re-issued removal: code=%d body=%s, want 204 — the error told the admin to re-issue it", again.Code, again.Body.String())
+		t.Fatalf("re-issued removal: code=%d body=%s, want 204 — the error told the admin to re-issue it", again.Code, again.Diagnostic(t))
 	}
 	if mb, err := real.GetMembership(ctx, racerID, "t1"); err == nil {
 		t.Errorf("team grant %+v survived the re-issued removal", mb)
@@ -748,15 +747,15 @@ func TestOrgOffboarding_anUnconfirmableMembershipTakesTheGrantBack(t *testing.T)
 	real := s.authStore()
 	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("placement whose re-read failed: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("placement whose re-read failed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
 	if mb, err := real.GetMembership(ctx, racerID, "t1"); err == nil {
 		t.Fatalf("team grant %+v stands on an org membership the handler could not re-confirm", mb)
 	}
-	body := w.Body.String()
+	body := w.Diagnostic(t)
 	for _, want := range []string{"re-confirm", "place them in the team again"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the error does not say what could not be established, or what to do (missing %q): %s", want, body)
@@ -786,12 +785,12 @@ func TestOrgOffboarding_aFailedRevokeNamesTheGrantItCouldNotTakeBack(t *testing.
 	real := s.authStore()
 	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1", failRevoke: true})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("placement whose revoke failed: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("placement whose revoke failed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	if body := w.Body.String(); !strings.Contains(body, "may hold a team grant") {
+	if body := w.Diagnostic(t); !strings.Contains(body, "may hold a team grant") {
 		t.Errorf("the error hides the grant it could not take back: %s", body)
 	}
 	// The state the message describes, asserted: the row IS standing. A
@@ -843,18 +842,18 @@ func TestOrgOffboarding_aRevokeWhoseAckWasLostIsNotReportedAsAStandingGrant(t *t
 	real := s.authStore()
 	s.authSvc.SetStoreForTest(&lostAckRevokeGate{recheckErrorGate: &recheckErrorGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"}})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
 	s.authSvc.SetStoreForTest(real)
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("placement whose revoke lost its ack: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("placement whose revoke lost its ack: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
 	if mb, err := real.GetMembership(context.Background(), racerID, "t1"); err == nil {
 		t.Fatalf("the delete did not apply, so this is not the lost-ack case: %+v", mb)
 	} else if !errors.Is(err, identity.ErrNotFound) {
 		t.Fatalf("reading the grant back: %v, want identity.ErrNotFound", err)
 	}
-	if body := w.Body.String(); !strings.Contains(body, "may hold a team grant") {
+	if body := w.Diagnostic(t); !strings.Contains(body, "may hold a team grant") {
 		t.Errorf("the body says more than the store answered: %s", body)
 	}
 	logged := logs.String()
@@ -879,12 +878,12 @@ func TestOrgOffboarding_aRemovedMemberWhoseRevokeFailsAnswers500NotTheConflict(t
 	real := s.authStore()
 	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1", gone: true, failRevoke: true})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("placement on a removed member whose revoke failed: code=%d body=%s, want 500 — the conflict would say the grant went back", w.Code, w.Body.String())
+		t.Fatalf("placement on a removed member whose revoke failed: code=%d body=%s, want 500 — the conflict would say the grant went back", w.Code, w.Diagnostic(t))
 	}
-	body := w.Body.String()
+	body := w.Diagnostic(t)
 	for _, want := range []string{"removed from this team's organization", "may hold a team grant"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the error hides the removal, or the grant it could not take back (missing %q): %s", want, body)
@@ -1028,7 +1027,7 @@ func TestOrgOffboarding_aReReadThatAnswersOnlyAtItsDeadlineStillTakesTheGrantBac
 	}
 	s.authSvc.SetStoreForTest(gate)
 
-	placed := httptest.NewRecorder()
+	placed := newErrorRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1036,12 +1035,12 @@ func TestOrgOffboarding_aReReadThatAnswersOnlyAtItsDeadlineStillTakesTheGrantBac
 	}()
 	awaitGate(t, gate.reached, "the placement reaching its pre-check")
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if off.Code != http.StatusNoContent {
 		close(gate.release)
 		awaitGateWithin(t, done, "the gated handler returning", 4*grantCompensationTimeout)
-		t.Fatalf("off-boarding: code=%d body=%s, want 204", off.Code, off.Body.String())
+		t.Fatalf("off-boarding: code=%d body=%s, want 204", off.Code, off.Diagnostic(t))
 	}
 	close(gate.release)
 	awaitGateWithin(t, done, "the placement returning", 4*grantCompensationTimeout)
@@ -1063,9 +1062,9 @@ func TestOrgOffboarding_aReReadThatAnswersOnlyAtItsDeadlineStillTakesTheGrantBac
 			n, gate.revokes.Load())
 	}
 	if placed.Code != http.StatusInternalServerError {
-		t.Errorf("placement whose re-read timed out: code=%d body=%s, want 500 — a boundary nothing could certify does not hold a grant up", placed.Code, placed.Body.String())
+		t.Errorf("placement whose re-read timed out: code=%d body=%s, want 500 — a boundary nothing could certify does not hold a grant up", placed.Code, placed.Diagnostic(t))
 	}
-	body := placed.Body.String()
+	body := placed.Diagnostic(t)
 	for _, want := range []string{
 		"could not re-confirm", "the team grant was revoked",
 		// The grant is taken back with the org membership row UNREADABLE,
@@ -1083,11 +1082,11 @@ func TestOrgOffboarding_aReReadThatAnswersOnlyAtItsDeadlineStillTakesTheGrantBac
 		}
 	}
 	// The public path the grant would have opened, driven as the holder.
-	roster := httptest.NewRecorder()
+	roster := newErrorRecorder()
 	s.handleListTeamMembers(roster, teamReq(auth.WithIdentity(ctx, auth.Identity{UserID: racerID}),
 		"GET", "/api/teams/t1/members", "", "t1", ""))
 	if roster.Code == http.StatusOK {
-		t.Errorf("the off-boarded account reads the t1 roster through a grant the compensation could not take back: %s", roster.Body.String())
+		t.Errorf("the off-boarded account reads the t1 roster through a grant the compensation could not take back: %s", roster.Diagnostic(t))
 	}
 	// The revoke HELD here, so the log the compensation keeps for the grant
 	// it could not take back stays empty — the sibling scenario above owns
@@ -1176,7 +1175,7 @@ func TestOrgOffboarding_aClientGoneAfterTheGrantWriteStillLosesTheGrant(t *testi
 	}
 	s.authSvc.SetStoreForTest(gate)
 
-	placed := httptest.NewRecorder()
+	placed := newErrorRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1184,7 +1183,7 @@ func TestOrgOffboarding_aClientGoneAfterTheGrantWriteStillLosesTheGrant(t *testi
 	}()
 	awaitGate(t, gate.reached, "the handler reaching the gated store call")
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if off.Code != http.StatusNoContent {
 		close(gate.release)
@@ -1271,7 +1270,7 @@ func TestOrgOffboarding_aClientGoneAfterTheRemovalStillGetsTheSecondSweep(t *tes
 		Store: real, userID: racerID, orgID: "o1", teamID: "t1", cancel: cancel,
 	})
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(ctx, "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 
 	if _, err := real.GetOrgMembership(bg, racerID, "o1"); err == nil {
@@ -1341,7 +1340,7 @@ func TestOrgOffboarding_aRoleChangeReadingBeforeTheRemovalWritesNothing(t *testi
 	}
 	s.authSvc.SetStoreForTest(gate)
 
-	patched := httptest.NewRecorder()
+	patched := newErrorRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1349,7 +1348,7 @@ func TestOrgOffboarding_aRoleChangeReadingBeforeTheRemovalWritesNothing(t *testi
 	}()
 	awaitGate(t, gate.reached, "the handler reaching the gated store call")
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if off.Code != http.StatusNoContent {
 		close(gate.release)
@@ -1373,7 +1372,7 @@ func TestOrgOffboarding_aRoleChangeReadingBeforeTheRemovalWritesNothing(t *testi
 
 	// What the orphan would be worth: canViewTeam authorizes on the team
 	// grant alone, so a grant left standing is live access, not a stale row.
-	roster := httptest.NewRecorder()
+	roster := newErrorRecorder()
 	s.handleListTeamMembers(roster, teamReq(auth.WithIdentity(ctx, auth.Identity{UserID: racerID}),
 		"GET", "/api/teams/t1/members", "", "t1", ""))
 	if roster.Code != http.StatusForbidden {
@@ -1391,7 +1390,7 @@ func TestTeamMembers_aRoleChangeOnAnOrphanGrantIsRefusedWithoutRevokingIt(t *tes
 	s := newOrgCredsTestServer(t)
 	ctx := context.Background()
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleUpdateMember(w, teamReq(orgAdminCtx(), "PATCH", "/api/teams/t1/members/teamadmin", `{"role":"member"}`, "t1", "teamadmin"))
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("role change on an orphan grant: code=%d body=%s, want 422", w.Code, w.Body.String())
@@ -1466,7 +1465,7 @@ func TestOrgOffboarding_aRoleChangeLandingAfterTheSweepLeavesNoGrant(t *testing.
 	}
 	s.authSvc.SetStoreForTest(gate)
 
-	patched := httptest.NewRecorder()
+	patched := newErrorRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1474,7 +1473,7 @@ func TestOrgOffboarding_aRoleChangeLandingAfterTheSweepLeavesNoGrant(t *testing.
 	}()
 	awaitGate(t, gate.reached, "the handler reaching the gated store call")
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if off.Code != http.StatusNoContent {
 		close(gate.release)
@@ -1500,7 +1499,7 @@ func TestOrgOffboarding_aRoleChangeLandingAfterTheSweepLeavesNoGrant(t *testing.
 
 	// What the orphan would be worth: canViewTeam authorizes on the team
 	// grant alone, so a grant left standing is live access, not a stale row.
-	roster := httptest.NewRecorder()
+	roster := newErrorRecorder()
 	s.handleListTeamMembers(roster, teamReq(auth.WithIdentity(ctx, auth.Identity{UserID: racerID}),
 		"GET", "/api/teams/t1/members", "", "t1", ""))
 	if roster.Code != http.StatusForbidden {
@@ -1524,15 +1523,15 @@ func TestOrgOffboarding_aRoleChangeWithAnUnconfirmableMembershipTakesTheGrantBac
 	}
 	s.authSvc.SetStoreForTest(&recheckErrorGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleUpdateMember(w, teamReq(orgAdminCtx(), "PATCH", "/api/teams/t1/members/"+racerID, `{"role":"admin"}`, "t1", racerID))
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("role change whose re-read failed: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("role change whose re-read failed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
 	if mb, err := real.GetMembership(ctx, racerID, "t1"); err == nil {
 		t.Errorf("team grant %+v stands on an org membership the handler could not re-confirm", mb)
 	}
-	if body := w.Body.String(); !strings.Contains(body, "re-confirm") {
+	if body := w.Diagnostic(t); !strings.Contains(body, "re-confirm") {
 		t.Errorf("the error does not say what could not be established: %s", body)
 	}
 }
@@ -1558,13 +1557,13 @@ func TestTeamMembers_aTeamWithNoOrgTakesAPlacementAndARoleChange(t *testing.T) {
 	}
 	owner := auth.WithIdentity(ctx, auth.Identity{UserID: "legacyowner"})
 
-	placed := httptest.NewRecorder()
+	placed := newErrorRecorder()
 	s.handlePutTeamMember(placed, teamReq(owner, "PUT", "/api/teams/t-legacy/members/"+racerID, `{"role":"member"}`, "t-legacy", racerID))
 	if placed.Code != http.StatusOK {
 		t.Fatalf("placement in a team with no org: code=%d body=%s, want 200", placed.Code, placed.Body.String())
 	}
 
-	patched := httptest.NewRecorder()
+	patched := newErrorRecorder()
 	s.handleUpdateMember(patched, teamReq(owner, "PATCH", "/api/teams/t-legacy/members/"+racerID, `{"role":"admin"}`, "t-legacy", racerID))
 	if patched.Code != http.StatusOK {
 		t.Fatalf("role change in a team with no org: code=%d body=%s, want 200", patched.Code, patched.Body.String())
@@ -1651,9 +1650,9 @@ func (g *landedWriteGate) UpsertMembership(ctx context.Context, mb identity.Memb
 // comes before the verdict on the off-boarding: a t.Fatalf with the writer
 // still parked kills the package on a goroutine dump instead of naming the
 // failure.
-func raceAgainstOffBoarding(t *testing.T, s *Server, gate *landedWriteGate, write func(w http.ResponseWriter)) *httptest.ResponseRecorder {
+func raceAgainstOffBoarding(t *testing.T, s *Server, gate *landedWriteGate, write func(w http.ResponseWriter)) *errorRecorder {
 	t.Helper()
-	rec := httptest.NewRecorder()
+	rec := newErrorRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1661,7 +1660,7 @@ func raceAgainstOffBoarding(t *testing.T, s *Server, gate *landedWriteGate, writ
 	}()
 	awaitGate(t, gate.reached, "the writer pausing on the live org membership")
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	code, body := off.Code, off.Body.String()
 	close(gate.release)
@@ -1710,7 +1709,7 @@ func TestOrgOffboarding_aGrantWriteThatLandsAndFailsIsStillTakenBack(t *testing.
 	// Why the conflict outranks the write error: the retry a 500 invites
 	// cannot work, so the caller would spend a round trip to learn the same
 	// thing.
-	again := httptest.NewRecorder()
+	again := newErrorRecorder()
 	s.handlePutTeamMember(again, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
 	if again.Code != http.StatusUnprocessableEntity {
 		t.Errorf("the placement re-issued after the removal: code=%d body=%s, want 422", again.Code, again.Body.String())
@@ -1728,7 +1727,7 @@ func TestOrgOffboarding_aGrantWriteThatLandsAndFailsIsStillTakenBack(t *testing.
 	}
 	// What the orphan would be worth: canViewTeam authorizes on the team
 	// grant alone, so a grant left standing is live access.
-	roster := httptest.NewRecorder()
+	roster := newErrorRecorder()
 	s.handleListTeamMembers(roster, teamReq(auth.WithIdentity(ctx, auth.Identity{UserID: racerID}),
 		"GET", "/api/teams/t1/members", "", "t1", ""))
 	if roster.Code != http.StatusForbidden {
@@ -1823,12 +1822,12 @@ func TestTeamMembers_aFailedWriteInsideALiveMembershipRevokesNothing(t *testing.
 	}
 	s.authSvc.SetStoreForTest(&landedWriteGate{Store: real, userID: racerID, orgID: "o1", landed: true})
 
-	placed := httptest.NewRecorder()
+	placed := newErrorRecorder()
 	s.handlePutTeamMember(placed, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"admin"}`, "t1", racerID))
 	if placed.Code != http.StatusInternalServerError {
-		t.Fatalf("placement whose write failed inside a live membership: code=%d body=%s, want 500", placed.Code, placed.Body.String())
+		t.Fatalf("placement whose write failed inside a live membership: code=%d body=%s, want 500", placed.Code, placed.Diagnostic(t))
 	}
-	if body := placed.Body.String(); !strings.Contains(body, "upsert membership") {
+	if body := placed.Diagnostic(t); !strings.Contains(body, "upsert membership") {
 		t.Errorf("the answer does not name the write that failed: %s", body)
 	}
 	if _, err := real.GetMembership(ctx, racerID, "t1"); err != nil {
@@ -1906,7 +1905,7 @@ func TestTeamMembers_aRoleChangeCaughtByAStoreBlipKeepsTheGrantItDidNotWrite(t *
 	}
 	s.authSvc.SetStoreForTest(&storeBlipGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleUpdateMember(w, teamReq(orgAdminCtx(), "PATCH", "/api/teams/t1/members/"+racerID, `{"role":"admin"}`, "t1", racerID))
 
 	if _, err := real.GetOrgMembership(ctx, racerID, "o1"); err != nil {
@@ -1920,9 +1919,9 @@ func TestTeamMembers_aRoleChangeCaughtByAStoreBlipKeepsTheGrantItDidNotWrite(t *
 		t.Errorf("the write the store reported as failed landed anyway: %+v", mb)
 	}
 	if w.Code != http.StatusInternalServerError {
-		t.Errorf("role change caught by a store blip: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Errorf("role change caught by a store blip: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	if body := w.Body.String(); !strings.Contains(body, "upsert membership") {
+	if body := w.Diagnostic(t); !strings.Contains(body, "upsert membership") {
 		t.Errorf("the answer does not name the write that failed: %s", body)
 	}
 	// The grant may have landed unacknowledged while the boundary could not
@@ -1953,7 +1952,7 @@ func TestTeamMembers_aPlacementCaughtByAStoreBlipKeepsTheGrantItDidNotWrite(t *t
 	}
 	s.authSvc.SetStoreForTest(&storeBlipGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, `{"role":"admin"}`, "t1", racerID))
 
 	if _, err := real.GetOrgMembership(ctx, racerID, "o1"); err != nil {
@@ -1967,9 +1966,9 @@ func TestTeamMembers_aPlacementCaughtByAStoreBlipKeepsTheGrantItDidNotWrite(t *t
 		t.Errorf("the write the store reported as failed landed anyway: %+v", mb)
 	}
 	if w.Code != http.StatusInternalServerError {
-		t.Errorf("placement caught by a store blip: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Errorf("placement caught by a store blip: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	if body := w.Body.String(); !strings.Contains(body, "upsert membership") {
+	if body := w.Diagnostic(t); !strings.Contains(body, "upsert membership") {
 		t.Errorf("the answer does not name the write that failed: %s", body)
 	}
 }
@@ -2014,7 +2013,7 @@ func TestTeamMembers_aConfigEditorGrantIsReRoledToItsOwnCapability(t *testing.T)
 	s := newOrgCredsTestServer(t)
 	seedConfigEditorGrant(t, s)
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleUpdateMember(w, teamReq(orgAdminCtx(), "PATCH", "/api/teams/t1/members/cfged", `{"role":"config_editor"}`, "t1", "cfged"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("a role change that keeps the grant OFF the org ladder: code=%d body=%s, want 200", w.Code, w.Body.String())
@@ -2035,7 +2034,7 @@ func TestTeamMembers_aConfigEditorGrantCannotClimbTheLadderWithoutTheBoundary(t 
 	s := newOrgCredsTestServer(t)
 	seedConfigEditorGrant(t, s)
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleUpdateMember(w, teamReq(orgAdminCtx(), "PATCH", "/api/teams/t1/members/cfged", `{"role":"member"}`, "t1", "cfged"))
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("a role change onto the ladder with no org membership: code=%d body=%s, want 422", w.Code, w.Body.String())
@@ -2131,10 +2130,10 @@ func TestOrgOffboarding_aMembershipDeleteThatFailsNamesWhatTheSweepTook(t *testi
 	_, invID := invitationFor(t, s, "t1", "racer@example.com", identity.RoleMember)
 	s.authSvc.SetStoreForTest(&orgMembershipDeleteGate{Store: real, userID: racerID, orgID: "o1"})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("off-boarding whose membership delete failed: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("off-boarding whose membership delete failed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
 	if inv, err := real.GetInvitation(ctx, invID); err == nil {
 		t.Errorf("the body says the pending invitations are revoked, and %+v stands", inv)
@@ -2149,7 +2148,7 @@ func TestOrgOffboarding_aMembershipDeleteThatFailsNamesWhatTheSweepTook(t *testi
 			t.Fatalf("the first sweep left grant %+v — not the scenario this test describes", mb)
 		}
 	}
-	body := w.Body.String()
+	body := w.Diagnostic(t)
 	for _, want := range []string{"their team grants in this org are revoked", "with the pending invitations they minted here that carry an org role", "those addressed to them, where their account row named an address", "may or may not be gone", "re-issue the removal"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the 500 does not say which state it left (missing %q): %s", want, body)
@@ -2158,10 +2157,10 @@ func TestOrgOffboarding_aMembershipDeleteThatFailsNamesWhatTheSweepTook(t *testi
 	// The advice this body gives, exercised on the state it left: both passes
 	// are idempotent, so the re-issue finishes the removal.
 	s.authSvc.SetStoreForTest(real)
-	again := httptest.NewRecorder()
+	again := newErrorRecorder()
 	s.handleRemoveOrgMember(again, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if again.Code != http.StatusNoContent {
-		t.Errorf("the re-issue this body asks for: code=%d body=%s, want 204", again.Code, again.Body.String())
+		t.Errorf("the re-issue this body asks for: code=%d body=%s, want 204", again.Code, again.Diagnostic(t))
 	}
 	if om, err := real.GetOrgMembership(ctx, racerID, "o1"); err == nil {
 		t.Errorf("the re-issued removal left org membership %+v standing", om)
@@ -2169,10 +2168,10 @@ func TestOrgOffboarding_aMembershipDeleteThatFailsNamesWhatTheSweepTook(t *testi
 	// And once more on nothing at all: DeleteOrgMembership answers nil when
 	// no row matched, which is why the error above can also be a delete
 	// whose ack was lost.
-	third := httptest.NewRecorder()
+	third := newErrorRecorder()
 	s.handleRemoveOrgMember(third, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if third.Code != http.StatusNoContent {
-		t.Errorf("the removal of a member who holds nothing: code=%d body=%s, want 204", third.Code, third.Body.String())
+		t.Errorf("the removal of a member who holds nothing: code=%d body=%s, want 204", third.Code, third.Diagnostic(t))
 	}
 }
 
@@ -2252,7 +2251,7 @@ func TestTeamMembers_anOrphanLadderGrantCannotReRoleItselfOffTheLadder(t *testin
 		t.Fatal("the console does not flag the orphan grant — then this is not the state the test describes")
 	}
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleUpdateMember(w, teamReq(auth.WithIdentity(ctx, self), "PATCH",
 		"/api/teams/t1/members/"+racerID, `{"role":"config_editor"}`, "t1", racerID))
 	if w.Code != http.StatusUnprocessableEntity {
@@ -2334,7 +2333,7 @@ func TestOrgOffboarding_aPendingInvitationIsRevokedWithTheGrants(t *testing.T) {
 		t.Fatalf("write the expired invitation: %v", err)
 	}
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("off-boarding: code=%d body=%s, want 204", w.Code, w.Body.String())
@@ -2517,7 +2516,7 @@ func TestOrgOffboarding_anInvitationMintedInsideTheWindowIsSweptToo(t *testing.T
 	gate := &offboardingWindowGate{Store: real, s: s, userID: racerID, email: "racer@example.com"}
 	s.authSvc.SetStoreForTest(gate)
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("off-boarding: code=%d body=%s, want 204", w.Code, w.Body.String())
@@ -2555,7 +2554,7 @@ func TestOrgOffboarding_theSweepRevokesTheInvitationsBeforeTheGrants(t *testing.
 	}
 	s.authSvc.SetStoreForTest(gate)
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("off-boarding: code=%d body=%s, want 204", w.Code, w.Body.String())
@@ -2634,12 +2633,12 @@ func TestOrgOffboarding_anUnreadableInvitationListStopsTheCascade(t *testing.T) 
 		_, invID := invitationFor(t, s, "t1", "racer@example.com", identity.RoleMember)
 		return s, real, invID
 	}
-	off := func(t *testing.T, s *Server) *httptest.ResponseRecorder {
+	off := func(t *testing.T, s *Server) *errorRecorder {
 		t.Helper()
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("off-boarding whose invitation read failed: code=%d body=%s, want 500", w.Code, w.Body.String())
+			t.Fatalf("off-boarding whose invitation read failed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 		}
 		return w
 	}
@@ -2656,7 +2655,7 @@ func TestOrgOffboarding_anUnreadableInvitationListStopsTheCascade(t *testing.T) 
 	t.Run("the first pass cannot list them", func(t *testing.T) {
 		s, real, invID := seed(t)
 		s.authSvc.SetStoreForTest(&invitationListErrorGate{Store: real, teamID: "t1", failOnCall: 1})
-		body := off(t, s).Body.String()
+		body := off(t, s).Diagnostic(t)
 		wants(t, body, "list team t1 invitations", "org membership stands", "re-issue the removal")
 		if _, err := real.GetOrgMembership(ctx, racerID, "o1"); err != nil {
 			t.Errorf("the org membership went although the sweep before it failed: %v", err)
@@ -2669,7 +2668,7 @@ func TestOrgOffboarding_anUnreadableInvitationListStopsTheCascade(t *testing.T) 
 	t.Run("the second pass cannot list them", func(t *testing.T) {
 		s, real, _ := seed(t)
 		s.authSvc.SetStoreForTest(&invitationListErrorGate{Store: real, teamID: "t1", failOnCall: 2})
-		body := off(t, s).Body.String()
+		body := off(t, s).Diagnostic(t)
 		wants(t, body, "list team t1 invitations", "may still hold a team grant in this org", "re-issue the removal")
 		// The last sweep runs after this failure and went through, so the
 		// body names the grants alone: naming the invitation residue too
@@ -2685,7 +2684,7 @@ func TestOrgOffboarding_anUnreadableInvitationListStopsTheCascade(t *testing.T) 
 	t.Run("the address the invitations are addressed to cannot be read", func(t *testing.T) {
 		s, real, invID := seed(t)
 		s.authSvc.SetStoreForTest(&invitationListErrorGate{Store: real, teamID: "t1", failUserRead: racerID})
-		body := off(t, s).Body.String()
+		body := off(t, s).Diagnostic(t)
 		wants(t, body, "resolve the address invitations of racer are addressed to", "org membership stands", "re-issue the removal")
 		if _, err := real.GetInvitation(ctx, invID); err != nil {
 			t.Errorf("the invitation went although the address read failed: %v", err)
@@ -2732,7 +2731,7 @@ func TestOrgOffboarding_anInvitationRevokedUnderTheSweepIsNotAFailure(t *testing
 	_, invID := invitationFor(t, s, "t1", "racer@example.com", identity.RoleMember)
 	s.authSvc.SetStoreForTest(&concurrentInvitationRevokeGate{Store: real, invID: invID})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("off-boarding whose invitation was revoked under it: code=%d body=%s, want 204", w.Code, w.Body.String())
@@ -2881,13 +2880,13 @@ func TestOrgOffboarding_theRefusalNamesItsSubjectOnABudgetOfItsOwn(t *testing.T)
 			gate := &subjectReadGate{Store: s.authStore(), userID: racerID, orgID: "o1", teamID: "t1", gone: tc.gone}
 			s.authSvc.SetStoreForTest(gate)
 
-			w := httptest.NewRecorder()
+			w := newErrorRecorder()
 			s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT",
 				"/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
 			if w.Code != tc.want {
-				t.Fatalf("code=%d body=%s, want %d", w.Code, w.Body.String(), tc.want)
+				t.Fatalf("code=%d body=%s, want %d", w.Code, w.Diagnostic(t), tc.want)
 			}
-			if body := w.Body.String(); !strings.Contains(body, "racer@example.com") {
+			if body := w.Diagnostic(t); !strings.Contains(body, "racer@example.com") {
 				t.Errorf("the refusal names the account by an opaque id: %s", body)
 			}
 			gate.mu.Lock()
@@ -2956,14 +2955,14 @@ func TestOrgMembership_withNoTeamGrantConfersOrgScopedReadOnly(t *testing.T) {
 		{"the org itself", s.handleGetOrg, "/api/orgs/o1"},
 		{"the org's SSO providers", s.handleListOrgSSOProviders, "/api/orgs/o1/sso/providers"},
 	} {
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		tc.h(w, orgReq(me, "GET", tc.path, "", "o1"))
 		if w.Code != http.StatusOK {
 			t.Errorf("%s for an org member with no team: code=%d body=%s, want 200", tc.name, w.Code, w.Body.String())
 		}
 	}
 	// And no team access: the roster of a team of that same org is refused.
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleListTeamMembers(w, teamReq(me, "GET", "/api/teams/t1/members", "", "t1", ""))
 	if w.Code != http.StatusForbidden {
 		t.Errorf("the t1 roster for an org member with no grant on it: code=%d body=%s, want 403", w.Code, w.Body.String())
@@ -3056,7 +3055,7 @@ func TestOrgOffboarding_anAcceptHoldingTheRevokedRowWritesNothing(t *testing.T) 
 	}()
 	awaitGate(t, gate.reached, "the accept reading the pending invitation")
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("off-boarding: code=%d body=%s, want 204", w.Code, w.Body.String())
@@ -3075,7 +3074,7 @@ func TestOrgOffboarding_anAcceptHoldingTheRevokedRowWritesNothing(t *testing.T) 
 	if mb, err := real.GetMembership(ctx, racerID, "t1"); err == nil {
 		t.Errorf("the off-boarded account holds a LIVE TEAM GRANT after a 204: %+v", mb)
 	}
-	roster := httptest.NewRecorder()
+	roster := newErrorRecorder()
 	s.handleListOrgMembers(roster, orgReq(auth.WithIdentity(ctx, auth.Identity{UserID: racerID}), "GET", "/api/orgs/o1/members", "", "o1"))
 	if roster.Code == http.StatusOK {
 		t.Errorf("the off-boarded account reads the org roster: code=%d", roster.Code)
@@ -3161,7 +3160,7 @@ func TestOrgOffboarding_anAcceptThatStraddlesTheSweepKeepsNoBoundary(t *testing.
 	}()
 	awaitGate(t, gate.claimed, "the accept claiming its invitation")
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("off-boarding: code=%d body=%s, want 204", w.Code, w.Body.String())
@@ -3185,7 +3184,7 @@ func TestOrgOffboarding_anAcceptThatStraddlesTheSweepKeepsNoBoundary(t *testing.
 	if !orphanGrantFlag(t, s, racerID) {
 		t.Error("the grant that survived the race is not reported as drift — then nothing names the access the race left")
 	}
-	roster := httptest.NewRecorder()
+	roster := newErrorRecorder()
 	s.handleListOrgMembers(roster, orgReq(auth.WithIdentity(ctx, auth.Identity{UserID: racerID}), "GET", "/api/orgs/o1/members", "", "o1"))
 	if roster.Code == http.StatusOK {
 		t.Errorf("the off-boarded account reads the org roster: code=%d", roster.Code)
@@ -3215,14 +3214,14 @@ func TestTeamMembers_anOrphanGrantLaunderedThroughItsOwnInvitationStaysOnTheDrif
 		t.Fatal("the console does not flag the orphan grant — then this is not the state the test describes")
 	}
 
-	patch := httptest.NewRecorder()
+	patch := newErrorRecorder()
 	s.handleUpdateMember(patch, teamReq(selfCtx, "PATCH",
 		"/api/teams/t1/members/"+racerID, `{"role":"config_editor"}`, "t1", racerID))
 	if patch.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("the one-request door: code=%d body=%s, want 422", patch.Code, patch.Body.String())
 	}
 
-	mint := httptest.NewRecorder()
+	mint := newErrorRecorder()
 	s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 		`{"email":"racer@example.com","role":"config_editor"}`, "t1", ""))
 	if mint.Code != http.StatusOK {
@@ -3270,15 +3269,15 @@ func TestOrgOffboarding_aLastDeleteThatFailsSaysTheMemberMayBeBack(t *testing.T)
 	}
 	s.authSvc.SetStoreForTest(&orgMembershipDeleteGate{Store: real, userID: racerID, orgID: "o1", failOnCall: 2})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("off-boarding whose last delete failed: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("off-boarding whose last delete failed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
 	if mb, err := real.GetMembership(ctx, racerID, "t1"); err == nil {
 		t.Fatalf("the sweeps did not go through (%+v) — then this is not the exit the test describes", mb)
 	}
-	body := w.Body.String()
+	body := w.Diagnostic(t)
 	for _, want := range []string{"re-deleting their org membership failed", "may stand", "they would be an org member again", "re-issue the removal"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the 500 does not say which state it left (missing %q): %s", want, body)
@@ -3292,10 +3291,10 @@ func TestOrgOffboarding_aLastDeleteThatFailsSaysTheMemberMayBeBack(t *testing.T)
 		t.Fatal(err)
 	}
 	s.authSvc.SetStoreForTest(real)
-	again := httptest.NewRecorder()
+	again := newErrorRecorder()
 	s.handleRemoveOrgMember(again, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if again.Code != http.StatusNoContent {
-		t.Errorf("the re-issue this body asks for: code=%d body=%s, want 204", again.Code, again.Body.String())
+		t.Errorf("the re-issue this body asks for: code=%d body=%s, want 204", again.Code, again.Diagnostic(t))
 	}
 	if om, err := real.GetOrgMembership(ctx, racerID, "o1"); err == nil {
 		t.Errorf("the re-issued removal left org membership %+v standing", om)
@@ -3357,7 +3356,7 @@ func TestOrgOffboarding_anAcceptThatLandsBehindTheLastDeleteIsASilentReAdmission
 	}()
 	awaitGate(t, gate.claimed, "the accept claiming its invitation")
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("off-boarding: code=%d body=%s, want 204", w.Code, w.Body.String())
@@ -3388,14 +3387,14 @@ func TestOrgOffboarding_anAcceptThatLandsBehindTheLastDeleteIsASilentReAdmission
 	if view := t1GrantView(t, s, racerID); view.OrphanGrant || view.OffLadder || view.MissingTeam {
 		t.Errorf("the console flags the grant of a silently re-admitted member: %+v", view)
 	}
-	roster := httptest.NewRecorder()
+	roster := newErrorRecorder()
 	s.handleListOrgMembers(roster, orgReq(auth.WithIdentity(ctx, auth.Identity{UserID: racerID}), "GET", "/api/orgs/o1/members", "", "o1"))
 	if roster.Code != http.StatusOK {
 		t.Errorf("the re-admitted account reading the org roster: code=%d, want 200 — the membership row is back", roster.Code)
 	}
 
 	// The repair the org-member DELETE row names, on the state it left.
-	again := httptest.NewRecorder()
+	again := newErrorRecorder()
 	s.handleRemoveOrgMember(again, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if again.Code != http.StatusNoContent {
 		t.Fatalf("the re-issued removal: code=%d body=%s, want 204", again.Code, again.Body.String())
@@ -3485,7 +3484,7 @@ func TestOrgOffboarding_theLastDeleteGetsItsOwnBudget(t *testing.T) {
 	gate := &lastDeleteBudgetGate{Store: real, userID: racerID, spendInSecondSweep: spent}
 	s.authSvc.SetStoreForTest(gate)
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("off-boarding against a slow-but-working store: code=%d body=%s, want 204", w.Code, w.Body.String())
@@ -3541,7 +3540,7 @@ func (g *windowPlacementGate) DeleteOrgMembership(ctx context.Context, userID, o
 	if !first {
 		return nil
 	}
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	g.s.handlePutOrgMember(w, teamReq(superAdminCtx(), "PUT", "/api/orgs/o1/members/"+g.userID, `{"role":"member"}`, "o1", g.userID))
 	g.mu.Lock()
 	g.putCode, g.putBody = w.Code, w.Body.String()
@@ -3563,7 +3562,7 @@ func TestOrgOffboarding_aPlacementInsideTheWindowIsTakenByTheLastDelete(t *testi
 	gate := &windowPlacementGate{Store: real, s: s, userID: racerID}
 	s.authSvc.SetStoreForTest(gate)
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	s.authSvc.SetStoreForTest(real)
 	if w.Code != http.StatusNoContent {
@@ -3583,7 +3582,7 @@ func TestOrgOffboarding_aPlacementInsideTheWindowIsTakenByTheLastDelete(t *testi
 	}
 
 	// The repair the PUT row names, on the state it left.
-	again := httptest.NewRecorder()
+	again := newErrorRecorder()
 	s.handlePutOrgMember(again, teamReq(superAdminCtx(), "PUT", "/api/orgs/o1/members/"+racerID, `{"role":"member"}`, "o1", racerID))
 	if again.Code != http.StatusOK {
 		t.Fatalf("the re-issued placement: code=%d body=%s, want 200", again.Code, again.Body.String())
@@ -3685,7 +3684,7 @@ func TestOrgOffboarding_anAccountWithNoRowIsStillOffBoarded(t *testing.T) {
 	// the endpoint is documented idempotent — "re-issue it to finish the
 	// sweep" is not a promise a permanent 500 can keep.
 	for attempt := 1; attempt <= 2; attempt++ {
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+ghost, "", "o1", ghost))
 		if w.Code != http.StatusNoContent {
 			t.Fatalf("attempt %d of the removal of an account with no row: code=%d body=%s, want 204",
@@ -3706,7 +3705,7 @@ func TestOrgOffboarding_anAccountWithNoRowIsStillOffBoarded(t *testing.T) {
 	if _, err := real.GetInvitation(ctx, invID); err != nil {
 		t.Errorf("an invitation was revoked although no address could be read: %v", err)
 	}
-	list := httptest.NewRecorder()
+	list := newErrorRecorder()
 	s.handleListOrgInvitations(list, orgReq(orgAdminCtx(), "GET", "/api/orgs/o1/invitations", "", "o1"))
 	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), invID) {
 		t.Errorf("the surviving invitation is not on the route the log line names: code=%d body=%s",
@@ -3773,11 +3772,11 @@ func TestOrgOffboarding_theSkippedInvitationHalfIsLoggedAsFoundNotAsFinished(t *
 		t.Fatal(err)
 	}
 	s.authSvc.SetStoreForTest(&grantListErrorGate{Store: real, userID: ghost})
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+ghost, "", "o1", ghost))
 	s.authSvc.SetStoreForTest(real)
 
-	body := w.Body.String()
+	body := w.Diagnostic(t)
 	if w.Code != http.StatusInternalServerError || !strings.Contains(body, "their org membership stands") {
 		t.Fatalf("not the exit this test is about: code=%d body=%s, want 500 from the first pass", w.Code, body)
 	}
@@ -3836,7 +3835,7 @@ func (g *secondSweepFailureGate) DeleteOrgMembership(ctx context.Context, userID
 	if n > 1 {
 		return nil
 	}
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	g.s.handlePutOrgMember(w, teamReq(superAdminCtx(), "PUT", "/api/orgs/o1/members/"+g.userID, `{"role":"member"}`, "o1", g.userID))
 	g.mu.Lock()
 	g.putCode, g.putBody = w.Code, w.Body.String()
@@ -3878,11 +3877,11 @@ func TestOrgOffboarding_aFailedSecondSweepStillTakesTheBoundaryRow(t *testing.T)
 		gate := &secondSweepFailureGate{Store: real, s: s, userID: racerID}
 		s.authSvc.SetStoreForTest(gate)
 
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 		s.authSvc.SetStoreForTest(real)
 		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("off-boarding whose second sweep failed: code=%d body=%s, want 500", w.Code, w.Body.String())
+			t.Fatalf("off-boarding whose second sweep failed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 		}
 		gate.mu.Lock()
 		putCode, putBody, deletes := gate.putCode, gate.putBody, gate.deletes
@@ -3890,12 +3889,12 @@ func TestOrgOffboarding_aFailedSecondSweepStillTakesTheBoundaryRow(t *testing.T)
 		if putCode != http.StatusOK {
 			t.Fatalf("the placement issued inside the window: code=%d body=%s, want 200 — then this is not the race the test describes", putCode, putBody)
 		}
-		if body := w.Body.String(); !strings.Contains(body, "may still hold a team grant in this org") {
+		if body := w.Diagnostic(t); !strings.Contains(body, "may still hold a team grant in this org") {
 			t.Errorf("the 500 does not name what the failed sweep may have left: %s", body)
 		}
 		// The invitation residue this body carries is the LAST sweep's own
 		// clause, which failed here too — never the grant pass's words.
-		if body := w.Body.String(); strings.Contains(body, standingMintedInvitation) &&
+		if body := w.Diagnostic(t); strings.Contains(body, standingMintedInvitation) &&
 			!strings.Contains(body, "the last sweep of their pending invitations failed") {
 			t.Errorf("the 500 names an invitation residue outside the last sweep's own clause: %s", body)
 		}
@@ -3908,10 +3907,10 @@ func TestOrgOffboarding_aFailedSecondSweepStillTakesTheBoundaryRow(t *testing.T)
 		if om, err := real.GetOrgMembership(ctx, racerID, "o1"); err == nil {
 			t.Errorf("the membership written inside the window stands although the body says the member was removed: %+v", om)
 		}
-		roster := httptest.NewRecorder()
+		roster := newErrorRecorder()
 		s.handleListOrgMembers(roster, orgReq(auth.WithIdentity(context.Background(), auth.Identity{UserID: racerID}), "GET", "/api/orgs/o1/members", "", "o1"))
 		if roster.Code != http.StatusForbidden {
-			t.Errorf("the removed member reads the org roster: code=%d body=%s, want 403", roster.Code, roster.Body.String())
+			t.Errorf("the removed member reads the org roster: code=%d body=%s, want 403", roster.Code, roster.Diagnostic(t))
 		}
 	})
 
@@ -3924,13 +3923,13 @@ func TestOrgOffboarding_aFailedSecondSweepStillTakesTheBoundaryRow(t *testing.T)
 		gate := &secondSweepFailureGate{Store: real, s: s, userID: racerID, failLastDelete: true}
 		s.authSvc.SetStoreForTest(gate)
 
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 		s.authSvc.SetStoreForTest(real)
 		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("off-boarding whose second sweep and last delete both failed: code=%d body=%s, want 500", w.Code, w.Body.String())
+			t.Fatalf("off-boarding whose second sweep and last delete both failed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 		}
-		body := w.Body.String()
+		body := w.Diagnostic(t)
 		for _, want := range []string{
 			"re-sweeping their team access failed",
 			"re-deleting their org membership failed too",
@@ -4002,9 +4001,9 @@ func TestOrgOffboarding_theBodiesThatReportAFinishedFirstPassCarryItsCondition(t
 			_, invID := invitationFor(t, s, "t1", "ghost@example.com", identity.RoleMember)
 			s.authSvc.SetStoreForTest(&orgMembershipDeleteGate{Store: real, userID: ghost, orgID: "o1", failOnCall: c.failOnCall})
 
-			w := httptest.NewRecorder()
+			w := newErrorRecorder()
 			s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+ghost, "", "o1", ghost))
-			body := w.Body.String()
+			body := w.Diagnostic(t)
 			if w.Code != http.StatusInternalServerError {
 				t.Fatalf("off-boarding of an account with no row: code=%d body=%s, want 500", w.Code, body)
 			}
@@ -4027,10 +4026,10 @@ func TestOrgOffboarding_theBodiesThatReportAFinishedFirstPassCarryItsCondition(t
 			// removal finishes, and the invitation is still there to be
 			// revoked by hand.
 			s.authSvc.SetStoreForTest(real)
-			again := httptest.NewRecorder()
+			again := newErrorRecorder()
 			s.handleRemoveOrgMember(again, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+ghost, "", "o1", ghost))
 			if again.Code != http.StatusNoContent {
-				t.Fatalf("the re-issue this body asks for: code=%d body=%s, want 204", again.Code, again.Body.String())
+				t.Fatalf("the re-issue this body asks for: code=%d body=%s, want 204", again.Code, again.Diagnostic(t))
 			}
 			if _, err := real.GetInvitation(ctx, invID); err != nil {
 				t.Errorf("the re-issue took the invitation (%v) — then the condition the bodies carry is not needed", err)
@@ -4058,7 +4057,7 @@ func TestOrgOffboarding_theRequestContextExitsLogThePartialOffBoarding(t *testin
 		real := s.authStore()
 		s.authSvc.SetStoreForTest(&grantListErrorGate{Store: real, userID: racerID})
 
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 		s.authSvc.SetStoreForTest(real)
 		if w.Code != http.StatusInternalServerError {
@@ -4096,7 +4095,7 @@ func TestOrgOffboarding_theRequestContextExitsLogThePartialOffBoarding(t *testin
 		}
 		s.authSvc.SetStoreForTest(&orgMembershipDeleteGate{Store: real, userID: racerID, orgID: "o1", failOnCall: 1})
 
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleRemoveOrgMember(w, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 		s.authSvc.SetStoreForTest(real)
 		if w.Code != http.StatusInternalServerError {

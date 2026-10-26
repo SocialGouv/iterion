@@ -291,7 +291,7 @@ function withActiveContext(prev: AuthState, res: AuthIdentity | AuthSession, org
   const activeTeamID = res.active_team_id ?? prev.activeTeamID ?? "";
   if (!activeOrgID || !orgs.some((o) => o.org_id === activeOrgID)) {
     const owner = orgs.find((o) => o.teams.some((t) => t.team_id === activeTeamID));
-    activeOrgID = owner?.org_id ?? orgs[0]?.org_id ?? "";
+    activeOrgID = owner?.org_id ?? orgs.find((o) => !o.unavailable)?.org_id ?? orgs[0]?.org_id ?? "";
   }
   const activeOrg = orgs.find((o) => o.org_id === activeOrgID);
   return {
@@ -299,8 +299,10 @@ function withActiveContext(prev: AuthState, res: AuthIdentity | AuthSession, org
     user: res.user,
     orgs,
     activeOrgID,
-    activeOrgRole: (res.active_org_role || activeOrg?.org_role || null) as OrgRole | null,
+    activeOrgRole: activeOrg?.unavailable ? null : (res.active_org_role || activeOrg?.org_role || null) as OrgRole | null,
     activeTeamID,
+    // The credential's team role still selects the appropriate shell,
+    // including config_editor, even when the org document cannot be read.
     activeRole: (res.active_role ?? null) as Role | null,
     treeStale,
     signedOutNotice: null,
@@ -1033,7 +1035,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isRestricted:
         state.status === "authenticated" &&
         !state.user?.is_super_admin &&
-        state.orgs.every((o) => o.teams.length === 0),
+        state.orgs.every((o) => !o.unavailable && o.teams.length === 0),
       signIn,
       signUp,
       signOut,

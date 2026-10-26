@@ -112,7 +112,7 @@ func TestWriteLaunchDenial_FloorsAMissingStatusInsteadOfPanicking(t *testing.T) 
 	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatalf("body %s: %v", body, err)
 	}
-	if got["error"] != "some_future_reason" {
-		t.Fatalf("error = %q, want the denial's own reason to survive the floor", got["error"])
+	if got["error_code"] != "some_future_reason" || got["error"] != identityUnavailable || got["request_id"] == "" {
+		t.Fatalf("error = %q, want the denial's own reason to survive the floor", got["error_code"])
 	}
 }

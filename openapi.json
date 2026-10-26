@@ -2110,6 +2110,9 @@
               "$ref": "#/components/schemas/MembershipView"
             },
             "type": "array"
+          },
+          "unavailable": {
+            "type": "boolean"
           }
         },
         "required": [

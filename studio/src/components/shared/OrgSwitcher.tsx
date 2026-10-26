@@ -47,6 +47,7 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
     treeStale,
     selectOrg,
     selectTeam,
+    reloadIdentity,
   } = useAuth();
   const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
@@ -55,7 +56,7 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
   // No org context (restricted/no-org user) → nothing to switch.
   if (isLocal || orgs.length === 0) return null;
 
-  const orgLabel = activeOrg?.org_name ?? "Select organization";
+  const orgLabel = activeOrg?.unavailable ? "Organization unavailable" : activeOrg?.org_name ?? "Select organization";
   // Every resource is team-scoped, so the active team is context the
   // operator should always be able to see — even in the common
   // single-team org where no switching is possible.
@@ -133,14 +134,15 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
       {orgs.map((o) => (
         <PopoverClose asChild key={o.org_id}>
           <button
+            disabled={o.unavailable}
             onClick={closeAfter(() => void selectOrg(o.org_id))}
             className={`w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 ${
               o.org_id === activeOrgID ? "bg-surface-2" : ""
             }`}
           >
-            <span className="block font-medium">{o.org_name}</span>
+            <span className="block font-medium">{o.unavailable ? `Organization ${o.org_id} unavailable` : o.org_name}</span>
             <span className="block text-xs text-fg-muted">
-              {o.org_role || "member"}
+              {o.unavailable ? "Could not read this organization" : o.org_role || "member"}
               {o.personal && " · personal"}
             </span>
           </button>
@@ -174,7 +176,13 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
           ))}
         </>
       )}
-      {teams.length === 0 && activeOrg && canManageActiveOrg && (
+      {orgs.some((o) => o.unavailable) && (
+        <div className="px-2 py-1.5 text-xs text-warning-fg">
+          Some organizations could not be read. You can use an available organization or{" "}
+          <button className="underline" onClick={() => void reloadIdentity()}>retry</button>.
+        </div>
+      )}
+      {teams.length === 0 && activeOrg && !activeOrg.unavailable && canManageActiveOrg && (
         <>
           <div className="my-1 border-t border-border-subtle" />
           <div className="px-2 py-1.5 text-xs text-fg-muted">
@@ -194,7 +202,7 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
       {/* Every member can open the org page (Plan, Usage, Teams roster are
           member-readable; the page hides mutating controls itself) — only
           the label signals the admin's extra powers. */}
-      {activeOrg && (
+      {activeOrg && !activeOrg.unavailable && (
         <PopoverClose asChild>
           <button
             onClick={closeAfter(() => navigate(`/orgs/${activeOrgID}`))}

@@ -350,21 +350,21 @@ func TestPipelineBoardReportsMalformedBotWithoutHidingHealthySiblings(t *testing
 		t.Fatal(err)
 	}
 
-	w := httptest.NewRecorder()
+	w := newServerErrorRecorder(env.srv)
 	env.srv.handlePipelineBoardTaskCreate(w, env.req(http.MethodPost, "/api/v1/pipeline-board/tasks", `{"bot":"broken","title":"catalog is broken"}`))
 	if w.Code == http.StatusNotFound {
-		t.Fatalf("create = 404 %s — the catalog could not be READ, and the operator is being sent to look for a bot that is there", w.Body.String())
+		t.Fatalf("create = 404 %s — the catalog could not be READ, and the operator is being sent to look for a bot that is there", w.Diagnostic(t))
 	}
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("create = %d %s, want 500 carrying the parse failure", w.Code, w.Body.String())
+		t.Fatalf("create = %d %s, want 500 carrying the parse failure", w.Code, w.Diagnostic(t))
 	}
-	if body := w.Body.String(); !strings.Contains(body, "manifest") {
+	if body := w.Diagnostic(t); !strings.Contains(body, "manifest") {
 		t.Errorf("refusal = %s, want the manifest parse failure that actually blocked the resolution", body)
 	}
-	w = httptest.NewRecorder()
+	w = newServerErrorRecorder(env.srv)
 	env.srv.handlePipelineBoardTaskCreate(w, env.req(http.MethodPost, "/api/v1/pipeline-board/tasks", `{"bot":"probe","title":"healthy sibling"}`))
 	if w.Code != http.StatusCreated {
-		t.Fatalf("healthy sibling create = %d %s, want 201", w.Code, w.Body.String())
+		t.Fatalf("healthy sibling create = %d %s, want 201", w.Code, w.Diagnostic(t))
 	}
 }
 
@@ -428,16 +428,16 @@ func TestPipelineBoardRefusesAForkWhoseOwnMetadataIsUnreadable(t *testing.T) {
 // baked twin's metadata, and never a launch of the fork behind it.
 func assertUnreadableMetadataRefusal(t *testing.T, env *pipelineTierEnv) {
 	t.Helper()
-	w := httptest.NewRecorder()
+	w := newServerErrorRecorder(env.srv)
 	env.srv.handlePipelineBoardTaskCreate(w, env.req(http.MethodPost, "/api/v1/pipeline-board/tasks", `{"bot":"probe","title":"unreadable fork"}`))
 	if w.Code == http.StatusCreated {
 		t.Fatalf("the card was created (%d) — the team's fork was admitted on the ORIGIN's metadata, "+
 			"which is not the bundle that would run", w.Code)
 	}
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("create = %d %s, want 500 naming the row whose metadata cannot be read", w.Code, w.Body.String())
+		t.Fatalf("create = %d %s, want 500 naming the row whose metadata cannot be read", w.Code, w.Diagnostic(t))
 	}
-	if body := w.Body.String(); !strings.Contains(body, "t1/probe") {
+	if body := w.Diagnostic(t); !strings.Contains(body, "t1/probe") {
 		t.Errorf("refusal = %s, want the tenant/slug of the row the operator has to fix", body)
 	}
 }

@@ -227,13 +227,18 @@ func resolveRemoteTeamIDAs(ctx context.Context, c *RemoteClient, bearer, arg str
 		return "", fmt.Errorf("resolving team %q: %w — pass the team UUID (see `iterion remote teams list`)", arg, err)
 	}
 	hits, found := 0, ""
+	incomplete := false
 	for _, org := range me.Orgs {
+		incomplete = incomplete || org.Unavailable
 		for _, t := range org.Teams {
 			if arg == strings.ToLower(t.TeamID) || arg == strings.ToLower(t.TeamSlug) {
 				hits++
 				found = t.TeamID
 			}
 		}
+	}
+	if incomplete {
+		return "", fmt.Errorf("cannot resolve team %q against an incomplete identity tree: an organization is unavailable — pass the team UUID", arg)
 	}
 	switch {
 	case hits == 1:
@@ -361,6 +366,9 @@ func RemoteOrgsSwitch(ctx context.Context, c *RemoteClient, p *Printer, orgID st
 	found := me.ActiveOrg == orgID
 	for _, o := range me.Orgs {
 		if o.OrgID == orgID {
+			if o.Unavailable {
+				return fmt.Errorf("organization %q is unavailable; retry after its identity document is repaired", orgID)
+			}
 			found = true
 			break
 		}
@@ -385,31 +393,35 @@ func RemoteOrgsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 	}
 	seen := map[string]bool{}
 	type orgRow struct {
-		ID     string `json:"id"`
-		Name   string `json:"name,omitempty"`
-		Role   string `json:"role,omitempty"`
-		Active bool   `json:"active"`
+		ID          string `json:"id"`
+		Name        string `json:"name,omitempty"`
+		Role        string `json:"role,omitempty"`
+		Active      bool   `json:"active"`
+		Unavailable bool   `json:"unavailable,omitempty"`
 	}
 	var orgs []orgRow
-	add := func(id, name, role string) {
+	add := func(id, name, role string, unavailable bool) {
 		if id == "" || seen[id] {
 			return
 		}
 		seen[id] = true
-		orgs = append(orgs, orgRow{ID: id, Name: name, Role: role, Active: id == me.ActiveOrg})
+		orgs = append(orgs, orgRow{ID: id, Name: name, Role: role, Active: id == me.ActiveOrg, Unavailable: unavailable})
 	}
 	for _, o := range me.Orgs {
-		add(o.OrgID, o.OrgName, o.OrgRole)
+		add(o.OrgID, o.OrgName, o.OrgRole, o.Unavailable)
 	}
 	// The active org is normally in the tree; keep it visible even if not
 	// (e.g. an org the account was removed from while its token lives on).
-	add(me.ActiveOrg, "", "")
+	add(me.ActiveOrg, "", "", false)
 	if p.Format == OutputJSON {
 		p.JSON(map[string]any{"orgs": orgs})
 		return nil
 	}
 	rows := make([][]string, 0, len(orgs))
 	for _, o := range orgs {
+		if o.Unavailable {
+			o.Name = "Organization unavailable"
+		}
 		mark := ""
 		if o.Active {
 			mark = "*"

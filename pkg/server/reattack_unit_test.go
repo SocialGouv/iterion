@@ -122,9 +122,10 @@ func TestSaveAUnitLeavesNoRecordOnceWritten(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { authoringStepHook = nil })
+	logs := captureFailureLogs(s)
 	rec, _ := savePath(t, s, "demo/main.bot", edited, revision)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), ".record") {
-		t.Fatalf("failed write: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(correlatedFailureLog(t, rec.Body.Bytes(), rec.Header().Get("X-Request-ID"), logs.String()), ".record") {
+		t.Fatalf("failed write: %d %s", rec.Code, correlatedFailureLog(t, rec.Body.Bytes(), rec.Header().Get("X-Request-ID"), logs.String()))
 	}
 	records := 0
 	for _, dir := range []string{control, filepath.Join(workdir, "demo", ".iterion", "authoring")} {

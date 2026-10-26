@@ -303,5 +303,5 @@ func dispatchHTTP(req mcpReq, store *native.Store, caps boardops.Capabilities, e
 }
 
 func writeJSONStatus(w http.ResponseWriter, status int, body any) {
-	httpx.WriteJSON(w, status, body)
+	httpx.WriteErrorJSON(w, status, body)
 }

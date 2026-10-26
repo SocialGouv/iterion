@@ -875,5 +875,5 @@ func writeBoard(w http.ResponseWriter, s BoardStore) {
 }
 
 func writeErr(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+	httpx.WriteError(w, status, "", err.Error())
 }

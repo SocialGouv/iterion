@@ -107,10 +107,10 @@ func TestR7_MidWriteTransient_ApproveKeepsARecordARerunLands(t *testing.T) {
 
 	aw := r6Approve(t, s, id)
 	if aw.Code == http.StatusConflict {
-		t.Fatalf("approve consumed a record whose remedy is a retry of the same request: %s", aw.Body.String())
+		t.Fatalf("approve consumed a record whose remedy is a retry of the same request: %s", aw.Diagnostic(t))
 	}
-	if aw.Code != http.StatusInternalServerError || !strings.Contains(aw.Body.String(), "converges") {
-		t.Fatalf("a mid-write divergence must stay pending with the converge remedy named: code=%d body=%s", aw.Code, aw.Body.String())
+	if aw.Code != http.StatusInternalServerError || !strings.Contains(aw.Diagnostic(t), "converges") {
+		t.Fatalf("a mid-write divergence must stay pending with the converge remedy named: code=%d body=%s", aw.Code, aw.Diagnostic(t))
 	}
 	if got := r6OrgList(t, s); len(got) != 1 {
 		t.Fatalf("the retry-convergent record must stay pending: %v", got)
@@ -134,12 +134,12 @@ func TestR7_MidWriteTransient_ApproveKeepsARecordARerunLands(t *testing.T) {
 
 	// The remedy the refusal destroys: the SAME body on the direct path lands
 	// and heals the divergence.
-	dw := httptest.NewRecorder()
+	dw := newErrorRecorder()
 	dreq := forgeReq(orgAdminCtx(), "PATCH", "/api/teams/t1/forge/repo-bots/"+res.IntegrationID, body, "t1")
 	dreq.SetPathValue("integration_id", res.IntegrationID)
 	s.handleUpdateForgeRepoBots(dw, dreq)
 	if dw.Code != http.StatusOK {
-		t.Fatalf("the same request re-run must land and heal: code=%d body=%s", dw.Code, dw.Body.String())
+		t.Fatalf("the same request re-run must land and heal: code=%d body=%s", dw.Code, dw.Diagnostic(t))
 	}
 	integ, err = s.forgeIntegrations.Get(context.Background(), res.IntegrationID)
 	if err != nil || len(integ.LaunchVars) != 2 {

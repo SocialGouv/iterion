@@ -363,10 +363,15 @@ func (s *Server) handleAdminUpdateOrg(w http.ResponseWriter, r *http.Request) {
 	if req.MemoryQuotaBytes != nil {
 		if setter, ok := s.memoryStore().(tenantMemoryQuotaSetter); ok {
 			quota := effectiveOrgMemoryQuota(o)
-			teams, _ := store.ListTeamsByOrg(r.Context(), o.ID)
+			teams, err := store.ListTeamsByOrg(r.Context(), o.ID)
+			if err != nil {
+				s.httpErrorFor(w, r, http.StatusInternalServerError, "admin: list teams to propagate memory quota for org %s: %v", o.ID, err)
+				return
+			}
 			for _, t := range teams {
-				if err := setter.SetTenantQuota(r.Context(), t.ID, quota); err != nil && s.logger != nil {
-					s.logger.Warn("admin: propagate memory quota for org %s team %s: %v", o.ID, t.ID, err)
+				if err := setter.SetTenantQuota(r.Context(), t.ID, quota); err != nil {
+					s.httpErrorFor(w, r, http.StatusInternalServerError, "admin: propagate memory quota for org %s team %s: %v", o.ID, t.ID, err)
+					return
 				}
 			}
 		}

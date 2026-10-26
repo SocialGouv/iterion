@@ -143,12 +143,29 @@ func findByIDs[T any](ctx context.Context, coll *mongo.Collection, ids []string,
 		return nil, fmt.Errorf("%s: %w", findErrMsg, err)
 	}
 	defer cur.Close(ctx)
-	var docs []T
-	if err := cur.All(ctx, &docs); err != nil {
-		return nil, fmt.Errorf("%s: %w", decodeErrMsg, err)
-	}
-	for _, d := range docs {
+	return decodeBulkCursor(ctx, cur, idOf, decodeErrMsg)
+}
+
+func decodeBulkCursor[T any](ctx context.Context, cur *mongo.Cursor, idOf func(T) string, operation string) (map[string]T, error) {
+	out := make(map[string]T)
+	failures := make(map[string]error)
+	for cur.Next(ctx) {
+		var d T
+		if err := cur.Decode(&d); err != nil {
+			id, ok := cur.Current.Lookup("_id").StringValueOK()
+			if !ok {
+				return nil, fmt.Errorf("%s: cannot identify unreadable document: %w", operation, err)
+			}
+			failures[id] = err
+			continue
+		}
 		out[idOf(d)] = d
+	}
+	if err := cur.Err(); err != nil {
+		return nil, fmt.Errorf("%s: cursor: %w", operation, err)
+	}
+	if len(failures) > 0 {
+		return out, &BulkDecodeError{Operation: operation, Failures: failures}
 	}
 	return out, nil
 }

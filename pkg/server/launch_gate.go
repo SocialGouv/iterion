@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -761,6 +762,11 @@ func (s *Server) renderLaunchDenial(w http.ResponseWriter, r *http.Request, d *l
 	status := d.status
 	if status == 0 {
 		status = http.StatusInternalServerError
+	}
+	if status >= http.StatusInternalServerError {
+		body["error_code"] = d.reason
+		httpx.WriteErrorJSON(errtrack.HTTPErrorWriter(w, r, s.logger), status, body)
+		return
 	}
 	httpx.WriteJSON(w, status, body)
 }

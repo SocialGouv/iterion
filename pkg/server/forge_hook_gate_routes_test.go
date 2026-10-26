@@ -101,19 +101,19 @@ func gateBotLookup(_ context.Context, _, botID string) (*bundle.ForgeRequirement
 	}
 }
 
-func enableRepoBots(t *testing.T, s *Server, connID string, bots ...string) *httptest.ResponseRecorder {
+func enableRepoBots(t *testing.T, s *Server, connID string, bots ...string) *errorRecorder {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{"connection_id": connID, "repo": "group/api", "bot_ids": bots})
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleEnableForgeRepoBots(w, forgeReq(superAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", string(body), "t1"))
 	return w
 }
 
 // decodeErrorBody reads the {error, detail} shape the studio switches on.
-func decodeErrorBody(t *testing.T, w *httptest.ResponseRecorder) (string, string) {
+func decodeErrorBody(t *testing.T, w *errorRecorder) (string, string) {
 	t.Helper()
 	var body struct {
 		Error  string `json:"error"`
@@ -280,7 +280,7 @@ func TestForgePreview_GatesMergesAndHookBase(t *testing.T) {
 			s.forgeOrchestrator.Bots = gateBotLookup
 			seedForgeConn(t, s, "c1", "https://gitlab.example.com", tc.webhookBase)
 
-			w := httptest.NewRecorder()
+			w := newErrorRecorder()
 			s.handlePreviewForgeEnable(w, forgeReq(superAdminCtx(), "GET",
 				"/api/teams/t1/forge/repo-bots/preview?connection_id=c1&repo=group/api&bots="+tc.bots, "", "t1"))
 			if w.Code != http.StatusOK {
@@ -336,7 +336,7 @@ func TestListTeamForgeRepos_GatesMerges(t *testing.T) {
 	// A gating bot settles the OR whatever its sibling resolves to.
 	mkInt("i5", "group/gated-ghost", []string{"gate-bot", "ghost-bot"})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleListTeamForgeRepos(w, forgeReq(superAdminCtx(), "GET", "/api/teams/t1/forge/repos", "", "t1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
@@ -422,7 +422,7 @@ func TestWriteForgeProvisionError_RestoreFailureOutranksTheHookFailure(t *testin
 		hook: forge.StatusErr("gitlab", "update hook", http.StatusBadGateway),
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
+			w := newErrorRecorder()
 			s.writeForgeProvisionError(w, errors.Join(tc.hook, restore))
 			if w.Code != http.StatusInternalServerError {
 				t.Fatalf("code=%d body=%s, want 500: the repo has stopped receiving deliveries", w.Code, w.Body.String())
@@ -430,8 +430,19 @@ func TestWriteForgeProvisionError_RestoreFailureOutranksTheHookFailure(t *testin
 			// Read the decoded fields: the shapes differ (a coded refusal
 			// carries `detail`, a plain one puts the message in `error`), and
 			// the raw JSON escapes the gesture's `<base>` placeholder.
-			code, detail := decodeErrorBody(t, w)
-			body := code + " " + detail
+			var cause struct {
+				Error string `json:"error"`
+				Code  string `json:"error_code"`
+			}
+			if err := json.Unmarshal([]byte(w.Diagnostic(t)), &cause); err != nil {
+				t.Fatal(err)
+			}
+			code, body := cause.Code, cause.Error
+			var public map[string]string
+			_ = json.Unmarshal(w.Body.Bytes(), &public)
+			if public["error_code"] != tc.wantCode {
+				t.Fatalf("lost stable code: %s", w.Body.String())
+			}
 			for _, want := range append([]string{"restore webhook config wh-1", "webhook store unavailable", "re-run the same request"}, tc.wantText...) {
 				if !strings.Contains(body, want) {
 					t.Errorf("the answer is missing %q: %s", want, body)
@@ -491,7 +502,7 @@ func TestForgeEnable_HookRefusedWithoutPublicURLNamesTheDeploymentGap(t *testing
 	}
 
 	// The preview says the same thing before the write: no base at all.
-	pw := httptest.NewRecorder()
+	pw := newErrorRecorder()
 	s.handlePreviewForgeEnable(pw, forgeReq(superAdminCtx(), "GET",
 		"/api/teams/t1/forge/repo-bots/preview?connection_id=c1&repo=group/api&bots=plain-bot", "", "t1"))
 	var pv struct {
@@ -537,7 +548,7 @@ func TestListTeamForgeRepos_GatesMergesMemoSpansOneWindow(t *testing.T) {
 	}
 	list := func() {
 		t.Helper()
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleListTeamForgeRepos(w, forgeReq(superAdminCtx(), "GET", "/api/teams/t1/forge/repos", "", "t1"))
 		if w.Code != http.StatusOK {
 			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
@@ -785,7 +796,7 @@ func TestListTeamForgeRepos_MemoStoresOnlyFactsAboutTheBot(t *testing.T) {
 	}
 	row := func() (any, bool) {
 		t.Helper()
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleListTeamForgeRepos(w, forgeReq(superAdminCtx(), "GET", "/api/teams/t1/forge/repos", "", "t1"))
 		if w.Code != http.StatusOK {
 			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())

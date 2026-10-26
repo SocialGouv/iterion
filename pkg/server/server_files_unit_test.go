@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
@@ -103,7 +104,7 @@ func savePathClaimed(t *testing.T, s *Server, path string, document json.RawMess
 	body, _ := json.Marshal(req)
 	r := httptest.NewRequest(http.MethodPost, "/api/files/save", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	s.handleSaveFile(rec, r)
+	s.handleSaveFile(errtrack.HTTPErrorWriter(rec, r, s.logger), r)
 	var out saveFileResponse
 	if rec.Code == http.StatusOK {
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -367,9 +368,10 @@ func TestSaveAUnitRollsBackWhenAWriteFails(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { authoringStepHook = nil })
+	logs := captureFailureLogs(s)
 	rec, _ := savePath(t, s, "demo/main.bot", edited, opened.Unit.Revision)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "rolled back") {
-		t.Fatalf("failed write: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(correlatedFailureLog(t, rec.Body.Bytes(), rec.Header().Get("X-Request-ID"), logs.String()), "rolled back") {
+		t.Fatalf("failed write: %d %s", rec.Code, correlatedFailureLog(t, rec.Body.Bytes(), rec.Header().Get("X-Request-ID"), logs.String()))
 	}
 	if publishes != 2 {
 		t.Fatalf("the fault did not fire on the second publish (%d publishes): the test proves nothing", publishes)

@@ -477,7 +477,7 @@ func assertIdentityUnavailable(t *testing.T, w *httptest.ResponseRecorder, logs 
 		t.Fatalf("%s answered %d, want 500: %s", what, w.Code, w.Body.String())
 	}
 	var body map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body["error"] != identityUnavailable || len(body) != 1 {
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body["error"] != identityUnavailable || body["request_id"] == "" || len(body) != 2+boolInt(body["trace_id"] != "") {
 		t.Fatalf("%s answered the body %s, want {\"error\":%q}", what, w.Body.String(), identityUnavailable)
 	}
 	if strings.Contains(w.Body.String(), internalHost) {

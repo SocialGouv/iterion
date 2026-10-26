@@ -91,7 +91,7 @@ func TestForgeEnable_IndeterminateHookWriteReachesOps(t *testing.T) {
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("code=%d body=%s, want 502: the forge's own failure", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "provisioning failed") {
+	if !strings.Contains(w.Diagnostic(t), "provisioning failed") {
 		t.Errorf("the answer does not name the failure: %s", w.Body.String())
 	}
 	warned := logs.String()

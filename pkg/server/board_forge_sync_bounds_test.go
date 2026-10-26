@@ -1022,18 +1022,18 @@ func TestHandleSyncForgeIntegration_CarriesTheSweepsPageBudget(t *testing.T) {
 	r := forgeReq(superAdminCtx(), http.MethodPost,
 		"/api/teams/t1/forge/integrations/"+ri.ID+"/sync", "", ri.TenantID)
 	r.SetPathValue("iid", ri.ID)
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleSyncForgeIntegration(w, r)
 
 	_, pages := gh.served()
-	t.Logf("OBSERVED code=%d pages=%d mirrored-cards=%d body=%s", w.Code, pages, board.count(), strings.TrimSpace(w.Body.String()))
+	t.Logf("OBSERVED code=%d pages=%d mirrored-cards=%d body=%s", w.Code, pages, board.count(), strings.TrimSpace(w.Diagnostic(t)))
 	if pages != forgeIssueSyncMaxPages {
 		t.Fatalf("the click read %d pages, want the sweep's %d: a narrower cap mirrors less than the schedule already does",
 			pages, forgeIssueSyncMaxPages)
 	}
 	if w.Code != http.StatusBadGateway ||
-		!strings.Contains(w.Body.String(), strconv.Itoa(forgeIssueSyncMaxPages)+" pages") {
-		t.Fatalf("a window the budget could not exhaust answered code=%d %s, want 502 naming the budget", w.Code, w.Body.String())
+		!strings.Contains(w.Diagnostic(t), strconv.Itoa(forgeIssueSyncMaxPages)+" pages") {
+		t.Fatalf("a window the budget could not exhaust answered code=%d %s, want 502 naming the budget", w.Code, w.Diagnostic(t))
 	}
 	if got := storedMark(t, s, ri.ID); !got.Equal(mark) {
 		t.Fatalf("the click moved the mark to %s over a window it only partly read", got)

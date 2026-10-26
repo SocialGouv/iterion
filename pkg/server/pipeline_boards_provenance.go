@@ -1,9 +1,10 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"net/http"
 	"sort"
 	"strings"
@@ -296,7 +297,5 @@ func (s *Server) upsertPipelineTask(
 // open-blockers refusal ships the blocker list with it.
 func (s *Server) writeJSONError(w http.ResponseWriter, r *http.Request, code int, body map[string]any) {
 	s.reflectAllowedOrigin(w, r)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(body)
+	httpx.WriteErrorJSON(errtrack.HTTPErrorWriter(w, r, s.logger), code, body)
 }

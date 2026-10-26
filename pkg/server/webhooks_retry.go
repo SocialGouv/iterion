@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -76,15 +77,16 @@ func (s *Server) acknowledgeWebhookLaunch(next http.Handler) http.Handler {
 			completed := false
 			defer func() {
 				if !completed && !reply.sent {
-					reply.code = http.StatusInternalServerError
+					reply.code = 0
 					reply.body.Reset()
-					reply.body.WriteString(`{"error":"webhook_handler_failed"}`)
+					s.httpErrorFor(reply, r, http.StatusInternalServerError, "webhook_handler_failed")
 				}
 				reply.Flush()
 			}()
 			ctx, cancel := launchBookingContext(r.Context())
 			defer cancel()
-			next.ServeHTTP(reply, r.WithContext(ctx))
+			request := r.WithContext(ctx)
+			next.ServeHTTP(errtrack.HTTPErrorWriter(reply, request, s.logger), request)
 			completed = true
 		}) {
 			httpError(w, http.StatusServiceUnavailable, "server_draining")

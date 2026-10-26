@@ -50,6 +50,7 @@ export interface OrgTreeView {
   org_role: OrgRole | "";
   personal?: boolean;
   teams: MembershipView[];
+  unavailable?: boolean;
 }
 
 // AuthIdentity is GET /api/auth/me: the account, its org→teams tree and the

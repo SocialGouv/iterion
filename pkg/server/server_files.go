@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -306,14 +307,14 @@ func (s *Server) writeJSONFor(w http.ResponseWriter, r *http.Request, v any) {
 }
 
 func httpError(w http.ResponseWriter, code int, format string, args ...any) {
-	httpx.WriteJSON(w, code, map[string]string{"error": fmt.Sprintf(format, args...)})
+	httpx.WriteError(w, code, "", fmt.Sprintf(format, args...))
 }
 
 // httpErrorFor is the request-aware variant: reflects allowlisted Origin so
 // browser code can read the error body when same-origin or loopback.
 func (s *Server) httpErrorFor(w http.ResponseWriter, r *http.Request, code int, format string, args ...any) {
 	s.reflectAllowedOrigin(w, r)
-	httpx.WriteJSON(w, code, map[string]string{"error": fmt.Sprintf(format, args...)})
+	httpx.WriteError(errtrack.HTTPErrorWriter(w, r, s.logger), code, "", fmt.Sprintf(format, args...))
 }
 
 // httpErrorCode is httpErrorFor with a stable machine-readable `error_code`
@@ -323,7 +324,7 @@ func (s *Server) httpErrorFor(w http.ResponseWriter, r *http.Request, code int, 
 // `author_document`).
 func (s *Server) httpErrorCode(w http.ResponseWriter, r *http.Request, status int, code, format string, args ...any) {
 	s.reflectAllowedOrigin(w, r)
-	httpx.WriteJSON(w, status, map[string]string{"error": fmt.Sprintf(format, args...), "error_code": code})
+	httpx.WriteError(errtrack.HTTPErrorWriter(w, r, s.logger), status, code, fmt.Sprintf(format, args...))
 }
 
 // requireSafeOrigin gates state-changing endpoints. Any request whose Origin

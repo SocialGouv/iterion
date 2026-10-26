@@ -75,7 +75,7 @@ func (m *mockGitLabAvatar) count() int {
 func connectGitLabPAT(t *testing.T, s *Server, baseURL string) forge.Connection {
 	t.Helper()
 	body := `{"provider":"gitlab","mode":"pat","forge_base_url":"` + baseURL + `","pat":"glpat-token"}`
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleConnectForge(w, forgeReq(superAdminCtx(), "POST", "/api/teams/t1/forge/connections", body, "t1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("connect: code=%d body=%s", w.Code, w.Body.String())
@@ -195,10 +195,10 @@ func seedAvatarConn(t *testing.T, s *Server, c forge.Connection) forge.Connectio
 	return c
 }
 
-func avatarReq(s *Server, connID, body string) *httptest.ResponseRecorder {
+func avatarReq(s *Server, connID, body string) *errorRecorder {
 	r := forgeReq(superAdminCtx(), "POST", "/api/teams/t1/forge/connections/"+connID+"/avatar", body, "t1")
 	r.SetPathValue("conn_id", connID)
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleForgeConnectionAvatar(w, r)
 	return w
 }
@@ -224,7 +224,7 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 	glUser := seedAvatarConn(t, s, forge.Connection{ID: "c-gl-user", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "iterion-bot", AccountKind: forge.AccountKindUser, ForgeBaseURL: srv.URL})
 	glBot := seedAvatarConn(t, s, forge.Connection{ID: "c-gl-bot", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL, AvatarError: "earlier refusal"})
 
-	decode := func(w *httptest.ResponseRecorder) map[string]any {
+	decode := func(w *errorRecorder) map[string]any {
 		var m map[string]any
 		_ = json.Unmarshal(w.Body.Bytes(), &m)
 		return m
@@ -232,29 +232,29 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 
 	t.Run("oauth is a person — refused, no override", func(t *testing.T) {
 		w := avatarReq(s, oauth.ID, `{"force":true}`)
-		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "personal account") {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Diagnostic(t), "personal account") {
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 	})
 	t.Run("github PAT — no API, points at the logo", func(t *testing.T) {
 		w := avatarReq(s, ghPAT.ID, "")
 		m := decode(w)
 		if w.Code != http.StatusUnprocessableEntity || m["logo_url"] != "/brand/iterion-bot.png" {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 	})
 	t.Run("github App — no API, deep-links the App's settings page", func(t *testing.T) {
 		w := avatarReq(s, ghApp.ID, "")
 		m := decode(w)
 		if w.Code != http.StatusUnprocessableEntity || m["manage_url"] != "https://github.com/organizations/acme/settings/apps/iterion-forge-1234" {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 	})
 	t.Run("gitlab PAT of an unflagged account — needs force", func(t *testing.T) {
 		w := avatarReq(s, glUser.ID, "")
 		m := decode(w)
 		if w.Code != http.StatusConflict || m["needs_force"] != true || m["account_login"] != "iterion-bot" {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 		if gl.count() != 0 {
 			t.Error("a refusal must not touch the forge")
@@ -263,12 +263,12 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 	t.Run("gitlab PAT forced — applied", func(t *testing.T) {
 		w := avatarReq(s, glUser.ID, `{"force":true,"variant":"circle"}`)
 		if w.Code != http.StatusOK {
-			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+			t.Fatalf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 		var resp forgeAvatarResp
 		_ = json.Unmarshal(w.Body.Bytes(), &resp)
 		if resp.AvatarURL != "https://gl/uploads/avatar.png" || resp.Connection == nil || resp.Connection.AvatarAppliedAt == nil {
-			t.Errorf("resp = %s", w.Body.String())
+			t.Errorf("resp = %s", w.Diagnostic(t))
 		}
 		if !bytes.Equal(gl.gotBytes, brand.BotAvatar(brand.VariantCircle)) {
 			t.Error("variant circle was asked, the plain bytes were uploaded")
@@ -277,7 +277,7 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 	t.Run("gitlab bot — applied, earlier error cleared", func(t *testing.T) {
 		w := avatarReq(s, glBot.ID, "")
 		if w.Code != http.StatusOK {
-			t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+			t.Fatalf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 		stored, _ := s.forgeConnections.Get(context.Background(), glBot.ID)
 		if stored.AvatarError != "" || stored.AvatarAppliedAt == nil || time.Since(*stored.AvatarAppliedAt) > time.Minute {
@@ -289,7 +289,7 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 	})
 	t.Run("unknown variant is a 400", func(t *testing.T) {
 		if w := avatarReq(s, glBot.ID, `{"variant":"square"}`); w.Code != http.StatusBadRequest {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 	})
 	t.Run("forge refusal is a 502 and kept on the connection", func(t *testing.T) {
@@ -297,8 +297,8 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 		gl.status = http.StatusBadRequest
 		gl.mu.Unlock()
 		w := avatarReq(s, glBot.ID, "")
-		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "is too big") {
-			t.Errorf("code=%d body=%s", w.Code, w.Body.String())
+		if w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "is too big") {
+			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
 		stored, _ := s.forgeConnections.Get(context.Background(), glBot.ID)
 		if !strings.Contains(stored.AvatarError, "is too big") {
@@ -316,7 +316,7 @@ func TestForgeConnectionAvatar_RequiresManager(t *testing.T) {
 	memberCtx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u2", TeamID: "t1", Role: identity.RoleMember})
 	r := forgeReq(memberCtx, "POST", "/api/teams/t1/forge/connections/c1/avatar", "", "t1")
 	r.SetPathValue("conn_id", "c1")
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleForgeConnectionAvatar(w, r)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("a plain member could rebrand: code=%d", w.Code)
@@ -389,7 +389,7 @@ func TestForgeConnectionAvatar_CompletesOnACancelledRequest(t *testing.T) {
 	cancel() // the client is gone before the upload starts
 	r := forgeReq(ctx, "POST", "/api/teams/t1/forge/connections/c-cancel/avatar", "", "t1")
 	r.SetPathValue("conn_id", "c-cancel")
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleForgeConnectionAvatar(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
@@ -568,8 +568,8 @@ func TestForgeConnectionAvatar_ForcedApplyBailsWhenWhoAmIHangs(t *testing.T) {
 	s.avatarApplyTimeout = 200 * time.Millisecond
 
 	w := avatarReq(s, "c-slow-user", `{"force":true}`)
-	if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "could not read the account") {
-		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "could not read the account") {
+		t.Fatalf("code=%d body=%s", w.Code, w.Diagnostic(t))
 	}
 	stored, _ := s.forgeConnections.Get(context.Background(), "c-slow-user")
 	if uploads != 0 || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
@@ -671,8 +671,8 @@ func TestForgeConnectionAvatar_SpentBudgetOutranksTheForgesAnswer(t *testing.T) 
 	s.avatarApplyTimeout = 200 * time.Millisecond
 	for _, body := range []string{"", `{"force":true}`} {
 		w := avatarReq(s, "c-stalled-403", body)
-		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "could not read the account") {
-			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Body.String())
+		if w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "could not read the account") {
+			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Diagnostic(t))
 		}
 	}
 	stored, _ := s.forgeConnections.Get(context.Background(), "c-stalled-403")
@@ -731,8 +731,8 @@ func TestForgeConnectionAvatar_UnreachableForgeIsNotAVouchMatter(t *testing.T) {
 	seedAvatarConn(t, s, forge.Connection{ID: "c-unreachable", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: url})
 	for _, body := range []string{"", `{"force":true}`} {
 		w := avatarReq(s, "c-unreachable", body)
-		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "could not read the account") {
-			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Body.String())
+		if w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "could not read the account") {
+			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Diagnostic(t))
 		}
 	}
 	stored, _ := s.forgeConnections.Get(context.Background(), "c-unreachable")
@@ -744,8 +744,8 @@ func TestForgeConnectionAvatar_UnreachableForgeIsNotAVouchMatter(t *testing.T) {
 	noUser := httptest.NewServer(http.NotFoundHandler())
 	defer noUser.Close()
 	seedAvatarConn(t, s, forge.Connection{ID: "c-wrong-base", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: noUser.URL})
-	if w := avatarReq(s, "c-wrong-base", ""); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "does not serve the user endpoint") || strings.Contains(w.Body.String(), "hook") {
-		t.Fatalf("404 on /user: code=%d body=%s", w.Code, w.Body.String())
+	if w := avatarReq(s, "c-wrong-base", ""); w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "does not serve the user endpoint") || strings.Contains(w.Diagnostic(t), "hook") {
+		t.Fatalf("404 on /user: code=%d body=%s", w.Code, w.Diagnostic(t))
 	}
 }
 
@@ -785,13 +785,13 @@ func TestForgeConnectionAvatar_StoreFailAfterUploadIsIterionFault500(t *testing.
 
 	w := avatarReq(s, "c-persist-fail", "")
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("a store write that failed AFTER a successful upload must answer 500 (iterion's own), got %d: body=%s", w.Code, w.Body.String())
+		t.Fatalf("a store write that failed AFTER a successful upload must answer 500 (iterion's own), got %d: body=%s", w.Code, w.Diagnostic(t))
 	}
-	if !strings.Contains(w.Body.String(), "c-persist-fail") {
-		t.Errorf("body must name the connection to act on it: body=%s", w.Body.String())
+	if !strings.Contains(w.Diagnostic(t), "c-persist-fail") {
+		t.Errorf("body must name the connection to act on it: body=%s", w.Diagnostic(t))
 	}
-	if !strings.Contains(w.Body.String(), "connection reset by peer") {
-		t.Errorf("body must carry the underlying cause: body=%s", w.Body.String())
+	if !strings.Contains(w.Diagnostic(t), "connection reset by peer") {
+		t.Errorf("body must carry the underlying cause: body=%s", w.Diagnostic(t))
 	}
 	if gl.count() != 1 {
 		t.Errorf("uploads = %d, want 1 — the upload landed before persist failed", gl.count())

@@ -132,14 +132,14 @@ func TestPipelineBoardLaunchAnswers503OnARoutingOutage(t *testing.T) {
 	req.SetPathValue("id", card.ID)
 	req = req.WithContext(auth.WithIdentity(req.Context(),
 		auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1", Role: identity.RoleMember}))
-	rec := httptest.NewRecorder()
+	rec := newServerErrorRecorder(s)
 	s.handlePipelineBoardTaskLaunch(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("launch-now = %d %s, want 503 — a wedged tenant routing store is this server's outage, not a conflict on the card", rec.Code, rec.Body.String())
+		t.Fatalf("launch-now = %d %s, want 503 — a wedged tenant routing store is this server's outage, not a conflict on the card", rec.Code, rec.Diagnostic(t))
 	}
-	if !strings.Contains(rec.Body.String(), card.ID) {
-		t.Errorf("response %s names no ticket", rec.Body.String())
+	if !strings.Contains(rec.Diagnostic(t), card.ID) {
+		t.Errorf("response %s names no ticket", rec.Diagnostic(t))
 	}
 	if n := launchCount(pub); n != 0 {
 		t.Fatalf("the refused ticket published %d launches, want 0", n)

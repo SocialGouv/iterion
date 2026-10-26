@@ -9,6 +9,7 @@ invariants. The product view is [docs/architecture.md](../../architecture.md).
 | Leaf | Read it when |
 |---|---|
 | [tenancy-credentials-spend.md](tenancy-credentials-spend.md) | Orgs, teams, keys, caps, platform settings. |
+| [http-failures.md](http-failures.md) | Generic HTTP failures, correlation, partial identity reads and quota propagation. |
 | [workspace-and-review-scope.md](workspace-and-review-scope.md) | Workspace capture/restore, review scope, sandbox wiring. |
 | [events-leases-and-schedules.md](events-leases-and-schedules.md) | The trigger spine, elections, queues, schedules, retries. |
 | [extensions-and-bot-sources.md](extensions-and-bot-sources.md) | Plugins, skills, memory, marketplace, bot sources. |

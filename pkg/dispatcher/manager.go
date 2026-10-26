@@ -844,7 +844,7 @@ func (m *Manager) handleIssueCancel(w http.ResponseWriter, r *http.Request) {
 func (m *Manager) handleWS(w http.ResponseWriter, r *http.Request) {
 	cur := m.Current()
 	if cur == nil {
-		http.Error(w, "dispatcher not running", http.StatusServiceUnavailable)
+		WriteErr(w, http.StatusServiceUnavailable, fmt.Errorf("dispatcher not running"))
 		return
 	}
 	// Delegate to the dispatcher's existing WS handler, which knows

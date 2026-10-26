@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -45,7 +44,7 @@ func seedAccount(t *testing.T, s *Server, id, email string) {
 // and answers the id and the token the accept takes.
 func mintInvitationAs(t *testing.T, s *Server, ctx context.Context, teamID, email string, role identity.Role) (string, string) {
 	t.Helper()
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/"+teamID+"/invitations",
 		`{"email":"`+email+`","role":"`+string(role)+`"}`, teamID, ""))
 	if w.Code != http.StatusOK {
@@ -62,8 +61,8 @@ func mintInvitationAs(t *testing.T, s *Server, ctx context.Context, teamID, emai
 }
 
 // patchOrgRole writes a member's org role the way the roster does.
-func patchOrgRole(s *Server, ctx context.Context, orgID, memberID string, role identity.OrgRole) *httptest.ResponseRecorder {
-	w := httptest.NewRecorder()
+func patchOrgRole(s *Server, ctx context.Context, orgID, memberID string, role identity.OrgRole) *errorRecorder {
+	w := newErrorRecorder()
 	s.handleUpdateOrgMember(w, teamReq(ctx, "PATCH", "/api/orgs/"+orgID+"/members/"+memberID,
 		`{"role":"`+string(role)+`"}`, orgID, memberID))
 	return w
@@ -491,9 +490,9 @@ func TestOrgMembers_aStandingThatCannotBeReadRefusesTheRoleWrite(t *testing.T) {
 
 	w := patchOrgRole(s, orgAdminCtx(), "o1", racerID, identity.OrgRoleAdmin)
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("writing while the writer's standing cannot be read: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("writing while the writer's standing cannot be read: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	if body := w.Body.String(); !strings.Contains(body, "connection reset by peer") {
+	if body := w.Diagnostic(t); !strings.Contains(body, "connection reset by peer") {
 		t.Errorf("the 500 does not carry the store's own error: %s", body)
 	}
 	s.authSvc.SetStoreForTest(real)
@@ -682,7 +681,7 @@ func TestOrgOffboarding_aRemovalRevokesTheInvitationsTheMemberMintedAboveWhatThe
 				t.Fatal(err)
 			}
 
-			rm := httptest.NewRecorder()
+			rm := newErrorRecorder()
 			s.handleRemoveOrgMember(rm, teamReq(superAdminCtx(), "DELETE", "/api/orgs/o1/members/orgadmin", "", "o1", "orgadmin"))
 			if rm.Code != http.StatusNoContent {
 				t.Fatalf("removing the creator: code=%d body=%s, want 204", rm.Code, rm.Body.String())
@@ -752,9 +751,9 @@ func TestOrgMembers_aDemotionWhoseInvitationSweepFailedSaysSoAndFinishesOnTheRei
 	s.authSvc.SetStoreForTest(&invitationListFailGate{Store: real, failures: 1})
 	w := patchOrgRole(s, superAdminCtx(), "o1", "orgadmin", identity.OrgRoleMember)
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("a demotion whose invitation sweep failed: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("a demotion whose invitation sweep failed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	body := w.Body.String()
+	body := w.Diagnostic(t)
 	for _, want := range []string{
 		"is now member",
 		"revoking the pending invitations they created",
@@ -774,7 +773,7 @@ func TestOrgMembers_aDemotionWhoseInvitationSweepFailedSaysSoAndFinishesOnTheRei
 
 	again := patchOrgRole(s, superAdminCtx(), "o1", "orgadmin", identity.OrgRoleMember)
 	if again.Code != http.StatusOK {
-		t.Fatalf("re-issuing the role change: code=%d body=%s, want 200", again.Code, again.Body.String())
+		t.Fatalf("re-issuing the role change: code=%d body=%s, want 200", again.Code, again.Diagnostic(t))
 	}
 	if got, err := real.GetInvitation(ctx, aboveID); err == nil {
 		t.Errorf("the re-issue did not revoke the invitation the failure left: %+v", got)
@@ -796,7 +795,7 @@ func TestOrgMembers_aPlacementThatLowersARoleRevokesTheInvitationsAboveIt(t *tes
 	aboveID, _ := mintInvitationAs(t, s, orgAdminCtx(), "t1", "newcomer@example.com", identity.RoleAdmin)
 	atID, _ := mintInvitationAs(t, s, orgAdminCtx(), "t1", "second@example.com", identity.RoleMember)
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handlePutOrgMember(w, teamReq(superAdminCtx(), "PUT", "/api/orgs/o1/members/orgadmin",
 		`{"role":"member"}`, "o1", "orgadmin"))
 	if w.Code != http.StatusOK {
@@ -901,7 +900,7 @@ func (g *mintInWindowGate) UpsertOrgMembership(ctx context.Context, om identity.
 	g.done = true
 	g.mu.Unlock()
 	if first {
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		g.s.handleCreateInvitation(w, teamReq(auth.WithIdentity(context.Background(), auth.Identity{UserID: g.userID}),
 			"POST", "/api/teams/t1/invitations", `{"email":"inwindow@example.com","role":"admin"}`, "t1", ""))
 		var minted struct {
@@ -955,14 +954,14 @@ func TestOrgMembers_aPlacementWhoseInvitationSweepFailedNamesThePlacement(t *tes
 	aboveID, _ := mintInvitationAs(t, s, orgAdminCtx(), "t1", "newcomer@example.com", identity.RoleAdmin)
 
 	s.authSvc.SetStoreForTest(&invitationListFailGate{Store: real, failures: 1})
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handlePutOrgMember(w, teamReq(superAdminCtx(), "PUT", "/api/orgs/o1/members/orgadmin",
 		`{"role":"member"}`, "o1", "orgadmin"))
 	s.authSvc.SetStoreForTest(real)
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("a placement whose invitation sweep failed: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("a placement whose invitation sweep failed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	if body := w.Body.String(); !strings.Contains(body, "re-issue the placement") {
+	if body := w.Diagnostic(t); !strings.Contains(body, "re-issue the placement") {
 		t.Errorf("the 500 does not name the act to re-issue: %s", body)
 	}
 	if _, err := real.GetInvitation(ctx, aboveID); err != nil {
@@ -1031,16 +1030,16 @@ func (g *mintParkGate) CreateInvitation(ctx context.Context, inv identity.Invita
 func TestTeamInvitations_aMintThatLandsAfterTheSweepIsRefusedByItsOwnConfirmation(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		mint func(*Server, context.Context) *httptest.ResponseRecorder
+		mint func(*Server, context.Context) *errorRecorder
 	}{
-		{"the team route", func(s *Server, ctx context.Context) *httptest.ResponseRecorder {
-			w := httptest.NewRecorder()
+		{"the team route", func(s *Server, ctx context.Context) *errorRecorder {
+			w := newErrorRecorder()
 			s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/t1/invitations",
 				`{"email":"accomplice@example.com","role":"admin"}`, "t1", ""))
 			return w
 		}},
-		{"the org route", func(s *Server, ctx context.Context) *httptest.ResponseRecorder {
-			w := httptest.NewRecorder()
+		{"the org route", func(s *Server, ctx context.Context) *errorRecorder {
+			w := newErrorRecorder()
 			s.handleCreateOrgInvitation(w, teamReq(ctx, "POST", "/api/orgs/o1/invitations",
 				`{"email":"accomplice@example.com","role":"admin","team_id":"t1"}`, "o1", ""))
 			return w
@@ -1056,7 +1055,7 @@ func TestTeamInvitations_aMintThatLandsAfterTheSweepIsRefusedByItsOwnConfirmatio
 				reached: make(chan struct{}), release: make(chan struct{})}
 			s.authSvc.SetStoreForTest(gate)
 
-			done := make(chan *httptest.ResponseRecorder, 1)
+			done := make(chan *errorRecorder, 1)
 			go func() { done <- c.mint(s, orgAdminCtx()) }()
 			awaitGate(t, gate.reached, "the mint parked just before its insert")
 
@@ -1118,7 +1117,7 @@ func TestTeamInvitations_aMintStraddlingTheRemovalKeepsTheRoleMirrorLessRow(t *t
 		name, minter, email string
 		seed                func(*testing.T, *Server)
 		mintCtx, removerCtx func() context.Context
-		mint                func(*Server, context.Context, string) *httptest.ResponseRecorder
+		mint                func(*Server, context.Context, string) *errorRecorder
 	}{
 		{
 			// The minter is a t1 admin and a plain member of o1, minting for
@@ -1129,8 +1128,8 @@ func TestTeamInvitations_aMintStraddlingTheRemovalKeepsTheRoleMirrorLessRow(t *t
 			mintCtx: func() context.Context { return auth.WithIdentity(context.Background(), auth.Identity{UserID: racerID}) },
 			// The org admin off-boards them, as the roster does.
 			removerCtx: orgAdminCtx,
-			mint: func(s *Server, ctx context.Context, email string) *httptest.ResponseRecorder {
-				w := httptest.NewRecorder()
+			mint: func(s *Server, ctx context.Context, email string) *errorRecorder {
+				w := newErrorRecorder()
 				s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/t1/invitations",
 					`{"email":"`+email+`","role":"config_editor"}`, "t1", ""))
 				return w
@@ -1141,8 +1140,8 @@ func TestTeamInvitations_aMintStraddlingTheRemovalKeepsTheRoleMirrorLessRow(t *t
 			// off-boards them is a platform admin.
 			name: "the org route", minter: "orgadmin", email: "latecomer@example.com",
 			seed: func(*testing.T, *Server) {}, mintCtx: orgAdminCtx, removerCtx: superAdminCtx,
-			mint: func(s *Server, ctx context.Context, email string) *httptest.ResponseRecorder {
-				w := httptest.NewRecorder()
+			mint: func(s *Server, ctx context.Context, email string) *errorRecorder {
+				w := newErrorRecorder()
 				s.handleCreateOrgInvitation(w, teamReq(ctx, "POST", "/api/orgs/o1/invitations",
 					`{"email":"`+email+`","role":"config_editor","team_id":"t1"}`, "o1", ""))
 				return w
@@ -1159,11 +1158,11 @@ func TestTeamInvitations_aMintStraddlingTheRemovalKeepsTheRoleMirrorLessRow(t *t
 				reached: make(chan struct{}), release: make(chan struct{})}
 			s.authSvc.SetStoreForTest(gate)
 
-			done := make(chan *httptest.ResponseRecorder, 1)
+			done := make(chan *errorRecorder, 1)
 			go func() { done <- c.mint(s, c.mintCtx(), c.email) }()
 			awaitGate(t, gate.reached, "the mint parked just before its insert")
 
-			off := httptest.NewRecorder()
+			off := newErrorRecorder()
 			s.handleRemoveOrgMember(off, teamReq(c.removerCtx(), "DELETE", "/api/orgs/o1/members/"+c.minter, "", "o1", c.minter))
 			if off.Code != http.StatusNoContent {
 				t.Fatalf("the removal that ran inside the mint: code=%d body=%s, want 204", off.Code, off.Body.String())
@@ -1225,7 +1224,7 @@ func TestTeamInvitations_aMintStraddlingTheRemovalLosesTheRowAddressedToItsOwnCr
 		name, minter, email string
 		seed                func(*testing.T, *Server)
 		mintCtx, removerCtx func() context.Context
-		mint                func(*Server, context.Context, string) *httptest.ResponseRecorder
+		mint                func(*Server, context.Context, string) *errorRecorder
 	}{
 		{
 			// A t1 admin and a plain member of o1, off-boarded by the org
@@ -1234,8 +1233,8 @@ func TestTeamInvitations_aMintStraddlingTheRemovalLosesTheRowAddressedToItsOwnCr
 			seed:       seedRacerAsTeamAdmin,
 			mintCtx:    func() context.Context { return auth.WithIdentity(context.Background(), auth.Identity{UserID: racerID}) },
 			removerCtx: orgAdminCtx,
-			mint: func(s *Server, ctx context.Context, email string) *httptest.ResponseRecorder {
-				w := httptest.NewRecorder()
+			mint: func(s *Server, ctx context.Context, email string) *errorRecorder {
+				w := newErrorRecorder()
 				s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/t1/invitations",
 					`{"email":"`+email+`","role":"config_editor"}`, "t1", ""))
 				return w
@@ -1248,8 +1247,8 @@ func TestTeamInvitations_aMintStraddlingTheRemovalLosesTheRowAddressedToItsOwnCr
 			name: "the org route", minter: "orgadmin", email: "orgadmin@example.com",
 			seed:    func(t *testing.T, s *Server) { seedAccount(t, s, "orgadmin", "orgadmin@example.com") },
 			mintCtx: orgAdminCtx, removerCtx: superAdminCtx,
-			mint: func(s *Server, ctx context.Context, email string) *httptest.ResponseRecorder {
-				w := httptest.NewRecorder()
+			mint: func(s *Server, ctx context.Context, email string) *errorRecorder {
+				w := newErrorRecorder()
 				s.handleCreateOrgInvitation(w, teamReq(ctx, "POST", "/api/orgs/o1/invitations",
 					`{"email":"`+email+`","role":"config_editor","team_id":"t1"}`, "o1", ""))
 				return w
@@ -1266,11 +1265,11 @@ func TestTeamInvitations_aMintStraddlingTheRemovalLosesTheRowAddressedToItsOwnCr
 				reached: make(chan struct{}), release: make(chan struct{})}
 			s.authSvc.SetStoreForTest(gate)
 
-			done := make(chan *httptest.ResponseRecorder, 1)
+			done := make(chan *errorRecorder, 1)
 			go func() { done <- c.mint(s, c.mintCtx(), c.email) }()
 			awaitGate(t, gate.reached, "the mint parked just before its insert")
 
-			off := httptest.NewRecorder()
+			off := newErrorRecorder()
 			s.handleRemoveOrgMember(off, teamReq(c.removerCtx(), "DELETE", "/api/orgs/o1/members/"+c.minter, "", "o1", c.minter))
 			if off.Code != http.StatusNoContent {
 				t.Fatalf("the removal that ran inside the mint: code=%d body=%s, want 204", off.Code, off.Body.String())
@@ -1372,7 +1371,7 @@ func TestTeamInvitations_aMintInsideTheRemovalsSecondPassLosesItsOwnReEntryTicke
 	real := s.authStore()
 	selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: racerID})
 
-	var mint *httptest.ResponseRecorder
+	var mint *errorRecorder
 	var keptID string
 	gate := &removalPass2GrantListGate{Store: real, userID: racerID}
 	gate.hook = func() {
@@ -1386,7 +1385,7 @@ func TestTeamInvitations_aMintInsideTheRemovalsSecondPassLosesItsOwnReEntryTicke
 			t.Error(err)
 			return
 		}
-		mint = httptest.NewRecorder()
+		mint = newErrorRecorder()
 		s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 			`{"email":"racer@example.com","role":"config_editor"}`, "t1", ""))
 		if mint.Code != http.StatusOK {
@@ -1408,7 +1407,7 @@ func TestTeamInvitations_aMintInsideTheRemovalsSecondPassLosesItsOwnReEntryTicke
 		keptID = invs[0].ID
 	}
 	s.authSvc.SetStoreForTest(gate)
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	s.authSvc.SetStoreForTest(real)
 
@@ -1528,14 +1527,14 @@ func TestOrgOffboarding_aFailedLastInvitationSweepSaysSoAndFinishesOnTheReissue(
 		}
 	}
 	s.authSvc.SetStoreForTest(gate)
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	s.authSvc.SetStoreForTest(real)
 
 	if off.Code != http.StatusInternalServerError {
-		t.Fatalf("a removal whose last invitation sweep failed: code=%d body=%s, want 500", off.Code, off.Body.String())
+		t.Fatalf("a removal whose last invitation sweep failed: code=%d body=%s, want 500", off.Code, off.Diagnostic(t))
 	}
-	body := off.Body.String()
+	body := off.Diagnostic(t)
 	for _, want := range []string{
 		"the last sweep of their pending invitations failed",
 		"connection reset by peer",
@@ -1574,10 +1573,10 @@ func TestOrgOffboarding_aFailedLastInvitationSweepSaysSoAndFinishesOnTheReissue(
 	}
 	// And the advice works: the removal is idempotent, so re-issuing it takes
 	// the row the failure left.
-	again := httptest.NewRecorder()
+	again := newErrorRecorder()
 	s.handleRemoveOrgMember(again, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if again.Code != http.StatusNoContent {
-		t.Fatalf("the re-issued removal: code=%d body=%s, want 204", again.Code, again.Body.String())
+		t.Fatalf("the re-issued removal: code=%d body=%s, want 204", again.Code, again.Diagnostic(t))
 	}
 	if inv, err := real.GetInvitation(ctx, strandedID); err == nil {
 		t.Errorf("the re-issued removal left the row the failure stranded: %+v", inv)
@@ -1666,7 +1665,7 @@ func TestTeamInvitations_theMintsTheConfirmationLetsThrough(t *testing.T) {
 			s.authSvc.SetStoreForTest(&standingDropsAsTheMintLandsGate{
 				Store: real, userID: "orgadmin", orgID: "o1", to: identity.OrgRoleMember,
 			})
-			w := httptest.NewRecorder()
+			w := newErrorRecorder()
 			s.handleCreateInvitation(w, teamReq(c.ctx(), "POST", "/api/teams/"+c.teamID+"/invitations",
 				`{"email":"newcomer@example.com","role":"`+c.role+`"}`, c.teamID, ""))
 			s.authSvc.SetStoreForTest(real)
@@ -1739,14 +1738,14 @@ func TestTeamInvitations_aStandingUnreadableAfterTheMintTakesTheInvitationBack(t
 			real := s.authStore()
 			s.authSvc.SetStoreForTest(&standingUnreadableAfterTheMintGate{Store: real, userID: "orgadmin", orgID: "o1"})
 
-			w := httptest.NewRecorder()
+			w := newErrorRecorder()
 			s.handleCreateInvitation(w, teamReq(orgAdminCtx(), "POST", "/api/teams/t1/invitations",
 				`{"email":"newcomer@example.com","role":"`+string(role)+`"}`, "t1", ""))
 			s.authSvc.SetStoreForTest(real)
 			if w.Code != http.StatusInternalServerError {
-				t.Fatalf("a mint whose cap cannot be confirmed: code=%d body=%s, want 500", w.Code, w.Body.String())
+				t.Fatalf("a mint whose cap cannot be confirmed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 			}
-			body := w.Body.String()
+			body := w.Diagnostic(t)
 			for _, want := range []string{
 				"connection reset by peer",
 				// The STANDING, not the org role: the confirmation measures
@@ -1837,18 +1836,18 @@ func TestTeamInvitations_aGrantUnreadableAfterTheMintTakesTheInvitationBack(t *t
 
 	gate := &grantUnreadableAfterTheMintGate{Store: real, userID: racerID, teamID: "t1", failOn: 2}
 	s.authSvc.SetStoreForTest(gate)
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleCreateInvitation(w, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 		`{"email":"racer@example.com","role":"config_editor"}`, "t1", ""))
 	s.authSvc.SetStoreForTest(real)
 
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("a mint whose grant read failed after the row landed: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("a mint whose grant read failed after the row landed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
 	if gate.hits < 2 {
 		t.Fatalf("the grant was read %d times — then the confirmation did not ask for it and this is not the exit the test describes", gate.hits)
 	}
-	body := w.Body.String()
+	body := w.Diagnostic(t)
 	for _, want := range []string{
 		"connection reset by peer",
 		// The read that actually failed, in the refusal's own words and in
@@ -1880,11 +1879,11 @@ func TestTeamInvitations_aGrantUnreadableAfterTheMintTakesTheInvitationBack(t *t
 	// The retry the body asks for, on a healthy store: the orphan-grant
 	// holder's self-addressed row is a state the console reports rather than
 	// one the mint refuses.
-	again := httptest.NewRecorder()
+	again := newErrorRecorder()
 	s.handleCreateInvitation(again, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 		`{"email":"racer@example.com","role":"config_editor"}`, "t1", ""))
 	if again.Code != http.StatusOK {
-		t.Errorf("the retry on a healthy store: code=%d body=%s, want 200", again.Code, again.Body.String())
+		t.Errorf("the retry on a healthy store: code=%d body=%s, want 200", again.Code, again.Diagnostic(t))
 	}
 }
 
@@ -1938,19 +1937,19 @@ func TestTeamInvitations_anAddressUnreadableAfterTheMintTakesTheInvitationBack(t
 	gate := &addressUnreadableAfterTheMintGate{Store: park, userID: racerID}
 	s.authSvc.SetStoreForTest(gate)
 
-	done := make(chan *httptest.ResponseRecorder, 1)
+	done := make(chan *errorRecorder, 1)
 	go func() {
-		w := httptest.NewRecorder()
+		w := newErrorRecorder()
 		s.handleCreateInvitation(w, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 			`{"email":"racer@example.com","role":"config_editor"}`, "t1", ""))
 		done <- w
 	}()
 	awaitGate(t, park.reached, "the mint parked just before its insert")
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	if off.Code != http.StatusNoContent {
-		t.Fatalf("the removal that ran inside the mint: code=%d body=%s, want 204", off.Code, off.Body.String())
+		t.Fatalf("the removal that ran inside the mint: code=%d body=%s, want 204", off.Code, off.Diagnostic(t))
 	}
 	gate.arm()
 	close(park.release)
@@ -1958,9 +1957,9 @@ func TestTeamInvitations_anAddressUnreadableAfterTheMintTakesTheInvitationBack(t
 	s.authSvc.SetStoreForTest(real)
 
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("a mint whose address read failed after the row landed: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("a mint whose address read failed after the row landed: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	body := w.Body.String()
+	body := w.Diagnostic(t)
 	for _, want := range []string{
 		"connection reset by peer",
 		"the address your own pending invitations are addressed to",
@@ -2031,7 +2030,7 @@ func TestTeamInvitations_whatTheConfirmationsRevokeAnswers(t *testing.T) {
 				Store: real, userID: "orgadmin", orgID: "o1",
 				to: identity.OrgRoleMember, revokeErr: c.revokeErr,
 			})
-			w := httptest.NewRecorder()
+			w := newErrorRecorder()
 			s.handleCreateInvitation(w, teamReq(orgAdminCtx(), "POST", "/api/teams/t1/invitations",
 				`{"email":"newcomer@example.com","role":"admin"}`, "t1", ""))
 			s.authSvc.SetStoreForTest(real)
@@ -2148,7 +2147,7 @@ func TestTeamInvitations_aClientGoneAtTheMintStillLosesTheUnconfirmedInvitation(
 	s.auditStore = &ctxAwareAudit{Store: audit.NewMemoryStore()}
 	s.authSvc.SetStoreForTest(&mintCancelGate{Store: real, userID: "orgadmin", orgID: "o1", cancel: cancel})
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/t1/invitations",
 		`{"email":"accomplice@example.com","role":"admin"}`, "t1", ""))
 	s.authSvc.SetStoreForTest(real)
@@ -2261,7 +2260,7 @@ func TestTeamMembers_removingTheGrantTakesTheRowItsOwnMintKeptOnIt(t *testing.T)
 		t.Fatalf("the mint's confirmation did not keep the row on the grant (%v) — then this is not the state the test describes", err)
 	}
 
-	drop := httptest.NewRecorder()
+	drop := newErrorRecorder()
 	s.handleRemoveMember(drop, teamReq(orgAdminCtx(), "DELETE", "/api/teams/t1/members/"+racerID, "", "t1", racerID))
 	if drop.Code != http.StatusNoContent {
 		t.Fatalf("removing the orphan grant: code=%d body=%s, want 204", drop.Code, drop.Body.String())
@@ -2328,7 +2327,7 @@ func TestTeamMembers_theCompensationThatUnwindsAGrantTakesTheRowKeptOnIt(t *test
 	}
 
 	s.authSvc.SetStoreForTest(&orgRowVanishesAfterPreCheckGate{Store: real, userID: racerID, orgID: "o1"})
-	patch := httptest.NewRecorder()
+	patch := newErrorRecorder()
 	s.handleUpdateMember(patch, teamReq(orgAdminCtx(), "PATCH",
 		"/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
 	s.authSvc.SetStoreForTest(real)
@@ -2368,7 +2367,7 @@ func TestTeamMembers_removingAGrantTakesOnlyWhatThatGrantWasThePremiseOf(t *test
 		selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: racerID})
 		invID, _ := mintInvitationAs(t, s, selfCtx, "t1", "racer@example.com", identity.RoleConfigEditor)
 
-		drop := httptest.NewRecorder()
+		drop := newErrorRecorder()
 		s.handleRemoveMember(drop, teamReq(orgAdminCtx(), "DELETE", "/api/teams/t1/members/"+racerID, "", "t1", racerID))
 		if drop.Code != http.StatusNoContent {
 			t.Fatalf("removing the grant of a member of the org: code=%d body=%s, want 204", drop.Code, drop.Body.String())
@@ -2389,7 +2388,7 @@ func TestTeamMembers_removingAGrantTakesOnlyWhatThatGrantWasThePremiseOf(t *test
 		selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: racerID})
 		invID, _ := mintInvitationAs(t, s, selfCtx, "t1", "newcomer@example.com", identity.RoleConfigEditor)
 
-		drop := httptest.NewRecorder()
+		drop := newErrorRecorder()
 		s.handleRemoveMember(drop, teamReq(orgAdminCtx(), "DELETE", "/api/teams/t1/members/"+racerID, "", "t1", racerID))
 		if drop.Code != http.StatusNoContent {
 			t.Fatalf("removing the orphan grant: code=%d body=%s, want 204", drop.Code, drop.Body.String())
@@ -2431,7 +2430,7 @@ func TestTeamMembers_theSweepOfARemovedGrantSelectsAfterTheDelete(t *testing.T) 
 		// Read from the store the gate wraps, so this read is none of the
 		// listings the gate counts.
 		requireWindowPremise(ctx, t, real, racerID, "t1")
-		mint := httptest.NewRecorder()
+		mint := newErrorRecorder()
 		s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
 			`{"email":"racer@example.com","role":"config_editor"}`, "t1", ""))
 		windowCode = mint.Code
@@ -2444,7 +2443,7 @@ func TestTeamMembers_theSweepOfARemovedGrantSelectsAfterTheDelete(t *testing.T) 
 		t.Logf("the mint issued right after the sweep's own listing: code=%d body=%s", mint.Code, mint.Body.String())
 	}
 	s.authSvc.SetStoreForTest(gate)
-	drop := httptest.NewRecorder()
+	drop := newErrorRecorder()
 	s.handleRemoveMember(drop, teamReq(orgAdminCtx(), "DELETE", "/api/teams/t1/members/"+racerID, "", "t1", racerID))
 	s.authSvc.SetStoreForTest(real)
 
@@ -2544,16 +2543,16 @@ func TestTeamMembers_aStandingUnreadableAfterTheGrantWentNamesTheTeamListing(t *
 
 	gate := &standingReadFailGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1", armed: true}
 	s.authSvc.SetStoreForTest(gate)
-	drop := httptest.NewRecorder()
+	drop := newErrorRecorder()
 	s.handleRemoveMember(drop, teamReq(teamAdminCtx(), "DELETE", "/api/teams/t1/members/"+racerID, "", "t1", racerID))
 	gate.arm(false)
 	s.authSvc.SetStoreForTest(real)
 
 	if drop.Code != http.StatusInternalServerError {
 		t.Fatalf("a removal whose sweep could not read the org membership: code=%d body=%s, want 500 — a selection that could not be made is not one that found nothing",
-			drop.Code, drop.Body.String())
+			drop.Code, drop.Diagnostic(t))
 	}
-	body := drop.Body.String()
+	body := drop.Diagnostic(t)
 	for _, want := range []string{
 		"reading their org membership in o1 failed",
 		"connection reset by peer",
@@ -2568,12 +2567,12 @@ func TestTeamMembers_aStandingUnreadableAfterTheGrantWentNamesTheTeamListing(t *
 		t.Errorf("the 500 sends its caller to the ORG listing while the row is in the team: %s", body)
 	}
 	// The listing it names, read by the caller it answered, carrying the row.
-	lw := httptest.NewRecorder()
+	lw := newErrorRecorder()
 	s.handleListInvitations(lw, teamReq(teamAdminCtx(), "GET", "/api/teams/t1/invitations", "", "t1", ""))
-	if lw.Code != http.StatusOK || !strings.Contains(lw.Body.String(), invID) {
-		t.Errorf("the listing the body names answers that caller %d without the row: %s", lw.Code, lw.Body.String())
+	if lw.Code != http.StatusOK || !strings.Contains(lw.Diagnostic(t), invID) {
+		t.Errorf("the listing the body names answers that caller %d without the row: %s", lw.Code, lw.Diagnostic(t))
 	}
-	ow := httptest.NewRecorder()
+	ow := newErrorRecorder()
 	s.handleListOrgInvitations(ow, teamReq(teamAdminCtx(), "GET", "/api/orgs/o1/invitations", "", "o1", ""))
 	if ow.Code != http.StatusForbidden {
 		t.Errorf("the org listing answers this caller %d — then the two listings are interchangeable here and this witness measures nothing", ow.Code)
@@ -2624,15 +2623,15 @@ func TestTeamMembers_aFailedSweepOfARemovedGrantSaysSoAndFinishesOnTheReissue(t 
 
 	gate := &invitationListingFailGate{Store: real, teamID: "t1", armed: true}
 	s.authSvc.SetStoreForTest(gate)
-	drop := httptest.NewRecorder()
+	drop := newErrorRecorder()
 	s.handleRemoveMember(drop, teamReq(orgAdminCtx(), "DELETE", "/api/teams/t1/members/"+racerID, "", "t1", racerID))
 	gate.arm(false)
 
 	if drop.Code != http.StatusInternalServerError {
 		t.Fatalf("a removal whose invitation sweep failed: code=%d body=%s, want 500 — a row kept on the grant just revoked may stand",
-			drop.Code, drop.Body.String())
+			drop.Code, drop.Diagnostic(t))
 	}
-	body := drop.Body.String()
+	body := drop.Diagnostic(t)
 	for _, want := range []string{
 		"sweeping the pending invitations they addressed to their own address here failed",
 		"no reachable servers",
@@ -2650,10 +2649,10 @@ func TestTeamMembers_aFailedSweepOfARemovedGrantSaysSoAndFinishesOnTheReissue(t 
 
 	// The repair the body names, on a store that answers again.
 	s.authSvc.SetStoreForTest(real)
-	again := httptest.NewRecorder()
+	again := newErrorRecorder()
 	s.handleRemoveMember(again, teamReq(orgAdminCtx(), "DELETE", "/api/teams/t1/members/"+racerID, "", "t1", racerID))
 	if again.Code != http.StatusNoContent {
-		t.Fatalf("the re-issued removal: code=%d body=%s, want 204", again.Code, again.Body.String())
+		t.Fatalf("the re-issued removal: code=%d body=%s, want 204", again.Code, again.Diagnostic(t))
 	}
 	if _, err := real.GetInvitation(ctx, invID); !errors.Is(err, identity.ErrNotFound) {
 		t.Errorf("the re-issue did not take the row: %v", err)
@@ -2713,7 +2712,7 @@ func TestTeamMembers_aCompensationWhoseSweepFailedNamesTheRowItCouldNotTake(t *t
 	}
 
 	s.authSvc.SetStoreForTest(&grantUnwoundSweepFailGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"})
-	patch := httptest.NewRecorder()
+	patch := newErrorRecorder()
 	s.handleUpdateMember(patch, teamReq(orgAdminCtx(), "PATCH",
 		"/api/teams/t1/members/"+racerID, `{"role":"member"}`, "t1", racerID))
 	s.authSvc.SetStoreForTest(real)
@@ -2759,7 +2758,7 @@ func TestTeamMembers_aGrantRemovedInATeamWithNoParentOrgKeepsTheRow(t *testing.T
 	selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: racerID})
 	invID, token := mintInvitationAs(t, s, selfCtx, "tfree", "racer@example.com", identity.RoleConfigEditor)
 
-	drop := httptest.NewRecorder()
+	drop := newErrorRecorder()
 	s.handleRemoveMember(drop, teamReq(selfCtx, "DELETE", "/api/teams/tfree/members/"+racerID, "", "tfree", racerID))
 	if drop.Code != http.StatusNoContent {
 		t.Fatalf("removing a grant in a team with no parent org: code=%d body=%s, want 204", drop.Code, drop.Body.String())
@@ -2797,7 +2796,7 @@ func TestTeamMembers_aDanglingGrantOfADeletedTeamIsClearedWithoutASweep(t *testi
 		t.Fatal(err)
 	}
 
-	drop := httptest.NewRecorder()
+	drop := newErrorRecorder()
 	s.handleRemoveMember(drop, teamReq(selfCtx, "DELETE", "/api/teams/t2/members/"+racerID, "", "t2", racerID))
 	if drop.Code != http.StatusNoContent {
 		t.Fatalf("clearing the dangling grant of a deleted team: code=%d body=%s, want 204 — a team no accept can resolve is exempt, where a read that failed is not",
@@ -2863,14 +2862,14 @@ func TestOrgOffboarding_aLastDeleteAndALastSweepThatBothFailNameBothResidues(t *
 	real := s.authStore()
 	s.authSvc.SetStoreForTest(&lastDeleteAndLastSweepFailGate{Store: real, userID: racerID, orgID: "o1", teamID: "t1"})
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	s.authSvc.SetStoreForTest(real)
 
 	if off.Code != http.StatusInternalServerError {
-		t.Fatalf("a removal whose last delete and last sweep both failed: code=%d body=%s, want 500", off.Code, off.Body.String())
+		t.Fatalf("a removal whose last delete and last sweep both failed: code=%d body=%s, want 500", off.Code, off.Diagnostic(t))
 	}
-	body := off.Body.String()
+	body := off.Diagnostic(t)
 	for _, want := range []string{
 		"the team grants of racer in org o1 are revoked",
 		"re-deleting their org membership failed",
@@ -3169,7 +3168,7 @@ func TestOrgOffboarding_aGrantWrittenBackAfterTheLastSweepIsSweptWhenItGoes(t *t
 		keptID, token = mintInvitationAs(t, s, selfCtx, "t1", "racer@example.com", identity.RoleConfigEditor)
 	}
 	s.authSvc.SetStoreForTest(gate)
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	s.authSvc.SetStoreForTest(real)
 
@@ -3191,7 +3190,7 @@ func TestOrgOffboarding_aGrantWrittenBackAfterTheLastSweepIsSweptWhenItGoes(t *t
 	}
 	// The cleanup the drift report asks for, which is also what withdraws
 	// the premise the row was kept on.
-	drop := httptest.NewRecorder()
+	drop := newErrorRecorder()
 	s.handleRemoveMember(drop, teamReq(orgAdminCtx(), "DELETE", "/api/teams/t1/members/"+racerID, "", "t1", racerID))
 	if drop.Code != http.StatusNoContent {
 		t.Fatalf("removing the grant written back: code=%d body=%s, want 204", drop.Code, drop.Body.String())
@@ -3256,14 +3255,14 @@ func TestOrgOffboarding_aSecondPassAndALastSweepThatBothFailNameBothCauses(t *te
 	real := s.authStore()
 	s.authSvc.SetStoreForTest(&secondPassAndLastSweepFailGate{Store: real, userID: racerID, teamID: "t1"})
 
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	s.authSvc.SetStoreForTest(real)
 
 	if off.Code != http.StatusInternalServerError {
-		t.Fatalf("a removal whose second pass and last sweep both failed: code=%d body=%s, want 500", off.Code, off.Body.String())
+		t.Fatalf("a removal whose second pass and last sweep both failed: code=%d body=%s, want 500", off.Code, off.Diagnostic(t))
 	}
-	body := off.Body.String()
+	body := off.Diagnostic(t)
 	for _, want := range []string{
 		"re-sweeping their team access failed",
 		"no reachable servers",
@@ -3356,7 +3355,7 @@ func TestOrgOffboarding_theLastInvitationSweepRunsOnABudgetOfItsOwn(t *testing.T
 		}
 	}
 	s.authSvc.SetStoreForTest(gate)
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	s.authSvc.SetStoreForTest(real)
 
@@ -3400,7 +3399,7 @@ func TestOrgOffboarding_aRowKeptOnAResurrectedMembershipStandsOrFallsWithIt(t *t
 		keptID, _ = mintInvitationAs(t, s, selfCtx, "t1", "racer@example.com", identity.RoleConfigEditor)
 	}
 	s.authSvc.SetStoreForTest(gate)
-	off := httptest.NewRecorder()
+	off := newErrorRecorder()
 	s.handleRemoveOrgMember(off, teamReq(orgAdminCtx(), "DELETE", "/api/orgs/o1/members/"+racerID, "", "o1", racerID))
 	s.authSvc.SetStoreForTest(real)
 
@@ -3502,7 +3501,7 @@ func ssoOrphanGrantHolder(t *testing.T, s *Server, addressedTo string, keepOrgRo
 	// makes its holder a minter, and a role change preserves the row's
 	// SOURCE (grantMembership, handleUpdateMember) — so the row the reconcile
 	// revokes is the one this holder minted on.
-	patched := httptest.NewRecorder()
+	patched := newErrorRecorder()
 	s.handleUpdateMember(patched, teamReq(orgAdminCtx(), "PATCH", "/api/teams/t1/members/"+uid, `{"role":"admin"}`, "t1", uid))
 	if patched.Code != http.StatusOK {
 		t.Fatalf("raising the github_sso grant to admin: code=%d body=%s", patched.Code, patched.Body.String())
@@ -3592,7 +3591,7 @@ func TestTeamMembers_anSSORevokedGrantTakesTheRowsMintedAboveWhatRemains(t *test
 	// The allow-list grants member; the org admin raises the grant to owner
 	// (the row's SOURCE is preserved), which is what makes its holder a
 	// minter above the role their standing mirrors.
-	patched := httptest.NewRecorder()
+	patched := newErrorRecorder()
 	s.handleUpdateMember(patched, teamReq(orgAdminCtx(), "PATCH", "/api/teams/t1/members/"+uid, `{"role":"owner"}`, "t1", uid))
 	if patched.Code != http.StatusOK {
 		t.Fatalf("raising the github_sso grant to owner: code=%d body=%s", patched.Code, patched.Body.String())

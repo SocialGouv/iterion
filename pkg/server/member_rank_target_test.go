@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -75,27 +74,27 @@ func teamGrantRole(t *testing.T, s *Server, userID, teamID string) (identity.Rol
 	return mb.Role, true
 }
 
-func removeOrgMemberAs(s *Server, ctx context.Context, orgID, memberID string) *httptest.ResponseRecorder {
-	w := httptest.NewRecorder()
+func removeOrgMemberAs(s *Server, ctx context.Context, orgID, memberID string) *errorRecorder {
+	w := newErrorRecorder()
 	s.handleRemoveOrgMember(w, teamReq(ctx, "DELETE", "/api/orgs/"+orgID+"/members/"+memberID, "", orgID, memberID))
 	return w
 }
 
-func patchTeamRoleAs(s *Server, ctx context.Context, teamID, memberID string, role identity.Role) *httptest.ResponseRecorder {
-	w := httptest.NewRecorder()
+func patchTeamRoleAs(s *Server, ctx context.Context, teamID, memberID string, role identity.Role) *errorRecorder {
+	w := newErrorRecorder()
 	s.handleUpdateMember(w, teamReq(ctx, "PATCH", "/api/teams/"+teamID+"/members/"+memberID,
 		`{"role":"`+string(role)+`"}`, teamID, memberID))
 	return w
 }
 
-func removeTeamMemberAs(s *Server, ctx context.Context, teamID, memberID string) *httptest.ResponseRecorder {
-	w := httptest.NewRecorder()
+func removeTeamMemberAs(s *Server, ctx context.Context, teamID, memberID string) *errorRecorder {
+	w := newErrorRecorder()
 	s.handleRemoveMember(w, teamReq(ctx, "DELETE", "/api/teams/"+teamID+"/members/"+memberID, "", teamID, memberID))
 	return w
 }
 
-func putTeamMemberAs(s *Server, ctx context.Context, teamID, memberID string, role identity.Role) *httptest.ResponseRecorder {
-	w := httptest.NewRecorder()
+func putTeamMemberAs(s *Server, ctx context.Context, teamID, memberID string, role identity.Role) *errorRecorder {
+	w := newErrorRecorder()
 	s.handlePutTeamMember(w, teamReq(ctx, "PUT", "/api/teams/"+teamID+"/members/"+memberID,
 		`{"role":"`+string(role)+`"}`, teamID, memberID))
 	return w
@@ -118,12 +117,12 @@ func wantBodyNames(t *testing.T, body string, clauses ...string) {
 func TestMemberRank_anOrgAdminDoesNotReachAnOrgOwnersRow(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		act  func(*Server) *httptest.ResponseRecorder
+		act  func(*Server) *errorRecorder
 		want []string
 	}{
 		{
 			name: "demoting them",
-			act: func(s *Server) *httptest.ResponseRecorder {
+			act: func(s *Server) *errorRecorder {
 				return patchOrgRole(s, orgAdminCtx(), "o1", "orgowner", identity.OrgRoleMember)
 			},
 			want: []string{
@@ -135,7 +134,7 @@ func TestMemberRank_anOrgAdminDoesNotReachAnOrgOwnersRow(t *testing.T) {
 		},
 		{
 			name: "removing them",
-			act: func(s *Server) *httptest.ResponseRecorder {
+			act: func(s *Server) *errorRecorder {
 				return removeOrgMemberAs(s, orgAdminCtx(), "o1", "orgowner")
 			},
 			want: []string{
@@ -145,7 +144,7 @@ func TestMemberRank_anOrgAdminDoesNotReachAnOrgOwnersRow(t *testing.T) {
 		},
 		{
 			name: "promoting them",
-			act: func(s *Server) *httptest.ResponseRecorder {
+			act: func(s *Server) *errorRecorder {
 				return patchOrgRole(s, orgAdminCtx(), "o1", "orgowner", identity.OrgRoleAdmin)
 			},
 			want: []string{"the org role of orgowner in this org is owner"},
@@ -246,24 +245,24 @@ func TestMemberRank_theOrgRosterWritesThatStillGoThrough(t *testing.T) {
 func TestMemberRank_aTeamAdminDoesNotReachTheGrantOfAnOrgAdmin(t *testing.T) {
 	for _, c := range []struct {
 		name  string
-		act   func(*Server, context.Context) *httptest.ResponseRecorder
+		act   func(*Server, context.Context) *errorRecorder
 		after func(*testing.T, *Server)
 	}{
-		{"demoting it", func(s *Server, ctx context.Context) *httptest.ResponseRecorder {
+		{"demoting it", func(s *Server, ctx context.Context) *errorRecorder {
 			return patchTeamRoleAs(s, ctx, "t1", "orgadmin", identity.RoleViewer)
 		}, func(t *testing.T, s *Server) {
 			if role, ok := teamGrantRole(t, s, "orgadmin", "t1"); !ok || role != identity.RoleViewer {
 				t.Errorf("the remedy the refusal names did not write the grant: role=%q present=%v", role, ok)
 			}
 		}},
-		{"removing it", func(s *Server, ctx context.Context) *httptest.ResponseRecorder {
+		{"removing it", func(s *Server, ctx context.Context) *errorRecorder {
 			return removeTeamMemberAs(s, ctx, "t1", "orgadmin")
 		}, func(t *testing.T, s *Server) {
 			if role, ok := teamGrantRole(t, s, "orgadmin", "t1"); ok {
 				t.Errorf("the remedy the refusal names left the grant at %q", role)
 			}
 		}},
-		{"placing it", func(s *Server, ctx context.Context) *httptest.ResponseRecorder {
+		{"placing it", func(s *Server, ctx context.Context) *errorRecorder {
 			return putTeamMemberAs(s, ctx, "t1", "orgadmin", identity.RoleViewer)
 		}, func(t *testing.T, s *Server) {
 			if role, ok := teamGrantRole(t, s, "orgadmin", "t1"); !ok || role != identity.RoleViewer {
@@ -309,15 +308,15 @@ func TestMemberRank_aTeamAdminDoesNotReachTheGrantOfAnOrgAdmin(t *testing.T) {
 func TestMemberRank_aTeamAdminDoesNotReachATeamOwnersGrant(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		act  func(*Server) *httptest.ResponseRecorder
+		act  func(*Server) *errorRecorder
 	}{
-		{"demoting it", func(s *Server) *httptest.ResponseRecorder {
+		{"demoting it", func(s *Server) *errorRecorder {
 			return patchTeamRoleAs(s, racerCtx(), "t1", teamOwnerID, identity.RoleViewer)
 		}},
-		{"removing it", func(s *Server) *httptest.ResponseRecorder {
+		{"removing it", func(s *Server) *errorRecorder {
 			return removeTeamMemberAs(s, racerCtx(), "t1", teamOwnerID)
 		}},
-		{"placing it", func(s *Server) *httptest.ResponseRecorder {
+		{"placing it", func(s *Server) *errorRecorder {
 			return putTeamMemberAs(s, racerCtx(), "t1", teamOwnerID, identity.RoleViewer)
 		}},
 	} {
@@ -552,9 +551,9 @@ func TestMemberRank_aRankThatCannotBeReadRefusesTheWrite(t *testing.T) {
 
 	w := removeOrgMemberAs(s, orgAdminCtx(), "o1", "orgowner")
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("a removal whose target's rank could not be read: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("a removal whose target's rank could not be read: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	wantBodyNames(t, w.Body.String(), "resolve the org membership of orgowner", "org row unavailable")
+	wantBodyNames(t, w.Diagnostic(t), "resolve the org membership of orgowner", "org row unavailable")
 	if om, err := real.GetOrgMembership(context.Background(), "orgowner", "o1"); err != nil || om.Role != identity.OrgRoleOwner {
 		t.Errorf("the refused removal moved the row: %+v (%v)", om, err)
 	}
@@ -645,12 +644,12 @@ func wantBodyLacks(t *testing.T, body string, clauses ...string) {
 func TestMemberRank_aTeamAdminWritesNoRankAboveTheirOwnGrant(t *testing.T) {
 	for _, c := range []struct {
 		name    string
-		promote func(*Server) *httptest.ResponseRecorder
+		promote func(*Server) *errorRecorder
 	}{
-		{"through the patch", func(s *Server) *httptest.ResponseRecorder {
+		{"through the patch", func(s *Server) *errorRecorder {
 			return patchTeamRoleAs(s, racerCtx(), "t1", racerID, identity.RoleOwner)
 		}},
-		{"through the put", func(s *Server) *httptest.ResponseRecorder {
+		{"through the put", func(s *Server) *errorRecorder {
 			return putTeamMemberAs(s, racerCtx(), "t1", racerID, identity.RoleOwner)
 		}},
 	} {
@@ -980,8 +979,8 @@ func seedRacerInSoloAsAdmin(t *testing.T, s *Server) context.Context {
 	return racerCtx()
 }
 
-func mintTeamInvitationAs(s *Server, ctx context.Context, teamID, email string, role identity.Role) *httptest.ResponseRecorder {
-	w := httptest.NewRecorder()
+func mintTeamInvitationAs(s *Server, ctx context.Context, teamID, email string, role identity.Role) *errorRecorder {
+	w := newErrorRecorder()
 	s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/"+teamID+"/invitations",
 		`{"email":"`+email+`","role":"`+string(role)+`"}`, teamID, ""))
 	return w
@@ -1115,9 +1114,9 @@ func TestTeamInvitations_aTeamCapThatCannotBeConfirmedTakesTheInvitationBack(t *
 
 	w := mintTeamInvitationAs(s, racerCtx(), "solo", "newcomer@example.com", identity.RoleOwner)
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("a mint whose creator's grant could not be re-read: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("a mint whose creator's grant could not be re-read: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	wantBodyNames(t, w.Body.String(),
+	wantBodyNames(t, w.Diagnostic(t),
 		"confirming your own grant in the team this invitation joins after it was minted failed",
 		"pool saturated",
 		"a cap that cannot be confirmed is not one",
@@ -1150,9 +1149,9 @@ func TestMemberRank_aRemovalWhoseTargetGrantCannotBeReadRefuses(t *testing.T) {
 
 	w := removeTeamMemberAs(s, racerCtx(), "t1", teamOwnerID)
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("a removal whose target grant could not be read: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("a removal whose target grant could not be read: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	wantBodyNames(t, w.Body.String(), "resolve the grant of teamowner in team t1", "pool saturated")
+	wantBodyNames(t, w.Diagnostic(t), "resolve the grant of teamowner in team t1", "pool saturated")
 	s.authSvc.SetStoreForTest(real)
 	if role, ok := teamGrantRole(t, s, teamOwnerID, "t1"); !ok || role != identity.RoleOwner {
 		t.Errorf("the refused removal took the grant anyway: role=%q present=%v", role, ok)
@@ -1406,10 +1405,10 @@ func TestTeamInvitations_aCreatorsGrantThatCannotBeReadRefusesTheMint(t *testing
 
 	w := mintTeamInvitationAs(s, racerCtx(), "solo", "newcomer@example.com", identity.RoleAdmin)
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("a mint whose creator's grant could not be read: code=%d body=%s, want 500", w.Code, w.Body.String())
+		t.Fatalf("a mint whose creator's grant could not be read: code=%d body=%s, want 500", w.Code, w.Diagnostic(t))
 	}
-	wantBodyNames(t, w.Body.String(), "resolve your own grant in team solo", "pool saturated")
-	wantBodyLacks(t, w.Body.String(), "your own is none")
+	wantBodyNames(t, w.Diagnostic(t), "resolve your own grant in team solo", "pool saturated")
+	wantBodyLacks(t, w.Diagnostic(t), "your own is none")
 	s.authSvc.SetStoreForTest(real)
 	invs, err := real.ListInvitationsByTeam(ctx, "solo")
 	if err != nil {
@@ -1607,7 +1606,7 @@ func TestOrgInvitations_aGrantThatDropsAfterTheMintTakesTheInvitationBack(t *tes
 	}
 	s.authSvc.SetStoreForTest(gate)
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleCreateOrgInvitation(w, orgReq(racerCtx(), "POST", "/api/orgs/o1/invitations",
 		`{"email":"newcomer@example.com","role":"member","team_id":"t1"}`, "o1"))
 	s.authSvc.SetStoreForTest(real)
@@ -1869,7 +1868,7 @@ func TestTeamInvitations_theGrantCompensationTakesTheRowsMintedAboveWhatCoversTh
 	s.authSvc.SetStoreForTest(gate)
 	defer s.authSvc.SetStoreForTest(real)
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.confirmOrgMembershipForGrant(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/"+racerID, "", "t1", racerID),
 		"o1", "t1", racerID, "placement", grantWriteAcked)
 	if w.Code != http.StatusConflict {

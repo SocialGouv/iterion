@@ -40,8 +40,8 @@ func TestFenceHTTPLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := armTestFence(t, s)
-	req := func() *httptest.ResponseRecorder {
-		w := httptest.NewRecorder()
+	req := func() *errorRecorder {
+		w := newServerErrorRecorder(s)
 		s.handleLaunchRun(w, httptest.NewRequest("POST", "/api/runs", strings.NewReader(string(body))).WithContext(ctx))
 		return w
 	}
@@ -50,7 +50,7 @@ func TestFenceHTTPLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := req()
-	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), denyMaintenanceFence) || !strings.Contains(w.Body.String(), "schema rollout") || !strings.Contains(w.Body.String(), rec.UpdatedAt.Format(time.RFC3339Nano)) {
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), denyMaintenanceFence) || !strings.Contains(w.Diagnostic(t), "schema rollout") || !strings.Contains(w.Diagnostic(t), rec.UpdatedAt.Format(time.RFC3339Nano)) {
 		t.Fatalf("armed: %d %s", w.Code, w.Body.String())
 	}
 	if meteredRuns(t, counter) != 0 {

@@ -304,7 +304,7 @@ func (h *Hub) broadcastBytes(data []byte) {
 func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	select {
 	case <-h.done:
-		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+		httpError(w, http.StatusServiceUnavailable, "server shutting down")
 		return
 	default:
 	}

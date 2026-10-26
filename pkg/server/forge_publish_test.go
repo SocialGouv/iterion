@@ -182,13 +182,13 @@ func TestForgePublishReview_ReviewFailureStillReportsInlineDiagnostics(t *testin
 	fake.err = errors.New("gitlab: create merge request summary note: HTTP 403")
 	fake.res = forge.ReviewResult{Diagnostics: []string{`inline comment "a.go":3: HTTP 400 {"message":{"line_code":["can't be blank"]}}`}}
 
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleForgePublishReview(w, publishReq("tok1", validPublishBody))
 	if w.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("status = %d, body = %s", w.Code, w.Diagnostic(t))
 	}
 	var resp publishReviewResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal([]byte(w.Diagnostic(t)), &resp); err != nil {
 		t.Fatal(err)
 	}
 	if resp.Published || len(resp.InlineDiagnostics) != 1 || resp.InlineDiagnostics[0] != fake.res.Diagnostics[0] {
@@ -199,7 +199,7 @@ func TestForgePublishReview_ReviewFailureStillReportsInlineDiagnostics(t *testin
 	}
 	// A caller keeping only the head of the body (review-pr keeps 500
 	// bytes) must still read the reason: the diagnostics come LAST.
-	if body := w.Body.String(); strings.Index(body, `"skipped_reason"`) > strings.Index(body, `"inline_diagnostics"`) {
+	if body := w.Diagnostic(t); strings.Index(body, `"skipped_reason"`) > strings.Index(body, `"inline_diagnostics"`) {
 		t.Fatalf("inline_diagnostics must follow skipped_reason in the body: %s", body)
 	}
 }
@@ -322,13 +322,13 @@ func TestForgePublishReview_ForgeErrorIs502(t *testing.T) {
 	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
 	fake.err = forge.StatusErr("github", "create pull review", 401)
 	fake.res = forge.ReviewResult{}
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleForgePublishReview(w, publishReq("tok1", validPublishBody))
 	if w.Code != http.StatusBadGateway {
-		t.Fatalf("forge failure must surface as 502, got %d (body: %s)", w.Code, w.Body.String())
+		t.Fatalf("forge failure must surface as 502, got %d (body: %s)", w.Code, w.Diagnostic(t))
 	}
-	if !strings.Contains(w.Body.String(), "create pull review") {
-		t.Fatalf("error body must carry the forge failure: %s", w.Body.String())
+	if !strings.Contains(w.Diagnostic(t), "create pull review") {
+		t.Fatalf("error body must carry the forge failure: %s", w.Diagnostic(t))
 	}
 }
 
@@ -499,14 +499,14 @@ func TestForgePublishReview_GatePostedEvenWhenTheReviewFails(t *testing.T) {
   "summary": "review summary",
   "gate": {"enabled": true, "context": "revi/review", "blocking_count": 0, "threshold": "high", "total_findings": 2}
 }`
-	w := httptest.NewRecorder()
+	w := newErrorRecorder()
 	s.handleForgePublishReview(w, publishReq("tok1", body))
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 — the publish failure must still be reported", w.Code)
 	}
 	var res publishReviewResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+	if err := json.Unmarshal([]byte(w.Diagnostic(t)), &res); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if res.Published {

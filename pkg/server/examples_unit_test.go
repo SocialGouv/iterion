@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -193,14 +194,18 @@ func writeExampleUnitFixture(t *testing.T, dir string) string {
 // exampleServer is a local server on workDir whose Home reads its bots
 // from examplesDir.
 func exampleServer(t *testing.T, workDir, examplesDir string) *httptest.Server {
+	return exampleServerLogged(t, workDir, examplesDir, os.Stderr)
+}
+
+func exampleServerLogged(t *testing.T, workDir, examplesDir string, logs io.Writer) *httptest.Server {
 	t.Helper()
 	srv := New(Config{
 		WorkDir:                 workDir,
 		StoreDir:                filepath.Join(workDir, ".iterion"),
 		ExamplesDir:             examplesDir,
 		SkipProjectRegistration: true,
-	}, iterlog.New(iterlog.LevelError, os.Stderr))
-	hs := httptest.NewServer(srv.mux)
+	}, iterlog.New(iterlog.LevelError, logs))
+	hs := httptest.NewServer(errtrack.HTTPErrorMiddleware(srv.logger)(srv.mux))
 	t.Cleanup(hs.Close)
 	return hs
 }
@@ -584,12 +589,13 @@ func TestLoadExampleNamesAMissingIncludeWithoutTheHostRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(examples, "x", unit.FragmentDir, "nodes.bot"), []byte("agent a:\n  model: \"m\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	hs := exampleServer(t, workDir, examples)
+	logs := &lockedBuffer{}
+	hs := exampleServerLogged(t, workDir, examples, logs)
 	code, body := getExampleJSON(t, hs.URL+"/api/examples/x/main.bot", nil)
 	if code != http.StatusInternalServerError {
 		t.Fatalf("status %d, want the 500 of the include that resolves to nothing: %s", code, body)
 	}
-	if !strings.Contains(string(body), "nope.md") {
+	if !strings.Contains(correlatedFailureLog(t, body, "", logs.String()), "nope.md") {
 		t.Errorf("the 500 does not name the missing include: %s", body)
 	}
 	if strings.Contains(string(body), examples) {

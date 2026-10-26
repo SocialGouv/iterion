@@ -180,7 +180,7 @@ func (s *Server) ListenAndServe() error {
 			case "/readyz":
 				s.handleReadyz(w, r)
 			default:
-				http.Error(w, "server generation superseded", http.StatusServiceUnavailable)
+				s.httpErrorCode(w, r, http.StatusServiceUnavailable, "server_generation_superseded", "server generation superseded")
 			}
 		})
 		return s.server.Serve(ln)

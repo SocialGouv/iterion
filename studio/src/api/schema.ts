@@ -6924,6 +6924,7 @@ export interface components {
             org_slug: string;
             personal?: boolean;
             teams: components["schemas"]["MembershipView"][];
+            unavailable?: boolean;
         };
         OutputCorrectionEpisode: {
             attempts?: number;

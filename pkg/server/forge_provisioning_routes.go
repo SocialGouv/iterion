@@ -556,8 +556,8 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 			// with it, since a 500 whose cause is a refused URL is still that
 			// refusal for whatever the studio renders for it.
 			writeJSONStatus(w, http.StatusInternalServerError, map[string]any{
-				"error":  "hook_url_refused",
-				"detail": restoreFailed.Error() + " " + hookRefusedDetail(hookRefused),
+				"error_code": "hook_url_refused",
+				"error":      restoreFailed.Error() + " " + hookRefusedDetail(hookRefused),
 			})
 			return
 		}
