@@ -35,15 +35,16 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install the Playwright chromium
-        run: corepack enable && cd studio && npx playwright install --with-deps chromium
-
       - name: Build the iterion binary with the studio SPA embedded
         # Mirror of test-e2e's build: the vite bundle IS the served SPA.
         run: |
           corepack enable
           cd studio
           pnpm install --frozen-lockfile --prefer-offline
+          # The browsers MUST come from the studio's own pinned playwright:
+          # an npx-latest install lays a different chromium build than the
+          # suite's @playwright/test expects and every spec dies on launch.
+          pnpm exec playwright install --with-deps chromium
           pnpm exec vite build
           rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
           cp -r dist/* ../pkg/server/static/
