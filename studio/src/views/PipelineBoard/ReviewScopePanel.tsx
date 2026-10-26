@@ -35,13 +35,6 @@ const STATUS_LABEL: Record<string, string> = {
   R: "renamed",
 };
 
-function statusTone(status: string): string {
-  if (status.startsWith("A")) return "text-success-text";
-  if (status.startsWith("D")) return "text-danger-text";
-  if (status.startsWith("R")) return "text-accent-text";
-  return "text-fg-subtle";
-}
-
 function isMediaKind(kind: ProducedFileKind): boolean {
   return kind === "image" || kind === "audio" || kind === "video";
 }
@@ -210,14 +203,22 @@ export function ReviewScopePanel({ runId, live, pauseKey }: Props) {
                         // streams the LIVE file, which does exist.
                         disabled={!!f.uncaptured && !media}
                         onClick={() => openFile(f)}
-                        className="flex w-full min-w-0 items-baseline gap-2 rounded px-1 py-0.5 text-left text-caption enabled:hover:bg-surface-hover disabled:cursor-default"
+                        className="flex w-full min-w-0 items-baseline gap-2 rounded px-1 py-0.5 text-left text-caption enabled:hover:bg-surface-2 disabled:cursor-default"
                         title={
                           media
                             ? `Play ${producedKindLabel(kind).toLowerCase()}: ${f.path}`
                             : `View the diff of ${f.path}`
                         }
                       >
-                        <span className={`w-16 shrink-0 ${statusTone(f.status)}`}>
+                        <span className={`w-16 shrink-0 ${
+                          f.status.startsWith("A")
+                            ? "text-success"
+                            : f.status.startsWith("D")
+                              ? "text-danger"
+                              : f.status.startsWith("R")
+                                ? "text-accent-text"
+                                : "text-fg-subtle"
+                  }`}>
                           {STATUS_LABEL[f.status] ?? f.status}
                         </span>
                         {media ? (

@@ -209,7 +209,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
             console to inspect it.
           </InlineBanner>
         ) : staged[reviewKey] ? (
-          <div className="flex items-center gap-2 rounded border border-border-subtle bg-surface px-2 py-1">
+          <div className="flex items-center gap-2 rounded border border-border-subtle bg-surface-1 px-2 py-1">
             <span className="text-micro text-fg-muted">Response prepared for this review.</span>
             <Button variant="secondary" size="sm" disabled={sending} onClick={unstage}>
               Change response

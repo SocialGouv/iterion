@@ -430,7 +430,7 @@ export function EditScheduleDialog({
       <div className="flex flex-col gap-3 px-4 py-3">
         {alwaysOn ? (
           <div className="flex flex-col gap-3">
-            <div className="rounded-md bg-surface-sunken px-3 py-2 text-xs text-fg-subtle">
+            <div className="rounded-md bg-surface-1 px-3 py-2 text-xs text-fg-subtle">
               Always-on schedule — relaunches on an interval with at most one live
               run at a time.
             </div>
