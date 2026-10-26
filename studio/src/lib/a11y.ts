@@ -11,13 +11,21 @@ import type { KeyboardEvent } from "react";
 // must NOT carry one — its name is its visible content, which contains
 // the visible label by construction. Only a row with no usable visible
 // text passes a label.
-export function clickableRowProps(onActivate: () => void, label?: string) {
+export function clickableRowProps(
+  onActivate: () => void,
+  label?: string,
+  opts?: { disabled?: boolean },
+) {
+  const { disabled } = opts ?? {};
   return {
     role: "button" as const,
-    tabIndex: 0,
+    // A disabled control leaves the tab order: nothing on it activates,
+    // and focusable-but-inert is a keyboard trap (RGAA 7.1).
+    tabIndex: disabled ? -1 : 0,
     ...(label ? { "aria-label": label } : {}),
-    onClick: onActivate,
+    onClick: disabled ? undefined : onActivate,
     onKeyDown: (e: KeyboardEvent<HTMLElement>) => {
+      if (disabled) return;
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         onActivate();

@@ -50,4 +50,26 @@ describe("GateFileInput", () => {
     expect(zone.hasAttribute("data-disabled")).toBe(false);
     expect(zone.className).toMatch(/(^|\s)pointer-events-none(\s|$)/);
   });
+
+  it("answers no key while disabled — the picker never opens (RGAA 7.1)", () => {
+    render(<GateFileInput label="soundtrack" value={null} onChange={vi.fn()} disabled />);
+    const input = screen.getByLabelText("Upload soundtrack", { selector: "input" });
+    const spy = vi.spyOn(input, "click");
+    const zone = screen.getByRole("button", { name: "Upload soundtrack" });
+    expect(zone.getAttribute("tabindex")).toBe("-1");
+    fireEvent.keyDown(zone, { key: "Enter" });
+    fireEvent.keyDown(zone, { key: " " });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("answers no key while busy — an in-flight upload never reopens the picker (RGAA 7.1)", async () => {
+    render(<GateFileInput label="soundtrack" value={null} onChange={vi.fn()} />);
+    const input = screen.getByLabelText("Upload soundtrack", { selector: "input" });
+    const spy = vi.spyOn(input, "click");
+    fireEvent.change(input, { target: { files: [new File(["x"], "a.mp3", { type: "audio/mpeg" })] } });
+    const zone = screen.getByRole("button", { name: "Upload soundtrack" });
+    await waitFor(() => expect(zone.getAttribute("aria-busy")).toBe("true"));
+    fireEvent.keyDown(zone, { key: "Enter" });
+    expect(spy).not.toHaveBeenCalled();
+  });
 });

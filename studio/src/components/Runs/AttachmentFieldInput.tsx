@@ -74,7 +74,7 @@ export default function AttachmentFieldInput({
   return (
     <div className="space-y-1">
       <div
-        {...clickableRowProps(() => inputRef.current?.click(), `Upload ${field.name}`)}
+        {...clickableRowProps(() => inputRef.current?.click(), `Upload ${field.name}`, { disabled })}
         aria-invalid={Boolean(value?.error) || undefined}
         aria-busy={showProgress || undefined}
         aria-disabled={disabled || undefined}
