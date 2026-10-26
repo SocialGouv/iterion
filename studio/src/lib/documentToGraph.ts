@@ -92,6 +92,20 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   for (const c of doc.computes ?? []) nodeMap.set(c.name, { kind: "compute", decl: c });
   // Subbots render as compact nodes here; expandSubbots (lib/subbotGraph.ts)
   // replaces them with a container frame once the child document is loaded.
+  // The virtual start node inserts FIRST: the graph renders nodes in
+  // insertion order, and the entry point reads last on the canvas if it is
+  // appended after the parsed nodes (RGAA 10.3).
+  const entryWorkflow = (activeWorkflowName
+    ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
+    : doc.workflows ?? [])[0];
+  const entryNode = entryWorkflow?.entry;
+  if (entryNode) {
+    // Inserted before every other fill: the graph renders in insertion
+    // order and the entry point must read first (RGAA 10.3). The entry
+    // node itself is validated after the parse fills.
+    nodeMap.set("__start__", { kind: "start", decl: null });
+  }
+
   for (const sb of doc.subbots ?? []) nodeMap.set(sb.name, { kind: "subbot", decl: sb });
   // A named `fail <name>:` is a declared terminal: it renders like the bare
   // `fail` target but carries its declaration (code / message / resumable).
@@ -111,14 +125,6 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
     }
   }
   if (!nodeMap.has("done") && referencedNodes.has("done")) nodeMap.set("done", { kind: "done", decl: null });
-  if (!nodeMap.has("fail") && referencedNodes.has("fail")) nodeMap.set("fail", { kind: "fail", decl: null });
-
-  // Add virtual start node pointing to the workflow entry
-  const entryNode = targetWorkflows.length > 0 ? targetWorkflows[0]!.entry : undefined;
-  if (entryNode && nodeMap.has(entryNode)) {
-    nodeMap.set("__start__", { kind: "start", decl: null });
-  }
-
   // Position nodes in a grid
   const COLS = 4;
   const X_GAP = 250;

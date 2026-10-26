@@ -96,3 +96,30 @@ describe("documentHasEditableNodes", () => {
     }
   });
 });
+
+// RGAA 10.3 (#2521): the virtual __start__ node must render FIRST on the
+// canvas — the graph emits nodes in insertion order, so it has to be the
+// first key in the map, not appended after the parsed workflow.
+describe("documentToGraph — the __start__ node order", () => {
+  it("emits __start__ before every parsed node", () => {
+    const graph = documentToGraph(
+      doc({
+        subbots: [{ name: "produce_episode", source: "episode.bot", isolated: true }],
+        workflows: [
+          {
+            name: "main",
+            entry: "plan",
+            edges: [
+              { from: "plan", to: "produce_episode" },
+              { from: "produce_episode", to: "done" },
+            ],
+          } as WorkflowDecl,
+        ],
+      }),
+      undefined,
+    );
+    const names = graph.nodes.map((n) => n.id);
+    expect(names[0]).toBe("__start__");
+    expect(names.indexOf("__start__")).toBeLessThan(names.indexOf("produce_episode"));
+  });
+});
