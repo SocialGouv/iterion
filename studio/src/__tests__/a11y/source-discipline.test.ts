@@ -557,11 +557,72 @@ describe("source discipline", () => {
     const hits = jsxAncestral().flatMap((e) =>
       e.ancestors
         .filter((a) => soft.test(a))
-        .flatMap(() => e.variants.filter((v) => /\btext-fg-subtle\b/.test(v)).map((v) => hit(e, v))),
+        .flatMap(() =>
+          e.variants
+            .filter((v) => /\btext-fg-subtle\b/.test(v))
+            .map(
+              (v) =>
+                `${e.path}:${e.line}  <${e.tag}> ${v} — inherited from a -soft ancestor`,
+            ),
+        ),
     );
     if (hits.length) {
       throw new Error(
         `text-fg-subtle inherited onto a -soft tint (RGAA 3.2) — text-fg-muted or the tint's own -fg:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("links in prose distinguish themselves at rest, not by colour alone (RGAA 10.6, #2523)", () => {
+    // The seeded drain list: the colour-only census at guard-seeding time
+    // (#2523). Files here are the DRAIN WAVE's job; the audited site
+    // (PipelineBoard) is fixed and OUT of this list.
+    const allowedPrefixes = [
+      "/src/components/ChatDock/ContextChip.tsx",
+      "/src/components/ChatDock/ConversationStrip.tsx",
+      "/src/components/Home/CloudReposPanel.tsx",
+      "/src/components/Home/GettingStartedCard.tsx",
+      "/src/components/Runs/ArtifactFilesPanel.tsx",
+      "/src/components/Runs/TestRunPane.tsx",
+      "/src/components/Runs/conversation/GateInboundFile.tsx",
+      "/src/components/Runs/runHeader/DeliverablesRow.tsx",
+      "/src/components/Runs/runHeader/ResultLinksRow.tsx",
+      "/src/components/WhatsNext/PreFlightPanel.tsx",
+      "/src/components/WhatsNext/WatchPanel.tsx",
+      "/src/components/WhatsNext/whatsNextView/SessionHeader.tsx",
+      "/src/views/Board/issueModal/LastRunSection.tsx",
+      "/src/views/Board/issueModal/PullRequestsSection.tsx",
+      "/src/views/Bots/BotHome/ActionsRow.tsx",
+      "/src/views/Bots/BotHome/AutomationsCard.tsx",
+      "/src/views/Bots/BotHome/ConfigSharesCard.tsx",
+      "/src/views/Bots/BotHome/RecentRunsCard.tsx",
+      "/src/views/Bots/BotHome/SecretBindingsCard.tsx",
+      "/src/views/PipelineBoard/PipelineCardDetails.tsx",
+      "/src/views/PipelineBoard/PipelineCardPage.tsx",
+      "/src/views/PipelineBoard/PipelineColumns.tsx",
+      "/src/views/PipelineBoard/ProducedElements.tsx",
+      "/src/views/PipelineBoard/SequentialReviews.tsx",
+      "/src/views/RepoDetail/index.tsx",
+      "/src/views/Sitemap/index.tsx",
+      "/src/views/Triggers/ScheduleOutcome.tsx",
+      "/src/views/Triggers/TriggerFamiliesExplainer.tsx",
+      "/src/views/admin/users/UserDrawer.tsx",
+      "/src/views/integrations/BindBotWizard.tsx",
+      "/src/views/orgs/OrgPage.tsx",
+      "/src/views/teams/tabs/integrations/ConnectionCard.tsx",
+      "/src/views/teams/tabs/integrations/GitHubAppLogoHint.tsx",
+      "/src/views/teams/tabs/integrations/OAuthAppsSection.tsx",
+    ];
+    const hits = jsxClassed()
+      .filter((e) => e.tag === "a" || e.tag === "Link")
+      .filter((e) => !allowedPrefixes.some((p) => e.path.startsWith(p)))
+      .filter((e) => /(?:^|\s)(?:hover:)?text-accent-text(?:$|\s)/.test(e.classes))
+      .filter((e) => !/(?:^|\s)underline(?:$|\s)|underline-offset/.test(e.classes))
+      .map((e) => hit(e, "colour-only link at rest"));
+    if (hits.length) {
+      throw new Error(
+        `links distinguished by colour only at rest (1.64:1, RGAA 10.6) — an at-rest underline is required:\n${hits.join("\n")}`,
       );
     }
     expect(hits).toHaveLength(0);

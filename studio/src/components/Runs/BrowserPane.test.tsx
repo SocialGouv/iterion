@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import BrowserPane from "./BrowserPane";
-import { getDefaultRunStore, useRunStore } from "@/store/run";
+import { getDefaultRunStore } from "@/store/run";
 
 afterEach(cleanup);
 
@@ -19,7 +19,10 @@ describe("BrowserPane", () => {
 describe("BrowserPane link names (RGAA 6.1, #2510)", () => {
   it("the open-in-new-tab link states its destination", () => {
     getDefaultRunStore().setState({
-      browser: { currentUrl: "https://example.test/app" },
+      browser: {
+        ...getDefaultRunStore().getState().browser,
+        currentUrl: "https://example.test/app",
+      },
     });
     render(<BrowserPane runId="r1" />);
     const link = screen.getByRole("link");

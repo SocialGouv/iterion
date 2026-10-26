@@ -253,31 +253,32 @@ export function CostChart({ buckets, workflows, colors }: CostChartProps) {
       {/* The figures the svg renders graphically, as real text for assistive
           tech (RGAA 1.6): hover-only <title> hides them from non-mouse
           users. sr-only keeps the table visually out of the way. */}
-      <table className="sr-only">
-        <caption>Cost per day, stacked by workflow</caption>
-        <thead>
-          <tr>
-            <th scope="col">Day</th>
-            {workflows.map((wf) => (
-              <th scope="col" key={wf}>
-                {wf}
-              </th>
-            ))}
-            <th scope="col">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {buckets.map((b) => (
-            <tr key={b.day}>
-              <th scope="row">{b.day}</th>
+      <div className="sr-only">
+        <Table caption="Cost per day, stacked by workflow">
+          <THead>
+            <tr>
+              <Th scope="col">Day</Th>
               {workflows.map((wf) => (
-                <td key={wf}>{formatCost(b.cost_by_workflow[wf] ?? 0)}</td>
+                <Th scope="col" key={wf}>
+                  {wf}
+                </Th>
               ))}
-              <td>{formatCost(b.total)}</td>
+              <Th scope="col">Total</Th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </THead>
+          <TBody>
+            {buckets.map((b) => (
+              <Tr key={b.day} hover={false}>
+                <Th scope="row">{b.day}</Th>
+                {workflows.map((wf) => (
+                  <Td key={wf}>{formatCost(b.cost_by_workflow[wf] ?? 0)}</Td>
+                ))}
+                <Td>{formatCost(b.total)}</Td>
+              </Tr>
+            ))}
+          </TBody>
+        </Table>
+      </div>
     <svg
       viewBox={`0 0 ${W} ${H}`}
       role="img"

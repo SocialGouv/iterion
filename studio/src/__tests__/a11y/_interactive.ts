@@ -85,16 +85,6 @@ export function unnamedInteractives(): UnnamedInteractive[] {
     };
     collect(sf);
 
-    // label-englobant: an ancestor <label> names the form control inside it.
-    const labelled = (n: ts.Node): boolean => {
-      let cur = n.parent;
-      while (cur) {
-        if (ts.isJsxElement(cur) && tagOf(cur.openingElement) === "label") return true;
-        cur = cur.parent;
-      }
-      return false;
-    };
-
     const visit = (n: ts.Node, inLabel: boolean): void => {
       if (ts.isJsxElement(n)) {
         const tag = tagOf(n.openingElement);
@@ -105,7 +95,7 @@ export function unnamedInteractives(): UnnamedInteractive[] {
           const title = attrs.get("title");
           const hasAriaLabel = ariaLabel !== undefined;
           const hasTitle = title !== undefined;
-          const idInit = attrs.get("id")?.initializer;
+          const idInit = attrs.get("id");
           const idKey =
             idInit && ts.isJsxExpression(idInit) && idInit.expression
               ? idInit.expression.getText()

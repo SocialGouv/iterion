@@ -8,7 +8,6 @@ import { memoryLocation } from "wouter/memory-location";
 
 import AppShell from "@/components/shared/AppShell";
 import { AuthProvider } from "@/auth/AuthContext";
-import { useUIStore } from "@/store/ui";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 afterEach(cleanup);
