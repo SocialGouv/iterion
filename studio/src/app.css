@@ -669,3 +669,15 @@ select:focus:not(:focus-visible) {
     scroll-behavior: auto !important;
   }
 }
+
+/* The in-page motion setting (RGAA 13.8) drives the same collapse from the
+ * root attribute instead of the OS query. Scoped to the registered
+ * animation utilities — a blanket * here would also kill the Radix
+ * transitions the dialogs animate with. New infinite animation = new
+ * registration below (motion.test.tsx holds the witness). */
+[data-motion="reduced"] .animate-pulse,
+[data-motion="reduced"] .animate-ping,
+[data-motion="reduced"] .animate-caret-blink,
+[data-motion="reduced"] .ch-stack-track {
+  animation: none !important;
+}
