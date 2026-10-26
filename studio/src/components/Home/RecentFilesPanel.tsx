@@ -1,3 +1,4 @@
+import { ClampText } from "@/components/ui/ClampText";
 import { useCallback, useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
@@ -220,9 +221,11 @@ export default function RecentFilesPanel({ variant = "card" }: Props) {
                           )}
                         </span>
                         {ex.description && (
-                          <span className="block truncate text-fg-muted text-micro mt-0.5">
-                            {ex.description}
-                          </span>
+                          <ClampText
+                            as="span"
+                            className="block text-fg-muted text-micro mt-0.5"
+                            text={ex.description}
+                          />
                         )}
                       </span>
                     </button>

@@ -312,7 +312,16 @@ export function BotCatalogDialog({
                         setLocation(`/bots/${encodeURIComponent(b.name)}`);
                       }}
                       title={`Open ${label || b.name}'s bot page`}
-                      className={`truncate text-sm font-medium hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded ${identity.color}`}
+                      className="text-sm font-medium hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded"
+                      tabIndex={0}
+                      onFocus={(e) => {
+                        (e.currentTarget as HTMLElement).style.whiteSpace = "normal";
+                        (e.currentTarget as HTMLElement).style.overflow = "visible";
+                      }}
+                      onBlur={(e) => {
+                        (e.currentTarget as HTMLElement).style.overflow = "hidden";
+                      }}
+                      style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                     >
                       {label || b.name}
                     </button>

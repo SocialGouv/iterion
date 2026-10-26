@@ -412,6 +412,142 @@ describe("source discipline", () => {
     expect(hits).toHaveLength(0);
   });
 
+  it("user-facing text never clamps raw — clamp via ClampText so the full text stays recoverable (RGAA 10.12)", () => {
+    // The allowlist: the audited sites are CONVERTED to ClampText; new raw
+    // truncates on user-facing text red here. (A hard zero-guard would
+    // start red against the ~257-site census — the drain is its own wave.)
+    // The seeded drain list: the raw-truncate census at guard-seeding time
+    // (#2526). Files here are the DRAIN WAVE's job; new files red.
+    const allowedPrefixes = [
+      "/src/components/Home/RecentFilesPanel.tsx",
+      "/src/views/Bots/index.tsx",
+      "/src/components/shared/SidebarContext.tsx",
+      "/src/components/Catalog/BotCatalogDialog.tsx",
+      "/src/components/ChatDock/AttachedReferences.tsx",
+      "/src/components/ChatDock/ContextChip.tsx",
+      "/src/components/ChatDock/ConversationStrip.tsx",
+      "/src/components/Editor/BundleFilesDrawer.tsx",
+      "/src/components/FilePicker/FilePicker.tsx",
+      "/src/components/Home/CloudReposPanel.tsx",
+      "/src/components/Home/RunsPanel.tsx",
+      "/src/components/Home/WhatsNextCard.tsx",
+      "/src/components/Inspector/InspectorEdge.tsx",
+      "/src/components/Inspector/InspectorMulti.tsx",
+      "/src/components/Inspector/InspectorNode.tsx",
+      "/src/components/Inspector/NodeRunsChip.tsx",
+      "/src/components/Library/LibraryItemCard.tsx",
+      "/src/components/Runs/ArtifactFilesPanel.tsx",
+      "/src/components/Runs/AttachmentFieldInput.tsx",
+      "/src/components/Runs/BranchDiffModal.tsx",
+      "/src/components/Runs/CommitDetailDialog.tsx",
+      "/src/components/Runs/CommitsPanel.tsx",
+      "/src/components/Runs/CostPreviewChip.tsx",
+      "/src/components/Runs/FileEditDialog.tsx",
+      "/src/components/Runs/FilesPanel.tsx",
+      "/src/components/Runs/IRNode.tsx",
+      "/src/components/Runs/LaunchView.tsx",
+      "/src/components/Runs/LogLinesView.tsx",
+      "/src/components/Runs/QueuedBanner.tsx",
+      "/src/components/Runs/ReportTab.tsx",
+      "/src/components/Runs/RunHeader.tsx",
+      "/src/components/Runs/SubbotRunFrame.tsx",
+      "/src/components/Runs/conversation/BannerCard.tsx",
+      "/src/components/Runs/conversation/GateAttachments.tsx",
+      "/src/components/Runs/conversation/GateInboundFile.tsx",
+      "/src/components/Runs/detail/ChangesTab.tsx",
+      "/src/components/Runs/detail/DetailHeader.tsx",
+      "/src/components/Runs/detail/LLMTrace.tsx",
+      "/src/components/Runs/eventLog/EventRow.tsx",
+      "/src/components/Runs/launchView/AutoManagedVarsSection.tsx",
+      "/src/components/Runs/launchView/ModelOverridesSection.tsx",
+      "/src/components/Runs/leftPanel/InfoPrimitives.tsx",
+      "/src/components/Runs/leftPanel/overview/AdvancedSection.tsx",
+      "/src/components/Runs/leftPanel/overview/ConfigurationSection.tsx",
+      "/src/components/Runs/leftPanel/overview/StatusHero.tsx",
+      "/src/components/Runs/runHeader/BotChip.tsx",
+      "/src/components/Runs/runHeader/DeliverablesRow.tsx",
+      "/src/components/Runs/runHeader/DeploymentRow.tsx",
+      "/src/components/Runs/runHeader/FinalizationRow.tsx",
+      "/src/components/Runs/runHeader/ResultLinksRow.tsx",
+      "/src/components/Runs/runHeader/SourceTicketRow.tsx",
+      "/src/components/Runs/runList/FilterMenu.tsx",
+      "/src/components/Runs/runList/RunListCard.tsx",
+      "/src/components/Runs/runList/RunListRow.tsx",
+      "/src/components/SourceView/SourceView.tsx",
+      "/src/components/Toolbar/Toolbar.tsx",
+      "/src/components/WhatsNext/PreFlightPanel.tsx",
+      "/src/components/WhatsNext/WatchPanel.tsx",
+      "/src/components/WhatsNext/whatsNextView/SessionHeader.tsx",
+      "/src/components/icons/BackendBadge.tsx",
+      "/src/components/shared/BotIdentity.tsx",
+      "/src/components/shared/CommandPalette.tsx",
+      "/src/components/shared/DispatcherControlBar.tsx",
+      "/src/components/shared/GateFileInput.tsx",
+      "/src/components/shared/InnerTabBar.tsx",
+      "/src/components/shared/LabelFilterPopover.tsx",
+      "/src/components/shared/NavLinks.tsx",
+      "/src/components/shared/OrgSwitcher.tsx",
+      "/src/components/shared/RepoSwitcher.tsx",
+      "/src/components/shared/UserTeamChip.tsx",
+      "/src/components/ui/Chip.tsx",
+      "/src/components/ui/Combobox.tsx",
+      "/src/components/ui/DropdownMenu.tsx",
+      "/src/components/ui/Meter.tsx",
+      "/src/components/ui/RefAwarePopup.tsx",
+      "/src/views/Board/ApproveTriage.tsx",
+      "/src/views/Board/Column.tsx",
+      "/src/views/Board/Fields.tsx",
+      "/src/views/Board/IssueCard.tsx",
+      "/src/views/Board/SelectionToolbar.tsx",
+      "/src/views/Board/issueModal/LastRunSection.tsx",
+      "/src/views/Board/issueModal/PullRequestsSection.tsx",
+      "/src/views/Bots/BotHome/ConfigSharesCard.tsx",
+      "/src/views/Bots/BotHome/RecentRunsCard.tsx",
+      "/src/views/ConfigShare/index.tsx",
+      "/src/views/Dispatcher/RetriesTable.tsx",
+      "/src/views/Dispatcher/RunningTable.tsx",
+      "/src/views/Marketplace/CopyPluginInstall.tsx",
+      "/src/views/Marketplace/MarketplaceCard.tsx",
+      "/src/views/Marketplace/MarketplaceDetail.tsx",
+      "/src/views/Marketplace/ModerationQueue.tsx",
+      "/src/views/Marketplace/index.tsx",
+      "/src/views/PipelineBoard/ExternalActiveRunsNotice.tsx",
+      "/src/views/PipelineBoard/PipelineCardDetails.tsx",
+      "/src/views/PipelineBoard/PipelineCardPage.tsx",
+      "/src/views/PipelineBoard/PipelineColumns.tsx",
+      "/src/views/PipelineBoard/ProducedElements.tsx",
+      "/src/views/PipelineBoard/QueueBanner.tsx",
+      "/src/views/PipelineBoard/ReviewScopePanel.tsx",
+      "/src/views/PipelineBoard/SequentialReviews.tsx",
+      "/src/views/ProjectSwitcher/index.tsx",
+      "/src/views/SettingsDialog/ProjectsTab.tsx",
+      "/src/views/Welcome/steps/CliCheck.tsx",
+      "/src/views/account/SettingsPage.tsx",
+      "/src/views/configEditorShell/ConflictDialog.tsx",
+      "/src/views/configEditorShell/ShareBrowser.tsx",
+      "/src/views/plugins/PluginCard.tsx",
+      "/src/views/plugins/PluginDetail.tsx",
+      "/src/views/teams/tabs/IntegrationsTab.tsx",
+      "/src/views/teams/tabs/integrations/ConnectionCard.tsx",
+      "/src/views/teams/tabs/integrations/OAuthAppsSection.tsx",
+      "/src/workspace/WorkspaceShell.tsx",
+      // The canvas nodes live in fixed-size graph boxes by design; their
+      // full text surfaces through the canvas selection popover.
+      "/src/components/Canvas/",
+    ];
+    const hits = jsxClassed()
+      .filter((e) => isIntrinsic(e.tag) || /^[A-Z]/.test(e.tag))
+      .filter((e) => /(?:^|\s)(?:truncate|line-clamp-\d+)(?:$|\s)/.test(e.classes))
+      .filter((e) => !allowedPrefixes.some((p) => e.path.startsWith(p) || e.path === p))
+      .map((e) => hit(e, "raw clamp"));
+    if (hits.length) {
+      throw new Error(
+        `raw truncate/line-clamp on user-facing text — route through ClampText so the full text stays recoverable (RGAA 10.12):\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
   it("text-fg-subtle never INHERITS onto a -soft tint from an ancestor either", () => {
     // The sibling canary above judges ONE variant string: when the tint and
     // the colour sit on two different elements (a tinted banner, a subtle

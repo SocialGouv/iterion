@@ -1,3 +1,4 @@
+import { ClampText } from "@/components/ui/ClampText";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { referenceDragProps } from "@/lib/chatDock/dragReference";
 import { useQuery } from "@tanstack/react-query";
@@ -508,11 +509,12 @@ function BotCard({
           <span className="shrink-0 text-lg leading-none" aria-hidden="true">
             {identity.emoji}
           </span>
-          <span className={`min-w-0 truncate text-sm font-medium ${identity.color}`}>{label}</span>
+          <ClampText className={`min-w-0 text-sm font-medium ${identity.color}`} text={label} />
           {bot.display_name?.trim() && (
-            <span className="min-w-0 truncate font-mono text-caption text-fg-subtle">
-              {bot.name}
-            </span>
+            <ClampText
+              className="min-w-0 font-mono text-caption text-fg-subtle"
+              text={bot.name}
+            />
           )}
           <span className="ml-auto shrink-0">
             <Badge variant={enabled ? "success" : "neutral"}>
@@ -521,7 +523,7 @@ function BotCard({
           </span>
         </span>
         {bot.description ? (
-          <p className="line-clamp-2 text-xs text-fg-muted">{bot.description}</p>
+          <ClampText as="p" className="text-xs text-fg-muted" lines={2} text={bot.description} />
         ) : (
           <p className="text-xs italic text-fg-subtle">No description.</p>
         )}
