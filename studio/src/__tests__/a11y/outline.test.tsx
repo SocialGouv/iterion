@@ -6,6 +6,7 @@ import { memoryLocation } from "wouter/memory-location";
 
 import AppShell from "@/components/shared/AppShell";
 import { AuthProvider } from "@/auth/AuthContext";
+import { useUIStore } from "@/store/ui";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 afterEach(cleanup);
@@ -36,6 +37,16 @@ describe("the shell's landmark outline", () => {
     expect(container.querySelectorAll("header").length).toBe(1);
     expect(container.querySelectorAll("main").length).toBe(1);
     expect(container.querySelectorAll("nav").length).toBe(1);
+  });
+
+  it("the primary navigation groups are real lists (RGAA 9.3)", () => {
+    const { container } = mount();
+    const nav = container.querySelector('nav[aria-label="Primary navigation"]')!;
+    const lists = nav.querySelectorAll("ul");
+    expect(lists.length).toBeGreaterThan(0);
+    for (const ul of lists) {
+      expect(ul.querySelectorAll("li").length).toBeGreaterThan(0);
+    }
   });
 
   it("keeps the banner landmark when the local-identity bar is empty", () => {

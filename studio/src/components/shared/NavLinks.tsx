@@ -179,7 +179,9 @@ export default function NavLinks({ collapsed }: Props) {
 
   return (
     <nav className="flex flex-col gap-3" aria-label="Primary navigation">
-      {groups.map((group, gi) => (
+      {groups.map((group, gi) => {
+        const captionId = `nav-group-${gi}`;
+        return (
         <div key={group.label ?? "workspace"} className="flex flex-col gap-0.5">
           {group.label &&
             (collapsed ? (
@@ -192,10 +194,20 @@ export default function NavLinks({ collapsed }: Props) {
                 />
               )
             ) : (
-              <div className="px-2 pb-0.5 pt-1 text-caption font-semibold uppercase tracking-wider text-fg-subtle">
+              <div
+
+                id={captionId}
+                className="px-2 pb-0.5 pt-1 text-caption font-semibold uppercase tracking-wider text-fg-subtle"
+              >
                 {group.label}
               </div>
             ))}
+          <ul
+            className="flex flex-col gap-0.5"
+            
+            aria-labelledby={group.label && !collapsed ? captionId : undefined}
+            aria-label={group.label && collapsed ? group.label : undefined}
+          >
           {group.links.map(({ section, href, label, icon: Icon }) => {
             const isActive = active === section;
             const withSublist =
@@ -232,8 +244,10 @@ export default function NavLinks({ collapsed }: Props) {
               />
             );
           })}
-        </div>
-      ))}
+          </ul>
+          </div>
+        );
+      })}
     </nav>
   );
 }
@@ -284,7 +298,7 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
 
   return (
     <>
-      <div className={`${base} ${layout} ${state} ${collapsed ? "" : "flex"} relative`}>
+      <li className={`${base} ${layout} ${state} ${collapsed ? "" : "flex"} relative`}>
         {/* Signature "you are here" indicator: a short accent bar pinned to
             the left edge of the active row (expanded only — the collapsed
             rail relies on the accent-soft fill + tinted icon instead). */}
@@ -357,7 +371,7 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
             )}
           </button>
         )}
-      </div>
+      </li>
       {sublistKind && !folded && tabs.length > 0 && (
         <SidebarTabList tabs={tabs} kind={sublistKind} />
       )}
