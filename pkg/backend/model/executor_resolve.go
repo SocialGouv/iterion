@@ -22,7 +22,7 @@ import (
 //     to step 2 — one rule (ir.BackendFallsThrough), shared with the pre-run
 //     readings that must answer for the route this one takes.
 //  2. workflow-level default (e.defaultBackend, from `default_backend:` or
-//     IR Preferences.BackendOrder[0])
+//     IR Preferences.BackendOrder[0]), with the same fall-through rule
 //  3. ITERION_DEFAULT_BACKEND env var (legacy explicit override)
 //  4. detect.Resolve over ITERION_BACKEND_PREFERENCE (auto-selection based
 //     on credentials present on the host)
@@ -52,7 +52,7 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	// The workflow's `default_backend:` is a routing field like a node's:
 	// the same template-then-env reading, or `{{vars.b}}` there became the
 	// backend NAME at dispatch.
-	if d := e.resolveRoutingField(e.defaultBackend); d != "" {
+	if d := e.resolveRoutingField(e.defaultBackend); !ir.BackendFallsThrough(d) {
 		return d
 	}
 	// A PROGRAM-ONLY executor stops here. Past this point the answer comes

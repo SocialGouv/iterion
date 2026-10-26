@@ -108,22 +108,22 @@ func lookupOf(t *testing.T, q unnamedRouteReading) func(string) string {
 //
 // The count is the three reference spellings of the grid (`${X}`, `$X` and
 // `${X:-}`, all three read at an authored default that does not exist) over the
-// six `default_backend:` values dispatch answers something for — the four that
-// name a backend, plus `auto` and the `{{vars.d}}` template, which step 2 hands
+// five `default_backend:` values dispatch answers something for — the four that
+// name a backend, plus the unresolved `{{vars.d}}` template, which step 2 hands
 // back as written — times the 72 of each line's 84 cells where the route is
 // what the verdict rests on. The other 12 are the `tools:` shape that declares
 // a writer: the author's own line answers before any route is read, so both
-// readings word it the same. The two defaults dispatch answers nothing for (an
-// absent one and a reference nothing answers) leave the node's own unanswered
+// readings word it the same. The three defaults dispatch answers nothing for (an
+// absent one, `auto` and a reference nothing answers) leave the node's own unanswered
 // reference as the only route, which both readings then read alike.
-const theReadingsPartWhereTheSourceNamesAReferenceNothingAnswers = 1296
+const theReadingsPartWhereTheSourceNamesAReferenceNothingAnswers = 1080
 
 // theReadingsPartByWorkflowDefault is the decomposition the count above is
 // reviewed by, asserted rather than described: WHICH `default_backend:` values
 // dispatch answers something for is the half of the derivation a reader cannot
 // check by arithmetic.
 var theReadingsPartByWorkflowDefault = map[string]int{
-	"claw": 216, "claude_code": 216, "codex": 216, "pi": 216, "auto": 216, "{{vars.d}}": 216,
+	"claw": 216, "claude_code": 216, "codex": 216, "pi": 216, "{{vars.d}}": 216,
 }
 
 // TestTheIROnlyReadingTakesTheRouteDispatchResolves is the acceptance of #2428,

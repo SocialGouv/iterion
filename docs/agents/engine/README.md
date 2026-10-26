@@ -14,7 +14,7 @@ invariants. The product view is [docs/architecture.md](../../architecture.md).
 | [events-leases-and-schedules.md](events-leases-and-schedules.md) | The trigger spine, elections, queues, schedules, retries. |
 | [extensions-and-bot-sources.md](extensions-and-bot-sources.md) | Plugins, skills, memory, marketplace, bot sources. |
 | [dsl-backend-execution.md](dsl-backend-execution.md) | The DSL pipeline, backends, runtime, store, server, forge. |
-| [dsl-and-runtime.md](dsl-and-runtime.md) | The compiled graph and how a workflow executes. |
+| [dsl-and-runtime.md](dsl-and-runtime.md) | The compiled graph, explicit target capabilities and how a workflow executes. |
 | [dsl-quick-reference.md](dsl-quick-reference.md) | The exact syntax of the cross-cutting fields, one line each. |
 | [dsl-errors-resume.md](dsl-errors-resume.md) | A run fails, resumes or rewinds; a checkpoint looks torn. |
 | [worktree-finalization.md](worktree-finalization.md) | A run's workspace finalization misbehaves; touching `finalizeWorktree`. |

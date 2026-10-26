@@ -458,10 +458,33 @@ will work without any further configuration. The agent in the
 default template has empty `backend:` and `model:` — both are
 filled in at run time from what's available.
 
+## Compilation and target capabilities
+
+`ir.Compile` never discovers credentials, reads CLI auth files or probes
+executables on the compiling host. With no model, node backend or workflow
+default, C018 warns that execution must resolve a backend on its target. A
+caller with an authoritative target snapshot can use
+`CompileWithCapabilities`: available suppresses that diagnostic, unavailable
+refuses agents and judges, and unknown keeps the warning. LLM routers retain
+their advisory C018 for unavailable or unknown targets. Human LLM interaction
+requirements are unchanged. Explicit DSL choices remain the operator’s intent.
+
+Server validation, cost preview, run-view compilation and runner transport
+compilation use the unknown-target entry point. They do not substitute the
+server’s credentials for those of a future runner. The executor remains the
+execution boundary: it resolves the backend on its target, builds its model
+client and returns the build error when no model can be resolved. Compilation
+is not credential validation. Explicit environment expansion, including
+`ITERION_DEFAULT_SUPERVISOR_MODEL`, retains its existing contract.
+
+The forfait-first and Anthropic-wire preflight reader deliberately stops at
+`auto` or an unresolved template. It cannot certify which backend a future
+runner selects, so falling through there would narrow a protective guard.
+
 ## Resolution chain
 
 When a node, workflow, and env are all silent, the runtime resolves
-a backend in this order (first non-empty wins):
+a backend in this order:
 
 1. `node.Backend` — the `backend:` line on the agent/judge/router
 2. `workflow.default_backend` — the workflow-level `default_backend:`
@@ -487,7 +510,10 @@ actually read — the launch-time `--fallback` admission, which runs in the
 process that dispatches the node.
 
 Two forms fall through to the next step of the chain: an empty field, and
-`auto` — on a NODE. A third kind is undecided: a field the source writes
+`auto` — on a node or the workflow default. Both use
+`ir.BackendFallsThrough` after template and environment expansion. An explicit
+`default_backend: auto` needs no compile-time warning: it deliberately leaves
+the choice to the execution target. A third kind is undecided: a field the source writes
 but does not answer — a `${X}` with no `:-` default, a bare `$X`, a
 `{{vars.x}}` a launch may override. Those do **not** fall through to
 `default_backend:`, because which branch the run takes is not knowable from

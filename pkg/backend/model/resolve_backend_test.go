@@ -23,10 +23,14 @@ func resetEnvForResolve(t *testing.T) {
 		"GOOGLE_CLOUD_PROJECT",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
 		"RESCUE_PROVIDER",
+		"ANTHROPIC_BASE_URL", "ZAI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY",
+		"ITERION_PI_BIN", "ITERION_OPENCODE_BIN",
 	} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("ITERION_PI_AGENT_DIR", t.TempDir())
 	// Point PATH at an empty dir so the detector can't discover the host's
 	// real `claude`/`codex` binaries. Without this, the claude_code probe's
 	// `claude auth status` fallback would spawn the real CLI during these

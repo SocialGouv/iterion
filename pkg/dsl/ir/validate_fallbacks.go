@@ -619,9 +619,9 @@ var (
 // route to the next step of the chain instead of naming where the node runs:
 // a field that resolved to nothing, and the explicit `auto`.
 //
-// It is the ONE spelling of that rule. Dispatch reads it as its step 1 — the
+// It is the ONE spelling of that rule. Dispatch reads it at steps 1 and 2 — the
 // node's own `backend:` wins unless it falls through, and then the workflow's
-// `default_backend:` answers (model.ClawExecutor.resolveBackendName) — the
+// `default_backend:` answers or falls through (model.ClawExecutor.resolveBackendName) — the
 // source reading of a node's route reads it (backendReader.field, and
 // SourceNodeBackendName over it), and so does the IR-only tool-surface reading
 // in pkg/runtime, which asks for the route a pre-run analysis must judge.

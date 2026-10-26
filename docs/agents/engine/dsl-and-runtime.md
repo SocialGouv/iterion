@@ -21,6 +21,13 @@ summary plus the gotchas that cost a session each.
   → runtime.Engine.Run() → execution with events, budget, and persistence
 ```
 
+`ir.Compile` takes an unknown execution target and never probes host credentials
+or executables. `CompileWithCapabilities` accepts an explicit target snapshot
+for C018; transport callers retain unknown, and the executor resolves/builds on
+its actual target. Node and workflow `auto` both fall through through
+`ir.BackendFallsThrough`; the forfait/wire preflight keeps its pessimistic stop.
+See [backend compilation and resolution](../../backends.md#compilation-and-target-capabilities).
+
 ### Node Types
 
 | Type | Description |

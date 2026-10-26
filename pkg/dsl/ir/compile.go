@@ -1,16 +1,13 @@
 package ir
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"math"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -156,8 +153,7 @@ type compiler struct {
 	// types stay clear of.
 	withSpans map[*DataMapping]ast.Span
 
-	autoBackendOnce   sync.Once
-	autoBackendCached bool
+	capabilities CompileCapabilities
 }
 
 // workflowInteractionDefault returns the workflow-level interaction default,
@@ -527,13 +523,31 @@ func (c *compiler) validateNodeNames() {
 
 // Compile transforms an AST File into a canonical IR Workflow.
 // In V1, exactly one workflow per file is supported.
+// Target capabilities are unknown: compilation never probes host credentials
+// or executables. Execution resolves and builds the backend on its target.
 func Compile(file *ast.File) *CompileResult {
+	return CompileWithCapabilities(file, CompileCapabilities{})
+}
+
+// CompileCapabilities is an authoritative snapshot of the execution target,
+// supplied by a caller that knows that target. A nil AutoBackendAvailable means
+// unknown, not unavailable. It does not override explicit DSL routing choices.
+type CompileCapabilities struct {
+	AutoBackendAvailable *bool
+}
+
+// CompileWithCapabilities compiles with explicit target availability. It never
+// discovers capabilities on the compiling host. Unknown availability produces
+// a C018 warning; known absence is an error for agents and judges. Routers keep
+// their existing advisory diagnostic because they allow runtime defaulting.
+func CompileWithCapabilities(file *ast.File, capabilities CompileCapabilities) *CompileResult {
 	c := &compiler{
-		file:    detachForCompile(file),
-		nodes:   make(map[string]Node),
-		schemas: make(map[string]*Schema),
-		prompts: make(map[string]*Prompt),
-		mcp:     make(map[string]*MCPServer),
+		file:         detachForCompile(file),
+		nodes:        make(map[string]Node),
+		schemas:      make(map[string]*Schema),
+		prompts:      make(map[string]*Prompt),
+		mcp:          make(map[string]*MCPServer),
+		capabilities: capabilities,
 	}
 	// A file that still carries `import` lines was handed over alone: its
 	// fragments were never merged in, and compiling it would be compiling a
@@ -939,17 +953,25 @@ func (c *compiler) worktreeMode(workflow string, at ast.Span, raw string) string
 	return "auto"
 }
 
-// canAutoResolveBackend reports whether the detect package can pick a
-// backend from the host environment, allowing an agent/judge with
-// neither `model:` nor `backend:` to validate. Cached per-compile —
-// 20-agent workflows would otherwise re-stat credentials.json and
-// re-LookPath the CLIs 40 times.
-func (c *compiler) canAutoResolveBackend() bool {
-	c.autoBackendOnce.Do(func() {
-		report := detect.Detect(context.Background())
-		c.autoBackendCached = detect.Resolve(report.PreferenceOrder, report.Backends) != ""
-	})
-	return c.autoBackendCached
+// checkModelOrBackend keeps all ordinary LLM nodes on the same capability
+// reading. Explicit workflow defaults (including auto) express routing intent;
+// their availability is checked when the target builds the backend.
+func (c *compiler) checkModelOrBackend(kind, name, model, backend string) {
+	if model != "" || backend != "" {
+		return
+	}
+	if len(c.file.Workflows) > 0 && c.file.Workflows[0].DefaultBackend != "" {
+		return
+	}
+	available := c.capabilities.AutoBackendAvailable
+	if available != nil && *available {
+		return
+	}
+	if available != nil && kind != "router" {
+		c.errorfAt(DiagMissingModelOrBackend, name, "", "%s %q must set 'model' or 'backend': the execution target reports no auto-resolvable backend (see docs/backends.md)", kind, name)
+		return
+	}
+	c.warnfAt(DiagMissingModelOrBackend, name, "", "%s %q has no model or backend; execution must resolve a backend on its target (see docs/backends.md)", kind, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,9 +1050,7 @@ func (c *compiler) buildLLMNodeShared(kind, name string, d *ast.LLMDecl) (LLMFie
 	c.validatePromptRef(name, "system", d.System)
 	c.validatePromptRef(name, "user", d.User)
 	model := resolveSupervisorModel(d.Model)
-	if model == "" && d.Backend == "" && !c.canAutoResolveBackend() {
-		c.errorfAt(DiagMissingModelOrBackend, name, "", "%s %q must set 'model' or 'backend' (or configure a credential the runtime can detect — see docs/backends.md)", kind, name)
-	}
+	c.checkModelOrBackend(kind, name, model, d.Backend)
 	// Apply workflow-level interaction default when node doesn't set one.
 	interaction := d.Interaction
 	if interaction == InteractionNone {
@@ -1181,9 +1201,7 @@ func (c *compiler) compileRouters() {
 		}
 		if mode == RouterLLM {
 			model := resolveSupervisorModel(r.Model)
-			if model == "" && r.Backend == "" {
-				c.warnf(DiagMissingModelOrBackend, "router %q with mode llm has no model or backend; will use built-in default at runtime", r.Name)
-			}
+			c.checkModelOrBackend("router", r.Name, model, r.Backend)
 			node.Model = model
 			node.Backend = r.Backend
 			node.Provider = r.Provider
