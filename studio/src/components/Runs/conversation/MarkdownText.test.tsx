@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 
 import MarkdownText from "./MarkdownText";
 
@@ -47,5 +47,13 @@ describe("MarkdownText", () => {
     const { container } = render(<MarkdownText value={md} />);
     expect(container.querySelectorAll("li").length).toBe(2);
     expect(container.querySelector("strong")?.textContent).toBe("one");
+  });
+});
+
+describe("MarkdownText heading shift (RGAA 9.1, #2517)", () => {
+  it("slots the markdown's h1 one level under the run title's h1", () => {
+    render(<MarkdownText value={"# Deliverables\n\ncontent"} />);
+    expect(screen.getByRole("heading", { level: 2, name: "Deliverables" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
   });
 });

@@ -245,7 +245,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
           {editingName ? (
             <RunNameEditor initial={friendlyName} onSubmit={onRename} onCancel={() => setEditingName(false)} />
           ) : (
-            <div className="inline-flex items-center gap-1 min-w-0 group">
+            <h1 className="inline-flex items-center gap-1 min-w-0 group font-semibold text-fg-default text-base m-0">
               <Tooltip content="Double-click to rename">
                 <button
                   type="button"
@@ -265,7 +265,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               >
                 <Pencil1Icon className="w-3 h-3" />
               </IconButton>
-            </div>
+            </h1>
           )}
           <StatusBadge status={run.status} />
           <AssistantWatchBadge runId={run.id} />

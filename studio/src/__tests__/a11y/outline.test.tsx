@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { Route, Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 
@@ -47,6 +49,16 @@ describe("the shell's landmark outline", () => {
     for (const ul of lists) {
       expect(ul.querySelectorAll("li").length).toBeGreaterThan(0);
     }
+  });
+
+  it("RunHeader's principal title is the run-detail h1 (RGAA 9.1, #2517)", () => {
+    // Source pin: the full RunHeader mount drags the run store and the
+    // websocket stack; the pin holds the wrapper mechanism at the source.
+    const src = readFileSync(
+      resolve(process.cwd(), "src/components/Runs/RunHeader.tsx"),
+      "utf8",
+    );
+    expect(src).toContain("<h1 className=\"inline-flex items-center gap-1 min-w-0 group");
   });
 
   it("keeps the banner landmark when the local-identity bar is empty", () => {
