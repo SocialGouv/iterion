@@ -341,6 +341,9 @@ export function ChatDockFloating({
 
   useEffect(() => {
     if (!focusOnMount) return;
+    // Remember what had focus so it can come back when the panel unmounts:
+    // focus must not fall to <body> when a dialog dismisses (RGAA 12.8).
+    const opener = (document.activeElement as HTMLElement) ?? null;
     // Defer focus so any layout / autofocus inside children settles first.
     const t = window.setTimeout(() => {
       const root = ref.current;
@@ -351,7 +354,10 @@ export function ChatDockFloating({
       );
       (focusable ?? root).focus();
     }, 0);
-    return () => window.clearTimeout(t);
+    return () => {
+      window.clearTimeout(t);
+      opener?.focus?.({ preventScroll: true });
+    };
   }, [focusOnMount]);
   return (
     <div
