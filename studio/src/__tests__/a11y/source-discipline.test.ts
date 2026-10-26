@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { absoluteTargetHits } from "./_adminNestLinks";
 import { hit, isIntrinsic, jsxAncestral, jsxClassed } from "./_jsx";
@@ -427,5 +429,23 @@ describe("source discipline", () => {
       );
     }
     expect(hits).toHaveLength(0);
+  });
+
+  it("NavLinks wires its group lists to their captions (RGAA 9.3, #2519)", () => {
+    // The anonymous mount renders one unlabelled workspace group, so the
+    // labelled-by wiring cannot be asserted from the DOM there; the source
+    // pin holds the mechanism instead: the caption carries the id the ul
+    // references, and the collapsed rail names its lists directly.
+    const src = readFileSync(
+      resolve(process.cwd(), "src/components/shared/NavLinks.tsx"),
+      "utf8",
+    );
+    expect(src).toContain("id={captionId}");
+    expect(src).toContain(
+      'aria-labelledby={group.label && !collapsed ? captionId : undefined}',
+    );
+    expect(src).toContain(
+      'aria-label={group.label && collapsed ? group.label : undefined}',
+    );
   });
 });
