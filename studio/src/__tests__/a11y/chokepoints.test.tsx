@@ -9,6 +9,7 @@ import { LiveDot } from "@/components/ui/LiveDot";
 import { ResizeSeparator } from "@/components/ui/ResizeSeparator";
 import { VideoPreview } from "@/components/ui/VideoPreview";
 import { CommittedTextField } from "@/components/Panels/forms/FormField";
+import { StatusMessage } from "@/components/ui/StatusMessage";
 import { setupMatchMedia, expectNoViolations } from "./axeHelpers";
 
 // The a11y-chokepoints primitives (#2501 #2502 #2504 #2507 #2512
@@ -52,6 +53,13 @@ describe("a11y / chokepoints", () => {
     expect((container.firstElementChild as HTMLElement).getAttribute("aria-hidden")).toBe(
       "true",
     );
+  });
+
+  it("StatusMessage injects text into a permanent role=status container (RGAA 7.5)", () => {
+    const { rerender } = render(<StatusMessage message="" />);
+    expect(screen.getByRole("status").textContent).toBe("");
+    rerender(<StatusMessage message="Draft saved" />);
+    expect(screen.getByRole("status").textContent).toBe("Draft saved");
   });
 
   it("required fields carry aria-required and a visible mention (RGAA 11.10)", () => {

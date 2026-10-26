@@ -20,7 +20,7 @@ import { botSourceEditorPath } from "@/api/client";
 import TestRunPane from "@/components/Runs/TestRunPane";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { useAuth } from "@/auth/AuthContext";
-import { Button, InlineBanner } from "@/components/ui";
+import { Button, InlineBanner, StatusMessage } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { useAssistantPageContext } from "@/lib/chatDock/pageContext";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -259,12 +259,10 @@ function BuilderForm({
                 ← Templates
               </button>
             )}
-            <span
-              aria-live="polite"
+            <StatusMessage
+              message={draftSaved ? "Draft saved" : ""}
               className={`ml-auto text-caption text-fg-subtle transition-opacity ${draftSaved ? "opacity-100" : "opacity-0"}`}
-            >
-              Draft saved
-            </span>
+            />
           </div>
 
           {created && <CreatedBotBanner created={created} isCloud={isCloud} />}

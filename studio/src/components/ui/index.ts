@@ -109,6 +109,7 @@ export { Spinner } from "./Spinner";
 export type { SpinnerProps, SpinnerSize } from "./Spinner";
 
 export { LiveDot } from "./LiveDot";
+export { StatusMessage } from "./StatusMessage";
 export type { LiveDotProps, LiveDotTone, LiveDotSize } from "./LiveDot";
 
 export { Stat } from "./Stat";
