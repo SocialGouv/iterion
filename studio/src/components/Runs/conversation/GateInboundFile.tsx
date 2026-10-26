@@ -64,6 +64,7 @@ export default function GateInboundFile({ runId, file }: Props) {
     <a
       href={attachmentURL(runId, file.attachment)}
       download={label}
+      aria-label={`Download ${label}`}
       className="inline-flex items-center gap-1 text-micro text-accent-text hover:underline"
     >
       <DownloadIcon /> Download

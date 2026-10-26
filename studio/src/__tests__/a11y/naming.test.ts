@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { unnamedInteractives } from "./_interactive";
@@ -26,6 +28,14 @@ const WAIVED: { path: string; tag: string; reason: string }[] = [
 ];
 
 describe("interactive elements carry a naming mechanism (RGAA 11.1)", () => {
+  it("GateInboundFile's download link names the file via aria-label (#2510)", () => {
+    const src = readFileSync(
+      resolve(process.cwd(), "src/components/Runs/conversation/GateInboundFile.tsx"),
+      "utf8",
+    );
+    expect(src).toContain('aria-label={`Download ${label}`}');
+  });
+
   it("leaves no interactive element without any naming mechanism", () => {
     const hits = unnamedInteractives().filter(
       (h) => !WAIVED.some((w) => w.path === h.path && w.tag === h.tag),

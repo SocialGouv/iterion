@@ -205,6 +205,7 @@ export default function BrowserPane({
               href={browser.currentUrl}
               target="_blank"
               rel="noopener noreferrer"
+              aria-label={`Open ${browser.currentUrl} in a new tab`}
               className="text-xs text-fg-muted underline hover:text-fg-default"
             >
               open ↗
