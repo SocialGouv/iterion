@@ -439,6 +439,7 @@ export default function Toolbar() {
       {workflows.length > 0 && (
         <ToolbarGroup>
           <Select
+            aria-label="Active workflow (switching redraws the canvas)"
             value={activeWorkflowName ?? workflows[0]?.name ?? ""}
             onChange={(e) => setActiveWorkflowName(e.target.value)}
             size="sm"
