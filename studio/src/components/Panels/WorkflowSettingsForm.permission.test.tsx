@@ -320,3 +320,14 @@ describe("WorkflowSettingsForm permission controls", () => {
     });
   });
 });
+
+describe("WorkflowSettingsForm resource actions", () => {
+  it("the resource remove button exposes an actionable aria-label (RGAA 11.1)", () => {
+    mount({ resources: { db: 2 } } as Partial<WorkflowDecl>);
+    const btn = screen.getByRole("button", { name: "Remove resource" });
+    // The name comes from the IconButton chokepoint's aria-label — a
+    // title attribute alone is hover-only and announced inconsistently.
+    expect(btn.getAttribute("aria-label")).toBe("Remove resource");
+    expect(btn.textContent).toContain("✕");
+  });
+});

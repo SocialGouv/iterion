@@ -19,6 +19,7 @@ import {
   WORKTREE_OPTIONS,
   WORKTREE_HELP,
 } from "@/lib/dslOptions";
+import { IconButton } from "@/components/ui";
 import CompactionFields from "./forms/CompactionFields";
 import MCPConfigFields from "./forms/MCPConfigFields";
 
@@ -258,18 +259,19 @@ export default function WorkflowSettingsForm() {
                 min={1}
               />
             </div>
-            <button
-              type="button"
+            <IconButton
+              variant="danger"
+              size="sm"
+              label="Remove resource"
               onClick={() => {
                 const next = { ...resources };
                 delete next[name];
                 setResources(next);
               }}
-              className="text-xs text-danger-fg px-2 py-1.5 mb-0.5 hover:bg-danger-soft rounded"
-              title="Remove resource"
+              className="mb-0.5"
             >
               ✕
-            </button>
+            </IconButton>
           </div>
         ))}
         <button
