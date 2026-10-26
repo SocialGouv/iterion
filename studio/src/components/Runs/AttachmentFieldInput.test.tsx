@@ -38,7 +38,7 @@ describe("AttachmentFieldInput", () => {
         disabled
       />,
     );
-    const zone = screen.getByRole("button", { name: "Upload logo" });
+    const zone = screen.getByRole("button", { name: "Drop an image or click to browse Upload logo" });
     expect(zone.getAttribute("aria-disabled")).toBe("true");
     expect(zone.hasAttribute("data-disabled")).toBe(true);
     expect(zone.className).toMatch(/(^|\s)data-\[disabled\]:opacity-60(\s|$)/);
@@ -48,7 +48,7 @@ describe("AttachmentFieldInput", () => {
     render(
       <AttachmentFieldInput field={{ name: "logo", type: "image" }} value={null} onChange={vi.fn()} serverLimits={null} />,
     );
-    const zone = screen.getByRole("button", { name: "Upload logo" });
+    const zone = screen.getByRole("button", { name: "Drop an image or click to browse Upload logo" });
     expect(zone.hasAttribute("aria-disabled")).toBe(false);
     expect(zone.hasAttribute("data-disabled")).toBe(false);
   });

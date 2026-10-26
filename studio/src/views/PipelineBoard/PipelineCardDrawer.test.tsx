@@ -88,7 +88,7 @@ describe("pipeline card drawer — resizable width", () => {
     expect(h.getAttribute("tabindex")).toBe("0");
     expect(h.getAttribute("aria-valuenow")).toBe(String(DRAWER_WIDTH_DEFAULT));
     expect(h.getAttribute("aria-valuemin")).toBe(String(DRAWER_WIDTH_MIN));
-    expect(h.getAttribute("aria-valuetext")).toBe(`${DRAWER_WIDTH_DEFAULT} pixels`);
+    expect(h.getAttribute("aria-valuetext")).toBe(`${DRAWER_WIDTH_DEFAULT} pixels wide`);
   });
 
   it("widens on ArrowLeft and narrows on ArrowRight (the drawer is right-anchored)", () => {

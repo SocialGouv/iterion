@@ -24,7 +24,7 @@ describe("GateFileInput", () => {
     // bound to the attribute, never a static opacity (RGAA 3.2) nor a
     // colour-only change (imperceptible state).
     render(<GateFileInput label="soundtrack" value={null} onChange={vi.fn()} disabled />);
-    const zone = screen.getByRole("button", { name: "Upload soundtrack" });
+    const zone = screen.getByRole("button", { name: "Drop a file or click to browse Upload soundtrack" });
     expect(zone.getAttribute("aria-disabled")).toBe("true");
     expect(zone.hasAttribute("data-disabled")).toBe(true);
     expect(zone.className).toMatch(/(^|\s)data-\[disabled\]:opacity-60(\s|$)/);
@@ -32,7 +32,7 @@ describe("GateFileInput", () => {
 
   it("carries neither disabled attribute when enabled", () => {
     render(<GateFileInput label="soundtrack" value={null} onChange={vi.fn()} />);
-    const zone = screen.getByRole("button", { name: "Upload soundtrack" });
+    const zone = screen.getByRole("button", { name: "Drop a file or click to browse Upload soundtrack" });
     expect(zone.hasAttribute("aria-disabled")).toBe(false);
     expect(zone.hasAttribute("data-disabled")).toBe(false);
   });
@@ -41,10 +41,10 @@ describe("GateFileInput", () => {
     // Busy blocks the pointer and says so (aria-busy); it is not the
     // disabled state: dimming the zone here would put the live
     // "Uploading…" text at 3.3:1 in the light theme (RGAA 3.2).
-    render(<GateFileInput label="soundtrack" value={null} onChange={vi.fn()} />);
-    const input = screen.getByLabelText("Upload soundtrack", { selector: "input" });
+    const view = render(<GateFileInput label="soundtrack" value={null} onChange={vi.fn()} />);
+    const input = view.getByLabelText("Upload soundtrack", { selector: "input" });
     fireEvent.change(input, { target: { files: [new File(["x"], "a.mp3", { type: "audio/mpeg" })] } });
-    const zone = screen.getByRole("button", { name: "Upload soundtrack" });
+    const zone = view.getByRole("button", { name: "Drop a file or click to browse Upload soundtrack" });
     await waitFor(() => expect(zone.getAttribute("aria-busy")).toBe("true"));
     expect(zone.hasAttribute("aria-disabled")).toBe(false);
     expect(zone.hasAttribute("data-disabled")).toBe(false);

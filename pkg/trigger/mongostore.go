@@ -78,7 +78,7 @@ func (s *MongoSubscriptionStore) ListByTenant(ctx context.Context, tenantID stri
 }
 
 func (s *MongoSubscriptionStore) ListByRepo(ctx context.Context, tenantID, repo string) ([]Subscription, error) {
-	return s.find(ctx, bson.M{"tenant_id": tenantID, "repo": bson.M{"$in": bson.A{repo, ""}}})
+	return s.find(ctx, bson.M{"tenant_id": tenantID, "repo": bson.M{"$in": bson.A{repo, "", nil}}})
 }
 
 func (s *MongoSubscriptionStore) ListByBot(ctx context.Context, tenantID, botID string) ([]Subscription, error) {
@@ -93,7 +93,9 @@ func (s *MongoSubscriptionStore) ListCandidates(ctx context.Context, ev Event) (
 	return s.find(ctx, bson.M{
 		"tenant_id": ev.TenantID,
 		"enabled":   true,
-		"repo":      bson.M{"$in": bson.A{ev.Repo, ""}},
+		// A tenant-wide subscription carries NO repo field (`repo` is
+		// omitempty): $in only matches an absent field through a null entry.
+		"repo": bson.M{"$in": bson.A{ev.Repo, "", nil}},
 	})
 }
 
