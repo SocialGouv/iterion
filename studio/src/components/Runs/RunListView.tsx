@@ -409,7 +409,6 @@ export default function RunListView() {
               <th scope="col" className="text-left px-4 py-2 font-medium">Run ID</th>
             </tr>
           </thead>
-          <tbody>
             {groups.map((g) => (
               <RunRowGroup
                 key={g.id}
@@ -432,7 +431,6 @@ export default function RunListView() {
                 ))}
               </RunRowGroup>
             ))}
-          </tbody>
         </table>
         <div className="sm:hidden">
           {groups.map((g) => (

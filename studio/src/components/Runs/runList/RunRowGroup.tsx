@@ -17,26 +17,26 @@ export function RunRowGroup({
   columnSpan: number;
   children: ReactNode;
 }) {
-  if (!showHeader) {
-    // Fragments in <tbody> render directly as a child sequence — no
-    // wrapping element, so the rows keep their normal striping.
-    return <>{children}</>;
-  }
+  // Each group owns its <tbody>: the rowgroup header (scope="rowgroup")
+  // then spans exactly the rows of ITS group, and assistive tech hears the
+  // group boundary instead of one undivided body (RGAA 5.7, #2509).
   return (
-    <>
-      <tr className="bg-surface-2 border-y border-border-default">
-        <th
-          colSpan={columnSpan}
-          scope="rowgroup"
-          className="text-left px-4 py-1.5 font-medium text-fg-muted text-micro uppercase tracking-wide"
-        >
-          <span>{label}</span>
-          <span className="ml-2 text-fg-subtle normal-case tracking-normal">
-            {count}
-          </span>
-        </th>
-      </tr>
+    <tbody>
+      {showHeader && (
+        <tr className="bg-surface-2 border-y border-border-default">
+          <th
+            colSpan={columnSpan}
+            scope="rowgroup"
+            className="text-left px-4 py-1.5 font-medium text-fg-muted text-micro uppercase tracking-wide"
+          >
+            <span>{label}</span>
+            <span className="ml-2 text-fg-subtle normal-case tracking-normal">
+              {count}
+            </span>
+          </th>
+        </tr>
+      )}
       {children}
-    </>
+    </tbody>
   );
 }
