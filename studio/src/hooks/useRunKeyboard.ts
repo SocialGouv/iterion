@@ -1,3 +1,4 @@
+import { shortcutsEnabled } from "@/lib/shortcuts";
 import { useEffect } from "react";
 
 import type { ExecutionState } from "@/api/runs";
@@ -95,7 +96,7 @@ export function useRunKeyboard({
         }
         clearChord();
       }
-      if (e.key === "g") {
+      if (e.key === "g" && shortcutsEnabled()) {
         chord = "g";
         if (chordTimer) clearTimeout(chordTimer);
         chordTimer = setTimeout(clearChord, 750);
@@ -105,6 +106,7 @@ export function useRunKeyboard({
       // j / k step between nodes by start order (vim-idiom: j=down, k=up).
       // The "down" axis is "later in the run"; "up" is "earlier".
       if (e.key === "j" || e.key === "k") {
+        if (!shortcutsEnabled()) return;
         const ordered = uniqueNodesByStart(executions);
         if (ordered.length === 0) return;
         e.preventDefault();

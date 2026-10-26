@@ -1,3 +1,4 @@
+import { shortcutsEnabled } from "@/lib/shortcuts";
 import { useEffect } from "react";
 
 import type { NativeIssue, NativeBoard } from "@/api/native";
@@ -63,13 +64,13 @@ export function useBoardKeyboard({
       // "?" is shift+/ on most layouts. Accept both the produced glyph
       // and the raw key+shift combo so AZERTY/QWERTZ users don't lose
       // the affordance.
-      if (e.key === "?" || (e.key === "/" && e.shiftKey)) {
+      if ((e.key === "?" || (e.key === "/" && e.shiftKey)) && shortcutsEnabled()) {
         e.preventDefault();
         onShowHelp();
         return;
       }
 
-      if (e.key === "c" || e.key === "n") {
+      if ((e.key === "c" || e.key === "n") && shortcutsEnabled()) {
         e.preventDefault();
         onCreate();
         return;
@@ -88,13 +89,13 @@ export function useBoardKeyboard({
       // normally.
       if (!selectedId || !board) return;
 
-      if (e.key === "e" || e.key === "Enter") {
+      if ((e.key === "e" || e.key === "Enter") && shortcutsEnabled()) {
         e.preventDefault();
         onEdit(selectedId);
         return;
       }
 
-      if (e.key === "x" || e.key === "X") {
+      if ((e.key === "x" || e.key === "X") && shortcutsEnabled()) {
         e.preventDefault();
         onToggleSelect(selectedId);
         return;

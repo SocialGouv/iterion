@@ -1,3 +1,4 @@
+import { shortcutsEnabled } from "@/lib/shortcuts";
 import { useEffect, useRef, useState } from "react";
 
 import { useDocumentStore } from "@/store/document";
@@ -156,7 +157,7 @@ export default function Toolbar() {
       } else if ((e.ctrlKey || e.metaKey) && e.key === "o") {
         e.preventDefault();
         fileInputRef.current?.click();
-      } else if (e.key === "?" && !(e.target as HTMLElement).matches("input, textarea, select")) {
+      } else if (e.key === "?" && !(e.target as HTMLElement).matches("input, textarea, select") && shortcutsEnabled()) {
         e.preventDefault();
         setShowShortcuts(true);
       }

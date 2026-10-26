@@ -49,6 +49,10 @@ export default function AppearanceTab() {
   const setMotionReduced = useUIStore((s) => s.setMotionReduced);
   const motionRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const currentMotionIndex = motionReduced ? 1 : 0;
+  const singleKeyShortcuts = useUIStore((s) => s.singleKeyShortcuts);
+  const setSingleKeyShortcuts = useUIStore((s) => s.setSingleKeyShortcuts);
+  const shortcutsRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const currentShortcutsIndex = singleKeyShortcuts ? 0 : 1;
   return (
     <div className="flex flex-col gap-6 p-4 text-sm">
       <section className="flex flex-col gap-3">
@@ -232,6 +236,71 @@ export default function AppearanceTab() {
             <span className="text-fg-default font-medium">Reduced</span>
             <span className="text-xs text-fg-subtle">
               Infinite animations stop; transitions stay.
+            </span>
+          </button>
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <div>
+          <div className="font-medium text-fg-default mb-1">Single-key shortcuts</div>
+          <p className="text-xs text-fg-subtle">
+            Bare keypresses (?, /, v, h, j, k, g-chords) trigger app-wide
+            shortcuts. Off, they answer nothing; modifier combos keep
+            working (RGAA 12.10).
+          </p>
+        </div>
+        <div
+          className="grid grid-cols-2 gap-2"
+          role="radiogroup"
+          aria-label="Single-key shortcuts"
+        >
+          <button
+            ref={(el) => {
+              shortcutsRefs.current[0] = el;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={singleKeyShortcuts}
+            tabIndex={singleKeyShortcuts ? 0 : -1}
+            onClick={() => setSingleKeyShortcuts(true)}
+            onKeyDown={(e) =>
+              moveRadioFocus(e, shortcutsRefs.current, currentShortcutsIndex, (next) =>
+                setSingleKeyShortcuts(next === 0),
+              )
+            }
+            className={`flex flex-col items-start gap-1 rounded border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+              singleKeyShortcuts
+                ? "border-accent bg-accent-soft/30 ring-1 ring-accent/40"
+                : "border-border-default bg-surface-1 hover:bg-surface-2"
+            }`}
+          >
+            <span className="text-fg-default font-medium">On</span>
+            <span className="text-xs text-fg-subtle">Shortcuts answer bare keys. The default.</span>
+          </button>
+          <button
+            ref={(el) => {
+              shortcutsRefs.current[1] = el;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={!singleKeyShortcuts}
+            tabIndex={!singleKeyShortcuts ? 0 : -1}
+            onClick={() => setSingleKeyShortcuts(false)}
+            onKeyDown={(e) =>
+              moveRadioFocus(e, shortcutsRefs.current, currentShortcutsIndex, (next) =>
+                setSingleKeyShortcuts(next === 0),
+              )
+            }
+            className={`flex flex-col items-start gap-1 rounded border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+              !singleKeyShortcuts
+                ? "border-accent bg-accent-soft/30 ring-1 ring-accent/40"
+                : "border-border-default bg-surface-1 hover:bg-surface-2"
+            }`}
+          >
+            <span className="text-fg-default font-medium">Off</span>
+            <span className="text-xs text-fg-subtle">
+              Bare keys reach the focused control only.
             </span>
           </button>
         </div>

@@ -1,3 +1,4 @@
+import { SINGLE_KEY_SHORTCUTS } from "@/lib/shortcuts";
 import { Dialog } from "@/components/ui/Dialog";
 import { Kbd } from "@/components/ui/Kbd";
 import { isMacOS } from "@/lib/keyboard";
@@ -23,10 +24,12 @@ export default function ShortcutsHelp({ open, onClose }: Props) {
     { keys: "Delete / Backspace", desc: "Delete selected node or edge" },
     { keys: "Right-click node", desc: "Context menu (set entry, duplicate, delete)" },
     { keys: "Drag from handle", desc: "Quick-add node with auto-connect" },
-    { keys: "/", desc: "Search nodes" },
     { keys: "Escape", desc: "Clear selection / close dialogs" },
-    { keys: "?", desc: "Show this help" },
   ];
+  // The bare-keypress shortcuts come from the registry, not hand copies:
+  // the list here and the gated branches cannot drift apart.
+  const singleKeyRows = SINGLE_KEY_SHORTCUTS.map(({ key, label }) => ({ keys: key, desc: label }));
+  const rows = [...shortcuts.slice(0, shortcuts.length - 1), ...singleKeyRows, shortcuts[shortcuts.length - 1]!];
   return (
     <Dialog
       open={open}
@@ -37,7 +40,7 @@ export default function ShortcutsHelp({ open, onClose }: Props) {
       widthClass="max-w-md"
     >
       <div className="px-4 py-3 space-y-2">
-        {shortcuts.map(({ keys, desc }) => (
+        {rows.map(({ keys, desc }) => (
           <div key={keys} className="flex items-center justify-between gap-4">
             <span className="text-xs text-fg-muted">{desc}</span>
             <Kbd size="md" className="whitespace-nowrap">

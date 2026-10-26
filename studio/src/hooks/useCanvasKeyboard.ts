@@ -1,3 +1,4 @@
+import { shortcutsEnabled } from "@/lib/shortcuts";
 import { useCallback, type KeyboardEvent } from "react";
 import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
@@ -75,7 +76,7 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
     (e: KeyboardEvent) => {
       const isInput = (e.target as HTMLElement).matches("input, textarea, select");
 
-      if (e.key === "/" && !isInput) {
+      if (e.key === "/" && !isInput && shortcutsEnabled()) {
         e.preventDefault();
         search.openSearch();
         return;
@@ -183,11 +184,11 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
       }
 
       // Tool switching shortcuts
-      if ((e.key === "v" || e.key === "V") && !isInput && !e.ctrlKey && !e.metaKey) {
+      if ((e.key === "v" || e.key === "V") && !isInput && !e.ctrlKey && !e.metaKey && shortcutsEnabled()) {
         setCanvasTool("select");
         return;
       }
-      if ((e.key === "h" || e.key === "H") && !isInput && !e.ctrlKey && !e.metaKey) {
+      if ((e.key === "h" || e.key === "H") && !isInput && !e.ctrlKey && !e.metaKey && shortcutsEnabled()) {
         setCanvasTool("pan");
         return;
       }
