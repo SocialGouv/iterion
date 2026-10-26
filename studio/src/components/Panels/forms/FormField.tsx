@@ -52,6 +52,7 @@ export function NodeFormHeader({ color, icon, label }: NodeFormHeaderProps) {
 }
 
 interface FieldRowChildArgs {
+  required?: boolean;
   /** id to apply to the primary control inside the row. */
   inputId: string;
   /** Space-separated ids to feed `aria-describedby` (help + error). */
@@ -59,6 +60,8 @@ interface FieldRowChildArgs {
 }
 
 interface FieldRowProps {
+  /** RGAA 11.10: a visible mention on the label and aria-required on the control. */
+  required?: boolean;
   label: string;
   help?: string;
   error?: string;
@@ -78,6 +81,7 @@ export function FieldRow({
   label,
   help,
   error,
+  required,
   className = "mb-2",
   children,
 }: FieldRowProps) {
@@ -88,9 +92,17 @@ export function FieldRow({
   const describedBy = [helpId, errorId].filter(Boolean).join(" ") || undefined;
   return (
     <div className={className}>
-      <FieldLabel htmlFor={inputId} help={help} helpId={helpId}>{label}</FieldLabel>
+      <FieldLabel htmlFor={inputId} help={help} helpId={helpId}>
+        {label}
+        {required && (
+          <>
+            <span className="ml-1 text-danger-fg" aria-hidden="true">*</span>
+            <span className="sr-only">(required)</span>
+          </>
+        )}
+      </FieldLabel>
       {typeof children === "function"
-        ? children({ inputId, describedBy })
+        ? children({ inputId, describedBy, required })
         : children}
       {error && (
         <p
@@ -168,6 +180,8 @@ export function TextField({ label, value, onChange, placeholder, multiline, rows
 }
 
 interface CommittedTextFieldProps {
+  /** RGAA 11.10: mentioned on the label and aria-required on the input. */
+  required?: boolean;
   label: string;
   value: string;
   onChange: (v: string) => void;
@@ -178,7 +192,7 @@ interface CommittedTextFieldProps {
 }
 
 /** TextField that only commits on blur or Enter, not on every keystroke. Used for name/rename fields. */
-export function CommittedTextField({ label, value, onChange, onCommit, validate, placeholder, help }: CommittedTextFieldProps) {
+export function CommittedTextField({ label, value, onChange, onCommit, validate, placeholder, help, required }: CommittedTextFieldProps) {
   const [draft, setDraft] = useState(value);
   const [error, setError] = useState<string | null>(null);
   const focusedRef = useRef(false);
@@ -232,12 +246,13 @@ export function CommittedTextField({ label, value, onChange, onCommit, validate,
   const isDirty = draft.trim() !== value;
 
   return (
-    <FieldRow label={label} help={help} error={error ?? undefined}>
-      {({ inputId, describedBy }) => (
+    <FieldRow label={label} help={help} error={error ?? undefined} required={required}>
+      {({ inputId, describedBy, required }) => (
         <div className="flex gap-1">
           <Input
             id={inputId}
             aria-describedby={describedBy}
+            aria-required={required || undefined}
             aria-invalid={error ? true : undefined}
             error={!!error}
             className="flex-1"

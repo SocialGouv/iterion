@@ -206,9 +206,12 @@ export function WizardForm({
           <label htmlFor={questionControlId(uid, current)} className="text-body font-medium text-fg-default">
             {current.label}
             {isRequiredQuestion(current) && (
-              <span className="ml-1 text-danger-fg" aria-hidden="true">
-                *
-              </span>
+              <>
+                <span className="ml-1 text-danger-fg" aria-hidden="true">
+                  *
+                </span>
+                <span className="sr-only">(required)</span>
+              </>
             )}
           </label>
           {current.description && (
@@ -348,9 +351,12 @@ function FlatForm({
                 <label htmlFor={questionControlId(uid, q)} className="text-body font-medium text-fg-default">
                   {q.label}
                   {isRequiredQuestion(q) && (
-                    <span className="ml-1 text-danger-fg" aria-hidden="true">
-                      *
-                    </span>
+                    <>
+                      <span className="ml-1 text-danger-fg" aria-hidden="true">
+                        *
+                      </span>
+                      <span className="sr-only">(required)</span>
+                    </>
                   )}
                 </label>
                 {q.description && (

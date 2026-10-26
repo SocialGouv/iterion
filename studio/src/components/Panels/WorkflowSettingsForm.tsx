@@ -77,6 +77,7 @@ export default function WorkflowSettingsForm() {
 
       <CommittedTextField
         label="Workflow Name"
+        required
         value={workflow.name}
         onChange={(v) => { updateWorkflow(workflow.name, { name: v }); setActiveWorkflowName(v); }}
         validate={(v) => {
@@ -243,6 +244,7 @@ export default function WorkflowSettingsForm() {
             <div className="flex-1">
               <CommittedTextField
                 label="Name"
+                required
                 value={name}
                 onChange={(v) => renameResource(name, v)}
                 validate={(v) => (!v.trim() ? "Name required" : null)}

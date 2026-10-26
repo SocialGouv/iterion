@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { CrossCircledIcon } from "@radix-ui/react-icons";
 
 import { Icon } from "@/components/ui/Icon";
 import { LiveDot } from "@/components/ui/LiveDot";
 import { ResizeSeparator } from "@/components/ui/ResizeSeparator";
 import { VideoPreview } from "@/components/ui/VideoPreview";
+import { CommittedTextField } from "@/components/Panels/forms/FormField";
 import { setupMatchMedia, expectNoViolations } from "./axeHelpers";
 
 // The a11y-chokepoints primitives (#2501 #2502 #2504 #2507 #2512
@@ -51,6 +52,23 @@ describe("a11y / chokepoints", () => {
     expect((container.firstElementChild as HTMLElement).getAttribute("aria-hidden")).toBe(
       "true",
     );
+  });
+
+  it("required fields carry aria-required and a visible mention (RGAA 11.10)", () => {
+    render(
+      <CommittedTextField label="Workflow Name" required value="svc" onChange={() => {}} />,
+    );
+    const input = screen.getByLabelText(/Workflow Name/) as HTMLInputElement;
+    expect(input.getAttribute("aria-required")).toBe("true");
+    expect(screen.getByText("*")).toBeTruthy();
+    expect(screen.getByText("(required)")).toBeTruthy();
+
+    cleanup();
+    render(
+      <CommittedTextField label="Optional note" value="" onChange={() => {}} />,
+    );
+    expect(screen.getByLabelText(/Optional note/).getAttribute("aria-required")).toBeNull();
+    expect(screen.queryByText("*")).toBeNull();
   });
 
   it("ResizeSeparator — full splitter contract on one axis", () => {

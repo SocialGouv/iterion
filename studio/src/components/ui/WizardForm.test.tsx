@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -41,5 +43,22 @@ describe("WizardForm", () => {
     expect(select.id.endsWith("-env")).toBe(true);
     const notes = screen.getByLabelText("Operator notes") as HTMLTextAreaElement;
     expect(notes.id.endsWith("-notes")).toBe(true);
+  });
+});
+
+describe("WizardForm required mention", () => {
+  it("every decorative required asterisk is paired with an sr-only mention", () => {
+    // The asterisk is aria-hidden: on its own it says nothing to assistive
+    // tech. Each one must sit beside an sr-only "(required)" so the label's
+    // accessible name carries the mention wherever that label renders.
+    // (The flat chat-style render labels no question at all — a separate
+    // gap; this pins the markers wherever labels DO render.)
+    const src = readFileSync(resolve(process.cwd(), "src/components/ui/WizardForm.tsx"), "utf8");
+    const asterisks = (src.match(/aria-hidden="true">\s*\*\s*<\/span>/g) ?? []).length;
+    const mentions = (src.match(/sr-only">\(required\)<\/span>/g) ?? []).length;
+    expect(asterisks).toBeGreaterThan(0);
+    expect(mentions, "each required asterisk needs its sr-only (required) mention beside it").toBe(
+      asterisks,
+    );
   });
 });
