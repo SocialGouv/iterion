@@ -414,11 +414,11 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
           showGlyph={false}
         />
         {call.duration !== undefined && (
-          <span className="text-caption text-fg-subtle">
+          <span className="text-caption text-fg-muted">
             {formatMs(call.duration)}
           </span>
         )}
-        <span className="ml-auto text-caption font-mono text-fg-subtle">
+        <span className="ml-auto text-caption font-mono text-fg-muted">
           seq {call.seq}
         </span>
       </div>
@@ -462,7 +462,7 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
           type="button"
           onClick={() => setShowRaw((v) => !v)}
           aria-pressed={showRaw}
-          className="text-caption text-fg-subtle hover:text-fg-default"
+          className="text-caption text-fg-muted hover:text-fg-default"
         >
           {showRaw ? "hide raw" : "show raw"}
         </button>
@@ -471,7 +471,7 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
         )}
       </div>
       {showRaw && call.rawData && (
-        <pre className="mt-1 text-caption font-mono whitespace-pre-wrap break-all bg-surface-1 rounded p-1.5 text-fg-subtle">
+        <pre className="mt-1 text-caption font-mono whitespace-pre-wrap break-all bg-surface-1 rounded p-1.5 text-fg-muted">
           {JSON.stringify(call.rawData, null, 2)}
         </pre>
       )}

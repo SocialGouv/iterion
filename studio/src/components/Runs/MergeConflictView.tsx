@@ -179,7 +179,7 @@ export default function MergeConflictView({
         <span className="text-micro font-semibold text-warning-fg">
           Merge conflict
         </span>
-        <span className="text-caption text-fg-subtle">
+        <span className="text-caption text-fg-muted">
           {remaining.length === 0
             ? "All files resolved"
             : `${remaining.length} file${remaining.length === 1 ? "" : "s"} pending`}
@@ -240,7 +240,7 @@ export default function MergeConflictView({
       )}
       <footer className="sticky bottom-0 border-t border-border-default bg-warning-soft px-3 py-2 space-y-2">
         <div>
-          <label className="block text-caption uppercase tracking-wide text-fg-subtle mb-1">
+          <label className="block text-caption uppercase tracking-wide text-fg-muted mb-1">
             Squash commit message
           </label>
           <Textarea
@@ -261,7 +261,7 @@ export default function MergeConflictView({
           {busyGlobal === "finalize" ? "Finalizing…" : "Finish merge"}
         </Button>
         {!allResolved && (
-          <div className="text-caption text-fg-subtle">
+          <div className="text-caption text-fg-muted">
             Resolve every file before finishing. Each file's "Resolve" button
             stages the current content via <code>git add</code>.
           </div>

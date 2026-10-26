@@ -119,7 +119,7 @@ export default function RunsPanel({ runs, loading, error, scope }: Props) {
                       {r.name || r.workflow_name}
                     </span>
                     {r.name && r.workflow_name !== r.name && (
-                      <span className="block text-caption text-fg-subtle truncate">
+                      <span className="block text-caption text-fg-muted truncate">
                         {r.workflow_name}
                       </span>
                     )}
@@ -130,7 +130,7 @@ export default function RunsPanel({ runs, loading, error, scope }: Props) {
                       ? ` · #${r.queue_position}`
                       : ""}
                   </Badge>
-                  <span className="text-caption text-fg-subtle shrink-0 w-16 text-right">
+                  <span className="text-caption text-fg-muted shrink-0 w-16 text-right">
                     {formatRelative(r.updated_at)}
                   </span>
                 </button>

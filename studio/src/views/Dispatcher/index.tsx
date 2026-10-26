@@ -438,7 +438,7 @@ function DispatchSkipsTable({
                 {s.identifier || s.issue_id}
               </Td>
               <Td className="font-mono">
-                {s.bot ? s.bot : <span className="text-fg-subtle">—</span>}
+                {s.bot ? s.bot : <span className="text-fg-muted">—</span>}
               </Td>
               <Td className="text-danger-fg">{s.reason}</Td>
             </Tr>

@@ -202,7 +202,7 @@ export default function AgentChatboxInline({
               <button
                 type="button"
                 onClick={() => toggleSkill(name)}
-                className="text-fg-subtle hover:text-fg-default focus:outline-none"
+                className="text-fg-muted hover:text-fg-default focus:outline-none"
                 aria-label={`Remove skill ${name}`}
               >
                 <Cross1Icon className="h-2.5 w-2.5" />
@@ -296,13 +296,13 @@ export default function AgentChatboxInline({
                     className={`w-full rounded px-2 py-1 text-left hover:bg-surface-2 ${selected ? "bg-info-soft" : ""}`}
                   >
                     <span className="inline-flex items-center gap-1 font-mono">
-                      <span className="text-caption text-fg-subtle">
+                      <span className="text-caption text-fg-muted">
                         {selected ? "☑" : "☐"}
                       </span>
                       {s.name}
                     </span>
                     {s.description && (
-                      <span className="ml-5 block text-caption text-fg-subtle">
+                      <span className="ml-5 block text-caption text-fg-muted">
                         {s.description}
                       </span>
                     )}

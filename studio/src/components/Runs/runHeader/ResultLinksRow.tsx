@@ -60,7 +60,7 @@ export default function ResultLinksRow({ links }: { links: ResultLink[] }) {
           <div key={link.url} className="flex items-center gap-2 min-w-0">
             <Icon className="w-4 h-4 shrink-0 text-accent-text" />
             <span className="font-medium text-fg-default shrink-0">{meta.label}</span>
-            <ArrowRightIcon className="w-3 h-3 shrink-0 text-fg-subtle" />
+            <ArrowRightIcon className="w-3 h-3 shrink-0 text-fg-muted" />
             <a
               href={link.url}
               target="_blank"

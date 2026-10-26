@@ -212,12 +212,12 @@ export default function PauseForm({
             🔐 Approval required: <code>{marker.tool}</code>
           </div>
           {arg && (
-            <pre className="text-caption text-fg-subtle whitespace-pre-wrap break-all max-h-32 overflow-auto m-0">
+            <pre className="text-caption text-fg-muted whitespace-pre-wrap break-all max-h-32 overflow-auto m-0">
               {arg}
             </pre>
           )}
           {!arg && prompt && (
-            <div className="text-caption text-fg-subtle whitespace-pre-wrap">{prompt}</div>
+            <div className="text-caption text-fg-muted whitespace-pre-wrap">{prompt}</div>
           )}
         </div>
         {error && (

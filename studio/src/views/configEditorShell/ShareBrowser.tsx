@@ -288,11 +288,11 @@ function ShareLeaf({
           <Icon
             icon={LockClosedIcon}
             label="read-only"
-            className="h-3 w-3 shrink-0 text-fg-subtle"
+            className="h-3 w-3 shrink-0 text-fg-muted"
           />
         )}
       </span>
-      <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-caption text-fg-subtle">
+      <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-caption text-fg-muted">
         {s.category && <span className="truncate">{s.category}</span>}
         {s.config_path && (
           <>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { absoluteTargetHits } from "./_adminNestLinks";
-import { hit, isIntrinsic, jsxClassed } from "./_jsx";
+import { hit, isIntrinsic, jsxAncestral, jsxClassed } from "./_jsx";
 import { files, scan, scanWhole } from "./_scanner";
 
 // Source-discipline regression traps. Each scans every source module as raw
@@ -405,6 +405,25 @@ describe("source discipline", () => {
     if (hits.length) {
       throw new Error(
         `text-fg-subtle on a -soft tint (design-system.md § Don'ts) — use text-fg-muted:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
+  it("text-fg-subtle never INHERITS onto a -soft tint from an ancestor either", () => {
+    // The sibling canary above judges ONE variant string: when the tint and
+    // the colour sit on two different elements (a tinted banner, a subtle
+    // child) no variant ever holds both and the case is invisible. The
+    // ancestry walker sees the composition.
+    const soft = /\bbg-(danger|warning|success|info|live|accent)-soft\b/;
+    const hits = jsxAncestral().flatMap((e) =>
+      e.ancestors
+        .filter((a) => soft.test(a))
+        .flatMap(() => e.variants.filter((v) => /\btext-fg-subtle\b/.test(v)).map((v) => hit(e, v))),
+    );
+    if (hits.length) {
+      throw new Error(
+        `text-fg-subtle inherited onto a -soft tint (RGAA 3.2) — text-fg-muted or the tint's own -fg:\n${hits.join("\n")}`,
       );
     }
     expect(hits).toHaveLength(0);

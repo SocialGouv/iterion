@@ -45,7 +45,7 @@ export default function OperatorPauseBanner({ run }: Props) {
           ? `Agent halted before ${checkpointNode}.`
           : "Agent halted at the next safe boundary."}
       </span>
-      <span className="text-fg-subtle">
+      <span className="text-fg-muted">
         The run will not progress until you click Resume.
       </span>
       <div className="ml-auto flex items-center gap-2">

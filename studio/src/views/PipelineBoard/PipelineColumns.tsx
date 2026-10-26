@@ -1073,14 +1073,14 @@ function DepsPreview({ card }: { card: PipelineBoardCardDTO }) {
           <li key={b.id} className="truncate" title={b.title || b.id}>
             · {b.title || b.id}
             {b.state ? (
-              <span className="text-fg-subtle"> ({b.state})</span>
+              <span className="text-fg-muted"> ({b.state})</span>
             ) : (
               <span className="text-danger-fg"> (missing)</span>
             )}
           </li>
         ))}
         {more > 0 && (
-          <li className="text-fg-subtle">+{more} more</li>
+          <li className="text-fg-muted">+{more} more</li>
         )}
       </ul>
     </div>

@@ -98,7 +98,7 @@ export default function AppearanceTab() {
                   <Icon className="w-4 h-4" />
                   {label}
                 </span>
-                <span className="text-xs text-fg-subtle">{description}</span>
+                <span className="text-xs text-fg-muted">{description}</span>
               </button>
             );
           })}
@@ -139,7 +139,7 @@ export default function AppearanceTab() {
             }`}
           >
             <span className="text-fg-default font-medium">Enter submits</span>
-            <span className="text-xs text-fg-subtle">
+            <span className="text-xs text-fg-muted">
               Enter sends the message. Shift+Enter inserts a newline.
             </span>
           </button>
@@ -166,7 +166,7 @@ export default function AppearanceTab() {
             <span className="text-fg-default font-medium">
               Cmd/Ctrl+Enter submits
             </span>
-            <span className="text-xs text-fg-subtle">
+            <span className="text-xs text-fg-muted">
               Enter inserts a newline. Cmd/Ctrl+Enter sends the message
               (legacy behavior).
             </span>
@@ -209,7 +209,7 @@ export default function AppearanceTab() {
             }`}
           >
             <span className="text-fg-default font-medium">Full motion</span>
-            <span className="text-xs text-fg-subtle">
+            <span className="text-xs text-fg-muted">
               Animations run. The default.
             </span>
           </button>
@@ -234,7 +234,7 @@ export default function AppearanceTab() {
             }`}
           >
             <span className="text-fg-default font-medium">Reduced</span>
-            <span className="text-xs text-fg-subtle">
+            <span className="text-xs text-fg-muted">
               Infinite animations stop; transitions stay.
             </span>
           </button>
@@ -276,7 +276,7 @@ export default function AppearanceTab() {
             }`}
           >
             <span className="text-fg-default font-medium">On</span>
-            <span className="text-xs text-fg-subtle">Shortcuts answer bare keys. The default.</span>
+            <span className="text-xs text-fg-muted">Shortcuts answer bare keys. The default.</span>
           </button>
           <button
             ref={(el) => {
@@ -299,7 +299,7 @@ export default function AppearanceTab() {
             }`}
           >
             <span className="text-fg-default font-medium">Off</span>
-            <span className="text-xs text-fg-subtle">
+            <span className="text-xs text-fg-muted">
               Bare keys reach the focused control only.
             </span>
           </button>

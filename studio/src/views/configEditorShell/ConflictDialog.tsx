@@ -91,14 +91,14 @@ function ConflictPane({
         highlight ? "border-accent bg-accent-soft/50" : "border-border-default bg-surface-2"
       }`}
     >
-      <h3 className="mb-1 text-caption font-semibold uppercase tracking-wider text-fg-subtle">
+      <h3 className="mb-1 text-caption font-semibold uppercase tracking-wider text-fg-muted">
         {title}
       </h3>
       {field.kind === "array" ? (
         (() => {
           const items = normArray(Array.isArray(value) ? value : []);
           return items.length === 0 ? (
-            <p className="italic text-fg-subtle">empty</p>
+            <p className="italic text-fg-muted">empty</p>
           ) : (
             <ul className="space-y-0.5 font-mono">
               {items.map((it, i) => (
@@ -112,7 +112,7 @@ function ConflictPane({
       ) : (
         <pre className="whitespace-pre-wrap wrap-break-word font-mono text-fg-default">
           {(typeof value === "string" ? value : "") || (
-            <span className="italic text-fg-subtle">empty</span>
+            <span className="italic text-fg-muted">empty</span>
           )}
         </pre>
       )}

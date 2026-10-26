@@ -144,14 +144,14 @@ export default function GateFileInput({
         {value ? (
           <p className="text-xs truncate max-w-full">
             {value.filename}{" "}
-            <span className="text-fg-subtle">· {formatBytes(value.size)}</span>
+            <span className="text-fg-muted">· {formatBytes(value.size)}</span>
           </p>
         ) : (
           <>
             <p className="text-xs text-fg-muted">
               {uploading ? "Uploading…" : "Drop a file or click to browse"}
             </p>
-            {hint && <p className="text-micro text-fg-subtle">{hint}</p>}
+            {hint && <p className="text-micro text-fg-muted">{hint}</p>}
           </>
         )}
         <input

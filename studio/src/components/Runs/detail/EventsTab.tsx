@@ -66,7 +66,7 @@ export function EventsTab({ events }: { events: RunEvent[] }) {
                       : "bg-surface-1 border-border-default text-fg-subtle hover:text-fg-default"
                   }`}
                 >
-                  {t} <span className="text-fg-subtle">{typeCounts.get(t)}</span>
+                  {t} <span className="text-fg-muted">{typeCounts.get(t)}</span>
                 </button>
               );
             })}

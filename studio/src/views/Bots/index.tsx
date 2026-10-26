@@ -313,7 +313,7 @@ export default function BotsView() {
                     : "border-border-default bg-surface-2 text-fg-muted hover:border-border-strong hover:text-fg-default"
                 }`}
               >
-                {tag} <span className="text-fg-subtle">{count}</span>
+                {tag} <span className="text-fg-muted">{count}</span>
               </button>
             );
           })}

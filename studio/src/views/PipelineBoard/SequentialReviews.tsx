@@ -149,7 +149,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
           Awaiting input
         </span>
         {total > 1 && (
-          <span className="text-micro text-fg-subtle">
+          <span className="text-micro text-fg-muted">
             Review {current + 1} of {total} · {stagedCount} prepared
           </span>
         )}
@@ -179,7 +179,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
       </div>
 
       {(review.workflow_name || review.node_id) && (
-        <div className="flex min-w-0 flex-wrap items-center gap-1 text-caption text-fg-subtle">
+        <div className="flex min-w-0 flex-wrap items-center gap-1 text-caption text-fg-muted">
           {review.run_id && (
             <Link
               href={`/runs/${encodeURIComponent(review.run_id)}`}
@@ -210,7 +210,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
           </InlineBanner>
         ) : staged[reviewKey] ? (
           <div className="flex items-center gap-2 rounded border border-border-subtle bg-surface px-2 py-1">
-            <span className="text-micro text-fg-subtle">Response prepared for this review.</span>
+            <span className="text-micro text-fg-muted">Response prepared for this review.</span>
             <Button variant="secondary" size="sm" disabled={sending} onClick={unstage}>
               Change response
             </Button>
@@ -241,7 +241,7 @@ export function SequentialReviews({ card, onResolved }: Props) {
 
       {total > 1 && (
         <div className="flex items-center justify-between gap-2 border-t border-border-subtle pt-2">
-          <span className="text-micro text-fg-subtle">
+          <span className="text-micro text-fg-muted">
             Responses stay editable until the whole batch is sent.
           </span>
           <Button

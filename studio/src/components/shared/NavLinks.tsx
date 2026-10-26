@@ -345,7 +345,7 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
           <button
             type="button"
             onClick={toggle}
-            className="ml-1 inline-flex items-center gap-0.5 text-caption text-fg-subtle hover:text-fg-default rounded px-1 py-0.5 hover:bg-surface-3"
+            className="ml-1 inline-flex items-center gap-0.5 text-caption text-fg-muted hover:text-fg-default rounded px-1 py-0.5 hover:bg-surface-3"
             aria-expanded={!folded}
             title={folded ? `Show ${tabs.length} open tab${tabs.length === 1 ? "" : "s"}` : "Hide open tabs"}
           >
@@ -477,7 +477,7 @@ function SidebarTabRow({
       <button
         type="button"
         onClick={handleClose}
-        className="inline-flex items-center justify-center w-4 h-4 rounded text-fg-subtle hover:text-fg-default hover:bg-surface-3 opacity-0 group-hover:opacity-100 focus:opacity-100"
+        className="inline-flex items-center justify-center w-4 h-4 rounded text-fg-muted hover:text-fg-default hover:bg-surface-3 opacity-0 group-hover:opacity-100 focus:opacity-100"
         title="Close tab"
         aria-label={`Close tab ${tab.label}`}
       >

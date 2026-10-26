@@ -70,7 +70,7 @@ export function ModerationQueue({ entries, onApprove, onReject }: Props) {
                   </span>
                 )}
               </div>
-              <p className="truncate font-mono text-caption text-fg-subtle">
+              <p className="truncate font-mono text-caption text-fg-muted">
                 {e.repo_url}
                 {e.ref ? `#${e.ref}` : ""}
               </p>
@@ -128,7 +128,7 @@ export function ModerationQueue({ entries, onApprove, onReject }: Props) {
         }
       >
         <label className="flex flex-col gap-1">
-          <span className="text-caption uppercase tracking-wide text-fg-subtle">
+          <span className="text-caption uppercase tracking-wide text-fg-muted">
             Reason (optional)
           </span>
           <Textarea

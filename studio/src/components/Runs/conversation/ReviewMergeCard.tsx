@@ -239,7 +239,7 @@ function ReviewMergeCardTurn({
               <option value="squash">Squash and merge</option>
               <option value="merge">Merge commit (FF)</option>
             </Select>
-            <span className="text-fg-subtle">
+            <span className="text-fg-muted">
               → {review.mergeInto === "current" ? "current branch" : review.mergeInto}
             </span>
           </div>
@@ -265,7 +265,7 @@ function ReviewMergeCardTurn({
             Request changes
           </Button>
         </div>
-        <p className="text-body text-fg-subtle">
+        <p className="text-body text-fg-muted">
           Force-merge skips the reviewer&apos;s verdict (git safety checks still
           apply). Request changes returns the run to the implementer.
         </p>

@@ -186,7 +186,7 @@ export default function CommandPalette({ open, actions, onClose }: Props) {
                     i === cursor ? "bg-accent-soft text-fg-default" : "text-fg-default hover:bg-surface-2"
                   }`}
                 >
-                  <span className="text-caption uppercase tracking-wide text-fg-subtle min-w-16 shrink-0">
+                  <span className="text-caption uppercase tracking-wide text-fg-muted min-w-16 shrink-0">
                     {a.group}
                   </span>
                   <span className="flex-1 truncate">{a.title}</span>
