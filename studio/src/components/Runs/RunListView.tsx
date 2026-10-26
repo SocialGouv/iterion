@@ -387,7 +387,10 @@ export default function RunListView() {
             so the user can tell at a glance how each run was
             triggered without expanding the row. */}
         <table className="w-full text-xs hidden sm:table">
-          <caption className="sr-only">Runs</caption>
+          <caption className="sr-only">
+            Runs by state group — columns: selection, run, workflow, source,
+            status, started, duration, run ID.
+          </caption>
           <thead className="text-fg-subtle">
             <tr className="border-b border-border-default">
               <th scope="col" className="pl-4 pr-1 py-2 w-8">

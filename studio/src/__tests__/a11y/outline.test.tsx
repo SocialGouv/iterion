@@ -61,6 +61,15 @@ describe("the shell's landmark outline", () => {
     expect(src).toContain("<h1 className=\"inline-flex items-center gap-1 min-w-0 group");
   });
 
+  it("the runs table caption summarizes the columns and the grouping (RGAA 5.1, #2508)", () => {
+    const src = readFileSync(
+      resolve(process.cwd(), "src/components/Runs/RunListView.tsx"),
+      "utf8",
+    );
+    expect(src).toContain("Runs by state group");
+    expect(src).toContain("duration, run ID");
+  });
+
   it("keeps the banner landmark when the local-identity bar is empty", () => {
     // Local identity hides the account chip; with no page content pushed
     // the bar collapses to zero height but the landmark STAYS (RGAA 9.2:
