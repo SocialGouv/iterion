@@ -170,6 +170,7 @@ func TestHeartbeatStoreForwardsReliabilityCapabilities(t *testing.T) {
 // no packed CLI session, mounts no run-files directory.
 func TestHeartbeatStoreHidesNoCapabilityTheEngineProbes(t *testing.T) {
 	probes := map[string]func(store.RunStore) bool{
+		"AsAttemptStore":          func(s store.RunStore) bool { return store.AsAttemptStore(s) != nil },
 		"AsBackendSessionStore":   func(s store.RunStore) bool { return store.AsBackendSessionStore(s) != nil },
 		"AsOutputCorrectionStore": func(s store.RunStore) bool { return store.AsOutputCorrectionStore(s) != nil },
 		"AsParentedRunCreator":    func(s store.RunStore) bool { return store.AsParentedRunCreator(s) != nil },
