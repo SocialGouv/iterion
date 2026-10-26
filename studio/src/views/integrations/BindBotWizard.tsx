@@ -384,6 +384,7 @@ function BotStep({
                 <button
                   type="button"
                   onClick={() => !bound && onPick(b.name)}
+                  aria-label={bound ? `${b.name} (already bound)` : `Bind ${b.name}`}
                   disabled={bound}
                   className={[
                     "w-full text-left rounded-[var(--radius-lg)] border p-3 transition-colors disabled:opacity-60",

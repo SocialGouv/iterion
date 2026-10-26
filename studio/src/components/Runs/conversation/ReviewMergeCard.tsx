@@ -204,6 +204,7 @@ function ReviewMergeCardTurn({
       {/* Continue the dialogue */}
       <div className="space-y-1">
         <textarea
+          aria-label="Reply to the reviewer"
           className="w-full rounded border border-border-control bg-surface-0 px-3 py-2 text-label text-fg-default"
           rows={3}
           placeholder="Reply to the reviewer (e.g. what you tested, what you saw)…"
@@ -246,7 +247,8 @@ function ReviewMergeCardTurn({
         )}
         {!noMerge && strategy === "squash" && (
           <textarea
-            className="w-full rounded border border-border-control bg-surface-0 px-3 py-2 text-body font-mono text-fg-default"
+            aria-label="Editable diff"
+          className="w-full rounded border border-border-control bg-surface-0 px-3 py-2 text-body font-mono text-fg-default"
             rows={2}
             placeholder="(optional) squash commit message — defaults to the run's commits"
             value={commitMsg}
