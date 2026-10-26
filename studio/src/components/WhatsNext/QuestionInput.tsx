@@ -156,7 +156,10 @@ function RadioInput({
           : OTHER_SENTINEL;
 
   return (
-    <div className="space-y-1.5">
+    <fieldset className="space-y-1.5">
+      {/* The visible label sits beside the group in WizardForm; the sr-only
+          legend names the GROUP for assistive tech (RGAA 11.5/11.6). */}
+      <legend className="sr-only">{question.label}</legend>
       {question.options.map((opt) => (
         <OptionRow
           key={opt.value}
@@ -193,7 +196,7 @@ function RadioInput({
           }}
         />
       )}
-    </div>
+    </fieldset>
   );
 }
 
@@ -233,7 +236,8 @@ function CheckboxInput({
   };
 
   return (
-    <div className="space-y-1.5">
+    <fieldset className="space-y-1.5">
+      <legend className="sr-only">{question.label}</legend>
       {question.options.map((opt) => (
         <OptionRow
           key={opt.value}
@@ -270,7 +274,7 @@ function CheckboxInput({
           }}
         />
       )}
-    </div>
+    </fieldset>
   );
 }
 

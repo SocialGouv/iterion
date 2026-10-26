@@ -34,6 +34,29 @@ describe("QuestionInput", () => {
     ).toBeTruthy();
   });
 
+  it("groups its radio and checkbox options under the question (RGAA 11.5/11.6)", () => {
+    const question = {
+      id: "gate",
+      label: "Proceed with the rollout?",
+      kind: "radio" as const,
+      required: false,
+      options: [
+        { label: "Yes", value: "yes" },
+        { label: "No", value: "no" },
+      ],
+    };
+    render(<QuestionInput question={question} value={""} onChange={vi.fn()} />);
+    const group = screen.getByRole("group", { name: "Proceed with the rollout?" });
+    expect(group.querySelector("legend")?.textContent).toBe("Proceed with the rollout?");
+
+    cleanup();
+    render(
+      <QuestionInput question={{ ...question, kind: "checkbox" }} value={[]} onChange={vi.fn()} />,
+    );
+    const checkboxGroup = screen.getByRole("group", { name: "Proceed with the rollout?" });
+    expect(checkboxGroup.querySelector("legend")?.textContent).toBe("Proceed with the rollout?");
+  });
+
   it("puts inputId on the select it renders (RGAA 11.1)", () => {
     render(
       <QuestionInput
