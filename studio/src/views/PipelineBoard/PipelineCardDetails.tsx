@@ -24,6 +24,8 @@ import { trapTabKey } from "@/lib/a11y";
 
 import {
   DRAWER_WIDTH_DEFAULT,
+  DRAWER_WIDTH_STEP,
+  DRAWER_WIDTH_STEP_LARGE,
   clampDrawerWidth,
   drawerWidthBounds,
   readDrawerWidth,
@@ -861,6 +863,9 @@ export default function PipelineCardDetails({
               onResize: commitWidth,
             },
           }}
+          step={DRAWER_WIDTH_STEP}
+          bigStep={DRAWER_WIDTH_STEP_LARGE}
+          valuetext={`${width} pixels`}
           onPointerResizeStart={startResize}
           onReset={() => commitWidth(DRAWER_WIDTH_DEFAULT)}
           title="Drag to resize — ←/→ to adjust, double-click to reset"

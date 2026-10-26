@@ -84,12 +84,15 @@ export function ResizeSeparator({
     else if (y && e.key === "ArrowDown") bump(y, y.grow === "end");
     else if (
       // Home/End need a single axis to mean anything; a corner grip
-      // spanning both skips them.
+      // spanning both skips them. They JUMP to the bounds — a step
+      // would take a dozen presses to reach them.
       axisCount === 1 &&
       primary &&
       (e.key === "Home" || e.key === "End")
     ) {
-      bump(primary, e.key === "End");
+      e.preventDefault();
+      e.stopPropagation();
+      primary.onResize(e.key === "End" ? primary.max : primary.min);
     }
   };
 

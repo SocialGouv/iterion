@@ -1,8 +1,12 @@
 import type { ComponentType, SVGProps } from "react";
 
-// IconComponent is any Radix-style icon: a component rendering a bare
-// <svg> from SVG props.
-export type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
+// IconComponent is any icon rendering a bare <svg> from SVG props:
+// Radix-style components and the @heroicons family (whose props type
+// narrows children away, hence the `children?: undefined` in the
+// contract — this alias's single widening point heals every call site).
+export type IconComponent = ComponentType<
+  SVGProps<SVGSVGElement> & { children?: undefined }
+>;
 
 // Icon renders an icon glyph with its accessibility contract decided
 // once, at this chokepoint, instead of per call-site:

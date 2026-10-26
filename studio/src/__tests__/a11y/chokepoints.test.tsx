@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { CrossCircledIcon } from "@radix-ui/react-icons";
 
@@ -53,39 +54,46 @@ describe("a11y / chokepoints", () => {
   });
 
   it("ResizeSeparator — full splitter contract on one axis", () => {
-    const onResize = vi.fn();
+    // The primitive is stateless: the caller owns the value and feeds it
+    // back through onResize. The harness mirrors that contract — a real
+    // panel re-renders with the committed size after every resize — so
+    // the assertions read the live aria-valuenow, not a frozen mock.
+    function Harness({ onReset }: { onReset: () => void }) {
+      const [value, setValue] = useState(300);
+      return (
+        <ResizeSeparator
+          label="Resize panel"
+          axes={{ x: { value, min: 220, max: 560, grow: "end", onResize: setValue } }}
+          onReset={onReset}
+        />
+      );
+    }
     const onReset = vi.fn();
-    const { container } = render(
-      <ResizeSeparator
-        label="Resize panel"
-        axes={{ x: { value: 300, min: 220, max: 560, grow: "end", onResize } }}
-        onReset={onReset}
-      />,
-    );
-    const grip = container.firstElementChild as HTMLElement;
-    expect(grip.getAttribute("role")).toBe("separator");
-    expect(grip.getAttribute("tabindex")).toBe("0");
-    expect(grip.getAttribute("aria-orientation")).toBe("vertical");
-    expect(grip.getAttribute("aria-valuenow")).toBe("300");
-    expect(grip.getAttribute("aria-valuemin")).toBe("220");
-    expect(grip.getAttribute("aria-valuemax")).toBe("560");
-    expect(grip.getAttribute("aria-valuetext")).toBe("300 pixels wide");
+    const { container } = render(<Harness onReset={onReset} />);
+    const grip = () => container.firstElementChild as HTMLElement;
+    expect(grip().getAttribute("role")).toBe("separator");
+    expect(grip().getAttribute("tabindex")).toBe("0");
+    expect(grip().getAttribute("aria-orientation")).toBe("vertical");
+    expect(grip().getAttribute("aria-valuenow")).toBe("300");
+    expect(grip().getAttribute("aria-valuemin")).toBe("220");
+    expect(grip().getAttribute("aria-valuemax")).toBe("560");
+    expect(grip().getAttribute("aria-valuetext")).toBe("300 pixels wide");
 
     // grow: "end" — ArrowRight enlarges, ArrowLeft shrinks, Shift is a
-    // big step, Home/End hit the bounds, and the primitive clamps.
-    fireEvent.keyDown(grip, { key: "ArrowRight" });
-    expect(onResize).toHaveBeenLastCalledWith(316);
-    fireEvent.keyDown(grip, { key: "ArrowLeft" });
-    expect(onResize).toHaveBeenLastCalledWith(284);
-    fireEvent.keyDown(grip, { key: "ArrowRight", shiftKey: true });
-    expect(onResize).toHaveBeenLastCalledWith(348);
-    fireEvent.keyDown(grip, { key: "Home" });
-    expect(onResize).toHaveBeenLastCalledWith(220);
-    fireEvent.keyDown(grip, { key: "End" });
-    expect(onResize).toHaveBeenLastCalledWith(560);
-    fireEvent.keyDown(grip, { key: "ArrowRight", shiftKey: true });
-    expect(onResize).toHaveBeenLastCalledWith(560);
-    fireEvent.doubleClick(grip);
+    // big step, Home/End jump to the bounds, and the primitive clamps.
+    fireEvent.keyDown(grip(), { key: "ArrowRight" });
+    expect(grip().getAttribute("aria-valuenow")).toBe("316");
+    fireEvent.keyDown(grip(), { key: "ArrowLeft" });
+    expect(grip().getAttribute("aria-valuenow")).toBe("300");
+    fireEvent.keyDown(grip(), { key: "ArrowRight", shiftKey: true });
+    expect(grip().getAttribute("aria-valuenow")).toBe("364");
+    fireEvent.keyDown(grip(), { key: "Home" });
+    expect(grip().getAttribute("aria-valuenow")).toBe("220");
+    fireEvent.keyDown(grip(), { key: "End" });
+    expect(grip().getAttribute("aria-valuenow")).toBe("560");
+    fireEvent.keyDown(grip(), { key: "ArrowRight", shiftKey: true });
+    expect(grip().getAttribute("aria-valuenow")).toBe("560");
+    fireEvent.doubleClick(grip());
     expect(onReset).toHaveBeenCalledTimes(1);
   });
 

@@ -90,7 +90,7 @@ export function IssueCard({
   const pinnedFields = iss.fields ? pickPinnedFields(iss.fields) : [];
   return (
     <div
-      {...clickableRowProps(onOpen)}
+      {...clickableRowProps(onOpen, iss.title)}
       draggable
       data-issue-card
       title={hoverTitle}

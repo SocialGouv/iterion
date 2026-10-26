@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { attachmentURL, fetchAttachment } from "@/api/runs";
 import { ImagePreviewDialog } from "@/views/PipelineBoard/ImagePreview";
-import { CopyButton, Spinner } from "@/components/ui";
+import { CopyButton, Spinner, VideoPreview } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { formatBytes } from "@/lib/format";
 import type { GateInboundFileRef } from "@/lib/gateInbound";

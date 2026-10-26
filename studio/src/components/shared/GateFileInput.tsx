@@ -116,7 +116,7 @@ export default function GateFileInput({
   return (
     <div className="space-y-1">
       <div
-        {...clickableRowProps(() => inputRef.current?.click())}
+        {...clickableRowProps(() => inputRef.current?.click(), `Upload ${label}`)}
         aria-invalid={Boolean(error) || undefined}
         aria-busy={uploading || undefined}
         aria-disabled={disabled || undefined}
