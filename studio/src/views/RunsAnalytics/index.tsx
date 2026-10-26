@@ -225,7 +225,7 @@ interface CostChartProps {
   colors: Record<string, string>;
 }
 
-function CostChart({ buckets, workflows, colors }: CostChartProps) {
+export function CostChart({ buckets, workflows, colors }: CostChartProps) {
   if (buckets.length === 0) {
     return (
       <p className="text-micro text-fg-muted italic">No cost recorded in this window.</p>
@@ -249,6 +249,35 @@ function CostChart({ buckets, workflows, colors }: CostChartProps) {
   );
   const yScale = (v: number) => PAD_TOP + plotH - (v / max) * plotH;
   return (
+    <div>
+      {/* The figures the svg renders graphically, as real text for assistive
+          tech (RGAA 1.6): hover-only <title> hides them from non-mouse
+          users. sr-only keeps the table visually out of the way. */}
+      <table className="sr-only">
+        <caption>Cost per day, stacked by workflow</caption>
+        <thead>
+          <tr>
+            <th scope="col">Day</th>
+            {workflows.map((wf) => (
+              <th scope="col" key={wf}>
+                {wf}
+              </th>
+            ))}
+            <th scope="col">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {buckets.map((b) => (
+            <tr key={b.day}>
+              <th scope="row">{b.day}</th>
+              {workflows.map((wf) => (
+                <td key={wf}>{formatCost(b.cost_by_workflow[wf] ?? 0)}</td>
+              ))}
+              <td>{formatCost(b.total)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     <svg
       viewBox={`0 0 ${W} ${H}`}
       role="img"
@@ -323,6 +352,7 @@ function CostChart({ buckets, workflows, colors }: CostChartProps) {
         );
       })}
     </svg>
+    </div>
   );
 }
 
