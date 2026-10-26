@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import {
+import { MixerHorizontalIcon,
   DoubleArrowLeftIcon,
   GearIcon,
 } from "@radix-ui/react-icons";
@@ -116,6 +116,15 @@ export default function Sidebar() {
       <div
         className={`shrink-0 border-t border-border-default ${collapsed ? "px-1.5 py-2 flex flex-col items-center gap-1.5" : "px-2 py-2 flex flex-col gap-1.5"}`}
       >
+        <a
+          href="/sitemap"
+          className={`inline-flex items-center gap-2 text-xs text-fg-muted hover:text-fg-default hover:bg-surface-2 rounded ${collapsed ? "justify-center h-7 w-7" : "w-full px-2 py-1"}`}
+          title="Plan du site — Sitemap"
+          aria-label="Sitemap"
+        >
+          <MixerHorizontalIcon className="w-4 h-4 shrink-0" />
+          {!collapsed && <span>Sitemap</span>}
+        </a>
         {collapsed ? (
           <button
             type="button"

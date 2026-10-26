@@ -51,6 +51,36 @@ interface LinkDef {
   icon: typeof HomeIcon;
 }
 
+export interface NavRegistryGroup {
+  label: string | null;
+  hrefs: { href: string; label: string }[];
+}
+
+export const NAV_REGISTRY_LOCAL: NavRegistryGroup[] = [
+  { label: null, hrefs: [{ href: "/", label: "Home" }] },
+  { label: "What's Next", hrefs: [{ href: "/whats-next", label: "What's Next" }] },
+  { label: "Editor", hrefs: [{ href: "/editor", label: "Editor" }] },
+  { label: "Runs", hrefs: [{ href: "/runs", label: "Runs" }] },
+  { label: "Bots", hrefs: [{ href: "/bots", label: "Bots" }] },
+  { label: "Insights", hrefs: [{ href: "/insights", label: "Insights" }] },
+  { label: "Pipelines", hrefs: [{ href: "/pipelines", label: "Pipelines" }] },
+  { label: "Config editor", hrefs: [{ href: "/config-editor", label: "Config editor" }] },
+  { label: "Dispatcher", hrefs: [{ href: "/dispatcher", label: "Dispatcher" }] },
+  { label: "Secrets", hrefs: [{ href: "/secrets", label: "Secrets" }] },
+  { label: "Skills", hrefs: [{ href: "/skills", label: "Skills" }] },
+  { label: "Triggers", hrefs: [{ href: "/triggers", label: "Triggers" }] },
+  { label: "Plugins", hrefs: [{ href: "/plugins", label: "Plugins" }] },
+  { label: "Marketplace", hrefs: [{ href: "/marketplace", label: "Marketplace" }] },
+  { label: "Integrations", hrefs: [{ href: "/integrations", label: "Integrations" }] },
+  { label: "Sitemap", hrefs: [{ href: "/sitemap", label: "Plan du site" }] },
+];
+export const NAV_REGISTRY_CLOUD: NavRegistryGroup[] = [
+  { label: null, hrefs: [{ href: "/", label: "Home" }] },
+  { label: "What's Next", hrefs: [{ href: "/whats-next", label: "What's Next" }] },
+  { label: "Runs", hrefs: [{ href: "/runs", label: "Runs" }] },
+  { label: "Bots", hrefs: [{ href: "/bots", label: "Bots" }] },
+];
+
 const BASE_LINKS_LOCAL: LinkDef[] = [
   { section: "home", href: "/", label: "Home", icon: HomeIcon },
   { section: "whatsNext", href: "/whats-next", label: "What's Next", icon: PaperPlaneIcon },

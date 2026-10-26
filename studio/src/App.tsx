@@ -42,6 +42,7 @@ const Welcome = lazy(() => import("@/views/Welcome"));
 const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
 const CloudReloginModal = lazy(() => import("@/components/shared/CloudReloginModal"));
+const SitemapPage = lazy(() => import("@/views/Sitemap"));
 const SettingsPage = lazy(() => import("@/views/account/SettingsPage"));
 const TeamPage = lazy(() => import("@/views/teams/TeamPage"));
 const IntegrationsPage = lazy(() => import("@/views/integrations/IntegrationsPage"));
@@ -892,6 +893,11 @@ function AuthedApp() {
           <Route path="/whats-next">
             <ErrorBoundary area="What's Next view">
               <WhatsNextView />
+            </ErrorBoundary>
+          </Route>
+          <Route path="/sitemap">
+            <ErrorBoundary area="Sitemap view">
+              <SitemapPage />
             </ErrorBoundary>
           </Route>
           <Route path="/config-editor">
