@@ -256,6 +256,26 @@ describe("source discipline", () => {
     expect(hits).toHaveLength(0);
   });
 
+  it("never animates opacity on an element that carries a text colour (RGAA 3.2)", () => {
+    // `animate-pulse` / `animate-ping` run an opacity animation; at the
+    // trough the element's text colour drops under the 3:1 floor — the
+    // animated twin of the static-opacity ban above. The static ban
+    // targets the onAccent pair (a light text on a solid colour, the
+    // pairing with no contrast headroom); softer pairs pass at the trough
+    // and their remaining motion is governed by the reduced-motion gate.
+    const re = /(?<![\w:-])animate-(?:pulse|ping)(?![\w-])/;
+    const textColour = /(?:^|\s)(?:hover:|focus-visible:)?text-fg-onAccent(?![\w-])/;
+    const hits = jsxClassed()
+      .filter((e) => isIntrinsic(e.tag) && re.test(e.classes) && textColour.test(e.classes))
+      .map((e) => hit(e, "opacity animation + text colour"));
+    if (hits.length) {
+      throw new Error(
+        `an opacity animation on a text-coloured element drops the label under 3:1 at the trough (RGAA 3.2) — keep the pulse icon-only, or drop it:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
   it("no native control or control primitive draws its boundary with a chrome border token (RGAA 3.3)", () => {
     // An <input>, <textarea>, <select> — or a className handed to one of
     // the control primitives, which overrides theirs (Tailwind emits

@@ -39,12 +39,11 @@ export default function DiagnosticBadge({
   const more = diagnostics.some((d) => d.unreported > 0);
   const shown = `${diagnostics.length}${more ? "+" : ""}`;
 
-  // Errors get a subtle pulse to pull the eye on a busy canvas; warnings
-  // stay static — they're plenty visible without animation, and pulsing
-  // every warning makes the studio feel anxious.
+  // Both severities stay static: a pulse animates opacity, and at its
+  // trough the white-on-danger label drops under 3:1 (RGAA 3.2).
   const colorClass =
     sev === "error"
-      ? "bg-danger-solid text-fg-onAccent border-danger-solid animate-pulse"
+      ? "bg-danger-solid text-fg-onAccent border-danger-solid"
       : "bg-warning-solid text-fg-onAccent border-warning-solid";
   const Icon = sev === "error" ? CrossCircledIcon : ExclamationTriangleIcon;
 
