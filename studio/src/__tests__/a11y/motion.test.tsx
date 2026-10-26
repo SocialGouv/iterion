@@ -57,7 +57,7 @@ describe("motion preference", () => {
   it("every inline infinite animation sits behind the motion gate", () => {
     const ungated = files
       .filter(([p, src]) => p.endsWith(".tsx") && /animation:\s*[^;]*infinite/.test(src))
-      .filter(([p, src]) => !/motionReduced/.test(src))
+      .filter(([, src]) => !/motionReduced/.test(src))
       .map(([p]) => p);
     if (ungated.length) {
       throw new Error(
