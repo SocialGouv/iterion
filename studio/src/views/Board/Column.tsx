@@ -179,8 +179,18 @@ export function Column({
             <span className="text-accent-text font-medium">{selCount} sel ·</span>
           )}
           {issues.length}
-          {eligible && <span className="ml-1 text-success">●</span>}
-          {terminal && <span className="ml-1 text-fg-muted">✓</span>}
+          {eligible && (
+            <>
+              <span aria-hidden="true" className="ml-1 text-success">●</span>
+              <span className="sr-only">dispatch eligible</span>
+            </>
+          )}
+          {terminal && (
+            <>
+              <span aria-hidden="true" className="ml-1 text-fg-muted">✓</span>
+              <span className="sr-only">terminal column</span>
+            </>
+          )}
           {manageable && (onEditColumn || onDeleteColumn || onMoveColumn) && (
             <Popover
               align="end"
