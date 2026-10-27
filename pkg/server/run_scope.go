@@ -203,7 +203,7 @@ func (s *Server) runTenant(ctx context.Context, runID string) (string, error) {
 //     admin's PAT pinned to another team was unusable there), it does not
 //     widen a session beyond canViewTeam;
 //   - a plain org member of the team's parent org reads as a viewer too,
-//     but only when the team's run-visibility axis (ADR-138) is explicitly
+//     but only when the team's run-visibility axis (ADR-139) is explicitly
 //     opened to the org — a per-team flag the org sets, marked Via:
 //     org-shared; every action stays behind the member rung;
 //   - everyone else: not authorized.
@@ -292,7 +292,7 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 		// The org reach, narrowest grant first: an org admin/owner reads
 		// as a viewer on every team of their org (what canViewTeam would
 		// grant); a plain org member does too, but ONLY on a team whose
-		// run-visibility axis (ADR-138) is explicitly opened to the org —
+		// run-visibility axis (ADR-139) is explicitly opened to the org —
 		// a per-team, org-gated flag read LIVE with the team above. Both
 		// land as a viewer: the ladder still refuses every action, and
 		// cdp/shell stay member-only.

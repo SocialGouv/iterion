@@ -256,7 +256,7 @@ export interface RunStoreState {
   setSelectedAttemptID: (id: string | null) => void;
   runId: string | null;
   snapshot: RunSnapshot | null;
-  // The caller's effective standing for the open run (ADR-138), kept
+  // The caller's effective standing for the open run (ADR-139), kept
   // beside the snapshot because the client's local per-seq rebuilds
   // never carry it. Null until a server payload names it.
   viewer: { role: string; via?: string } | null;

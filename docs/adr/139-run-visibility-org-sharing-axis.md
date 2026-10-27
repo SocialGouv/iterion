@@ -1,4 +1,4 @@
-# ADR-138: run visibility — an org sharing axis, not a second tenancy
+# ADR-139: run visibility — an org sharing axis, not a second tenancy
 
 Status: accepted (plan reviewed by codex gpt-6-astra xhigh, 9 findings, 2026-10-27)
 Date: 2026-10-27
