@@ -828,3 +828,45 @@ func TestAPinnedHostResolvesThroughTheSystemResolverByDefault(t *testing.T) {
 		t.Errorf("the local service took %d connection(s); want none", n)
 	}
 }
+
+// The spellings only a system resolver (or the dial itself) parses meet the
+// pin too: a zoned IPv6 literal — the pin's dial never carries a zone — and
+// the IPv4 notations inet_aton reads (hex, octal, the 1-3 part forms) key as
+// the address they reach, whichever side of the pin spells them that way.
+// Keyed as the names they spell, they reach the base dialer unpinned, which
+// is the hole this test holds shut.
+func TestThePinMeetsTheSpellingsOnlyTheResolverParses(t *testing.T) {
+	dial, dialed := recordingDial("127.0.0.1:9")
+	var blocked blockedLog
+	res := &scriptedResolver{script: map[string][]string{
+		"fd00::5":    {"fd00::5"},
+		"0x0a.1.2.3": {"10.1.2.3"},
+		"167838211":  {"10.1.2.3"},
+		"0177.0.0.1": {"127.0.0.1"},
+	}, count: map[string]int{}}
+	prx := startPinProxy(t, Options{PinnedHosts: []string{"[FD00::5%lo]", "10.1.2.3", "127.0.0.1"}, PinResolver: res, Dial: dial, OnBlocked: blocked.record})
+	targets := []string{
+		"[fd00::5]:443",
+		"0x0a.1.2.3:443", "167838211:443", "0177.0.0.1:443",
+	}
+	for _, target := range targets {
+		if answer := connectVia(t, prx, target); !strings.HasPrefix(answer, "502") || !strings.Contains(answer, "is not a public unicast IP") {
+			t.Errorf("CONNECT %s: %q; want the pin's refusal", target, answer)
+		}
+		if status := forwardVia(t, prx, target); status != http.StatusBadGateway {
+			t.Errorf("forward to %s: status %d; want the pin's 502", target, status)
+		}
+	}
+	if got := dialed(); len(got) != 0 {
+		t.Errorf("the dialer was asked for %q — a spelling slipped past the pin", got)
+	}
+	reports := blocked.all()
+	if want := 2 * len(targets); len(reports) != want {
+		t.Errorf("OnBlocked reported %q; want the %d refusals", reports, want)
+	}
+	for _, r := range reports {
+		if !strings.HasPrefix(r, "fd00::5: ") && !strings.HasPrefix(r, "10.1.2.3: ") && !strings.HasPrefix(r, "127.0.0.1: ") {
+			t.Errorf("OnBlocked reported %q; want the host in its pinned form", r)
+		}
+	}
+}

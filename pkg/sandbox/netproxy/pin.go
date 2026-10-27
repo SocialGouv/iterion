@@ -100,13 +100,101 @@ func (p *Proxy) pinDial(dial dialFunc, pins *pinSet, res httpdial.HostResolver) 
 
 // pinKey is the form a host is pinned and matched in: the policy's canonical
 // form (lowercase, no root dot, IDN folded), an IP address in its standard
-// spelling — an IPv4 address written as IPv6 is the IPv4 one.
+// spelling — an IPv4 address written as IPv6 is the IPv4 one, a zone is
+// dropped because the pin's dial never carries one, and an IPv4 notation
+// only a system resolver reads becomes the dotted quad the dial reaches.
 func pinKey(host string) string {
 	c := canonicalHost(host)
 	if a, err := netip.ParseAddr(c); err == nil {
-		return a.Unmap().String()
+		return unzoned(a).String()
+	}
+	if a, ok := numericIPv4(c); ok {
+		return a.String()
 	}
 	return c
+}
+
+// unzoned strips an IPv6 zone: a zone names an interface of the machine
+// that parsed the literal, and the proxy dials from the host side, so a
+// pin and a CONNECT meet only when both key the bare address.
+func unzoned(a netip.Addr) netip.Addr {
+	return a.Unmap().WithZone("")
+}
+
+// numericIPv4 parses the IPv4 notations a system resolver reads that netip
+// refuses — inet_aton's forms: one to four dot-separated parts, each
+// decimal, octal (a leading 0) or hex (0x), the last field widening over
+// the bytes that remain. The dial's resolver (cgo getaddrinfo) reads such a
+// host as that address; keyed as the name it spells, the host would slip
+// past a pin on the address itself.
+func numericIPv4(s string) (netip.Addr, bool) {
+	parts := strings.Split(s, ".")
+	if len(parts) > 4 {
+		return netip.Addr{}, false
+	}
+	var b [4]byte
+	for i, p := range parts {
+		n, ok := numericField(p)
+		if !ok {
+			return netip.Addr{}, false
+		}
+		if i < len(parts)-1 {
+			if n > 255 {
+				return netip.Addr{}, false
+			}
+			b[i] = byte(n)
+			continue
+		}
+		// The last field fills the bytes that remain: 32 bits for one
+		// part, 24 for two, 16 for three, one byte for four.
+		width := uint(8 * (5 - len(parts)))
+		if n >= 1<<width {
+			return netip.Addr{}, false
+		}
+		for shift := 0; shift < int(width)/8; shift++ {
+			b[4-int(width)/8+shift] = byte(n >> (width - 8 - uint(shift)*8))
+		}
+	}
+	return netip.AddrFrom4(b), true
+}
+
+// numericField reads one inet_aton field: decimal, octal (a leading 0) or
+// hex (0x), refusing empty and overflowing. The octal reading is the one
+// the resolver the dial goes through gives a leading-0 part.
+func numericField(p string) (uint64, bool) {
+	if p == "" {
+		return 0, false
+	}
+	base := uint64(10)
+	digits := p
+	switch {
+	case strings.HasPrefix(p, "0x"), strings.HasPrefix(p, "0X"):
+		base, digits = 16, p[2:]
+	case len(p) > 1 && p[0] == '0':
+		base, digits = 8, p[1:]
+	}
+	if digits == "" {
+		return 0, false
+	}
+	var n uint64
+	for _, r := range digits {
+		var d uint64
+		switch {
+		case r >= '0' && r <= '9':
+			d = uint64(r - '0')
+		case base == 16 && r >= 'a' && r <= 'f':
+			d = uint64(r-'a') + 10
+		case base == 16 && r >= 'A' && r <= 'F':
+			d = uint64(r-'A') + 10
+		default:
+			return 0, false
+		}
+		if n > (^uint64(0)-d)/base || n*base > 1<<32-1-d {
+			return 0, false
+		}
+		n = n*base + d
+	}
+	return n, true
 }
 
 // pinnedHostSet keys Options.PinnedHosts by pinKey. An entry that cannot be
