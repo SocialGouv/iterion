@@ -191,11 +191,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
     </details>
 * **studio:** a disabled dropzone answers no key — the picker never opens (RGAA 7.1) ([0551c46](https://github.com/SocialGouv/iterion/commit/0551c46128386b3c8894f70f04676a02cfc39c2b))
 
-    <details><summary>why</summary>
-
-    clickableRowProps gains an optional { disabled }: the key handler refuses, tabIndex leaves the control out of the tab order, and the click target clears. The two dropzones pass their existing state (AttachmentFieldInput's disabled, GateFileInput's busy = disabled || uploading) — the mouse was already blocked by pointer-events-none; the keyboard now matches. The signature is additive: the other twelve call sites keep their behaviour.
-
-    </details>
+    **why:** clickableRowProps gains an optional { disabled }: the key handler refuses, tabIndex leaves the control out of the tab order, and the click target clears. The two dropzones pass their existing state (AttachmentFieldInput's disabled, GateFileInput's busy = disabled || uploading) — the mouse was already blocked by pointer-events-none; the keyboard now matches. The signature is additive: the other twelve call sites keep their behaviour.
 * **studio:** a11y chokepoints - named human armings, icon roles, live regions, separators, media alternatives ([10f4872](https://github.com/SocialGouv/iterion/commit/10f48724ad00cdf416b7e12c50c3a6c22cf73f60))
 
     <details><summary>why</summary>
