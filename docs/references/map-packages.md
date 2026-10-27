@@ -53,6 +53,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/testfs` | removes only scratch paths inside a test-owned root. | — |
 | `internal/testparallel` | bounds how wide a test binary runs its parallel tests, from TestMain. | — |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — |
+| `internal/yamlx` | centralizes the repository's yaml.v3 entry points so the canonical style lives in one place: strict unmarshaling (unknown fields rejected) and… | — |
 | `pkg/alert` | implements run-health alerting for the iterion studio / server. | `ErrorReportingSink`, `Sink` |
 | `pkg/artifactlabels` | derives semantic labels for a published artifact from the SHAPE of its output data — so an artifact groups under "Plans", "Verdicts", etc. | — |
 | `pkg/askusermcp` | holds the ask-user MCP tool surface shared by the two transports that expose it to a claude_code session: - the stdio server (`iterion`… | — |
