@@ -87,6 +87,60 @@ func TestTeamLifecycle_statusRefusesPendingDeletion(t *testing.T) {
 	}
 }
 
+// The run-visibility axis (ADR-138) is a governance act like suspension:
+// an org decision, with "" an explicit reset and an unknown value refused
+// rather than read as the default.
+func TestTeamLifecycle_runVisibilityIsAnOrgDecision(t *testing.T) {
+	s := newOrgCredsTestServer(t)
+
+	w := httptest.NewRecorder()
+	s.handleSetTeamRunVisibility(w, teamReq(teamAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{"run_visibility":"org"}`, "t1", ""))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("axis as team admin: code=%d body=%s, want 403", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	s.handleSetTeamRunVisibility(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{"run_visibility":"org"}`, "t1", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("axis as org admin: code=%d body=%s", w.Code, w.Body.String())
+	}
+	got, err := s.authStore().GetTeam(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RunVisibility != identity.RunVisibilityOrg {
+		t.Fatalf("run visibility = %q, want org", got.RunVisibility)
+	}
+
+	// A PUT without the field is not a reset: refusing it keeps "" an
+	// explicit, audited act.
+	w = httptest.NewRecorder()
+	s.handleSetTeamRunVisibility(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{}`, "t1", ""))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("absent field: code=%d body=%s, want 400", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	s.handleSetTeamRunVisibility(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{"run_visibility":"public"}`, "t1", ""))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown value: code=%d body=%s, want 400", w.Code, w.Body.String())
+	}
+
+	// "" is the explicit reset — the revocation half of the axis.
+	w = httptest.NewRecorder()
+	s.handleSetTeamRunVisibility(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{"run_visibility":""}`, "t1", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset: code=%d body=%s", w.Code, w.Body.String())
+	}
+	got, err = s.authStore().GetTeam(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RunVisibility != identity.RunVisibilityTeam {
+		t.Fatalf("run visibility = %q, want team-private", got.RunVisibility)
+	}
+}
+
 // A team that still owns a repo integration cannot be deleted: its webhook
 // would keep firing into a tenant nothing can reach. The refusal must NAME
 // what is left, or the operator has no next step.

@@ -245,6 +245,17 @@ type Team struct {
 	// publisher reads it FRESH and refuses the launch on a store error or
 	// an unknown value.
 	LLMFallback string `bson:"llm_fallback,omitempty" json:"llm_fallback,omitempty"`
+
+	// RunVisibility names who beyond the team may READ the team's runs by
+	// id (ADR-138). Empty (or RunVisibilityTeam, the default) keeps runs
+	// team-private: only standings in the team see them. RunVisibilityOrg
+	// admits any org-membership of the team's parent org as a viewer at
+	// the run-by-id choke point — never an action. Written ONLY through
+	// the org-gated run-visibility route (PatchTeam $set): like
+	// RunnerPool, whole-document writers would silently reset the axis.
+	// The choke point reads it FRESH on every request; an unknown value
+	// reads as team-private (a typo'd boundary field must not open runs).
+	RunVisibility string `bson:"run_visibility,omitempty" json:"run_visibility,omitempty"`
 }
 
 // Credential-fallback policies a team may hold on Team.LLMFallback. The
@@ -261,6 +272,25 @@ const (
 func ValidLLMFallback(s string) bool {
 	switch s {
 	case "", LLMFallbackPlatform, LLMFallbackNone:
+		return true
+	}
+	return false
+}
+
+// Run visibility axis values (ADR-138). The empty value reads as
+// RunVisibilityTeam: the runs stay team-private.
+const (
+	RunVisibilityTeam = ""
+	RunVisibilityOrg  = "org"
+)
+
+// ValidRunVisibility reports whether s is a value the run-by-id choke
+// point honours. An unknown value is never read as the default — the
+// route refuses setting it, and the choke point treats it as
+// team-private (a typo'd boundary field must not open runs).
+func ValidRunVisibility(s string) bool {
+	switch s {
+	case RunVisibilityTeam, RunVisibilityOrg:
 		return true
 	}
 	return false
@@ -716,6 +746,10 @@ type TeamPatch struct {
 	// platform default) the team's credential-fallback policy. Same pointer
 	// rule as RunnerPool: "" is a meaningful write.
 	LLMFallback *string
+	// RunVisibility, when non-nil, sets (or, pointing at "", resets to
+	// team-private) the run visibility axis (ADR-138). Same pointer rule
+	// as RunnerPool: "" is a meaningful write.
+	RunVisibility *string
 	// MaxConcurrentRuns / LaunchRatePerMin, when non-nil, set the team's
 	// executor caps (nil = untouched; the caps route is the writer).
 	MaxConcurrentRuns *int
@@ -725,7 +759,8 @@ type TeamPatch struct {
 // Empty reports whether the patch would write nothing.
 func (p TeamPatch) Empty() bool {
 	return p.Name == nil && p.Slug == nil && p.OrgID == nil && p.Status == nil &&
-		p.RunnerPool == nil && p.LLMFallback == nil && p.MaxConcurrentRuns == nil && p.LaunchRatePerMin == nil
+		p.RunnerPool == nil && p.LLMFallback == nil && p.RunVisibility == nil &&
+		p.MaxConcurrentRuns == nil && p.LaunchRatePerMin == nil
 }
 
 // OrgPatch is TeamPatch's org-level twin, for the same reason: the org

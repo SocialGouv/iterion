@@ -3383,6 +3383,9 @@
           },
           "run": {
             "$ref": "#/components/schemas/RunHeader"
+          },
+          "viewer": {
+            "$ref": "#/components/schemas/RunViewer"
           }
         },
         "required": [
@@ -3552,6 +3555,20 @@
           "created_at",
           "updated_at",
           "active"
+        ],
+        "type": "object"
+      },
+      "RunViewer": {
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "via": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role"
         ],
         "type": "object"
       },
@@ -6061,6 +6078,9 @@
           },
           "personal": {
             "type": "boolean"
+          },
+          "run_visibility": {
+            "type": "string"
           },
           "runner_pool": {
             "type": "string"
@@ -14808,6 +14828,30 @@
           }
         },
         "summary": "PUT /api/teams/{id}/routing-policy",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/run-visibility": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdRunVisibility",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/run-visibility",
         "tags": [
           "teams"
         ]

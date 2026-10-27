@@ -433,6 +433,9 @@ func (s *MongoStore) PatchTeam(ctx context.Context, id string, p TeamPatch) (Tea
 	if p.LLMFallback != nil {
 		set["llm_fallback"] = *p.LLMFallback
 	}
+	if p.RunVisibility != nil {
+		set["run_visibility"] = *p.RunVisibility
+	}
 	if p.OrgID != nil {
 		set["org_id"] = *p.OrgID
 	}

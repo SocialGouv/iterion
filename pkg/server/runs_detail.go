@@ -72,6 +72,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 			s.httpErrorFor(w, r, http.StatusNotFound, "run not found in cross-store: %v", err)
 			return
 		}
+		attachRunViewer(r, snap)
 		s.writeJSONFor(w, r, snap)
 		return
 	}
@@ -87,6 +88,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
+	attachRunViewer(r, snap)
 	s.enrichRunLOC(r.Context(), &snap.Run)
 	s.writeJSONFor(w, r, snap)
 }

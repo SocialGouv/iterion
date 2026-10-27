@@ -350,6 +350,96 @@ func (d failingOrgMembershipRead) GetOrgMembership(ctx context.Context, userID, 
 	return identity.OrgMembership{}, d.err
 }
 
+// The org-shared axis (ADR-138): a plain org member of the run team's
+// parent org reads the team's runs by id as a viewer, and only as a
+// viewer, when — and only when — the team's run-visibility axis is
+// explicitly opened. Everything else about the call is unchanged: an
+// unknown value stays closed, a team membership still wins, and the
+// ladder still refuses every action.
+func TestRunByIDOrgSharedAxis(t *testing.T) {
+	srv, _ := newRunScopeServer(t)
+	ctx := context.Background()
+	org := identity.RunVisibilityOrg
+	if _, err := srv.authStore().PatchTeam(ctx, "tenant-A", identity.TeamPatch{RunVisibility: &org}); err != nil {
+		t.Fatalf("open the axis: %v", err)
+	}
+	if _, err := srv.authStore().CreateUser(ctx, identity.User{ID: "u-orgmember", Email: "u-orgmember@x", Status: identity.UserStatusActive}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := srv.authStore().UpsertOrgMembership(ctx, identity.OrgMembership{UserID: "u-orgmember", OrgID: "org-1", Role: identity.OrgRoleMember}); err != nil {
+		t.Fatalf("seed org membership: %v", err)
+	}
+
+	t.Run("org member reads as viewer via org-shared", func(t *testing.T) {
+		code, got, tenant := scoped(t, srv, http.MethodGet, "/api/runs/run-1", caller("u-orgmember", ""))
+		if code != http.StatusOK || got.Role != identity.RoleViewer || got.Via != "org-shared" {
+			t.Fatalf("got %d (%+v): the axis admits an org member as a viewer", code, got)
+		}
+		if got.TeamID != "tenant-A" || tenant != "tenant-A" {
+			t.Fatalf("identity/tenant = %+v/%q: re-anchored on the run's team", got, tenant)
+		}
+	})
+	t.Run("org member cannot act", func(t *testing.T) {
+		if code, _, _ := scoped(t, srv, http.MethodPost, "/api/runs/run-1/cancel", caller("u-orgmember", "")); code != http.StatusForbidden {
+			t.Fatalf("got %d: the axis grants read, not act", code)
+		}
+	})
+	t.Run("org member cannot drive the CDP pump", func(t *testing.T) {
+		if code, _, _ := scoped(t, srv, http.MethodGet, "/api/runs/run-1/browser/cdp", caller("u-orgmember", "")); code != http.StatusForbidden {
+			t.Fatalf("got %d: cdp is an action for an org-shared reader too", code)
+		}
+	})
+	t.Run("closing the axis closes it live", func(t *testing.T) {
+		empty := identity.RunVisibilityTeam
+		if _, err := srv.authStore().PatchTeam(ctx, "tenant-A", identity.TeamPatch{RunVisibility: &empty}); err != nil {
+			t.Fatalf("close the axis: %v", err)
+		}
+		if code, _, _ := scoped(t, srv, http.MethodGet, "/api/runs/run-1", caller("u-orgmember", "")); code != http.StatusNotFound {
+			t.Fatalf("got %d: a closed axis is the missing-run answer", code)
+		}
+		if _, err := srv.authStore().PatchTeam(ctx, "tenant-A", identity.TeamPatch{RunVisibility: &org}); err != nil {
+			t.Fatalf("reopen: %v", err)
+		}
+	})
+	t.Run("an unknown value reads as team-private", func(t *testing.T) {
+		bogus := "public"
+		if _, err := srv.authStore().PatchTeam(ctx, "tenant-A", identity.TeamPatch{RunVisibility: &bogus}); err != nil {
+			t.Fatalf("set a bogus value: %v", err)
+		}
+		if code, _, _ := scoped(t, srv, http.MethodGet, "/api/runs/run-1", caller("u-orgmember", "")); code != http.StatusNotFound {
+			t.Fatalf("got %d: an unknown value must not open runs", code)
+		}
+		if _, err := srv.authStore().PatchTeam(ctx, "tenant-A", identity.TeamPatch{RunVisibility: &org}); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+	})
+	t.Run("no org membership, no axis", func(t *testing.T) {
+		// u-member-b is a member of tenant-B: in prod the role mirror
+		// would have written them an org row, but the arm reads the
+		// org-membership ROW, never an inference from a team membership.
+		if code, _, _ := scoped(t, srv, http.MethodGet, "/api/runs/run-1", caller("u-member-b", "tenant-B")); code != http.StatusNotFound {
+			t.Fatalf("got %d: a team membership of another team is not an org membership", code)
+		}
+	})
+	t.Run("a team membership still wins, config_editor still refuses", func(t *testing.T) {
+		// u-configed-a holds config_editor on tenant-A. Giving them the
+		// org membership too must not change the verdict: the membership
+		// branch runs first and a config_editor is not a rung (ADR-078).
+		if err := srv.authStore().UpsertOrgMembership(ctx, identity.OrgMembership{UserID: "u-configed-a", OrgID: "org-1", Role: identity.OrgRoleMember}); err != nil {
+			t.Fatalf("seed org membership: %v", err)
+		}
+		if code, _, _ := scoped(t, srv, http.MethodGet, "/api/runs/run-1", caller("u-configed-a", "tenant-A")); code != http.StatusNotFound {
+			t.Fatalf("got %d: a config_editor membership outranks the axis (ADR-078)", code)
+		}
+	})
+	t.Run("an org admin keeps their own lineage", func(t *testing.T) {
+		code, got, _ := scoped(t, srv, http.MethodGet, "/api/runs/run-1", caller("u-orgadmin", "tenant-B"))
+		if code != http.StatusOK || got.Via != "org-admin-lineage" {
+			t.Fatalf("got %d (%+v): the axis must not rebrand the admin lineage", code, got)
+		}
+	})
+}
+
 // The class is the set of REGISTERED routes whose pattern carries the run
 // wildcard — every one of them goes through this file's resolution, and no
 // fixed sibling of theirs ever does (the review's F1: a future

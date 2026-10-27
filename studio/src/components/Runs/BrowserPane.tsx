@@ -73,6 +73,11 @@ export default function BrowserPane({
   // as user typing would clobber the keystroke (prev === new is true
   // even though the user actually changed prev mid-render).
   const lastStoreUrlRef = useRef<string | undefined>(browser.currentUrl);
+  // The live attach POSTs /browser/attach — a member action on the run
+  // ladder (ADR-103). A viewer's affordance is simply absent instead of
+  // error-on-click, the same rule the file editor's gate follows.
+  const viewer = useRunStore((s) => s.viewer);
+  const canAttach = viewer ? viewer.role !== "viewer" : true;
   // Cancel in-flight attach + skip stale setState on unmount.
   const attachAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -235,16 +240,18 @@ export default function BrowserPane({
             </button>
           </Tooltip>
         ) : (
-          <Tooltip content="Spawn a host Chromium and stream it here (requires chromium installed on PATH)">
-            <button
-              type="button"
-              onClick={handleAttach}
-              disabled={attachBusy}
-              className="text-xs text-success hover:text-success-fg disabled:opacity-50"
-            >
-              {attachBusy ? "attaching…" : "attach live"}
-            </button>
-          </Tooltip>
+          canAttach && (
+            <Tooltip content="Spawn a host Chromium and stream it here (requires chromium installed on PATH)">
+              <button
+                type="button"
+                onClick={handleAttach}
+                disabled={attachBusy}
+                className="text-xs text-success hover:text-success-fg disabled:opacity-50"
+              >
+                {attachBusy ? "attaching…" : "attach live"}
+              </button>
+            </Tooltip>
+          )
         )}
         {onDockChange ? (
           <Tooltip

@@ -92,7 +92,10 @@ type teamSummaryView struct {
 	// LLMFallback is the team's credential-fallback policy — the same
 	// boundary class: read back to confirm and audit the write.
 	LLMFallback string `json:"llm_fallback,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
+	// RunVisibility is the run sharing axis (ADR-138) — read back to
+	// confirm and audit the write.
+	RunVisibility string `json:"run_visibility,omitempty"`
+	CreatedAt     string `json:"created_at,omitempty"`
 }
 
 func toTeamSummaryView(t identity.Team) teamSummaryView {
@@ -107,6 +110,7 @@ func toTeamSummaryView(t identity.Team) teamSummaryView {
 		LaunchRatePerMin:  t.LaunchRatePerMin,
 		RunnerPool:        t.RunnerPool,
 		LLMFallback:       t.LLMFallback,
+		RunVisibility:     t.RunVisibility,
 		CreatedAt:         t.CreatedAt.Format(time.RFC3339),
 	}
 }
