@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
 )
 
 // PresetSpec is a file-based preset parsed from a bundle's
@@ -112,7 +112,7 @@ func loadPresetFile(path string) (PresetSpec, error) {
 	fmBytes, mdBody := splitFrontmatter(body)
 	var fm presetFrontmatter
 	if len(strings.TrimSpace(string(fmBytes))) > 0 {
-		if err := yaml.UnmarshalStrict(fmBytes, &fm); err != nil {
+		if err := yamlx.UnmarshalStrict(fmBytes, &fm); err != nil {
 			return PresetSpec{}, fmt.Errorf("bundle: parse preset %s frontmatter: %w", path, err)
 		}
 	}

@@ -26,7 +26,7 @@ import (
 	"strings"
 	"unicode"
 
-	yaml "go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
 )
 
 // SchemaVersion is the current plugin.yaml schema. Unknown future versions are
@@ -206,7 +206,7 @@ const CommandPlaceholder = "{{command}}"
 // ParseManifest decodes and validates a plugin.yaml document.
 func ParseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
-	if err := yaml.UnmarshalStrict(data, &m); err != nil {
+	if err := yamlx.UnmarshalStrict(data, &m); err != nil {
 		return nil, fmt.Errorf("plugin: parse manifest: %w", err)
 	}
 	if m.SchemaVersion == 0 {

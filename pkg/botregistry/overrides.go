@@ -10,8 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/yamlx"
 	"github.com/gofrs/flock"
-	"go.yaml.in/yaml/v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -277,7 +278,7 @@ func writeOverrides(workdir string, ov *Overrides) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("botregistry: mkdir %s: %w", dir, err)
 	}
-	body, err := yaml.Marshal(ov)
+	body, err := yamlx.Marshal(ov)
 	if err != nil {
 		return fmt.Errorf("botregistry: marshal overrides: %w", err)
 	}

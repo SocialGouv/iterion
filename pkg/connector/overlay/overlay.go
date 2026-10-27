@@ -46,7 +46,8 @@ import (
 	"sort"
 	"strings"
 
-	yaml "go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
@@ -186,7 +187,7 @@ func Parse(body []byte) (*Overlay, error) {
 		return nil, fmt.Errorf("overlay: %s declares schema_version %d, newer than supported %d (upgrade iterion)", File, probe.SchemaVersion, SchemaVersion)
 	}
 	var ov Overlay
-	if err := yaml.UnmarshalStrict(body, &ov); err != nil {
+	if err := yamlx.UnmarshalStrict(body, &ov); err != nil {
 		return nil, fmt.Errorf("overlay: parse %s: %w", File, err)
 	}
 	return &ov, nil

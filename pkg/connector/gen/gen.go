@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	yaml "go.yaml.in/yaml/v2"
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
@@ -214,59 +214,129 @@ func decode(data []byte) (map[string]any, error) {
 		}
 		return out, nil
 	}
-	var raw any
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("gen: parse YAML description: %w", err)
 	}
-	norm, ok := normalizeYAML(raw).(map[string]any)
+	norm, ok := nodeToAny(&doc).(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("gen: description is not a mapping")
 	}
 	return norm, nil
 }
 
-// normalizeYAML converts yaml.v2's map[interface{}]interface{} into
-// map[string]any so one walk serves both input syntaxes.
+// nodeToAny converts a parsed YAML tree into plain Go values so one walk
+// serves both input syntaxes — the JSON twin of the same description must
+// produce the same tree. Aliases resolve to their anchored value and merge
+// keys expand, matching what a plain Unmarshal hands back: the exact walk
+// keeps `<<` literal, and the tree comparison between the two decoders is
+// what surfaces a body only one of them understands.
 //
-// A non-string SCALAR key is RENDERED, not dropped. "No API description has
-// one" was wrong about the only syntax that can produce one: YAML resolves an
-// unquoted `200:` as an int, so the ordinary hand-written form of a responses
-// block — `responses:` / `  200:` / `  404:` — lost every case, silently and
-// with no skip reported. The operation shipped with no results and no errors,
-// which also disables validatePagination's array check: the very same
-// description saved as JSON was correctly refused. YAML 1.1 does the same to
-// `on:`/`no:`/`yes:`/`off:`, which it resolves as bools, so a schema property
-// genuinely named `on` disappeared the same way.
+// A non-string SCALAR mapping key is RENDERED, not dropped. "No API
+// description has one" was wrong about the only syntax that can produce one:
+// YAML resolves an unquoted `200:` as an int, so the ordinary hand-written
+// form of a responses block — `responses:` / `  200:` / `  404:` — lost every
+// case, silently and with no skip reported. The operation shipped with no
+// results and no errors, which also disables validatePagination's array
+// check. The conversion builds map[string]any and stringifies scalar keys
+// through their literal form, so `200` arrives as "200"; YAML 1.1 read
+// `on:`/`no:`/`yes:`/`off:` as bools and dropped them the same way, while the
+// core schema here keeps them as the strings they spell.
 //
 // A non-scalar key (YAML's complex-key form) is still dropped: it has no
 // rendering a reader downstream could act on, and no description has one.
-func normalizeYAML(v any) any {
-	switch t := v.(type) {
-	case map[any]any:
-		out := make(map[string]any, len(t))
-		for k, val := range t {
-			ks, ok := yamlKeyString(k)
-			if !ok {
+func nodeToAny(n *yaml.Node) any {
+	switch n.Kind {
+	case yaml.DocumentNode:
+		if len(n.Content) == 0 {
+			return nil
+		}
+		return nodeToAny(n.Content[0])
+	case yaml.AliasNode:
+		if n.Alias == nil {
+			return nil
+		}
+		return nodeToAny(n.Alias)
+	case yaml.MappingNode:
+		out := make(map[string]any, len(n.Content)/2)
+		var merges []*yaml.Node
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			key, val := n.Content[i], n.Content[i+1]
+			if key.Kind == yaml.ScalarNode && key.Tag == "!!merge" {
+				merges = append(merges, val)
 				continue
 			}
-			out[ks] = normalizeYAML(val)
+			if key.Kind != yaml.ScalarNode {
+				continue
+			}
+			out[key.Value] = nodeToAny(val)
+		}
+		// A merge key contributes what its anchored mapping holds, without
+		// ever overriding a key the mapping spells out itself; a sequence
+		// merge applies its sources in order, earlier winning.
+		for _, val := range merges {
+			switch src := nodeToAny(val).(type) {
+			case map[string]any:
+				for mk, mv := range src {
+					if _, explicit := out[mk]; !explicit {
+						out[mk] = mv
+					}
+				}
+			case []any:
+				for _, item := range src {
+					if m, ok := item.(map[string]any); ok {
+						for mk, mv := range m {
+							if _, explicit := out[mk]; !explicit {
+								out[mk] = mv
+							}
+						}
+					}
+				}
+			}
 		}
 		return out
-	case []any:
-		for i := range t {
-			t[i] = normalizeYAML(t[i])
+	case yaml.SequenceNode:
+		out := make([]any, len(n.Content))
+		for i, c := range n.Content {
+			out[i] = nodeToAny(c)
 		}
-		return t
+		return out
 	default:
-		return v
+		return scalarValue(n)
 	}
 }
 
-// detectFormat reads the version marker each format carries at the root.
-// yamlKeyString renders a YAML mapping key the way the document wrote it.
-// The JSON twin of the same description carries these as strings, so the two
-// syntaxes must produce the same tree — that is the whole point of
-// normalizing.
+// scalarValue resolves a scalar node to its core-schema Go value; anything
+// unresolvable stays the literal text.
+func scalarValue(n *yaml.Node) any {
+	switch n.ShortTag() {
+	case "!!int":
+		if i, err := strconv.ParseInt(n.Value, 10, 64); err == nil {
+			return int(i)
+		}
+		if u, err := strconv.ParseUint(n.Value, 10, 64); err == nil {
+			return u
+		}
+	case "!!float":
+		if f, err := strconv.ParseFloat(n.Value, 64); err == nil {
+			return f
+		}
+	case "!!bool":
+		switch n.Value {
+		case "true", "True", "TRUE":
+			return true
+		case "false", "False", "FALSE":
+			return false
+		}
+	case "!!null":
+		return nil
+	}
+	return n.Value
+}
+
+// yamlKeyString renders a YAML scalar the way the document wrote it. The
+// JSON twin of the same description carries these values as strings, so the
+// two syntaxes must render identically.
 func yamlKeyString(k any) (string, bool) {
 	switch t := k.(type) {
 	case string:

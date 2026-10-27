@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	yaml "go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -155,7 +156,7 @@ func saveScheduleManifest(path string, m *ScheduleManifest) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create manifest dir: %w", err)
 	}
-	body, err := yaml.Marshal(m)
+	body, err := yamlx.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("marshal manifest: %w", err)
 	}

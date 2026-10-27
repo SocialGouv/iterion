@@ -11,7 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	yaml "go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // File names inside a connector package directory.
@@ -92,7 +93,7 @@ type responsesDoc struct {
 const maxResponseContractBytes = 4 << 20
 
 func writeYAML(path string, v any) error {
-	body, err := yaml.Marshal(v)
+	body, err := yamlx.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("spec: encode %s: %w", path, err)
 	}
@@ -160,7 +161,7 @@ func read(dir string) (*Package, error) {
 	}
 
 	var c Connector
-	if err := yaml.UnmarshalStrict(body, &c); err != nil {
+	if err := yamlx.UnmarshalStrict(body, &c); err != nil {
 		return nil, fmt.Errorf("spec: parse %s: %w", ConnectorFile, err)
 	}
 	p := &Package{Connector: c, Schemas: map[string]Schema{}}
@@ -170,7 +171,7 @@ func read(dir string) (*Package, error) {
 			return nil, err
 		}
 		var sf schemasDoc
-		if err := yaml.UnmarshalStrict(sb, &sf); err != nil {
+		if err := yamlx.UnmarshalStrict(sb, &sf); err != nil {
 			return nil, fmt.Errorf("spec: parse %s: %w", SchemasFile, err)
 		}
 		if err := checkDocConnector(SchemasFile, sf.Connector, c.ID); err != nil {
@@ -207,7 +208,7 @@ func read(dir string) (*Package, error) {
 			return nil, err
 		}
 		var f OpsFile
-		if err := yaml.UnmarshalStrict(ob, &f); err != nil {
+		if err := yamlx.UnmarshalStrict(ob, &f); err != nil {
 			return nil, fmt.Errorf("spec: parse %s: %w", where, err)
 		}
 		if err := checkDocConnector(where, f.Connector, c.ID); err != nil {

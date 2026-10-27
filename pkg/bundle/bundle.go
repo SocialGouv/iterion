@@ -26,7 +26,7 @@ import (
 	"strings"
 	"syscall"
 
-	"go.yaml.in/yaml/v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"

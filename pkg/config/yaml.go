@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"go.yaml.in/yaml/v2"
+	"gopkg.in/yaml.v3"
 )
 
 // loadYAML reads path and overlays its contents onto cfg. Unknown keys
