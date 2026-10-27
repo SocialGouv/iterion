@@ -16,9 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
-	"regexp"
 	"strings"
 	"time"
 
@@ -996,7 +996,7 @@ type issueTenantDoc struct {
 // handlers resolve prefixes too); the lookup is the existence check, so a
 // deleted issue stops resolving at once. The _id-anchored filter rides the
 // same index the per-tenant reads ride.
-func (s *Store) ResolveIssueTenant(ctx context.Context, prefix string) (string, error) {
+func (s *Store) ResolveIssueTenant(prefix string) (string, error) {
 	want := prefix
 	if !strings.HasPrefix(prefix, "native:") {
 		want = "native:" + prefix
