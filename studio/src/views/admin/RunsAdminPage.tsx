@@ -3,11 +3,11 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 import { listAdminOrgs, listAdminRuns } from "@/api/adminRuns";
 import { useAuth } from "@/auth/AuthContext";
+import { Select } from "@/components/ui/Select";
 import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Select } from "@/components/ui/Select";
 import { Table, TableSkeleton, TBody, Td, Th, THead, Tr } from "@/components/ui/Table";
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
@@ -106,6 +106,7 @@ export default function RunsAdminPage() {
           </label>
           <Select
             id="admin-runs-org"
+            size="md"
             fit
             value={orgId}
             onChange={(e) => setOrgId(e.target.value)}
@@ -122,6 +123,7 @@ export default function RunsAdminPage() {
           </label>
           <Select
             id="admin-runs-status"
+            size="md"
             fit
             value={status}
             onChange={(e) => setStatus(e.target.value)}
