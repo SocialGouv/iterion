@@ -817,6 +817,10 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 			httpError(w, http.StatusConflict, "%v", err)
 			return
 		}
+		if errors.Is(err, errAuthoringReadLimit) {
+			httpError(w, http.StatusRequestEntityTooLarge, "%v — the authoring journal reads at most %d bytes (ITERION_ASSISTANT_AUTHORING_MAX_TOTAL_BYTES)", err, currentAuthoringLimits().maxTotalBytes)
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "write error: %v", err)
 		return
 	}

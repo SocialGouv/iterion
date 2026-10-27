@@ -17,6 +17,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
+	"os"
+	"path/filepath"
 )
 
 func newWebhookTestServer(t *testing.T) *Server {
@@ -34,6 +36,17 @@ func newWebhookTestServer(t *testing.T) *Server {
 	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
 		ID: "t2", Name: "t2", Slug: "webhook-t2", CreatedAt: time.Now(),
 	}); err != nil {
+		t.Fatal(err)
+	}
+	// The label door's visibility gate (#2676) judges the catalogue: the
+	// fixtures pin feature-dev, so the workspace carries it (a deployment
+	// whose webhook pins a bot has that bot in its catalogue). A test that
+	// needs a different workspace replaces cfg.WorkDir after this.
+	s.cfg.WorkDir = t.TempDir()
+	if err := os.MkdirAll(filepath.Join(s.cfg.WorkDir, "bots"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.cfg.WorkDir, "bots", "feature-dev.bot"), []byte(testBotMain), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()

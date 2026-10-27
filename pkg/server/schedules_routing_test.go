@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
@@ -95,12 +96,26 @@ func TestSchedule_RoutingBlockLifecycle(t *testing.T) {
 	}
 
 	// The binding level does not hold the lock primitive: a schedule lock
-	// would launder an unset past the author. 422, nothing lands.
-	if w := create(`{"bot_id":"w3","cron":"*/5 * * * *","routing":{"strict":false,"locks":["strict"]}}`); w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("locks create = %d: %s", w.Code, w.Body.String())
+	// would launder an unset past the author. 422, nothing lands, and the
+	// message names EVERY holder (routingLockHolders) — an operator sent
+	// to two of the four cannot fix what they cannot see (#2688).
+	wLocksCreate := create(`{"bot_id":"w3","cron":"*/5 * * * *","routing":{"strict":false,"locks":["strict"]}}`)
+	if wLocksCreate.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("locks create = %d: %s", wLocksCreate.Code, wLocksCreate.Body.String())
 	}
-	if w := update(sid, `{"routing":{"locks":["pair_order"]}}`); w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("locks update = %d: %s", w.Code, w.Body.String())
+	wLocksUpdate := update(sid, `{"routing":{"locks":["pair_order"]}}`)
+	if wLocksUpdate.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("locks update = %d: %s", wLocksUpdate.Code, wLocksUpdate.Body.String())
+	}
+	for _, door := range []struct{ name, body string }{
+		{"create", wLocksCreate.Body.String()},
+		{"update", wLocksUpdate.Body.String()},
+	} {
+		for _, holder := range []string{"author's manifest", "team and org routing records", "platform record"} {
+			if !strings.Contains(door.body, holder) {
+				t.Fatalf("locks %s message does not name %s: %s", door.name, holder, door.body)
+			}
+		}
 	}
 	if got := get(sid).Routing; got != nil {
 		t.Fatalf("a refused lock write must not land: %+v", got)
