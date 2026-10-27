@@ -47,10 +47,24 @@ const REAL_HTML_TAG =
 
 function escapeAngles(md: MarkdownIt) {
   const escape = (raw: string) => raw.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  // Tag-by-tag, not token-by-token: an html_block that opens with a real tag
+  // (<details>...) swallows following lines up to the next blank line, so a
+  // whole prose block rides inside one token and any tag-looking fragment in
+  // it (<run>, <tbody>, <Route ...>) would reach the Vue compiler raw. The
+  // changelog page is prose only — its sole real markup is the details
+  // wrapper release-it emits, and a blank line in a body splits the block
+  // into sibling tokens, so the rule keys on the page, not on the token.
+  // Elsewhere, a details block gets the same prose treatment and the
+  // REAL_HTML_TAG contract holds for every other token.
   for (const rule of ['html_inline', 'html_block'] as const) {
-    md.renderer.rules[rule] = (tokens, idx) => {
+    md.renderer.rules[rule] = (tokens, idx, _options, env) => {
       const content = tokens[idx].content
-      return REAL_HTML_TAG.test(content.trim()) ? content : escape(content)
+      const prose =
+        env?.relativePath === 'changelog.md' || /^<details[\s>]/i.test(content.trim())
+      return content.replace(/<\/?[a-zA-Z][^<>]*>/g, (m) => {
+        if (prose) return /^<\/?(details|summary)[\s/>]/i.test(m) ? m : escape(m)
+        return REAL_HTML_TAG.test(m) ? m : escape(m)
+      })
     }
   }
 }
@@ -74,6 +88,10 @@ function escapeBraces(md: MarkdownIt) {
   }
   wrap('text', (t, i) => md.utils.escapeHtml(t[i].content))
   wrap('code_inline', (t, i) => `<code>${md.utils.escapeHtml(t[i].content)}</code>`)
+  // html_inline/html_block carry `{{ }}` too once escapeAngles passes a real
+  // tag's block through raw; the use chain wraps escapeAngles' renderers.
+  wrap('html_inline', (t, i) => t[i].content)
+  wrap('html_block', (t, i) => t[i].content)
 }
 
 // Build a collapsed sidebar group listing every .md in a docs subdir.
@@ -334,7 +352,7 @@ export default withMermaid(
       // to the bundled yaml grammar. (```ebnf isn't bundled either but has no
       // close bundled match; it falls back to plain text on its own.)
       languageAlias: { iter: 'yaml' },
-      config: (md) => md.use(literalChangelogProse).use(escapeBraces).use(escapeAngles).use(githubLinks),
+      config: (md) => md.use(literalChangelogProse).use(escapeAngles).use(escapeBraces).use(githubLinks),
     },
     themeConfig: {
       logo: '/iterion-logo.png',

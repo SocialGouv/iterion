@@ -11,6 +11,7 @@ vi.mock("@/views/admin/OrgsAdminPage", () => ({ default: () => <div>page:/orgs</
 vi.mock("@/views/admin/UsersAdminPage", () => ({ default: () => <div>page:/users</div> }));
 vi.mock("@/views/admin/AuditAdminPage", () => ({ default: () => <div>page:/audit</div> }));
 vi.mock("@/views/admin/DLQAdminPage", () => ({ default: () => <div>page:/dlq</div> }));
+vi.mock("@/views/admin/RunsAdminPage", () => ({ default: () => <div>page:/runs</div> }));
 vi.mock("@/views/admin/PlatformLlmCredsPage", () => ({
   default: () => <div>page:/llm-credentials</div>,
 }));

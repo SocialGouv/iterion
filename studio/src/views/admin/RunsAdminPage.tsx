@@ -7,6 +7,7 @@ import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Select } from "@/components/ui/Select";
 import { Table, TableSkeleton, TBody, Td, Th, THead, Tr } from "@/components/ui/Table";
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
@@ -103,9 +104,9 @@ export default function RunsAdminPage() {
           <label className="text-sm text-fg-muted" htmlFor="admin-runs-org">
             Organization
           </label>
-          <select
+          <Select
             id="admin-runs-org"
-            className="rounded border border-border bg-surface px-2 py-1 text-sm"
+            fit
             value={orgId}
             onChange={(e) => setOrgId(e.target.value)}
           >
@@ -115,13 +116,13 @@ export default function RunsAdminPage() {
                 {o.name}
               </option>
             ))}
-          </select>
+          </Select>
           <label className="text-sm text-fg-muted" htmlFor="admin-runs-status">
             State
           </label>
-          <select
+          <Select
             id="admin-runs-status"
-            className="rounded border border-border bg-surface px-2 py-1 text-sm"
+            fit
             value={status}
             onChange={(e) => setStatus(e.target.value)}
           >
@@ -131,7 +132,7 @@ export default function RunsAdminPage() {
                 {s}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         {query.error != null && (
@@ -166,7 +167,7 @@ export default function RunsAdminPage() {
                     </a>
                     {row.runner_pool ? (
                       <span
-                        className="ml-2 rounded bg-warning/15 px-1 py-0.5 text-[10px] font-medium text-warning"
+                        className="ml-2 rounded bg-warning/15 px-1 py-0.5 text-caption font-medium text-warning"
                         title={`Sovereign runner pool: ${row.runner_pool}`}
                       >
                         pool: {row.runner_pool}
