@@ -131,6 +131,23 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/admin/orgs/{id}":   {response: orgView{}},
 		"PATCH /api/admin/orgs/{id}": {request: updateOrgReq{}, response: orgView{}},
 
+		// Platform runs view (super-admin, #2148): the cross-org runs
+		// list. Read-only; opening ONE run rides the ADR-103 choke
+		// point, not this route.
+		"GET /api/admin/runs": {
+			response:    adminRunsResponse{},
+			description: "Every org's runs in one super-admin view. Filters combine (org_id, team_id, status, since). Paginated server-side across orgs: pass the previous page's next_cursor back as cursor; an absent next_cursor is the last page.",
+			query: []queryParam{
+				{name: "org_id", description: "Narrow to the runs of one org (all its teams).", schemaType: "string"},
+				{name: "team_id", description: "Narrow to one team's runs. Combines with org_id: a team outside the org answers an empty page.", schemaType: "string"},
+				{name: "status", description: "Exact run status (running, queued, paused_waiting_human, paused_operator, finished, failed, failed_resumable, cancelled).", schemaType: "string"},
+				{name: "since", description: "Only runs updated at or after this RFC3339 instant.", schemaType: "string"},
+				{name: "limit", description: "Page size, 1..500 (default 50).", schemaType: "integer"},
+				{name: "cursor", description: "Keyset token from the previous page's next_cursor. A malformed value is refused with 400.", schemaType: "string"},
+			},
+			errors: map[int]string{401: "Authentication required", 403: "Super-admin required", 500: "Run store unavailable"},
+		},
+
 		// User administration (super-admin). The detail route is one
 		// account's file — provenance, granted memberships, SSO links.
 		"GET /api/admin/users": {

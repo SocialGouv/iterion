@@ -346,6 +346,14 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 		s.httpErrorFor(w, r, http.StatusForbidden, "your role in team %s does not allow this action", team)
 		return nil, false
 	}
+	// A19 (#2148): a cross-team read granted by the super-admin flag —
+	// and only such a grant — crosses the named, audited predicate. A
+	// membership or org-admin standing is the ordinary path and stays
+	// unaudited; the flag that reaches everywhere is exactly the one
+	// that must leave a trace.
+	if resolved.Via == "super-admin" && id.TeamID != team {
+		s.superAdminRunRead(r, id, team, "run.cross_team_read", runID, nil)
+	}
 	return s.stampAuthedContext(w, r, resolved)
 }
 

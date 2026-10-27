@@ -273,6 +273,8 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		BundleDisplayName: r.BundleDisplayName,
 		SourceKind:        deriveSourceKind(r),
 		Source:            cloneRunSource(r.Source),
+		TenantID:          r.TenantID,
+		RunnerPool:        r.RunnerPool,
 		Status:            r.Status,
 		FilePath:          r.FilePath,
 		CreatedAt:         r.CreatedAt,
