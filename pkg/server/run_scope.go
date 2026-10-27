@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -52,6 +53,40 @@ var runScopePrefixes = []runScopePrefix{
 var runScopeLadderRoutes = map[string]bool{
 	"browser/cdp": true,
 	"shell":       true,
+}
+
+// issueScopePrefixes are the fixed segment chains that precede the id
+// wildcard of the BOARD issue routes (ADR-141): the native REST family and
+// the pipeline-board family — the forge per-card routes ride the native
+// chain. Classified only when the issue-tenant resolver capability exists
+// (cloud): self-hosted's single store has no tenancy to decouple.
+var issueScopePrefixes = []runScopePrefix{
+	{4, []string{"api", "v1", "native", "issues"}},
+	{4, []string{"api", "v1", "pipeline-board", "tasks"}},
+}
+
+// ErrAmbiguousIssueID marks an issue id PREFIX that names more than one
+// issue across teams: an ambiguous prefix is not an address, so the
+// ambient stamp decides and the handler's own resolution renders the
+// verdict for the caller's team.
+var ErrAmbiguousIssueID = errors.New("ambiguous issue id prefix")
+
+// issueIDClass is the board twin of runIDClass (ADR-141).
+func (s *Server) issueIDClass(r *http.Request) (string, bool, int) {
+	if s == nil || s.mux == nil || s.cfg.IssueTenantResolver == nil {
+		return "", false, 0
+	}
+	_, pattern := s.mux.Handler(r)
+	if pattern == "" {
+		return "", false, 0
+	}
+	for _, w := range issueScopePrefixes {
+		if !patternWildcardAt(pattern, w) {
+			continue
+		}
+		return extractRunID(r.URL.EscapedPath(), w.fixedSegments), true, w.fixedSegments
+	}
+	return "", false, 0
 }
 
 // routeSubPath returns the request path segments AFTER the id wildcard
@@ -309,6 +344,9 @@ func (s *Server) runScopeLadder(r *http.Request, fixedSegments int, role identit
 // (one answer, no existence oracle), 403 for a caller without the ladder's
 // rung, 500 when the store fails (fail visibly, never a degrade).
 func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Identity) (context.Context, bool) {
+	if issueID, isIssue, fixedSegments := s.issueIDClass(r); isIssue {
+		return s.scopeIssueByID(w, r, id, issueID, fixedSegments)
+	}
 	runID, ok, fixedSegments := s.runIDClass(r)
 	if !ok {
 		return s.stampAuthedContext(w, r, id)
@@ -357,6 +395,53 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 	// byID: the run's team is the scope this request acts in — the
 	// explicit team header must not fight the resource's team (the
 	// class test pins it).
+	return s.stampIdentity(w, r, resolved, true)
+}
+
+// scopeIssueByID is the board twin of the run arm (ADR-141): the issue's
+// team resolves team-blind through the issue-tenant resolver, the caller's
+// standing in THAT team authorizes — reads for a viewer, mutations for a
+// member, the run ladder's rule (no board GET hands out live control) —
+// and the stamp lands on the issue's team, so every handler's per-request
+// store resolution (cloudBoardResolve reads the stamped team) serves the
+// issue's own board unchanged. An issue the caller cannot see answers 404
+// exactly like a missing one; a resolver that cannot read is a 500; an
+// ambiguous id prefix is not an address — the ambient stamp decides.
+func (s *Server) scopeIssueByID(w http.ResponseWriter, r *http.Request, id auth.Identity, issueID string, fixedSegments int) (context.Context, bool) {
+	if issueID == "" {
+		s.httpErrorFor(w, r, http.StatusNotFound, "issue not found")
+		return nil, false
+	}
+	team, err := s.cfg.IssueTenantResolver(r.Context(), issueID)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrAmbiguousIssueID):
+		return s.stampAuthedContext(w, r, id)
+	case errors.Is(err, tracker.ErrNotFound):
+		s.httpErrorFor(w, r, http.StatusNotFound, "issue not found")
+		return nil, false
+	default:
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve issue tenant: %v", err)
+		return nil, false
+	}
+	resolved, ok, err := s.identityInTeam(r.Context(), id, team)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve standing in team %s: %v", team, err)
+		return nil, false
+	}
+	if !ok {
+		// No standing in the issue's team: the issue is invisible — the
+		// same 404 a missing issue answers (no existence oracle).
+		s.httpErrorFor(w, r, http.StatusNotFound, "issue not found")
+		return nil, false
+	}
+	if !s.runScopeLadder(r, fixedSegments, resolved.Role) {
+		s.httpErrorFor(w, r, http.StatusForbidden, "your role in team %s does not allow this action", team)
+		return nil, false
+	}
+	if resolved.Via == "super-admin" && id.TeamID != team {
+		s.superAdminRunRead(r, id, team, "issue.cross_team_read", issueID, nil)
+	}
 	return s.stampIdentity(w, r, resolved, true)
 }
 
