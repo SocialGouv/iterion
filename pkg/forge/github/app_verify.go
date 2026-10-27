@@ -68,7 +68,7 @@ func exchangeUserAuthCode(ctx context.Context, httpClient *http.Client, webBase 
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := httpClient.Do(req)
+	resp, err := forge.DoHTTP(httpClient, req, forge.OAuthRedirectSecrets(v)...)
 	if err != nil {
 		return "", err
 	}
@@ -113,7 +113,7 @@ func userCanAccessInstallation(ctx context.Context, httpClient *http.Client, api
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		resp, err := httpClient.Do(req)
+		resp, err := forge.DoHTTP(httpClient, req)
 		if err != nil {
 			return err
 		}

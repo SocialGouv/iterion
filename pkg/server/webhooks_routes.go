@@ -581,6 +581,10 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.UpdatedAt = time.Now().UTC()
 	if err := s.webhookConfigs.Update(r.Context(), cfg); err != nil {
+		if errors.Is(err, webhooks.ErrConflict) {
+			httpError(w, http.StatusConflict, "%v", err)
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
@@ -625,7 +629,7 @@ func (s *Server) handleRotateWebhook(w http.ResponseWriter, r *http.Request) {
 	if cfg.ProvisionedBy != "" {
 		// Rotating a managed webhook's token without re-pushing it to the
 		// forge hook would silently brick delivery — re-provision via the
-		// Integrations tab instead (it re-mints + UpdateHook atomically).
+		// Integrations tab instead (a new endpoint gets a distinct identity).
 		httpError(w, http.StatusConflict, "this webhook is managed by a forge integration — rotate it by disabling and re-enabling the bot in the Integrations tab")
 		return
 	}
@@ -650,6 +654,10 @@ func (s *Server) handleRotateWebhook(w http.ResponseWriter, r *http.Request) {
 		cfg.HMACSecretSealed = sealed
 	}
 	if err := s.webhookConfigs.Update(r.Context(), cfg); err != nil {
+		if errors.Is(err, webhooks.ErrConflict) {
+			httpError(w, http.StatusConflict, "%v", err)
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}

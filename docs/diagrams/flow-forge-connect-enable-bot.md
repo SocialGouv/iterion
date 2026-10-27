@@ -14,7 +14,7 @@ The sequence is drawn on the feature page: [forge-integrations.md § What it doe
 
 ## Enable — one request, a fixed write order
 
-`Provision` is the one-action enable. Two stores hold the result and share no transaction, so the **enforcement** half (`webhook_configs`) is written before the forge hook, and the **report** half (`repo_integrations`) last: a failure between them leaves the repo applying settings the report has not caught up with, never a report certifying a configuration that is not in force. A fresh config is rolled back (`rollbackConfig`) on three downstream failures — the admin-client build, the hook upsert and the integration create; an integration *update* answers `ErrProvisionDiverged` instead, and a schedule-sync failure leaves the provision standing. Re-running the same request converges. Same bots, same events and a hook already on the right URL take the idempotent short-circuit, in this order: binding reconcile, operator-settings write, `BotRules` backfill, schedule sync when crons are given, `Created=false`.
+`Provision` is the one-action enable. It takes a per-repo lease, reserves a durable immutable webhook identity, writes the versioned config, attempts the remote hook, then activates the integration through CAS. A failed or uncertain attempt retains its retry identity; only a confirmed refusal can restore settings through their exact version. Legacy secret migration uses a distinct candidate URL while the old epoch remains active. Same bots, events and URL short-circuit only when no attempt is pending. See [ADR-138](../adr/138-forge-provisioning-immutable-identities.md) for the concurrency guarantee and reconciler boundary.
 
 The write order is drawn on the feature page: [forge-integrations.md § What it does](../forge-integrations.md#what-it-does).
 
@@ -91,7 +91,7 @@ stateDiagram-v2
 - **A stale parked request** — `409` when the integration vanished, its bot set drifted, the repo was provisioned meanwhile, or the connection is gone; the record stays pending, including after a transient provision failure at replay.
 - **A bot with neither a `forge:` block nor a forge or command invocation** — cannot auto-provision; an empty native event set refuses too; two bots claiming the same command without args disambiguation refuse in `addCommandRoute`.
 - **Launch vars that would drop keys the repo pins** — `ErrLaunchVarsDrop` as `400` naming them; an absent map over a diverged integration and config pair is `ErrProvisionDiverged` as `500`.
-- **A hook the connection's token may not manage** — `403 insufficient_scope` on `forge.ErrForbidden`, `400 connection_unauthorized` on `forge.ErrUnauthorized`, and the fresh config is rolled back.
+- **A hook the connection's token may not manage** — `403 insufficient_scope` on `forge.ErrForbidden`, `400 connection_unauthorized` on `forge.ErrUnauthorized`, and the durable candidate remains available for retry.
 
 ## Collections touched
 

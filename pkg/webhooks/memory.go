@@ -21,15 +21,50 @@ func NewMemoryConfigStore() *MemoryConfigStore {
 }
 
 func (s *MemoryConfigStore) Create(_ context.Context, c Config) error {
-	return s.kit.Insert(c.ID, c, ErrDuplicate)
+	return s.kit.Insert(c.ID, storekit.Snapshot(c), ErrDuplicate)
 }
 
 func (s *MemoryConfigStore) Get(_ context.Context, id string) (Config, error) {
-	return s.kit.Get(id)
+	c, err := s.kit.Get(id)
+	return storekit.Snapshot(c), err
 }
 
 func (s *MemoryConfigStore) Update(_ context.Context, c Config) error {
-	return s.kit.Replace(c.ID, c)
+	c = storekit.Snapshot(c)
+	ok, err := s.kit.Mutate(c.ID, func(cur *Config) bool {
+		if cur.Version != c.Version || cur.ProvisionFrozen {
+			return false
+		}
+		c.Version++
+		c.LastUsedAt = cur.LastUsedAt
+		*cur = c
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (s *MemoryConfigStore) DisableProvision(_ context.Context, id, integrationID string) error {
+	ok, err := s.kit.Mutate(id, func(c *Config) bool {
+		if c.ProvisionIntegrationID != integrationID {
+			return false
+		}
+		c.Enabled = false
+		c.Version++
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (s *MemoryConfigStore) Delete(_ context.Context, id string) error {
@@ -39,7 +74,7 @@ func (s *MemoryConfigStore) Delete(_ context.Context, id string) error {
 func (s *MemoryConfigStore) ListByTenant(_ context.Context, tenantID string) ([]Config, error) {
 	out := s.kit.List(func(c Config) bool { return c.TenantID == tenantID })
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return out, nil
+	return storekit.Snapshot(out), nil
 }
 
 func (s *MemoryConfigStore) MarkUsed(_ context.Context, id string, t time.Time) error {

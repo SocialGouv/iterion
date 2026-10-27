@@ -84,7 +84,7 @@ func (a *OAuthApp) postToken(ctx context.Context, v url.Values) (forge.Refreshed
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := a.httpClient().Do(req)
+	resp, err := forge.DoHTTP(a.httpClient(), req, forge.OAuthRedirectSecrets(v)...)
 	if err != nil {
 		return forge.RefreshedToken{}, err
 	}

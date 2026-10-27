@@ -444,13 +444,13 @@ func forgeProseRejectionTest(src string) string {
 // claims are claims about code: the detail quotes the forge's own message and
 // names one remedy per case (a pinned base the forge refuses, no public URL, a
 // public URL that is not an absolute http(s) URL, a base to pin), a
-// re-provision puts its previous webhook config back only when the forge
+// re-provision restores previous webhook settings only when the forge
 // provably did not apply the write — a 4xx other than 408 and 499, a request
-// that never left, a step that ended on a read, a hook request that was never
-// sent, or no forge call — under a
-// compare-and-set, so a concurrent provision that won is not clobbered, and
-// nothing serialises two provisions of the same repo, which the section owes
-// the operator as a known limit.
+// that never left, a step that ended on a read with no preceding indeterminate
+// write, a hook request that was never sent, or no forge call — under a
+// version compare-and-set, so a concurrent winner is not clobbered. A lease
+// reduces overlap; immutable endpoint secrets preserve verification even when
+// a remote write finishes after that lease expires.
 func TestTheRefusedHookSectionDescribesTheRefusalAndTheRestoreThatShipped(t *testing.T) {
 	routes := forgeProseSource(t, filepath.FromSlash(forgeProseProvisionRoutes))
 	detail := forgeProseHookRefusedDetail(routes)
@@ -500,7 +500,7 @@ func TestTheRefusedHookSectionDescribesTheRefusalAndTheRestoreThatShipped(t *tes
 		claim string
 	}{
 		{regexp.MustCompile(`requestNeverLeft\(err\)\s*\{\s*return true`), "a request that never left (DNS, dial, TLS certificate) restores"},
-		{regexp.MustCompile(`errors\.As\(err, &read\)\s*\{\s*return read\.priorWrite == nil`), "a step that ended on a read applied nothing"},
+		{regexp.MustCompile(`errors\.As\(err, &read\)\s*\{\s*return read\.priorWrite == nil`), "a step that ended on a read with no preceding indeterminate write applied nothing"},
 		{regexp.MustCompile(`errors\.As\(err, &notSent\)\s*\{\s*return true`), "a hook request that was never sent restores"},
 	} {
 		if !fact.re.MatchString(rejection) {
@@ -511,8 +511,8 @@ func TestTheRefusedHookSectionDescribesTheRefusalAndTheRestoreThatShipped(t *tes
 	if restore == "" {
 		t.Fatalf("pkg/forge: restoreConfig is gone — the section describes its compare-and-set")
 	}
-	if !strings.Contains(restore, "cur.TokenHash != w.wroteHash") {
-		t.Errorf("pkg/forge: the restore is no longer a compare-and-set on the hash this provision wrote (%q): the section promises a concurrent winner is left alone", restore)
+	if !strings.Contains(restore, "cur.TokenHash != w.wroteHash") || !strings.Contains(restore, "cur.Version != w.wroteVersion") || !strings.Contains(restore, "w.prev.Version = w.wroteVersion") {
+		t.Errorf("pkg/forge: restore lost its identity or version fence (%q): the section promises a concurrent winner is left alone", restore)
 	}
 
 	page := forgeProseSource(t, "docs", "webhooks.md")
@@ -531,11 +531,14 @@ func TestTheRefusedHookSectionDescribesTheRefusalAndTheRestoreThatShipped(t *tes
 		"the token hash",
 		"A concurrent provision that won the race is left alone",
 		"re-run the same request",
-		"concurrent re-provisions of the same repo are not serialised",
-		"Re-run the request if two raced",
+		"per-repo lease reduces overlapping work",
+		"same epoch secret",
+		"new webhook ID and secret",
+		"pending and retired epochs",
+		"301/302/303/307/308",
 	} {
 		if !strings.Contains(prose, required) {
-			t.Errorf("docs/webhooks.md § hook_url_refused does not state %q: the server quotes the forge, names the missing public URL, restores under a compare-and-set and orders nothing between two provisions of one repo — and a reader of this section acts on what it says", required)
+			t.Errorf("docs/webhooks.md § hook_url_refused does not state %q: the server quotes the forge, retains an immutable identity and fences settings restoration by version — a reader acts on this contract", required)
 		}
 	}
 	// The classification lives in two bullets, and each class belongs to ONE of
@@ -549,7 +552,7 @@ func TestTheRefusedHookSectionDescribesTheRefusalAndTheRestoreThatShipped(t *tes
 	for _, class := range []string{
 		"a forge 4xx other than 408 and 499",
 		"a request that never left",
-		"a step that ended on a read",
+		"a step that ended on a read with no preceding indeterminate write",
 		"a hook request that was never sent",
 		"no forge call at all",
 	} {

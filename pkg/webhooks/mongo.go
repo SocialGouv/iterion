@@ -89,7 +89,53 @@ func (s *MongoConfigStore) Get(ctx context.Context, id string) (Config, error) {
 }
 
 func (s *MongoConfigStore) Update(ctx context.Context, c Config) error {
-	return s.kit.Replace(ctx, c.ID, c, ErrDuplicate, "update config")
+	filter := bson.M{"_id": c.ID, "version": c.Version, "provision_frozen": bson.M{"$ne": true}}
+	if c.Version == 0 {
+		delete(filter, "version")
+		filter["$or"] = bson.A{bson.M{"version": 0}, bson.M{"version": bson.M{"$exists": false}}}
+	}
+	c.Version++
+	raw, err := bson.Marshal(c)
+	if err != nil {
+		return err
+	}
+	var doc bson.M
+	if err = bson.Unmarshal(raw, &doc); err != nil {
+		return err
+	}
+	delete(doc, "last_used_at")
+	// A request snapshot cannot erase a delivery's independently stamped usage.
+	pipeline := mongo.Pipeline{bson.D{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{bson.M{"last_used_at": "$last_used_at"}, bson.M{"$literal": doc}}}}}}
+	r, err := s.kit.Coll().UpdateOne(ctx, filter, pipeline)
+	if mongo.IsDuplicateKeyError(err) {
+		return ErrDuplicate
+	}
+	if err != nil {
+		return fmt.Errorf("webhooks: update config: %w", err)
+	}
+	if r.MatchedCount == 0 {
+		if _, err := s.Get(ctx, c.ID); err != nil {
+			return err
+		}
+		return ErrConflict
+	}
+	return nil
+}
+
+func (s *MongoConfigStore) DisableProvision(ctx context.Context, id, integrationID string) error {
+	r, err := s.kit.Coll().UpdateOne(ctx,
+		bson.M{"_id": id, "provision_integration_id": integrationID},
+		bson.M{"$set": bson.M{"enabled": false}, "$inc": bson.M{"version": 1}})
+	if err != nil {
+		return fmt.Errorf("webhooks: disable provisioned config: %w", err)
+	}
+	if r.MatchedCount == 0 {
+		if _, err := s.Get(ctx, id); err != nil {
+			return err
+		}
+		return ErrConflict
+	}
+	return nil
 }
 
 func (s *MongoConfigStore) Delete(ctx context.Context, id string) error {

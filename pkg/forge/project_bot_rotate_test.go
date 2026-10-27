@@ -270,15 +270,16 @@ func TestRotateDueProjectBots_RowGoneMidRotationRevokesTheNewToken(t *testing.T)
 	}
 }
 
-// vanishingIntegrations serves one listing, then forgets the row on Update.
+// vanishingIntegrations serves one listing, then loses the row before the
+// credential-specific write.
 type vanishingIntegrations struct {
 	RepoIntegrationStore
 	id string
 }
 
-func (v *vanishingIntegrations) Update(ctx context.Context, ri RepoIntegration) error {
-	if ri.ID == v.id {
+func (v *vanishingIntegrations) RecordProjectBot(ctx context.Context, id, secretID, tokenID string, bot *ProjectBot, at time.Time) error {
+	if id == v.id {
 		return ErrIntegrationNotFound
 	}
-	return v.RepoIntegrationStore.Update(ctx, ri)
+	return v.RepoIntegrationStore.RecordProjectBot(ctx, id, secretID, tokenID, bot, at)
 }
