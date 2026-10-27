@@ -151,11 +151,16 @@ func TestRunPersistWorkspace_CatalogRegenScopedToItsOwner(t *testing.T) {
 			botID: "review-pr",
 		},
 		{
-			name:       "an owner no discovery accepts is refused, and said",
-			bundle:     openVendoredBundle("bots", "whats-next"),
-			manifests:  map[string]string{"whats-next": bundle.ManifestFileAlt},
-			wantMirror: true, // its own frozen copy, which this run did not rewrite
-			wantWarn:   "bot catalog regen",
+			// ADR-140: discovery claims the .yml spelling, so the owner
+			// this table used to refuse is IN the write set — its own run
+			// refreshes its own copy like any owner's, and the frozen
+			// copy the fixture arms is replaced by the live render.
+			name:          "an owner spelled manifest.yml is in the write set, and its own run refreshes it",
+			bundle:        openVendoredBundle("bots", "whats-next"),
+			botID:         "whats-next",
+			manifests:     map[string]string{"whats-next": bundle.ManifestFileAlt},
+			wantRefreshed: []string{"whats-next"},
+			wantMirror:    true,
 		},
 	}
 	for _, tc := range cases {

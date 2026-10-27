@@ -252,23 +252,18 @@ func assistantDependencyBotsLocalize(ctx context.Context, target *authoringTarge
 		return assistantDependencyBotsLocalizeResponse{}, authoringConflictError{fmt.Sprintf("open bundle does not declare workflow dependency %q", req.Name)}
 	}
 	// The localize lands a real bundle under plugins/<name> INSIDE the
-	// consumer's directory. Discovery claims a bundle directory only when
-	// it carries manifest.yaml (the exact spelling) AND main.bot, and skips
-	// a claimed directory's subtree. A consumer failing that test is NOT
-	// claimed: the walk descends it, the landed copy leaks into the routing
-	// namespace as a top-level bot, shadows the .botz materialization, and
-	// the consumer itself drops from the catalogue
+	// consumer's directory, which discovery only skips while it CLAIMS the
+	// consumer. The claim is bundle.DirClaim's verdict — the same one the
+	// walk uses (ADR-140) — so a directory cannot be a bundle on one
+	// surface and a descent on another: an unclaimed or unopenable
+	// consumer is refused before anything moves
 	// (docs/agents/engine/bot-catalog-regeneration.md records the corner).
-	// Refuse before anything moves: the directory must be one discovery
-	// claims, or the copy has no place to land.
-	missing := ""
-	if _, err := os.Stat(filepath.Join(target.bundleDir, bundle.ManifestFile)); err != nil {
-		missing = bundle.ManifestFile + " (the exact spelling — manifest.yml is another tool's manifest here)"
-	} else if _, err := os.Stat(filepath.Join(target.bundleDir, bundle.MainBotFile)); err != nil {
-		missing = bundle.MainBotFile
+	claimed, openable, _ := bundle.DirClaim(target.bundleDir)
+	if !claimed {
+		return assistantDependencyBotsLocalizeResponse{}, authoringConflictError{"consumer bundle is not one discovery claims (its manifest is not iterion's) — a localized dependency under an unclaimed consumer shadows the catalogue and drops the consumer from it"}
 	}
-	if missing != "" {
-		return assistantDependencyBotsLocalizeResponse{}, authoringConflictError{fmt.Sprintf("consumer bundle is not one discovery claims: no %s — a localized dependency under an unclaimed consumer shadows the catalogue and drops the consumer from it", missing)}
+	if !openable {
+		return assistantDependencyBotsLocalizeResponse{}, authoringConflictError{fmt.Sprintf("consumer bundle is claimed but carries no %s — discovery would skip it and the localized copy would shadow the catalogue", bundle.MainBotFile)}
 	}
 	gitRootOut, err := assistantDependencyGit(ctx, target.workDir, "rev-parse", "--show-toplevel")
 	if err != nil {
