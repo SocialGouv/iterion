@@ -3,6 +3,333 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [4.0.0](https://github.com/SocialGouv/iterion/compare/v3.286.3...v4.0.0) (2026-10-27)
+
+### ⚠ BREAKING CHANGES
+
+* **server:** isolate corrupt identity rows and sanitize 5xx responses
+
+### Features
+
+* **backendcaps:** one declarative capability table for all seven backends, seeded cell-for-cell from HEAD ([d24de5b](https://github.com/SocialGouv/iterion/commit/d24de5b4773b84c91cd14c8a8385028ed3914d02))
+
+    <details><summary>why</summary>
+
+    The backendcap registry is the single declarative table of what each of the seven backends ships, refuses or lacks - name, severity as a column, the evidence, and the axis - seeded from the state at HEAD (the e2e live ledger's 57 targets: 55 never, 2 pass) with a guard proving zero verdict moves: a registry diff in a PR is an explicit verdict change, which is the review surface the upcoming parity doctrine will work against. Four enumeration sites now derive from the table (the route/detection…
+
+    </details>
+* **ci:** the test capability census - skips named, sleeps inventoried, CI publishes the state ([6132671](https://github.com/SocialGouv/iterion/commit/61326713ce9555bd900e16d246cb3c7b85da0198))
+
+    <details><summary>why</summary>
+
+    The repository's test capabilities were unmeasured: 757 skips whose reasons were never censused and 486 sleeps whose durations were never inventoried. The static census generator (scripts/ci/testcaps) scans the source tree without running tests or services and produces deterministic census.json and summary.md - two generations are byte identical - plus an optional runner.json observing literal prerequisites on the machine. The CI job runs the census on every test run and publishes the artifact…
+
+    </details>
+* **mcp:** a plugin MCP server's {{workspace}} is the run's workspace ([#1800](https://github.com/SocialGouv/iterion/issues/1800)) ([08ca164](https://github.com/SocialGouv/iterion/commit/08ca1649a042dc6c36284ac8f46039abb2dd3024))
+
+    <details><summary>why</summary>
+
+    PrepareWorkflow takes the project dir (for .mcp.json) and the workspace (for the {{workspace}} placeholders) as two separate, explicit inputs, threaded through the whole runview compile API; every launch surface passes the engine's workDir, and sub-bot children, dispatcher dispatches (per-run recompile, never the shared IR), and studio launches resolve {{workspace}} against the run's own workspace. Surfaces without a run pass "" explicitly.
+
+    </details>
+* **release:** the syntax floor accepts the symbolic pin "next" and the cut rewrites it ([c55941b](https://github.com/SocialGouv/iterion/commit/c55941bd34d9c78d08e8cdfc4e44ebbc41fc229e))
+
+    <details><summary>why</summary>
+
+    A numeric ahead-pin rusts on a waiting branch: HoldSyntaxFloor demanded exactly the next minor above the newest changelog release, so every cut forced a manual re-pin. The syntax floor now accepts the literal "next" (strictly above every released version), the cut rewrites it through the same ApplyPin pass across floors.go, pkg/bundle and the bots' requires manifests - two "next" pins in one cut take one version - bundlelint and the catalogue stay green while a pin is symbolic, the missing…
+
+    </details>
+* **studio-e2e:** the studio Playwright e2e suite runs in CI, loudly ([9c0d139](https://github.com/SocialGouv/iterion/commit/9c0d139c4730a2eaa05d6913d437aa18489c4b1c))
+
+    <details><summary>why</summary>
+
+    Three specs were red on a normal host and nothing reported it: the run-console locator matched both the log line and the session card, and the launch spec asserted a caption the per-node picker no longer renders (product decision documented in place). The run-console locator is now exact; the caption assertion moved to the section that still renders it. The suite now runs in the studio-e2e-advisory workflow on the pinned chromium, and the local task names its skip with the install command…
+
+    </details>
+* **studio:** single-key shortcuts are disablable and truthfully listed (RGAA 12.10) ([30bd1f6](https://github.com/SocialGouv/iterion/commit/30bd1f6276899f15278705e52aef9910c587cbf8))
+
+    <details><summary>why</summary>
+
+    Bare keypresses (?, /, v, h, j, k, the g-chords, and the board's c/e/x) triggered app-wide actions with no way to turn them off, and the help dialog hand-copied its list. lib/shortcuts.ts is now the one registry: the help renders its rows, every branch consults shortcutsEnabled(), and the ui store persists the setting (Settings > Appearance > Single-key shortcuts). Modifier combos and dialog dismissal (? on the open board help) stay live whatever the setting.
+
+    </details>
+* **studio:** StatusMessage, a status region assistive tech hears (RGAA 7.5) ([#2514](https://github.com/SocialGouv/iterion/issues/2514)) ([3c24b92](https://github.com/SocialGouv/iterion/commit/3c24b92368d445bfe13eadc5decf8c6948f9fdd0))
+
+    <details><summary>why</summary>
+
+    The bot builder's draft-saved span toggled its own opacity while the text stayed static: role=live politeness announces nothing when no text is injected. StatusMessage is the shared primitive — a permanent role=status whose text changes — and the builder site feeds it the message conditionally. Kind stays in the text, never motion alone.
+
+    </details>
+* **studio:** the reduced-motion setting is an in-page control (RGAA 13.8) ([8513012](https://github.com/SocialGouv/iterion/commit/85130129cee64b4a66a26b15f21fe2b909dd4b04))
+
+    <details><summary>why</summary>
+
+    The OS-level prefers-reduced-motion reset stays; the criterion also asks for a mechanism ON the page. The ui store now carries motionReduced (persisted, mirrored as [data-motion=reduced] on the document root before first render), AppearanceTab exposes the Animations radiogroup, and the infinite animations gate on it:
+
+    </details>
+
+### Bug Fixes
+
+* **bots:** name the human behind an arming and let respect_human_arming protect it ([b60e25c](https://github.com/SocialGouv/iterion/commit/b60e25c893661a1cef06c5b1a221ede11835954e))
+
+    <details><summary>why</summary>
+
+    The dep-update guard queried enabledBy but never read it, so a maintainer's deliberate "merge when ready" was destroyed exactly like the bot's own previous arming - the manifest's own principle (arm_automerge must not undo what somebody else decided) contradicted the behavior. The arming query now resolves the owner, every reason that removes a standing commitment names it, and the new manifest var respect_human_arming (defaults to the manifest's stated principle) protects a human's arming from…
+
+    </details>
+* **bots:** name the human behind an arming and let respect_human_arming protect it ([4d0fc31](https://github.com/SocialGouv/iterion/commit/4d0fc31caf99fa3a64803d82e9f2c7e935f63850))
+
+    <details><summary>why</summary>
+
+    The dep-update guard queried enabledBy but never read it, so a maintainer's deliberate "merge when ready" was destroyed exactly like the bot's own previous arming - the manifest's own principle (arm_automerge must not undo what somebody else decided) contradicted the behavior. The arming query now resolves the owner, every reason that removes a standing commitment names it, and the new manifest var respect_human_arming (defaults to the manifest's stated principle) protects a human's arming from…
+
+    </details>
+* **bots:** the fourteen catalogue guards read catalogWorkflowFiles instead of globbing examples ([067bfc0](https://github.com/SocialGouv/iterion/commit/067bfc0ce5552e22d65fb6d868119fc541444199))
+
+    <details><summary>why</summary>
+
+    The fourteen catalogue guards globbed examples/ with their own pattern and no floor, so a layout rename that stopped a glob matching left each one green over a corpus it no longer reads. The guards now build on catalogWorkflowFiles (the one table of shipped-workflow roots with a per-root floor), and nine of them see the subbot children their globs never matched - the new verdicts triaged one by one.
+
+    </details>
+* **budget,runtime:** ceilings are absolute - the exit grace cannot spend past them, and raises cannot cross them ([ea11a44](https://github.com/SocialGouv/iterion/commit/ea11a44e2b9419e90f4b02af82d97081288ead4f))
+
+    <details><summary>why</summary>
+
+    CapImposed meant "the clamp changed a value", so a run declared at or below the platform ceiling (or a donor allowance) kept CapImposed false and spent the full 10 percent exit grace past the ceiling it was under. The marker now means a ceiling is in force, the graced limit is min(cap*(1+r), ceiling) - the deadline included - and the donor half of the ceiling travels a new wire field (SchemaVersion 27, the first free number after 26; messages without the marker refuse and get republished by…
+
+    </details>
+* **cli,sandbox:** the schedule crontab carries no PATH line, and the container refusal names what it searched ([c99aac7](https://github.com/SocialGouv/iterion/commit/c99aac748654e057f05bc8f6393dd49e0189639e))
+
+    <details><summary>why</summary>
+
+    renderCronBlock wrote the install-time PATH into the crontab verbatim and Vixie/cronie silently cuts one env assignment at 1000 bytes, so every cron-launched run lost the system directories sitting in the tail. The crontab now invokes a POSIX wrapper the install writes beside it: the wrapper sets the sanitised PATH (empty and relative entries dropped, duplicates removed, missing system dirs appended, shortening trims from the tail while sparing system dirs) and names what it dropped. The…
+
+    </details>
+* **dsl:** resolve workflow auto without compiler host probes ([db68f4c](https://github.com/SocialGouv/iterion/commit/db68f4c52f54d8732def3f07d5e985fc3ae0a371)), references [#2657](https://github.com/SocialGouv/iterion/issues/2657)
+
+    <details><summary>why</summary>
+
+    Apply BackendFallsThrough to the workflow default after template and environment resolution. Compile with an explicit target capability snapshot instead of probing the compiling host; preserve pessimistic preflight guards and defer unknown target availability to execution.
+
+    </details>
+* **model,runtime:** the reserved output namespace is engine-authoritative, and auto-answered interactions book their spend ([ecee17b](https://github.com/SocialGouv/iterion/commit/ecee17be7673dd9a6854a3e753fcfb644259aa37))
+
+    <details><summary>why</summary>
+
+    A delegate output's reserved `_` keys were read straight out of the map the backend returned - which for non-claw backends is the model's own JSON - so a model could forge `_tokens: 99999999` to burn a declared budget or `_tokens: 0` to under-count past it. stampDelegateOutputMeta now strips the whole reserved namespace and rebuilds it from the harness's own counters, the router and the relay re-stamp behind it, and the claw runner's oversized fallback bounds the relay-added string scalars its…
+
+    </details>
+* **platformcfg:** classify ITERION_SCHEDULE_PATH_MAX_BYTES as infra ([1b408d2](https://github.com/SocialGouv/iterion/commit/1b408d203953cffeb27acccaac06ae21c603f4ec))
+
+    <details><summary>why</summary>
+
+    The schedules-refusal landing added the cron-line PATH bound knob (pkg/cli/schedule_path.go) without the platformcfg classification - the infra census flagged it. Classified in botVarsInfraExact: the process's own posture, never a bot variable.
+
+    </details>
+* **platformcfg:** classify ITERION_SCHEDULE_PATH_MAX_BYTES as infra ([43d1cee](https://github.com/SocialGouv/iterion/commit/43d1cee61f46ecd122583985ecde468793e7bb8e))
+
+    <details><summary>why</summary>
+
+    The schedules-refusal landing added the cron-line PATH bound knob (pkg/cli/schedule_path.go) without the platformcfg classification - the infra census flagged it. Classified in botVarsInfraExact: the process's own posture, never a bot variable.
+
+    </details>
+* preserve the deepsec export schema ([#2592](https://github.com/SocialGouv/iterion/issues/2592)) ([05d4733](https://github.com/SocialGouv/iterion/commit/05d4733d83a7278d42a241ab5f9ce0df9f6d7073))
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 7 local (announced 6, ceiling 20) Adversarial-Model: kimi-code
+
+    </details>
+* regenerate the maps and corpus golden after the catalogue-guards landing ([a0522f2](https://github.com/SocialGouv/iterion/commit/a0522f24be9482bfc07cebdb5c85ad009984d990))
+
+    <details><summary>why</summary>
+
+    The catalogue-guards landing rebased cleanly (no conflicts) and pushed its pre-rebase goldens - the maps and corpus golden were stale on the new base. Regenerated on the landed state.
+
+    </details>
+* **runner,dsl:** a node the launch vars dead-end stops the pre-flight from parking behind it ([9e5a31e](https://github.com/SocialGouv/iterion/commit/9e5a31e2de75da413077bf5146432f6a470d77b3))
+
+    <details><summary>why</summary>
+
+    When the launch vars make every outgoing guard of a node false, the run dies at that node - but a cap on a route behind it still parked the run and armed a retry for work that cannot happen, and the compiled bounded-iteration fallback (C012) closed a cycle whose prune dropped the whole walk, misparking under the hard cap too. Both walks now share one notion of a node that cannot be left under the launch vars: CanReachVia does not walk through it (a spent bounded iteration is no crossing) and…
+
+    </details>
+* **runtime,server,runview:** an undecided effect carries its code on the four remaining routes ([b679b63](https://github.com/SocialGouv/iterion/commit/b679b637f3a12c20d32bdcacaa6c1c3ab977cbae))
+
+    <details><summary>why</summary>
+
+    Three routes still re-drove a run or masked an undecided effect while the first command ran, and the fourth (the engine's other sandbox execs) was inventoried. The fan-out's cancels and abandoned branches keep AMBIGUOUS_EFFECT through wrapContextErr (the drain preserves a recorded verdict instead of overwriting it with INTERRUPTED); a subbot child read back from its record keeps its FailureCode (the recovery refuses to retry the node and the reattachment keeps the binding); the cloud operator…
+
+    </details>
+* **runtime,server,runview:** an undecided effect carries its code on the four remaining routes ([e61b84d](https://github.com/SocialGouv/iterion/commit/e61b84dc9d5eebf334235e9fcae8a45c5c1bc64d))
+
+    <details><summary>why</summary>
+
+    Three routes still re-drove a run or masked an undecided effect while the first command ran, and the fourth (the engine's other sandbox execs) was inventoried. The fan-out's cancels and abandoned branches keep AMBIGUOUS_EFFECT through wrapContextErr (the drain preserves a recorded verdict instead of overwriting it with INTERRUPTED); a subbot child read back from its record keeps its FailureCode (the recovery refuses to retry the node and the reattachment keeps the binding); the cloud operator…
+
+    </details>
+* **server,bots:** bind consumed reviews to their producer (adopts [#2589](https://github.com/SocialGouv/iterion/issues/2589)) ([bb0c926](https://github.com/SocialGouv/iterion/commit/bb0c926fc39ed5433505a72d544842df40151edb))
+
+    <details><summary>why</summary>
+
+    The merge-gate hand-off walked this PR's runs newest-first and returned the first producer that rendered, so any later review-producing bot fed the fixer instead of the gate's own reviewer. Adopts the parked PR: consumes.from optionally pins the eligible producer by bot id, Billy binds to review-pr with no cross-bot fallback, and the manifests declare the binding. The old producer-agnostic tests die with the fallback they asserted; the declarations test carries the multi-tier and ordering cases.
+
+    </details>
+* **server,bots:** land the consumed-review producer binding the phantom squash claimed ([e361f77](https://github.com/SocialGouv/iterion/commit/e361f775875d0b92f12da93cb9a71d86b963cbec)), references [#2589](https://github.com/SocialGouv/iterion/issues/2589)
+
+    <details><summary>why</summary>
+
+    The squash efc89e9ea merged an empty diff: the adoption content was lost in a rebase-amend shuffle while its commit message travelled. This lands the real binding - consumes.from optionally pins the eligible producer by bot id, Billy binds to review-pr with no cross-bot fallback, the old producer-agnostic tests die with the fallback they asserted.
+
+    </details>
+* **server:** isolate corrupt identity rows and sanitize 5xx responses ([bba1b10](https://github.com/SocialGouv/iterion/commit/bba1b10316b4937f24aadd32fa09af6af1fabf4c)), references [#2624](https://github.com/SocialGouv/iterion/issues/2624) [#2625](https://github.com/SocialGouv/iterion/issues/2625) [#2634](https://github.com/SocialGouv/iterion/issues/2634)
+
+    <details><summary>why</summary>
+
+    Decode identity bulk reads per document and render corrupt organizations as unavailable while keeping healthy memberships usable in the Studio and CLI. Refuse quota-update acknowledgments until every enforced counter is updated.
+
+    </details>
+* **studio:** a disabled dropzone answers no key — the picker never opens (RGAA 7.1) ([0551c46](https://github.com/SocialGouv/iterion/commit/0551c46128386b3c8894f70f04676a02cfc39c2b))
+
+    <details><summary>why</summary>
+
+    clickableRowProps gains an optional { disabled }: the key handler refuses, tabIndex leaves the control out of the tab order, and the click target clears. The two dropzones pass their existing state (AttachmentFieldInput's disabled, GateFileInput's busy = disabled || uploading) — the mouse was already blocked by pointer-events-none; the keyboard now matches. The signature is additive: the other twelve call sites keep their behaviour.
+
+    </details>
+* **studio:** a11y chokepoints - named human armings, icon roles, live regions, separators, media alternatives ([10f4872](https://github.com/SocialGouv/iterion/commit/10f48724ad00cdf416b7e12c50c3a6c22cf73f60))
+
+    <details><summary>why</summary>
+
+    The a11y-chokepoints stream's eight tickets: shared primitives (clickableRowProps with keyboard handlers, LiveDot with role=status, the Radix icon wrapper's role=img, separators with role=separator, media alternatives with captions and fallback text) and their application across Runs, Canvas, Board, Library, Marketplace, Dispatcher, integrations and shared components. The OrgSwitcher team row's JSX closed a div over a span (repaired - tsc clean).
+
+    </details>
+* **studio:** a11y chokepoints - named human armings, icon roles, live regions, separators, media alternatives ([5eeff73](https://github.com/SocialGouv/iterion/commit/5eeff730abc55b6abfd9558f15b5c712a27f22fa))
+
+    <details><summary>why</summary>
+
+    The a11y-chokepoints stream's eight tickets: shared primitives (clickableRowProps with keyboard handlers, LiveDot with role=status, the Radix icon wrapper's role=img, separators with role=separator, media alternatives with captions and fallback text) and their application across Runs, Canvas, Board, Library, Marketplace, Dispatcher, integrations and shared components. The OrgSwitcher team row's JSX closed a div over a span (repaired - tsc clean).
+
+    </details>
+* **studio:** closing the assistant dock hands focus back to its opener (RGAA 12.8) ([b2b0c00](https://github.com/SocialGouv/iterion/commit/b2b0c0075ec8ccb1356bc67849815c677ce27b4c))
+
+    <details><summary>why</summary>
+
+    The floating panel moved focus in on open but only cleared its timer on unmount - the opener's focus fell to <body> and the tab order restarted from the top of the page. The mount effect now remembers document.activeElement before deferring focus and restores it in the cleanup, the CommandPalette idiom; the restore-mount path (focusOnMount off) still touches nothing.
+
+    </details>
+* **studio:** each run group owns its tbody (RGAA 5.7) ([#2509](https://github.com/SocialGouv/iterion/issues/2509)) ([c32bc19](https://github.com/SocialGouv/iterion/commit/c32bc19b54ab431f407911e1faafe524a82c495b))
+
+    <details><summary>why</summary>
+
+    RunListView wrapped ALL groups in one <tbody>, so the rowgroup headers (scope=rowgroup) spanned nothing: assistive tech heard one undivided body with cosmetic dividers. The tbody ownership moves into RunRowGroup - each group's rows live in their own tbody under their rowgroup header, and the suppressed-header group (the "none" key) still owns its body.
+
+    </details>
+* **studio:** heal the a11y landings' studio debt - names, splitter jumps, types ([c124472](https://github.com/SocialGouv/iterion/commit/c12447263ac1d1a26d7f60d3f2c39f21977d5caf))
+
+    <details><summary>why</summary>
+
+    10f48724a landed the a11y chokepoints with a red studio suite and a red typecheck; this heals the class at each chokepoint:
+
+    </details>
+* **studio:** phantom colour classes resolve to real theme tokens ([#2640](https://github.com/SocialGouv/iterion/issues/2640)) ([4bbbcfe](https://github.com/SocialGouv/iterion/commit/4bbbcfe036aec46332de037f4ab1ea82e8f95d8f))
+
+    <details><summary>why</summary>
+
+    The denylist canary only sees named shapes: text-success-text / text-danger-text (two statusTone copies), text-muted-fg, bg-subtle, bg-surface-sunken, hover:bg-surface-hover, hover:text-info-hover, bg-surface — classes Tailwind generates no rule for, whose elements silently inherit their colour. broken-classes.test.ts gains the allowlist: every colour utility in the corpus must resolve to a --color token of app.css's @theme (the source the build compiles utilities from), with the non-colour…
+
+    </details>
+* **studio:** question option groups carry their legend (RGAA 11.5/11.6) ([#2528](https://github.com/SocialGouv/iterion/issues/2528) [#2536](https://github.com/SocialGouv/iterion/issues/2536)) ([7349d12](https://github.com/SocialGouv/iterion/commit/7349d124bc5e0b423fe178738e0bb0034d227e6a))
+
+    <details><summary>why</summary>
+
+    RadioInput and CheckboxInput rendered their option rows in a bare div: assistive tech heard a list of ungrouped radios with no group name. Both wrap in a fieldset whose sr-only legend is the question's label - the visible label stays beside the group in WizardForm, so the layout is unchanged and the accessible name is real text, not a reference to a distant id. One edit serves both criteria (11.5 the group, 11.6 its legend); #2536 closes as its duplicate.
+
+    </details>
+* **studio:** required fields say so — visible mention and aria-required (RGAA 11.10) ([#2530](https://github.com/SocialGouv/iterion/issues/2530)) ([3bfe7a3](https://github.com/SocialGouv/iterion/commit/3bfe7a38451677328d3bd143c1d398ab35d14e18))
+
+    <details><summary>why</summary>
+
+    FieldRow is the label+control chokepoint: a required field now carries the visible asterisk on its label, an sr-only (required) mention so the accessible name states it, and aria-required on the control through the render-prop. CommittedTextField plumbs it; the Workflow Settings form's two name fields (workflow name, resource name) mark required — they were required-by-validation only, silent to assistive tech. WizardForm's decorative asterisks each gain their sr-only mention beside them.
+
+    </details>
+* **studio:** text-fg-subtle never inherits onto a -soft tint (RGAA 3.2) ([#2639](https://github.com/SocialGouv/iterion/issues/2639)) ([82aa5cd](https://github.com/SocialGouv/iterion/commit/82aa5cd2a7021e5f872a51eb0790c917896ca960))
+
+    <details><summary>why</summary>
+
+    The inherited-composition case was invisible to the variant canary: the tint sits on a banner, the subtle colour on a child span, and no single className ever holds both. _jsx.ts grows classedWithAncestry - the JSX ancestry walk (intrinsic chain only, component boundaries cut) - and the extended canary judges the composition. 61 sites across 29 files swap to text-fg-muted (the design rule's prescription; the interactive quiet controls keep their hover restore).
+
+    </details>
+* **studio:** the board column glyphs carry text alternatives (RGAA 13.5) ([#2534](https://github.com/SocialGouv/iterion/issues/2534)) ([b4fe8ec](https://github.com/SocialGouv/iterion/commit/b4fe8ecbccbe775fb2bcafc7b5a9ed923b7bb30a))
+
+    <details><summary>why</summary>
+
+    The header's bare ● and ✓ marked dispatch eligibility and terminality to sighted users alone - a screen reader heard nothing between the count and the menu. Each glyph is aria-hidden with an sr-only text alternative (the LiveDot doctrine: glyph decorative, meaning textual).
+
+    </details>
+* **studio:** the contextual header bar is the page's banner landmark (RGAA 9.2) ([#2518](https://github.com/SocialGouv/iterion/issues/2518)) ([8d5d79b](https://github.com/SocialGouv/iterion/commit/8d5d79bc57bfc5dc4e1e6fc876c9a63e029bd8ea))
+
+    <details><summary>why</summary>
+
+    The bar above <main> was a generic div, and in local identity it rendered nothing at all: the authenticated shell had ZERO banner landmark on every page. The bar is now the <header> landmark, always rendered - when the local-identity chip self-hides and no page content is pushed it collapses to zero height (h-0, no border) so the layout does not shift while the landmark stays.
+
+    </details>
+* **studio:** the DiagnosticBadge pulse drops its onAccent label under 3:1 at the trough (RGAA 3.2) ([180cf1e](https://github.com/SocialGouv/iterion/commit/180cf1e1db8ad8d02cbb091226ff691d0564858c)), references [#2535](https://github.com/SocialGouv/iterion/issues/2535)
+
+    <details><summary>why</summary>
+
+    animate-pulse animates opacity; at the trough the white-on-danger count text loses its contrast headroom. Both severities stay static, and a source-discipline canary bans the class (opacity-animating utilities) on any onAccent text element so the pairing cannot drift back. Softer text pairs pass at the trough; their remaining motion is governed by the reduced-motion gate (#2535).
+
+    </details>
+* **studio:** the primary navigation groups are real lists (RGAA 9.3) ([#2519](https://github.com/SocialGouv/iterion/issues/2519)) ([1db37ed](https://github.com/SocialGouv/iterion/commit/1db37ed36b29f58f1b1cd5c3329d0346bf0972f4))
+
+    <details><summary>why</summary>
+
+    NavLinks rendered each group as a div of bare rows: assistive tech heard a flat stream of buttons with no list structure and no group names. Each group is now a ul labelled by its caption (aria-labelledby expanded, aria-label on the collapsed icon rail), every row is a li - including the editor/runs rows whose nested tab list stays inside.
+
+    </details>
+* **studio:** the resource remove button names itself properly (RGAA 11.1) ([#2529](https://github.com/SocialGouv/iterion/issues/2529)) ([66a5991](https://github.com/SocialGouv/iterion/commit/66a599150d6a9cbd4f51efeb575625a3fab483c1))
+
+    <details><summary>why</summary>
+
+    The glyph-only remove button leaned on title for its accessible name — hover-only, announced inconsistently. It goes through the IconButton chokepoint, whose required label renders the aria-label (the visible ✕ stays). Verified the studio-wide sweep found no sibling raw glyph-only button.
+
+    </details>
+* **studio:** the run-detail title is the page h1 and the markdown slots one level under it (RGAA 9.1) ([#2517](https://github.com/SocialGouv/iterion/issues/2517)) ([721af27](https://github.com/SocialGouv/iterion/commit/721af27376b20273e1bd2925730ed16c6d2ad321))
+
+    <details><summary>why</summary>
+
+    Two families in one ticket: RunHeader rendered the run's friendly name in a plain div (no heading on the run-detail page at all), and MarkdownText shifted every markdown heading down TWO levels (h1 -> h3), so a document hierarchy starting at h1 landed at h5 under a page that had no h1 to justify the drop. The title wrapper is now the page's h1 (the double-click rename affordance unchanged), and the markdown headings slot one level below it (h1 -> h2 ...).
+
+    </details>
+* **studio:** the runs table caption summarizes columns and grouping (RGAA 5.1) ([#2508](https://github.com/SocialGouv/iterion/issues/2508)) ([3825134](https://github.com/SocialGouv/iterion/commit/38251346600eb3590bd119c6ae2db1eec542838c))
+
+    <details><summary>why</summary>
+
+    The complex table's caption read "Runs" - one word for an eight-column table grouped by state. The caption now names the grouping and lists the columns, the summary assistive tech reads before the cells.
+
+    </details>
+* **studio:** the source-level naming guard for interactive elements (leg 2 of [#2591](https://github.com/SocialGouv/iterion/issues/2591)) ([b014cc4](https://github.com/SocialGouv/iterion/commit/b014cc42fd4f792eb21765ee465ba7d31b3d5869))
+
+    <details><summary>why</summary>
+
+    The net's 11.1 hole: axe 4.13 passes placeholder-only inputs outright, and the source scan is the only place the class is decidable. _interactive.ts walks every intrinsic interactive element and flags the ones with NO naming mechanism — static text, an expression child (the runtime-name case, covered by the colocated role-name tests), aria-label, aria-labelledby, title, an enclosing label, or the FieldRow htmlFor/id pair sharing one expression. input[type=hidden] and the display:none utility…
+
+    </details>
+* **studio:** the speaker chips reach assistive tech (RGAA 10.8) ([#2525](https://github.com/SocialGouv/iterion/issues/2525)) ([bb3ab72](https://github.com/SocialGouv/iterion/commit/bb3ab729af737fb5a0fc77b66688c5bec9b59906))
+
+    <details><summary>why</summary>
+
+    The persona chip and the You chip hid themselves with aria-hidden while carrying real information — who is speaking. Multi-bot docks make that text load-bearing (a Copi reply must not read as Nexie's). Both chips drop the attribute; they stay visible text with no other change.
+
+    </details>
+* **webhooks,server:** the delivery is acknowledged once claimed, and a launch_error delivery re-drives ([e566e93](https://github.com/SocialGouv/iterion/commit/e566e9380ded16c7e0d7c063c8115254c6ccb0c7))
+
+    <details><summary>why</summary>
+
+    Every webhook lane ran its launch on the request context, so a forge closing the delivery at its own clock cancelled the launch midway and the launch_error delivery sat there forever - no retry, no sweep, and the forge will not redeliver a closed connection. The lanes now acknowledge the delivery once claimed (202 + the delivery id) and run the launch on a context detached from the request, bounded and shutdown-aware like launchBookingContext. A launch_error delivery is re-driven by a…
+
+    </details>
+
 ## [3.286.3](https://github.com/SocialGouv/iterion/compare/v3.286.2...v3.286.3) (2026-10-24)
 
 ### Bug Fixes
