@@ -70,21 +70,35 @@ footer degrades to the id alone instead of publishing a dead relative link.
 That is why this costs no `requires.iterion` bump: refusing to run a malware
 scan because a signature line cannot render would be the worse trade.
 
-## The chat lane — prod-watch carries it, feed-watch is next
+## The chat lane — both halves carry it
 
 `bots/prod-watch` (Argus) ends every Mattermost message — an alert, a notice,
-the digest, a session message — with the footer; `bots/feed-watch` (Vigie)
-still carries none. The retrofit is not a copy of the forge footer: the chat
-text goes through `clip(text, max_chars)`, so a footer appended after the clip
-can push the message past the webhook's limit, and one appended before it is
-the first thing cut. prod-watch reserves the footer's room FIRST
-(`body_chars = max_message_chars - len(footer) - 1`: the labels' check, a
-note's parts and the clip all work in it), then clips —
-`TestProdWatch_AClippedMessageStillEndsWithItsRun` (e2e) sends a message long
-enough to be cut and reads the link at its end. The feed-watch half and the
-chat-class guard are
-[#2430](https://github.com/SocialGouv/iterion/issues/2430).
+the digest, a session message — with the footer, and `bots/feed-watch` (Vigie)
+now ends its digest with it too. Neither is a copy of the forge footer: the
+chat text goes through `clip(text, max_chars)`, so a footer appended after the
+clip can push the message past the webhook's limit, and one appended before it
+is the first thing cut. Each half reserves the footer's room FIRST, then fits
+the body into what is left:
 
+- **prod-watch** computes `body_chars = max_message_chars - len(footer) - 1`
+  (the labels' check, a note's parts and the clip all work in it), then clips —
+  `TestProdWatch_AClippedMessageStillEndsWithItsRun` (e2e) sends a message long
+  enough to be cut and reads the link at its end.
+- **feed-watch** delivers through its deterministic `notify` node and builds
+  the footer there: the run link, and beside it the Revi-style provenance
+  — `Étape | Modèle | Harness | Effort demandé | Tokens` for the synthesize
+  step. Mattermost renders no `<details>` fold
+  ([mattermost#38480](https://github.com/mattermost/mattermost/issues/38480)),
+  so the block travels unfolded at the bottom of the LAST message, and the
+  split reserves its room: the tail part is re-split — never cut — so body,
+  marker and footer all fit one budget (the `max_messages` ceiling, which
+  already drops content and fails the run, re-trims the capped tail instead).
+  A silence alert carries the signature alone: no LLM step stands behind it.
+
+The chat-lane guard (`bots/chat_run_link_test.go`) pins the class the way the
+forge one does, so a chat-facing bot that joins must carry the link and cannot
+drop out quietly. Both halves of
+[#2430](https://github.com/SocialGouv/iterion/issues/2430) are covered.
 ## The guard
 
 `bots/forge_run_link_test.go` discovers the class from the bundles — a `.bot`

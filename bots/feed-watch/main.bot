@@ -407,6 +407,15 @@ schema notify_input:
   max_message_chars: int
   ## Ceiling on the messages one digest may occupy (0 = none).
   max_messages: int
+  ## AI provenance of the synthesize step, for the run footer the node
+  ## appends (docs/agents/bots/run-link.md). All json, not typed scalars:
+  ## the engine's per-node `_` keys may be absent (an engine that predates
+  ## them), and a typed field would turn that absence into a run failure.
+  ai_model: json
+  ai_backend: json
+  ai_tokens: json
+  ai_fallback_used: json
+  ai_served_by: json
 
 schema silence_input:
   category: string
@@ -1258,7 +1267,7 @@ tool verify_message:
 ## consecutive posts, ordered by sequential (blocking) POSTs.
 tool notify:
   script: |
-    import json, os, sys, time, urllib.request
+    import json, os, re, sys, time, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     message = {{input.message_markdown}}
     sinks = {{input.sinks}} or []
@@ -1280,6 +1289,83 @@ tool notify:
     # the marker it reserves for puts the last message OVER the budget the
     # budget exists to respect.
     MARK_RESERVE = len(chr(10) + chr(10) + mark_for(999, 999, True))
+
+    ## ── The run footer (docs/agents/bots/run-link.md) ──────────────
+    ## Anything this bot posts outside the deployment names the run that
+    ## wrote it: the steps, the model and the cost behind the digest, and
+    ## the way into the platform. Mattermost renders no <details> fold
+    ## (mattermost/mattermost#38480), so the Revi-style provenance travels
+    ## as a compact block on the LAST message, and the split reserves its
+    ## room (FOOTER_RESERVE) instead of clipping it.
+    run_url = str({{run.url}} or '').strip()
+    run_id = str({{run.id}} or '').strip()
+    run_tokens = int({{run.tokens}} or 0)
+    ai_model = str({{input.ai_model}} or '').strip()
+    ai_backend = str({{input.ai_backend}} or '').strip()
+    ai_tokens = int({{input.ai_tokens}} or 0)
+    ai_fallback = {{input.ai_fallback_used}} is True
+    ai_served_by = str({{input.ai_served_by}} or '').strip()
+    ## The effort the synthesize node ASKS for. Keep the default in sync
+    ## with that node's `reasoning_effort` declaration below — the dial is
+    ## declared there and read here, same file on purpose.
+    effort = (os.environ.get('FEED_WATCH_EFFORT', 'medium').strip() or 'medium')
+
+    def resolved(v):
+        # An engine that predates the run.* members leaves the reference
+        # unresolved; a value still carrying a template delimiter is no
+        # address and no id (same rule the forge footers apply).
+        return '' if v.startswith(chr(123) * 2) else v
+
+    run_url = resolved(run_url)
+    run_id = resolved(run_id)
+
+    bt = chr(96)
+    nl2 = chr(10) + chr(10)
+    # A run id is CALLER-CHOSEN at launch and screened only for path
+    # traversal, so it may carry markdown: an id like 'x](https://evil'
+    # would close the label early and publish a foreign link under Vigie's
+    # name. Only a plain id becomes a label; anything else is named in a
+    # code span (backticks stripped, so it cannot close the span either).
+    raw_id = run_id
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]*', run_id):
+        run_id = ''
+    sig = '\U0001F916 [iterion](https://iterion.cloud)'
+    if run_url and run_id:
+        sig = sig + ' · run [' + bt + run_id + bt + '](' + run_url + ')'
+    elif run_url:
+        sig = sig + ' · run [this run](' + run_url + ')'
+    elif run_id:
+        sig = sig + ' · run ' + bt + run_id + bt
+    elif raw_id:
+        sig = sig + ' · run ' + bt + raw_id.replace(bt, '') + bt
+
+    def fmt_tokens(n):
+        return str(n) if n < 1000 else '{:.1f}k'.format(n / 1000.0)
+
+    def cell(v):
+        # A provenance value is operator-configured, never caller-chosen,
+        # so plain stripping keeps a stray pipe or newline from breaking
+        # the table it lands in.
+        return str(v or '').strip().replace('|', '\\|').replace(chr(10), ' ')
+
+    step_label = 'Synthèse'
+    if ai_fallback and ai_served_by:
+        step_label = step_label + ' (repli : ' + cell(ai_served_by) + ')'
+    if ai_model or ai_backend or ai_tokens:
+        footer = nl2.join([
+            '##### Détails du run IA · Iterion',
+            chr(10).join([
+                '| Étape | Modèle | Harness | Effort demandé | Tokens |',
+                '|---|---|---|---|---:|',
+                '| ' + step_label + ' | ' + cell(ai_model) + ' | ' + cell(ai_backend) +
+                ' | ' + cell(effort) + ' | ' + fmt_tokens(ai_tokens) + ' |']),
+            'Tokens du run au moment de publier : **' + fmt_tokens(run_tokens) + '**.',
+            sig])
+    else:
+        # No provenance reached the node: publish the run link alone
+        # rather than an empty table that claims a step nobody served.
+        footer = sig
+    FOOTER_RESERVE = len(nl2 + footer)
 
     def out(o):
         print(json.dumps(o, ensure_ascii=False))
@@ -1349,26 +1435,27 @@ tool notify:
     def messages_for(limit):
         """The digest as it will be posted to a sink of budget `limit`:
         one entry when it fits, else numbered parts, the last one carrying
-        the truncation notice if the ceiling cut the tail off."""
-        parts = split_text(message or '', max(limit - MARK_RESERVE, 1))
+        the truncation notice if the ceiling cut the tail off — and the
+        run footer always, whole on the last part."""
+        # One split for the whole body, every part sized for the worst
+        # tail (marker + footer) so the LAST part always has their room.
+        # The reserve is paid on every part — a footer only one message
+        # carries is cheaper than a second, tail-only split that re-cuts
+        # block boundaries the first pass had already chosen.
+        parts = split_text(message or '', max(limit - MARK_RESERVE - FOOTER_RESERVE, 1))
         cut = max_messages > 0 and len(parts) > max_messages
         if cut:
             truncated_limits.add(limit)
             parts = parts[:max_messages]
-            # Every part was sized against MARK_RESERVE, which covers the
-            # plain `_(i/n)_` marker — not the 62-char truncation notice the
-            # LAST part now carries. Re-trim that one part rather than
-            # reserving 64 chars on EVERY part, which would shrink the whole
-            # digest to pay for a marker only one message ever gets.
-            room = limit - len(mark_for(len(parts), len(parts), True)) - 2
-            if room > 0 and len(parts[-1]) > room:
-                parts[-1] = parts[-1][:room].rstrip()
         if len(parts) == 1 and not cut:
-            return parts
+            return [parts[0] + nl2 + footer]
         n = len(parts)
         msgs = []
         for i, part in enumerate(parts, 1):
-            msgs.append(part + chr(10) + chr(10) + mark_for(i, n, cut and i == n))
+            tail_txt = mark_for(i, n, cut and i == n)
+            if i == n:
+                tail_txt = tail_txt + nl2 + footer
+            msgs.append(part + nl2 + tail_txt)
         return msgs
 
     if not sinks:
@@ -1495,7 +1582,7 @@ tool notify:
 ## nobody. `finished` is not `delivered`.
 tool notify_silence:
   script: |
-    import json, os, sys, datetime, subprocess, urllib.request
+    import json, os, re, sys, datetime, subprocess, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     category = {{input.category}}
     digest_title = {{input.digest_title}}
@@ -1526,6 +1613,28 @@ tool notify_silence:
     for k, v in (('{title}', title), ('{category}', category),
                  ('{days}', str(silence_days)), ('{window}', str(silence_window))):
         text = text.replace(k, v)
+    # The run signature the digest carries (docs/agents/bots/run-link.md),
+    # minus the AI block: a silence alert has no LLM step behind it — the
+    # link names the run that checked. Same id rules as the forge footers:
+    # an unresolved reference is no id, a caller-chosen id may carry
+    # markdown, so only a plain one becomes a link label and any other is
+    # named in a backtick-stripped code span.
+    sil_url = str({{run.url}} or '').strip()
+    raw_id = str({{run.id}} or '').strip()
+    if raw_id.startswith(chr(123) * 2):
+        raw_id = ''
+    sil_id = raw_id if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]*', raw_id) else ''
+    bt = chr(96)
+    sig = '\U0001F916 [iterion](https://iterion.cloud)'
+    if sil_url and sil_id:
+        sig = sig + ' · run [' + bt + sil_id + bt + '](' + sil_url + ')'
+    elif sil_url:
+        sig = sig + ' · run [this run](' + sil_url + ')'
+    elif sil_id:
+        sig = sig + ' · run ' + bt + sil_id + bt
+    elif raw_id:
+        sig = sig + ' · run ' + bt + raw_id.replace(bt, '') + bt
+    text = text + chr(10) + chr(10) + sig
     if not sinks:
         out({'posted': False, 'dry_run': bool(dry_run), 'delivered': 0, 'targets': [],
              'parts': 1, 'posts': 0,
@@ -1864,6 +1973,11 @@ workflow feed_watch:
     digest_title: "{{outputs.load_pending.digest_title}}",
     max_message_chars: "{{vars.max_message_chars}}",
     max_messages: "{{vars.max_messages}}",
+    ai_model: "{{outputs.synthesize._model}}",
+    ai_backend: "{{outputs.synthesize._backend}}",
+    ai_tokens: "{{outputs.synthesize._tokens}}",
+    ai_fallback_used: "{{outputs.synthesize._fallback_used}}",
+    ai_served_by: "{{outputs.synthesize._served_by}}",
   }
 
   ## Only a DELIVERED digest consumes the queue: dry-run and

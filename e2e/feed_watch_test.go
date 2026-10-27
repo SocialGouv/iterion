@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -35,9 +36,12 @@ func feedWatchTool(t *testing.T, wf *ir.Workflow, id string) *ir.ToolNode {
 
 // subScript replaces {{input.K}} template refs with JSON literals (the
 // engine's injection contract for script tool nodes) plus the webhooks
-// secret path, and fails on any leftover ref so a renamed input cannot
-// silently produce a broken script.
-func subScript(t *testing.T, script string, inputs map[string]any, secretPath string) string {
+// secret path and the run-namespace members the scripts read directly, and
+// fails on any leftover ref so a renamed input cannot silently produce a
+// broken script. Run refs default to the deployment shape (a public origin,
+// a plain id); a test overrides any of them — an empty run.url is the
+// no-public-origin case.
+func subScript(t *testing.T, script string, inputs map[string]any, secretPath string, runRefs ...map[string]any) string {
 	t.Helper()
 	for k, v := range inputs {
 		b, err := json.Marshal(v)
@@ -45,6 +49,23 @@ func subScript(t *testing.T, script string, inputs map[string]any, secretPath st
 			t.Fatalf("marshal input %s: %v", k, err)
 		}
 		script = strings.ReplaceAll(script, "{{input."+k+"}}", string(b))
+	}
+	run := map[string]any{
+		"run.url":    "https://iterion.cloud/studio/runs/run-e2e-1",
+		"run.id":     "run-e2e-1",
+		"run.tokens": 4321,
+	}
+	for _, over := range runRefs {
+		for k, v := range over {
+			run[k] = v
+		}
+	}
+	for k, v := range run {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal run ref %s: %v", k, err)
+		}
+		script = strings.ReplaceAll(script, "{{"+k+"}}", string(b))
 	}
 	b, _ := json.Marshal(secretPath)
 	script = strings.ReplaceAll(script, "{{secrets.webhooks.path}}", string(b))
@@ -270,6 +291,8 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 		"message_markdown": "**digest**", "sinks": plan["sinks"], "dry_run": true,
 		"category": "demo", "digest_title": "Demo Watch",
 		"max_message_chars": 14000, "max_messages": 5,
+		"ai_model": "claude-fable-x", "ai_backend": "claude_code",
+		"ai_tokens": 15340, "ai_fallback_used": false, "ai_served_by": "",
 	}
 	out, stderr, err = runPy(t, ws, subScript(t, notifyScript, notifyInputs, ""))
 	if err != nil {
@@ -312,8 +335,17 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 	if out["parts"].(float64) != 1 || out["posts"].(float64) != 1 {
 		t.Fatalf("short digest must be a single unsplit post: %v", out)
 	}
-	if gotBody["channel"] != "#demo" || gotBody["text"] != "**digest**" {
+	// The delivered text is the digest plus the run footer; everything
+	// else in the payload is unchanged.
+	if gotBody["channel"] != "#demo" {
 		t.Fatalf("webhook payload = %v", gotBody)
+	}
+	text, _ := gotBody["text"].(string)
+	if body := stripFooter(text); body != "**digest**" {
+		t.Fatalf("webhook payload body = %q", body)
+	}
+	if !strings.Contains(text, footerHeading) || !strings.HasSuffix(text, runFooterSig(runURLDefault, runIDDefault)) {
+		t.Fatalf("webhook payload must carry the run footer: %q", text)
 	}
 
 	// commit_state — clears exactly the snapshot, archives the digest.
@@ -699,6 +731,45 @@ func longDigest(blocks int) string {
 // notify node appends to every message of a split digest.
 var partMarker = regexp.MustCompile(`\n\n_\(\d+/\d+[^)]*\)_$`)
 
+// The run footer the notify/notify_silence nodes append (the details
+// heading when AI provenance is shown, the signature always).
+const (
+	footerHeading = "##### Détails du run IA · Iterion"
+	footerSig     = "🤖 [iterion](https://iterion.cloud)"
+
+	// The run refs subScript substitutes by default (the deployment shape).
+	runURLDefault = "https://iterion.cloud/studio/runs/run-e2e-1"
+	runIDDefault  = "run-e2e-1"
+)
+
+// runFooterSig returns a footer-bearing message's expected FINAL line for
+// the given run refs — the signature plus the run mention, mirroring the
+// python's four cases.
+func runFooterSig(runURL, runID string) string {
+	sig := footerSig
+	switch {
+	case runURL != "" && runID != "":
+		sig += " · run [`" + runID + "`](" + runURL + ")"
+	case runURL != "":
+		sig += " · run [this run](" + runURL + ")"
+	case runID != "":
+		sig += " · run `" + runID + "`"
+	}
+	return sig
+}
+
+// stripFooter removes the run footer from a message: the block starts at
+// the details heading when provenance is shown, at the signature when not.
+func stripFooter(m string) string {
+	if i := strings.LastIndex(m, footerHeading); i >= 0 {
+		return strings.TrimRight(m[:i], "\n")
+	}
+	if i := strings.LastIndex(m, footerSig); i >= 0 {
+		return strings.TrimRight(m[:i], "\n")
+	}
+	return m
+}
+
 // notifySink is a webhook stand-in accumulating every payload it receives,
 // in order, optionally failing from the Nth post of a given channel on.
 type notifySink struct {
@@ -757,8 +828,14 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 	script := feedWatchTool(t, wf, "notify").Script
 
 	// run posts `msg` to `sinks` through the real script and returns the
-	// node output plus the recording sink.
-	run := func(t *testing.T, msg string, sinks []any, maxChars, maxMessages int, sink *notifySink) (map[string]any, error) {
+	// node output plus the recording sink. The opts maps carry AI
+	// provenance inputs (`ai_*`) and run-namespace overrides (`run.*`) on
+	// top of the defaults below.
+	aiDefaults := map[string]any{
+		"ai_model": "claude-fable-x", "ai_backend": "claude_code",
+		"ai_tokens": 15340, "ai_fallback_used": false, "ai_served_by": "",
+	}
+	run := func(t *testing.T, msg string, sinks []any, maxChars, maxMessages int, sink *notifySink, opts ...map[string]any) (map[string]any, error) {
 		t.Helper()
 		srv := httptest.NewServer(sink.handler())
 		defer srv.Close()
@@ -766,23 +843,41 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		if err := os.WriteFile(secret, []byte(`{"w1": "`+srv.URL+`", "w2": "`+srv.URL+`"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		out, stderr, err := runPy(t, t.TempDir(), subScript(t, script, map[string]any{
+		inputs := map[string]any{
 			"message_markdown": msg, "sinks": sinks, "dry_run": false,
 			"category": "demo", "digest_title": "Demo Watch",
 			"max_message_chars": maxChars, "max_messages": maxMessages,
-		}, secret))
+		}
+		for k, v := range aiDefaults {
+			inputs[k] = v
+		}
+		runRefs := map[string]any{}
+		for _, over := range opts {
+			for k, v := range over {
+				if strings.HasPrefix(k, "run.") {
+					runRefs[k] = v
+				} else {
+					inputs[k] = v
+				}
+			}
+		}
+		out, stderr, err := runPy(t, t.TempDir(), subScript(t, script, inputs, secret, runRefs))
 		if err != nil && stderr != "" {
 			t.Logf("notify stderr: %s", stderr)
 		}
 		return out, err
 	}
 
-	// reassemble strips the part markers and re-joins, so the assertion is
-	// "the channel received the whole digest", not "it received something".
+	// reassemble strips the run footer from the last message and the part
+	// markers from every one, and re-joins, so the assertion is "the
+	// channel received the whole digest", not "it received something".
 	reassemble := func(t *testing.T, got []string) string {
 		t.Helper()
 		var body []string
 		for i, m := range got {
+			if i == len(got)-1 {
+				m = stripFooter(m)
+			}
 			stripped := partMarker.ReplaceAllString(m, "")
 			if stripped == m && len(got) > 1 {
 				t.Fatalf("message %d/%d carries no part marker: %q", i+1, len(got), tail(m))
@@ -811,15 +906,152 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 			t.Fatalf("a fully delivered sink must count as delivered: %v", out)
 		}
 		for i, m := range got {
-			if len(m) > 1200 {
-				t.Fatalf("message %d is %d chars, over the 1200 budget", i+1, len(m))
+			// The budget is a CHARACTER budget (the python reserves and
+			// splits on len()), and the footer carries multibyte text.
+			if utf8.RuneCountInString(m) > 1200 {
+				t.Fatalf("message %d is over the 1200-char budget: %d runes", i+1, utf8.RuneCountInString(m))
 			}
-			if !strings.HasSuffix(m, fmt.Sprintf("_(%d/%d)_", i+1, len(got))) {
-				t.Fatalf("message %d marker wrong: %q", i+1, tail(m))
+			marker := fmt.Sprintf("_(%d/%d)_", i+1, len(got))
+			if i < len(got)-1 {
+				if !strings.HasSuffix(m, marker) {
+					t.Fatalf("message %d marker wrong: %q", i+1, tail(m))
+				}
+				continue
+			}
+			// The last part: its marker first, the run footer at the very
+			// bottom.
+			if !strings.Contains(m, marker) || !strings.HasSuffix(m, runFooterSig(runURLDefault, runIDDefault)) {
+				t.Fatalf("last message must carry its marker then the run footer: %q", tail(m))
 			}
 		}
 		if body := reassemble(t, got); body != msg {
 			t.Fatalf("content lost in the split:\nwant %d chars, got %d chars", len(msg), len(body))
+		}
+	})
+
+	// The footer carries the AI provenance and the run link WHOLE on the
+	// last message: a footer split across parts is a broken table in the
+	// channel, and the reserve that keeps it whole is the whole mechanism.
+	t.Run("the run footer rides the last part whole", func(t *testing.T) {
+		msg := longDigest(20)
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
+		sink := newNotifySink()
+		if _, err := run(t, msg, sinks, 1200, 0, sink); err != nil {
+			t.Fatalf("notify failed: %v", err)
+		}
+		got := sink.texts("#demo")
+		if len(got) < 3 {
+			t.Fatalf("expected a split, got %d message(s)", len(got))
+		}
+		last := got[len(got)-1]
+		for _, want := range []string{
+			footerHeading, "claude-fable-x", "claude_code",
+			"[`run-e2e-1`](https://iterion.cloud/studio/runs/run-e2e-1)",
+			"Tokens du run",
+		} {
+			if !strings.Contains(last, want) {
+				t.Fatalf("the run footer must carry %q whole on the last message, got: %q", want, tail(last))
+			}
+		}
+		for _, m := range got[:len(got)-1] {
+			if strings.Contains(m, footerHeading) || strings.Contains(m, "/studio/runs/") {
+				t.Fatalf("an earlier message carries part of the run footer: %q", tail(m))
+			}
+		}
+		if body := reassemble(t, got); body != msg {
+			t.Fatal("the footer reserve must not lose digest content")
+		}
+	})
+
+	// A digest that fits one message has no part marker, and still ends
+	// with the footer.
+	t.Run("a digest that fits one message still ends with the footer", func(t *testing.T) {
+		msg := "# Demo Watch\n\nshort enough to fit in one message"
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
+		sink := newNotifySink()
+		if _, err := run(t, msg, sinks, 4000, 0, sink); err != nil {
+			t.Fatalf("notify failed: %v", err)
+		}
+		got := sink.texts("#demo")
+		if len(got) != 1 {
+			t.Fatalf("want 1 message, got %d", len(got))
+		}
+		if !strings.HasSuffix(got[0], runFooterSig(runURLDefault, runIDDefault)) || !strings.Contains(got[0], footerHeading) {
+			t.Fatalf("the single message must end with the run footer: %q", tail(got[0]))
+		}
+		if body := stripFooter(got[0]); body != msg {
+			t.Fatalf("footer appended over unchanged content:\nwant %q\ngot %q", msg, body)
+		}
+	})
+
+	// A deployment with no public origin must not publish a dead or
+	// relative link: the run is named by its id alone.
+	t.Run("no public origin prints the run id alone", func(t *testing.T) {
+		msg := "# Demo Watch\n\nshort enough to fit in one message"
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
+		sink := newNotifySink()
+		if _, err := run(t, msg, sinks, 4000, 0, sink,
+			map[string]any{"run.url": ""}); err != nil {
+			t.Fatalf("notify failed: %v", err)
+		}
+		got := sink.texts("#demo")
+		if len(got) != 1 {
+			t.Fatalf("want 1 message, got %d", len(got))
+		}
+		if strings.Contains(got[0], "/studio/runs/") {
+			t.Fatalf("no origin must publish no run link: %q", tail(got[0]))
+		}
+		if !strings.Contains(got[0], "run `run-e2e-1`") {
+			t.Fatalf("the run must still be named, by its id alone: %q", tail(got[0]))
+		}
+	})
+
+	// A run id is caller-chosen at launch and screened only for path
+	// traversal, so it may carry markdown: an id like this one would close
+	// a label early and publish a foreign link under Vigie's name. No
+	// address AND an unusable label: the id is still NAMED, in a code span
+	// a hostile id can neither close nor turn into a link.
+	t.Run("a markdown-bearing run id is named, never labeled", func(t *testing.T) {
+		msg := "# Demo Watch\n\nshort enough to fit in one message"
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
+		sink := newNotifySink()
+		if _, err := run(t, msg, sinks, 4000, 0, sink, map[string]any{
+			"run.url": "", "run.id": "x](https://evil.example",
+		}); err != nil {
+			t.Fatalf("notify failed: %v", err)
+		}
+		got := sink.texts("#demo")
+		if len(got) != 1 {
+			t.Fatalf("want 1 message, got %d", len(got))
+		}
+		if strings.Contains(got[0], "](https://evil.example)") {
+			t.Fatalf("a caller-chosen id must never become a link label: %q", tail(got[0]))
+		}
+		if !strings.Contains(got[0], "run `x](https://evil.example`") {
+			t.Fatalf("the run must still be named, in a code span: %q", tail(got[0]))
+		}
+	})
+
+	// Provenance that never reached the node publishes no table: an empty
+	// row would claim a step nobody served.
+	t.Run("no AI provenance publishes the run link alone", func(t *testing.T) {
+		msg := "# Demo Watch\n\nshort enough to fit in one message"
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
+		sink := newNotifySink()
+		if _, err := run(t, msg, sinks, 4000, 0, sink, map[string]any{
+			"ai_model": "", "ai_backend": "", "ai_tokens": 0,
+		}); err != nil {
+			t.Fatalf("notify failed: %v", err)
+		}
+		got := sink.texts("#demo")
+		if len(got) != 1 {
+			t.Fatalf("want 1 message, got %d", len(got))
+		}
+		if strings.Contains(got[0], footerHeading) {
+			t.Fatalf("an empty provenance table claims a step nobody served: %q", tail(got[0]))
+		}
+		if !strings.HasSuffix(got[0], runFooterSig(runURLDefault, runIDDefault)) {
+			t.Fatalf("the run signature must still close the message: %q", tail(got[0]))
 		}
 	})
 
@@ -842,8 +1074,8 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 			t.Fatalf("both sinks fully delivered, got %v", out)
 		}
 		for _, m := range narrow {
-			if len(m) > 900 {
-				t.Fatalf("a #narrow message is %d chars, over its own 900 budget", len(m))
+			if utf8.RuneCountInString(m) > 900 {
+				t.Fatalf("a #narrow message is over its own 900-char budget: %d runes", utf8.RuneCountInString(m))
 			}
 		}
 		if body := reassemble(t, narrow); body != msg {
@@ -856,14 +1088,15 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 
 	t.Run("a section heading is not stranded at the end of a part", func(t *testing.T) {
 		// Sized so the "also seen" header lands EXACTLY on a boundary:
-		// at a 500-char budget an entry (400) plus the header (20) fits,
-		// the next entry does not — so without the fix the header closes
-		// message 1 while its items open message 2.
+		// at a 900-char budget an entry (400) plus the header (20) fits
+		// the body budget the footer reserve leaves, the next entry does
+		// not — so without the fix the header closes message 1 while its
+		// items open message 2.
 		entry := strings.Repeat("mot ", 100)
 		msg := strings.Join([]string{entry, "### Egalement vus", entry, entry}, "\n\n")
 		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
 		sink := newNotifySink()
-		if _, err := run(t, msg, sinks, 500, 0, sink); err != nil {
+		if _, err := run(t, msg, sinks, 900, 0, sink); err != nil {
 			t.Fatalf("notify failed: %v", err)
 		}
 		got := sink.texts("#demo")
@@ -905,8 +1138,14 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		if !strings.Contains(got[1], "digest truncated") {
 			t.Fatalf("the capped tail must be announced, got: %q", tail(got[1]))
 		}
+		if !strings.Contains(got[1], footerHeading) || !strings.HasSuffix(got[1], runFooterSig(runURLDefault, runIDDefault)) {
+			t.Fatalf("the capped tail must still carry the run footer under its truncation notice: %q", tail(got[1]))
+		}
 		if strings.Contains(got[0], "digest truncated") {
 			t.Fatal("only the LAST message announces the truncation")
+		}
+		if strings.Contains(got[0], footerHeading) {
+			t.Fatal("only the LAST message carries the run footer")
 		}
 	})
 
@@ -934,9 +1173,9 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 			t.Fatalf("the capped tail must be announced: %q", tail(got[2]))
 		}
 		for i, m := range got {
-			if len(m) > 1200 {
-				t.Fatalf("message %d/%d is %d chars, over the 1200 budget: %q",
-					i+1, len(got), len(m), tail(m))
+			if utf8.RuneCountInString(m) > 1200 {
+				t.Fatalf("message %d/%d is over the 1200-char budget: %d runes: %q",
+					i+1, len(got), utf8.RuneCountInString(m), tail(m))
 			}
 		}
 	})
@@ -999,6 +1238,51 @@ func tail(s string) string {
 		return s
 	}
 	return "…" + s[len(s)-120:]
+}
+
+// TestFeedWatch_SilenceAlertLinksItsRun drives the REAL notify_silence
+// script: the silence alert carries the same run signature the digest does
+// (no AI block — no LLM step serves it), naming the run that checked.
+func TestFeedWatch_SilenceAlertLinksItsRun(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "feed-watch/main.bot")
+	script := feedWatchTool(t, wf, "notify_silence").Script
+	sink := newNotifySink()
+	srv := httptest.NewServer(sink.handler())
+	defer srv.Close()
+	secret := filepath.Join(t.TempDir(), "webhooks.json")
+	if err := os.WriteFile(secret, []byte(`{"w1": "`+srv.URL+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err := runPy(t, t.TempDir(), subScript(t, script, map[string]any{
+		"category": "demo", "digest_title": "Demo Watch",
+		"sinks":        []any{map[string]any{"webhook": "w1", "channel": "#demo"}},
+		"silence_days": 3, "silence_window": 3, "silence_message": "",
+		"dry_run": false, "workspace": t.TempDir(), "state_dir": "state",
+		"state_commit": false,
+	}, secret))
+	if err != nil {
+		t.Fatalf("notify_silence failed: %v (stderr: %s)", err, stderr)
+	}
+	if out["posted"] != true {
+		t.Fatalf("a delivered silence alert must report posted: %v", out)
+	}
+	got := sink.texts("#demo")
+	if len(got) != 1 {
+		t.Fatalf("want 1 silence alert, got %d", len(got))
+	}
+	if strings.Contains(got[0], footerHeading) {
+		t.Fatalf("a silence alert has no AI step behind it — no provenance table: %q", tail(got[0]))
+	}
+	if !strings.HasSuffix(got[0], runFooterSig(runURLDefault, runIDDefault)) {
+		t.Fatalf("the silence alert must end with the run signature: %q", tail(got[0]))
+	}
+	if !strings.Contains(got[0], "[`run-e2e-1`](https://iterion.cloud/studio/runs/run-e2e-1)") {
+		t.Fatalf("the silence alert must link its run: %q", tail(got[0]))
+	}
 }
 
 // TestFeedWatch_OverflowItemsSurviveCommit: snapshot_ids must name only
