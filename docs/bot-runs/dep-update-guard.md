@@ -7,6 +7,64 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-10-27 — the lane re-proven end to end after the Claude-forfait outage; both security PRs merged unattended (runs 01a17cb2 / 01a17cea + 01a17d0b)
+
+- Status: **validated end to end, twice in one morning**, on the configuration
+  armed after #1591: gate_context `revi/review` (ruleset-required, strict
+  freshness), `arm_automerge: true`, and both audits served by the z.ai facade
+  after the platform Claude forfait died (below).
+- Versions: bot dep-update-guard 2.11.0 + review-pr 0.9.17 served on
+  iterion.cloud (identical to local) · engine v3.285.0.
+- Funding note: the platform-tier Claude forfait (the `iterion-forfait` k8s
+  secret; the DB platform-credentials row is still `stored: null`) died on
+  2026-10-26 with an unrefreshable OAuth session — every cloud claude run
+  resolved AUTH_FAILED and parked, repo-wide. The fix on this repo is a
+  routing override on the integration (selectors
+  security_audit/align/verify_build/commit → provider zai): `nodes_served`
+  shows every LLM node served by `facade:zai:https://api.z.ai/api/anthropic`.
+  A second, repo-scoped zai platform key (`bko-automaint`) is shadowed by the
+  unrestricted `zai-glm` key — a pinned route takes the first platform key
+  of the provider, so the scoping bought nothing yet.
+- Proof, PR #26 (go toolchain 1.26.6 → 1.26.10 [security]; run 01a17cb2,
+  `/vetty` at 09:30:21Z): prepare → security_audit (verdict safe, $0.88,
+  govulncheck + osv-scanner 2.4.0 + OSV API + proxy.golang.org toolchain
+  check) → align → verify_build → commit (nothing to align) →
+  `revi/review=success` on the audited head `bf27446` at 09:55:04Z →
+  **merged 09:55:12Z by `app/iterion-forge-core`** (squash `831330b4`).
+  ~25 min, ~$1.9. The arm node reports `armed: true — the forge reported
+  every required check already green` (the direct-merge path pinned to the
+  audited sha).
+- Proof, PR #25 (undici 7.29.0 → 7.30.1 [security]; runs 01a17cea then
+  01a17d0b): audited green at 10:44 and ARMED (SQUASH) — then the #26 merge
+  moved main and strict freshness held the PR BEHIND. The designed path
+  resolved it without a human: a real renovate run rebased the PR (head
+  `8d836373`), the synchronize relaunched Vetty, the fresh head was
+  re-audited, the gate re-landed, the arming was re-pinned, and the PR
+  **merged 11:26:24Z by `app/iterion-forge-core`** (squash `23b2aea0`),
+  ~$1.6 on the second pass. The serial-batch behavior the 2026-08-13 bilan
+  described, now self-healing.
+- Around the loop, the same morning: Revi reviewed a human PR end to end
+  (#27 — gate SUCCESS at 09:21 and again 10:37 after a branch update;
+  merged 10:54), so the review lane is alive on the codex credential. And
+  the preflight certifies the wiring
+  (`AUTO_MAINT_ITERION=<fleet wrapper>`, since the installed CLI predates
+  `iterion remote forge repo-bots`): agreements 1/3/4/5/7 green; 2 red by
+  ticket (#1589, producer not pinned) and 5's workflows line red by design
+  (#1595 — the delivery probe holds workflow-touching alignments with a
+  named verdict). Agreements 5/6 installation coverage stay blind without a
+  classic PAT and are covered empirically (Renovate authored PRs this week;
+  the forge App posted these very gates).
+- Lessons for next run:
+  - the webhook rate limit is 2 launches / 60 min — budget `/vetty` ×N and
+    any branch update that relaunches Revi across windows;
+  - a run relaunched by the reconciler replays its inputs VERBATIM (F8):
+    after a launch_vars change the merge hop needs a FRESH launch, not a
+    resume or a relaunch — the 09:25 relaunch carried `arm_automerge:
+    false` and would never have merged;
+  - the gate proved it BLOCKS the same morning: fresh heads sat
+    PENDING → BLOCKED for a day on 2026-10-26 (fail-closed observed, not
+    inferred).
+
 ## 2026-09-17 — profile 2: a manifest-only bump judged safe, nothing to align, nothing to commit (run 01a0af9e-9697)
 
 - Status: **validated end to end** — `prepare` → `security_audit` (safe) → `align`
