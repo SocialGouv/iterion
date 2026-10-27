@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -223,7 +224,24 @@ export default function HumanPromptForm({
     setLatestAnswer(defaultAnswerForSpec(formSpec));
   }, [nodeId, formSpec]);
 
+  const canAct = useRunCanAct();
+
   if (submitted) return null;
+
+  // A reader (org-shared, team viewer) has no answer to give: the run
+  // ladder refuses the resume behind this form (ADR-138). The read-only
+  // note replaces the form instead of proposing a command that 403s.
+  if (!canAct) {
+    return (
+      <div
+        className="px-4 py-3 border border-border-default rounded bg-surface-1 text-body text-fg-muted"
+        role="note"
+      >
+        This gate waits on a member of the run's team — you have read-only
+        access to this run.
+      </div>
+    );
+  }
 
   const submit = async (
     answers: Record<string, unknown>,

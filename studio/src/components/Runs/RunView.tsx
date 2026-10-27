@@ -471,7 +471,9 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     snapshot.run.status === "cancelled";
   // The chat input is hidden when the run reached a terminal status,
   // but the transcript stays readable in the floating / docked panel.
-  const chatInputDisabled = isQueued || isTerminal;
+  const canAct = snapshot.viewer ? snapshot.viewer.role !== "viewer" : true;
+  const chatInputDisabled =
+    !canAct || isQueued || isTerminal;
 
   // The center column: the canvas + node-detail top split over the bottom
   // drawer, with the optional right-hand Side dock. Extracted to a const to

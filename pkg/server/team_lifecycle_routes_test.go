@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -92,6 +93,7 @@ func TestTeamLifecycle_statusRefusesPendingDeletion(t *testing.T) {
 // rather than read as the default.
 func TestTeamLifecycle_runVisibilityIsAnOrgDecision(t *testing.T) {
 	s := newOrgCredsTestServer(t)
+	s.auditStore = audit.NewMemoryStore()
 
 	w := httptest.NewRecorder()
 	s.handleSetTeamRunVisibility(w, teamReq(teamAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{"run_visibility":"org"}`, "t1", ""))
@@ -110,6 +112,27 @@ func TestTeamLifecycle_runVisibilityIsAnOrgDecision(t *testing.T) {
 	}
 	if got.RunVisibility != identity.RunVisibilityOrg {
 		t.Fatalf("run visibility = %q, want org", got.RunVisibility)
+	}
+
+	// The write is audited to BOTH scopes (the ADR-138 review's F9): the
+	// team's trail and the org's trail each carry the action — the org row
+	// is what the roster-curating operator reads. Writes are detached;
+	// poll briefly for both rows to land.
+	deadline := time.Now().Add(10 * time.Second)
+	var tenantEvs, orgEvs []audit.Event
+	for {
+		tenantEvs, _ = s.auditStore.ListByTenant(context.Background(), "t1", audit.Page{})
+		orgEvs, _ = s.auditStore.ListByTenant(context.Background(), "o1", audit.Page{})
+		if (len(tenantEvs) >= 1 && len(orgEvs) >= 1) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(tenantEvs) != 1 || tenantEvs[0].Action != "team.run_visibility_changed" {
+		t.Fatalf("tenant audit = %+v, want one team.run_visibility_changed row", tenantEvs)
+	}
+	if len(orgEvs) != 1 || orgEvs[0].Action != "team.run_visibility_changed" {
+		t.Fatalf("org audit = %+v, want one team.run_visibility_changed row", orgEvs)
 	}
 
 	// A PUT without the field is not a reset: refusing it keeps "" an
