@@ -14,6 +14,7 @@ import {
   beforeSignIn,
   cancelScheduledRefresh,
   currentSessionGeneration,
+  publishExplicitTeam,
   renewSession,
   sessionDelivered,
   settlePendingSignOut,
@@ -385,6 +386,16 @@ function stateWithout(kind: Exclude<IdentityFetch["kind"], "ok">): AuthState {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(initial);
+
+  // The tab publishes the team it displays (#2662): every adoption point —
+  // bootstrap, switch, identity re-read — re-publishes, and a sign-out
+  // clears. The access cookie is browser-wide, so what a tab displays must
+  // travel with its own requests: the server scopes them to this team
+  // (validated against the session's grants), whatever another tab's switch
+  // did to the cookie since.
+  useEffect(() => {
+    publishExplicitTeam(state.status === "authenticated" ? state.activeTeamID || null : null);
+  }, [state.status, state.activeTeamID]);
 
   // The machine's record, re-read on every change of it — this tab's writes
   // and another tab's storage events alike (I6: every tab re-renders from the

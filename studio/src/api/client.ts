@@ -120,6 +120,20 @@ export {
 // (sessionDelivered): a request sent under an older generation belongs to a
 // session the tab has left, so its 401 renews nothing and signs nothing out —
 // the session it would renew, or sign out, is the one that replaced it.
+// explicitTeam is the team THIS TAB last adopted and displays (#2662): the
+// access cookie is browser-wide — the last switch in ANY tab re-scopes it —
+// so tenant-scoped requests carry the tab's own team and the server
+// validates it against the session's grants. Absent (nothing adopted yet),
+// no header goes out and the request scopes exactly as before.
+let explicitTeam: string | null = null;
+
+// publishExplicitTeam is called by the auth context at every adoption point
+// (bootstrap, switch, identity re-read) and cleared on sign-out: what a tab
+// displays is what its requests scope to.
+export function publishExplicitTeam(teamID: string | null): void {
+  explicitTeam = teamID;
+}
+
 let sessionGeneration = 0;
 
 export function currentSessionGeneration(): number {
@@ -621,7 +635,11 @@ async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, s
   const sentAt = Date.now();
   const res = await fetch(fullPath, {
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(explicitTeam ? { "X-Iterion-Team": explicitTeam } : {}),
+      ...(init?.headers ?? {}),
+    },
     ...init,
   });
   // 401 → the access JWT likely just expired. Renew the session and replay
