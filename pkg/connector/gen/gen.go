@@ -308,11 +308,13 @@ func nodeToAny(n *yaml.Node, budget *int) (any, error) {
 				}
 			case []any:
 				for _, item := range s {
-					if m, ok := item.(map[string]any); ok {
-						for mk, mv := range m {
-							if _, explicit := out[mk]; !explicit {
-								out[mk] = mv
-							}
+					m, ok := item.(map[string]any)
+					if !ok {
+						return nil, fmt.Errorf("gen: merge key value must be a mapping or a sequence of mappings")
+					}
+					for mk, mv := range m {
+						if _, explicit := out[mk]; !explicit {
+							out[mk] = mv
 						}
 					}
 				}
@@ -337,16 +339,17 @@ func nodeToAny(n *yaml.Node, budget *int) (any, error) {
 }
 
 // scalarValue resolves a scalar node to its core-schema Go value; anything
-// unresolvable stays the literal text. Base 0 matches yaml.v3's own
-// resolver: 0x/0o/0b and underscores are ints, and a leading zero stays
-// decimal.
+// unresolvable stays the literal text. Base 0 and the underscore strip
+// match yaml.v3's own resolver: 0x/0o/0b and underscores are ints, and a
+// leading zero reads octal, exactly as a plain Unmarshal resolves it.
 func scalarValue(n *yaml.Node) any {
 	switch n.ShortTag() {
 	case "!!int":
-		if i, err := strconv.ParseInt(n.Value, 0, 64); err == nil {
+		plain := strings.ReplaceAll(n.Value, "_", "")
+		if i, err := strconv.ParseInt(plain, 0, 64); err == nil {
 			return int(i)
 		}
-		if u, err := strconv.ParseUint(n.Value, 0, 64); err == nil {
+		if u, err := strconv.ParseUint(plain, 0, 64); err == nil {
 			return u
 		}
 	case "!!float":
