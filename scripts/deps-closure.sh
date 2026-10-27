@@ -7,6 +7,8 @@ cd "$(git rev-parse --show-toplevel)"
 out="$(mktemp "${TMPDIR:-/tmp}/deps-closure.XXXXXX")"
 trap 'rm -f "$out" "$out".pkgs "$out".dirs "$out".loc' EXIT
 
+# pin vendor mode: an inherited GOFLAGS=-mod=mod (GVM env) rewrites go.sum
+export GOFLAGS=-mod=vendor
 go list -deps ./cmd/iterion > "$out.pkgs"
 printf 'packages linked: %s\n' "$(wc -l < "$out.pkgs")"
 
