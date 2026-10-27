@@ -57,6 +57,23 @@ func TestUnmarshalStrictAcceptsKnownFields(t *testing.T) {
 	}
 }
 
+func TestUnmarshalStrictEmptyDocumentIsZeroValue(t *testing.T) {
+	t.Parallel()
+	// A bundle manifest may be empty or comment-only: the loader opens it
+	// as a manifest of no fields and its own defaults apply. v2's
+	// UnmarshalStrict returned nil for these; the v3 Decoder returns
+	// io.EOF, which must be absorbed here and not reach callers.
+	for _, doc := range []string{"", "  \n\n", "# only a comment\n"} {
+		var out sample
+		if err := UnmarshalStrict([]byte(doc), &out); err != nil {
+			t.Fatalf("strict decode of empty document %q: %v", doc, err)
+		}
+		if out != (sample{}) {
+			t.Fatalf("empty document decoded %+v, want the zero value", out)
+		}
+	}
+}
+
 func TestUnmarshalIgnoresUnknownFields(t *testing.T) {
 	t.Parallel()
 	var out sample

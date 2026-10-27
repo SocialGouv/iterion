@@ -6,6 +6,7 @@ package yamlx
 
 import (
 	"bytes"
+	"io"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,11 +14,19 @@ import (
 // UnmarshalStrict decodes YAML data into out and rejects unknown fields.
 // Use it wherever a document may not carry fields the target does not
 // declare: the schema drift becomes a caller-visible error instead of a
-// silently dropped value.
+// silently dropped value. An empty or comment-only document decodes to the
+// zero value — the caller's defaults apply — matching what v2's
+// UnmarshalStrict returned for the same bytes.
 func UnmarshalStrict(data []byte, out any) error {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	return dec.Decode(out)
+	if err := dec.Decode(out); err != nil {
+		if err == io.EOF {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // Unmarshal decodes YAML data into out, ignoring unknown fields. Use it for

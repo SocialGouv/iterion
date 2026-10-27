@@ -68,7 +68,7 @@ func (r *OverlayRefusal) Error() string {
 
 // LoadOverrides reads <workdir>/.iterion/bot-overrides.yaml. A missing
 // file is not an error — it returns an empty, non-nil Overrides. One past
-// the size cap or the decode's bound is an *OverlayRefusal, before yaml.v2
+// the size cap or the decode's bound is an *OverlayRefusal, before yaml.v3
 // builds a node of it; one that is not YAML is the decode's error.
 //
 // Every catalogue listing reads the overlay, and at the decode's bound one
@@ -141,7 +141,7 @@ func readOverrides(workdir string) (*Overrides, error) {
 }
 
 // decodeOverrides decodes the overlay's bytes, held to its size cap and to
-// the decode's bound before yaml.v2 builds a node of them.
+// the decode's bound before yaml.v3 builds a node of them.
 func decodeOverrides(path string, body []byte) (*Overrides, error) {
 	if len(body) > overridesMaxBytes {
 		return nil, oversizeOverlay(path)

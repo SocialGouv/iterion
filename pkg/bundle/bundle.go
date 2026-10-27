@@ -95,7 +95,7 @@ var genericManifestKeys = map[string]bool{
 }
 
 // manifestStructKeys are the Manifest's top-level yaml keys, derived from
-// the struct's tags (yaml.v2 reads an untagged field under its lowercased
+// the struct's tags (yaml.v3 reads an untagged field under its lowercased
 // name), so a field added to the struct is known here without a second
 // list to keep.
 var manifestStructKeys = func() map[string]bool {

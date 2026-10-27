@@ -19,6 +19,7 @@ package gen
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -218,11 +219,16 @@ func decode(data []byte) (map[string]any, error) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("gen: parse YAML description: %w", err)
 	}
-	norm, ok := nodeToAny(&doc).(map[string]any)
+	budget := maxParseNodes
+	norm, err := nodeToAny(&doc, &budget)
+	if err != nil {
+		return nil, err
+	}
+	m, ok := norm.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("gen: description is not a mapping")
 	}
-	return norm, nil
+	return m, nil
 }
 
 // nodeToAny converts a parsed YAML tree into plain Go values so one walk
@@ -245,18 +251,26 @@ func decode(data []byte) (map[string]any, error) {
 //
 // A non-scalar key (YAML's complex-key form) is still dropped: it has no
 // rendering a reader downstream could act on, and no description has one.
-func nodeToAny(n *yaml.Node) any {
+// maxParseNodes bounds the node walk: the budget is what stops an alias
+// expansion from deciding this process's memory.
+const maxParseNodes = 2_000_000
+
+func nodeToAny(n *yaml.Node, budget *int) (any, error) {
+	if *budget <= 0 {
+		return nil, fmt.Errorf("gen: description exceeds the parse node budget")
+	}
+	*budget--
 	switch n.Kind {
 	case yaml.DocumentNode:
 		if len(n.Content) == 0 {
-			return nil
+			return nil, nil
 		}
-		return nodeToAny(n.Content[0])
+		return nodeToAny(n.Content[0], budget)
 	case yaml.AliasNode:
 		if n.Alias == nil {
-			return nil
+			return nil, nil
 		}
-		return nodeToAny(n.Alias)
+		return nodeToAny(n.Alias, budget)
 	case yaml.MappingNode:
 		out := make(map[string]any, len(n.Content)/2)
 		var merges []*yaml.Node
@@ -269,21 +283,31 @@ func nodeToAny(n *yaml.Node) any {
 			if key.Kind != yaml.ScalarNode {
 				continue
 			}
-			out[key.Value] = nodeToAny(val)
+			v, err := nodeToAny(val, budget)
+			if err != nil {
+				return nil, err
+			}
+			out[key.Value] = v
 		}
 		// A merge key contributes what its anchored mapping holds, without
 		// ever overriding a key the mapping spells out itself; a sequence
-		// merge applies its sources in order, earlier winning.
+		// merge applies its sources in order, earlier winning. A merge
+		// value that resolves to anything else is refused loudly, matching
+		// what a plain Unmarshal reports for the same document.
 		for _, val := range merges {
-			switch src := nodeToAny(val).(type) {
+			src, err := nodeToAny(val, budget)
+			if err != nil {
+				return nil, err
+			}
+			switch s := src.(type) {
 			case map[string]any:
-				for mk, mv := range src {
+				for mk, mv := range s {
 					if _, explicit := out[mk]; !explicit {
 						out[mk] = mv
 					}
 				}
 			case []any:
-				for _, item := range src {
+				for _, item := range s {
 					if m, ok := item.(map[string]any); ok {
 						for mk, mv := range m {
 							if _, explicit := out[mk]; !explicit {
@@ -292,32 +316,48 @@ func nodeToAny(n *yaml.Node) any {
 						}
 					}
 				}
+			default:
+				return nil, fmt.Errorf("gen: merge key value must be a mapping or a sequence of mappings")
 			}
 		}
-		return out
+		return out, nil
 	case yaml.SequenceNode:
 		out := make([]any, len(n.Content))
 		for i, c := range n.Content {
-			out[i] = nodeToAny(c)
+			v, err := nodeToAny(c, budget)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = v
 		}
-		return out
+		return out, nil
 	default:
-		return scalarValue(n)
+		return scalarValue(n), nil
 	}
 }
 
 // scalarValue resolves a scalar node to its core-schema Go value; anything
-// unresolvable stays the literal text.
+// unresolvable stays the literal text. Base 0 matches yaml.v3's own
+// resolver: 0x/0o/0b and underscores are ints, and a leading zero stays
+// decimal.
 func scalarValue(n *yaml.Node) any {
 	switch n.ShortTag() {
 	case "!!int":
-		if i, err := strconv.ParseInt(n.Value, 10, 64); err == nil {
+		if i, err := strconv.ParseInt(n.Value, 0, 64); err == nil {
 			return int(i)
 		}
-		if u, err := strconv.ParseUint(n.Value, 10, 64); err == nil {
+		if u, err := strconv.ParseUint(n.Value, 0, 64); err == nil {
 			return u
 		}
 	case "!!float":
+		switch n.Value {
+		case ".inf", ".Inf", ".INF", "+.inf", "+.Inf", "+.INF":
+			return math.Inf(1)
+		case "-.inf", "-.Inf", "-.INF":
+			return math.Inf(-1)
+		case ".nan", ".NaN", ".NAN":
+			return math.NaN()
+		}
 		if f, err := strconv.ParseFloat(n.Value, 64); err == nil {
 			return f
 		}
