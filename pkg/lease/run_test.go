@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -411,10 +412,17 @@ func (f *blipStore) Renew(ctx context.Context, name, owner string, now time.Time
 // its term through a blip shorter than the step-down, and a new term — for
 // the gate sweep, a new deep pass over days of runs — is not paid for nothing.
 func TestRun_ASingleFailedRenewalKeepsTheTerm(t *testing.T) {
+	// This checks lease behavior, not whether a loaded CI scheduler runs the
+	// retry within the 500ms wall-clock margin before the safety deadline.
+	synctest.Test(t, testRunSingleFailedRenewalKeepsTheTerm)
+}
+
+func testRunSingleFailedRenewalKeepsTheTerm(t *testing.T) {
 	fs := &blipStore{Store: NewMemoryStore()}
 	log := &logSink{}
 	var tr terms
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	const leaseTTL = 3 * time.Second // renew every 1s, hold 2.5s: 500ms of slack for the renewal after the blip
 	done := make(chan struct{})
 	go func() {

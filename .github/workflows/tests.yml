@@ -749,7 +749,10 @@ jobs:
         env:
           ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
-          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/store/mongo/... \
+          # This includes the complete server suite, which already exceeds
+          # five minutes without Mongo. Keep its package budget below the
+          # job's fifteen-minute limit without shortening any test coverage.
+          go test -mod=vendor -count=1 -v -timeout 10m ./pkg/store/mongo/... \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
             ./pkg/cloudsched/... ./pkg/auth/... \
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... ./pkg/credpool/... \
