@@ -40,7 +40,8 @@ func TestNoIterExtensionAnywhere(t *testing.T) {
 	root := repoRootForDocsTest(t)
 
 	cmd := gittest.Cmd(root, "grep", "-nIE", `\.iter([^a-zA-Z0-9._]|$)`,
-		"--", ".", ":(exclude)vendor/", ":(exclude)third_party/",
+		"--", ".", ":(exclude)vendor/",
+		":(exclude)third_party/tiktoken-go-tokenizer/",
 		":(exclude)CHANGELOG.md", ":(exclude)docs/changelog/")
 	out, err := cmd.Output()
 	// git grep exits 1 with no output when there are no matches — the
