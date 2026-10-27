@@ -201,9 +201,6 @@
 // The session lookup APIs (StatSession, ListSessions, GetSessionMessages) and
 // their SQLite storage stack are removed in this fork; see FORK.md. `WithCodexHome`
 // stays accepted and inert.
-// local SQLite database and rollout files and do not require a running CLI
-// instance. Persisted rollout lifecycle records are surfaced as typed system
-// messages such as TaskStartedMessage and TaskCompleteMessage.
 //
 // # Requirements
 //
