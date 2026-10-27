@@ -737,6 +737,28 @@ team (ADR-103), not in their active one: reads take a viewer, actions a member
 caller the run's browser and terminal — and an admin/owner of the team's org
 who is not a member of that team enters as a viewer.
 
+### The id-addressed routes outside the by-id class
+
+Every route the mux serves under an id wildcard is either in the class above
+or governed by another stated rule — the enumeration is pinned by
+`TestEveryIDWildcardRouteIsClassifiedOrReasoned` in
+[pkg/server/id_route_enumeration_test.go](../pkg/server/id_route_enumeration_test.go),
+so a new id-addressed route cannot land unclassified:
+
+| Family | Rule |
+|---|---|
+| `/api/teams/{id}/…` | the path team IS the scope (`canViewTeam` / `canManageTeam`) |
+| `/api/admin/…` | super-admin over the platform sentinel tenant |
+| `/api/auth/…`, `/api/me/…`, `/api/orgs/…` | identity surfaces, user-scoped, org-scoped by path |
+| `/api/v1/native/issues/{id}…`, `/api/v1/pipeline-board/tasks/{id}…` | the board store resolves per ACTIVE team (cloud) or the one local store; a cross-team id answers `404` emergently — the ADR-103 by-id rule for issues is the pending #1849 slice |
+| `/api/v1/native/labels/{label}`, `/api/v1/native/board/…` | board vocabulary and config of the active team's store |
+| `/api/v1/bots/{name}…` | the dispatch catalog: a tiered namespace by design (team > platform > baked), not an authored-resource id |
+| `/api/assistant-watches/{watchID}` | fixed compatibility sibling of the run-addressed `DELETE /api/runs/{id}/assistant-watches/{watchID}`: the stop resolves the watch's target run under the caller's active team |
+| `/api/v1/marketplace/…` | public marketplace family (anonymous reads, repo-coordinate installs) |
+| `/api/v1/mcp/…` | per-run token over single-tenant store surfaces |
+| `/api/webhooks/…` | signature-authenticated deliveries |
+| `/api/examples/{name…}`, `/api/local/…`, `/api/projects/{id}`, `/api/v1/pipeline-board/workspace-images/{path…}`, `/api/v1/plugins/{name}…`, `/brand/{file}` | deployment-local or static surfaces with no tenant dimension (local registries, workdir files, the plugin tree, brand assets) |
+
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/runs` | authenticated (no role) — another team than the active one, through `?team_id=` or `X-Iterion-Team`, needs `canViewTeam` | List runs |
