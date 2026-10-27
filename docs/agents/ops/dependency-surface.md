@@ -15,7 +15,7 @@ Go's dead-code elimination works at function granularity, so the number is an
 upper bound on what ships — and the right unit for "generality we carry,
 audit and bump".
 
-**Baseline (2026-10-27, main `0b1de4062`): 7,340,738 LOC across 847
+**Baseline (2026-10-27, main `0b1de4062`): 7,340,738 LOC across 667
 packages.** Composition of the top:
 
 | block | linked LOC | why it is there |

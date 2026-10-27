@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ADR-138 metric: third-party source linked into the server binary.
+# ADR-140 metric: third-party source linked into the server binary.
 # Prints the linked package count, the non-stdlib LOC total and the top
 # contributors. Run via `task deps:closure`.
 set -euo pipefail
@@ -17,7 +17,7 @@ go list -deps -f '{{if not .Standard}}{{.Dir}}{{end}}' ./cmd/iterion | awk 'NF' 
 # (vendor mode: every .Dir lives under the repo root, so filter by subtree)
 top="$(git rev-parse --show-toplevel)"
 grep -E "^($top/vendor/|$top/third_party/)" "$out.dirs.raw" > "$out.dirs" || true
-printf 'non-stdlib packages: %s\n' "$(wc -l < "$out.dirs")"
+printf 'third-party packages: %s\n' "$(wc -l < "$out.dirs")"
 
 : > "$out.loc"
 while read -r d; do

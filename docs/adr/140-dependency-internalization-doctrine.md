@@ -14,7 +14,7 @@ same effort should carry a Go→Rust migration ([ADR-139](139-language-stays-go-
 refuses the migration).
 
 Measurement reframed the question. The server binary's import closure links
-**7,340,738 third-party LOC across 847 packages** (main `0b1de4062`), and
+**7,340,738 third-party LOC across 667 packages** (main `0b1de4062`), and
 **68 % of that is one generality**: the modernc sqlite stack, pulled by the
 codex SDK fork's *session lookup* — three exported functions iterion never
 calls (grep-verified; resume flows as a JSON-RPC field resolved by the codex

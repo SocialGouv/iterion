@@ -252,7 +252,7 @@ tasks:
       - go run -mod=vendor ./scripts/modelsnapshot
 
   deps:closure:
-    desc: ADR-138 metric - third-party LOC linked into the server binary (total + top contributors)
+    desc: ADR-140 metric - third-party LOC linked into the server binary (total + top contributors)
     cmds:
       - scripts/deps-closure.sh
 
