@@ -173,7 +173,7 @@ Three things the count does not say:
 
 ## Related
 
-- [adr/138-run-visibility-org-sharing-axis.md](../adr/138-run-visibility-org-sharing-axis.md) — the run sharing axis: who beyond the team may read runs by id, and what the flag opens.
+- [adr/139-run-visibility-org-sharing-axis.md](../adr/139-run-visibility-org-sharing-axis.md) — the run sharing axis: who beyond the team may read runs by id, and what the flag opens.
 
 - [cloud-architecture.md](../cloud-architecture.md) — the multitenancy enforcement layers and one deliberate cross-tenant case.
 - [cloud-rest-api.md](../cloud-rest-api.md) — the per-route auth column for the surfaces it documents, and the credential list.
