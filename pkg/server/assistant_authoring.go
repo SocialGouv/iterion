@@ -1350,6 +1350,8 @@ func (s *Server) authoringError(w http.ResponseWriter, r *http.Request, err erro
 		s.httpErrorFor(w, r, http.StatusForbidden, "%v", err)
 	case errors.Is(err, botsource.ErrNotFound), errors.Is(err, os.ErrNotExist):
 		s.httpErrorFor(w, r, http.StatusNotFound, "%v", err)
+	case errors.Is(err, errAuthoringReadLimit):
+		s.httpErrorFor(w, r, http.StatusRequestEntityTooLarge, "%v — the authoring journal reads at most %d bytes (ITERION_ASSISTANT_AUTHORING_MAX_TOTAL_BYTES)", err, currentAuthoringLimits().maxTotalBytes)
 	default:
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 	}
