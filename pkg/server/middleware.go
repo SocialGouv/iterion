@@ -262,12 +262,64 @@ func tenantFreePathMethod(method, p string) bool {
 	return false
 }
 
-// stampAuthedContext writes the resolved identity onto the request
-// context — the auth identity always, the store-level tenant only when
-// the identity carries one. A team-less identity on a tenant-scoped
-// route is refused here (the ONE choke point for every requireAuth
-// route), never handed to the store with an empty tenant.
+// teamPathPrefix marks the routes that scope by the team in their PATH:
+// the {id} of /api/teams/ is the explicit scope, and a scope header must
+// not fight it — the same precedence resolveTenantScope states for its
+// own forms, the more local scope wins.
+const teamPathPrefix = "/api/teams/"
+
+// applyExplicitTeamScope re-stamps a caller's identity onto the team its
+// X-Iterion-Team header names (#2662): the access cookie stays the
+// identity — a browser-wide artefact every tab shares — while the caller
+// (a studio tab, a CLI whose base URL is assembled for it) chooses the
+// team its request acts on. The grant it costs is exactly the standing a
+// team switch would demand, computed by the ONE computation identityInTeam
+// (role recomputed in the target team, credential facts preserved), so the
+// header enables nothing a switch would refuse; a caller without standing
+// takes a 403 naming the header — the same contract resolveTenantScope
+// gives its ?team_id= form. Routes that scope by the team in their path
+// ignore it; a team-less credential is not rescued by one (that refusal
+// keeps its fail-closed contract — the header chooses a scope, it does not
+// mint a team). By-id run routes never reach here with a header that
+// matters: scopeRunByID resolved them to the resource's team upstream.
+func (s *Server) applyExplicitTeamScope(w http.ResponseWriter, r *http.Request, id auth.Identity) (auth.Identity, bool) {
+	requested := strings.TrimSpace(r.Header.Get(tenantScopeHeader))
+	if requested == "" || requested == id.TeamID || strings.HasPrefix(r.URL.Path, teamPathPrefix) {
+		return id, true
+	}
+	resolved, ok, err := s.identityInTeam(r.Context(), id, requested)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "resolve standing in team %s: %v", requested, err)
+		return auth.Identity{}, false
+	}
+	if !ok {
+		httpError(w, http.StatusForbidden, "not authorised to scope this route to %s=%s", tenantScopeHeader, requested)
+		return auth.Identity{}, false
+	}
+	return resolved, true
+}
+
+// stampAuthedContext stamps a caller identity for the routes OUTSIDE the
+// by-id class: the explicit team header (#2662) re-scopes it first.
 func (s *Server) stampAuthedContext(w http.ResponseWriter, r *http.Request, id auth.Identity) (context.Context, bool) {
+	return s.stampIdentity(w, r, id, false)
+}
+
+// stampIdentity writes the resolved identity onto the request context —
+// the auth identity always, the store-level tenant only when the identity
+// carries one. A team-less identity on a tenant-scoped route is refused
+// here (the ONE choke point for every requireAuth route), never handed to
+// the store with an empty tenant. byID marks an identity scopeRunByID
+// already re-scoped to a resource's team: that team IS the scope, and the
+// explicit header must not fight it (#2662 — a by-id run stays the run's
+// team whatever team the header names).
+func (s *Server) stampIdentity(w http.ResponseWriter, r *http.Request, id auth.Identity, byID bool) (context.Context, bool) {
+	if !byID && id.TeamID != "" {
+		var ok bool
+		if id, ok = s.applyExplicitTeamScope(w, r, id); !ok {
+			return nil, false
+		}
+	}
 	ctx := auth.WithIdentity(r.Context(), id)
 	if id.TeamID == "" {
 		if !tenantFreePathMethod(r.Method, r.URL.Path) {

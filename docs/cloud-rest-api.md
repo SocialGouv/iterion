@@ -117,6 +117,21 @@ JWT layer.
 Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 [pkg/server/password_routes.go](../pkg/server/password_routes.go).
 
+The active team rides the access credential, and the credential lives in a
+browser-wide cookie — every tab of a browser shares it. A caller that needs
+its requests to act on another team of its own standing — a second studio
+tab that kept its team while the cookie moved, a CLI whose base URL is
+assembled for it — sends `X-Iterion-Team: <team_id>` on any tenant-scoped
+route (where a route also reads `?team_id=`, the query keeps precedence).
+The header re-scopes the request to that team at the auth choke point: the
+standing it costs is the one a team switch would demand (the role is
+recomputed in the named team, so the header never carries the active team's
+role across), a team the caller has no standing in answers `403` naming the
+header, routes that scope by the team in their path ignore it (the path is
+the more local scope), run-addressed routes ignore it (ADR-103: a run by id
+is served from the run's team), and a credential without an active team is
+not rescued by one. Absent, it changes nothing.
+
 Every route that mints a credential — login, register, refresh, the
 password change and reset confirm, the desktop exchange, the team and org
 switches — answers the session alone (`AuthSessionResponse`: `user`, the
