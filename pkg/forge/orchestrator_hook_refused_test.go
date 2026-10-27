@@ -98,8 +98,11 @@ func TestProvision_HookCreateRefusedIsTyped(t *testing.T) {
 	if lerr != nil {
 		t.Fatal(lerr)
 	}
-	if len(cfgs) != 0 {
-		t.Errorf("the refused fresh provision left %d webhook config(s) behind: %+v", len(cfgs), cfgs)
+	if len(cfgs) != 1 || cfgs[0].ProvisionIntegrationID == "" {
+		t.Fatalf("refused create must retain one durable retry identity, got %d configs", len(cfgs))
+	}
+	if _, err := o.Integrations.Get(ctx, cfgs[0].ProvisionIntegrationID); !errors.Is(err, ErrIntegrationNotFound) {
+		t.Errorf("unconfirmed candidate became operational: %v", err)
 	}
 }
 
@@ -220,11 +223,13 @@ func TestReprovision_RefusedHookRestoresTheStoredConfig(t *testing.T) {
 type restoreFailStore struct {
 	webhooks.ConfigStore
 	failHash string
+	updates  int
 	err      error
 }
 
 func (s *restoreFailStore) Update(ctx context.Context, c webhooks.Config) error {
-	if c.TokenHash == s.failHash {
+	s.updates++
+	if c.TokenHash == s.failHash && s.updates == 2 {
 		return s.err
 	}
 	return s.ConfigStore.Update(ctx, c)

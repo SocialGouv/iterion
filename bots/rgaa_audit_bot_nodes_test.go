@@ -1641,7 +1641,7 @@ L.out({ ok: true, cases: out });
 	}
 
 	t.Run("split_report_requires_a_readable_valid_annex", func(t *testing.T) {
-		for _, fault := range []string{"missing", "directory", "invalid", "outside"} {
+		for _, fault := range []string{"missing", "directory", "invalid", "outside", "counts_missing"} {
 			t.Run(fault, func(t *testing.T) {
 				dir := t.TempDir()
 				main := filepath.Join(dir, filepath.Base(fmt.Sprint(draft["draft_path"])))
@@ -1658,7 +1658,22 @@ L.out({ ok: true, cases: out });
 					}
 				case "outside":
 					annex = fmt.Sprint(draft["technical_annex_path"])
-
+				case "counts_missing":
+					var lines []string
+					for _, line := range strings.Split(mustRead(t, fmt.Sprint(draft["technical_annex_path"])), "\n") {
+						if !strings.HasPrefix(line, "- **Décidés** : ") {
+							lines = append(lines, line)
+						}
+					}
+					if err := os.WriteFile(annex, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					// A counter-shaped finding in the business report cannot
+					// replace missing metadata in the technical annex.
+					fake := "\n- **Décidés** : 0/106 — 0 conforme(s), 0 non conforme(s), 0 conforme(s) faute de sujet, 106 à évaluer\n"
+					if err := os.WriteFile(main, []byte(mustRead(t, main)+fake), 0o644); err != nil {
+						t.Fatal(err)
+					}
 				}
 				script := `const L=require(process.argv[1]).init(process.argv[2]); L.reportParts({path:process.argv[3],annexPath:process.argv[4]},process.argv[5],false);`
 				cmd := exec.Command("node", "-e", script, filepath.Join(run, "bin", "lib.js"), run, main, annex, dir)

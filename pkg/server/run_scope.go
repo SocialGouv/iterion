@@ -354,7 +354,10 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 	if resolved.Via == "super-admin" && id.TeamID != team {
 		s.superAdminRunRead(r, id, team, "run.cross_team_read", runID, nil)
 	}
-	return s.stampAuthedContext(w, r, resolved)
+	// byID: the run's team is the scope this request acts in — the
+	// explicit team header must not fight the resource's team (the
+	// class test pins it).
+	return s.stampIdentity(w, r, resolved, true)
 }
 
 // socketStanding is what one tick of an open run socket (the Browser-Live

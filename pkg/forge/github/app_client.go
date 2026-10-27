@@ -483,7 +483,7 @@ func InstallationInfo(ctx context.Context, httpClient *http.Client, apiBase stri
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := httpClient.Do(req)
+	resp, err := forge.DoHTTP(httpClient, req)
 	if err != nil {
 		return Installation{}, err
 	}
@@ -529,7 +529,7 @@ func AppSlug(ctx context.Context, httpClient *http.Client, apiBase string, cfg A
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := httpClient.Do(req)
+	resp, err := forge.DoHTTP(httpClient, req)
 	if err != nil {
 		return "", err
 	}
@@ -609,7 +609,7 @@ func MintInstallationTokenWithPermissions(ctx context.Context, httpClient *http.
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := httpClient.Do(req)
+	resp, err := forge.DoHTTP(httpClient, req)
 	if err != nil {
 		return forge.RefreshedToken{}, err
 	}

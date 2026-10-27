@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
 
@@ -22,13 +24,22 @@ import (
 // not a bot binding). It is the studio Integrations tab's source of truth
 // and the unit of deprovision.
 type RepoIntegration struct {
-	ID               string   `bson:"_id" json:"id"`
-	TenantID         string   `bson:"tenant_id" json:"tenant_id"`
-	ConnectionID     string   `bson:"connection_id" json:"connection_id"`
-	Provider         Provider `bson:"provider" json:"provider"`
-	RepoFullName     string   `bson:"repo_full_name" json:"repo_full_name"`
-	BotIDs           []string `bson:"bot_ids" json:"bot_ids"`
-	EventsNormalized []string `bson:"events_normalized" json:"events_normalized"`
+	// Version fences every snapshot write, including activation and retirement.
+	Version int64 `bson:"version" json:"-"`
+	// A retired row retains its monotonic version; new activations use distinct webhook epochs.
+	Retired               bool     `bson:"retired,omitempty" json:"-"`
+	RetireCleanupComplete bool     `bson:"retire_cleanup_complete,omitempty" json:"-"`
+	WebhookSecretSealed   []byte   `bson:"webhook_secret_sealed,omitempty" json:"-"`
+	CandidateWebhookID    string   `bson:"candidate_webhook_id,omitempty" json:"-"`
+	CandidateSecretSealed []byte   `bson:"candidate_secret_sealed,omitempty" json:"-"`
+	ProvisionPending      bool     `bson:"provision_pending,omitempty" json:"provision_pending,omitempty"`
+	ID                    string   `bson:"_id" json:"id"`
+	TenantID              string   `bson:"tenant_id" json:"tenant_id"`
+	ConnectionID          string   `bson:"connection_id" json:"connection_id"`
+	Provider              Provider `bson:"provider" json:"provider"`
+	RepoFullName          string   `bson:"repo_full_name" json:"repo_full_name"`
+	BotIDs                []string `bson:"bot_ids" json:"bot_ids"`
+	EventsNormalized      []string `bson:"events_normalized" json:"events_normalized"`
 
 	WebhookID string `bson:"webhook_id" json:"webhook_id"`                 // -> webhooks.Config._id
 	HookID    string `bson:"hook_id" json:"hook_id"`                       // forge-side hook id
@@ -162,7 +173,19 @@ type ProjectBot struct {
 type RepoIntegrationStore interface {
 	Create(ctx context.Context, ri RepoIntegration) error
 	Get(ctx context.Context, id string) (RepoIntegration, error)
+	// Lifecycle reads include pending-only reservations and retired tombstones.
+	GetProvision(ctx context.Context, id string) (RepoIntegration, error)
+	GetProvisionByConnRepo(ctx context.Context, tenantID, connID, repo string) (RepoIntegration, error)
 	Update(ctx context.Context, ri RepoIntegration) error
+	// WithProvisionVersion fences a local projection against activation/retirement
+	// and advances Version after a successful callback.
+	// The callback performs store writes only, with the supplied context, and must
+	// not call this integration store. Mongo callbacks may retry in a transaction.
+	WithProvisionVersion(ctx context.Context, id string, version int64, retired bool, write func(context.Context) error) error
+	// RecordProjectBot changes only the credential result while its previous
+	// identity is still current. Unrelated operator writes do not lose a token
+	// the forge has already rotated.
+	RecordProjectBot(ctx context.Context, id, secretID, tokenID string, bot *ProjectBot, at time.Time) error
 	// StampSynced writes the issue sync's high-water mark and nothing else.
 	// Update writes the whole document from the caller's snapshot, which a sync
 	// pass reads minutes before it stamps: that write reverts whatever an
@@ -179,6 +202,9 @@ type RepoIntegrationStore interface {
 	GetByConnRepo(ctx context.Context, tenantID, connID, repo string) (RepoIntegration, error)
 	ListByTenant(ctx context.Context, tenantID string) ([]RepoIntegration, error)
 	ListByConnection(ctx context.Context, tenantID, connID string) ([]RepoIntegration, error)
+	// ListProvisionsByConnection includes unconfirmed reservations and tombstones
+	// so disconnect can revoke their retained credentials as well.
+	ListProvisionsByConnection(ctx context.Context, tenantID, connID string) ([]RepoIntegration, error)
 	ListByWebhook(ctx context.Context, tenantID, webhookID string) ([]RepoIntegration, error)
 	// ListSyncEnabled returns every integration (across all tenants) with
 	// SyncIssuesEnabled set, for the periodic forge→board sync worker.
@@ -194,6 +220,12 @@ type RepoIntegrationStore interface {
 	ListProjectBotsExpiringBefore(ctx context.Context, t time.Time) ([]RepoIntegration, error)
 }
 
+var ErrIntegrationConflict = errors.New("forge: integration changed concurrently; re-read and retry")
+
+func integrationVisible(ri RepoIntegration) bool {
+	return !ri.Retired && (!ri.ProvisionPending || ri.WebhookID != "")
+}
+
 // ---- in-memory store (tests / local) ----
 
 type MemoryRepoIntegrationStore struct {
@@ -206,11 +238,12 @@ func NewMemoryRepoIntegrationStore() *MemoryRepoIntegrationStore {
 }
 
 func (m *MemoryRepoIntegrationStore) Create(_ context.Context, ri RepoIntegration) error {
+	ri = storekit.Snapshot(ri)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, ex := range m.items {
-		if ex.TenantID == ri.TenantID && ex.ConnectionID == ri.ConnectionID && ex.RepoFullName == ri.RepoFullName {
-			return fmt.Errorf("forge: integration already exists for %s on connection %s", ri.RepoFullName, ri.ConnectionID)
+		if ex.ID == ri.ID || ex.TenantID == ri.TenantID && ex.ConnectionID == ri.ConnectionID && ex.RepoFullName == ri.RepoFullName {
+			return ErrIntegrationConflict
 		}
 	}
 	m.items[ri.ID] = ri
@@ -218,21 +251,36 @@ func (m *MemoryRepoIntegrationStore) Create(_ context.Context, ri RepoIntegratio
 }
 
 func (m *MemoryRepoIntegrationStore) Get(_ context.Context, id string) (RepoIntegration, error) {
+	ri, err := m.GetProvision(context.Background(), id)
+	if err == nil && !integrationVisible(ri) {
+		return RepoIntegration{}, ErrIntegrationNotFound
+	}
+	return ri, err
+}
+
+func (m *MemoryRepoIntegrationStore) GetProvision(_ context.Context, id string) (RepoIntegration, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	ri, ok := m.items[id]
 	if !ok {
 		return RepoIntegration{}, ErrIntegrationNotFound
 	}
-	return ri, nil
+	return storekit.Snapshot(ri), nil
 }
 
 func (m *MemoryRepoIntegrationStore) Update(_ context.Context, ri RepoIntegration) error {
+	ri = storekit.Snapshot(ri)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.items[ri.ID]; !ok {
+	cur, ok := m.items[ri.ID]
+	if !ok {
 		return ErrIntegrationNotFound
 	}
+	if cur.Version != ri.Version {
+		return ErrIntegrationConflict
+	}
+	ri.Version++
+	ri.LastSyncedAt = cur.LastSyncedAt
 	m.items[ri.ID] = ri
 	return nil
 }
@@ -249,6 +297,41 @@ func (m *MemoryRepoIntegrationStore) StampSynced(_ context.Context, id string, a
 	return nil
 }
 
+func (m *MemoryRepoIntegrationStore) WithProvisionVersion(ctx context.Context, id string, version int64, retired bool, write func(context.Context) error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ri, ok := m.items[id]
+	if !ok {
+		return ErrIntegrationNotFound
+	}
+	if ri.Version != version || ri.Retired != retired {
+		return ErrIntegrationConflict
+	}
+	if err := write(ctx); err != nil {
+		return err
+	}
+	ri.Version++
+	m.items[id] = ri
+	return nil
+}
+
+func (m *MemoryRepoIntegrationStore) RecordProjectBot(_ context.Context, id, secretID, tokenID string, bot *ProjectBot, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ri, ok := m.items[id]
+	if !ok || !integrationVisible(ri) {
+		return ErrIntegrationNotFound
+	}
+	if ri.ManagedSecretID != secretID || ri.ProjectBot == nil || ri.ProjectBot.TokenID != tokenID {
+		return ErrIntegrationConflict
+	}
+	ri.ProjectBot = storekit.Snapshot(bot)
+	ri.UpdatedAt = at
+	ri.Version++
+	m.items[id] = ri
+	return nil
+}
+
 func (m *MemoryRepoIntegrationStore) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -260,11 +343,19 @@ func (m *MemoryRepoIntegrationStore) Delete(_ context.Context, id string) error 
 }
 
 func (m *MemoryRepoIntegrationStore) GetByConnRepo(_ context.Context, tenantID, connID, repo string) (RepoIntegration, error) {
+	ri, err := m.GetProvisionByConnRepo(context.Background(), tenantID, connID, repo)
+	if err == nil && !integrationVisible(ri) {
+		return RepoIntegration{}, ErrIntegrationNotFound
+	}
+	return ri, err
+}
+
+func (m *MemoryRepoIntegrationStore) GetProvisionByConnRepo(_ context.Context, tenantID, connID, repo string) (RepoIntegration, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, ri := range m.items {
 		if ri.TenantID == tenantID && ri.ConnectionID == connID && ri.RepoFullName == repo {
-			return ri, nil
+			return storekit.Snapshot(ri), nil
 		}
 	}
 	return RepoIntegration{}, ErrIntegrationNotFound
@@ -278,6 +369,18 @@ func (m *MemoryRepoIntegrationStore) ListByConnection(_ context.Context, tenantI
 	return m.filter(func(ri RepoIntegration) bool {
 		return ri.TenantID == tenantID && ri.ConnectionID == connID
 	}), nil
+}
+
+func (m *MemoryRepoIntegrationStore) ListProvisionsByConnection(_ context.Context, tenantID, connID string) ([]RepoIntegration, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []RepoIntegration
+	for _, ri := range m.items {
+		if ri.TenantID == tenantID && ri.ConnectionID == connID {
+			out = append(out, ri)
+		}
+	}
+	return storekit.Snapshot(out), nil
 }
 
 func (m *MemoryRepoIntegrationStore) ListSyncEnabled(_ context.Context) ([]RepoIntegration, error) {
@@ -307,12 +410,12 @@ func (m *MemoryRepoIntegrationStore) filter(keep func(RepoIntegration) bool) []R
 	defer m.mu.RUnlock()
 	var out []RepoIntegration
 	for _, ri := range m.items {
-		if keep(ri) {
+		if integrationVisible(ri) && keep(ri) {
 			out = append(out, ri)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return out
+	return storekit.Snapshot(out)
 }
 
 // ---- Mongo store ----
@@ -344,17 +447,55 @@ func (s *MongoRepoIntegrationStore) EnsureSchema(ctx context.Context) error {
 
 func (s *MongoRepoIntegrationStore) Create(ctx context.Context, ri RepoIntegration) error {
 	if _, err := s.coll.InsertOne(ctx, ri); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return ErrIntegrationConflict
+		}
 		return fmt.Errorf("forge: insert repo integration: %w", err)
 	}
 	return nil
 }
 
 func (s *MongoRepoIntegrationStore) Get(ctx context.Context, id string) (RepoIntegration, error) {
+	ri, err := s.GetProvision(ctx, id)
+	if err == nil && !integrationVisible(ri) {
+		return RepoIntegration{}, ErrIntegrationNotFound
+	}
+	return ri, err
+}
+
+func (s *MongoRepoIntegrationStore) GetProvision(ctx context.Context, id string) (RepoIntegration, error) {
 	return mongoutil.FindOne[RepoIntegration](ctx, s.coll, bson.M{"_id": id}, ErrIntegrationNotFound, "forge: get repo integration")
 }
 
 func (s *MongoRepoIntegrationStore) Update(ctx context.Context, ri RepoIntegration) error {
-	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": ri.ID}, ri, nil, ErrIntegrationNotFound, "forge: update repo integration")
+	filter := bson.M{"_id": ri.ID, "version": ri.Version}
+	if ri.Version == 0 {
+		delete(filter, "version")
+		filter["$or"] = bson.A{bson.M{"version": 0}, bson.M{"version": bson.M{"$exists": false}}}
+	}
+	ri.Version++
+	// Preserve independently stamped sync metadata in the same atomic write.
+	raw, err := bson.Marshal(ri)
+	if err != nil {
+		return err
+	}
+	var doc bson.M
+	if err = bson.Unmarshal(raw, &doc); err != nil {
+		return err
+	}
+	delete(doc, "last_synced_at")
+	pipeline := mongo.Pipeline{bson.D{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{bson.M{"last_synced_at": "$last_synced_at"}, bson.M{"$literal": doc}}}}}}
+	r, err := s.coll.UpdateOne(ctx, filter, pipeline)
+	if err != nil {
+		return fmt.Errorf("forge: update repo integration: %w", err)
+	}
+	if r.MatchedCount == 0 {
+		if _, err := s.GetProvision(ctx, ri.ID); err != nil {
+			return err
+		}
+		return ErrIntegrationConflict
+	}
+	return nil
 }
 
 func (s *MongoRepoIntegrationStore) StampSynced(ctx context.Context, id string, at time.Time) error {
@@ -362,11 +503,61 @@ func (s *MongoRepoIntegrationStore) StampSynced(ctx context.Context, id string, 
 		bson.M{"$set": bson.M{"last_synced_at": at}}, ErrIntegrationNotFound, "forge: stamp repo integration sync")
 }
 
+func (s *MongoRepoIntegrationStore) WithProvisionVersion(ctx context.Context, id string, version int64, retired bool, write func(context.Context) error) error {
+	session, err := s.coll.Database().Client().StartSession()
+	if err != nil {
+		return err
+	}
+	defer session.EndSession(context.WithoutCancel(ctx))
+	_, err = session.WithTransaction(ctx, func(ctx context.Context) (any, error) {
+		filter := bson.M{"_id": id, "retired": bson.M{"$ne": true}, "version": version}
+		if retired {
+			filter["retired"] = true
+		}
+		if version == 0 {
+			filter["version"] = bson.M{"$in": bson.A{0, nil}}
+		}
+		// A real write conflicts with a concurrent retirement or replacement.
+		// A separate version read would leave the projection's commit unfenced.
+		r, err := s.coll.UpdateOne(ctx, filter, bson.M{"$inc": bson.M{"version": 1}})
+		if err != nil {
+			return nil, err
+		}
+		if r.MatchedCount != 1 {
+			return nil, ErrIntegrationConflict
+		}
+		return nil, write(ctx)
+	})
+	return err
+}
+
+func (s *MongoRepoIntegrationStore) RecordProjectBot(ctx context.Context, id, secretID, tokenID string, bot *ProjectBot, at time.Time) error {
+	r, err := s.coll.UpdateOne(ctx, bson.M{"_id": id, "retired": bson.M{"$ne": true}, "managed_secret_id": secretID, "project_bot.token_id": tokenID, "$or": bson.A{bson.M{"provision_pending": bson.M{"$ne": true}}, bson.M{"webhook_id": bson.M{"$nin": bson.A{"", nil}}}}}, bson.M{"$set": bson.M{"project_bot": bot, "updated_at": at}, "$inc": bson.M{"version": 1}})
+	if err != nil {
+		return fmt.Errorf("forge: record project bot: %w", err)
+	}
+	if r.MatchedCount == 0 {
+		if _, err := s.Get(ctx, id); err != nil {
+			return err
+		}
+		return ErrIntegrationConflict
+	}
+	return nil
+}
+
 func (s *MongoRepoIntegrationStore) Delete(ctx context.Context, id string) error {
 	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrIntegrationNotFound, "forge: delete repo integration")
 }
 
 func (s *MongoRepoIntegrationStore) GetByConnRepo(ctx context.Context, tenantID, connID, repo string) (RepoIntegration, error) {
+	ri, err := s.GetProvisionByConnRepo(ctx, tenantID, connID, repo)
+	if err == nil && !integrationVisible(ri) {
+		return RepoIntegration{}, ErrIntegrationNotFound
+	}
+	return ri, err
+}
+
+func (s *MongoRepoIntegrationStore) GetProvisionByConnRepo(ctx context.Context, tenantID, connID, repo string) (RepoIntegration, error) {
 	return mongoutil.FindOne[RepoIntegration](ctx, s.coll, bson.M{"tenant_id": tenantID, "connection_id": connID, "repo_full_name": repo}, ErrIntegrationNotFound, "forge: get repo integration by conn/repo")
 }
 
@@ -376,6 +567,10 @@ func (s *MongoRepoIntegrationStore) ListByTenant(ctx context.Context, tenantID s
 
 func (s *MongoRepoIntegrationStore) ListByConnection(ctx context.Context, tenantID, connID string) ([]RepoIntegration, error) {
 	return s.find(ctx, bson.M{"tenant_id": tenantID, "connection_id": connID})
+}
+
+func (s *MongoRepoIntegrationStore) ListProvisionsByConnection(ctx context.Context, tenantID, connID string) ([]RepoIntegration, error) {
+	return mongoutil.FindAllSorted[RepoIntegration](ctx, s.coll, bson.M{"tenant_id": tenantID, "connection_id": connID}, "created_at", "forge: list provisions", "forge: decode provisions")
 }
 
 func (s *MongoRepoIntegrationStore) ListByWebhook(ctx context.Context, tenantID, webhookID string) ([]RepoIntegration, error) {
@@ -393,12 +588,12 @@ func (s *MongoRepoIntegrationStore) ListSyncEnabledForRepo(ctx context.Context, 
 func (s *MongoRepoIntegrationStore) ListProjectBotsExpiringBefore(ctx context.Context, t time.Time) ([]RepoIntegration, error) {
 	// A missing project_bot.expires_at never matches $lte, so integrations
 	// with no bot — or a bot with no expiry — are excluded by the query itself.
-	return mongoutil.FindAllSorted[RepoIntegration](ctx, s.coll,
-		bson.M{"project_bot.expires_at": bson.M{"$lte": t}}, "project_bot.expires_at",
-		"forge: list expiring project bots", "forge: decode expiring project bots")
+	return s.find(ctx, bson.M{"project_bot.expires_at": bson.M{"$lte": t}})
 }
 
 func (s *MongoRepoIntegrationStore) find(ctx context.Context, filter bson.M) ([]RepoIntegration, error) {
+	filter["retired"] = bson.M{"$ne": true}
+	filter["$or"] = bson.A{bson.M{"provision_pending": bson.M{"$ne": true}}, bson.M{"webhook_id": bson.M{"$nin": bson.A{"", nil}}}}
 	return mongoutil.FindAllSorted[RepoIntegration](ctx, s.coll, filter, "created_at",
 		"forge: list repo integrations", "forge: decode repo integrations")
 }

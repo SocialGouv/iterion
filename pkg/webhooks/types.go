@@ -63,15 +63,22 @@ type Rate struct {
 // exactly once at create/rotate; only TokenHash/TokenLast4/Fingerprint
 // persist.
 type Config struct {
-	ID          string        `bson:"_id" json:"id"`
-	TenantID    string        `bson:"tenant_id" json:"tenant_id"`
-	Name        string        `bson:"name" json:"name"`
-	Provider    Provider      `bson:"provider" json:"provider"`
-	SignMode    SignatureMode `bson:"sign_mode,omitempty" json:"sign_mode,omitempty"`
-	Enabled     bool          `bson:"enabled" json:"enabled"`
-	TokenHash   string        `bson:"token_hash" json:"-"`
-	TokenLast4  string        `bson:"token_last4" json:"token_last4"`
-	Fingerprint string        `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	// ProvisionFrozen seals the old policy snapshot during a webhook migration.
+	// Retry the integration to finish the migration, then edit its active config.
+	ProvisionFrozen bool  `bson:"provision_frozen,omitempty" json:"-"`
+	Version         int64 `bson:"version" json:"-"`
+	// ProvisionIntegrationID names the authoritative active epoch. Enabled alone
+	// cannot reactivate a retired config after an expired provisioning lease.
+	ProvisionIntegrationID string        `bson:"provision_integration_id,omitempty" json:"-"`
+	ID                     string        `bson:"_id" json:"id"`
+	TenantID               string        `bson:"tenant_id" json:"tenant_id"`
+	Name                   string        `bson:"name" json:"name"`
+	Provider               Provider      `bson:"provider" json:"provider"`
+	SignMode               SignatureMode `bson:"sign_mode,omitempty" json:"sign_mode,omitempty"`
+	Enabled                bool          `bson:"enabled" json:"enabled"`
+	TokenHash              string        `bson:"token_hash" json:"-"`
+	TokenLast4             string        `bson:"token_last4" json:"token_last4"`
+	Fingerprint            string        `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
 
 	// HMACSecretSealed holds the sealed plaintext used to recompute the
 	// body HMAC for hmac-mode providers (GitHub, Forgejo). Same plaintext

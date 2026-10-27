@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -100,6 +101,21 @@ func (s *Server) webhookAuth(provider webhooks.Provider, next http.Handler) http
 		if !cfg.Enabled {
 			httpError(w, http.StatusGone, "webhook disabled")
 			return
+		}
+		if cfg.ProvisionIntegrationID != "" {
+			if s.forgeIntegrations == nil {
+				httpError(w, http.StatusServiceUnavailable, "webhook activation store unavailable")
+				return
+			}
+			ri, err := s.forgeIntegrations.Get(r.Context(), cfg.ProvisionIntegrationID)
+			if errors.Is(err, forge.ErrIntegrationNotFound) || err == nil && (ri.TenantID != cfg.TenantID || ri.WebhookID != cfg.ID) {
+				httpError(w, http.StatusGone, "webhook epoch retired or pending")
+				return
+			}
+			if err != nil {
+				httpError(w, http.StatusServiceUnavailable, "webhook activation unavailable")
+				return
+			}
 		}
 		// Per-webhook rate limit.
 		if s.authLimiter != nil {

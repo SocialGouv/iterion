@@ -330,6 +330,15 @@ func (h *storeHooks) emit(nodeID string, evType store.EventType, data map[string
 // and a recursive decode) over a field bounded only by the IPC's 1 MiB budget,
 // for output nobody will see.
 //
+// The body is also bounded here, on what [iterlog.Logger.LogBlock] WRITES
+// rather than on the bytes handed over ([iterlog.BlockPreviewRendered] at
+// maxFieldSize): the far side chooses both its size and where its newlines
+// fall, and every rendered line carries the logger's continuation prefix, so
+// an unbounded 1 MiB body of single-byte lines is ~7.5 MiB of run log. Redact
+// first, bound second: a secret straddling the cut must be redacted, not
+// halved onto the operator's log. One owner, like the gate — a new block site
+// inherits the bound instead of re-deriving it.
+//
 // Only for a body that reaches the operator's log and nothing else. Text that
 // also lands in an event or an error is redacted eagerly, where it is built:
 // those keep it whatever the log level is.
@@ -340,7 +349,7 @@ func (h *storeHooks) logFarSideBlock(level iterlog.Level, emoji, header, body st
 	if !h.logger.IsEnabled(level) {
 		return
 	}
-	h.logger.LogBlock(level, emoji, header, h.red(body))
+	h.logger.LogBlock(level, emoji, header, iterlog.BlockPreviewRendered(h.red(body), maxFieldSize))
 }
 
 // onLLMPrompt implements the OnLLMPrompt hook.
@@ -498,9 +507,11 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 	}
 
 	if step.Text != "" {
-		// Full response, no preview cap — the studio folds the
-		// body under the header so length doesn't crowd the log.
-		// The [node#iter/claw] tag must lead the header so the
+		// Bounded on what the renderer writes at the logFarSideBlock
+		// choke point (an unbounded full response of single-byte lines
+		// rendered seven-fold over); the studio still folds the body
+		// under the header, and the cap engages only past maxFieldSize
+		// rendered. The [node#iter/claw] tag must lead the header so the
 		// per-node Logs tab's prefix filter associates the line.
 		h.logFarSideBlock(iterlog.LevelInfo, "💬",
 			fmt.Sprintf("[%s#%d/claw] response step %d:", nodeID, step.Iteration, step.Number),

@@ -1159,6 +1159,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		}
 	}
 	s.leases = leaseStoreFor(s, s.warnf)
+	if s.forgeOrchestrator != nil {
+		s.forgeOrchestrator.ProvisionLeases = s.leases
+	}
 	s.replicaID = newReplicaID()
 	s.gateSweep = gateSweepSettingsFromEnv(os.Getenv, s.warnf)
 	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket

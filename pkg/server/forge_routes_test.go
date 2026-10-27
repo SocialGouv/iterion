@@ -262,8 +262,8 @@ func TestForgeIntegration_PATConnectEnableDisable(t *testing.T) {
 	if deleted != 1 {
 		t.Errorf("forge hook not deleted on disable: %d", deleted)
 	}
-	if _, err := s.webhookConfigs.Get(context.Background(), res.WebhookID); err == nil {
-		t.Error("webhook config should be gone after disable")
+	if cfg, err := s.webhookConfigs.Get(context.Background(), res.WebhookID); err != nil || cfg.Enabled {
+		t.Error("disabled webhook must retain its verification tombstone")
 	}
 }
 

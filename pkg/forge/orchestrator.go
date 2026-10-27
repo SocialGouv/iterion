@@ -13,8 +13,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -73,11 +75,14 @@ var ErrBotNotProvisionable = errors.New("forge: bot set cannot be auto-provision
 // per-webhook secret override pinning the connection's managed forge token
 // — recorded as one RepoIntegration. Idempotent and reversible.
 type Orchestrator struct {
-	Connections  ConnectionStore
-	Integrations RepoIntegrationStore
-	Webhooks     webhooks.ConfigStore
-	Secrets      secrets.GenericSecretStore
-	Sealer       secrets.Sealer
+	ProvisionLeases lease.Store
+	// ProvisionLeaseTTL is overrideable; correctness survives lease expiry.
+	ProvisionLeaseTTL time.Duration
+	Connections       ConnectionStore
+	Integrations      RepoIntegrationStore
+	Webhooks          webhooks.ConfigStore
+	Secrets           secrets.GenericSecretStore
+	Sealer            secrets.Sealer
 	// Bindings, when set, gets a bot-secret binding per enabled bot pinning
 	// the managed forge token under the bot's workflow-secret name (forge_token).
 	// The webhook secret override (Tier-0) only reaches the DIRECT webhook launch
@@ -276,10 +281,23 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		return ProvisionResult{}, ErrConnectionNotFound // cross-tenant — do not leak existence
 	}
 
-	existing, exErr := o.Integrations.GetByConnRepo(ctx, req.TenantID, conn.ID, req.RepoFullName)
-	hasExisting := exErr == nil
+	ctx, release, err := o.provisionLease(ctx, req.TenantID, conn.ID, req.RepoFullName)
+	if err != nil {
+		return ProvisionResult{}, err
+	}
+	defer release()
+	existing, exErr := o.Integrations.GetProvisionByConnRepo(ctx, req.TenantID, conn.ID, req.RepoFullName)
+	hasExisting := exErr == nil && !existing.Retired
 	if exErr != nil && !errors.Is(exErr, ErrIntegrationNotFound) {
 		return ProvisionResult{}, exErr
+	}
+	reservationBase := existing
+	if existing.Retired && !existing.RetireCleanupComplete {
+		return ProvisionResult{}, fmt.Errorf("%w: finish disabling the integration before enabling it again", ErrProvisionBusy)
+	}
+	wasActive := hasExisting && existing.WebhookID != ""
+	if !hasExisting {
+		existing = RepoIntegration{}
 	}
 
 	desiredBots := dedupSorted(req.BotIDs)
@@ -295,6 +313,14 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// both need it.
 	var prevCfg webhooks.Config
 	hasPrevCfg := false
+	var candidateCfg webhooks.Config
+	candidateErr := webhooks.ErrNotFound
+	if hasExisting && existing.CandidateWebhookID != "" {
+		candidateCfg, candidateErr = o.Webhooks.Get(ctx, existing.CandidateWebhookID)
+		if candidateErr != nil && !errors.Is(candidateErr, webhooks.ErrNotFound) {
+			return ProvisionResult{}, candidateErr
+		}
+	}
 	if hasExisting && existing.WebhookID != "" {
 		prev, gerr := o.Webhooks.Get(ctx, existing.WebhookID)
 		switch {
@@ -528,7 +554,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// has none, so the board-launch path can't authenticate until a
 	// re-provision backfills them. Cheap and idempotent (ensureBotBinding
 	// no-ops when the binding already matches).
-	if hasExisting && equalStringSet(existing.BotIDs, desiredBots) && equalStringSet(existing.EventsNormalized, eventsNormalized) &&
+	if hasExisting && !existing.ProvisionPending && equalStringSet(existing.BotIDs, desiredBots) && equalStringSet(existing.EventsNormalized, eventsNormalized) &&
 		existing.HookURL == desiredHookURL {
 		// A project-bot repo has no team binding to backfill: its token is
 		// its own (see the binding step of the rebuild path).
@@ -598,6 +624,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
 				return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but the integration update failed: %v — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, uerr, ErrProvisionDivergedRetry)
 			}
+			existing.Version++
 			if verr := o.verifyOperatorSettings(ctx, existing, cfg); verr != nil {
 				return ProvisionResult{}, verr
 			}
@@ -623,10 +650,10 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		// re-establishes each row's operator-owned tuning — its cadence
 		// (cron or keepalive) with the stored next fire, vars, pause state,
 		// overlap/guard, retry, stale-after, ref and routing.
-		if changed || len(req.ScheduleCrons) > 0 {
-			if err := o.syncSchedules(ctx, req.TenantID, existing.ID, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting)); err != nil {
-				return ProvisionResult{}, err
-			}
+		// An earlier activation may have succeeded while its projection failed.
+		// Reconcile even an otherwise identical retry; the carry preserves tuning.
+		if err := o.syncProvisionSchedules(ctx, existing, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting)); err != nil {
+			return ProvisionResult{}, err
 		}
 		return ProvisionResult{
 			IntegrationID:   existing.ID,
@@ -766,41 +793,40 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		o.LogWarn("forge: %s: bots carry merge-gate gesture scopes (approvals/merge/reviewers) — their runs may approve, arm merge-when-pipeline-succeeds and request reviewers through the publish surface; strip with the forge_publish_mutations launch pin", req.RepoFullName)
 	}
 
-	// Mint a fresh iwh_ on every mutating provision (create OR event-widen):
-	// it keeps the forge hook secret and the iterion config hash in lockstep
-	// without ever needing the prior plaintext. The operator never sees it —
-	// iterion holds both ends.
-	plaintext, hash, last4, fingerprint, err := webhooks.MintToken()
+	var oldConfig *webhooks.Config
+	if hasPrevCfg {
+		oldConfig = &prevCfg
+	}
+	reserved, webhookID, plaintext, err := o.reserveHookIdentity(ctx, req, conn, reservationBase, oldConfig, managedSecretID, projectBot)
 	if err != nil {
-		return ProvisionResult{}, fmt.Errorf("forge: mint webhook token: %w", err)
+		return ProvisionResult{}, err
 	}
-
-	webhookID := o.id()
-	if hasExisting && existing.WebhookID != "" {
-		webhookID = existing.WebhookID
-	}
+	// A durable retry owns this project bot even if the remote outcome is unknown.
+	committed = true
+	hash, last4, fingerprint := auth.HashRefreshToken(plaintext), secrets.Last4(plaintext), secrets.FingerprintSHA256(plaintext)
 
 	now := o.clock()
 	cfg := webhooks.Config{
-		ID:                 webhookID,
-		TenantID:           req.TenantID,
-		Name:               provisionedWebhookName(conn.Provider, req.RepoFullName),
-		Provider:           webhooks.Provider(conn.Provider),
-		SignMode:           signModeFor(conn.Provider),
-		Enabled:            true,
-		TokenHash:          hash,
-		TokenLast4:         last4,
-		Fingerprint:        fingerprint,
-		BotIDs:             desiredBots,
-		DefaultBotID:       singleBotDefault(desiredBots),
-		BotRules:           botRules,
-		ProjectAllowlist:   []string{req.RepoFullName},
-		EventAllowlist:     nativeEvents,
-		AuthorAllowlist:    authorAllowlist,
-		LabelAllowlist:     operatorLabels,
-		ReviewOnSync:       reviewOnSync,
-		ReviewOnSyncPinned: reviewOnSyncPinned,
-		ForgeBaseURL:       conn.BaseURL(),
+		ID:                     webhookID,
+		ProvisionIntegrationID: reserved.ID,
+		TenantID:               req.TenantID,
+		Name:                   provisionedWebhookName(conn.Provider, req.RepoFullName),
+		Provider:               webhooks.Provider(conn.Provider),
+		SignMode:               signModeFor(conn.Provider),
+		Enabled:                true,
+		TokenHash:              hash,
+		TokenLast4:             last4,
+		Fingerprint:            fingerprint,
+		BotIDs:                 desiredBots,
+		DefaultBotID:           singleBotDefault(desiredBots),
+		BotRules:               botRules,
+		ProjectAllowlist:       []string{req.RepoFullName},
+		EventAllowlist:         nativeEvents,
+		AuthorAllowlist:        authorAllowlist,
+		LabelAllowlist:         operatorLabels,
+		ReviewOnSync:           reviewOnSync,
+		ReviewOnSyncPinned:     reviewOnSyncPinned,
+		ForgeBaseURL:           conn.BaseURL(),
 		// The burst must absorb a full review fan-out: one submitted review
 		// fires one pull_request_review_comment delivery PER inline comment,
 		// near-simultaneously, and the bucket is charged BEFORE the handler
@@ -829,38 +855,46 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		cfg.HMACSecretSealed = sealed
 	}
 
-	createdConfig := false
-	if hasExisting && existing.WebhookID != "" {
-		if hasPrevCfg {
-			cfg.CreatedAt = prevCfg.CreatedAt
-			cfg.CreatedBy = prevCfg.CreatedBy
-			carryOperatorWebhookSettings(&cfg, prevCfg)
+	if hasPrevCfg {
+		cfg.CreatedAt = prevCfg.CreatedAt
+		cfg.CreatedBy = prevCfg.CreatedBy
+		carryOperatorWebhookSettings(&cfg, prevCfg)
+	}
+	// Never borrow a later version for settings resolved from an older snapshot.
+	currentCfg, currentErr := candidateCfg, candidateErr
+	if hasPrevCfg && prevCfg.ID == webhookID {
+		currentCfg, currentErr = prevCfg, nil
+	}
+	if currentErr == nil {
+		if currentCfg.TokenHash != hash {
+			return ProvisionResult{}, errors.New("forge: reserved webhook identity does not match the stored token hash")
 		}
+		cfg.Version = currentCfg.Version
 		// The carry filled Routing only when the request said nothing; an
 		// explicitly-empty block (a spoken clear) must stay empty in the
 		// store, so the collapse to nil happens HERE, after the carry had
 		// its say and before the write.
 		cfg.Routing = nilIfEmptyRouting(cfg.Routing)
-		cfg.RotatedAt = &now
+		cfg.RotatedAt = currentCfg.RotatedAt
 		if err := o.Webhooks.Update(ctx, cfg); err != nil {
 			return ProvisionResult{}, fmt.Errorf("forge: update webhook config: %w", err)
 		}
+		cfg.Version++
 	} else {
 		cfg.Routing = nilIfEmptyRouting(cfg.Routing)
 		if err := o.Webhooks.Create(ctx, cfg); err != nil {
 			return ProvisionResult{}, fmt.Errorf("forge: create webhook config: %w", err)
 		}
-		createdConfig = true
 	}
 
 	// The config write above is live from here on: every step until the
 	// forge-side hook matches it returns through undoConfigWrite.
 	written := configWrite{
-		created:   createdConfig,
-		webhookID: webhookID,
-		wroteHash: cfg.TokenHash,
-		hasPrev:   hasPrevCfg,
-		prev:      prevCfg,
+		webhookID:    webhookID,
+		wroteHash:    cfg.TokenHash,
+		wroteVersion: cfg.Version,
+		hasPrev:      currentErr == nil,
+		prev:         currentCfg,
 	}
 
 	admin, err := o.AdminFor(ctx, conn)
@@ -871,11 +905,15 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			fmt.Errorf("forge: build admin client: %w", err))
 	}
 	hookURL := o.inboundURL(conn, webhookID)
-	spec := HookSpec{URL: hookURL, Secret: plaintext, Events: nativeEvents, Active: true}
+	spec := HookSpec{URL: hookURL, Secret: plaintext, Events: nativeEvents, Active: true, Version: reserved.Version}
 
 	// existing is the zero RepoIntegration when !hasExisting, so its HookID
 	// is "" — upsertHook treats that as "no prior hook".
-	hookID, err := o.upsertHook(ctx, admin, req.RepoFullName, existing.HookID, hookURL, spec)
+	priorHookID := existing.HookID
+	if webhookID != existing.WebhookID {
+		priorHookID = ""
+	}
+	hookID, err := o.upsertHook(ctx, admin, req.RepoFullName, priorHookID, hookURL, spec)
 	if err != nil {
 		// Before the refusal is typed, undone and logged: a forge that quotes
 		// the request it refused hands the secret back, and this is the last
@@ -885,6 +923,9 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	}
 
 	ri := RepoIntegration{
+		ID:                   reserved.ID,
+		Version:              reserved.Version,
+		WebhookSecretSealed:  reserved.WebhookSecretSealed,
 		TenantID:             req.TenantID,
 		ConnectionID:         conn.ID,
 		Provider:             conn.Provider,
@@ -906,6 +947,9 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
+	if reserved.CandidateWebhookID != "" {
+		ri.WebhookSecretSealed = reserved.CandidateSecretSealed
+	}
 	if hasExisting {
 		ri.ID = existing.ID
 		ri.CreatedAt = existing.CreatedAt
@@ -924,18 +968,20 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ri.SyncIssuesEnabled = existing.SyncIssuesEnabled
 		ri.LastSyncedAt = existing.LastSyncedAt
 		ri.MinAuthorRole = existing.MinAuthorRole
-		if err := o.Integrations.Update(ctx, ri); err != nil {
-			// Same divergence as the operator-settings write: the config
-			// already carries the new settings (above), the report half
-			// failed. Typed so the route can say so; re-running the same
-			// request converges.
-			return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but the integration update failed: %v — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, err, ErrProvisionDivergedRetry)
-		}
-	} else {
-		ri.ID = o.id()
-		if err := o.Integrations.Create(ctx, ri); err != nil {
-			o.rollbackConfig(ctx, createdConfig, webhookID)
-			return ProvisionResult{}, fmt.Errorf("forge: record integration: %w", err)
+	}
+	if err := o.Integrations.Update(ctx, ri); err != nil {
+		// Same divergence as the operator-settings write: the config
+		// already carries the new settings (above), the report half
+		// failed. Typed so the route can say so; re-running the same
+		// request converges.
+		return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but integration activation failed: %w — re-read and retry (%w)", ErrProvisionDiverged, err, ErrProvisionDivergedRetry)
+	}
+	ri.Version++
+	// The authority now selects the new epoch. Cleanup only the captured old ID;
+	// an old config remains a verification tombstone and cannot admit deliveries.
+	if existing.WebhookID != "" && existing.WebhookID != webhookID && existing.HookID != "" {
+		if err := admin.DeleteHook(ctx, req.RepoFullName, existing.HookID); err != nil && !errors.Is(err, ErrHookNotFound) && o.LogWarn != nil {
+			o.LogWarn("forge: retired webhook %s cleanup failed: %v", existing.WebhookID, err)
 		}
 	}
 	// The row is written: a minted bot is now recorded, and stays.
@@ -949,7 +995,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// Materialise cloud schedules for the enabled bots' schedule invocations.
 	// The repo clone URL rides along so a stateful scheduled bot gets a git
 	// workspace (#219) — without it the run lands in the pod's bare WorkDir.
-	if err := o.syncSchedules(ctx, req.TenantID, ri.ID, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting)); err != nil {
+	if err := o.syncProvisionSchedules(ctx, ri, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting)); err != nil {
 		return ProvisionResult{}, err
 	}
 
@@ -960,7 +1006,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ManagedSecretID: managedSecretID,
 		BotIDs:          desiredBots,
 		BotLogin:        projectBotLogin(projectBot),
-		Created:         !hasExisting,
+		Created:         !wasActive,
 	}, nil
 }
 
@@ -1009,67 +1055,27 @@ func (o *Orchestrator) upsertHook(ctx context.Context, admin Admin, repo, priorI
 	return h.ID, nil
 }
 
-func (o *Orchestrator) rollbackConfig(ctx context.Context, created bool, webhookID string) {
-	if created && webhookID != "" {
-		rctx, cancel := repairContext(ctx)
-		defer cancel()
-		_ = o.Webhooks.Delete(rctx, webhookID)
-	}
-}
-
-// configRepairTimeout bounds a repair on its own context: long enough for a
-// store round-trip on a loaded cluster, short enough that a wedged store
-// cannot hold the request handler.
 const configRepairTimeout = 10 * time.Second
 
-// repairContext detaches the repair of a config write from the request that
-// asked for it. The cancellation of that request is itself one of the
-// failures being repaired — the operator's tab closed, a gateway read
-// timeout on a slow self-managed forge — so a repair that inherits it cannot
-// run exactly when it is owed, and the stored config is then left carrying a
-// secret the forge's live hook does not sign with: every delivery to the
-// repo answers 401 (the production store hands the context to the driver,
-// pkg/webhooks/mongo.go).
+// repairContext lets settings repair and lease release outlive a cancelled
+// request, with a finite budget for the store round trip.
 func repairContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), configRepairTimeout)
 }
 
-// configWrite is the webhook config a provision wrote before the forge
-// accepted anything: whether it CREATED it (so undoing is a delete) or
-// REPLACED one (so undoing is putting the previous back), the hash it wrote
-// (the compare-and-set of the restore), and the previous config itself.
+// configWrite remembers the exact version eligible for settings restoration.
 type configWrite struct {
-	created   bool
-	webhookID string
-	wroteHash string
-	hasPrev   bool
-	prev      webhooks.Config
+	wroteVersion int64
+	webhookID    string
+	wroteHash    string
+	hasPrev      bool
+	prev         webhooks.Config
 }
 
-// undoConfigWrite unwinds that write when a later step fails, and is the ONE
-// place every step between the write and a matching forge-side hook returns
-// through. It answers the error the caller returns.
-//
-// A fresh provision deletes the config it created: an inbound endpoint no
-// hook calls is an orphan.
-//
-// A re-provision REPLACED a config whose secret the forge's live hook still
-// signs with, so the previous one goes back — but only when the forge
-// provably did not apply the new hook: no forge call was made, or
-// forgeRejectedTheWrite says so (a hook request never sent, a step that ended
-// on a read, a request that never left, a refusal the forge answered). On an
-// INDETERMINATE failure the write may have landed, in which case the forge
-// now holds the new secret and the stored config is the one that matches it:
-// restoring there is what would break a working repo, so the config stays and
-// the error names the remedy.
-//
-// Both halves repair on a context of their own (repairContext), since the
-// request's cancellation is one of the failures they undo.
+// undoConfigWrite retains durable retry identities. A confirmed refusal may
+// restore the previous settings through their exact version; an indeterminate
+// outcome preserves the attempted settings and tells the caller to retry.
 func (o *Orchestrator) undoConfigWrite(ctx context.Context, w configWrite, calledForge bool, err error) error {
-	if w.created {
-		o.rollbackConfig(ctx, true, w.webhookID)
-		return err
-	}
 	if calledForge && !forgeRejectedTheWrite(err) {
 		return &HookWriteIndeterminateError{WebhookID: w.webhookID, Err: err}
 	}
@@ -1083,17 +1089,8 @@ func (o *Orchestrator) undoConfigWrite(ctx context.Context, w configWrite, calle
 	return err
 }
 
-// restoreConfig puts a re-provision's previous webhook config back, after the
-// step it was written for failed. The counterpart of rollbackConfig for the
-// UPDATE half: there is no config to delete, there is one to un-replace — the
-// secret the forge still signs its deliveries with lives in it.
-//
-// Compare-and-set on the hash this provision wrote: a concurrent provision
-// that landed in the meantime (the operator pinning a base and re-enabling
-// while a slow forge call is still in flight) owns the stored config AND the
-// forge-side hook, and overwriting it with this attempt's snapshot would
-// break the repo the winner just fixed. A re-read that fails is reported,
-// never resolved by a blind write.
+// restoreConfig restores settings only while this attempt still owns the
+// config version. The immutable epoch token verifies either remote outcome.
 func (o *Orchestrator) restoreConfig(ctx context.Context, w configWrite) error {
 	if !w.hasPrev {
 		return nil
@@ -1102,10 +1099,14 @@ func (o *Orchestrator) restoreConfig(ctx context.Context, w configWrite) error {
 	if err != nil {
 		return &ConfigRestoreError{WebhookID: w.prev.ID, Err: fmt.Errorf("re-read the stored config: %w", err)}
 	}
-	if cur.TokenHash != w.wroteHash {
+	if cur.TokenHash != w.wroteHash || cur.Version != w.wroteVersion {
 		return nil
 	}
+	w.prev.Version = w.wroteVersion
 	if err := o.Webhooks.Update(ctx, w.prev); err != nil {
+		if errors.Is(err, webhooks.ErrConflict) {
+			return nil
+		}
 		return &ConfigRestoreError{WebhookID: w.prev.ID, Err: err}
 	}
 	return nil
@@ -1242,16 +1243,46 @@ func (o *Orchestrator) ensureManagedSecret(ctx context.Context, conn *Connection
 // Deprovision removes one repo integration: the forge hook (best-effort —
 // a 404 is success), the minted project bot when the repo has one (its token
 // revoked on the forge, its secret deleted — both are this repo's alone), the
-// iterion webhook config, and the join row. The connection's managed secret
+// iterion webhook admission, retaining verification and join-row tombstones.
+// The connection's managed secret
 // survives (it is connection-level, shared across that connection's other
 // repos).
 func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID string) error {
-	ri, err := o.Integrations.Get(ctx, integrationID)
+	ri, err := o.Integrations.GetProvision(ctx, integrationID)
 	if err != nil {
 		return err
 	}
 	if ri.TenantID != tenantID {
 		return ErrIntegrationNotFound
+	}
+	if ri.Retired && ri.RetireCleanupComplete {
+		return nil
+	}
+	ctx, release, err := o.provisionLease(ctx, ri.TenantID, ri.ConnectionID, ri.RepoFullName)
+	if err != nil {
+		return err
+	}
+	defer release()
+	// Retirement is the admission fence, before any best-effort remote cleanup.
+	// Keep the row: an old request must never find its version available again.
+	ri.Retired = true
+	if err := o.Integrations.Update(ctx, ri); err != nil {
+		return err
+	}
+	ri.Version++
+	// Retirement waits for an earlier version-fenced projection to finish.
+	// Capture its complete rows before slow cleanup; later epochs use new IDs.
+	var oldSchedules []cloudsched.ScheduledBot
+	if o.Schedules != nil {
+		err = o.Integrations.WithProvisionVersion(ctx, ri.ID, ri.Version, true, func(ctx context.Context) error {
+			var err error
+			oldSchedules, err = o.Schedules.ListByIntegration(ctx, ri.TenantID, ri.ID)
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		ri.Version++
 	}
 	if ri.HookID != "" {
 		if conn, cerr := o.Connections.Get(ctx, ri.ConnectionID); cerr == nil {
@@ -1275,17 +1306,37 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 			}
 		}
 	}
-	if ri.WebhookID != "" {
-		if derr := o.Webhooks.Delete(ctx, ri.WebhookID); derr != nil && !errors.Is(derr, webhooks.ErrNotFound) {
-			return fmt.Errorf("forge: delete webhook config: %w", derr)
+	for _, id := range []string{ri.WebhookID, ri.CandidateWebhookID} {
+		if id == "" {
+			continue
+		}
+		cfg, err := o.Webhooks.Get(ctx, id)
+		if errors.Is(err, webhooks.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		// Legacy endpoints are not authority-bound until their first migration.
+		if cfg.ProvisionIntegrationID == "" {
+			cfg.ProvisionIntegrationID = ri.ID
+			if err := o.Webhooks.Update(ctx, cfg); err != nil {
+				return err
+			}
+		}
+		if err := o.Webhooks.DisableProvision(ctx, id, ri.ID); err != nil {
+			return err
 		}
 	}
 	if o.Schedules != nil {
-		if err := o.Schedules.DeleteByIntegration(ctx, ri.TenantID, ri.ID); err != nil {
-			return fmt.Errorf("forge: delete schedules: %w", err)
+		for _, row := range oldSchedules {
+			if err := o.Schedules.Delete(ctx, row.ID); err != nil && !errors.Is(err, cloudsched.ErrNotFound) {
+				return fmt.Errorf("forge: delete schedule: %w", err)
+			}
 		}
 	}
-	return o.Integrations.Delete(ctx, ri.ID)
+	ri.RetireCleanupComplete = true
+	return o.Integrations.Update(ctx, ri)
 }
 
 // syncSchedules replaces the integration's ScheduledBot rows with one per
@@ -1303,6 +1354,15 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 // would silently postpone the row past the slot it is due for), the
 // keepalive silence cutoff and the pinned checkout ref.
 // No-op when no schedule store is wired.
+func (o *Orchestrator) syncProvisionSchedules(ctx context.Context, ri RepoIntegration, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string, routing *llmroute.Policy) error {
+	if o.Schedules == nil {
+		return nil
+	}
+	return o.Integrations.WithProvisionVersion(ctx, ri.ID, ri.Version, false, func(ctx context.Context) error {
+		return o.syncSchedules(ctx, ri.TenantID, ri.ID, repoURL, invByBot, crons, actor, routing)
+	})
+}
+
 func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string, integRouting *llmroute.Policy) error {
 	if o.Schedules == nil {
 		return nil
@@ -1528,7 +1588,7 @@ func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, conn
 	if conn.TenantID != tenantID {
 		return ErrConnectionNotFound
 	}
-	items, err := o.Integrations.ListByConnection(ctx, tenantID, connID)
+	items, err := o.Integrations.ListProvisionsByConnection(ctx, tenantID, connID)
 	if err != nil {
 		return err
 	}

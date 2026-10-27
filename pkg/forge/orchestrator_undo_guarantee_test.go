@@ -469,8 +469,8 @@ func TestProvision_UndoGuaranteeMatrix(t *testing.T) {
 					if !saidReRun {
 						t.Errorf("the answer to an unsettled write does not name the remedy: %v", perr)
 					}
-					if cfg.TokenHash == prevCfg.TokenHash {
-						t.Errorf("the previous config came back although the forge may hold the new secret")
+					if cfg.TokenHash != prevCfg.TokenHash {
+						t.Errorf("same-epoch retry changed its immutable secret")
 					}
 				}
 			})
@@ -539,8 +539,12 @@ func TestFreshProvision_CancelledRequestLeavesNoOrphanConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, c := range cfgs {
-				t.Errorf("the failed fresh provision left an orphan webhook config %s (%v) — an inbound endpoint no hook calls",
-					c.ID, c.ProjectAllowlist)
+				if _, err := o.Integrations.Get(bg, c.ProvisionIntegrationID); !errors.Is(err, ErrIntegrationNotFound) {
+					t.Errorf("unconfirmed retry candidate is operational: %v", err)
+				}
+				if ri, err := o.Integrations.GetProvision(bg, c.ProvisionIntegrationID); err != nil || ri.CandidateWebhookID != c.ID {
+					t.Errorf("candidate lacks a durable retry reservation: %v", err)
+				}
 			}
 		})
 	}

@@ -1072,11 +1072,13 @@ tool prepare:
         const main = fs.readFileSync(report, "utf8"), technical = fs.readFileSync(annex, "utf8");
         const name = path.basename(annex);
         if (path.dirname(report) !== path.dirname(annex) || !main.includes("](" + name + ")") || !technical.startsWith("<!-- ultra11y:annex " + name + " -->")) die("report's technical annex is invalid or not linked: " + annex);
-        const text = main + "\n\n" + technical, lines = reportLines(text);
+        // Finding prose in the business report is content, never annex metadata.
+        const text = main + "\n\n" + technical;
+        const lines = { decided: reportLines(technical).decided, rate: reportLines(main).rate };
         if (!lines.decided || lines.rate === null) die("split report lacks its counts or conformity rate");
         const index = html ? reportFile(rep.htmlPath, root) : "";
         const single = html ? reportFile(rep.htmlSinglePath, root) : "";
-        return { report: report, annex: annex, html: index, single: single, text: text, files: [report, annex, index, single].filter(Boolean) };
+        return { report: report, annex: annex, html: index, single: single, text: text, lines: lines, files: [report, annex, index, single].filter(Boolean) };
       };
       const copyReportFiles = (files, sourceRoot, destination) => {
         fs.mkdirSync(destination, { recursive: true });
@@ -1893,7 +1895,7 @@ tool final_report:
     const parts = L.reportParts(rep.json, OUT, {{input.html_report}});
     const reportPath = parts.report, date = String(rep.json.date || new Date().toISOString().slice(0, 10));
     const doc = L.readJSON(L.auditPath());
-    const counts = L.countDoc(doc), lines = L.reportLines(parts.text);
+    const counts = L.countDoc(doc), lines = parts.lines;
     const rate = L.rate(counts);
     const flaggedOpen = L.flagged(doc);
     if (!L.sameCounts(lines.decided, counts)) degraded.decided_line = "the report's « Décidés » line (" + JSON.stringify(lines.decided) + ") disagrees with the document (" + JSON.stringify(counts) + ")" + (flaggedOpen.length ? " — " + flaggedOpen.length + " criteria the engine marks without subject are still open: " + flaggedOpen.join(", ") : "");

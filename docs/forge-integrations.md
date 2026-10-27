@@ -40,15 +40,15 @@ In the studio, **Integrations → Repositories** (`/integrations`):
    - derives a team-scoped **managed `forge_token`** secret from the
      connection (created once per connection);
    - creates (or extends) the iterion **webhook config** for that repo, with
-     a fresh `iwh_` secret it holds on both ends, the events the bots need,
+     an immutable `iwh_` secret per webhook identity, the events the bots need,
      and a per-webhook `SecretOverrides` pin to the managed token;
    - calls the forge API to **create the webhook** on the repo pointing at
      iterion's inbound URL with that `iwh_` secret;
    - records a **`RepoIntegration`** join row.
 
-Disable is the inverse, one click: delete the forge hook, the webhook
-config, and the join row (the managed secret survives — it is shared by the
-connection's other repos; it is removed when the connection is deleted).
+Disable retires the integration, deletes the forge hook and schedules, and
+retains verification tombstones. The connection-level managed secret survives
+until disconnect. Re-enable reserves a fresh webhook identity after cleanup.
 
 Both halves drawn from the code — the GitHub App connect, then the enable's
 fixed write order; the step table, the guards that refuse and the collections
@@ -111,10 +111,11 @@ sequenceDiagram
     O->>DB: generic_secrets create, admin token re-sealed, egress hosts pinned
     O->>DB: forge_connections stamp managed_secret_id
     O->>DB: bot_secret_bindings upsert, one per enabled bot
-    O->>O: command map, bot rules, fresh iwh_ webhook secret
+    O->>O: command map and bot rules
+    O->>DB: reserve versioned integration and immutable sealed webhook identity
     O->>DB: webhook_configs create or update, the enforcement half
     O->>G: upsert the repo hook with inbound URL, secret, native events
-    O->>DB: repo_integrations create or update, the report half
+    O->>DB: repo_integrations CAS activates the webhook and records settings
     O->>G: re-mint the github_app token for the provisioned repo set
     O->>DB: scheduled_bots replaced for the integration
     O-->>S: ProvisionResult with integration, webhook, hook, created
@@ -314,9 +315,10 @@ from it).
   so the existing inbound SSRF host-pin keeps applying; the global
   `ITERION_WEBHOOK_FORGE_HOSTS` allowlist still wins.
 - The `iwh_` webhook secret is minted server-side and **never shown to the
-  operator** — iterion holds both ends. A fresh one is minted on every
-  mutating provision so the forge hook secret and the iterion config hash
-  stay in lockstep without needing the prior plaintext.
+  operator** — iterion holds both ends. It is sealed per webhook epoch and
+  reused across retries, including requests that outlive their lease. Legacy
+  hooks migrate to a new URL; disable/re-enable rotates the epoch. See
+  [ADR-138](adr/138-forge-provisioning-immutable-identities.md).
 - Insufficient scope (the token can't create a hook) surfaces as a
   structured `insufficient_scope` 403 so the studio can prompt to reconnect
   with broader scope or paste a PAT.

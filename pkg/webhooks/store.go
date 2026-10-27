@@ -10,6 +10,7 @@ import (
 var (
 	ErrNotFound  = errors.New("webhooks: not found")
 	ErrDuplicate = errors.New("webhooks: duplicate idempotency key")
+	ErrConflict  = errors.New("webhooks: config changed concurrently; re-read and retry")
 )
 
 // ConfigStore persists webhook configs. Get is intentionally NOT
@@ -20,7 +21,11 @@ var (
 type ConfigStore interface {
 	Create(ctx context.Context, c Config) error
 	Get(ctx context.Context, id string) (Config, error)
+	// Update compares Version and increments it atomically. Legacy rows start at zero.
 	Update(ctx context.Context, c Config) error
+	// DisableProvision disables one immutable endpoint without replacing policy.
+	// It also works on a frozen migration source; authority must match.
+	DisableProvision(ctx context.Context, id, integrationID string) error
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]Config, error)
 	MarkUsed(ctx context.Context, id string, t time.Time) error

@@ -48,6 +48,87 @@ func TestHandleAssistantMessage_ThinkingFoldsInRunLog(t *testing.T) {
 	}
 }
 
+// TestHandleAssistantMessage_ThinkingBlockBoundedOnRenderedSize proves the
+// thinking block is bounded on what the logger WRITES: the model chooses
+// where its newlines fall, so a body bounded on its own bytes still reaches
+// the run log multiplied by the continuation prefix every rendered line
+// carries. The witness body is single-byte lines with a unique tail.
+func TestHandleAssistantMessage_ThinkingBlockBoundedOnRenderedSize(t *testing.T) {
+	var logBuf bytes.Buffer
+	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelInfo, &logBuf)}
+
+	thinking := strings.Repeat("ab\n", 2_000_000) + "ZE_TAIL_9Q\n"
+	m := &claudesdk.AssistantMessage{
+		Message: &claudesdk.APIMessage{
+			Content: []claudesdk.ContentBlock{
+				&claudesdk.ThinkingBlock{Type: "thinking", Thinking: thinking},
+			},
+		},
+	}
+
+	meta := sessionMeta{}
+	var lastText string
+	err := b.handleAssistantMessage(m, Task{NodeID: "n1"}, map[string]string{},
+		&meta, &lastText, time.Now(), func() {})
+	if err != nil {
+		t.Fatalf("handleAssistantMessage: %v", err)
+	}
+
+	out := logBuf.String()
+	if !strings.Contains(out, "...[truncated]") {
+		t.Errorf("the thinking block carries no truncation marker — the bound is gone")
+	}
+	if !strings.Contains(out, "│ ab") {
+		t.Errorf("the bound dropped the head of the thinking text instead of previewing it:\n%.200s", out)
+	}
+	if strings.Contains(out, "ZE_TAIL_9Q") {
+		t.Errorf("the tail of a 6 MiB thinking body reached the run log — the block is unbounded")
+	}
+	if logBuf.Len() >= len(thinking)/2 {
+		t.Errorf("the logger wrote %d bytes for a %d-byte thinking body — the rendered-size bound is gone", logBuf.Len(), len(thinking))
+	}
+	if meta.thinkingTokens <= 0 {
+		t.Errorf("meta.thinkingTokens = %d, want > 0 (metrics are not log output)", meta.thinkingTokens)
+	}
+}
+
+// TestHandleAssistantMessage_ThinkingBlockGateAsksNoPass proves the thinking
+// block asks the sink before paying: a log that drops the block (level below
+// info) must not run the task's redaction pass over its text — the rule
+// storeHooks.logFarSideBlock owns on the claw side.
+func TestHandleAssistantMessage_ThinkingBlockGateAsksNoPass(t *testing.T) {
+	var logBuf bytes.Buffer
+	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &logBuf)}
+
+	passes := 0
+	task := Task{NodeID: "n1", RedactSecrets: func(s string) string {
+		passes++
+		return s
+	}}
+	m := &claudesdk.AssistantMessage{
+		Message: &claudesdk.APIMessage{
+			Content: []claudesdk.ContentBlock{
+				&claudesdk.ThinkingBlock{Type: "thinking", Thinking: "Let me reason about this carefully."},
+			},
+		},
+	}
+
+	meta := sessionMeta{}
+	var lastText string
+	err := b.handleAssistantMessage(m, task, map[string]string{},
+		&meta, &lastText, time.Now(), func() {})
+	if err != nil {
+		t.Fatalf("handleAssistantMessage: %v", err)
+	}
+
+	if out := logBuf.String(); strings.Contains(out, "🧠") {
+		t.Errorf("a run log at level error was given the thinking block:\n%s", out)
+	}
+	if passes != 0 {
+		t.Errorf("a log that drops the thinking block still paid %d secret pass(es) over its text", passes)
+	}
+}
+
 // claudeCodeThinkingDisplay defaults to summarized; the env var overrides
 // and "off" suppresses the flag for CLIs that predate it.
 func TestClaudeCodeThinkingDisplay(t *testing.T) {

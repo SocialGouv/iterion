@@ -156,6 +156,10 @@ func (s *Server) handlePatchForgeIntegration(w http.ResponseWriter, r *http.Requ
 	}
 	ri.UpdatedAt = time.Now().UTC()
 	if err := s.forgeIntegrations.Update(r.Context(), ri); err != nil {
+		if errors.Is(err, forge.ErrIntegrationConflict) {
+			httpError(w, http.StatusConflict, "%v", err)
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}

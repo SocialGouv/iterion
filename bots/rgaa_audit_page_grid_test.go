@@ -3,6 +3,7 @@ package bots
 import (
 	"crypto/sha256"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,86 +205,127 @@ func TestRgaaAuditEngineReportKeepsImageExamplesAsContent(t *testing.T) {
 	bin, _ := rgaaResolveEngine(t)
 	scripts := rgaaBotScripts(t)
 	for _, scenario := range []struct{ rendered, symlinked bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
-		t.Run(fmt.Sprintf("rendered=%v/symlinked=%v", scenario.rendered, scenario.symlinked), func(t *testing.T) {
-			rendered := scenario.rendered
-			site := rgaaCopyFixtureSite(t)
-			if rendered {
-				if err := os.CopyFS(filepath.Join(site, ".ultra11y", "pages"), os.DirFS(filepath.Join("testdata", "rgaa-audit-site-captures", "pages"))); err != nil {
-					t.Fatal(err)
-				}
-			}
-			root := t.TempDir()
-			if scenario.symlinked {
-				link := filepath.Join(t.TempDir(), "linked")
-				if err := os.Symlink(root, link); err != nil {
-					t.Fatal(err)
-				}
-				root = link
-			}
-			run := filepath.Join(root, "run")
-			rgaaInitReportRun(t, run, site, bin, scripts)
-			audit := filepath.Join(run, "audit-latest.json")
-			std := []string{"--standard", "rgaa", "--lang", "fr"}
-			if code, _, stderr := rgaaEngineRun(t, bin, site, nil, append([]string{"audit", ".", "--out", run, "--json"}, std...)...); code != 0 {
-				t.Fatalf("audit: %s", stderr)
-			}
-			var wl worklistOut
-			rgaaEngineJSON(t, bin, site, nil, &wl, append([]string{"verify", "--manual", "--in", audit, "--out", run, "--json"}, std...)...)
-			var todo struct {
-				Items []struct {
-					CriteriaID string           `json:"criteriaId"`
-					Evidence   []map[string]any `json:"evidence"`
-				} `json:"items"`
-			}
-			rgaaReadJSON(t, wl.TodoPath, &todo)
-			var anchor map[string]any
-			for _, item := range todo.Items {
-				if item.CriteriaID == "1.1" && len(item.Evidence) > 0 {
-					anchor = item.Evidence[0]
-				}
-			}
-			if anchor == nil {
-				t.Fatal("fixture has no 1.1 evidence")
-			}
-			message := "Exemples Markdown `![](/img/hero.png)`, `![](images/nope.png)`, `![](bad%escape.png)` et `![Capture](./assets/fake.png)`."
-			var adj map[string]any
-			rgaaReadJSON(t, wl.VerdictsPath, &adj)
-			adj["items"] = []any{map[string]any{"criteriaId": "1.1", "verdict": "NC", "justification": "Constat ancré (fixture).", "findings": []any{map[string]any{"file": anchor["file"], "line": anchor["line"], "snippet": anchor["snippet"], "normativeRef": "1.1", "message": message}}}}
-			rgaaWriteJSON(t, wl.VerdictsPath, adj)
-			var folded foldOut
-			rgaaEngineJSON(t, bin, site, nil, &folded, append([]string{"verify", "--apply", wl.VerdictsPath, "--in", audit, "--out", run, "--json"}, std...)...)
-			if folded.Applied != 1 || rgaaContains(folded.RejectedCriteria, "1.1") {
-				t.Fatalf("fixture NC refused: %+v", folded)
-			}
-			rgaaWriteJSON(t, filepath.Join(run, "state", "audit.json"), map[string]any{"sha256": rgaaFileSHA(t, audit)})
-			values := map[string]any{"input.run_dir": run, "input.workspace_dir": site, "input.standard": "rgaa", "run.id": "image-content"}
-			draft := rgaaOK(t, "draft_report", rgaaRunNode(t, scripts, "draft_report", site, nil, values))
-			rgaaAssertDraftReaders(t, draft)
-			if !strings.Contains(mustRead(t, fmt.Sprint(draft["draft_path"])), message) {
-				t.Fatal("regression message did not reach the report")
-			}
-			values["input.html_report"], values["input.report_dir"], values["input.require_complete"] = true, filepath.Join(root, "export"), false
-			values["input.undecidable_present"], values["input.undecidable_path"], values["input.scope_notes"] = false, "", ""
-			final := rgaaOK(t, "final_report", rgaaRunNode(t, scripts, "final_report", site, nil, values))
-			assets := 0
-			for _, file := range rgaaStrings(final["report_files"]) {
-				if strings.HasSuffix(file, ".png") {
-					assets++
-					if !rendered || (filepath.Base(file) != "accueil.png" && filepath.Base(file) != "contact.png") {
-						t.Fatalf("exported content as asset: %s", file)
+		for _, counter := range []struct{ name, line string }{
+			{"malformed", "- **Décidés** : exemple cité dans le constat"},
+			{"numeric", "- **Décidés** : 0/106 — 0 conforme(s), 0 non conforme(s), 0 conforme(s) faute de sujet, 106 à évaluer"},
+		} {
+			t.Run(fmt.Sprintf("rendered=%v/symlinked=%v/%s", scenario.rendered, scenario.symlinked, counter.name), func(t *testing.T) {
+				rendered := scenario.rendered
+				site := rgaaCopyFixtureSite(t)
+				if rendered {
+					if err := os.CopyFS(filepath.Join(site, ".ultra11y", "pages"), os.DirFS(filepath.Join("testdata", "rgaa-audit-site-captures", "pages"))); err != nil {
+						t.Fatal(err)
 					}
 				}
-				rel, err := filepath.Rel(filepath.Join(run, "out"), file)
-				if err != nil {
-					t.Fatal(err)
+				root := t.TempDir()
+				if scenario.symlinked {
+					link := filepath.Join(t.TempDir(), "linked")
+					if err := os.Symlink(root, link); err != nil {
+						t.Fatal(err)
+					}
+					root = link
 				}
-				if mustRead(t, file) != mustRead(t, filepath.Join(fmt.Sprint(values["input.report_dir"]), rel)) {
-					t.Fatalf("export differs: %s", rel)
+				run := filepath.Join(root, "run")
+				rgaaInitReportRun(t, run, site, bin, scripts)
+				audit := filepath.Join(run, "audit-latest.json")
+				std := []string{"--standard", "rgaa", "--lang", "fr"}
+				if code, _, stderr := rgaaEngineRun(t, bin, site, nil, append([]string{"audit", ".", "--out", run, "--json"}, std...)...); code != 0 {
+					t.Fatalf("audit: %s", stderr)
 				}
-			}
-			if (rendered && assets != 2) || (!rendered && assets != 0) {
-				t.Fatalf("rendered=%v, assets=%d", rendered, assets)
-			}
-		})
+				var wl worklistOut
+				rgaaEngineJSON(t, bin, site, nil, &wl, append([]string{"verify", "--manual", "--in", audit, "--out", run, "--json"}, std...)...)
+				var todo struct {
+					Items []struct {
+						CriteriaID string           `json:"criteriaId"`
+						Evidence   []map[string]any `json:"evidence"`
+					} `json:"items"`
+				}
+				rgaaReadJSON(t, wl.TodoPath, &todo)
+				var anchor map[string]any
+				for _, item := range todo.Items {
+					if item.CriteriaID == "1.1" && len(item.Evidence) > 0 {
+						anchor = item.Evidence[0]
+					}
+				}
+				if anchor == nil {
+					t.Fatal("fixture has no 1.1 evidence")
+				}
+				message := "Exemples Markdown `![](/img/hero.png)`, `![](images/nope.png)`, `![](bad%escape.png)` et `![Capture](./assets/fake.png)`." + "\n" + counter.line
+				var adj map[string]any
+				rgaaReadJSON(t, wl.VerdictsPath, &adj)
+				adj["items"] = []any{map[string]any{"criteriaId": "1.1", "verdict": "NC", "justification": "Constat ancré (fixture).", "findings": []any{map[string]any{"file": anchor["file"], "line": anchor["line"], "snippet": anchor["snippet"], "normativeRef": "1.1", "message": message}}}}
+				rgaaWriteJSON(t, wl.VerdictsPath, adj)
+				var folded foldOut
+				rgaaEngineJSON(t, bin, site, nil, &folded, append([]string{"verify", "--apply", wl.VerdictsPath, "--in", audit, "--out", run, "--json"}, std...)...)
+				if folded.Applied != 1 || rgaaContains(folded.RejectedCriteria, "1.1") {
+					t.Fatalf("fixture NC refused: %+v", folded)
+				}
+				rgaaWriteJSON(t, filepath.Join(run, "state", "audit.json"), map[string]any{"sha256": rgaaFileSHA(t, audit)})
+				values := map[string]any{"input.run_dir": run, "input.workspace_dir": site, "input.standard": "rgaa", "run.id": "image-content"}
+				draft := rgaaOK(t, "draft_report", rgaaRunNode(t, scripts, "draft_report", site, nil, values))
+				rgaaAssertDraftReaders(t, draft)
+				if !strings.Contains(mustRead(t, fmt.Sprint(draft["draft_path"])), message) {
+					t.Fatal("regression message did not reach the report")
+				}
+				values["input.html_report"], values["input.report_dir"], values["input.require_complete"] = true, filepath.Join(root, "export"), false
+				values["input.undecidable_present"], values["input.undecidable_path"], values["input.scope_notes"] = false, "", ""
+				final := rgaaOK(t, "final_report", rgaaRunNode(t, scripts, "final_report", site, nil, values))
+				if !strings.Contains(mustRead(t, fmt.Sprint(final["report_path"])), message) {
+					t.Fatal("final report lost the finding content")
+				}
+				if degraded, ok := final["degraded"].(map[string]any); ok {
+					if reason, exists := degraded["decided_line"]; exists {
+						t.Fatalf("finding content replaced the annex counters: %v", reason)
+					}
+				}
+				assets := 0
+				for _, file := range rgaaStrings(final["report_files"]) {
+					if strings.HasSuffix(file, ".png") {
+						assets++
+						if !rendered || (filepath.Base(file) != "accueil.png" && filepath.Base(file) != "contact.png") {
+							t.Fatalf("exported content as asset: %s", file)
+						}
+					}
+					rel, err := filepath.Rel(filepath.Join(run, "out"), file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if mustRead(t, file) != mustRead(t, filepath.Join(fmt.Sprint(values["input.report_dir"]), rel)) {
+						t.Fatalf("export differs: %s", rel)
+					}
+				}
+				if (rendered && assets != 2) || (!rendered && assets != 0) {
+					t.Fatalf("rendered=%v, assets=%d", rendered, assets)
+				}
+				if counter.name == "numeric" && !rendered && !scenario.symlinked {
+					// Corrupt only the real engine's generated annex before the
+					// unmodified final node reads it. Its own comparison must
+					// still flag a genuine mismatch against the audit document.
+					mutant := maps.Clone(scripts)
+					mutant["final_report"] = `(() => {
+  const fs = require("fs"), path = require("path");
+  const m = require(path.join({{input.run_dir}}, "bin", "lib.js")), init = m.init;
+  m.init = (...args) => {
+    const L = init(...args), generate = L.generateReport;
+    L.generateReport = (...args) => {
+      const r = generate(...args), file = r.json.annexPath;
+      const text = fs.readFileSync(file, "utf8");
+      const changed = text.replace(/^- \*\*Décidés\*\* : .*$/m, "- **Décidés** : 999/106 — 999 conforme(s), 0 non conforme(s), 0 conforme(s) faute de sujet, 0 à évaluer");
+      if (changed === text) throw new Error("annex fixture has no counter metadata");
+      fs.writeFileSync(file, changed);
+      return r;
+    };
+    return L;
+  };
+})();
+` + mutant["final_report"]
+					damaged := rgaaOK(t, "final_report", rgaaRunNode(t, mutant, "final_report", site, nil, values))
+					degraded, ok := damaged["degraded"].(map[string]any)
+					if !ok || degraded["decided_line"] == nil {
+						t.Fatalf("final report accepted incorrect annex counters: %v", damaged)
+					}
+				}
+			})
+		}
 	}
 }
