@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-10-27
 - **Authors**: devthejo (session with Claude), operator-arbitrated
-- **Code**: the seams it protects — [pkg/runtime/engine.go](../../pkg/runtime/engine.go) (`NodeExecutor`), [pkg/backend/delegate/delegate.go](../../pkg/backend/delegate/delegate.go) (`delegate.Backend`), [pkg/eventbus/bus.go](../../pkg/eventbus/bus.go) (`eventbus.Bus`); sidecar precedents: rtk (Rust output rewriter, [plugins-compression](../agents/backends/plugins-compression.md)), the agent CLIs ([ADR-065](065-cli-agents-generic-seam.md)/[ADR-085](085)), [ADR-027](027-git-cli-shell-out-not-embedded-pure-go.md) (host `git`)
+- **Code**: the seams it protects — [pkg/runtime/engine.go](../../pkg/runtime/engine.go) (`NodeExecutor`), [pkg/backend/delegate/delegate.go](../../pkg/backend/delegate/delegate.go) (`delegate.Backend`), [pkg/eventbus/bus.go](../../pkg/eventbus/bus.go) (`eventbus.Bus`); sidecar precedents: rtk (Rust output rewriter, [plugins-compression](../agents/backends/plugins-compression.md)), the agent CLIs ([ADR-065](065-dedicated-cli-agent-backend.md)/[ADR-085](085-pi-as-execution-backend.md)), [ADR-027](027-git-cli-shell-out-not-embedded-pure-go.md) (host `git`)
 
 ## Context
 
