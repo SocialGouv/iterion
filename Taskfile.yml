@@ -158,7 +158,7 @@ tasks:
           --project=chromium --headed --workers=1
 
   demo:rgaa-audit:
-    desc: Produce an RGAA report for this very studio with one command (real LLM run, ~$20-30; needs an authenticated claude CLI). Writes report FR + page grid + annex + ledger under .rgaa-demo/.
+    desc: Produce an RGAA report for this very studio with one command (real LLM run, ~$20-30; needs an authenticated claude CLI). Writes business report FR + technical annex + page grid + coverage + ledger under .rgaa-demo/.
     cmds:
       - |
         set -euo pipefail

@@ -76,11 +76,16 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   own findings are never pruned) and reports what it pruned; an incomplete
   trial is not applied, and the part of an applied one the engine refuses
   (a retained claim whose anchor does not ground) is named as a degradation.
-- `final_report` renders the report, cross-checks its « Décidés » line and
-  RGAA rate against the document, runs the engine's integrity and
-  completeness checks, writes the coverage annex, and copies everything to
-  `report_dir` when set — the ledger with workspace-relative anchors, ready
-  to commit.
+- `final_report` uses ultra11y 5.45.0 to render the business summary and
+  its separate technical annex. It cross-checks the annex's « Décidés »
+  line and the summary's RGAA rate against the audit, then runs the engine's
+  integrity and completeness checks. Both draft readers receive both files.
+  `report_dir`, when set, receives these documents, requested HTML files,
+  the linked screenshots, Markdown and JSON page grids when rendered,
+  Iterion's coverage annex
+  and the ledger with workspace-relative anchors. Relative report links
+  remain usable. `report_files` lists the source artifacts; historical
+  outputs and issue plans are not swept into this export.
 - `deliver` builds the issue plan from the engine's own tickets (one per
   criterion, severity-sorted, capped); `publish` files it when
   `post_to_board` is true; `publish_verify` holds the judge's own report to

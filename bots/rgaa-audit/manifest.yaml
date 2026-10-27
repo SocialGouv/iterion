@@ -1,7 +1,10 @@
 name: rgaa-audit
 display_name: Acci
 icon: ♿
-version: 3.0.3
+version: 3.1.0
+## 3.1.0 — ultra11y 5.45.0: business summary and technical annex flow
+## through both readers and integrity checks; export also preserves HTML
+## and the JSON page grid. Historical runs keep their original engine.
 ## 3.0.3 — a citation snippet the adjudicator retyped is folded with its
 ## anchor's text (#2453): the fold accepted it through a fallback to the
 ## anchor, and every later trial, which grounds a conformity's citations as
