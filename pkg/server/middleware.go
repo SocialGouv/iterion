@@ -287,7 +287,12 @@ func (s *Server) applyExplicitTeamScope(w http.ResponseWriter, r *http.Request, 
 	if requested == "" || requested == id.TeamID || strings.HasPrefix(r.URL.Path, teamPathPrefix) {
 		return id, true
 	}
-	resolved, ok, err := s.identityInTeam(r.Context(), id, requested)
+	// allowOrgShared=false: the axis grants reads BY ID at the choke
+	// point — the header re-scope costs what a team switch would demand,
+	// and a plain org member's switch into the team is refused (the
+	// ADR-139 review's R1141b0: letting the axis ride the header opened
+	// the team's run lists and stats to it).
+	resolved, ok, err := s.identityInTeam(r.Context(), id, requested, false)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "resolve standing in team %s: %v", requested, err)
 		return auth.Identity{}, false

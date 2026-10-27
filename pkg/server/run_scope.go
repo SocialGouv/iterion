@@ -208,14 +208,23 @@ func (s *Server) runTenant(ctx context.Context, runID string) (string, error) {
 //     org-shared; every action stays behind the member rung;
 //   - everyone else: not authorized.
 //
+// The axis is a BY-ID grant: allowOrgShared marks the callers that sit on
+// the run-addressed/WS-scope paths, where the grant was decided. The
+// X-Iterion-Team header re-scope passes false — the header costs exactly
+// what a team switch would demand, and a plain org member's switch into
+// the team is refused; letting the axis ride the header would open the
+// team's run LISTS and stats to it (the ADR-139 review's R1141b0).
+//
 // A membership-store FAILURE is an error, never a silent degrade to viewer.
-func (s *Server) identityInTeam(ctx context.Context, id auth.Identity, teamID string) (auth.Identity, bool, error) {
-	return identityInTeamOn(s.authStore(), ctx, id, teamID)
+func (s *Server) identityInTeam(ctx context.Context, id auth.Identity, teamID string, allowOrgShared bool) (auth.Identity, bool, error) {
+	return identityInTeamOn(s.authStore(), ctx, id, teamID, allowOrgShared)
 }
 
 // identityInTeamOn is identityInTeam against an explicit identity store —
 // the same computation, testable against stubbed membership failures.
-func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, teamID string) (auth.Identity, bool, error) {
+// allowOrgShared carries the by-id contract line: true on the
+// run-addressed and WS-standing paths, false on the header re-scope.
+func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, teamID string, allowOrgShared bool) (auth.Identity, bool, error) {
 	if id.IsSynthetic() {
 		return auth.Identity{}, false, nil
 	}
@@ -300,7 +309,7 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 		switch {
 		case om.Role.AtLeast(identity.OrgRoleAdmin):
 			via = "org-admin-lineage"
-		case t.RunVisibility == identity.RunVisibilityOrg:
+		case allowOrgShared && t.RunVisibility == identity.RunVisibilityOrg:
 			via = "org-shared"
 		default:
 			return auth.Identity{}, false, nil
@@ -398,7 +407,7 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve run tenant: %v", err)
 		return nil, false
 	}
-	resolved, ok, err := s.identityInTeam(r.Context(), id, team)
+	resolved, ok, err := s.identityInTeam(r.Context(), id, team, true)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve standing in team %s: %v", team, err)
 		return nil, false
@@ -559,7 +568,7 @@ func (s *Server) runSocketStanding(ctx context.Context, runID string, opener aut
 	}
 	scoped := opener
 	scoped.IsSuperAdmin = user.IsSuperAdmin
-	resolved, ok, serr := identityInTeamOn(s.authStore(), ctx, scoped, team)
+	resolved, ok, serr := identityInTeamOn(s.authStore(), ctx, scoped, team, true)
 	if serr != nil {
 		if s.logger != nil {
 			s.logger.Error("server: run socket of %s: the caller's standing in %s could not be read: %v", runID, team, serr)

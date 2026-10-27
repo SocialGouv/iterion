@@ -286,7 +286,7 @@ func TestRunByIDStoreOutageDoesNotDegradeToViewer(t *testing.T) {
 	mem := identity.NewMemoryStore()
 	_ = mem.UpsertMembership(context.Background(), identity.Membership{UserID: "u-member-a", TeamID: "tenant-A", Role: identity.RoleMember})
 	st := failingMembershipRead{Store: mem, err: context.DeadlineExceeded}
-	_, _, err := identityInTeamOn(st, context.Background(), caller("u-member-a", "tenant-A"), "tenant-A")
+	_, _, err := identityInTeamOn(st, context.Background(), caller("u-member-a", "tenant-A"), "tenant-A", true)
 	if err == nil {
 		t.Fatal("a membership read that FAILED produced a verdict — it must be an error, never a refuse-or-allow")
 	}
@@ -318,14 +318,14 @@ func TestRunByIDLineageOutageIsNotARefusal(t *testing.T) {
 
 	t.Run("team read outage", func(t *testing.T) {
 		st := failingTeamRead{Store: mem, err: context.DeadlineExceeded}
-		_, _, err := identityInTeamOn(st, ctx, noMembership, "tenant-A")
+		_, _, err := identityInTeamOn(st, ctx, noMembership, "tenant-A", true)
 		if err == nil {
 			t.Fatal("a team read that FAILED produced a verdict")
 		}
 	})
 	t.Run("org membership read outage", func(t *testing.T) {
 		st := failingOrgMembershipRead{Store: mem, err: context.DeadlineExceeded}
-		_, _, err := identityInTeamOn(st, ctx, noMembership, "tenant-A")
+		_, _, err := identityInTeamOn(st, ctx, noMembership, "tenant-A", true)
 		if err == nil {
 			t.Fatal("an org-membership read that FAILED produced a verdict")
 		}
@@ -438,6 +438,37 @@ func TestRunByIDOrgSharedAxis(t *testing.T) {
 			t.Fatalf("got %d (%+v): the axis must not rebrand the admin lineage", code, got)
 		}
 	})
+}
+
+// The X-Iterion-Team header re-scope (applyExplicitTeamScope) costs
+// exactly what a team switch would demand — and a plain org member's
+// switch into the team is refused. The org-shared axis grants reads by
+// ID at the choke point; it must NOT ride the header into the
+// team-scoped list routes (the gate review's R1141b0/R45e424).
+func TestExplicitTeamScopeRefusesTheOrgSharedAxis(t *testing.T) {
+	srv, _ := newRunScopeServer(t)
+	ctx := context.Background()
+	org := identity.RunVisibilityOrg
+	if _, err := srv.authStore().PatchTeam(ctx, "tenant-A", identity.TeamPatch{RunVisibility: &org}); err != nil {
+		t.Fatalf("open the axis: %v", err)
+	}
+	if _, err := srv.authStore().CreateUser(ctx, identity.User{ID: "u-orgmember", Email: "u-orgmember@x", Status: identity.UserStatusActive}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := srv.authStore().UpsertOrgMembership(ctx, identity.OrgMembership{UserID: "u-orgmember", OrgID: "org-1", Role: identity.OrgRoleMember}); err != nil {
+		t.Fatalf("seed org membership: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/runs", nil)
+	req.Header.Set("X-Iterion-Team", "tenant-A")
+	w := httptest.NewRecorder()
+	resolved, ok := srv.applyExplicitTeamScope(w, req, caller("u-orgmember", "tenant-B"))
+	if ok {
+		t.Fatalf("the header re-scope must not honour the org-shared axis: %+v", resolved)
+	}
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("code = %d body=%s, want 403 naming the header", w.Code, w.Body.String())
+	}
 }
 
 // The class is the set of REGISTERED routes whose pattern carries the run
@@ -748,7 +779,7 @@ func TestIdentityInTeam_KeepsTheCredentialFacts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			id := tc.id
 			id.Credential, id.ExpiresAt, id.SessionLineage, id.SessionGeneration = auth.CredentialPAT, expires, "lineage-1", 3
-			got, ok, err := identityInTeamOn(srv.authStore(), context.Background(), id, "tenant-A")
+			got, ok, err := identityInTeamOn(srv.authStore(), context.Background(), id, "tenant-A", true)
 			if err != nil || !ok {
 				t.Fatalf("re-scope: ok=%t err=%v", ok, err)
 			}

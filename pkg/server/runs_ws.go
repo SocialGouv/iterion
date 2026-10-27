@@ -397,6 +397,14 @@ func (c *runConn) watchStanding() {
 	if c.identity.Credential == "" {
 		return
 	}
+	// A cross-store connection (?store=) watches a FOREIGN store's run:
+	// runTenant below reads the primary store and would answer not-found,
+	// closing the socket at the first tick with a reason that names no
+	// bound — the same exemption the mutating-envelope gate makes for
+	// c.xStore (the ADR-139 review's R63ff56).
+	if c.xStore != nil {
+		return
+	}
 	t := time.NewTicker(runWSStandingTickPeriod())
 	defer t.Stop()
 	for {
@@ -438,7 +446,7 @@ func (c *runConn) watchStanding() {
 			}
 			continue
 		}
-		resolved, ok, serr := identityInTeamOn(c.server.authStore(), ctx, scoped, team)
+		resolved, ok, serr := identityInTeamOn(c.server.authStore(), ctx, scoped, team, true)
 		cancel()
 		if serr != nil {
 			if c.server.logger != nil {
@@ -631,7 +639,7 @@ func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
 	}
 	envID := c.identity
 	envID.IsSuperAdmin = user.IsSuperAdmin
-	resolved, ok, serr := identityInTeamOn(c.server.authStore(), ctx, envID, team)
+		resolved, ok, serr := identityInTeamOn(c.server.authStore(), ctx, envID, team, true)
 	if serr != nil {
 		if c.server.logger != nil {
 			c.server.logger.Error("server: ws of run %s: the caller's standing in %s could not be read: %v", c.runID, team, serr)
