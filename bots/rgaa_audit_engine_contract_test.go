@@ -34,7 +34,7 @@ import (
 // These tests run the pinned engine on testdata/rgaa-audit-site (two HTML
 // pages and one TSX component with planted defects) and assert the shapes the
 // bot reads: exit codes, JSON keys, counters, file layout. Every assertion
-// below was measured on ultra11y 5.42.1; a pin bump that changes one of them
+// below was measured on ultra11y 5.45.0; a pin bump that changes one of them
 // is a migration, and this file is where it shows first.
 //
 // Facts worth their weight (all measured, all relied on by the bot):
@@ -55,16 +55,12 @@ import (
 //   - The C gate grounds citations on the SOURCE (file exists, snippet
 //     matches when given), not on the evidence the item was shown: a stray
 //     citation is accepted. The bot checks citations ⊆ evidence itself.
-//   - KNOWN UPSTREAM DEFECTS at 5.42.1, each pinned by a subtest that fails
-//     the day upstream fixes it: (1) a criterion the engine marks "no
-//     subject" that stays open after a fold (coverage gap or agent `manual`)
-//     is written back `inapplicable` while `manual`, the report counts it
-//     both as « conforme faute de sujet » and « à évaluer », and `check
-//     --report` notices only when NA exceeds C; (2) re-folding a criterion
-//     the previous fold decided crashes with a TypeError and no JSON. The
-//     bot decides every flagged criterion before the final report, compares
-//     the report's « Décidés » line with the document, folds the real audit
-//     once and reads JSON, never exit codes alone.
+//   - Reports split the business summary (RGAA rate) and the technical annex
+//     (Décidés / automatic rate). check and verify follow the annex link.
+//   - Partial/manual folds no longer double count open criteria; re-folding
+//     a decided criterion returns a structured refusal. The bot still checks
+//     report counts, folds the real audit once, and never treats a crash as
+//     a successful refusal.
 //
 // The engine comes from ULTRA11Y_BIN (scripts/ultra11y-engine.sh prints it,
 // installing the pinned version when needed). Without it the tests skip
@@ -643,6 +639,15 @@ func rgaaReadReportLines(t *testing.T, path string) rgaaReportLines {
 		t.Fatal(err)
 	}
 	body := string(raw)
+	link := regexp.MustCompile(`\]\((annexe-technique-[A-Za-z0-9._-]+\.md)\)`).FindStringSubmatch(body)
+	if len(link) != 2 {
+		t.Fatalf("business report %s has no technical-annex link", path)
+	}
+	annex, err := os.ReadFile(filepath.Join(filepath.Dir(path), link[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body += "\n" + string(annex)
 	m := rgaaDecidedLine.FindStringSubmatch(body)
 	r := rgaaRateLine.FindStringSubmatch(body)
 	a := rgaaAutoRateLine.FindStringSubmatch(body)
@@ -860,7 +865,6 @@ func TestRgaaAuditEngineContract(t *testing.T) {
 		}
 	})
 
-	var flagged []string
 	t.Run("partial_fold_lands_a_cited_C_and_refuses_the_coverage_gaps", func(t *testing.T) {
 		ledger := filepath.Join(run, "ledger.json")
 		f := fold(t, writeAdj(t, run, adjudication(goodC)), audit, run, "--ledger", ledger)
@@ -892,18 +896,8 @@ func TestRgaaAuditEngineContract(t *testing.T) {
 		if int(f.ConformancePct) != int(doc.Core.ConformancePct) {
 			t.Fatalf("fold conformancePct %.0f ≠ core %.0f", f.ConformancePct, doc.Core.ConformancePct)
 		}
-		// The engine's own "no subject" marker: coverage gaps it wrote back as
-		// `inapplicable` while still `manual`. The set is the engine's, not
-		// "items without evidence" — some carry evidence, some evidence-less
-		// items are not flagged. This set drives the report subtests below.
-		flagged = rgaaFlagged(doc)
-		if len(flagged) == 0 {
-			t.Fatal("the engine flagged no coverage gap as inapplicable — the fixture must leave some subject-less criteria open")
-		}
-		for _, id := range flagged {
-			if !rgaaContains(f.RejectedCriteria, id) {
-				t.Fatalf("flagged criterion %s is not among the coverage gaps", id)
-			}
+		if flagged := rgaaFlagged(doc); len(flagged) != 0 {
+			t.Fatalf("coverage gaps incorrectly marked inapplicable: %v", flagged)
 		}
 	})
 	if t.Failed() {
@@ -944,26 +938,22 @@ func TestRgaaAuditEngineContract(t *testing.T) {
 		}
 	})
 
-	t.Run("known_upstream_defect_refolding_a_decided_criterion_crashes", func(t *testing.T) {
-		// KNOWN UPSTREAM DEFECT (ultra11y 5.42.1): applying a verdict for a
-		// criterion the previous fold already decided throws (TypeError on the
-		// item's missing evidence) — exit 1 with NO JSON, indistinguishable
-		// from a refusal by the exit code alone. The bot therefore folds the
-		// real audit once, probes on copies, and reads JSON, never exit codes
-		// alone. When this subtest FAILS, upstream fixed it.
+	t.Run("refolding_a_decided_criterion_returns_a_structured_refusal", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "refold")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		folded := filepath.Join(dir, "audit-latest.json")
 		rgaaCopyFile(t, audit, folded)
-		code, stdout, stderr := rgaaEngineRun(t, bin, site, nil, append([]string{"verify", "--apply", writeAdj(t, dir, adjudication(goodC)), "--in", folded, "--out", dir, "--json"}, std...)...)
-		if code == 0 || json.Valid(stdout) {
-			t.Fatalf("re-folding a decided criterion now answers with JSON (exit %d): upstream fixed the crash — update this test and the bot's note\n%s", code, stdout)
+		before, _ := os.ReadFile(folded)
+		var f foldOut
+		code := rgaaEngineJSON(t, bin, site, nil, &f, append([]string{"verify", "--apply", writeAdj(t, dir, adjudication(goodC)), "--in", folded, "--out", dir, "--strict", "--json"}, std...)...)
+		if code == 0 || f.OK || f.Applied != 0 || !strings.Contains(fmt.Sprint(f.Issues), "criterion "+goodC["criteriaId"].(string)+": not open for adjudication") {
+			t.Fatalf("re-fold must refuse the already decided criterion with JSON: exit %d, %+v", code, f)
 		}
-		// The engine's top-level catch prints the error message alone.
-		if !strings.Contains(string(stderr), "Cannot read properties of undefined") {
-			t.Fatalf("expected the TypeError crash message, got exit %d\nstderr: %s", code, stderr)
+		after, _ := os.ReadFile(folded)
+		if !bytes.Equal(before, after) {
+			t.Fatal("refused strict re-fold changed the audit")
 		}
 	})
 
@@ -1011,84 +1001,29 @@ func TestRgaaAuditEngineContract(t *testing.T) {
 		}
 	})
 
-	t.Run("report_after_deciding_the_engine_flagged_criteria_passes_check", func(t *testing.T) {
-		dir, copyPath := probe(t, "decided")
-		verdicts := []map[string]any{goodC}
-		for _, id := range flagged {
-			verdicts = append(verdicts, naVerdict(id))
-		}
-		f := fold(t, writeAdj(t, dir, adjudication(verdicts...)), copyPath, dir)
-		if f.Applied != 1+len(flagged) || f.Rejected != worklist.Count-1-len(flagged) {
-			t.Fatalf("applied=%d rejected=%d, expected %d applied and %d coverage gaps", f.Applied, f.Rejected, 1+len(flagged), worklist.Count-1-len(flagged))
-		}
-		var after packAuditDoc
-		rgaaReadJSON(t, copyPath, &after)
-		if left := rgaaFlagged(after); len(left) != 0 {
-			t.Fatalf("criteria still inapplicable && manual after deciding the flagged set: %v", left)
-		}
-		rep := rgaaReportPath(t, bin, site, copyPath, dir, std)
-		lines := rgaaReadReportLines(t, rep)
-		counts := rgaaCountDoc(after)
-		if lines.Decided != counts || lines.Rate != rgaaRate(counts) {
-			t.Fatalf("report lines %+v / %d%% ≠ document %+v / %d%%", lines.Decided, lines.Rate, counts, rgaaRate(counts))
-		}
-		var chk checkOut
-		code := rgaaEngineJSON(t, bin, site, nil, &chk, append([]string{"check", "--report", rep, "--in", copyPath, "--json"}, std[:2]...)...)
-		if code != 0 || !chk.OK {
-			t.Fatalf("check --report refused a report whose flagged criteria were all decided (exit %d): %v", code, chk.Issues)
-		}
-	})
-
-	t.Run("known_upstream_defect_flagged_criteria_are_double_counted", func(t *testing.T) {
-		// KNOWN UPSTREAM DEFECT (ultra11y 5.42.1). A criterion the engine
-		// marks "no subject" that stays open after a fold — as a coverage gap
-		// or under an agent `manual` verdict — is written back `inapplicable`
-		// while `manual`; the report then counts it both as « conforme faute
-		// de sujet » and « à évaluer », so its « Décidés » line disagrees with
-		// the document. `check --report` only notices when NA exceeds C: on a
-		// C-only fold it refuses, on a single `manual` it stays quiet.
-		//
-		// The bot therefore decides every flagged criterion before the final
-		// report, and compares the « Décidés » line with the document itself.
-		// When this subtest FAILS, upstream fixed the double count: lift both
-		// workarounds.
-		rep := rgaaReportPath(t, bin, site, audit, run, std)
-		lines := rgaaReadReportLines(t, rep)
-		counts := rgaaCountDoc(doc)
-		if lines.Decided == counts {
-			t.Fatalf("the Décidés line now matches the document after a C-only fold (%+v) — upstream fixed the double count; lift the bot's workarounds", counts)
-		}
-		var chk checkOut
-		code := rgaaEngineJSON(t, bin, site, nil, &chk, append([]string{"check", "--report", rep, "--in", audit, "--json"}, std[:2]...)...)
-		if code == 0 || chk.OK || !strings.Contains(fmt.Sprint(chk.Issues), "dépasse C") {
-			t.Fatalf("check --report after a C-only fold: exit %d ok=%v issues=%v (expected the « NA dépasse C » refusal)", code, chk.OK, chk.Issues)
-		}
-
-		// The silent half: one `manual` on a flagged criterion, every other
-		// flagged criterion decided NA. The report miscounts and check accepts.
-		dir, copyPath := probe(t, "manual")
-		verdicts := []map[string]any{goodC, {"criteriaId": flagged[len(flagged)-1], "verdict": "manual", "reason": "undecidable", "justification": "fixture"}}
-		for _, id := range flagged[:len(flagged)-1] {
-			verdicts = append(verdicts, naVerdict(id))
-		}
-		f := fold(t, writeAdj(t, dir, adjudication(verdicts...)), copyPath, dir)
-		if f.StillManual != 1 || f.Applied != len(flagged) {
-			t.Fatalf("manual fold: applied=%d stillManual=%d (want %d/1)", f.Applied, f.StillManual, len(flagged))
-		}
-		var after packAuditDoc
-		rgaaReadJSON(t, copyPath, &after)
-		if left := rgaaFlagged(after); len(left) != 1 || left[0] != flagged[len(flagged)-1] {
-			t.Fatalf("expected exactly the manual criterion to stay inapplicable && manual, got %v", left)
-		}
-		rep = rgaaReportPath(t, bin, site, copyPath, dir, std)
-		lines = rgaaReadReportLines(t, rep)
-		counts = rgaaCountDoc(after)
-		if lines.Decided == counts {
-			t.Fatalf("the Décidés line now matches the document under a folded manual verdict (%+v) — upstream fixed it; update this test", counts)
-		}
-		code = rgaaEngineJSON(t, bin, site, nil, &chk, append([]string{"check", "--report", rep, "--in", copyPath, "--json"}, std[:2]...)...)
-		if code != 0 || !chk.OK {
-			t.Fatalf("check --report now refuses the silently miscounted report (exit %d: %v) — the engine changed; update this test", code, chk.Issues)
+	t.Run("partial_and_manual_folds_keep_report_counts_consistent", func(t *testing.T) {
+		for _, manual := range []bool{false, true} {
+			dir, copyPath := probe(t, fmt.Sprintf("consistent-%v", manual))
+			verdicts := []map[string]any{goodC}
+			if manual {
+				verdicts = []map[string]any{{"criteriaId": targetID, "verdict": "manual", "reason": "undecidable", "justification": "fixture"}}
+			}
+			f := fold(t, writeAdj(t, dir, adjudication(verdicts...)), copyPath, dir)
+			if manual && f.StillManual != 1 {
+				t.Fatalf("manual fold: %+v", f)
+			}
+			var after packAuditDoc
+			rgaaReadJSON(t, copyPath, &after)
+			rep := rgaaReportPath(t, bin, site, copyPath, dir, std)
+			lines, counts := rgaaReadReportLines(t, rep), rgaaCountDoc(after)
+			if lines.Decided != counts || lines.Rate != rgaaRate(counts) || len(rgaaFlagged(after)) != 0 {
+				t.Fatalf("partial/manual fold report disagrees: %+v / %+v", lines, counts)
+			}
+			var chk checkOut
+			code := rgaaEngineJSON(t, bin, site, nil, &chk, append([]string{"check", "--report", rep, "--in", copyPath, "--json"}, std[:2]...)...)
+			if code != 0 || !chk.OK {
+				t.Fatalf("check --report refused a consistent partial/manual fold: %d %+v", code, chk)
+			}
 		}
 	})
 

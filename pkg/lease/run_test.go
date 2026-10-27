@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -287,6 +288,11 @@ func (f *flakyStore) sent() time.Time {
 // expired, starts sweeping too — and it must keep the TTL/6 margin that
 // absorbs clock skew between the replicas, not merely stop "in time".
 func TestRun_AHolderThatCannotRenewStepsDownWithTheSkewMarginLeft(t *testing.T) {
+	// Keep the deadline assertion independent of CI scheduling pauses.
+	synctest.Test(t, testRunHolderStepsDownWithSkewMargin)
+}
+
+func testRunHolderStepsDownWithSkewMargin(t *testing.T) {
 	fs := &flakyStore{Store: NewMemoryStore()}
 	log := &logSink{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -370,26 +376,28 @@ func TestRun_TheStepDownCountsFromWhenTheCallWasSent(t *testing.T) {
 		{"slow renewal", &slowStore{Store: NewMemoryStore(), renewDelay: slow, okRenewals: 1}, func(f *slowStore) time.Time { return f.renewSent }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			var clock stopClock
-			started := make(chan struct{})
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				_ = Run(ctx, c.store, spec("a", leaseTTL, nil), clock.serve(started))
-			}()
-			<-started
-			until(t, 15*time.Second, "a to step down", func() bool { return clock.at.Load() != 0 })
-			c.store.mu.Lock()
-			expiry := c.sent(c.store).Add(leaseTTL)
-			c.store.mu.Unlock()
-			if stopped := clock.stopped(); !stopped.Before(expiry.Add(-leaseTTL / 12)) {
-				t.Errorf("a stopped %s before its lease's expiry in the store — want at least %s: the deadline was counted from the answer, not the send",
-					expiry.Sub(stopped), leaseTTL/12)
-			}
-			cancel()
-			<-done
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var clock stopClock
+				started := make(chan struct{})
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					_ = Run(ctx, c.store, spec("a", leaseTTL, nil), clock.serve(started))
+				}()
+				<-started
+				until(t, 15*time.Second, "a to step down", func() bool { return clock.at.Load() != 0 })
+				c.store.mu.Lock()
+				expiry := c.sent(c.store).Add(leaseTTL)
+				c.store.mu.Unlock()
+				if stopped := clock.stopped(); !stopped.Before(expiry.Add(-leaseTTL / 12)) {
+					t.Errorf("a stopped %s before its lease's expiry in the store — want at least %s: the deadline was counted from the answer, not the send",
+						expiry.Sub(stopped), leaseTTL/12)
+				}
+				cancel()
+				<-done
+			})
 		})
 	}
 }
@@ -411,10 +419,17 @@ func (f *blipStore) Renew(ctx context.Context, name, owner string, now time.Time
 // its term through a blip shorter than the step-down, and a new term — for
 // the gate sweep, a new deep pass over days of runs — is not paid for nothing.
 func TestRun_ASingleFailedRenewalKeepsTheTerm(t *testing.T) {
+	// This checks lease behavior, not whether a loaded CI scheduler runs the
+	// retry within the 500ms wall-clock margin before the safety deadline.
+	synctest.Test(t, testRunSingleFailedRenewalKeepsTheTerm)
+}
+
+func testRunSingleFailedRenewalKeepsTheTerm(t *testing.T) {
 	fs := &blipStore{Store: NewMemoryStore()}
 	log := &logSink{}
 	var tr terms
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	const leaseTTL = 3 * time.Second // renew every 1s, hold 2.5s: 500ms of slack for the renewal after the blip
 	done := make(chan struct{})
 	go func() {

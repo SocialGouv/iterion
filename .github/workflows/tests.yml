@@ -322,10 +322,12 @@ jobs:
         # is a budget a healthy run can reach, and did — ./bots carried the
         # whole job to the panic at 10m0s while the same commit passed on a
         # faster machine (measured: 521.8s on CI at one commit, a timeout at
-        # 10m0s on the next). The number bounds a HANG, not a slow machine; a
-        # package that genuinely needs 20 minutes of test time is a review
-        # finding either way.
-        run: go test -mod=vendor -count=1 -timeout 1200s $(go list -mod=vendor ./... | grep -v '/e2e$')
+        # 10m0s on the next). The same bots sources later passed in 1007s
+        # on the PR and reached the 1200s aggregate limit in its merge group
+        # while a test had run for only 9s (#2745). Allow 25m per package,
+        # still bounded by the job's 30m including setup and live compilation.
+        # Individual test deadlines and all assertions remain in force.
+        run: go test -mod=vendor -count=1 -timeout 1500s $(go list -mod=vendor ./... | grep -v '/e2e$')
 
       - name: Live e2e compile check
         # Builds every -tags=live test in the repo and runs NONE of them
@@ -749,7 +751,10 @@ jobs:
         env:
           ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
-          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/store/mongo/... \
+          # This includes the complete server suite, which already exceeds
+          # five minutes without Mongo. Keep its package budget below the
+          # job's fifteen-minute limit without shortening any test coverage.
+          go test -mod=vendor -count=1 -v -timeout 10m ./pkg/store/mongo/... \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
             ./pkg/cloudsched/... ./pkg/auth/... \
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... ./pkg/credpool/... \
@@ -1151,7 +1156,9 @@ jobs:
           sudo install -m 0755 /tmp/golangci-lint-2.12.2-linux-amd64/golangci-lint /usr/local/bin/golangci-lint
           golangci-lint version
       - name: Run golangci-lint
-        run: golangci-lint run --timeout 5m
+        # Cold package loading exceeded five minutes on the shared runners.
+        # Keep every analyzer enabled within the existing 20-minute job budget.
+        run: golangci-lint run --timeout 10m
 
   brand:
     # The positioning guard: every public surface must carry the product

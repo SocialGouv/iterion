@@ -39,6 +39,7 @@ vi.mock("@/components/Runs/RunsTabsView", () => ({ default: function RequestedRu
 
 import App from "@/App";
 import { apiRequest, cancelScheduledRefresh, SessionRenewalUnavailableError } from "@/api/client";
+import { stopLoop } from "@/api/signOutMachine";
 import { useServerInfoStore } from "@/store/serverInfo";
 import type { ServerInfo } from "@/api/types";
 
@@ -178,13 +179,19 @@ beforeEach(() => {
   }));
 });
 
+// React cleanup alone does not destroy module timers as a document unload does.
+function unloadDocument() {
+  cleanup();
+  cancelScheduledRefresh();
+  stopLoop();
+}
+
 afterEach(async () => {
   releaseLogout?.();
   releaseRefresh?.();
   for (const r of heldMe.splice(0)) r();
   await new Promise((r) => setTimeout(r, 10));
-  cancelScheduledRefresh();
-  cleanup();
+  unloadDocument();
   localStorage.clear();
   vi.unstubAllGlobals();
 });
@@ -271,8 +278,11 @@ describe("a sign-out whose logout got no 2xx", () => {
       expect(jar).toEqual({ refresh: "T0", access: "A0" });
 
       // A reload — or the next person at this computer.
-      cleanup();
+      unloadDocument();
       const reloadAt = log.length;
+      // The old document is gone while the reload is delayed past its first
+      // automatic retry (2s). Its module timer must not send another logout.
+      await new Promise((r) => setTimeout(r, 2100));
       render(<App />);
       await screen.findByText("Sign-out not confirmed", {}, { timeout: 6000 });
       expect(shell()).toBeNull();
@@ -293,7 +303,7 @@ describe("a sign-out whose logout got no 2xx", () => {
     await screen.findByText("Sign-out not confirmed", {}, { timeout: 6000 });
 
     logoutMode = "ok";
-    cleanup();
+    unloadDocument();
     const reloadAt = log.length;
     render(<App />);
     await screen.findByRole("heading", { name: "Sign in to iterion" }, { timeout: 6000 });

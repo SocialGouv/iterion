@@ -1,17 +1,21 @@
 package bots
 
 import (
+	"bufio"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -662,19 +666,68 @@ func runDeliveryProbeAt(t *testing.T, c deliveryProbeCarrier, ws, checkURL, toke
 	return got, elapsed
 }
 
-// deadAddress is a loopback address nothing listens on: a port bound and
-// released, so the refusal is the kernel's and not a firewall's.
+// deadAddress owns a bound, non-listening TCP socket until this row ends.
+// Releasing a listener before returning its address lets a parallel fixture
+// reclaim that port and receive this row's retries. Python is already a
+// prerequisite of the probe matrix and exposes bind without listen on every
+// platform; keeping stdin open owns the socket, closing it releases the child.
 func deadAddress(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	cmd := exec.Command("python3", "-I", "-c", `import socket, sys
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.bind(("127.0.0.1", 0))
+    print("%s:%d" % s.getsockname(), flush=True)
+    sys.stdin.read()
+`)
+	in, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := l.Addr().String()
-	if err := l.Close(); err != nil {
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = in.Close()
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = in.Close()
+		_ = out.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = in.Close()
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("release refused port: %v", err)
+		}
+	})
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read reserved endpoint: %v", err)
+	}
+	addr := strings.TrimSpace(line)
+	if _, _, err := net.SplitHostPort(addr); err != nil {
 		t.Fatal(err)
 	}
 	return "http://" + addr + "/api/v1/forge/delivery-preflight"
+}
+
+func TestDeadAddressKeepsItsRefusedPortReserved(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	u, err := url.Parse(deadAddress(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l, err := net.Listen("tcp", u.Host); err == nil {
+		_ = l.Close()
+		t.Fatal("another fixture can reclaim the refused endpoint and receive its token digest")
+	}
+	if c, err := net.DialTimeout("tcp", u.Host, time.Second); err == nil {
+		_ = c.Close()
+		t.Fatal("the reserved endpoint accepted a connection")
+	} else if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("the reserved endpoint did not refuse the connection: %v", err)
+	}
 }
 
 // TestDeliveryProbeReadsTheForgeAPIsScopeListOnlyWhenItAnswers covers the
