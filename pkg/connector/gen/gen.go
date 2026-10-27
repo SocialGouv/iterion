@@ -220,7 +220,7 @@ func decode(data []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("gen: parse YAML description: %w", err)
 	}
 	budget := maxParseNodes
-	norm, err := nodeToAny(&doc, &budget)
+	norm, err := nodeToAny(&doc, &budget, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -252,12 +252,20 @@ func decode(data []byte) (map[string]any, error) {
 // A non-scalar key (YAML's complex-key form) is still dropped: it has no
 // rendering a reader downstream could act on, and no description has one.
 // maxParseNodes bounds the node walk: the budget is what stops an alias
-// expansion from deciding this process's memory.
-const maxParseNodes = 2_000_000
+// expansion from deciding this process's memory. maxParseDepth bounds
+// recursion: frames are spent per nesting level, so a shallow cycle could
+// exhaust the stack before the node budget trips.
+const (
+	maxParseNodes = 2_000_000
+	maxParseDepth = 10_000
+)
 
-func nodeToAny(n *yaml.Node, budget *int) (any, error) {
+func nodeToAny(n *yaml.Node, budget *int, depth int) (any, error) {
 	if *budget <= 0 {
 		return nil, fmt.Errorf("gen: description exceeds the parse node budget")
+	}
+	if depth > maxParseDepth {
+		return nil, fmt.Errorf("gen: description exceeds the parse depth limit")
 	}
 	*budget--
 	switch n.Kind {
@@ -265,12 +273,12 @@ func nodeToAny(n *yaml.Node, budget *int) (any, error) {
 		if len(n.Content) == 0 {
 			return nil, nil
 		}
-		return nodeToAny(n.Content[0], budget)
+		return nodeToAny(n.Content[0], budget, depth+1)
 	case yaml.AliasNode:
 		if n.Alias == nil {
 			return nil, nil
 		}
-		return nodeToAny(n.Alias, budget)
+		return nodeToAny(n.Alias, budget, depth+1)
 	case yaml.MappingNode:
 		out := make(map[string]any, len(n.Content)/2)
 		var merges []*yaml.Node
@@ -283,7 +291,7 @@ func nodeToAny(n *yaml.Node, budget *int) (any, error) {
 			if key.Kind != yaml.ScalarNode {
 				continue
 			}
-			v, err := nodeToAny(val, budget)
+			v, err := nodeToAny(val, budget, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -295,7 +303,7 @@ func nodeToAny(n *yaml.Node, budget *int) (any, error) {
 		// value that resolves to anything else is refused loudly, matching
 		// what a plain Unmarshal reports for the same document.
 		for _, val := range merges {
-			src, err := nodeToAny(val, budget)
+			src, err := nodeToAny(val, budget, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -326,7 +334,7 @@ func nodeToAny(n *yaml.Node, budget *int) (any, error) {
 	case yaml.SequenceNode:
 		out := make([]any, len(n.Content))
 		for i, c := range n.Content {
-			v, err := nodeToAny(c, budget)
+			v, err := nodeToAny(c, budget, depth+1)
 			if err != nil {
 				return nil, err
 			}

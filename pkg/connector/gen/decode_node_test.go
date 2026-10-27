@@ -20,7 +20,7 @@ func TestNodeToAnyResolvesHexScalar(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	budget := maxParseNodes
-	out, err := nodeToAny(&doc, &budget)
+	out, err := nodeToAny(&doc, &budget, 0)
 	if err != nil {
 		t.Fatalf("nodeToAny: %v", err)
 	}
