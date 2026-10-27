@@ -9,6 +9,8 @@ go 1.26.0
 // Upstream (v0.0.13 and master) still has the bug; drop this once fixed.
 replace github.com/ethpandaops/codex-agent-sdk-go => ./third_party/codex-agent-sdk-go
 
+replace github.com/tiktoken-go/tokenizer => ./third_party/tiktoken-go-tokenizer
+
 require (
 	github.com/ethpandaops/codex-agent-sdk-go v0.0.13
 	github.com/fsnotify/fsnotify v1.10.1

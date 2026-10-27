@@ -1,81 +1,18 @@
-![Tests](https://github.com/tiktoken-go/tokenizer/actions/workflows/go.yml/badge.svg)
+# Trimmed fork of github.com/tiktoken-go/tokenizer
 
-# Tokenizer
+First-party fork of upstream **v0.8.1**, wired through a `replace` directive
+in the root `go.mod`. Only the `o200k_base` encoding is kept: iterion's
+single consumer is `pkg/backend/thinktokens` (`Get(O200kBase)` + `Count`),
+and the figure it produces is display-only.
 
-This is a pure go port of OpenAI's tokenizer.
+Deleted relative to upstream: the cl100k/p50k/r50k/gpt2 encodings and their
+vocab tables (~200k LOC of frozen BPE ranks), `ForModel`, the `Model`
+constants and the model-prefix table. `ErrModelNotSupported` went with them;
+`ErrEncodingNotSupported` stays.
 
-<a href="https://www.buymeacoffee.com/mwahlmann" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-blue.png" alt="Buy Me A Coffee" height="41" width="174"></a>
+**Re-apply on resync:** this is NOT an upstream patch — it is a deletion.
+Bumping upstream re-imports the deleted encodings; re-trim, and let the
+closure metric (`task deps:closure`, ADR-138) flag any regression.
 
-## Usage
-
-```go
-package main
-
-import (
-    "fmt"
-    "github.com/tiktoken-go/tokenizer"
-)
-
-func main() {
-    enc, err := tokenizer.Get(tokenizer.Cl100kBase)
-    if err != nil {
-        panic("oh oh")
-    }
-
-    // this should print a list of token ids
-    ids, _, _ := enc.Encode("supercalifragilistic")
-    fmt.Println(ids)
-
-    // this should print the original string back
-    text, _ := enc.Decode(ids)
-    fmt.Println(text)
-}
-```
-
-Alternatively you can use the included command-line tool
-
-```sh
-> tokenizer -h
-
-Usage of tokenizer:
-  -decode string
-        tokens to decode
-  -encode string
-        text to encode
-  -token string
-        text to calculate token
-
-> tokenizer -encode supercalifragilistic
-```
-
-## Todo
-
-- ✅ port code
-- ✅ o200k_base encoding
-- ✅ cl100k_base encoding
-- ✅ r50k_base encoding
-- ✅ p50k_base encoding
-- ✅ p50k_edit encoding
-- ✅ tests
-- ❌ handle special tokens
-- ❌ gpt-2 model
-
-## Caveats
-
-This library embeds OpenAI's vocabularies—which are not small (~4Mb)— as go
-maps. This is different than what the way python version of tiktoken works, 
-which downloads the dictionaries and puts them in a cache folder.
-
-However, since the dictionaries are compiled during the go build process
-the performance and start-up times should be better than downloading and loading
-them at runtime.
-
-## Alternatives
-
-Here is a list of other libraries that do something similar.
-
-- [https://github.com/sugarme/tokenizer](https://github.com/sugarme/tokenizer) (A different tokenizer algorithm than OpenAI's)
-- [https://github.com/pandodao/tokenizer-go](https://github.com/pandodao/tokenizer-go) (deprecated, calls into JavaScript)
-- [https://github.com/pkoukk/tiktoken-go](https://github.com/pkoukk/tiktoken-go)
-
-
+The vocab tables are frozen BPE ranks: never regenerate them; resync only to
+take upstream engine fixes.

@@ -586,7 +586,7 @@ github.com/spf13/cobra
 # github.com/spf13/pflag v1.0.10
 ## explicit; go 1.12
 github.com/spf13/pflag
-# github.com/tiktoken-go/tokenizer v0.8.1
+# github.com/tiktoken-go/tokenizer v0.8.1 => ./third_party/tiktoken-go-tokenizer
 ## explicit; go 1.26
 github.com/tiktoken-go/tokenizer
 github.com/tiktoken-go/tokenizer/codec
@@ -1077,3 +1077,4 @@ modernc.org/sqlite/lib
 software.sslmate.com/src/go-pkcs12
 software.sslmate.com/src/go-pkcs12/internal/rc2
 # github.com/ethpandaops/codex-agent-sdk-go => ./third_party/codex-agent-sdk-go
+# github.com/tiktoken-go/tokenizer => ./third_party/tiktoken-go-tokenizer
