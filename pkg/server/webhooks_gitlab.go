@@ -316,8 +316,12 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 	if !ok {
 		return
 	}
-
-	// Idempotency: one launch per (tenant, webhook, project, issue, label).
+	// The visibility gate (#2676): a label starts a bot the catalogue
+	// enables — a disabled bot no more launches by its label than by its
+	// card, and a refused overlay starts nothing.
+	if !s.gateLabelBotVisibility(ctx, w, cfg, meta, botID, payloadHash, srcIP) {
+		return
+	}
 	// "gl|issue|" keeps the key space disjoint from the mr|/note|/cmd| paths.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gl|issue|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.IssueIID, label)))
 

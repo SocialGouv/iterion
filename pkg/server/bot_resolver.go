@@ -794,6 +794,43 @@ func (s *Server) bakedFindByName(name string) (botregistry.EntryWithSchema, bool
 	return entry, found, nil
 }
 
+// botVisibleForLaunch answers whether botID is enabled to a door that
+// judges visibility — the label door joins the card launch door (#2676).
+// The tier that answers is the tier the launch would serve from, in launch
+// precedence: a team row, then a platform row, each through its OWN live
+// row's manifest (no workspace overlay there), then the baked catalog read
+// FAIL-CLOSED through the overlay — a refused overlay starts nothing, the
+// card door's rule. A bot no tier describes is not launchable through a
+// visibility-judging door.
+func (s *Server) botVisibleForLaunch(ctx context.Context, teamID, botID string) (bool, error) {
+	if s.botSources != nil {
+		if teamID != "" {
+			entry, found, err := s.storedBotEntry(ctx, teamID, botID)
+			if err != nil {
+				return false, err
+			}
+			if found {
+				return entry.Enabled, nil
+			}
+		}
+		entry, found, err := s.storedBotEntry(ctx, botsource.PlatformTenantID, botID)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			return entry.Enabled, nil
+		}
+	}
+	entry, found, err := s.bakedFindByName(botID)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	return entry.Enabled, nil
+}
+
 // findEntryByName is the launcher's name match, one implementation for every
 // entry set: an exact match first, then the NormalizeName-folded spelling
 // (review_pr → review-pr), because the launcher accepts both and a run's
