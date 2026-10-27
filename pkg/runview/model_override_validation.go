@@ -62,7 +62,8 @@ func ScreenPolicyOverrides(path, source, bundleDir string, pol *store.RunLLMRout
 	if wf == nil {
 		return nil, nil
 	}
-	overrides := toModelOverrides(EffectiveModelOverrides(nil, pol))
+	sourced := foldSourcedOverrides(nil, pol)
+	overrides := toModelOverrides(plainModelOverrideEntries(sourced))
 	var warnings []string
 	for _, node := range wf.Nodes {
 		llm, ok := node.(ir.LLMNode)
@@ -78,6 +79,7 @@ func ScreenPolicyOverrides(path, source, bundleDir string, pol *store.RunLLMRout
 			warnings = append(warnings, fmt.Sprintf("the routing block moves %s %q onto a backend that cannot gate it: %s", llm.NodeKind(), llm.NodeID(), reason))
 		}
 	}
+	warnings = append(warnings, composedPairWarnings(wf, sourced)...)
 	return warnings, nil
 }
 

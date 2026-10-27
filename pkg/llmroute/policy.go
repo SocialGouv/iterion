@@ -555,6 +555,44 @@ func validateOverride(o Override) error {
 	return nil
 }
 
+// ValidateComposedPair cross-checks the (backend, provider) pair the
+// per-field composition can assemble from DIFFERENT entries — each entry
+// validates alone, so validateOverride certifies a split pin whose pair
+// the harness ignores at dispatch (#2637). The same three refusals as the
+// per-entry check, named for the two entries and their levels that
+// produced the pair: backendFrom / providerFrom say where each half was
+// written ("the routing policy's override cell \"reviewer_*\"", "the
+// launch's own override row \"*\"").
+func ValidateComposedPair(backend, backendFrom, provider, providerFrom string) error {
+	if backend == "" || provider == "" {
+		return nil
+	}
+	tokens := providerHintTokens(provider)
+	if len(tokens) == 0 {
+		return fmt.Errorf("provider %q from %s names no step", provider, providerFrom)
+	}
+	for _, t := range tokens {
+		s := t.step
+		if s == "auto" {
+			return fmt.Errorf("provider %q from %s names \"auto\" — an override pins, it never defers; omit the cell to let the process decide", provider, providerFrom)
+		}
+		if s == "" {
+			return fmt.Errorf("provider %q from %s names an empty step", provider, providerFrom)
+		}
+		chains, single := ConsumesProviderHint(backend)
+		if !chains && !single {
+			return fmt.Errorf("provider %q names %q from %s and backend %q from %s — composed, this harness does not consume the provider hint; the gate would certify a pin the harness ignores", provider, s, providerFrom, backend, backendFrom)
+		}
+		if single && !chains && len(tokens) > 1 {
+			return fmt.Errorf("provider %q names %q from %s and backend %q from %s — composed, this harness honours a single-value hint and derives the rest from the model prefix; it does not walk chains", provider, s, providerFrom, backend, backendFrom)
+		}
+		if !HonoursProviderHintValue(backend, s) {
+			return fmt.Errorf("provider %q names %q from %s and backend %q from %s — composed, this harness acts on none of this value at its routing chokepoint, so the gate would certify a pin the harness silently ignores; the spend would follow the default precedence", provider, s, providerFrom, backend, backendFrom)
+		}
+	}
+	return nil
+}
+
 // Validate reports whether p is coherent. Errors are user-facing and name
 // the offending field. An UNSET field (empty) is legal at any single level
 // — inherit is the norm; only values that are set must be well-formed.
