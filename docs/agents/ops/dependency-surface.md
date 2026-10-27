@@ -28,7 +28,7 @@ packages.** Composition of the top:
 
 ## The rule it serves
 
-- [ADR-138](../../adr/138-dependency-internalization-doctrine.md) — what may
+- [ADR-140](../../adr/140-dependency-internalization-doctrine.md) — what may
   be internalized, cut or fork-patched, and what stays untouchable.
 - [ADR-139](../../adr/139-language-stays-go-sidecars-for-the-rest.md) — the
   language itself is not on the table; other languages arrive as sidecars

@@ -1,4 +1,4 @@
-# ADR-138: dependencies are pruned, fork-patched or kept — never rewritten wholesale
+# ADR-140: dependencies are pruned, fork-patched or kept — never rewritten wholesale
 
 - **Status**: Accepted
 - **Date**: 2026-10-27
