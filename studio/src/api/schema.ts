@@ -454,6 +454,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/admin/runs
+         * @description Every org's runs in one super-admin view. Filters combine (org_id, team_id, status, since). Paginated server-side across orgs: pass the previous page's next_cursor back as cursor; an absent next_cursor is the last page.
+         */
+        get: operations["getAdminRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/settings/bot-roles": {
         parameters: {
             query?: never;
@@ -7334,12 +7354,14 @@ export interface components {
             /** Format: date-time */
             retry_after?: string;
             retry_attempts?: number;
+            runner_pool?: string;
             shard_count?: number;
             shard_index?: number;
             shard_label?: string;
             source?: components["schemas"]["RunSource"];
             source_kind?: string;
             status: string;
+            team_id?: string;
             /** Format: date-time */
             updated_at: string;
             work_dir?: string;
@@ -7475,6 +7497,31 @@ export interface components {
             forge_base_url?: string;
             provider: string;
             webhook_base_url?: string;
+        };
+        adminRunRow: {
+            bundle_name?: string;
+            /** Format: date-time */
+            created_at: string;
+            error?: string;
+            /** Format: date-time */
+            finished_at?: string;
+            id: string;
+            name?: string;
+            org_id?: string;
+            org_name?: string;
+            project_path?: string;
+            runner_pool?: string;
+            source_kind?: string;
+            status: string;
+            team_id?: string;
+            team_name?: string;
+            /** Format: date-time */
+            updated_at: string;
+            workflow_name: string;
+        };
+        adminRunsResponse: {
+            next_cursor?: string;
+            runs: components["schemas"]["adminRunRow"][];
         };
         adminUpdateUserReq: {
             is_super_admin?: boolean;
@@ -9209,6 +9256,60 @@ export interface operations {
             };
             /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminRuns: {
+        parameters: {
+            query?: {
+                /** @description Narrow to the runs of one org (all its teams). */
+                org_id?: string;
+                /** @description Narrow to one team's runs. Combines with org_id: a team outside the org answers an empty page. */
+                team_id?: string;
+                /** @description Exact run status (running, queued, paused_waiting_human, paused_operator, finished, failed, failed_resumable, cancelled). */
+                status?: string;
+                /** @description Only runs updated at or after this RFC3339 instant. */
+                since?: string;
+                /** @description Page size, 1..500 (default 50). */
+                limit?: number;
+                /** @description Keyset token from the previous page's next_cursor. A malformed value is refused with 400. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["adminRunsResponse"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Run store unavailable */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

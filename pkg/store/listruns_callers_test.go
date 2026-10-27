@@ -34,6 +34,7 @@ var listRunsCallers = map[string]string{
 	"pkg/runview/pipeline_scheduler.go":  "boot-time rebuild of the pipeline queue, once per process lifetime",
 	"pkg/runview/service_lifecycle.go":   "orphan reconcile, which lists only with lock authority (a local store); the lock-less cloud server returns before the listing",
 	"pkg/runview/service_runs.go":        "the runs listing API: a request path whose filters apply after the load (#1351 made the loads projected)",
+	"pkg/runview/admin_list.go":          "the super-admin cross-org runs view (#2148): a request path an operator triggers, behind requireSuperAdmin and the audited cross-org predicate — the same projected-load walk the per-team listing runs, paginated after the sort; never a periodic worker",
 	"pkg/server/pipeline_admission.go":   "fork index memoized for a TTL and rebuilt only while a ticket is stuck, with projected loads",
 	"pkg/server/run_delegation.go":       "request path: a delegation launch looks for its prior attempts",
 	"pkg/store/store_run.go":             "the filesystem store's scan-based indexed questions (filterRunsSorted) — one process over a local tree, where the scan is the index",

@@ -578,7 +578,19 @@ type RunSummary struct {
 	// SourceKind classifies how the run was triggered, for list filtering /
 	// grouping: "manual" | "webhook" | "dispatcher" | "fork" | "shard".
 	// Derived server-side from the run's source/owner; never persisted.
-	SourceKind string          `json:"source_kind,omitempty"`
+	SourceKind string `json:"source_kind,omitempty"`
+	// TenantID is the team the run belongs to (wire name team_id, the
+	// same spelling the ?team_id= scope parameter uses). Empty for
+	// local-mode runs — the filesystem store is implicitly
+	// single-tenant. Carried so a cross-tenant listing can attribute
+	// each row (#2148); a per-team listing answers with the caller's
+	// own team.
+	TenantID string `json:"team_id,omitempty"`
+	// RunnerPool is the sovereign runner pool (#2029) the run was
+	// stamped with at launch. Empty = the shared default pool. Carried
+	// so a cross-tenant view keeps pool-sovereign rows visually marked
+	// (A19).
+	RunnerPool string          `json:"runner_pool,omitempty"`
 	Status     store.RunStatus `json:"status"`
 	FilePath   string          `json:"file_path,omitempty"`
 	CreatedAt  time.Time       `json:"created_at"`

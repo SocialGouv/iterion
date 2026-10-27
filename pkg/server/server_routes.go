@@ -364,6 +364,10 @@ func (s *Server) routes() {
 	// and the runtime-mutable sandbox default image.
 	s.registerAdminSettingsFamilyRoutes()
 
+	// Platform runs view (super-admin): every org's runs in one
+	// filterable, server-side paginated list (#2148). Read-only.
+	s.registerAdminRunRoutes()
+
 	// Dispatcher + native tracker — both optional. Each handler is
 	// registered through requireAuth so a server bound to a non-loopback
 	// address (devcontainer / LAN / SSH tunnel) can't have its kanban
