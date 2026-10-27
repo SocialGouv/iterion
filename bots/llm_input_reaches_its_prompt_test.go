@@ -44,11 +44,10 @@ import (
 // rendering the node's channels through the REAL resolver
 // (model.TemplateResolver) with a distinct marker as each field's value, and
 // looking for the marker in the output. A reading of the syntax is a list of
-// spellings — the bang form `{{!input.X}}` parses as a normal reference and
-// renders as a literal placeholder (#1775); a sub-path renders on a json value
-// and not on a string — and each rule added to such a list is one more rule
-// the next form slips past. The renderer has no list. If it is ever changed to
-// render a form it leaves verbatim today, this guard follows without an edit.
+// spellings — a sub-path renders on a json value and not on a string — and
+// each rule added to such a list is one more rule the next form slips past.
+// The renderer has no list. If it is ever changed to render a form it leaves
+// verbatim today, this guard follows without an edit.
 //
 // What the renderer cannot know is the SHAPE a value has at runtime, so the
 // marker is given that shape (inputFields, markerInput). It follows how the
@@ -714,9 +713,10 @@ workflow w:
 			wantMiss: nil,
 		},
 		{
-			// The prompt renderer leaves `{{!input.a}}` in the text verbatim:
-			// the model reads the placeholder, not the value.
-			name: "a bang reference does not reach the model",
+			// The prompt renderer resolves `{{!input.a}}` like every other
+			// ref: the bang is a tool-body spelling, inert in a prompt
+			// (C169 names it). The model reads the value.
+			name: "a bang reference reaches the model as its value",
 			src: `schema in:
   a: string
 schema out:
@@ -732,7 +732,7 @@ workflow w:
   entry: one
   one -> done
 `,
-			wantMiss: []string{"a"},
+			wantMiss: nil,
 		},
 		{
 			// The #1598 shape through a key the schema never declared: the

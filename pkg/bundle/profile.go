@@ -45,7 +45,7 @@ const (
 func MaxSyntaxRequirements(files map[string]string) SyntaxRequirements {
 	var entries []string
 	for rel := range files {
-		if isRootEntry(rel) {
+		if IsRootEntry(rel) {
 			entries = append(entries, rel)
 		}
 	}
@@ -95,13 +95,13 @@ func maxSyntaxRequirementsDir(dir string, staged map[string]string) SyntaxRequir
 	var entries []string
 	if dents, err := os.ReadDir(root); err == nil {
 		for _, d := range dents {
-			if !d.IsDir() && isRootEntry(d.Name()) {
+			if !d.IsDir() && IsRootEntry(d.Name()) {
 				entries = append(entries, d.Name())
 			}
 		}
 	}
 	for rel := range staged {
-		if isRootEntry(rel) && !slices.Contains(entries, rel) {
+		if IsRootEntry(rel) && !slices.Contains(entries, rel) {
 			entries = append(entries, rel)
 		}
 	}
@@ -141,13 +141,15 @@ func within(path, root string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
-// isRootEntry reports a bundle-relative slash path that is a .bot file at
+// IsRootEntry reports a bundle-relative slash path that is a .bot file at
 // the bundle root other than main.bot: an entry of its own (a child another
 // bot declares, or a workflow launched by path), never a fragment — those
 // live under lib/ and are reached through imports. The extension folds case,
 // the rule workflowfile.IsWorkflowFile opens the file by: a path-promoted
-// entry (DirForEntry) must not be invisible to the floor walk.
-func isRootEntry(rel string) bool {
+// entry (DirForEntry) must not be invisible to the floor walk. The store
+// gate of a cloud bot's validation asks it too, so disk and store cannot
+// drift.
+func IsRootEntry(rel string) bool {
 	return rel != MainBotFile && !strings.Contains(rel, "/") && len(rel) >= 4 && strings.EqualFold(rel[len(rel)-4:], ".bot")
 }
 

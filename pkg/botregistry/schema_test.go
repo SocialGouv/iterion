@@ -68,6 +68,33 @@ func TestLoadSchema_ParseErrorSurfaces(t *testing.T) {
 	}
 }
 
+// TestDiscoveryParsesEachBotOnce: discovery and the schema load share one
+// frontmatter cache keyed by (path, size+mtime), so a bot file is parsed
+// once no matter how many surfaces read it. The counter is the cache's own
+// witness: a cache that always misses parses again on the second list.
+func TestDiscoveryParsesEachBotOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "solo.bot"), sampleBot)
+	writeFile(t, filepath.Join(dir, "plain.bot"), "agent a:\n  model: \"test\"\n\nworkflow w:\n  a -> done\n")
+	writeFile(t, filepath.Join(dir, "boxed", "manifest.yaml"), "name: boxed\n")
+	writeFile(t, filepath.Join(dir, "boxed", "main.bot"), sampleBot)
+
+	ClearSchemaCache()
+	if _, _, err := ListWithSchemaDiagnostics(ListOptions{Paths: []string{dir}}); err != nil {
+		t.Fatalf("first list: %v", err)
+	}
+	after := frontmatterParseCount.Load()
+	if after == 0 {
+		t.Fatal("the first list parsed nothing — the counter or the cache is miswired")
+	}
+	if _, _, err := ListWithSchemaDiagnostics(ListOptions{Paths: []string{dir}}); err != nil {
+		t.Fatalf("second list: %v", err)
+	}
+	if got := frontmatterParseCount.Load(); got != after {
+		t.Fatalf("the second list parsed %d more bots — one parse per (size, mtime) is the contract", got-after)
+	}
+}
+
 func TestLoadSchema_CacheHitAndInvalidate(t *testing.T) {
 	ClearSchemaCache()
 	dir := t.TempDir()

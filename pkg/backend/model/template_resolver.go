@@ -103,6 +103,12 @@ func (r *TemplateResolver) ResolveValue(ref string, input map[string]any, td *Te
 	if ref == ir.LiteralOpenExpression {
 		return "{{", true
 	}
+	// The bang form reaches this lookup as written ({{!input.x}}): strip the
+	// prefix here — the one lookup behind the prompt path — so a prompt
+	// renders the value like every other non-shell context. The shell path
+	// never passes a bang (the parser strips it), and the compiler names the
+	// spelling where it is inert (C169).
+	ref = strings.TrimPrefix(ref, "!")
 	parts := strings.SplitN(ref, ".", 2)
 	if len(parts) < 2 {
 		return "", false

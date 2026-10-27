@@ -726,7 +726,7 @@ func parseBundle(dir string) (e *Entry, identity, err error) {
 	if m.Name == "" {
 		m.Name = filepath.Base(dir)
 	}
-	fm, identity := bundle.ReadFrontmatter(filepath.Join(dir, "main.bot"))
+	fm, _, _, _, identity := cachedFrontmatterParse(filepath.Join(dir, "main.bot"))
 	if identity != nil {
 		identity = fmt.Errorf("listed with its manifest's triggers and capabilities, which the frontmatter of its main.bot overrides — %w", identity)
 	}
@@ -772,11 +772,12 @@ func parseBundle(dir string) (e *Entry, identity, err error) {
 // the reader did not read it: the entry carries the file's name and no
 // declared identity, and the caller says so (DiscoveryErrorIdentity).
 func parseBotFile(path string) (e *Entry, identity, err error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("bots: read %s: %w", path, err)
+	fm, _, raw, _, perr := cachedFrontmatterParse(path)
+	var readErr *os.PathError
+	if errors.As(perr, &readErr) {
+		return nil, nil, fmt.Errorf("bots: read %s: %w", path, perr)
 	}
-	fm, identity := bundle.ParseFrontmatter(path, raw)
+	identity = perr
 	if identity != nil {
 		identity = fmt.Errorf("listed under its file name, with no declared description, triggers or capabilities — %w", identity)
 	}

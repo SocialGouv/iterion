@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
@@ -59,21 +60,33 @@ func ReadFrontmatter(path string) (*Frontmatter, error) {
 // same line. A reader that only knew `##` would silently drop the whole
 // catalogue identity of a file the parser accepts.
 func ParseFrontmatter(name string, raw []byte) (*Frontmatter, error) {
+	fm, _, _, err := FrontmatterParse(name, raw)
+	return fm, err
+}
+
+// FrontmatterParse is ParseFrontmatter with the parse kept: the block's
+// frontmatter (nil when there is none), the parsed AST, and what the
+// reading spent of the read budget — what a caller that goes on to load
+// the unit hands unit.LoadDirWithMainAST, so one parse serves both
+// readers of a bot file (discovery's catalogue identity and the schema
+// load). err is ParseFrontmatter's own: a read refusal, or nil with a nil
+// frontmatter when the file carries no block a reader reads.
+func FrontmatterParse(name string, raw []byte) (*Frontmatter, *ast.File, int, error) {
 	pr, err := parser.Parse(name, string(raw))
 	if err != nil {
-		return nil, fmt.Errorf("the frontmatter is not read: %w", err)
+		return nil, nil, 0, fmt.Errorf("the frontmatter is not read: %w", err)
 	}
 	block := parser.Frontmatter(pr.File)
 	if !block.Found || !block.Closed {
-		return nil, nil
+		return nil, pr.File, pr.Spent, nil
 	}
-	fm, _, err := workflowfile.DecodeFrontmatter(strings.Join(block.Lines, "\n"), parser.ReadBudget())
+	fm, _, derr := workflowfile.DecodeFrontmatter(strings.Join(block.Lines, "\n"), parser.ReadBudget())
 	var refusal *workflowfile.YAMLDecodeRefusal
-	if errors.As(err, &refusal) {
-		return nil, fmt.Errorf("the frontmatter is not read: %w — %s", err, parser.ReadBudgetHint)
+	if errors.As(derr, &refusal) {
+		return nil, pr.File, pr.Spent, fmt.Errorf("the frontmatter is not read: %w — %s", derr, parser.ReadBudgetHint)
 	}
-	if err != nil {
-		return nil, nil
+	if derr != nil {
+		return nil, pr.File, pr.Spent, nil
 	}
-	return fm, nil
+	return fm, pr.File, pr.Spent, nil
 }

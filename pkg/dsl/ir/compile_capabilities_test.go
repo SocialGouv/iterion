@@ -51,7 +51,8 @@ func TestCompileUsesExplicitTargetCapabilities(t *testing.T) {
 							t.Fatal("compilation changed with the compiling host's credentials")
 						}
 						first = r
-						if r.HasErrors() != (explicit == "" && capability.name == "absent" && kind != "router") {
+						fallsThrough := explicit == "" || explicit == "node" || explicit == "workflow-auto"
+						if r.HasErrors() != (fallsThrough && capability.name == "absent" && kind != "router") {
 							t.Fatalf("unexpected compile verdict: %v", r.Diagnostics)
 						}
 						var found []Diagnostic
@@ -60,9 +61,13 @@ func TestCompileUsesExplicitTargetCapabilities(t *testing.T) {
 								found = append(found, d)
 							}
 						}
+						// `backend: auto` and `default_backend: auto` fall
+						// through the documented chain like no field at all,
+						// so they reach the capability branch with the empty
+						// explicit value.
 						wantCount := 0
 						wantSeverity := SeverityWarning
-						if explicit == "" && capability.name != "available" {
+						if fallsThrough && capability.name != "available" {
 							wantCount = 1
 							if capability.name == "absent" && kind != "router" {
 								wantSeverity = SeverityError

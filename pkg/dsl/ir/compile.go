@@ -954,14 +954,25 @@ func (c *compiler) worktreeMode(workflow string, at ast.Span, raw string) string
 }
 
 // checkModelOrBackend keeps all ordinary LLM nodes on the same capability
-// reading. Explicit workflow defaults (including auto) express routing intent;
-// their availability is checked when the target builds the backend.
+// reading. The node's route is read the way the source reads a routing
+// field (sourceBackend, by default): a decided name answers, a field the
+// source writes but cannot answer (a ${X} with no :-, a {{vars.x}}) is
+// declared and not judged, and an empty or `auto` field falls through to
+// the workflow default, which answers the same way (BackendFallsThrough —
+// docs/backends.md). Only when nothing in the chain decides does the
+// target's capability verdict speak. One workflow per file (C007 refuses
+// the rest before nodes compile), so Workflows[0] is this node's own.
 func (c *compiler) checkModelOrBackend(kind, name, model, backend string) {
-	if model != "" || backend != "" {
+	if model != "" {
 		return
 	}
-	if len(c.file.Workflows) > 0 && c.file.Workflows[0].DefaultBackend != "" {
+	if n, decides := sourceBackend.field(backend); n != "" || !decides {
 		return
+	}
+	if len(c.file.Workflows) > 0 {
+		if n, decides := sourceBackend.field(c.file.Workflows[0].DefaultBackend); n != "" || !decides {
+			return
+		}
 	}
 	available := c.capabilities.AutoBackendAvailable
 	if available != nil && *available {
@@ -1006,6 +1017,16 @@ func (c *compiler) compilePrompts() {
 		refs, err := ParseRefs(body)
 		if err != nil {
 			c.errorfAtSpan(DiagBadTemplateRef, p.Span, "prompt %q: %v", p.Name, err)
+		}
+		// A bang ref in a prompt body is parsed and then ignored — a prompt
+		// has no shell to escape, the value renders whatever the prefix
+		// says. The warning names the spelling instead of leaving it silent;
+		// in a tool body the bang is the remedy, not the defect.
+		for _, ref := range refs {
+			if ref.Unquoted {
+				c.warnfAtSpan(DiagBangRefInPromptBody, p.Span,
+					"prompt %q: %s carries the bang form — a prompt has no shell, the value renders either way", p.Name, ref.Raw)
+			}
 		}
 		c.prompts[p.Name] = &Prompt{
 			Name:         p.Name,

@@ -512,8 +512,10 @@ process that dispatches the node.
 Two forms fall through to the next step of the chain: an empty field, and
 `auto` — on a node or the workflow default. Both use
 `ir.BackendFallsThrough` after template and environment expansion. An explicit
-`default_backend: auto` needs no compile-time warning: it deliberately leaves
-the choice to the execution target. A third kind is undecided: a field the source writes
+`default_backend: auto` deliberately leaves the choice to the execution
+target — and when nothing in the chain decides, C018 answers as it does for
+no default at all (unknown capabilities: a warning; a target reporting none:
+an error). A third kind is undecided: a field the source writes
 but does not answer — a `${X}` with no `:-` default, a bare `$X`, a
 `{{vars.x}}` a launch may override. Those do **not** fall through to
 `default_backend:`, because which branch the run takes is not knowable from
