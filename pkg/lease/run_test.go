@@ -288,6 +288,11 @@ func (f *flakyStore) sent() time.Time {
 // expired, starts sweeping too — and it must keep the TTL/6 margin that
 // absorbs clock skew between the replicas, not merely stop "in time".
 func TestRun_AHolderThatCannotRenewStepsDownWithTheSkewMarginLeft(t *testing.T) {
+	// Keep the deadline assertion independent of CI scheduling pauses.
+	synctest.Test(t, testRunHolderStepsDownWithSkewMargin)
+}
+
+func testRunHolderStepsDownWithSkewMargin(t *testing.T) {
 	fs := &flakyStore{Store: NewMemoryStore()}
 	log := &logSink{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -371,26 +376,28 @@ func TestRun_TheStepDownCountsFromWhenTheCallWasSent(t *testing.T) {
 		{"slow renewal", &slowStore{Store: NewMemoryStore(), renewDelay: slow, okRenewals: 1}, func(f *slowStore) time.Time { return f.renewSent }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			var clock stopClock
-			started := make(chan struct{})
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				_ = Run(ctx, c.store, spec("a", leaseTTL, nil), clock.serve(started))
-			}()
-			<-started
-			until(t, 15*time.Second, "a to step down", func() bool { return clock.at.Load() != 0 })
-			c.store.mu.Lock()
-			expiry := c.sent(c.store).Add(leaseTTL)
-			c.store.mu.Unlock()
-			if stopped := clock.stopped(); !stopped.Before(expiry.Add(-leaseTTL / 12)) {
-				t.Errorf("a stopped %s before its lease's expiry in the store — want at least %s: the deadline was counted from the answer, not the send",
-					expiry.Sub(stopped), leaseTTL/12)
-			}
-			cancel()
-			<-done
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var clock stopClock
+				started := make(chan struct{})
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					_ = Run(ctx, c.store, spec("a", leaseTTL, nil), clock.serve(started))
+				}()
+				<-started
+				until(t, 15*time.Second, "a to step down", func() bool { return clock.at.Load() != 0 })
+				c.store.mu.Lock()
+				expiry := c.sent(c.store).Add(leaseTTL)
+				c.store.mu.Unlock()
+				if stopped := clock.stopped(); !stopped.Before(expiry.Add(-leaseTTL / 12)) {
+					t.Errorf("a stopped %s before its lease's expiry in the store — want at least %s: the deadline was counted from the answer, not the send",
+						expiry.Sub(stopped), leaseTTL/12)
+				}
+				cancel()
+				<-done
+			})
 		})
 	}
 }
