@@ -106,7 +106,7 @@ describe("RunsAdminPage", () => {
     expect(table.textContent).toContain("pool: pool-souverain");
     const link = await screen.findByRole("link", { name: "run-1" });
     expect(link.getAttribute("href")).toContain("/runs/run-1");
-    await expectNoViolations(view.container);
+    await expectNoViolations(view.container, "RunsAdminPage");
   });
 
   it("sends the org and state filters to the server COMBINED", async () => {
