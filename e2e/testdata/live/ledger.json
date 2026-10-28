@@ -162,6 +162,11 @@
       "verdict": "never"
     },
     {
+      "target": "test:live:feat:codex-web-search",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
       "target": "test:live:feat:cursors",
       "last_run": "0001-01-01T00:00:00Z",
       "verdict": "never"
@@ -178,6 +183,16 @@
     },
     {
       "target": "test:live:feat:permission-ask",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:permission-grok",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
+      "target": "test:live:feat:permission-kimi",
       "last_run": "0001-01-01T00:00:00Z",
       "verdict": "never"
     },
@@ -222,6 +237,11 @@
       "verdict": "never"
     },
     {
+      "target": "test:live:feat:workspace-commands",
+      "last_run": "0001-01-01T00:00:00Z",
+      "verdict": "never"
+    },
+    {
       "target": "test:live:feat:worktree",
       "last_run": "0001-01-01T00:00:00Z",
       "verdict": "never"
@@ -250,6 +270,12 @@
       "target": "test:live:kanban",
       "last_run": "0001-01-01T00:00:00Z",
       "verdict": "never"
+    },
+    {
+      "target": "test:live:openai-compatible",
+      "last_run": "2026-10-28T20:22:47.615228641Z",
+      "verdict": "fail",
+      "ref": "05c188cd5d9a"
     },
     {
       "target": "test:live:review",

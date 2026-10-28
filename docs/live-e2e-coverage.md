@@ -83,6 +83,26 @@ operator passes `-write-back` (e.g. `go run ./cmd/iterion-live-status
 class guard (`TestEveryLiveTestRecordsToTheLedger` in `pkg/liveledger`)
 fails a new live test that reaches no recording hook. See #1422.
 
+Two companion guards keep the row set and the target set honest, because
+a row only means something if a run can be attributed to it:
+
+- `TestEveryLiveTestIsInvocableFromItsOwnTarget` — every live test needs
+  a `test:live:*` target that runs it on its own (a target whose `-run`
+  pattern reaches nothing outside the test's own source file; the
+  `openai-compatible` pair shares one target and one row on purpose).
+  A test reachable only from `test:live` or `test:live:feats:all` runs
+  under THAT row, which merges its members fail-sticky — so no verdict,
+  cost or date is ever attributable to the test, and its own row reads
+  `never` forever while the coverage matrix cites it as live proof.
+- `TestEveryRecordingTargetHasALedgerRow` — the committed file carries a
+  row for every recording target. The status table lists a missing
+  target from the Taskfile at read time, so an absent row is invisible
+  in the file itself and makes every "N of M read `never`" count wrong
+  on M. Seed with `-write-back`, then reconcile
+  `pkg/backend/backendcaps/live_seed.json` (compared cell-for-cell by
+  `TestLiveLedgerZeroMove`) and the reviewed golden beside it
+  (`go test ./pkg/backend/backendcaps/ -update-backendcaps`).
+
 ## Quality layer — how it works
 
 - **Evidence** = the *real artifact*, never the bot's self-report: the git

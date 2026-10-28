@@ -522,6 +522,21 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_Permission_Ask$' -timeout 6m ./e2e/...
 
+  test:live:feat:permission-kimi:
+    desc: 'Live e2e for the permission gate deny mode through kimi''s native PreToolUse hook — filesystem sentinel, not model prose (needs the kimi CLI; real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Permission_Deny_Kimi$' -timeout 10m ./e2e/...
+
+  test:live:feat:permission-grok:
+    desc: 'Live e2e for the permission gate deny mode through grok''s native hook — the proof behind grok''s entry in ir.gateEnforcingModes (needs the grok CLI; real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Permission_Deny_Grok$' -timeout 10m ./e2e/...
+
+  test:live:feat:codex-web-search:
+    desc: 'Live e2e for the codex native web_search selection — current URLs, readonly write refusal, WebSearch lifecycle (needs the codex CLI; real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_CodexWebSearch$' -timeout 10m ./e2e/...
+
   test:live:feat:rtk:
     desc: 'Live e2e for the rtk command-output compression (needs rtk binary) feature (real cost).'
     cmds:
