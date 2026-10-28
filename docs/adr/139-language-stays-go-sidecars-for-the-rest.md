@@ -10,7 +10,7 @@
 A proposal reached the operator: with today's coding agents able to write large
 codebases quickly, migrate iterion from Go to Rust — framed alongside the
 dependency-internalization proposal this ADR's sibling
-([ADR-140](140-dependency-internalization-doctrine.md)) disposes of.
+([ADR-142](142-dependency-internalization-doctrine.md)) disposes of.
 
 The measured shape of the codebase decides most of it:
 

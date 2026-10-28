@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ADR-140 metric: third-party source linked into the server binary.
+# ADR-142 metric: third-party source linked into the server binary.
 # Prints the linked package count, the non-stdlib LOC total and the top
 # contributors. Run via `task deps:closure`.
 set -euo pipefail
