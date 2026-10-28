@@ -247,7 +247,7 @@ type Team struct {
 	LLMFallback string `bson:"llm_fallback,omitempty" json:"llm_fallback,omitempty"`
 
 	// RunVisibility names who beyond the team may READ the team's runs by
-	// id (ADR-142). Empty (or RunVisibilityTeam, the default) keeps runs
+	// id (ADR-143). Empty (or RunVisibilityTeam, the default) keeps runs
 	// team-private: only standings in the team see them. RunVisibilityOrg
 	// admits any org-membership of the team's parent org as a viewer at
 	// the run-by-id choke point — never an action. Written ONLY through
@@ -277,7 +277,7 @@ func ValidLLMFallback(s string) bool {
 	return false
 }
 
-// Run visibility axis values (ADR-142). The empty value reads as
+// Run visibility axis values (ADR-143). The empty value reads as
 // RunVisibilityTeam: the runs stay team-private.
 const (
 	RunVisibilityTeam = ""
@@ -747,7 +747,7 @@ type TeamPatch struct {
 	// rule as RunnerPool: "" is a meaningful write.
 	LLMFallback *string
 	// RunVisibility, when non-nil, sets (or, pointing at "", resets to
-	// team-private) the run visibility axis (ADR-142). Same pointer rule
+	// team-private) the run visibility axis (ADR-143). Same pointer rule
 	// as RunnerPool: "" is a meaningful write.
 	RunVisibility *string
 	// MaxConcurrentRuns / LaunchRatePerMin, when non-nil, set the team's

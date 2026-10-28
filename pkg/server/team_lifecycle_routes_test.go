@@ -88,7 +88,7 @@ func TestTeamLifecycle_statusRefusesPendingDeletion(t *testing.T) {
 	}
 }
 
-// The run-visibility axis (ADR-142) is a governance act like suspension:
+// The run-visibility axis (ADR-143) is a governance act like suspension:
 // an org decision, with "" an explicit reset and an unknown value refused
 // rather than read as the default.
 func TestTeamLifecycle_runVisibilityIsAnOrgDecision(t *testing.T) {
@@ -114,7 +114,7 @@ func TestTeamLifecycle_runVisibilityIsAnOrgDecision(t *testing.T) {
 		t.Fatalf("run visibility = %q, want org", got.RunVisibility)
 	}
 
-	// The write is audited to BOTH scopes (the ADR-142 review's F9): the
+	// The write is audited to BOTH scopes (the ADR-143 review's F9): the
 	// team's trail and the org's trail each carry the action — the org row
 	// is what the roster-curating operator reads. Writes are detached;
 	// poll briefly for both rows to land.

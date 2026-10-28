@@ -211,7 +211,7 @@ func (s *Server) handleSetTeamStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, toTeamSummaryView(t))
 }
 
-// handleSetTeamRunVisibility writes Team.RunVisibility (ADR-142): who
+// handleSetTeamRunVisibility writes Team.RunVisibility (ADR-143): who
 // beyond the team may READ its runs by id. Exposure of a team's run
 // contents to the org is a governance act exactly like suspension — the
 // same org gate, the same double audit — and resetting to team-private is

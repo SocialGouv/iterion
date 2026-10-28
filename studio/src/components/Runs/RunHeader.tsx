@@ -51,7 +51,7 @@ interface Props {
   run: RunHeaderType;
   active: boolean;
   wsState: WsState;
-  // The caller's effective standing for this run (ADR-142), from the
+  // The caller's effective standing for this run (ADR-143), from the
   // server-resolved snapshot. Undefined on auth-less local servers —
   // the affordances then stay unconditional.
   viewer?: { role: string; via?: string } | null;
@@ -78,7 +78,7 @@ export default function RunHeader({ run, active, wsState, viewer, onResetLayout,
   const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
 
   // canAct is the caller's standing for THIS run, server-resolved
-  // (ADR-142): a viewer — a team viewer, an org-admin-lineage reader, an
+  // (ADR-143): a viewer — a team viewer, an org-admin-lineage reader, an
   // org-shared reader — reads but never acts, so every action affordance
   // below is gated on it instead of proposing commands the ladder will
   // 403. Undefined on auth-less local servers: today's affordances.
