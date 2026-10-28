@@ -285,6 +285,10 @@ describe("a sign-out whose logout got no 2xx", () => {
       await new Promise((r) => setTimeout(r, 2100));
       render(<App />);
       await screen.findByText("Sign-out not confirmed", {}, { timeout: 6000 });
+      // The reload's own presentation answered unconfirmed, so the machine's
+      // retry loop is armed for +2s; the exact wire log below names the
+      // bootstrap's presentation, not the loop's first re-presentation.
+      stopLoop();
       expect(shell()).toBeNull();
       // The logout is presented again before anything else, and no identity is
       // read from the session it is meant to end.
