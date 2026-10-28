@@ -34,7 +34,9 @@ export function ContextUsageBar({ used, window, className }: Props) {
       aria-valuetext={usage.title}
       className={`mt-1 h-[3px] w-full rounded-sm overflow-hidden ${tone.bg} ${className ?? ""}`}
       title={usage.title}
-      aria-label={usage.title}
+      // The name says WHICH gauge, the value text says how full: the same
+      // sentence in both is read twice, around the role.
+      aria-label="Context usage"
     >
       <div
         className={`h-full ${tone.fill} transition-[width] duration-300`}

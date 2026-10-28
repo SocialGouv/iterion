@@ -20,6 +20,12 @@ describe("ContextUsageBar", () => {
     expect(bar.getAttribute("aria-valuetext")).toBe(
       "context: 45,000 / 100,000 tokens (45%)",
     );
+    // The name says WHICH gauge; the same sentence in both is read twice,
+    // around the role.
+    expect(bar.getAttribute("aria-label")).toBe("Context usage");
+    expect(bar.getAttribute("aria-label")).not.toBe(
+      bar.getAttribute("aria-valuetext"),
+    );
   });
 
   it("stays in range when the proxy reports more usage than window", () => {

@@ -25,6 +25,14 @@ const CONVERSATIONS = [
 
 const LABELS: Record<string, string> = { "c-1": "Copi", "c-2": "Vigie" };
 
+// The hostile case this surface really produces: nothing dedupes two
+// conversations with the SAME bot, and then one label names both tabs and
+// both close controls.
+const SAME_BOT = [
+  { id: "c-1", botId: "copilot", runId: "run-1" },
+  { id: "c-2", botId: "copilot", runId: "run-2" },
+];
+
 const REFERENCES: TypedReference[] = [
   { ref: "run:run-1", kind: "run", label: "nightly deploy" },
   { ref: "bot:bots/vigie/main.bot", kind: "bot", label: "vigie" },
@@ -82,6 +90,39 @@ describe("assistant dock naming", () => {
         name: "Close Vigie conversation and stop its run",
       }),
     ).toBeTruthy();
+  });
+
+  it("separates two conversations of the same bot, tab and close alike", () => {
+    render(
+      <main>
+        <ConversationStrip
+          conversations={SAME_BOT}
+          activeId="c-1"
+          atLimit={false}
+          onSelect={() => {}}
+          onClose={() => {}}
+          onOpen={() => {}}
+          labelFor={() => "Copi"}
+        />
+      </main>,
+    );
+    for (const name of [
+      "Copi 1",
+      "Copi 2",
+      "Close Copi 1 conversation and stop its run",
+      "Close Copi 2 conversation and stop its run",
+    ]) {
+      expect(screen.getAllByRole("button", { name })).toHaveLength(1);
+    }
+    // The visible text is untouched: both tabs still read "Copi".
+    expect(screen.getByRole("button", { name: "Copi 1" }).textContent).toBe("Copi");
+  });
+
+  it("leaves the ordinary single-label tab named exactly what it shows", () => {
+    mountStrip();
+    // Two distinct bots: no position, no aria-label — the name is the text.
+    const tab = screen.getByRole("button", { name: "Copi" });
+    expect(tab.getAttribute("aria-label")).toBeNull();
   });
 
   it("says a watch landed as the tab's description, never as its name", () => {

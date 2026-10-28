@@ -159,6 +159,12 @@ export function axeRunOptions(): axe.RunOptions {
       values: [...AXE_WCAG_TAGS, "best-practice"],
     },
     rules: declaredRuleSwitches(),
+    // The node's own element, so a result can be identified by what it IS.
+    // axe's `html` is a SERIALISATION it rewrites past 300 characters —
+    // every attribute name and value truncated to 20 — and a node matched by
+    // a string in that serialisation stops matching when the library next
+    // adds an attribute.
+    elementRef: true,
   };
 }
 
@@ -174,21 +180,28 @@ export function axeRunOptions(): axe.RunOptions {
  * aria-hidden-focus mistake still fails, in the same entry, with the node
  * that caused it. A rule waiver would hide both.
  */
-const VENDOR_SENTINELS: { rule: string; marker: string; why: string }[] = [
+const VENDOR_SENTINELS: { rule: string; attribute: string; why: string }[] = [
   {
     rule: "aria-hidden-focus",
-    marker: "data-radix-focus-guard",
+    attribute: "data-radix-focus-guard",
     why: "Radix's own focus guard: aria-hidden + tabindex=0 by design",
   },
 ];
 
 /**
- * The node's OWN opening tag. axe reports `html` as the node's outerHTML, so
- * a marker searched in the whole string also matches a surface's own element
- * that merely CONTAINS the library's sentinel — which is how a wrapper's real
- * aria-hidden-focus violation gets dropped. The sentinel is identified by the
- * attributes it carries, so the opening tag is the whole question.
+ * Does the node ITSELF carry `attribute`? Read from the element axe hands
+ * back (`elementRef`), never from its `html`: that string is a truncating
+ * serialisation, and it is the node's outerHTML — a surface's own wrapper
+ * CONTAINS its library sentinels, so a substring match there drops the
+ * wrapper's real violation. The element-less fallback keeps the own-tag
+ * discipline for a result axe hands back without one.
  */
+function nodeHasAttribute(n: axe.NodeResult, attribute: string): boolean {
+  if (n.element) return n.element.hasAttribute(attribute);
+  return openingTag(n.html).includes(attribute);
+}
+
+/** The node's own opening tag — `>` inside an attribute value does not end it. */
 function openingTag(html: string): string {
   let quote: '"' | "'" | null = null;
   for (let i = 0; i < html.length; i += 1) {
@@ -201,7 +214,6 @@ function openingTag(html: string): string {
       quote = c as '"' | "'";
       continue;
     }
-    // `>` inside an attribute value (title="a > b") does not end the tag.
     if (c === ">") return html.slice(0, i + 1);
   }
   return html;
@@ -210,13 +222,12 @@ function openingTag(html: string): string {
 function withoutVendorSentinels(results: axe.Result[]): axe.Result[] {
   return results
     .map((result) => {
-      const markers = VENDOR_SENTINELS.filter((s) => s.rule === result.id);
-      if (markers.length === 0) return result;
+      const sentinels = VENDOR_SENTINELS.filter((s) => s.rule === result.id);
+      if (sentinels.length === 0) return result;
       return {
         ...result,
         nodes: result.nodes.filter(
-          (n) =>
-            !markers.some((s) => openingTag(n.html).includes(s.marker)),
+          (n) => !sentinels.some((s) => nodeHasAttribute(n, s.attribute)),
         ),
       };
     })
@@ -275,8 +286,8 @@ const UNDECIDABLE_HERE: Record<string, string> = {
  * A waiver covers BOTH buckets — a rule can be a violation on one axe release
  * and needs-review on the next, and the one lane a surface has for "this rule
  * is wrong about this pattern, and here is what judges it" must not depend on
- * that. It is scoped to the NODE it names, by a substring of that node's own
- * opening tag, for the same reason the vendor sentinels are: a rule waived for
+ * that. It is scoped to the NODE it names, by an attribute that node carries,
+ * for the same reason the vendor sentinels are: a rule waived for
  * a whole surface is a surface that stopped being judged, and the next
  * roleless focusable added to it would never be seen. A waiver that matched no
  * node FAILS, too: it is a live claim about this surface, and a dead one is
@@ -284,10 +295,24 @@ const UNDECIDABLE_HERE: Record<string, string> = {
  */
 export interface AxeWaiver {
   rule: string;
-  /** A substring of the waived node's own opening tag (e.g. `role="separator"`). */
-  marker: string;
+  /**
+   * An attribute the waived node carries (`role`, `data-…`): read off the
+   * element, so the waiver cannot drift with axe's html serialisation. With
+   * `=value`, the attribute must also have that value.
+   */
+  node: string;
   /** Why the rule is wrong here, naming what pins the concern instead. */
   reason: string;
+}
+
+/** `role=separator` → the node carries role="separator"; `data-x` → it has the attribute. */
+function nodeMatches(n: axe.NodeResult, selector: string): boolean {
+  const eq = selector.indexOf("=");
+  if (eq === -1) return nodeHasAttribute(n, selector);
+  const name = selector.slice(0, eq);
+  const value = selector.slice(eq + 1);
+  if (n.element) return n.element.getAttribute(name) === value;
+  return openingTag(n.html).includes(`${name}="${value}"`);
 }
 
 export async function expectNoViolationsStrict(
@@ -306,14 +331,14 @@ export async function expectNoViolationsStrict(
     const mine = waivers.filter((w) => w.rule === result.id);
     if (mine.length === 0) return result;
     const nodes = result.nodes.filter((n) => {
-      const hit = mine.find((w) => openingTag(n.html).includes(w.marker));
+      const hit = mine.find((w) => nodeMatches(n, w.node));
       if (hit) matched.add(hit);
       return !hit;
     });
     return nodes.length > 0 ? { ...result, nodes } : null;
   };
   const waivedList = waivers.length
-    ? `\n  waived here: ${waivers.map((w) => `${w.rule} on ${w.marker} (${w.reason})`).join(", ")}`
+    ? `\n  waived here: ${waivers.map((w) => `${w.rule} on ${w.node} (${w.reason})`).join(", ")}`
     : "";
 
   const problems: string[] = [];
@@ -342,7 +367,7 @@ export async function expectNoViolationsStrict(
   if (dead.length > 0) {
     problems.push(
       `waivers that matched nothing — the surface no longer needs them, drop them:\n${dead
-        .map((w) => `  - [${w.rule}] on ${w.marker}: ${w.reason}`)
+        .map((w) => `  - [${w.rule}] on ${w.node}: ${w.reason}`)
         .join("\n")}`,
     );
   }

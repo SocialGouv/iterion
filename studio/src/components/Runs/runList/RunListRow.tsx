@@ -16,6 +16,7 @@ import { BotAvatar } from "./BotAvatar";
 import {
   formatDuration,
   friendlyLabel,
+  runRowQualifier,
   shortRunID,
   workflowDisplay,
 } from "./runListFormat";
@@ -48,7 +49,7 @@ export const RunListRow = memo(function RunListRow({
       {/* Selection cell swallows its clicks so toggling never navigates. */}
       <td className="pl-4 pr-1 py-2 w-8" onClick={(e) => e.stopPropagation()}>
         <Checkbox
-          aria-label={`Select run ${friendlyLabel(run)}`}
+          aria-label={`Select run ${friendlyLabel(run)} ${runRowQualifier(run)}`}
           checked={selected}
           onChange={() => onToggleSelect(run.id)}
         />
@@ -64,7 +65,7 @@ export const RunListRow = memo(function RunListRow({
           <span
             role="img"
             className="shrink-0 cursor-grab select-none text-fg-muted"
-            aria-label={`Drag ${friendlyLabel(run)} onto the assistant`}
+            aria-label={`Drag ${friendlyLabel(run)} ${runRowQualifier(run)} onto the assistant`}
             title="Drag onto the assistant to ask about this run"
             {...referenceDragProps("run", run.id, friendlyLabel(run))}
           >
@@ -112,9 +113,12 @@ export const RunListRow = memo(function RunListRow({
                 e.stopPropagation();
                 onResume(run.id);
               }}
-              // One Resume per row: the name carries the run it resumes, and
-              // keeps the visible word first (SC 2.5.3).
-              aria-label={`Resume ${friendlyLabel(run)}`}
+              // One Resume per row, and the label alone does not separate
+              // them: friendlyLabel falls back to workflow_name, so a list of
+              // `deploy` runs would read "Resume deploy" N times. The short
+              // id is the row's own discriminator, and the last cell shows
+              // it. Visible word first, for SC 2.5.3.
+              aria-label={`Resume ${friendlyLabel(run)} ${runRowQualifier(run)}`}
               title="Resume from the last checkpoint"
             >
               Resume

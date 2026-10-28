@@ -63,11 +63,12 @@ export default function BotChip({
       >
         {personaName ? (
           <span
-            // A glyph with a text alternative — aria-label on a roleless
-            // span is prohibited (axe aria-prohibited-attr).
-            role="img"
+            // Decorative: the persona's name is the very next node, so a
+            // text alternative would only prepend "persona bot" to the
+            // chip's name — and a name on a roleless span is prohibited
+            // ARIA anyway (axe aria-prohibited-attr).
+            aria-hidden="true"
             className="shrink-0 text-[0.95em] leading-none"
-            aria-label="persona bot"
           >
             {identity.emoji}
           </span>

@@ -16,6 +16,7 @@ import {
   friendlyLabel,
   retryAttemptLabel,
   retryHint,
+  runRowQualifier,
   shortRunID,
   workflowDisplay,
 } from "./runListFormat";
@@ -74,9 +75,10 @@ export const RunListCard = memo(function RunListCard({
             // Keep Enter/Space on the button from bubbling to the card's
             // clickableRowProps handler (which would navigate instead).
             onKeyDown={(e) => e.stopPropagation()}
-            // One Resume per card: the name carries the run it resumes, and
-            // keeps the visible word first (SC 2.5.3).
-            aria-label={`Resume ${friendlyLabel(run)}`}
+            // One Resume per card, qualified like the row's: friendlyLabel
+            // falls back to workflow_name, so the short id the card also
+            // shows is what separates two runs of one workflow.
+            aria-label={`Resume ${friendlyLabel(run)} ${runRowQualifier(run)}`}
             title="Resume from the last checkpoint"
           >
             Resume

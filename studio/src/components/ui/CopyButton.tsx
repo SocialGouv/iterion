@@ -67,7 +67,10 @@ export function CopyButton({
   }
 
   const visible = copied ? copiedLabel : label;
-  const name = describes ? `${visible} ${describes}` : visible;
+  // Qualify the RESTING label: a name that becomes "Copied of plan" for the
+  // 1.2 s of the copied state is both ungrammatical and a name change on a
+  // focused control, which assistive tech re-announces.
+  const name = describes ? `${label} ${describes}` : visible;
 
   return (
     <button

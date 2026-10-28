@@ -48,7 +48,7 @@ describe("expectNoViolationsStrict — incompletes are never dropped", () => {
       expectNoViolationsStrict(container, "waived", [
         {
           rule: "aria-valid-attr-value",
-          marker: 'aria-labelledby="does-not-exist"',
+          node: "aria-labelledby=does-not-exist",
           reason: "pinned by AdminNav.test.tsx",
         },
       ]),
@@ -233,6 +233,30 @@ describe("vendor sentinels", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("still recognises the guard when axe truncates its markup", async () => {
+    // axe rewrites `html` past 300 characters, cutting every attribute name
+    // and value to 20 — `data-radix-focus-guard` becomes
+    // `data-radix-focus-gua...`. A sentinel matched in that string stops
+    // matching the day the library adds an attribute; matched on the
+    // element, it does not.
+    const { container } = render(
+      <div>
+        <span
+          data-radix-focus-guard=""
+          aria-hidden="true"
+          tabIndex={0}
+          title={"a > b " + "x".repeat(200)}
+          data-filler={"y".repeat(200)}
+          style={{ outline: "none", opacity: 0, pointerEvents: "none" }}
+        />
+        <button type="button">ok</button>
+      </div>,
+    );
+    await expect(
+      expectNoViolationsStrict(container, "radix guard, truncated"),
+    ).resolves.toBeUndefined();
+  });
+
   it("still fails when the surface's own node CONTAINS a sentinel", async () => {
     // The hostile shape, not the cooperative one: axe reports a node by its
     // outerHTML, so a wrapper that merely contains the guard must not be
@@ -287,7 +311,7 @@ describe("waivers", () => {
       expectNoViolationsStrict(waived.container, "splitter", [
         {
           rule: "focus-order-semantics",
-          marker: 'role="separator"',
+          node: "role=separator",
           reason: "the window-splitter pattern, pinned by its keyboard tests",
         },
       ]),
@@ -317,7 +341,7 @@ describe("waivers", () => {
       expectNoViolationsStrict(container, "splitter + a real one", [
         {
           rule: "focus-order-semantics",
-          marker: 'role="separator"',
+          node: "role=separator",
           reason: "the window-splitter pattern, pinned by its keyboard tests",
         },
       ]),
@@ -330,7 +354,7 @@ describe("waivers", () => {
       expectNoViolationsStrict(container, "clean", [
         {
           rule: "heading-order",
-          marker: "<h2",
+          node: "role=heading",
           reason: "nothing here reports it",
         },
       ]),
@@ -395,9 +419,9 @@ describe("one net, no second one", () => {
     // `axe.run()` also appears in prose below, and a call nobody awaits
     // nets nothing.
     expect(selfSource.match(/await axe\.run\s*\(/g) ?? []).toHaveLength(3);
-    expect(/\bexport (async )?function expectNoViolations\s*\(/.test(selfSource)).toBe(
-      false,
-    );
+    // No "no lax export" check here: a spec file cannot carry one, so the
+    // assertion would read as a guard and prove nothing. The scan below
+    // covers the helper itself, which is where a lax variant would return.
   });
 
   it("imports axe-core in the net's own files and nowhere else", () => {

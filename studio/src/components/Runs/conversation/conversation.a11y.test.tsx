@@ -17,7 +17,10 @@ function mountPayload() {
       <GateInboundPayload
         runId="run-1"
         questions={{
-          plan: { steps: ["migrate", "verify"] },
+          // `review_notes` on the wire, "Review notes" on screen: the name
+          // has to follow the label the reader sees, which a key where the
+          // two coincide could not show.
+          review_notes: { blocking: ["rollback path"] },
           budget: { tokens: 1200 },
         }}
       />
@@ -29,10 +32,10 @@ describe("gate inbound payload naming", () => {
   it("names each field's Copy JSON after the field it copies", () => {
     mountPayload();
     expect(
-      screen.getByRole("button", { name: "Copy JSON of plan" }),
+      screen.getByRole("button", { name: "Copy JSON of Review notes" }),
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Copy JSON of budget" }),
+      screen.getByRole("button", { name: "Copy JSON of Budget" }),
     ).toBeTruthy();
   });
 
@@ -40,7 +43,7 @@ describe("gate inbound payload naming", () => {
     mountPayload();
     // Matched by the real accessible-name algorithm, one button per name,
     // and no other button on the surface.
-    const expected = ["Copy JSON of plan", "Copy JSON of budget"];
+    const expected = ["Copy JSON of Review notes", "Copy JSON of Budget"];
     for (const name of expected) {
       expect(screen.getAllByRole("button", { name })).toHaveLength(1);
     }

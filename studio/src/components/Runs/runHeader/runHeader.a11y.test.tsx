@@ -56,9 +56,14 @@ describe("run header naming", () => {
     ).toBeTruthy();
   });
 
-  it("exposes the persona glyph as an image with its text alternative", () => {
+  it("keeps the persona emoji out of the chip's name", () => {
     mountRows();
-    expect(screen.getByRole("img", { name: "persona bot" })).toBeTruthy();
+    // Decorative: the persona's name follows it, so a text alternative would
+    // only prepend "persona bot" to every chip.
+    expect(screen.queryByRole("img", { name: "persona bot" })).toBeNull();
+    const chip = screen.getByRole("button", { name: /Fleur/ });
+    expect(chip.getAttribute("aria-label")).toBeNull();
+    expect(chip.textContent).not.toContain("persona bot");
   });
 });
 

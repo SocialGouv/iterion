@@ -180,8 +180,9 @@ export function DetailHeader({
             <span className="font-medium">Error</span>
             <CopyButton
               value={exec.error}
-              // The label the header shows, not the raw ir id: an identifier
-              // that appears nowhere on screen names nothing for the reader.
+              // The label the header LEADS with (the node's description when
+              // it has one). The raw ir id is rendered beside it in mono, but
+              // it is the label that names the node for the reader.
               describes={`the error of ${label}`}
             />
           </div>

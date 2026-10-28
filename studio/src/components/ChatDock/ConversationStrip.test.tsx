@@ -68,11 +68,12 @@ describe("ConversationStrip disposal affordance", () => {
         waitingIds={new Set(["c-2"])}
       />,
     );
-    // The state is the tab's DESCRIPTION, not its name: the name is the bot,
-    // and it must not move when a gate parks the run.
+    // The state is the tab's DESCRIPTION, not its name: the name is the bot
+    // (plus its position, since both conversations answer to "Copi"), and it
+    // must not move when a gate parks the run.
     expect(
       screen.getByRole("button", {
-        name: "Copi",
+        name: "Copi 2",
         description: "Ready for your next message",
       }),
     ).toBeTruthy();

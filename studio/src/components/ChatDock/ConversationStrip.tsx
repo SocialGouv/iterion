@@ -45,7 +45,7 @@ export function ConversationStrip({
   // the run"; the panel's minus correctly means minimise and must stay safe.
   return (
     <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
-      {conversations.map((c) => {
+      {conversations.map((c, index) => {
         const isActive = c.id === activeId;
         const isClosing = closingIds.has(c.id);
         const isWaiting = waitingIds.has(c.id);
@@ -61,6 +61,15 @@ export function ConversationStrip({
             ? "Ready for your next message"
             : null;
         const stateId = `conversation-state-${c.id}`;
+        // Nothing stops two conversations with the SAME bot (addConversation
+        // caps the count, it does not dedupe), and then the label names both
+        // tabs and both close buttons identically. The position is what
+        // separates them — and only then, so the ordinary single-conversation
+        // name stays what the reader sees.
+        const label = labelFor(c);
+        const ambiguous =
+          conversations.filter((other) => labelFor(other) === label).length > 1;
+        const qualified = ambiguous ? `${label} ${index + 1}` : label;
         return (
           <span
             key={c.id}
@@ -75,13 +84,16 @@ export function ConversationStrip({
               className="max-w-[9rem] truncate"
               aria-current={isActive ? "true" : undefined}
               aria-describedby={state ? stateId : undefined}
+              // Only when the label repeats: the name then carries the
+              // position, and it still starts with the visible text.
+              aria-label={ambiguous ? qualified : undefined}
               disabled={isClosing}
               onClick={() => onSelect(c.id)}
               title={
                 [
                   c.originLabel
-                    ? `${labelFor(c)} — about ${c.originLabel}`
-                    : labelFor(c),
+                    ? `${qualified} — about ${c.originLabel}`
+                    : qualified,
                   state,
                 ]
                   .filter(Boolean)
@@ -114,8 +126,8 @@ export function ConversationStrip({
               type="button"
               aria-label={
                 isClosing
-                  ? `Closing ${labelFor(c)} conversation`
-                  : `Close ${labelFor(c)} conversation and stop its run`
+                  ? `Closing ${qualified} conversation`
+                  : `Close ${qualified} conversation and stop its run`
               }
               title="Close conversation and stop its run"
               disabled={isClosing}

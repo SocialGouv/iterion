@@ -100,7 +100,9 @@ function GateInboundValue({ runId, item }: { runId: string; item: GateInboundIte
         />
       ) : null;
     case "json":
-      return <JSONBlock value={item.value} name={item.key} />;
+      // The label the row shows, not the wire key: "review_notes" names
+      // nothing the reader sees.
+      return <JSONBlock value={item.value} name={humanizeKey(item.key)} />;
     case "scalar":
       return <span className="break-words">{item.text}</span>;
     case "markdown":

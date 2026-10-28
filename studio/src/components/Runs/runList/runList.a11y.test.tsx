@@ -13,10 +13,14 @@ afterEach(cleanup);
 // The runs list is the studio's densest repetition: one Resume control per
 // resumable run, all of them reading "Resume". The visible word stays, the
 // accessible name carries the run (#2591's surface triage).
-function run(id: string, name: string): RunSummary {
+// NO custom name on purpose: friendlyLabel then falls back to
+// workflow_name, which every run of one workflow shares — the hostile case,
+// and the ordinary one on this surface. The short id is what separates them,
+// and the last cell shows it.
+function run(id: string, name?: string): RunSummary {
   return {
     id,
-    name,
+    ...(name ? { name } : {}),
     workflow_name: "deploy",
     status: "failed_resumable",
     created_at: "2026-10-01T10:00:00Z",
@@ -32,7 +36,7 @@ function mountRows() {
     <table>
       <tbody>
         <RunListRow
-          run={run("run-aaaa", "nightly deploy")}
+          run={run("0199aaaa-1111-7000-8000-000000000001")}
           selected={false}
           resuming={false}
           onOpen={noop}
@@ -41,7 +45,7 @@ function mountRows() {
           onResume={noop}
         />
         <RunListRow
-          run={run("run-bbbb", "hotfix deploy")}
+          run={run("0199bbbb-2222-7000-8000-000000000002")}
           selected={false}
           resuming={false}
           onOpen={noop}
@@ -55,43 +59,68 @@ function mountRows() {
 }
 
 describe("runs list naming", () => {
-  it("names every row's Resume after the run it resumes", () => {
+  it("separates two unnamed runs of the SAME workflow, row by row", () => {
     mountRows();
+    // Both rows read "deploy": the name has to carry the short id, or the
+    // list offers two controls a screen reader cannot tell apart.
+    const resume = screen.getAllByRole("button", { name: /^Resume deploy / });
+    expect(resume).toHaveLength(2);
+    expect(new Set(resume.map((b) => b.getAttribute("aria-label"))).size).toBe(2);
     expect(
-      screen.getByRole("button", { name: "Resume nightly deploy" }),
+      screen.getByRole("button", { name: "Resume deploy 0199aaaa-1111-" }),
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Resume hotfix deploy" }),
+      screen.getByRole("button", { name: "Resume deploy 0199bbbb-2222-" }),
     ).toBeTruthy();
     // The visible word is untouched, so SC 2.5.3 still holds.
-    for (const b of screen.getAllByRole("button", { name: /^Resume / })) {
-      expect(b.textContent).toContain("Resume");
-    }
+    for (const b of resume) expect(b.textContent).toContain("Resume");
   });
 
   it("names the card's Resume the same way — touch has the same list", () => {
     const onResume = vi.fn();
     render(
       <RunListCard
-        run={run("run-cccc", "card deploy")}
+        run={run("0199cccc-3333-7000-8000-000000000003")}
         resuming={false}
         onOpen={noop}
         onFilterBot={noop}
         onResume={onResume}
       />,
     );
-    const button = screen.getByRole("button", { name: "Resume card deploy" });
+    const button = screen.getByRole("button", { name: "Resume deploy 0199cccc-3333-" });
     expect(button.textContent).toContain("Resume");
   });
 
-  it("keeps each row's select and drag controls qualified by the run", () => {
+  it("qualifies each row's select and drag controls the same way", () => {
     mountRows();
-    expect(
-      screen.getByRole("checkbox", { name: "Select run nightly deploy" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("checkbox", { name: "Select run hotfix deploy" }),
-    ).toBeTruthy();
+    for (const name of [
+      "Select run deploy 0199aaaa-1111-",
+      "Select run deploy 0199bbbb-2222-",
+    ]) {
+      expect(screen.getAllByRole("checkbox", { name })).toHaveLength(1);
+    }
+    for (const name of [
+      "Drag deploy 0199aaaa-1111- onto the assistant",
+      "Drag deploy 0199bbbb-2222- onto the assistant",
+    ]) {
+      expect(screen.getAllByRole("img", { name })).toHaveLength(1);
+    }
+  });
+
+  it("leaves no two ROW-SPECIFIC controls sharing an accessible name", () => {
+    mountRows();
+    // Scoped to the controls that act on one row. The bot avatar is
+    // deliberately out: every row's avatar runs the same filter, and two
+    // controls with one name doing one thing is not a defect.
+    const rowSpecific = [
+      ...screen.getAllByRole("button", { name: /^Resume / }),
+      ...screen.getAllByRole("checkbox"),
+      ...screen.getAllByRole("img", { name: /onto the assistant$/ }),
+    ];
+    expect(rowSpecific.length).toBe(6);
+    const names = rowSpecific.map((el) => el.getAttribute("aria-label"));
+    expect(names.every((n) => n && n.length > 0)).toBe(true);
+    expect(new Set(names).size).toBe(names.length);
   });
 });
 

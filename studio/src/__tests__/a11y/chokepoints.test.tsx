@@ -195,7 +195,7 @@ describe("a11y / chokepoints", () => {
     await expectNoViolationsStrict(root.container, "chokepoints", [
       {
         rule: "focus-order-semantics",
-        marker: 'role="separator"',
+        node: "role=separator",
         reason:
           "the window-splitter pattern: role=separator with aria-valuenow IS a widget (ARIA 1.2) and axe's role list predates it — the keyboard contract is pinned by 'ResizeSeparator — full splitter contract on one axis' in this file",
       },
