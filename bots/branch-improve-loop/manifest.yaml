@@ -1,7 +1,10 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.9.8
+version: 1.9.9
+## 1.9.9 — plan_revise carries the mission its plan node rendered: the
+## plan_gate edge fills a typed `mission_context` from the same vars, so a
+## revise whose best-effort session is gone still sees the operator's brief.
 ## 1.9.8 — the prior-review hand-off is bound to review-pr, so another bot's
 ## review of the same PR is never substituted for Revi's.
 ## 1.9.7 — plan_revise renders the triage plan's own stated assumptions and

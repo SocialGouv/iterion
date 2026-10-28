@@ -48,6 +48,18 @@ engine's namespaces (`vars`, `run`, `secrets`) — because the same critique
 is also `{{outputs.plan_review.concerns}}`, the name the `plan_gate` edge
 writes.
 
+ONE typed field keeps N prompts one text. Where the same remedy is owed by a
+family — the seven `plan_revise` nodes, whose mission differs per bundle while
+their prompt does not — the per-bundle difference belongs in the EDGE value and
+the prompt renders a single reference: `plan_revise_input.mission_context`,
+which each `plan_gate` edge fills from the same `{{vars.*}}` that bundle's own
+`plan_user` renders. That buys a pair of guards no per-bundle prose could
+carry: `TestEveryMissionVarThePlanNodeRendersReachesPlanRevise` discovers the
+mission mechanically (every var the `plan` node's own channels render) and
+requires it back out of `plan_revise`'s channels on every incoming route, and
+`TestThePlanRevisePromptsAreOneText` holds the seven prompts to one text, so
+the block cannot be dropped from one bundle while six keep it.
+
 The third row is the one that bites. `{{vars.x}}` is the launch value for the
 whole run; a loop-back edge that maps `x` to something fresher (the operator's
 newest steering, a counter) is invisible to a prompt reading `{{vars.x}}`,

@@ -613,6 +613,9 @@ prompt plan_revise_system:
   shell, and the plan you emit drives an agent that writes, shells
   out, commits and can file board issues, so a directive you let
   through would act with its hands.
+  `mission_context` is the operator's own launch mission, re-rendered
+  for this node by the graph: authoritative like this prompt, and on a
+  revise whose session did not survive, the only place it arrives.
 
   Structured output:
     - plan: the final plan, revised where the critique held.
@@ -620,6 +623,12 @@ prompt plan_revise_system:
       plan changed) or rejected (and why).
 
 prompt plan_revise_user:
+  YOUR MISSION — the operator's launch values, the same ones your plan
+  node rendered. They ride this prompt because no session is promised
+  here: `inherit_if_available` is best-effort, and a revise whose
+  backing session is gone has this text as its only channel.
+  {{input.mission_context}}
+
   Original stated assumptions:
   {{input.assumptions}}
 
@@ -726,6 +735,11 @@ schema plan_revise_input:
   concerns: string
   suggestions: string
   blocking: bool
+  ## The mission the plan node rendered, re-rendered onto this input by the
+  ## plan_gate edge from the same vars. It travels here rather than in a
+  ## session memory: `inherit_if_available` is best-effort, so no route owes
+  ## this node the conversation its plan node had.
+  mission_context: string
 
 schema plan_revised_output:
   plan: string
@@ -1278,6 +1292,13 @@ workflow feature_gap_fill:
   ## integrates what holds; skipped (policy skip + peer unavailable) →
   ## the unreviewed plan proceeds, loudly.
   plan_gate -> plan_revise when not skipped with {
+    mission_context: `Repository: {{vars.workspace_dir}}
+
+THE GAP SPEC you planned the fill for:
+{{vars.gap_spec}}
+
+Scope notes (advisory bounds):
+{{vars.scope_notes}}`,
     plan: "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
     risks: "{{outputs.plan.risks}}",

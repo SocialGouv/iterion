@@ -1,7 +1,10 @@
 name: feature-gap-fill
 display_name: Fini
 icon: 🧩
-version: 2.4.3
+version: 2.4.4
+## 2.4.4 — plan_revise carries the mission its plan node rendered: the
+## plan_gate edge fills a typed `mission_context` from the same vars, so a
+## revise whose best-effort session is gone still sees the operator's brief.
 ## 2.4.3 — plan_revise renders the plan's own stated assumptions and risks:
 ## the plan and the critique ride its prompt instead of an inherited session,
 ## which `inherit_if_available` does not promise.

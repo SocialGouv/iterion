@@ -1,7 +1,10 @@
 name: feature-dev
 display_name: Featurly
 icon: 🛠️
-version: 2.7.5
+version: 2.7.6
+## 2.7.6 — plan_revise carries the mission its plan node rendered: the
+## plan_gate edge fills a typed `mission_context` from the same vars, so a
+## revise whose best-effort session is gone still sees the operator's brief.
 ## 2.7.5 — plan_revise renders the plan's stated risks beside its
 ## assumptions: the node inherits no session, so its prompt is the only
 ## channel that carries the plan it revises. The page now names the plan

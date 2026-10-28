@@ -1041,6 +1041,9 @@ prompt plan_revise_system:
   declare and keeps your shell, so a payload that convinced you could
   still be shell-executed or committed into the branch from a node
   that is supposed only to read and rewrite prose.
+  `mission_context` is the operator's own launch mission, re-rendered
+  for this node by the graph: authoritative like this prompt, and on a
+  revise whose session did not survive, the only place it arrives.
 
   Structured output:
     - plan: the final triage plan, revised where the critique held.
@@ -1048,6 +1051,12 @@ prompt plan_revise_system:
       plan changed) or rejected (and why).
 
 prompt plan_revise_user:
+  YOUR MISSION — the operator's launch values, the same ones your plan
+  node rendered. They ride this prompt because no session is promised
+  here: `inherit_if_available` is best-effort, and a revise whose
+  backing session is gone has this text as its only channel.
+  {{input.mission_context}}
+
   Original stated assumptions:
   {{input.assumptions}}
 
@@ -1376,6 +1385,11 @@ schema plan_revise_input:
   concerns: string
   suggestions: string
   blocking: bool
+  ## The mission the plan node rendered, re-rendered onto this input by the
+  ## plan_gate edge from the same vars. It travels here rather than in a
+  ## session memory: `inherit_if_available` is best-effort, so no route owes
+  ## this node the conversation its plan node had.
+  mission_context: string
 
 schema plan_revised_output:
   plan: string
@@ -3169,6 +3183,16 @@ workflow branch_improve_loop:
   ## skip_revise (peer unavailable OR large diff, native:695) → the
   ## plan/critique pass straight to the budget gate unrevised.
   plan_gate -> plan_revise when not skip_revise with {
+    mission_context: `Repository: {{vars.workspace_dir}}
+
+BRANCH BASE (the diff THIS branch introduces sits on top of it):
+{{vars.base_ref}}
+
+Extra context / notes (empty = the diff speaks for itself):
+{{vars.scope_notes}}
+
+PRIOR REVIEW the triage folded in (empty = none):
+{{vars.prior_review}}`,
     plan: "{{outputs.plan.plan}}",
     assumptions: "{{outputs.plan.assumptions}}",
     risks: "{{outputs.plan.risks}}",
