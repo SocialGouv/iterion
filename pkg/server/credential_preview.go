@@ -56,6 +56,15 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 			httpError(w, http.StatusBadRequest, "personal source does not accept an id")
 			return
 		}
+		// The caller's vars ride as the personal lane's own --var-style
+		// values: the operator owns them (ADR-129 §4 rule 2 trusts the
+		// CLI's --var names), so the preview reads the routing fields the
+		// way the launch it mirrors would. The webhook kind resolves its
+		// vars from the config layers and the delivery payload — caller
+		// values are not part of that launch shape and are refused, never
+		// silently dropped.
+		spec.Launch.Vars = req.Vars
+		spec.Launch.TrustedVarNames = trustedVarNames(req.Vars)
 	case "webhook":
 		if req.Source.ID == "" {
 			httpError(w, http.StatusBadRequest, "webhook source requires an id")
@@ -102,12 +111,20 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 				previewRepo = entry
 			}
 		}
+		if len(req.Vars) > 0 {
+			httpError(w, http.StatusBadRequest, "webhook source resolves its vars from the config layers and the delivery payload; a caller-supplied vars map is not part of that launch")
+			return
+		}
 		spec.Launch.Vars = applyWebhookVarLayers(map[string]string{}, cfg)
 		// The launch trusts the config's OPERATOR layer for the routing
 		// pre-flights (webhooks_gitlab.go's webhook lane); the preview
 		// answers for the same launch, so it trusts the same names — a
 		// var-derived cell the launch narrows must not preview as undecided.
 		spec.Launch.TrustedVarNames = trustedVarNames(cfg.OperatorLaunchVars)
+		// The webhook lanes launch warn-and-proceed on an undeclared input
+		// (AllowUnknownInputs); the preview mirrors its lane, the personal
+		// one mirrors the CLI's default refusal.
+		spec.Launch.AllowUnknownInputs = true
 		disabled = !cfg.Enabled
 	default:
 		httpError(w, http.StatusBadRequest, "source.kind must be personal or webhook")

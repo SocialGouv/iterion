@@ -1125,6 +1125,12 @@
           },
           "source": {
             "$ref": "#/components/schemas/CredentialPreviewSource"
+          },
+          "vars": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
           }
         },
         "required": [
