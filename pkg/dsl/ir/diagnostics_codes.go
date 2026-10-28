@@ -356,4 +356,19 @@ const (
 	// (#2460). The class is closed where it is written — an error, not a
 	// launch-time warning an author can miss.
 	DiagSessionSlotNamesANode DiagCode = "C314" // session_slot equals the id of another node of the same workflow (error)
+
+	// ADR-132's compile-time half, stage 1 of its staged transition: a run
+	// reads no environment. A route field, a var default or a tool body that
+	// consults `${NAME}` makes a run setting depend on the process the run
+	// starts in — the one source no tenant can write and no record can
+	// audit. Named on ANY env name, not on an `ITERION_` prefix: 22 of the
+	// names the catalogue dials in a routing field carried another family
+	// when this guard was written (`VETTY_`, `BMADY_`, `FEED_`, `REARCHI_`,
+	// `RESCUE_PROVIDER`, `DEVBOX_SETUP_MODEL`), and a doctrine with a
+	// prefix-shaped hole only moves the next dial to a different spelling.
+	//
+	// Stage 1 changes nothing at runtime, so a deployment's pins keep
+	// working while the catalogue is de-dialled; the hard catalogue floor
+	// arrives with the last de-dialled bot group.
+	DiagEnvDialInRunSetting DiagCode = "C315" // a run setting (route field, var default, tool body) reads the process environment instead of its authored literal and the levels above it (warning)
 )

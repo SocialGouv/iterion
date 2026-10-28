@@ -74,5 +74,6 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateSyncInteractionBackends(w)
 	c.validateTreeNoiseChannels(w)
 	c.validateBracedEnvBodies(w)
+	c.validateEnvDials(w)
 	c.validateSandboxOptOut(w)
 }

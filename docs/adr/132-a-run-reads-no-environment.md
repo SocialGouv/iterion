@@ -574,3 +574,28 @@ site keys the route-scoped selector reuses (`override_fold.go:103`), the rescue 
   is the one out-of-band spend brake that works when the control plane is the thing that is down.
 
 The lock is lifted: the implementation slices start from this record's plan.
+
+## Implementation disposition — S1/S2 (session-vagues16, debt-leap wave 16 — 2026-10-28)
+
+The record landed in `docs/adr/` byte-identical to the reviewed text (number 132 was still free),
+and §6's warn half shipped in the same wave. Two facts the record states moved between its review
+and its implementation; they are recorded here rather than edited into the Decision, so a reader
+of §6 finds the shipped shape without the decision being rewritten after approval:
+
+- **The diagnostic is C315, not C314.** C314 was free when the reviewer spot-checked it; it was
+  taken while this record waited, by #2460's compile-time refusal of a `session_slot` colliding
+  with another node's id. The code is an identifier — the record's own argument about ADR numbers
+  applies to it — so the guard took the next free one instead of a number already bound to
+  another check.
+- **The predicate names ANY env name, not the `ITERION_` family** (§6's opening sentence and its
+  floor-test line say `${ITERION_*}`). The chantier's D0 default settled the scout's question that
+  way, on a measure retaken in the tree: 35 of the catalogue's 333 dialled routing lines carry
+  another family — `RESCUE_` (13), `BMADY_` (10), `VETTY_` (9), `REARCHI_` (8), `FEED_` (4),
+  `DEVBOX_` (2). A doctrine with a prefix-shaped hole only moves the next dial to another
+  spelling, and `dep-update-guard`'s human-node escalation model (`${VETTY_MODEL_ESCALATE:-…}`)
+  would have stayed undecided at the launch gate forever under a prefix guard.
+
+§5's de-dialling and §7's production migration are NOT in this wave, by this record's own
+sequencing: §7 forbids de-dialling before the pools' pins exist as records, and that write happens
+on the operator's go, on targets outside this repository. The wave's arbitration box carries the
+question (ARB-13).
