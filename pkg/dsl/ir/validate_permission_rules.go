@@ -144,7 +144,7 @@ func (c *compiler) validatePermissionRules(w *Workflow) {
 		}
 		if !gateModeIsOn(mode) {
 			if len(declared) > 0 {
-				c.warnfAt(DiagPermissionRulesNoGate, nn.NodeID(), "",
+				c.warnfAtProperty(DiagPermissionRulesNoGate, nn.NodeKind().String(), nn.NodeID(), declared[0],
 					"%s %q declares %s permission rules but its effective permission gate is %s under the DSL; rules are inert unless --permission arms the gate (or ITERION_PERMISSION, where no mode is spelled — an explicit off outranks the environment)",
 					nn.NodeKind(), nn.NodeID(), joinRuleKinds(declared), modeLabel(strings.ToLower(strings.TrimSpace(mode))))
 			}
@@ -166,7 +166,7 @@ func (c *compiler) validatePermissionRules(w *Workflow) {
 	if readers == 0 {
 		// The one verdict no run-time override can falsify: nothing in the
 		// graph issues an LLM tool call, so nothing evaluates a policy.
-		c.warnfAtSpan(DiagPermissionRulesNoGate, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagPermissionRulesNoGate, "workflow", w.Name, c.firstWrittenProperty(w.Name, declaredAtWorkflow),
 			"workflow %q declares %s permission rules but no node issues LLM tool calls (no agent or judge node, and no tool node whose recovery reaches its agent rung); nothing can ever read them",
 			w.Name, joinRuleKinds(declaredAtWorkflow))
 		return
@@ -178,7 +178,7 @@ func (c *compiler) validatePermissionRules(w *Workflow) {
 		if gateModeIsOn(w.Permission) {
 			why = fmt.Sprintf("the workflow declares permission: %s but every reader overrides it to off", strings.ToLower(strings.TrimSpace(w.Permission)))
 		}
-		c.warnfAtSpan(DiagPermissionRulesNoGate, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagPermissionRulesNoGate, "workflow", w.Name, c.firstWrittenProperty(w.Name, declaredAtWorkflow),
 			"workflow %q declares %s permission rules but no reader runs with the gate on under the DSL (%s); rules are inert unless --permission arms the gate (or ITERION_PERMISSION, where no mode is spelled — an explicit off outranks the environment)",
 			w.Name, joinRuleKinds(declaredAtWorkflow), why)
 		return
@@ -191,7 +191,7 @@ func (c *compiler) validatePermissionRules(w *Workflow) {
 		}
 	}
 	if len(shadowed) > 0 {
-		c.warnfAtSpan(DiagPermissionRulesNoGate, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagPermissionRulesNoGate, "workflow", w.Name, c.firstWrittenProperty(w.Name, shadowed),
 			"workflow %q declares %s permission rules, but every reader declares its own %s, which REPLACES the workflow list; the workflow's rules are inert — remove them, or restate them in the node lists that need them",
 			w.Name, joinRuleKinds(shadowed), joinRuleKinds(shadowed))
 	}
@@ -210,7 +210,7 @@ func (c *compiler) checkPermissionRuleSyntax(w *Workflow) {
 		for _, raw := range workflowRulesOfKind(w, kind) {
 			if err := permission.ValidateRule(raw); err != nil {
 				report(func(format string, args ...any) {
-					c.errorfAtSpan(DiagInvalidPermissionRule, c.workflowSpan(w.Name), format, args...)
+					c.errorfAtProperty(DiagInvalidPermissionRule, "workflow", w.Name, kind, format, args...)
 				}, fmt.Sprintf("workflow %q", w.Name), kind, raw, err)
 			}
 		}
@@ -225,7 +225,7 @@ func (c *compiler) checkPermissionRuleSyntax(w *Workflow) {
 			for _, raw := range nodePermissionRules(nn, kind) {
 				if err := permission.ValidateRule(raw); err != nil {
 					report(func(format string, args ...any) {
-						c.errorfAt(DiagInvalidPermissionRule, id, "", format, args...)
+						c.errorfAtProperty(DiagInvalidPermissionRule, kindName, id, kind, format, args...)
 					}, fmt.Sprintf("%s %q", kindName, id), kind, raw, err)
 				}
 			}
@@ -418,12 +418,12 @@ func (c *compiler) warnAllowClassRow(w *Workflow, nn LLMNode, raw string, askRow
 		}
 	}
 	if nn == nil {
-		c.warnfAtSpan(DiagPermissionClassRisk, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagPermissionClassRisk, "workflow", w.Name, "allow",
 			"workflow %q: allow rule %q grants the whole tool class — the members registered now and every one the registry tags later, each auto-approved where no deny or ask row decides first. Move the grant to ask: to keep future members behind an approval, or keep allow: and accept the widening",
 			w.Name, raw)
 		return
 	}
-	c.warnfAt(DiagPermissionClassRisk, nn.NodeID(), "",
+	c.warnfAtProperty(DiagPermissionClassRisk, nn.NodeKind().String(), nn.NodeID(), "allow",
 		"%s %q: allow rule %q grants the whole tool class — the members registered now and every one the registry tags later, each auto-approved where no deny or ask row decides first. Move the grant to ask: to keep future members behind an approval, or keep allow: and accept the widening",
 		nn.NodeKind().String(), nn.NodeID(), raw)
 }

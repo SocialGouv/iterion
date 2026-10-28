@@ -204,6 +204,14 @@ func (m *mapper) walkZero(v reflect.Value) {
 			}
 		}
 	case reflect.Slice, reflect.Array:
+		if v.Type() == propertySpansType {
+			// The per-property span table is a position: where each line
+			// was written, in the order it was written — not the program.
+			if v.CanSet() {
+				v.Set(reflect.Zero(v.Type()))
+			}
+			return
+		}
 		if v.Type().Elem().Kind() == reflect.Uint8 {
 			return
 		}
@@ -212,6 +220,8 @@ func (m *mapper) walkZero(v reflect.Value) {
 		}
 	}
 }
+
+var propertySpansType = reflect.TypeOf(ast.PropertySpans{})
 
 func deepCopy(v reflect.Value) reflect.Value {
 	switch v.Kind() {

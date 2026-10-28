@@ -37,7 +37,7 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 			{"timeout", t.Timeout != ""},
 		} {
 			if orphan.set {
-				c.warnfAt(DiagActionOnlyProperty, t.Name, "",
+				c.warnfAtProperty(DiagActionOnlyProperty, "tool", t.Name, orphan.name,
 					"tool %q: `%s:` has no effect without `action:` — it is read only by the connector recipe", t.Name, orphan.name)
 			}
 		}
@@ -86,7 +86,7 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 
 	if t.Timeout != "" {
 		if _, err := time.ParseDuration(t.Timeout); err != nil {
-			c.errorfAt(DiagActionBadTimeout, t.Name, "",
+			c.errorfAtProperty(DiagActionBadTimeout, "tool", t.Name, "timeout",
 				"tool %q: `timeout: %s` is not a duration (want e.g. 30s, 2m)", t.Name, t.Timeout)
 		}
 	}
@@ -96,7 +96,7 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 	// attempts, and the delay is not iterion's to choose anyway: a vendor
 	// that wants one says so in `Retry-After`.
 	if t.Retry != "" && !isPositiveInteger(t.Retry) {
-		c.errorfAt(DiagActionBadTimeout, t.Name, "",
+		c.errorfAtProperty(DiagActionBadTimeout, "tool", t.Name, "retry",
 			"tool %q: `retry: %s` must be a number of extra attempts (e.g. `retry: 3`); "+
 				"the delay between them comes from the vendor's Retry-After, not from the workflow", t.Name, t.Retry)
 	}

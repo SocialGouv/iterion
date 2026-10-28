@@ -1176,7 +1176,16 @@ func (l *Lexer) emitError(code DiagCode, msg string, line, col int) {
 	if !l.spend(line, col, 1) {
 		return
 	}
-	l.tokens = append(l.tokens, Token{Type: TokenError, Code: code, Value: msg, Line: line, Column: col})
+	// The diagnosis token stands on the rune it refuses: its extent is that
+	// rune, so a span closed on it ends past the rune and not past the text
+	// of the diagnosis.
+	t := Token{Type: TokenError, Code: code, Value: msg, Line: line, Column: col}
+	if line >= 1 && line <= len(l.lineStarts) {
+		if off := l.lineStarts[line-1] + col - 1; off >= 0 && off < len(l.src) {
+			t.Offset, t.End = off, off+1
+		}
+	}
+	l.tokens = append(l.tokens, t)
 }
 
 func isIdentStart(r rune) bool {

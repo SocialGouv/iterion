@@ -89,6 +89,17 @@ type Diagnostic struct {
 	File   string
 	Line   int // 1-based; 0 = no position
 	Column int // 1-based
+	// Property names the property of the declaration the diagnostic is
+	// about, when it is about one property's VALUE rather than the
+	// declaration: the position is then that property line's where the
+	// parser recorded it (ast.PropertySpans), and EndLine/EndColumn close
+	// its span — the column after its last rune — on a `.bot` source; an
+	// author document carries the start alone, its mapper knowing where a
+	// YAML node starts and not where its text ends (#1094). Empty and zero
+	// for a diagnostic about the declaration, an edge or the program.
+	Property  string
+	EndLine   int
+	EndColumn int
 }
 
 func (d Diagnostic) Error() string {
@@ -155,6 +166,10 @@ type compiler struct {
 	// like edgeSpans: a span is the authoring surface, which this package's
 	// types stay clear of.
 	withSpans map[*DataMapping]ast.Span
+	// nodeTables is the per-property span table of every node declaration
+	// by the id the graph knows it under (eachNodeDecl), built on the first
+	// diagnostic about a node property's value (propertySpan).
+	nodeTables map[string]ast.PropertySpans
 
 	capabilities CompileCapabilities
 
@@ -189,13 +204,13 @@ func (c *compiler) workflowInteractionDefault() InteractionMode {
 // whatever attribution a site can offer — a node, an edge, a source span, a
 // site-specific fix line — travels the same way whichever helper it used,
 // and the catalogue fix line is the default hint for every code.
-func (c *compiler) emit(sev Severity, code DiagCode, nodeID, edgeID string, sp ast.Span, hint string, format string, args ...any) {
+func (c *compiler) emit(sev Severity, code DiagCode, nodeID, edgeID string, sp ast.Span, prop, hint string, format string, args ...any) {
 	if hint == "" {
 		hint = HintFor(code)
 	}
 	// Held to expr.MaxDiagnosticText here, whatever the site composed: the
 	// one bound no quoting site can undo.
-	c.diags = append(c.diags, Diagnostic{
+	d := Diagnostic{
 		Code:     code,
 		Severity: sev,
 		Message:  expr.Clip(fmt.Sprintf(format, args...), expr.MaxDiagnosticText),
@@ -205,15 +220,23 @@ func (c *compiler) emit(sev Severity, code DiagCode, nodeID, edgeID string, sp a
 		File:     sp.Start.File,
 		Line:     sp.Start.Line,
 		Column:   sp.Start.Column,
-	})
+		Property: prop,
+	}
+	// Only a property span ends past its last rune; the other spans the
+	// parser records end where they start or at their value, so only a
+	// property diagnostic closes its span.
+	if prop != "" && sp.End.Line != 0 {
+		d.EndLine, d.EndColumn = sp.End.Line, sp.End.Column
+	}
+	c.diags = append(c.diags, d)
 }
 
 func (c *compiler) errorf(code DiagCode, format string, args ...any) {
-	c.emit(SeverityError, code, "", "", ast.Span{}, "", format, args...)
+	c.emit(SeverityError, code, "", "", ast.Span{}, "", "", format, args...)
 }
 
 func (c *compiler) warnf(code DiagCode, format string, args ...any) {
-	c.emit(SeverityWarning, code, "", "", ast.Span{}, "", format, args...)
+	c.emit(SeverityWarning, code, "", "", ast.Span{}, "", "", format, args...)
 }
 
 // errorfAt is a variant of errorf that attaches authoritative attribution
@@ -221,49 +244,49 @@ func (c *compiler) warnf(code DiagCode, format string, args ...any) {
 // the precise node or edge instead of guessing from the message text; the
 // source position is resolved from those ids by attachPositions.
 func (c *compiler) errorfAt(code DiagCode, nodeID, edgeID string, format string, args ...any) {
-	c.emit(SeverityError, code, nodeID, edgeID, ast.Span{}, "", format, args...)
+	c.emit(SeverityError, code, nodeID, edgeID, ast.Span{}, "", "", format, args...)
 }
 
 // warnfAt is the warning counterpart to errorfAt.
 func (c *compiler) warnfAt(code DiagCode, nodeID, edgeID string, format string, args ...any) {
-	c.emit(SeverityWarning, code, nodeID, edgeID, ast.Span{}, "", format, args...)
+	c.emit(SeverityWarning, code, nodeID, edgeID, ast.Span{}, "", "", format, args...)
 }
 
 // errorfOnEdge attributes a diagnostic to one specific AST edge — its own
 // line, which is what tells two edges sharing endpoints apart — with the
 // canonical edge id alongside.
 func (c *compiler) errorfOnEdge(code DiagCode, ae *ast.Edge, format string, args ...any) {
-	c.emit(SeverityError, code, "", edgeID(ae.From, ae.To), ae.Span, "", format, args...)
+	c.emit(SeverityError, code, "", edgeID(ae.From, ae.To), ae.Span, "", "", format, args...)
 }
 
 // errorfAtEdge is errorfOnEdge for a compiled edge, through the span
 // compileEdges recorded for it.
 func (c *compiler) errorfAtEdge(code DiagCode, e *Edge, format string, args ...any) {
-	c.emit(SeverityError, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", format, args...)
+	c.emit(SeverityError, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", "", format, args...)
 }
 
 // warnfAtEdge is the warning counterpart to errorfAtEdge.
 func (c *compiler) warnfAtEdge(code DiagCode, e *Edge, format string, args ...any) {
-	c.emit(SeverityWarning, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", format, args...)
+	c.emit(SeverityWarning, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", "", format, args...)
 }
 
 // errorfAtSpan attributes a diagnostic to a source span directly — for a
 // declaration that is not a graph node (a prompt, a schema) and so has no
 // NodeID for attachPositions to look up.
 func (c *compiler) errorfAtSpan(code DiagCode, sp ast.Span, format string, args ...any) {
-	c.emit(SeverityError, code, "", "", sp, "", format, args...)
+	c.emit(SeverityError, code, "", "", sp, "", "", format, args...)
 }
 
 // warnfAtSpan is the warning counterpart to errorfAtSpan.
 func (c *compiler) warnfAtSpan(code DiagCode, sp ast.Span, format string, args ...any) {
-	c.emit(SeverityWarning, code, "", "", sp, "", format, args...)
+	c.emit(SeverityWarning, code, "", "", sp, "", "", format, args...)
 }
 
 // errorfAtNodeSpan attributes a diagnostic to a node AND to a specific span —
 // for a node that has more than one declaration, where the id alone would
 // resolve to the first one while the line to edit is the other.
 func (c *compiler) errorfAtNodeSpan(code DiagCode, nodeID string, sp ast.Span, format string, args ...any) {
-	c.emit(SeverityError, code, nodeID, "", sp, "", format, args...)
+	c.emit(SeverityError, code, nodeID, "", sp, "", "", format, args...)
 }
 
 // edgeID builds the canonical "<from>-><to>" identifier the studio uses so
@@ -303,12 +326,12 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		// author who wrote `mode: allowlist` under `sandbox:` (or whose
 		// `network:` body sat de-indented after a blank line) meant the
 		// network's.
-		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+		c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 			"%s %q has invalid sandbox mode %q: that is a network: mode — write it as `network:` + `mode: %s` under `sandbox:` (the sandbox's own modes are \"none\", \"auto\" and \"inline\")",
 			scope, name, blk.Mode, blk.Mode)
 		return nil
 	default:
-		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+		c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 			"%s %q has invalid sandbox mode %q (want \"\", \"none\", \"auto\", or \"inline\")",
 			scope, name, blk.Mode)
 		return nil
@@ -317,7 +340,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	switch blk.HostState {
 	case "", "auto", "none":
 	default:
-		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+		c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 			"%s %q has invalid sandbox.host_state %q (want \"\", \"auto\", or \"none\")",
 			scope, name, blk.HostState)
 		return nil
@@ -379,7 +402,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		switch blk.Network.Mode {
 		case "", "open", "allowlist", "denylist":
 		default:
-			c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+			c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 				"%s %q has invalid sandbox.network mode %q (want \"open\", \"allowlist\" or \"denylist\")",
 				scope, name, blk.Network.Mode)
 			return nil
@@ -387,13 +410,13 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		switch blk.Network.Inherit {
 		case "", "replace", "append":
 		default:
-			c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+			c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 				"%s %q has invalid sandbox.network inherit %q (want \"replace\" or \"append\"; omit it to merge, the default)",
 				scope, name, blk.Network.Inherit)
 			return nil
 		}
 		if blk.Network.Mode == "" {
-			c.warnfAtScope(DiagNetworkModeMissing, scope, name,
+			c.warnfAtProperty(DiagNetworkModeMissing, scope, name, "sandbox",
 				"%s %q declares sandbox.network without a mode: as written the block is inert — at the policy layer it resolves to open (the proxy does not start); on a repo-defined sandbox (mode auto with a found devcontainer.json) the runtime instead completes it to the allowlist its content is shaped like. Write mode: allowlist (or open / denylist) to say which you mean",
 				scope, name)
 		}
@@ -422,13 +445,13 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	// error out at Driver.Prepare time. Surface it as a compile-time
 	// diagnostic so the user fixes the workflow source.
 	if spec.Mode == "inline" && spec.Image == "" && spec.Build == nil {
-		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+		c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 			"%s %q has sandbox mode=inline but no image: declare an image or build, or use mode=auto with a .devcontainer/devcontainer.json",
 			scope, name)
 		return nil
 	}
 	if spec.Image != "" && spec.Build != nil {
-		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
+		c.errorfAtProperty(DiagInvalidSandboxMode, scope, name, "sandbox",
 			"%s %q has both sandbox.image and sandbox.build set; they are mutually exclusive (use image: for a pre-built ref or build: for a Dockerfile)",
 			scope, name)
 		return nil
@@ -764,7 +787,7 @@ func (c *compiler) compile() *Workflow {
 		Interaction:         interaction,
 		Contracts:           contracts,
 		Contract:            contract,
-		Worktree:            c.worktreeMode(wf.Name, wf.Span, wf.Worktree),
+		Worktree:            c.worktreeMode(wf.Name, wf.Worktree),
 		Compress:            wf.Compress,
 		AutoMemory:          wf.AutoMemory,
 		AmbientContext:      wf.AmbientContext,
@@ -953,21 +976,21 @@ func defaultWorktreeMode(raw string) string {
 }
 
 // worktreeMode canonicalises a workflow's `worktree:` and refuses a value
-// that is neither auto nor none (C142), naming what was WRITTEN and where
-// (the workflow's span — the declaration keeps no per-property position).
+// that is neither auto nor none (C142), naming what was WRITTEN, on the
+// `worktree:` line.
 // The runtime compares the canonical value to `auto` and nothing else, so a
 // mistyped auto ran the workflow in place, in the operator's own checkout,
 // with every commit landing there, without a word. A refused value reaches
 // the IR as the DEFAULT, auto: every launch surface refuses a workflow with
 // an error, and one that did not would then isolate the run rather than
 // run it in place — the hazard the check exists to close, closed twice.
-func (c *compiler) worktreeMode(workflow string, at ast.Span, raw string) string {
+func (c *compiler) worktreeMode(workflow string, raw string) string {
 	mode := defaultWorktreeMode(raw)
 	switch mode {
 	case "auto", "none":
 		return mode
 	}
-	c.errorfAtSpan(DiagInvalidWorktree, at,
+	c.errorfAtProperty(DiagInvalidWorktree, "workflow", workflow, "worktree",
 		"workflow %q has invalid worktree %q; valid values are auto, none",
 		workflow, raw)
 	return "auto"
@@ -1386,7 +1409,7 @@ func (c *compiler) compileHumans() {
 			switch node.Posture {
 			case "", PostureHumanRequired, PostureAgentVerdictOK:
 			default:
-				c.errorfAt(DiagInvalidReviewGateValue, h.Name, "",
+				c.errorfAtProperty(DiagInvalidReviewGateValue, "human", h.Name, "posture",
 					"human %q has invalid posture %q; valid values are %s, %s",
 					h.Name, h.Posture, PostureHumanRequired, PostureAgentVerdictOK)
 				node.Posture = ""
@@ -1398,7 +1421,7 @@ func (c *compiler) compileHumans() {
 			switch node.MergeStrategy {
 			case "", "squash", "merge":
 			default:
-				c.errorfAt(DiagInvalidReviewGateValue, h.Name, "",
+				c.errorfAtProperty(DiagInvalidReviewGateValue, "human", h.Name, "merge_strategy",
 					"human %q has invalid merge_strategy %q; valid values are squash, merge",
 					h.Name, h.MergeStrategy)
 				node.MergeStrategy = ""
@@ -1755,11 +1778,13 @@ func (c *compiler) compileComputes() {
 		for _, e := range cd.Expr {
 			ast, err := expr.ParseOn(e.Expr, c.exprBudget)
 			if err != nil {
+				// On the entry's own line: the block holds one line per field,
+				// and the node's header would name them all at once.
 				if code := exprDiagCode(err); code == DiagExprPastReadBudget {
-					c.errorfAt(code, cd.Name, "",
+					c.errorfAtNodeSpan(code, cd.Name, e.Span,
 						"compute %q field %q: %v", cd.Name, e.Key, err)
 				} else {
-					c.errorfAt(code, cd.Name, "",
+					c.errorfAtNodeSpan(code, cd.Name, e.Span,
 						"compute %q field %q: invalid expression %q: %v", cd.Name, e.Key, expr.Excerpt(e.Expr), err)
 				}
 				continue
@@ -1873,9 +1898,9 @@ func (c *compiler) compileWaits() {
 			c.errorfAt(DiagWaitNoTimeout, wd.Name, "",
 				"wait %q has no `timeout:` — a mandatory bound is required (the no-silent-infinity invariant)", wd.Name)
 		} else if d, err := time.ParseDuration(wd.Timeout); err != nil {
-			c.errorfAt(DiagWaitNoTimeout, wd.Name, "", "wait %q has an invalid `timeout:` %q: %v", wd.Name, wd.Timeout, err)
+			c.errorfAtProperty(DiagWaitNoTimeout, "wait", wd.Name, "timeout", "wait %q has an invalid `timeout:` %q: %v", wd.Name, wd.Timeout, err)
 		} else if d <= 0 {
-			c.errorfAt(DiagWaitNoTimeout, wd.Name, "", "wait %q `timeout:` must be positive, got %q", wd.Name, wd.Timeout)
+			c.errorfAtProperty(DiagWaitNoTimeout, "wait", wd.Name, "timeout", "wait %q `timeout:` must be positive, got %q", wd.Name, wd.Timeout)
 		} else {
 			timeout = d
 		}
@@ -1907,9 +1932,9 @@ func (c *compiler) compileAwaitAnswers() {
 			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "",
 				"await_answers %q has no `timeout:` — a mandatory bound is required (the no-silent-infinity invariant)", ad.Name)
 		} else if d, err := time.ParseDuration(ad.Timeout); err != nil {
-			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "", "await_answers %q has an invalid `timeout:` %q: %v", ad.Name, ad.Timeout, err)
+			c.errorfAtProperty(DiagAwaitAnswersNoTimeout, "await_answers", ad.Name, "timeout", "await_answers %q has an invalid `timeout:` %q: %v", ad.Name, ad.Timeout, err)
 		} else if d <= 0 {
-			c.errorfAt(DiagAwaitAnswersNoTimeout, ad.Name, "", "await_answers %q `timeout:` must be positive, got %q", ad.Name, ad.Timeout)
+			c.errorfAtProperty(DiagAwaitAnswersNoTimeout, "await_answers", ad.Name, "timeout", "await_answers %q `timeout:` must be positive, got %q", ad.Name, ad.Timeout)
 		} else {
 			timeout = d
 		}
@@ -1948,7 +1973,7 @@ func (c *compiler) compileFails() {
 		if fd.Code != "" {
 			switch {
 			case !failCodePattern.MatchString(fd.Code):
-				c.errorfAt(DiagInvalidFailCode, fd.Name, "",
+				c.errorfAtProperty(DiagInvalidFailCode, "fail", fd.Name, "code",
 					"fail %q has `code: %s` — a failure code must be UPPER_SNAKE (e.g. PLAN_BUDGET_EXHAUSTED): it is persisted as the run's failure_code and read by machines",
 					fd.Name, fd.Code)
 			case store.FailureCode(fd.Code).Reserved():
@@ -1959,7 +1984,7 @@ func (c *compiler) compileFails() {
 				// is auto-retried as a transient fault, and a resumable
 				// fail re-runs the same guard — so every attempt burns
 				// for nothing.
-				c.errorfAt(DiagReservedFailCode, fd.Name, "",
+				c.errorfAtProperty(DiagReservedFailCode, "fail", fd.Name, "code",
 					"fail %q has `code: %s` — that code belongs to the engine and is read as control flow (auto-resume, usage-window retry); pick a name of the bot's own, e.g. PLAN_BUDGET_EXHAUSTED",
 					fd.Name, fd.Code)
 			default:

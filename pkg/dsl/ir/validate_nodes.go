@@ -423,7 +423,7 @@ func (c *compiler) validateCompress(w *Workflow) {
 		return false
 	}
 	if !valid(w.Compress) {
-		c.errorfAtSpan(DiagInvalidCompress, c.workflowSpan(w.Name),
+		c.errorfAtProperty(DiagInvalidCompress, "workflow", w.Name, "compress",
 			"workflow %q has invalid compress %q; valid values are on, off, ultra",
 			w.Name, w.Compress)
 	}
@@ -432,7 +432,7 @@ func (c *compiler) validateCompress(w *Workflow) {
 		func(nn *ToolNode) string { return nn.Compress },
 		func(n Node, kind, compress string) {
 			if !valid(compress) {
-				c.errorfAt(DiagInvalidCompress, n.NodeID(), "",
+				c.errorfAtProperty(DiagInvalidCompress, kind, n.NodeID(), "compress",
 					"%s %q has invalid compress %q; valid values are on, off, ultra",
 					kind, n.NodeID(), compress)
 			}
@@ -450,7 +450,7 @@ func (c *compiler) validateLoopBudgetGuard(w *Workflow) {
 	case "", "on", "off":
 		return
 	}
-	c.errorfAtSpan(DiagInvalidLoopBudgetGuard, c.workflowSpan(w.Name),
+	c.errorfAtProperty(DiagInvalidLoopBudgetGuard, "workflow", w.Name, "loop_budget_guard",
 		"workflow %q has invalid loop_budget_guard %q; valid values are on, off",
 		w.Name, w.LoopBudgetGuard)
 }
@@ -464,7 +464,7 @@ func (c *compiler) validateRepoDevbox(w *Workflow) {
 	case "", "on", "off":
 		return
 	}
-	c.errorfAtSpan(DiagInvalidRepoDevbox, c.workflowSpan(w.Name),
+	c.errorfAtProperty(DiagInvalidRepoDevbox, "workflow", w.Name, "repo_devbox",
 		"workflow %q has invalid repo_devbox %q; valid values are on, off",
 		w.Name, w.RepoDevbox)
 }
@@ -479,7 +479,7 @@ func (c *compiler) validateWorkspaceCheckpoint(w *Workflow) {
 	case "", "on", "off":
 		return
 	}
-	c.errorfAtSpan(DiagInvalidWorkspaceCheckpoint, c.workflowSpan(w.Name),
+	c.errorfAtProperty(DiagInvalidWorkspaceCheckpoint, "workflow", w.Name, "workspace_checkpoint",
 		"workflow %q has invalid workspace_checkpoint %q; valid values are on, off",
 		w.Name, w.WorkspaceCheckpoint)
 }
@@ -504,7 +504,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		return false
 	}
 	if !valid(w.AutoMemory) {
-		c.errorfAtSpan(DiagInvalidAutoMemory, c.workflowSpan(w.Name),
+		c.errorfAtProperty(DiagInvalidAutoMemory, "workflow", w.Name, "auto_memory",
 			"workflow %q has invalid auto_memory %q; valid values are on, off",
 			w.Name, w.AutoMemory)
 	}
@@ -515,7 +515,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		}
 		kind, value := nn.NodeKind().String(), nn.GetAutoMemory()
 		if !valid(value) {
-			c.errorfAt(DiagInvalidAutoMemory, n.NodeID(), "",
+			c.errorfAtProperty(DiagInvalidAutoMemory, kind, n.NodeID(), "auto_memory",
 				"%s %q has invalid auto_memory %q; valid values are on, off",
 				kind, n.NodeID(), value)
 			continue
@@ -537,7 +537,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		// genuinely cannot know.
 		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		if backend != "" && !automemory.SupportsBackend(backend) {
-			c.warnfAt(DiagAutoMemoryNotSupported, n.NodeID(), "",
+			c.warnfAtProperty(DiagAutoMemoryNotSupported, kind, n.NodeID(), "auto_memory",
 				"%s %q: auto_memory: on has NO effect on backend=%q — MEMORY.md is wired for claude_code, claw and pi only",
 				kind, n.NodeID(), backend)
 		}
@@ -580,7 +580,7 @@ func (c *compiler) validateAmbientContext(w *Workflow) {
 	}
 	accepted := strings.Join(ambient.Values, ", ")
 	if !valid(w.AmbientContext) {
-		c.errorfAtSpan(DiagInvalidAmbientContext, c.workflowSpan(w.Name),
+		c.errorfAtProperty(DiagInvalidAmbientContext, "workflow", w.Name, "ambient_context",
 			"workflow %q has invalid ambient_context %q; valid values are %s",
 			w.Name, w.AmbientContext, accepted)
 	}
@@ -593,7 +593,7 @@ func (c *compiler) validateAmbientContext(w *Workflow) {
 		}
 		kind, value := nn.NodeKind().String(), nn.GetAmbientContext()
 		if !valid(value) {
-			c.errorfAt(DiagInvalidAmbientContext, n.NodeID(), "",
+			c.errorfAtProperty(DiagInvalidAmbientContext, kind, n.NodeID(), "ambient_context",
 				"%s %q has invalid ambient_context %q; valid values are %s",
 				kind, n.NodeID(), value, accepted)
 			continue
@@ -629,7 +629,7 @@ func (c *compiler) validateAmbientContext(w *Workflow) {
 		}
 	}
 	if wfDeclared && ignoring > 0 && honouring == 0 {
-		c.warnfAtSpan(DiagAmbientContextNotEnforced, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagAmbientContextNotEnforced, "workflow", w.Name, "ambient_context",
 			"workflow %q sets ambient_context: %s but no agent/judge node inheriting it runs on a backend that enforces it (%s)",
 			w.Name, wfPolicy, strings.Join(ambient.EnforcingBackends(wfPolicy), ", "))
 	}
@@ -657,19 +657,19 @@ func (c *compiler) diagnoseAmbientRoute(at ambientRoute, backend, route string) 
 	switch support, reason := ambient.SupportOf(backend, at.policy); support {
 	case ambient.Refused:
 		if at.inheritedFrom != "" {
-			c.errorfAt(DiagAmbientContextRefused, at.node, "",
+			c.errorfAtProperty(DiagAmbientContextRefused, at.kind, at.node, "ambient_context",
 				"%s %q inherits ambient_context: %s from workflow %q, which %s cannot honour: %s",
 				at.kind, at.node, at.policy, at.inheritedFrom, where, reason)
 			return
 		}
-		c.errorfAt(DiagAmbientContextRefused, at.node, "",
+		c.errorfAtProperty(DiagAmbientContextRefused, at.kind, at.node, "ambient_context",
 			"%s %q: ambient_context: %s cannot be honoured on %s: %s",
 			at.kind, at.node, at.policy, where, reason)
 	case ambient.Unmeasured:
 		if at.inheritedFrom != "" {
 			return
 		}
-		c.warnfAt(DiagAmbientContextNotEnforced, at.node, "",
+		c.warnfAtProperty(DiagAmbientContextNotEnforced, at.kind, at.node, "ambient_context",
 			"%s %q: ambient_context: %s is not enforced on %s — what it loads has not been measured, so it keeps its own conventions; %s apply the policy",
 			at.kind, at.node, at.policy, where, strings.Join(ambient.EnforcingBackends(at.policy), ", "))
 	}
@@ -729,15 +729,15 @@ func (c *compiler) warnIfWorkflowAutoMemoryIsInert(w *Workflow) {
 		// "MEMORY.md is wired for claw only" is a strange thing to read on a
 		// workflow that HAS a claw node, and it points the author at the
 		// backends when half the answer is their own per-node `off`.
-		c.warnfAtSpan(DiagAutoMemoryNotSupported, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagAutoMemoryNotSupported, "workflow", w.Name, "auto_memory",
 			"workflow %q sets auto_memory: on but nothing honours it: %d agent/judge node(s) override it with auto_memory: off, and the remaining %d are on a backend that ignores it (MEMORY.md is wired for claude_code, claw and pi only)",
 			w.Name, optedOut, unsupported)
 	case unsupported > 0:
-		c.warnfAtSpan(DiagAutoMemoryNotSupported, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagAutoMemoryNotSupported, "workflow", w.Name, "auto_memory",
 			"workflow %q sets auto_memory: on but NO agent/judge node can honour it — MEMORY.md is wired for claude_code, claw and pi only",
 			w.Name)
 	case optedOut > 0:
-		c.warnfAtSpan(DiagAutoMemoryNotSupported, c.workflowSpan(w.Name),
+		c.warnfAtProperty(DiagAutoMemoryNotSupported, "workflow", w.Name, "auto_memory",
 			"workflow %q sets auto_memory: on but every agent/judge node overrides it with auto_memory: off — the workflow default has no effect",
 			w.Name)
 	}
@@ -781,7 +781,7 @@ func (c *compiler) validatePermission(w *Workflow) {
 		return false
 	}
 	if !valid(w.Permission) {
-		c.errorfAtSpan(DiagInvalidPermission, c.workflowSpan(w.Name),
+		c.errorfAtProperty(DiagInvalidPermission, "workflow", w.Name, "permission",
 			"workflow %q has invalid permission %q; valid values are off, ask, deny",
 			w.Name, w.Permission)
 	}
@@ -790,7 +790,7 @@ func (c *compiler) validatePermission(w *Workflow) {
 		func(nn *ToolNode) string { return nn.Permission },
 		func(n Node, kind, perm string) {
 			if !valid(perm) {
-				c.errorfAt(DiagInvalidPermission, n.NodeID(), "",
+				c.errorfAtProperty(DiagInvalidPermission, kind, n.NodeID(), "permission",
 					"%s %q has invalid permission %q; valid values are off, ask, deny",
 					kind, n.NodeID(), perm)
 				return
@@ -801,7 +801,7 @@ func (c *compiler) validatePermission(w *Workflow) {
 			// Warn so an operator doesn't ship an inert security control.
 			if kind == "tool" {
 				if m := strings.ToLower(strings.TrimSpace(perm)); m == "ask" || m == "deny" {
-					c.warnfAt(DiagToolNodePermissionInert, n.NodeID(), "",
+					c.warnfAtProperty(DiagToolNodePermissionInert, kind, n.NodeID(), "permission",
 						"tool node %q sets permission: %s, but the gate only governs agent/judge LLM tool calls; a tool node's permission is not enforced (use goal/postcondition/policy/recovery to gate the action)",
 						n.NodeID(), m)
 				}
@@ -831,7 +831,7 @@ func (c *compiler) validateReviewGates(w *Workflow) {
 			continue
 		}
 		if !worktreeAuto {
-			c.errorfAt(DiagReviewNeedsWorktree, h.NodeID(), "",
+			c.errorfAtProperty(DiagReviewNeedsWorktree, "human", h.NodeID(), "interaction",
 				"human %q uses interaction: review but the workflow does not declare worktree: auto — a review gate squash-merges the run's worktree, so there is nothing to merge without one",
 				h.NodeID())
 		}
@@ -858,29 +858,29 @@ func (c *compiler) validateMemory(w *Workflow) {
 			return
 		}
 		if m.Scope == "" {
-			c.errorfAtScope(DiagMemoryMissingScope, scope, id,
+			c.errorfAtProperty(DiagMemoryMissingScope, scope, id, "memory",
 				"%s %q: memory: enabled requires a scope: name", scope, id)
 		}
 		if m.Visibility != "" {
 			if !knownMemoryVisibilities[m.Visibility] {
-				c.errorfAtScope(DiagMemoryInvalidVisibility, scope, id,
+				c.errorfAtProperty(DiagMemoryInvalidVisibility, scope, id, "memory",
 					"%s %q: memory: unknown visibility %q (bot|project|cross_project|user|org|global)", scope, id, m.Visibility)
 			}
 			if m.ProjectRoot {
-				c.errorfAtScope(DiagMemoryVisibilityConflict, scope, id,
+				c.errorfAtProperty(DiagMemoryVisibilityConflict, scope, id, "memory",
 					"%s %q: memory: visibility: and the legacy project_root: are mutually exclusive", scope, id)
 			}
 			// `write:` defaults to TRUE when memory is enabled, so the
 			// combination is reached by declaring the visibility alone —
 			// which is exactly how the ungated write door was opened.
 			if m.Visibility == string(knowledge.VisibilityGlobal) && m.Write {
-				c.warnfAtScope(DiagMemoryGlobalWriteGated, scope, id,
+				c.warnfAtProperty(DiagMemoryGlobalWriteGated, scope, id, "memory",
 					"%s %q: memory: visibility: %q is instance-wide (every team reads it), so memory_write is NOT installed for a run — a run holds no platform authority; set write: false, or pick a team-scoped visibility, and write the catalogue through the REST surface (super-admin) or `iterion memory import`",
 					scope, id, m.Visibility)
 			}
 		}
 		if backend != "" && backend != "claw" {
-			c.warnfAtScope(DiagMemoryNotSupported, scope, id,
+			c.warnfAtProperty(DiagMemoryNotSupported, scope, id, "memory",
 				"%s %q: memory: has NO effect on backend=%q — memory_read/memory_write/memory_list and autoload are claw-only; switch to backend: \"claw\" or remove the memory: block",
 				scope, id, backend)
 		}
@@ -921,8 +921,8 @@ func (c *compiler) validatePlaywrightMCP(w *Workflow) {
 			continue
 		}
 		if !sandboxHasBrowserImage(w.Sandbox) {
-			c.errorfAtSpan(
-				DiagPlaywrightNeedsBrowserImage, c.workflowSpan(w.Name),
+			c.errorfAtProperty(
+				DiagPlaywrightNeedsBrowserImage, "workflow", w.Name, "sandbox",
 				"mcp_servers.%s: Playwright MCP requires a sandbox image that bundles Chromium "+
 					"(e.g. ghcr.io/socialgouv/iterion-sandbox-browser); "+
 					"workflow.sandbox.image is %q",
@@ -992,10 +992,10 @@ func (c *compiler) validateCompaction(w *Workflow) {
 			return
 		}
 		if cp.Threshold != 0 && (math.IsNaN(cp.Threshold) || math.IsInf(cp.Threshold, 0) || cp.Threshold <= 0 || cp.Threshold > 1) {
-			c.errorfAtScope(DiagInvalidCompaction, scope, id, "%s %q: compaction.threshold must be in (0, 1], got %g", scope, id, cp.Threshold)
+			c.errorfAtProperty(DiagInvalidCompaction, scope, id, "compaction", "%s %q: compaction.threshold must be in (0, 1], got %g", scope, id, cp.Threshold)
 		}
 		if cp.PreserveRecent < 0 {
-			c.errorfAtScope(DiagInvalidCompaction, scope, id, "%s %q: compaction.preserve_recent must be >= 1 when set (0 = inherit), got %d", scope, id, cp.PreserveRecent)
+			c.errorfAtProperty(DiagInvalidCompaction, scope, id, "compaction", "%s %q: compaction.preserve_recent must be >= 1 when set (0 = inherit), got %d", scope, id, cp.PreserveRecent)
 		}
 	}
 	check("workflow", w.Name, w.Compaction)
@@ -1102,7 +1102,7 @@ func (c *compiler) validateNodeMaxTokensVsBudget(w *Workflow) {
 	cap := w.Budget.MaxTokens
 	checkLLM := func(id string, mt int) {
 		if mt > 0 && mt > cap {
-			c.warnfAt(DiagNodeMaxTokensVsBudget, id, "",
+			c.warnfAtProperty(DiagNodeMaxTokensVsBudget, "node", id, "max_tokens",
 				"node %q has max_tokens=%d which exceeds workflow.budget.max_tokens=%d", id, mt, cap)
 		}
 	}
@@ -1640,7 +1640,7 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 			continue
 		}
 		if !ValidReasoningEfforts[effort] {
-			c.errorfAt(DiagInvalidReasoningEffort, node.NodeID(), "",
+			c.errorfAtProperty(DiagInvalidReasoningEffort, "node", node.NodeID(), "reasoning_effort",
 				"node %q has invalid reasoning_effort %q; valid values are none, low, medium, high, xhigh, max, ultracode",
 				node.NodeID(), effort)
 			continue
@@ -1655,7 +1655,7 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 			if shown == "" {
 				shown = "(default)"
 			}
-			c.warnfAt(DiagUltracodeModelGate, node.NodeID(), "",
+			c.warnfAtProperty(DiagUltracodeModelGate, "node", node.NodeID(), "reasoning_effort",
 				"node %q uses reasoning_effort: ultracode but model %q is neither Opus 4.8 nor a Claude 5 model (Opus 5, Fable 5.1); ultracode's workflow-orchestration prerogative is reliable only there and will degrade to plain xhigh elsewhere",
 				node.NodeID(), shown)
 		}
@@ -1683,12 +1683,12 @@ func (c *compiler) validateNodeTimeout(w *Workflow) {
 		}
 		d, err := time.ParseDuration(expanded)
 		if err != nil {
-			c.errorfAt(DiagInvalidNodeTimeout, node.NodeID(), "",
+			c.errorfAtProperty(DiagInvalidNodeTimeout, "node", node.NodeID(), "timeout",
 				"node %q has an invalid timeout %q: %s", node.NodeID(), raw, DurationParseReason(raw, expanded, err))
 			continue
 		}
 		if d <= 0 {
-			c.errorfAt(DiagInvalidNodeTimeout, node.NodeID(), "",
+			c.errorfAtProperty(DiagInvalidNodeTimeout, "node", node.NodeID(), "timeout",
 				"node %q timeout must be positive, got %q", node.NodeID(), raw)
 		}
 	}

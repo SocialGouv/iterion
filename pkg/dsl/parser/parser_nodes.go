@@ -29,6 +29,7 @@ func (p *parser) parseAgentDecl() *ast.AgentDecl {
 			break
 		}
 		p.parseLLMProp(&ad.LLMDecl, t, "agent")
+		p.recordProperty(&ad.Properties, t)
 	}
 	return ad
 }
@@ -210,6 +211,7 @@ func (p *parser) parseJudgeDecl() *ast.JudgeDecl {
 			break
 		}
 		p.parseLLMProp(&jd.LLMDecl, t, "judge")
+		p.recordProperty(&jd.Properties, t)
 	}
 	return jd
 }
@@ -308,6 +310,7 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&rd.Properties, t)
 		p.skipNewlines()
 	}
 	return rd
@@ -370,6 +373,7 @@ func (p *parser) parseHumanDecl() *ast.HumanDecl {
 			break
 		}
 		p.parseHumanProp(hd, t)
+		p.recordProperty(&hd.Properties, t)
 	}
 	return hd
 }
@@ -490,6 +494,7 @@ func (p *parser) parseToolNodeDecl() *ast.ToolNodeDecl {
 			break
 		}
 		p.parseToolNodeProp(td, t)
+		p.recordProperty(&td.Properties, t)
 	}
 	return td
 }
@@ -796,6 +801,7 @@ func (p *parser) parseComputeDecl() *ast.ComputeDecl {
 			break
 		}
 		p.parseComputeProp(cd, t)
+		p.recordProperty(&cd.Properties, t)
 	}
 	return cd
 }
@@ -1075,6 +1081,7 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&sd.Properties, t)
 	}
 	return sd
 }
@@ -1118,6 +1125,7 @@ func (p *parser) parseEmitDecl() *ast.EmitDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&ed.Properties, t)
 	}
 	return ed
 }
@@ -1165,6 +1173,7 @@ func (p *parser) parseWaitDecl() *ast.WaitDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&wd.Properties, t)
 	}
 	return wd
 }
@@ -1224,6 +1233,7 @@ func (p *parser) parseFailDecl() *ast.FailDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&fd.Properties, t)
 	}
 	return fd
 }
@@ -1269,6 +1279,7 @@ func (p *parser) parseAwaitAnswersDecl() *ast.AwaitAnswersDecl {
 			p.next()
 			p.skipUnknownProperty()
 		}
+		p.recordProperty(&ad.Properties, t)
 	}
 	return ad
 }

@@ -35,8 +35,12 @@ import (
 // that exists to find it reported nothing.
 func (c *compiler) validateEnvDials(w *Workflow) {
 	for _, s := range routeSites(w) {
+		scope, id := "node", s.nodeID
+		if id == "" {
+			scope, id = "workflow", w.Name
+		}
 		for _, name := range bracedEnvNames(s.value) {
-			c.warnfAt(DiagEnvDialInRunSetting, s.nodeID, "",
+			c.warnfAtProperty(DiagEnvDialInRunSetting, scope, id, routeProperty(s.field),
 				"%s reads its route from the environment: %s consults ${%s} — a run's route comes from the authored literal and the routing policy above it (platform < org < team < bot < binding < launch), never from the process environment a run happens to start in (ADR-132 §1). Write the value the author means here, and pin a tenant's choice as a policy `overrides` cell",
 				s.owner(), s.field, name)
 		}
@@ -66,7 +70,7 @@ func (c *compiler) validateEnvDials(w *Workflow) {
 
 	for _, s := range toolBodyEnvSites(w) {
 		for _, name := range s.names {
-			c.warnfAt(DiagEnvDialInRunSetting, s.nodeID, "",
+			c.warnfAtProperty(DiagEnvDialInRunSetting, "tool", s.nodeID, s.where,
 				"node %q reads the environment in its %s body: ${%s} is answered by the ENGINE, from the engine's own environment, before the body's shell ever runs (the same expansion C188 reads) — a run reads no environment (ADR-132 §1). Carry the value as a var the ladder can set, or, where the engine CONSTRUCTS the name into this process's environment, read it bare ($%s) so the child's own environment answers it",
 				s.nodeID, s.where, name, name)
 		}
@@ -89,6 +93,20 @@ func (s routeSite) owner() string {
 		return "the workflow"
 	}
 	return fmt.Sprintf("node %q", s.nodeID)
+}
+
+// routeProperty is the property line a route field is written on: the
+// field's own name without the colon the message spells it with, or the
+// block that holds it — `recovery model:` is the tool's recovery: block,
+// `fallback "spare" model:` the node's fallbacks: block.
+func routeProperty(field string) string {
+	switch {
+	case strings.HasPrefix(field, "recovery "):
+		return "recovery"
+	case strings.HasPrefix(field, "fallback "):
+		return "fallbacks"
+	}
+	return strings.TrimSuffix(field, ":")
 }
 
 // routeSites enumerates every authored field whose value selects a route, over

@@ -81,8 +81,10 @@ func TestAnExpressionPastTheBudgetIsRefusedAtTheComputeNode(t *testing.T) {
 		t.Fatalf("C320 count = %d, want 1\ndiagnostics: %d", got, len(cr.Diagnostics))
 	}
 	d := diagFor(cr, DiagExprPastReadBudget)
-	if d.NodeID != "c" || d.Line != 4 {
-		t.Errorf("C320 at node %q line %d, want the compute node c at line 4", d.NodeID, d.Line)
+	// On the entry's own line (the `expr:` block holds one line per
+	// field), attributed to the compute node.
+	if d.NodeID != "c" || d.Line != 7 {
+		t.Errorf("C320 at node %q line %d, want the compute node c's entry at line 7", d.NodeID, d.Line)
 	}
 	if d.Hint != expr.BudgetHint || d.Hint != HintFor(DiagExprPastReadBudget) {
 		t.Errorf("C320 hint %q, want the budget's remedy", d.Hint)
@@ -479,7 +481,7 @@ func TestAnEnumMismatchNamesTheMisspelledMember(t *testing.T) {
 func TestEveryDiagnosticTextIsBoundedAtEmit(t *testing.T) {
 	c := &compiler{}
 	huge := strings.Repeat("é", 1<<20)
-	c.emit(SeverityError, DiagBadExpr, "n", "", ast.Span{}, huge, "%s", huge)
+	c.emit(SeverityError, DiagBadExpr, "n", "", ast.Span{}, "", huge, "%s", huge)
 	d := c.diags[0]
 	if len(d.Message) > expr.MaxDiagnosticText+len("…") || !strings.HasSuffix(d.Message, "…") || !utf8.ValidString(d.Message) {
 		t.Errorf("a %d-byte message was recorded as %d bytes (valid UTF-8: %v)", len(huge), len(d.Message), utf8.ValidString(d.Message))

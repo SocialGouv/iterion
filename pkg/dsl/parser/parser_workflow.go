@@ -180,6 +180,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 
 		case TokenComment:
 			p.next() // skip workflow-level comments
+			continue
 
 		default:
 			// Must be an edge: IDENT -> IDENT ... — unless a colon follows the
@@ -199,7 +200,9 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 				p.addError(DiagUnexpectedToken, t, "unexpected token "+strconv.Quote(t.Value)+" in workflow")
 				p.next()
 			}
+			continue
 		}
+		p.recordProperty(&wd.Properties, t)
 	}
 	return wd
 }

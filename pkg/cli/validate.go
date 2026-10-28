@@ -135,10 +135,18 @@ type ValidateDiagnostic struct {
 	File     string `json:"file,omitempty"`
 	Line     int    `json:"line,omitempty"`
 	Column   int    `json:"column,omitempty"`
-	Message  string `json:"message"`
-	Hint     string `json:"hint,omitempty"`
-	NodeID   string `json:"node_id,omitempty"`
-	EdgeID   string `json:"edge_id,omitempty"`
+	// EndLine and EndColumn close the span the finding is positioned on,
+	// when the stage recorded one — the column after the span's last rune;
+	// Property names the property of the declaration the finding is about,
+	// when it is about one property's value rather than the declaration:
+	// the position is then that property line's (#1094).
+	EndLine   int    `json:"end_line,omitempty"`
+	EndColumn int    `json:"end_column,omitempty"`
+	Property  string `json:"property,omitempty"`
+	Message   string `json:"message"`
+	Hint      string `json:"hint,omitempty"`
+	NodeID    string `json:"node_id,omitempty"`
+	EdgeID    string `json:"edge_id,omitempty"`
 	// Edit is the mechanical remedy the diagnostic carries, when its fix
 	// is the same every time (pkg/dsl/fix; `iterion fix` applies it): the
 	// literal before and after, at its line and column.
@@ -494,16 +502,19 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	for _, d := range cr.Diagnostics {
 		result.CompileDiagnostics = append(result.CompileDiagnostics, d.Error())
 		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
-			Source:   "compile",
-			Code:     string(d.Code),
-			Severity: d.Severity.String(),
-			File:     d.File,
-			Line:     d.Line,
-			Column:   d.Column,
-			Message:  d.Message,
-			Hint:     d.Hint,
-			NodeID:   d.NodeID,
-			EdgeID:   d.EdgeID,
+			Source:    "compile",
+			Code:      string(d.Code),
+			Severity:  d.Severity.String(),
+			File:      d.File,
+			Line:      d.Line,
+			Column:    d.Column,
+			EndLine:   d.EndLine,
+			EndColumn: d.EndColumn,
+			Property:  d.Property,
+			Message:   d.Message,
+			Hint:      d.Hint,
+			NodeID:    d.NodeID,
+			EdgeID:    d.EdgeID,
 		})
 		if d.Severity == ir.SeverityError {
 			result.Valid = false

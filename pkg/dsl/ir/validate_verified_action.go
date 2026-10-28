@@ -38,7 +38,7 @@ func (c *compiler) validateVerifiedActions(w *Workflow) {
 			case PolicyRequired, PolicyRecover, PolicyBestEffort:
 				// known
 			default:
-				c.errorfAt(DiagInvalidPolicy, tn.ID, "",
+				c.errorfAtProperty(DiagInvalidPolicy, "tool", tn.ID, "policy",
 					"tool %q has invalid policy %q; valid values are required, recover, best_effort",
 					tn.ID, tn.Policy)
 			}

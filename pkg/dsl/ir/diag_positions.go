@@ -22,74 +22,16 @@ func (c *compiler) attachPositions() {
 		return
 	}
 	nodePos := map[string]ast.Pos{}
-	add := func(name string, sp ast.Span) {
-		if name == "" || sp.Start.Line == 0 {
+	c.eachNodeDecl(func(id string, sp ast.Span, _ ast.PropertySpans) {
+		if sp.Start.Line == 0 {
 			return
 		}
-		if _, seen := nodePos[name]; !seen {
-			nodePos[name] = sp.Start
+		if _, seen := nodePos[id]; !seen {
+			nodePos[id] = sp.Start
 		}
-	}
-	f := c.file
-	for _, d := range f.Agents {
-		add(d.Name, d.Span)
-	}
-	for _, d := range f.Judges {
-		add(d.Name, d.Span)
-	}
-	for _, d := range f.Routers {
-		add(d.Name, d.Span)
-	}
-	for _, d := range f.Humans {
-		add(d.Name, d.Span)
-	}
-	for _, d := range f.Tools {
-		add(d.Name, d.Span)
-	}
-	for _, d := range f.Computes {
-		add(d.Name, d.Span)
-	}
-	for _, d := range f.Emits {
-		add(d.Name, d.Span)
-	}
-	for _, d := range f.Waits {
-		add(d.Name, d.Span)
-	}
-	for _, d := range f.AwaitAnswers {
-		add(d.Name, d.Span)
-	}
-	for _, d := range f.Fails {
-		add(d.Name, d.Span)
-	}
-	for _, d := range f.Subbots {
-		add(d.Name, d.Span)
-	}
-	for _, u := range f.Uses {
-		for _, g := range f.Groups {
-			if g.Name != u.Group {
-				continue
-			}
-			for _, d := range g.Agents {
-				add(u.Prefix+"."+d.Name, d.Span)
-			}
-			for _, d := range g.Judges {
-				add(u.Prefix+"."+d.Name, d.Span)
-			}
-			for _, d := range g.Routers {
-				add(u.Prefix+"."+d.Name, d.Span)
-			}
-			for _, d := range g.Humans {
-				add(u.Prefix+"."+d.Name, d.Span)
-			}
-			for _, d := range g.Tools {
-				add(u.Prefix+"."+d.Name, d.Span)
-			}
-			for _, d := range g.Computes {
-				add(u.Prefix+"."+d.Name, d.Span)
-			}
-		}
-	}
+	})
 
+	f := c.file
 	edgePos := map[string]ast.Pos{}
 	for _, w := range f.Workflows {
 		for _, e := range w.Edges {
@@ -154,11 +96,137 @@ func (c *compiler) attachPositions() {
 	})
 }
 
+// eachNodeDecl visits every node declaration of the file under the id the
+// compiled graph knows it by, with its header span and its per-property
+// span table, in declaration order; the first declaration of an id comes
+// first. A group member instantiated by a use is visited under its
+// instance id: expandGroups clones it into the file before any validator
+// runs, so the file's own lists hold every node the graph has.
+func (c *compiler) eachNodeDecl(visit func(id string, sp ast.Span, props ast.PropertySpans)) {
+	f := c.file
+	if f == nil {
+		return
+	}
+	for _, d := range f.Agents {
+		visit(d.Name, d.Span, d.Properties)
+	}
+	for _, d := range f.Judges {
+		visit(d.Name, d.Span, d.Properties)
+	}
+	for _, d := range f.Routers {
+		visit(d.Name, d.Span, d.Properties)
+	}
+	for _, d := range f.Humans {
+		visit(d.Name, d.Span, d.Properties)
+	}
+	for _, d := range f.Tools {
+		visit(d.Name, d.Span, d.Properties)
+	}
+	for _, d := range f.Computes {
+		visit(d.Name, d.Span, d.Properties)
+	}
+	for _, d := range f.Emits {
+		visit(d.Name, d.Span, d.Properties)
+	}
+	for _, d := range f.Waits {
+		visit(d.Name, d.Span, d.Properties)
+	}
+	for _, d := range f.AwaitAnswers {
+		visit(d.Name, d.Span, d.Properties)
+	}
+	for _, d := range f.Fails {
+		visit(d.Name, d.Span, d.Properties)
+	}
+	for _, d := range f.Subbots {
+		visit(d.Name, d.Span, d.Properties)
+	}
+}
+
+// propertySpan is the span of the property prop of the declaration a
+// validator names as (scope, id) — the workflow's when scope is "workflow",
+// the node's otherwise: the line the author wrote the value on, for a
+// diagnostic about that value (#1094). False when no span was recorded for
+// it: a declaration the parser did not build (the JSON transport), a
+// property the declaration does not write, a compiler without a file.
+func (c *compiler) propertySpan(scope, id, prop string) (ast.Span, bool) {
+	if c.file == nil {
+		return ast.Span{}, false
+	}
+	if scope == "workflow" {
+		for _, wf := range c.file.Workflows {
+			if wf.Name == id {
+				return wf.Properties.Lookup(prop)
+			}
+		}
+		return ast.Span{}, false
+	}
+	if c.nodeTables == nil {
+		c.nodeTables = map[string]ast.PropertySpans{}
+		c.eachNodeDecl(func(id string, _ ast.Span, props ast.PropertySpans) {
+			if _, seen := c.nodeTables[id]; !seen {
+				c.nodeTables[id] = props
+			}
+		})
+	}
+	return c.nodeTables[id].Lookup(prop)
+}
+
+// emitAtProperty attributes a diagnostic about the value of property prop
+// of the declaration (scope, id) to that property's line and names the
+// property. Where the parser recorded no span for it — the declaration does
+// not write the property (a value it inherits from the workflow), or was
+// not built by the parser — the diagnostic goes to the declaration (the
+// workflow's header, or the node by its id through attachPositions) and
+// names no property: a property the declaration has no line for is not
+// claimed.
+func (c *compiler) emitAtProperty(sev Severity, code DiagCode, scope, id, prop string, format string, args ...any) {
+	sp, ok := c.propertySpan(scope, id, prop)
+	if !ok {
+		prop = ""
+	}
+	nodeID := id
+	if scope == "workflow" {
+		nodeID = ""
+		if sp.Start.Line == 0 {
+			sp = c.workflowSpan(id)
+		}
+	}
+	c.emit(sev, code, nodeID, "", sp, prop, "", format, args...)
+}
+
+// firstWrittenProperty is, of the properties named, the one the workflow
+// writes first in its source — by line, then by column, for a document that
+// writes several on one line — what a diagnostic about several of its lines
+// points at; the first named when none has a recorded line.
+func (c *compiler) firstWrittenProperty(workflow string, props []string) string {
+	best, bestAt := props[0], ast.Pos{}
+	for _, prop := range props {
+		sp, ok := c.propertySpan("workflow", workflow, prop)
+		if !ok {
+			continue
+		}
+		if bestAt.Line == 0 || sp.Start.Line < bestAt.Line || (sp.Start.Line == bestAt.Line && sp.Start.Column < bestAt.Column) {
+			best, bestAt = prop, sp.Start
+		}
+	}
+	return best
+}
+
+// errorfAtProperty is emitAtProperty for an error.
+func (c *compiler) errorfAtProperty(code DiagCode, scope, id, prop string, format string, args ...any) {
+	c.emitAtProperty(SeverityError, code, scope, id, prop, format, args...)
+}
+
+// warnfAtProperty is emitAtProperty for a warning.
+func (c *compiler) warnfAtProperty(code DiagCode, scope, id, prop string, format string, args ...any) {
+	c.emitAtProperty(SeverityWarning, code, scope, id, prop, format, args...)
+}
+
 // workflowSpan is the source span of the workflow declaration named `name`
-// — its `workflow <name>:` header, since the declaration keeps no
-// per-property position — for a diagnostic raised from the compiled
-// Workflow, where the AST is out of reach. Zero when the compiler has no
-// file: the diagnostic then carries no position, as a global one does.
+// — its `workflow <name>:` header — for a diagnostic about the declaration
+// raised from the compiled Workflow, where the AST is out of reach; one
+// about a property's value reads propertySpan. Zero when the compiler has
+// no file: the diagnostic then carries no position, as a global one does.
 func (c *compiler) workflowSpan(name string) ast.Span {
 	if c.file == nil {
 		return ast.Span{}
@@ -169,26 +237,6 @@ func (c *compiler) workflowSpan(name string) ast.Span {
 		}
 	}
 	return ast.Span{}
-}
-
-// errorfAtScope attributes a diagnostic to the declaration a validator
-// names as (scope, id): the workflow's header when the scope is the
-// workflow, the node's own line otherwise.
-func (c *compiler) errorfAtScope(code DiagCode, scope, id string, format string, args ...any) {
-	if scope == "workflow" {
-		c.errorfAtSpan(code, c.workflowSpan(id), format, args...)
-		return
-	}
-	c.errorfAt(code, id, "", format, args...)
-}
-
-// warnfAtScope is the warning counterpart to errorfAtScope.
-func (c *compiler) warnfAtScope(code DiagCode, scope, id string, format string, args ...any) {
-	if scope == "workflow" {
-		c.warnfAtSpan(code, c.workflowSpan(id), format, args...)
-		return
-	}
-	c.warnfAt(code, id, "", format, args...)
 }
 
 // mcpServerSpan is the source span of the top-level `mcp_server <name>:`

@@ -84,9 +84,10 @@ func (c *compiler) validateTreeNoiseChannels(w *Workflow) {
 					continue
 				}
 				seenRaw[ref.Raw] = true
-				// The AST keeps no per-property span (the lot-1b work), so
-				// the position travels in the message: the body-relative
-				// line of the reference, located by its raw text.
+				// Positioned on the body's property line; the AST keeps no
+				// position inside a body, so the line inside it travels in
+				// the message: the body-relative line of the reference,
+				// located by its raw text.
 				line := bodyLineOf(b.text, ref.Raw)
 				if b.where == "script" {
 					// A ref inside a quoted span or a heredoc of a script
@@ -98,26 +99,26 @@ func (c *compiler) validateTreeNoiseChannels(w *Workflow) {
 					if !free {
 						continue
 					}
-					c.warnfAt(DiagTreeNoiseRefInExecBody, t.ID, "",
+					c.warnfAtProperty(DiagTreeNoiseRefInExecBody, "tool", t.ID, b.where,
 						"tool %q script, body line %d: {{run.tree_noise}} renders as ONE JSON-quoted string (a script body renders its refs as JSON literals) — as a git pathspec list that word matches no file, so an exclusion meant for this line silently stops applying (inside quotes the check cannot tell data from a collapsed word, and stays silent). "+
 							"Write {{!run.tree_noise}} for a verbatim substitution, or read $%s unquoted — the engine exports it to every tool process",
 						t.ID, freeLine, treenoise.TreeNoiseEnvVar)
 					continue
 				}
-				c.warnfAt(DiagTreeNoiseRefInExecBody, t.ID, "",
+				c.warnfAtProperty(DiagTreeNoiseRefInExecBody, "tool", t.ID, b.where,
 					"tool %q %s, body line %d: {{run.tree_noise}} renders shell-escaped as ONE word — as a git pathspec list that word matches no file, so an exclusion meant for this line silently stops applying. "+
 						"Write {{!run.tree_noise}} for a verbatim substitution, or read $%s unquoted — the engine exports it to every tool process",
 					t.ID, b.where, line, treenoise.TreeNoiseEnvVar)
 			}
 			for _, q := range sc.hits {
 				if q.double {
-					c.warnfAt(DiagTreeNoiseEnvQuoted, t.ID, "",
+					c.warnfAtProperty(DiagTreeNoiseEnvQuoted, "tool", t.ID, b.where,
 						"tool %q %s, body line %d: %s — inside double quotes $%s expands as ONE word, so the pathspec list collapses into a single argument that matches nothing (git exits 0 and the whole tree stages). "+
 							"Drop the quotes so the list word-splits — inside [ … ] tests and assignments the quotes are mandatory and left alone",
 						t.ID, b.where, q.line, q.text, treenoise.TreeNoiseEnvVar)
 					continue
 				}
-				c.warnfAt(DiagTreeNoiseEnvQuoted, t.ID, "",
+				c.warnfAtProperty(DiagTreeNoiseEnvQuoted, "tool", t.ID, b.where,
 					"tool %q %s, body line %d: %s — single quotes never expand, so the literal text reaches the command and excludes nothing. "+
 						"Read $%s unquoted: the engine exports pre-quoted pathspecs meant to word-split",
 					t.ID, b.where, q.line, q.text, treenoise.TreeNoiseEnvVar)
@@ -127,7 +128,7 @@ func (c *compiler) validateTreeNoiseChannels(w *Workflow) {
 }
 
 // bodyLineOf returns the 1-based line of needle inside body — the position
-// the message carries where the AST keeps no per-property span. 0 when the
+// the message carries, the AST keeping no position inside a body. 0 when the
 // needle is absent (a ref reconstructed from an expression, say), so the
 // message degrades to "body line 0" rather than naming a wrong one.
 func bodyLineOf(body, needle string) int {

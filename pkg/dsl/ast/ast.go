@@ -126,7 +126,10 @@ type SubbotDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // EmitDecl is an `emit` node: it publishes a named event with an optional
@@ -144,7 +147,10 @@ type EmitDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // WaitDecl is a `wait` node: it blocks its branch until the named event is
@@ -164,7 +170,10 @@ type WaitDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // AwaitAnswersDecl is an `await_answers` node: the deterministic sync point for
@@ -185,7 +194,10 @@ type AwaitAnswersDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +660,9 @@ type LLMDecl struct {
 	Deny              []string         // node-level permission deny rules; a non-empty list REPLACES the workflow's deny: (empty = inherit)
 	Needs             []string         // resource names acquired before running (workflow.resources)
 	Fallbacks         []*FallbackDecl  // ordered `fallbacks:` routes tried when this node's primary fails (ADR-087); declaration order preserved for round-trip
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
 }
 
 // FallbackDecl is one named entry of a node's `fallbacks:` block — a
@@ -734,7 +749,10 @@ type RouterDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
@@ -800,7 +818,10 @@ type HumanDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
@@ -876,7 +897,10 @@ type ToolNodeDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ActionParam is one argument of a connector action.
@@ -920,7 +944,10 @@ type ComputeDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ComputeExpr is one entry inside a `compute` node's `expr:` block:
@@ -965,7 +992,10 @@ type FailDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,7 +1043,10 @@ type WorkflowDecl struct {
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment
-	Span     Span
+	// Properties is the span of each property line the parser accepted in
+	// this declaration, by name (PropertySpans).
+	Properties PropertySpans
+	Span       Span
 }
 
 // BudgetBlock represents execution limits for a workflow.

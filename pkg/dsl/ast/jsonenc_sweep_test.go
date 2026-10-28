@@ -92,8 +92,9 @@ func TestEveryASTFieldHasAJSONCounterpart(t *testing.T) {
 		"ResourcesBlock": "mirrored across two workflow fields (TestResourcesBlockIsFullyMirrored)",
 		"Span":           "source positions never travel",
 		"Pos":            "source positions never travel",
+		"PropertySpan":   "source positions never travel (the per-property span table, PropertySpans)",
 	}
-	for _, name := range append(exportedStructTypes(t, "ast.go"), exportedStructTypes(t, "contract.go")...) {
+	for _, name := range append(append(exportedStructTypes(t, "ast.go"), exportedStructTypes(t, "contract.go")...), exportedStructTypes(t, "pos.go")...) {
 		if !listed[name] {
 			if _, ok := excluded[name]; !ok {
 				t.Errorf("ast.%s has no entry in the sweep's pair list (nor an exclusion) — a field added to it can be dropped by the transport unseen", name)
@@ -147,14 +148,16 @@ func exportedStructTypes(t *testing.T, file string) []string {
 	return names
 }
 
+var propertySpansType = reflect.TypeOf(PropertySpans{})
+
 // exportedFields lists a struct's exported fields, flattening embedded
 // structs (AgentDecl and JudgeDecl embed LLMDecl; their mirrors are flat)
-// and skipping Span.
+// and skipping the positions: Span and the per-property span table.
 func exportedFields(t reflect.Type) []reflect.StructField {
 	var out []reflect.StructField
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
-		if f.Name == "Span" || !f.IsExported() {
+		if f.Name == "Span" || f.Type == propertySpansType || !f.IsExported() {
 			continue
 		}
 		if f.Anonymous && f.Type.Kind() == reflect.Struct {

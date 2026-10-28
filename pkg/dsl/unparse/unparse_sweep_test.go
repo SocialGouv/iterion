@@ -22,6 +22,7 @@ import (
 func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 	unwritten := map[string]string{
 		"Span":                    "source positions never travel",
+		"Properties":              "source positions never travel (the per-property span table, ast.PropertySpans)",
 		"CursorDecl.Span":         "",
 		"AgentDecl.LLMDecl":       "embedded; its fields are read through llmFields",
 		"JudgeDecl.LLMDecl":       "embedded; its fields are read through llmFields",
@@ -79,7 +80,7 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 			continue
 		}
 		for _, f := range fs {
-			if f == "Span" {
+			if f == "Span" || f == "Properties" {
 				continue
 			}
 			if _, ok := unwritten[typ+"."+f]; ok {

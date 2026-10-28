@@ -129,3 +129,40 @@ func TestValidate_DiagnosticsCarryPositionAndFix(t *testing.T) {
 		t.Errorf("E012 = %+v, want source=parse line=2 and a fix line", *unknown)
 	}
 }
+
+// TestValidate_APropertyFindingNamesThePropertyAndClosesItsSpan: a finding
+// about one property's value is positioned on that property's line, not on
+// the declaration's header, and `--json` carries the property it is about
+// and the end of its span — what an editor needs to underline the value.
+func TestValidate_APropertyFindingNamesThePropertyAndClosesItsSpan(t *testing.T) {
+	dir := t.TempDir()
+	src := "agent a:\n  model: \"m\"\n\nworkflow w:\n  entry: a\n  compress: bogus\n  a -> done\n"
+	path := writeFixture(t, dir, "prop.bot", src)
+	p, buf := newTestPrinter(cli.OutputJSON)
+	_ = cli.RunValidate(path, p)
+	var result cli.ValidateResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("cannot parse JSON output: %v\n%s", err, buf.String())
+	}
+	var found *cli.ValidateDiagnostic
+	for i := range result.Diagnostics {
+		if result.Diagnostics[i].Code == "C102" {
+			found = &result.Diagnostics[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a C102 finding, got %+v", result.Diagnostics)
+	}
+	if found.Line != 6 || found.Column != 3 || found.Property != "compress" || found.EndLine != 6 || found.EndColumn != 3+len("compress: bogus") {
+		t.Errorf("C102 at %d:%d-%d:%d about %q, want 6:3-6:%d about \"compress\"", found.Line, found.Column, found.EndLine, found.EndColumn, found.Property, 3+len("compress: bogus"))
+	}
+	if !strings.Contains(buf.String(), `"property": "compress"`) || !strings.Contains(buf.String(), `"end_line": 6`) {
+		t.Errorf("the JSON does not carry the property and the span end:\n%s", buf.String())
+	}
+
+	p, buf = newTestPrinter(cli.OutputHuman)
+	_ = cli.RunValidate(path, p)
+	if out := buf.String(); !strings.Contains(out, "prop.bot:6:3: ") {
+		t.Errorf("human output does not position the finding on the compress line:\n%s", out)
+	}
+}

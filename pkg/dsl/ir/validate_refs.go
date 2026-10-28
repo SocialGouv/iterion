@@ -67,11 +67,11 @@ type refContext struct {
 // context's full attribution: node, edge and the span of the text that
 // carries the reference.
 func (c *compiler) refErrorf(rc refContext, code DiagCode, format string, args ...any) {
-	c.emit(SeverityError, code, rc.NodeID, rc.EdgeID, rc.Span, "", format, args...)
+	c.emit(SeverityError, code, rc.NodeID, rc.EdgeID, rc.Span, "", "", format, args...)
 }
 
 func (c *compiler) refWarnf(rc refContext, code DiagCode, format string, args ...any) {
-	c.emit(SeverityWarning, code, rc.NodeID, rc.EdgeID, rc.Span, "", format, args...)
+	c.emit(SeverityWarning, code, rc.NodeID, rc.EdgeID, rc.Span, "", "", format, args...)
 }
 
 // collectAllRefs gathers every template reference in the workflow together
@@ -927,7 +927,7 @@ func (c *compiler) validateNodeBodyInputMapped(w *Workflow, rc refContext, node 
 	list := strings.Join(quoted, ", ")
 	hint := fmt.Sprintf("map the field on an incoming edge (%s with { %s: \"{{outputs.<producer>.%s}}\" }) or read the producer's output directly ({{outputs.<producer>.%s}}); the incoming edges of %q: %s",
 		quoted[0], expr.Excerpt(fieldName), expr.Excerpt(fieldName), expr.Excerpt(fieldName), rc.NodeID, list)
-	c.emit(SeverityWarning, DiagInputFieldNeverMapped, rc.NodeID, rc.EdgeID, rc.Span, hint,
+	c.emit(SeverityWarning, DiagInputFieldNeverMapped, rc.NodeID, rc.EdgeID, rc.Span, "", hint,
 		"%s: reference %s reads a field %q that none of the node's incoming edges maps — empty on every path (incoming: %s)",
 		rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), list)
 }
@@ -1093,7 +1093,7 @@ func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *Router
 	// The catalogue fix for C032 ("add an output: schema") cannot be
 	// followed on a router, which has no output of its own: the remedy
 	// here is to map the field onto the router or read a var.
-	c.emit(SeverityWarning, DiagRefNodeNoSchema, rc.NodeID, rc.EdgeID, rc.Span,
+	c.emit(SeverityWarning, DiagRefNodeNoSchema, rc.NodeID, rc.EdgeID, rc.Span, "",
 		fmt.Sprintf("A router has no `output:` of its own — map the field onto it through an incoming edge (`… -> %s with { %s: \"…\" }`), or read `{{vars.%s}}` for a launch-time value.", rc.NodeID, expr.Excerpt(fieldName), expr.Excerpt(fieldName)),
 		"%s", msg)
 }

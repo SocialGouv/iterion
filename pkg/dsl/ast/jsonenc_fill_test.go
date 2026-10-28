@@ -63,8 +63,9 @@ func legalise(f *File) {
 var commentPlaceType = reflect.TypeOf(CommentBefore)
 
 var transportlessTypes = map[reflect.Type]bool{
-	reflect.TypeOf(Span{}): true,
-	reflect.TypeOf(Pos{}):  true,
+	reflect.TypeOf(Span{}):          true,
+	reflect.TypeOf(Pos{}):           true,
+	reflect.TypeOf(PropertySpans{}): true,
 }
 
 // fillDepth bounds the recursion: deep enough to allocate every pointer a

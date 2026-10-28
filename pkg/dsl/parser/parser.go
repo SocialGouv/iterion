@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
+	"sort"
 )
 
 // ParseResult is the output of Parse: the reading of a whole source.
@@ -192,6 +193,9 @@ type parser struct {
 	// blocks is the open-block stack the broken-list resync reads
 	// (openBlocks), kept current with the consumed stream.
 	blocks openBlockStack
+	// refusedProp is the property keyword unknownProperty last refused,
+	// which recordProperty leaves out of the declaration's table.
+	refusedProp Token
 }
 
 // ---- helpers ----
@@ -202,6 +206,56 @@ func (p *parser) backup()     { p.lex.Backup() }
 
 func (p *parser) pos(t Token) ast.Pos {
 	return ast.Pos{File: p.file, Line: t.Line, Column: t.Column}
+}
+
+// propertySpan is the span of the property line the keyword token name
+// opened, once the parser has read it: from the keyword to the end of the
+// last token read from the text since — the end of a block property's body,
+// of a multi-line value's last line. INDENT, DEDENT, NEWLINE and comment
+// tokens carry none of the line's text and are skipped; when nothing past
+// the keyword was read, the span is the keyword's. Recorded by every
+// declaration loop into the declaration's Properties (ast.PropertySpans),
+// for the compiler's diagnostics about a property's value (#1094).
+func (p *parser) propertySpan(name Token) ast.Span {
+	start := p.pos(name)
+	end := p.endPos(name)
+	for i := p.lex.ti - 1; i >= 0; i-- {
+		t := p.lex.tokens[i]
+		switch t.Type {
+		case TokenIndent, TokenDedent, TokenNewline, TokenComment, TokenEOF:
+			continue
+		}
+		if t.Offset > name.Offset || (t.Offset == name.Offset && t.Line == name.Line) {
+			end = p.endPos(t)
+		}
+		break
+	}
+	return ast.Span{Start: start, End: end}
+}
+
+// endPos is the position just past the last rune of a token read from the
+// text. A scanner that looks ahead for its terminator (the block scalar
+// reads the indentation of the line below before it knows the block ended)
+// leaves End past the token's own text, so the last rune is the last
+// non-blank one before End, as the lexer's endLineOf finds the end line.
+// Every token the scanner reads carries its extent, the lexer's diagnosis
+// the rune it refuses; a token without one ends where it starts.
+func (p *parser) endPos(t Token) ast.Pos {
+	src, starts := p.lex.src, p.lex.lineStarts
+	if t.End <= t.Offset || t.End > len(src) || len(starts) == 0 {
+		return ast.Pos{File: p.file, Line: t.Line, Column: t.Column}
+	}
+	last := t.End - 1
+	for last > t.Offset && (src[last] == ' ' || src[last] == '\t' || src[last] == '\n') {
+		last--
+	}
+	// The line whose first rune is the last one at or before last: the
+	// count of line starts not past it.
+	line := sort.Search(len(starts), func(i int) bool { return starts[i] > last })
+	if line == 0 {
+		line = 1
+	}
+	return ast.Pos{File: p.file, Line: line, Column: last - starts[line-1] + 2}
 }
 
 func (p *parser) addError(code DiagCode, t Token, msg string) {
@@ -777,7 +831,20 @@ func (p *parser) parseDeclHeader(kind string) (start Token, name string, ok bool
 // message uses; the conformance test in pkg/dsl/spec holds the two sets of
 // names together.
 func (p *parser) unknownProperty(kind string, t Token, name string) {
+	p.refusedProp = t
 	p.addErrorHint(DiagUnknownProperty, t, "unknown "+kind+" property "+strconv.Quote(name)+"", spec.UnknownPropertyHintIn(kind, p.blockHost, name))
+}
+
+// recordProperty records the span of the property line the keyword token t
+// opened into the declaration's table — unless unknownProperty refused that
+// very line: a refused name is no property of the declaration, and a table
+// that grew with every stray line would make Set, linear in the table,
+// quadratic in a file of strays.
+func (p *parser) recordProperty(ps *ast.PropertySpans, t Token) {
+	if r := p.refusedProp; r.Line == t.Line && r.Column == t.Column && r.Value == t.Value {
+		return
+	}
+	ps.Set(t.Value, p.propertySpan(t))
 }
 
 // skipIndentedBlock drops the indented block that follows a refused header,
