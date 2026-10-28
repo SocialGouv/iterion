@@ -201,6 +201,14 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	// tell an operator whether their PAT rides a header or a query string.
 	fmt.Fprintf(out, "  scheme: %s (%s) · capabilities: %s\n", scheme, placement.Describe(), capabilityNames(caps))
 	fmt.Fprintf(out, "  a .bot reaches it with `connection: %s`\n", alias)
+	// A grant nothing performs is said at the moment it is MADE. `agent` is
+	// accepted (it is a settled decision, and the operator's choice is not
+	// silently narrowed) and it is inert, so the one surface that could tell
+	// them must — the alternative is a connection that reads as attachable to
+	// an agent and is not.
+	if advice := connection.AgentGrantAdvice(caps); advice != "" {
+		fmt.Fprintf(out, "  warning: %s\n", advice)
+	}
 	// A self-hosted instance is the common case for the connectors this
 	// catalog ships, and the guarded dialer refuses one by default. Said here
 	// rather than left for the first run to discover: the record is still
@@ -238,6 +246,12 @@ func ConnectionsList(storeDir string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "%-16s %-12s %-10s %s\n", c.Alias, c.Connector, c.Status, host)
 		fmt.Fprintf(out, "  %s · scheme %s · %s\n", c.ID, c.SchemeID, capabilityNames(c.Capabilities))
+		// Said on EVERY list, not only at `add`: the grant outlives the
+		// command that wrote it, and the operator reading an inventory months
+		// later is the one deciding what this connection can be used for.
+		if advice := connection.AgentGrantAdvice(c.Capabilities); advice != "" {
+			fmt.Fprintf(out, "  warning: %s\n", advice)
+		}
 		if c.StatusReason != "" {
 			fmt.Fprintf(out, "  %s\n", c.StatusReason)
 		}

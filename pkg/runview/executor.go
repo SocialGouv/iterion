@@ -398,6 +398,15 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if err := ValidateModelOverridePermissions(spec.Workflow, spec.ModelOverrides, spec.Permission); err != nil {
 		return nil, err
 	}
+	// Every plane builds its executor here — the CLI, the launch API, a
+	// resume, a subbot, the dispatcher, the cloud runner, a replay — so this
+	// is the one place a `.bot` whose `action:` nodes nothing can serve is
+	// refused for all of them. Wiring the refusal at each launch surface
+	// instead is how the catalog became a capability some surfaces had and
+	// others silently lacked (LocalConnectors' own doc).
+	if err := admitConnectorActions(spec.Workflow, spec.Connectors); err != nil {
+		return nil, err
+	}
 	if spec.Logger == nil {
 		spec.Logger = iterlog.NewFromEnv(os.Stderr)
 	}

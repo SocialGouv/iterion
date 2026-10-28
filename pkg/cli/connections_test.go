@@ -320,3 +320,54 @@ func TestAnHTTPOriginIsFlaggedOnAddAndOnEveryList(t *testing.T) {
 		t.Errorf("the warning must name the host it is about, got:\n%s", out)
 	}
 }
+
+// A grant nothing performs is said by BOTH commands that describe the record
+// (#1072 governance). `--capability agent` is accepted — it is a settled
+// decision and the operator's explicit choice is never silently narrowed — and
+// it is inert, so `add` says so when it writes it and `list` says so every
+// time it reads it back. A connection granting `action` alone is owed nothing
+// and must stay quiet.
+func TestAnAgentGrantIsReportedAsInertOnAddAndOnEveryList(t *testing.T) {
+	ws := connectionsWorkspace(t)
+	storeDir := filepath.Join(ws, ".iterion")
+
+	var add bytes.Buffer
+	if err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector: "forgejo", Scheme: "token", Alias: "agentic",
+		BaseURL: "https://codeberg.org", TokenEnv: "FORGE_TEST_TOKEN",
+		Capabilities: []string{"action", "agent"}, StoreDir: storeDir,
+	}, &add); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if !strings.Contains(add.String(), "inert") {
+		t.Errorf("add must say the `agent` grant it just stored is inert, got:\n%s", add.String())
+	}
+
+	var list bytes.Buffer
+	if err := cli.ConnectionsList(storeDir, &list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(list.String(), "inert") {
+		t.Errorf("list must say it too — the grant outlives the command that wrote it, got:\n%s", list.String())
+	}
+
+	// The action-only record next to it stays silent, or the warning is noise
+	// an operator learns to skip.
+	var addAction, listBoth bytes.Buffer
+	if err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector: "forgejo", Scheme: "token", Alias: "deterministic",
+		BaseURL: "https://codeberg.org", TokenEnv: "FORGE_TEST_TOKEN",
+		Capabilities: []string{"action"}, StoreDir: storeDir,
+	}, &addAction); err != nil {
+		t.Fatalf("add action-only: %v", err)
+	}
+	if strings.Contains(addAction.String(), "inert") {
+		t.Errorf("an action-only grant is honoured and owed no warning, got:\n%s", addAction.String())
+	}
+	if err := cli.ConnectionsList(storeDir, &listBoth); err != nil {
+		t.Fatalf("list both: %v", err)
+	}
+	if n := strings.Count(listBoth.String(), "inert"); n != 1 {
+		t.Errorf("exactly the agent-granting record is flagged, got %d warnings in:\n%s", n, listBoth.String())
+	}
+}

@@ -48,6 +48,8 @@ var guardNames = []string{
 	"ITERION_STUDIO_INSECURE_NONLOOPBACK",
 	// Private-network reach and host allowlists.
 	"ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE", "ITERION_CONNECTOR_ALLOW_PRIVATE",
+	// Refusals a process may lift: the connector-action admission screen.
+	"ITERION_CONNECTOR_ADMISSION",
 	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "ITERION_OPENAI_COMPATIBLE_RESOLVED",
 	"ITERION_RUNNER_CLONE_ALLOW_PRIVATE", "ITERION_WEBHOOK_FORGE_HOSTS",
 	// Code and configuration loaded from the repository or the host.

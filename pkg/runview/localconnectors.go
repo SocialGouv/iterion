@@ -1,7 +1,11 @@
 package runview
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"sort"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/connection"
@@ -82,4 +86,126 @@ func WorkflowHasAction(wf *ir.Workflow) bool {
 		}
 	}
 	return false
+}
+
+// ActionNode is one tool node declaring a connector action, reduced to what a
+// refusal has to name: which node, which operation, which package has to be
+// installed, and which connection would have authenticated the call.
+type ActionNode struct {
+	NodeID string
+	// Action is the operation id, `connector.resource.verb`.
+	Action string
+	// Connector is the package half of Action — the thing a tier serves.
+	Connector string
+	// Connection is the alias the node authenticates with, empty when the
+	// author wrote none (the compiler refuses that, C261; a hand-built IR can
+	// still carry it).
+	Connection string
+}
+
+// ActionNodes lists every tool node declaring a connector action, ordered by
+// node id.
+//
+// SORTED rather than walked in map order. ir.Workflow.Nodes is a map, the list
+// is read into a refusal an operator and a test both read, and a message whose
+// order depends on which bucket Go visited first is a message nothing can
+// assert on.
+func ActionNodes(wf *ir.Workflow) []ActionNode {
+	if wf == nil {
+		return nil
+	}
+	out := make([]ActionNode, 0, len(wf.Nodes))
+	for _, n := range wf.Nodes {
+		t, ok := n.(*ir.ToolNode)
+		if !ok || t.Action == "" {
+			continue
+		}
+		connector, _, _ := strings.Cut(t.Action, ".")
+		out = append(out, ActionNode{NodeID: t.NodeID(), Action: t.Action, Connector: connector, Connection: t.Connection})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	return out
+}
+
+// UnservedActionsError is the admission refusal of a run this process cannot
+// serve: the workflow declares `action:` nodes and no connector catalog is
+// wired here.
+//
+// TYPED rather than a formatted string: "the plane serves no connector at all"
+// is a deployment fact an operator fixes by installing a package, and a caller
+// that wants to tell it apart from "this connection may not" (a grant fixed on
+// the record) needs more than a substring.
+type UnservedActionsError struct {
+	// Nodes are the action nodes, ordered by node id.
+	Nodes []ActionNode
+}
+
+func (e *UnservedActionsError) Error() string {
+	var b strings.Builder
+	b.WriteString("runview: this process wires no connector catalog, so the run is refused at admission — ")
+	fmt.Fprintf(&b, "%d tool node(s) declare `action:`:", len(e.Nodes))
+	for _, n := range e.Nodes {
+		fmt.Fprintf(&b, " %q wants %s from connector %q", n.NodeID, n.Action, n.Connector)
+		if n.Connection != "" {
+			fmt.Fprintf(&b, " through connection %q", n.Connection)
+		}
+		b.WriteByte(';')
+	}
+	b.WriteString(" nothing here resolves a connector package or opens its credential." +
+		" Locally: install the package in a tier this process reads" +
+		" (`<iterion data dir>/connectors/<id>/`, or `<workspace>/connectors/<id>/` with ITERION_CONNECTOR_PROJECT_CATALOG=1 —" +
+		" `iterion connectors gen` builds one) and bind a credential with `iterion connections add`." +
+		" The platform and team tiers of docs/adr/098-connector-catalog.md, and the cloud connection store a server would" +
+		" read, do not exist yet, so a cloud plane and a runner arrive here too." +
+		" " + ConnectorAdmissionEnv + "=off keeps the old behaviour — the run starts and fails at the node.")
+	return b.String()
+}
+
+// ConnectorAdmissionEnv turns the admission refusal below off for the process.
+//
+// A refusal that stops a run is a LOAD-BEARING bound, and a load-bearing bound
+// keeps a greppable way out. Two legitimate uses, neither of them a defect in
+// the refusal:
+//
+//   - a bot whose `action:` node is on a branch this launch will not take. It
+//     ran to completion on a catalog-less plane before, and an operator who
+//     knows that is entitled to keep it running while they install the
+//     package.
+//   - a caller that builds an executor to run ONE node rather than a run
+//     (botreplay's scenario recorder), where a bot's unrelated action node is
+//     not the node being executed.
+//
+// Spelled like ITERION_CONNECTOR_ALLOW_PRIVATE and for the same reason: the
+// decision belongs to whoever runs the process, and the refusal names the
+// variable so an operator does not have to find it.
+const ConnectorAdmissionEnv = "ITERION_CONNECTOR_ADMISSION"
+
+// admitConnectorActions refuses, at executor build, a workflow whose action
+// nodes nothing here can resolve.
+//
+// At ADMISSION rather than at the node. The executor keeps its own refusal
+// (executeToolNodeAction, "this process has no connector catalog wired") and
+// must: the two guards protect different things, and only that one protects an
+// IR built by a path that never came through here. But reaching it means the
+// run already started, already spent whatever its earlier nodes cost, and
+// already took whatever effects they had — for a verdict every one of its
+// inputs was known before the first node ran. The honesty the catalog owes is
+// that a `.bot` which cannot run here says so before it runs, naming the
+// package to install rather than failing mid-flight at the node.
+//
+// The predicate is the executor's own — a nil INTERFACE, not a nil pointer
+// inside one (LocalConnectors returns the former deliberately), so the two
+// guards cannot disagree about what "wired" means.
+func admitConnectorActions(wf *ir.Workflow, connectors model.ConnectorResolver) error {
+	if connectors != nil {
+		return nil
+	}
+	if os.Getenv(ConnectorAdmissionEnv) == "off" {
+		return nil
+	}
+	nodes := ActionNodes(wf)
+	if len(nodes) == 0 {
+		return nil
+	}
+	return &UnservedActionsError{Nodes: nodes}
 }

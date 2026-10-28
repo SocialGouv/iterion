@@ -189,9 +189,13 @@ func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, op spec.Opera
 	// this?". A deterministic node and an agent facade are different uses of
 	// one credential, and an operator may legitimately allow one and not the
 	// other.
+	//
+	// TYPED (agent.go): the refusal reaches the executor as the node's
+	// failure, and a caller — today the operator reading it, tomorrow the MCP
+	// facade — has to tell "widen this grant" from "the grant you hold is one
+	// this build cannot honour".
 	if !conn.Has(CapAction) {
-		return fmt.Errorf("connection %q may not serve a deterministic node: it declares %s, not %q — an operator grants that use deliberately",
-			conn.Alias, describeCaps(conn.Capabilities), CapAction)
+		return &CapabilityError{Alias: conn.Alias, Want: CapAction, Have: conn.Capabilities}
 	}
 	// The scheme the connection holds must be one the operation accepts, and
 	// the grant must cover what the operation needs. Refused locally: the

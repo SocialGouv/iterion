@@ -251,6 +251,10 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_OPENAI_COMPATIBLE_RESOLVED":       true,
 	"ITERION_CONNECTOR_ALLOW_PRIVATE":          true,
 	"ITERION_WEBHOOK_FORGE_HOSTS":              true,
+	// The connector-action admission refusal: `off` lets a run start that
+	// nothing here can serve, so it fails at the node as it used to. A stored
+	// value must not decide that for a tenant's run.
+	"ITERION_CONNECTOR_ADMISSION": true,
 	// Code loaded from the repository under review or the host: MCP servers,
 	// plugins, CLI settings sources, context files, slash commands.
 	"ITERION_MCP_AUTOLOAD":                             true,
