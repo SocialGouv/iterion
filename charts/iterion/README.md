@@ -13,8 +13,9 @@ image, two deployments (`server` + `runner`).
 
 - Kubernetes ≥ 1.28, Helm ≥ 3.8 (OCI)
 - MongoDB 6+ **replica set** (change streams + transactions), NATS 2.10+
-  with JetStream, an S3-compatible bucket — bundled sub-charts exist for
-  all three (dev), external services recommended (prod)
+  with JetStream, an S3-compatible bucket — the dev values bring up all
+  three in-cluster (the nats sub-chart and the chart's own single-replica
+  dev stores), external services recommended (prod)
 - Optional: [KEDA](https://keda.sh) for queue-depth runner autoscaling,
   prometheus-operator for the PodMonitor / PrometheusRule, cert-manager
   or equivalent for ingress TLS
@@ -26,7 +27,7 @@ image, two deployments (`server` + `runner`).
 helm upgrade --install iterion oci://ghcr.io/socialgouv/charts/iterion \
   --version <semver> -f my-values.yaml
 
-# Dev stack — bundled Mongo/NATS/MinIO, single replica, fixed dev keys
+# Dev stack — in-cluster Mongo/NATS/SeaweedFS, single replica, fixed dev keys
 helm upgrade --install iterion ./charts/iterion -f charts/iterion/values-dev.yaml
 
 # Prod shape — external Mongo/NATS/S3, HPA, NetworkPolicy, PodMonitor
@@ -34,8 +35,8 @@ helm upgrade --install iterion ./charts/iterion -f charts/iterion/values-prod.ya
 ```
 
 Post-install, `NOTES.txt` prints the studio URL, where to find the
-bootstrap super-admin temp password, and loud warnings when the bundled
-MongoDB runs without auth or email is disabled.
+bootstrap super-admin temp password, and loud warnings when the dev stores
+run or email is disabled.
 
 ## Values — top-level map
 
@@ -56,7 +57,8 @@ groups:
 | `metrics` | `podMonitor.*` scrape config + `prometheusRule.*` alert packs: the control-plane starter (DLQ depth, heartbeat errors, orphan recoveries, launch denials, webhook throttling), `prometheusRule.datastores.*` (a replica missing or restarting per store, valkey replication and AOF, SeaweedFS volumes and leader, MongoDB members — and an absent-signal rule per exporter family, so a signal nobody scrapes pages) and the backup rules when `backup.enabled` |
 | `backup` | The off-cluster copy of the artifact bucket: one rclone CronJob per tier (daily `sync` keeping deletions, weekly and monthly `snapshot`s), image pinned by digest, destination credentials by `existingSecret` only, every run checked — [docs/cloud-backup.md](../../docs/cloud-backup.md#blob-backup) |
 | `persistence` | local-mode PVC only |
-| `mongodb` / `nats` / `minio` | Bundled sub-charts (dev). **The bundled Mongo defaults to `auth.enabled: false` — dev only**, flip it or use an external URI for anything shared |
+| `nats` | The one sub-chart (the official NATS chart), dev only |
+| `devStack` | The chart's own single-replica dev stores at the digests of docker-compose.cloud.yml — `mongodb` (a one-member replica set, **no auth: dev only**) and `seaweedfs` (the production object store in one process, a fixed identity, the bucket created by a pinned rclone hook); `values-dev.yaml` turns them on and `config.mongo.uri` / `config.s3.endpoint` resolve to them when empty |
 
 ## Upgrade notes
 
@@ -86,6 +88,14 @@ groups:
   used to get. `pdb.enabled: true|false` forces either way.
 - **`metrics.prometheusRule.enabled`** — opt-in; requires the
   PrometheusRule CRD.
+- **BREAKING, dev values only** — the Bitnami `mongodb` and `minio`
+  sub-charts are gone with their `mongodb.*` / `minio.*` values (frozen
+  `bitnamilegacy/*` images, no security updates): the dev stack is now the
+  chart's own `devStack.*` — Mongo 8.3 and SeaweedFS 4.48, both pinned by
+  digest, the bucket created by a pinned rclone hook. A values file still
+  setting `mongodb.*` or `minio.*` is refused by the schema; point
+  `config.mongo.uri` / `config.s3.endpoint` at your stores, or leave them
+  empty with `devStack.*.enabled`. Production never enabled either sub-chart.
 - **`backup.*`** — new, off by default; the render refuses an enabled
   backup without its destination Secret or with an unpinned image.
 - **`metrics.prometheusRule.datastores.*`** — new, off by default; it names

@@ -365,7 +365,7 @@ config:
     # delay × (MaxDeliver-1) above the cold readiness time of the new fleet.
     epochMismatchDelay: 2m
   mongo:
-    uri: ""           # required when mode=cloud and mongodb.enabled=false
+    uri: ""           # required when mode=cloud, unless devStack.mongodb resolves it or the auth Secret carries ITERION_MONGO_URI
     database: iterion
     eventsTtlDays: 90
   nats:
@@ -382,7 +382,7 @@ config:
     # Clustered NATS needs this >1 for data-HA; CreateOrUpdateStream migrates existing streams in place at the next server boot.
     streamReplicas: 1
   s3:
-    endpoint: ""      # required when mode=cloud and minio.enabled=false
+    endpoint: ""      # required when mode=cloud, unless devStack.seaweedfs resolves it
     region: us-east-1
     bucket: iterion-artifacts
     usePathStyle: true
@@ -845,24 +845,45 @@ backup:
   failedJobsHistoryLimit: 5
   podAnnotations: {}
 
-# --- Sub-charts (off by default; values-dev.yaml turns them on) ----
-mongodb:
-  enabled: false
-  architecture: replicaset
-  replicaCount: 1
-  auth:
-    enabled: false
+# --- Sub-chart (off by default; values-dev.yaml turns it on) ---------
 nats:
   enabled: false
   config:
     jetstream:
       enabled: true
-minio:
-  enabled: false
-  # Credentials intentionally left empty — values-dev.yaml supplies
-  # the dev-only minioadmin/minioadmin pair. In prod set these via
-  # an existing Secret referenced from secrets.storage.existingSecret.
-  auth:
-    rootUser: ""
-    rootPassword: ""
-  defaultBuckets: iterion-artifacts
+
+# --- Dev-only in-cluster datastores (values-dev.yaml turns them on) ----
+# First-party, single-replica stores for `task chart:kind`, the cloud-e2e CI
+# job and ad-hoc experiments — the releases and digests of
+# docker-compose.cloud.yml. Never for production (no replication, fixed dev
+# identities); the cloud deployment's stores are their own charts.
+devStack:
+  mongodb:
+    # A ONE-member replica set (change streams and transactions need a
+    # replica set; failover does not exist here), initiated by its own
+    # readiness probe like the compose stack, no authentication. Resolves
+    # config.mongo.uri when that is empty.
+    enabled: false
+    image: mongo:8.3@sha256:44dce4b1688969ff3fdbfc438fd6113f734140ad96e3639ef17ee26a162dfb58
+    replicaSetName: rs0
+    resources: {}
+    # emptyDir by default (the data lives as long as the pod); a PVC on request.
+    persistence:
+      enabled: false
+      size: 8Gi
+      storageClass: ""
+  seaweedfs:
+    # The object store, as in prod: SeaweedFS in one process (master +
+    # volume + filer + S3 gateway). Its S3 identity is the chart's dev key
+    # pair (secrets.storage.s3AccessKeyId / s3SecretAccessKey, create=true
+    # required); the bucket config.s3.bucket is created by a post-install
+    # hook with the backup CronJob's pinned rclone. Resolves
+    # config.s3.endpoint when that is empty.
+    enabled: false
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    resources: {}
+    # emptyDir by default (the data lives as long as the pod); a PVC on request.
+    persistence:
+      enabled: false
+      size: 8Gi
+      storageClass: ""

@@ -9,7 +9,7 @@ data:
   ITERION_LOG_FORMAT: {{ .Values.config.log.format | quote }}
   ITERION_LOG_LEVEL: {{ .Values.config.log.level | quote }}
   {{- if eq .Values.mode "cloud" }}
-  ITERION_MONGO_URI: {{ .Values.config.mongo.uri | quote }}
+  ITERION_MONGO_URI: {{ include "iterion.mongo.uri" . | quote }}
   ITERION_MONGO_DB: {{ .Values.config.mongo.database | quote }}
   ITERION_MONGO_EVENTS_TTL_DAYS: {{ .Values.config.mongo.eventsTtlDays | quote }}
   ITERION_NATS_URL: {{ .Values.config.nats.url | quote }}
@@ -17,7 +17,7 @@ data:
   ITERION_NATS_KV_BUCKET: {{ .Values.config.nats.kvBucket | quote }}
   ITERION_NATS_DLQ_STREAM: {{ .Values.config.nats.dlqStream | quote }}
   ITERION_NATS_STREAM_REPLICAS: {{ .Values.config.nats.streamReplicas | quote }}
-  ITERION_S3_ENDPOINT: {{ .Values.config.s3.endpoint | quote }}
+  ITERION_S3_ENDPOINT: {{ include "iterion.s3.endpoint" . | quote }}
   ITERION_S3_REGION: {{ .Values.config.s3.region | quote }}
   ITERION_S3_BUCKET: {{ .Values.config.s3.bucket | quote }}
   ITERION_S3_USE_PATH_STYLE: {{ .Values.config.s3.usePathStyle | quote }}

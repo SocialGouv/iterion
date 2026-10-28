@@ -1,0 +1,140 @@
+{{- if (.Values.devStack.mongodb).enabled -}}
+{{- $m := .Values.devStack.mongodb -}}
+{{- $name := printf "%s-mongodb" (include "iterion.fullname" .) -}}
+{{- $rs := $m.replicaSetName | default "rs0" -}}
+{{- if not (regexMatch "^[^@]+@sha256:[0-9a-f]{64}$" ($m.image | default "")) -}}
+{{- fail (printf "devStack.mongodb.image must be pinned by digest (<repository>:<tag>@sha256:<64 hex>), got %q" ($m.image | default "")) -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9_-]+$" $rs) -}}
+{{- fail (printf "devStack.mongodb.replicaSetName must be [A-Za-z0-9_-]+, got %q" $rs) -}}
+{{- end -}}
+# The dev Mongo (#2084): the official image at the digest
+# docker-compose.cloud.yml runs, a ONE-member replica set — change streams
+# and transactions need a replica set, failover does not exist here — with
+# no authentication. For `task chart:kind`, the cloud-e2e CI job and ad-hoc
+# experiments: never for production, whose MongoDB is its own chart.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-mongodb
+spec:
+  type: ClusterIP
+  # The replica-set member is named after this Service, and mongod must
+  # reach ITSELF through that name to accept the configuration — before
+  # the pod is Ready, since the readiness probe is what initiates the set.
+  # Publishing the not-ready address is what closes that loop.
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "iterion.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-mongodb
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: mongodb
+      protocol: TCP
+{{- if ($m.persistence).enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-data
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-mongodb
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ $m.persistence.size | default "8Gi" }}
+  {{- with $m.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-mongodb
+spec:
+  replicas: 1
+  # One data directory, one mongod: never two pods on it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "iterion.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dev-mongodb
+  template:
+    metadata:
+      labels:
+        {{- include "iterion.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: dev-mongodb
+    spec:
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mongodb
+          image: {{ $m.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          args:
+            - --replSet
+            - {{ $rs }}
+            - --bind_ip_all
+          env:
+            # mongosh (the probe) keeps its logs under HOME; the pod runs as
+            # an unprivileged uid with no home of its own.
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: mongodb
+              containerPort: 27017
+              protocol: TCP
+          # Initiate the replica set on first boot, the way the compose stack
+          # does, so change streams work without a manual mongosh step; the
+          # probe itself just confirms the server answers.
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - --eval
+                - 'try { rs.status() } catch (e) { rs.initiate({ _id: {{ $rs | quote }}, members: [{ _id: 0, host: {{ printf "%s:27017" $name | quote }} }] }) }'
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: mongodb
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            {{- toYaml ($m.resources | default dict) | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          {{- if ($m.persistence).enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+{{- end -}}

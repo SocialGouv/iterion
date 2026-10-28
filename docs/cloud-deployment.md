@@ -8,8 +8,8 @@ egress, observability, resume, and migration from a filesystem store.
 The Helm chart is published to GHCR as an OCI artifact at
 `oci://ghcr.io/socialgouv/charts/iterion` (sources in
 [charts/iterion/](../charts/iterion/)). It renders the full stack;
-values-dev.yaml bundles in-cluster Mongo / NATS / MinIO for smoke
-tests, values-prod.yaml expects external dependencies.
+values-dev.yaml brings up an in-cluster Mongo, NATS and SeaweedFS for
+smoke tests, values-prod.yaml expects external dependencies.
 
 ## Install
 

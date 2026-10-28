@@ -2,6 +2,7 @@ package chart_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,8 +42,14 @@ func helmBinary(t *testing.T) string {
 // render runs `helm template iterion . --namespace iterion <args>`.
 func render(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	return renderAs(t, "iterion", args...)
+}
+
+// renderAs is render under another release name.
+func renderAs(t *testing.T, release string, args ...string) (string, error) {
+	t.Helper()
 	helm := helmBinary(t)
-	cmd := exec.Command(helm, append([]string{"template", "iterion", ".", "--namespace", renderNamespace}, args...)...)
+	cmd := exec.Command(helm, append([]string{"template", release, ".", "--namespace", renderNamespace}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -609,4 +616,129 @@ func TestChartRenderBackup(t *testing.T) {
 		mustRefuse(t, "maxAgeHours must be at least 1", append(base, "--set-json", "backup.tiers="+tier("sync", 7, 0))...)
 		mustRefuse(t, "backup.tiers must list at least one tier", append(base, "--set-json", "backup.tiers=[]")...)
 	})
+}
+
+func TestChartRenderDevStack(t *testing.T) {
+	const rcloneDigest = "sha256:d5971950c2b370fb04dd3292541b5bda6d9103143fd7e345aeb435a399388afc"
+	out := mustRender(t, "-f", "values-dev.yaml")
+	docs := manifests(t, out)
+
+	t.Run("no MinIO and no Bitnami left in the dev render", func(t *testing.T) {
+		lower := strings.ToLower(out)
+		for _, word := range []string{"minio", "bitnami"} {
+			if strings.Contains(lower, word) {
+				t.Errorf("the dev render still mentions %q", word)
+			}
+		}
+	})
+
+	t.Run("the dev stores render pinned, with the bucket hook", func(t *testing.T) {
+		mongo := podSpec(t, docs, "Deployment", "iterion-mongodb")
+		if img := fmt.Sprint(dig(mongo, "containers", "0", "image")); !strings.HasPrefix(img, "mongo:8.3@sha256:") {
+			t.Errorf("mongo image = %s, want the digest-pinned mongo:8.3", img)
+		}
+		if args := fmt.Sprint(dig(mongo, "containers", "0", "args")); !strings.Contains(args, "--replSet rs0") {
+			t.Errorf("mongo args = %s, want a replica set", args)
+		}
+		svc := must(t, docs, "Service", "iterion-mongodb")
+		if dig(svc, "spec", "publishNotReadyAddresses") != true {
+			t.Errorf("the dev Mongo Service must publish the not-ready pod: rs.initiate needs the member host to route to the pod before it is Ready")
+		}
+		sw := podSpec(t, docs, "Deployment", "iterion-seaweedfs")
+		if img := fmt.Sprint(dig(sw, "containers", "0", "image")); !strings.HasPrefix(img, "chrislusf/seaweedfs:4.48@sha256:") {
+			t.Errorf("seaweedfs image = %s, want the digest-pinned 4.48", img)
+		}
+		if args := fmt.Sprint(dig(sw, "containers", "0", "args")); !strings.Contains(args, "-s3.autoCreateBucket=false") || !strings.Contains(args, "-master.telemetry=false") {
+			t.Errorf("seaweedfs args = %s", args)
+		}
+		job := must(t, docs, "Job", "iterion-seaweedfs-init")
+		if got := dig(job, "metadata", "annotations", "helm.sh/hook"); got != "post-install,post-upgrade" {
+			t.Errorf("bucket hook = %v", got)
+		}
+		if img := fmt.Sprint(dig(job, "spec", "template", "spec", "containers", "0", "image")); img != "rclone/rclone@"+rcloneDigest {
+			t.Errorf("bucket hook image = %s, want the backup CronJob's pinned rclone", img)
+		}
+		if script := fmt.Sprint(dig(job, "spec", "template", "spec", "containers", "0", "args", "0")); !strings.Contains(script, `rclone mkdir "s3:${BUCKET}"`) || !strings.Contains(script, `rclone size "s3:${BUCKET}"`) {
+			t.Errorf("the hook must create the bucket and read it back, got:\n%s", script)
+		}
+	})
+
+	t.Run("the identity file is the chart's dev key pair and nothing anonymous", func(t *testing.T) {
+		secret := must(t, docs, "Secret", "iterion-seaweedfs-s3")
+		var identity struct {
+			Identities []struct {
+				Name        string `json:"name"`
+				Credentials []struct {
+					AccessKey string `json:"accessKey"`
+					SecretKey string `json:"secretKey"`
+				} `json:"credentials"`
+				Actions []string `json:"actions"`
+			} `json:"identities"`
+		}
+		if err := json.Unmarshal([]byte(fmt.Sprint(dig(secret, "stringData", "s3.json"))), &identity); err != nil {
+			t.Fatalf("s3.json: %v", err)
+		}
+		if len(identity.Identities) != 1 || len(identity.Identities[0].Credentials) != 1 {
+			t.Fatalf("want one identity with one credential, got %+v", identity)
+		}
+		if c := identity.Identities[0].Credentials[0]; c.AccessKey != "iterion-dev" || c.SecretKey != "iterion-dev-secret" {
+			t.Errorf("the identity must be secrets.storage's pair, got %+v", c)
+		}
+		if identity.Identities[0].Name == "anonymous" {
+			t.Errorf("an anonymous identity serves unsigned requests")
+		}
+		storage := must(t, docs, "Secret", "iterion-storage")
+		if got := dig(storage, "stringData", "ITERION_S3_ACCESS_KEY_ID"); got != "iterion-dev" {
+			t.Errorf("the server's key = %v, want the same pair as the gateway", got)
+		}
+	})
+
+	t.Run("the config resolves the dev stores whatever the release name", func(t *testing.T) {
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		if got := dig(cm, "data", "ITERION_MONGO_URI"); got != "mongodb://iterion-mongodb:27017/?replicaSet=rs0" {
+			t.Errorf("ITERION_MONGO_URI = %v", got)
+		}
+		if got := dig(cm, "data", "ITERION_S3_ENDPOINT"); got != "http://iterion-seaweedfs:8333" {
+			t.Errorf("ITERION_S3_ENDPOINT = %v", got)
+		}
+		ci, err := renderAs(t, "ci", "-f", "values-dev.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ciDocs := manifests(t, ci)
+		cm = must(t, ciDocs, "ConfigMap", "ci-iterion-config")
+		if got := dig(cm, "data", "ITERION_MONGO_URI"); got != "mongodb://ci-iterion-mongodb:27017/?replicaSet=rs0" {
+			t.Errorf("release ci: ITERION_MONGO_URI = %v", got)
+		}
+		if got := dig(cm, "data", "ITERION_S3_ENDPOINT"); got != "http://ci-iterion-seaweedfs:8333" {
+			t.Errorf("release ci: ITERION_S3_ENDPOINT = %v", got)
+		}
+		must(t, ciDocs, "Service", "ci-iterion-mongodb")
+		must(t, ciDocs, "Service", "ci-iterion-seaweedfs")
+		if got := dig(must(t, ciDocs, "Job", "ci-iterion-seaweedfs-init"), "spec", "template", "spec", "containers", "0", "env", "5", "value"); got != "http://ci-iterion-seaweedfs:8333" {
+			t.Errorf("release ci: the bucket hook dials %v", got)
+		}
+	})
+
+	t.Run("the guards", func(t *testing.T) {
+		mustRefuse(t, "needs secrets.storage.create=true", "-f", "values-dev.yaml", "--set", "secrets.storage.create=false")
+		mustRefuse(t, "must be pinned by digest", "-f", "values-dev.yaml", "--set", "devStack.seaweedfs.image=chrislusf/seaweedfs:4.48")
+		mustRefuse(t, "must be pinned by digest", "-f", "values-dev.yaml", "--set", "devStack.mongodb.image=mongo:8.3")
+		mustRefuse(t, "minio", "-f", "values-dev.yaml", "--set", "minio.enabled=true")
+		mustRefuse(t, "mongodb", "-f", "values-dev.yaml", "--set", "mongodb.enabled=true")
+	})
+
+	t.Run("production renders no dev store", func(t *testing.T) {
+		prod := manifests(t, mustRender(t, "-f", "values-prod.yaml"))
+		for _, name := range []string{"iterion-mongodb", "iterion-seaweedfs"} {
+			if find(prod, "Deployment", name) != nil {
+				t.Errorf("%s rendered with values-prod", name)
+			}
+		}
+		if find(prod, "Job", "iterion-seaweedfs-init") != nil {
+			t.Errorf("the bucket hook rendered with values-prod")
+		}
+	})
+
+	judgeClean(t, out, 4)
 }

@@ -92,9 +92,9 @@ spec:
 ```
 
 `--oplog` captures changes that happen during the dump (replica set
-required; the bundled `values-dev.yaml` Mongo runs single-replica
-which is enough for `--oplog` but not for production failover; use
-`values-prod.yaml` external Mongo with ≥3 replicas).
+required; the dev Mongo of `values-dev.yaml` is a one-member replica set,
+enough for `--oplog` but not for failover; production brings an external
+Mongo with ≥3 replicas, as `values-prod.yaml` expects).
 
 ### Cloud-native — PVC snapshot
 

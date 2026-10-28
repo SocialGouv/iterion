@@ -24,19 +24,12 @@ keywords:
   - iterion
 icon: https://raw.githubusercontent.com/SocialGouv/iterion/main/build/appicon.png
 
-# Sub-charts are bundled to make `task chart:kind` self-contained:
-# values-dev.yaml turns them on, values-prod.yaml leaves them off so
-# operators bring their own MongoDB Atlas / S3 / managed NATS.
+# The one sub-chart left, the official NATS chart: values-dev.yaml turns it
+# on so `task chart:kind` is self-contained, values-prod.yaml leaves it off
+# so operators bring their own managed NATS. The dev Mongo and object store
+# are the chart's own templates (values.yaml § devStack), pinned by digest.
 dependencies:
-  - name: mongodb
-    version: "16.5.x"
-    repository: oci://registry-1.docker.io/bitnamicharts
-    condition: mongodb.enabled
   - name: nats
     version: 2.14.x
     repository: https://nats-io.github.io/k8s/helm/charts/
     condition: nats.enabled
-  - name: minio
-    version: "14.7.x"
-    repository: oci://registry-1.docker.io/bitnamicharts
-    condition: minio.enabled

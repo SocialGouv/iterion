@@ -125,7 +125,7 @@ networkPolicy:
             protocol: TCP
 
       # ---------------------------------------------------------------
-      # 6. In-cluster S3-compatible blob gateway (MinIO or similar).
+      # 6. In-cluster S3-compatible blob gateway (SeaweedFS or similar).
       #
       # Drop this rule and use a public S3 CIDR instead if you target
       # AWS S3 directly.
@@ -136,9 +136,10 @@ networkPolicy:
                 kubernetes.io/metadata.name: iterion-data
             podSelector:
               matchLabels:
-                app.kubernetes.io/name: minio
+                app.kubernetes.io/name: seaweedfs
+                app.kubernetes.io/component: s3
         ports:
-          - port: 9000
+          - port: 8333
             protocol: TCP
 
 # Operator notes:

@@ -83,12 +83,9 @@ secrets:
     enabled: true
     existingSecret: iterion-forfait
 
-# Sub-charts disabled — bring your own managed services.
-mongodb:
-  enabled: false
+# The nats sub-chart and the dev stores (devStack.*) stay off — bring your
+# own managed services.
 nats:
-  enabled: false
-minio:
   enabled: false
 
 networkPolicy:
@@ -101,7 +98,7 @@ networkPolicy:
   egress:
     extraAllow: []
       # === Example 1: allow same-namespace pods (in-cluster Mongo,
-      # NATS, MinIO, BuildKit, etc.) ===
+      # NATS, SeaweedFS, BuildKit, etc.) ===
       # - to:
       #     - podSelector: {}
       #

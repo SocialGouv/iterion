@@ -113,11 +113,32 @@ protocol. Resolution order:
 {{- end -}}
 
 {{/*
+iterion.mongo.uri — the Mongo URI the ConfigMap carries: config.mongo.uri
+when the operator sets it, else the dev Mongo's Service when
+devStack.mongodb is on (its one-member replica set, whatever the release
+name), else empty — an install whose auth Secret carries ITERION_MONGO_URI
+leaves it so (the Secret's envFrom comes after the ConfigMap's and wins).
+*/}}
+{{- define "iterion.mongo.uri" -}}
+{{- if .Values.config.mongo.uri -}}
+{{- .Values.config.mongo.uri -}}
+{{- else if (.Values.devStack.mongodb).enabled -}}
+{{- printf "mongodb://%s-mongodb:27017/?replicaSet=%s" (include "iterion.fullname" .) ((.Values.devStack.mongodb).replicaSetName | default "rs0") -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 iterion.s3.endpoint — the S3 endpoint the pods and the backup CronJobs
-dial: config.s3.endpoint as set by the operator.
+dial: config.s3.endpoint when the operator sets it, else the dev SeaweedFS
+gateway's Service when devStack.seaweedfs is on (the dev stack resolves
+its own endpoint whatever the release name), else empty.
 */}}
 {{- define "iterion.s3.endpoint" -}}
+{{- if .Values.config.s3.endpoint -}}
 {{- .Values.config.s3.endpoint -}}
+{{- else if (.Values.devStack.seaweedfs).enabled -}}
+{{- printf "http://%s-seaweedfs:8333" (include "iterion.fullname" .) -}}
+{{- end -}}
 {{- end -}}
 
 {{/*

@@ -13,6 +13,9 @@
     "containerSecurityContext": {
       "type": "object"
     },
+    "devStack": {
+      "type": "object"
+    },
     "fullnameOverride": {
       "type": "string"
     },
@@ -31,18 +34,12 @@
     "metrics": {
       "type": "object"
     },
-    "minio": {
-      "type": "object"
-    },
     "mode": {
       "type": "string",
       "enum": [
         "local",
         "cloud"
       ]
-    },
-    "mongodb": {
-      "type": "object"
     },
     "nameOverride": {
       "type": "string"
