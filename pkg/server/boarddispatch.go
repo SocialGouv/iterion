@@ -1971,13 +1971,14 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		Vars: lc.Vars,
 		// Same warn-and-proceed contract as pipeline admission: the
 		// unknown-key warning was emitted upstream, the launch proceeds.
-		AllowUnknownInputs: true,
-		RepoURL:            lc.RepoURL,
-		RepoRef:            lc.RepoRef,
-		KeyOverrides:       lc.KeyOverrides,
-		SecretOverrides:    lc.SecretOverrides,
-		RetryPolicy:        retryPolicy,
-		LLMRoutePolicy:     routePolicy,
+		AllowUnknownInputs:           true,
+		RefuseUndecidedRoutingFields: true,
+		RepoURL:                      lc.RepoURL,
+		RepoRef:                      lc.RepoRef,
+		KeyOverrides:                 lc.KeyOverrides,
+		SecretOverrides:              lc.SecretOverrides,
+		RetryPolicy:                  retryPolicy,
+		LLMRoutePolicy:               routePolicy,
 		// Stamp the card onto the run record (ADR-046 SourceRef) — the
 		// card→run edge SetLastRun writes below is not enough: the
 		// fork-adoption sweep resolves an issue's runs through the indexed

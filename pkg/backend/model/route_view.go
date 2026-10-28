@@ -93,6 +93,14 @@ func (v RouteView) field(raw string) string {
 	return resolveRoutingVars(raw, v.Vars, v.LateVars)
 }
 
+// ResolvedRoutingField resolves a routing field's `{{vars.*}}` spans the
+// way every launch-time derivation reads them (field): a late name stays
+// as written, and so does every other namespace. Exported for the launch
+// funnel's card-lane shape check (#2665), which judges the SAME
+// resolution the pre-flights walk — a second resolver here would let the
+// refusal and the walk disagree.
+func (v RouteView) ResolvedRoutingField(raw string) string { return v.field(raw) }
+
 // gateVars returns the vars the `when:` gate may read: the view's, minus
 // every late name — a gate over a late name is a gate the view cannot
 // answer, and FallbackWhenActive keeps the route active there.

@@ -68,6 +68,16 @@ type LaunchSpec struct {
 	// in a node's `with:`) is this opt-out's legitimate user; a typo'd key
 	// stays the default's refusal. False = the check runs.
 	AllowUnknownInputs bool
+	// RefuseUndecidedRoutingFields is the card lanes' launch shape
+	// (ADR-129 §7, #2665): a board card's vars are the delivery payload's
+	// own answer and no operator gesture follows the launch, so a
+	// backend/model/provider/effort field the launch's vars reading cannot
+	// decide (a {{vars.*}} span naming an undeclared or late var) refuses
+	// the launch instead of running undecided — a gate may only certify
+	// the route the run will spend. False = every other lane's shape: the
+	// undecided field stays undecided and the per-reader pre-flights
+	// answer as they always have.
+	RefuseUndecidedRoutingFields bool
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Unknown name → launch error. Empty means no
 	// preset.
