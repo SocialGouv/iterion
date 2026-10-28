@@ -227,9 +227,9 @@ var botVarsInfraExact = map[string]bool{
 	// posture — how much replay a crash may lose on a fan-out. It
 	// configures the process, never a bot's run.
 	"ITERION_PARALLEL_SAVE_WINDOW": true,
-	"ITERION_BIN":                 true,
-	"ITERION_PI_BIN":              true,
-	"ITERION_OPENCODE_BIN":        true,
+	"ITERION_BIN":                  true,
+	"ITERION_PI_BIN":               true,
+	"ITERION_OPENCODE_BIN":         true,
 	// The two project-trust switches are ENFORCEMENT, not paths: each one
 	// lifts a refusal that stops an agent CLI executing code out of the
 	// repository under review.
