@@ -1068,6 +1068,16 @@ executes the in-container tools itself and builds, for each
 launcher-placed one, a proxy ToolDef closure that round-trips the call
 across the channel.
 
+**The engine classifies a cut from its own context, never from the
+crossing's words.** A crossing the engine ends reports what the far side saw
+— a killed process, a closed pipe — and never the `context` error that ended
+it, so the engine reads the fact where it holds it: the run's context at the
+node boundary (a cancelled run), the deadline it froze into the node's
+context (a budget stop, which never re-runs the node it cut), and the
+branch's context (a sibling retired by the first failure is a stopped
+branch, not a failure of its own that would erase the typed code the run
+carries). The crossing's words stay as the detail of the error.
+
 **The launcher's side of the crossing has three rules of its own**, in
 `executeViaSandboxRunner`, `refuseForwardedCall` and `multiplexerHandler`
 ([pkg/backend/model/claw_backend.go](../pkg/backend/model/claw_backend.go)):

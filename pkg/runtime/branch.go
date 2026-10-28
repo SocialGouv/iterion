@@ -891,6 +891,18 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	output, err := e.executeWithResources(execCtx, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
+		// The branch classifies a cut from what IT knows, as the trunk does
+		// at its node boundary: a node that returns once the branch's context
+		// has ended was stopped — a sibling's failure retired it, the run was
+		// cancelled — whatever the executor's words for it. A sandboxed
+		// crossing says "signal: killed" or "closed pipe" and never
+		// context.Canceled, so read from its chain alone a stopped sibling
+		// was a failure of its own, erasing the typed code the run should
+		// carry (#2456). The executor's words stay as the detail; an
+		// undecided effect keeps its own classification.
+		if ctxErr := ctx.Err(); ctxErr != nil && !IsAmbiguousEffect(err) {
+			err = fmt.Errorf("%w (%v)", e.wrapContextErr(ctxErr), err)
+		}
 		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
 		// The delegate stamps what the attempt burned on the result it
 		// returns beside the error, and this is the last frame that can see

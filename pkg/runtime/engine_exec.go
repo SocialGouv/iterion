@@ -536,7 +536,13 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// operator gesture — "give it another hour" — silently did nothing
 		// while a raise to 12h worked. A grant whose effect turns on an
 		// undisclosed 11% line is not a grant.
-		if errors.Is(execErr, context.DeadlineExceeded) &&
+		//
+		// The executor's chain is one witness of the cut and the engine's own
+		// context is the other: a sandboxed crossing killed at the deadline
+		// reports what the far side saw — a dead pipe, a killed process — and
+		// never context.DeadlineExceeded, so the fact is also read from the
+		// context this deadline was frozen into (#2456).
+		if (errors.Is(execErr, context.DeadlineExceeded) || errors.Is(spanCtx.Err(), context.DeadlineExceeded)) &&
 			!budgetDeadline.IsZero() && !time.Now().Before(budgetDeadline) {
 			// Steering is drained BEFORE this verdict, because this return
 			// never reaches the node boundary where the other drain sits. A
