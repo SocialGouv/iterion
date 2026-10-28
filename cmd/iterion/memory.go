@@ -131,7 +131,14 @@ func runMemoryImport(cmd *cobra.Command, _ []string) error {
 		defer f.Close()
 		in = f
 	}
-	sum, err := knowledge.ImportSpace(cmd.Context(), memory.DefaultFSStore(), ref, in, knowledge.ImportStrategy(memoryOpts.strategy))
+	// The operator at their own console, on their own filesystem store, holds
+	// the platform write authority the `global` space requires: this command
+	// IS the super-admin surface locally. The grant is explicit (and
+	// greppable) rather than implied by the adapter, so the engine's
+	// memory_write tool — which proves nothing — stays refused on the same
+	// store.
+	ctx := knowledge.WithPlatformWriteAuthority(cmd.Context())
+	sum, err := knowledge.ImportSpace(ctx, memory.DefaultFSStore(), ref, in, knowledge.ImportStrategy(memoryOpts.strategy))
 	if err != nil {
 		return err
 	}

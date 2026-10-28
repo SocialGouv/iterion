@@ -128,16 +128,26 @@ var (
 // when a write would exceed the per-space cap (Aggregate=false) or the
 // per-org aggregate ceiling (Aggregate=true).
 type QuotaError struct {
-	Aggregate bool  // true = org-wide ceiling, false = per-space cap
+	Aggregate bool  // true = an aggregate ceiling, false = per-space cap
 	Used      int64 // bytes currently used
 	Delta     int64 // bytes the rejected write would add
 	Quota     int64 // the cap that would be exceeded
+	// Counter names WHICH aggregate refused, when it is not the writer's own
+	// org: a global write meets the tenant-less instance ceiling
+	// (InstanceUsageID), and reporting that as "org quota exceeded" sends an
+	// operator to raise the wrong ceiling. Empty keeps the original wording.
+	Counter string
 }
 
 func (e *QuotaError) Error() string {
 	scope := "space"
 	if e.Aggregate {
 		scope = "org"
+		if e.Counter == InstanceUsageID {
+			scope = "instance"
+		} else if e.Counter != "" {
+			scope = "org " + e.Counter
+		}
 	}
 	return fmt.Sprintf("knowledge: %s quota exceeded (used=%d delta=%d quota=%d)",
 		scope, e.Used, e.Delta, e.Quota)

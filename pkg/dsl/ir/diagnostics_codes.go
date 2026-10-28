@@ -395,4 +395,14 @@ const (
 	// pass N-1 would otherwise read the bytes of pass N. Same doctrine as
 	// C314 — a collision that cannot be authored needs no runtime guard.
 	DiagDeliverableNameCollision DiagCode = "C318" // two deliverables: entries of the same node are served under the same base name (error)
+
+	// The instance-wide `global` memory space is read by every org, so a
+	// mutation there is a PLATFORM act: it answers to platform authority on
+	// the context (knowledge.AuthorizeSpaceWrite), and a run carries none. So
+	// a node declaring `visibility: "global"` with `write: true` gets the
+	// read/list tools and NOT memory_write. A warning, not an error — the
+	// combination stays expressible and will install the tool the day a
+	// super-admin run's authority reaches the engine (philosophy #1: warn
+	// rather than reject, and never remove a capability to close a hole).
+	DiagMemoryGlobalWriteGated DiagCode = "C319" // memory: visibility: "global" with write: true — memory_write is NOT installed for a run (warning)
 )

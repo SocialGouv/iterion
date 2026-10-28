@@ -65,7 +65,13 @@ func TestFSStore_BotVisibility_PathLayout(t *testing.T) {
 func TestFSStore_SharedTreeVisibilities(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
 	s := DefaultFSStore()
-	ctx := context.Background()
+	// This test measures the LAYOUT (one on-disk root per visibility), and the
+	// set it walks includes the instance-wide `global` space, which only a
+	// platform-authorized context may mutate. It therefore writes as the
+	// operator does. The authority itself is measured by
+	// TestFSStore_GlobalSpaceAnswersToPlatformAuthority, which drives the
+	// ungranted path.
+	ctx := knowledge.WithPlatformWriteAuthority(context.Background())
 
 	refs := []knowledge.SpaceRef{
 		{Visibility: knowledge.VisibilityUser, TenantID: "acme", UserID: "alice", Name: "notes"},

@@ -48,6 +48,27 @@ func installWorkspaceMemory(ctx context.Context, opts *GenerationOptions, store 
 		opts.SystemBlocks = append(opts.SystemBlocks, api.ContentBlock{Type: "text", Text: block})
 	}
 
+	// A run holds no platform authority, so it is not handed a write tool on
+	// the instance-wide `global` space — every org reads that space back, and
+	// the super-admin gate used to exist on the REST surface ONLY (the engine
+	// installed memory_write on spec.Write alone, with no visibility test, and
+	// wrote unmetered). The refusal is the SHARED one, so the engine and both
+	// store adapters answer the same question: a granted context still gets
+	// the tool, so the capability is gated, not removed.
+	writeRefused := error(nil)
+	if spec.Write {
+		writeRefused = knowledge.AuthorizeSpaceWrite(ctx, ref)
+	}
+	if writeRefused != nil {
+		// Explicit, never silent: the model is told the tool is withheld and
+		// why, so a withheld capability shows in the transcript instead of
+		// looking like a prompt it ignored. The author is warned at compile
+		// time too (C317).
+		opts.SystemBlocks = append(opts.SystemBlocks, api.ContentBlock{Type: "text", Text: fmt.Sprintf(
+			"<workspace_memory_write_refused space=%q visibility=%q>\n%s\nThis space is instance-wide: an operator writes it through the REST surface (super-admin) or `iterion memory import`. Do not retry; record findings in a tenant-scoped space instead.\n</workspace_memory_write_refused>",
+			ref.Name, ref.Visibility, writeRefused.Error())})
+	}
+
 	// Extend the prompt cache to cover the memory blocks too: without
 	// this, the system prompt's existing breakpoint stops at block 0
 	// and the (often-stable, often-large) memory blocks re-bill on
@@ -59,7 +80,7 @@ func installWorkspaceMemory(ctx context.Context, opts *GenerationOptions, store 
 	if spec.Read {
 		opts.Tools = append(opts.Tools, memoryReadTool(store, ref), memoryListTool(store, ref))
 	}
-	if spec.Write {
+	if spec.Write && writeRefused == nil {
 		opts.Tools = append(opts.Tools, memoryWriteTool(store, ref, memoryAttribution(spec.BotID)))
 	}
 	if spec.PreCompactInject {

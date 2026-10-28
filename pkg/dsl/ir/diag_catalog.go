@@ -79,6 +79,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagDeliverableNameCollision:    {"Two deliverables share one name", "Rename one of the files: a deliverable is served under its base name, and the run store refuses the second rather than overwrite the first."},
 	DiagMemoryInvalidVisibility:     {"Invalid memory visibility", "Use one of `bot`, `project`, `cross_project`, `user`, `org`, `global`."},
 	DiagMemoryVisibilityConflict:    {"Memory visibility conflict", "Use `visibility:` alone; drop the legacy `project_root:`."},
+	DiagMemoryGlobalWriteGated:      {"Global memory space is not run-writable", "A run holds no platform authority: set `write: false`, or use a tenant-scoped visibility, and let an operator write the instance catalogue through the REST surface or `iterion memory import`."},
 	DiagBadPromptInclude:            {"Bad prompt include", "Point `{{include \"...\"}}` at an existing file, with a path relative to the file that contains the include (the `.bot`'s directory for a prompt declared in it, a bundle's `prompts/` for a `prompts/*.md`), never escaping it, under 256 KiB."},
 
 	// Attachments.

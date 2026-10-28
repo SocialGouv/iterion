@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/knowledge"
 )
 
 // validateEvents cross-checks emit/wait event names (ADR-051): a wait on an
@@ -698,6 +699,14 @@ func (c *compiler) validateMemory(w *Workflow) {
 			if m.ProjectRoot {
 				c.errorfAtScope(DiagMemoryVisibilityConflict, scope, id,
 					"%s %q: memory: visibility: and the legacy project_root: are mutually exclusive", scope, id)
+			}
+			// `write:` defaults to TRUE when memory is enabled, so the
+			// combination is reached by declaring the visibility alone —
+			// which is exactly how the ungated write door was opened.
+			if m.Visibility == string(knowledge.VisibilityGlobal) && m.Write {
+				c.warnfAtScope(DiagMemoryGlobalWriteGated, scope, id,
+					"%s %q: memory: visibility: %q is instance-wide (every team reads it), so memory_write is NOT installed for a run — a run holds no platform authority; set write: false, or pick a team-scoped visibility, and write the catalogue through the REST surface (super-admin) or `iterion memory import`",
+					scope, id, m.Visibility)
 			}
 		}
 		if backend != "" && backend != "claw" {

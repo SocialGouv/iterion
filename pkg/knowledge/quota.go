@@ -23,8 +23,12 @@ const (
 )
 
 // DefaultQuotaFor returns the default per-space sub-cap for a
-// visibility. VisibilityGlobal is read-only to orgs (0 = not writable
-// through the org path).
+// visibility. Zero means "no sub-cap, never deny" — the value both adapters
+// act on (the FS one skips the per-space ceiling and charges the aggregate;
+// the cloud one passes allowZeroQuota to its counter CAS) — not "not
+// writable". Only VisibilityGlobal and an unknown visibility take it:
+// the instance-wide catalogue is bounded by its own aggregate
+// (InstanceUsageID), not by a per-space slice of one org's budget.
 func DefaultQuotaFor(v Visibility) int64 {
 	switch v {
 	case VisibilityCrossProject:

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"io"
 	"net/http"
 
@@ -63,25 +64,49 @@ func (s *Server) memoryRef(r *http.Request) (knowledge.SpaceRef, bool) {
 	return ref, true
 }
 
-// requireMemoryWriteAuth gates a memory MUTATION. The `global` space is
-// instance-wide (not tenant-scoped), so a write/delete/import there is
-// visible to EVERY tenant — in multi-tenant (cloud) mode that requires a
-// super-admin whose platform authority stands (platformAuthorityStands: the
-// flag from the account, the credential still live). Tenant-scoped spaces
-// only affect the caller's own org, so a member may write them. Local
-// single-tenant mode (no identity store) has no cross-tenant concern and is
-// always allowed.
-func (s *Server) requireMemoryWriteAuth(w http.ResponseWriter, r *http.Request, ref knowledge.SpaceRef) bool {
+// requireMemoryWriteAuth gates a memory MUTATION and returns the request the
+// handler must use from then on. The `global` space is instance-wide (not
+// tenant-scoped), so a write/delete/import there is visible to EVERY tenant —
+// in multi-tenant (cloud) mode that requires a super-admin whose platform
+// authority stands (platformAuthorityStands: the flag from the account, the
+// credential still live). Tenant-scoped spaces only affect the caller's own
+// org, so a member may write them. Local single-tenant mode (no identity
+// store) has no cross-tenant concern and is always allowed.
+//
+// On a global ref the returned request carries the platform write grant the
+// store adapters require (knowledge.AuthorizeSpaceWrite). Granting HERE, in
+// the function that just proved the authority, is what keeps the proof and
+// the grant inseparable: a handler cannot carry one without the other, and
+// the engine — which proves nothing — carries neither.
+func (s *Server) requireMemoryWriteAuth(w http.ResponseWriter, r *http.Request, ref knowledge.SpaceRef) (*http.Request, bool) {
 	if ref.Visibility != knowledge.VisibilityGlobal {
-		return true
+		return r, true
 	}
-	if s.authStore() == nil {
-		return true // local single-tenant
+	if s.authStore() != nil && !s.platformAuthority(w, r) {
+		return r, false // platformAuthority already wrote the refusal
 	}
-	if s.platformAuthority(w, r) {
-		return true
+	// Authorized: local single-tenant, or a super-admin whose authority stands.
+	return r.WithContext(knowledge.WithPlatformWriteAuthority(r.Context())), true
+}
+
+// auditGlobalMemoryMutation records a mutation of the instance-wide space.
+// The docs promised this row and no memory mutation wrote one, so a
+// super-admin overwrite of the shared catalogue left no trace. Platform
+// scope: the act is instance-wide, so it belongs under /api/admin/audit, not
+// in one org's log — tenantID still names the org the actor was acting from,
+// for filtering. Tenant-scoped mutations are deliberately NOT audited here:
+// they are ordinary member writes, and a row per document would drown the
+// control-plane log.
+func (s *Server) auditGlobalMemoryMutation(r *http.Request, ref knowledge.SpaceRef, action, path string) {
+	if ref.Visibility != knowledge.VisibilityGlobal {
+		return
 	}
-	return false
+	actingTenant, _ := store.TenantFromContext(r.Context())
+	s.auditPlatform(r, actingTenant, action, "memory_space", ref.ID(), map[string]any{
+		"visibility": string(ref.Visibility),
+		"name":       ref.Name,
+		"path":       path,
+	})
 }
 
 // memoryDocPath reads and validates the ?path= param, writing a 400 and
@@ -153,7 +178,8 @@ func (s *Server) handleMemoryWriteDoc(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid space")
 		return
 	}
-	if !s.requireMemoryWriteAuth(w, r, ref) {
+	r, ok = s.requireMemoryWriteAuth(w, r, ref)
+	if !ok {
 		return
 	}
 	path, ok := memoryDocPath(w, r)
@@ -167,9 +193,10 @@ func (s *Server) handleMemoryWriteDoc(w http.ResponseWriter, r *http.Request) {
 	}
 	meta, err := s.memoryStore().WriteDocument(r.Context(), ref, knowledge.DocumentInput{Path: path, Content: body, UpdatedBy: identityActor(r)})
 	if err != nil {
-		httpError(w, http.StatusUnprocessableEntity, "%s", err.Error())
+		httpError(w, memoryMutationStatus(err, http.StatusUnprocessableEntity), "%s", err.Error())
 		return
 	}
+	s.auditGlobalMemoryMutation(r, ref, "memory.global_write", path)
 	writeJSON(w, meta)
 }
 
@@ -179,7 +206,8 @@ func (s *Server) handleMemoryDeleteDoc(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid space")
 		return
 	}
-	if !s.requireMemoryWriteAuth(w, r, ref) {
+	r, ok = s.requireMemoryWriteAuth(w, r, ref)
+	if !ok {
 		return
 	}
 	path, ok := memoryDocPath(w, r)
@@ -187,9 +215,10 @@ func (s *Server) handleMemoryDeleteDoc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.memoryStore().DeleteDocument(r.Context(), ref, path); err != nil {
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		httpError(w, memoryMutationStatus(err, http.StatusInternalServerError), "%s", err.Error())
 		return
 	}
+	s.auditGlobalMemoryMutation(r, ref, "memory.global_delete", path)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -215,16 +244,31 @@ func (s *Server) handleMemoryImport(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid space")
 		return
 	}
-	if !s.requireMemoryWriteAuth(w, r, ref) {
+	r, ok = s.requireMemoryWriteAuth(w, r, ref)
+	if !ok {
 		return
 	}
 	strategy := knowledge.ImportStrategy(r.URL.Query().Get("strategy"))
 	sum, err := knowledge.ImportSpace(r.Context(), s.memoryStore(), ref, r.Body, strategy)
 	if err != nil {
-		httpError(w, http.StatusUnprocessableEntity, "%s", err.Error())
+		httpError(w, memoryMutationStatus(err, http.StatusUnprocessableEntity), "%s", err.Error())
 		return
 	}
+	s.auditGlobalMemoryMutation(r, ref, "memory.global_import", "")
 	writeJSON(w, sum)
+}
+
+// memoryMutationStatus maps a store refusal to its HTTP status, keeping each
+// handler's own default for everything else. A missing platform write grant
+// is an AUTHORIZATION failure, not an unprocessable payload or a server
+// fault: the store is the gate of record (every writer passes through it,
+// including the engine), so its typed refusal must not surface as a 422 a
+// client reads as "bad document" or a 500 it reads as "retry later".
+func memoryMutationStatus(err error, otherwise int) int {
+	if errors.Is(err, knowledge.ErrGlobalWriteForbidden) {
+		return http.StatusForbidden
+	}
+	return otherwise
 }
 
 // identityActor returns a "user_id" attribution for memory writes.

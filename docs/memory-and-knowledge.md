@@ -29,7 +29,7 @@ escape the tree.
 | `cross_project` | every project in one team | — | 512 MiB |
 | `user` | one user across projects | `UserID` | 128 MiB |
 | `org` | every bot / run / project in one team | — | 1 GiB |
-| `global` | the whole iterion instance | — | none (`0` = no sub-cap) |
+| `global` | the whole iterion instance | — | none (`0` = no sub-cap, never a refusal); bounded by the instance aggregate |
 
 `private` names a run-scoped scratch space nothing implements: a `SpaceRef`
 carries no run field, the closed enum
@@ -58,8 +58,17 @@ Two levels, both enforced at write:
   org alone is not enough.
 - **Per-visibility sub-caps**: the per-space defaults from the table
   above — a default of `0` (`global`) means *no* sub-cap, never a
-  refusal — and a cloud `global` write, which has no team, meets no
-  aggregate either; only the per-document cap applies. The filesystem adapter reads three env overrides:
+  refusal, in the docs, in `DefaultQuotaFor` and in both adapters. A cloud
+  `global` write carries no team, so it meets no PER-TEAM aggregate; it meets
+  the **instance aggregate** instead — a tenant-less row of
+  `memory_tenant_usage` keyed by `knowledge.InstanceUsageID`, bounded by the
+  same `DefaultOrgAggregateQuota` default and re-capped through
+  `SetTenantQuota(InstanceUsageID, n)`. The writing team's own counter is
+  debited too, so instance-wide bytes are attributed rather than anonymous;
+  that share is attribution, not accounting (a credit lands on whoever
+  SHRINKS a document, and a counter driven negative clamps to zero). The
+  filesystem adapter has always charged its whole-tree aggregate for a global
+  write, so the two adapters now answer the same question. It reads three env overrides:
   `ITERION_MEMORY_QUOTA_<VISIBILITY>` (e.g. `ITERION_MEMORY_QUOTA_PROJECT`),
   `ITERION_MEMORY_QUOTA_ORG_TOTAL` for its aggregate counter (where `0`
   refuses every write that grows the tree) and
@@ -85,6 +94,17 @@ write CAS is what actually blocks an over-budget write.
 | `DELETE` | `/api/memory/doc` | member (super-admin for global) | Delete |
 | `GET` | `/api/memory/export` | member | Tarball export of the space |
 | `POST` | `/api/memory/import` | member (super-admin for global; optional `?strategy=`) | Tarball import |
+
+A mutation of `visibility=global` is checked ONCE, by
+`knowledge.AuthorizeSpaceWrite`, at the chokepoint every writer passes: the
+store. The authority is a fact of the CONTEXT — a `SpaceRef` carries no
+principal — granted by whoever proved it, so the proof and the grant are
+inseparable. Two sites grant it, and `grep WithPlatformWriteAuthority` is the
+audit: `requireMemoryWriteAuth` (which returns the granted request) and the
+local `iterion memory import` CLI. A store refusal surfaces as **403**, never
+as the 422 a client reads as "bad document". Every global mutation writes a
+platform-scoped audit row (`memory.global_write` / `_delete` / `_import`),
+readable at `/api/admin/audit`.
 
 Query params resolve the space:
 
@@ -329,18 +349,44 @@ Multi-tenant safety lives on three boundaries:
    `SpaceRef.ID()` (which includes the tenant) and every query on a space or
    its documents addresses that id — `{space_id}` for a space's documents, the composite `{_id}`
    for one of them — so isolation rides the ref, not
-   the ctx tenant filter the rest of the store uses. `validateCloudTenant`
+   the ctx tenant filter the rest of the store uses. The space-wide reads
+   carry a `tenant_id` clause on top (`spaceDocFilter`): it cannot widen a
+   result, since the id already carries the tenant, but it refuses a document
+   whose stamped tenant disagrees with the ref that asked for it. The clause
+   is deliberately absent for `global`, whose documents carry no `tenant_id`
+   field at all. `validateCloudTenant`
    fail-closes, before any Mongo I/O, on a non-global ref carrying no
    tenant ([pkg/store/mongo/memory.go](../pkg/store/mongo/memory.go)).
 3. **Validate path traversal**: `SpaceRef.Validate` rejects `..`, `/`,
-   and `\` in every qualifier and the document path
+   and `\` in every qualifier and the document path, and rejects `:` —
+   the delimiter `SpaceRef.ID()` joins the axes with. Without that, two
+   DIFFERENT refs spell the SAME id (`{project:"x:y"}` and
+   `{project:"x", bot:"y:"}` both render `v1:org:T:x:y:::n`), and the FS
+   adapter folds them together as well (`pathSeg` maps `:` to `-`)
    ([pkg/knowledge/scope.go](../pkg/knowledge/scope.go)).
 
 `visibility=global` is the only space that **deliberately** crosses the
-tenant boundary; REST writes there are gated on `IsSuperAdmin`
-(`requireMemoryWriteAuth`), while a `claw` node whose `memory:` block sets
-`enabled: true` and `visibility: "global"` (with its `scope:`; `write`
-defaults to true) writes there from a run with no gate, and neither leaves
-an audit row — no memory mutation
-records one, so a super-admin overwrite of the shared catalogue does not
-show up under `/api/orgs/{id}/audit` or `/api/admin/audit`.
+tenant boundary, so a mutation there is a PLATFORM act and answers to one
+predicate — `knowledge.AuthorizeSpaceWrite`, called first by both adapters'
+`WriteDocument` and `DeleteDocument` and by the engine's tool installer. The
+authority rides the context, is granted only where it has just been proven,
+and defaults to refused:
+
+- **REST**: `requireMemoryWriteAuth` checks `platformAuthority` and returns
+  the granted request, so a handler cannot carry the grant without the proof.
+- **CLI**: `iterion memory import` grants it — the operator at their own
+  console, on their own filesystem store.
+- **A run**: no grant. A `claw` node whose `memory:` block sets
+  `enabled: true` and `visibility: "global"` (with its `scope:`; `write`
+  defaults to true) gets `memory_read` / `memory_list` and NOT
+  `memory_write`, plus a `<workspace_memory_write_refused>` system block
+  saying why, and **C317** at compile time. The capability is gated, not
+  removed: carrying a super-admin run's authority through to the engine
+  inserts at that one named grant, once the run message carries the launching
+  principal's platform flag.
+
+Every global mutation leaves a platform-scoped audit row
+(`memory.global_write`, `memory.global_delete`, `memory.global_import`) under
+`/api/admin/audit`. Team-scoped mutations are deliberately not audited: they
+are ordinary member writes, and a row per document would drown the
+control-plane log.

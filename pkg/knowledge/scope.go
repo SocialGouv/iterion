@@ -106,13 +106,13 @@ func (r SpaceRef) Validate() error {
 func (r SpaceRef) ID() string {
 	return strings.Join([]string{
 		"v1", string(r.Visibility), r.TenantID, r.ProjectID, r.BotID, r.UserID, r.Name,
-	}, ":")
+	}, string(idDelimiter))
 }
 
 // validateSegment guards a SpaceRef qualifier (tenant/user/project/bot)
 // that becomes a path segment + ID component. Empty is allowed (presence
 // is the visibility switch's job); a present value must not contain a
-// path separator or be a traversal token.
+// path separator, be a traversal token, or carry the ID delimiter.
 func validateSegment(field, v string) error {
 	if v == "" {
 		return nil
@@ -120,8 +120,24 @@ func validateSegment(field, v string) error {
 	if strings.ContainsAny(v, `/\`) || v == "." || v == ".." {
 		return fmt.Errorf("knowledge: %s %q must not contain a path separator or traversal", field, v)
 	}
+	if strings.ContainsRune(v, idDelimiter) {
+		return fmt.Errorf("knowledge: %s %q must not contain %q — it is the space-id delimiter", field, v, string(idDelimiter))
+	}
 	return nil
 }
+
+// idDelimiter is the separator ID() joins the ref's axes with. A qualifier
+// or name carrying it makes two DIFFERENT refs spell the SAME id — e.g.
+// {project:"x:y", bot:""} and {project:"x", bot:"y:"} both render
+// "v1:org:T:x:y:::n" — so one space answers for another, and the FS adapter
+// folds them together too (pathSeg maps ':' to '-', so "a:b" and "a-b" land
+// in one directory). Rejecting the delimiter at the one boundary every
+// writer passes through is what keeps "equal refs produce equal ids" an
+// equivalence rather than a one-way map. The tree does mint tenant ids
+// containing ':' ("platform:", the bot-source and BYOK platform scopes), but
+// none addresses a memory space: a memory ref's tenant is the team id from
+// the request identity or the run.
+const idDelimiter = ':'
 
 // ValidateName rejects names that are empty, contain path separators,
 // or attempt traversal. A space Name is a single folder segment; the
@@ -133,6 +149,9 @@ func ValidateName(name string) error {
 	}
 	if strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
 		return fmt.Errorf("knowledge: space name %q must be a single folder segment", name)
+	}
+	if strings.ContainsRune(name, idDelimiter) {
+		return fmt.Errorf("knowledge: space name %q must not contain %q — it is the space-id delimiter", name, string(idDelimiter))
 	}
 	return nil
 }
