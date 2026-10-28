@@ -198,34 +198,9 @@
 // WithPermissionMode("plan") and WithCanUseTool for full control over agent
 // interactions.
 //
-// # Session Metadata
-//
-// Read metadata about a local Codex session using StatSession:
-//
-//	stat, err := codexsdk.StatSession(ctx, "550e8400-e29b-41d4-a716-446655440000",
-//	    codexsdk.WithCodexHome("/custom/.codex"),
-//	)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	fmt.Printf("Session: %s (tokens: %d)\n", stat.Title, stat.TokensUsed)
-//
-// List and inspect local sessions without a running CLI instance:
-//
-//	sessions, err := codexsdk.ListSessions(ctx, codexsdk.WithCwd("/repo"))
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	msgs, err := codexsdk.GetSessionMessages(ctx, sessions[0].SessionID)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	fmt.Printf("Loaded %d persisted messages\n", len(msgs))
-//
-// StatSession, ListSessions, and GetSessionMessages read from the Codex CLI's
-// local SQLite database and rollout files and do not require a running CLI
-// instance. Persisted rollout lifecycle records are surfaced as typed system
-// messages such as TaskStartedMessage and TaskCompleteMessage.
+// The session lookup APIs (StatSession, ListSessions, GetSessionMessages) and
+// their SQLite storage stack are removed in this fork; see FORK.md. `WithCodexHome`
+// stays accepted and inert.
 //
 // # Requirements
 //

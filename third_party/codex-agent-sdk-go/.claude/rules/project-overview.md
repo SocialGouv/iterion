@@ -13,7 +13,6 @@
 - Streaming input query API: `QueryStream(ctx, messages, opts...)`
 - Stateful client API: `NewClient()` + `Client` methods
 - Lifecycle helper: `WithClient(ctx, fn, opts...)`
-- Session metadata API: `StatSession(ctx, sessionID, opts...)`
 
 ## Primary Public Surface Areas
 
@@ -21,7 +20,6 @@
 - `mcp.go`: `Tool` interface, `NewTool` constructor, and `WithSDKTools` tool registration
 - `client.go`: `Client` interface
 - `query.go`: top-level query functions
-- `session_stat.go`: `SessionStat` struct and `StatSession()` function
 - `types.go`: re-exported message/content/config types
 - `errors.go`: typed and sentinel errors
 
