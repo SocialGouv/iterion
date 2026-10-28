@@ -80,8 +80,8 @@ func (p *Publisher) fillFromOrg(
 	bundle *secrets.RunBundle,
 	apiKeyFPs map[secrets.Provider]string,
 	skips *skipTracker,
-	skippedAPIKeys map[secrets.Provider]skippedAPIKey,
-	skippedForfaits map[string]skippedForfait,
+	skippedAPIKeys skippedAPIKeys,
+	skippedForfaits skippedForfaits,
 	pinned map[string]bool,
 	policy sharedTierPolicy,
 	native *tierNative,
@@ -154,9 +154,7 @@ func (p *Publisher) fillFromOrg(
 				if floorHeld {
 					skips.noteFloorHeld(rec.Fingerprint)
 				}
-				if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
-					skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt, org: true}
-				}
+				skippedForfaits.remember(string(rec.Kind), skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt, org: true})
 				continue
 			}
 			bundle.OrgSourced[string(rec.Kind)] = true
@@ -236,7 +234,7 @@ func (p *Publisher) fillFromOrg(
 					// omitting it here is what turned a recoverable park into an
 					// outright refusal for an org-funded team.
 					if refused := providersWithoutKey(missing, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
-						fallback, ferr := secrets.Resolve(octx, p.apiKeys, orgScope, "", audienceBotID, refused, nil, p.sealer, nil, withheld.note)
+						fallback, ferr := secrets.Resolve(octx, p.apiKeys, orgScope, "", audienceBotID, refused, nil, p.sealer, restorableKey(skips), withheld.note)
 						if ferr != nil {
 							p.logger.Warn("cloudpublisher: org refused-key fallback resolve: %v", ferr)
 						}
@@ -244,13 +242,15 @@ func (p *Publisher) fillFromOrg(
 							if len(r.Plaintext) == 0 {
 								continue
 							}
-							if _, seen := skippedAPIKeys[prov]; seen {
-								continue // a tenant key's restore takes precedence
-							}
-							skippedAPIKeys[prov] = skippedAPIKey{
+							// A tenant key's restore takes precedence, and the
+							// restore applies that order itself — tier by tier.
+							// Dropping this candidate because the provider was
+							// already "seen" is what let a tenant entry the
+							// RESERVE holds mask the org sibling behind it.
+							skippedAPIKeys.remember(prov, skippedAPIKey{
 								plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID,
 								fingerprint: r.Fingerprint, org: true,
-							}
+							})
 						}
 					}
 					if len(usedIDs) > 0 {

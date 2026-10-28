@@ -644,9 +644,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// vars through the view, and a late name leaves the route undecided.
 	envFunded := view.Workflow != nil && model.EffectiveProviders(view, knownPoolProviders).OnlyEnvFunded()
 
-	// Refused-but-only keys, per provider, remembered across the tiers for
-	// the restore step — the api-key twin of skippedForfaits below.
-	skippedAPIKeys := map[secrets.Provider]skippedAPIKey{}
+	// Refused-but-only keys, per provider AND per tier, remembered across
+	// the tiers for the restore step — the api-key twin of skippedForfaits
+	// below. Every candidate, not one per provider: see skipped_creds.go.
+	skippedAPIKeys := skippedAPIKeys{}
 	// When the earliest credential passed over by any tier reopens — the
 	// instant the run's usage-window retry may arm on (see credResolution).
 	skips := &skipTracker{}
@@ -659,7 +660,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// vocabulary) before it can meter honestly — PR-C' owns that.
 	apiKeyFPs := map[secrets.Provider]string{}
 
-	skippedForfaits := map[string]skippedForfait{}
+	skippedForfaits := skippedForfaits{}
 	// Every tier's walk reports here what its audience kept out, so the one
 	// thing a refusal does not leave behind — a trace — exists by the end.
 	withheld := newAudienceWithholdings(audienceBotID, secrets.LaunchRepoFromContext(ctx))
@@ -783,7 +784,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// with an empty wire fails on a no-credential auth error nothing
 					// retries (or silently spends the runner pod's ambient env).
 					if refused := providersWithoutKey(allKnownProviders, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
-						fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, audienceBotID, refused, overrides, p.sealer, nil, withheld.note)
+						fallback, ferr := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, audienceBotID, refused, overrides, p.sealer, restorableKey(skips), withheld.note)
 						if ferr != nil {
 							p.logger.Warn("cloudpublisher: refused-key fallback resolve: %v", ferr)
 						}
@@ -791,7 +792,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							if len(r.Plaintext) == 0 {
 								continue
 							}
-							skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID, fingerprint: r.Fingerprint}
+							skippedAPIKeys.remember(prov, skippedAPIKey{plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID, fingerprint: r.Fingerprint})
 						}
 					}
 					// Bumping last_used_at is best-effort observability, not on
@@ -971,9 +972,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 								// Remembered: if the end of the resolution finds the
 								// wire still empty, this forfait is restored — a
 								// parked run with a durable retry beats a stuck one.
-								if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
-									skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt}
-								}
+								// EVERY one of them: a member's own subscription and
+								// the team's are two candidates of one kind, and the
+								// restore owes the dead one even when the reserve
+								// holds the other (skipped_creds.go).
+								skippedForfaits.remember(string(rec.Kind), skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt})
 								continue
 							}
 							setOAuthCredential(&bundle, string(rec.Kind), payload, rec.Fingerprint, rec.ID, rec.CreatedAt)
@@ -1151,86 +1154,100 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// default first (APIKeyForRoute) — and park routes that can
 					// run. They wait for the shared tiers' own restore, which may
 					// refill the family (a closed Claude forfait under `auto`).
-					var deferredTenantKeys []secrets.Provider
+					var deferredTenantKeys []deferredTenantKey
+					// Per provider, the candidates of THIS tier are walked in
+					// the order the fill preferred them, and the first one the
+					// slot accepts comes back. A candidate-level refusal — the
+					// reserve holds this credential — takes the NEXT candidate;
+					// a SLOT-level one (the whitelist, a family another
+					// credential holds, the refused_pinned_key knob, a pin to
+					// defer to) ends the provider, because it answers the same
+					// way for every candidate and trying the next would only
+					// repeat it.
 					restoreKeys := func(tier restoreTier) {
 						for _, prov := range allKnownProviders {
-							sk, ok := skippedAPIKeys[prov]
-							if !ok || restoreTierOf(sk.org, sk.platform) != tier {
-								continue
+							for _, sk := range skippedAPIKeys.candidatesAt(prov, tier) {
+								if skips.heldByFloor(sk.fingerprint) {
+									p.logger.Info("cloudpublisher: refused api-key NOT restored for run=%s provider=%s fp=%s bot=%s — the reserve holds it for another workload; the credential is usable, it is spoken for",
+										runID, prov, sk.fingerprint, botID)
+									continue
+								}
+								// The whitelist gates the restore like the fill: an
+								// unlisted slot never comes back.
+								if !policy.sealableSlot(slotOfProvider(prov)) {
+									break
+								}
+								outcome := sealDefault
+								if tier == restoreTierTenant {
+									if taken[secrets.WireFamily(string(prov))] {
+										break
+									}
+									if bundle.PinnedAPIKeys[prov] != "" {
+										deferredTenantKeys = append(deferredTenantKeys, deferredTenantKey{prov: prov, sk: sk})
+										break
+									}
+								} else {
+									// A slot an earlier tier funded is not
+									// rewritten.
+									if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
+										break
+									}
+									familyTaken := taken[secrets.WireFamily(string(prov))]
+									// The shared tier's own rule, facade policy
+									// included: "nothing else serves the wire"
+									// must not hand back as the default a key the
+									// fill keeps off it.
+									outcome = sealDecision(prov, familyTaken, pinnedSet[strings.ToLower(string(prov))],
+										func() bool { return policy.facadeMayDefault(natives[tier]) })
+									if outcome == sealNone {
+										break
+									}
+									// refused_pinned_key (#1999, ADR-121): under
+									// the default `forfait`, a refused key stays
+									// out of a family another credential holds —
+									// the routes naming its provider spend that
+									// holder instead of parking on the key's own
+									// refusal. Facades are out of the knob's scope
+									// (no forfait alternative) and always come
+									// back; `park` restores as before.
+									if outcome == sealPinnedOnly && policy.restoreRefusedKey(prov, familyTaken) {
+										p.logger.Info("cloudpublisher: refused api-key for run=%s provider=%s stays OUT (refused_pinned_key=forfait): %s serves the routes naming it — set refused_pinned_key=park to restore it", runID, prov, familyHolderName(&bundle, prov))
+										break
+									}
+								}
+								restoreKey(prov, sk, outcome)
+								// One credential per slot: the rest of this
+								// provider's candidates were the fallbacks for
+								// exactly this restore.
+								break
 							}
-							if skips.heldByFloor(sk.fingerprint) {
-								p.logger.Info("cloudpublisher: refused api-key NOT restored for run=%s provider=%s fp=%s bot=%s — the reserve holds it for another workload; the credential is usable, it is spoken for",
-									runID, prov, sk.fingerprint, botID)
-								continue
-							}
-							// The whitelist gates the restore like the fill: an
-							// unlisted slot never comes back.
-							if !policy.sealableSlot(slotOfProvider(prov)) {
-								continue
-							}
-							outcome := sealDefault
-							if tier == restoreTierTenant {
-								if taken[secrets.WireFamily(string(prov))] {
-									continue
-								}
-								if bundle.PinnedAPIKeys[prov] != "" {
-									deferredTenantKeys = append(deferredTenantKeys, prov)
-									continue
-								}
-							} else {
-								// A slot an earlier tier funded is not
-								// rewritten.
-								if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
-									continue
-								}
-								familyTaken := taken[secrets.WireFamily(string(prov))]
-								// The shared tier's own rule, facade policy
-								// included: "nothing else serves the wire"
-								// must not hand back as the default a key the
-								// fill keeps off it.
-								outcome = sealDecision(prov, familyTaken, pinnedSet[strings.ToLower(string(prov))],
-									func() bool { return policy.facadeMayDefault(natives[tier]) })
-								if outcome == sealNone {
-									continue
-								}
-								// refused_pinned_key (#1999, ADR-121): under
-								// the default `forfait`, a refused key stays
-								// out of a family another credential holds —
-								// the routes naming its provider spend that
-								// holder instead of parking on the key's own
-								// refusal. Facades are out of the knob's scope
-								// (no forfait alternative) and always come
-								// back; `park` restores as before.
-								if outcome == sealPinnedOnly && policy.restoreRefusedKey(prov, familyTaken) {
-									p.logger.Info("cloudpublisher: refused api-key for run=%s provider=%s stays OUT (refused_pinned_key=forfait): %s serves the routes naming it — set refused_pinned_key=park to restore it", runID, prov, familyHolderName(&bundle, prov))
-									continue
-								}
-							}
-							restoreKey(prov, sk, outcome)
 						}
 					}
 					restoreForfaits := func(tier restoreTier) {
-						for kind, sf := range skippedForfaits {
-							if restoreTierOf(sf.org, sf.platform) != tier || taken[secrets.WireFamily(kind)] {
-								continue
+						for _, kind := range skippedForfaits.kinds() {
+							for _, sf := range skippedForfaits.candidatesAt(kind, tier) {
+								if taken[secrets.WireFamily(kind)] {
+									break
+								}
+								if skips.heldByFloor(sf.fp) {
+									p.logger.Info("cloudpublisher: window-closed forfait NOT restored for run=%s kind=%s fp=%s bot=%s — the reserve holds it for another workload; the credential is usable, it is spoken for",
+										runID, kind, sf.fp, botID)
+									continue
+								}
+								if !policy.sealableSlot(slotOfKind(kind)) {
+									break
+								}
+								setOAuthCredential(&bundle, kind, sf.payload, sf.fp, sf.id, sf.connectedAt)
+								if sf.org {
+									bundle.OrgSourced[kind] = true
+								}
+								if sf.platform {
+									bundle.PlatformSourced[kind] = true
+								}
+								taken[secrets.WireFamily(kind)] = true
+								p.logger.Info("cloudpublisher: window-closed forfait RESTORED for run=%s kind=%s fp=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, kind, sf.fp)
+								break
 							}
-							if skips.heldByFloor(sf.fp) {
-								p.logger.Info("cloudpublisher: window-closed forfait NOT restored for run=%s kind=%s fp=%s bot=%s — the reserve holds it for another workload; the credential is usable, it is spoken for",
-									runID, kind, sf.fp, botID)
-								continue
-							}
-							if !policy.sealableSlot(slotOfKind(kind)) {
-								continue
-							}
-							setOAuthCredential(&bundle, kind, sf.payload, sf.fp, sf.id, sf.connectedAt)
-							if sf.org {
-								bundle.OrgSourced[kind] = true
-							}
-							if sf.platform {
-								bundle.PlatformSourced[kind] = true
-							}
-							taken[secrets.WireFamily(kind)] = true
-							p.logger.Info("cloudpublisher: window-closed forfait RESTORED for run=%s kind=%s fp=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, kind, sf.fp)
 						}
 					}
 					restoreKeys(restoreTierTenant)
@@ -1248,7 +1265,8 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// retries, or spends the runner pod's ambient env. A run
 					// whose every route names its provider has no such route, and
 					// the key would only park routes the shared key serves.
-					for _, prov := range deferredTenantKeys {
+					for _, deferred := range deferredTenantKeys {
+						prov := deferred.prov
 						if taken[secrets.WireFamily(string(prov))] {
 							p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key stays out: a shared key serves the routes naming it, and another credential holds the wire", runID, prov)
 							continue
@@ -1261,7 +1279,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 						delete(bundle.PlatformSourced, string(prov))
 						delete(bundle.OrgSourced, string(prov))
 						p.logger.Info("cloudpublisher: run=%s provider=%s — the tenant's own refused key comes back as the default, over the shared key sealed for its routes: nothing else holds the wire", runID, prov)
-						restoreKey(prov, skippedAPIKeys[prov], sealDefault)
+						// The candidate the tenant pass DEFERRED, carried here
+						// with it: re-reading the provider's memory would pick
+						// the first entry, which another tier may have added.
+						restoreKey(prov, deferred.sk, sealDefault)
 					}
 				}
 
@@ -2000,7 +2021,7 @@ func setOAuthCredential(bundle *secrets.RunBundle, kind string, payload []byte, 
 //
 // botID is the run's raw bot id, the key the budget floor matches;
 // audienceBotID is its canonical spelling, read by the BYOK audience only.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID, audienceBotID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits map[string]skippedForfait, pinned map[string]bool, policy sharedTierPolicy, native *tierNative) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID, audienceBotID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys skippedAPIKeys, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits skippedForfaits, pinned map[string]bool, policy sharedTierPolicy, native *tierNative) {
 	if p.sealer == nil {
 		return
 	}
@@ -2064,9 +2085,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 					if floorHeld {
 						skips.noteFloorHeld(rec.Fingerprint)
 					}
-					if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
-						skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt, platform: true}
-					}
+					skippedForfaits.remember(string(rec.Kind), skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt, platform: true})
 					p.logger.Info("cloudpublisher: platform forfait SKIPPED run=%s kind=%s rank=%d fp=%s — %s", runID, rec.Kind, rec.Rank, rec.Fingerprint, why)
 					continue
 				}
@@ -2158,9 +2177,14 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 				// must not vanish outright — the rule the forfait branch above
 				// states verbatim. It is remembered for the restore step
 				// instead, behind any tenant key of the same provider, whose
-				// restore takes precedence.
+				// restore takes precedence — an ORDER the restore applies
+				// itself, tier by tier. Recording this candidate only when the
+				// provider was not already "seen" is what masked it: a tenant
+				// entry the reserve holds is refused at the restore, and the
+				// platform sibling that would have parked the run had never
+				// been written down.
 				if refused := providersWithoutKey(missing, bundle.APIKeys, bundle.PinnedAPIKeys); len(refused) > 0 {
-					fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", audienceBotID, refused, nil, p.sealer, nil, withheld.note)
+					fallback, ferr := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", audienceBotID, refused, nil, p.sealer, restorableKey(skips), withheld.note)
 					if ferr != nil {
 						p.logger.Warn("cloudpublisher: platform refused-key fallback resolve: %v", ferr)
 					}
@@ -2168,10 +2192,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 						if len(r.Plaintext) == 0 {
 							continue
 						}
-						if _, seen := skippedAPIKeys[prov]; seen {
-							continue
-						}
-						skippedAPIKeys[prov] = skippedAPIKey{plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID, fingerprint: r.Fingerprint, platform: true}
+						skippedAPIKeys.remember(prov, skippedAPIKey{plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID, fingerprint: r.Fingerprint, platform: true})
 					}
 				}
 			}
