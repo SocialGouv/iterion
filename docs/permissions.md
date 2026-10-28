@@ -55,19 +55,28 @@ a claude_code node with an `output_schema:` spawns the CLI **twice** on one
 session — the work pass (`Execute`), and a structured-output pass that resumes
 the same transcript to reformat what the first pass produced.
 
-- The **work pass** carries the hook, so the table above is exact there: the
-  rules decide, scoped patterns included.
-- The **structured-output pass** of a gated node is bounded instead by
-  withholding the native surface entirely (`gatedFormattingWithheld`), leaving
-  only `StructuredOutput`, which is not on the roster. That is a bound, not
-  the gate: it cannot express `deny: ["Bash(rm -rf:*)"]`, only "no native
-  tools at all". Since #1672 the one-shot path *has* a hook channel
-  (`claudesdk.Prompt` sends the same `initialize` control request, proven at
-  the transport level by `TestAHookedOneShotSpawnSendsItsInitializeOnStdin`),
-  so the mechanism is no longer missing; what is still owed before the gate
-  replaces the withholding is a live proof that the CLI registers hooks from
-  an `initialize` on that stream. Until then the withholding stays, because it
-  is a bound that holds without that proof.
+**Both spawns carry the gate** (#1672). They register it through one
+constructor (`claudePermissionGate`), so the table above is exact on both: the
+rules decide, scoped patterns included, and a node's `tools:` declaration
+reaches both spawns beside it — `tools:` bounds what *exists*, the policy
+bounds what *runs*.
+
+One thing differs, because it cannot not: an **`ask` verdict on the
+structured-output pass is a refusal, not a pause**. That pass runs after the
+turn that could have paused for an operator, and its caller returns a result
+rather than a pending question — so the call is refused with a reason naming
+why, and the pass is not stopped (it still owes its JSON). `StructuredOutput`
+is exempt in the policy, so the tool a schema'd node returns its result with
+is never refused on either spawn.
+
+How the gate reaches the second spawn: `claudesdk.Prompt` sends the same
+`initialize` control request as the streaming path, and a one-shot spawn
+carrying hooks therefore reads stdin as a protocol stream (`--input-format
+stream-json`) with its prompt as a user message. A CLI that **refuses** that
+registration aborts the spawn with a typed error rather than running it
+ungated. Pinned by `TestTheGatedFormattingSpawnCarriesTheGateOnItsStdin` (the
+verdict read off the wire) and, against the real CLI, by
+`TestCLILiveOneShotHookChannelIsNotRefused` (`clilive` build tag).
 
 A node with no `output_schema:` has one spawn and no second case to reason
 about.
@@ -239,22 +248,16 @@ is the exception that proves the shape: it is *not* on the roster and is
 withheld separately, from every spawn, ultracode included, whatever the list
 says — with the schedulers `ScheduleWakeup`, `CronCreate`/`CronDelete`/
 `CronList` and `RemoteTrigger`, which no one-shot session can use.)
-The one spawn where none of them survives is the **structured-output pass of a
-GATED node**: it cannot carry the permission hook, so it withholds the roster,
-the whole orchestration surface this package enumerates (`Agent`, `Task`,
-`TaskOutput`, `Monitor`, `Workflow` — ultracode or not, because nothing there
-can run the policy the author wrote), and the names the live CLI was measured
-still registering afterwards: `EnterWorktree`/`ExitWorktree` (they move the
-worktree the session acts in), `CronCreate`/`CronDelete`/`CronList` and
-`ScheduleWakeup` (they schedule future work), `SendMessage`, `RemoteTrigger`,
-`BashOutput`, `KillShell`, `TaskStop`. `StructuredOutput` is the one tool that
-pass needs and is deliberately not withheld. That withholding is the enforced
-half and it is **incomplete** — it names a roster iterion does not own, so the
-tools outside those lists survive it (#1651). The sentence that pass also
-carries — *"Do not call any tool other than StructuredOutput; just return the
-JSON."* — covers those names whatever their spelling, but only while the model
-cooperates, which under a prompt-injection threat is the weaker control: it is
-defence in depth beside the flag, never in place of it. On claw,
+The **structured-output pass of a GATED node** used to be the one spawn where
+none of them survived: it withheld the whole roster plus every name the live
+CLI was measured still registering, because it could not carry the permission
+hook. It carries the hook now (#1672), so the answer there is the same as
+everywhere else — the list narrows what exists, the policy decides what runs,
+and the policy reads the name the CLI actually offers rather than a roster
+iterion does not own. That is the stronger half of the exchange: the
+withholding could only say "no native tools at all" and left every name
+outside its three lists alive, while the gate refuses `Bash(rm -rf:*)` by the
+rule the author wrote. On claw,
 `assembleEffectiveTools` adds `ask_user` when `interaction:` is set, then
 `todo_write`, then `read_file`/`write_file`/`glob` under `auto_memory:` — so a
 node that declared no tools can end up holding a file writer, which **C270**

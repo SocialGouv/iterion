@@ -39,8 +39,19 @@ import (
 // When $SETTINGS_LOG is set it also records, one line per spawn, the content
 // of the file its --settings flag names — the flag settings object as the CLI
 // reads it — or a "<no settings file: …>" marker.
+//
+// When $STDIN_DIR is set it also records, in $STDIN_DIR/<spawn number>, the
+// control lines it READ on stdin — which is where a hook-borne bound travels,
+// and the only place a spawn's gate can be observed at all. With $HOOK_PROBE
+// set it additionally plays the CLI's half of one PreToolUse callback on the
+// structured-output spawn and records the verdict it gets back: a registration
+// nobody answers is not a gate. That spawn is the one carrying --resume, not
+// the one carrying --json-schema: pass 1 asks for the schema too (the CLI
+// takes it together with --allowedTools since 2.1), and probing pass 1 pauses
+// an `ask` run before pass 2 exists.
 const fakeClaudeArgv = `#!/bin/sh
 printf '%s' "$*" | tr '\n' ' ' >> "$ARGV_LOG"; printf '\n' >> "$ARGV_LOG"
+spawn=$(wc -l < "$ARGV_LOG" | tr -d ' ')
 if [ -n "$ENV_LOG" ]; then printf 'bg=[%s] mem=[%s] bdef=[%s] bmax=[%s] rtkdb=[%s] rtkrecall=[%s] sse=[%s] rr=[%s] exitdelay=[%s] bgceil=[%s]\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-<unset>}" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}" "${BASH_DEFAULT_TIMEOUT_MS-<unset>}" "${BASH_MAX_TIMEOUT_MS-<unset>}" "${RTK_DB_PATH-<unset>}" "${RTK_RECALL-<unset>}" "${CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS-<unset>}" "${CLAUDE_CODE_BG_TASKS_REPORT_RUNNING-<unset>}" "${CLAUDE_CODE_EXIT_AFTER_STOP_DELAY-<unset>}" "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-<unset>}" >> "$ENV_LOG"; fi
 if [ -n "$SETTINGS_LOG" ]; then
 	settings=; prev=
@@ -51,9 +62,17 @@ fi
 
 case "$*" in *--input-format*)
 	while read -r line; do
+		if [ -n "$STDIN_DIR" ]; then printf '%s\n' "$line" >> "$STDIN_DIR/$spawn"; fi
 		case "$line" in *'"type":"user"'*) break ;; esac
 	done ;;
 esac
+if [ -n "$HOOK_PROBE" ]; then
+	case "$*" in *--resume*)
+		printf '%s\n' '{"type":"control_request","request_id":"probe1","request":{"subtype":"hook_callback","callback_id":"hook_PreToolUse_0","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /nope"}}}}'
+		read -r verdict
+		if [ -n "$STDIN_DIR" ] && [ -n "$verdict" ]; then printf '%s\n' "$verdict" >> "$STDIN_DIR/$spawn"; fi ;;
+	esac
+fi
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"s1","model":"fake","tools":[],"mcp_servers":[]}'
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"","num_turns":1,"duration_ms":1,"duration_api_ms":1,"session_id":"s1"}'
 `
@@ -283,29 +302,29 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 	}
 
 	// A GATED task, DECLARING tools — the one combination that separates the
-	// two spawns, and the one an earlier version of this fix got backwards.
+	// two spawns, and the one two earlier versions of this fix got backwards
+	// in opposite directions.
 	//
 	// The gate is a PreToolUse hook, so it holds on the spawn it is
-	// registered on. Prompt carries a hook channel since #1672.1, but the
-	// gate is not wired onto it until a live run proves the CLI registers
-	// hooks there, so today only Execute's spawn carries it. There the node keeps everything
-	// it declared: `tools:` bounds what EXISTS, the policy bounds what RUNS,
+	// registered on — and since #1672.2 BOTH spawns register it through the
+	// one constructor (claudePermissionGate), so both read the same answer.
+	// What that means on argv is that the DECLARATION reaches both spawns
+	// unchanged: `tools:` bounds what EXISTS, the policy bounds what RUNS,
 	// and joining them deletes a gated node's own tools (measured on three
 	// shipped bots — whats-next losing Read/Glob/Grep, feed-watch losing the
 	// WebFetch its whole job is, copilot losing Read/Glob/Bash/Skill).
-	// The formatting spawn cannot carry the hook, so THERE the native surface
-	// is withheld instead, or a `permission: deny` node resumes its own
-	// transcript ungated with the whole roster under bypassPermissions.
-	// Both ENABLED modes, not just deny: the withholding keys on
-	// Policy.Enabled(), and the package has a neighbouring ask-flavoured
-	// predicate — reaching for the wrong one would leave every
-	// `permission: ask` node's formatting spawn ungated, and a deny-only
-	// fixture cannot see it.
+	// That the gate itself reaches the second spawn is not visible here at
+	// all — it travels on stdin, and TestTheGatedFormattingSpawnCarriesTheGateOnItsStdin
+	// is where it is read.
+	// Both ENABLED modes, not just deny: the package has a neighbouring
+	// ask-flavoured predicate (CanAsk), and reaching for the wrong one would
+	// leave every `permission: ask` node's formatting spawn ungated — a
+	// deny-only fixture cannot see it.
 	//
 	// DiagnosticShell is set because it is the other input that decides this
-	// answer, and it decides it OPPOSITE ways on the two spawns: the opt-in
-	// is a grant, so spawn #1 keeps Bash; spawn #2 has no gate to bound it,
-	// so it does not.
+	// answer, and it must decide it the SAME way on both spawns now: the
+	// opt-in is a grant, and a grant that survives one spawn and not the
+	// other is the bug this row exists for.
 	for _, mode := range []permission.Mode{permission.ModeAsk, permission.ModeDeny} {
 		pol, err := permission.NewPolicy(mode, nil, nil, []string{"Bash"})
 		if err != nil {
@@ -323,56 +342,34 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 		if len(gated) < 2 {
 			t.Fatalf("mode %v: expected two spawns for the gated row, got %d", mode, len(gated))
 		}
-		if got := disallowed(gated[0]); slices.Contains(got, "Read") || slices.Contains(got, "Bash") {
-			t.Errorf("mode %v: the gated spawn that CARRIES the hook removed the tools the node declared (disallowed=%v)", mode, got)
-		}
-		for _, native := range roster {
-			if got := disallowed(gated[1]); !slices.Contains(got, native) {
-				t.Errorf("mode %v: the ungated formatting spawn of a GATED task keeps %q (disallowed=%v)", mode, native, got)
+		for i, argv := range gated {
+			if got := disallowed(argv); slices.Contains(got, "Read") || slices.Contains(got, "Bash") {
+				t.Errorf("mode %v: spawn #%d of a gated node removed the tools it declared (disallowed=%v)", mode, i+1, got)
 			}
-		}
-		// …and the two lists stay DISJOINT there. Emitting the declaration
-		// as well would name `Read` on --allowedTools and on
-		// --disallowedTools in one argv, which makes the withholding rest on
-		// the CLI resolving deny over allow — a precedence this repo has
-		// never executed. Disjoint lists hold whatever it is.
-		if f := strings.Fields(gated[1]); slices.Contains(f, "--allowedTools") {
-			t.Errorf("mode %v: the gated formatting spawn emits an approval list beside its withholding: %s", mode, gated[1])
-		}
-		// The bounds that are NOT the declaration reach this spawn from a
-		// statement OUTSIDE the gated/ungated branch. Asserted on the gated
-		// arm too: moving `claudeSpawnBounds` one indentation level, into the
-		// `else`, strips all three from every gated node — measured, with the
-		// whole suite green.
-		f := strings.Fields(gated[1])
-		if !slices.Contains(f, "--strict-mcp-config") {
-			t.Errorf("mode %v: the gated formatting spawn lost --strict-mcp-config — the operator's ~/.claude.json servers boot inside this bot node (#506)", mode)
-		}
-		if j := slices.Index(f, "--max-turns"); j < 0 || j+1 >= len(f) || f[j+1] != "25" {
-			t.Errorf("mode %v: the gated formatting spawn runs uncapped although the node set tool_max_steps: 25 (argv: %s)", mode, gated[1])
-		}
-		if got := disallowed(gated[1]); !slices.Contains(got, "Workflow") {
-			t.Errorf("mode %v: the gated formatting spawn keeps Workflow — the one tool the DATA in the resumed transcript can arm (disallowed=%v)", mode, got)
-		}
-		// The orchestration surface is OUTSIDE the roster the loop above
-		// checks. `claudeNativeTools` happens to carry `Task`, so `Task` was
-		// withheld by accident while `Agent` — the spelling the current CLI
-		// uses — `TaskOutput` and `Monitor` were not: a gated node resumed its
-		// own transcript under bypassPermissions, with no hook, and could
-		// still spawn a subagent whose tool calls nothing it declared bounds.
-		// claudeSpawnBounds removes these only under an opt-in knob that is
-		// off by default, which is a question about the model family, not
-		// about the gate.
-		for _, orch := range []string{"Agent", "Task", "TaskOutput", "Monitor"} {
-			if got := disallowed(gated[1]); !slices.Contains(got, orch) {
-				t.Errorf("mode %v: the gated formatting spawn keeps %q — a subagent spawned there is bounded by nothing the node declared (disallowed=%v)", mode, orch, got)
+			if f := strings.Fields(argv); !slices.Contains(f, "--allowedTools") {
+				t.Errorf("mode %v: spawn #%d of a gated node carries no declaration: %s", mode, i+1, argv)
 			}
-		}
-		// One name, once. Both flags are sets and both options append, so the
-		// roster (which carries `Task`) composed with the orchestration list
-		// (which carries it too) must still put it on the argv once.
-		if got := disallowed(gated[1]); len(got) != len(uniq(got)) {
-			t.Errorf("mode %v: the gated formatting spawn repeats a name on --disallowedTools: %v", mode, got)
+			// The bounds that are NOT the declaration reach both spawns from
+			// statements OUTSIDE any gated/ungated branch. Asserted on the
+			// gated arm too: moving `claudeSpawnBounds` one indentation
+			// level, into a branch, stripped all three from every gated node
+			// — measured, with the whole suite green.
+			f := strings.Fields(argv)
+			if !slices.Contains(f, "--strict-mcp-config") {
+				t.Errorf("mode %v: spawn #%d lost --strict-mcp-config — the operator's ~/.claude.json servers boot inside this bot node (#506)", mode, i+1)
+			}
+			if j := slices.Index(f, "--max-turns"); j < 0 || j+1 >= len(f) || f[j+1] != "25" {
+				t.Errorf("mode %v: spawn #%d runs uncapped although the node set tool_max_steps: 25 (argv: %s)", mode, i+1, argv)
+			}
+			if got := disallowed(argv); !slices.Contains(got, "Workflow") {
+				t.Errorf("mode %v: spawn #%d keeps Workflow — the one tool the DATA in the resumed transcript can arm (disallowed=%v)", mode, i+1, got)
+			}
+			// One name, once. Both flags are sets and both options append, so
+			// a caller composing several bounds onto one spawn must still put
+			// each name on the argv once.
+			if got := disallowed(argv); len(got) != len(uniq(got)) {
+				t.Errorf("mode %v: spawn #%d repeats a name on --disallowedTools: %v", mode, i+1, got)
+			}
 		}
 	}
 
@@ -396,13 +393,13 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 	}
 
 	// A GATED **ULTRACODE** node: the row that separates "who may orchestrate"
-	// from "when a call may run". Ultracode keys what the spawn that carries
-	// the hook keeps, and has nothing to say about the gate. On the formatting
-	// spawn there is no hook, so the policy the author wrote cannot refuse a
-	// single call; and `Workflow` is the tool the CLI arms on the word
-	// "ultracode" appearing anywhere in the prompt — which is the transcript
-	// this pass resumes, content included. (The first spawn withholds
-	// `Workflow` too, like every spawn: it only runs in the background.)
+	// from "when a call may run". Ultracode keys what a spawn KEEPS; the gate
+	// decides what may RUN, and since #1672.2 it decides it on both spawns.
+	// So the argv answer is the same on both: `Workflow` goes (the CLI arms
+	// it on the word "ultracode" appearing anywhere in the prompt — which is
+	// the transcript the second pass resumes, content included, and it only
+	// ever runs in the background), the declaration's own withholding goes,
+	// and everything else is the gate's business rather than this flag's.
 	gatedUltra := spawnArgv(t, Task{
 		NodeID:        "n",
 		Permission:    mustPolicy(t, permission.ModeDeny),
@@ -414,36 +411,43 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 	if len(gatedUltra) < 2 {
 		t.Fatalf("expected two spawns for the gated ultracode row, got %d", len(gatedUltra))
 	}
-	if got := disallowed(gatedUltra[0]); slices.Contains(got, "Read") || !slices.Contains(got, "Workflow") {
-		t.Errorf("the gated ultracode spawn that CARRIES the hook must keep what it declared and withhold Workflow (disallowed=%v)", got)
-	}
-	// The last group is what the LIVE CLI was measured still registering once
-	// the three lists above are withheld. Two names an earlier pass guessed —
-	// `SlashCommand`, `TaskList` — are not tools of this CLI at all, which is
-	// why the list is read from the product rather than assembled from
-	// neighbouring source files.
-	for _, name := range []string{
-		"Workflow", "Agent", "TaskOutput", "Monitor",
-		"EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList",
-		"ScheduleWakeup", "SendMessage", "RemoteTrigger", "BashOutput", "KillShell", "TaskStop",
-	} {
-		if got := disallowed(gatedUltra[1]); !slices.Contains(got, name) {
-			t.Errorf("the gated ultracode formatting spawn keeps %q with no hook to bound it (disallowed=%v)", name, got)
+	for i, argv := range gatedUltra {
+		got := disallowed(argv)
+		if slices.Contains(got, "Read") {
+			t.Errorf("spawn #%d of a gated ultracode node removed the one tool it declared (disallowed=%v)", i+1, got)
+		}
+		// headlessWithheldTools holds on EVERY spawn, ultracode included:
+		// each name hands work to a later turn this session will never have.
+		// `Agent` and `Task` are withheld here by the DECLARATION (the roster
+		// carries both since #1651, and `read_file` grants neither) — which
+		// is why the two groups are asserted apart.
+		for _, name := range []string{
+			"Workflow", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
+			"RemoteTrigger", "AskUserQuestion", "SlashCommand", "BashOutput", "KillShell",
+		} {
+			if !slices.Contains(got, name) {
+				t.Errorf("spawn #%d keeps %q, which can only hand work to a turn this session will not have (disallowed=%v)", i+1, name, got)
+			}
+		}
+		for _, name := range []string{"Agent", "Task", "Bash", "Write"} {
+			if !slices.Contains(got, name) {
+				t.Errorf("spawn #%d keeps %q, which `tools: [read_file]` does not declare (disallowed=%v)", i+1, name, got)
+			}
 		}
 	}
-	// The advisory sentence rides the GATED arm only, and it exempts
-	// StructuredOutput by name. Both halves matter: an ungated
-	// structured-output pass is the `--max-turns` fallback and legitimately
-	// does tool work (54 of the catalog's 57 two-pass nodes are ungated), and
-	// StructuredOutput is how the agent RETURNS its result — a blanket "call
-	// no tools" would push every gated schema'd node onto the text fallback.
-	const advisory = "Do not call any tool other than StructuredOutput"
-	if last := gatedUltra[len(gatedUltra)-1]; !strings.Contains(last, advisory) {
-		t.Errorf("the gated formatting spawn carries no instruction covering the names the roster misses: %s", last)
-	}
+	// NEITHER pass is told to call no tools now. The sentence a gated pass
+	// used to carry was the advisory half of a withholding that no longer
+	// exists, and it is false where the policy allows a tool: this pass is
+	// the `--max-turns` fallback for a first pass cut off mid-work, which is
+	// the one case where it must still be able to act (54 of the catalog's 57
+	// two-pass nodes are ungated, and the gated ones are exactly the ones
+	// whose work matters most). StructuredOutput is exempt in the policy, so
+	// the tool the pass RETURNS its result with is never refused.
 	ungatedPass := ungated2ndPassProbe(t)
-	if last := ungatedPass[len(ungatedPass)-1]; strings.Contains(last, "Do not call any tool") {
-		t.Errorf("an UNGATED formatting spawn was told to call no tools — that pass is the --max-turns fallback and is where the node collects its work: %s", last)
+	for name, spawns := range map[string][]string{"gated": gatedUltra, "ungated": ungatedPass} {
+		if last := spawns[len(spawns)-1]; strings.Contains(last, "Do not call any tool") {
+			t.Errorf("the %s formatting spawn was told to call no tools — the gate decides that now, call by call: %s", name, last)
+		}
 	}
 
 	// A named list removes what it does not name and KEEPS what it does.
@@ -492,22 +496,34 @@ func ungated2ndPassProbe(t *testing.T) []string {
 	return spawns
 }
 
-// The one tool the formatting pass needs must never be withheld: it is how the
-// agent RETURNS its result. A list assembled by enumeration is exactly where
-// that gets swept in by accident.
-func TestTheGatedFormattingWithholdingSparesTheToolThePassNeeds(t *testing.T) {
-	for _, name := range gatedFormattingWithheld() {
-		if name == "StructuredOutput" {
-			t.Fatalf("the gated formatting spawn withholds StructuredOutput — every schema'd gated node would fall back to text parsing")
+// The one tool the formatting pass needs must never be refused: it is how the
+// agent RETURNS its result. The withholding that used to answer for this is
+// gone (#1672.2), so the question moves to the gate — and the gate answers it
+// with an exemption rather than with a list, which is why it holds for every
+// spelling and every mode.
+func TestTheFormattingPassCanAlwaysReturnItsResult(t *testing.T) {
+	for _, mode := range []permission.Mode{permission.ModeAsk, permission.ModeDeny} {
+		// The strictest shape an author can write: deny everything by mode,
+		// and name the tool in a deny rule as well.
+		pol, err := permission.NewPolicy(mode, nil, nil, []string{"StructuredOutput", "Bash"})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	// …and the enumeration carries no name twice, so the argv stays a witness.
-	seen := map[string]bool{}
-	for _, name := range gatedFormattingWithheld() {
-		if seen[name] {
-			t.Errorf("gatedFormattingWithheld repeats %q", name)
+		if dec, rule := pol.Evaluate("StructuredOutput", nil); dec != permission.Allow {
+			t.Errorf("mode %v: StructuredOutput evaluates to %v (rule %q) — every schema'd gated node would fall back to text parsing", mode, dec, rule)
 		}
-		seen[name] = true
+		// …and the withholding is not hiding somewhere on the argv either.
+		for i, argv := range spawnArgv(t, Task{
+			NodeID:        "n",
+			Permission:    pol,
+			AllowedTools:  []string{"read_file"},
+			ToolsDeclared: true,
+			OutputSchema:  []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
+		}) {
+			if got := disallowed(argv); slices.Contains(got, "StructuredOutput") {
+				t.Errorf("mode %v: spawn #%d withholds StructuredOutput on the command line (disallowed=%v)", mode, i+1, got)
+			}
+		}
 	}
 }
 

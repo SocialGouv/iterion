@@ -277,11 +277,28 @@ func (b *ClaudeCodeBackend) wireAsyncAskHooks(task Task, opts []claudesdk.Option
 	return opts
 }
 
-// wirePermissionHook installs the tool-permission gate for claude_code:
-// a broad PreToolUse hook (Matcher nil = every tool) that evaluates the
-// resolved policy before the CLI runs a tool. This is claude_code's half
-// of cross-backend parity with claw's executeToolsDirect gate — both
-// honour the SAME permission.Policy.
+// permissionAskEscalation is what ONE spawn does with an `ask:` verdict. It
+// is the only thing the gate cannot answer from the task alone: whether a
+// call can be surfaced to a human depends on whether this spawn's caller has
+// a pause to offer, which is a property of the CALL SITE.
+//
+// Every other verdict is the task's and is decided once, in
+// claudePermissionGate.
+type permissionAskEscalation func(toolName string, input map[string]any, rule string) claudesdk.HookOutput
+
+// claudePermissionGate is the ONE place a claude_code spawn derives its
+// tool-permission gate from: a broad PreToolUse hook (Matcher nil = every
+// tool) that evaluates the resolved policy before the CLI runs a tool. This
+// is claude_code's half of cross-backend parity with claw's
+// executeToolsDirect gate — both honour the SAME permission.Policy.
+//
+// It is a function of the task and nothing else, so that a spawn is gated by
+// calling it and ungated by not calling it — there is no third state and no
+// per-spawn copy of the policy reading that could drift. The reason that
+// matters is measured: a claude_code node with an `output_schema:` spawns the
+// CLI TWICE on one session under the same always-on bypassPermissions, and
+// for five rounds the second spawn had no gate at all because the gate lived
+// inline in the first spawn's wiring (#1672).
 //
 // Under the always-on --permission-mode bypassPermissions, PreToolUse
 // hooks STILL run and a "deny" decision STILL blocks the tool (per the
@@ -289,21 +306,21 @@ func (b *ClaudeCodeBackend) wireAsyncAskHooks(task Task, opts []claudesdk.Option
 // needs no --permission-mode change:
 //   - Allow → empty HookOutput → falls through → bypass approves.
 //   - Deny  → permissionDecision "deny" with a reason the model adapts to.
-//   - Ask   → capture the approval prompt + cancel the stream so the run
-//     PAUSES for the human (reuses the ask_user pause path:
-//     pendingQuestion + buildAskUserPendingResult). On resume the operator
-//     grants and the model re-issues the now-authorized call.
+//   - Ask   → whatever this spawn can do about it (escalate).
 //
-// Infrastructure tools (ask_user, board.*) are exempt inside
-// permission.Policy.Evaluate, so this hook never blocks iterion's own
-// interaction plumbing.
-func (b *ClaudeCodeBackend) wirePermissionHook(task Task, opts []claudesdk.Option, pendingQuestion, pendingPermission *atomic.Value, cancelStream context.CancelFunc) []claudesdk.Option {
+// Infrastructure tools (ask_user, board.*, StructuredOutput) are exempt
+// inside permission.Policy.Evaluate, so this hook never blocks iterion's own
+// interaction plumbing nor the tool a schema'd node returns its result with.
+//
+// The gate bounds EVERY name the CLI offers, including the ones no list in
+// this package enumerates — which is what makes it a stronger bound than any
+// --disallowedTools roster (#1651: the roster is not this project's to own).
+func claudePermissionGate(task Task, escalate permissionAskEscalation) []claudesdk.Option {
 	policy := task.Permission
 	if !policy.Enabled() {
-		return opts
+		return nil
 	}
-	noContinue := false
-	return append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
+	return []claudesdk.Option{claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
 		Handler: func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
 			policyToolName := claudePermissionToolName(task, in.ToolName, in.ToolInput)
 			dec, rule := policy.Evaluate(policyToolName, in.ToolInput)
@@ -314,23 +331,69 @@ func (b *ClaudeCodeBackend) wirePermissionHook(task Task, opts []claudesdk.Optio
 					DecisionReason: permission.DenyMessage(policyToolName, in.ToolInput, rule),
 				}, nil
 			case permission.Ask:
-				// Surface the approval request to the human and stop the
-				// stream — the post-session check reuses the ask_user
-				// pending path to pause the run. The marker carries the
-				// structured request so the runtime can auto-grant on resume.
-				pendingQuestion.Store(pendingAskUser{Question: permission.AskPrompt(policyToolName, in.ToolInput, rule)})
-				pendingPermission.Store(permission.Marker(policyToolName, in.ToolInput, rule))
-				cancelStream()
-				return claudesdk.HookOutput{
-					Decision:      "deny",
-					Continue:      &noContinue,
-					SystemMessage: "This action requires operator approval; it has been escalated to the iterion runtime. Stop generating.",
-				}, nil
+				return escalate(policyToolName, in.ToolInput, rule), nil
 			default: // permission.Allow
 				return claudesdk.HookOutput{}, nil
 			}
 		},
-	}))
+	})}
+}
+
+// wirePermissionHook carries the gate to the WORK spawn, whose caller has a
+// pause to offer: an `ask:` verdict captures the approval prompt and cancels
+// the stream, so the run pauses for the human (it reuses the ask_user pause
+// path — pendingQuestion + buildAskUserPendingResult). On resume the operator
+// grants and the model re-issues the now-authorized call. The marker carries
+// the structured request so the runtime can auto-grant on resume.
+func (b *ClaudeCodeBackend) wirePermissionHook(task Task, opts []claudesdk.Option, pendingQuestion, pendingPermission *atomic.Value, cancelStream context.CancelFunc) []claudesdk.Option {
+	noContinue := false
+	return append(opts, claudePermissionGate(task, func(toolName string, input map[string]any, rule string) claudesdk.HookOutput {
+		pendingQuestion.Store(pendingAskUser{Question: permission.AskPrompt(toolName, input, rule)})
+		pendingPermission.Store(permission.Marker(toolName, input, rule))
+		cancelStream()
+		return claudesdk.HookOutput{
+			Decision:      "deny",
+			Continue:      &noContinue,
+			SystemMessage: "This action requires operator approval; it has been escalated to the iterion runtime. Stop generating.",
+		}
+	})...)
+}
+
+// wireFormattingPermissionHook carries the SAME gate to the structured-output
+// spawn (formatOutput). The policy reading is identical — it is the same
+// function — and only the `ask:` arm differs: this spawn runs after the turn
+// that could pause for an operator, and its caller returns a result rather
+// than a pending question, so an approval cannot be queued here. The call is
+// refused instead, which is strictly stricter than pausing and never leaves a
+// run waiting for an answer nothing would deliver.
+//
+// The refusal does NOT stop generating (no Continue:false): this pass still
+// owes its JSON, and the work itself belonged to the pass before it.
+func wireFormattingPermissionHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
+	return append(opts, claudePermissionGate(task, func(toolName string, _ map[string]any, rule string) claudesdk.HookOutput {
+		return claudesdk.HookOutput{
+			Decision:       "deny",
+			DecisionReason: formattingPassAskRefusal(toolName, rule),
+		}
+	})...)
+}
+
+// formattingPassAskRefusal is what the model is told when a call needs
+// operator approval on the structured-output pass. It names the reason the
+// answer is a refusal rather than a pause, so the model stops retrying and
+// returns its JSON.
+//
+// It is not permission.DenyMessage: that one reports a deny RULE, and what
+// matched here is an ask rule (or the `ask` mode default). Reporting it as a
+// deny rule would send an author looking for a rule they never wrote.
+func formattingPassAskRefusal(toolName, rule string) string {
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "Permission refused: the `%s` tool needs operator approval", toolName)
+	if rule != "" {
+		fmt.Fprintf(b, " (ask rule: %s)", rule)
+	}
+	b.WriteString(", and this is the structured-output pass — it runs after the turn that could pause for an approval, so the call is refused rather than queued. Do not retry it here: return the JSON the output schema asks for; the work itself belongs to the pass before this one.")
+	return b.String()
 }
 
 // claudePermissionToolName is the narrow bridge between Claude Code's native
