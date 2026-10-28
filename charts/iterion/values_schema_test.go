@@ -65,9 +65,28 @@ func TestValuesSchemaMatchesTemplates(t *testing.T) {
 			t.Errorf("template/dependency key %q missing from schema", key)
 		}
 	}
+	// Retired sub-chart keys stay in the schema in their OFF form only: a
+	// values file that merely disabled them keeps rendering, one that enables
+	// or configures them is refused (the dev-only break of #2084).
+	retired := map[string]bool{"minio": true, "mongodb": true}
 	for key := range schema.Properties {
-		if !used[key] {
+		if !used[key] && !retired[key] {
 			t.Errorf("schema key %q is consumed by neither templates nor dependencies", key)
+		}
+	}
+	for key := range retired {
+		if used[key] {
+			t.Errorf("retired key %q is consumed again — drop it from the retired set", key)
+		}
+	}
+	for _, off := range []map[string]any{{"minio": map[string]any{"enabled": false}}, {"mongodb": map[string]any{"enabled": false}}, {"mongodb": map[string]any{}}} {
+		if err := resolved.Validate(off); err != nil {
+			t.Errorf("the off form of a retired sub-chart must keep rendering: %v: %v", off, err)
+		}
+	}
+	for _, on := range []map[string]any{{"minio": map[string]any{"enabled": true}}, {"mongodb": map[string]any{"enabled": false, "auth": map[string]any{"enabled": false}}}} {
+		if err := resolved.Validate(on); err == nil {
+			t.Errorf("a retired sub-chart enabled or configured must be refused: %v", on)
 		}
 	}
 	for _, file := range []string{"values.yaml", "values-dev.yaml", "values-prod.yaml"} {

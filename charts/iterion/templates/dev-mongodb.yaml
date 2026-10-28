@@ -1,6 +1,6 @@
-{{- if (.Values.devStack.mongodb).enabled -}}
+{{- if ((.Values.devStack).mongodb).enabled -}}
 {{- $m := .Values.devStack.mongodb -}}
-{{- $name := printf "%s-mongodb" (include "iterion.fullname" .) -}}
+{{- $name := printf "%s-mongodb" (include "iterion.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- $rs := $m.replicaSetName | default "rs0" -}}
 {{- if not (regexMatch "^[^@]+@sha256:[0-9a-f]{64}$" ($m.image | default "")) -}}
 {{- fail (printf "devStack.mongodb.image must be pinned by digest (<repository>:<tag>@sha256:<64 hex>), got %q" ($m.image | default "")) -}}
@@ -77,6 +77,7 @@ spec:
         {{- include "iterion.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: dev-mongodb
     spec:
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
       {{- with .Values.imagePullSecrets }}

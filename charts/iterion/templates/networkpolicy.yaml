@@ -6,9 +6,20 @@ metadata:
   labels:
     {{- include "iterion.labels" . | nindent 4 }}
 spec:
+  # The app pods — server, runner, pools, backup — not the dev stores
+  # (devStack.*), which share the release's selector labels: under this
+  # policy their ports (27017, 8333) would be closed to the very pods that
+  # dial them, and they have no business under a deny-all egress.
   podSelector:
     matchLabels:
       {{- include "iterion.selectorLabels" . | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values:
+          - dev-mongodb
+          - dev-seaweedfs
+          - dev-seaweedfs-init
   policyTypes:
     - Ingress
     - Egress

@@ -92,10 +92,12 @@ groups:
   sub-charts are gone with their `mongodb.*` / `minio.*` values (frozen
   `bitnamilegacy/*` images, no security updates): the dev stack is now the
   chart's own `devStack.*` — Mongo 8.3 and SeaweedFS 4.48, both pinned by
-  digest, the bucket created by a pinned rclone hook. A values file still
-  setting `mongodb.*` or `minio.*` is refused by the schema; point
-  `config.mongo.uri` / `config.s3.endpoint` at your stores, or leave them
-  empty with `devStack.*.enabled`. Production never enabled either sub-chart.
+  digest, the bucket created by a pinned rclone hook. A values file that
+  only turned them off (`mongodb.enabled: false`, `minio.enabled: false` —
+  every production values file did) keeps rendering; one that enabled or
+  configured them is refused by the schema. Point `config.mongo.uri` /
+  `config.s3.endpoint` at your stores, or leave them empty with
+  `devStack.*.enabled`.
 - **`backup.*`** — new, off by default; the render refuses an enabled
   backup without its destination Secret or with an unpinned image.
 - **`metrics.prometheusRule.datastores.*`** — new, off by default; it names

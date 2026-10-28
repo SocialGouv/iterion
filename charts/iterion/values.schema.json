@@ -34,12 +34,32 @@
     "metrics": {
       "type": "object"
     },
+    "minio": {
+      "type": "object",
+      "description": "Retired sub-chart (4.4): accepted only in its off form so a values file that merely disabled it keeps rendering; anything else is refused.",
+      "properties": {
+        "enabled": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
     "mode": {
       "type": "string",
       "enum": [
         "local",
         "cloud"
       ]
+    },
+    "mongodb": {
+      "type": "object",
+      "description": "Retired sub-chart (4.4): accepted only in its off form so a values file that merely disabled it keeps rendering; anything else is refused.",
+      "properties": {
+        "enabled": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
     },
     "nameOverride": {
       "type": "string"

@@ -113,7 +113,7 @@ metadata:
 spec:
   volumeSnapshotClassName: csi-snapshotter  # cluster-specific
   source:
-    persistentVolumeClaimName: data-iterion-mongodb-0
+    persistentVolumeClaimName: <the Mongo data PVC>   # e.g. data-iterion-mongodb-0 (your Mongo chart's name)
 ```
 
 Schedule via [Velero](https://velero.io/) or a controller that issues

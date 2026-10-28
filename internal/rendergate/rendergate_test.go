@@ -1,6 +1,7 @@
 package rendergate_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -322,8 +323,148 @@ func TestADuplicateKeyElsewhereIsAWarningNotADeath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ := docs[0].Body()["data"].(map[string]any)
+	data, _ := docs[0].Body["data"].(map[string]any)
 	if data["ITERION_CANONICAL_REDIRECT"] != "true" {
 		t.Errorf("the last definition must win like the API server, got %v", data["ITERION_CANONICAL_REDIRECT"])
+	}
+}
+
+func TestAnAliasCycleIsRefusedNotFollowed(t *testing.T) {
+	// `&x {a: *x}`: following the alias never ends. The gate must answer with
+	// an error, not grow its stack until the runtime kills it.
+	_, err := rendergate.Judge([]byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata: &x\n  a: *x\n"))
+	if err == nil || !strings.Contains(err.Error(), "alias *x reaches back into its own anchor") {
+		t.Fatalf("want the cycle refused by name, got %v", err)
+	}
+	// A legitimate alias (the same anchor used twice, no cycle) still folds.
+	report := judge(t, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n  a: &shared {k: v}\n  b: *shared\n---\n"+valkeyha("valkeyha"))
+	if len(report.Findings) != 0 || report.Judged != 1 {
+		t.Fatalf("a shared anchor is fine, got %+v", report)
+	}
+}
+
+func judgeIn(t *testing.T, namespace, stream string) rendergate.Report {
+	t.Helper()
+	report, err := rendergate.JudgeWithOptions([]byte(stream), rendergate.Options{DefaultNamespace: namespace})
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	return report
+}
+
+func TestAListIsFlattenedLikeKubectlDoes(t *testing.T) {
+	list := "apiVersion: v1\nkind: List\nitems:\n  - " + strings.ReplaceAll(strings.TrimPrefix(valkeyha("valkey"), "\n"), "\n", "\n    ")
+	report := judge(t, list)
+	if len(report.Dead()) != 1 || report.PodTemplates != 1 {
+		t.Fatalf("the StatefulSet inside a List must be judged, got %+v", report)
+	}
+}
+
+func TestObjectsWithoutANamespaceLandInTheReleaseNamespace(t *testing.T) {
+	// A Helm umbrella writes no metadata.namespace into its own templates
+	// while a sub-chart writes `iterion` into its StatefulSet: both land in
+	// the release namespace at apply time. The budget the #2012 follow-up
+	// needs is exactly that shape.
+	budget := "apiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata:\n  name: iterion-valkeyha\nspec:\n  maxUnavailable: 1\n  selector:\n    matchLabels:\n      app.kubernetes.io/name: valkeyha\n      app.kubernetes.io/instance: iterion\n"
+	stream := budget + "---\n" + valkeyha("valkeyha")
+	if report := judgeIn(t, "iterion", stream); len(report.Findings) != 0 || report.Judged != 2 {
+		t.Fatalf("with the release namespace the budget is alive, got %+v", report)
+	}
+	if report := judge(t, stream); len(report.Dead()) != 1 {
+		t.Fatalf("without a release namespace the two objects stay apart, got %+v", report.Findings)
+	}
+	// A term naming the release namespace explicitly is judged, not unjudged.
+	term := "affinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      - topologyKey: kubernetes.io/hostname\n        namespaces: [iterion]\n        labelSelector:\n          matchLabels:\n            app: nobody\n"
+	report := judgeIn(t, "iterion", workload("Deployment", "web", "", map[string]string{"app": "web"}, term))
+	if dead := report.Dead(); len(dead) != 1 {
+		t.Fatalf("a dead term naming the release namespace must be dead, got %+v", report.Findings)
+	}
+}
+
+func TestMergeKeysAreFoldedLikeYAMLDefines(t *testing.T) {
+	// Labels through a merge key: the pods DO carry them.
+	viaMerge := "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  template:\n    metadata:\n      labels:\n        <<: &labels {app: web, tier: front}\n        extra: yes\n    spec:\n      topologySpreadConstraints:\n        - topologyKey: kubernetes.io/hostname\n          maxSkew: 1\n          whenUnsatisfiable: ScheduleAnyway\n          labelSelector:\n            matchLabels:\n              app: web\n"
+	if report := judge(t, viaMerge); len(report.Findings) != 0 || report.Judged != 1 {
+		t.Fatalf("labels reached through << are the pod's labels, got %+v", report)
+	}
+	// A dead term reached through a merge key is still dead.
+	deadViaMerge := "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  template:\n    metadata:\n      labels:\n        app: web\n    spec:\n      affinity:\n        <<: &aff\n          podAntiAffinity:\n            requiredDuringSchedulingIgnoredDuringExecution:\n              - topologyKey: kubernetes.io/hostname\n                labelSelector:\n                  matchLabels:\n                    app: nobody\n"
+	if report := judge(t, deadViaMerge); len(report.Dead()) != 1 {
+		t.Fatalf("a dead term behind << must be found, got %+v", report.Findings)
+	}
+	// The mapping's own key wins over the merged one, whatever the order.
+	docs, _, err := rendergate.Parse([]byte("kind: ConfigMap\nmetadata:\n  name: c\ndata:\n  <<: {a: merged, b: merged}\n  a: own\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := docs[0].Body["data"].(map[string]any)
+	if data["a"] != "own" || data["b"] != "merged" {
+		t.Errorf("merge precedence: got %v", data)
+	}
+}
+
+func TestExcessiveAliasingIsRefused(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("kind: ConfigMap\nmetadata:\n  name: bomb\ndata:\n  a0: &a0 [x, x, x, x, x, x, x, x, x, x]\n")
+	for i := 1; i < 9; i++ {
+		fmt.Fprintf(&b, "  a%d: &a%d [*a%d, *a%d, *a%d, *a%d, *a%d, *a%d, *a%d, *a%d, *a%d, *a%d]\n", i, i, i-1, i-1, i-1, i-1, i-1, i-1, i-1, i-1, i-1, i-1)
+	}
+	_, err := rendergate.Judge([]byte(b.String()))
+	if err == nil || !strings.Contains(err.Error(), "excessive aliasing") {
+		t.Fatalf("a billion-laughs document must be refused by name, got %v", err)
+	}
+}
+
+func TestControllerAddedLabelsAreNotDead(t *testing.T) {
+	// pod-template-hash is stamped on every Deployment pod at runtime: a term
+	// requiring it exists is alive; one requiring it does NOT exist is dead.
+	exists := workload("Deployment", "web", "", map[string]string{"app": "web"},
+		"topologySpreadConstraints:\n  - topologyKey: zone\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchLabels:\n        app: web\n      matchExpressions:\n        - {key: pod-template-hash, operator: Exists}\n")
+	if report := judge(t, exists); len(report.Findings) != 0 {
+		t.Fatalf("pod-template-hash exists on every Deployment pod, got %+v", report.Findings)
+	}
+	jobName := "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: j\nspec:\n  template:\n    metadata:\n      labels:\n        app: j\n    spec:\n      affinity:\n        podAntiAffinity:\n          requiredDuringSchedulingIgnoredDuringExecution:\n            - topologyKey: kubernetes.io/hostname\n              labelSelector:\n                matchLabels:\n                  batch.kubernetes.io/job-name: j\n"
+	if report := judge(t, jobName); len(report.Findings) != 0 {
+		t.Fatalf("the job name label is stamped on every Job pod, got %+v", report.Findings)
+	}
+	absent := workload("Deployment", "web", "", map[string]string{"app": "web"},
+		"topologySpreadConstraints:\n  - topologyKey: zone\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchExpressions:\n        - {key: pod-template-hash, operator: DoesNotExist}\n")
+	if report := judge(t, absent); len(report.Dead()) != 1 {
+		t.Fatalf("requiring the runtime label to be absent selects no pod, got %+v", report.Findings)
+	}
+	stateful := workload("StatefulSet", "db", "", map[string]string{"app": "db"},
+		"topologySpreadConstraints:\n  - topologyKey: zone\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchExpressions:\n        - {key: controller-revision-hash, operator: Exists}\n")
+	if report := judge(t, stateful); len(report.Findings) != 0 {
+		t.Fatalf("controller-revision-hash is stamped on every StatefulSet pod, got %+v", report.Findings)
+	}
+}
+
+func TestMatchLabelKeysFollowTheAPIServer(t *testing.T) {
+	// matchLabelKeys adds `key in (the pod's value)`: alive on a key the
+	// template carries, and on the runtime pod-template-hash; a term whose
+	// selector is otherwise dead stays dead.
+	alive := workload("Deployment", "web", "", map[string]string{"app": "web", "tier": "front"},
+		"affinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      - topologyKey: kubernetes.io/hostname\n        matchLabelKeys: [tier, pod-template-hash]\n        labelSelector:\n          matchLabels:\n            app: web\n")
+	if report := judge(t, alive); len(report.Findings) != 0 {
+		t.Fatalf("matchLabelKeys on carried labels is alive, got %+v", report.Findings)
+	}
+	dead := workload("Deployment", "web", "", map[string]string{"app": "web"},
+		"affinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      - topologyKey: kubernetes.io/hostname\n        matchLabelKeys: [app]\n        labelSelector:\n          matchLabels:\n            app: nobody\n")
+	if report := judge(t, dead); len(report.Dead()) != 1 {
+		t.Fatalf("a dead selector stays dead whatever matchLabelKeys adds, got %+v", report.Findings)
+	}
+	mismatch := workload("Deployment", "web", "", map[string]string{"app": "web"},
+		"affinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      - topologyKey: kubernetes.io/hostname\n        mismatchLabelKeys: [app]\n        labelSelector:\n          matchLabels:\n            app: web\n")
+	report := judge(t, mismatch)
+	if len(report.Findings) != 1 || report.Findings[0].Verdict != rendergate.Unjudged || len(report.Dead()) != 0 {
+		t.Fatalf("mismatchLabelKeys excludes the own pods by construction: unjudged, got %+v", report.Findings)
+	}
+}
+
+func TestARolloutCarriesAPodTemplate(t *testing.T) {
+	rollout := strings.Replace(workload("Deployment", "web", "", map[string]string{"app": "web"},
+		"topologySpreadConstraints:\n  - topologyKey: zone\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchLabels:\n        app: nobody\n"), "kind: Deployment", "kind: Rollout", 1)
+	if report := judge(t, rollout); len(report.Dead()) != 1 || report.Dead()[0].Kind != "Rollout" {
+		t.Fatalf("an Argo Rollout's template must be judged, got %+v", report)
 	}
 }

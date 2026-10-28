@@ -122,8 +122,8 @@ leaves it so (the Secret's envFrom comes after the ConfigMap's and wins).
 {{- define "iterion.mongo.uri" -}}
 {{- if .Values.config.mongo.uri -}}
 {{- .Values.config.mongo.uri -}}
-{{- else if (.Values.devStack.mongodb).enabled -}}
-{{- printf "mongodb://%s-mongodb:27017/?replicaSet=%s" (include "iterion.fullname" .) ((.Values.devStack.mongodb).replicaSetName | default "rs0") -}}
+{{- else if ((.Values.devStack).mongodb).enabled -}}
+{{- printf "mongodb://%s:27017/?replicaSet=%s" (printf "%s-mongodb" (include "iterion.fullname" .) | trunc 63 | trimSuffix "-") ((.Values.devStack.mongodb).replicaSetName | default "rs0") -}}
 {{- end -}}
 {{- end -}}
 
@@ -136,8 +136,8 @@ its own endpoint whatever the release name), else empty.
 {{- define "iterion.s3.endpoint" -}}
 {{- if .Values.config.s3.endpoint -}}
 {{- .Values.config.s3.endpoint -}}
-{{- else if (.Values.devStack.seaweedfs).enabled -}}
-{{- printf "http://%s-seaweedfs:8333" (include "iterion.fullname" .) -}}
+{{- else if ((.Values.devStack).seaweedfs).enabled -}}
+{{- printf "http://%s:8333" (printf "%s-seaweedfs" (include "iterion.fullname" .) | trunc 63 | trimSuffix "-") -}}
 {{- end -}}
 {{- end -}}
 
@@ -151,7 +151,10 @@ workload, rendered from its OWN selector labels (#2012). Call with a dict:
   scheduling  the knob block (server.scheduling, runner.scheduling or the
               pool's own, merged over the runner's)
   affinity    (optional) the operator's free-form affinity, merged OVER the
-              generated one key by key
+              generated one key by key: nodeAffinity and a term list of the
+              OTHER kind (required vs preferred) are kept alongside, a term
+              list of the SAME kind REPLACES the generated one (lists do not
+              merge) — scheduling.antiAffinity: none renders this alone
 The selector is never typed by hand: it is the chart's selectorLabels plus
 the component (and extra) labels — the same ones the pod template carries —
 so it cannot name a label the pods do not have. That dead-selector class is
@@ -189,8 +192,15 @@ affinity:
 {{- if not (has $when (list "ScheduleAnyway" "DoNotSchedule")) -}}
 {{- fail (printf "scheduling.spread.whenUnsatisfiable must be ScheduleAnyway or DoNotSchedule (got %q) on the %s workload" $when $component) -}}
 {{- end }}
+{{- $skew := 1 -}}
+{{- if hasKey $spread "maxSkew" -}}
+{{- $skew = int $spread.maxSkew -}}
+{{- if lt $skew 1 -}}
+{{- fail (printf "scheduling.spread.maxSkew must be at least 1 (got %v) on the %s workload" $spread.maxSkew $component) -}}
+{{- end -}}
+{{- end }}
 topologySpreadConstraints:
-  - maxSkew: {{ $spread.maxSkew | default 1 }}
+  - maxSkew: {{ $skew }}
     topologyKey: {{ $key }}
     whenUnsatisfiable: {{ $when }}
     labelSelector:
@@ -226,9 +236,27 @@ budget carries exactly one of the two), minAvailable defaults to 1.
 */}}
 {{- define "iterion.pdbBudget" -}}
 {{- $b := . | default dict -}}
-{{- if $b.maxUnavailable -}}
+{{- $max := "" -}}
+{{- if hasKey $b "maxUnavailable" -}}{{- $max = printf "%v" $b.maxUnavailable -}}{{- end -}}
+{{- if ne $max "" -}}
 maxUnavailable: {{ $b.maxUnavailable }}
+{{- else if hasKey $b "minAvailable" -}}
+minAvailable: {{ $b.minAvailable }}
 {{- else -}}
-minAvailable: {{ $b.minAvailable | default 1 }}
+minAvailable: 1
+{{- end -}}
+{{- end -}}
+
+{{/*
+iterion.promqlMatchers — refuses a value that cannot be a PromQL label
+matcher list (label="v", label=~"re", …): one with no `=`, with a newline
+or with a backslash. Dict: value, path (the values key, for the message).
+Prometheus drops a WHOLE PrometheusRule on one unparsable expression, so a
+typo here would silence every datastore alert at once.
+*/}}
+{{- define "iterion.promqlMatchers" -}}
+{{- $v := .value | default "" -}}
+{{- if or (not (regexMatch "^[^\n]+$" $v)) (not (contains "=" $v)) -}}
+{{- fail (printf "%s must be a PromQL label matcher list such as pod=~\".*mongodb.*\" or job=\"x\", written as PromQL (got %q)" .path $v) -}}
 {{- end -}}
 {{- end -}}

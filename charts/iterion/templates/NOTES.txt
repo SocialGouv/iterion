@@ -17,7 +17,7 @@ logs on first boot:
   kubectl logs deploy/{{ include "iterion.fullname" . }} | grep -i bootstrap
 {{- end }}
 
-{{- if or (.Values.devStack.mongodb).enabled (.Values.devStack.seaweedfs).enabled }}
+{{- if or ((.Values.devStack).mongodb).enabled ((.Values.devStack).seaweedfs).enabled }}
 
 !! WARNING: the dev datastores are running (devStack.*): a single replica,
    no authentication on MongoDB, a fixed S3 identity. That is acceptable

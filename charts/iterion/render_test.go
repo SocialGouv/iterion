@@ -170,12 +170,15 @@ func sameLabels(got map[string]string, want map[string]string) bool {
 // dead selector; it also refuses a render where nothing was judged.
 func judgeClean(t *testing.T, stream string, minJudged int) {
 	t.Helper()
-	report, err := rendergate.Judge([]byte(stream))
+	report, err := rendergate.JudgeWithOptions([]byte(stream), rendergate.Options{DefaultNamespace: renderNamespace})
 	if err != nil {
 		t.Fatalf("render gate: %v", err)
 	}
 	for _, f := range report.Dead() {
 		t.Errorf("dead selector: %s", f)
+	}
+	for _, w := range report.Warnings {
+		t.Errorf("the chart's own render must carry no defect: %s", w)
 	}
 	for _, f := range report.Findings {
 		if f.Verdict != rendergate.Dead {
@@ -239,7 +242,7 @@ func TestChartRenderScheduling(t *testing.T) {
 		// selecting a name no pod carries. The generated term stays alive, the
 		// operator's is dead, and the finding names the workload and the key.
 		out := mustRender(t, "-f", "values-prod.yaml", "--set-json", "server.affinity="+deadValkeySelector)
-		report, err := rendergate.Judge([]byte(out))
+		report, err := rendergate.JudgeWithOptions([]byte(out), rendergate.Options{DefaultNamespace: renderNamespace})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -305,6 +308,41 @@ func TestChartRenderScheduling(t *testing.T) {
 			t.Errorf("the operator's nodeAffinity is dropped")
 		}
 		assertSpread(t, spec, ownLabels("server"), false)
+		// A term list of the SAME kind replaces the generated one (lists do not
+		// merge): the documented truth, so nobody expects both terms.
+		preferred := `{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":1,"podAffinityTerm":{"topologyKey":"zone","labelSelector":{"matchLabels":{"app.kubernetes.io/component":"runner"}}}}]}}`
+		docs = manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set-json", "server.affinity="+preferred))
+		terms, _ := dig(podSpec(t, docs, "Deployment", "iterion"), "affinity", "podAntiAffinity", "preferredDuringSchedulingIgnoredDuringExecution").([]any)
+		if len(terms) != 1 || dig(terms[0], "podAffinityTerm", "topologyKey") != "zone" {
+			t.Errorf("an operator term list of the same kind must replace the generated one, got %v", terms)
+		}
+	})
+
+	t.Run("a pool inherits the runner's placement and merges its own over it", func(t *testing.T) {
+		runnerNode := `{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"pool","operator":"In","values":["platform"]}]}]}}}`
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", "testdata/values-pools.yaml",
+			"--set", "runner.nodeSelector.disk=ssd", "--set-json", `runner.tolerations=[{"key":"dedicated","operator":"Equal","value":"runners","effect":"NoSchedule"}]`,
+			"--set-json", "runner.affinity="+runnerNode,
+			"--set-json", `runnerPools[0].affinity={"podAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"topologyKey":"zone","labelSelector":{"matchLabels":{"app.kubernetes.io/component":"server"}}}]}}`,
+			"--set-json", `runnerPools[0].pdb={"enabled":false}`,
+			"--set-json", `runnerPools[0].gateway={"baseUrl":"https://gateway.alpha.example","existingSecret":"iterion-pool-alpha-gateway"}`,
+			"--set", "runnerPools[0].name=alpha", "--set", "runnerPools[0].replicas=2"))
+		spec := podSpec(t, docs, "Deployment", "iterion-runner-pool-alpha")
+		if dig(spec, "nodeSelector", "disk") != "ssd" {
+			t.Errorf("the pool must inherit runner.nodeSelector, got %v", spec["nodeSelector"])
+		}
+		if tolerations, _ := spec["tolerations"].([]any); len(tolerations) != 1 {
+			t.Errorf("the pool must inherit runner.tolerations, got %v", spec["tolerations"])
+		}
+		if dig(spec, "affinity", "nodeAffinity") == nil {
+			t.Errorf("the pool must keep the runner's nodeAffinity under its own podAffinity")
+		}
+		if dig(spec, "affinity", "podAffinity") == nil {
+			t.Errorf("the pool's own podAffinity is dropped")
+		}
+		if find(docs, "PodDisruptionBudget", "iterion-runner-pool-alpha") != nil {
+			t.Errorf("a pool's pdb.enabled: false (a YAML bool) must drop its budget")
+		}
 	})
 
 	t.Run("a budget is honest about single replicas", func(t *testing.T) {
@@ -335,12 +373,24 @@ func TestChartRenderScheduling(t *testing.T) {
 		if fmt.Sprint(dig(pdb, "spec", "maxUnavailable")) != "1" || dig(pdb, "spec", "minAvailable") != nil {
 			t.Errorf("maxUnavailable must replace minAvailable, got %v", pdb["spec"])
 		}
+		// Zero is a value, never replaced: minAvailable 0 allows every
+		// disruption (the budget an operator writes to NOT block drains),
+		// maxUnavailable 0 forbids them all.
+		docs = manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "server.pdb.minAvailable=0"))
+		if pdb := must(t, docs, "PodDisruptionBudget", "iterion-server"); fmt.Sprint(dig(pdb, "spec", "minAvailable")) != "0" {
+			t.Errorf("minAvailable 0 must render 0, got %v", pdb["spec"])
+		}
+		docs = manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "server.pdb.maxUnavailable=0"))
+		if pdb := must(t, docs, "PodDisruptionBudget", "iterion-server"); fmt.Sprint(dig(pdb, "spec", "maxUnavailable")) != "0" || dig(pdb, "spec", "minAvailable") != nil {
+			t.Errorf("maxUnavailable 0 must render 0, got %v", pdb["spec"])
+		}
 	})
 
 	t.Run("unknown knob values are refused", func(t *testing.T) {
 		mustRefuse(t, "scheduling.antiAffinity must be", "-f", "values-prod.yaml", "--set", "server.scheduling.antiAffinity=medium")
 		mustRefuse(t, "whenUnsatisfiable must be", "-f", "values-prod.yaml", "--set", "runner.scheduling.spread.whenUnsatisfiable=Maybe")
 		mustRefuse(t, "pdb.enabled must be", "-f", "values-prod.yaml", "--set", "server.pdb.enabled=sometimes")
+		mustRefuse(t, "maxSkew must be at least 1", "-f", "values-prod.yaml", "--set", "server.scheduling.spread.maxSkew=0")
 	})
 }
 
@@ -444,8 +494,16 @@ func TestChartRenderDatastoreAlerts(t *testing.T) {
 			if !strings.Contains(expr, "kube_statefulset_status_replicas_ready{") || !strings.Contains(expr, " < kube_statefulset_replicas{") || !strings.Contains(expr, `namespace="iterion"`) {
 				t.Errorf("%s replica rule expr = %q", store, expr)
 			}
-			if rule(rules, "IterionDatastoreRestarting", map[string]string{"datastore": store}) == nil {
+			// The match is grouped: an alternation spans the whole name and the
+			// pod suffix of the restart rule applies to every branch.
+			if !strings.Contains(expr, `statefulset=~"(?:`) {
+				t.Errorf("%s replica rule must group the match, got %q", store, expr)
+			}
+			restart := rule(rules, "IterionDatastoreRestarting", map[string]string{"datastore": store})
+			if restart == nil {
 				t.Errorf("no IterionDatastoreRestarting rule for %s", store)
+			} else if !strings.Contains(fmt.Sprint(restart["expr"]), `pod=~"(?:`) || !strings.Contains(fmt.Sprint(restart["expr"]), `)-[0-9]+"`) {
+				t.Errorf("%s restart rule must apply the pod suffix to a grouped match, got %q", store, restart["expr"])
 			}
 		}
 	})
@@ -458,7 +516,8 @@ func TestChartRenderDatastoreAlerts(t *testing.T) {
 			{"IterionSeaweedFSNoLeader", "seaweedfs", "SeaweedFS_master_is_leader{", "== 0"},
 			{"IterionMongoDBMemberOutOfSet", "mongodb", "mongodb_rs_members_state{", `member_state!~"PRIMARY|SECONDARY|ARBITER"`},
 			{"IterionMongoDBMemberUnhealthy", "mongodb", "mongodb_rs_members_health{", "== 0"},
-			{"IterionMongoDBNoPrimary", "mongodb", `member_state="PRIMARY"`, "< 1"},
+			{"IterionMongoDBNoPrimary", "mongodb", `member_state="PRIMARY"`, `< 1) and (count(mongodb_rs_members_state{namespace="iterion", pod=~".*mongodb.*"}) > 0)`},
+			{"IterionSeaweedFSUnderReplicated", "seaweedfs", `* on(namespace, pod) group_left() (SeaweedFS_master_is_leader{`, "== 1)) > 0"},
 		}
 		for _, s := range signals {
 			r := rule(rules, s.alert, map[string]string{"family": s.family})
@@ -474,7 +533,7 @@ func TestChartRenderDatastoreAlerts(t *testing.T) {
 	})
 
 	t.Run("every exporter family has an absent-signal rule", func(t *testing.T) {
-		for _, family := range []string{"kube-state-metrics", "valkey", "seaweedfs", "mongodb"} {
+		for _, family := range []string{"kube-state-metrics", "valkey", "seaweedfs", "seaweedfs-master", "mongodb"} {
 			r := rule(rules, "IterionDatastoreSignalAbsent", map[string]string{"family": family})
 			if r == nil {
 				t.Errorf("no absent-signal rule for %s", family)
@@ -499,6 +558,37 @@ func TestChartRenderDatastoreAlerts(t *testing.T) {
 		if rule(off, "IterionSeaweedFSVolumesMissing", nil) == nil {
 			t.Errorf("the other families must stay when one is off")
 		}
+	})
+
+	t.Run("a regex idiom in a match is quoted once, never a rule-file break", func(t *testing.T) {
+		// A backslash is an ordinary regex idiom on names; both rules must
+		// render it as PromQL does — escaped once inside the quoted string —
+		// or Prometheus drops the WHOLE PrometheusRule on the first bad
+		// expression.
+		docs := manifests(t, mustRender(t, append(base, "--set-json", `metrics.prometheusRule.datastores.statefulsets=[{"name":"mongodb","match":"iterion-mongodb\\d*"}]`)...))
+		rules := ruleGroups(t, docs)["iterion.datastores"]
+		replica := fmt.Sprint(rule(rules, "IterionDatastoreReplicasMissing", map[string]string{"datastore": "mongodb"})["expr"])
+		restart := fmt.Sprint(rule(rules, "IterionDatastoreRestarting", map[string]string{"datastore": "mongodb"})["expr"])
+		if !strings.Contains(replica, `statefulset=~"(?:iterion-mongodb\\d*)"`) {
+			t.Errorf("replica rule expr = %q", replica)
+		}
+		if !strings.Contains(restart, `pod=~"(?:iterion-mongodb\\d*)-[0-9]+"`) {
+			t.Errorf("restart rule expr = %q", restart)
+		}
+		mustRefuse(t, "statefulsets[mongodb].match must be a one-line regex", append(base, "--set-json", `metrics.prometheusRule.datastores.statefulsets=[{"name":"mongodb","match":""}]`)...)
+		mustRefuse(t, "datastores.valkey.selector must be a PromQL label matcher list", append(base, "--set-string", "metrics.prometheusRule.datastores.valkey.selector=valkeyfiler")...)
+	})
+
+	t.Run("the mongodb prefix names the exporter's collector", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, append(base, "--set", "metrics.prometheusRule.datastores.mongodb.metricPrefix=mongodb_")...))
+		rules := ruleGroups(t, docs)["iterion.datastores"]
+		for _, alert := range []string{"IterionMongoDBMemberUnhealthy", "IterionMongoDBMemberOutOfSet", "IterionMongoDBNoPrimary"} {
+			r := rule(rules, alert, nil)
+			if r == nil || strings.Contains(fmt.Sprint(r["expr"]), "mongodb_rs_") || !strings.Contains(fmt.Sprint(r["expr"]), "mongodb_members_") {
+				t.Errorf("%s with the replicasetstatus prefix = %v", alert, r)
+			}
+		}
+		mustRefuse(t, "metricPrefix must be a metric-name prefix", append(base, "--set-string", "metrics.prometheusRule.datastores.mongodb.metricPrefix=mongo db_")...)
 	})
 
 	t.Run("the namespace and the selectors are the operator's", func(t *testing.T) {
@@ -583,11 +673,16 @@ func TestChartRenderBackup(t *testing.T) {
 	t.Run("the alert rules follow the tiers", func(t *testing.T) {
 		docs := manifests(t, mustRender(t, append(base, "--set", "metrics.prometheusRule.enabled=true")...))
 		rules := ruleGroups(t, docs)["iterion.backup"]
-		failed := rule(rules, "IterionArtifactBackupFailed", nil)
-		if failed == nil || !strings.Contains(fmt.Sprint(failed["expr"]), `kube_job_status_failed{namespace="iterion", job_name=~"iterion-backup-.*"} > 0`) {
-			t.Errorf("failed rule = %v", failed)
-		}
 		for _, tier := range []string{"daily", "weekly", "monthly"} {
+			// The LAST run of the tier failed, read from the CronJob's own
+			// status so it resolves on the next green run — not the failed-pod
+			// counter (1 forever after a retried-then-green Job), not a retained
+			// failed Job (pages after the copy has recovered).
+			failed := rule(rules, "IterionArtifactBackupFailed", map[string]string{"tier": tier})
+			want := fmt.Sprintf(`(kube_cronjob_status_last_schedule_time{namespace="iterion", cronjob="iterion-backup-%s"} > kube_cronjob_status_last_successful_time{namespace="iterion", cronjob="iterion-backup-%s"}) and on(namespace, cronjob) (kube_cronjob_status_active{namespace="iterion", cronjob="iterion-backup-%s"} == 0)`, tier, tier, tier)
+			if failed == nil || fmt.Sprint(failed["expr"]) != want {
+				t.Errorf("failed rule for %s = %v, want expr %s", tier, failed, want)
+			}
 			if r := rule(rules, "IterionArtifactBackupStale", map[string]string{"tier": tier}); r == nil || !strings.Contains(fmt.Sprint(r["expr"]), `cronjob="iterion-backup-`+tier+`"`) {
 				t.Errorf("stale rule for %s = %v", tier, r)
 			}
@@ -619,7 +714,6 @@ func TestChartRenderBackup(t *testing.T) {
 }
 
 func TestChartRenderDevStack(t *testing.T) {
-	const rcloneDigest = "sha256:d5971950c2b370fb04dd3292541b5bda6d9103143fd7e345aeb435a399388afc"
 	out := mustRender(t, "-f", "values-dev.yaml")
 	docs := manifests(t, out)
 
@@ -651,15 +745,29 @@ func TestChartRenderDevStack(t *testing.T) {
 		if args := fmt.Sprint(dig(sw, "containers", "0", "args")); !strings.Contains(args, "-s3.autoCreateBucket=false") || !strings.Contains(args, "-master.telemetry=false") {
 			t.Errorf("seaweedfs args = %s", args)
 		}
-		job := must(t, docs, "Job", "iterion-seaweedfs-init")
-		if got := dig(job, "metadata", "annotations", "helm.sh/hook"); got != "post-install,post-upgrade" {
-			t.Errorf("bucket hook = %v", got)
+		// The bucket belongs to the pod's own lifecycle: a pod restarted on an
+		// emptyDir gets it back, where a Helm hook would have left it bucketless.
+		postStart := fmt.Sprint(dig(sw, "containers", "0", "lifecycle", "postStart", "exec", "command", "2"))
+		if !strings.Contains(postStart, "s3.bucket.create -name %s") || !strings.Contains(postStart, "s3.bucket.list") {
+			t.Errorf("the gateway's postStart must create the bucket and key on the listing, got:\n%s", postStart)
 		}
-		if img := fmt.Sprint(dig(job, "spec", "template", "spec", "containers", "0", "image")); img != "rclone/rclone@"+rcloneDigest {
-			t.Errorf("bucket hook image = %s, want the backup CronJob's pinned rclone", img)
+		if got := dig(envMap(dig(sw, "containers", "0"))["BUCKET"], "value"); got != "iterion-artifacts" {
+			t.Errorf("BUCKET env = %v", got)
 		}
-		if script := fmt.Sprint(dig(job, "spec", "template", "spec", "containers", "0", "args", "0")); !strings.Contains(script, `rclone mkdir "s3:${BUCKET}"`) || !strings.Contains(script, `rclone size "s3:${BUCKET}"`) {
-			t.Errorf("the hook must create the bucket and read it back, got:\n%s", script)
+		if find(docs, "Job", "iterion-seaweedfs-init") != nil {
+			t.Errorf("no hook Job: the bucket is the pod's own")
+		}
+		for _, name := range []string{"iterion-mongodb", "iterion-seaweedfs"} {
+			if got := dig(podSpec(t, docs, "Deployment", name), "automountServiceAccountToken"); got != false {
+				t.Errorf("%s must not mount the namespace's ServiceAccount token, got %v", name, got)
+			}
+		}
+		// The replica-set member host is the Service, the URI's host and the
+		// member agree (a `localhost` member would initiate fine and strand
+		// every client).
+		probe := fmt.Sprint(dig(mongo, "containers", "0", "readinessProbe", "exec", "command", "3"))
+		if !strings.Contains(probe, `host: "iterion-mongodb:27017"`) {
+			t.Errorf("the member host must be the Service, got probe %s", probe)
 		}
 	})
 
@@ -715,17 +823,77 @@ func TestChartRenderDevStack(t *testing.T) {
 		}
 		must(t, ciDocs, "Service", "ci-iterion-mongodb")
 		must(t, ciDocs, "Service", "ci-iterion-seaweedfs")
-		if got := dig(must(t, ciDocs, "Job", "ci-iterion-seaweedfs-init"), "spec", "template", "spec", "containers", "0", "env", "5", "value"); got != "http://ci-iterion-seaweedfs:8333" {
-			t.Errorf("release ci: the bucket hook dials %v", got)
+		if probe := fmt.Sprint(dig(podSpec(t, ciDocs, "Deployment", "ci-iterion-mongodb"), "containers", "0", "readinessProbe", "exec", "command", "3")); !strings.Contains(probe, `host: "ci-iterion-mongodb:27017"`) {
+			t.Errorf("release ci: the member host must follow the Service, got %s", probe)
+		}
+		// A release name Helm allows (53 chars) must not render names the API
+		// refuses (> 63): the dev stores truncate like every chart name does.
+		long, err := renderAs(t, strings.Repeat("r", 53), "-f", "values-dev.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Scoped to the dev stores: the chart's older objects (secrets,
+		// configmap, runner, test pod) carry the same class and are not this
+		// change's — noted as debt.
+		for _, d := range manifests(t, long) {
+			name := fmt.Sprint(dig(d, "metadata", "name"))
+			if (strings.Contains(name, "-mongodb") || strings.Contains(name, "-seaweedfs")) && len(name) > 63 {
+				t.Errorf("%s %s: %d characters", d["kind"], name, len(name))
+			}
+		}
+		if _, err := render(t, "-f", "values-dev.yaml", "--set-json", "devStack=null"); err != nil {
+			t.Errorf("devStack: null must render (the stores off), got %v", err)
 		}
 	})
 
 	t.Run("the guards", func(t *testing.T) {
 		mustRefuse(t, "needs secrets.storage.create=true", "-f", "values-dev.yaml", "--set", "secrets.storage.create=false")
+		mustRefuse(t, "no secrets.storage.existingSecret", "-f", "values-dev.yaml", "--set", "secrets.storage.existingSecret=my-s3")
 		mustRefuse(t, "must be pinned by digest", "-f", "values-dev.yaml", "--set", "devStack.seaweedfs.image=chrislusf/seaweedfs:4.48")
 		mustRefuse(t, "must be pinned by digest", "-f", "values-dev.yaml", "--set", "devStack.mongodb.image=mongo:8.3")
 		mustRefuse(t, "minio", "-f", "values-dev.yaml", "--set", "minio.enabled=true")
 		mustRefuse(t, "mongodb", "-f", "values-dev.yaml", "--set", "mongodb.enabled=true")
+		mustRefuse(t, "mongodb", "-f", "values-dev.yaml", "--set", "mongodb.enabled=false", "--set", "mongodb.auth.enabled=false")
+	})
+
+	t.Run("a values file that only turned the retired sub-charts off keeps rendering", func(t *testing.T) {
+		// The production values before this change — and every GitOps copy of
+		// them — carry `mongodb.enabled: false` / `minio.enabled: false`.
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "mongodb.enabled=false", "--set", "minio.enabled=false"))
+		must(t, docs, "Deployment", "iterion")
+		for _, name := range []string{"iterion-mongodb", "iterion-seaweedfs"} {
+			if find(docs, "Deployment", name) != nil {
+				t.Errorf("%s rendered from a retired key", name)
+			}
+		}
+	})
+
+	t.Run("the NetworkPolicy never selects the dev stores", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-dev.yaml", "--set", "networkPolicy.enabled=true"))
+		policy := must(t, docs, "NetworkPolicy", "iterion")
+		selector := dig(policy, "spec", "podSelector")
+		for component, labels := range map[string]map[string]string{
+			"dev-mongodb":        {"app.kubernetes.io/name": "iterion", "app.kubernetes.io/instance": "iterion", "app.kubernetes.io/component": "dev-mongodb"},
+			"dev-seaweedfs":      {"app.kubernetes.io/name": "iterion", "app.kubernetes.io/instance": "iterion", "app.kubernetes.io/component": "dev-seaweedfs"},
+			"dev-seaweedfs-init": {"app.kubernetes.io/name": "iterion", "app.kubernetes.io/instance": "iterion", "app.kubernetes.io/component": "dev-seaweedfs-init"},
+		} {
+			matched, err := rendergate.SelectorMatches(selector, labels)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if matched {
+				t.Errorf("the NetworkPolicy selects the %s pods: their ports would be closed to the app pods", component)
+			}
+		}
+		for _, component := range []string{"server", "runner", "runner-pool", "backup"} {
+			matched, err := rendergate.SelectorMatches(selector, map[string]string{"app.kubernetes.io/name": "iterion", "app.kubernetes.io/instance": "iterion", "app.kubernetes.io/component": component})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !matched {
+				t.Errorf("the NetworkPolicy must still select the %s pods", component)
+			}
+		}
 	})
 
 	t.Run("production renders no dev store", func(t *testing.T) {
@@ -735,8 +903,14 @@ func TestChartRenderDevStack(t *testing.T) {
 				t.Errorf("%s rendered with values-prod", name)
 			}
 		}
-		if find(prod, "Job", "iterion-seaweedfs-init") != nil {
-			t.Errorf("the bucket hook rendered with values-prod")
+		// The helpers resolve the dev stores ONLY when they are on: an AWS S3
+		// deployment leaves config.s3.endpoint empty on purpose, and the Mongo
+		// URI of production rides the auth Secret.
+		cm := must(t, prod, "ConfigMap", "iterion-config")
+		for _, key := range []string{"ITERION_MONGO_URI", "ITERION_S3_ENDPOINT"} {
+			if got := dig(cm, "data", key); got != "" {
+				t.Errorf("values-prod renders %s = %v, want empty", key, got)
+			}
 		}
 	})
 

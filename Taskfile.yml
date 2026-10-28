@@ -1451,30 +1451,10 @@ tasks:
     desc: "Chart render gate: helm lint (dev, prod --strict) + the render tests — every anti-affinity / spread / PDB selector confronted with its own pod labels (internal/rendergate, #2012), the backup and alert guards"
     deps: [chart:check-version]
     cmds:
-      # Sub-chart archives: helm renders EVERY archive in charts/iterion/charts/,
-      # declared in Chart.yaml or not — a stale one resurrects the sub-chart it
-      # came from (measured: the minio archive still rendered 67 minio objects
-      # with its dependency removed). Prune the undeclared, fetch a declared
-      # one only when it is missing (the one network step, skipped once the
-      # archives are there).
-      - cmd: |
-          set -eu
-          declared=$(awk '/^dependencies:/{d=1;next} d&&/^  - name:/{print $3}' charts/iterion/Chart.yaml)
-          for archive in charts/iterion/charts/*.tgz; do
-            [ -e "$archive" ] || continue
-            name=$(basename "$archive" | sed -E 's/-[0-9][^/]*\.tgz$//')
-            case " $declared " in
-              *" $name "*) ;;
-              *) echo "chart:check: removing $archive — not declared in Chart.yaml, helm would render it anyway"; rm -v "$archive" ;;
-            esac
-          done
-          for name in $declared; do
-            if ! ls charts/iterion/charts/"$name"-*.tgz >/dev/null 2>&1; then
-              echo "chart:check: the $name sub-chart archive is missing — helm dependency update (network)"
-              helm dependency update charts/iterion
-              break
-            fi
-          done
+      # Sub-chart archives reconciled with Chart.yaml first (undeclared ones
+      # pruned — helm renders them anyway —, a missing declared one fetched):
+      # scripts/chart-check-deps.sh, tested by charts/iterion/deps_test.go.
+      - sh scripts/chart-check-deps.sh charts/iterion
       - helm lint charts/iterion -f charts/iterion/values-dev.yaml
       - helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
       # REQUIRE=1: here a missing helm is red, never a skip.

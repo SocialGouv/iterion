@@ -250,21 +250,25 @@ spec:
         - name: run-iterion
           emptyDir:
             medium: Memory
-      {{- with $pool.nodeSelector }}
+      {{- /* The pool inherits the runner's placement knobs and overrides each key by key: nodeSelector and tolerations as wholes, affinity and scheduling deep-merged; the pool label joins the selector so each pool spreads its OWN replicas. */ -}}
+      {{- with ($pool.nodeSelector | default $.Values.runner.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with $pool.tolerations }}
+      {{- with ($pool.tolerations | default $.Values.runner.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- /* The pool's own scheduling block overrides the runner's key by key; the pool label joins the selector so each pool spreads its OWN replicas. */ -}}
       {{- $scheduling := mergeOverwrite (deepCopy ($.Values.runner.scheduling | default dict)) (deepCopy ($pool.scheduling | default dict)) }}
-      {{- with (include "iterion.scheduling" (dict "root" $ "component" "runner-pool" "extraLabels" (dict "iterion.io/runner-pool" $pool.name) "scheduling" $scheduling "affinity" ($pool.affinity | default $.Values.runner.affinity))) }}
+      {{- $affinity := mergeOverwrite (deepCopy ($.Values.runner.affinity | default dict)) (deepCopy ($pool.affinity | default dict)) }}
+      {{- with (include "iterion.scheduling" (dict "root" $ "component" "runner-pool" "extraLabels" (dict "iterion.io/runner-pool" $pool.name) "scheduling" $scheduling "affinity" $affinity)) }}
       {{- . | trim | nindent 6 }}
       {{- end }}
 {{- $pdb := mergeOverwrite (deepCopy ($.Values.runner.pdb | default dict)) (deepCopy ($pool.pdb | default dict)) }}
-{{- if include "iterion.pdbWanted" (dict "enabled" ($pdb.enabled | default "auto") "replicas" ($pool.replicas | default 1)) }}
+{{- /* hasKey, not sprig default: default treats false as empty and a pool's `pdb: {enabled: false}` would be ignored. */ -}}
+{{- $pdbEnabled := "auto" }}
+{{- if hasKey $pdb "enabled" }}{{ $pdbEnabled = $pdb.enabled }}{{ end }}
+{{- if include "iterion.pdbWanted" (dict "enabled" $pdbEnabled "replicas" ($pool.replicas | default 1)) }}
 ---
 # A pool guaranteed more than one replica gets the same disruption budget
 # as the shared runner: a node drain must not evict every replica of a

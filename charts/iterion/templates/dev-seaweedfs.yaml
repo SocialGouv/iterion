@@ -1,15 +1,12 @@
-{{- if (.Values.devStack.seaweedfs).enabled -}}
+{{- if ((.Values.devStack).seaweedfs).enabled -}}
 {{- $sw := .Values.devStack.seaweedfs -}}
-{{- $name := printf "%s-seaweedfs" (include "iterion.fullname" .) -}}
-{{- if not .Values.secrets.storage.create -}}
-{{- fail "devStack.seaweedfs.enabled needs secrets.storage.create=true: the gateway's S3 identity is rendered from secrets.storage.s3AccessKeyId / s3SecretAccessKey so the server, the runner and the store agree on one key pair (dev only — never for production)" -}}
+{{- $name := printf "%s-seaweedfs" (include "iterion.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $identitySecret := printf "%s-seaweedfs-s3" (include "iterion.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- if or (not .Values.secrets.storage.create) .Values.secrets.storage.existingSecret -}}
+{{- fail "devStack.seaweedfs.enabled needs secrets.storage.create=true and no secrets.storage.existingSecret: the gateway's S3 identity is rendered from secrets.storage.s3AccessKeyId / s3SecretAccessKey so the server, the runner, the bucket hook and the store agree on ONE key pair (dev only — never for production)" -}}
 {{- end -}}
 {{- if not (regexMatch "^[^@]+@sha256:[0-9a-f]{64}$" ($sw.image | default "")) -}}
 {{- fail (printf "devStack.seaweedfs.image must be pinned by digest (<repository>:<tag>@sha256:<64 hex>), got %q" ($sw.image | default "")) -}}
-{{- end -}}
-{{- $backupImage := .Values.backup.image | default dict -}}
-{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" ($backupImage.digest | default "")) -}}
-{{- fail "devStack.seaweedfs needs backup.image.digest (the pinned rclone of the backup CronJob creates the dev bucket)" -}}
 {{- end -}}
 # The dev object store (#2084): SeaweedFS in one process — master + volume +
 # filer + S3 gateway — the release and digest docker-compose.cloud.yml runs,
@@ -20,10 +17,13 @@
 # to the S3 port is signed. -s3.autoCreateBucket=false: a PUT into a missing
 # bucket fails instead of creating it, so a wrong ITERION_S3_BUCKET shows.
 # -master.telemetry=false: no anonymous statistics sent to seaweedfs.com.
+# Signed requests are the S3 port's (8333); the master, volume and filer
+# ports of the one process answer unsigned on the pod IP — dev only, they
+# are published by no Service.
 apiVersion: v1
 kind: Secret
 metadata:
-  name: {{ $name }}-s3
+  name: {{ $identitySecret }}
   labels:
     {{- include "iterion.labels" . | nindent 4 }}
     app.kubernetes.io/component: dev-seaweedfs
@@ -92,6 +92,7 @@ spec:
       annotations:
         checksum/s3-identity: {{ printf "%s:%s" .Values.secrets.storage.s3AccessKeyId .Values.secrets.storage.s3SecretAccessKey | sha256sum }}
     spec:
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
       {{- with .Values.imagePullSecrets }}
@@ -113,6 +114,32 @@ spec:
             - -master.volumeSizeLimitMB=1024
             - -master.telemetry=false
             - -volume.max=0
+          env:
+            - name: BUCKET
+              value: {{ .Values.config.s3.bucket | quote }}
+          # The bucket, created by the pod ITSELF once its filer answers:
+          # nothing in iterion creates its bucket, the gateway refuses to
+          # (-s3.autoCreateBucket=false), and a Helm hook would leave a pod
+          # restarted on an emptyDir — a rollout, an eviction, a rollback —
+          # without one, so every run would fail at its first S3 write. The
+          # probes wait for the hook; `s3.bucket.create` refuses an existing
+          # bucket, so the loop keys on the listing.
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    for i in $(seq 1 90); do
+                      printf 's3.bucket.create -name %s\n' "$BUCKET" | weed shell -master=localhost:9333 -filer=localhost:8888 >/dev/null 2>&1 || true
+                      if printf 's3.bucket.list\n' | weed shell -master=localhost:9333 -filer=localhost:8888 2>/dev/null | grep -qE "(^|[[:space:]])${BUCKET}([[:space:]]|$)"; then
+                        exit 0
+                      fi
+                      sleep 2
+                    done
+                    echo "dev-seaweedfs: bucket $BUCKET not created after 180s" >&2
+                    exit 1
           ports:
             - name: s3
               containerPort: 8333
@@ -148,87 +175,5 @@ spec:
           {{- end }}
         - name: s3-identity
           secret:
-            secretName: {{ $name }}-s3
----
-# The bucket. Nothing in iterion creates its bucket and the gateway refuses
-# to (-s3.autoCreateBucket=false), so a post-install / post-upgrade hook
-# creates config.s3.bucket with rclone — the backup CronJob's pinned image —
-# the way docker/s3-init.sh does for the compose stack: `rclone mkdir` is
-# idempotent (an existing bucket exits 0), `rclone size` exits 3 on a bucket
-# that is not there, a real read-back. The hook runs after the release's
-# resources (with --wait: after they are ready); its loop covers a gateway
-# still coming up.
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: {{ $name }}-init
-  labels:
-    {{- include "iterion.labels" . | nindent 4 }}
-    app.kubernetes.io/component: dev-seaweedfs-init
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "0"
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
-spec:
-  backoffLimit: 6
-  template:
-    metadata:
-      labels:
-        {{- include "iterion.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: dev-seaweedfs-init
-    spec:
-      restartPolicy: OnFailure
-      securityContext:
-        {{- toYaml .Values.securityContext | nindent 8 }}
-      containers:
-        - name: s3-init
-          image: {{ printf "%s@%s" ($backupImage.repository | default "rclone/rclone") $backupImage.digest | quote }}
-          imagePullPolicy: IfNotPresent
-          securityContext:
-            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -eu
-              for i in $(seq 1 60); do
-                if rclone lsd s3: >/dev/null 2>&1; then break; fi
-                echo "s3-init: waiting for the gateway ($i)"
-                sleep 2
-              done
-              rclone mkdir "s3:${BUCKET}"
-              rclone size "s3:${BUCKET}"
-              echo "s3-init: bucket ${BUCKET} ready"
-          env:
-            - name: BUCKET
-              value: {{ .Values.config.s3.bucket | quote }}
-            - name: RCLONE_CONFIG
-              value: /dev/null
-            - name: XDG_CACHE_HOME
-              value: /tmp
-            - name: RCLONE_CONFIG_S3_TYPE
-              value: s3
-            - name: RCLONE_CONFIG_S3_PROVIDER
-              value: Other
-            - name: RCLONE_CONFIG_S3_ENDPOINT
-              value: {{ printf "http://%s:8333" $name | quote }}
-            - name: RCLONE_CONFIG_S3_REGION
-              value: {{ .Values.config.s3.region | quote }}
-            - name: RCLONE_CONFIG_S3_FORCE_PATH_STYLE
-              value: "true"
-            - name: RCLONE_CONFIG_S3_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "iterion.fullname" . }}-storage
-                  key: ITERION_S3_ACCESS_KEY_ID
-            - name: RCLONE_CONFIG_S3_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "iterion.fullname" . }}-storage
-                  key: ITERION_S3_SECRET_ACCESS_KEY
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-      volumes:
-        - name: tmp
-          emptyDir: {}
+            secretName: {{ $identitySecret }}
 {{- end -}}

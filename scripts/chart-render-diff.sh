@@ -15,6 +15,14 @@ if [ -d charts/iterion/charts ]; then
   cp -R charts/iterion/charts "$work/before/charts/iterion/"
 fi
 for side in before after; do
+  # A base that declares a sub-chart whose archive is gone (the dependency
+  # was dropped since, and `task chart:check` pruned it) cannot render:
+  # say which, instead of helm's "missing in charts/ directory".
+  missing=$(helm dependency list "$work/$side/charts/iterion" | awk 'NR>1 && $4 != "ok" {print $1}' | tr '\n' ' ')
+  if [ -n "$missing" ]; then
+    echo "chart-render-diff: the $side side declares sub-charts whose archives are not in place (${missing}): run \`helm dependency update\` on it, or diff from a base that declares the same dependencies" >&2
+    exit 2
+  fi
   helm template iterion "$work/$side/charts/iterion" \
     --namespace iterion -f "$work/$side/charts/iterion/values-dev.yaml" > "$work/$side.yaml"
 done

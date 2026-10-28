@@ -97,7 +97,7 @@ networkPolicy:
       #
       # Replace the namespaceSelector + podSelector with whatever
       # labels your Mongo install uses. The example below assumes
-      # a Bitnami helm chart in the iterion-data namespace.
+      # a MongoDB chart labelling its pods `app.kubernetes.io/name: mongodb` (groundhog2k, Bitnami…) in the iterion-data namespace.
       # ---------------------------------------------------------------
       - to:
           - namespaceSelector:

@@ -268,7 +268,7 @@ networkPolicy:
 
 The chart synthesises a single egress block from the union of
 defaults + `egress.extraAllow`. There is no auto-detection of bundled
-sub-charts; if you also bundle Mongo via `mongodb.enabled`, add the
+sub-charts; if you run the dev stores (`devStack.*`), add the
 matching `egress.extraAllow` entry.
 
 ## NATS monitoring endpoint (KEDA)

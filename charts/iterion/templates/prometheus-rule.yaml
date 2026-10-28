@@ -64,15 +64,22 @@ spec:
     # silent copy cannot pass for a working one. kube-state-metrics series.
     - name: iterion.backup
       rules:
+        {{- range $tier := .Values.backup.tiers }}
+        # The LAST run of the tier failed: scheduled after the last success
+        # and no longer active. Read from the CronJob's own status, so it
+        # resolves on the next green run — a rule on kube_job_status_failed
+        # counts failed PODS (1 forever on a Job that retried once and went
+        # green) and one on a retained failed Job keeps paging after the copy
+        # has recovered.
         - alert: IterionArtifactBackupFailed
-          expr: {{ printf `kube_job_status_failed{namespace=%q, job_name=~"%s-backup-.*"} > 0` .Release.Namespace $fullname | quote }}
+          expr: {{ printf `(kube_cronjob_status_last_schedule_time{namespace=%q, cronjob="%s-backup-%s"} > kube_cronjob_status_last_successful_time{namespace=%q, cronjob="%s-backup-%s"}) and on(namespace, cronjob) (kube_cronjob_status_active{namespace=%q, cronjob="%s-backup-%s"} == 0)` $.Release.Namespace $fullname $tier.name $.Release.Namespace $fullname $tier.name $.Release.Namespace $fullname $tier.name | quote }}
           for: 15m
           labels:
             severity: critical
+            tier: {{ $tier.name | quote }}
           annotations:
-            summary: "The off-cluster artifact copy failed"
-            description: "Job {{ `{{ $labels.job_name }}` }} failed: rclone exited non-zero on the copy or on the check that proves it. The cluster holds the only copy until the next successful run — read the Job's logs."
-        {{- range $tier := .Values.backup.tiers }}
+            summary: "The {{ $tier.name }} artifact copy's last run failed"
+            description: "CronJob {{ $fullname }}-backup-{{ $tier.name }}: its last scheduled run is over and did not succeed (rclone exited non-zero on the copy or on the check that proves it, retries exhausted). The cluster holds the only copy until a run goes green — read the latest Job's logs: kubectl -n {{ $.Release.Namespace }} logs job/<{{ $fullname }}-backup-{{ $tier.name }}-…>."
         - alert: IterionArtifactBackupStale
           expr: {{ printf `time() - kube_cronjob_status_last_successful_time{namespace=%q, cronjob="%s-backup-%s"} > %d * 3600` $.Release.Namespace $fullname $tier.name (int $tier.maxAgeHours) | quote }}
           for: 1h
@@ -106,8 +113,14 @@ spec:
     - name: iterion.datastores
       rules:
         {{- range $store := $ds.statefulsets }}
+        {{- if or (not $store.match) (not (regexMatch "^[^\n]+$" $store.match)) }}
+        {{- fail (printf "metrics.prometheusRule.datastores.statefulsets[%s].match must be a one-line regex (got %q)" ($store.name | default "?") ($store.match | default "")) }}
+        {{- end }}
+        {{- /* The match is a regex FRAGMENT: grouped, so an alternation (a|b) spans the whole name and the pod suffix applies to every branch; quoted ONCE (%q) in both rules, so a backslash stays the regex idiom it is instead of breaking the rule file — Prometheus drops a WHOLE PrometheusRule on one unparsable expression. */ -}}
+        {{- $match := printf "(?:%s)" $store.match }}
+        {{- $pods := printf "(?:%s)-[0-9]+" $store.match }}
         - alert: IterionDatastoreReplicasMissing
-          expr: {{ printf `kube_statefulset_status_replicas_ready{namespace=%q, statefulset=~%q} < kube_statefulset_replicas{namespace=%q, statefulset=~%q}` $dsNamespace $store.match $dsNamespace $store.match | quote }}
+          expr: {{ printf `kube_statefulset_status_replicas_ready{namespace=%q, statefulset=~%q} < kube_statefulset_replicas{namespace=%q, statefulset=~%q}` $dsNamespace $match $dsNamespace $match | quote }}
           for: {{ $ds.forDuration | default "10m" }}
           labels:
             severity: critical
@@ -116,7 +129,7 @@ spec:
             summary: "{{ $store.name }} is missing a replica"
             description: "StatefulSet {{ `{{ $labels.statefulset }}` }}: {{ `{{ $value }}` }} ready replica(s), fewer than it asks for. One loss is survivable; the second is not — act now."
         - alert: IterionDatastoreRestarting
-          expr: {{ printf `increase(kube_pod_container_status_restarts_total{namespace=%q, pod=~"%s-[0-9]+"}[1h]) > %d` $dsNamespace $store.match (int ($ds.restartsPerHour | default 3)) | quote }}
+          expr: {{ printf `increase(kube_pod_container_status_restarts_total{namespace=%q, pod=~%q}[1h]) > %d` $dsNamespace $pods (int ($ds.restartsPerHour | default 3)) | quote }}
           labels:
             severity: warning
             datastore: {{ $store.name | quote }}
@@ -135,6 +148,7 @@ spec:
             description: "The replica rules above read kube_statefulset_* and see nothing: kube-state-metrics is not scraped for namespace {{ $dsNamespace }}, so a lost replica would page nobody."
         {{- with $ds.valkey }}
         {{- if .enabled }}
+        {{- include "iterion.promqlMatchers" (dict "value" .selector "path" "metrics.prometheusRule.datastores.valkey.selector") }}
         {{- $sel := printf "namespace=%q, %s" $dsNamespace .selector }}
         # valkeyfiler (the SeaweedFS filer store): redis_exporter series
         # (Valkey supported). connected_slaves is the primary's count of
@@ -170,6 +184,8 @@ spec:
         {{- end }}
         {{- with $ds.seaweedfs }}
         {{- if .enabled }}
+        {{- include "iterion.promqlMatchers" (dict "value" .volumeSelector "path" "metrics.prometheusRule.datastores.seaweedfs.volumeSelector") }}
+        {{- include "iterion.promqlMatchers" (dict "value" .masterSelector "path" "metrics.prometheusRule.datastores.seaweedfs.masterSelector") }}
         {{- $vol := printf "namespace=%q, %s" $dsNamespace .volumeSelector }}
         {{- $master := printf "namespace=%q, %s" $dsNamespace .masterSelector }}
         # SeaweedFS: the volumes registered on the volume servers, the master
@@ -192,8 +208,11 @@ spec:
           annotations:
             summary: "No SeaweedFS master is leader"
             description: "No master reports is_leader=1: writes are refused until the raft group elects one."
+        # The leader's gauge only: a master that stepped down keeps its last
+        # non-zero value (nothing resets it), so a plain sum or max over
+        # every master would page forever on a stale follower.
         - alert: IterionSeaweedFSUnderReplicated
-          expr: {{ printf `sum(SeaweedFS_master_under_replicated_volumes{%s}) > 0` $master | quote }}
+          expr: {{ printf `sum(SeaweedFS_master_under_replicated_volumes{%s} * on(namespace, pod) group_left() (SeaweedFS_master_is_leader{%s} == 1)) > 0` $master $master | quote }}
           for: 30m
           labels:
             severity: warning
@@ -209,16 +228,32 @@ spec:
             family: seaweedfs
           annotations:
             summary: "No SeaweedFS volume-server series"
-            description: {{ printf "The SeaweedFS rules see nothing: the volume servers' metrics port is not scraped for %s in namespace %s." .volumeSelector $dsNamespace | quote }}
+            description: {{ printf "The SeaweedFS volume rules see nothing: the volume servers' metrics port is not scraped for %s in namespace %s." .volumeSelector $dsNamespace | quote }}
+        - alert: IterionDatastoreSignalAbsent
+          expr: {{ printf `absent(SeaweedFS_master_is_leader{%s})` $master | quote }}
+          for: {{ $absentFor }}
+          labels:
+            severity: warning
+            family: seaweedfs-master
+          annotations:
+            summary: "No SeaweedFS master series"
+            description: {{ printf "The SeaweedFS leader and replication rules see nothing: the masters' metrics port is not scraped for %s in namespace %s." .masterSelector $dsNamespace | quote }}
         {{- end }}
         {{- end }}
         {{- with $ds.mongodb }}
         {{- if .enabled }}
+        {{- include "iterion.promqlMatchers" (dict "value" .selector "path" "metrics.prometheusRule.datastores.mongodb.selector") }}
         {{- $sel := printf "namespace=%q, %s" $dsNamespace .selector }}
-        # MongoDB: mongodb_exporter's replSetGetStatus view (one series per
-        # member, member_idx = host:port, member_state = its state name).
+        {{- $p := .metricPrefix | default "mongodb_rs_" }}
+        {{- if not (regexMatch "^[a-zA-Z_][a-zA-Z0-9_]*$" $p) }}
+        {{- fail (printf "metrics.prometheusRule.datastores.mongodb.metricPrefix must be a metric-name prefix (got %q)" $p) }}
+        {{- end }}
+        # MongoDB: percona mongodb_exporter's view of replSetGetStatus, one
+        # series per member (member_idx = host:port, member_state = its state
+        # name). The prefix names the collector: mongodb_rs_ (diagnosticdata,
+        # on by default) or mongodb_ (--collector.replicasetstatus).
         - alert: IterionMongoDBMemberUnhealthy
-          expr: {{ printf `mongodb_rs_members_health{%s} == 0` $sel | quote }}
+          expr: {{ printf `%smembers_health{%s} == 0` $p $sel | quote }}
           for: 5m
           labels:
             severity: critical
@@ -227,7 +262,7 @@ spec:
             summary: "A MongoDB replica-set member is unhealthy"
             description: "Member {{ `{{ $labels.member_idx }}` }} reports health 0 ({{ `{{ $labels.member_state }}` }}): the set is one failure from losing its majority."
         - alert: IterionMongoDBMemberOutOfSet
-          expr: {{ printf `mongodb_rs_members_state{%s, member_state!~"PRIMARY|SECONDARY|ARBITER"}` $sel | quote }}
+          expr: {{ printf `%smembers_state{%s, member_state!~"PRIMARY|SECONDARY|ARBITER"}` $p $sel | quote }}
           for: 5m
           labels:
             severity: critical
@@ -236,7 +271,7 @@ spec:
             summary: "A MongoDB member is out of the replica set"
             description: "Member {{ `{{ $labels.member_idx }}` }} is {{ `{{ $labels.member_state }}` }} — neither PRIMARY, SECONDARY nor ARBITER — for 5 minutes."
         - alert: IterionMongoDBNoPrimary
-          expr: {{ printf `(count(mongodb_rs_members_state{%s, member_state="PRIMARY"}) or vector(0)) < 1` $sel | quote }}
+          expr: {{ printf `((count(%smembers_state{%s, member_state="PRIMARY"}) or vector(0)) < 1) and (count(%smembers_state{%s}) > 0)` $p $sel $p $sel | quote }}
           for: 2m
           labels:
             severity: critical
@@ -245,7 +280,7 @@ spec:
             summary: "The MongoDB replica set has no primary"
             description: "No member reports PRIMARY: iterion cannot write (runs stop) until an election succeeds."
         - alert: IterionDatastoreSignalAbsent
-          expr: {{ printf `absent(mongodb_rs_members_state{%s})` $sel | quote }}
+          expr: {{ printf `absent(%smembers_state{%s})` $p $sel | quote }}
           for: {{ $absentFor }}
           labels:
             severity: warning

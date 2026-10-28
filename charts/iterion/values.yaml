@@ -93,16 +93,18 @@ server:
       maxSkew: 1
       whenUnsatisfiable: ScheduleAnyway
   # Free-form affinity merged OVER the generated one, key by key: an
-  # operator's nodeAffinity is added, an operator's podAntiAffinity is
-  # merged with the generated term. scheduling.antiAffinity: none renders
-  # this block alone.
+  # operator's nodeAffinity is added, a term list of the OTHER kind
+  # (required next to the generated preferred, or the reverse) is kept, a
+  # term list of the SAME kind REPLACES the generated one — lists do not
+  # merge. scheduling.antiAffinity: none renders this block alone.
   affinity: {}
   # The PodDisruptionBudget. enabled auto (default): rendered only when the
   # server is guaranteed more than one replica — replicas > 1, or the HPA's
   # minReplicas > 1 when the HPA owns the count — because minAvailable 1 on
   # a single replica refuses every eviction and holds a node drain forever;
   # true / false force it either way. One of minAvailable / maxUnavailable
-  # (maxUnavailable wins when set).
+  # (maxUnavailable wins when set; 0 is a value — minAvailable 0 allows
+  # every disruption, maxUnavailable 0 none — "" is unset).
   pdb:
     enabled: auto
     minAvailable: 1
@@ -724,7 +726,8 @@ metrics:
       # The namespace the stores run in; "" = the release namespace.
       namespace: ""
       # StatefulSets to watch. match is a regex on the StatefulSet name
-      # (and, with -[0-9]+ appended, on its pod names).
+      # (grouped, then -[0-9]+ appended for its pod names); write it as a
+      # regex, a backslash stays a backslash.
       statefulsets:
         - name: mongodb
           match: ".*-mongodb"
@@ -746,7 +749,8 @@ metrics:
       absentFor: 30m
       # Each family: the PromQL label matchers (inside the braces) that
       # pick that exporter's series in your cluster — a pod regex, a job
-      # name — joined with namespace=<namespace>.
+      # name — joined with namespace=<namespace>; written as PromQL (a
+      # backslash in a regex is doubled, as in any PromQL string).
       valkey:
         # valkeyfiler, the SeaweedFS filer store: redis_exporter series
         # (Valkey supported). connected_slaves below this number on the
@@ -762,11 +766,16 @@ metrics:
         masterSelector: 'pod=~".*seaweedfs-master.*"'
         minVolumes: 4
       mongodb:
-        # mongodb_exporter's replSetGetStatus view: a member unhealthy or
-        # out of the set (neither PRIMARY, SECONDARY nor ARBITER), no
-        # primary at all.
+        # percona mongodb_exporter's view of replSetGetStatus — a member
+        # unhealthy or out of the set (neither PRIMARY, SECONDARY nor
+        # ARBITER), no primary at all. metricPrefix names the collector that
+        # produces the series: "mongodb_rs_" for the diagnosticdata
+        # collector (on by default: mongodb_rs_members_state{member_idx,
+        # member_state}), "mongodb_" for the replicasetstatus collector
+        # (--collector.replicasetstatus: mongodb_members_state).
         enabled: true
         selector: 'pod=~".*mongodb.*"'
+        metricPrefix: mongodb_rs_
 
 # --- Off-cluster copy of the artifact bucket (#2013) -----------------
 # One CronJob per tier copies config.s3.bucket — the artifact store the
