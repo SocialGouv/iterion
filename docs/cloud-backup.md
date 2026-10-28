@@ -160,11 +160,13 @@ backup:
   and `monthly` **snapshot** the whole bucket under `weekly/<timestamp>/`
   (kept 35 days) and `monthly/<timestamp>/` (kept 400 days, 13 months).
 - **Every run proves its copy.** It ends with `rclone check --one-way
-  --size-only` (`backup.checkArgs`) against the copy it just made: rclone's
-  exit code alone proves nothing — it takes any error on a source lookup for
-  "a directory", copies nothing and exits 0 (ADR-107) — so the Job is red
-  when a source object is missing from the destination. `--size-only`
-  because a multipart ETag is not an MD5.
+  --size-only` (`backup.checkArgs`) against the copy it just made, over the
+  objects that existed when the copy started (`--min-age`: the bucket is
+  live, an object written meanwhile is next run's): the Job is red when a
+  source object is missing from the destination. `--size-only` because a
+  multipart ETag is not an MD5. A sync that would delete more than
+  `backup.maxDelete` objects (1000) aborts red instead of mirroring an
+  emptied source; only timestamp-named directories are ever expired.
 - **Alerts** (with `metrics.prometheusRule.enabled`, kube-state-metrics
   series): `IterionArtifactBackupFailed` (a Job failed, critical),
   `IterionArtifactBackupStale` per tier (no success within its

@@ -655,13 +655,21 @@ func TestChartRenderBackup(t *testing.T) {
 			// whitespace is dropped line by line: the block scalar re-indents.
 			script := regexp.MustCompile(`(?m)^[ \t]+`).ReplaceAllString(fmt.Sprint(dig(container, "args", "0")), "")
 			checks := map[string]string{
-				"sync":     `rclone sync "$src" "$root" --backup-dir "dst:${DST_BUCKET}/${PREFIX}-deleted/${ts}" $EXTRA_ARGS` + "\n" + `rclone check "$src" "$root" $CHECK_ARGS`,
-				"snapshot": `rclone copy "$src" "${root}/${ts}" $EXTRA_ARGS` + "\n" + `rclone check "$src" "${root}/${ts}" $CHECK_ARGS`,
+				"sync":     `rclone sync "$src" "$root" --backup-dir "dst:${DST_BUCKET}/${PREFIX}-deleted/${ts}" --max-delete "$MAX_DELETE" $EXTRA_ARGS` + "\n" + `rclone check "$src" "$root" --min-age "$start" $CHECK_ARGS`,
+				"snapshot": `rclone copy "$src" "${root}/${ts}" $EXTRA_ARGS` + "\n" + `rclone check "$src" "${root}/${ts}" --min-age "$start" $CHECK_ARGS`,
 			}
 			for branch, want := range checks {
 				if !strings.Contains(script, want) {
-					t.Errorf("%s: the %s branch must check the copy it just made, script lacks:\n%s", tier, branch, want)
+					t.Errorf("%s: the %s branch must check what existed when the copy started, script lacks:\n%s", tier, branch, want)
 				}
+			}
+			// Retention: the listing is read before the loop (a failed listing
+			// fails the Job) and only a timestamp-shaped directory is purged.
+			if !strings.Contains(script, `dirs=$(rclone lsf --dirs-only "$aged")`) || !strings.Contains(script, `[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)`) {
+				t.Errorf("%s: the expiry must list first and purge timestamp names only, got:\n%s", tier, script)
+			}
+			if v := dig(env["MAX_DELETE"], "value"); v != "1000" {
+				t.Errorf("%s MAX_DELETE = %v, want the 1000 default", tier, v)
 			}
 		}
 		if strings.Contains(out, "secretAccessKey:") || strings.Contains(out, "iterion-dev-secret") {
@@ -710,6 +718,14 @@ func TestChartRenderBackup(t *testing.T) {
 		mustRefuse(t, "keepDays must be at least 1", append(base, "--set-json", "backup.tiers="+tier("sync", 0, 36))...)
 		mustRefuse(t, "maxAgeHours must be at least 1", append(base, "--set-json", "backup.tiers="+tier("sync", 7, 0))...)
 		mustRefuse(t, "backup.tiers must list at least one tier", append(base, "--set-json", "backup.tiers=[]")...)
+		two := func(a, b string) string {
+			return fmt.Sprintf(`[{"name":"%s","schedule":"0 2 * * *","mode":"sync","prefix":"%s","keepDays":7,"maxAgeHours":36},{"name":"%s","schedule":"0 3 * * *","mode":"snapshot","prefix":"%s","keepDays":35,"maxAgeHours":192}]`, a, a, b, b)
+		}
+		// Two tiers on one prefix expire each other's copies: refused at render.
+		mustRefuse(t, "is used by two tiers", append(base, "--set-json", "backup.tiers="+strings.Replace(two("daily", "weekly"), `"prefix":"weekly"`, `"prefix":"daily"`, 1))...)
+		mustRefuse(t, "tier name \"daily\" is used twice", append(base, "--set-json", "backup.tiers="+strings.Replace(two("daily", "weekly"), `"name":"weekly"`, `"name":"daily"`, 1))...)
+		mustRefuse(t, "is the deletion twin of prefix", append(base, "--set-json", "backup.tiers="+strings.Replace(two("daily", "weekly"), `"prefix":"weekly"`, `"prefix":"daily-deleted"`, 1))...)
+		mustRefuse(t, "must name a directory of the destination bucket", append(base, "--set-json", "backup.tiers="+strings.Replace(two("daily", "weekly"), `"prefix":"weekly"`, `"prefix":".."`, 1))...)
 	})
 }
 

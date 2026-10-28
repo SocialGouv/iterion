@@ -837,8 +837,16 @@ backup:
       keepDays: 400
       maxAgeHours: 800
   # rclone check flags: --one-way (every source object must exist at the
-  # destination), --size-only (a multipart ETag is not an MD5).
+  # destination), --size-only (a multipart ETag is not an MD5). The check
+  # always judges what existed when the copy started (--min-age): the
+  # bucket is live.
   checkArgs: ["--one-way", "--size-only"]
+  # The most objects one sync run may delete from the mirror (rclone
+  # --max-delete): a source emptied by a bad deleteGone would otherwise be
+  # mirrored green and kept only keepDays; past the bound the sync aborts
+  # and the Job is red. -1 = unbounded. Raise it knowingly for a planned
+  # mass cleanup.
+  maxDelete: 1000
   # Flags appended to every copy (--transfers, --bwlimit, --checksum…).
   extraArgs: []
   resources:

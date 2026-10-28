@@ -20,6 +20,31 @@
 {{- fail "backup.tiers must list at least one tier (name, schedule, mode, prefix, keepDays, maxAgeHours)" -}}
 {{- end -}}
 {{- $storageSecret := default (printf "%s-storage" (include "iterion.fullname" $)) $.Values.secrets.storage.existingSecret -}}
+{{- /* Tiers must not share a name (one CronJob each) nor a prefix, and no
+     prefix may be another's deletion twin: two tiers on one prefix expire
+     each other's copies with every Job green. */ -}}
+{{- $names := dict -}}
+{{- $prefixes := dict -}}
+{{- range $tier := $b.tiers -}}
+{{- $n := $tier.name | default "" -}}
+{{- if hasKey $names $n -}}
+{{- fail (printf "backup.tiers: tier name %q is used twice" $n) -}}
+{{- end -}}
+{{- $_ := set $names $n true -}}
+{{- $p := $tier.prefix | default "" -}}
+{{- if or (eq $p ".") (eq $p "..") -}}
+{{- fail (printf "backup.tiers[%s].prefix must name a directory of the destination bucket, not %q" $n $p) -}}
+{{- end -}}
+{{- if hasKey $prefixes $p -}}
+{{- fail (printf "backup.tiers: prefix %q is used by two tiers — they would expire each other's copies" $p) -}}
+{{- end -}}
+{{- $_ := set $prefixes $p true -}}
+{{- end -}}
+{{- range $p, $_ := $prefixes -}}
+{{- if hasKey $prefixes (printf "%s-deleted" $p) -}}
+{{- fail (printf "backup.tiers: prefix %q is the deletion twin of prefix %q (its sync keeps what it deletes under it)" (printf "%s-deleted" $p) $p) -}}
+{{- end -}}
+{{- end -}}
 {{- range $tier := $b.tiers }}
 {{- if not (regexMatch "^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$" ($tier.name | default "")) }}
 {{- fail (printf "backup.tiers[]: tier name %q is invalid (1-32 chars of [a-z0-9-], alphanumeric at both ends)" ($tier.name | default "")) }}
@@ -97,6 +122,11 @@ spec:
                 - |
                   set -eu
                   ts=$(date -u +%Y%m%dT%H%M%SZ)
+                  # The check below judges what existed when the copy STARTED:
+                  # the bucket is live (every run writes artifacts), and an
+                  # object written during the copy is not missing, it is next
+                  # run's.
+                  start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
                   cutoff=$(date -u -d "@$(( $(date -u +%s) - KEEP_DAYS * 86400 ))" +%Y%m%dT%H%M%SZ)
                   src="src:${SOURCE_BUCKET}"
                   root="dst:${DST_BUCKET}/${PREFIX}"
@@ -105,29 +135,44 @@ spec:
                       # A mirror of the bucket. What the sync would delete or
                       # overwrite is moved under <prefix>-deleted/<ts>/ instead,
                       # so a deletion in the source stays recoverable for
-                      # KEEP_DAYS.
-                      rclone sync "$src" "$root" --backup-dir "dst:${DST_BUCKET}/${PREFIX}-deleted/${ts}" $EXTRA_ARGS
-                      rclone check "$src" "$root" $CHECK_ARGS
+                      # KEEP_DAYS. --max-delete: a source emptied by a bad
+                      # deleteGone would otherwise be mirrored green; past the
+                      # bound the sync aborts and the Job is red.
+                      rclone sync "$src" "$root" --backup-dir "dst:${DST_BUCKET}/${PREFIX}-deleted/${ts}" --max-delete "$MAX_DELETE" $EXTRA_ARGS
+                      rclone check "$src" "$root" --min-age "$start" $CHECK_ARGS
                       aged="dst:${DST_BUCKET}/${PREFIX}-deleted"
                       ;;
                     snapshot)
                       # A dated full copy under <prefix>/<ts>/, kept KEEP_DAYS.
                       rclone copy "$src" "${root}/${ts}" $EXTRA_ARGS
-                      rclone check "$src" "${root}/${ts}" $CHECK_ARGS
+                      rclone check "$src" "${root}/${ts}" --min-age "$start" $CHECK_ARGS
                       aged="$root"
                       ;;
                   esac
-                  # The copy proved itself above: rclone's exit code alone does
-                  # not (ADR-107 — a source lookup error reads as "a directory",
-                  # copies nothing and exits 0), the check does. Then expire the
-                  # dated directories older than KEEP_DAYS: their names are UTC
-                  # timestamps, so a text comparison orders them.
-                  rclone lsf --dirs-only "$aged" 2>/dev/null | while read -r dir; do
+                  # The copy proved itself above: a listing error below the
+                  # bucket root reads as "not a directory" and copies nothing
+                  # (ADR-107), the check is what proves the copy. Then expire
+                  # the dated directories older than KEEP_DAYS: their names are
+                  # UTC timestamps, so a text comparison orders them. The
+                  # listing is read into a variable first (a failed listing
+                  # fails the Job instead of skipping retention silently) and
+                  # only a timestamp-shaped name is ever purged (a stray
+                  # "<prefix>//key" object lists as "/", which would name the
+                  # whole tier).
+                  dirs=$(rclone lsf --dirs-only "$aged")
+                  for dir in $dirs; do
                     dir=${dir%/}
-                    if [ "$dir" \< "$cutoff" ]; then
-                      echo "backup ${TIER}: expiring ${aged}/${dir}"
-                      rclone purge "${aged}/${dir}"
-                    fi
+                    case "$dir" in
+                      [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
+                        if [ "$dir" \< "$cutoff" ]; then
+                          echo "backup ${TIER}: expiring ${aged}/${dir}"
+                          rclone purge "${aged}/${dir}"
+                        fi
+                        ;;
+                      *)
+                        echo "backup ${TIER}: skipping ${aged}/${dir} — not a timestamp directory"
+                        ;;
+                    esac
                   done
                   echo "backup ${TIER}: ${MODE} ok ${ts}"
               env:
@@ -145,6 +190,8 @@ spec:
                   value: {{ $dst.bucket | quote }}
                 - name: CHECK_ARGS
                   value: {{ join " " ($b.checkArgs | default (list "--one-way" "--size-only")) | quote }}
+                - name: MAX_DELETE
+                  value: {{ (hasKey $b "maxDelete" | ternary $b.maxDelete 1000) | int | quote }}
                 - name: EXTRA_ARGS
                   value: {{ join " " ($b.extraArgs | default list) | quote }}
                 # The two rclone remotes, configured from the environment alone
