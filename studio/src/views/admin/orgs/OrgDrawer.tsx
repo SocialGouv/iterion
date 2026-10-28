@@ -88,8 +88,12 @@ export function OrgDrawer({
         </div>
       )}
 
+      {/* h3: the Dialog's own title is the h2 of this surface, so its
+          sections are its direct children — and they are siblings of each
+          other, which is why OrgUsageStats/Teams/Quotas/Status/DangerZone
+          all sit at the same level (RGAA 9.1). */}
       <section className="space-y-3 mb-4">
-        <h4 className="font-medium">Details</h4>
+        <h3 className="font-medium">Details</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <Field label="Name">
             <Input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} />

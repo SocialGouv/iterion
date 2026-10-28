@@ -113,7 +113,10 @@ export function Stat({
     <span
       className={`${layout} ${className}`.trim()}
       title={hint}
-      aria-label={ariaLabel}
+      // A named label/value pair is a group, and only when it is named:
+      // aria-label on a roleless span is prohibited (axe
+      // aria-prohibited-attr), and an unnamed group would be noise.
+      {...(ariaLabel ? { role: "group", "aria-label": ariaLabel } : {})}
     >
       {inner}
     </span>

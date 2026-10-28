@@ -14,7 +14,7 @@ import type {
   UsageCapsView,
 } from "@/api/adminSettings";
 import type { CredentialUsageListView } from "@/api/adminCredUsage";
-import { setupMatchMedia, expectNoViolations } from "@/__tests__/a11y/axeHelpers";
+import { setupMatchMedia, expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
 
 // The two facts every console screen gates on. The guard around the group
 // (RequireSuperAdmin, tested in auth/) means a real mount only ever happens in
@@ -225,20 +225,20 @@ describe("a11y / admin console screens", () => {
   it.each(SCREENS)("$name — loaded form, nav and header wiring", async ({ name, path, Page, field }) => {
     const container = mountScreen(path, Page);
     await screen.findByLabelText(field);
-    await expectNoViolations(container, name);
+    await expectNoViolationsStrict(container, name);
   });
 
   it.each(SCREENS)("$name — super-admin gate short-circuit", async ({ name, path, Page }) => {
     mockUser = { is_super_admin: false };
     const container = mountScreen(path, Page);
     await screen.findByText("Super-admin only.");
-    await expectNoViolations(container, `${name} (gated)`);
+    await expectNoViolationsStrict(container, `${name} (gated)`);
   });
 
   it.each(SCREENS)("$name — local-mode notice", async ({ name, path, Page }) => {
     mockInfo = { mode: "local" };
     const container = mountScreen(path, Page);
     await screen.findByText(/cloud-mode feature/);
-    await expectNoViolations(container, `${name} (local)`);
+    await expectNoViolationsStrict(container, `${name} (local)`);
   });
 });

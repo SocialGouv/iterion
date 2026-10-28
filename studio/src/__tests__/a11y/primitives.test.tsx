@@ -27,7 +27,7 @@ import { Select } from "@/components/ui/Select";
 import { Textarea } from "@/components/ui/Textarea";
 import { Drawer } from "@/components/ui/Drawer";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
-import { setupMatchMedia, expectNoViolations } from "./axeHelpers";
+import { setupMatchMedia, expectNoViolationsStrict } from "./axeHelpers";
 
 // Smoke a11y test for the shared UI primitives. Uses axe-core in
 // jsdom and focuses on WCAG 2.1 A + AA rules. The aim is to catch
@@ -59,7 +59,7 @@ describe("a11y / primitives", () => {
         <Button variant="primary" size="md" loading>Loading</Button>
       </div>,
     );
-    await expectNoViolations(root, "Button");
+    await expectNoViolationsStrict(root, "Button");
   });
 
   it("IconButton requires a label and exposes aria-label", async () => {
@@ -70,7 +70,7 @@ describe("a11y / primitives", () => {
         <IconButton label="Delete" variant="danger" disabled>🗑</IconButton>
       </div>,
     );
-    await expectNoViolations(root, "IconButton");
+    await expectNoViolationsStrict(root, "IconButton");
   });
 
   it("EmptyState", async () => {
@@ -79,7 +79,7 @@ describe("a11y / primitives", () => {
         <EmptyState message="No runs yet" />
       </main>,
     );
-    await expectNoViolations(root, "EmptyState");
+    await expectNoViolationsStrict(root, "EmptyState");
   });
 
   it("Spinner with screen-reader label", async () => {
@@ -88,7 +88,7 @@ describe("a11y / primitives", () => {
         <Spinner size="sm" label="Loading data" />
       </div>,
     );
-    await expectNoViolations(root, "Spinner");
+    await expectNoViolationsStrict(root, "Spinner");
   });
 
   it("LiveDot — every tone", async () => {
@@ -102,7 +102,7 @@ describe("a11y / primitives", () => {
         <LiveDot tone="neutral" pulse={false} label="Unknown" />
       </div>,
     );
-    await expectNoViolations(root, "LiveDot");
+    await expectNoViolationsStrict(root, "LiveDot");
   });
 
   it("Stat — every tone, sizes, live, stack, button", async () => {
@@ -116,7 +116,7 @@ describe("a11y / primitives", () => {
         <Stat label="duration" value="1m 03s" tone="live" live hint="active" />
       </div>,
     );
-    await expectNoViolations(root, "Stat");
+    await expectNoViolationsStrict(root, "Stat");
   });
 
   it("Meter — sizes, tones, no-cap, compact, full", async () => {
@@ -130,7 +130,7 @@ describe("a11y / primitives", () => {
         <Meter label="Review loop" value={3} max={5} compact fixedTone="live" />
       </div>,
     );
-    await expectNoViolations(root, "Meter");
+    await expectNoViolationsStrict(root, "Meter");
   });
 
   it("Badge variants", async () => {
@@ -143,12 +143,12 @@ describe("a11y / primitives", () => {
         <Badge variant="danger">failed</Badge>
       </div>,
     );
-    await expectNoViolations(root, "Badge");
+    await expectNoViolationsStrict(root, "Badge");
   });
 
   it("Skeleton is aria-hidden", async () => {
     const root = mount(<Skeleton className="h-6 w-32" />);
-    await expectNoViolations(root, "Skeleton");
+    await expectNoViolationsStrict(root, "Skeleton");
   });
 
   it("InlineBanner — every tone × layout, with action + dismiss", async () => {
@@ -179,7 +179,7 @@ describe("a11y / primitives", () => {
         ))}
       </main>,
     );
-    await expectNoViolations(root, "InlineBanner");
+    await expectNoViolationsStrict(root, "InlineBanner");
   });
 
   it("Button loading state still passes axe (no orphaned spinner label)", async () => {
@@ -189,7 +189,7 @@ describe("a11y / primitives", () => {
         <Button variant="primary" size="sm" loading>Resume</Button>
       </div>,
     );
-    await expectNoViolations(root, "Button loading");
+    await expectNoViolationsStrict(root, "Button loading");
   });
 
   it("Stale-WS banner — role=status + reconnect Button", async () => {
@@ -204,7 +204,7 @@ describe("a11y / primitives", () => {
         </div>
       </main>,
     );
-    await expectNoViolations(root, "WS banner");
+    await expectNoViolationsStrict(root, "WS banner");
   });
 
   it("DesktopOnlyNotice — desktop branch + narrow notice", async () => {
@@ -219,7 +219,7 @@ describe("a11y / primitives", () => {
         </DesktopOnlyNotice>
       </main>,
     );
-    await expectNoViolations(root, "DesktopOnlyNotice");
+    await expectNoViolationsStrict(root, "DesktopOnlyNotice");
   });
 
   it("Toast region — status + alert roles per level", async () => {
@@ -232,7 +232,7 @@ describe("a11y / primitives", () => {
         </div>
       </main>,
     );
-    await expectNoViolations(root, "Toast region");
+    await expectNoViolationsStrict(root, "Toast region");
   });
 
   it("Checkbox — labelled, help, standalone, disabled", async () => {
@@ -244,7 +244,7 @@ describe("a11y / primitives", () => {
         <Checkbox label="Disabled option" disabled />
       </main>,
     );
-    await expectNoViolations(root, "Checkbox");
+    await expectNoViolationsStrict(root, "Checkbox");
   });
 
   it("Radio + RadioGroup — labelled set", async () => {
@@ -264,7 +264,7 @@ describe("a11y / primitives", () => {
         <Radio name="solo" aria-label="Standalone radio" />
       </main>,
     );
-    await expectNoViolations(root, "Radio/RadioGroup");
+    await expectNoViolationsStrict(root, "Radio/RadioGroup");
   });
 
   it("FieldLabel — associates with its control via htmlFor", async () => {
@@ -276,13 +276,13 @@ describe("a11y / primitives", () => {
         <input id="fld" type="text" aria-describedby="fld-help" />
       </main>,
     );
-    await expectNoViolations(root, "FieldLabel");
+    await expectNoViolationsStrict(root, "FieldLabel");
   });
 
   it("BrandMark — the mascot image carries the brand name", async () => {
     const root = mount(<BrandMark className="h-7 w-7" />);
     expect(root.querySelector("img")?.getAttribute("alt")).toBe("Iterion");
-    await expectNoViolations(root, "BrandMark");
+    await expectNoViolationsStrict(root, "BrandMark");
   });
 
   it("BrandWordmark — full + compact have an accessible name", async () => {
@@ -292,7 +292,7 @@ describe("a11y / primitives", () => {
         <BrandWordmark compact />
       </div>,
     );
-    await expectNoViolations(root, "BrandWordmark");
+    await expectNoViolationsStrict(root, "BrandWordmark");
   });
 
   it("TerminalCaret + EmptyState caret stay decorative (aria-hidden)", async () => {
@@ -302,7 +302,7 @@ describe("a11y / primitives", () => {
         <EmptyState message="No runs yet" caret />
       </main>,
     );
-    await expectNoViolations(root, "TerminalCaret");
+    await expectNoViolationsStrict(root, "TerminalCaret");
   });
 
   it("Table — caption, header scope, densities, skeleton", async () => {
@@ -345,7 +345,7 @@ describe("a11y / primitives", () => {
     for (const th of root.querySelectorAll("th")) {
       expect(th.getAttribute("scope")).toBe("col");
     }
-    await expectNoViolations(root, "Table");
+    await expectNoViolationsStrict(root, "Table");
   });
 
   it("Drawer — Radix sheet with title/description", async () => {
@@ -355,7 +355,7 @@ describe("a11y / primitives", () => {
       </Drawer>,
     );
     // Radix portals the content to document.body — audit the whole document.
-    await expectNoViolations(document.body, "Drawer");
+    await expectNoViolationsStrict(document.body, "Drawer");
     void root;
   });
 
@@ -374,7 +374,7 @@ describe("a11y / primitives", () => {
     expect(root.querySelector("input[aria-label='Name ok']")?.hasAttribute("aria-invalid")).toBe(false);
     expect(root.querySelector("select")?.getAttribute("aria-invalid")).toBe("true");
     expect(root.querySelector("textarea")?.getAttribute("aria-invalid")).toBe("true");
-    await expectNoViolations(root, "aria-invalid");
+    await expectNoViolationsStrict(root, "aria-invalid");
   });
 
   it("CommandPalette — dialog + combobox + listbox roles pass axe", async () => {
@@ -388,6 +388,6 @@ describe("a11y / primitives", () => {
         ]}
       />,
     );
-    await expectNoViolations(root, "CommandPalette");
+    await expectNoViolationsStrict(root, "CommandPalette");
   });
 });

@@ -40,7 +40,7 @@ export function OrgStatusSection({
 
   return (
     <section className="space-y-3">
-      <h4 className="font-medium">Status</h4>
+      <h3 className="font-medium">Status</h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <Field label="Status">
           <Select

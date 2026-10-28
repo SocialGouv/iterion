@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { OrgView, TeamSummary } from "@/api/orgs";
 import type { OrgUsage } from "@/api/usage";
-import { setupMatchMedia, expectNoViolations } from "@/__tests__/a11y/axeHelpers";
+import { setupMatchMedia, expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
 
 // The org drawer is the console's teams drill-down (its sections are
 // read-only or form fields; the mutations belong to the sections' own
@@ -110,7 +110,7 @@ describe("a11y / OrgDrawer", () => {
   it("has no violation once its usage and teams have loaded", async () => {
     const dialog = mountDrawer();
     await screen.findByRole("table", { name: "Teams in this organization" });
-    await expectNoViolations(dialog, "OrgDrawer");
+    await expectNoViolationsStrict(dialog, "OrgDrawer");
   });
 
   it("has no violation while the drill-down is still loading", async () => {
@@ -126,7 +126,7 @@ describe("a11y / OrgDrawer", () => {
     // "no teams" verdict, which would be a lie about an org that has some.
     expect(screen.queryByRole("table", { name: "Teams in this organization" })).toBeNull();
     expect(screen.queryByText("This organization has no teams.")).toBeNull();
-    await expectNoViolations(dialog, "OrgDrawer (loading)");
+    await expectNoViolationsStrict(dialog, "OrgDrawer (loading)");
     release(TEAMS);
   });
 });

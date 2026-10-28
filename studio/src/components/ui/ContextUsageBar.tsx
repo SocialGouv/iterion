@@ -22,6 +22,10 @@ export function ContextUsageBar({ used, window, className }: Props) {
       : { fill: "bg-accent/80", bg: "bg-accent/20" };
   return (
     <div
+      // A bar with a text alternative: aria-label on a roleless div is
+      // prohibited (axe aria-prohibited-attr). Not a progressbar — it would
+      // owe aria-valuenow/min/max, and the title already carries the figure.
+      role="img"
       className={`mt-1 h-[3px] w-full rounded-sm overflow-hidden ${tone.bg} ${className ?? ""}`}
       title={usage.title}
       aria-label={usage.title}

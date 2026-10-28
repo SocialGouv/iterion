@@ -645,7 +645,7 @@ export default function PipelineCardDetails({
   // a JSON blob in a 28rem column meant leaving the board.
   const [width, setWidth] = useState(() => readDrawerWidth());
   const bounds = drawerWidthBounds(viewportWidth());
-  const panelRef = useRef<HTMLElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
   const commitWidth = useCallback((next: number) => {
     const clamped = clampDrawerWidth(next, viewportWidth());
@@ -834,7 +834,10 @@ export default function PipelineCardDetails({
         aria-hidden={!scrimArmed}
         onClick={scrimArmed ? onClose : undefined}
       />
-      <aside
+      {/* A div, not an <aside>: role="dialog" is not an allowed role for
+          <aside> (its implicit complementary landmark conflicts with it),
+          which axe reports as aria-allowed-role. */}
+      <div
         ref={panelRef}
         // tabIndex -1 so focus can rest on the panel itself before the first
         // Tab — the announcement point for the dialog's label.
@@ -873,7 +876,7 @@ export default function PipelineCardDetails({
         />
         {header}
         {body}
-      </aside>
+      </div>
     </>,
     document.body,
   );

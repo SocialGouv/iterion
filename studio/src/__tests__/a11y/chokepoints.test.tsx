@@ -10,7 +10,7 @@ import { ResizeSeparator } from "@/components/ui/ResizeSeparator";
 import { VideoPreview } from "@/components/ui/VideoPreview";
 import { CommittedTextField } from "@/components/Panels/forms/FormField";
 import { StatusMessage } from "@/components/ui/StatusMessage";
-import { setupMatchMedia, expectNoViolations } from "./axeHelpers";
+import { setupMatchMedia, expectNoViolationsStrict } from "./axeHelpers";
 
 // The a11y-chokepoints primitives (#2501 #2502 #2504 #2507 #2512
 // #2520): the contract each shared primitive owns, tested at the
@@ -192,6 +192,6 @@ describe("a11y / chokepoints", () => {
         />
       </main>,
     );
-    await expectNoViolations(root.container, "chokepoints");
+    await expectNoViolationsStrict(root.container, "chokepoints");
   });
 });

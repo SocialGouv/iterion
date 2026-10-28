@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
-import { expectNoViolations, setupMatchMedia } from "@/__tests__/a11y/axeHelpers";
+import { expectNoViolationsStrict, setupMatchMedia } from "@/__tests__/a11y/axeHelpers";
 import { focusableWithin } from "@/lib/a11y";
 
 // Same stubs as PipelineCardDetails.test: ProducedElements pulls react-query
@@ -226,7 +226,7 @@ describe("pipeline card drawer — portal chrome", () => {
 
   it("has no axe violations through the portal", async () => {
     mount();
-    await expectNoViolations(document.body, "pipeline card drawer");
+    await expectNoViolationsStrict(document.body, "pipeline card drawer");
   });
 
   it("the scrim ignores the click that opened it, then closes on the next one", () => {

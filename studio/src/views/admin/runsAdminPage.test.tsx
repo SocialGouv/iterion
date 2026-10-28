@@ -6,7 +6,7 @@ import { Route, Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 
 import type { AdminRunsQuery, AdminRunsResponse } from "@/api/adminRuns";
-import { setupMatchMedia, expectNoViolations } from "@/__tests__/a11y/axeHelpers";
+import { setupMatchMedia, expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
 
 // The runs console screen (#2148): rows name their org, sovereign-pool
 // rows stay marked, and the org + state filters travel to the server
@@ -106,7 +106,7 @@ describe("RunsAdminPage", () => {
     expect(table.textContent).toContain("pool: pool-souverain");
     const link = await screen.findByRole("link", { name: "run-1" });
     expect(link.getAttribute("href")).toContain("/runs/run-1");
-    await expectNoViolations(view.container, "RunsAdminPage");
+    await expectNoViolationsStrict(view.container, "RunsAdminPage");
   });
 
   it("sends the org and state filters to the server COMBINED", async () => {

@@ -28,12 +28,12 @@ export function OrgTeamsSection({ orgID }: { orgID: string }) {
 
   return (
     <section className="space-y-2 mb-4">
-      <h4 className="font-medium">
+      <h3 className="font-medium">
         Teams{" "}
         {!query.isPending && (
           <span className="text-caption text-fg-subtle">({teams.length})</span>
         )}
-      </h4>
+      </h3>
 
       {err && (
         <div className="text-sm text-fg-muted bg-warning-soft border border-warning/40 rounded px-3 py-2">

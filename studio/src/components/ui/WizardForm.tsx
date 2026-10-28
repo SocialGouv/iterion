@@ -166,6 +166,9 @@ export function WizardForm({
       value: String(i),
       label: (
         <span
+          // A glyph with a text alternative — aria-label on a roleless span
+          // is prohibited (axe aria-prohibited-attr).
+          role="img"
           aria-label={`Question ${i + 1} of ${total}`}
           className={`block w-2 h-2 rounded-full transition-colors ${
             i === step
