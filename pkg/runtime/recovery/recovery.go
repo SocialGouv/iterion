@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
 
@@ -225,6 +226,25 @@ func PermanentToolRecipe() Recipe {
 	})
 }
 
+// NodeTimeoutRecipe: the node ran out the bound its own `timeout:`
+// declared, so it is NOT re-run. A retry starts a FRESH bound, which turns
+// the one duration the author wrote into N of them — and a node that could
+// not answer within d is not more likely to answer within the next d. The
+// cure is the author's or the operator's: a larger `timeout:`, or a resume.
+//
+// FailTerminal still checkpoints (failRunWithCheckpoint), so the run parks
+// at failed_resumable and TIMEOUT is already inside `--auto-resume`'s
+// allow-list of engine codes (docs/resume.md) — the bound ends this
+// attempt, it does not end the run's chances.
+func NodeTimeoutRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind:   ActionFailTerminal,
+			Reason: "the node ran out the timeout it declared; not retrying — a retry would run it under a fresh bound",
+		}
+	})
+}
+
 // ExecutionFailedRecipe: the catch-all bucket for unclassified node
 // failures. Tries one retry with a short delay (covers transient
 // subprocess crashes, flaky network blips, momentary fs races), then
@@ -345,6 +365,7 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeToolFailedTransient:   TransientToolRecipe(2),
 		runtime.ErrCodeToolFailedPermanent:   PermanentToolRecipe(),
 		runtime.ErrCodeExecutionFailed:       ExecutionFailedRecipe(1),
+		runtime.ErrCodeTimeout:               NodeTimeoutRecipe(),
 		runtime.ErrCodeNetworkTransient:      NetworkTransientRecipe(6),
 		runtime.ErrCodeAuthFailed:            AuthFailedRecipe(),
 		runtime.ErrCodeModelUnavailable:      ModelUnavailableRecipe(),
@@ -481,6 +502,33 @@ func Classify(err error) runtime.ErrorCode {
 			return runtime.ErrCodeModelUnavailable
 		}
 		return runtime.ErrCodeExecutionFailed
+	}
+	// A node ended by the bound its own `timeout:` declared, read BY TYPE
+	// and before every needle below — the same discipline the credential
+	// above follows, and for the same reason: the needles catch wordings.
+	// What a cut node reports is whatever its backend saw — a sandboxed
+	// crossing's killed runner, the container's whole stderr, the bare
+	// context.DeadlineExceeded the in-node retry loop hands up when the
+	// bound cuts its backoff — so read by words, the last of those matches
+	// "context deadline exceeded" and the node is re-run six times against
+	// the one bound its author declared, while the others fall to the
+	// catch-all retry (#2456). TIMEOUT is that bound expiring: the code the
+	// engine already persists for a deadline it cut a node at
+	// (store.FailureTimeout), and its recipe does not re-run the node.
+	//
+	// AFTER every typed branch above, deliberately: a cut that wraps a usage
+	// window, a rejected credential or an unusable schema is still that, and
+	// those are what an operator can act on. The boundary that costs is
+	// named rather than hidden: two of those branches RETRY (a 429, a 5xx
+	// through *api.APIError), so a cut wrapping one of them is re-run under
+	// a fresh bound — unchanged from before this arm existed, and rarely
+	// reached, because the in-node retry loop eats such a failure and hands
+	// up the bare context error this arm catches. A per-request timeout
+	// INSIDE the node carries no type at all and is not this — it stays a
+	// transient fault for the needles below.
+	var nodeDeadline *model.ErrNodeDeadline
+	if errors.As(err, &nodeDeadline) {
+		return runtime.ErrCodeTimeout
 	}
 	// String-pattern fallback for unstructured errors that bubble up
 	// from out-of-process backends (claude_code CLI, iterion sandbox

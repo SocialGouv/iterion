@@ -107,6 +107,21 @@ verdict — only an operator can (a raised cap, a different `--var`). The run
 stays parked at `failed_resumable` for a human, and the log says "not
 auto-recoverable (code &lt;YOURS&gt;)".
 
+`TIMEOUT` is on that list, and it is the code a node that ran out its own
+`timeout:` ends with — but the in-run ladder does NOT re-run such a node:
+a retry would run it under a FRESH bound, which turns the one duration the
+author wrote into N of them, and a node that could not answer within `d` is
+no likelier to answer within the next `d`. The bound ends that attempt; the
+operator's lane (a raised `timeout:`, a resume, a redelivery) is what gives
+it another. The cut is read from the TYPE the site that froze the deadline
+names, never from the words the backend came back with — a sandboxed
+crossing reports a killed runner, and the bare context error the in-node
+retry loop hands up reads exactly like the network needle that would have
+retried it six times ([#2456](https://github.com/SocialGouv/iterion/issues/2456)).
+A request-level timeout INSIDE the node is a different thing — the upstream
+client's own bound — and stays the transient fault the longer backoff
+absorbs.
+
 That is **enforced, not assumed**: `code:` is refused at compile time when
 it collides with one of the engine's own `store.FailureCode` values
 ([C248](references/diagnostics.md)), so a `fail` node cannot mint

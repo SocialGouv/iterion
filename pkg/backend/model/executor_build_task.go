@@ -550,7 +550,12 @@ func (s *nodeBuildSession) boardTokenFor(mint func() string) string {
 
 // executeBackend is the unified execution path for agent and judge nodes.
 // It resolves the backend, builds a Task, and dispatches to the backend.
-func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
+//
+// The error is a NAMED result because the per-node `timeout:` below NAMES its
+// own cut on the way out — every exit past that bound passes through the
+// defer that reads the outcome; nothing reads the output there, hence the
+// blank name beside it.
+func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]any) (_ map[string]any, err error) {
 	f, err := extractBackendFields(node)
 	if err != nil {
 		return nil, err
@@ -565,9 +570,42 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// error here is defensive: skip the bound rather than fail the node.
 	if f.timeout != "" {
 		if d, derr := time.ParseDuration(ir.ExpandEnvWithDefault(f.timeout)); derr == nil && d > 0 {
+			runCtx := ctx
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, d)
 			defer cancel()
+			nodeCtx := ctx
+			// This bound is the ENGINE's, so the cut it makes is named here
+			// rather than left to be read from the words that come back:
+			// what a node reports when this deadline kills it is whatever
+			// its backend saw — a sandboxed crossing's killed runner, a
+			// closed pipe, or the bare context error the in-node retry loop
+			// hands up when the bound cuts its backoff — and recovery
+			// dispatch's last tier reads words, where the last of those
+			// matches a network-transient needle and re-runs the node six
+			// times against the one bound its author declared (#2456). See
+			// [ErrNodeDeadline] for why the cause travels in the chain and
+			// stays out of the text.
+			//
+			// Registered AFTER `defer cancel()` so it runs BEFORE it and
+			// reads the deadline's own verdict. Only while the parent is
+			// still live: a run cancelled, or out of its duration budget, is
+			// the engine's own reading at the node boundary
+			// (runtime.handleContextDoneWithCheckpoint, the budget arm), and
+			// this node must not re-model it as its own bound.
+			defer func() {
+				if err == nil || runCtx.Err() != nil {
+					return
+				}
+				if !errors.Is(nodeCtx.Err(), context.DeadlineExceeded) {
+					return
+				}
+				var already *ErrNodeDeadline
+				if errors.As(err, &already) {
+					return
+				}
+				err = &ErrNodeDeadline{NodeID: f.id, Timeout: d, Observed: err}
+			}()
 		}
 	}
 

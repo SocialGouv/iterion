@@ -1227,19 +1227,27 @@ carries). The crossing's words stay as the detail of the error.
   (`pkg/errtrack`, Sentry) reaches no link holding the far side's text in
   clear.
 
-  What a CUT crossing's error carries, today, is what the crossing OBSERVED,
-  redacted — not the reason the run ended. The multiplexer tests the context
-  only between two envelopes, and what unblocks a read parked on a held pipe is
+  What a CUT crossing's error carries is what the crossing OBSERVED, redacted
+  — not the reason the run ended. The multiplexer tests the context only
+  between two envelopes, and what unblocks a read parked on a held pipe is
   `clawRunnerWaitDelay` closing this process's own ends, so the error of a
   cancelled or timed-out crossing usually names the closed pipe or the signal
   that killed the runner; the cut reaches the error's chain only when the
-  multiplexer happens to notice the context between two envelopes. Three
-  readers need the cut itself: a convergence quoting a cancelled sibling's
-  cause, the engine's duration-budget arm, and recovery dispatch, which
-  classifies by the error's TEXT and finds the container's whole stderr quoted
-  there. Issue [#2456](https://github.com/SocialGouv/iterion/issues/2456) owns
-  that, because carrying a cut out of the crossing re-models how the engine
-  classifies one.
+  multiplexer happens to notice the context between two envelopes. That is
+  left as it is, deliberately: none of the three readers that need the cut
+  takes it from the crossing's words. A convergence and the engine's
+  duration-budget arm read the context the engine itself holds (above), and
+  recovery dispatch reads the one bound the crossing cannot know about — the
+  node's own `timeout:` — from the type the site that froze it NAMES
+  (`model.ErrNodeDeadline`, written by `executeBackend`, classified by
+  `recovery.Classify` before any text needle, and ended by
+  `NodeTimeoutRecipe` without a re-run, because a retry would start a fresh
+  bound). The needles stay what they were written for: a request-level
+  timeout INSIDE the node is the upstream client's own bound and remains a
+  transient fault. The guarantee is pinned as a matrix over {run cancel, node
+  `timeout:`, run `max_duration`} × the three accounts a backend gives of a
+  cut, driven through the real engine
+  (`pkg/runtime/recovery/cut_guarantee_matrix_test.go`).
 
 > **Where an advertised tool executes is a boundary, not a fallback.**
 > A tool the runner proxies runs on the HOST, with the launcher's
