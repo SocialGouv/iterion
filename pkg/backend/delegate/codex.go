@@ -793,48 +793,19 @@ func hasNonEmptyStructuredOutput(value any) bool {
 }
 
 // codexSandboxForAllowedTools picks the least-privilege codex sandbox mode
-// compatible with the intent expressed by a DECLARED AllowedTools list (an
-// empty one names nothing that writes, so it stays read-only).
-// Iterion accepts both Claude-style TitleCase names and its native snake_case
-// aliases, so normalise before deciding whether filesystem mutation is needed.
+// compatible with the intent a DECLARED AllowedTools list expresses. The
+// table that reads the names is the catalogue's
+// (toolcatalog.CodexDeclaredListIsReadOnly), so the compiler and the runtime's
+// pre-run readers ask the very classifier this delegate runs.
 //
 // "danger-full-access" is intentionally never chosen here — workflows that
 // truly need unrestricted network or out-of-workspace writes must request it
 // with the node-level `full_access: true`, not by listing a mutating tool.
 func codexSandboxForAllowedTools(allowed []string) string {
-	for _, t := range allowed {
-		if isCodexWebSearchTool(t) {
-			continue
-		}
-		// Classified by the CANONICAL name, not by a spelling list of this
-		// file's own: `find` and `glob` are one tool, and a private table
-		// gave them different sandboxes (#1579 — the same disagreement, on a
-		// fourth table).
-		//
-		// Unifying the spellings also settles three names the old list did
-		// not carry at all, so they fell to `default` and forced
-		// workspace-write: `toolsearch`, `todowrite`, `skill` — plus the
-		// `list_dir` spelling of `ls`. (`websearch` was already exempt, one
-		// line above, through isCodexWebSearchTool.) None of them writes the
-		// workspace — a todo list is session state, a skill is a read — so a
-		// node declaring read-ish names beside one of them is now read-only,
-		// which is what this function's contract (the LEAST-PRIVILEGE mode
-		// compatible with the declared intent) asks for. Measured over 53
-		// spellings and all 2809 ordered pairs: it narrows, never widens. The
-		// one `.bot` in the tree on `backend: "codex"` also sets
-		// `readonly: true`, so it short-circuits before this classifier.
-		switch toolcatalog.CanonicalToolName(t) {
-		case "read", "glob", "grep", "ls", "websearch", "toolsearch", "todowrite", "skill":
-			continue
-		case "bash", "edit", "write", "notebookedit":
-			return "workspace-write"
-		default:
-			// Unknown/custom tool names cannot prove the task is read-only. Prefer
-			// preserving writer semantics; explicit `readonly:` remains the lock.
-			return "workspace-write"
-		}
+	if toolcatalog.CodexDeclaredListIsReadOnly(allowed, true) {
+		return codexSandboxReadOnly
 	}
-	return codexSandboxReadOnly
+	return "workspace-write"
 }
 
 // codexSandboxReadOnly is the mode a task gets when nothing it declares can
@@ -843,26 +814,12 @@ func codexSandboxForAllowedTools(allowed []string) string {
 const codexSandboxReadOnly = "read-only"
 
 // CodexDeclaredListIsReadOnly reports whether a DECLARED `tools:` list alone
-// puts codex in that mode. It is the question a pre-run reader of a node's
-// surface asks, answered by the classifier the delegate runs for real, so the
-// reader cannot drift from the sandbox the task will get.
-//
-// The read-only set is CODEX's, and it OVERLAPS a reader's own read-only
-// vocabulary rather than nesting inside it, in both directions. It is `read`,
-// `glob`, `grep`, `ls`, `websearch`, `toolsearch`, `todowrite` and `skill` by
-// CANONICAL name, and nothing else: `web_fetch`, `git_diff`, `git_status`,
-// `list_files`, `search_codebase` and `tree` buy workspace-write here while
-// pkg/runtime reads them as read-only, and `ls`, `websearch`, `toolsearch`,
-// `todowrite` and `skill` are read-only here while that map does not carry
-// them at all. The canonicalisation is the other half of the difference: this
-// classifier reads `Read` and `read_file` as the same tool, a reader matching
-// its own map literally does not.
-//
-// It answers for what the AUTHOR declared. An undeclared list is no bound at
-// all, and the runtime's own appends are outside the question: `interaction:`
-// puts `ask_user` on a non-empty list, and that name buys workspace-write.
-// `readonly:` and `full_access:` are the author's own locks, read by
-// codexSandboxForTask before a declared list is ever classified.
+// puts codex in its read-only sandbox, through the task path this delegate
+// runs for real — the author's `readonly:` and `full_access:` locks first, then
+// the catalogue's table (toolcatalog.CodexDeclaredListIsReadOnly, where the
+// set and its reasons are written down). A reader that holds a Task asks here;
+// a reader that holds only the declaration asks the catalogue, and the two
+// cannot drift: this is that table.
 func CodexDeclaredListIsReadOnly(tools []string, declared bool) bool {
 	return codexSandboxForTask(Task{ToolsDeclared: declared, AllowedTools: tools}) == codexSandboxReadOnly
 }
