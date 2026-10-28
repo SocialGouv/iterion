@@ -803,6 +803,12 @@ backup:
     endpoint: ""
     region: ""
     bucket: ""
+    # The directory of the bucket this deployment copies into:
+    # <namespace>/<release fullname> by default, so two deployments sharing
+    # one backup bucket never mirror over each other (their syncs would
+    # move each other's copies into <prefix>-deleted and expire them).
+    # Set "" to copy into the bucket's root.
+    # path: ""
     # rclone's S3 provider name: AWS, Ceph, Minio, Other (OVH, SeaweedFS…).
     provider: Other
     forcePathStyle: true
@@ -847,7 +853,10 @@ backup:
   # and the Job is red. -1 = unbounded. Raise it knowingly for a planned
   # mass cleanup.
   maxDelete: 1000
-  # Flags appended to every copy (--transfers, --bwlimit, --checksum…).
+  # Flags appended to every copy (--transfers, --bwlimit, --checksum…) — a
+  # filter here must be repeated in checkArgs, the check reads the source
+  # too. Verbosity flags are refused: rclone prints the credentials it read
+  # from the environment at debug level.
   extraArgs: []
   resources:
     requests:

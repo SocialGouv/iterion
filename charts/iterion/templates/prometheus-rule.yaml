@@ -89,9 +89,11 @@ spec:
           annotations:
             summary: "The {{ $tier.name }} artifact copy has no success within {{ $tier.maxAgeHours }}h"
             description: "CronJob {{ $fullname }}-backup-{{ $tier.name }}: the last successful run is older than {{ $tier.maxAgeHours }}h. The off-cluster copy is falling behind its schedule ({{ $tier.schedule }})."
+        # Time-based, not a `for:` of maxAgeHours: a `for:` restarts from zero
+        # on every Prometheus restart and an 800 h one would never fire.
         - alert: IterionArtifactBackupNeverSucceeded
-          expr: {{ printf `absent(kube_cronjob_status_last_successful_time{namespace=%q, cronjob="%s-backup-%s"})` $.Release.Namespace $fullname $tier.name | quote }}
-          for: {{ int $tier.maxAgeHours }}h
+          expr: {{ printf `absent(kube_cronjob_status_last_successful_time{namespace=%q, cronjob="%s-backup-%s"}) and on() (time() - kube_cronjob_created{namespace=%q, cronjob="%s-backup-%s"} > %d * 3600)` $.Release.Namespace $fullname $tier.name $.Release.Namespace $fullname $tier.name (int $tier.maxAgeHours) | quote }}
+          for: 15m
           labels:
             severity: warning
             tier: {{ $tier.name | quote }}

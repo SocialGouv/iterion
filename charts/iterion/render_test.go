@@ -671,6 +671,17 @@ func TestChartRenderBackup(t *testing.T) {
 			if v := dig(env["MAX_DELETE"], "value"); v != "1000" {
 				t.Errorf("%s MAX_DELETE = %v, want the 1000 default", tier, v)
 			}
+			// One directory per release in the destination bucket: two
+			// deployments sharing a bucket must never mirror over each other.
+			if v := dig(env["DST_BUCKET"], "value"); v != "iterion-artifacts-backup/iterion/iterion" {
+				t.Errorf("%s DST_BUCKET = %v, want <bucket>/<namespace>/<fullname>", tier, v)
+			}
+			if got := dig(cj, "spec", "jobTemplate", "spec", "template", "spec", "automountServiceAccountToken"); got != false {
+				t.Errorf("%s: rclone must not mount the ServiceAccount token, got %v", tier, got)
+			}
+			if got := dig(cj, "metadata", "labels", "iterion.io/backup-tier"); got != tier {
+				t.Errorf("%s: tier label = %v", tier, got)
+			}
 		}
 		if strings.Contains(out, "secretAccessKey:") || strings.Contains(out, "iterion-dev-secret") {
 			t.Errorf("the render carries a credential-looking literal")
@@ -694,7 +705,9 @@ func TestChartRenderBackup(t *testing.T) {
 			if r := rule(rules, "IterionArtifactBackupStale", map[string]string{"tier": tier}); r == nil || !strings.Contains(fmt.Sprint(r["expr"]), `cronjob="iterion-backup-`+tier+`"`) {
 				t.Errorf("stale rule for %s = %v", tier, r)
 			}
-			if r := rule(rules, "IterionArtifactBackupNeverSucceeded", map[string]string{"tier": tier}); r == nil || !strings.HasPrefix(fmt.Sprint(r["expr"]), "absent(") {
+			// Time-based: a `for:` of maxAgeHours restarts from zero on every
+			// Prometheus restart, so an 800 h one would never fire.
+			if r := rule(rules, "IterionArtifactBackupNeverSucceeded", map[string]string{"tier": tier}); r == nil || !strings.HasPrefix(fmt.Sprint(r["expr"]), "absent(") || !strings.Contains(fmt.Sprint(r["expr"]), `and on() (time() - kube_cronjob_created{namespace="iterion", cronjob="iterion-backup-`+tier+`"} > `) || fmt.Sprint(r["for"]) != "15m" {
 				t.Errorf("never-succeeded rule for %s = %v", tier, r)
 			}
 		}
@@ -726,6 +739,39 @@ func TestChartRenderBackup(t *testing.T) {
 		mustRefuse(t, "tier name \"daily\" is used twice", append(base, "--set-json", "backup.tiers="+strings.Replace(two("daily", "weekly"), `"name":"weekly"`, `"name":"daily"`, 1))...)
 		mustRefuse(t, "is the deletion twin of prefix", append(base, "--set-json", "backup.tiers="+strings.Replace(two("daily", "weekly"), `"prefix":"weekly"`, `"prefix":"daily-deleted"`, 1))...)
 		mustRefuse(t, "must name a directory of the destination bucket", append(base, "--set-json", "backup.tiers="+strings.Replace(two("daily", "weekly"), `"prefix":"weekly"`, `"prefix":".."`, 1))...)
+		// rclone prints the credentials it read from the environment at debug
+		// level: a verbosity flag is refused before it reaches a Job's logs.
+		for _, flag := range []string{"-vv", "-v", "--verbose", "--log-level=DEBUG", "--dump=headers", "--log-file=/tmp/x"} {
+			mustRefuse(t, "rclone prints the credentials", append(base, "--set-json", fmt.Sprintf(`backup.extraArgs=[%q]`, flag))...)
+		}
+		mustRefuse(t, "rclone prints the credentials", append(base, "--set-json", `backup.checkArgs=["--one-way","-vv"]`)...)
+		// A numeric tier name would render an unquoted label the API refuses,
+		// a fractional maxAgeHours would alert on its truncation.
+		// A numeric tier name is a label VALUE: quoted, or the API server
+		// refuses the unquoted integer the template would otherwise render.
+		docs := manifests(t, mustRender(t, append(base, "--set-json", `backup.tiers=[{"name":"365","schedule":"0 2 * * *","mode":"sync","prefix":"current","keepDays":7,"maxAgeHours":36}]`)...))
+		if got := dig(must(t, docs, "CronJob", "iterion-backup-365"), "metadata", "labels", "iterion.io/backup-tier"); got != "365" {
+			t.Errorf("a numeric tier name must render a quoted label, got %v (%T)", got, got)
+		}
+		mustRefuse(t, "must be whole numbers", append(base, "--set-json", `backup.tiers=[{"name":"daily","schedule":"0 2 * * *","mode":"sync","prefix":"current","keepDays":7,"maxAgeHours":1.5}]`)...)
+		mustRefuse(t, "backup", append(base, "--set-string", "backup.enabled=false")...)
+	})
+
+	t.Run("the destination path and the check flags are the operator's", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, append(base, "--set-string", "backup.destination.path=", "--set-json", `backup.checkArgs=[]`)...))
+		container := dig(must(t, docs, "CronJob", "iterion-backup-daily"), "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
+		env := envMap(container)
+		if v := dig(env["DST_BUCKET"], "value"); v != "iterion-artifacts-backup" {
+			t.Errorf("path \"\" must copy into the bucket root, got %v", v)
+		}
+		if v := dig(env["CHECK_ARGS"], "value"); v != "" {
+			t.Errorf("checkArgs: [] must mean no flag, got %q", v)
+		}
+		docs = manifests(t, mustRender(t, append(base, "--set-string", "backup.destination.path=/team-a/")...))
+		container = dig(must(t, docs, "CronJob", "iterion-backup-daily"), "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
+		if v := dig(envMap(container)["DST_BUCKET"], "value"); v != "iterion-artifacts-backup/team-a" {
+			t.Errorf("an explicit path is trimmed of its slashes, got %v", v)
+		}
 	})
 }
 

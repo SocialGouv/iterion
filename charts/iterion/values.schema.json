@@ -5,7 +5,21 @@
   "additionalProperties": false,
   "properties": {
     "backup": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "tiers": {
+          "type": "array"
+        },
+        "checkArgs": {
+          "type": "array"
+        },
+        "extraArgs": {
+          "type": "array"
+        }
+      }
     },
     "config": {
       "type": "object"

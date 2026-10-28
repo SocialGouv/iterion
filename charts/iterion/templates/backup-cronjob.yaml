@@ -19,6 +19,24 @@
 {{- if not $b.tiers -}}
 {{- fail "backup.tiers must list at least one tier (name, schedule, mode, prefix, keepDays, maxAgeHours)" -}}
 {{- end -}}
+{{- /* rclone logs every option it read from the environment, value
+     included, at debug level: a verbosity flag would print both S3 key
+     pairs into the Job's logs. */ -}}
+{{- range $flag := concat ($b.extraArgs | default list) ($b.checkArgs | default list) -}}
+{{- if regexMatch "^(-v+|--verbose(=.*)?|--log-level(=.*)?|--log-file(=.*)?|--dump(-.*)?(=.*)?|-vv)$" (toString $flag) -}}
+{{- fail (printf "backup.extraArgs / checkArgs: %q is refused — rclone prints the credentials it read from the environment at that verbosity" $flag) -}}
+{{- end -}}
+{{- end -}}
+{{- /* The destination path: one per release by default, so two deployments
+     sharing a backup bucket never mirror over each other. */ -}}
+{{- $dstPath := printf "%s/%s" $.Release.Namespace (include "iterion.fullname" $) -}}
+{{- if hasKey $dst "path" -}}
+{{- $dstPath = $dst.path -}}
+{{- end -}}
+{{- $dstRoot := $dst.bucket -}}
+{{- if $dstPath -}}
+{{- $dstRoot = printf "%s/%s" $dst.bucket (trimAll "/" $dstPath) -}}
+{{- end -}}
 {{- $storageSecret := default (printf "%s-storage" (include "iterion.fullname" $)) $.Values.secrets.storage.existingSecret -}}
 {{- /* Tiers must not share a name (one CronJob each) nor a prefix, and no
      prefix may be another's deletion twin: two tiers on one prefix expire
@@ -64,6 +82,9 @@
 {{- if lt (int ($tier.maxAgeHours | default 0)) 1 }}
 {{- fail (printf "backup.tiers[%s].maxAgeHours must be at least 1 (the staleness the alert pages on)" $tier.name) }}
 {{- end }}
+{{- if or (ne (toString (int $tier.maxAgeHours)) (toString $tier.maxAgeHours)) (ne (toString (int $tier.keepDays)) (toString $tier.keepDays)) }}
+{{- fail (printf "backup.tiers[%s].maxAgeHours and keepDays must be whole numbers (got %v and %v)" $tier.name $tier.maxAgeHours $tier.keepDays) }}
+{{- end }}
 ---
 # One CronJob per backup tier (#2013): rclone — the tool and the pinned
 # image of the production migration (ADR-107) — copies the artifact bucket
@@ -78,7 +99,7 @@ metadata:
   labels:
     {{- include "iterion.labels" $ | nindent 4 }}
     app.kubernetes.io/component: backup
-    iterion.io/backup-tier: {{ $tier.name }}
+    iterion.io/backup-tier: {{ $tier.name | quote }}
 spec:
   schedule: {{ $tier.schedule | quote }}
   # Never two copies of the same tier at once: a slow run is finished, not
@@ -97,7 +118,7 @@ spec:
           labels:
             {{- include "iterion.selectorLabels" $ | nindent 12 }}
             app.kubernetes.io/component: backup
-            iterion.io/backup-tier: {{ $tier.name }}
+            iterion.io/backup-tier: {{ $tier.name | quote }}
           {{- with $b.podAnnotations }}
           annotations:
             {{- toYaml . | nindent 12 }}
@@ -105,6 +126,8 @@ spec:
         spec:
           restartPolicy: Never
           serviceAccountName: {{ include "iterion.serviceAccountName" $ }}
+          # rclone talks to two buckets, never to the API server.
+          automountServiceAccountToken: false
           securityContext:
             {{- toYaml $.Values.securityContext | nindent 12 }}
           {{- with $.Values.imagePullSecrets }}
@@ -186,10 +209,11 @@ spec:
                   value: {{ $tier.keepDays | int | quote }}
                 - name: SOURCE_BUCKET
                   value: {{ $.Values.config.s3.bucket | quote }}
+                # <bucket>/<namespace>/<fullname> by default (backup.destination.path).
                 - name: DST_BUCKET
-                  value: {{ $dst.bucket | quote }}
+                  value: {{ $dstRoot | quote }}
                 - name: CHECK_ARGS
-                  value: {{ join " " ($b.checkArgs | default (list "--one-way" "--size-only")) | quote }}
+                  value: {{ if hasKey $b "checkArgs" }}{{ join " " $b.checkArgs | quote }}{{ else }}"--one-way --size-only"{{ end }}
                 - name: MAX_DELETE
                   value: {{ (hasKey $b "maxDelete" | ternary $b.maxDelete 1000) | int | quote }}
                 - name: EXTRA_ARGS

@@ -141,7 +141,7 @@ backup:
   destination:
     endpoint: https://s3.<another-region>.example   # NOT the cluster's region
     region: <another-region>
-    bucket: iterion-artifacts-backup
+    bucket: iterion-artifacts-backup                  # copied into <bucket>/<namespace>/<release>/ (destination.path)
     provider: Other                                   # rclone's S3 provider name
     existingSecret: iterion-backup-destination        # RCLONE_CONFIG_DST_ACCESS_KEY_ID + RCLONE_CONFIG_DST_SECRET_ACCESS_KEY
 ```
@@ -168,11 +168,17 @@ backup:
   `backup.maxDelete` objects (1000) aborts red instead of mirroring an
   emptied source; only timestamp-named directories are ever expired.
 - **Alerts** (with `metrics.prometheusRule.enabled`, kube-state-metrics
-  series): `IterionArtifactBackupFailed` (a Job failed, critical),
+  series): `IterionArtifactBackupFailed` per tier (its last scheduled run is
+  over and did not succeed, critical — it resolves on the next green run),
   `IterionArtifactBackupStale` per tier (no success within its
-  `maxAgeHours`), `IterionArtifactBackupNeverSucceeded` per tier (no success
-  recorded at all — which is also what a kube-state-metrics nobody scrapes
-  looks like, so a silent copy cannot pass for a working one).
+  `maxAgeHours`), `IterionArtifactBackupNeverSucceeded` per tier (the
+  CronJob is older than `maxAgeHours` and no success is recorded — which is
+  also what a kube-state-metrics nobody scrapes looks like, so a silent copy
+  cannot pass for a working one).
+- **Logs never carry the keys**: rclone prints every option it read from
+  the environment at debug level, so `-v`/`-vv`/`--log-level`/`--dump` are
+  refused in `backup.extraArgs` and `checkArgs`; a filter in `extraArgs`
+  must be repeated in `checkArgs`, the check reads the source too.
 - **NetworkPolicy.** With `networkPolicy.enabled`, add the destination
   endpoint to `networkPolicy.egress.extraAllow`: the backup pods carry the
   chart's selector labels and sit under the same deny-all egress.
@@ -221,6 +227,7 @@ that has never been restored is unverified.
    bucket, never the live one (the two remotes as the CronJob defines them,
    `RCLONE_CONFIG_DST_*`, plus a `restore` remote for the target):
    ```sh
+   # DST_BUCKET is <bucket>/<namespace>/<release> as the CronJob renders it
    rclone copy "dst:${DST_BUCKET}/current" "restore:${RESTORE_BUCKET}"              # the daily mirror
    rclone copy "dst:${DST_BUCKET}/weekly/<timestamp>" "restore:${RESTORE_BUCKET}"   # or a dated snapshot
    rclone check --one-way --size-only "dst:${DST_BUCKET}/current" "restore:${RESTORE_BUCKET}"
