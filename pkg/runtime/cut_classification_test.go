@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,16 +19,54 @@ import (
 type cutCrossingExecutor struct {
 	cutNode  string
 	attempts atomic.Int32
+
+	// gateNode, when set, is a node that answers `stop: true` only once the
+	// cut node has STARTED: the scenario it builds is "a running sibling is
+	// retired by the first failure", and without the barrier the failing
+	// branch can win the fork before the sibling was ever dispatched — a
+	// verdict that depends on goroutine order, red under -race, green
+	// otherwise.
+	gateNode    string
+	started     chan struct{}
+	startedOnce sync.Once
 }
 
 func (x *cutCrossingExecutor) Execute(ctx context.Context, node ir.Node, _ map[string]any) (map[string]any, error) {
-	if node.NodeID() != x.cutNode {
-		return map[string]any{"ok": true}, nil
+	switch node.NodeID() {
+	case x.cutNode:
+		x.attempts.Add(1)
+		if x.started != nil {
+			x.startedOnce.Do(func() { close(x.started) })
+		}
+		<-ctx.Done()
+		return nil, errors.New("sandbox runner exited: signal: killed")
+	case x.gateNode:
+		if x.gateNode == "" {
+			break
+		}
+		select {
+		case <-x.started:
+			return map[string]any{"stop": true}, nil
+		case <-time.After(10 * time.Second):
+			return nil, errors.New("the cut node never started: the fork did not dispatch both branches")
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	x.attempts.Add(1)
-	<-ctx.Done()
-	return nil, errors.New("sandbox runner exited: signal: killed")
+	return map[string]any{"ok": true}, nil
 }
+
+// EffectiveToolNames answers the workspace-safety seam: the stub's nodes hold
+// no tools at all, so two of them may run in parallel branches — the scenario
+// needs a RUNNING sibling beside the branch that fails, and an executor that
+// does not answer the seam gets the worst-case (mutating) reading.
+func (x *cutCrossingExecutor) EffectiveToolNames(ir.Node, bool) []string { return []string{} }
+
+// EffectiveBackendName and EffectiveFallbackBackends complete the three seams
+// parallel-branch admission reads; the stub routes nowhere and falls back to
+// nothing.
+func (x *cutCrossingExecutor) EffectiveBackendName(ir.Node) string        { return "" }
+func (x *cutCrossingExecutor) EffectiveFallbackBackends(ir.Node) []string { return nil }
 
 // A node the run's duration budget cuts is a budget stop, however the
 // crossing words its death: the engine set the deadline and knows it fired.
@@ -58,8 +97,10 @@ func cutSiblingWorkflow(t *testing.T) *ir.Workflow {
 		Name:  "cut_sibling",
 		Entry: "fork",
 		Nodes: map[string]ir.Node{
-			"fork":  &ir.RouterNode{BaseNode: ir.BaseNode{ID: "fork"}, RouterMode: ir.RouterFanOutAll},
-			"guard": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "guard"}, Exprs: []*ir.ComputeExpr{{Key: "stop", AST: stop, Raw: "true"}}},
+			"fork": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "fork"}, RouterMode: ir.RouterFanOutAll},
+			// guard is answered by the stub, which waits for the sibling to start
+			// before saying stop: the retirement must find a RUNNING crossing.
+			"guard": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "guard"}},
 			"slow":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "slow"}},
 			"collect": &ir.ComputeNode{
 				BaseNode:  ir.BaseNode{ID: "collect"},
@@ -91,7 +132,7 @@ func cutSiblingWorkflow(t *testing.T) *ir.Workflow {
 // failure of its own, and its untyped error erased the typed code the run
 // should carry.
 func TestAStoppedSiblingThatReportsTheCutInItsOwnWordsIsNotAFailureOfItsOwn(t *testing.T) {
-	x := &cutCrossingExecutor{cutNode: "slow"}
+	x := &cutCrossingExecutor{cutNode: "slow", gateNode: "guard", started: make(chan struct{})}
 	s := tmpStore(t)
 	err := New(cutSiblingWorkflow(t), s, x).Run(context.Background(), "run-cut-sibling", nil)
 	var rt *RuntimeError
