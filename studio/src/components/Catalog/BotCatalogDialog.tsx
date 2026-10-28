@@ -14,6 +14,7 @@ import { botVisual } from "@/lib/personas";
 import { catalogToggleToast } from "@/lib/catalogStale";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { HiddenFileInput } from "@/components/shared/HiddenFileInput";
 import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 
@@ -196,11 +197,11 @@ export function BotCatalogDialog({
             >
               New bot
             </Button>
-            <input
-              ref={botzFileRef}
-              type="file"
+            {/* Driven by the "Import .botz…" button beside it, never
+                reached directly — out of the a11y tree. */}
+            <HiddenFileInput
+              inputRef={botzFileRef}
               accept=".botz"
-              className="hidden"
               onChange={(e) => void onUploadBotz(e)}
             />
             <Button

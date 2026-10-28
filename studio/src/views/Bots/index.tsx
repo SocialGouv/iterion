@@ -17,6 +17,7 @@ import {
   importSuccessMessage,
 } from "@/components/Catalog/importActions";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import { HiddenFileInput } from "@/components/shared/HiddenFileInput";
 import {
   Badge,
   Button,
@@ -255,18 +256,16 @@ export default function BotsView() {
 
   return (
     <div className="flex flex-col gap-3 p-4">
-      <input
-        ref={botzFileRef}
-        type="file"
+      {/* Both pickers are driven by the import menu's items, never reached
+          directly — HiddenFileInput keeps them out of the a11y tree. */}
+      <HiddenFileInput
+        inputRef={botzFileRef}
         accept=".botz"
-        className="hidden"
         onChange={(e) => void onUploadBotz(e)}
       />
-      <input
-        ref={scriptFileRef}
-        type="file"
+      <HiddenFileInput
+        inputRef={scriptFileRef}
         accept=".js,.mjs"
-        className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
           e.target.value = "";

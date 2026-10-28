@@ -49,4 +49,22 @@ describe("interactive elements carry a naming mechanism (RGAA 11.1)", () => {
     }
     expect(hits).toHaveLength(0);
   });
+
+  // A waiver is a live claim about a site. One that matches nothing is a
+  // sentence nobody can check, and the entry it hides behind is how a list
+  // like this one stops describing the tree it guards.
+  it("carries no waiver the tree no longer needs", () => {
+    const all = unnamedInteractives();
+    const dead = WAIVED.filter(
+      (w) => !all.some((h) => h.path === w.path && h.tag === w.tag),
+    );
+    if (dead.length) {
+      throw new Error(
+        `waivers that match nothing — the element is named now, drop them:\n${dead
+          .map((w) => `  ${w.path}  <${w.tag}>: ${w.reason}`)
+          .join("\n")}`,
+      );
+    }
+    expect(dead).toHaveLength(0);
+  });
 });

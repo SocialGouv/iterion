@@ -6,6 +6,7 @@ import { Route, Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 
 import type { AdminUserDetail } from "@/api/admin";
+import { setupMatchMedia, expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
 
 const getAdminUser = vi.fn<(id: string) => Promise<AdminUserDetail>>();
 const listOrgs = vi.fn(async () => [] as unknown[]);
@@ -61,6 +62,15 @@ function renderDrawer() {
     </QueryClientProvider>,
   );
 }
+
+// Radix renders the dialog in a portal, outside render()'s container, so the
+// drawer's own subtree is reached by role and not by the render result.
+function mountDrawer(): HTMLElement {
+  renderDrawer();
+  return screen.getByRole("dialog");
+}
+
+setupMatchMedia();
 
 beforeEach(() => {
   getAdminUser.mockReset();
@@ -206,5 +216,74 @@ describe("UserDrawer", () => {
 
     expect(await screen.findByLabelText("Team")).toBeTruthy();
     expect(screen.queryByText(/Add this account to an organization first/i)).toBeNull();
+  });
+});
+
+// Two of each, and the names deliberately COLLIDE: a fixture with distinct
+// display names cannot show whether a repeated control's name is unique. Two
+// organizations share the display name "Platform"; the same team name — and
+// slug — exists in both, which is legal because a team name is per-org.
+const PLACED = detail({
+  orgs: [
+    { org_id: "o1", org_name: "Platform", org_slug: "sdpc", role: "member" },
+    { org_id: "o2", org_name: "Platform", org_slug: "dnum", role: "owner" },
+  ],
+  teams: [
+    { team_id: "t1", team_name: "Core", team_slug: "core", org_id: "o1", org_name: "SDPC", role: "admin" },
+    { team_id: "t2", team_name: "Core", team_slug: "core", org_id: "o2", org_name: "DNUM", role: "member" },
+  ],
+  sso_links: [{ provider: "github", subject: "1234567", email: "someone@externes.example.org" }],
+});
+
+describe("UserDrawer — repeated row controls name the row they act on", () => {
+  // Every membership row carries the same verb. Without the row in the name,
+  // a screen-reader user hears "Remove, Remove" and has to count table rows
+  // to know which organization the second one revokes.
+  it("qualifies each membership's destructive control by its tenant", async () => {
+    getAdminUser.mockResolvedValue(PLACED);
+    mountDrawer();
+
+    expect(await screen.findByRole("button", { name: "Remove from sdpc" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove from dnum" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Revoke core in SDPC" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Revoke core in DNUM" })).toBeTruthy();
+    // The visible words are untouched: the name CONTAINS them (SC 2.5.3).
+    for (const [visible, count] of [
+      ["Remove", 2],
+      ["Revoke", 2],
+    ] as const) {
+      expect(screen.getAllByText(visible)).toHaveLength(count);
+    }
+  });
+});
+
+describe("a11y / UserDrawer", () => {
+  it("has no violation with both rosters loaded", async () => {
+    getAdminUser.mockResolvedValue(PLACED);
+    const dialog = mountDrawer();
+    await screen.findByRole("table", { name: "Organizations this account belongs to" });
+    await expectNoViolationsStrict(dialog, "UserDrawer");
+  });
+
+  it("has no violation on the unplaced account the console exists for", async () => {
+    getAdminUser.mockResolvedValue(detail({ has_password: false }));
+    const dialog = mountDrawer();
+    await screen.findByText(/belongs to nothing/i);
+    await expectNoViolationsStrict(dialog, "UserDrawer (unplaced)");
+  });
+
+  it("has no violation while the account is still loading", async () => {
+    let release: (d: AdminUserDetail) => void = () => {};
+    getAdminUser.mockReturnValue(
+      new Promise<AdminUserDetail>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const dialog = mountDrawer();
+    // The slate is a named live region, not visible text (Spinner carries the
+    // label on role=status), so it is asserted the way it is announced.
+    await screen.findByRole("status", { name: "Loading account…" });
+    await expectNoViolationsStrict(dialog, "UserDrawer (loading)");
+    release(detail());
   });
 });

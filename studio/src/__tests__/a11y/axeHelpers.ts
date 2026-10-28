@@ -305,6 +305,20 @@ export interface AxeWaiver {
   reason: string;
 }
 
+/**
+ * ClampText's clamped block is a focus stop carrying no widget role on
+ * purpose (RGAA 10.12: focusing it reveals what the clamp hides), so
+ * `focus-order-semantics` is wrong about it on every surface that embeds one,
+ * and right about anything else the surface makes focusable. Declared beside
+ * the waiver type rather than copied per entry: the claim belongs to the
+ * primitive, and the copies are where its reason drifts.
+ */
+export const CLAMP_TEXT_WAIVER: AxeWaiver = {
+  rule: "focus-order-semantics",
+  node: "data-clamp-text",
+  reason: "ClampText's deliberate focus stop, pinned by ClampText.test.tsx",
+};
+
 /** `role=separator` → the node carries role="separator"; `data-x` → it has the attribute. */
 function nodeMatches(n: axe.NodeResult, selector: string): boolean {
   const eq = selector.indexOf("=");

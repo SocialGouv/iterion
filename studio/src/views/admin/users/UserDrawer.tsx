@@ -127,8 +127,11 @@ function IdentitySection({ detail }: { detail: AdminUserDetail }) {
   const unplaced = detail.orgs.length === 0 && detail.teams.length === 0;
 
   return (
+    // h3: the Dialog's own title is this surface's h2, so its sections are
+    // its direct children — and they are siblings of each other, which is
+    // why Identity/Organizations/Teams all sit at this level (RGAA 9.1).
     <section className="space-y-3 mb-5">
-      <h4 className="font-medium">Identity</h4>
+      <h3 className="font-medium">Identity</h3>
 
       {unplaced && (
         <InlineBanner tone="warning" layout="inline" title="This account belongs to nothing">
@@ -181,7 +184,7 @@ function IdentitySection({ detail }: { detail: AdminUserDetail }) {
       </dl>
 
       <div>
-        <h5 className="text-sm font-medium mb-1">Connected identities</h5>
+        <h4 className="text-sm font-medium mb-1">Connected identities</h4>
         {links.length === 0 ? (
           <p className="text-caption text-fg-subtle">
             No SSO identity linked.
@@ -277,9 +280,9 @@ function OrgsSection({
 
   return (
     <section className="space-y-2 mb-5">
-      <h4 className="font-medium">
+      <h3 className="font-medium">
         Organizations <span className="text-caption text-fg-subtle">({detail.orgs.length})</span>
-      </h4>
+      </h3>
 
       {detail.orgs.length === 0 ? (
         <EmptyState message="This account belongs to no organization." />
@@ -337,10 +340,16 @@ function OrgsSection({
                   {o.joined_at ? formatDateTime(o.joined_at) : "—"}
                 </Td>
                 <Td align="right">
+                  {/* Every row carries the same verb: the name says WHICH
+                      tenant it revokes, and keeps the visible word (SC 2.5.3).
+                      By the SLUG the row displays under the name, not the
+                      name: two organizations may share a display name, and
+                      the slug is the one identifier that cannot repeat. */}
                   <Button
                     size="sm"
                     variant="danger"
                     disabled={busy}
+                    aria-label={`Remove from ${o.org_slug ?? o.org_id}`}
                     onClick={() => void removeFrom(o)}
                   >
                     Remove
@@ -485,9 +494,9 @@ function TeamsSection({
 
   return (
     <section className="space-y-2">
-      <h4 className="font-medium">
+      <h3 className="font-medium">
         Teams <span className="text-caption text-fg-subtle">({detail.teams.length})</span>
-      </h4>
+      </h3>
 
       {detail.teams.length === 0 ? (
         <EmptyState message="This account holds no team grant." />
@@ -556,10 +565,14 @@ function TeamsSection({
                   />
                 </Td>
                 <Td align="right">
+                  {/* Team names are per-organization, so the team alone
+                      still collides across two orgs — the pair the row
+                      displays in its first two cells is what cannot. */}
                   <Button
                     size="sm"
                     variant="danger"
                     disabled={busy}
+                    aria-label={`Revoke ${t.team_slug ?? t.team_id} in ${t.org_name ?? t.org_id}`}
                     onClick={() => void removeFrom(t)}
                   >
                     Revoke

@@ -9,6 +9,7 @@ import ConfirmDialog from "../shared/ConfirmDialog";
 import { useConfirm } from "@/hooks/useConfirm";
 import { Spinner } from "@/components/ui/Spinner";
 import ShortcutsHelp from "../shared/ShortcutsHelp";
+import { HiddenFileInput } from "../shared/HiddenFileInput";
 import FilePicker from "../FilePicker/FilePicker";
 import {
   Button,
@@ -468,24 +469,13 @@ export default function Toolbar() {
       )}
 
       {/* The control is the File menu's Import item; this input is the
-          mechanism it clicks. `hidden` is display:none, so a browser keeps it
-          out of the a11y tree and out of the tab order; the attributes state
-          that where the rendered net can read it, since jsdom loads no
-          stylesheet. NOT fixable by teaching the harness `.hidden` globally:
-          Tailwind's `hidden sm:table` surfaces (the desktop runs table, the
-          selection toolbar, the sort/group controls) would then be hidden at
-          every width, and a net over them would pass on an empty tree. The
-          source naming guard reads the utility class
-          (__tests__/a11y/_interactive.ts). */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".bot"
-        className="hidden"
-        aria-hidden="true"
-        tabIndex={-1}
-        onChange={handleImport}
-      />
+          mechanism it clicks (HiddenFileInput states that for every net,
+          including jsdom, which loads no stylesheet). NOT fixable by teaching
+          the harness `.hidden` globally: Tailwind's `hidden sm:table` surfaces
+          (the desktop runs table, the selection toolbar, the sort/group
+          controls) would then be hidden at every width, and a net over them
+          would pass on an empty tree. */}
+      <HiddenFileInput inputRef={fileInputRef} accept=".bot" onChange={handleImport} />
 
       {/* Right-aligned: file status → Launch run; then navigation icons */}
       <div className="ml-auto flex items-center gap-3">

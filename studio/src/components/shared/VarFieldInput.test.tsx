@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { VarField } from "@/api/types";
 
 import VarFieldInput, { defaultStringFor } from "./VarFieldInput";
+import { files } from "@/__tests__/a11y/_scanner";
 
 afterEach(cleanup);
 
@@ -227,5 +228,69 @@ describe("defaultStringFor", () => {
         default: { kind: "bool", raw: "false" },
       }),
     ).toBe("false");
+  });
+});
+
+describe("VarFieldInput bool — the caller owns the name", () => {
+  // Every caller labels the control it asks for (`<label htmlFor={id}>`):
+  // VarFieldsSection, AutoManagedVarsSection, BotArgsForm and
+  // AddTaskDialog's VarRow all do. A second label rendered HERE would make
+  // two, and the one a browser picks is not the var's name but the value
+  // beside the box — so the field can announce itself as "false".
+  function renderLabelled(value: string) {
+    return render(
+      <>
+        <label htmlFor="bot-arg-dry_run">dry_run</label>
+        <VarFieldInput
+          field={{ name: "dry_run", type: "bool" }}
+          id="bot-arg-dry_run"
+          value={value}
+          onChange={() => {}}
+        />
+      </>,
+    );
+  }
+
+  it("leaves the checkbox with exactly one label, the caller's", () => {
+    const { container } = renderLabelled("false");
+    const box = screen.getByRole("checkbox") as HTMLInputElement;
+    expect(box.labels ? [...box.labels].map((l) => l.textContent) : []).toEqual(["dry_run"]);
+    // The value mirror is still on screen, and still outside the name.
+    expect(container.textContent).toContain("false");
+    expect(screen.getByRole("checkbox", { name: "dry_run" })).toBe(box);
+  });
+
+  it("mirrors the state visually without adding it to the name", () => {
+    renderLabelled("true");
+    const box = screen.getByRole("checkbox", { name: "dry_run" }) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(screen.queryByRole("checkbox", { name: /true/ })).toBeNull();
+  });
+});
+
+describe("VarFieldInput — the caller's label is a contract, not a convention", () => {
+  // The bool renderer leaves naming to the caller, like every other type
+  // does, which is only safe while every call site hands it the `id` its
+  // own `<label htmlFor>` points at. `id` is optional in the props (an
+  // enum/number field inside an enclosing label needs none), so the guard
+  // is here rather than in the type.
+  it("has every production call site pass the id its label points at", () => {
+    const unnamed: string[] = [];
+    for (const [path, src] of files) {
+      for (const tag of src.match(/<VarFieldInput\b[\s\S]*?\/>/g) ?? []) {
+        if (!/\bid=/.test(tag)) {
+          unnamed.push(`${path}  ${tag.replace(/\s+/g, " ").slice(0, 120)}`);
+        }
+      }
+    }
+    if (unnamed.length) {
+      throw new Error(
+        `<VarFieldInput> without an id — the caller's <label htmlFor> resolves to nothing and the control has no accessible name:\n${unnamed.join("\n")}`,
+      );
+    }
+    // Non-vacuous: the call sites exist and were read.
+    expect(
+      files.filter(([, src]) => src.includes("<VarFieldInput")).length,
+    ).toBeGreaterThanOrEqual(4);
   });
 });

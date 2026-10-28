@@ -43,14 +43,22 @@ export default function VarFieldInput({
   switch (field.type) {
     case "bool":
       return (
-        <label className="inline-flex items-center gap-2">
+        // A span, not a label: every caller already names this control with
+        // its own `<label htmlFor={id}>` (the `id` prop's contract), and a
+        // second, implicit label here gives the checkbox TWO of them
+        // (axe form-field-multiple-labels) whose text is the current value —
+        // so the var could announce itself as "false". The state the mirror
+        // text shows is what the checkbox itself announces, hence aria-hidden.
+        <span className="inline-flex items-center gap-2">
           <Checkbox
             checked={value === "true"}
             onChange={(e) => onChange(e.target.checked ? "true" : "false")}
             {...common}
           />
-          <span className="text-xs text-fg-muted">{value === "true" ? "true" : "false"}</span>
-        </label>
+          <span aria-hidden="true" className="text-xs text-fg-muted">
+            {value === "true" ? "true" : "false"}
+          </span>
+        </span>
       );
     case "int":
     case "float":
