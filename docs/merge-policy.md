@@ -309,6 +309,33 @@ keeps a single pending run and silently replaces it with the next one: a merged
 pull request's run could replace a pending nightly or dispatch, then hold its
 release while the queue builds.
 
+## A rebuilt group's older runs are cancelled
+
+GitHub rebuilds a queue group whenever its base moves — a push to `main`, an
+entry ahead failing or leaving — and leaves the discarded group's runs to
+finish. They hold `arc-runners` pods for a verdict nobody reads, which is the
+churn half of the queue's cost: over 2026-10-21/22, 14 of 38 completed
+`merge_group` runs were red and the five pull requests involved were rebuilt
+repeatedly, each rebuild leaving a full Tests run behind it.
+
+[`.github/workflows/merge-queue-churn.yml`](../.github/workflows/merge-queue-churn.yml)
+cancels them, and only them. The branch of a queue entry is
+`gh-readonly-queue/<base>/pr-<n>-<base sha>`: the `pr-<n>` prefix survives a
+rebuild, the base sha is the generation. A run is cancelled when it carries
+the same prefix as the run doing the cancelling, on a different branch, is not
+completed, and was created strictly before it. So the newest generation kills
+the ones it replaced; every job of one generation shares its branch and cannot
+touch its siblings (the three `race` shards included); an equal timestamp
+cancels nothing, since a tie is not an order and the cost of guessing is a
+required check reported `cancelled` — a red entry.
+
+Required check NAMES are untouched: the janitor is its own workflow, nothing
+requires it, and the ruleset never waits for it. It runs on `ubuntu-latest` on
+purpose — queued behind the pod shortage it exists to relieve, it would arrive
+after the runs it was meant to kill — with `actions: write` as its only scope
+and no checkout. `internal/ciguard/queue_churn_test.go` runs the shipped jq
+filter against crafted run listings, in both list orders.
+
 ## Measuring the queue
 
 `devbox run -- task ci:queue-stats -- --since 2026-09-22 --until 2026-09-28`
@@ -328,10 +355,11 @@ window in UTC so two periods compare:
   release, a direct merge, any other push) committed at most 90 seconds before
   the rebuild, or the queue itself (an entry ahead failed or left, a dequeue
   and a re-enqueue) — and the state of the build it replaced: for a push,
-  whether it was already green or still running when the push hit (the queue
-  does not cancel the run of a group it discards; a build that had already
-  finished red had ejected its pull request, so its rebuild is a re-enqueue,
-  counted as the queue's). **Queue
+  whether it was already green or still running when the push hit (GitHub does
+  not cancel the run of a group it discards — the janitor below does, so a
+  discarded build now reads as `cancelled` rather than as a full run nobody
+  waited for; a build that had already finished red had ejected its pull
+  request, so its rebuild is a re-enqueue, counted as the queue's). **Queue
   builds discarded by a direct push** is the line the release hold above
   exists to shrink. Runs are read day by day and checked against the count the
   API announces: a query answers at most 1000 runs, and paging has returned a

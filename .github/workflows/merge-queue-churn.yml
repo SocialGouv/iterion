@@ -1,0 +1,140 @@
+# Cancels the merge-queue runs of the generations an entry has replaced.
+#
+# Why this exists: GitHub rebuilds a queue group whenever its base moves — a
+# push to `main`, an entry ahead failing or leaving — and it does NOT cancel
+# the runs of the group it discarded. Those runs hold `arc-runners` pods to
+# completion for a verdict nobody reads, competing with the builds that
+# decide the merge. Measured over 2026-10-21/22: 14 of 38 completed
+# `merge_group` runs were red and the five pull requests involved were
+# rebuilt repeatedly; every rebuild left a full Tests run (three `race`
+# shards, three test legs) running for nothing.
+#
+# WHAT IT CANCELS, and nothing else: a run is superseded when it belongs to
+# the SAME queue entry as this run — same `gh-readonly-queue/<base>/pr-<n>`
+# prefix, the part of the branch name that survives a rebuild — on a
+# DIFFERENT branch (so a different base sha, i.e. an older generation), is
+# not completed, and was created strictly before this run. The two
+# conservative clauses are load-bearing:
+#
+#   - `head_branch != ours` keeps the generation that is running from
+#     cancelling itself. Every job of a generation shares its branch — the
+#     three `race` shards, the three test legs, the queue gate, this
+#     janitor — so none of them can cancel another.
+#   - `created_at < ours` makes the newer generation the only one that
+#     cancels. On equal timestamps nothing is cancelled: a tie is not an
+#     order, and guessing one here costs a required check.
+#
+# A cancelled required check reads as a red entry, so the predicate errs
+# towards doing nothing: an uncancelled run wastes a pod, a wrongly cancelled
+# one ejects a pull request. `internal/ciguard`'s TestTheSupersededFilterCancels…
+# tests run the filter BELOW — the shipped text, not a copy — against crafted
+# run lists.
+#
+# WHERE it runs: `ubuntu-latest`, deliberately, while every required job
+# routes to the scale set. This job exists to free ARC pods when they are
+# scarce; queued behind the same pod shortage it would arrive after the runs
+# it was meant to kill. It takes seconds, uses no action (nothing to fetch
+# from codeload, #2435) and no checkout: the step body below is the whole
+# program.
+#
+# The token: `actions: write` is the only scope that can cancel a run, and
+# the job-level block REPLACES the workflow default, so this job can read
+# nothing else. Like every `merge_group` workflow, the file it runs is the
+# file on the queue branch — the entry's own code — which is why the program
+# is inline and reviewable in the pull request's diff rather than a script
+# the tree can repoint.
+name: merge queue churn
+
+on:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  cancel-superseded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      # The predicate, as the one text that decides a cancellation. It is a
+      # job-level `env` so the guard can read it out of this file and run it:
+      # a filter embedded in the script below would be pinned by a copy, and
+      # a copy drifts.
+      SUPERSEDED_FILTER: >-
+        def entry(b): b | capture("^(?<e>gh-readonly-queue/.+/pr-[0-9]+)-[0-9a-f]+$") | .e;
+        [ .workflow_runs[]
+          | select(.event == "merge_group")
+          | select(.status != "completed")
+          | select((.id | tostring) != $self_id)
+          | select(.head_branch != $self_branch)
+          | select(.head_branch | test("^gh-readonly-queue/.+/pr-[0-9]+-[0-9a-f]+$"))
+          | select(entry(.head_branch) == entry($self_branch))
+          | select(.created_at < $self_created)
+          | .id ]
+        | unique | .[]
+    steps:
+      - name: Cancel the runs this entry's generation replaced
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SELF_BRANCH: ${{ github.ref_name }}
+          SELF_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com"
+          auth="Authorization: Bearer $GH_TOKEN"
+
+          # gh-readonly-queue/<base>/pr-<number>-<base-sha>. A ref this
+          # program cannot read is a stop, not a scan: without an entry key
+          # there is no "same entry" to compare against.
+          if ! printf '%s' "$SELF_BRANCH" | grep -Eq '^gh-readonly-queue/.+/pr-[0-9]+-[0-9a-f]+$'; then
+            echo "::error::'$SELF_BRANCH' is not a merge-queue branch — refusing to cancel anything"
+            exit 1
+          fi
+
+          self_created="$(curl -fsSL -H "$auth" "$api/repos/$REPO/actions/runs/$SELF_RUN_ID" | jq -r '.created_at')"
+          if [ -z "$self_created" ] || [ "$self_created" = "null" ]; then
+            echo "::error::run $SELF_RUN_ID has no created_at — nothing orders the generations"
+            exit 1
+          fi
+          echo "this run: $SELF_BRANCH (#$SELF_RUN_ID, created $self_created)"
+
+          # One page is enough by construction: the queue builds at most
+          # three entries, each with a handful of workflows, and the API
+          # answers newest first.
+          runs="$(curl -fsSL -H "$auth" "$api/repos/$REPO/actions/runs?event=merge_group&per_page=100")"
+          superseded="$(jq -r \
+            --arg self_branch "$SELF_BRANCH" \
+            --arg self_id "$SELF_RUN_ID" \
+            --arg self_created "$self_created" \
+            "$SUPERSEDED_FILTER" <<<"$runs")"
+
+          if [ -z "$superseded" ]; then
+            echo "no superseded run of this entry is still running"
+            exit 0
+          fi
+
+          for id in $superseded; do
+            branch="$(jq -r --arg id "$id" '.workflow_runs[] | select((.id|tostring) == $id) | .head_branch' <<<"$runs")"
+            echo "cancelling run $id ($branch) — an earlier generation of this entry"
+            http="$(curl -sS -X POST -H "$auth" -o /tmp/cancel.out -w '%{http_code}' \
+              "$api/repos/$REPO/actions/runs/$id/cancel")"
+            case "$http" in
+              2*)
+                echo "  cancelled"
+                ;;
+              409)
+                # The run reached a terminal state between the list and the
+                # POST. Named rather than swallowed: it is the one HTTP code
+                # that means the work is already done.
+                echo "  already finished (409) — nothing to cancel"
+                ;;
+              *)
+                echo "::error::cancelling run $id answered HTTP $http:"
+                cat /tmp/cancel.out
+                exit 1
+                ;;
+            esac
+          done
