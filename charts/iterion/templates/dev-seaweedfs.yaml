@@ -1,7 +1,7 @@
 {{- if ((.Values.devStack).seaweedfs).enabled -}}
 {{- $sw := .Values.devStack.seaweedfs -}}
-{{- $name := printf "%s-seaweedfs" (include "iterion.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- $identitySecret := printf "%s-seaweedfs-s3" (include "iterion.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $name := include "iterion.devStoreName" (dict "root" . "suffix" "seaweedfs") -}}
+{{- $identitySecret := include "iterion.devStoreName" (dict "root" . "suffix" "seaweedfs-s3") -}}
 {{- if or (not .Values.secrets.storage.create) .Values.secrets.storage.existingSecret -}}
 {{- fail "devStack.seaweedfs.enabled needs secrets.storage.create=true and no secrets.storage.existingSecret: the gateway's S3 identity is rendered from secrets.storage.s3AccessKeyId / s3SecretAccessKey so the server, the runner, the bucket hook and the store agree on ONE key pair (dev only — never for production)" -}}
 {{- end -}}
@@ -138,7 +138,7 @@ spec:
                       fi
                       sleep 2
                     done
-                    echo "dev-seaweedfs: bucket $BUCKET not created after 180s" >&2
+                    echo "dev-seaweedfs: bucket $BUCKET still absent after 90 attempts (each waits for the master with no bound of its own)" >&2
                     exit 1
           ports:
             - name: s3

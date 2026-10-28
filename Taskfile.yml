@@ -1458,7 +1458,7 @@ tasks:
       - helm lint charts/iterion -f charts/iterion/values-dev.yaml
       - helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
       # REQUIRE=1: here a missing helm is red, never a skip.
-      - ITERION_CHART_RENDER_REQUIRE=1 go test -count=1 -run 'TestChartRender' ./charts/iterion/
+      - ITERION_CHART_RENDER_REQUIRE=1 go test -count=1 -run 'TestChart' ./charts/iterion/
 
   chart:gate:
     desc: "Judge a rendered manifest stream for dead scheduling / PDB selectors (stdin, or a file after --): helm template … | task chart:gate"

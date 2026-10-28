@@ -1121,7 +1121,7 @@ jobs:
         # of #2012), then the render guards of the backup CronJob and the alert
         # packs. REQUIRE=1: on this job a missing helm is a red step, never a
         # skip (the `test` job has Go but no helm, and skips them by design).
-        run: ITERION_CHART_RENDER_REQUIRE=1 go test -mod=vendor -count=1 -run 'TestChartRender' ./charts/iterion/
+        run: ITERION_CHART_RENDER_REQUIRE=1 go test -mod=vendor -count=1 -run 'TestChart' ./charts/iterion/
 
   golangci:
     # Curated golangci-lint pass (.golangci.yml): errcheck, govet,

@@ -123,7 +123,7 @@ leaves it so (the Secret's envFrom comes after the ConfigMap's and wins).
 {{- if .Values.config.mongo.uri -}}
 {{- .Values.config.mongo.uri -}}
 {{- else if ((.Values.devStack).mongodb).enabled -}}
-{{- printf "mongodb://%s:27017/?replicaSet=%s" (printf "%s-mongodb" (include "iterion.fullname" .) | trunc 63 | trimSuffix "-") ((.Values.devStack.mongodb).replicaSetName | default "rs0") -}}
+{{- printf "mongodb://%s:27017/?replicaSet=%s" (include "iterion.devStoreName" (dict "root" . "suffix" "mongodb")) ((.Values.devStack.mongodb).replicaSetName | default "rs0") -}}
 {{- end -}}
 {{- end -}}
 
@@ -137,8 +137,19 @@ its own endpoint whatever the release name), else empty.
 {{- if .Values.config.s3.endpoint -}}
 {{- .Values.config.s3.endpoint -}}
 {{- else if ((.Values.devStack).seaweedfs).enabled -}}
-{{- printf "http://%s:8333" (printf "%s-seaweedfs" (include "iterion.fullname" .) | trunc 63 | trimSuffix "-") -}}
+{{- printf "http://%s:8333" (include "iterion.devStoreName" (dict "root" . "suffix" "seaweedfs")) -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+iterion.devStoreName — the name of a dev store object: the release's
+fullname cut so the suffix still fits in 63 characters. Cutting AFTER the
+suffix folds the stores onto the server's own name (a 62-character
+fullnameOverride then renders three Deployments and three Services under
+one name, and the Mongo URI dials the server). Dict: root, suffix.
+*/}}
+{{- define "iterion.devStoreName" -}}
+{{- printf "%s-%s" (include "iterion.fullname" .root | trunc (int (sub 62 (len .suffix))) | trimSuffix "-") .suffix -}}
 {{- end -}}
 
 {{/*
@@ -236,11 +247,16 @@ budget carries exactly one of the two), minAvailable defaults to 1.
 */}}
 {{- define "iterion.pdbBudget" -}}
 {{- $b := . | default dict -}}
+{{- /* "" and null are unset (hasKey sees both as values; null survives inside a pool entry): the budget falls back to minAvailable 1, never to an EMPTY one — a PDB with neither field lets the disruption controller evict every pod. */ -}}
 {{- $max := "" -}}
+{{- $min := "" -}}
 {{- if hasKey $b "maxUnavailable" -}}{{- $max = printf "%v" $b.maxUnavailable -}}{{- end -}}
+{{- if hasKey $b "minAvailable" -}}{{- $min = printf "%v" $b.minAvailable -}}{{- end -}}
+{{- if eq $max "<nil>" -}}{{- $max = "" -}}{{- end -}}
+{{- if eq $min "<nil>" -}}{{- $min = "" -}}{{- end -}}
 {{- if ne $max "" -}}
 maxUnavailable: {{ $b.maxUnavailable }}
-{{- else if hasKey $b "minAvailable" -}}
+{{- else if ne $min "" -}}
 minAvailable: {{ $b.minAvailable }}
 {{- else -}}
 minAvailable: 1
@@ -249,14 +265,20 @@ minAvailable: 1
 
 {{/*
 iterion.promqlMatchers — refuses a value that cannot be a PromQL label
-matcher list (label="v", label=~"re", …): one with no `=`, with a newline
-or with a backslash. Dict: value, path (the values key, for the message).
-Prometheus drops a WHOLE PrometheusRule on one unparsable expression, so a
-typo here would silence every datastore alert at once.
+matcher list (label="v", label=~"re", …): one with no `=`, with a newline,
+or with a backslash PromQL's string lexer does not know (it reads \\ \"
+\a \b \f \n \r \t \v \x \u \U and octal only — a regex \d written
+unescaped kills the whole rule file: write \\d, or [0-9]). Dict: value,
+path (the values key, for the message). Prometheus drops a WHOLE
+PrometheusRule on one unparsable expression, so a typo here would silence
+every datastore alert at once.
 */}}
 {{- define "iterion.promqlMatchers" -}}
 {{- $v := .value | default "" -}}
 {{- if or (not (regexMatch "^[^\n]+$" $v)) (not (contains "=" $v)) -}}
 {{- fail (printf "%s must be a PromQL label matcher list such as pod=~\".*mongodb.*\" or job=\"x\", written as PromQL (got %q)" .path $v) -}}
+{{- end -}}
+{{- if not (regexMatch `^([^\\]|\\[\\"abfnrtvxuU0-7])*$` $v) -}}
+{{- fail (printf "%s carries a backslash PromQL cannot read (got %q): inside a PromQL string a regex escape is written twice (\\\\d), or as a class ([0-9])" .path $v) -}}
 {{- end -}}
 {{- end -}}

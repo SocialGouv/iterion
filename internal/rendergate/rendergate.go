@@ -211,7 +211,8 @@ func parse(stream []byte, opts Options) ([]Object, []string, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("document %d: %w", i+1, err)
 		}
-		f := &folder{expanding: map[*yaml.Node]bool{}, budget: maxNodes}
+		f := &folder{expanding: map[*yaml.Node]bool{}, anchors: map[*yaml.Node]bool{}, budget: maxNodes, limit: maxNodes}
+		anchorsOf(&node, f.anchors)
 		doc, err := f.fold(&node)
 		if err != nil {
 			return nil, nil, fmt.Errorf("document %d: %w", i+1, err)
@@ -224,17 +225,12 @@ func parse(stream []byte, opts Options) ([]Object, []string, error) {
 		if kind == "" {
 			continue
 		}
-		if kind == "List" {
-			items, _ := body["items"].([]any)
-			for j, item := range items {
-				if obj, ok := objectOf(item); ok {
-					out = append(out, obj)
-				} else {
-					warnings = append(warnings, fmt.Sprintf("document %d (List): item %d has no kind and is skipped", i+1, j+1))
-				}
-			}
+		if isList(kind) {
+			objs, w := flatten(body, fmt.Sprintf("document %d", i+1))
+			out = append(out, objs...)
+			warnings = append(warnings, w...)
 			for _, d := range f.duplicates {
-				warnings = append(warnings, fmt.Sprintf("document %d (List): %s", i+1, d))
+				warnings = append(warnings, fmt.Sprintf("document %d (%s): %s", i+1, kind, d))
 			}
 			continue
 		}
@@ -244,6 +240,35 @@ func parse(stream []byte, opts Options) ([]Object, []string, error) {
 		}
 		out = append(out, obj)
 	}
+}
+
+// isList is a `kind: List` or a typed list (DeploymentList…): kubectl
+// flattens both, at any depth.
+func isList(kind string) bool {
+	return kind == "List" || (strings.HasSuffix(kind, "List") && len(kind) > 4)
+}
+
+// flatten turns a list document into its objects, lists inside lists
+// included.
+func flatten(body map[string]any, where string) ([]Object, []string) {
+	var out []Object
+	var warnings []string
+	items, _ := body["items"].([]any)
+	for j, item := range items {
+		obj, ok := objectOf(item)
+		if !ok {
+			warnings = append(warnings, fmt.Sprintf("%s (List): item %d has no kind and is skipped", where, j+1))
+			continue
+		}
+		if isList(obj.Kind) {
+			nested, w := flatten(obj.Body, fmt.Sprintf("%s item %d", where, j+1))
+			out = append(out, nested...)
+			warnings = append(warnings, w...)
+			continue
+		}
+		out = append(out, obj)
+	}
+	return out, warnings
 }
 
 func objectOf(raw any) (Object, bool) {
@@ -271,14 +296,84 @@ func objectOf(raw any) (Object, bool) {
 // of eating the memory of the host.
 type folder struct {
 	expanding  map[*yaml.Node]bool
+	anchors    map[*yaml.Node]bool
 	budget     int
+	limit      int
 	duplicates []string
+}
+
+// anchorsOf collects the anchored nodes of one document: an alias may only
+// name one of them (yaml.v2, hence kubectl, scopes anchors to the document;
+// this decoder keeps them for the whole stream).
+func anchorsOf(n *yaml.Node, into map[*yaml.Node]bool) {
+	if n.Anchor != "" {
+		into[n] = true
+	}
+	for _, c := range n.Content {
+		anchorsOf(c, into)
+	}
+}
+
+// mergeSources returns the mappings a merge key applies, in the order
+// yaml.v2 applies them: one mapping, or a sequence walked backwards so its
+// earlier entries win. An alias must name a mapping and a sequence must
+// hold mappings; anything else is refused, as yaml.v2 refuses it.
+func (f *folder) mergeSources(v *yaml.Node) ([]map[string]any, error) {
+	target := v
+	if v.Kind == yaml.AliasNode {
+		target = v.Alias
+		if target.Kind != yaml.MappingNode {
+			return nil, fmt.Errorf("line %d: a merge key (<<) must merge a mapping, *%s is not one", v.Line, v.Value)
+		}
+	}
+	switch target.Kind {
+	case yaml.MappingNode:
+		folded, err := f.fold(v)
+		if err != nil {
+			return nil, err
+		}
+		m, _ := folded.(map[string]any)
+		return []map[string]any{m}, nil
+	case yaml.SequenceNode:
+		out := make([]map[string]any, 0, len(target.Content))
+		for i := len(target.Content) - 1; i >= 0; i-- {
+			item := target.Content[i]
+			resolved := item
+			if item.Kind == yaml.AliasNode {
+				resolved = item.Alias
+			}
+			if resolved.Kind != yaml.MappingNode {
+				return nil, fmt.Errorf("line %d: a merge key (<<) must merge a mapping, entry %d of the list is not one", item.Line, i+1)
+			}
+			folded, err := f.fold(item)
+			if err != nil {
+				return nil, err
+			}
+			m, _ := folded.(map[string]any)
+			out = append(out, m)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("line %d: a merge key (<<) must merge a mapping, got a scalar", v.Line)
+	}
+}
+
+// key reads a mapping key: a scalar, or an alias to one.
+func (f *folder) key(n *yaml.Node) (string, error) {
+	if n.Kind != yaml.AliasNode {
+		return n.Value, nil
+	}
+	v, err := f.fold(n)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprint(v), nil
 }
 
 func (f *folder) fold(n *yaml.Node) (any, error) {
 	f.budget--
 	if f.budget < 0 {
-		return nil, fmt.Errorf("document expands past %d nodes through its aliases — refused (excessive aliasing)", DefaultMaxNodes)
+		return nil, fmt.Errorf("document expands past %d nodes — refused (excessive aliasing, or a stream no render produces)", f.limit)
 	}
 	switch n.Kind {
 	case yaml.DocumentNode:
@@ -287,6 +382,9 @@ func (f *folder) fold(n *yaml.Node) (any, error) {
 		}
 		return f.fold(n.Content[0])
 	case yaml.AliasNode:
+		if !f.anchors[n.Alias] {
+			return nil, fmt.Errorf("line %d: alias *%s names an anchor of another document — kubectl refuses such a stream", n.Line, n.Value)
+		}
 		if f.expanding[n.Alias] {
 			return nil, fmt.Errorf("line %d: alias *%s reaches back into its own anchor", n.Line, n.Value)
 		}
@@ -295,16 +393,30 @@ func (f *folder) fold(n *yaml.Node) (any, error) {
 		delete(f.expanding, n.Alias)
 		return v, err
 	case yaml.MappingNode:
+		// Keys and merge keys are applied in document order and the later
+		// definition wins — the semantics of the yaml.v2 parser kubectl, Helm
+		// and Argo CD apply through (an own key written BEFORE a `<<` is
+		// overridden by it there), not the YAML specification's.
 		m := make(map[string]any, len(n.Content)/2)
 		firstLine := map[string]int{}
-		var merges []*yaml.Node
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			keyNode, valueNode := n.Content[i], n.Content[i+1]
 			if keyNode.Tag == "!!merge" || (keyNode.Value == "<<" && keyNode.Tag == "") {
-				merges = append(merges, valueNode)
+				sources, err := f.mergeSources(valueNode)
+				if err != nil {
+					return nil, err
+				}
+				for _, src := range sources {
+					for k, val := range src {
+						m[k] = val
+					}
+				}
 				continue
 			}
-			key := keyNode.Value
+			key, err := f.key(keyNode)
+			if err != nil {
+				return nil, err
+			}
 			if line, seen := firstLine[key]; seen {
 				f.duplicates = append(f.duplicates, fmt.Sprintf("mapping key %q defined at line %d and again at line %d — the API server keeps the last", key, line, keyNode.Line))
 			} else {
@@ -315,30 +427,6 @@ func (f *folder) fold(n *yaml.Node) (any, error) {
 				return nil, err
 			}
 			m[key] = v
-		}
-		for _, merge := range merges {
-			v, err := f.fold(merge)
-			if err != nil {
-				return nil, err
-			}
-			var sources []any
-			switch s := v.(type) {
-			case []any:
-				sources = s
-			default:
-				sources = []any{v}
-			}
-			for _, src := range sources {
-				sm, ok := src.(map[string]any)
-				if !ok {
-					return nil, fmt.Errorf("line %d: a merge key (<<) must merge a mapping, got %T", merge.Line, src)
-				}
-				for k, val := range sm {
-					if _, present := m[k]; !present {
-						m[k] = val
-					}
-				}
-			}
 		}
 		return m, nil
 	case yaml.SequenceNode:
@@ -367,21 +455,45 @@ type podTemplate struct {
 	kind, name, namespace string
 	labels                map[string]string
 	// assumed are the labels the controller stamps on every pod of this kind
-	// at runtime (pod-template-hash, the job name…): absent from the
+	// at runtime (pod-template-hash, the controller uid…): absent from the
 	// template, present on the pod, so a selector naming them is not dead.
 	assumed map[string]bool
-	spec    map[string]any
+	// perPod are the assumed labels whose value names ONE pod (the
+	// StatefulSet pod name, an ordinal): a literal against them may match
+	// a pod the manifest does not show, so it is unjudged, not dead.
+	perPod map[string]bool
+	spec   map[string]any
 }
 
-// runtimeLabels lists the labels each controller adds to its pods.
+// runtimeLabels lists the labels each controller stamps on its pods with a
+// value no manifest knows: a hash, a uid, a per-pod ordinal. A bare
+// ReplicaSet stamps nothing; an Argo Rollout stamps its own hash, not the
+// Deployment's.
 var runtimeLabels = map[string][]string{
 	"Deployment":  {"pod-template-hash"},
-	"ReplicaSet":  {"pod-template-hash"},
-	"Rollout":     {"pod-template-hash", "rollouts-pod-template-hash"},
+	"Rollout":     {"rollouts-pod-template-hash"},
 	"StatefulSet": {"controller-revision-hash", "statefulset.kubernetes.io/pod-name", "apps.kubernetes.io/pod-index"},
 	"DaemonSet":   {"controller-revision-hash", "pod-template-generation"},
-	"Job":         {"batch.kubernetes.io/job-name", "batch.kubernetes.io/controller-uid", "job-name", "controller-uid"},
+	"Job":         {"batch.kubernetes.io/controller-uid", "controller-uid"},
 	"CronJob":     {"batch.kubernetes.io/job-name", "batch.kubernetes.io/controller-uid", "job-name", "controller-uid"},
+}
+
+// perPodLabels are the runtime labels whose value is a pod's own identity.
+var perPodLabels = map[string][]string{
+	"StatefulSet": {"statefulset.kubernetes.io/pod-name", "apps.kubernetes.io/pod-index"},
+}
+
+// completionIndexLabel is stamped on the pods of an Indexed Job only.
+const completionIndexLabel = "batch.kubernetes.io/job-completion-index"
+
+// knownLabels are the labels a controller stamps with a value the manifest
+// does know: a Job names its pods after itself (a CronJob's jobs carry a
+// generated name, opaque above).
+func knownLabels(doc Object) map[string]string {
+	if doc.Kind != "Job" {
+		return nil
+	}
+	return map[string]string{"batch.kubernetes.io/job-name": doc.Name, "job-name": doc.Name}
 }
 
 // templateOf extracts the pod template of the kinds that carry one.
@@ -395,8 +507,8 @@ func templateOf(doc Object) (podTemplate, bool) {
 		tpl, _ = spec["template"].(map[string]any)
 	case "CronJob":
 		jobTemplate, _ := spec["jobTemplate"].(map[string]any)
-		jobSpec, _ := jobTemplate["spec"].(map[string]any)
-		tpl, _ = jobSpec["template"].(map[string]any)
+		spec, _ = jobTemplate["spec"].(map[string]any)
+		tpl, _ = spec["template"].(map[string]any)
 	default:
 		return podTemplate{}, false
 	}
@@ -409,12 +521,27 @@ func templateOf(doc Object) (podTemplate, bool) {
 	for _, k := range runtimeLabels[doc.Kind] {
 		assumed[k] = true
 	}
+	perPod := map[string]bool{}
+	for _, k := range perPodLabels[doc.Kind] {
+		assumed[k], perPod[k] = true, true
+	}
+	if (doc.Kind == "Job" || doc.Kind == "CronJob") && spec["completionMode"] == "Indexed" {
+		assumed[completionIndexLabel], perPod[completionIndexLabel] = true, true
+	}
+	labels := stringMap(meta["labels"])
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	for k, v := range knownLabels(doc) {
+		labels[k] = v
+	}
 	return podTemplate{
 		kind:      doc.Kind,
 		name:      doc.Name,
 		namespace: doc.Namespace,
-		labels:    stringMap(meta["labels"]),
+		labels:    labels,
 		assumed:   assumed,
+		perPod:    perPod,
 		spec:      podSpec,
 	}, true
 }
@@ -511,6 +638,13 @@ func judgeTerm(t podTemplate, all []podTemplate, site string, raw any, anti bool
 		return nil
 	}
 	report.Judged++
+	if key, ok := sel.literalOnPerPod(namespaceOf(all, t.namespace)); ok {
+		report.Findings = append(report.Findings, Finding{
+			Kind: t.kind, Name: t.name, Namespace: t.namespace, Site: site,
+			Selector: sel.String(), Verdict: Unjudged, Detail: perPodDetail(key),
+		})
+		return nil
+	}
 	if matched := peersMatching(sel, t, all, true); len(matched) > 0 {
 		return nil
 	}
@@ -531,6 +665,11 @@ func judgeOwn(t podTemplate, all []podTemplate, site string, sel selector, repor
 		return
 	}
 	finding := Finding{Kind: t.kind, Name: t.name, Namespace: t.namespace, Site: site, Selector: sel.String()}
+	if key, ok := sel.literalOnPerPod([]podTemplate{t}); ok {
+		finding.Verdict, finding.Detail = Unjudged, perPodDetail(key)
+		report.Findings = append(report.Findings, finding)
+		return
+	}
 	if others := peersMatching(sel, t, all, false); len(others) > 0 {
 		finding.Verdict = CrossWorkload
 		finding.Detail = "matches " + strings.Join(others, ", ") + " but none of its own pods"
@@ -539,7 +678,7 @@ func judgeOwn(t podTemplate, all []podTemplate, site string, sel selector, repor
 	}
 	finding.Verdict = Dead
 	finding.DeadKeys = sel.failing(t.labels, t.assumed)
-	finding.Detail = carried(t.labels, finding.DeadKeys)
+	finding.Detail = carried(t.labels, t.assumed, finding.DeadKeys)
 	report.Findings = append(report.Findings, finding)
 }
 
@@ -552,6 +691,13 @@ func judgePDB(p Object, all []podTemplate, report *Report) error {
 		return fmt.Errorf("PodDisruptionBudget %s: spec.selector: %w", p.Name, err)
 	}
 	report.Judged++
+	if key, ok := sel.literalOnPerPod(namespaceOf(all, p.Namespace)); ok {
+		report.Findings = append(report.Findings, Finding{
+			Kind: p.Kind, Name: p.Name, Namespace: p.Namespace, Site: "spec.selector",
+			Selector: sel.String(), Verdict: Unjudged, Detail: perPodDetail(key),
+		})
+		return nil
+	}
 	var dead []string
 	first := true
 	for _, t := range all {
@@ -609,6 +755,44 @@ func peersMatching(sel selector, t podTemplate, all []podTemplate, self bool) []
 	return out
 }
 
+// namespaceOf keeps the templates of one namespace.
+func namespaceOf(all []podTemplate, namespace string) []podTemplate {
+	var out []podTemplate
+	for _, p := range all {
+		if p.namespace == namespace {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func perPodDetail(key string) string {
+	return fmt.Sprintf("%s names one pod at runtime: a literal against it cannot be judged from the manifests", key)
+}
+
+// literalOnPerPod reports the first key the selector pins to a literal (an
+// equality or an In) that one of the templates stamps per pod at runtime.
+func (s selector) literalOnPerPod(templates []podTemplate) (string, bool) {
+	keys := make([]string, 0, len(s.labels))
+	for k := range s.labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, r := range s.exprs {
+		if r.operator == "In" {
+			keys = append(keys, r.key)
+		}
+	}
+	for _, k := range keys {
+		for _, t := range templates {
+			if t.perPod[k] {
+				return k, true
+			}
+		}
+	}
+	return "", false
+}
+
 func countNamespace(all []podTemplate, namespace string) int {
 	n := 0
 	for _, p := range all {
@@ -620,11 +804,13 @@ func countNamespace(all []podTemplate, namespace string) int {
 }
 
 // carried says what the pods carry for the dead keys.
-func carried(labels map[string]string, keys []string) string {
+func carried(labels map[string]string, assumed map[string]bool, keys []string) string {
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		if v, ok := labels[k]; ok {
 			parts = append(parts, fmt.Sprintf("the pods carry %s=%s", k, v))
+		} else if assumed[k] {
+			parts = append(parts, fmt.Sprintf("%s is stamped at runtime, a literal value cannot match it", k))
 		} else {
 			parts = append(parts, fmt.Sprintf("the pods carry no %s label", k))
 		}
@@ -710,9 +896,10 @@ func (s selector) matches(labels map[string]string, assumed map[string]bool) boo
 
 // failing lists the keys of the requirements the labels do not satisfy,
 // matchLabels first, then the expressions in their order. A key the
-// controller stamps on every pod at runtime (assumed) is present with an
-// unknown value: it satisfies Exists, In, NotIn and an equality, never
-// DoesNotExist.
+// controller stamps on every pod at runtime (assumed) is present with a
+// value no manifest knows: it satisfies Exists and NotIn, never
+// DoesNotExist — and a literal written against it (an equality, an In) is
+// a stale hash, dead at runtime.
 func (s selector) failing(labels map[string]string, assumed map[string]bool) []string {
 	var out []string
 	keys := make([]string, 0, len(s.labels))
@@ -721,11 +908,7 @@ func (s selector) failing(labels map[string]string, assumed map[string]bool) []s
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		v, ok := labels[k]
-		switch {
-		case ok && v != s.labels[k]:
-			out = append(out, k)
-		case !ok && !assumed[k]:
+		if v, ok := labels[k]; !ok || v != s.labels[k] {
 			out = append(out, k)
 		}
 	}
@@ -734,7 +917,7 @@ func (s selector) failing(labels map[string]string, assumed map[string]bool) []s
 		holds := false
 		switch r.operator {
 		case "In":
-			holds = (ok && contains(r.values, v)) || (!ok && assumed[r.key])
+			holds = ok && contains(r.values, v)
 		case "NotIn":
 			holds = !ok || !contains(r.values, v)
 		case "Exists":

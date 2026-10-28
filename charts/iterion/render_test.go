@@ -168,6 +168,17 @@ func sameLabels(got map[string]string, want map[string]string) bool {
 
 // judgeClean runs the dead-selector gate over a render and fails on any
 // dead selector; it also refuses a render where nothing was judged.
+// valuesFile writes an operator-shaped values file: the one place where
+// `{}`, `[]` and null survive as written (sprig and --set read them away).
+func valuesFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func judgeClean(t *testing.T, stream string, minJudged int) {
 	t.Helper()
 	report, err := rendergate.JudgeWithOptions([]byte(stream), rendergate.Options{DefaultNamespace: renderNamespace})
@@ -318,6 +329,23 @@ func TestChartRenderScheduling(t *testing.T) {
 		}
 	})
 
+	t.Run("a pool that spells an empty nodeSelector or tolerations sheds the runner's", func(t *testing.T) {
+		// The block as written, even empty: sprig default reads {} and []
+		// as absent, and a sovereign pool meant for its own nodes would keep
+		// the fleet's selector and the tolerations that admit it to the
+		// runner's tainted nodes.
+		values := valuesFile(t, "runner:\n  nodeSelector: {workload: general}\n  tolerations: [{key: general, operator: Exists, effect: NoSchedule}]\nrunnerPools:\n  - name: sovereign\n    gateway: {baseUrl: https://gateway.sovereign.example, existingSecret: iterion-pool-sovereign-gateway}\n    nodeSelector: {}\n    tolerations: []\n  - name: shared\n    gateway: {baseUrl: https://gateway.shared.example, existingSecret: iterion-pool-shared-gateway}\n")
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", values))
+		sovereign := podSpec(t, docs, "Deployment", "iterion-runner-pool-sovereign")
+		if sovereign["nodeSelector"] != nil || sovereign["tolerations"] != nil {
+			t.Errorf("an empty block must opt out, got nodeSelector=%v tolerations=%v", sovereign["nodeSelector"], sovereign["tolerations"])
+		}
+		shared := podSpec(t, docs, "Deployment", "iterion-runner-pool-shared")
+		if tolerations, _ := shared["tolerations"].([]any); dig(shared, "nodeSelector", "workload") != "general" || len(tolerations) != 1 {
+			t.Errorf("a pool that spells nothing inherits, got nodeSelector=%v tolerations=%v", shared["nodeSelector"], shared["tolerations"])
+		}
+	})
+
 	t.Run("a pool inherits the runner's placement and merges its own over it", func(t *testing.T) {
 		runnerNode := `{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"pool","operator":"In","values":["platform"]}]}]}}}`
 		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", "testdata/values-pools.yaml",
@@ -383,6 +411,21 @@ func TestChartRenderScheduling(t *testing.T) {
 		docs = manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "server.pdb.maxUnavailable=0"))
 		if pdb := must(t, docs, "PodDisruptionBudget", "iterion-server"); fmt.Sprint(dig(pdb, "spec", "maxUnavailable")) != "0" || dig(pdb, "spec", "minAvailable") != nil {
 			t.Errorf("maxUnavailable 0 must render 0, got %v", pdb["spec"])
+		}
+		// "" and null are unset: the budget falls back to minAvailable 1,
+		// never to an EMPTY budget — a PDB with neither field lets the
+		// disruption controller evict every pod.
+		docs = manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set-json", `server.pdb.minAvailable=""`))
+		if pdb := must(t, docs, "PodDisruptionBudget", "iterion-server"); fmt.Sprint(dig(pdb, "spec", "minAvailable")) != "1" || dig(pdb, "spec", "maxUnavailable") != nil {
+			t.Errorf(`minAvailable "" must fall back to 1, got %v`, pdb["spec"])
+		}
+		pools := valuesFile(t, "runner:\n  pdb:\n    maxUnavailable: 1\nrunnerPools:\n  - name: pminempty\n    replicas: 2\n    gateway: {baseUrl: https://gateway.example, existingSecret: iterion-pool-gateway}\n    pdb: {minAvailable: \"\"}\n  - name: pmaxnull\n    replicas: 2\n    gateway: {baseUrl: https://gateway.example, existingSecret: iterion-pool-gateway}\n    pdb: {minAvailable: 2, maxUnavailable: null}\n")
+		docs = manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", pools))
+		if pdb := must(t, docs, "PodDisruptionBudget", "iterion-runner-pool-pminempty"); fmt.Sprint(dig(pdb, "spec", "maxUnavailable")) != "1" || dig(pdb, "spec", "minAvailable") != nil {
+			t.Errorf("a pool's empty minAvailable keeps the runner's maxUnavailable, got %v", pdb["spec"])
+		}
+		if pdb := must(t, docs, "PodDisruptionBudget", "iterion-runner-pool-pmaxnull"); fmt.Sprint(dig(pdb, "spec", "minAvailable")) != "2" || dig(pdb, "spec", "maxUnavailable") != nil {
+			t.Errorf("a pool's null maxUnavailable is unset and its minAvailable 2 stands, got %v", pdb["spec"])
 		}
 	})
 
@@ -482,6 +525,16 @@ func TestChartRenderDatastoreAlerts(t *testing.T) {
 	if len(rules) == 0 {
 		t.Fatal("no iterion.datastores group in the render")
 	}
+
+	t.Run("a match or a selector PromQL cannot read is refused at render", func(t *testing.T) {
+		// Prometheus drops the WHOLE rule file on one unparsable expression:
+		// an unanchored RE2 fragment and PromQL's own string escapes only.
+		mustRefuse(t, "must not be anchored", append(base, "--set", `metrics.prometheusRule.datastores.statefulsets[0].match=^.*-mongodb$`)...)
+		mustRefuse(t, "missing closing", append(base, "--set", `metrics.prometheusRule.datastores.statefulsets[0].match=.*-mongodb(`)...)
+		mustRefuse(t, "backslash PromQL cannot read", append(base, "--set-json", `metrics.prometheusRule.datastores.mongodb.selector="pod=~\"mongo-\\d+\""`)...)
+		// The escapes PromQL knows pass: a regex escape written twice.
+		mustRender(t, append(base, "--set-json", `metrics.prometheusRule.datastores.mongodb.selector="pod=~\"mongo-\\\\d+\""`)...)
+	})
 
 	t.Run("one replica rule and one restart rule per store", func(t *testing.T) {
 		for _, store := range []string{"mongodb", "nats", "valkeyha", "valkeyfiler", "seaweedfs"} {
@@ -698,7 +751,11 @@ func TestChartRenderBackup(t *testing.T) {
 			// counter (1 forever after a retried-then-green Job), not a retained
 			// failed Job (pages after the copy has recovered).
 			failed := rule(rules, "IterionArtifactBackupFailed", map[string]string{"tier": tier})
-			want := fmt.Sprintf(`(kube_cronjob_status_last_schedule_time{namespace="iterion", cronjob="iterion-backup-%s"} > kube_cronjob_status_last_successful_time{namespace="iterion", cronjob="iterion-backup-%s"}) and on(namespace, cronjob) (kube_cronjob_status_active{namespace="iterion", cronjob="iterion-backup-%s"} == 0)`, tier, tier, tier)
+			// A tier that never ran green has no last_successful series: the
+			// `unless` branch pages its failed first run (the base rule on
+			// kube_job_status_failed did; a `>` alone matches nothing).
+			m := fmt.Sprintf(`{namespace="iterion", cronjob="iterion-backup-%s"}`, tier)
+			want := fmt.Sprintf(`((kube_cronjob_status_last_schedule_time%s > kube_cronjob_status_last_successful_time%s) or on(namespace, cronjob) (kube_cronjob_status_last_schedule_time%s unless on(namespace, cronjob) kube_cronjob_status_last_successful_time%s)) and on(namespace, cronjob) (kube_cronjob_status_active%s == 0)`, m, m, m, m, m)
 			if failed == nil || fmt.Sprint(failed["expr"]) != want {
 				t.Errorf("failed rule for %s = %v, want expr %s", tier, failed, want)
 			}
@@ -930,31 +987,87 @@ func TestChartRenderDevStack(t *testing.T) {
 		}
 	})
 
-	t.Run("the NetworkPolicy never selects the dev stores", func(t *testing.T) {
+	t.Run("the NetworkPolicy keeps the dev stores out, and a second one admits the app pods to them", func(t *testing.T) {
 		docs := manifests(t, mustRender(t, "-f", "values-dev.yaml", "--set", "networkPolicy.enabled=true"))
-		policy := must(t, docs, "NetworkPolicy", "iterion")
-		selector := dig(policy, "spec", "podSelector")
-		for component, labels := range map[string]map[string]string{
-			"dev-mongodb":        {"app.kubernetes.io/name": "iterion", "app.kubernetes.io/instance": "iterion", "app.kubernetes.io/component": "dev-mongodb"},
-			"dev-seaweedfs":      {"app.kubernetes.io/name": "iterion", "app.kubernetes.io/instance": "iterion", "app.kubernetes.io/component": "dev-seaweedfs"},
-			"dev-seaweedfs-init": {"app.kubernetes.io/name": "iterion", "app.kubernetes.io/instance": "iterion", "app.kubernetes.io/component": "dev-seaweedfs-init"},
-		} {
+		// The labels come from the rendered pod templates, never typed by
+		// hand: a renamed component moves with them.
+		podLabels := func(name string) map[string]string {
+			return stringMap(dig(must(t, docs, "Deployment", name), "spec", "template", "metadata", "labels"))
+		}
+		stores := map[string]map[string]string{"mongodb": podLabels("iterion-mongodb"), "seaweedfs": podLabels("iterion-seaweedfs")}
+		apps := map[string]map[string]string{"server": podLabels("iterion"), "runner": podLabels("iterion-runner")}
+		matches := func(selector any, labels map[string]string) bool {
 			matched, err := rendergate.SelectorMatches(selector, labels)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if matched {
-				t.Errorf("the NetworkPolicy selects the %s pods: their ports would be closed to the app pods", component)
+			return matched
+		}
+		appSel := dig(must(t, docs, "NetworkPolicy", "iterion"), "spec", "podSelector")
+		guard := must(t, docs, "NetworkPolicy", "iterion-dev-stores")
+		storeSel := dig(guard, "spec", "podSelector")
+		ingress, _ := dig(guard, "spec", "ingress").([]any)
+		if len(ingress) != 1 || fmt.Sprint(dig(guard, "spec", "policyTypes")) != "[Ingress]" {
+			t.Fatalf("the stores policy is one ingress rule, egress open, got %v", guard["spec"])
+		}
+		from, _ := dig(ingress[0], "from").([]any)
+		if len(from) != 1 {
+			t.Fatalf("the stores policy admits one peer selector, got %v", from)
+		}
+		fromSel := dig(from[0], "podSelector")
+		for name, labels := range stores {
+			if matches(appSel, labels) {
+				t.Errorf("the app policy selects the %s store: its ports would be closed to the app pods", name)
+			}
+			if !matches(storeSel, labels) {
+				t.Errorf("the stores policy must select the %s store", name)
+			}
+			if matches(fromSel, labels) {
+				t.Errorf("the stores policy admits the %s store as a client", name)
 			}
 		}
-		for _, component := range []string{"server", "runner", "runner-pool", "backup"} {
-			matched, err := rendergate.SelectorMatches(selector, map[string]string{"app.kubernetes.io/name": "iterion", "app.kubernetes.io/instance": "iterion", "app.kubernetes.io/component": component})
-			if err != nil {
-				t.Fatal(err)
+		for name, labels := range apps {
+			if !matches(appSel, labels) {
+				t.Errorf("the app policy must select the %s pods", name)
 			}
-			if !matched {
-				t.Errorf("the NetworkPolicy must still select the %s pods", component)
+			if matches(storeSel, labels) {
+				t.Errorf("the stores policy selects the %s pods", name)
 			}
+			if !matches(fromSel, labels) {
+				t.Errorf("the stores policy must admit the %s pods", name)
+			}
+		}
+		ports := map[string]bool{}
+		if list, _ := dig(ingress[0], "ports").([]any); true {
+			for _, p := range list {
+				ports[fmt.Sprint(dig(p, "port"))] = true
+			}
+		}
+		if len(ports) != 2 || !ports["27017"] || !ports["8333"] {
+			t.Errorf("the stores policy admits 27017 and 8333 only, got %v", ports)
+		}
+		prod := manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "networkPolicy.enabled=true"))
+		if find(prod, "NetworkPolicy", "iterion-dev-stores") != nil {
+			t.Errorf("production renders a dev-stores policy")
+		}
+	})
+
+	t.Run("a long fullnameOverride keeps the stores' names apart from the server's", func(t *testing.T) {
+		// Cut after the suffix, three Deployments and three Services would
+		// share one name and the Mongo URI would dial the server.
+		over := strings.Repeat("f", 63)
+		stream := mustRender(t, "-f", "values-dev.yaml", "--set", "fullnameOverride="+over)
+		docs := manifests(t, stream)
+		mongo, seaweed := strings.Repeat("f", 55)+"-mongodb", strings.Repeat("f", 53)+"-seaweedfs"
+		for _, kind := range []string{"Deployment", "Service"} {
+			for _, name := range []string{over, mongo, seaweed} {
+				if find(docs, kind, name) == nil {
+					t.Errorf("no %s %s", kind, name)
+				}
+			}
+		}
+		if !strings.Contains(stream, "mongodb://"+mongo+":27017") {
+			t.Errorf("the Mongo URI must dial the store's own Service")
 		}
 	})
 

@@ -3,6 +3,7 @@ package chart_test
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,5 +183,79 @@ func TestChartCheckDepsNeverPrunesOnARealHelmFailure(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "nothing was removed") {
 		t.Fatalf("the failure must say nothing was removed, got\n%s", out)
+	}
+}
+
+func exitCode(err error) int {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	if err != nil {
+		return -1
+	}
+	return 0
+}
+
+// The listing every caller shares: `--missing` names the declared
+// dependencies not in place and touches nothing — helm's padding, its
+// trailing blank line and its WARNING lines are not dependencies, and a
+// listing helm cannot read is a failure, never an empty list.
+func TestChartCheckDepsMissingModeFeedsTheRenderDiff(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		if os.Getenv("ITERION_CHART_RENDER_REQUIRE") == "1" {
+			t.Fatalf("helm is required here (ITERION_CHART_RENDER_REQUIRE=1) and not in PATH: %v", err)
+		}
+		t.Skipf("helm not in PATH (%v) — this test runs under `task chart:check`", err)
+	}
+	script, err := filepath.Abs(filepath.Join("..", "..", "scripts", "chart-check-deps.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	chart := filepath.Join(root, "chart")
+	if err := os.MkdirAll(filepath.Join(chart, "charts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The scratch archive carries version 0.0.1: declared as such, helm
+	// reports it ok; a wrong version would be a missing dependency too.
+	chartYAML := "apiVersion: v2\nname: scratch\nversion: 0.0.1\ndependencies:\n  - name: nats\n    version: 0.0.1\n    repository: https://example.invalid\n"
+	if err := os.WriteFile(filepath.Join(chart, "Chart.yaml"), []byte(chartYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := func() (string, int) {
+		cmd := exec.Command("sh", script, "--missing", chart)
+		cmd.Env = append(os.Environ(), "HOME="+root)
+		out, err := cmd.CombinedOutput()
+		return string(out), exitCode(err)
+	}
+	writeChartArchive(t, chart, "nats-2.14.6.tgz", "nats")
+	if out, code := missing(); code != 0 || strings.TrimSpace(out) != "" {
+		t.Fatalf("archive in place: nothing is missing, got exit %d\n%s", code, out)
+	}
+	if err := os.Remove(filepath.Join(chart, "charts", "nats-2.14.6.tgz")); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := missing(); code != 0 || !strings.Contains(out, "nats (missing)") {
+		t.Fatalf("archive gone: nats (missing) expected, got exit %d\n%s", code, out)
+	}
+	writeChartArchive(t, chart, "nats-2.14.6.tgz", "nats")
+	if err := os.WriteFile(filepath.Join(chart, "charts", "junk-1.0.0.tgz"), []byte("not an archive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := missing(); code == 0 {
+		t.Fatalf("a listing helm cannot read must fail, got exit 0\n%s", out)
+	}
+	// The render diff asks that listing before rendering a side: on the real
+	// chart it diffs (0 or 1), it never trips on the listing (2).
+	diff, err := filepath.Abs(filepath.Join("..", "..", "scripts", "chart-render-diff.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", diff, "HEAD")
+	cmd.Dir = filepath.Dir(filepath.Dir(diff))
+	out, err := cmd.CombinedOutput()
+	if code := exitCode(err); code != 0 && code != 1 {
+		t.Fatalf("chart-render-diff on the real chart: exit %d\n%s", code, out)
 	}
 }

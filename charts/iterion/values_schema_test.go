@@ -79,7 +79,7 @@ func TestValuesSchemaMatchesTemplates(t *testing.T) {
 			t.Errorf("retired key %q is consumed again — drop it from the retired set", key)
 		}
 	}
-	for _, off := range []map[string]any{{"minio": map[string]any{"enabled": false}}, {"mongodb": map[string]any{"enabled": false}}, {"mongodb": map[string]any{}}} {
+	for _, off := range []map[string]any{{"minio": map[string]any{"enabled": false}}, {"mongodb": map[string]any{"enabled": false}}, {"mongodb": map[string]any{}}, {"mongodb": nil}, {"minio": nil}} {
 		if err := resolved.Validate(off); err != nil {
 			t.Errorf("the off form of a retired sub-chart must keep rendering: %v: %v", off, err)
 		}

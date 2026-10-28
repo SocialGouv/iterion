@@ -58,7 +58,7 @@ groups:
 | `backup` | The off-cluster copy of the artifact bucket: one rclone CronJob per tier (daily `sync` keeping deletions, weekly and monthly `snapshot`s), image pinned by digest, destination credentials by `existingSecret` only, every run checked — [docs/cloud-backup.md](../../docs/cloud-backup.md#blob-backup) |
 | `persistence` | local-mode PVC only |
 | `nats` | The one sub-chart (the official NATS chart), dev only |
-| `devStack` | The chart's own single-replica dev stores at the digests of docker-compose.cloud.yml — `mongodb` (a one-member replica set, **no auth: dev only**) and `seaweedfs` (the production object store in one process, a fixed identity, the bucket created by a pinned rclone hook); `values-dev.yaml` turns them on and `config.mongo.uri` / `config.s3.endpoint` resolve to them when empty |
+| `devStack` | The chart's own single-replica dev stores at the digests of docker-compose.cloud.yml — `mongodb` (a one-member replica set, **no auth: dev only**) and `seaweedfs` (the production object store in one process, a fixed identity, the bucket created by the pod itself at start); `values-dev.yaml` turns them on and `config.mongo.uri` / `config.s3.endpoint` resolve to them when empty |
 
 ## Upgrade notes
 
@@ -92,7 +92,7 @@ groups:
   sub-charts are gone with their `mongodb.*` / `minio.*` values (frozen
   `bitnamilegacy/*` images, no security updates): the dev stack is now the
   chart's own `devStack.*` — Mongo 8.3 and SeaweedFS 4.48, both pinned by
-  digest, the bucket created by a pinned rclone hook. A values file that
+  digest, the bucket created by the pod itself at start. A values file that
   only turned them off (`mongodb.enabled: false`, `minio.enabled: false` —
   every production values file did) keeps rendering; one that enabled or
   configured them is refused by the schema. Point `config.mongo.uri` /

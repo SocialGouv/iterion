@@ -11,8 +11,14 @@
 # never do is remove a DECLARED archive: a listing it could not read is a
 # failure of the check, never an empty list.
 # Usage: scripts/chart-check-deps.sh <chart dir>
+#        scripts/chart-check-deps.sh --missing <chart dir>
+#          prints the declared dependencies not in place, one `name (status)`
+#          per line, and touches nothing — the one listing every caller
+#          shares (chart-render-diff.sh asks it before rendering a side).
 set -eu
-chart=${1:?usage: chart-check-deps.sh <chart dir>}
+mode=reconcile
+if [ "${1:-}" = "--missing" ]; then mode=missing; shift; fi
+chart=${1:?usage: chart-check-deps.sh [--missing] <chart dir>}
 [ -f "$chart/Chart.yaml" ] || { echo "chart-check-deps: no Chart.yaml in $chart" >&2; exit 2; }
 command -v helm >/dev/null 2>&1 || { echo "chart-check-deps: helm is not on PATH (run under devbox)" >&2; exit 2; }
 # NAME, VERSION, REPOSITORY and STATUS are tab-separated and space-padded; an
@@ -27,6 +33,10 @@ dependency_list() {
   printf '%s\n' "$out" | tr -d '\r' | awk -F'\t' 'NF>=4 && $1 !~ /^WARNING/ {name=$1; status=$4; gsub(/^ +| +$/, "", name); gsub(/^ +| +$/, "", status); if (name != "" && name != "NAME") print name "\t" status}'
 }
 listing=$(dependency_list) || exit 1
+if [ "$mode" = missing ]; then
+  printf '%s\n' "$listing" | awk -F'\t' '$1 != "" && $2 != "ok" {print $1 " (" $2 ")"}'
+  exit 0
+fi
 declared=$(printf '%s\n' "$listing" | cut -f1 | tr '\n' ' ')
 # An unpacked sub-chart DIRECTORY is rendered by helm too; this check removes
 # no directory — it refuses, and the operator decides.

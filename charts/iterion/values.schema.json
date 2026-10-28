@@ -49,8 +49,8 @@
       "type": "object"
     },
     "minio": {
-      "type": "object",
-      "description": "Retired sub-chart (4.4): accepted only in its off form so a values file that merely disabled it keeps rendering; anything else is refused.",
+      "type": ["object", "null"],
+      "description": "Retired sub-chart (4.4): accepted only in its off form (an empty, disabled or nulled block) so a values file that merely disabled it keeps rendering; anything else is refused.",
       "properties": {
         "enabled": {
           "const": false
@@ -66,8 +66,8 @@
       ]
     },
     "mongodb": {
-      "type": "object",
-      "description": "Retired sub-chart (4.4): accepted only in its off form so a values file that merely disabled it keeps rendering; anything else is refused.",
+      "type": ["object", "null"],
+      "description": "Retired sub-chart (4.4): accepted only in its off form (an empty, disabled or nulled block) so a values file that merely disabled it keeps rendering; anything else is refused.",
       "properties": {
         "enabled": {
           "const": false

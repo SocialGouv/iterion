@@ -250,12 +250,16 @@ spec:
         - name: run-iterion
           emptyDir:
             medium: Memory
-      {{- /* The pool inherits the runner's placement knobs and overrides each key by key: nodeSelector and tolerations as wholes, affinity and scheduling deep-merged; the pool label joins the selector so each pool spreads its OWN replicas. */ -}}
-      {{- with ($pool.nodeSelector | default $.Values.runner.nodeSelector) }}
+      {{- /* The pool inherits the runner's placement knobs: nodeSelector and tolerations as wholes — a pool's own block, even empty, replaces the runner's (hasKey, not sprig default: default reads an empty block as absent, and a sovereign pool could never shed the fleet's selector or its tolerations); affinity and scheduling deep-merged key by key; the pool label joins the selector so each pool spreads its OWN replicas. */ -}}
+      {{- $nodeSelector := $.Values.runner.nodeSelector }}
+      {{- if hasKey $pool "nodeSelector" }}{{ $nodeSelector = $pool.nodeSelector }}{{ end }}
+      {{- with $nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with ($pool.tolerations | default $.Values.runner.tolerations) }}
+      {{- $tolerations := $.Values.runner.tolerations }}
+      {{- if hasKey $pool "tolerations" }}{{ $tolerations = $pool.tolerations }}{{ end }}
+      {{- with $tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

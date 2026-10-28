@@ -392,14 +392,60 @@ func TestMergeKeysAreFoldedLikeYAMLDefines(t *testing.T) {
 	if report := judge(t, deadViaMerge); len(report.Dead()) != 1 {
 		t.Fatalf("a dead term behind << must be found, got %+v", report.Findings)
 	}
-	// The mapping's own key wins over the merged one, whatever the order.
-	docs, _, err := rendergate.Parse([]byte("kind: ConfigMap\nmetadata:\n  name: c\ndata:\n  <<: {a: merged, b: merged}\n  a: own\n"))
+	// Document order, the later definition wins — the yaml.v2 semantics
+	// kubectl and Helm apply through (not the YAML specification's).
+	docs, _, err := rendergate.Parse([]byte("kind: ConfigMap\nmetadata:\n  name: c\ndata:\n  <<: {a: merged, b: merged}\n  a: own\n---\nkind: ConfigMap\nmetadata:\n  name: d\ndata:\n  a: own\n  <<: {a: merged}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	data, _ := docs[0].Body["data"].(map[string]any)
 	if data["a"] != "own" || data["b"] != "merged" {
-		t.Errorf("merge precedence: got %v", data)
+		t.Errorf("own key after the merge wins: got %v", data)
+	}
+	data, _ = docs[1].Body["data"].(map[string]any)
+	if data["a"] != "merged" {
+		t.Errorf("a merge after the own key overrides it, as yaml.v2 does: got %v", data)
+	}
+	// A list of mappings: the earlier entry wins (yaml.v2 walks it
+	// backwards), and the whole merge overrides an own key written before.
+	docs, _, err = rendergate.Parse([]byte("kind: ConfigMap\nmetadata:\n  name: c\ndata:\n  a: own\n  <<: [{a: first, b: first}, {a: second, c: second}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := docs[0].Body["data"].(map[string]any); data["a"] != "first" || data["b"] != "first" || data["c"] != "second" {
+		t.Errorf("list merge: got %v", data)
+	}
+	// An alias to a sequence is not a mapping: refused, as yaml.v2 does.
+	if _, _, err = rendergate.Parse([]byte("kind: ConfigMap\nmetadata:\n  name: c\ndata:\n  l: &l [{a: x}]\n  m:\n    <<: *l\n")); err == nil || !strings.Contains(err.Error(), "must merge a mapping") {
+		t.Errorf("an alias to a sequence must be refused, got %v", err)
+	}
+	// An alias into ANOTHER document: kubectl refuses the stream.
+	if _, _, err = rendergate.Parse([]byte("kind: ConfigMap\nmetadata:\n  name: c\ndata: &d {a: x}\n---\nkind: ConfigMap\nmetadata:\n  name: e\ndata: *d\n")); err == nil || !strings.Contains(err.Error(), "another document") {
+		t.Errorf("an alias across documents must be refused, got %v", err)
+	}
+	// An alias as a KEY names what it aliases, not the anchor.
+	docs, _, err = rendergate.Parse([]byte("kind: ConfigMap\nmetadata:\n  name: c\ndata:\n  k: &k app\n  *k : web\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := docs[0].Body["data"].(map[string]any); data["app"] != "web" {
+		t.Errorf("alias key: got %v", data)
+	}
+}
+
+func TestNodeBudgetNamesTheBoundInForce(t *testing.T) {
+	_, err := rendergate.JudgeWithOptions([]byte(valkeyha("valkey")), rendergate.Options{MaxNodes: 10})
+	if err == nil || !strings.Contains(err.Error(), "past 10 nodes") {
+		t.Fatalf("the budget error names the bound in force, got %v", err)
+	}
+}
+
+func TestNestedAndTypedListsAreFlattened(t *testing.T) {
+	inner := strings.ReplaceAll(strings.TrimPrefix(valkeyha("valkey"), "\n"), "\n", "\n        ")
+	nested := "apiVersion: v1\nkind: List\nitems:\n  - apiVersion: apps/v1\n    kind: StatefulSetList\n    items:\n      - " + strings.TrimSpace(inner) + "\n"
+	report := judge(t, nested)
+	if len(report.Dead()) != 1 || report.PodTemplates != 1 {
+		t.Fatalf("a StatefulSet two lists deep must be judged, got %+v", report)
 	}
 }
 
@@ -427,10 +473,52 @@ func TestControllerAddedLabelsAreNotDead(t *testing.T) {
 	if report := judge(t, jobName); len(report.Findings) != 0 {
 		t.Fatalf("the job name label is stamped on every Job pod, got %+v", report.Findings)
 	}
+	// A CronJob's jobs carry a generated name: a literal job-name is dead.
+	cronName := "apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: c\nspec:\n  schedule: '* * * * *'\n  jobTemplate:\n    spec:\n      template:\n        metadata:\n          labels:\n            app: c\n        spec:\n          affinity:\n            podAntiAffinity:\n              requiredDuringSchedulingIgnoredDuringExecution:\n                - topologyKey: kubernetes.io/hostname\n                  labelSelector:\n                    matchLabels:\n                      batch.kubernetes.io/job-name: c\n"
+	if report := judge(t, cronName); len(report.Dead()) != 1 {
+		t.Fatalf("a CronJob's job name is generated, a literal is dead, got %+v", report.Findings)
+	}
 	absent := workload("Deployment", "web", "", map[string]string{"app": "web"},
 		"topologySpreadConstraints:\n  - topologyKey: zone\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchExpressions:\n        - {key: pod-template-hash, operator: DoesNotExist}\n")
 	if report := judge(t, absent); len(report.Dead()) != 1 {
 		t.Fatalf("requiring the runtime label to be absent selects no pod, got %+v", report.Findings)
+	}
+	// A literal against a runtime key is a stale hash: dead, and said so.
+	stale := workload("Deployment", "web", "", map[string]string{"app": "web"},
+		"topologySpreadConstraints:\n  - topologyKey: zone\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchExpressions:\n        - {key: pod-template-hash, operator: In, values: [abc123]}\n")
+	if report := judge(t, stale); len(report.Dead()) != 1 || !strings.Contains(report.Dead()[0].Detail, "stamped at runtime") {
+		t.Fatalf("a literal pod-template-hash is dead, got %+v", report.Findings)
+	}
+	// A bare ReplicaSet's pods carry no pod-template-hash; a Rollout's carry
+	// rollouts-pod-template-hash only.
+	for key, want := range map[string]int{"pod-template-hash": 1, "rollouts-pod-template-hash": 0} {
+		rollout := strings.Replace(workload("Deployment", "web", "", map[string]string{"app": "web"},
+			"topologySpreadConstraints:\n  - topologyKey: zone\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchExpressions:\n        - {key: "+key+", operator: Exists}\n"), "kind: Deployment", "kind: Rollout", 1)
+		if report := judge(t, rollout); len(report.Dead()) != want {
+			t.Fatalf("a Rollout stamps rollouts-pod-template-hash only: %s Exists must give %d dead, got %+v", key, want, report.Findings)
+		}
+	}
+	rs := workload("ReplicaSet", "web", "", map[string]string{"app": "web"},
+		"topologySpreadConstraints:\n  - topologyKey: zone\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchExpressions:\n        - {key: pod-template-hash, operator: Exists}\n")
+	if report := judge(t, rs); len(report.Dead()) != 1 {
+		t.Fatalf("a bare ReplicaSet carries no pod-template-hash, got %+v", report.Findings)
+	}
+	// A literal against a label that names ONE pod may match a pod the
+	// manifests do not show: unjudged, not dead.
+	ordinal := workload("StatefulSet", "db", "", map[string]string{"app": "db"},
+		"affinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      - topologyKey: kubernetes.io/hostname\n        labelSelector:\n          matchLabels:\n            statefulset.kubernetes.io/pod-name: db-0\n")
+	if report := judge(t, ordinal); len(report.Findings) != 1 || report.Findings[0].Verdict != rendergate.Unjudged || len(report.Dead()) != 0 {
+		t.Fatalf("a literal pod name is unjudged, got %+v", report.Findings)
+	}
+	// The completion index exists on the pods of an Indexed Job only.
+	indexed := func(mode string) string {
+		return "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: j\nspec:\n  completionMode: " + mode + "\n  template:\n    metadata:\n      labels:\n        app: j\n    spec:\n      topologySpreadConstraints:\n        - topologyKey: zone\n          maxSkew: 1\n          whenUnsatisfiable: ScheduleAnyway\n          labelSelector:\n            matchExpressions:\n              - {key: batch.kubernetes.io/job-completion-index, operator: Exists}\n"
+	}
+	if report := judge(t, indexed("Indexed")); len(report.Findings) != 0 {
+		t.Fatalf("an Indexed Job stamps the completion index, got %+v", report.Findings)
+	}
+	if report := judge(t, indexed("NonIndexed")); len(report.Dead()) != 1 {
+		t.Fatalf("a NonIndexed Job stamps no completion index, got %+v", report.Findings)
 	}
 	stateful := workload("StatefulSet", "db", "", map[string]string{"app": "db"},
 		"topologySpreadConstraints:\n  - topologyKey: zone\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchExpressions:\n        - {key: controller-revision-hash, operator: Exists}\n")

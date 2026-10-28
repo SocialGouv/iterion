@@ -19,7 +19,6 @@ spec:
         values:
           - dev-mongodb
           - dev-seaweedfs
-          - dev-seaweedfs-init
   policyTypes:
     - Ingress
     - Egress
@@ -55,4 +54,47 @@ spec:
     {{- with .Values.networkPolicy.egress.extraAllow }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+{{- if or ((.Values.devStack).mongodb).enabled ((.Values.devStack).seaweedfs).enabled }}
+---
+# The dev stores answer unsigned on the pod IP (no auth on Mongo, the
+# SeaweedFS master, volume and filer ports): left under no policy they are
+# open to every pod of a shared dev cluster. This one admits the release's
+# app pods on the two ports they dial and nothing else; egress stays open
+# (the stores dial nothing out). The kubelet's probes are host traffic no
+# policy sees.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "iterion.fullname" . }}-dev-stores
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "iterion.selectorLabels" . | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - dev-mongodb
+          - dev-seaweedfs
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "iterion.selectorLabels" . | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: NotIn
+                values:
+                  - dev-mongodb
+                  - dev-seaweedfs
+      ports:
+        - port: 27017
+          protocol: TCP
+        - port: 8333
+          protocol: TCP
+{{- end }}
 {{- end -}}

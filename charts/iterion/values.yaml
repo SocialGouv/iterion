@@ -104,7 +104,8 @@ server:
   # a single replica refuses every eviction and holds a node drain forever;
   # true / false force it either way. One of minAvailable / maxUnavailable
   # (maxUnavailable wins when set; 0 is a value — minAvailable 0 allows
-  # every disruption, maxUnavailable 0 none — "" is unset).
+  # every disruption, maxUnavailable 0 none — "" and null are unset; with
+  # both unset the budget is minAvailable 1, never an empty one).
   pdb:
     enabled: auto
     minAvailable: 1
@@ -296,10 +297,13 @@ runner:
 # image), resources (default runner.resources), podAnnotations,
 # gateway.apiKeySecretKey (default OPENAI_COMPATIBLE_API_KEY), env (literal
 # pod env — the pool's routing dials, ITERION_VIBE_MODEL_* and friends),
-# nodeSelector, tolerations, affinity, scheduling and pdb (each merged over
-# the runner's block key by key; the pool spreads its OWN replicas — its
+# nodeSelector, tolerations, affinity, scheduling and pdb. nodeSelector and
+# tolerations are taken as the pool writes them when it spells the key (an
+# empty block opts out of the runner's), inherited otherwise; affinity,
+# scheduling and pdb are merged over the runner's block key by key (a key
+# set to null clears the runner's). The pool spreads its OWN replicas — its
 # selector carries the pool label — and gets a budget once it is guaranteed
-# more than one replica).
+# more than one replica.
 # Every ITERION_ name in `env` is also rendered into ITERION_BOT_VARS_ENV_PINS:
 # the platform bot-vars record (PUT /api/admin/settings/bot-vars) does not
 # reach a pinned name, so a model pin stored for the shared fleet never

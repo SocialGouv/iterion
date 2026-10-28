@@ -378,8 +378,11 @@ ships the check that found the defect.
   PodDisruptionBudget selector with the labels of its own pods; a selector
   matching none is refused with the workload and the dead key named
   (`internal/rendergate`). The same judge reads ANY rendered stream:
-  `helm template … | task chart:gate` — run it on the GitOps repository's
-  render before pushing an affinity or a budget there. The datastores of
+  `helm template … | task chart:gate -- -namespace <apply namespace>` —
+  the namespace the objects land in (`helm template` writes none into
+  them), so a chart's objects and its sub-charts' are judged together — run
+  it on the GitOps repository's render before pushing an affinity or a
+  budget there. The datastores of
   the cloud deployment (MongoDB, NATS, valkey, SeaweedFS) are other charts:
   their anti-affinity and budgets live in those values, and this gate is
   how a dead one is caught before Argo CD applies it.
