@@ -137,7 +137,7 @@ func RestoreReclaimedWorktree(ctx context.Context, st store.RunStore, run *store
 		if refErr != nil || strings.TrimSpace(base) != run.BaseCommit {
 			return fmt.Errorf("runtime: reclaimed worktree baseline is missing or differs from recorded commit %s", run.BaseCommit)
 		}
-		if _, addErr := runGit(run.RepoRoot, "worktree", "add", "--detach", run.WorkDir, run.BaseCommit); addErr != nil {
+		if _, addErr := runWorktreeCommand(run.RepoRoot, "add", "--detach", run.WorkDir, run.BaseCommit); addErr != nil {
 			return fmt.Errorf("runtime: restore reclaimed worktree: %w", addErr)
 		}
 	} else if err != nil || !info.IsDir() {

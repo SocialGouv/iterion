@@ -85,6 +85,43 @@ func gitCommitMessage(dir, message string) (string, error) {
 	return string(out), err
 }
 
+// lockWorktreeRegistration serializes this process's runtime mutations of
+// one Git worktree registry. Linked checkouts and symlink spellings share
+// the common directory; unrelated repositories keep independent gates.
+// The existing resource gate supplies waiter lifetime and reference cleanup,
+// in a namespace separate from the gates held while a child executes.
+func lockWorktreeRegistration(repoRoot string) (func(), error) {
+	common, err := runGit(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return nil, fmt.Errorf("resolve worktree registry: %w (output: %s)", err, common)
+	}
+	common, err = filepath.EvalSymlinks(strings.TrimSuffix(common, "\n"))
+	if err != nil {
+		return nil, fmt.Errorf("resolve worktree registry path: %w", err)
+	}
+	gate, release := retainResourceGate("git-worktree-registration:" + common)
+	if err := gate.sem.Acquire(context.Background(), resourceWriterWeight); err != nil {
+		release()
+		return nil, err
+	}
+	return func() {
+		gate.sem.Release(resourceWriterWeight)
+		release()
+	}, nil
+}
+
+// runWorktreeCommand holds the registry gate only for the Git command. A
+// sibling cannot observe a half-written commondir, but its nodes still run
+// alongside the other children once registration completes.
+func runWorktreeCommand(repoRoot string, args ...string) (string, error) {
+	release, err := lockWorktreeRegistration(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return runGit(repoRoot, append([]string{"worktree"}, args...)...)
+}
+
 // worktreeContext is the state captured at setupWorktree time and
 // consumed by finalizeWorktree to decide whether the run actually
 // produced new commits and whether a fast-forward of the user's branch
@@ -190,11 +227,9 @@ func setupWorktree(storeRoot, runID, repoHint, baseCommit string, logger *iterlo
 	if startPoint == "" {
 		startPoint = "HEAD"
 	}
-	cmd, cancel := gitCmd("-C", repoRoot, "worktree", "add", wtPath, startPoint)
-	out, addErr := cmd.CombinedOutput()
-	cancel()
+	out, addErr := runWorktreeCommand(repoRoot, "add", wtPath, startPoint)
 	if addErr != nil {
-		return worktreeContext{}, nil, fmt.Errorf("git worktree add %s at %s: %w\noutput: %s", wtPath, startPoint, addErr, string(out))
+		return worktreeContext{}, nil, fmt.Errorf("git worktree add %s at %s: %w\noutput: %s", wtPath, startPoint, addErr, out)
 	}
 
 	if logger != nil {
@@ -217,15 +252,13 @@ func setupWorktree(storeRoot, runID, repoHint, baseCommit string, logger *iterlo
 		// the failure goes through a stderr fallback so it isn't
 		// completely silent — otherwise the worktree directory leaks on
 		// disk with no trace.
-		rmCmd, rmCancel := gitCmd("-C", repoRoot, "worktree", "remove", "--force", wtPath)
-		out, rmErr := rmCmd.CombinedOutput()
-		rmCancel()
+		out, rmErr := runWorktreeCommand(repoRoot, "remove", "--force", wtPath)
 		if rmErr != nil {
 			l := logger
 			if l == nil {
 				l = iterlog.NewFallback(iterlog.LevelWarn, os.Stderr)
 			}
-			l.Warn("runtime: git worktree remove %s failed: %v\noutput: %s", wtPath, rmErr, string(out))
+			l.Warn("runtime: git worktree remove %s failed: %v\noutput: %s", wtPath, rmErr, out)
 		}
 	}
 	return worktreeContext{
