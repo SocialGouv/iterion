@@ -38,6 +38,9 @@ func (s *Server) canViewTeamOrFail(ctx context.Context, id auth.Identity, teamID
 	if id.IsSynthetic() {
 		return false, nil
 	}
+	if id.PinRefusesTeam(teamID) {
+		return false, nil
+	}
 	if id.IsSuperAdmin {
 		return true, nil
 	}
@@ -80,6 +83,9 @@ func (s *Server) canEditConfigShares(ctx context.Context, id auth.Identity, team
 	if id.IsSynthetic() {
 		return false
 	}
+	if id.PinRefusesTeam(teamID) {
+		return false
+	}
 	if id.IsSuperAdmin {
 		return true
 	}
@@ -106,6 +112,9 @@ func (s *Server) canManageTeam(ctx context.Context, id auth.Identity, teamID str
 	if id.IsSynthetic() {
 		return false
 	}
+	if id.PinRefusesTeam(teamID) {
+		return false
+	}
 	if id.IsSuperAdmin {
 		return true
 	}
@@ -128,6 +137,12 @@ func (s *Server) orgAdminOfTeam(ctx context.Context, id auth.Identity, teamID st
 // "no": a team the store says is NOT THERE, or one with no parent org, is a
 // fact and no failure; a team row it could not read is.
 func (s *Server) orgAdminOfTeamOrFail(ctx context.Context, id auth.Identity, teamID string) (bool, error) {
+	// A team-addressed gate in its own right (team_lifecycle_routes.go takes
+	// it directly), so it owes the pin its own refusal and not the one its
+	// callers happen to have made.
+	if id.PinRefusesTeam(teamID) {
+		return false, nil
+	}
 	t, err := s.authStore().GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, identity.ErrNotFound) {
@@ -145,6 +160,9 @@ func (s *Server) orgAdminOfTeamOrFail(ctx context.Context, id auth.Identity, tea
 // roster / usage. Super-admins and any org member pass.
 func (s *Server) canViewOrg(ctx context.Context, id auth.Identity, orgID string) bool {
 	if id.IsSynthetic() {
+		return false
+	}
+	if id.PinRefusesOrg(orgID) {
 		return false
 	}
 	if id.IsSuperAdmin {
@@ -173,6 +191,9 @@ func (s *Server) canManageOrg(ctx context.Context, id auth.Identity, orgID strin
 // no failure; a membership row it could not read is.
 func (s *Server) canManageOrgOrFail(ctx context.Context, id auth.Identity, orgID string) (bool, error) {
 	if id.IsSynthetic() {
+		return false, nil
+	}
+	if id.PinRefusesOrg(orgID) {
 		return false, nil
 	}
 	if id.IsSuperAdmin {

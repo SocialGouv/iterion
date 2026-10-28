@@ -214,6 +214,14 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 	if id.IsSynthetic() {
 		return auth.Identity{}, false, nil
 	}
+	// The re-scope is the second address of a team: a credential pinned to
+	// one team reaches no run and no issue of another, whatever standing its
+	// owner holds there. "Not authorized" here, so the caller answers the
+	// 404 a run they cannot see answers — no existence oracle over the
+	// teams the pin excludes.
+	if id.PinRefusesTeam(teamID) {
+		return auth.Identity{}, false, nil
+	}
 	if id.IsSuperAdmin {
 		return withCredentialOf(auth.Identity{
 			UserID: id.UserID, Email: id.Email, IsSuperAdmin: true,
@@ -289,10 +297,10 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 }
 
 // withCredentialOf returns scoped carrying the credential facts of from — the
-// principal kind, the token id, the credential kind, its expiry and its
-// session — so an identity re-scoped to a run's team is still the credential
-// that was presented: what it may mint and until when does not change with
-// the team it acts in.
+// principal kind, the token id, the credential kind, its expiry, its session
+// and its team pin — so an identity re-scoped to a run's team is still the
+// credential that was presented: what it may mint, until when, and which team
+// it is bound to do not change with the team it acts in.
 func withCredentialOf(scoped, from auth.Identity) auth.Identity {
 	scoped.Kind = from.Kind
 	scoped.JTI = from.JTI
@@ -302,6 +310,8 @@ func withCredentialOf(scoped, from auth.Identity) auth.Identity {
 	scoped.SessionGeneration = from.SessionGeneration
 	scoped.CredentialID = from.CredentialID
 	scoped.MintedBy = from.MintedBy
+	scoped.TeamPin = from.TeamPin
+	scoped.OrgPin = from.OrgPin
 	return scoped
 }
 

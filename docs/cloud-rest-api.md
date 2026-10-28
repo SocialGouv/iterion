@@ -251,7 +251,9 @@ and names the same session (its `sid` and `sgen` claims). They answer
 (any of the revocations above), disabled (`auth: account disabled`) or
 pending a password change, and `403 {"error":"a personal access token
 cannot mint another credential: sign in to mint one"}` to a personal
-access token: a token is pinned to its team and its own expiry. An access
+access token: a token is pinned to its team and its own expiry, and the
+pin bounds every team- and org-addressed route it reaches (PATs, below).
+An access
 token minted before access tokens named their session switches too,
 bounded by its own expiry alone. `POST /api/me/tokens` and `GET
 /api/me/sso/{provider}/link/start` refuse the same credentials the same
@@ -703,6 +705,23 @@ Source: [pkg/server/triggers_routes.go](../pkg/server/triggers_routes.go).
 | `GET` | `/api/me/tokens` | member | List own PATs (no plaintext) |
 | `POST` | `/api/me/tokens` | member | Mint a PAT (`iap_…` shown once) |
 | `DELETE` | `/api/me/tokens/{token_id}` | member (owner) or super-admin | Revoke |
+
+A token carrying a `team_id` is **bound** to that team, not merely served
+with it active: every team-addressed route answers `403` for another team,
+every org-addressed route answers `403` for another organization than that
+team's (a pin on a team with no parent org reaches none), and a run or a
+board issue of another team answers the `404` an invisible run answers —
+the owner's own membership there changes nothing. `POST /api/me/tokens`
+fills the minter's active team in when the caller names none, so **every**
+token of an ordinary account carries a pin and reaches exactly one team: a
+client that needs several teams mints one token per team, which is also how
+it revokes one team's access alone. Only a super-admin mints an unpinned
+token (the `/api/admin/…` surfaces are tenant-free by design), and a
+super-admin's token keeps the platform reach its account has, pinned or
+not. The pin is read wherever authorization is decided
+([pkg/auth](../pkg/auth/identity.go) `Identity.PinRefusesTeam` /
+`PinRefusesOrg`), so it holds through a WebSocket ticket the token mints and
+through the run-by-id re-scope.
 
 Source: [pkg/server/pat_routes.go](../pkg/server/pat_routes.go).
 

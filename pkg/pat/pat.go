@@ -5,7 +5,9 @@
 // Security model (v1): a PAT authenticates AS its owning user — it
 // inherits the user's role (including super-admin) within the
 // resolved team. There are no granular scopes yet (v2); mitigations
-// are the optional team pin, the optional expiry, ITERION_PAT_MAX_TTL,
+// are the optional team pin — which BOUNDS the token to one team and to
+// that team's org, at every authorization gate, not just at the team it
+// authenticates with — the optional expiry, ITERION_PAT_MAX_TTL,
 // instant revocation — of one token, or of every token of the account
 // by "sign out everywhere" and an admin disable — and audit rows on
 // create/revoke/use. A PAT mints no credential of its own account but a
@@ -40,9 +42,17 @@ type Token struct {
 	TokenHash   string `bson:"token_hash" json:"-"`
 	TokenLast4  string `bson:"token_last4" json:"token_last4"`
 	Fingerprint string `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
-	// TeamID optionally pins the token to one team: requests
-	// authenticate with that team active (membership re-checked at
-	// every use). Empty → the user's default team.
+	// TeamID optionally pins the token to one team: requests authenticate
+	// with that team active (membership re-checked at every use) AND reach
+	// no other team — nor any organization but that team's. The pin is
+	// carried on the identity the middleware reads (auth.Identity.TeamPin /
+	// OrgPin) and every authorization gate refuses what it excludes, so a
+	// leak of a pinned token stays inside its team even where its owner is
+	// a member elsewhere. Empty → the user's default team and NO bound, a
+	// row only a super-admin's mint produces: handleCreatePAT fills the
+	// minter's active team in for everyone else, so an ordinary account's
+	// token always reaches exactly one team, and a client needing several
+	// mints one token per team.
 	TeamID     string     `bson:"team_id,omitempty" json:"team_id,omitempty"`
 	CreatedAt  time.Time  `bson:"created_at" json:"created_at"`
 	ExpiresAt  *time.Time `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
