@@ -285,8 +285,10 @@ func TestEverySpawnOfATaskCarriesTheNodesToolBoundary(t *testing.T) {
 	// A GATED task, DECLARING tools — the one combination that separates the
 	// two spawns, and the one an earlier version of this fix got backwards.
 	//
-	// The gate is a PreToolUse hook and hooks exist only on the Session path,
-	// so only Execute's spawn can carry it. There the node keeps everything
+	// The gate is a PreToolUse hook, so it holds on the spawn it is
+	// registered on. Prompt carries a hook channel since #1672.1, but the
+	// gate is not wired onto it until a live run proves the CLI registers
+	// hooks there, so today only Execute's spawn carries it. There the node keeps everything
 	// it declared: `tools:` bounds what EXISTS, the policy bounds what RUNS,
 	// and joining them deletes a gated node's own tools (measured on three
 	// shipped bots — whats-next losing Read/Glob/Grep, feed-watch losing the

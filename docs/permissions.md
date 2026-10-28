@@ -46,6 +46,32 @@ Set on the `workflow` block, per node, the CLI, or the environment.
 | `ask` | `default` | allow-rules auto-approve; **deny**-rules hard-block; everything else **pauses the run and surfaces the call to the human** (resumable). |
 | `deny` | `dontAsk` | allow-rules approve; **ask**-rules still pause (the lists are read the same way in both armed modes); everything else is **hard-denied with no pause** — the policy boundary for headless / cloud / cron runs with no human attached. |
 
+### Which spawn the gate bounds
+
+The gate is a `PreToolUse` hook, so it bounds **the spawn it is registered
+on** — a bound carried on argv follows the task, a bound carried on a hook
+follows the call site. That distinction is visible on exactly one node shape:
+a claude_code node with an `output_schema:` spawns the CLI **twice** on one
+session — the work pass (`Execute`), and a structured-output pass that resumes
+the same transcript to reformat what the first pass produced.
+
+- The **work pass** carries the hook, so the table above is exact there: the
+  rules decide, scoped patterns included.
+- The **structured-output pass** of a gated node is bounded instead by
+  withholding the native surface entirely (`gatedFormattingWithheld`), leaving
+  only `StructuredOutput`, which is not on the roster. That is a bound, not
+  the gate: it cannot express `deny: ["Bash(rm -rf:*)"]`, only "no native
+  tools at all". Since #1672 the one-shot path *has* a hook channel
+  (`claudesdk.Prompt` sends the same `initialize` control request, proven at
+  the transport level by `TestAHookedOneShotSpawnSendsItsInitializeOnStdin`),
+  so the mechanism is no longer missing; what is still owed before the gate
+  replaces the withholding is a live proof that the CLI registers hooks from
+  an `initialize` on that stream. Until then the withholding stays, because it
+  is a bound that holds without that proof.
+
+A node with no `output_schema:` has one spawn and no second case to reason
+about.
+
 ## Rule syntax
 
 Rules use Claude Code's syntax — a bare tool name matches any use, or a

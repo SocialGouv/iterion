@@ -115,9 +115,18 @@ func (c *controller) nextRequestID() string {
 // writeFn is synchronous), so the CLI receives the request before
 // any subsequent user message.
 func (c *controller) sendRequestNoWait(subtype string, body any) error {
+	_, err := c.sendRequestNoWaitWithID(subtype, body)
+	return err
+}
+
+// sendRequestNoWaitWithID is sendRequestNoWait, returning the request id it
+// minted. A caller that must tell "the engine registered this" from "the
+// engine REFUSED this" needs the id: the refusal arrives as a control_response
+// carrying it, and no pending entry exists to route it to.
+func (c *controller) sendRequestNoWaitWithID(subtype string, body any) (string, error) {
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
-		return err
+		return "", err
 	}
 	var bodyMap map[string]any
 	if err := json.Unmarshal(bodyJSON, &bodyMap); err != nil {
@@ -126,14 +135,18 @@ func (c *controller) sendRequestNoWait(subtype string, body any) error {
 	bodyMap["subtype"] = subtype
 	finalBody, err := json.Marshal(bodyMap)
 	if err != nil {
-		return err
+		return "", err
 	}
+	id := c.nextRequestID()
 	req := controlRequest{
 		Type:      "control_request",
-		RequestID: c.nextRequestID(),
+		RequestID: id,
 		Request:   json.RawMessage(finalBody),
 	}
-	return c.writeFn(req)
+	if err := c.writeFn(req); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // handleResponse routes a control response to its pending request.

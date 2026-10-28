@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -22,25 +23,59 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 	}
 
 	procCfg := configToProcess(cfg)
-	args := buildArgs(procCfg, false)
 
-	// For one-shot mode, append the prompt as the last argument.
-	args = append(args, prompt)
+	// A gated task's hooks have to reach THIS spawn too. Hooks travel in an
+	// `initialize` control request on stdin, and the CLI only reads stdin as a
+	// protocol stream under `--input-format stream-json`: with the prompt in
+	// argv it never looks. So a hooked one-shot run carries the prompt on
+	// stdin as a user message instead, exactly as a Session's first turn does.
+	// Without hooks nothing changes — the prompt stays the last argument and
+	// stdin stays closed, so the CLI does not wait on it.
+	hooked := len(cfg.hooks) > 0
+	args := buildArgs(procCfg, hooked)
+	if !hooked {
+		args = append(args, prompt)
+	}
 
 	spOpts := spawnOptions{
 		Cwd:            cfg.cwd,
 		Env:            cfg.env,
 		StderrCallback: cfg.stderrCallback,
 		CommandBuilder: cfg.commandBuilder,
-		// One-shot Prompt(): the prompt is the last CLI argument, nothing
-		// is ever written to stdin. Leave it attached to /dev/null so the
-		// CLI doesn't emit "no stdin data received in 3s, ...".
-		OpenStdin: false,
+		// Unhooked one-shot Prompt(): the prompt is the last CLI argument,
+		// nothing is ever written to stdin. Leave it attached to /dev/null so
+		// the CLI doesn't emit "no stdin data received in 3s, ...".
+		OpenStdin: hooked,
 	}
 
 	proc, err := spawnProcess(ctx, cliPath, args, spOpts)
 	if err != nil {
 		return nil, err
+	}
+
+	// The channel opens BEFORE the prompt is written: FIFO ordering on stdin
+	// is what makes the CLI register the hooks before it processes the turn
+	// their gate has to bound.
+	hookCh := newHookChannel()
+	ctrl := newController(proc.writeLine)
+	var initRequestID string
+	if hooked {
+		var err error
+		initRequestID, err = hookCh.sendInitialize(ctrl, cfg.hooks)
+		if err != nil {
+			_ = proc.close()
+			return nil, fmt.Errorf("claudesdk: one-shot prompt could not register its hooks, so its gate would not bound this spawn: %w", err)
+		}
+		if err := proc.writeLine(map[string]any{
+			"type": "user",
+			"message": map[string]any{
+				"role":    "user",
+				"content": prompt,
+			},
+		}); err != nil {
+			_ = proc.close()
+			return nil, fmt.Errorf("claudesdk: one-shot prompt could not be written to stdin: %w", err)
+		}
 	}
 
 	var result *ResultMessage
@@ -69,7 +104,20 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 		}
 
 		if isControlRequest(rm) {
-			handleControlRequestOneShot(cfg, proc, rm.Data)
+			handleControlRequestOneShot(ctx, cfg, ctrl, hookCh, rm.Data)
+			continue
+		}
+
+		// A refused registration must not read as a successful one. The
+		// initialize is sent without waiting, so nothing routes its answer:
+		// the engine's "error" response is the ONLY place a CLI that does not
+		// accept hooks on this path says so, and a spawn that proceeded past
+		// it would run the task's gate nowhere while looking gated.
+		if isControlResponse(rm) {
+			if refusal := initializeRefusal(rm.Data, initRequestID); refusal != "" {
+				_ = proc.close()
+				return nil, fmt.Errorf("claudesdk: the CLI refused the one-shot hook registration (%s), so this spawn would run with the task's gate absent", refusal)
+			}
 			continue
 		}
 
@@ -96,6 +144,17 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 				return nil, &ParseError{Raw: rm.Data, Err: err}
 			}
 			result = &r
+			// A hooked spawn reads stdin as a protocol stream, so the CLI
+			// does not exit at the end of a turn — it waits for more input.
+			// Waiting for EOF here would be a circular wait: the only stdin
+			// close is proc.close(), below this loop. The result is the end
+			// of the one turn a one-shot prompt has, so stop reading and let
+			// close() run the shutdown ladder, exactly as Session.Stream
+			// returns on its ResultMessage. Stdin cannot be half-closed
+			// earlier: hook callbacks are answered on it.
+			if hooked {
+				break
+			}
 		}
 	}
 
@@ -113,8 +172,31 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 	return result, nil
 }
 
-// handleControlRequestOneShot handles control requests in one-shot mode.
-func handleControlRequestOneShot(cfg *config, proc *cliProcess, data json.RawMessage) {
+// initializeRefusal reports the engine's error when a control response
+// refuses the initialize request sent under wantID, and "" for anything else.
+// An empty wantID means no registration was sent, so nothing can refuse it.
+func initializeRefusal(data json.RawMessage, wantID string) string {
+	if wantID == "" {
+		return ""
+	}
+	var resp controlResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return ""
+	}
+	if resp.Response.RequestID != wantID || resp.Response.Subtype != "error" {
+		return ""
+	}
+	if resp.Response.Error == "" {
+		return "no reason given"
+	}
+	return resp.Response.Error
+}
+
+// handleControlRequestOneShot handles control requests in one-shot mode. It
+// answers hook_callback through the same channel the Session path uses: a
+// spawn that registered hooks and then refused their callbacks would hold no
+// gate at all, only a slower one.
+func handleControlRequestOneShot(ctx context.Context, cfg *config, ctrl *controller, hooks *hookChannel, data json.RawMessage) {
 	var req controlRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return
@@ -125,11 +207,11 @@ func handleControlRequestOneShot(cfg *config, proc *cliProcess, data json.RawMes
 		return
 	}
 
-	ctrl := newController(proc.writeLine)
-
 	switch subtype {
 	case "can_use_tool":
 		handleCanUseTool(cfg, ctrl, req)
+	case "hook_callback":
+		hooks.handleCallback(ctx, cfg, ctrl, req)
 	default:
 		if err := ctrl.sendErrorResponse(req.RequestID, "unsupported request: "+subtype); err != nil {
 			cfg.errorf("claudesdk: failed to deliver error response (request_id=%s, subtype=%s): %v", req.RequestID, subtype, err)

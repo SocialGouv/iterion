@@ -23,8 +23,9 @@ type Session struct {
 	closed            bool
 	started           bool
 
-	// hookCallbacks maps callback IDs to their handlers.
-	hookCallbacks map[string]HookCallback
+	// hooks is this spawn's hook channel — the shared registration and
+	// callback-answering path Prompt's one-shot spawn holds too.
+	hooks *hookChannel
 
 	// mcpCleanup removes the temporary MCP config file, if any.
 	mcpCleanup func()
@@ -35,8 +36,8 @@ type Session struct {
 func NewSession(opts ...Option) *Session {
 	cfg := applyOptions(opts)
 	return &Session{
-		cfg:           cfg,
-		hookCallbacks: make(map[string]HookCallback),
+		cfg:   cfg,
+		hooks: newHookChannel(),
 	}
 }
 
@@ -371,34 +372,13 @@ func (s *Session) setupMcpConfig(args *[]string) (func(), error) {
 	return func() {}, nil
 }
 
-// sendInitialize sends the initialize control request with hook
-// configuration. The request must be written to stdin BEFORE the
-// first user message (FIFO ordering ensures the CLI registers hooks
-// before processing the prompt) — but we do NOT wait for the
-// response, because the response can only be dispatched from inside
-// Stream() and Stream() is called AFTER ensureStarted returns.
-// Calling sendRequest here would deadlock the session forever.
+// sendInitialize registers the session's hooks on its spawn through the
+// shared hook channel. The request must reach stdin BEFORE the first user
+// message, and it is not awaited: the response can only be dispatched from
+// inside Stream(), which is called after ensureStarted returns.
 func (s *Session) sendInitialize() error {
-	hooks := make(map[string][]hookMatcherConfig)
-	for event, matchers := range s.cfg.hooks {
-		var configs []hookMatcherConfig
-		for i, m := range matchers {
-			callbackID := fmt.Sprintf("hook_%s_%d", event, i)
-			s.hookCallbacks[callbackID] = m.Handler
-			configs = append(configs, hookMatcherConfig{
-				Matcher:         m.Matcher,
-				HookCallbackIDs: []string{callbackID},
-				Timeout:         m.Timeout,
-			})
-		}
-		hooks[string(event)] = configs
-	}
-
-	body := map[string]any{
-		"hooks": hooks,
-	}
-
-	return s.ctrl.sendRequestNoWait("initialize", body)
+	_, err := s.hooks.sendInitialize(s.ctrl, s.cfg.hooks)
+	return err
 }
 
 // handleControlRequest dispatches incoming control requests from the CLI.
@@ -456,81 +436,8 @@ func hookSpecificFields(output HookOutput) map[string]any {
 	return hookSpecific
 }
 
-// handleHookCallback processes hook callbacks from the CLI.
+// handleHookCallback answers a hook callback through the shared channel, the
+// same path Prompt's one-shot spawn uses.
 func (s *Session) handleHookCallback(ctx context.Context, req controlRequest) {
-	var body struct {
-		CallbackID string         `json:"callback_id"`
-		Input      map[string]any `json:"input"`
-		ToolUseID  *string        `json:"tool_use_id,omitempty"`
-	}
-	if err := json.Unmarshal(req.Request, &body); err != nil {
-		if sendErr := s.ctrl.sendErrorResponse(req.RequestID, "parse error: "+err.Error()); sendErr != nil {
-			s.cfg.errorf("claudesdk: failed to deliver hook parse-error response (request_id=%s): %v", req.RequestID, sendErr)
-		}
-		return
-	}
-
-	handler, ok := s.hookCallbacks[body.CallbackID]
-	if !ok {
-		// An unknown callback_id signals a hook-registration bug — worth a
-		// log line even when the error response is delivered fine.
-		s.cfg.errorf("claudesdk: hook callback for unknown callback_id %s", body.CallbackID)
-		if sendErr := s.ctrl.sendErrorResponse(req.RequestID, "unknown callback: "+body.CallbackID); sendErr != nil {
-			s.cfg.errorf("claudesdk: failed to deliver unknown-callback error response (request_id=%s, callback_id=%s): %v", req.RequestID, body.CallbackID, sendErr)
-		}
-		return
-	}
-
-	inputJSON, _ := json.Marshal(body.Input)
-	var input HookCallbackInput
-	_ = json.Unmarshal(inputJSON, &input)
-	input.ToolUseID = body.ToolUseID
-
-	output, err := handler(ctx, input)
-	if err != nil {
-		if sendErr := s.ctrl.sendErrorResponse(req.RequestID, err.Error()); sendErr != nil {
-			s.cfg.errorf("claudesdk: failed to deliver hook error response (request_id=%s, callback_id=%s, cause=%v): %v", req.RequestID, body.CallbackID, err, sendErr)
-		}
-		return
-	}
-
-	// Build hook-specific output. We only emit hookSpecificOutput when
-	// at least one variant-discriminating field is populated — claude-code
-	// CLI Zod-validates the inner object against a discriminated union
-	// keyed on hookEventName, and a bare {hookEventName: X} (no other
-	// fields) matches no variant and produces an "Invalid input" stderr
-	// spam on every tool call from no-op hooks (e.g. our PostToolUse
-	// inbox drainer that returns HookOutput{} when no operator messages
-	// are queued).
-	hookSpecific := hookSpecificFields(output)
-
-	resp := map[string]any{}
-	if len(hookSpecific) > 0 {
-		hookSpecific["hookEventName"] = input.HookEventName
-		resp["hookSpecificOutput"] = hookSpecific
-	}
-	if output.SystemMessage != "" {
-		resp["systemMessage"] = output.SystemMessage
-	}
-	if output.Continue != nil {
-		resp["continue"] = *output.Continue
-	}
-	// Stop-hook blocking: the Claude Code hook protocol blocks a stop with a
-	// top-level {"decision":"block","reason":...}, distinct from PreToolUse's
-	// permissionDecision (carried in hookSpecificOutput above). Without this the
-	// Stop-hook's BlockStop/Reason were dropped, so our operator-message drainer
-	// (claude_code.go HookStop) could never actually hold the session open to
-	// inject a queued message — it was silently ineffective.
-	if output.BlockStop {
-		resp["decision"] = "block"
-		if output.Reason != "" {
-			resp["reason"] = output.Reason
-		}
-	}
-
-	// A lost success response can drop a Stop-hook block decision — the
-	// CLI would end the turn a hook meant to hold open.
-	if sendErr := s.ctrl.sendResponse(req.RequestID, "success", resp); sendErr != nil {
-		s.cfg.errorf("claudesdk: failed to deliver hook response (request_id=%s, callback_id=%s): %v", req.RequestID, body.CallbackID, sendErr)
-	}
+	s.hooks.handleCallback(ctx, s.cfg, s.ctrl, req)
 }

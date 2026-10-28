@@ -198,12 +198,15 @@ func claudeReadonlyWithheld() []string {
 // session under the same always-on bypassPermissions, and a bound carried on
 // one spawn and not the other is no bound at all.
 //
-// The bounds that travel on ARGV follow the task this way. The HOOK-borne
-// ones cannot: claudesdk.Prompt has no hook channel and drops them, which is
-// why the permission gate is answered on the spawn that cannot carry it
-// (formatOutput) by withholding the native surface there, and never on the
-// one that can — joining the gate to the declaration would delete a gated
-// node's own tools. Capabilities that are not bounds
+// The bounds that travel on ARGV follow the task this way. A HOOK-borne one
+// follows the CALL SITE instead, so it holds only where it is registered.
+// claudesdk.Prompt does carry a hook channel now (#1672.1), but the gate does
+// not ride it until a live run proves the CLI registers hooks from an
+// `initialize` on the one-shot stream — a hook the engine ignores is a paper
+// bound. So the permission gate is still answered on the spawn that does not
+// carry it (formatOutput) by withholding the native surface there, and never
+// on the one that does — joining the gate to the declaration would delete a
+// gated node's own tools. Capabilities that are not bounds
 // (secrets materialisation, the rtk rewriter, inbox drain, edit-miss
 // resilience, ask_user) are absent from the second spawn on purpose: their
 // absence narrows it.
@@ -2019,7 +2022,9 @@ func claudeEnvPinsAndDropped(task Task) (map[string]string, []string) {
 	// cannot MOVE it, `0` ("wait indefinitely") included, not to shorten a
 	// deadline that kills. It arms only where the CLI's stdin is closed,
 	// which is the formatting pass: the one spawn with no lifecycle to catch
-	// what a kill loses.
+	// what a kill loses. A formatting pass that ever carries hooks keeps its
+	// stdin OPEN for the turn (hook callbacks are answered on it, see
+	// claudesdk.Prompt), so wiring the gate there moves this invariant too.
 	pin(printBgWaitCeilingEnv, strconv.FormatInt(defaultPrintBgWaitCeiling.Milliseconds(), 10))
 	cfg := resolveBackgroundLifecycleConfig()
 	if cfg.enabled {
@@ -2180,10 +2185,12 @@ func claudeExtraEnvEntries(task Task) (entries [][2]string, overridden []string)
 // task has that can travel on argv — claudeSpawnBounds always, and
 // claudeToolOptions unless the task is GATED, where the native surface is
 // withheld instead of the declaration being restated.
-// The hook-borne ones cannot travel — Prompt has no hook channel — so a gated
-// task has its native surface withheld here instead. The sentence that used
-// to sit here — "(no tools)" — is what kept that gap invisible for five
-// rounds; what it names is the instruction, not the toolset.
+// The hook-borne gate does not travel here yet: Prompt carries the channel
+// (#1672.1) but nothing has proven the CLI registers hooks from it on this
+// path, so a gated task has its native surface withheld here instead. The
+// sentence that used to sit here — "(no tools)" — is what kept that gap
+// invisible for five rounds; what it names is the instruction, not the
+// toolset.
 func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, credSpawn, []string, error) {
 	// Use the parent context directly — the runtime already enforces budget
 	// timeouts. Adding a short artificial timeout here risks cancelling the
@@ -2214,9 +2221,15 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// the resumed transcript can arm — comes back. No MCP extras:
 	// this pass passes no --mcp-config and reformats text the first pass
 	// already produced.
-	// The permission gate cannot travel to THIS spawn: it is a PreToolUse
-	// hook, and hooks exist only on the Session path — claudesdk.Prompt has
-	// no hook channel and drops them silently (#1672). Execute's spawn
+	// The permission gate does not travel to THIS spawn yet. The mechanism is
+	// no longer missing — claudesdk.Prompt carries the same `initialize`
+	// control request as the Session path, and the hooks reach the process
+	// (claudesdk/hookchannel.go, witnessed on the wire by
+	// TestAHookedOneShotSpawnSendsItsInitializeOnStdin). What is owed before
+	// the gate replaces the withholding below is a LIVE proof that the CLI
+	// registers hooks from an `initialize` on the one-shot stream: a hook the
+	// CLI ignores is a paper bound, and the withholding is a real one. Until
+	// that proof exists, this arm stays (#1672). Execute's spawn
 	// carries the hook and therefore keeps everything the node DECLARED —
 	// `tools:` bounds what exists, the policy bounds what runs, and joining
 	// them would delete a gated node's own tools. Here, with no gate to run,
