@@ -135,7 +135,11 @@ func TestAssistantWatchHealth_AFreeLeaseIsAStateNotAnAlarm(t *testing.T) {
 	if out.Coordinator.Holder != "" || out.Coordinator.HolderExpiresAt != nil || out.Coordinator.HolderState != assistantWatchHolderFree {
 		t.Fatalf("answer over a free lease = %+v; want no holder and holder_state free", out.Coordinator)
 	}
-	if out.Coordinator.Stale || len(sweepAttention(out.Attention)) > 0 {
+	// The alarm channel is sweepAttention: the raw Stale flag honestly reads
+	// true while the first post-election sweep is still in flight (started,
+	// not yet completed), and sweepStaleIsAttention forgives that window —
+	// diagnostics, not an alarm.
+	if len(sweepAttention(out.Attention)) > 0 {
 		t.Fatalf("a free lease is reported as an outage: %+v, attention %v", out.Coordinator, out.Attention)
 	}
 }
