@@ -2783,6 +2783,23 @@ func usageBackendForProvider(prov secrets.Provider) string {
 // retry when THAT key reopens rather than when its fallback does.
 func (p *Publisher) apiKeyUsable(ctx context.Context, scope, runID, botID string, skips *skipTracker) func(secrets.ApiKey) bool {
 	return func(k secrets.ApiKey) bool {
+		backend := usageBackendForProvider(k.Provider)
+		// ONE skip exit, so every reason the walk passes a key over records
+		// the same two facts: the key's reopening instant (nil-safe, zero
+		// means "none to report") and whether a RESERVATION is holding it.
+		// The second is what the restore step reads, and a skip that leaves
+		// it unrecorded is indistinguishable from a dead key at the end of
+		// the walk — which hands an unreserved bot the very credential the
+		// reserve keeps for another workload. Noted against THIS key's
+		// fingerprint: a sibling of the same provider that is genuinely dead
+		// must stay restorable.
+		skip := func(until time.Time, floorHeld bool) bool {
+			skips.note(until)
+			if floorHeld {
+				skips.noteFloorHeld(k.Fingerprint)
+			}
+			return false
+		}
 		// Concurrency ceiling first — cheaper than the meter read, and a
 		// key at its ceiling must rest whatever its refusal history says.
 		// Providers with fair-usage frequency limits publish no numeric
@@ -2797,25 +2814,35 @@ func (p *Publisher) apiKeyUsable(ctx context.Context, scope, runID, botID string
 			} else if n >= k.MaxConcurrentRuns {
 				p.logger.Info("cloudpublisher: api-key(%s) %q AT ITS CEILING for run=%s (%d/%d alive runs); trying the next key of this provider",
 					k.Provider, k.Name, runID, n, k.MaxConcurrentRuns)
-				return false
+				// The ceiling answers before the meter, so the reserve is
+				// asked HERE too: a key that is both full and held is
+				// spoken for, not dead, and the restore must not hand it
+				// over. Asked only where a reservation can exist — with no
+				// budget floor configured, capPolicyFor lowers nothing and
+				// floorHeld is false by construction, so the extra meter
+				// read would buy a deployment that reserved nothing an
+				// answer it already has. The key's reopening is NOT noted:
+				// a ceiling lapses when a run ends, not at a window's
+				// reset, so the window's instant would arm the run's retry
+				// on a moment that answers a different question.
+				floorHeld := false
+				if p.budgetFloor != nil {
+					_, _, floorHeld = p.refusedUntil(ctx, backend, scope, k.Fingerprint, string(k.Provider), botID)
+				}
+				if floorHeld {
+					p.logger.Info("cloudpublisher: api-key(%s) %q is ALSO held by the reserve for run=%s bot=%s — it is spoken for, not dead, and the walk's restore will not hand it back",
+						k.Provider, k.Name, runID, botID)
+				}
+				return skip(time.Time{}, floorHeld)
 			}
 		}
-		backend := usageBackendForProvider(k.Provider)
 		until, why, floorHeld := p.refusedUntil(ctx, backend, scope, k.Fingerprint, string(k.Provider), botID)
 		if until.IsZero() {
 			return true
 		}
 		p.logger.Info("cloudpublisher: api-key(%s) %q SKIPPED for run=%s — %s (reopens %s); trying the next key of this provider",
 			k.Provider, k.Name, runID, why, until.UTC().Format(time.RFC3339))
-		skips.note(until)
-		if floorHeld {
-			// Passed over by the RESERVE, not for being unusable: remember it
-			// so the walk's restore step does not hand it back at the end.
-			// THIS key — a sibling key of the same provider that is genuinely
-			// dead must stay restorable.
-			skips.noteFloorHeld(k.Fingerprint)
-		}
-		return false
+		return skip(until, floorHeld)
 	}
 }
 
