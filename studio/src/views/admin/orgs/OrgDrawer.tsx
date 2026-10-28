@@ -90,8 +90,8 @@ export function OrgDrawer({
 
       {/* h3: the Dialog's own title is the h2 of this surface, so its
           sections are its direct children — and they are siblings of each
-          other, which is why OrgUsageStats/Teams/Quotas/Status/DangerZone
-          all sit at the same level (RGAA 9.1). */}
+          other, which is why Teams/Quotas/Status/DangerZone all sit at this
+          level too (RGAA 9.1). OrgUsageStats contributes no heading. */}
       <section className="space-y-3 mb-4">
         <h3 className="font-medium">Details</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

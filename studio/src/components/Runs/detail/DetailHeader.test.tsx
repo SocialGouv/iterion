@@ -83,6 +83,25 @@ describe("DetailHeader node references", () => {
     assertDrag(nextRun, second.ir_node_id);
   });
 
+  it("names the error copy after the label the header shows", () => {
+    const exec = { ...execution("plan_review"), error: "exit status 1" };
+    render(
+      <DetailHeader
+        runId="01a09afe-92d7-7235-b9bd-892ac04caea7"
+        exec={exec}
+        executions={[exec]}
+        selectedIteration={0}
+        onSelectIteration={() => {}}
+        events={[]}
+      />,
+    );
+    // `Label plan_review` is what useNodeLabel resolves here (mocked above),
+    // and what the header renders — the raw ir id appears nowhere on screen.
+    expect(
+      screen.getByRole("button", { name: "copy the error of Label plan_review" }),
+    ).toBeTruthy();
+  });
+
   it("does not offer a drag that would mint a different or invalid pointer", () => {
     const exec = execution("invalid]node");
     render(<DetailHeader runId="01a09afe-92d7-7235-b9bd-892ac04caea7" exec={exec} executions={[exec]} selectedIteration={0} onSelectIteration={() => {}} events={[]} />);

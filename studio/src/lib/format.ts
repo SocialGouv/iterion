@@ -58,6 +58,10 @@ export interface ContextUsage {
   pct: number;
   label: string;
   title: string;
+  /** Tokens used, clamped to the window — a gauge's aria-valuenow. */
+  now: number;
+  /** The window, i.e. a gauge's aria-valuemax. */
+  max: number;
 }
 
 export function formatContextUsage(
@@ -70,6 +74,12 @@ export function formatContextUsage(
     pct,
     label: `${formatTokens(used)}/${formatTokens(window)}`,
     title: `context: ${used.toLocaleString("en-US")} / ${window.toLocaleString("en-US")} tokens (${Math.round(pct)}%)`,
+    // A proxy can report more usage than the window it declares, which is
+    // why `pct` is clamped — a gauge built on these has to be clamped the
+    // same way or it announces an out-of-range value. The true figures stay
+    // in `title`.
+    now: Math.min(used, window),
+    max: window,
   };
 }
 

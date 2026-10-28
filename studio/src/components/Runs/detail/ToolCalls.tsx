@@ -203,10 +203,14 @@ export function ToolPayloadBlock({
     value.length + extra.length < totalSize;
   const loaded = value.length + extra.length;
   const fullValue = extra ? value + extra : value;
-  // One string for the eye and for the name — see the button below.
-  const moreLabel = loading
-    ? "loading…"
-    : `load more (+${formatBytes(Math.min(FETCH_CHUNK_BYTES, (totalSize ?? loaded) - loaded))})`;
+  // One string for the eye and for the name — see the button below. Only
+  // computed where it renders: with nothing more to fetch the subtraction
+  // below goes negative and formats a figure nobody reads.
+  const moreLabel = !hasMore
+    ? ""
+    : loading
+      ? "loading…"
+      : `load more (+${formatBytes(Math.min(FETCH_CHUNK_BYTES, (totalSize ?? loaded) - loaded))})`;
 
   useLayoutEffect(() => {
     if (!open || expanded) {
@@ -268,7 +272,7 @@ export function ToolPayloadBlock({
           }
         }}
       >
-        <summary className="cursor-pointer text-caption text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2 flex items-center justify-between">
+        <summary className="cursor-pointer text-caption text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2 flex items-center">
           <span>
             {label}
             {totalSize !== undefined && totalSize > value.length && (

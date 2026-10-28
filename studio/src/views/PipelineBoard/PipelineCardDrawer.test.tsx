@@ -261,6 +261,7 @@ describe("pipeline card drawer — portal chrome", () => {
     await expectNoViolationsStrict(document.body, "pipeline card drawer", [
       {
         rule: "focus-order-semantics",
+        marker: 'role="separator"',
         reason:
           "the drawer's resize grip is a window splitter: role=separator with aria-valuenow IS a widget (ARIA 1.2) and axe's role list predates it — its keyboard contract is pinned by 'widens on ArrowLeft and narrows on ArrowRight' and 'takes a bigger step with Shift and jumps to the bounds with Home/End' above",
       },

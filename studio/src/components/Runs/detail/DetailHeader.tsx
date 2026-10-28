@@ -180,7 +180,9 @@ export function DetailHeader({
             <span className="font-medium">Error</span>
             <CopyButton
               value={exec.error}
-              describes={`the error of ${exec.ir_node_id}`}
+              // The label the header shows, not the raw ir id: an identifier
+              // that appears nowhere on screen names nothing for the reader.
+              describes={`the error of ${label}`}
             />
           </div>
           <div className="font-mono text-micro whitespace-pre-wrap break-words">

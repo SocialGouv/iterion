@@ -1,7 +1,6 @@
 // Shared a11y test helpers for the jsdom + axe-core suites (primitives.test +
 // views.test). NOT a test file — imported by them.
 import axe from "axe-core";
-import { expect } from "vitest";
 
 /**
  * jsdom does not implement matchMedia; components that read the viewport
@@ -87,8 +86,10 @@ export const AXE_BEST_PRACTICE_RULES = [
   "focus-order-semantics",
   // RGAA 9.1: levels that skip on a composed surface.
   "heading-order",
-  // An icon's text alternative repeated as its own visible label: the
-  // IconButton + caption pattern's trap, announced twice.
+  // A real <img> whose alt repeats the text next to it, announced twice
+  // (BrandMark, avatars). The rule's selector is `img`, so the studio's
+  // role="img" glyphs are out of its reach — this is the net for the brand
+  // and avatar surfaces, not for them.
   "image-redundant-alt",
   // #2591's own class: a control named only by title (or placeholder, which
   // axe's `label` rule passes outright). This is the rule that makes the
@@ -98,7 +99,10 @@ export const AXE_BEST_PRACTICE_RULES = [
   // landmark as far as navigation goes.
   "landmark-unique",
   // role="presentation"/"none" on an element that keeps its semantics
-  // anyway: the author's intent and the tree disagree.
+  // anyway: the author's intent and the tree disagree. It judges elements
+  // with an IMPLICIT role (a <button role="presentation">), so a plain
+  // <div role="presentation"> — the studio's scrims — is inapplicable: a
+  // guard against the mistake rather than a finding today.
   "presentation-role-conflict",
   // RGAA 5.7: a scope= that points nowhere useful.
   "scope-attr-valid",
@@ -271,14 +275,25 @@ const UNDECIDABLE_HERE: Record<string, string> = {
  * A waiver covers BOTH buckets — a rule can be a violation on one axe release
  * and needs-review on the next, and the one lane a surface has for "this rule
  * is wrong about this pattern, and here is what judges it" must not depend on
- * that. The price is that a waiver which matched nothing FAILS: a waiver is a
- * live claim about this surface, and a dead one is how a net quietly stops
- * judging what it says it judges.
+ * that. It is scoped to the NODE it names, by a substring of that node's own
+ * opening tag, for the same reason the vendor sentinels are: a rule waived for
+ * a whole surface is a surface that stopped being judged, and the next
+ * roleless focusable added to it would never be seen. A waiver that matched no
+ * node FAILS, too: it is a live claim about this surface, and a dead one is
+ * how a net quietly stops judging what it says it judges.
  */
+export interface AxeWaiver {
+  rule: string;
+  /** A substring of the waived node's own opening tag (e.g. `role="separator"`). */
+  marker: string;
+  /** Why the rule is wrong here, naming what pins the concern instead. */
+  reason: string;
+}
+
 export async function expectNoViolationsStrict(
   container: HTMLElement,
   label: string,
-  waivers: { rule: string; reason: string }[] = [],
+  waivers: AxeWaiver[] = [],
 ): Promise<void> {
   const results = await axe.run(container, axeRunOptions());
   // Sentinels first, in both buckets: which bucket axe files a library's own
@@ -286,22 +301,35 @@ export async function expectNoViolationsStrict(
   // does not.
   const violations = withoutVendorSentinels(results.violations);
   const incomplete = withoutVendorSentinels(results.incomplete);
-  const waived = new Set(waivers.map((w) => w.rule));
+  const matched = new Set<AxeWaiver>();
+  const keep = (result: axe.Result): axe.Result | null => {
+    const mine = waivers.filter((w) => w.rule === result.id);
+    if (mine.length === 0) return result;
+    const nodes = result.nodes.filter((n) => {
+      const hit = mine.find((w) => openingTag(n.html).includes(w.marker));
+      if (hit) matched.add(hit);
+      return !hit;
+    });
+    return nodes.length > 0 ? { ...result, nodes } : null;
+  };
   const waivedList = waivers.length
-    ? `\n  waived here: ${waivers.map((w) => `${w.rule} (${w.reason})`).join(", ")}`
+    ? `\n  waived here: ${waivers.map((w) => `${w.rule} on ${w.marker} (${w.reason})`).join(", ")}`
     : "";
 
   const problems: string[] = [];
-  const failed = violations.filter((v) => !waived.has(v.id));
+  const failed = violations
+    .map(keep)
+    .filter((r): r is axe.Result => r !== null);
   if (failed.length > 0) {
     const summary = failed
       .map((v) => `  - [${v.id}] ${v.help}${nodes(v)}`)
       .join("\n");
     problems.push(`axe violations:${waivedList}\n${summary}`);
   }
-  const open = incomplete.filter(
-    (v) => !waived.has(v.id) && !(v.id in UNDECIDABLE_HERE),
-  );
+  const open = incomplete
+    .filter((v) => !(v.id in UNDECIDABLE_HERE))
+    .map(keep)
+    .filter((r): r is axe.Result => r !== null);
   if (open.length > 0) {
     const summary = open
       .map((v) => `  - [${v.id}] ${v.help} — needs review${nodes(v)}`)
@@ -310,17 +338,15 @@ export async function expectNoViolationsStrict(
       `axe results needing review — decide each, never drop them:${waivedList}\n${summary}`,
     );
   }
-  const reported = new Set([...violations, ...incomplete].map((v) => v.id));
-  const dead = waivers.filter((w) => !reported.has(w.rule));
+  const dead = waivers.filter((w) => !matched.has(w));
   if (dead.length > 0) {
     problems.push(
       `waivers that matched nothing — the surface no longer needs them, drop them:\n${dead
-        .map((w) => `  - [${w.rule}] ${w.reason}`)
+        .map((w) => `  - [${w.rule}] on ${w.marker}: ${w.reason}`)
         .join("\n")}`,
     );
   }
   if (problems.length > 0) {
     throw new Error(`${label} has ${problems.join("\n\n")}`);
   }
-  expect(open).toHaveLength(0);
 }

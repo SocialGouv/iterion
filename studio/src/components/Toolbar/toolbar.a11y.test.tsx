@@ -89,7 +89,17 @@ describe("toolbar naming", () => {
     // is the collision this guards against. A name this test computed itself
     // would prove nothing.
     for (const button of buttons) {
-      const candidate = button.getAttribute("aria-label") ?? button.textContent ?? "";
+      // Normalised the way the accessible-name algorithm normalises, or a
+      // name split across nodes ("<Icon /> Launch run") would be read as
+      // " Launch run" and fail as "not found" instead of as a collision.
+      const candidate = (button.getAttribute("aria-label") ?? button.textContent ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!candidate) {
+        throw new Error(
+          `a toolbar button has no name to read: ${button.outerHTML.slice(0, 120)}`,
+        );
+      }
       expect(screen.getAllByRole("button", { name: candidate })).toHaveLength(1);
     }
   });

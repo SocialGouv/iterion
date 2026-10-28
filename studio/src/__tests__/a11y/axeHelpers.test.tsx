@@ -46,7 +46,11 @@ describe("expectNoViolationsStrict — incompletes are never dropped", () => {
     );
     await expect(
       expectNoViolationsStrict(container, "waived", [
-        { rule: "aria-valid-attr-value", reason: "pinned by AdminNav.test.tsx" },
+        {
+          rule: "aria-valid-attr-value",
+          marker: 'aria-labelledby="does-not-exist"',
+          reason: "pinned by AdminNav.test.tsx",
+        },
       ]),
     ).resolves.toBeUndefined();
   });
@@ -283,17 +287,52 @@ describe("waivers", () => {
       expectNoViolationsStrict(waived.container, "splitter", [
         {
           rule: "focus-order-semantics",
+          marker: 'role="separator"',
           reason: "the window-splitter pattern, pinned by its keyboard tests",
         },
       ]),
     ).resolves.toBeUndefined();
   });
 
+  it("covers the node it names and no other", async () => {
+    // The hostile shape: the waived splitter AND a roleless focusable the
+    // surface really did get wrong. A rule waived for the whole surface
+    // would hide the second one — which is how a net stops judging what it
+    // says it judges.
+    const { container } = render(
+      <div>
+        <div
+          role="separator"
+          tabIndex={0}
+          aria-orientation="vertical"
+          aria-valuenow={300}
+          aria-valuemin={220}
+          aria-valuemax={560}
+          aria-label="Resize panel"
+        />
+        <div tabIndex={0}>focusable, no widget role</div>
+      </div>,
+    );
+    await expect(
+      expectNoViolationsStrict(container, "splitter + a real one", [
+        {
+          rule: "focus-order-semantics",
+          marker: 'role="separator"',
+          reason: "the window-splitter pattern, pinned by its keyboard tests",
+        },
+      ]),
+    ).rejects.toThrow(/focus-order-semantics/);
+  });
+
   it("fails when it matched nothing — a dead waiver is how a net stops judging", async () => {
     const { container } = render(<button type="button">ok</button>);
     await expect(
       expectNoViolationsStrict(container, "clean", [
-        { rule: "heading-order", reason: "nothing here reports it" },
+        {
+          rule: "heading-order",
+          marker: "<h2",
+          reason: "nothing here reports it",
+        },
       ]),
     ).rejects.toThrow(/matched nothing/);
   });
@@ -331,7 +370,11 @@ describe("one net, no second one", () => {
     // vacuous — a lax net would live in a TEST file, so test files must be
     // in scope.
     const paths = allFiles.map(([path]) => path);
-    expect(paths.length).toBeGreaterThan(300);
+    // A floor, not a census: ~1465 modules today, and the realistic
+    // regression is a glob that loses a whole extension or directory, not
+    // one file. A surgical exclusion would slip past this — the assertions
+    // below are what hold the named files.
+    expect(paths.length).toBeGreaterThan(1200);
     expect(paths).toContain("/src/__tests__/a11y/primitives.test.tsx");
     expect(paths).toContain("/src/__tests__/a11y/axeHelpers.test.tsx");
     // Vite's glob excludes the module that declares it, so the scanner
@@ -345,7 +388,8 @@ describe("one net, no second one", () => {
     // Both are read as text instead, which is the point: a lax net added to
     // the net's own modules would otherwise be the one that gets through.
     expect(scannerSource).toContain("import.meta.glob");
-    expect(/\baxe\.run\s*\(/.test(scannerSource)).toBe(false);
+    expect(/axe-core/.test(scannerSource)).toBe(false);
+    expect(/\bexpectNoViolations/.test(scannerSource)).toBe(false);
     // Exactly the two probes this file declares — a third is a deliberate
     // act that has to be argued for here. The call form is what counts:
     // `axe.run()` also appears in prose below, and a call nobody awaits
@@ -356,20 +400,24 @@ describe("one net, no second one", () => {
     );
   });
 
-  it("calls axe.run() from axeHelpers.ts and nowhere else", () => {
-    // The net's own two files: the helper, and this guard — which runs a
-    // raw rule to prove the allowlist above is not judging a clean fixture.
+  it("imports axe-core in the net's own files and nowhere else", () => {
+    // The import is the chokepoint, not one spelling of the call: a second
+    // net reached through `import { run } from "axe-core"` or
+    // `import * as axeCore` would pass a grep for `axe.run(` and reopen the
+    // hole #2591 closed. The net's own two files: the helper, and this guard
+    // — which runs a raw rule to prove the allowlist above is not judging a
+    // clean fixture.
     const NET = [
       "/src/__tests__/a11y/axeHelpers.ts",
       "/src/__tests__/a11y/axeHelpers.test.tsx",
     ];
     const hits = allFiles
       .filter(([path]) => !NET.includes(path))
-      .filter(([, src]) => /\baxe\.run\s*\(/.test(src))
+      .filter(([, src]) => /from "axe-core"|require\("axe-core"\)/.test(src))
       .map(([path]) => path);
     if (hits.length) {
       throw new Error(
-        `axe.run() belongs to axeHelpers.ts: a second net would drop incompletes again (#2591).\n${hits.join("\n")}`,
+        `axe-core belongs to axeHelpers.ts: a second net would drop incompletes again (#2591).\n${hits.join("\n")}`,
       );
     }
     expect(hits).toHaveLength(0);

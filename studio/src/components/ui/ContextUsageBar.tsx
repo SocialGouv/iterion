@@ -27,8 +27,10 @@ export function ContextUsageBar({ used, window, className }: Props) {
       // assistive tech can otherwise report and compare.
       role="progressbar"
       aria-valuemin={0}
-      aria-valuemax={window}
-      aria-valuenow={used}
+      // Both from the formatter, which owns the clamp the percentage already
+      // applies: a valuenow above valuemax is an out-of-range gauge.
+      aria-valuemax={usage.max}
+      aria-valuenow={usage.now}
       aria-valuetext={usage.title}
       className={`mt-1 h-[3px] w-full rounded-sm overflow-hidden ${tone.bg} ${className ?? ""}`}
       title={usage.title}
