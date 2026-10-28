@@ -268,4 +268,15 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Values.runner.cache.existingClaim | default (printf "%s-runner-cache" (include "iterion.fullname" .)) }}
         {{- end }}
+      {{- with .Values.runner.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.runner.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (include "iterion.scheduling" (dict "root" $ "component" "runner" "scheduling" .Values.runner.scheduling "affinity" .Values.runner.affinity)) }}
+      {{- . | trim | nindent 6 }}
+      {{- end }}
 {{- end -}}

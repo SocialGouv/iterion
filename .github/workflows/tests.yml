@@ -1120,6 +1120,17 @@ jobs:
             echo "::error::a malformed image.digest rendered instead of failing"
             exit 1
           fi
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: chart render tests (dead selectors, backup and alert guards)
+        # The Go half of `task chart:check`: renders the chart (dev, prod,
+        # pools) and confronts every anti-affinity / spread / PDB selector with
+        # the labels of its own pods (internal/rendergate — the valkeyha defect
+        # of #2012), then the render guards of the backup CronJob and the alert
+        # packs. REQUIRE=1: on this job a missing helm is a red step, never a
+        # skip (the `test` job has Go but no helm, and skips them by design).
+        run: ITERION_CHART_RENDER_REQUIRE=1 go test -mod=vendor -count=1 -run 'TestChartRender' ./charts/iterion/
 
   golangci:
     # Curated golangci-lint pass (.golangci.yml): errcheck, govet,

@@ -111,3 +111,95 @@ protocol. Resolution order:
 {{- required "runner.keda.enabled=true requires either nats.enabled=true or config.nats.monitoringEndpoint to be set so the JetStream lag scaler can scrape the monitoring port" "" -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+iterion.scheduling — the affinity and topologySpreadConstraints of ONE
+workload, rendered from its OWN selector labels (#2012). Call with a dict:
+  root        the chart root ($)
+  component   the app.kubernetes.io/component value of the workload
+  extraLabels (optional) labels the workload's pods carry beyond the
+              component — e.g. the pool label
+  scheduling  the knob block (server.scheduling, runner.scheduling or the
+              pool's own, merged over the runner's)
+  affinity    (optional) the operator's free-form affinity, merged OVER the
+              generated one key by key
+The selector is never typed by hand: it is the chart's selectorLabels plus
+the component (and extra) labels — the same ones the pod template carries —
+so it cannot name a label the pods do not have. That dead-selector class is
+what `task chart:check` (internal/rendergate) refuses, after ovh-prod's
+valkeyha spread its three replicas by luck alone (#2012).
+*/}}
+{{- define "iterion.scheduling" -}}
+{{- $root := .root -}}
+{{- $component := .component -}}
+{{- $s := .scheduling | default dict -}}
+{{- $preset := $s.antiAffinity | default "" -}}
+{{- if not (has $preset (list "" "none" "soft" "hard")) -}}
+{{- fail (printf "scheduling.antiAffinity must be soft, hard or none (got %q) on the %s workload" $preset $component) -}}
+{{- end -}}
+{{- $key := $s.topologyKey | default "kubernetes.io/hostname" -}}
+{{- $labels := dict "app.kubernetes.io/name" (include "iterion.name" $root) "app.kubernetes.io/instance" $root.Release.Name "app.kubernetes.io/component" $component -}}
+{{- range $k, $v := (.extraLabels | default dict) -}}
+{{- $_ := set $labels $k $v -}}
+{{- end -}}
+{{- $term := dict "topologyKey" $key "labelSelector" (dict "matchLabels" $labels) -}}
+{{- $generated := dict -}}
+{{- if eq $preset "hard" -}}
+{{- $_ := set $generated "podAntiAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (list $term)) -}}
+{{- else if eq $preset "soft" -}}
+{{- $_ := set $generated "podAntiAffinity" (dict "preferredDuringSchedulingIgnoredDuringExecution" (list (dict "weight" 100 "podAffinityTerm" $term))) -}}
+{{- end -}}
+{{- $affinity := mergeOverwrite $generated (deepCopy (.affinity | default dict)) -}}
+{{- if $affinity }}
+affinity:
+  {{- toYaml $affinity | nindent 2 }}
+{{- end }}
+{{- $spread := $s.spread | default dict -}}
+{{- if $spread.enabled }}
+{{- $when := $spread.whenUnsatisfiable | default "ScheduleAnyway" -}}
+{{- if not (has $when (list "ScheduleAnyway" "DoNotSchedule")) -}}
+{{- fail (printf "scheduling.spread.whenUnsatisfiable must be ScheduleAnyway or DoNotSchedule (got %q) on the %s workload" $when $component) -}}
+{{- end }}
+topologySpreadConstraints:
+  - maxSkew: {{ $spread.maxSkew | default 1 }}
+    topologyKey: {{ $key }}
+    whenUnsatisfiable: {{ $when }}
+    labelSelector:
+      matchLabels:
+        {{- toYaml $labels | nindent 8 }}
+{{- end }}
+{{- end -}}
+
+{{/*
+iterion.pdbWanted — "yes" when a workload's PodDisruptionBudget must render.
+Dict: enabled (auto | true | false), replicas (the replica count the
+workload is GUARANTEED: the static count, or the autoscaler's floor when
+one owns the count). auto renders the budget only above one replica: on a
+single replica, minAvailable 1 refuses every eviction and holds a node
+drain forever — a budget that protects nothing and blocks everything.
+*/}}
+{{- define "iterion.pdbWanted" -}}
+{{- $enabled := printf "%v" .enabled -}}
+{{- if eq $enabled "true" -}}
+yes
+{{- else if eq $enabled "false" -}}
+{{- else if eq $enabled "auto" -}}
+{{- if gt (int .replicas) 1 }}yes{{ end -}}
+{{- else -}}
+{{- fail (printf "pdb.enabled must be auto, true or false (got %q)" $enabled) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+iterion.pdbBudget — the one budget line of a PodDisruptionBudget from a
+{minAvailable, maxUnavailable} block: maxUnavailable wins when set (a
+budget carries exactly one of the two), minAvailable defaults to 1.
+*/}}
+{{- define "iterion.pdbBudget" -}}
+{{- $b := . | default dict -}}
+{{- if $b.maxUnavailable -}}
+maxUnavailable: {{ $b.maxUnavailable }}
+{{- else -}}
+minAvailable: {{ $b.minAvailable | default 1 }}
+{{- end -}}
+{{- end -}}

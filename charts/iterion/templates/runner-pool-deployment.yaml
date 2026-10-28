@@ -250,11 +250,26 @@ spec:
         - name: run-iterion
           emptyDir:
             medium: Memory
-{{- if gt (int ($pool.replicas | default 1)) 1 }}
+      {{- with $pool.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $pool.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- /* The pool's own scheduling block overrides the runner's key by key; the pool label joins the selector so each pool spreads its OWN replicas. */ -}}
+      {{- $scheduling := mergeOverwrite (deepCopy ($.Values.runner.scheduling | default dict)) (deepCopy ($pool.scheduling | default dict)) }}
+      {{- with (include "iterion.scheduling" (dict "root" $ "component" "runner-pool" "extraLabels" (dict "iterion.io/runner-pool" $pool.name) "scheduling" $scheduling "affinity" ($pool.affinity | default $.Values.runner.affinity))) }}
+      {{- . | trim | nindent 6 }}
+      {{- end }}
+{{- $pdb := mergeOverwrite (deepCopy ($.Values.runner.pdb | default dict)) (deepCopy ($pool.pdb | default dict)) }}
+{{- if include "iterion.pdbWanted" (dict "enabled" ($pdb.enabled | default "auto") "replicas" ($pool.replicas | default 1)) }}
 ---
-# A pool with more than one replica gets the same disruption budget as
-# the shared runner: a node drain must not evict every replica of a
-# team's pool at once.
+# A pool guaranteed more than one replica gets the same disruption budget
+# as the shared runner: a node drain must not evict every replica of a
+# team's pool at once. (pdb.enabled: auto never renders it on a single
+# replica, where it would block the drain instead.)
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -264,7 +279,7 @@ metadata:
     app.kubernetes.io/component: runner-pool
     iterion.io/runner-pool: {{ $pool.name }}
 spec:
-  minAvailable: 1
+  {{- include "iterion.pdbBudget" $pdb | nindent 2 }}
   selector:
     matchLabels:
       {{- include "iterion.selectorLabels" $ | nindent 6 }}

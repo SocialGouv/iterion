@@ -347,6 +347,43 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, spans are dropped and the
 W3C propagator-only path is installed (inbound trace context still
 respected, but no export).
 
+## Spreading the replicas: anti-affinity, spread constraints, disruption budgets
+
+Three replicas on three nodes mean nothing unless something keeps them
+apart: on ovh-prod, MongoDB and valkeyha held one replica per node by
+chance alone — no anti-affinity on one, a dead selector on the other
+(`app.kubernetes.io/name In [valkey]` against pods labelled `valkeyha`, the
+sub-chart's alias) — until a reschedule could have put two on the node the
+autoscaler drains (#2012). The chart now spreads its own workloads and
+ships the check that found the defect.
+
+- **`server.scheduling` / `runner.scheduling`** (a `runnerPools[]` entry
+  overrides them key by key): `antiAffinity: soft` (preferred, the
+  default — a one-node cluster still schedules) or `hard` (required — a
+  replica with no free node stays Pending) over `topologyKey`
+  (`kubernetes.io/hostname`), plus a `topologySpreadConstraints` entry
+  (`maxSkew: 1`, `ScheduleAnyway` by default, `DoNotSchedule` for a hard
+  spread). The selector is rendered from the workload's own labels, never
+  typed: it cannot name a label the pods do not carry. `affinity:` stays
+  the free-form block, merged over the generated one.
+- **`server.pdb` / `runner.pdb`**: the PodDisruptionBudget renders only
+  when the workload is *guaranteed* more than one replica (`replicas > 1`,
+  or the HPA / KEDA floor above one). On a single replica, `minAvailable: 1`
+  refuses every eviction and holds a node drain forever — a budget that
+  protects nothing and blocks everything — so `auto` never renders it
+  there; `enabled: true|false` forces it. `maxUnavailable` replaces
+  `minAvailable` when set.
+- **The render gate** — `task chart:check` (in `task check`) renders the
+  dev, prod and pool values and confronts every anti-affinity, spread and
+  PodDisruptionBudget selector with the labels of its own pods; a selector
+  matching none is refused with the workload and the dead key named
+  (`internal/rendergate`). The same judge reads ANY rendered stream:
+  `helm template … | task chart:gate` — run it on the GitOps repository's
+  render before pushing an affinity or a budget there. The datastores of
+  the cloud deployment (MongoDB, NATS, valkey, SeaweedFS) are other charts:
+  their anti-affinity and budgets live in those values, and this gate is
+  how a dead one is caught before Argo CD applies it.
+
 ## Pod turnover & in-flight runs
 
 A runner pod goes away for three reasons, and a deploy is the *rarest* of

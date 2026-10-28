@@ -46,8 +46,8 @@ groups:
 |---|---|
 | `mode` | `local` (single-pod studio + PVC) vs `cloud` (the platform) |
 | `image` | Repository/tag/**digest**/pullPolicy — one image for server + runner. `digest` wins over `tag`; prefer it over a moving tag (`edge`/`main`), which is resolved per pod and can leave one ReplicaSet running two builds — see [cloud-deployment.md](../../docs/cloud-deployment.md#pinning-the-image) |
-| `server` | Replicas, full-surge `strategy`, resources, command/args, metrics port |
-| `runner` | Pool enable/replicas/resources, full-surge `strategy`, `keda.*` (JetStream lag scaler), `sandbox.enabled` (+RBAC for per-run pods) |
+| `server` | Replicas, full-surge `strategy`, resources, command/args, metrics port, `scheduling.*` (hostname anti-affinity + spread of its own replicas, soft by default) and `pdb.*` (the disruption budget, rendered only above one guaranteed replica) |
+| `runner` | Pool enable/replicas/resources, full-surge `strategy`, `keda.*` (JetStream lag scaler), `sandbox.enabled` (+RBAC for per-run pods), the same `scheduling.*` / `pdb.*` knobs (a `runnerPools[]` entry overrides them key by key) |
 | `config` | Non-secret env: `rollout.*` (monotonic runner epoch), `mongo.*`, `nats.*`, `s3.*`, `runner.*`, `auth.*` (public half: publicUrl, cookies, TTLs, signupMode, OIDC client ids), `smtp.*` (host/port/from — enables invitations + password-reset email), `orgDefaults.*` (platform-wide launch limits → `ITERION_ORG_DEFAULT_*`), `log.*` |
 | `secrets` | Four bundles, each `create:` (chart-rendered, dev) or `existingSecret:` (sealed-secrets / external-secrets, prod): `llm` (fallback provider keys), `storage` (S3 creds), `auth` (`ITERION_JWT_SECRET`, `ITERION_SECRETS_KEY`, bootstrap admin, OIDC client secrets, `completionWebhookSecret`, `webpush` VAPID keypair), `smtp` (relay credentials, server-only) |
 | `service` / `ingress` | Exposure; pair ingress TLS with your issuer |
@@ -73,10 +73,31 @@ groups:
   (previous behaviour).
 - **`config.orgDefaults.*`** — new platform-wide launch limits; all
   default to 0 (unlimited), so upgrades are behaviour-neutral until set.
-- **PodDisruptionBudgets** render automatically once `server.replicas>1`
-  (or the runner is KEDA-scaled) — no value to set.
+- **Replicas are spread by default** — every server, runner and pool pod
+  template now carries a soft hostname anti-affinity and a soft
+  `topologySpreadConstraints`, both selecting the workload's OWN labels
+  (`scheduling.*`); an upgrade rolls the pods once. Keep the previous spec
+  with `scheduling.antiAffinity: none` + `scheduling.spread.enabled: false`.
+- **PodDisruptionBudgets** render once a workload is *guaranteed* more than
+  one replica (`replicas > 1`, or the HPA / KEDA floor above one) and never
+  on a single replica, where `minAvailable: 1` refused every eviction and
+  held node drains: a KEDA pool with `minReplicas: 1` loses the budget it
+  used to get. `pdb.enabled: true|false` forces either way.
 - **`metrics.prometheusRule.enabled`** — opt-in; requires the
   PrometheusRule CRD.
+
+## Checks
+
+```bash
+task chart:check           # helm lint (dev, prod --strict) + the render tests
+helm template iterion charts/iterion -f my-values.yaml | task chart:gate
+```
+
+`task chart:check` is part of `task check`. Its render tests confront every
+anti-affinity, spread and PodDisruptionBudget selector of the dev, prod and
+pool renders with the labels of its own pods and refuse a selector that
+names none (`internal/rendergate`); `task chart:gate` judges any rendered
+stream the same way — a GitOps repo's `helm template` included.
 
 ## Smoke test
 

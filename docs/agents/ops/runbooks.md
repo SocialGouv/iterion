@@ -41,6 +41,7 @@ in the commands/paths that actually worked.
 ## Cloud ops
 
 - [cloud-deployment](../../cloud-deployment.md#verifying-that-an-infra-apps-push-landed-argocd-sync-liveness) — how a build reaches a deployment (server follows `:edge`, runner pinned BY DIGEST); verify by Deployment generation, never pods.
+- [cloud-deployment § spreading the replicas](../../cloud-deployment.md#spreading-the-replicas-anti-affinity-spread-constraints-disruption-budgets) — the `scheduling.*` knobs, the honest PDB rule (never on a single replica), and `task chart:gate` to judge ANY rendered manifest — the GitOps repository's too — for an anti-affinity, spread or budget selector that names no pod. Read before touching affinity or PDB values anywhere.
 - [probes-and-graceful-shutdown](../../probes-and-graceful-shutdown.md) — `/healthz`/`/readyz` promises, the lame-duck window, why only Mongo gates readiness. Read on 502s during a deploy or a CrashLoop at boot.
 - [platform-bots](../../platform-bots.md) — iterating a bot on cloud without an image rollout; the engine contract `requires:`; read on "version drift" or a refused push.
 - [bot-bundle-snapshots](../../bot-bundle-snapshots.md) — cloud bundle/subbot resolution; read before changing it.

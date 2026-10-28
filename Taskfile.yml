@@ -629,9 +629,10 @@ tasks:
       - ./{{.BINARY}} diagram {{.CLI_ARGS}}
 
   check:
-    desc: Run all checks (lint + test + golden replay + studio + pi extension)
+    desc: Run all checks (lint + test + golden replay + studio + pi extension + chart render gate)
     cmds:
       - task: gen:check
+      - task: chart:check
       - task: lint
       - task: test
       - task: test:goldens
@@ -1445,6 +1446,44 @@ tasks:
       CHART_DIFF_BASE: '{{.BASE}}'
     cmds:
       - bash scripts/chart-render-diff.sh "$CHART_DIFF_BASE"
+
+  chart:check:
+    desc: "Chart render gate: helm lint (dev, prod --strict) + the render tests — every anti-affinity / spread / PDB selector confronted with its own pod labels (internal/rendergate, #2012), the backup and alert guards"
+    deps: [chart:check-version]
+    cmds:
+      # Sub-chart archives: helm renders EVERY archive in charts/iterion/charts/,
+      # declared in Chart.yaml or not — a stale one resurrects the sub-chart it
+      # came from (measured: the minio archive still rendered 67 minio objects
+      # with its dependency removed). Prune the undeclared, fetch a declared
+      # one only when it is missing (the one network step, skipped once the
+      # archives are there).
+      - cmd: |
+          set -eu
+          declared=$(awk '/^dependencies:/{d=1;next} d&&/^  - name:/{print $3}' charts/iterion/Chart.yaml)
+          for archive in charts/iterion/charts/*.tgz; do
+            [ -e "$archive" ] || continue
+            name=$(basename "$archive" | sed -E 's/-[0-9][^/]*\.tgz$//')
+            case " $declared " in
+              *" $name "*) ;;
+              *) echo "chart:check: removing $archive — not declared in Chart.yaml, helm would render it anyway"; rm -v "$archive" ;;
+            esac
+          done
+          for name in $declared; do
+            if ! ls charts/iterion/charts/"$name"-*.tgz >/dev/null 2>&1; then
+              echo "chart:check: the $name sub-chart archive is missing — helm dependency update (network)"
+              helm dependency update charts/iterion
+              break
+            fi
+          done
+      - helm lint charts/iterion -f charts/iterion/values-dev.yaml
+      - helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
+      # REQUIRE=1: here a missing helm is red, never a skip.
+      - ITERION_CHART_RENDER_REQUIRE=1 go test -count=1 -run 'TestChartRender' ./charts/iterion/
+
+  chart:gate:
+    desc: "Judge a rendered manifest stream for dead scheduling / PDB selectors (stdin, or a file after --): helm template … | task chart:gate"
+    cmds:
+      - go run -mod=vendor ./cmd/render-gate {{.CLI_ARGS}}
 
   chart:package:
     desc: Package the chart into dist/ (mirrors what release.yml publishes to OCI)

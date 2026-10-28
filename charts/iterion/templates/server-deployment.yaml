@@ -151,9 +151,8 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.server.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
+      {{- with (include "iterion.scheduling" (dict "root" $ "component" "server" "scheduling" .Values.server.scheduling "affinity" .Values.server.affinity)) }}
+      {{- . | trim | nindent 6 }}
       {{- end }}
   {{- if and (eq .Values.mode "local") .Values.persistence.enabled }}
   volumeClaimTemplates:

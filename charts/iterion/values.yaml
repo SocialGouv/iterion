@@ -74,7 +74,39 @@ server:
   priorityClassName: ""
   nodeSelector: {}
   tolerations: []
+  # Keep the replicas apart (#2012). The chart renders a podAntiAffinity
+  # term and a topologySpreadConstraint from the server's OWN selector
+  # labels — never typed by hand, so the selector cannot name a label the
+  # pods do not carry: that dead-selector class is what `task chart:check`
+  # (internal/rendergate) refuses, after ovh-prod's valkeyha held its three
+  # replicas on three nodes by luck alone. antiAffinity: soft (preferred,
+  # the default — a one-node cluster still schedules), hard (required — a
+  # replica with no free node stays Pending), none. topologyKey is the node
+  # label both are spread over.
+  scheduling:
+    antiAffinity: soft
+    topologyKey: kubernetes.io/hostname
+    # The spread constraint over the same key: maxSkew 1 and ScheduleAnyway
+    # (soft) by default; DoNotSchedule makes it hard; enabled: false drops it.
+    spread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+  # Free-form affinity merged OVER the generated one, key by key: an
+  # operator's nodeAffinity is added, an operator's podAntiAffinity is
+  # merged with the generated term. scheduling.antiAffinity: none renders
+  # this block alone.
   affinity: {}
+  # The PodDisruptionBudget. enabled auto (default): rendered only when the
+  # server is guaranteed more than one replica — replicas > 1, or the HPA's
+  # minReplicas > 1 when the HPA owns the count — because minAvailable 1 on
+  # a single replica refuses every eviction and holds a node drain forever;
+  # true / false force it either way. One of minAvailable / maxUnavailable
+  # (maxUnavailable wins when set).
+  pdb:
+    enabled: auto
+    minAvailable: 1
+    maxUnavailable: ""
   hpa:
     enabled: true
     minReplicas: 1
@@ -115,6 +147,30 @@ runner:
   priorityClassName: ""
   podSecurityContext: {}
   containerSecurityContext: {}
+  nodeSelector: {}
+  tolerations: []
+  # Same knobs as server.scheduling, on the runner's own labels: soft
+  # anti-affinity + a soft spread by default, so a KEDA-grown pool fills the
+  # nodes evenly instead of piling on the one that holds the image. hard
+  # leaves the replicas beyond the node count Pending — an operator's
+  # explicit choice.
+  scheduling:
+    antiAffinity: soft
+    topologyKey: kubernetes.io/hostname
+    spread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+  affinity: {}
+  # The runner's PodDisruptionBudget, same rule as server.pdb: auto renders
+  # it when the pool is guaranteed more than one replica (replicas > 1, or
+  # keda.minReplicas > 1 when KEDA owns the count). A KEDA pool whose floor
+  # is one replica gets none — the budget would hold every node drain while
+  # protecting a pod KEDA deletes without asking anyway.
+  pdb:
+    enabled: auto
+    minAvailable: 1
+    maxUnavailable: ""
   # Prometheus metrics port for the runner. Defaults to the same
   # value as server.metricsPort to keep dashboards uniform; override
   # if your platform requires distinct ports per component.
@@ -237,7 +293,11 @@ runner:
 # Optional: replicas (default 1), image (default the shared runner
 # image), resources (default runner.resources), podAnnotations,
 # gateway.apiKeySecretKey (default OPENAI_COMPATIBLE_API_KEY), env (literal
-# pod env — the pool's routing dials, ITERION_VIBE_MODEL_* and friends).
+# pod env — the pool's routing dials, ITERION_VIBE_MODEL_* and friends),
+# nodeSelector, tolerations, affinity, scheduling and pdb (each merged over
+# the runner's block key by key; the pool spreads its OWN replicas — its
+# selector carries the pool label — and gets a budget once it is guaranteed
+# more than one replica).
 # Every ITERION_ name in `env` is also rendered into ITERION_BOT_VARS_ENV_PINS:
 # the platform bot-vars record (PUT /api/admin/settings/bot-vars) does not
 # reach a pinned name, so a model pin stored for the shared fleet never

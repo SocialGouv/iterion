@@ -1,0 +1,301 @@
+package rendergate_test
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/internal/rendergate"
+)
+
+// valkeyha is the ovh-prod defect of #2012 in its exact shape: the valkey
+// sub-chart installed under the alias valkeyha, its pods labelled with the
+// alias, its anti-affinity still selecting the chart's bare name.
+func valkeyha(selected string) string {
+	return `
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: iterion-valkeyha
+  namespace: iterion
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valkeyha
+        app.kubernetes.io/instance: iterion
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - ` + selected + `
+`
+}
+
+// workload renders a Deployment whose pods carry the labels and whose pod
+// spec is the given YAML fragment (indented under the template spec).
+func workload(kind, name, namespace string, labels map[string]string, podSpec string) string {
+	var b strings.Builder
+	b.WriteString("apiVersion: apps/v1\nkind: " + kind + "\nmetadata:\n  name: " + name + "\n")
+	if namespace != "" {
+		b.WriteString("  namespace: " + namespace + "\n")
+	}
+	b.WriteString("spec:\n  template:\n    metadata:\n      labels:\n")
+	for k, v := range labels {
+		b.WriteString("        " + k + ": " + v + "\n")
+	}
+	b.WriteString("    spec:\n")
+	for _, line := range strings.Split(strings.TrimRight(podSpec, "\n"), "\n") {
+		if line != "" {
+			b.WriteString("      " + line + "\n")
+		}
+	}
+	return b.String()
+}
+
+func judge(t *testing.T, stream string) rendergate.Report {
+	t.Helper()
+	report, err := rendergate.Judge([]byte(stream))
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	return report
+}
+
+func TestTheValkeyhaDefectIsNamed(t *testing.T) {
+	report := judge(t, valkeyha("valkey"))
+	dead := report.Dead()
+	if len(dead) != 1 {
+		t.Fatalf("want exactly one dead selector, got %d findings: %+v", len(dead), report.Findings)
+	}
+	f := dead[0]
+	if f.Kind != "StatefulSet" || f.Name != "iterion-valkeyha" || f.Namespace != "iterion" {
+		t.Errorf("the finding must name the workload, got %s %s in %q", f.Kind, f.Name, f.Namespace)
+	}
+	if len(f.DeadKeys) != 1 || f.DeadKeys[0] != "app.kubernetes.io/name" {
+		t.Errorf("the finding must name the dead key, got %v", f.DeadKeys)
+	}
+	if f.Site != "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0]" {
+		t.Errorf("site = %q", f.Site)
+	}
+	if !strings.Contains(f.Detail, "app.kubernetes.io/name=valkeyha") {
+		t.Errorf("the finding must say what the pods carry instead, got detail %q", f.Detail)
+	}
+	line := f.String()
+	for _, want := range []string{"dead", "StatefulSet iterion-valkeyha", "app.kubernetes.io/name in (valkey)", "dead key(s) app.kubernetes.io/name", "valkeyha"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the printed line %q lacks %q", line, want)
+		}
+	}
+	if report.Judged != 1 || report.PodTemplates != 1 {
+		t.Errorf("judged=%d templates=%d, want 1 and 1", report.Judged, report.PodTemplates)
+	}
+}
+
+func TestTheOwnSelectorIsAlive(t *testing.T) {
+	report := judge(t, valkeyha("valkeyha"))
+	if len(report.Findings) != 0 {
+		t.Fatalf("a selector naming the pods' own label is alive, got %+v", report.Findings)
+	}
+	if report.Judged != 1 {
+		t.Errorf("the alive selector must still count as judged, got %d", report.Judged)
+	}
+}
+
+func TestSelectorSemantics(t *testing.T) {
+	labels := map[string]string{"app": "web", "tier": "front"}
+	spread := func(selector string) string {
+		return workload("Deployment", "web", "", labels, "topologySpreadConstraints:\n  - topologyKey: kubernetes.io/hostname\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n"+selector)
+	}
+	cases := []struct {
+		name     string
+		selector string
+		deadKeys []string // nil = alive
+	}{
+		{"matchLabels equal", "    labelSelector:\n      matchLabels:\n        app: web\n        tier: front\n", nil},
+		{"matchLabels wrong value", "    labelSelector:\n      matchLabels:\n        app: api\n", []string{"app"}},
+		{"matchLabels absent key", "    labelSelector:\n      matchLabels:\n        app: web\n        zone: eu\n", []string{"zone"}},
+		{"In holds", "    labelSelector:\n      matchExpressions:\n        - {key: app, operator: In, values: [api, web]}\n", nil},
+		{"NotIn holds on another value", "    labelSelector:\n      matchExpressions:\n        - {key: app, operator: NotIn, values: [api]}\n", nil},
+		{"NotIn holds on an absent key", "    labelSelector:\n      matchExpressions:\n        - {key: zone, operator: NotIn, values: [eu]}\n", nil},
+		{"NotIn fails on the carried value", "    labelSelector:\n      matchExpressions:\n        - {key: app, operator: NotIn, values: [web]}\n", []string{"app"}},
+		{"Exists holds", "    labelSelector:\n      matchExpressions:\n        - {key: tier, operator: Exists}\n", nil},
+		{"Exists fails", "    labelSelector:\n      matchExpressions:\n        - {key: zone, operator: Exists}\n", []string{"zone"}},
+		{"DoesNotExist holds", "    labelSelector:\n      matchExpressions:\n        - {key: zone, operator: DoesNotExist}\n", nil},
+		{"DoesNotExist fails", "    labelSelector:\n      matchExpressions:\n        - {key: app, operator: DoesNotExist}\n", []string{"app"}},
+		{"two dead keys are both named", "    labelSelector:\n      matchLabels:\n        app: api\n      matchExpressions:\n        - {key: zone, operator: Exists}\n", []string{"app", "zone"}},
+		{"an empty selector matches every pod", "    labelSelector: {}\n", nil},
+		{"a numeric value is compared as text", "    labelSelector:\n      matchLabels:\n        app: web\n      matchExpressions:\n        - {key: tier, operator: In, values: [front]}\n", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			report := judge(t, spread(c.selector))
+			dead := report.Dead()
+			if c.deadKeys == nil {
+				if len(dead) != 0 {
+					t.Fatalf("want alive, got %+v", dead)
+				}
+				return
+			}
+			if len(dead) != 1 {
+				t.Fatalf("want one dead finding, got %+v", report.Findings)
+			}
+			if got := strings.Join(dead[0].DeadKeys, ","); got != strings.Join(c.deadKeys, ",") {
+				t.Errorf("dead keys = %q, want %q", got, strings.Join(c.deadKeys, ","))
+			}
+		})
+	}
+}
+
+func TestANullSelectorIsDead(t *testing.T) {
+	labels := map[string]string{"app": "web"}
+	stream := workload("Deployment", "web", "", labels,
+		"topologySpreadConstraints:\n  - topologyKey: kubernetes.io/hostname\n    maxSkew: 1\n    whenUnsatisfiable: DoNotSchedule\n"+
+			"affinity:\n  podAntiAffinity:\n    preferredDuringSchedulingIgnoredDuringExecution:\n      - weight: 100\n        podAffinityTerm:\n          topologyKey: kubernetes.io/hostname\n")
+	report := judge(t, stream)
+	dead := report.Dead()
+	if len(dead) != 2 {
+		t.Fatalf("a spread and a term without labelSelector select no pod, want 2 dead, got %+v", report.Findings)
+	}
+	sites := map[string]bool{}
+	for _, f := range dead {
+		if f.Selector != "<null>" {
+			t.Errorf("%s: selector rendered %q, want <null>", f.Site, f.Selector)
+		}
+		sites[f.Site] = true
+	}
+	for _, want := range []string{"topologySpreadConstraints[0]", "affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm"} {
+		if !sites[want] {
+			t.Errorf("no dead finding at %s, got %v", want, sites)
+		}
+	}
+}
+
+func TestCrossWorkloadIsReportedNotFatal(t *testing.T) {
+	server := workload("Deployment", "server", "", map[string]string{"app": "server"},
+		"affinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      - topologyKey: kubernetes.io/hostname\n        labelSelector:\n          matchLabels:\n            app: runner\n")
+	runner := workload("Deployment", "runner", "", map[string]string{"app": "runner"}, "")
+	report := judge(t, server+"---\n"+runner)
+	if len(report.Dead()) != 0 {
+		t.Fatalf("keeping the server away from the runner is not dead, got %+v", report.Dead())
+	}
+	if len(report.Findings) != 1 || report.Findings[0].Verdict != rendergate.CrossWorkload {
+		t.Fatalf("want one cross-workload finding, got %+v", report.Findings)
+	}
+	if !strings.Contains(report.Findings[0].Detail, "Deployment/runner") {
+		t.Errorf("the finding must name the matched workload, got %q", report.Findings[0].Detail)
+	}
+	alone := judge(t, server)
+	if len(alone.Dead()) != 1 {
+		t.Fatalf("without the runner in the stream the same term is dead, got %+v", alone.Findings)
+	}
+}
+
+func TestAPodAffinityNeedsSomePod(t *testing.T) {
+	term := "affinity:\n  podAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      - topologyKey: kubernetes.io/hostname\n        labelSelector:\n          matchLabels:\n            app: cache\n"
+	web := workload("Deployment", "web", "", map[string]string{"app": "web"}, term)
+	cache := workload("StatefulSet", "cache", "", map[string]string{"app": "cache"}, "")
+	if report := judge(t, web+"---\n"+cache); len(report.Findings) != 0 {
+		t.Fatalf("co-location with an existing pod is alive, got %+v", report.Findings)
+	}
+	report := judge(t, web)
+	if dead := report.Dead(); len(dead) != 1 || dead[0].Site != "affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0]" {
+		t.Fatalf("co-location with nothing is dead, got %+v", report.Findings)
+	}
+}
+
+func TestAPodDisruptionBudgetSelectingNoPodIsDead(t *testing.T) {
+	pdb := func(namespace, app string) string {
+		return "apiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata:\n  name: web\n  namespace: " + namespace + "\nspec:\n  minAvailable: 1\n  selector:\n    matchLabels:\n      app: " + app + "\n"
+	}
+	web := workload("Deployment", "web", "prod", map[string]string{"app": "web"}, "")
+	if report := judge(t, web+"---\n"+pdb("prod", "web")); len(report.Findings) != 0 || report.Judged != 1 {
+		t.Fatalf("a budget over existing pods is alive and judged, got %+v (judged %d)", report.Findings, report.Judged)
+	}
+	report := judge(t, web+"---\n"+pdb("prod", "wep"))
+	dead := report.Dead()
+	if len(dead) != 1 || dead[0].Kind != "PodDisruptionBudget" || dead[0].Site != "spec.selector" {
+		t.Fatalf("a budget over a typo is dead, got %+v", report.Findings)
+	}
+	if len(dead[0].DeadKeys) != 1 || dead[0].DeadKeys[0] != "app" {
+		t.Errorf("dead keys = %v", dead[0].DeadKeys)
+	}
+	elsewhere := judge(t, web+"---\n"+pdb("staging", "web"))
+	if len(elsewhere.Dead()) != 1 {
+		t.Fatalf("a budget in another namespace than its pods protects nothing, got %+v", elsewhere.Findings)
+	}
+	null := "apiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata:\n  name: web\n  namespace: prod\nspec:\n  minAvailable: 1\n"
+	if report := judge(t, web+"---\n"+null); len(report.Dead()) != 1 {
+		t.Fatalf("a budget without a selector selects nothing, got %+v", report.Findings)
+	}
+}
+
+func TestTermsReachingOtherNamespacesAreUnjudged(t *testing.T) {
+	term := func(extra string) string {
+		return "affinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      - topologyKey: kubernetes.io/hostname\n" + extra + "        labelSelector:\n          matchLabels:\n            app: web\n"
+	}
+	labels := map[string]string{"app": "web"}
+	byNamespaceSelector := judge(t, workload("Deployment", "web", "prod", labels, term("        namespaceSelector:\n          matchLabels:\n            team: a\n")))
+	if len(byNamespaceSelector.Findings) != 1 || byNamespaceSelector.Findings[0].Verdict != rendergate.Unjudged || byNamespaceSelector.Judged != 0 {
+		t.Fatalf("a namespaceSelector term cannot be judged from the stream, got %+v", byNamespaceSelector)
+	}
+	byOtherNamespace := judge(t, workload("Deployment", "web", "prod", labels, term("        namespaces: [staging]\n")))
+	if len(byOtherNamespace.Findings) != 1 || byOtherNamespace.Findings[0].Verdict != rendergate.Unjudged {
+		t.Fatalf("a term naming another namespace is unjudged, got %+v", byOtherNamespace.Findings)
+	}
+	own := judge(t, workload("Deployment", "web", "prod", labels, term("        namespaces: [prod]\n")))
+	if len(own.Findings) != 0 || own.Judged != 1 {
+		t.Fatalf("a term naming its own namespace is judged like any other, got %+v", own)
+	}
+}
+
+func TestEveryPodTemplateKindIsJudged(t *testing.T) {
+	deadSpread := "topologySpreadConstraints:\n  - topologyKey: zone\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchLabels:\n        app: nobody\n"
+	for _, kind := range []string{"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"} {
+		report := judge(t, workload(kind, "w", "", map[string]string{"app": "w"}, deadSpread))
+		if dead := report.Dead(); len(dead) != 1 || dead[0].Kind != kind {
+			t.Errorf("%s: want one dead finding of that kind, got %+v", kind, report.Findings)
+		}
+	}
+	cronJob := "apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: nightly\nspec:\n  schedule: '0 2 * * *'\n  jobTemplate:\n    spec:\n      template:\n        metadata:\n          labels:\n            app: nightly\n        spec:\n          topologySpreadConstraints:\n            - topologyKey: zone\n              maxSkew: 1\n              whenUnsatisfiable: ScheduleAnyway\n              labelSelector:\n                matchLabels:\n                  app: nobody\n"
+	report := judge(t, cronJob)
+	if dead := report.Dead(); len(dead) != 1 || dead[0].Kind != "CronJob" || dead[0].Name != "nightly" {
+		t.Errorf("CronJob: want one dead finding, got %+v", report.Findings)
+	}
+	pod := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\n  labels:\n    app: p\nspec:\n  topologySpreadConstraints:\n    - topologyKey: zone\n      maxSkew: 1\n      whenUnsatisfiable: ScheduleAnyway\n      labelSelector:\n        matchLabels:\n          app: p\n"
+	if report := judge(t, pod); len(report.Findings) != 0 || report.Judged != 1 || report.PodTemplates != 1 {
+		t.Errorf("Pod: its own labels are the template, got %+v", report)
+	}
+}
+
+func TestMalformedStreamsAreRefused(t *testing.T) {
+	if _, err := rendergate.Judge([]byte("kind: Deployment\nmetadata: [unclosed\n")); err == nil {
+		t.Error("broken YAML must be an error, not a clean report")
+	}
+	bad := workload("Deployment", "w", "", map[string]string{"app": "w"},
+		"topologySpreadConstraints:\n  - topologyKey: zone\n    labelSelector:\n      matchExpressions:\n        - {key: app, operator: Gt, values: ['1']}\n")
+	_, err := rendergate.Judge([]byte(bad))
+	if err == nil || !strings.Contains(err.Error(), "unknown operator") {
+		t.Errorf("an operator the API would refuse must be refused here, got %v", err)
+	}
+	noKey := workload("Deployment", "w", "", map[string]string{"app": "w"},
+		"topologySpreadConstraints:\n  - topologyKey: zone\n    labelSelector:\n      matchExpressions:\n        - {operator: Exists}\n")
+	if _, err := rendergate.Judge([]byte(noKey)); err == nil || !strings.Contains(err.Error(), "empty key") {
+		t.Errorf("a requirement without a key must be refused, got %v", err)
+	}
+}
+
+func TestAnEmptyStreamJudgesNothing(t *testing.T) {
+	report := judge(t, "# nothing rendered\n---\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\n")
+	if report.Judged != 0 || report.PodTemplates != 0 || len(report.Findings) != 0 {
+		t.Fatalf("got %+v", report)
+	}
+	if !strings.Contains(report.Summary(), "0 pod templates, 0 selectors judged, 0 dead") {
+		t.Errorf("summary = %q", report.Summary())
+	}
+}
