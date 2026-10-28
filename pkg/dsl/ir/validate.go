@@ -67,6 +67,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validatePermissionRules(w)
 	c.validateVerifiedActions(w)
 	c.validateArtifactLabels(w)
+	c.validateDeliverables(w)
 	c.validateFileFields(w)
 	c.validateReservedAnswerKeys(w)
 	c.validateEvents(w)

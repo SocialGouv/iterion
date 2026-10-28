@@ -186,6 +186,7 @@ llm_prop = "description" ":" str_value NEWLINE
          | "output" ":" IDENT NEWLINE
          | "publish" ":" IDENT NEWLINE
          | "artifact_labels" ":" tool_ref_list NEWLINE
+         | "deliverables" ":" string_list NEWLINE
          | "system" ":" prompt_ref NEWLINE
          | "user" ":" prompt_ref NEWLINE
          | "session" ":" session_mode NEWLINE
@@ -296,6 +297,7 @@ tool_prop = "description" ":" str_value NEWLINE
           | "output" ":" IDENT NEWLINE
           | "publish" ":" IDENT NEWLINE
           | "artifact_labels" ":" tool_ref_list NEWLINE
+          | "deliverables" ":" string_list NEWLINE
           | "await" ":" await_mode NEWLINE
           | "compress" ":" compress_mode NEWLINE
           | "permission" ":" permission_mode NEWLINE

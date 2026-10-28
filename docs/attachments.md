@@ -195,6 +195,42 @@ order; it is not required.
 > This is the writing counterpart of `[iterion] preview_screenshot=`,
 > which promotes a browser capture the same way.
 
+## A node declares the files it produces
+
+The directive above is a line the tool PRINTS. A node can declare the same
+files up front instead, so the contract is readable without running
+anything:
+
+```iter fragment
+tool export_report:
+  command: `make report`
+  deliverables: ["report.md", "out/annex.html"]
+```
+
+A declared deliverable is a **workspace-relative** path, and its **base
+name** is the handle the run serves it under: `out/annex.html` is served as
+`annex.html`, so a download address carries the file name the author wrote.
+`agent` and `judge` nodes accept the property too — they run tools in the
+same workspace. A `human` node's file comes from the operator's own upload
+and a `compute` node writes none, so there the parser refuses the property
+by name instead of dropping the declaration in silence.
+
+Two shapes are refused where the declaration is written, because no run
+could keep the promise:
+
+| Code | What it refuses                                                      |
+| ---- | -------------------------------------------------------------------- |
+| C317 | An entry that is not a workspace-relative file path: absolute (`/tmp/report.md`), escaping upwards (`../report.md`), naming a directory (`out/`), or empty. A `{{…}}` reference or a `${…}` form does not excuse the shape — no rendering makes `/tmp/report.md` relative — so a templated entry is held to the same rules; what it renders TO is the collector's to refuse, where the path is resolved. |
+| C318 | Two entries of one node sharing a base name (`out/report.md` and `tmp/report.md`): both would be served as `report.md`, and the run store refuses the second rather than overwrite the first. The handle is per node, so two different nodes may each declare `report.md`. |
+
+The declaration has ONE reader, `ir.NodeDeliverables`, and the handle has
+one definition, `ir.DeliverableName`: the compiler that judges a
+declaration and the collector that uploads the bytes cannot disagree about
+which file is served under which name. The collection itself — the
+node-end upload into the run's file store, and the download route that
+serves a declared name — is the next slice of iterion#2690; a tool that
+must hand a file to a human today prints the directive above.
+
 ## Upload protocol
 
 The Launch modal uploads each attachment immediately on selection via

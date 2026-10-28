@@ -615,6 +615,7 @@ type LLMDecl struct {
 	Output            string           // schema reference name
 	Publish           string           // persistent artifact name (empty if not set)
 	ArtifactLabels    []string         // artifact_labels: applied to the published artifact
+	Deliverables      []string         // deliverables: workspace-relative files the run collects and serves under their base name
 	System            string           // prompt reference name
 	User              string           // prompt reference name
 	Session           SessionMode      // defaults to SessionFresh
@@ -841,6 +842,7 @@ type ToolNodeDecl struct {
 	Output         string        // schema reference name
 	Publish        string        // persistent artifact name (empty if not set)
 	ArtifactLabels []string      // artifact_labels: applied to the published artifact
+	Deliverables   []string      // deliverables: workspace-relative files the run collects and serves under their base name
 	Await          AwaitMode     // convergence strategy (none/wait_all/best_effort)
 	Sandbox        *SandboxBlock // node-level sandbox override; nil inherits from workflow
 	Compress       string        // compress output-compression mode: on|ultra|off ("" = inherit)

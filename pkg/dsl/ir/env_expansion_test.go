@@ -252,6 +252,7 @@ tool gate:
   output: verdict
   publish: test_output
   artifact_labels: [tests]
+  deliverables: ["report.md"]
   await: wait_all
   sandbox: auto
   compress: ultra

@@ -966,6 +966,13 @@
           "$ref": "#/$defs/v1.cursors",
           "description": "Prompt-engineering dials activated on the node (docs/cursors.md)"
         },
+        "deliverables": {
+          "description": "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "deny": {
           "description": "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)",
           "items": {
@@ -1504,6 +1511,13 @@
           "$ref": "#/$defs/v1.cursors",
           "description": "Prompt-engineering dials activated on the node (docs/cursors.md)"
         },
+        "deliverables": {
+          "description": "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "deny": {
           "description": "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)",
           "items": {
@@ -1915,6 +1929,13 @@
           "description": "The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261)",
           "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
+        },
+        "deliverables": {
+          "description": "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "description": {
           "description": "Free-text description shown by the studio and the reports",
@@ -3644,6 +3665,13 @@
           "$ref": "#/$defs/v2.cursors",
           "description": "Prompt-engineering dials activated on the node (docs/cursors.md)"
         },
+        "deliverables": {
+          "description": "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "deny": {
           "description": "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)",
           "items": {
@@ -4182,6 +4210,13 @@
           "$ref": "#/$defs/v2.cursors",
           "description": "Prompt-engineering dials activated on the node (docs/cursors.md)"
         },
+        "deliverables": {
+          "description": "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "deny": {
           "description": "Permission rules always blocked on this node; a non-empty list REPLACES the workflow's deny: (C154/C111)",
           "items": {
@@ -4593,6 +4628,13 @@
           "description": "The connection binding that authenticates the action, bare or quoted (an alias may carry a dash) (C261)",
           "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
+        },
+        "deliverables": {
+          "description": "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "description": {
           "description": "Free-text description shown by the studio and the reports",

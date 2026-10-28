@@ -188,6 +188,51 @@ func (c *compiler) validateArtifactLabels(w *Workflow) {
 	}
 }
 
+// validateDeliverables refuses a `deliverables:` entry the run could never
+// collect (C317) and two entries of one node that would be served under the
+// same name (C318).
+//
+// Errors, not warnings, and judged where the declaration is written: the
+// collector reads the file from the node's workspace and stores it under
+// its base name, so an absolute path, an upward escape or a second entry
+// with the same base name is a promise no run can keep. C314's argument —
+// a collision that cannot be authored needs no runtime guard.
+//
+// A template (`{{…}}`) or an environment form (`${…}`) does not excuse the
+// shape: no rendering can make `/tmp/report.md` relative or put a trailing
+// slash back, so both rules are decided on the text as written. What a
+// template RENDERS to — a value that climbs out of the workspace — only the
+// collector can judge, and it does so where it resolves the path.
+//
+// Both rules read the declaration through NodeDeliverables and name it with
+// DeliverableName, the same chokepoint the collector uses, so the compiler
+// and the run cannot disagree about which file is served under which name.
+func (c *compiler) validateDeliverables(w *Workflow) {
+	for _, n := range w.Nodes {
+		declared := NodeDeliverables(n)
+		if len(declared) == 0 {
+			continue
+		}
+		firstByName := make(map[string]string, len(declared))
+		for _, entry := range declared {
+			if !DeliverableIsWorkspacePath(entry) {
+				c.errorfAt(DiagDeliverableNotWorkspacePath, n.NodeID(), "",
+					"%s %q declares the deliverable %q, which is not a workspace-relative file path — the run collects a deliverable from the node's workspace and serves it under its base name",
+					n.NodeKind().String(), n.NodeID(), entry)
+				continue
+			}
+			name := DeliverableName(entry)
+			if first, taken := firstByName[name]; taken {
+				c.errorfAt(DiagDeliverableNameCollision, n.NodeID(), "",
+					"%s %q declares the deliverables %q and %q, which are both served as %q — the run store refuses the second rather than overwrite the first; rename one of the files",
+					n.NodeKind().String(), n.NodeID(), first, entry, name)
+				continue
+			}
+			firstByName[name] = entry
+		}
+	}
+}
+
 // validateCompress enforces that every compress value (workflow-level + every
 // agent/judge/tool node) is one of the accepted barewords. A typo
 // would silently fall back to "inherit" instead of compressing — so

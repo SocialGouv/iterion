@@ -251,6 +251,7 @@ A node: `agent <name>:` at the top level or inside a `group`.
 | `output` | ident | Schema the node's structured output must match |
 | `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
 | `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
+| `deliverables` | string list | Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive |
 | `system` | prompt name, or its text as a string | The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `user` | prompt name, or its text as a string | The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
@@ -302,6 +303,7 @@ A node: `judge <name>:` at the top level or inside a `group`.
 | `output` | ident | Schema the node's structured output must match |
 | `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
 | `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
+| `deliverables` | string list | Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive |
 | `system` | prompt name, or its text as a string | The system prompt: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `user` | prompt name, or its text as a string | The user message: a declared prompt's name, or the text itself as a string (an inline prompt, named after its body) |
 | `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
@@ -403,6 +405,7 @@ A node: `tool <name>:` at the top level or inside a `group`.
 | `output` | ident | Schema the node's structured output must match |
 | `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
 | `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
+| `deliverables` | string list | Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive |
 | `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
 | `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
 | `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |

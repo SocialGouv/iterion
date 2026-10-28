@@ -6,7 +6,9 @@ package ir
 
 import (
 	"os"
+	"path"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -233,6 +235,7 @@ type AgentNode struct {
 	ActiveMCPServers []string   // populated after project config resolution
 	Publish          string     // persistent artifact name (empty if not set)
 	PublishLabels    []string   // DSL artifact_labels: applied to the published artifact
+	Deliverables     []string   // DSL deliverables: files the run collects at node end
 	Session          SessionMode
 	SessionSlot      string
 	Tools            []string // tool capability names
@@ -272,6 +275,7 @@ type JudgeNode struct {
 	MCP              *MCPConfig
 	ActiveMCPServers []string
 	Publish          string
+	Deliverables     []string // DSL deliverables: files the run collects at node end
 	Session          SessionMode
 	SessionSlot      string
 	Tools            []string
@@ -395,6 +399,7 @@ type ToolNode struct {
 
 	Publish       string   // persistent artifact name (empty = not published)
 	PublishLabels []string // DSL artifact_labels: applied to the published artifact
+	Deliverables  []string // DSL deliverables: files the run collects at node end
 	Session       SessionMode
 	AwaitMode     AwaitMode
 	Sandbox       *SandboxSpec // node-level sandbox override (nil = inherit workflow)
@@ -860,6 +865,70 @@ func NodePublishLabels(n Node) []string {
 		return n.PublishLabels
 	}
 	return nil
+}
+
+// NodeDeliverables returns the DSL `deliverables:` list of the node kinds
+// that run something in a workspace (agent, judge, tool), or nil.
+//
+// It is the ONE reader of the declaration: the collector, a validator and a
+// report ask here instead of type-switching again, so a node kind that
+// gains the property is served everywhere at once — and the handle a
+// deliverable is served under is its base name, decided here with
+// DeliverableName rather than re-derived per reader.
+//
+// A human node's file comes from the operator's upload and a compute node
+// writes nothing, so neither accepts the property: the parser refuses it by
+// name there, which is a typed refusal rather than a silent drop.
+func NodeDeliverables(n Node) []string {
+	switch n := n.(type) {
+	case *AgentNode:
+		return n.Deliverables
+	case *JudgeNode:
+		return n.Deliverables
+	case *ToolNode:
+		return n.Deliverables
+	}
+	return nil
+}
+
+// DeliverableName is the handle a declared deliverable is served under: its
+// base name, extension included (`out/report.md` is served as `report.md`,
+// which is what G119 settled and what the download route addresses). Empty
+// when the path names no file.
+func DeliverableName(declared string) string {
+	cleaned := strings.TrimSpace(declared)
+	if cleaned == "" || strings.HasSuffix(cleaned, "/") {
+		return ""
+	}
+	base := path.Base(path.Clean(cleaned))
+	switch base {
+	case ".", "..", "/":
+		return ""
+	}
+	return base
+}
+
+// DeliverableIsWorkspacePath answers whether a declared deliverable can be
+// resolved inside the node's workspace: non-empty, relative, naming a file
+// rather than a directory, and not escaping upwards. The collector reads
+// the file from the workspace, so a path outside it is a promise no run can
+// keep — C317 refuses it where it is written.
+//
+// A template (`{{…}}`) or an environment form (`${…}`) is judged like any
+// other text: no rendering can make `/tmp/report.md` relative, so a
+// templated entry is held to the same shape. Only what a template renders
+// TO escapes this answer, and that is the collector's to refuse where it
+// resolves the path.
+func DeliverableIsWorkspacePath(declared string) bool {
+	cleaned := strings.TrimSpace(declared)
+	if cleaned == "" || strings.HasPrefix(cleaned, "/") {
+		return false
+	}
+	normalised := path.Clean(cleaned)
+	if normalised == "." || normalised == ".." || strings.HasPrefix(normalised, "../") {
+		return false
+	}
+	return DeliverableName(cleaned) != ""
 }
 
 // NodeInteraction returns the Interaction field for nodes that support it, or InteractionNone.

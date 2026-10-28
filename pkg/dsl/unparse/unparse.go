@@ -753,7 +753,8 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 		writeAgentFields(&w.b, llmFields{
 			Model: a.Model, Backend: a.Backend, Provider: a.Provider, Command: a.Command,
 			Input: a.Input, Output: a.Output, Publish: a.Publish, ArtifactLabels: a.ArtifactLabels,
-			System: a.System, User: a.User, Session: a.Session, SessionSlot: a.SessionSlot,
+			Deliverables: a.Deliverables,
+			System:       a.System, User: a.User, Session: a.Session, SessionSlot: a.SessionSlot,
 			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities, Skills: a.Skills,
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
 			Timeout:  a.Timeout,
@@ -791,7 +792,8 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 		writeAgentFields(&w.b, llmFields{
 			Model: j.Model, Backend: j.Backend, Provider: j.Provider, Command: j.Command,
 			Input: j.Input, Output: j.Output, Publish: j.Publish, ArtifactLabels: j.ArtifactLabels,
-			System: j.System, User: j.User, Session: j.Session, SessionSlot: j.SessionSlot,
+			Deliverables: j.Deliverables,
+			System:       j.System, User: j.User, Session: j.Session, SessionSlot: j.SessionSlot,
 			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities, Skills: j.Skills,
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
 			Timeout:  j.Timeout,
@@ -1017,6 +1019,7 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 			writeProp(&w.b, "publish", t.Publish)
 		}
 		writeArtifactLabels(&w.b, t.ArtifactLabels, "  ")
+		writeDeliverables(&w.b, t.Deliverables, "  ")
 		if t.Await != ast.AwaitNone {
 			writeProp(&w.b, "await", t.Await.String())
 		}
@@ -1436,6 +1439,22 @@ func writeArtifactLabels(b *buf, labels []string, indent string) {
 	fmt.Fprintf(b, "%sartifact_labels: [%s]\n", indent, strings.Join(items, ", "))
 }
 
+// writeDeliverables renders `deliverables: ["report.md"]` — the files the
+// node produces that the run collects. Every element is QUOTED: a path is a
+// string in this list, and `out/report.md` is no identifier (the string
+// list parser reads a bare word too, but writing a path bare would make the
+// round-trip depend on what the path happens to contain).
+func writeDeliverables(b *buf, paths []string, indent string) {
+	if len(paths) == 0 {
+		return
+	}
+	items := make([]string, len(paths))
+	for i, p := range paths {
+		items[i] = b.str(p)
+	}
+	fmt.Fprintf(b, "%sdeliverables: [%s]\n", indent, strings.Join(items, ", "))
+}
+
 // identOrStr renders v bare when it is an identifier and as a string
 // literal otherwise — for properties the parser reads as either.
 func identOrStr(b *buf, v string) string {
@@ -1728,6 +1747,7 @@ type llmFields struct {
 	Model, Backend, Provider, Command   string
 	Input, Output, Publish              string
 	ArtifactLabels                      []string
+	Deliverables                        []string
 	System, User                        string
 	Session                             ast.SessionMode
 	SessionSlot                         string
@@ -1774,6 +1794,7 @@ func writeAgentFields(b *buf, f llmFields) {
 		writeIdentProp(b, "publish", f.Publish)
 	}
 	writeArtifactLabels(b, f.ArtifactLabels, "  ")
+	writeDeliverables(b, f.Deliverables, "  ")
 	if f.System != "" {
 		writePromptRef(b, "system", f.System)
 	}

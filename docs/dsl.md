@@ -376,7 +376,7 @@ Important property groups:
 | Group | Properties |
 |---|---|
 | Model execution | `model`, `backend`, `provider`, and the `claude_code`-compatible binary override `command`. See [backends](backends.md) and [delegation](delegation.md). |
-| Data/prompt | `input`, `output`, `system`, `user`, `publish`, `artifact_labels`, `description`. |
+| Data/prompt | `input`, `output`, `system`, `user`, `publish`, `artifact_labels`, `deliverables`, `description`. |
 | Conversation | `session: fresh\|inherit\|inherit_if_available\|fork\|artifacts_only\|persist`, `interaction`, `interaction_prompt`, `interaction_model`. `persist` (ADR-089) resumes **this node's own** last CLI conversation on re-entry (claude_code / pi / codex); judges and humans stay graph nodes. Trunk-only (C243). |
 | Tools/access | `tools`, `tool_policy`, `capabilities`, `skills`, `permission`, `mcp`, `sandbox`. The exact Claude spellings `Read`/`Bash`/`Grep` resolve on claw as `read_file`/`bash`/`grep` when the bundle declares the tool-alias engine floor; exact names and unique MCP shorthand win first. See [tool-name aliases](tool-name-aliases.md). |
 | Limits | `tool_max_steps`, `max_tokens`, `reasoning_effort`, `timeout`, `compaction`, `compress`. |
@@ -524,7 +524,9 @@ tool run_tests:
   needs: [test_slot]
 ```
 
-`command` and `script` are mutually exclusive. A script adds `language: js|py|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `await`, `sandbox`, `compress`, `permission`, `needs`, and `env_expansion: braced | none` — what the engine expands in the node's bodies before they run ([the rule and the decline](#template-namespaces)).
+`command` and `script` are mutually exclusive. A script adds `language: js|py|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `deliverables`, `await`, `sandbox`, `compress`, `permission`, `needs`, and `env_expansion: braced | none` — what the engine expands in the node's bodies before they run ([the rule and the decline](#template-namespaces)).
+
+**Declared deliverables.** `deliverables: ["report.md", "out/annex.html"]` names the files the node produces that the run collects and serves as downloads — workspace-relative paths, each served under its base name, the declared twin of the `[iterion] attachment=` line a tool prints ([attachments](attachments.md#a-node-declares-the-files-it-produces)). The compiler refuses a path the run could never collect ([C317](references/diagnostics.md)) and two entries one node would serve under the same name ([C318](references/diagnostics.md)). `agent` and `judge` nodes accept the same property; a `human` node's file comes from the operator's upload and a `compute` node writes none, so neither accepts it.
 
 **The output contract.** A tool node's **stdout is its output**: the runtime parses it as a JSON object, and that object is what `{{outputs.<tool>.<field>}}`, an edge `when`, and the declared `output:` schema see. Stdout that is not a JSON object is wrapped as `{"result": "<text>"}` — a downstream `{{outputs.run_tests.passed}}` then finds nothing. A non-zero exit code **fails the node** (resumable), stdout and stderr attached; when the failure is a *result* rather than an error — a test suite that fails, a scanner that finds something — wrap the command so it exits 0 and reports the verdict as a field:
 

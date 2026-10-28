@@ -299,6 +299,7 @@ var (
 	pOutput         = prop("output", Ident, "Schema the node's structured output must match")
 	pPublish        = prop("publish", Ident, "Artifact name the output is published under (read back as {{artifacts.<name>}})")
 	pArtifactLabels = prop("artifact_labels", ToolList, "Labels stamped on the published artifact; a quoted element is the literal label")
+	pDeliverables   = prop("deliverables", StringList, "Files the node produces that the run collects and serves as downloads: workspace-relative paths, each served under its base name (C317/C318) — the declared twin of the `[iterion] attachment=` directive")
 	pAwait          = enum("await", "Convergence rule when several incoming branches reach the node", "wait_all", "best_effort")
 	pDescription    = prop("description", String, "Free-text description shown by the studio and the reports")
 	pNeeds          = prop("needs", IdentOrList, "Resource(s) leased from the workflow's resources: block for the node's duration")
@@ -333,7 +334,7 @@ var llmProperties = []Property{
 	pDescription,
 	pModel, pBackend, pProvider,
 	word(prop("command", String, "Executable that drives a CLI backend, overriding its default binary")),
-	pInput, pOutput, pPublish, pArtifactLabels,
+	pInput, pOutput, pPublish, pArtifactLabels, pDeliverables,
 	pSystem, pUser,
 	enum("session", "How the node's LLM session relates to the previous node's", "fresh", "inherit", "inherit_if_available", "fork", "artifacts_only", "persist"),
 	prop("session_slot", Ident, "Named durable session slot; requires session: persist; must not be named like another node (C314)"),
@@ -498,7 +499,7 @@ var Kinds = append([]Kind{
 			prop("script", String, "Inline script run by the interpreter language: names"),
 			checked("language", "Interpreter for script:", "js", "node", "py", "python", "python3", "sh", "bash"),
 			checked("env_expansion", "What the engine expands in this node's bodies before they run: the braced environment forms (braced, the default) or nothing (none), which hands `${NAME}` and `${NAME:-default}` to the body's own reader as written — ADR-130; another word, or the property on an `action:` node that has no body, is refused (C004)", "braced", "none"),
-			pInput, pOutput, pPublish, pArtifactLabels,
+			pInput, pOutput, pPublish, pArtifactLabels, pDeliverables,
 			pAwait,
 			pSandbox,
 			pCompress,

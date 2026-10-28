@@ -164,6 +164,7 @@ nodes:
     output: verdict
     publish: survey_out
     artifact_labels: [plan, review-ledger]
+    deliverables: ["report.md", "out/annex.html"]
     system: reviewer
     user: "Inline text is a prompt too"
     session: "fresh"
@@ -286,6 +287,7 @@ nodes:
     output: verdict
     publish: test_output
     artifact_labels: [tests]
+    deliverables: ["tests.log"]
     await: wait_all
     sandbox: auto
     compress: ultra

@@ -453,6 +453,7 @@ type jsonAgentDecl struct {
 	Output            string               `json:"output,omitempty"`
 	Publish           string               `json:"publish,omitempty"`
 	ArtifactLabels    []string             `json:"artifact_labels,omitempty"`
+	Deliverables      []string             `json:"deliverables,omitempty"`
 	System            string               `json:"system,omitempty"`
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
@@ -503,6 +504,7 @@ type jsonJudgeDecl struct {
 	Output            string               `json:"output,omitempty"`
 	Publish           string               `json:"publish,omitempty"`
 	ArtifactLabels    []string             `json:"artifact_labels,omitempty"`
+	Deliverables      []string             `json:"deliverables,omitempty"`
 	System            string               `json:"system,omitempty"`
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
@@ -604,6 +606,7 @@ type jsonToolNodeDecl struct {
 	Output         string             `json:"output,omitempty"`
 	Publish        string             `json:"publish,omitempty"`
 	ArtifactLabels []string           `json:"artifact_labels,omitempty"`
+	Deliverables   []string           `json:"deliverables,omitempty"`
 	Await          string             `json:"await,omitempty"`
 	Sandbox        *jsonSandboxBlock  `json:"sandbox,omitempty"`
 	Compress       string             `json:"compress,omitempty"`
@@ -1143,6 +1146,7 @@ func toolToJSON(t *ToolNodeDecl) *jsonToolNodeDecl {
 		Output:         t.Output,
 		Publish:        t.Publish,
 		ArtifactLabels: t.ArtifactLabels,
+		Deliverables:   t.Deliverables,
 		Await:          awaitModeToStr[t.Await],
 		Sandbox:        sandboxBlockToJSON(t.Sandbox),
 		Compress:       t.Compress,
@@ -1528,6 +1532,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Output:            a.Output,
 		Publish:           a.Publish,
 		ArtifactLabels:    a.ArtifactLabels,
+		Deliverables:      a.Deliverables,
 		System:            a.System,
 		User:              a.User,
 		Session:           sessionModeToStr[a.Session],
@@ -1576,6 +1581,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Output:            j.Output,
 		Publish:           j.Publish,
 		ArtifactLabels:    j.ArtifactLabels,
+		Deliverables:      j.Deliverables,
 		System:            j.System,
 		User:              j.User,
 		Session:           sessionModeToStr[j.Session],
@@ -2102,6 +2108,7 @@ func toolFromJSON(jt *jsonToolNodeDecl) (*ToolNodeDecl, error) {
 		Output:         jt.Output,
 		Publish:        jt.Publish,
 		ArtifactLabels: jt.ArtifactLabels,
+		Deliverables:   jt.Deliverables,
 		Await:          aw,
 		Sandbox:        sandboxBlockFromJSON(jt.Sandbox),
 		Compress:       jt.Compress,
@@ -2352,6 +2359,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Output:            ja.Output,
 			Publish:           ja.Publish,
 			ArtifactLabels:    ja.ArtifactLabels,
+			Deliverables:      ja.Deliverables,
 			System:            ja.System,
 			User:              ja.User,
 			Session:           sess,
@@ -2414,6 +2422,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Output:            jj.Output,
 			Publish:           jj.Publish,
 			ArtifactLabels:    jj.ArtifactLabels,
+			Deliverables:      jj.Deliverables,
 			System:            jj.System,
 			User:              jj.User,
 			Session:           sess,

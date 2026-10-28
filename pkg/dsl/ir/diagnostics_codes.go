@@ -379,4 +379,20 @@ const (
 	// nothing, and the author learned it only when a fan-out refused the node
 	// (#2427). A warning: the node runs, and `readonly:` is the author's lock.
 	DiagCodexToolsListBoundsNothing DiagCode = "C316" // a node routed to codex (primary or fallback) declares a tools: list that buys the workspace-write sandbox — the list bounds nothing (warning)
+
+	// A `deliverables:` entry names a file the run collects from the node's
+	// WORKSPACE and serves under its base name. A path the collector could
+	// never resolve — absolute, escaping upwards, naming a directory, empty
+	// — is refused where it is written: the declaration IS the contract,
+	// and a promise no run can keep is worth less than a compile error.
+	// A value carrying a template or an environment form is not a literal
+	// path and is judged when it is rendered, not here.
+	DiagDeliverableNotWorkspacePath DiagCode = "C317" // a deliverables: entry is not a workspace-relative file path (absolute, `..` escape, directory, empty) (error)
+
+	// Two entries of one node with the same base name would be served
+	// under the same handle, and the run store refuses the second rather
+	// than overwrite the first (the `name_taken` loss): the reviewer of
+	// pass N-1 would otherwise read the bytes of pass N. Same doctrine as
+	// C314 — a collision that cannot be authored needs no runtime guard.
+	DiagDeliverableNameCollision DiagCode = "C318" // two deliverables: entries of the same node are served under the same base name (error)
 )

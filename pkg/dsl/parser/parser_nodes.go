@@ -55,6 +55,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenArtifactLabels:
 		p.expect(TokenColon)
 		d.ArtifactLabels = p.parseToolList()
+	case TokenDeliverables:
+		p.expect(TokenColon)
+		d.Deliverables = p.parseStringList()
 	case TokenSystem:
 		p.expect(TokenColon)
 		d.System = p.promptRef()
@@ -515,6 +518,9 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	case TokenArtifactLabels:
 		p.expect(TokenColon)
 		td.ArtifactLabels = p.parseToolList()
+	case TokenDeliverables:
+		p.expect(TokenColon)
+		td.Deliverables = p.parseStringList()
 	case TokenAwait:
 		p.expect(TokenColon)
 		td.Await = p.parseAwaitMode()

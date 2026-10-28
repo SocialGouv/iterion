@@ -1021,6 +1021,7 @@ func (w *writer) llm(kind, name string, d *ast.LLMDecl) *yaml.Node {
 	p.str("output", d.Output)
 	p.str("publish", d.Publish)
 	p.set("artifact_labels", strList(d.ArtifactLabels))
+	p.set("deliverables", strList(d.Deliverables))
 	p.set("system", w.promptRef(d.System))
 	p.set("user", w.promptRef(d.User))
 	if d.Session != ast.SessionFresh {
@@ -1279,6 +1280,7 @@ func (w *writer) tool(d *ast.ToolNodeDecl) *yaml.Node {
 	p.str("output", d.Output)
 	p.str("publish", d.Publish)
 	p.set("artifact_labels", strList(d.ArtifactLabels))
+	p.set("deliverables", strList(d.Deliverables))
 	if d.Await != ast.AwaitNone {
 		p.set("await", str(d.Await.String()))
 	}
