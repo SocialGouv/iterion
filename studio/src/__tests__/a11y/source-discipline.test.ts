@@ -605,7 +605,6 @@ describe("source discipline", () => {
       "/src/views/PipelineBoard/SequentialReviews.tsx",
       "/src/views/RepoDetail/index.tsx",
       "/src/views/Sitemap/index.tsx",
-      "/src/views/Triggers/ScheduleOutcome.tsx",
       "/src/views/Triggers/TriggerFamiliesExplainer.tsx",
       "/src/views/admin/users/UserDrawer.tsx",
       "/src/views/integrations/BindBotWizard.tsx",

@@ -192,6 +192,18 @@ func RunIssueShow(p *Printer, opts IssueRefOptions) error {
 	if iss.Claim != "" {
 		p.KV("Claim", iss.Claim)
 	}
+	// The card's run: the pointer AND what the run turned out to be. Printing
+	// the pointer alone is the defect #1501 names — a card whose run died
+	// reads exactly like a card that was dispatched and worked.
+	if iss.LastRunID != "" {
+		p.KV("Last run", iss.LastRunID)
+	}
+	if outcome := FormatRunOutcome(iss.LastRunStatus, iss.LastRunErrorCode, iss.LastRunAt); outcome != "" {
+		p.KV("Last run result", outcome)
+	}
+	if iss.LastRunError != "" {
+		p.KV("Last run error", iss.LastRunError)
+	}
 	if len(iss.Fields) > 0 {
 		data, _ := json.MarshalIndent(iss.Fields, "  ", "  ")
 		p.Line("  Fields:")

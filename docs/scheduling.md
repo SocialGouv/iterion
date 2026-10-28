@@ -589,6 +589,12 @@ as JSON, including `last_run_status`, `last_run_error_code`, `last_run_error`
 and `last_error`. `iterion schedule list` lists the local cron manifest instead;
 it does not contain cloud run outcomes.
 
+The schedule is one of four records that carry this tuple: a trigger
+subscription ([cloud REST API](cloud-rest-api.md#triggers-event-driven-runs))
+and a board card ([native tracker](native-tracker.md)) report the same way,
+written by one spine ([pkg/server/outcome_spine.go](../pkg/server/outcome_spine.go))
+and rendered by one studio component.
+
 ## Retention — pair recurring schedules with `iterion runs prune`
 
 Every scheduled run persists forever under `<store-dir>/runs/<run_id>/`;

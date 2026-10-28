@@ -2032,6 +2032,53 @@
         ],
         "type": "object"
       },
+      "Matcher": {
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "authors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kinds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "repos": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subject_states": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "MembershipView": {
         "properties": {
           "personal": {
@@ -3574,6 +3621,144 @@
         "required": [
           "status",
           "state"
+        ],
+        "type": "object"
+      },
+      "Subscription": {
+        "properties": {
+          "args_var": {
+            "type": "string"
+          },
+          "bot_id": {
+            "type": "string"
+          },
+          "consume_labels": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "cron": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "guard": {
+            "type": "string"
+          },
+          "guard_timeout": {
+            "type": "string"
+          },
+          "guard_var": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "interval_seconds": {
+            "type": "integer"
+          },
+          "invocation": {
+            "type": "string"
+          },
+          "key_overrides": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "last_error_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_run_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_run_error": {
+            "type": "string"
+          },
+          "last_run_error_code": {
+            "type": "string"
+          },
+          "last_run_id": {
+            "type": "string"
+          },
+          "last_run_status": {
+            "type": "string"
+          },
+          "match": {
+            "$ref": "#/components/schemas/Matcher"
+          },
+          "max_concurrent": {
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "overlap": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "retry_jitter": {
+            "type": "string"
+          },
+          "retry_max_attempts": {
+            "type": "integer"
+          },
+          "retry_max_wait": {
+            "type": "string"
+          },
+          "retry_usage_window": {
+            "type": "string"
+          },
+          "routing": {
+            "$ref": "#/components/schemas/Policy"
+          },
+          "secret_overrides": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "stale_after": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "vars": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "bot_id",
+          "invocation",
+          "match",
+          "enabled",
+          "created_at",
+          "updated_at"
         ],
         "type": "object"
       },
@@ -16054,8 +16239,26 @@
       "get": {
         "operationId": "getV1Triggers",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "subscriptions": {
+                      "items": {
+                        "$ref": "#/components/schemas/Subscription"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "subscriptions"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/v1/triggers",
@@ -16120,8 +16323,15 @@
       "get": {
         "operationId": "getV1TriggersById",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/v1/triggers/{id}",

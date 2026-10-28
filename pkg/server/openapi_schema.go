@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // This file turns the v1 route inventory (openapi.go) into a typed spec: a
@@ -357,6 +358,22 @@ func routeSchemas() map[string]routeOp {
 			request:  pipelineRecomputeDepsRequest{},
 			response: pipelineRecomputeDepsResponse{},
 		},
+
+		// Trigger subscriptions — the standing launch orders. Typed on the
+		// READ routes because the record now reports the OUTCOME of the run
+		// it launched (last_run_id/status/error/error_code/at, #1501) beside
+		// the launch-time last_error: a subscription that fired and whose run
+		// died must not read like one that fired and worked, and a client
+		// generated from an untyped spec cannot see the difference at all.
+		// The writes stay untyped — they carry no outcome, and their request
+		// body (triggerSubscriptionReq) accepts matcher shapes the generator
+		// would flatten into a wrong contract.
+		"GET /api/v1/triggers": {
+			response: struct {
+				Subscriptions []trigger.Subscription `json:"subscriptions"`
+			}{},
+		},
+		"GET /api/v1/triggers/{id}": {response: trigger.Subscription{}},
 
 		"POST /api/teams/{id}/forge/oauth-apps": {request: forgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
 		// Platform forge OAuth apps (super-admin): the deployment's own

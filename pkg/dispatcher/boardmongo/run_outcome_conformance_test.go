@@ -18,7 +18,8 @@ import (
 // the card has been re-dispatched PAST is dropped, because LastRunID is
 // what says which run the card reports; (4) a card with no run at all is
 // never stamped; (5) a redelivery of the same outcome is an idempotent
-// no-op.
+// no-op; (6) a RE-DISPATCH clears the tuple, so the previous run's verdict
+// is never read as the current run's.
 //
 // Mutation that reddens it on BOTH twins: drop `lastrunstatus` from the
 // store's write (the `$set`/`replace` field list in boardmongo, the field
@@ -68,18 +69,29 @@ func runRunOutcomeSuite(t *testing.T, store native.BoardStore) {
 		t.Errorf("LastRunAt=%v after an identical redelivery; want it untouched at %v", got.LastRunAt, at)
 	}
 
-	// (3) An outcome for a run the card has moved PAST is dropped: the
-	// re-dispatch repointed LastRunID, and run-1's late terminal is no
-	// longer this card's state.
+	// (6) The re-dispatch itself CLEARS the tuple: the card reports its
+	// CURRENT run, and run-1's verdict against a run that has not finished
+	// is exactly the two-meanings value #1501 exists to end — `iterion
+	// issue show`, the board grid and the REST payload all read this field.
 	if err := store.SetLastRun(iss.ID, "run-2", ""); err != nil {
 		t.Fatalf("SetLastRun(run-2): %v", err)
 	}
+	got, _ = store.Get(iss.ID)
+	if got.LastRunStatus != "" || got.LastRunError != "" || got.LastRunErrorCode != "" || got.LastRunAt != nil {
+		t.Errorf("after a re-dispatch the card still carries run-1's outcome (%q, %q, %q, %v); want it cleared — the pointer names run-2",
+			got.LastRunStatus, got.LastRunError, got.LastRunErrorCode, got.LastRunAt)
+	}
+
+	// (3) An outcome for a run the card has moved PAST is dropped: the
+	// re-dispatch repointed LastRunID, and run-1's late terminal is no
+	// longer this card's state — so it writes NOTHING, rather than
+	// resurrecting a verdict on the current run.
 	if err := store.SetRunOutcome(iss.ID, "run-1", "cancelled", "late", "LATE", at.Add(time.Minute)); err != nil {
 		t.Fatalf("SetRunOutcome(stale run): %v", err)
 	}
 	got, _ = store.Get(iss.ID)
-	if got.LastRunStatus != "failed" {
-		t.Errorf("LastRunStatus=%q after a stale run's outcome; want the card to still report run-1's own %q", got.LastRunStatus, "failed")
+	if got.LastRunStatus != "" {
+		t.Errorf("LastRunStatus=%q after a stale run's late outcome; want empty — run-1 is not the run this card reports", got.LastRunStatus)
 	}
 
 	// (2) The new run succeeds: the previous failure is cleared.

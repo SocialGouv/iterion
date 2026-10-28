@@ -696,6 +696,20 @@ delete or generate one; `emit` additionally passes the launch gate, which
 enforces the rung a second time. The reads carry `requireAuth`; the
 subscription reads also scope by the request's tenant.
 
+**What a subscription reports.** The two reads are typed in the spec
+(`Subscription`, the list under `{"subscriptions": […]}`), so a generated
+client sees two different facts and not one: `last_error` / `last_error_at`
+are the LAUNCH verdict (empty = the launch went through; a message = an org
+launch-gate denial, a run service that refused), while `last_run_id`,
+`last_run_status`, `last_run_error`, `last_run_error_code` and `last_run_at`
+are the OUTCOME of the run that was launched — written by the run-outcome
+spine from the run's terminal status, with the error fields cleared by a
+successful run. A subscription that fired and whose run died otherwise reads
+exactly like one that fired and worked. The same tuple is on a cloud schedule
+and on a board card ([native tracker](native-tracker.md)); `iterion remote
+triggers list` prints it with the record, and the studio's Automations table
+renders it in its `Last run` column.
+
 Source: [pkg/server/triggers_routes.go](../pkg/server/triggers_routes.go).
 
 ## Personal access tokens (PATs)

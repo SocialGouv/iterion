@@ -4,6 +4,7 @@ import { GitBranch } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { formatRelative } from "@/lib/format";
 import { clickableRowProps } from "@/lib/a11y";
+import { runOutcomeFailed } from "@/components/shared/LastRunOutcome";
 import type { DispatchSkipView, RetryView, RunningView } from "@/api/dispatcher";
 import type { NativeIssue } from "@/api/native";
 
@@ -212,6 +213,15 @@ export function IssueCard({
           // dispatcher's running view (which has its own chip below) is
           // absent on the cloud board, where in_progress is the signal.
           const live = iss.state === "in_progress";
+          // The run's RESULT, not just the pointer to it (#1501). A card
+          // whose run died otherwise reads exactly like one that was
+          // dispatched and worked — on the grid, where the operator looks
+          // first. The detail (code, message) rides the title: the card has
+          // room for a word, the modal renders the rest.
+          const status = iss.last_run_status?.trim();
+          const failed = !live && runOutcomeFailed(iss);
+          const outcome = !live && status ? ` · ${status}` : "";
+          const detail = [iss.last_run_error_code, iss.last_run_error].filter(Boolean).join(" — ");
           return (
             <button
               type="button"
@@ -219,14 +229,14 @@ export function IssueCard({
                 e.stopPropagation();
                 onOpenRun(lastRunId);
               }}
-              className="font-mono text-info hover:underline"
+              className={`font-mono hover:underline ${failed ? "text-warning-fg" : "text-info"}`}
               title={
                 live
                   ? `Open the live run on this issue (run ${lastRunId})`
-                  : `Open the last run on this issue (run ${lastRunId})`
+                  : `Open the last run on this issue (run ${lastRunId})${status ? ` — ${status}` : ""}${detail ? `: ${detail}` : ""}`
               }
             >
-              {live ? "▶ live run" : "↪ last run"}
+              {live ? "▶ live run" : `↪ last run${outcome}`}
             </button>
           );
         })()}

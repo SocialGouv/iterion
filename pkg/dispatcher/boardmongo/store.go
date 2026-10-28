@@ -815,12 +815,22 @@ func (s *Store) SetLastRun(id, runID, workdir string) error {
 		return nil
 	}
 	now := time.Now().UTC()
+	// The outcome tuple describes the run the pointer is LEAVING — see the
+	// FS twin (native.Store.setLastRunLocked) for why it cannot ride along.
+	outcomeKeys := []string{}
+	if iss.LastRunID != runID {
+		iss.LastRunStatus = ""
+		iss.LastRunError = ""
+		iss.LastRunErrorCode = ""
+		iss.LastRunAt = nil
+		outcomeKeys = []string{"lastrunstatus", "lastrunerror", "lastrunerrorcode", "lastrunat"}
+	}
 	iss.LastRunID = runID
 	iss.LastWorkdir = workdir
 	iss.Runs = native.AppendRunRef(iss.Runs, runID, workdir, now)
 	iss.LaunchRefusal = nil // a launch happened: the retry ledger no longer describes the card
 	iss.UpdatedAt = now
-	if err := s.replace(ctx, iss, "lastrunid", "lastworkdir", "runs", "launchrefusal"); err != nil {
+	if err := s.replace(ctx, iss, append([]string{"lastrunid", "lastworkdir", "runs", "launchrefusal"}, outcomeKeys...)...); err != nil {
 		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueLastRun, IssueID: id, Payload: map[string]any{"run_id": runID, "workdir": workdir}})

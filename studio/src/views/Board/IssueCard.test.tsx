@@ -92,3 +92,48 @@ describe("IssueCard awaiting-input badge", () => {
     expect(screen.queryByText(/Awaiting input/i)).toBeNull();
   });
 });
+
+// The card's run pointer was the only thing the grid said about the run it
+// launched (#1501): a card whose run died read exactly like a card that was
+// dispatched and worked. The chip now carries the terminal status, and the
+// title the cause — the grid has room for a word, the modal for the rest.
+describe("IssueCard last-run outcome", () => {
+  it("names the terminal status on the chip and the cause in its title", () => {
+    renderCard({
+      ...baseIssue,
+      state: "blocked",
+      last_run_id: "run-dead",
+      last_run_status: "failed",
+      last_run_error_code: "SANDBOX_DRIVER_UNAVAILABLE",
+      last_run_error: "sandbox start: no runtime",
+    });
+    const chip = screen.getByRole("button", { name: /last run/i });
+    expect(chip.textContent).toContain("failed");
+    expect(chip.className).toContain("text-warning-fg");
+    expect(chip.getAttribute("title")).toContain("SANDBOX_DRIVER_UNAVAILABLE");
+    expect(chip.getAttribute("title")).toContain("sandbox start: no runtime");
+  });
+
+  it("keeps a successful run neutral", () => {
+    renderCard({ ...baseIssue, state: "done", last_run_id: "run-ok", last_run_status: "finished" });
+    const chip = screen.getByRole("button", { name: /last run/i });
+    expect(chip.textContent).toContain("finished");
+    expect(chip.className).toContain("text-info");
+    expect(chip.className).not.toContain("text-warning-fg");
+  });
+
+  it("says nothing about an outcome the spine has not stamped yet", () => {
+    renderCard({ ...baseIssue, state: "ready", last_run_id: "run-fresh" });
+    const chip = screen.getByRole("button", { name: /last run/i });
+    expect(chip.textContent).toBe("↪ last run");
+  });
+
+  // in_progress is the live signal on the cloud board: the chip opens the
+  // RUNNING run, so a stale terminal status must not be painted over it.
+  it("stays the live-run chip while the card is in progress", () => {
+    renderCard({ ...baseIssue, state: "in_progress", last_run_id: "run-live", last_run_status: "failed" });
+    const chip = screen.getByRole("button", { name: /live run/i });
+    expect(chip.textContent).toBe("▶ live run");
+    expect(chip.className).toContain("text-info");
+  });
+});

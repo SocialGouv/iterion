@@ -53,6 +53,29 @@ The studio's Board view surfaces these as a "Last run" panel on the
 issue modal with a link back to `/runs/<id>` and a
 `vscode://file/<path>` shortcut to open the worktree.
 
+**The pointer is the dispatch; the outcome is a second fact.** A card also
+carries what the run in `last_run_id` turned out to be —
+`last_run_status` (the terminal run status), `last_run_error`,
+`last_run_error_code` (a stable `store.FailureCode`) and `last_run_at` —
+written by the run-outcome spine
+([pkg/server/outcome_spine.go](../pkg/server/outcome_spine.go)) and only
+while `last_run_id` still names that run, so a late terminal from a run the
+card was re-dispatched past is dropped. Both error fields are cleared by a
+successful run: this is a health signal, not an audit trail (`runs` is the
+audit). Without it a card whose run died reads exactly like a card that was
+dispatched and worked. Where it shows:
+
+| surface | what it says |
+|---|---|
+| `iterion issue show` | `Last run` / `Last run result` (status · code · instant) / `Last run error` |
+| `iterion remote issues list` | a `LAST RUN` column (status · code · instant) |
+| studio board grid | the `↪ last run` chip names the status and turns to the warning tone; the cause rides its title |
+| `GET /api/v1/native/issues`, the pipeline-board routes | the fields themselves (the `Issue` schema in [openapi.json](../openapi.json)) |
+
+The same tuple is on a cloud schedule ([scheduling](scheduling.md)) and on a
+trigger subscription ([cloud REST API](cloud-rest-api.md#triggers-event-driven-runs)):
+one spine writes it, one studio component renders it.
+
 ## Board
 
 `board.json` defines what columns exist on the kanban and what custom

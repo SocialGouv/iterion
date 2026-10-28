@@ -52,8 +52,23 @@ export interface TriggerSubscription {
   guard_var?: string;
   origin?: string;
   enabled: boolean;
-  created_at?: string;
-  updated_at?: string;
+  // Launch-time verdict of the last direct launch this subscription asked
+  // for: empty means it went through, a message says why it did not (an org
+  // launch-gate denial, a run service that refused the run).
+  last_error?: string;
+  last_error_at?: string;
+  // Terminal outcome of the last RUN this subscription launched (#1501).
+  // last_error above is the launch decision; these are the run's result —
+  // without them a subscription that fired and whose run died reads exactly
+  // like one that fired and worked. last_run_error_code is a stable
+  // machine-readable classifier (a store.FailureCode, e.g.
+  // "SANDBOX_DRIVER_UNAVAILABLE"); both error fields are cleared by a
+  // successful run.
+  last_run_id?: string;
+  last_run_status?: string;
+  last_run_error?: string;
+  last_run_error_code?: string;
+  last_run_at?: string;
 }
 
 // SubscriptionInput is the create/update payload (server-managed fields

@@ -230,6 +230,18 @@ func (s *Store) setLastRunLocked(iss *Issue, runID, workdir string) error {
 		return nil
 	}
 	now := time.Now().UTC()
+	if iss.LastRunID != runID {
+		// The outcome tuple describes the run the pointer is LEAVING. The
+		// card reports its CURRENT run (SetRunOutcome's match key says so),
+		// so carrying the previous run's verdict forward would make every
+		// surface — `iterion issue show`, the board grid, the REST payload —
+		// report a dead run's failure against a run that has not finished.
+		// Same reason LaunchRefusal is dropped below.
+		iss.LastRunStatus = ""
+		iss.LastRunError = ""
+		iss.LastRunErrorCode = ""
+		iss.LastRunAt = nil
+	}
 	iss.LastRunID = runID
 	iss.LastWorkdir = workdir
 	iss.Runs = AppendRunRef(iss.Runs, runID, workdir, now)

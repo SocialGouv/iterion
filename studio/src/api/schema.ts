@@ -6923,6 +6923,15 @@ export interface components {
             updated_at: string;
             updated_by?: string;
         };
+        Matcher: {
+            actions?: string[];
+            authors?: string[];
+            kinds?: string[];
+            labels?: string[];
+            repos?: string[];
+            sources?: string[];
+            subject_states?: string[];
+        };
         MembershipView: {
             personal?: boolean;
             role: string;
@@ -7395,6 +7404,55 @@ export interface components {
         StatusMapping: {
             state: string;
             status: string;
+        };
+        Subscription: {
+            args_var?: string;
+            bot_id: string;
+            consume_labels?: boolean;
+            /** Format: date-time */
+            created_at: string;
+            created_by?: string;
+            cron?: string;
+            enabled: boolean;
+            guard?: string;
+            guard_timeout?: string;
+            guard_var?: string;
+            id: string;
+            interval_seconds?: number;
+            invocation: string;
+            key_overrides?: {
+                [key: string]: string;
+            };
+            last_error?: string;
+            /** Format: date-time */
+            last_error_at?: string;
+            /** Format: date-time */
+            last_run_at?: string;
+            last_run_error?: string;
+            last_run_error_code?: string;
+            last_run_id?: string;
+            last_run_status?: string;
+            match: components["schemas"]["Matcher"];
+            max_concurrent?: number;
+            mode?: string;
+            origin?: string;
+            overlap?: string;
+            repo?: string;
+            retry_jitter?: string;
+            retry_max_attempts?: number;
+            retry_max_wait?: string;
+            retry_usage_window?: string;
+            routing?: components["schemas"]["Policy"];
+            secret_overrides?: {
+                [key: string]: string;
+            };
+            stale_after?: string;
+            tenant_id?: string;
+            /** Format: date-time */
+            updated_at: string;
+            vars?: {
+                [key: string]: string;
+            };
         };
         Token: {
             /** Format: date-time */
@@ -17507,12 +17565,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        subscriptions: components["schemas"]["Subscription"][];
+                    };
+                };
             };
         };
     };
@@ -17581,12 +17643,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Subscription"];
+                };
             };
         };
     };
