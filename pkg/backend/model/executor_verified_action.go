@@ -93,6 +93,9 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 		// error — but the error is still what happened, so it is recorded.
 		e.logVA(node.ID, fmt.Sprintf("recipe failed: %v", res.runErr))
 	}
+	if err := e.deliveryVerdict(node.ID, res); err != nil {
+		return nil, err
+	}
 	met, pcOut, pcErr := e.runPostcondition(ctx, node, input)
 	if pcErr != nil {
 		return nil, pcErr
@@ -123,6 +126,9 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 				}
 				if errors.Is(repairRes.runErr, sandbox.ErrExecStatusUnknown) {
 					repairRes.output = nil
+				}
+				if derr := e.deliveryVerdict(node.ID, repairRes); derr != nil {
+					return nil, derr
 				}
 				lastRung = "self_repair"
 				met, pcOut, pcErr = e.runPostcondition(ctx, node, input)
@@ -174,6 +180,28 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 		node.ID, policy, lastRung, strings.TrimSpace(res.stdout), strings.TrimSpace(res.stderr))
 }
 
+// deliveryVerdict ends the node when a recipe run lost a file it
+// declared `required=true`, and reports nil otherwise.
+//
+// EVERY rung that RUNS a recipe asks it — rung 2 and the self-repair
+// re-runs of rung 3 — because the guarantee belongs to the directive,
+// not to the rung that happened to execute the command. One helper
+// rather than the same four lines twice: the third rung would drift.
+//
+// It ends the node BEFORE the oracle and the rungs after it. The
+// postcondition answers about the world the recipe acted on; this loss
+// is about the run's own store, which no rung can mend — re-running a
+// command that already exited 0 cannot deliver bytes this process could
+// not read. Failing early also keeps the LLM rungs from spending on a
+// node that is going to fail anyway.
+func (e *ClawExecutor) deliveryVerdict(nodeID string, res recipeResult) error {
+	if res.deliveryErr == nil {
+		return nil
+	}
+	e.logVA(nodeID, fmt.Sprintf("required deliverable lost: %v", res.deliveryErr))
+	return res.deliveryErr
+}
+
 // runVerifiedRecipe runs the node's recipe (rung 2) and reports whether it
 // is repairable (command/script — a self-repair rung can propose a corrected
 // command). Registry-tool recipes run via the standard path and are not
@@ -197,6 +225,13 @@ func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode,
 		var setup *toolNodeSetupError
 		if errors.As(rerr, &setup) {
 			return recipeResult{}, false, rerr
+		}
+		// A lost required deliverable travels as itself, never as the
+		// recipe's run error: the tool ran and returned, and the ladder
+		// must not read it as a run to judge by the postcondition.
+		var lost *requiredAttachmentLostError
+		if errors.As(rerr, &lost) {
+			return recipeResult{output: out, deliveryErr: rerr}, false, nil
 		}
 		return recipeResult{output: out, runErr: rerr}, false, nil
 	}
@@ -231,6 +266,10 @@ func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, 
 	if ambiguousEnd(res.runErr) {
 		return false, nil, fmt.Errorf("model: tool node %q: postcondition: %w", node.ID, res.runErr)
 	}
+	// res.deliveryErr is deliberately not read: a postcondition is the
+	// node's oracle, not its producer. A directive on its stdout still
+	// publishes, and a loss is still recorded on the run, but what the
+	// CHECK declares cannot overturn the check's own answer.
 	return res.runErr == nil, res.output, nil
 }
 

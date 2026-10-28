@@ -6,6 +6,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -15,7 +16,8 @@ import (
 // toolAttachmentDirective is the line prefix a tool node uses to hand a
 // file it produced to the run, so a downstream human gate can SHOW it.
 //
-// Shape: `[iterion] attachment=<path> [name=<n>] [mime=<type/subtype>]`
+// Shape:
+// `[iterion] attachment=<path> [name=<n>] [mime=<type/subtype>] [required=true]`
 //
 // Why this exists. A gate renders its inbound payload (iterion#332), and
 // a `file`-typed value is previewed by fetching
@@ -46,12 +48,23 @@ type AttachmentDirective struct {
 	Path string
 	Name string
 	MIME string
+	// Required turns the loss of this file into the NODE's failure
+	// instead of an event beside its success.
+	//
+	// Opt-in, and the default is unchanged: a tool's own output is the
+	// contract with the workflow, so a deliverable that did not reach a
+	// human is not by itself a reason to fail the step — every bot that
+	// declares a conditional or best-effort `attachment=` keeps running
+	// exactly as before. A workflow whose POINT is the file (an audit
+	// report, a signed export) says so with `required=true` and gets a
+	// failing node rather than a success nobody can collect (#2668).
+	Required bool
 }
 
 // attachmentDirectiveKeys are the trailing `key=value` tokens the
 // directive accepts. Anything else belongs to the PATH — see
 // splitAttachmentTail.
-var attachmentDirectiveKeys = []string{"name", "mime"}
+var attachmentDirectiveKeys = []string{"name", "mime", "required"}
 
 // splitAttachmentTail separates the path from the trailing options.
 //
@@ -94,11 +107,27 @@ func scanToolAttachments(output string) []AttachmentDirective {
 				dir.Name = kv[eq+1:]
 			case "mime":
 				dir.MIME = kv[eq+1:]
+			case "required":
+				dir.Required = directiveRequires(kv[eq+1:])
 			}
 		}
 		found = append(found, dir)
 	}
 	return found
+}
+
+// directiveRequires reads the `required=` token. The usual boolean
+// spellings answer (`true`/`false`, `1`/`0`, …); anything else — a typo,
+// `yes`, an empty value — reads as TRUE, because the token is only ever
+// typed to ASK for the guarantee: a value no parser recognises must not
+// quietly cancel it. The opposite default would turn `required=yes` into
+// the silent loss this directive exists to end.
+func directiveRequires(value string) bool {
+	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+	if err != nil {
+		return true
+	}
+	return parsed
 }
 
 // neutralizeActiveMIME downgrades any type the browser would EXECUTE
@@ -190,6 +219,27 @@ type attachmentLoss struct {
 	Reason attachmentLossReason
 	// Detail is the human cause, as the warning has always phrased it.
 	Detail string
+	// Required carries the directive's own `required=true`: this loss is
+	// the node's failure, not a note beside its success. Only the
+	// `attachment=` verb can set it — see recordAttachmentLost.
+	Required bool
+}
+
+// requiredAttachmentLostError is the node failure a `required=true`
+// directive asks for: the file the node declared never reached the run,
+// so the step did not do what it says it does.
+//
+// Typed rather than a bare fmt.Errorf because the recipe SUCCEEDED —
+// the ladder must not read it as a command to repair, and re-running
+// cannot bring back bytes this process was never able to read (the pod
+// case, #2668). It names the path and the reason, so the failure an
+// operator reads is the one the run recorded.
+type requiredAttachmentLostError struct{ loss attachmentLoss }
+
+func (e *requiredAttachmentLostError) Error() string {
+	return fmt.Sprintf(
+		"required %s=%s was not delivered to the run (%s): %s",
+		e.loss.Directive, e.loss.Path, e.loss.Reason, e.loss.Detail)
 }
 
 // recordAttachmentLost is the single exit for a declared file that did
@@ -201,16 +251,19 @@ type attachmentLoss struct {
 // and the next drop site added next to a bare logger.Warn would be
 // silent again — the defect this closes (#2668).
 //
-// Non-fatal is unchanged: the caller returns after this, the node keeps
-// its own result. Making the loss FAIL the node is a documented break
-// in the directive's contract and is not decided here.
+// It also returns the verdict: nil when the node keeps its own result
+// (the default, non-fatal contract — the caller returns after this),
+// and a requiredAttachmentLostError when the directive said
+// `required=true`. Failing the node is OPT-IN and lives here, at the
+// one place that knows a declared file is gone, so a verb added beside
+// this chokepoint inherits both halves instead of half of them.
 func recordAttachmentLost(
 	ctx context.Context,
 	emitter EventEmitter,
 	runID, nodeID string,
 	loss attachmentLoss,
 	logger *iterlog.Logger,
-) {
+) error {
 	label := "Tool attachment"
 	if loss.Directive == directivePreviewScreenshot {
 		label = "Browser screenshot"
@@ -224,6 +277,9 @@ func recordAttachmentLost(
 		"reason":    string(loss.Reason),
 		"detail":    loss.Detail,
 		"source":    "tool-stdout",
+		// Always sent, both ways: a reader filtering the losses that
+		// FAILED a node cannot tell a false from an absent field.
+		"required": loss.Required,
 	}
 	// Omitted rather than sent empty: an empty handle would read as "it
 	// was served under no name" instead of "no name was reached yet".
@@ -236,17 +292,25 @@ func recordAttachmentLost(
 		NodeID: nodeID,
 		Data:   data,
 	})
+
+	if !loss.Required {
+		return nil
+	}
+	return &requiredAttachmentLostError{loss: loss}
 }
 
 // publishToolAttachment reads the file a tool declared and persists it
 // as a run attachment, so the studio can fetch it through the existing
 // `/api/runs/{id}/attachments/{name}` route.
 //
-// Failures are non-fatal: a missing or unreadable file must never abort
-// a tool node. The tool's own output is the contract with the workflow;
-// the directive is how the bytes reach a human. They are not silent
-// either — every exit that does not publish goes through
-// recordAttachmentLost, so the run carries the loss.
+// Failures are non-fatal BY DEFAULT: a missing or unreadable file must
+// never abort a tool node that did not ask for the guarantee. The tool's
+// own output is the contract with the workflow; the directive is how the
+// bytes reach a human. They are not silent either — every exit that does
+// not publish goes through recordAttachmentLost, so the run carries the
+// loss. The returned error is that chokepoint's verdict: non-nil only
+// for a directive that declared `required=true`, in which case the
+// caller fails the node with it.
 func publishToolAttachment(
 	ctx context.Context,
 	sink AttachmentWriter,
@@ -254,35 +318,35 @@ func publishToolAttachment(
 	runID, nodeID string,
 	dir AttachmentDirective,
 	logger *iterlog.Logger,
-) {
+) error {
 	info, err := os.Stat(dir.Path)
 	if err != nil {
-		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+		return recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
 			Directive: directiveAttachment,
 			Path:      dir.Path,
 			Reason:    lossUnreadable,
 			Detail:    fmt.Sprintf("stat %s: %v", dir.Path, err),
+			Required:  dir.Required,
 		}, logger)
-		return
 	}
 	if info.IsDir() {
-		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+		return recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
 			Directive: directiveAttachment,
 			Path:      dir.Path,
 			Reason:    lossNotAFile,
 			Detail:    fmt.Sprintf("%s is a directory", dir.Path),
+			Required:  dir.Required,
 		}, logger)
-		return
 	}
 	if info.Size() > maxToolAttachmentBytes {
-		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+		return recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
 			Directive: directiveAttachment,
 			Path:      dir.Path,
 			Reason:    lossOverCap,
 			Detail: fmt.Sprintf("%s is %d bytes, over the %d cap", dir.Path,
 				info.Size(), int64(maxToolAttachmentBytes)),
+			Required: dir.Required,
 		}, logger)
-		return
 	}
 
 	// The name is the handle the gate's descriptor will carry, so it must
@@ -310,7 +374,7 @@ func publishToolAttachment(
 		if existing, listErr := lister.ListAttachments(ctx, runID); listErr == nil {
 			for _, rec := range existing {
 				if rec.Name == name {
-					recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+					return recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
 						Directive: directiveAttachment,
 						Path:      dir.Path,
 						Name:      name,
@@ -318,8 +382,8 @@ func publishToolAttachment(
 						Detail: fmt.Sprintf(
 							"%q already exists on this run (publish a revision "+
 								"under its own name=)", name),
+						Required: dir.Required,
 					}, logger)
-					return
 				}
 			}
 		}
@@ -327,14 +391,14 @@ func publishToolAttachment(
 
 	f, err := os.Open(dir.Path)
 	if err != nil {
-		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+		return recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
 			Directive: directiveAttachment,
 			Path:      dir.Path,
 			Name:      name,
 			Reason:    lossUnreadable,
 			Detail:    fmt.Sprintf("open %s: %v", dir.Path, err),
+			Required:  dir.Required,
 		}, logger)
-		return
 	}
 	defer f.Close()
 
@@ -344,14 +408,14 @@ func publishToolAttachment(
 		MIME:             attachmentMIME(dir),
 	}
 	if err := sink.WriteAttachment(ctx, runID, rec, f); err != nil {
-		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+		return recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
 			Directive: directiveAttachment,
 			Path:      dir.Path,
 			Name:      name,
 			Reason:    lossStoreWriteFailed,
 			Detail:    fmt.Sprintf("write %s: %v", name, err),
+			Required:  dir.Required,
 		}, logger)
-		return
 	}
 
 	_, _ = emitter.AppendEvent(ctx, runID, store.Event{
@@ -365,4 +429,5 @@ func publishToolAttachment(
 		},
 	})
 	logger.Logf(iterlog.LevelInfo, "📎", "Tool attachment [%s]: %s", nodeID, name)
+	return nil
 }

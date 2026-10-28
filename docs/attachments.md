@@ -84,24 +84,60 @@ echo "[iterion] attachment=$PWD/exports/final.mp4 name=final_video mime=video/mp
 
 | Token   | Required | Notes                                                                    |
 | ------- | -------- | ------------------------------------------------------------------------ |
-| `<path>` | yes     | Everything up to the first `name=` / `mime=` token, so a path may contain spaces. Host-absolute, readable, and at most 50 MB. |
+| `<path>` | yes     | Everything up to the first `name=` / `mime=` / `required=` token, so a path may contain spaces. Host-absolute, readable, and at most 50 MB. |
 | `name`  | optional | The handle `/api/runs/{id}/attachments/{name}` serves. Defaults to the file's base name without its extension, sanitised to `[A-Za-z0-9_-]`. A name the run already carries is **never overwritten** — the directive is skipped with a warning, so a tool cannot clobber an operator's upload or an earlier iteration's deliverable. |
 | `mime`  | optional | Stored as-is when well formed; otherwise sniffed from the extension, falling back to `application/octet-stream`. Types the browser would EXECUTE (html, xhtml, svg, xml, javascript) are downgraded to `application/octet-stream`: the serve route replies `Content-Disposition: inline` with no nosniff, and tool stdout is not a trusted channel. |
+| `required` | optional | `required=true` makes the loss of THIS file the node's failure instead of an event beside its success. Off by default. The usual boolean spellings answer; any other value (`yes`, a typo, an empty value) reads as **true** — the token is only ever typed to ask for the guarantee, so a spelling no parser knows must not quietly cancel it. |
 
 The runtime reads the bytes and persists them through the same
 `WriteAttachment` path as an upload, so the result is an ordinary run
 attachment: same storage layout, same serving route, same presigning.
 One line per file; other stdout is left alone.
 
-Failures are **non-fatal** — a missing or unreadable file is skipped,
-never enough to fail the tool node. The tool's own output is its
-contract with the workflow; the directive is only how the bytes reach a
-human.
+Failures are **non-fatal by default** — a missing or unreadable file is
+skipped, never enough to fail the tool node. The tool's own output is
+its contract with the workflow; the directive is only how the bytes
+reach a human.
+
+A workflow whose POINT is the file says so with `required=true`, and
+then the loss fails the node:
+
+```sh
+echo "[iterion] attachment=$PWD/report.md mime=text/markdown required=true"
+```
+
+The node ends with `required attachment=<path> was not delivered to the
+run (<reason>)`, after the `run_attachment_lost` event is recorded — the
+failure replaces nothing, it is added. The guarantee is about the LOSS,
+so a required file that arrives leaves the node exactly as green as
+before, and the token changes nothing for any node that does not carry
+it. Three boundaries are deliberate:
+
+- A recipe that FAILED is judged by its own exit status: the files it
+  did not finish writing are that failure's consequence, and no
+  delivery verdict is computed for it.
+- A node with a `postcondition:` fails on the loss too, before the
+  recovery rungs — the postcondition answers about the world the recipe
+  acted on, while the loss is about the run's own store, and no rung can
+  mend it by re-running a command that already exited 0.
+- A `postcondition:` body, and an `action:` node's vendor payload, still
+  publish what they declare but can never FAIL the node: a check is the
+  node's oracle rather than its producer, and a response body the vendor
+  controls must not be able to end a run.
+
+`required=` therefore hands an author a loud failure in place of a
+silent loss — and, like every token on this line, it is read from a
+stream the author does not fully own (tool stdout carries fetched pages,
+catted files and model-written text). Opting in accepts that a line
+planted there can fail the node; it cannot corrupt what the node
+delivered.
 
 They are not **silent**, though. Every exit that does not publish emits
 a `run_attachment_lost` event on the run, carrying the declared `path`,
 the `reason` (`unreadable`, `not_a_file`, `over_cap`, `name_taken`,
-`store_write_failed`) and a human `detail`. Without it the only trace
+`store_write_failed`), a human `detail`, and `required` — always both
+ways, so a reader filtering the losses that failed a node cannot read an
+absent field as a `false`. Without it the only trace
 was a warning in the runner's log — and on a sandbox pod that is the
 one place the operator cannot read, so a run could lose its whole
 deliverable and look like it succeeded (#2668). The sibling

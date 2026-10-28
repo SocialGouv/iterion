@@ -230,6 +230,9 @@ func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolN
 	if err != nil {
 		return nil, fmt.Errorf("model: tool node %q: execute: %w", node.ID, err)
 	}
+	if lost := e.deliverToolNodeFiles(node.ID, outputForEvent); lost != nil {
+		return nil, lost
+	}
 
 	// Try to parse tool output as JSON map, otherwise wrap as text.
 	// Registry-tool path preserves untrimmed stdout in the fallback;
@@ -257,7 +260,12 @@ func (e *ClawExecutor) emitToolNodeStarted(nodeID, toolName string, inputSize in
 // executeToolNodeShell and executeToolNodeScript). The registry-tool
 // path uses a different payload shape (single combined output stream,
 // privacy-redacted variants) and intentionally does not use this helper.
-func (e *ClawExecutor) emitToolNodeFinish(nodeID, toolName, resolved, stdout, stderr string, dur time.Duration, runErr error) {
+//
+// It also hands over the files the output declared and returns their
+// verdict — nil unless a `required=true` directive lost its file — so
+// the delivery reads the SAME combined stream the event and the log
+// carry, built once here.
+func (e *ClawExecutor) emitToolNodeFinish(nodeID, toolName, resolved, stdout, stderr string, dur time.Duration, runErr error) error {
 	// Both streams concatenated, stdout first so the structured payload is
 	// visible at the top of long stderr dumps from yarn/npm/git.
 	logged := combineStreamsForLog(stdout, stderr)
@@ -281,6 +289,33 @@ func (e *ClawExecutor) emitToolNodeFinish(nodeID, toolName, resolved, stdout, st
 	if e.hooks.OnToolNodeResult != nil {
 		e.hooks.OnToolNodeResult(nodeID, toolName, []byte(resolved), logged, dur, runErr)
 	}
+	// A recipe that failed has its own story: the files it did not finish
+	// writing are that failure's consequence, not a second verdict, and
+	// the loss is on the run either way (the event). Only a recipe that
+	// SUCCEEDED can be held to what it declared.
+	if runErr != nil {
+		return nil
+	}
+	return e.deliverToolNodeFiles(nodeID, logged)
+}
+
+// deliverToolNodeFiles fires OnToolNodeDeliverables and returns the
+// verdict that fails the node: the loss of a file the node's output
+// declared `required=true`. Nil when no hook is registered, when every
+// declared file reached the run, and for every loss the author did not
+// mark required — the directive's default contract is unchanged.
+//
+// The verdict is wrapped with the node id the way every other tool-node
+// failure is, so an operator reading the run cannot tell it apart from
+// the rest by its shape — only by what it says.
+func (e *ClawExecutor) deliverToolNodeFiles(nodeID, output string) error {
+	if e.hooks.OnToolNodeDeliverables == nil {
+		return nil
+	}
+	if err := e.hooks.OnToolNodeDeliverables(nodeID, output); err != nil {
+		return fmt.Errorf("model: tool node %q: %w", nodeID, err)
+	}
+	return nil
 }
 
 // parseToolNodeOutput parses stdout as a JSON object; on failure wraps
@@ -333,6 +368,11 @@ func (e *ClawExecutor) executeToolNodeCommon(
 	if res.runErr != nil {
 		return nil, fmt.Errorf("model: tool node %q: %s: %w\nstdout: %s\nstderr: %s", node.ID, failVerb, res.runErr, res.stdout, res.stderr)
 	}
+	// The recipe succeeded and a file it declared `required=true` did not
+	// reach the run: the node did not do what it says it does.
+	if res.deliveryErr != nil {
+		return nil, res.deliveryErr
+	}
 	return res.output, nil
 }
 
@@ -348,6 +388,12 @@ type recipeResult struct {
 	stderr   string
 	resolved string
 	runErr   error
+	// deliveryErr is the verdict of handing over the files the output
+	// declared: non-nil only when a `required=true` directive lost its
+	// file (#2668). It is NOT a recipe failure — the recipe exited 0 —
+	// so it never feeds the self-repair rungs, which would re-run a
+	// command that did nothing wrong.
+	deliveryErr error
 }
 
 // toolCommand is a tool node's command as runToolNodeCore runs it: the
@@ -406,14 +452,15 @@ func (e *ClawExecutor) runToolNodeCore(
 	}
 	outputStr := string(stdoutBytes)
 
-	e.emitToolNodeFinish(node.ID, toolName, resolved, outputStr, stderrStr, duration, runErr)
+	deliveryErr := e.emitToolNodeFinish(node.ID, toolName, resolved, outputStr, stderrStr, duration, runErr)
 
 	return recipeResult{
-		output:   parseToolNodeOutput(outputStr, strings.TrimSpace(outputStr)),
-		stdout:   outputStr,
-		stderr:   stderrStr,
-		resolved: resolved,
-		runErr:   runErr,
+		output:      parseToolNodeOutput(outputStr, strings.TrimSpace(outputStr)),
+		stdout:      outputStr,
+		stderr:      stderrStr,
+		resolved:    resolved,
+		runErr:      runErr,
+		deliveryErr: deliveryErr,
 	}, nil
 }
 

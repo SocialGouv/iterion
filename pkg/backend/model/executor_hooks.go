@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -286,6 +287,22 @@ type EventHooks struct {
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)
+	// OnToolNodeDeliverables fires for a direct tool node whose recipe
+	// SUCCEEDED, right after OnToolNodeResult, and hands over the files
+	// its output declared (`[iterion] attachment=`,
+	// `[iterion] preview_screenshot=`).
+	//
+	// It is the ONE hook here whose verdict reaches the node: it returns
+	// the loss of a file the author marked `required=true` (#2668), and
+	// the executor fails the node with it. Every other hook in this
+	// struct observes and cannot change an outcome — which is why this
+	// one is named for what it does rather than folded into the result
+	// hook, where a logging side effect would be able to fail a run.
+	//
+	// Composed hooks are joined, not short-circuited: both registrants
+	// deliver their files, and a non-nil verdict from EITHER fails the
+	// node.
+	OnToolNodeDeliverables func(nodeID string, output string) error
 
 	// Delegation lifecycle hooks.
 	// OnDelegateStarted fires before the backend is invoked. The payload
@@ -348,6 +365,20 @@ func chainCb2[A, B any](a, b func(A, B)) func(A, B) {
 	return func(x A, y B) { a(x, y); b(x, y) }
 }
 
+// chainCb2Err is the error-returning variant of chainCb2 (used by
+// OnToolNodeDeliverables). Both sides run — the second registrant's
+// files must still be handed over when the first lost a required one —
+// and both verdicts travel, joined rather than one chosen.
+func chainCb2Err[A, B any](a, b func(A, B) error) func(A, B) error {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	}
+	return func(x A, y B) error { return errors.Join(a(x, y), b(x, y)) }
+}
+
 // chainCb3 is the 3-argument variant of chainCb2 (used by OnLLMPrompt).
 func chainCb3[A, B, C any](a, b func(A, B, C)) func(A, B, C) {
 	switch {
@@ -401,13 +432,15 @@ func ChainHooks(a, b EventHooks) EventHooks {
 		OnToolStarted:        chainCb2(a.OnToolStarted, b.OnToolStarted),
 		OnToolCall:           chainCb2(a.OnToolCall, b.OnToolCall),
 		OnToolNodeResult:     chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
-		OnDelegateStarted:    chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
-		OnDelegateFinished:   chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
-		OnDelegateError:      chainCb2(a.OnDelegateError, b.OnDelegateError),
-		OnDelegateRetry:      chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
-		OnProviderFallback:   chainCb2(a.OnProviderFallback, b.OnProviderFallback),
-		OnSessionDegraded:    chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
-		OnMCPServerDegraded:  chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
-		OnNodeFinished:       chainCb2(a.OnNodeFinished, b.OnNodeFinished),
+		OnToolNodeDeliverables: chainCb2Err(
+			a.OnToolNodeDeliverables, b.OnToolNodeDeliverables),
+		OnDelegateStarted:   chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
+		OnDelegateFinished:  chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
+		OnDelegateError:     chainCb2(a.OnDelegateError, b.OnDelegateError),
+		OnDelegateRetry:     chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
+		OnProviderFallback:  chainCb2(a.OnProviderFallback, b.OnProviderFallback),
+		OnSessionDegraded:   chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
+		OnMCPServerDegraded: chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
+		OnNodeFinished:      chainCb2(a.OnNodeFinished, b.OnNodeFinished),
 	}
 }

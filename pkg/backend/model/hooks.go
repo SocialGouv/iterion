@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -1582,24 +1583,46 @@ func (h *storeHooks) onToolNodeResult(nodeID string, toolName string, input []by
 				h.logger.Logf(iterlog.LevelInfo, "🌐", "Preview URL [%s]: %s", nodeID, url)
 			}
 		}
-		if h.attachmentSink != nil {
-			for _, dir := range scanPreviewScreenshots(output) {
-				captureBrowserScreenshot(
-					h.ctx, h.attachmentSink, h.emitter,
-					h.runID, nodeID, dir, h.logger,
-				)
-			}
-			// A tool that GENERATED a deliverable hands it over the same
-			// way, so a downstream human gate can show it rather than
-			// print a path the browser cannot reach.
-			for _, dir := range scanToolAttachments(output) {
-				publishToolAttachment(
-					h.ctx, h.attachmentSink, h.emitter,
-					h.runID, nodeID, dir, h.logger,
-				)
-			}
+	}
+}
+
+// onToolNodeDeliverables implements the OnToolNodeDeliverables hook: it
+// hands over the files a direct tool node's output declared, and returns
+// the loss of one the author marked `required=true`.
+//
+// Separate from onToolNodeResult, which observes and cannot refuse: this
+// is the only hook whose verdict reaches the node, so the plumbing that
+// can fail a run is one named seam rather than a side effect of logging.
+func (h *storeHooks) onToolNodeDeliverables(nodeID string, output string) error {
+	if h.attachmentSink == nil {
+		return nil
+	}
+	for _, dir := range scanPreviewScreenshots(output) {
+		captureBrowserScreenshot(
+			h.ctx, h.attachmentSink, h.emitter,
+			h.runID, nodeID, dir, h.logger,
+		)
+	}
+	// A tool that GENERATED a deliverable hands it over the same way, so
+	// a downstream human gate can show it rather than print a path the
+	// browser cannot reach.
+	//
+	// Every directive is attempted, and EVERY required loss travels: a
+	// run that loses one declared file still collects the others, and
+	// the operator reads the whole set on the node that failed rather
+	// than one file at a time across re-runs. Joined rather than "the
+	// first one", so the failure does not depend on which directive the
+	// tool happened to print first.
+	var lost []error
+	for _, dir := range scanToolAttachments(output) {
+		if err := publishToolAttachment(
+			h.ctx, h.attachmentSink, h.emitter,
+			h.runID, nodeID, dir, h.logger,
+		); err != nil {
+			lost = append(lost, err)
 		}
 	}
+	return errors.Join(lost...)
 }
 
 // NewStoreEventHooks returns EventHooks that emit store events for a given run
@@ -1675,6 +1698,9 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnMCPServerDegraded:  h.onMCPServerDegraded,
 		// OnToolNodeResult handles direct tool nodes with full I/O content.
 		OnToolNodeResult: h.onToolNodeResult,
+		// …and OnToolNodeDeliverables hands over the files that output
+		// declared, which is the one hook that can fail the node.
+		OnToolNodeDeliverables: h.onToolNodeDeliverables,
 	}
 }
 
@@ -1687,6 +1713,12 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 // missing or unreadable file should never abort a tool node, since the
 // directive is a best-effort hint — but they are no longer log-only:
 // recordAttachmentLost puts them on the run (#2668).
+//
+// Unlike `attachment=`, this verb carries no `required=` token and so
+// never fails a node: a capture is a hint about work that happened
+// elsewhere, where `attachment=` declares a deliverable the node owes.
+// That is why the chokepoint's verdict is discarded at both sites
+// below, explicitly rather than by a signature that cannot carry it.
 //
 // A future Playwright-driven fast path can bypass the stdout
 // directive and write screenshots from inside the runtime; this
@@ -1702,7 +1734,8 @@ func captureBrowserScreenshot(
 ) {
 	f, err := os.Open(dir.Path)
 	if err != nil {
-		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+		// No `required=` on this verb: the verdict is always nil.
+		_ = recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
 			Directive: directivePreviewScreenshot,
 			Path:      dir.Path,
 			Reason:    lossUnreadable,
@@ -1727,7 +1760,8 @@ func captureBrowserScreenshot(
 		MIME:             mime,
 	}
 	if err := sink.WriteAttachment(ctx, runID, rec, f); err != nil {
-		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+		// No `required=` on this verb: the verdict is always nil.
+		_ = recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
 			Directive: directivePreviewScreenshot,
 			Path:      dir.Path,
 			Name:      name,

@@ -265,7 +265,9 @@ func (e *ClawExecutor) finishAction(node *ir.ToolNode, op spec.Operation, res ex
 	if err == nil && res.Err != nil {
 		err = res.Err
 	}
-	e.emitToolNodeFinish(node.ID, actionToolName(node), node.Action, "", "", time.Since(start), err)
+	// An action node prints nothing: with no stdout there is no directive
+	// to honour, so the delivery verdict is always nil here.
+	_ = e.emitToolNodeFinish(node.ID, actionToolName(node), node.Action, "", "", time.Since(start), err)
 	// Only past one, so the common case reads as it always did.
 	cost := ""
 	if spent > 1 {
@@ -371,7 +373,12 @@ func (e *ClawExecutor) actionOutput(node *ir.ToolNode, op spec.Operation, res ex
 		out["requests"] = spent
 	}
 	rendered, _ := json.Marshal(out)
-	e.emitToolNodeFinish(node.ID, actionToolName(node), node.Action, string(rendered), "", time.Since(start), nil)
+	// The "output" here is the VENDOR's payload, not a program's stdout.
+	// It is still walked for directives, as it always has been, so an
+	// action that returns a path can promote it — but a response body
+	// the vendor controls may not FAIL the node: the verdict is dropped
+	// on purpose, and this is the stream where that matters.
+	_ = e.emitToolNodeFinish(node.ID, actionToolName(node), node.Action, string(rendered), "", time.Since(start), nil)
 	return out
 }
 
