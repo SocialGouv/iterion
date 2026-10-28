@@ -772,10 +772,18 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, err)
 		return "", fmt.Errorf("ticket %s: %w", iss.ID, err)
 	}
-	routeLayers, retryLayers, policyErr := s.cardLaunchPolicyLayers(ctx, teamID, lc)
+	routeLayers, retryLayers, integration, policyErr := s.cardLaunchPolicyLayers(ctx, teamID, lc)
 	if policyErr != nil {
 		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, policyErr)
 		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, policyErr)
+	}
+	// The integration's var layers around the card's bot_args, the operator's
+	// names trusted — the board dispatcher's composition (#2665 item 1).
+	var trustedVars []string
+	if integration != nil {
+		lc.Vars, trustedVars = applyCardIntegrationVarLayers(lc.Vars, *integration, func(format string, args ...any) {
+			s.logger.Warn("pipeline admission: ticket "+iss.ID+": "+format, args...)
+		})
 	}
 	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, teamID, bot.Launch.BotID, routeLayers...)
 	if routeErr != nil {
@@ -849,7 +857,8 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		}
 	}
 	spec := runview.LaunchSpec{
-		Vars: launchVars,
+		Vars:            launchVars,
+		TrustedVarNames: trustedVars,
 		// The dispatcher's shipped contract: an unknown bot_arg is warned
 		// about (pkg/dispatcher/loop.go) and the launch proceeds — the
 		// #1757 refusal would turn a typo'd card into a failed launch.

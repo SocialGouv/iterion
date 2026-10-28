@@ -357,6 +357,13 @@ func cardLaneSpec(pol *store.RunLLMRoutePolicy, source string, vars map[string]s
 	return spec
 }
 
+// Since #2665 item 1 (ARB-7) the card lanes hand the run the integration's
+// var layers and trust the operator's names (pkg/server,
+// TestLaunchLanes_HandTheRunTheIntegrationsVarLayers), so the shape below is
+// no longer theirs: the legs keep measuring the PUBLISHER's own reading of a
+// var-less, untrusted spec — the shape a hand-typed card and the trigger
+// spine still hand it.
+//
 // TestRoutingParity_TheCardLaneShapeIsItsOwn is §7's second lane-shape
 // residual as a measurement: the parity above is four readers given ONE
 // launch shape, and the two card lanes hand them a DIFFERENT one. Under the

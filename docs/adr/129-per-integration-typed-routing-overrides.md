@@ -565,18 +565,18 @@ resolves an allowlist and pins no name for the same reason — its vars are subs
 blind-carry an args-var payload — so this is one rule on the three lanes whose vars are not an
 operator's own gesture, not a card-lane exception.
 
-Named rather than fixed, because the only correct repair changes what a carded run DOES. The gate
-must certify the route the run will actually SPEND, so feeding it vars the run does not carry would
-admit a launch that then spends outside the list — strictly worse than the refusal; and trusting the
-value a card carries is rule 2's own hole (a bot-arg is member-writable and the webhook wrote it from
-the delivery payload). Handing the RUN the integration's var layers is the repair, and it is the
-`ensureBoardCard` carry list's follow-up rather than this slice's: every pinned var whose name that
-list does not already hold — the operator's `gate_context` among them — would start reaching cards
-already sitting in their columns, and for a name it DOES hold the follow-up owes a precedence rule
-(the card's copy, frozen at carding time, or the integration's value at launch).
-`TestRoutingParity_TheCardLaneShapeIsItsOwn` measures both refusals and the bound, and
-`TestLaunchLanes_CarryNoIntegrationVarLayer` pins both halves of the carry rule on the lanes
-themselves — one integration var of each kind, per level — so neither can go quiet.
+Fixed since (#2665 item 1, ARB-7, rule B): the card lanes hand the run the integration's var
+layers, read LIVE by the carried id in the same fetch as its routing block, in the one order every
+lane shares — `operator_launch_vars` over the card's `bot_args` over `launch_vars` over the declared
+defaults — and the operator layer's names are the lane's trusted names, so a routing field those vars
+dial reads the same on a card lane as on the direct lane and the credential preview. A `bot_arg` that
+carries an operator name is IGNORED and said so at launch: a member-writable, payload-derived value
+never overrides the operator's (rule 2 of §4, kept where it bites), and there is no per-card override
+of an operator name without editing the integration — which is also how an admin narrowing the
+integration reaches the cards already sitting in its columns.
+`TestLaunchLanes_HandTheRunTheIntegrationsVarLayers` pins the layering, the trust and the signal on
+both lanes; the trigger spine keeps pinning nothing (its vars are subscription-computed), the one
+remaining instance of the rule.
 
 ### 8. Backend parity and the escape hatches
 

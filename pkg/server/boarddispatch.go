@@ -1691,19 +1691,25 @@ type boardLaunchContext struct {
 // spent ABSENT (ADR-129 §5). The id is member-writable like every bot-arg, so
 // the tenant check is the guard that makes the recorded level true — another
 // team's config is as unreadable here as a deleted one.
-func (s *Server) cardLaunchPolicyLayers(ctx context.Context, tenant string, lc boardLaunchContext) ([]llmroute.Layer, []retrypolicy.Layer, error) {
+//
+// The integration itself rides back beside its layers: its two var layers
+// are the lanes' to apply around the card's bot_args
+// (applyCardIntegrationVarLayers, #2665 item 1) — read in the same live
+// fetch, under the same tenant check, so the vars a carded run reads and
+// the policy it reads come from one record. Nil when the card names none.
+func (s *Server) cardLaunchPolicyLayers(ctx context.Context, tenant string, lc boardLaunchContext) ([]llmroute.Layer, []retrypolicy.Layer, *webhooks.Config, error) {
 	if lc.WebhookID == "" {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if s.webhookConfigs == nil {
-		return nil, nil, fmt.Errorf("card names integration %s, whose launch policy this server cannot read (no webhook config store wired)", lc.WebhookID)
+		return nil, nil, nil, fmt.Errorf("card names integration %s, whose launch policy this server cannot read (no webhook config store wired)", lc.WebhookID)
 	}
 	cfg, err := s.webhookConfigs.Get(store.WithoutTenantFilter(ctx), lc.WebhookID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read the launch policy of integration %s: %w", lc.WebhookID, err)
+		return nil, nil, nil, fmt.Errorf("read the launch policy of integration %s: %w", lc.WebhookID, err)
 	}
 	if cfg.TenantID != tenant {
-		return nil, nil, fmt.Errorf("card names integration %s, which belongs to another team", lc.WebhookID)
+		return nil, nil, nil, fmt.Errorf("card names integration %s, which belongs to another team", lc.WebhookID)
 	}
 	var routeLayers []llmroute.Layer
 	if cfg.Routing != nil {
@@ -1713,7 +1719,7 @@ func (s *Server) cardLaunchPolicyLayers(ctx context.Context, tenant string, lc b
 	if p := retryLayerPolicy(cfg); p != nil {
 		retryLayers = []retrypolicy.Layer{{Source: retrypolicy.SourceWebhook, Policy: *p}}
 	}
-	return routeLayers, retryLayers, nil
+	return routeLayers, retryLayers, &cfg, nil
 }
 
 // retryLayerPolicy is a webhook's retry block as a fold LAYER, or nil when
@@ -1942,9 +1948,20 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// its ledger, and the next tick retries it until the attempt cap files it
 	// blocked with the reason (processCard's errCardLaunchRefused arm): a
 	// store outage spaces and then stops these launches, it never widens them.
-	routeLayers, retryLayers, policyErr := s.cardLaunchPolicyLayers(ctx, tenant, lc)
+	routeLayers, retryLayers, integration, policyErr := s.cardLaunchPolicyLayers(ctx, tenant, lc)
 	if policyErr != nil {
 		return &launchRefusal{cardID: iss.ID, cause: policyErr}
+	}
+	// The integration's var layers reach the carded run as they reach the
+	// direct lane (#2665 item 1): operator layer over the card's bot_args
+	// over launch_vars, the operator's names trusted for the routing gate.
+	var trustedVars []string
+	if integration != nil {
+		lc.Vars, trustedVars = applyCardIntegrationVarLayers(lc.Vars, *integration, func(format string, args ...any) {
+			if s.logger != nil {
+				s.logger.Warn("board dispatcher: card "+iss.ID+": "+format, args...)
+			}
+		})
 	}
 	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, tenant, lb.BotID, routeLayers...)
 	if routeErr != nil {
@@ -1968,7 +1985,8 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		return &launchRefusal{cardID: iss.ID, cause: err}
 	}
 	spec := runview.LaunchSpec{
-		Vars: lc.Vars,
+		Vars:            lc.Vars,
+		TrustedVarNames: trustedVars,
 		// Same warn-and-proceed contract as pipeline admission: the
 		// unknown-key warning was emitted upstream, the launch proceeds.
 		AllowUnknownInputs:           true,

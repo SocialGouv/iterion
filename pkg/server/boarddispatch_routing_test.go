@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -329,20 +331,18 @@ func TestBoardDispatch_RefusesACardWhoseIntegrationItCannotRead(t *testing.T) {
 	}
 }
 
-// TestLaunchLanes_PinNoLaunchVarAsOperatorDecided pins a DELIBERATE decision
-// of both unpolicied lanes: neither declares TrustedVarNames, so a routing
-// field templated on a var a card supplies stays undecided at the gate and a
-// non-empty `providers:` allowlist REFUSES the launch (ADR-129 §4 rule 2).
-//
-// The reason is measured right here: a card's BotArgs are not the operator's
-// own `--var`. ensureBoardCard writes PAYLOAD-derived values into them — the
-// PR url below, the comment body under a route's args var, a previous run's
-// hand-off — and both lanes turn iss.BotArgs straight into spec.Vars. Pinning
-// those names would let a forge comment decide which credential a run
-// acquires, which is the hole rule 2 exists to close. The operator's own
-// launch values reach a run through POST /api/runs (runs_launch.go), which
-// pins them because the request IS the operator's gesture.
-func TestLaunchLanes_PinNoLaunchVarAsOperatorDecided(t *testing.T) {
+// TestLaunchLanes_PinOnlyTheIntegrationsOperatorNames pins the trust rule of
+// both card lanes (ADR-129 §4 rule 2, ARB-7): a card's BotArgs are PAYLOAD-
+// derived — ensureBoardCard writes the PR url, the comment body under a
+// route's args var, a previous run's hand-off — and are never pinned
+// operator-decided; only the integration's OPERATOR layer names are
+// (TestLaunchLanes_HandTheRunTheIntegrationsVarLayers), and an integration
+// with no such layer, like the one below, pins nothing. Pinning bot_args
+// would let a forge comment decide which credential a run acquires, the
+// hole rule 2 exists to close. The operator's own launch values reach a run
+// through POST /api/runs (runs_launch.go), which pins them because the
+// request IS the operator's gesture.
+func TestLaunchLanes_PinOnlyTheIntegrationsOperatorNames(t *testing.T) {
 	pub := &tierPublisher{}
 	s, rs := newTeamForkServer(t, pub)
 	pub.onLaunch = func(runID string) { finishRunAs(t, rs, runID, store.RunStatusFinished) }
@@ -477,37 +477,22 @@ func TestEnsureBoardCard_WarnsWhenTheConfigHasNoID(t *testing.T) {
 	}
 }
 
-// TestLaunchLanes_CarryNoIntegrationVarLayer is the other half of the shape
-// both card lanes hand their readers, and the one ADR-129 §7's second
-// lane-shape residual rests on: a card's BotArgs are its WHOLE var set, and
-// the rule that fills them is by NAME over the already-layered map.
-// ensureBoardCard copies the route's args var, the PR carry list and the
-// bot's declared PR-scoped hand-offs — so an integration var whose name is
-// one of those DOES ride the card (as a card value: member-writable, pinned
-// operator-decided by neither lane), and every other one reaches no carded
-// run, however the integration's `launch_vars` / `operator_launch_vars` set
-// it. Both halves are measured here, because the line between them is what
-// the residual and its follow-up are about.
+// TestLaunchLanes_HandTheRunTheIntegrationsVarLayers is ADR-129 §7's second
+// lane-shape residual CLOSED (#2665 item 1, ARB-7): a carded run reads the
+// var layers of the integration its card names — live, by the carried id, in
+// the same fetch as its routing block — in the one order every lane shares:
+// `operator_launch_vars` over the card's bot_args over `launch_vars`. The
+// operator's names are the lane's trusted names, so a routing field those
+// vars dial reads the same on the card lanes as on the direct lane; a bot_arg
+// carrying an operator name — a stale copy carded before the admin narrowed
+// the integration, or a client's board-task write — is ignored AND signalled.
+// The card's own carry (the PR url) still rides. Both lanes read the same
+// cloud board store, so one card measures both.
 //
-// The consequence of the second half, measured on the publisher side by
-// TestRoutingParity_TheCardLaneShapeIsItsOwn: a routing field dialled by an
-// uncarried var reads from its DECLARED DEFAULT here, so under a non-empty
-// `providers:` allowlist a card can be refused where the same integration's
-// direct lane launches. Pinned so the residual cannot go quiet — the day
-// these lanes hand the run the integration's var layers, this witness reds
-// and §7's residual goes with it.
-//
-// Mutant: ensureBoardCard carrying every var it is handed instead of its
-// list → the operator's var rides the card and the assertions red, which is
-// the forbidden alternative (the card as the var carrier, frozen at carding
-// time against the admin's later edit). The other direction — the carry list
-// filtered against the integration's own layers, which is the absolute
-// reading "no integration var rides a card" — reds the carried-name half.
-// And applyWebhookVarLayers' `mergeVarsInto` turned to `fillVarGaps`, the
-// forbidden alternative for the LAYERING (a repo's `gate_context` losing to
-// whatever a payload stamped) → the carried-name half reds on both lanes,
-// because the base below carries the payload's own branch names.
-func TestLaunchLanes_CarryNoIntegrationVarLayer(t *testing.T) {
+// Mutants: the operator layer not applied → revi_model reads the card's stale
+// copy and the trusted names empty; the warn not called → the signal
+// assertion reds; the launch layer not applied → revi_backend missing.
+func TestLaunchLanes_HandTheRunTheIntegrationsVarLayers(t *testing.T) {
 	pub := &tierPublisher{}
 	s, rs := newTeamForkServer(t, pub)
 	pub.onLaunch = func(runID string) { finishRunAs(t, rs, runID, store.RunStatusFinished) }
@@ -516,98 +501,58 @@ func TestLaunchLanes_CarryNoIntegrationVarLayer(t *testing.T) {
 		t.Fatalf("native.NewStore: %v", err)
 	}
 	s.cfg.CloudBoardFor = func(string) native.BoardStore { return board }
-	// An integration pinning two vars at each of its two levels: one name the
-	// carry list holds and one it does not, per level. `target_branch` is the
-	// carried name on the operator layer — the level the forge orchestrator
-	// provisions (`gate_context`, which the list does NOT hold, rides it too)
-	// — and `revi_model` / `revi_backend` are the shape a routing field dials.
 	integration := webhooks.Config{
 		ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub,
 		LaunchVars:         map[string]string{"revi_backend": "claw", "base_ref": "integration-base"},
 		OperatorLaunchVars: map[string]string{"revi_model": "openai_compatible/gw-1/m", "target_branch": "integration-target"},
 	}
 	seedIntegrationConfig(t, s, integration)
-	// The vars a webhook handler hands ensureBoardCard are already LAYERED
-	// (applyWebhookVarLayers): the premise is what the card keeps of them,
-	// not what the handler was given.
-	//
-	// The base carries the payload's OWN base_ref / target_branch, because
-	// on the lane this witness simulates the handler always stamps them
-	// first (buildCommandVars, buildPRForgeCommandVars) — so the carried
-	// NAMES reach ensureBoardCard through a COLLISION, and asserting the
-	// integration's value on them pins the direction of the layering
-	// (mergeVarsInto, "layer OVER") and not merely the carry list. With a
-	// base that leaves those names free, the same assertions pass whichever
-	// way the two webhook levels layer.
-	handlerVars := applyWebhookVarLayers(map[string]string{
-		"pr_url":        "https://forge.example/o/r/pull/7",
-		"base_ref":      "payload-base",
-		"target_branch": "payload-target",
-	}, integration)
-	for _, name := range []string{"revi_backend", "revi_model", "base_ref", "target_branch"} {
-		if handlerVars[name] == "" {
-			t.Fatalf("precondition: the direct lane's vars carry %q (%v) — without that this test compares nothing", name, handlerVars)
-		}
-	}
-	// The two names the carry list holds, with the integration level each
-	// comes from — the half that DOES ride, asserted on its value so a card
-	// carrying the name with someone else's value would not pass for it.
-	carriedFromIntegration := map[string]string{"base_ref": "integration-base", "target_branch": "integration-target"}
-	// The direct lane's own reading of the collision, before any card: each
-	// level layers OVER the handler's base, so the integration's value is
-	// what every lane starts from. A lane that layered UNDER would keep the
-	// payload's branch names here, and every assertion below would then be
-	// comparing the card against a different premise.
-	for name, want := range carriedFromIntegration {
-		if got := handlerVars[name]; got != want {
-			t.Fatalf("precondition: the direct lane reads %q = %q, want %q — the webhook levels layer OVER the handler's base (applyWebhookVarLayers)", name, got, want)
-		}
-	}
 	s.ensureBoardCard(boundedCtx(t), integration, webhooks.CommandRoute{BotID: "probe", Mode: "board"},
-		handlerVars, webhookEventMeta{Kind: "note", SubjectID: "note:1"}, "", "", "")
+		map[string]string{"pr_url": "https://forge.example/o/r/pull/7"},
+		webhookEventMeta{Kind: "note", SubjectID: "note:1"}, "", "", "")
 	cards, err := board.List(native.ListFilter{})
 	if err != nil || len(cards) != 1 {
 		t.Fatalf("board.List = %v, %v; want one card", cards, err)
 	}
-	if cards[0].BotArgs["pr_url"] == "" {
-		t.Fatalf("the card dropped the carried PR var (%v) — the premise is a SELECTIVE carry, not an empty one", cards[0].BotArgs)
-	}
-	for name, want := range carriedFromIntegration {
-		if got := cards[0].BotArgs[name]; got != want {
-			t.Errorf("the card keeps %q = %q, want %q — the carry is by NAME over the layered map, so an integration var the list holds rides it (§7's rule, and the half its follow-up has to answer for)", name, got, want)
-		}
-	}
-	for _, name := range []string{"revi_backend", "revi_model"} {
-		if _, carried := cards[0].BotArgs[name]; carried {
-			t.Errorf("the card carries the integration's %q var (%v) — ADR-129 §7's residual says a name outside the carry list does not ride; if the carry became deliberate, that residual is closed and this witness is the one to rewrite", name, cards[0].BotArgs)
-		}
-	}
+	// A stale copy of an OPERATOR name on the card: the value the integration
+	// pinned when the card was written, narrowed by the admin since.
+	cards[0].BotArgs["revi_model"] = "openai_compatible/gw-0/old"
 
+	var warned bytes.Buffer
+	s.logger = iterlog.New(iterlog.LevelWarn, &warned)
 	if err := s.processBoardCard(boundedCtx(t), "t1", *cards[0]); err != nil {
 		t.Fatalf("processBoardCard = %v, want nil", err)
 	}
-	// Both lanes read the same cloud board store, so the same card measures
-	// both shapes.
 	pub2 := &tierPublisher{}
 	s2, _ := newTeamForkServer(t, pub2)
 	s2.cfg.CloudBoardFor = func(string) native.BoardStore { return board }
 	seedIntegrationConfig(t, s2, integration)
+	var warned2 bytes.Buffer
+	s2.logger = iterlog.New(iterlog.LevelWarn, &warned2)
 	if _, err := s2.launchTicketNow(boundedCtx(t), "t1", s2.runs, board, cards[0]); err != nil {
 		t.Fatalf("launchTicketNow = %v, want nil", err)
 	}
-	for lane, spec := range map[string]runview.LaunchSpec{"board dispatch": pub.only(t), "pipeline admission": pub2.only(t)} {
-		if spec.Vars["pr_url"] == "" {
-			t.Fatalf("%s: the launch dropped the carried PR var (%v)", lane, spec.Vars)
-		}
-		for name, want := range carriedFromIntegration {
-			if got := spec.Vars[name]; got != want {
-				t.Errorf("%s: the launch reads %q = %q, want %q — a carried name reaches the run with the integration's value, from the card", lane, name, got, want)
+	want := map[string]string{
+		"pr_url":        "https://forge.example/o/r/pull/7",
+		"revi_backend":  "claw",
+		"base_ref":      "integration-base",
+		"revi_model":    "openai_compatible/gw-1/m",
+		"target_branch": "integration-target",
+	}
+	for lane, got := range map[string]struct {
+		spec runview.LaunchSpec
+		log  string
+	}{"board dispatch": {pub.only(t), warned.String()}, "pipeline admission": {pub2.only(t), warned2.String()}} {
+		for name, value := range want {
+			if got.spec.Vars[name] != value {
+				t.Errorf("%s: %q = %q, want %q — operator layer over bot_args over launch_vars (%v)", lane, name, got.spec.Vars[name], value, got.spec.Vars)
 			}
 		}
-		for _, name := range []string{"revi_backend", "revi_model"} {
-			if _, reached := spec.Vars[name]; reached {
-				t.Errorf("%s: the integration's %q var reached the run (%v) — a routing field it dials would then be readable here, which §7 says it is not", lane, name, spec.Vars)
-			}
+		if !reflect.DeepEqual(got.spec.TrustedVarNames, []string{"revi_model", "target_branch"}) {
+			t.Errorf("%s: trusted = %v, want the operator layer's names, sorted", lane, got.spec.TrustedVarNames)
+		}
+		if !strings.Contains(got.log, `"revi_model"`) || !strings.Contains(got.log, "ignored") {
+			t.Errorf("%s: the stale operator-name bot_arg was not signalled; log = %q", lane, got.log)
 		}
 	}
 }
