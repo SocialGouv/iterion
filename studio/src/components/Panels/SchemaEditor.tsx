@@ -57,8 +57,8 @@ export default function SchemaEditor({ filterName }: SchemaEditorProps = {}) {
           {filterName ? `Schema "${filterName}" not found.` : "No schemas defined."}
         </p>
       )}
-      {visible.map((schema) => (
-        <SchemaCard key={schema.name} schema={schema} allSchemas={schemas} onUpdate={updateSchema} onRemove={removeSchema} onRename={renameSchema} />
+      {visible.map((schema, i) => (
+        <SchemaCard key={schema.name} schema={schema} index={i} allSchemas={schemas} onUpdate={updateSchema} onRemove={removeSchema} onRename={renameSchema} />
       ))}
     </div>
   );
@@ -66,12 +66,15 @@ export default function SchemaEditor({ filterName }: SchemaEditorProps = {}) {
 
 function SchemaCard({
   schema,
+  index,
   allSchemas,
   onUpdate,
   onRemove,
   onRename,
 }: {
   schema: SchemaDecl;
+  /** 1-based fallback in the delete button's name while the name is empty. */
+  index: number;
   allSchemas: SchemaDecl[];
   onUpdate: (name: string, updates: Partial<SchemaDecl>) => void;
   onRemove: (name: string) => void;
@@ -113,10 +116,13 @@ function SchemaCard({
             return null;
           }}
         />
+        {/* Sibling cards repeat the visible "Delete"; the schema name is
+            what a screen reader needs to tell them apart. */}
         <Button
           variant="ghost"
           size="sm"
           className="text-danger hover:text-danger-fg ml-2"
+          aria-label={`Delete schema ${schema.name || index + 1}`}
           onClick={() => setConfirmDelete(true)}
         >
           Delete

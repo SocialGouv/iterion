@@ -48,13 +48,14 @@ export default function MCPServersEditor() {
         </p>
       ) : (
         <ul className="space-y-3">
-          {servers.map((srv) => (
+          {servers.map((srv, i) => (
             <li
               key={srv.name}
               className="border border-border-default rounded p-2 bg-surface-1/40"
             >
               <ServerCard
                 server={srv}
+                index={i}
                 allNames={new Set(servers.map((s) => s.name))}
                 onRename={(newName) => {
                   // Renaming via update keeps the rest of the fields; the
@@ -94,12 +95,15 @@ export default function MCPServersEditor() {
 
 function ServerCard({
   server,
+  index,
   allNames,
   onRename,
   onPatch,
   onDelete,
 }: {
   server: MCPServerDecl;
+  /** 1-based fallback in the remove button's name while the name is empty. */
+  index: number;
   allNames: Set<string>;
   onRename: (newName: string) => void;
   onPatch: (patch: Partial<MCPServerDecl>) => void;
@@ -110,8 +114,11 @@ function ServerCard({
     <>
       <div className="flex items-center justify-between mb-1">
         <span className="text-caption text-fg-subtle font-mono uppercase">{transport}</span>
+        {/* Sibling cards repeat the visible "Remove"; the server name is
+            what a screen reader needs to tell them apart. */}
         <button
           type="button"
+          aria-label={`Remove server ${server.name || index + 1}`}
           className="text-caption text-danger hover:text-danger-fg"
           onClick={onDelete}
         >

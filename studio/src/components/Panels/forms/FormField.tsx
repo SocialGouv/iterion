@@ -268,7 +268,7 @@ export function CommittedTextField({ label, value, onChange, onCommit, validate,
             <IconButton
               variant="primary"
               size="sm"
-              label="Confirm edit"
+              label={`Confirm ${label} edit`}
               tooltip="Confirm"
               className="shrink-0 text-xs"
               onMouseDown={(e) => {
@@ -524,7 +524,7 @@ export function PromptPickerField({
             <IconButton
               variant="secondary"
               size="sm"
-              label={value ? `Edit prompt ${value}` : "Edit prompt"}
+              label={value ? `Edit prompt ${value}` : `Edit ${label.toLowerCase()}`}
               tooltip={value ? `Edit prompt "${value}"` : "Select a prompt to edit"}
               className="shrink-0"
               onClick={() => value && onEdit(value)}
@@ -548,11 +548,18 @@ export function PromptPickerField({
             </Button>
           </div>
           {value && body && (
+            /* PromptOverlayHighlight hides its visible text (aria-hidden:
+               the component pairs with a transparent textarea in overlay
+               mode), so aria-labelledby cannot reach a visible name source
+               here. The name carries the preview inline — label in name
+               (RGAA 11.1 / WCAG 2.5.3) — plus the prompt name to keep each
+               slot's button distinct. */
             <button
               type="button"
               className="mt-1 w-full text-left rounded border border-border-default bg-surface-0 hover:border-accent transition-colors"
               onClick={() => onEdit(value)}
               title="Click to edit in large editor"
+              aria-label={`Preview of prompt ${value}: ${previewLines} — click to edit in large editor`}
             >
               <PromptOverlayHighlight
                 value={previewLines}

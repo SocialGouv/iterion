@@ -71,6 +71,7 @@ export default function VarsEditor({ filterName }: VarsEditorProps = {}) {
 
       <VarsSection
         title="Top-Level Vars"
+        addLabel="Add variable"
         vars={topLevelVars}
         onChange={setVars}
         disabled={!document}
@@ -80,6 +81,7 @@ export default function VarsEditor({ filterName }: VarsEditorProps = {}) {
       {activeWorkflow && (
         <VarsSection
           title={`Workflow "${activeWorkflow.name}" Vars`}
+          addLabel="Add workflow variable"
           vars={workflowVars}
           onChange={(v) => setWorkflowVars(activeWorkflow.name, v)}
           disabled={!document}
@@ -92,12 +94,16 @@ export default function VarsEditor({ filterName }: VarsEditorProps = {}) {
 
 function VarsSection({
   title,
+  addLabel,
   vars,
   onChange,
   disabled,
   filterName,
 }: {
   title: string;
+  /** The section-qualified name of the "+ Add" button — sibling sections
+   *  repeat the same visible "+ Add", so the name carries the section. */
+  addLabel: string;
   vars: VarsBlock | undefined;
   onChange: (v: VarsBlock | undefined) => void;
   disabled: boolean;
@@ -139,6 +145,7 @@ function VarsSection({
         {!filterName && (
           <button
             type="button"
+            aria-label={addLabel}
             className="text-accent-text hover:underline text-xs disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={addField}
             disabled={disabled}
@@ -189,10 +196,15 @@ function VarsSection({
           <div className="mt-1">
             {field.type === "bool" ? (
               <div className="flex items-center gap-2">
+                {/* The visible "Default" caption is a bare sibling (the two
+                    other Default shapes below are FieldRow-paired, this one
+                    is not), so the select names itself after its variable —
+                    sibling rows share the caption. */}
                 <label className="text-xs text-fg-subtle">Default</label>
                 <Select
                   value={field.default ? displayDefault(field.default) : ""}
                   onChange={(e) => updateField(i, { default: e.target.value === "" ? undefined : rawToLiteral("bool", e.target.value) })}
+                  aria-label={`Default for variable ${field.name || i + 1}`}
                 >
                   <option value="">-- no default --</option>
                   <option value="true">true</option>
