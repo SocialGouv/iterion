@@ -12,6 +12,8 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
+
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // Keep a read result below the 256 KiB transport/sink boundary used by a few
@@ -417,6 +419,15 @@ func sensitiveWorkspacePath(path string) bool {
 	clean := filepath.ToSlash(filepath.Clean(path))
 	base := filepath.Base(clean)
 	if base == ".env" || strings.HasPrefix(base, ".env.") || base == ".netrc" || base == ".git-credentials" || base == "cli-auth.json" {
+		return true
+	}
+	// The clone's own credential store: `.git/iterion-credentials` holds the
+	// run's live forge token in plaintext. `.git-credentials` above is git's
+	// DEFAULT store, which a repo-targeted run never writes — this is the one
+	// credential file such a run is guaranteed to have. A prefix match also
+	// covers the sibling the atomic replace writes first (`.tmp` on the host,
+	// `.tmp.$$` in the sandbox), which a failed replace leaves on disk.
+	if strings.HasPrefix(base, gitlib.CredentialStoreFile) {
 		return true
 	}
 	if strings.Contains(base, "id_rsa") || strings.Contains(base, "id_ed25519") {

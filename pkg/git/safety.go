@@ -6,6 +6,27 @@ import (
 	"strings"
 )
 
+// CredentialStoreFile is the basename, inside a clone's `.git/` directory,
+// of the credential store the cloud runner writes in git's
+// credential-store format and names in `credential.helper store --file=…`.
+// It holds the run's live forge token in plaintext (mode 0600).
+//
+// It lives here, in the package both its writer and its refusers import,
+// because the sites that must REFUSE it match on this name: the claw
+// workspace tools (`sensitiveWorkspacePath`), a bundle manifest's
+// `authoring.editable_files` (`authoringSensitivePath`) and the pod → host
+// export list (`exportExcludes`). A rename that moved only the writer's
+// literal would silently un-protect the file. The review-scope handlers
+// refuse it by a different rule — ValidateRelPath below rejects any `.git`
+// path component, whatever it holds.
+//
+// Readers match it as a PREFIX of the basename: the atomic replace writes
+// the value to a sibling first — `<name>.tmp` on the runner host
+// (writeGitCredentials) and `<name>.tmp.$$` inside the sandbox
+// (pkg/sandbox/execwrite.go) — and a replace that fails leaves that
+// sibling on disk with the token in it.
+const CredentialStoreFile = "iterion-credentials"
+
 // ValidateRelPath accepts a path coming from an HTTP query and verifies
 // it stays inside the run's working directory. It rejects absolute paths,
 // `..` traversal, and NUL bytes.

@@ -11,6 +11,7 @@ import (
 
 	"go.yaml.in/yaml/v2"
 
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 )
@@ -1296,6 +1297,15 @@ func authoringSensitivePath(path string) bool {
 		return true
 	}
 	if base == ".netrc" || base == ".git-credentials" || base == "secrets.json" || base == "secrets.key" || base == "auth.json" {
+		return true
+	}
+	// The clone's own credential store holds the run's LIVE forge token in
+	// plaintext, and for a repo-targeted run the workspace scope IS the clone
+	// root — so a `{scope: workspace, path: .git/iterion-credentials}`
+	// declaration would hand the token to the authoring surface. The name
+	// comes from gitlib, where its writer reads it too; the prefix also covers
+	// the sibling the atomic replace writes first (`.tmp`, `.tmp.$$`).
+	if strings.HasPrefix(base, gitlib.CredentialStoreFile) {
 		return true
 	}
 	if strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") || strings.HasSuffix(base, ".p12") || strings.HasPrefix(base, "id_rsa") || strings.HasPrefix(base, "id_ed25519") {

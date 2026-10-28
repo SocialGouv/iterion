@@ -1243,7 +1243,7 @@ func (r *Run) CaptureWorkspaceHead(ctx context.Context) (string, error) {
 // bandwidth: the archiver runs in the sandbox, on an image the workflow
 // chooses, so a list enforced there alone is a list the exported side asks
 // the pod to respect. What the host must not receive, the host drops.
-var exportExcludes = []string{"./.git/config", "./.git/iterion-credentials", "./.git/hooks"}
+var exportExcludes = []string{"./.git/config", "./.git/" + gitlib.CredentialStoreFile, "./.git/hooks"}
 
 // tarExcludeArgs renders exportExcludes as tar flags.
 func tarExcludeArgs() []string {

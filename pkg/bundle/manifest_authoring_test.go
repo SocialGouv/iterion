@@ -44,6 +44,12 @@ func TestDecodeManifestRejectsUnsafeAuthoringFiles(t *testing.T) {
 		{"duplicate", "- {scope: bundle, path: a.py}\n    - {scope: bundle, path: ./a.py}", "duplicate"},
 		{"glob", "- {scope: workspace, path: scripts/*.py}", "globs are not allowed"},
 		{"secret", "- {scope: workspace, path: .env.local}", "secret-bearing path"},
+		// For a repo-targeted run the workspace scope IS the clone root, and
+		// the clone's credential store holds the run's live forge token — the
+		// one credential file such a run is guaranteed to have.
+		{"clone credential store", "- {scope: workspace, path: .git/iterion-credentials}", "secret-bearing path"},
+		// The atomic replace leaves this sibling behind when the rename fails.
+		{"clone credential store mid-replace", "- {scope: workspace, path: .git/iterion-credentials.tmp}", "secret-bearing path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

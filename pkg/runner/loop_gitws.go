@@ -673,8 +673,10 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 
 // gitCredentialFile is where the clone's live forge token lives, in git's
 // credential-store format. It sits under .git/ (not the worktree) so a bot's
-// `git add -A` can never stage it.
-const gitCredentialFile = "iterion-credentials"
+// `git add -A` can never stage it. The name comes from gitlib because the
+// readers that must refuse the file match on it (the claw workspace tools);
+// a rename has to move both ends or the refusal stops covering it.
+const gitCredentialFile = gitlib.CredentialStoreFile
 
 // installGitCredentialStore detaches the clone from the token it was cloned
 // with and points git at a credential FILE instead.
