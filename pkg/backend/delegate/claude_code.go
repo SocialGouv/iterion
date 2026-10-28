@@ -118,6 +118,23 @@ func claudeNativeToolsForAllowed(allowed []string, diagnosticShell bool) map[str
 // native roster has a tool for. `edit` is one-to-many on purpose — no
 // declaration grants MultiEdit on its own, so an edit-capable node that lost
 // it could not apply a multi-hunk change.
+// Three rows are one-to-many because the roster spells one CAPABILITY under
+// several tool names, and a declaration grants the capability:
+//
+//   - `edit` keeps Edit+MultiEdit — no declaration grants MultiEdit on its
+//     own, so an edit-capable node that lost it could not apply a multi-hunk
+//     change.
+//   - `agent` keeps Task+Agent — `Agent` is the spelling the current CLI uses
+//     for the subagent tool `Task` names on older ones (claude_code_stream.go
+//     matches `case "Agent", "Task":`). A node that declared the subagent and
+//     got only the dead spelling declared nothing.
+//
+// `BashOutput` and `KillShell` are NOT companions of `bash`: a row may only
+// grant natives that canonicalise onto it (the projection would otherwise
+// hand out a tool no declaration names), and both only read or stop the
+// BACKGROUND shells that backgroundTasksOffEnv already keeps a headless run
+// from starting. They are withheld from every spawn instead, with the rest of
+// headlessWithheldTools.
 var claudeNativeForCanonical = map[string][]string{
 	"bash":         {"Bash"},
 	"read":         {"Read"},
@@ -126,7 +143,7 @@ var claudeNativeForCanonical = map[string][]string{
 	"write":        {"Write"},
 	"edit":         {"Edit", "MultiEdit"},
 	"notebookedit": {"NotebookEdit"},
-	"agent":        {"Task"},
+	"agent":        {"Task", "Agent"},
 	"webfetch":     {"WebFetch"},
 	"websearch":    {"WebSearch"},
 	"toolsearch":   {"ToolSearch"},

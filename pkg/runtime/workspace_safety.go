@@ -824,11 +824,11 @@ func unrestrictedRouteWriteReason(
 	// A DECLARED-EMPTY `tools: []` reaches exactly the verdict an undeclared
 	// list reaches, and that is deliberate: it is not a proof that the node
 	// holds nothing. On claude_code the bound is `--disallowedTools` over
-	// `claudeNativeTools`, a hardcoded 14-name enumeration of a roster
-	// iterion does not own — the package's own `orchestrationTools` names
-	// `Agent`, `TaskOutput` and `Monitor` outside it, and MCP tools are not
-	// on it either, so which of them survive is the CLI's call (`Monitor` and
-	// every MCP tool do). On claw the runtime's own
+	// `claudeNativeTools`, a twenty-name declaration of a roster iterion does
+	// not own — the package's own `orchestrationTools` still names
+	// `TaskOutput` and `Monitor` outside it, and MCP tools are not on it
+	// either, so which of them survive is the CLI's call (`Monitor` and every
+	// MCP tool do). `Agent` joined the roster with #1651 and is bounded. On claw the runtime's own
 	// `interaction:` append puts `ask_user` back, and the appends below it
 	// `todo_write` and, under `auto_memory:`, `write_file` (C270 says so at
 	// compile time). The declared-name loop the caller runs before this one

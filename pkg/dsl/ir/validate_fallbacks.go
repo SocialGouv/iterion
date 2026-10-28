@@ -511,7 +511,7 @@ func toolsInversionReason(nodeBackend, routeBackend string, tools []string) stri
 		return ""
 	}
 	if nodeClaw {
-		return "routes a claw node to a CLI backend, where the tools: list does not mean what it means on claw — claude_code narrows only its own 14-name native roster (every MCP tool and every name outside it survives), codex maps the list onto a sandbox mode, and pi/kimi/grok never receive it at all — so the route changes what this node can do, and the parallel-branch admission was already decided on the claw reading; declare the node on the CLI backend instead, or route to another claw model"
+		return "routes a claw node to a CLI backend, where the tools: list does not mean what it means on claw — claude_code narrows only its own native roster (every MCP tool and every name outside it survives), codex maps the list onto a sandbox mode, and pi/kimi/grok never receive it at all — so the route changes what this node can do, and the parallel-branch admission was already decided on the claw reading; declare the node on the CLI backend instead, or route to another claw model"
 	}
 	// A DECLARED list — `tools: []` included — says the same thing on both
 	// sides, so there is nothing to invert. Only an UNDECLARED list does:

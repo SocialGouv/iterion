@@ -43,14 +43,16 @@ func ToolsDeclared(tools []string) bool { return tools != nil }
 // zero diagnostics.
 //
 // It says the list ARRIVES, never that the node ends up holding nothing —
-// and it is deliberately NOT a workspace-safety predicate. `claudeNativeTools`
-// is a hardcoded enumeration of a roster iterion does not own: the same
-// package's `orchestrationTools` (Agent, TaskOutput, Monitor) and
-// `headlessWithheldTools` name tools outside it. Which of those survive a
-// `tools: []` is the CLI's call (the pinned one resolves the roster's legacy
-// `Task` to `Agent`; `Monitor` survives), and every MCP tool survives, being
-// on no roster. (`Workflow` is withheld separately, from every spawn whatever
-// its list.) On claw the runtime's
+// and it is deliberately NOT a workspace-safety predicate. The claude_code
+// roster is `backendcaps.NativeTools(ClaudeCode)`, a declaration of a surface
+// iterion does not own, held against iterion's own second enumeration of it
+// by delegate's anchoring guard (#1651): every tool it renders a header for
+// is on the roster or excluded with a reason. Sibling lists still name tools
+// the roster does not — `orchestrationTools` carries `TaskOutput` and
+// `Monitor`, `headlessWithheldTools` carries `Workflow`, the cron family and
+// `RemoteTrigger` — and every MCP tool survives any list, being on no roster.
+// Which roster names survive a `tools: []` is the CLI's call, and some names
+// are withheld from every spawn whatever the list says. On claw the runtime's
 // own interaction and auto-memory appends can put `write_file` back. Anything that must know what
 // a node can DO reads the effective surface, not this.
 //

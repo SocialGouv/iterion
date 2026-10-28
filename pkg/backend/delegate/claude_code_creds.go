@@ -174,6 +174,18 @@ var orchestrationTools = []string{"Agent", "Task", "TaskOutput", "Monitor"}
 //     later turn of this session, so here they can never fire. A durable cron
 //     is written into the workspace's .claude/scheduled_tasks.json instead.
 //   - RemoteTrigger schedules remote agents under the account the CLI runs on.
+//   - AskUserQuestion surfaces a question and waits for an answer. A headless
+//     session has nobody to ask: the node's own `ask_user` capability is the
+//     supported way to reach an operator, and it rides the engine rather than
+//     a blocked turn.
+//   - SlashCommand runs a repository-defined command, and a command can be
+//     Bash-backed — it reaches a shell a node never declared. It is withheld
+//     for the same reason the roster bounds `Bash` itself.
+//   - BashOutput and KillShell read and stop BACKGROUND shells.
+//     backgroundTasksOffEnv already forces every subagent and shell into the
+//     foreground, so in a one-shot session they have nothing to act on; and
+//     they cannot be companions of `bash` (a projection row may only grant
+//     natives that canonicalise onto it).
 //
 // Withholding a name the running CLI does not register costs nothing: a deny
 // rule for an absent tool matches nothing.
@@ -181,6 +193,9 @@ var headlessWithheldTools = []string{
 	"Workflow",
 	"ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
 	"RemoteTrigger",
+	"AskUserQuestion",
+	"SlashCommand",
+	"BashOutput", "KillShell",
 }
 
 // backgroundTasksOffEnv is the CLI's own switch for background work. With it

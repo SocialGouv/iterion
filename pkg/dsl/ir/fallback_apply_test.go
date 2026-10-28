@@ -110,7 +110,7 @@ func TestApplyRunFallback_RefusesUngatedRouteFromWorkflowGate(t *testing.T) {
 
 // TestApplyRunFallback_RefusesToolsInversion: the `tools:` list does not mean
 // the same thing on the two sides of the crossing — claw resolves its whole
-// surface from it, while claude_code narrows only its own 14-name native
+// surface from it, while claude_code narrows only its own native
 // roster, codex maps it onto a sandbox mode and pi/kimi/grok never receive it
 // — so the route silently changes what the node can DO, and the node was
 // already admitted as a read-only parallel branch on the claw reading.

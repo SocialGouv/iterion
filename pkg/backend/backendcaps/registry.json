@@ -8,20 +8,26 @@
       "default_preference": 1,
       "detection_order": 1,
       "native_tools": [
+        "Agent",
+        "AskUserQuestion",
         "Bash",
-        "Read",
+        "BashOutput",
+        "Edit",
         "Glob",
         "Grep",
-        "Write",
-        "Edit",
+        "KillShell",
         "MultiEdit",
         "NotebookEdit",
+        "Read",
+        "ScheduleWakeup",
+        "Skill",
+        "SlashCommand",
         "Task",
+        "TodoWrite",
+        "ToolSearch",
         "WebFetch",
         "WebSearch",
-        "ToolSearch",
-        "TodoWrite",
-        "Skill"
+        "Write"
       ],
       "cells": [
         {

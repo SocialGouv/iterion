@@ -67,7 +67,7 @@ variable names locate the current consumers.
 | 7 | `pkg/dsl/ir/validate_async_backend.go:62` — `validateSyncInteractionBackends` | Inert sync interaction warning |
 | 8 | `pkg/backend/toolcatalog/toolcatalog.go:50` — `ConstrainsTools` | Registry name resolution |
 | 9 | `pkg/backend/toolcatalog/declared.go:56` — `ReceivesToolList` | Tool-list delivery |
-| 10 | `pkg/backend/delegate/claude_code.go:78` — `claudeNativeTools` | Exact legacy 14-name roster, in legacy order |
+| 10 | `pkg/backend/delegate/claude_code.go:78` — `claudeNativeTools` | Twenty-name roster (the legacy 14 plus the six #1651 restored), alphabetical |
 | 11 | `pkg/backend/detect/detect.go:87` — `DefaultPreferenceOrder` | `claude_code,claw`, unchanged |
 | 12 | `pkg/backend/detect/detect.go:124` — `detectBackends` | Five probes in legacy order; kimi/grok remain unprobed |
 | 13 | `pkg/backend/model/executor_retry.go:520` — `sessionResumeBackends` | Session-ID consumption |
@@ -134,7 +134,7 @@ the corresponding guard. The historical source commit remains historical.
 | `model.TestBackendCapabilityConsumersConform` | Replace the provider-chain eligibility consumer with `return false`; the actual consumer must disagree with the registry on claude_code. |
 
 Existing consumer tests remain independent behavioral witnesses: the Claude
-14-name literal assertion, IR permission/interaction diagnostics, session
+native-roster literal assertion, IR permission/interaction diagnostics, session
 packer capability tests, detect credential isolation, and toolcatalog's real
 registry conformance. No live model is needed or run for this migration.
 

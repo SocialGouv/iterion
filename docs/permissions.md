@@ -173,18 +173,34 @@ On `claude_code` a `tools:` list is **not** inert. The hard-restrict flag
 `--tools` is deliberately unused (see `pkg/backend/toolcatalog`), but iterion
 turns the list into `claudesdk.WithDisallowedTools`, which the SDK spells as
 `--disallowedTools`: every tool on Claude Code's **closed native roster**
-that the list does not name is removed. The roster is fourteen names —
-`Bash Read Glob Grep Write Edit MultiEdit NotebookEdit Task WebFetch
-WebSearch ToolSearch TodoWrite Skill` (`claudeNativeTools`). Measured on a
-reviewer node, counting only what the list itself contributes:
+that the list does not name is removed. The roster is twenty names —
+`Agent AskUserQuestion Bash BashOutput Edit Glob Grep KillShell MultiEdit
+NotebookEdit Read ScheduleWakeup Skill SlashCommand Task TodoWrite ToolSearch
+WebFetch WebSearch Write` (`backendcaps.NativeTools(ClaudeCode)`, read as
+`claudeNativeTools`). Measured on a reviewer node, counting only what the
+list itself contributes:
 
 ```
 no tools: list                          the list adds nothing
-tools: []                               the list adds all fourteen
-tools: [bash, read_file, glob, grep]    the list adds
-  [Write Edit MultiEdit NotebookEdit Task WebFetch WebSearch ToolSearch
-   TodoWrite Skill]
+tools: []                               the list adds all twenty
+tools: [bash, read_file, glob, grep]    the list adds the other sixteen
+  [Agent AskUserQuestion BashOutput Edit KillShell MultiEdit NotebookEdit
+   ScheduleWakeup Skill SlashCommand Task TodoWrite ToolSearch WebFetch
+   WebSearch Write]
 ```
+
+Six of those twenty were missing until #1651, which is why the roster is now
+held against iterion's own second enumeration of the same surface — the
+display table it renders tool headers from — by an anchoring guard
+(`TestEveryDisplayedToolIsOnTheRosterOrExcludedOnPurpose`). A name the roster
+forgets is a tool no `tools:` list can remove, and on the 84 shipped
+claude_code nodes that declare a restricted list with no `permission:` gate
+that list is the only bound. Five of the six — `AskUserQuestion`,
+`SlashCommand`, `ScheduleWakeup`, `BashOutput`, `KillShell` — are on the
+roster so `--disallowedTools` can name them and are withheld from **every**
+spawn whatever the list says; `Agent` is the current CLI's spelling of the
+subagent tool `Task` names on older ones, so declaring the subagent keeps
+both.
 
 **`tools: []` is a declaration, not an absence.** An empty list is the author
 saying *this node has no tools*; a node with no `tools:` line leaves the
@@ -197,7 +213,7 @@ explicit fact on the task (`delegate.Task.ToolsDeclared`).
 
 Three backends receive the list and narrow on it (`toolcatalog.ReceivesToolList`):
 claw resolves zero tool definitions from it, claude_code disallows all
-fourteen names of `claudeNativeTools`, codex drops to the `read-only` sandbox.
+twenty names of `claudeNativeTools`, codex drops to the `read-only` sandbox.
 pi, kimi and grok are driven through the CLI-agent seam, which never passes
 the list to the agent: there the bound is dropped and **C270** says so at
 compile time. Because an older engine reads `tools: []` as an absent list —

@@ -26,6 +26,12 @@ var headlessWithheldNames = []string{
 	"Workflow",
 	"ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
 	"RemoteTrigger",
+	// #1651 added these four. AskUserQuestion has nobody to ask in a headless
+	// run; SlashCommand reaches a Bash-backed command a node never declared;
+	// BashOutput and KillShell only act on background shells that
+	// backgroundTasksOffEnv already prevents.
+	"AskUserQuestion", "SlashCommand",
+	"BashOutput", "KillShell",
 }
 
 const schemaOK = `{"type":"object","properties":{"ok":{"type":"boolean"}}}`

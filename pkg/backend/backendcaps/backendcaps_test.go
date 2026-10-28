@@ -67,6 +67,15 @@ type headEnumerations struct {
 // TestSeedZeroMove compares with literals extracted from pre-migration HEAD,
 // not with expectations generated from registry.json. Changes to this oracle
 // are explicit verdict changes too, and require the same review as the golden.
+//
+// One row has moved since the migration, and it is the only one: `native_tools`
+// for claude_code, from the fourteen names pre-migration HEAD carried to twenty
+// (#1651). The six added — Agent, AskUserQuestion, BashOutput, KillShell,
+// ScheduleWakeup, SlashCommand — were tools the roster had drifted away from
+// while iterion rendered headers for them, which made each one a tool no
+// `tools:` list could remove. The oracle was edited by hand for it, because
+// there is deliberately no flag that regenerates it: its diff is the review.
+// Every other row still reads pre-migration HEAD verbatim.
 func TestSeedZeroMove(t *testing.T) {
 	var seed headEnumerations
 	readJSON(t, "testdata/head-enumerations.json", &seed)

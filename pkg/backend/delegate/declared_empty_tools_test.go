@@ -27,9 +27,10 @@ func TestADeclaredEmptyToolListRemovesEveryNativeToolOnClaudeCode(t *testing.T) 
 	// `ToolSearch` or `TodoWrite` from it left every other test in the
 	// package green while `tools: []` silently kept the tool.
 	want := []string{
-		"Bash", "Read", "Glob", "Grep", "Write", "Edit", "MultiEdit",
-		"NotebookEdit", "Task", "WebFetch", "WebSearch", "ToolSearch",
-		"TodoWrite", "Skill",
+		"Agent", "AskUserQuestion", "Bash", "BashOutput", "Edit", "Glob",
+		"Grep", "KillShell", "MultiEdit", "NotebookEdit", "Read",
+		"ScheduleWakeup", "Skill", "SlashCommand", "Task", "TodoWrite",
+		"ToolSearch", "WebFetch", "WebSearch", "Write",
 	}
 	got := claudeNativeDisallowedTools(declaredEmpty.AllowedTools, true, false)
 	for _, w := range want {
@@ -100,16 +101,19 @@ func TestTheDocumentedConsequencesOfAnEmptyToolListAreTrue(t *testing.T) {
 	declaredEmpty := Task{AllowedTools: []string{}, ToolsDeclared: true}
 	disallowed := claudeNativeDisallowedTools(declaredEmpty.AllowedTools, true, false)
 
-	// "claude_code disallows all fourteen names of claudeNativeTools"
-	if len(disallowed) != 14 {
-		t.Errorf("claude_code disallows %d names, the docs say fourteen: %v", len(disallowed), disallowed)
+	// "claude_code disallows all twenty names of claudeNativeTools" (#1651
+	// added six: Agent, AskUserQuestion, BashOutput, KillShell,
+	// ScheduleWakeup, SlashCommand).
+	if len(disallowed) != 20 {
+		t.Errorf("claude_code disallows %d names, the docs say twenty: %v", len(disallowed), disallowed)
 	}
 
-	// "Agent, TaskOutput and Monitor are not on the roster, and neither is any
-	// MCP tool" — the claim the whole `tools: []` narrative rests on, and the
-	// reason the parallel-branch scheduler does NOT read such a node as
-	// read-only: what survives is decided by the CLI, not by this list.
-	for _, survivor := range []string{"Agent", "TaskOutput", "Monitor", "mcp__srv__anything"} {
+	// "TaskOutput and Monitor are not on the roster, and neither is any MCP
+	// tool" — what survives is decided by the CLI, not by this list, which is
+	// why the parallel-branch scheduler does NOT read such a node as
+	// read-only. `Agent` used to be on this line and is now ON the roster
+	// (#1651): the subagent spawner is bounded by a `tools:` list today.
+	for _, survivor := range []string{"TaskOutput", "Monitor", "mcp__srv__anything"} {
 		if slices.Contains(disallowed, survivor) {
 			t.Errorf("%q is disallowed — the docs say the roster does not name it, and the scheduler's pessimism is justified by that", survivor)
 		}
