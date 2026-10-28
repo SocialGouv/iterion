@@ -40,6 +40,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "render-gate: %v\n", err)
 		os.Exit(2)
 	}
+	for _, w := range report.Warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
 	failed := false
 	for _, f := range report.Findings {
 		if f.Verdict == rendergate.CrossWorkload && *cross == "ignore" {

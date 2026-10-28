@@ -299,3 +299,31 @@ func TestAnEmptyStreamJudgesNothing(t *testing.T) {
 		t.Errorf("summary = %q", report.Summary())
 	}
 }
+
+func TestADuplicateKeyElsewhereIsAWarningNotADeath(t *testing.T) {
+	// A real ovh-prod render carried ITERION_CANONICAL_REDIRECT twice in one
+	// ConfigMap: the API server keeps the last, yaml.v3 refuses the document,
+	// and a gate that refused with it never judged the dead selector that
+	// followed in the same stream.
+	configMap := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: iterion-config\n  namespace: iterion\ndata:\n  ITERION_CANONICAL_REDIRECT: \"false\"\n  ITERION_MODE: cloud\n  ITERION_CANONICAL_REDIRECT: \"true\"\n"
+	report := judge(t, configMap+"---\n"+valkeyha("valkey"))
+	if len(report.Dead()) != 1 {
+		t.Fatalf("the dead selector after the duplicate key must still be judged, got %+v", report.Findings)
+	}
+	if len(report.Warnings) != 1 {
+		t.Fatalf("want one warning for the duplicate key, got %v", report.Warnings)
+	}
+	for _, want := range []string{"ConfigMap iterion-config", `"ITERION_CANONICAL_REDIRECT"`, "line 7", "line 9", "keeps the last"} {
+		if !strings.Contains(report.Warnings[0], want) {
+			t.Errorf("warning %q lacks %q", report.Warnings[0], want)
+		}
+	}
+	docs, _, err := rendergate.Parse([]byte(configMap))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := docs[0].Body()["data"].(map[string]any)
+	if data["ITERION_CANONICAL_REDIRECT"] != "true" {
+		t.Errorf("the last definition must win like the API server, got %v", data["ITERION_CANONICAL_REDIRECT"])
+	}
+}

@@ -89,6 +89,11 @@ type Report struct {
 	// A gate that judged nothing proves nothing: callers assert it.
 	Judged   int
 	Findings []Finding
+	// Warnings are the stream's defects outside the selector class — a
+	// mapping key defined twice in one document, which the API server
+	// resolves by keeping the last (a real render carried one). Reported,
+	// never fatal, so the gate judges the stream it was given.
+	Warnings []string
 }
 
 // Dead returns the fatal findings.
@@ -115,7 +120,7 @@ func (r Report) Summary() string {
 // Judge parses the stream and confronts every scheduling and disruption
 // selector with the pod templates of its namespace.
 func Judge(stream []byte) (Report, error) {
-	docs, err := Parse(stream)
+	docs, warnings, err := Parse(stream)
 	if err != nil {
 		return Report{}, err
 	}
@@ -132,7 +137,7 @@ func Judge(stream []byte) (Report, error) {
 			}
 		}
 	}
-	report := Report{PodTemplates: len(templates)}
+	report := Report{PodTemplates: len(templates), Warnings: warnings}
 	for _, t := range templates {
 		if err := judgeTemplate(t, templates, &report); err != nil {
 			return Report{}, err
@@ -152,19 +157,32 @@ type object struct {
 	body                  map[string]any
 }
 
+// Body is the folded document.
+func (o object) Body() map[string]any { return o.body }
+
 // Parse splits a multi-document YAML stream into its manifests, keeping
-// every document that carries a `kind`.
-func Parse(stream []byte) ([]object, error) {
+// every document that carries a `kind`. Documents are read as node trees
+// and folded by hand: a mapping key defined twice keeps its last value,
+// as the API server does, and is returned as a warning instead of the
+// error yaml.v3 would raise — a gate that dies on a duplicate key in some
+// ConfigMap never judges the selectors it exists for.
+func Parse(stream []byte) ([]object, []string, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(stream))
 	var out []object
+	var warnings []string
 	for i := 0; ; i++ {
-		var doc any
-		err := dec.Decode(&doc)
+		var node yaml.Node
+		err := dec.Decode(&node)
 		if errors.Is(err, io.EOF) {
-			return out, nil
+			return out, warnings, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("document %d: %w", i+1, err)
+			return nil, nil, fmt.Errorf("document %d: %w", i+1, err)
+		}
+		var duplicates []string
+		doc, err := fold(&node, &duplicates)
+		if err != nil {
+			return nil, nil, fmt.Errorf("document %d: %w", i+1, err)
 		}
 		body, ok := doc.(map[string]any)
 		if !ok {
@@ -177,7 +195,60 @@ func Parse(stream []byte) ([]object, error) {
 		meta, _ := body["metadata"].(map[string]any)
 		name, _ := meta["name"].(string)
 		namespace, _ := meta["namespace"].(string)
+		for _, d := range duplicates {
+			warnings = append(warnings, fmt.Sprintf("document %d (%s %s): %s", i+1, kind, name, d))
+		}
 		out = append(out, object{kind: kind, name: name, namespace: namespace, body: body})
+	}
+}
+
+// fold turns a yaml.v3 node tree into the generic shape (map[string]any,
+// []any, scalars) the judges read, recording every mapping key defined
+// twice; the last definition wins, which is what the API server keeps.
+func fold(n *yaml.Node, duplicates *[]string) (any, error) {
+	switch n.Kind {
+	case yaml.DocumentNode:
+		if len(n.Content) == 0 {
+			return nil, nil
+		}
+		return fold(n.Content[0], duplicates)
+	case yaml.AliasNode:
+		return fold(n.Alias, duplicates)
+	case yaml.MappingNode:
+		m := make(map[string]any, len(n.Content)/2)
+		firstLine := map[string]int{}
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			key := n.Content[i].Value
+			if line, seen := firstLine[key]; seen {
+				*duplicates = append(*duplicates, fmt.Sprintf("mapping key %q defined at line %d and again at line %d — the API server keeps the last", key, line, n.Content[i].Line))
+			} else {
+				firstLine[key] = n.Content[i].Line
+			}
+			v, err := fold(n.Content[i+1], duplicates)
+			if err != nil {
+				return nil, err
+			}
+			m[key] = v
+		}
+		return m, nil
+	case yaml.SequenceNode:
+		list := make([]any, 0, len(n.Content))
+		for _, c := range n.Content {
+			v, err := fold(c, duplicates)
+			if err != nil {
+				return nil, err
+			}
+			list = append(list, v)
+		}
+		return list, nil
+	case yaml.ScalarNode:
+		var v any
+		if err := n.Decode(&v); err != nil {
+			return nil, fmt.Errorf("line %d: %w", n.Line, err)
+		}
+		return v, nil
+	default:
+		return nil, nil
 	}
 }
 
