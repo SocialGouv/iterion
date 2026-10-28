@@ -206,8 +206,13 @@ type Engine struct {
 	budgetAsk              *ir.BudgetOverrides      // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
 	validateOutputs        bool                     // when true, validate node outputs against declared schemas
 	outputCorrectionBudget int                      // bounded invalid-output correction calls per node episode
-	forceResume            bool                     // when true, skip workflow hash check on resume
-	acceptScratchLoss      bool                     // when true, a resume goes on although its scratch does not travel (WithAcceptScratchLoss)
+	// parallelSaveWindow coalesces routine fan-out boundary checkpoints into
+	// one durable write per window (#561); zero keeps the legacy synchronous
+	// one-write-per-boundary behaviour. Immediate writes — branch completion,
+	// pause, spend, abandoned resume — bypass the window in both modes.
+	parallelSaveWindow time.Duration
+	forceResume        bool // when true, skip workflow hash check on resume
+	acceptScratchLoss  bool // when true, a resume goes on although its scratch does not travel (WithAcceptScratchLoss)
 	// scratchBankHeld stops the current sandbox's teardown from banking its
 	// scratch: set when restoring the bank failed, so a partial scratch
 	// never replaces the bank a later resume will retry (ADR-106). Each
@@ -359,7 +364,7 @@ func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOpt
 	// executors while preserving legacy fail-fast behaviour for executors that
 	// do not implement OutputCorrector. WithOutputCorrectionBudget(0) disables
 	// it explicitly.
-	e := &Engine{workflow: wf, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget()}
+	e := &Engine{workflow: wf, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -384,7 +389,7 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 	if err != nil {
 		return nil, fmt.Errorf("runtime: apply recipe %q: %w", r.Name, err)
 	}
-	e := &Engine{workflow: applied, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget()}
+	e := &Engine{workflow: applied, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
 	for _, opt := range opts {
 		opt(e)
 	}

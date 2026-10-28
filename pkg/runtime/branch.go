@@ -517,9 +517,13 @@ func (e *Engine) abandonBranchResume(parent, branchRS *runState, result *branchR
 	}
 	cp := buildCheckpointWithoutParallel(parent, ps.RouterNodeID)
 	cp.Parallel = ps
-	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
-		e.logger.Error("failed to save abandoned branch resume %s at %q: %v", result.branchID, gateNodeID, err)
+	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil {
+		if e.logger != nil {
+			e.logger.Error("failed to save abandoned branch resume %s at %q: %v", result.branchID, gateNodeID, err)
+		}
+		return
 	}
+	parallel.markWritten()
 }
 
 func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branchResult, currentNodeID string, completed bool, parallel *parallelExecutionState, completeResume bool) {
@@ -537,6 +541,15 @@ func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branc
 		updated = parallel.updateBranch(branch)
 	}
 	if !updated {
+		return
+	}
+	if !completed && !completeResume && result.err == nil {
+		// A healthy restart boundary rides the coalescing saver (#561).
+		// A boundary carrying a failure or a cancellation is its own
+		// durability contract — the run's context may already be dying, and
+		// deferring its write past the cancellation would turn the old
+		// best-effort attempt into one that can never succeed.
+		e.requestParallelSave(parent, parallel, result.branchID, currentNodeID)
 		return
 	}
 	ps := parallel.snapshot()
@@ -560,6 +573,7 @@ func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branc
 		// This snapshot carries the run budget, so any spend booked before it
 		// is now durable and persistBranchSpend has nothing left to write.
 		result.spendUncheckpointed = false
+		parallel.markWritten()
 	}
 	if barrier != nil {
 		close(barrier)
@@ -631,6 +645,7 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 	if err := e.store.PauseRun(parent.ctx, parent.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause branch: %w", err)
 	}
+	parallel.markWritten()
 	pausePersisted = true
 	return ErrRunPaused
 }
@@ -650,9 +665,13 @@ func (e *Engine) persistParallelCheckpointLocked(parent *runState, parallel *par
 		cp.InteractionID = ps.PendingInteractionID
 		cp.InteractionQuestions = deepCopyAnyMap(ps.PendingInteractionQuestions)
 	}
-	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
-		e.logger.Error("failed to save deferred branch checkpoint %s at %q: %v", branchID, nodeID, err)
+	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil {
+		if e.logger != nil {
+			e.logger.Error("failed to save deferred branch checkpoint %s at %q: %v", branchID, nodeID, err)
+		}
+		return
 	}
+	parallel.markWritten()
 }
 
 // emitBranchNodeStarted records one logical branch-node attempt. Human gates
@@ -1083,7 +1102,9 @@ func (e *Engine) persistBranchSpend(parent *runState, parallel *parallelExecutio
 	// should not be left around to be copied back.
 	if err := e.store.SaveCheckpoint(writeCtx, parent.runID, cp); err != nil {
 		e.logger.Error("failed to persist branch %s spend: %v", result.branchID, err)
+		return
 	}
+	parallel.markWritten()
 }
 
 // publishBranchArtifact persists the node's output as a versioned artifact
