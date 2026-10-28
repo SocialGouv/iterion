@@ -28,6 +28,18 @@ import (
 // driver actually keeps. It walks the REAL wiring twice, once on a driver
 // that honours host binds and once on one that does not, so the dropped
 // targets are measured rather than listed.
+//
+// ADR-143 states that rule as the contract it always was: it is about a
+// KEPT MOUNT, never about bind-ness. A read-back path (ADR-143 §2-3) is
+// served on a pod by storage the driver owns and drained at teardown —
+// so once that seam lands, the run-files variable becomes legal on a pod
+// because a kept mount serves it, and this walk goes green on the new
+// behaviour with no edit here. What must never go green is a path the
+// runtime names and NO kept mount serves.
+//
+// TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt pins
+// the converse, which is the half the read-back seam turns on: named
+// EXACTLY when served, measured in both directions.
 
 // specCapturingDriver records the spec handed to Prepare and then refuses
 // to Start: the canary reads what the runtime BUILT, and nothing must run.
@@ -131,6 +143,73 @@ func TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt(t *testing.T) {
 			t.Errorf("post_create names %s, under the dropped bind %s — the snippet runs against a path the container never had (it fails soft, so a bot's devbox.json silently provisions nothing)", ref, target)
 		}
 	}
+}
+
+// TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt is the
+// read-back contract's own canary (ADR-143): the run-files variable is
+// named EXACTLY when a mount the driver keeps serves the path it names.
+//
+// Both directions are defects, and only one of them has ever happened:
+//
+//   - named, not served — #815: the variable pointed at a directory the
+//     pod never had, and a gate wrapper died on "Directory nonexistent".
+//   - served, not named — the defect the read-back seam can introduce:
+//     an emptyDir at the declared path, drained at teardown, and the
+//     tool inside the pod told nothing, so it writes to a temp dir that
+//     dies with the pod and the drain collects an empty directory.
+//
+// Measured on the real wiring, driver by driver, rather than asserted
+// per driver: when the seam lands, the pod case flips from
+// (not named, not served) to (named, served) and this test does not
+// change. A test that pinned "unset on a pod" would have to be edited to
+// let the fix in, which is how a canary becomes a snapshot.
+func TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt(t *testing.T) {
+	p := canaryParams(t)
+	for _, tc := range []struct {
+		name      string
+		hostBinds bool
+	}{
+		{"a driver with a host filesystem", true},
+		{"a driver without one (the pod case)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := buildSandboxSpecFor(t, tc.hostBinds, p)
+			named := strings.TrimSpace(spec.Env[runFilesEnvVar])
+			// Asked of the path the runtime NAMED, not of the one the
+			// params declared: a variable pointing somewhere else is the
+			// same broken promise as a variable with no mount at all.
+			servingNamed := mountServing(spec.Mounts, named)
+			servingDeclared := mountServing(spec.Mounts, p.RunFilesContainerPath)
+
+			switch {
+			case named != "" && servingNamed == "":
+				t.Errorf("spec.Env[%s] = %s and no kept mount serves it — the "+
+					"runtime promises a directory the container never had "+
+					"(mounts: %v)", runFilesEnvVar, named, spec.Mounts)
+			case named == "" && servingDeclared != "":
+				t.Errorf("the mount %s serves %s and spec.Env[%s] is unset — the "+
+					"container has the directory and nothing tells the tool, so "+
+					"it writes elsewhere and the read-back drains nothing",
+					servingDeclared, p.RunFilesContainerPath, runFilesEnvVar)
+			}
+		})
+	}
+}
+
+// mountServing returns the kept mount whose target is containerPath or a
+// parent of it, or "" when none does.
+func mountServing(mounts []string, containerPath string) string {
+	want := path.Clean(containerPath)
+	for _, m := range mounts {
+		tgt := mountTarget(m)
+		if tgt == "" {
+			continue
+		}
+		if c := path.Clean(tgt); want == c || strings.HasPrefix(want, c+"/") {
+			return m
+		}
+	}
+	return ""
 }
 
 // droppedMountTargets returns the mount targets present in `all` and gone

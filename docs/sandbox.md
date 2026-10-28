@@ -264,7 +264,10 @@ read-back seam the driver does not have — an emptyDir at the container
 path plus a drain at teardown, i.e. `WorkspaceExporter`'s shape widened
 past the workspace. Until then the artifact-files panel is empty for a
 pod run, and the variable stays honestly unset rather than naming a
-directory nobody reads.
+directory nobody reads. The contract that seam implements is written:
+[ADR-143](adr/143-sandbox-read-back-contract.md) — a read-back path is
+declared, served by storage the driver owns, and drained at teardown, so
+the variable is named *because* the content comes back.
 `TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt`
 ([pkg/runtime](../pkg/runtime/sandbox_bind_promise_canary_test.go)) walks
 every `spec.Env` value and every path in `spec.PostCreate` against the
