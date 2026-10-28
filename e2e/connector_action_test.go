@@ -393,7 +393,10 @@ func runConnectorBot(t *testing.T, src string, resolver *connection.Resolver, cl
 	}
 	exec, err := runview.BuildExecutor(espec)
 	if err != nil {
-		t.Fatalf("BuildExecutor: %v", err)
+		// Admission refuses a workflow this process cannot serve (an `action:`
+		// with no connector catalog wired) before any node runs: the caller
+		// judges that refusal, it is not a harness failure.
+		return nil, nil, fmt.Errorf("BuildExecutor: %w", err)
 	}
 
 	eng := newEngine(t, wf, s, exec, opts...)
