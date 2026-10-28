@@ -149,13 +149,104 @@ type AttachmentLister interface {
 	ListAttachments(ctx context.Context, runID string) ([]store.AttachmentRecord, error)
 }
 
+// attachmentLossReason is the stable token EventRunAttachmentLost
+// carries, so a reader can group losses without parsing prose.
+type attachmentLossReason string
+
+const (
+	// lossUnreadable: the declared path could not be stat'd or opened
+	// from here. THE cloud case: the file is in the pod, this is the
+	// host (#2668).
+	lossUnreadable attachmentLossReason = "unreadable"
+	// lossNotAFile: the path is a directory or another non-regular file.
+	lossNotAFile attachmentLossReason = "not_a_file"
+	// lossOverCap: bigger than maxToolAttachmentBytes.
+	lossOverCap attachmentLossReason = "over_cap"
+	// lossNameTaken: the run already carries that handle, and a stable
+	// name is the whole point of the verb — the newcomer is refused
+	// rather than suffixed away.
+	lossNameTaken attachmentLossReason = "name_taken"
+	// lossStoreWriteFailed: the bytes were readable but the store
+	// refused them.
+	lossStoreWriteFailed attachmentLossReason = "store_write_failed"
+)
+
+// Directive tokens EventRunAttachmentLost reports under, matching the
+// stdout verb the author wrote.
+const (
+	directiveAttachment        = "attachment"
+	directivePreviewScreenshot = "preview_screenshot"
+)
+
+// attachmentLoss is one declared file the run did not receive.
+type attachmentLoss struct {
+	// Directive is the stdout verb that declared it.
+	Directive string
+	// Path is what the tool printed.
+	Path string
+	// Name is the handle it would have been served under, empty when
+	// the loss happened before one was derived.
+	Name   string
+	Reason attachmentLossReason
+	// Detail is the human cause, as the warning has always phrased it.
+	Detail string
+}
+
+// recordAttachmentLost is the single exit for a declared file that did
+// not make it: it warns on the runner's log AS BEFORE and records the
+// loss on the RUN, where the operator and the studio can see it.
+//
+// One chokepoint rather than a warn+emit pair repeated at every drop
+// site: both stdout file verbs lose files for the same five reasons,
+// and the next drop site added next to a bare logger.Warn would be
+// silent again — the defect this closes (#2668).
+//
+// Non-fatal is unchanged: the caller returns after this, the node keeps
+// its own result. Making the loss FAIL the node is a documented break
+// in the directive's contract and is not decided here.
+func recordAttachmentLost(
+	ctx context.Context,
+	emitter EventEmitter,
+	runID, nodeID string,
+	loss attachmentLoss,
+	logger *iterlog.Logger,
+) {
+	label := "Tool attachment"
+	if loss.Directive == directivePreviewScreenshot {
+		label = "Browser screenshot"
+	}
+	logger.Warn("%s [%s]: %s — not delivered to the run (%s)",
+		label, nodeID, loss.Detail, loss.Reason)
+
+	data := map[string]any{
+		"directive": loss.Directive,
+		"path":      loss.Path,
+		"reason":    string(loss.Reason),
+		"detail":    loss.Detail,
+		"source":    "tool-stdout",
+	}
+	// Omitted rather than sent empty: an empty handle would read as "it
+	// was served under no name" instead of "no name was reached yet".
+	if loss.Name != "" {
+		data["name"] = loss.Name
+	}
+	_, _ = emitter.AppendEvent(ctx, runID, store.Event{
+		Type:   store.EventRunAttachmentLost,
+		RunID:  runID,
+		NodeID: nodeID,
+		Data:   data,
+	})
+}
+
 // publishToolAttachment reads the file a tool declared and persists it
 // as a run attachment, so the studio can fetch it through the existing
 // `/api/runs/{id}/attachments/{name}` route.
 //
-// Failures are logged and non-fatal: a missing or unreadable file must
-// never abort a tool node. The tool's own output is the contract with
-// the workflow; the directive is how the bytes reach a human.
+// Failures are non-fatal: a missing or unreadable file must never abort
+// a tool node. The tool's own output is the contract with the workflow;
+// the directive is how the bytes reach a human. They are not silent
+// either — every exit that does not publish goes through
+// recordAttachmentLost, so the run carries the loss.
 func publishToolAttachment(
 	ctx context.Context,
 	sink AttachmentWriter,
@@ -166,16 +257,31 @@ func publishToolAttachment(
 ) {
 	info, err := os.Stat(dir.Path)
 	if err != nil {
-		logger.Warn("Tool attachment [%s]: stat %s: %v", nodeID, dir.Path, err)
+		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+			Directive: directiveAttachment,
+			Path:      dir.Path,
+			Reason:    lossUnreadable,
+			Detail:    fmt.Sprintf("stat %s: %v", dir.Path, err),
+		}, logger)
 		return
 	}
 	if info.IsDir() {
-		logger.Warn("Tool attachment [%s]: %s is a directory", nodeID, dir.Path)
+		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+			Directive: directiveAttachment,
+			Path:      dir.Path,
+			Reason:    lossNotAFile,
+			Detail:    fmt.Sprintf("%s is a directory", dir.Path),
+		}, logger)
 		return
 	}
 	if info.Size() > maxToolAttachmentBytes {
-		logger.Warn("Tool attachment [%s]: %s is %d bytes, over the %d cap — skipped",
-			nodeID, dir.Path, info.Size(), int64(maxToolAttachmentBytes))
+		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+			Directive: directiveAttachment,
+			Path:      dir.Path,
+			Reason:    lossOverCap,
+			Detail: fmt.Sprintf("%s is %d bytes, over the %d cap", dir.Path,
+				info.Size(), int64(maxToolAttachmentBytes)),
+		}, logger)
 		return
 	}
 
@@ -204,9 +310,15 @@ func publishToolAttachment(
 		if existing, listErr := lister.ListAttachments(ctx, runID); listErr == nil {
 			for _, rec := range existing {
 				if rec.Name == name {
-					logger.Warn(
-						"Tool attachment [%s]: %q already exists on this run — skipped "+
-							"(publish a revision under its own name=)", nodeID, name)
+					recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+						Directive: directiveAttachment,
+						Path:      dir.Path,
+						Name:      name,
+						Reason:    lossNameTaken,
+						Detail: fmt.Sprintf(
+							"%q already exists on this run (publish a revision "+
+								"under its own name=)", name),
+					}, logger)
 					return
 				}
 			}
@@ -215,7 +327,13 @@ func publishToolAttachment(
 
 	f, err := os.Open(dir.Path)
 	if err != nil {
-		logger.Warn("Tool attachment [%s]: open %s: %v", nodeID, dir.Path, err)
+		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+			Directive: directiveAttachment,
+			Path:      dir.Path,
+			Name:      name,
+			Reason:    lossUnreadable,
+			Detail:    fmt.Sprintf("open %s: %v", dir.Path, err),
+		}, logger)
 		return
 	}
 	defer f.Close()
@@ -226,7 +344,13 @@ func publishToolAttachment(
 		MIME:             attachmentMIME(dir),
 	}
 	if err := sink.WriteAttachment(ctx, runID, rec, f); err != nil {
-		logger.Warn("Tool attachment [%s]: write %s: %v", nodeID, name, err)
+		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+			Directive: directiveAttachment,
+			Path:      dir.Path,
+			Name:      name,
+			Reason:    lossStoreWriteFailed,
+			Detail:    fmt.Sprintf("write %s: %v", name, err),
+		}, logger)
 		return
 	}
 

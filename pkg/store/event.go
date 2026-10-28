@@ -762,6 +762,28 @@ const (
 	//   - mime: the stored (already neutralised) media type
 	//   - source: "tool-stdout"
 	EventRunAttachmentPublished EventType = "run_attachment_published"
+	// EventRunAttachmentLost fires when a tool node DECLARED a file —
+	// `[iterion] attachment=<path>` or `[iterion] preview_screenshot=<path>`
+	// — and the run never received it. The node still succeeds: the
+	// directive is how bytes reach a human, not the tool's contract with
+	// the workflow. But a loss that only ever reached the runner's log is
+	// a loss nobody learns about: on a pod the declared path lives in a
+	// container the host cannot stat, so every file-valued bot was mute
+	// in cloud without a single durable trace (#2668).
+	//
+	// The twin of EventRunAttachmentPublished, and the same gesture as
+	// EventSandboxWorkspaceExportFailed: say that work is gone, where it
+	// was gone, and why, on the run itself. Data:
+	//   - directive: "attachment" or "preview_screenshot" — the verb used
+	//   - path: the path the tool printed (already in the node's stdout,
+	//     so this discloses nothing the run does not already carry)
+	//   - name: the handle it would have been served under, when the
+	//     loss happened late enough for one to be derived
+	//   - reason: a stable token — "unreadable", "not_a_file",
+	//     "over_cap", "name_taken", "store_write_failed"
+	//   - detail: the human cause (the stat/open error, the sizes)
+	//   - source: "tool-stdout"
+	EventRunAttachmentLost EventType = "run_attachment_lost"
 	// EventBrowserSessionStarted fires when the runtime attaches a
 	// Chromium instance to a node and registers it in the
 	// BrowserRegistry. The studio uses this signal to flip the

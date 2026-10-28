@@ -1683,9 +1683,10 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 // `[iterion] preview_screenshot=<path>` directive) and persists it as
 // a run attachment, then emits an `EventBrowserScreenshot` so the
 // studio's Browser pane can fetch it through the existing
-// `/api/runs/:id/attachments/:name` route. Failures are logged but
-// non-fatal — a missing or unreadable file should never abort a tool
-// node, since the directive is a best-effort hint.
+// `/api/runs/:id/attachments/:name` route. Failures stay non-fatal — a
+// missing or unreadable file should never abort a tool node, since the
+// directive is a best-effort hint — but they are no longer log-only:
+// recordAttachmentLost puts them on the run (#2668).
 //
 // A future Playwright-driven fast path can bypass the stdout
 // directive and write screenshots from inside the runtime; this
@@ -1701,7 +1702,12 @@ func captureBrowserScreenshot(
 ) {
 	f, err := os.Open(dir.Path)
 	if err != nil {
-		logger.Warn("Browser screenshot [%s]: open %s: %v", nodeID, dir.Path, err)
+		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+			Directive: directivePreviewScreenshot,
+			Path:      dir.Path,
+			Reason:    lossUnreadable,
+			Detail:    fmt.Sprintf("open %s: %v", dir.Path, err),
+		}, logger)
 		return
 	}
 	defer f.Close()
@@ -1721,7 +1727,13 @@ func captureBrowserScreenshot(
 		MIME:             mime,
 	}
 	if err := sink.WriteAttachment(ctx, runID, rec, f); err != nil {
-		logger.Warn("Browser screenshot [%s]: write %s: %v", nodeID, name, err)
+		recordAttachmentLost(ctx, emitter, runID, nodeID, attachmentLoss{
+			Directive: directivePreviewScreenshot,
+			Path:      dir.Path,
+			Name:      name,
+			Reason:    lossStoreWriteFailed,
+			Detail:    fmt.Sprintf("write %s: %v", name, err),
+		}, logger)
 		return
 	}
 

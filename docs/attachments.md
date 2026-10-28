@@ -93,10 +93,20 @@ The runtime reads the bytes and persists them through the same
 attachment: same storage layout, same serving route, same presigning.
 One line per file; other stdout is left alone.
 
-Failures are **non-fatal** — a missing or unreadable file is logged and
-skipped, never enough to fail the tool node. The tool's own output is
-its contract with the workflow; the directive is only how the bytes
-reach a human.
+Failures are **non-fatal** — a missing or unreadable file is skipped,
+never enough to fail the tool node. The tool's own output is its
+contract with the workflow; the directive is only how the bytes reach a
+human.
+
+They are not **silent**, though. Every exit that does not publish emits
+a `run_attachment_lost` event on the run, carrying the declared `path`,
+the `reason` (`unreadable`, `not_a_file`, `over_cap`, `name_taken`,
+`store_write_failed`) and a human `detail`. Without it the only trace
+was a warning in the runner's log — and on a sandbox pod that is the
+one place the operator cannot read, so a run could lose its whole
+deliverable and look like it succeeded (#2668). The sibling
+`[iterion] preview_screenshot=` verb reports its losses the same way;
+the event names which directive it came from.
 
 To show it at a gate, return a descriptor from the same node and map it
 in the edge's `with {}`:
