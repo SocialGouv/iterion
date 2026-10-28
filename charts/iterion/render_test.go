@@ -847,8 +847,14 @@ func TestChartRenderDevStack(t *testing.T) {
 
 	t.Run("the dev stores render pinned, with the bucket hook", func(t *testing.T) {
 		mongo := podSpec(t, docs, "Deployment", "iterion-mongodb")
-		if img := fmt.Sprint(dig(mongo, "containers", "0", "image")); !strings.HasPrefix(img, "mongo:8.3@sha256:") {
-			t.Errorf("mongo image = %s, want the digest-pinned mongo:8.3", img)
+		if img := fmt.Sprint(dig(mongo, "containers", "0", "image")); !strings.HasPrefix(img, "mongo:8.3") || !strings.Contains(img, "@sha256:") {
+			t.Errorf("mongo image = %s, want a digest-pinned mongo 8.3", img)
+		}
+		// SERVER-121912: without glibc owning rseq, MongoDB 8.x exits at
+		// start on Linux 6.19+ — the CI runners' kernel (cloud-e2e red on
+		// main at 05c188cd5).
+		if env := envMap(dig(mongo, "containers", "0")); env["GLIBC_TUNABLES"] == nil || fmt.Sprint(env["GLIBC_TUNABLES"]["value"]) != "glibc.pthread.rseq=1" {
+			t.Errorf("mongo env GLIBC_TUNABLES = %v, want glibc.pthread.rseq=1 (SERVER-121912)", env["GLIBC_TUNABLES"])
 		}
 		if args := fmt.Sprint(dig(mongo, "containers", "0", "args")); !strings.Contains(args, "--replSet rs0") {
 			t.Errorf("mongo args = %s, want a replica set", args)

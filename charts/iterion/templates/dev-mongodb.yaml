@@ -99,6 +99,14 @@ spec:
             # an unprivileged uid with no home of its own.
             - name: HOME
               value: /tmp
+            # MongoDB 8.x refuses to start on Linux 6.19+ (SERVER-121912):
+            # tcmalloc's per-CPU caches collide with the kernel's rseq, and
+            # the 8.3.9+ guard still exits on 6.19.0-7.0.13 and on Ubuntu's
+            # 7.0.0 builds (the CI runners). glibc keeping rseq makes
+            # tcmalloc fall back to per-thread caches: the guard passes on
+            # any kernel, the dev store pays a little allocator throughput.
+            - name: GLIBC_TUNABLES
+              value: glibc.pthread.rseq=1
           ports:
             - name: mongodb
               containerPort: 27017
