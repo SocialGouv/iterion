@@ -84,11 +84,22 @@ describe("assistant dock naming", () => {
     ).toBeTruthy();
   });
 
-  it("exposes the watch glyph as an image with its text alternative", () => {
+  it("says a watch landed as the tab's description, never as its name", () => {
     mountStrip();
+    // Both options are the real algorithms: `name` and `description` are
+    // computed by dom-accessibility-api, not read off an attribute.
     expect(
-      screen.getByRole("img", { name: "New automatic watch result" }),
+      screen.getByRole("button", {
+        name: "Vigie",
+        description: "New automatic watch result",
+      }),
     ).toBeTruthy();
+    // The name does not move with the state: the unread tab is still "Vigie",
+    // and the quiet one is still "Copi" with no description.
+    expect(screen.getByRole("button", { name: "Copi" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Copi" }).getAttribute("aria-describedby"),
+    ).toBeNull();
   });
 
   it("names each attached reference's remove after the reference", () => {

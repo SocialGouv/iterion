@@ -68,7 +68,14 @@ describe("ConversationStrip disposal affordance", () => {
         waitingIds={new Set(["c-2"])}
       />,
     );
-    expect(screen.getByLabelText("Ready for your next message")).toBeTruthy();
+    // The state is the tab's DESCRIPTION, not its name: the name is the bot,
+    // and it must not move when a gate parks the run.
+    expect(
+      screen.getByRole("button", {
+        name: "Copi",
+        description: "Ready for your next message",
+      }),
+    ).toBeTruthy();
   });
 
   it("distinguishes a new automatic watch result from an ordinary wait", () => {
@@ -85,7 +92,19 @@ describe("ConversationStrip disposal affordance", () => {
         unreadWatchIds={new Set(["c-1"])}
       />,
     );
-    expect(screen.getByLabelText("New automatic watch result")).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Copi",
+        description: "New automatic watch result",
+      }),
+    ).toBeTruthy();
+    // And only that one: a watch result is not an ordinary wait.
+    expect(
+      screen.queryByRole("button", {
+        name: "Copi",
+        description: "Ready for your next message",
+      }),
+    ).toBeNull();
     expect(screen.queryByLabelText("Ready for your next message")).toBeNull();
   });
 });

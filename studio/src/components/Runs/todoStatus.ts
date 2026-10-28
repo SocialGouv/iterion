@@ -11,6 +11,15 @@ export const STATUS_GLYPH: Record<TodoItem["status"], string> = {
   completed: "●",
 };
 
+// What a screen reader hears: role="img" makes the glyph's own text
+// presentational, so the alternative carries the whole meaning — and the wire
+// value ("in_progress") is not it.
+export const STATUS_WORD: Record<TodoItem["status"], string> = {
+  pending: "pending",
+  in_progress: "in progress",
+  completed: "completed",
+};
+
 export const STATUS_COLOR: Record<TodoItem["status"], string> = {
   pending: "text-fg-subtle",
   in_progress: "text-warning-fg",

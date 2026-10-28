@@ -1,5 +1,9 @@
 import type { TodoItem } from "@/components/Runs/toolFormatters";
-import { STATUS_COLOR, STATUS_GLYPH } from "@/components/Runs/todoStatus";
+import {
+  STATUS_COLOR,
+  STATUS_GLYPH,
+  STATUS_WORD,
+} from "@/components/Runs/todoStatus";
 
 // TodoItems renders the agent task-list body (no header): one row per
 // item with a status glyph and its text — the in_progress item shows its
@@ -23,7 +27,7 @@ export function TodoItems({ todos }: { todos: TodoItem[] }) {
               // span is prohibited (axe aria-prohibited-attr).
               role="img"
               className={`${STATUS_COLOR[t.status]} flex-none mt-px`}
-              aria-label={t.status}
+              aria-label={STATUS_WORD[t.status]}
             >
               {STATUS_GLYPH[t.status]}
             </span>

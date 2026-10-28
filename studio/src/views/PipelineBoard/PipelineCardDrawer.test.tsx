@@ -224,9 +224,47 @@ describe("pipeline card drawer — portal chrome", () => {
     outside.remove();
   });
 
+  it("names the page presentation as a region, and stays axe-clean", async () => {
+    // The same component's other half: the dedicated route renders a shell
+    // instead of a dialog, and its name sat on a roleless div
+    // (aria-prohibited-attr) — the drawer's own entry never mounted it.
+    const { container } = render(
+      <PipelineCardDetails
+        card={makeCard()}
+        presentation="page"
+        onClose={() => {}}
+        onRefetch={() => {}}
+      />,
+    );
+    expect(
+      screen.getByRole("region", { name: "Details for Compose the intro" }),
+    ).toBeTruthy();
+    // The page opens at h1, so its sections are h2 — the same body under the
+    // overlay's h2 keeps them h3 (RGAA 9.1).
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Compose the intro" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Inputs" })).toBeTruthy();
+    await expectNoViolationsStrict(container, "pipeline card page");
+  });
+
+  it("keeps the overlay's sections at h3, under its own h2", async () => {
+    mount();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Compose the intro" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 3, name: "Inputs" })).toBeTruthy();
+  });
+
   it("has no axe violations through the portal", async () => {
     mount();
-    await expectNoViolationsStrict(document.body, "pipeline card drawer");
+    await expectNoViolationsStrict(document.body, "pipeline card drawer", [
+      {
+        rule: "focus-order-semantics",
+        reason:
+          "the drawer's resize grip is a window splitter: role=separator with aria-valuenow IS a widget (ARIA 1.2) and axe's role list predates it — its keyboard contract is pinned by 'widens on ArrowLeft and narrows on ArrowRight' and 'takes a bigger step with Shift and jumps to the bounds with Home/End' above",
+      },
+    ]);
   });
 
   it("the scrim ignores the click that opened it, then closes on the next one", () => {

@@ -73,7 +73,10 @@ export function CopyButton({
     <button
       type="button"
       onClick={handleClick}
-      title={name}
+      // The tooltip keeps the visible wording ("copy" / "copied"): the
+      // qualification is for the accessible name, and "copied of plan" is not
+      // English anyone should read.
+      title={visible}
       aria-label={name}
       className={[baseClass, className ?? ""].join(" ")}
     >

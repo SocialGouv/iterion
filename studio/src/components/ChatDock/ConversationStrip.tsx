@@ -50,6 +50,17 @@ export function ConversationStrip({
         const isClosing = closingIds.has(c.id);
         const isWaiting = waitingIds.has(c.id);
         const hasUnreadWatch = unreadWatchIds.has(c.id);
+        // A state, not a name: the tab is "Vigie" whether or not a watch
+        // result landed, so the state is the control's DESCRIPTION. Folding
+        // it into the name (a glyph with a text alternative inside the
+        // button) renamed the tab on an unrelated event and left the
+        // tooltip disagreeing with it.
+        const state = hasUnreadWatch
+          ? "New automatic watch result"
+          : isWaiting
+            ? "Ready for your next message"
+            : null;
+        const stateId = `conversation-state-${c.id}`;
         return (
           <span
             key={c.id}
@@ -63,39 +74,42 @@ export function ConversationStrip({
               type="button"
               className="max-w-[9rem] truncate"
               aria-current={isActive ? "true" : undefined}
+              aria-describedby={state ? stateId : undefined}
               disabled={isClosing}
               onClick={() => onSelect(c.id)}
               title={
-                c.originLabel
-                  ? `${labelFor(c)} — about ${c.originLabel}`
-                  : labelFor(c)
+                [
+                  c.originLabel
+                    ? `${labelFor(c)} — about ${c.originLabel}`
+                    : labelFor(c),
+                  state,
+                ]
+                  .filter(Boolean)
+                  .join(" — ")
               }
             >
               {labelFor(c)}
               {c.originLabel ? (
                 <span className="text-fg-subtle"> · {c.originLabel}</span>
               ) : null}
-              {hasUnreadWatch || isWaiting ? (
+              {state ? (
+                // Decorative: the dot repeats what the description says, and
+                // a name on a roleless span is prohibited ARIA anyway.
                 <span
-                  // A state glyph with a text alternative — aria-label on a
-                  // roleless span is prohibited (axe aria-prohibited-attr).
-                  role="img"
+                  aria-hidden="true"
                   className={`ml-1 inline-block h-1.5 w-1.5 rounded-full align-middle ${
                     hasUnreadWatch ? "bg-accent" : "bg-warning"
                   }`}
-                  aria-label={
-                    hasUnreadWatch
-                      ? "New automatic watch result"
-                      : "Ready for your next message"
-                  }
-                  title={
-                    hasUnreadWatch
-                      ? "New automatic watch result"
-                      : "Ready for your next message"
-                  }
                 />
               ) : null}
             </button>
+            {state ? (
+              // Outside the button on purpose: inside, even an sr-only text
+              // node joins the name computed from content.
+              <span id={stateId} className="sr-only">
+                {state}
+              </span>
+            ) : null}
             <button
               type="button"
               aria-label={

@@ -73,6 +73,9 @@ describe("tool calls naming", () => {
       name: "copy raw input of Bash seq 1",
     });
     expect(copy.textContent).toBe("copy");
+    // The tooltip is visible UI: it keeps the wording, and the row
+    // qualification lives in the accessible name only.
+    expect(copy.getAttribute("title")).toBe("copy");
     const toggle = screen.getByRole("button", {
       name: "show raw event of Bash seq 1",
     });

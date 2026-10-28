@@ -5,7 +5,14 @@ import {
   Cross2Icon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { Link } from "wouter";
 
@@ -277,8 +284,16 @@ function MetaRow({ card }: { card: PipelineBoardCard }) {
   );
 }
 
+// The body is shared by both presentations, which open at different levels:
+// the page's own title is an h1, the overlay's an h2. A section is the child
+// of whichever one is above it, so the level travels with the presentation
+// instead of being hardcoded 11 times (RGAA 9.1 / axe heading-order).
+const SectionHeadingLevel = createContext<2 | 3>(3);
+
 function SectionHeading({ children }: { children: React.ReactNode }) {
-  return <h3 className="text-xs font-semibold text-fg-default">{children}</h3>;
+  const level = useContext(SectionHeadingLevel);
+  const Tag = level === 2 ? "h2" : "h3";
+  return <Tag className="text-xs font-semibold text-fg-default">{children}</Tag>;
 }
 
 // ContractSection shows stable bot_args (request file + correlation) above
@@ -813,11 +828,16 @@ export default function PipelineCardDetails({
   if (presentation === "page") {
     return (
       <div
+        // The page presentation is a named region, not a dialog: aria-label
+        // on a roleless div is prohibited ARIA (axe aria-prohibited-attr).
+        role="region"
         className="flex h-full min-h-0 w-full flex-col"
         aria-label={`Details for ${card.title}`}
       >
-        {header}
-        {body}
+        <SectionHeadingLevel.Provider value={2}>
+          {header}
+          {body}
+        </SectionHeadingLevel.Provider>
       </div>
     );
   }

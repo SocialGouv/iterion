@@ -4,6 +4,11 @@ import axe from "axe-core";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { allFiles } from "./_scanner";
+// Read as TEXT, a second way: Vite's glob excludes the module that declares
+// it (the scanner) and this file is the glob's own consumer, so the two files
+// most likely to host a laxer net are the two the scan cannot reach.
+import scannerSource from "./_scanner.ts?raw";
+import selfSource from "./axeHelpers.test.tsx?raw";
 import {
   AXE_BEST_PRACTICE_RULES,
   AXE_WCAG_TAGS,
@@ -61,15 +66,56 @@ describe("expectNoViolationsStrict — incompletes are never dropped", () => {
 // #2591's other half: the rule set the net runs is DECLARED, so widening it
 // is one edit and so nothing silently joins or leaves it.
 describe("the declared rule scope", () => {
-  it("covers WCAG 2.2 AA — target-size is in scope, even though jsdom cannot judge it", () => {
+  it("RUNS every rule it declares — a declared rule is not an executed one", async () => {
+    // The trap this closes: axe skips an `experimental` rule, and one that is
+    // off by default, even when its tag is in runOnly. Asked of the registry
+    // (getRules), `target-size` and `focus-order-semantics` look in scope;
+    // asked of a real run under the net's own options, they were in no bucket
+    // at all. So the oracle is the run.
+    const { container } = render(
+      <main>
+        <h1>surface</h1>
+        <span tabIndex={0}>focusable, no widget role</span>
+        <button type="button">ok</button>
+      </main>,
+    );
+    const results = await axe.run(container, axeRunOptions());
+    const ran = new Set(
+      [
+        ...results.violations,
+        ...results.incomplete,
+        ...results.passes,
+        ...results.inapplicable,
+      ].map((r) => r.id),
+    );
+    const declared = new Set([
+      ...axe.getRules([...AXE_WCAG_TAGS]).map((r) => r.ruleId),
+      ...AXE_BEST_PRACTICE_RULES,
+    ]);
+    // `bypass` needs the document root (a means to skip repeated blocks),
+    // which a mounted fragment has no answer for — the same blind spot as
+    // the page-level landmark family, and the only one.
+    const inert = [...declared].filter((id) => !ran.has(id) && id !== "bypass");
+    expect(inert).toEqual([]);
+    expect(ran.size).toBeGreaterThan(70);
+    // Both halves of the declaration, named: the WCAG 2.2 rule axe ships
+    // disabled, and the experimental best-practice one.
     expect([...AXE_WCAG_TAGS]).toContain("wcag22aa");
-    const inScope = axe.getRules([...AXE_WCAG_TAGS]).map((r) => r.ruleId);
-    expect(inScope).toContain("target-size");
-    // Honest about the limit the tag buys us: with no layout, jsdom measures
-    // every element 0×0 and axe reads that as a pass rather than as "cannot
-    // tell" — the scope is declared here, the judgement needs #2765's engine.
-    const { container } = render(<button type="button">ok</button>);
-    expect(container).toBeTruthy();
+    expect(ran).toContain("target-size");
+    expect(ran).toContain("focus-order-semantics");
+  });
+
+  it("catches what focus-order-semantics is declared for", async () => {
+    // The rule was inert for a release and nobody noticed, because nothing
+    // exercised what it judges. This is that something.
+    const { container } = render(
+      <div>
+        <span tabIndex={0}>focusable, no widget role</span>
+      </div>,
+    );
+    await expect(
+      expectNoViolationsStrict(container, "roleless focusable"),
+    ).rejects.toThrow(/focus-order-semantics/);
   });
 
   it("runs the declared best-practice rules (a positive tabindex fails)", async () => {
@@ -109,31 +155,21 @@ describe("the declared rule scope", () => {
   });
 
   it("declares the best-practice half as an allowlist — axe's other rules are off", () => {
-    const off = Object.keys(
-      (axeRunOptions().rules ?? {}) as Record<string, unknown>,
-    );
+    const off = (axeRunOptions().rules ?? {}) as Record<
+      string,
+      { enabled: boolean }
+    >;
     const bestPractice = axe.getRules(["best-practice"]).map((r) => r.ruleId);
     const wcagScoped = new Set(
       axe.getRules([...AXE_WCAG_TAGS]).map((r) => r.ruleId),
     );
-    const bothHalves: string[] = [];
     for (const rule of bestPractice) {
-      if (AXE_BEST_PRACTICE_RULES.includes(rule as never)) {
-        expect(off).not.toContain(rule);
-      } else if (wcagScoped.has(rule)) {
-        // Mirrors declaredBestPracticeRules()'s escape hatch: a WCAG tag
-        // already put the rule in scope, so it stays ON.
-        bothHalves.push(rule);
-        expect(off).not.toContain(rule);
-      } else {
-        expect(off).toContain(rule);
-      }
+      const declared =
+        AXE_BEST_PRACTICE_RULES.includes(rule as never) || wcagScoped.has(rule);
+      // The WCAG half decides for a rule carrying both: switching it off
+      // here would shrink that half.
+      expect(off[rule]).toEqual({ enabled: declared });
     }
-    // A deliberate tripwire, not a bug: no best-practice rule carries a
-    // declared WCAG tag today, so the branch above is unreachable. The day an
-    // axe release changes that, the rule is ON by design and this line says
-    // so — acknowledge the widening here rather than discover it in a diff.
-    expect(bothHalves).toEqual([]);
     // The registry has to have been read for any of this to mean anything.
     expect(bestPractice.length).toBeGreaterThan(20);
   });
@@ -172,6 +208,27 @@ describe("vendor sentinels", () => {
     ).rejects.toThrow(/aria-hidden-focus/);
   });
 
+  it("reads the sentinel's own tag even when an attribute holds a '>'", async () => {
+    // openingTag() stops at the first UNQUOTED '>': a title="a > b" before
+    // the marker would otherwise hide the guard and turn every open-dialog
+    // audit red on a node the surface does not own.
+    const { container } = render(
+      <div>
+        <span
+          title="a > b"
+          data-radix-focus-guard=""
+          aria-hidden="true"
+          tabIndex={0}
+          style={{ outline: "none", opacity: 0, pointerEvents: "none" }}
+        />
+        <button type="button">ok</button>
+      </div>,
+    );
+    await expect(
+      expectNoViolationsStrict(container, "radix guard, angled title"),
+    ).resolves.toBeUndefined();
+  });
+
   it("still fails when the surface's own node CONTAINS a sentinel", async () => {
     // The hostile shape, not the cooperative one: axe reports a node by its
     // outerHTML, so a wrapper that merely contains the guard must not be
@@ -195,6 +252,75 @@ describe("vendor sentinels", () => {
   });
 });
 
+// A waiver is the one lane a surface has for "this rule is wrong about this
+// pattern, and here is what judges it instead". It has to work on whichever
+// bucket axe files the rule under, and it has to die when it stops being
+// true.
+describe("waivers", () => {
+  it("covers a violation, not only a needs-review", async () => {
+    // focus-order-semantics is a VIOLATION on the window-splitter pattern
+    // (role=separator + aria-valuenow IS a widget in ARIA 1.2, axe's role
+    // list predates it) — the shape chokepoints.test.tsx and the pipeline
+    // drawer waive. Non-vacuous: the same fixture fails unwaived.
+    const splitter = (
+      <div
+        role="separator"
+        tabIndex={0}
+        aria-orientation="vertical"
+        aria-valuenow={300}
+        aria-valuemin={220}
+        aria-valuemax={560}
+        aria-label="Resize panel"
+      />
+    );
+    const unwaived = render(<div>{splitter}</div>);
+    await expect(
+      expectNoViolationsStrict(unwaived.container, "splitter"),
+    ).rejects.toThrow(/focus-order-semantics/);
+    cleanup();
+    const waived = render(<div>{splitter}</div>);
+    await expect(
+      expectNoViolationsStrict(waived.container, "splitter", [
+        {
+          rule: "focus-order-semantics",
+          reason: "the window-splitter pattern, pinned by its keyboard tests",
+        },
+      ]),
+    ).resolves.toBeUndefined();
+  });
+
+  it("fails when it matched nothing — a dead waiver is how a net stops judging", async () => {
+    const { container } = render(<button type="button">ok</button>);
+    await expect(
+      expectNoViolationsStrict(container, "clean", [
+        { rule: "heading-order", reason: "nothing here reports it" },
+      ]),
+    ).rejects.toThrow(/matched nothing/);
+  });
+
+  it("auto-waives label-content-name-mismatch, because axe cannot decide it", async () => {
+    // The qualified-name pattern this slice landed everywhere: visible
+    // "Remove", accessible name "Remove server tools_db". Non-vacuous — the
+    // rule DOES report on it, identically to a real mismatch, which is why
+    // no entry can act on it.
+    const { container } = render(
+      <button type="button" aria-label="Remove server tools_db">
+        Remove
+      </button>,
+    );
+    const raw = await axe.run(container, {
+      runOnly: { type: "rule", values: ["label-content-name-mismatch"] },
+      rules: { "label-content-name-mismatch": { enabled: true } },
+    });
+    expect(raw.incomplete.map((r) => r.id)).toContain(
+      "label-content-name-mismatch",
+    );
+    await expect(
+      expectNoViolationsStrict(container, "qualified name"),
+    ).resolves.toBeUndefined();
+  });
+});
+
 // Every axe entry in the studio goes through this one helper: that is what
 // makes "incompletes are never dropped" true of the whole suite rather than
 // of one file. A second, hand-rolled axe.run would reopen the hole in
@@ -209,8 +335,25 @@ describe("one net, no second one", () => {
     expect(paths).toContain("/src/__tests__/a11y/primitives.test.tsx");
     expect(paths).toContain("/src/__tests__/a11y/axeHelpers.test.tsx");
     // Vite's glob excludes the module that declares it, so the scanner
-    // itself is the one file this list cannot see. It holds no axe call.
+    // itself is the one file the list cannot hold — covered below by text.
     expect(paths).not.toContain("/src/__tests__/a11y/_scanner.ts");
+  });
+
+  it("covers the two files the scan cannot reach", () => {
+    // The scanner declares the glob, so it is absent from its own result;
+    // and this file is allowlisted below because it legitimately runs axe.
+    // Both are read as text instead, which is the point: a lax net added to
+    // the net's own modules would otherwise be the one that gets through.
+    expect(scannerSource).toContain("import.meta.glob");
+    expect(/\baxe\.run\s*\(/.test(scannerSource)).toBe(false);
+    // Exactly the two probes this file declares — a third is a deliberate
+    // act that has to be argued for here. The call form is what counts:
+    // `axe.run()` also appears in prose below, and a call nobody awaits
+    // nets nothing.
+    expect(selfSource.match(/await axe\.run\s*\(/g) ?? []).toHaveLength(3);
+    expect(/\bexport (async )?function expectNoViolations\s*\(/.test(selfSource)).toBe(
+      false,
+    );
   });
 
   it("calls axe.run() from axeHelpers.ts and nowhere else", () => {

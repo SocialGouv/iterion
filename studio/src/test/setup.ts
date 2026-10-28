@@ -29,4 +29,14 @@
 if (typeof document !== "undefined") {
   const { configure } = await import("@testing-library/dom");
   configure({ asyncUtilTimeout: 3000 });
+
+  // jsdom loads no stylesheet, so the ONE Tailwind utility whose whole
+  // meaning is "not in the accessibility tree" — `hidden` (display: none) —
+  // is invisible here: axe reads a nameless control where a browser reads
+  // nothing at all, and Testing Library counts an element the user cannot
+  // reach. Declared once, for every DOM test, rather than compensated for
+  // with aria attributes at each call site.
+  const style = document.createElement("style");
+  style.textContent = ".hidden{display:none}";
+  document.head.appendChild(style);
 }

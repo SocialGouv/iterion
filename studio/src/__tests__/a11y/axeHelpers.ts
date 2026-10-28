@@ -31,10 +31,11 @@ export function setupMatchMedia(): void {
  * 2.2. Declared once so widening the net is one edit, and so an axe release
  * that adds a rule to one of these tags arrives in every entry at once.
  *
- * `wcag22aa` carries exactly one rule today, `target-size` (SC 2.5.8), and
- * jsdom has no layout: every element measures 0×0, which axe reads as a
- * *pass* rather than as "cannot tell". The tag declares the scope honestly;
- * judging target size needs a real engine, which is #2765's job.
+ * `wcag22aa` carries exactly one rule today, `target-size` (SC 2.5.8), which
+ * axe ships OFF by default — `declaredRuleSwitches` turns it on, or the tag
+ * would be a declaration nobody runs. jsdom still has no layout, so it
+ * answers `inapplicable` on element after element: the scope is declared and
+ * executed here, the judgement needs a real engine (#2765).
  */
 export const AXE_WCAG_TAGS = [
   "wcag2a",
@@ -49,7 +50,7 @@ export const AXE_WCAG_TAGS = [
  * judges a mounted fragment and names a defect the WCAG tags miss. It is an
  * ALLOWLIST, not the tag: a best-practice rule nobody decided on stays off,
  * so an axe upgrade cannot redden 55 entries at once with a concern no test
- * pins, and `declaredBestPracticeRules` is the one place to argue with.
+ * pins, and `AXE_BEST_PRACTICE_RULES` is the one place to argue with.
  *
  * Deliberately out:
  *  - the page-level family (`region`, `landmark-one-main`,
@@ -108,33 +109,42 @@ export const AXE_BEST_PRACTICE_RULES = [
 ] as const;
 
 /**
- * Every `best-practice` rule outside the declared allowlist, as axe's own
- * per-rule switch. `runOnly` filters by TAG, so `best-practice` can only come
- * in whole and be narrowed back down from here — and the narrowing is read
- * from axe's registry (`getRules`) rather than from a hand-copied list, so a
- * rule added by an upgrade is off by default instead of missing from both.
+ * The per-rule switches that make the declaration above the scope that
+ * actually RUNS.
  *
- * A best-practice rule that also carries one of the declared WCAG tags stays
- * ON: the WCAG tag already put it in scope, and disabling it here would
- * silently shrink the WCAG half.
+ * `runOnly` by tag is not sufficient: axe skips a rule that is
+ * `experimental`, or off by default, even when its tag is asked for. Under
+ * tags alone this net silently dropped `target-size` (the whole of wcag22aa,
+ * `enabled: false` in axe 4.13), five WCAG A/AA rules —
+ * `label-content-name-mismatch` (the only machine check for SC 2.5.3),
+ * `p-as-heading`, `table-fake-caption`, `td-has-header`,
+ * `css-orientation-lock` — and `focus-order-semantics` out of the declared
+ * best-practice list. A rule named in a list and never executed is the same
+ * hole as an incomplete nobody reads, so every declared rule is turned ON by
+ * id and every undeclared best-practice rule OFF by id.
+ *
+ * Read from axe's registry (`getRules`) rather than from a hand-copied list,
+ * so a rule an upgrade adds to a declared tag arrives in the net, and one it
+ * adds to `best-practice` stays off until someone decides.
  */
-export function declaredBestPracticeRules(): Record<
-  string,
-  { enabled: boolean }
-> {
-  const wcag = new Set<string>(AXE_WCAG_TAGS);
-  const declared = new Set<string>(AXE_BEST_PRACTICE_RULES);
-  const off: Record<string, { enabled: boolean }> = {};
-  for (const rule of axe.getRules(["best-practice"])) {
-    const { ruleId, tags } = rule as unknown as {
-      ruleId: string;
-      tags?: string[];
-    };
-    if (declared.has(ruleId)) continue;
-    if ((tags ?? []).some((tag) => wcag.has(tag))) continue;
-    off[ruleId] = { enabled: false };
+export function declaredRuleSwitches(): Record<string, { enabled: boolean }> {
+  const switches: Record<string, { enabled: boolean }> = {};
+  const idOf = (rule: unknown) => (rule as { ruleId: string }).ruleId;
+  // ON: the declared WCAG scope, then the declared best-practice rules.
+  for (const rule of axe.getRules([...AXE_WCAG_TAGS])) {
+    switches[idOf(rule)] = { enabled: true };
   }
-  return off;
+  for (const id of AXE_BEST_PRACTICE_RULES) {
+    switches[id] = { enabled: true };
+  }
+  // OFF: every other best-practice rule. A rule already ON above is in the
+  // WCAG scope, which decides — turning it off here would shrink that half.
+  for (const rule of axe.getRules(["best-practice"])) {
+    const id = idOf(rule);
+    if (switches[id]?.enabled) continue;
+    switches[id] = { enabled: false };
+  }
+  return switches;
 }
 
 /** The axe run options every entry shares: the declared scope, nothing else. */
@@ -144,7 +154,7 @@ export function axeRunOptions(): axe.RunOptions {
       type: "tag",
       values: [...AXE_WCAG_TAGS, "best-practice"],
     },
-    rules: declaredBestPracticeRules(),
+    rules: declaredRuleSwitches(),
   };
 }
 
@@ -176,8 +186,21 @@ const VENDOR_SENTINELS: { rule: string; marker: string; why: string }[] = [
  * attributes it carries, so the opening tag is the whole question.
  */
 function openingTag(html: string): string {
-  const end = html.indexOf(">");
-  return end === -1 ? html : html.slice(0, end + 1);
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < html.length; i += 1) {
+    const c = html[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c as '"' | "'";
+      continue;
+    }
+    // `>` inside an attribute value (title="a > b") does not end the tag.
+    if (c === ">") return html.slice(0, i + 1);
+  }
+  return html;
 }
 
 function withoutVendorSentinels(results: axe.Result[]): axe.Result[] {
@@ -216,6 +239,25 @@ function nodes(result: axe.Result): string {
 }
 
 /**
+ * Rules no entry can decide, and what decides them instead. Auto-waived for
+ * every surface, visibly, because the reason is the same everywhere:
+ *
+ *  - `color-contrast`: jsdom has no canvas, so axe marks every element's
+ *    contrast incomplete. Judged at the token level by contrast.test.ts.
+ *  - `label-content-name-mismatch`: axe 4.13 answers needs-review for EVERY
+ *    control carrying both an aria-label and visible text — probed, the
+ *    contained case (`Remove` → "Remove server tools_db"), the glyph case and
+ *    a REAL mismatch (`Delete` → "Save") come back identical, so the rule
+ *    cannot separate them. SC 2.5.3 is pinned by the colocated name tests,
+ *    which assert the visible word is part of the accessible name.
+ */
+const UNDECIDABLE_HERE: Record<string, string> = {
+  "color-contrast": "jsdom has no canvas — contrast.test.ts judges the tokens",
+  "label-content-name-mismatch":
+    "axe 4.13 cannot separate a contained name from a mismatch — the colocated name tests pin SC 2.5.3",
+};
+
+/**
  * Run axe over `container` against the declared scope and throw a readable
  * summary on failure (`label` names the surface under test).
  *
@@ -225,6 +267,13 @@ function nodes(result: axe.Result): string {
  * controls). A surface waives a rule per entry, naming the colocated test
  * that pins the concern instead; an unwaived incomplete fails the same way a
  * violation does.
+ *
+ * A waiver covers BOTH buckets — a rule can be a violation on one axe release
+ * and needs-review on the next, and the one lane a surface has for "this rule
+ * is wrong about this pattern, and here is what judges it" must not depend on
+ * that. The price is that a waiver which matched nothing FAILS: a waiver is a
+ * live claim about this surface, and a dead one is how a net quietly stops
+ * judging what it says it judges.
  */
 export async function expectNoViolationsStrict(
   container: HTMLElement,
@@ -232,34 +281,46 @@ export async function expectNoViolationsStrict(
   waivers: { rule: string; reason: string }[] = [],
 ): Promise<void> {
   const results = await axe.run(container, axeRunOptions());
-  // Applied to both buckets: which bucket axe files a library's own sentinel
-  // under is axe's business and moves between releases; whose node it is does
-  // not.
-  const failed = withoutVendorSentinels(results.violations);
+  // Sentinels first, in both buckets: which bucket axe files a library's own
+  // node under is axe's business and moves between releases; whose node it is
+  // does not.
+  const violations = withoutVendorSentinels(results.violations);
+  const incomplete = withoutVendorSentinels(results.incomplete);
+  const waived = new Set(waivers.map((w) => w.rule));
+  const waivedList = waivers.length
+    ? `\n  waived here: ${waivers.map((w) => `${w.rule} (${w.reason})`).join(", ")}`
+    : "";
+
+  const problems: string[] = [];
+  const failed = violations.filter((v) => !waived.has(v.id));
   if (failed.length > 0) {
-    const violations = failed
+    const summary = failed
       .map((v) => `  - [${v.id}] ${v.help}${nodes(v)}`)
       .join("\n");
-    throw new Error(`${label} has axe violations:\n${violations}`);
+    problems.push(`axe violations:${waivedList}\n${summary}`);
   }
-  // jsdom cannot compute colour contrast (no canvas), so axe marks every
-  // element's color-contrast incomplete — an environment artefact, covered
-  // at the token level by contrast.test.ts. Auto-waived here, visibly.
-  const ENVIRONMENT_INHERENT = new Set(["color-contrast"]);
-  const waived = new Set([...waivers.map((w) => w.rule), ...ENVIRONMENT_INHERENT]);
-  const open = withoutVendorSentinels(results.incomplete).filter(
-    (v) => !waived.has(v.id),
+  const open = incomplete.filter(
+    (v) => !waived.has(v.id) && !(v.id in UNDECIDABLE_HERE),
   );
   if (open.length > 0) {
     const summary = open
       .map((v) => `  - [${v.id}] ${v.help} — needs review${nodes(v)}`)
       .join("\n");
-    const waivedList = waivers.length
-      ? `\n  waived here: ${waivers.map((w) => w.rule).join(", ")}`
-      : "";
-    throw new Error(
-      `${label} has axe results needing review — decide each, never drop them:${waivedList}\n${summary}`,
+    problems.push(
+      `axe results needing review — decide each, never drop them:${waivedList}\n${summary}`,
     );
+  }
+  const reported = new Set([...violations, ...incomplete].map((v) => v.id));
+  const dead = waivers.filter((w) => !reported.has(w.rule));
+  if (dead.length > 0) {
+    problems.push(
+      `waivers that matched nothing — the surface no longer needs them, drop them:\n${dead
+        .map((w) => `  - [${w.rule}] ${w.reason}`)
+        .join("\n")}`,
+    );
+  }
+  if (problems.length > 0) {
+    throw new Error(`${label} has ${problems.join("\n\n")}`);
   }
   expect(open).toHaveLength(0);
 }
