@@ -367,3 +367,246 @@ func TestChartRenderSubChartArchivesAreDeclared(t *testing.T) {
 		}
 	}
 }
+
+// ruleGroups indexes the alerting rules of the release's PrometheusRule by
+// group name.
+func ruleGroups(t *testing.T, docs []map[string]any) map[string][]map[string]any {
+	t.Helper()
+	pr := must(t, docs, "PrometheusRule", "iterion")
+	groups, _ := dig(pr, "spec", "groups").([]any)
+	out := map[string][]map[string]any{}
+	for _, g := range groups {
+		gm, _ := g.(map[string]any)
+		name, _ := gm["name"].(string)
+		rules, _ := gm["rules"].([]any)
+		for _, r := range rules {
+			rm, _ := r.(map[string]any)
+			out[name] = append(out[name], rm)
+		}
+	}
+	return out
+}
+
+// rule finds the rule with the alert name whose labels carry every given
+// label; nil when none does.
+func rule(rules []map[string]any, alert string, labels map[string]string) map[string]any {
+	for _, r := range rules {
+		if r["alert"] != alert {
+			continue
+		}
+		got := stringMap(r["labels"])
+		matched := true
+		for k, v := range labels {
+			if got[k] != v {
+				matched = false
+			}
+		}
+		if matched {
+			return r
+		}
+	}
+	return nil
+}
+
+func envMap(container any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	env, _ := dig(container, "env").([]any)
+	for _, e := range env {
+		m, _ := e.(map[string]any)
+		name, _ := m["name"].(string)
+		out[name] = m
+	}
+	return out
+}
+
+func TestChartRenderDatastoreAlerts(t *testing.T) {
+	base := []string{"-f", "values-prod.yaml", "-f", "testdata/values-datastores.yaml"}
+	rules := ruleGroups(t, manifests(t, mustRender(t, base...)))["iterion.datastores"]
+	if len(rules) == 0 {
+		t.Fatal("no iterion.datastores group in the render")
+	}
+
+	t.Run("one replica rule and one restart rule per store", func(t *testing.T) {
+		for _, store := range []string{"mongodb", "nats", "valkeyha", "valkeyfiler", "seaweedfs"} {
+			r := rule(rules, "IterionDatastoreReplicasMissing", map[string]string{"datastore": store})
+			if r == nil {
+				t.Errorf("no IterionDatastoreReplicasMissing rule for %s", store)
+				continue
+			}
+			expr := fmt.Sprint(r["expr"])
+			if !strings.Contains(expr, "kube_statefulset_status_replicas_ready{") || !strings.Contains(expr, " < kube_statefulset_replicas{") || !strings.Contains(expr, `namespace="iterion"`) {
+				t.Errorf("%s replica rule expr = %q", store, expr)
+			}
+			if rule(rules, "IterionDatastoreRestarting", map[string]string{"datastore": store}) == nil {
+				t.Errorf("no IterionDatastoreRestarting rule for %s", store)
+			}
+		}
+	})
+
+	t.Run("the store-level signals of the ticket", func(t *testing.T) {
+		signals := []struct{ alert, family, series, threshold string }{
+			{"IterionValkeyReplicasDisconnected", "valkey", "redis_connected_slaves{", "< 2"},
+			{"IterionValkeyAOFWriteFailing", "valkey", "redis_aof_last_write_status{", "== 0"},
+			{"IterionSeaweedFSVolumesMissing", "seaweedfs", "SeaweedFS_volumeServer_volumes{", "< 4"},
+			{"IterionSeaweedFSNoLeader", "seaweedfs", "SeaweedFS_master_is_leader{", "== 0"},
+			{"IterionMongoDBMemberOutOfSet", "mongodb", "mongodb_rs_members_state{", `member_state!~"PRIMARY|SECONDARY|ARBITER"`},
+			{"IterionMongoDBMemberUnhealthy", "mongodb", "mongodb_rs_members_health{", "== 0"},
+			{"IterionMongoDBNoPrimary", "mongodb", `member_state="PRIMARY"`, "< 1"},
+		}
+		for _, s := range signals {
+			r := rule(rules, s.alert, map[string]string{"family": s.family})
+			if r == nil {
+				t.Errorf("no %s rule", s.alert)
+				continue
+			}
+			expr := fmt.Sprint(r["expr"])
+			if !strings.Contains(expr, s.series) || !strings.Contains(expr, s.threshold) || !strings.Contains(expr, `namespace="iterion"`) {
+				t.Errorf("%s expr = %q, want %q and %q on the release namespace", s.alert, expr, s.series, s.threshold)
+			}
+		}
+	})
+
+	t.Run("every exporter family has an absent-signal rule", func(t *testing.T) {
+		for _, family := range []string{"kube-state-metrics", "valkey", "seaweedfs", "mongodb"} {
+			r := rule(rules, "IterionDatastoreSignalAbsent", map[string]string{"family": family})
+			if r == nil {
+				t.Errorf("no absent-signal rule for %s", family)
+				continue
+			}
+			if expr := fmt.Sprint(r["expr"]); !strings.HasPrefix(expr, "absent(") {
+				t.Errorf("%s absent rule expr = %q", family, expr)
+			}
+		}
+	})
+
+	t.Run("off by default and per family", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "metrics.prometheusRule.enabled=true"))
+		if groups := ruleGroups(t, docs); len(groups["iterion.datastores"]) != 0 {
+			t.Errorf("the datastore pack rendered without datastores.enabled")
+		}
+		docs = manifests(t, mustRender(t, append(base, "--set", "metrics.prometheusRule.datastores.valkey.enabled=false")...))
+		off := ruleGroups(t, docs)["iterion.datastores"]
+		if rule(off, "IterionValkeyAOFWriteFailing", nil) != nil || rule(off, "IterionDatastoreSignalAbsent", map[string]string{"family": "valkey"}) != nil {
+			t.Errorf("valkey rules rendered with the family off")
+		}
+		if rule(off, "IterionSeaweedFSVolumesMissing", nil) == nil {
+			t.Errorf("the other families must stay when one is off")
+		}
+	})
+
+	t.Run("the namespace and the selectors are the operator's", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, append(base, "--set", "metrics.prometheusRule.datastores.namespace=data", "--set-string", `metrics.prometheusRule.datastores.valkey.selector=job="valkey-metrics"`)...))
+		custom := ruleGroups(t, docs)["iterion.datastores"]
+		r := rule(custom, "IterionValkeyReplicasDisconnected", nil)
+		if r == nil || !strings.Contains(fmt.Sprint(r["expr"]), `{namespace="data", job="valkey-metrics"}`) {
+			t.Errorf("valkey expr = %v", r)
+		}
+		if r := rule(custom, "IterionDatastoreReplicasMissing", map[string]string{"datastore": "nats"}); r == nil || !strings.Contains(fmt.Sprint(r["expr"]), `namespace="data"`) {
+			t.Errorf("the replica rules must follow the namespace, got %v", r)
+		}
+	})
+
+	judgeClean(t, mustRender(t, base...), 6)
+}
+
+func TestChartRenderBackup(t *testing.T) {
+	const digest = "sha256:d5971950c2b370fb04dd3292541b5bda6d9103143fd7e345aeb435a399388afc"
+	base := []string{"-f", "values-prod.yaml", "-f", "testdata/values-backup.yaml"}
+
+	t.Run("absent when disabled", func(t *testing.T) {
+		for _, values := range []string{"values-dev.yaml", "values-prod.yaml"} {
+			for _, d := range manifests(t, mustRender(t, "-f", values)) {
+				if d["kind"] == "CronJob" {
+					t.Errorf("%s renders a CronJob with backup.enabled=false", values)
+				}
+			}
+		}
+	})
+
+	t.Run("one pinned CronJob per tier, credentials by Secret only", func(t *testing.T) {
+		out := mustRender(t, base...)
+		docs := manifests(t, out)
+		tiers := map[string]string{"daily": "sync", "weekly": "snapshot", "monthly": "snapshot"}
+		for tier, mode := range tiers {
+			cj := must(t, docs, "CronJob", "iterion-backup-"+tier)
+			container := dig(cj, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
+			if got := dig(container, "image"); got != "rclone/rclone@"+digest {
+				t.Errorf("%s image = %v, want the digest-pinned rclone", tier, got)
+			}
+			env := envMap(container)
+			if v := dig(env["MODE"], "value"); v != mode {
+				t.Errorf("%s MODE = %v, want %s", tier, v, mode)
+			}
+			for _, name := range []string{"RCLONE_CONFIG_SRC_ACCESS_KEY_ID", "RCLONE_CONFIG_SRC_SECRET_ACCESS_KEY", "RCLONE_CONFIG_DST_ACCESS_KEY_ID", "RCLONE_CONFIG_DST_SECRET_ACCESS_KEY"} {
+				e := env[name]
+				if e == nil || dig(e, "valueFrom", "secretKeyRef", "name") == nil || dig(e, "value") != nil {
+					t.Errorf("%s: %s must come from a Secret, got %v", tier, name, e)
+				}
+			}
+			if got := dig(env["RCLONE_CONFIG_DST_ACCESS_KEY_ID"], "valueFrom", "secretKeyRef", "name"); got != "iterion-backup-destination" {
+				t.Errorf("%s: destination secret = %v", tier, got)
+			}
+			if got := dig(env["RCLONE_CONFIG_SRC_ACCESS_KEY_ID"], "valueFrom", "secretKeyRef", "name"); got != "iterion-storage" {
+				t.Errorf("%s: source secret = %v, want the deployment's storage secret", tier, got)
+			}
+			if got := dig(cj, "spec", "concurrencyPolicy"); got != "Forbid" {
+				t.Errorf("%s: concurrencyPolicy = %v", tier, got)
+			}
+			// The check follows EACH copy: the sync branch checks the mirror,
+			// the snapshot branch checks the dated copy. A script that only
+			// mentions `rclone check` somewhere proves neither. Leading
+			// whitespace is dropped line by line: the block scalar re-indents.
+			script := regexp.MustCompile(`(?m)^[ \t]+`).ReplaceAllString(fmt.Sprint(dig(container, "args", "0")), "")
+			checks := map[string]string{
+				"sync":     `rclone sync "$src" "$root" --backup-dir "dst:${DST_BUCKET}/${PREFIX}-deleted/${ts}" $EXTRA_ARGS` + "\n" + `rclone check "$src" "$root" $CHECK_ARGS`,
+				"snapshot": `rclone copy "$src" "${root}/${ts}" $EXTRA_ARGS` + "\n" + `rclone check "$src" "${root}/${ts}" $CHECK_ARGS`,
+			}
+			for branch, want := range checks {
+				if !strings.Contains(script, want) {
+					t.Errorf("%s: the %s branch must check the copy it just made, script lacks:\n%s", tier, branch, want)
+				}
+			}
+		}
+		if strings.Contains(out, "secretAccessKey:") || strings.Contains(out, "iterion-dev-secret") {
+			t.Errorf("the render carries a credential-looking literal")
+		}
+		judgeClean(t, out, 6)
+	})
+
+	t.Run("the alert rules follow the tiers", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, append(base, "--set", "metrics.prometheusRule.enabled=true")...))
+		rules := ruleGroups(t, docs)["iterion.backup"]
+		failed := rule(rules, "IterionArtifactBackupFailed", nil)
+		if failed == nil || !strings.Contains(fmt.Sprint(failed["expr"]), `kube_job_status_failed{namespace="iterion", job_name=~"iterion-backup-.*"} > 0`) {
+			t.Errorf("failed rule = %v", failed)
+		}
+		for _, tier := range []string{"daily", "weekly", "monthly"} {
+			if r := rule(rules, "IterionArtifactBackupStale", map[string]string{"tier": tier}); r == nil || !strings.Contains(fmt.Sprint(r["expr"]), `cronjob="iterion-backup-`+tier+`"`) {
+				t.Errorf("stale rule for %s = %v", tier, r)
+			}
+			if r := rule(rules, "IterionArtifactBackupNeverSucceeded", map[string]string{"tier": tier}); r == nil || !strings.HasPrefix(fmt.Sprint(r["expr"]), "absent(") {
+				t.Errorf("never-succeeded rule for %s = %v", tier, r)
+			}
+		}
+		docs = manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "metrics.prometheusRule.enabled=true"))
+		if len(ruleGroups(t, docs)["iterion.backup"]) != 0 {
+			t.Errorf("backup rules rendered with backup disabled")
+		}
+	})
+
+	t.Run("the guards refuse an unpinned image, a missing destination, missing source credentials and a bad tier", func(t *testing.T) {
+		mustRefuse(t, "backup.destination.existingSecret is required", append(base, "--set", "backup.destination.existingSecret=")...)
+		mustRefuse(t, "backup.destination.bucket is required", append(base, "--set", "backup.destination.bucket=")...)
+		mustRefuse(t, "backup.destination.endpoint is required", append(base, "--set", "backup.destination.endpoint=")...)
+		mustRefuse(t, "backup.image.digest must be", append(base, "--set", "backup.image.digest=1.71.1")...)
+		mustRefuse(t, "backup.image.digest must be", append(base, "--set", "backup.image.digest=")...)
+		mustRefuse(t, "needs the source credentials", append(base, "--set", "secrets.storage.existingSecret=", "--set", "secrets.storage.create=false")...)
+		tier := func(mode string, keepDays, maxAge int) string {
+			return fmt.Sprintf(`[{"name":"daily","schedule":"0 2 * * *","mode":%q,"prefix":"current","keepDays":%d,"maxAgeHours":%d}]`, mode, keepDays, maxAge)
+		}
+		mustRefuse(t, "mode must be sync or snapshot", append(base, "--set-json", "backup.tiers="+tier("mirror", 7, 36))...)
+		mustRefuse(t, "keepDays must be at least 1", append(base, "--set-json", "backup.tiers="+tier("sync", 0, 36))...)
+		mustRefuse(t, "maxAgeHours must be at least 1", append(base, "--set-json", "backup.tiers="+tier("sync", 7, 0))...)
+		mustRefuse(t, "backup.tiers must list at least one tier", append(base, "--set-json", "backup.tiers=[]")...)
+	})
+}

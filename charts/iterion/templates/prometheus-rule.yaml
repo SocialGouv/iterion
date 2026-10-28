@@ -1,15 +1,19 @@
 {{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled -}}
-# Starter alert pack for the cloud control plane. Opt-in
-# (metrics.prometheusRule.enabled) because it requires the
-# PrometheusRule CRD (prometheus-operator). Thresholds are deliberately
-# conservative — tune per deployment.
+# Alert packs for the cloud control plane. Opt-in
+# (metrics.prometheusRule.enabled) because it requires the PrometheusRule
+# CRD (prometheus-operator). Thresholds are deliberately conservative —
+# tune per deployment.
+{{- $rule := .Values.metrics.prometheusRule }}
+{{- $ds := $rule.datastores | default dict }}
+{{- $dsNamespace := $ds.namespace | default .Release.Namespace }}
+{{- $absentFor := $ds.absentFor | default "30m" }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: {{ include "iterion.fullname" . }}
   labels:
     {{- include "iterion.labels" . | nindent 4 }}
-    {{- with .Values.metrics.prometheusRule.additionalLabels }}
+    {{- with $rule.additionalLabels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
@@ -52,4 +56,204 @@ spec:
           annotations:
             summary: "Inbound webhooks are being throttled"
             description: "Sustained rate-limit/quota rejections on inbound webhooks — a noisy forge integration or an abusive caller."
+    {{- if .Values.backup.enabled }}
+    {{- $fullname := include "iterion.fullname" . }}
+    # The off-cluster copy (#2013): a failed Job, a tier without a success
+    # within its maxAgeHours, a tier that never succeeded at all — the last
+    # one is also what a kube-state-metrics nobody scrapes looks like, so a
+    # silent copy cannot pass for a working one. kube-state-metrics series.
+    - name: iterion.backup
+      rules:
+        - alert: IterionArtifactBackupFailed
+          expr: {{ printf `kube_job_status_failed{namespace=%q, job_name=~"%s-backup-.*"} > 0` .Release.Namespace $fullname | quote }}
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "The off-cluster artifact copy failed"
+            description: "Job {{ `{{ $labels.job_name }}` }} failed: rclone exited non-zero on the copy or on the check that proves it. The cluster holds the only copy until the next successful run — read the Job's logs."
+        {{- range $tier := .Values.backup.tiers }}
+        - alert: IterionArtifactBackupStale
+          expr: {{ printf `time() - kube_cronjob_status_last_successful_time{namespace=%q, cronjob="%s-backup-%s"} > %d * 3600` $.Release.Namespace $fullname $tier.name (int $tier.maxAgeHours) | quote }}
+          for: 1h
+          labels:
+            severity: warning
+            tier: {{ $tier.name | quote }}
+          annotations:
+            summary: "The {{ $tier.name }} artifact copy has no success within {{ $tier.maxAgeHours }}h"
+            description: "CronJob {{ $fullname }}-backup-{{ $tier.name }}: the last successful run is older than {{ $tier.maxAgeHours }}h. The off-cluster copy is falling behind its schedule ({{ $tier.schedule }})."
+        - alert: IterionArtifactBackupNeverSucceeded
+          expr: {{ printf `absent(kube_cronjob_status_last_successful_time{namespace=%q, cronjob="%s-backup-%s"})` $.Release.Namespace $fullname $tier.name | quote }}
+          for: {{ int $tier.maxAgeHours }}h
+          labels:
+            severity: warning
+            tier: {{ $tier.name | quote }}
+          annotations:
+            summary: "The {{ $tier.name }} artifact copy has never succeeded"
+            description: "No successful run of CronJob {{ $fullname }}-backup-{{ $tier.name }} is recorded — it never ran green, or kube-state-metrics is not scraped. Either way nothing proves a copy exists."
+        {{- end }}
+    {{- end }}
+    {{- if $ds.enabled }}
+    # The datastore alert pack (#2014): the replicated stores the deployment
+    # depends on — in the cloud deployment they are OTHER charts (MongoDB,
+    # NATS, valkey, SeaweedFS), so this block names them. One rule per store
+    # on the ready-replica count (kube-state-metrics, present on any
+    # kube-prometheus) and on restarts, then the store-level signals the
+    # exporters produce — and, per exporter family, an absent() rule so a
+    # signal nobody scrapes pages instead of staying silent. The loss of ONE
+    # replica must be visible while it is still one: these stores survive one
+    # loss (quorum of three, replication 002), not two.
+    - name: iterion.datastores
+      rules:
+        {{- range $store := $ds.statefulsets }}
+        - alert: IterionDatastoreReplicasMissing
+          expr: {{ printf `kube_statefulset_status_replicas_ready{namespace=%q, statefulset=~%q} < kube_statefulset_replicas{namespace=%q, statefulset=~%q}` $dsNamespace $store.match $dsNamespace $store.match | quote }}
+          for: {{ $ds.forDuration | default "10m" }}
+          labels:
+            severity: critical
+            datastore: {{ $store.name | quote }}
+          annotations:
+            summary: "{{ $store.name }} is missing a replica"
+            description: "StatefulSet {{ `{{ $labels.statefulset }}` }}: {{ `{{ $value }}` }} ready replica(s), fewer than it asks for. One loss is survivable; the second is not — act now."
+        - alert: IterionDatastoreRestarting
+          expr: {{ printf `increase(kube_pod_container_status_restarts_total{namespace=%q, pod=~"%s-[0-9]+"}[1h]) > %d` $dsNamespace $store.match (int ($ds.restartsPerHour | default 3)) | quote }}
+          labels:
+            severity: warning
+            datastore: {{ $store.name | quote }}
+          annotations:
+            summary: "{{ $store.name }} pods are restarting"
+            description: "{{ `{{ $labels.pod }}` }} restarted {{ `{{ $value }}` }} times in the last hour."
+        {{- end }}
+        - alert: IterionDatastoreSignalAbsent
+          expr: {{ printf `absent(kube_statefulset_replicas{namespace=%q})` $dsNamespace | quote }}
+          for: {{ $absentFor }}
+          labels:
+            severity: warning
+            family: kube-state-metrics
+          annotations:
+            summary: "No kube-state-metrics series for the datastore namespace"
+            description: "The replica rules above read kube_statefulset_* and see nothing: kube-state-metrics is not scraped for namespace {{ $dsNamespace }}, so a lost replica would page nobody."
+        {{- with $ds.valkey }}
+        {{- if .enabled }}
+        {{- $sel := printf "namespace=%q, %s" $dsNamespace .selector }}
+        # valkeyfiler (the SeaweedFS filer store): redis_exporter series
+        # (Valkey supported). connected_slaves is the primary's count of
+        # replicas; AOF write status is 1 when the last write was ok.
+        - alert: IterionValkeyReplicasDisconnected
+          expr: {{ printf `max(redis_connected_slaves{%s}) < %d` $sel (int .minConnectedReplicas) | quote }}
+          for: 5m
+          labels:
+            severity: critical
+            family: valkey
+          annotations:
+            summary: "The valkey primary has fewer than {{ .minConnectedReplicas }} connected replicas"
+            description: "{{ `{{ $value }}` }} replica(s) connected to the primary: the filer metadata is one failure away from a single copy."
+        - alert: IterionValkeyAOFWriteFailing
+          expr: {{ printf `redis_aof_last_write_status{%s} == 0` $sel | quote }}
+          for: 5m
+          labels:
+            severity: critical
+            family: valkey
+          annotations:
+            summary: "The valkey AOF is not being written"
+            description: "{{ `{{ $labels.pod }}` }}: the last AOF write failed — the filer metadata is not durable until it writes again (disk full?)."
+        - alert: IterionDatastoreSignalAbsent
+          expr: {{ printf `absent(redis_connected_slaves{%s})` $sel | quote }}
+          for: {{ $absentFor }}
+          labels:
+            severity: warning
+            family: valkey
+          annotations:
+            summary: "No redis_exporter series for valkey"
+            description: {{ printf "The valkey rules see nothing: no exporter is scraped for %s in namespace %s." .selector $dsNamespace | quote }}
+        {{- end }}
+        {{- end }}
+        {{- with $ds.seaweedfs }}
+        {{- if .enabled }}
+        {{- $vol := printf "namespace=%q, %s" $dsNamespace .volumeSelector }}
+        {{- $master := printf "namespace=%q, %s" $dsNamespace .masterSelector }}
+        # SeaweedFS: the volumes registered on the volume servers, the master
+        # leader, the volumes the master counts under their replica placement.
+        - alert: IterionSeaweedFSVolumesMissing
+          expr: {{ printf `sum(SeaweedFS_volumeServer_volumes{%s}) < %d` $vol (int .minVolumes) | quote }}
+          for: 10m
+          labels:
+            severity: critical
+            family: seaweedfs
+          annotations:
+            summary: "SeaweedFS has fewer than {{ .minVolumes }} registered volumes"
+            description: "{{ `{{ $value }}` }} volume(s) registered across the volume servers: a volume server is gone or lost its disk."
+        - alert: IterionSeaweedFSNoLeader
+          expr: {{ printf `max(SeaweedFS_master_is_leader{%s}) == 0` $master | quote }}
+          for: 5m
+          labels:
+            severity: critical
+            family: seaweedfs
+          annotations:
+            summary: "No SeaweedFS master is leader"
+            description: "No master reports is_leader=1: writes are refused until the raft group elects one."
+        - alert: IterionSeaweedFSUnderReplicated
+          expr: {{ printf `sum(SeaweedFS_master_under_replicated_volumes{%s}) > 0` $master | quote }}
+          for: 30m
+          labels:
+            severity: warning
+            family: seaweedfs
+          annotations:
+            summary: "SeaweedFS volumes are under-replicated"
+            description: "{{ `{{ $value }}` }} volume(s) below their replica placement for 30 minutes: the next loss is not covered."
+        - alert: IterionDatastoreSignalAbsent
+          expr: {{ printf `absent(SeaweedFS_volumeServer_volumes{%s})` $vol | quote }}
+          for: {{ $absentFor }}
+          labels:
+            severity: warning
+            family: seaweedfs
+          annotations:
+            summary: "No SeaweedFS volume-server series"
+            description: {{ printf "The SeaweedFS rules see nothing: the volume servers' metrics port is not scraped for %s in namespace %s." .volumeSelector $dsNamespace | quote }}
+        {{- end }}
+        {{- end }}
+        {{- with $ds.mongodb }}
+        {{- if .enabled }}
+        {{- $sel := printf "namespace=%q, %s" $dsNamespace .selector }}
+        # MongoDB: mongodb_exporter's replSetGetStatus view (one series per
+        # member, member_idx = host:port, member_state = its state name).
+        - alert: IterionMongoDBMemberUnhealthy
+          expr: {{ printf `mongodb_rs_members_health{%s} == 0` $sel | quote }}
+          for: 5m
+          labels:
+            severity: critical
+            family: mongodb
+          annotations:
+            summary: "A MongoDB replica-set member is unhealthy"
+            description: "Member {{ `{{ $labels.member_idx }}` }} reports health 0 ({{ `{{ $labels.member_state }}` }}): the set is one failure from losing its majority."
+        - alert: IterionMongoDBMemberOutOfSet
+          expr: {{ printf `mongodb_rs_members_state{%s, member_state!~"PRIMARY|SECONDARY|ARBITER"}` $sel | quote }}
+          for: 5m
+          labels:
+            severity: critical
+            family: mongodb
+          annotations:
+            summary: "A MongoDB member is out of the replica set"
+            description: "Member {{ `{{ $labels.member_idx }}` }} is {{ `{{ $labels.member_state }}` }} — neither PRIMARY, SECONDARY nor ARBITER — for 5 minutes."
+        - alert: IterionMongoDBNoPrimary
+          expr: {{ printf `(count(mongodb_rs_members_state{%s, member_state="PRIMARY"}) or vector(0)) < 1` $sel | quote }}
+          for: 2m
+          labels:
+            severity: critical
+            family: mongodb
+          annotations:
+            summary: "The MongoDB replica set has no primary"
+            description: "No member reports PRIMARY: iterion cannot write (runs stop) until an election succeeds."
+        - alert: IterionDatastoreSignalAbsent
+          expr: {{ printf `absent(mongodb_rs_members_state{%s})` $sel | quote }}
+          for: {{ $absentFor }}
+          labels:
+            severity: warning
+            family: mongodb
+          annotations:
+            summary: "No mongodb_exporter series"
+            description: {{ printf "The MongoDB rules see nothing: no exporter is scraped for %s in namespace %s." .selector $dsNamespace | quote }}
+        {{- end }}
+        {{- end }}
+    {{- end }}
 {{- end }}

@@ -124,31 +124,65 @@ constraint applies.
 
 ## Blob backup
 
-The S3/MinIO bucket holds artifact bodies addressed by version. For
-production buckets, enable:
-
-- **Versioning** (so a delete on the bucket is recoverable).
-- **Lifecycle rule** that expires non-current versions after a grace
-  window matching the Mongo backup retention (e.g. 35 days).
-- **Cross-region replication** when the underlying durability SLA
-  needs improvement.
-
-For the bundled MinIO (`values-dev.yaml` only — not for production),
-mirror to an offsite bucket on the same CronJob cadence as the Mongo
-dump:
+The artifact bucket (`config.s3.bucket`, `iterion-artifacts`) holds the
+artifact bodies, the attachments, the tool outputs, the backend sessions
+and the offloaded IR. Inside the cluster it is replicated — SeaweedFS
+`002`, three copies on three volumes — which protects a disk or a node and
+nothing else: not a deletion (a human, a bug, a misplaced `deleteGone`),
+not the loss of the cluster or of the region. A copy OUTSIDE the cluster
+does, and the chart carries its mechanics: `backup.*` renders one CronJob
+per tier running rclone — the tool and the pinned image of the production
+migration ([ADR-107](adr/107-seaweedfs-object-store.md)) — against an
+S3-compatible bucket in another region or another provider.
 
 ```yaml
-# CronJob excerpt — same skeleton as above
-image: minio/mc:RELEASE.2025-12-01T00-00-00Z
-command:
-  - /bin/sh
-  - -c
-  - |
-    set -e
-    mc alias set src "${MINIO_URL}" "${MINIO_KEY}" "${MINIO_SECRET}"
-    mc alias set dst "${OFFSITE_URL}" "${OFFSITE_KEY}" "${OFFSITE_SECRET}"
-    mc mirror --quiet src/iterion-artifacts dst/iterion-artifacts-backup
+backup:
+  enabled: true
+  destination:
+    endpoint: https://s3.<another-region>.example   # NOT the cluster's region
+    region: <another-region>
+    bucket: iterion-artifacts-backup
+    provider: Other                                   # rclone's S3 provider name
+    existingSecret: iterion-backup-destination        # RCLONE_CONFIG_DST_ACCESS_KEY_ID + RCLONE_CONFIG_DST_SECRET_ACCESS_KEY
 ```
+
+- **Credentials by Secret only.** The destination's come from
+  `existingSecret` (sealed-secrets, external-secrets, a Secret applied by
+  hand); the source's are the deployment's own storage Secret. The chart
+  renders no credential value, and refuses an enabled backup without its
+  destination, its Secret or a pinned image.
+- **Pinned image.** `backup.image.digest` (rclone 1.71.1 by default) — the
+  render refuses a tag.
+- **Tiers** (`backup.tiers`, the defaults are the table below): `daily`
+  **syncs** the bucket into `<bucket>/current/` and moves what the sync would
+  delete or overwrite under `current-deleted/<timestamp>/`, expired after 7
+  days — a deletion in the source stays recoverable for a week; `weekly`
+  and `monthly` **snapshot** the whole bucket under `weekly/<timestamp>/`
+  (kept 35 days) and `monthly/<timestamp>/` (kept 400 days, 13 months).
+- **Every run proves its copy.** It ends with `rclone check --one-way
+  --size-only` (`backup.checkArgs`) against the copy it just made: rclone's
+  exit code alone proves nothing — it takes any error on a source lookup for
+  "a directory", copies nothing and exits 0 (ADR-107) — so the Job is red
+  when a source object is missing from the destination. `--size-only`
+  because a multipart ETag is not an MD5.
+- **Alerts** (with `metrics.prometheusRule.enabled`, kube-state-metrics
+  series): `IterionArtifactBackupFailed` (a Job failed, critical),
+  `IterionArtifactBackupStale` per tier (no success within its
+  `maxAgeHours`), `IterionArtifactBackupNeverSucceeded` per tier (no success
+  recorded at all — which is also what a kube-state-metrics nobody scrapes
+  looks like, so a silent copy cannot pass for a working one).
+- **NetworkPolicy.** With `networkPolicy.enabled`, add the destination
+  endpoint to `networkPolicy.egress.extraAllow`: the backup pods carry the
+  chart's selector labels and sit under the same deny-all egress.
+- **The destination's own protections stay yours:** versioning on the
+  destination bucket and a lifecycle rule on the expired prefixes complement
+  the tiers; another region or another provider is what the destination
+  choice buys.
+
+`backup.enabled` is false by default: no copy exists until an operator sets
+the destination and its Secret. The chart proves the manifest of the copy
+(`task chart:check` renders the tiers and refuses a missing guard), never a
+restore — the drill below is what proves that.
 
 ---
 
@@ -158,9 +192,12 @@ Recommended baseline (tune to your compliance posture):
 
 | Tier | Frequency | Retention | Storage |
 |---|---|---|---|
-| Hot | Daily dump + blob mirror | 7 days | Same region offsite |
-| Warm | Weekly | 35 days | Different region |
-| Cold | Monthly | 13 months | Glacier / Archive tier |
+| Hot | Daily dump + blob `sync` (`current/`, deletions kept under `current-deleted/`) | 7 days | Offsite, another region |
+| Warm | Weekly blob `snapshot` (`weekly/<timestamp>/`) | 35 days | Another region |
+| Cold | Monthly blob `snapshot` (`monthly/<timestamp>/`) | 13 months (400 days) | Glacier / Archive tier |
+
+The three blob tiers are the chart's `backup.tiers` defaults; a Mongo dump
+on the same cadence (above) keeps the two in lock-step.
 
 Mongo dump size grows with `events` collection — the config's
 `mongo.events_ttl_days` (env `ITERION_MONGO_EVENTS_TTL_DAYS`, default 90)
@@ -177,7 +214,18 @@ that has never been restored is unverified.
 1. **Provision a clean restore target** (separate namespace, separate
    bucket prefix). Do **not** restore on top of a live deployment.
 2. **Restore the blob bucket first** — Mongo references blob keys, so
-   the keys must exist before any run doc consults them.
+   the keys must exist before any run doc consults them. From the chart's
+   off-cluster copy, run rclone the other way round, into the RESTORE
+   bucket, never the live one (the two remotes as the CronJob defines them,
+   `RCLONE_CONFIG_DST_*`, plus a `restore` remote for the target):
+   ```sh
+   rclone copy "dst:${DST_BUCKET}/current" "restore:${RESTORE_BUCKET}"              # the daily mirror
+   rclone copy "dst:${DST_BUCKET}/weekly/<timestamp>" "restore:${RESTORE_BUCKET}"   # or a dated snapshot
+   rclone check --one-way --size-only "dst:${DST_BUCKET}/current" "restore:${RESTORE_BUCKET}"
+   ```
+   An object deleted from the live bucket lives under
+   `current-deleted/<timestamp>/` for the tier's `keepDays`; copy it back
+   the same way.
 3. **Restore Mongo from `--archive`**:
    ```sh
    aws s3 cp s3://${BACKUP_BUCKET}/mongo/iterion-${TS}.gz - \

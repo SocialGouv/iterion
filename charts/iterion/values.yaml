@@ -702,12 +702,148 @@ metrics:
     namespace: ""
     interval: 30s
     labels: {}
-  # Starter alert pack (DLQ depth, heartbeat errors, orphan recoveries,
-  # launch denials, webhook throttling). Needs the PrometheusRule CRD
-  # (prometheus-operator).
+  # Alert packs: the control-plane starter (DLQ depth, heartbeat errors,
+  # orphan recoveries, launch denials, webhook throttling), the backup
+  # rules when backup.enabled, and the datastore pack below. Needs the
+  # PrometheusRule CRD (prometheus-operator).
   prometheusRule:
     enabled: false
     additionalLabels: {}
+    # The datastore alert pack (#2014): the replicated stores the
+    # deployment depends on. In the cloud deployment they are OTHER charts
+    # (MongoDB, NATS, valkey, SeaweedFS), so this block names them for YOUR
+    # cluster. A rule per store on kube_statefulset_status_replicas_ready <
+    # kube_statefulset_replicas (kube-state-metrics, present on any
+    # kube-prometheus) and on container restarts; then the store-level
+    # signals, each from the exporter that produces it; and, per exporter
+    # family, an absent() rule so a signal nobody scrapes pages instead of
+    # staying silent. These stores survive ONE loss (quorum of three,
+    # replication 002), not two: the alert must arrive during the first.
+    datastores:
+      enabled: false
+      # The namespace the stores run in; "" = the release namespace.
+      namespace: ""
+      # StatefulSets to watch. match is a regex on the StatefulSet name
+      # (and, with -[0-9]+ appended, on its pod names).
+      statefulsets:
+        - name: mongodb
+          match: ".*-mongodb"
+        - name: nats
+          match: ".*-nats"
+        - name: valkeyha
+          match: ".*-valkeyha(-.*)?"
+        - name: valkeyfiler
+          match: ".*-valkeyfiler(-.*)?"
+        - name: seaweedfs
+          match: ".*-seaweedfs-(master|volume|filer|s3)"
+      # How long a replica may be missing before the page (a rolling
+      # update dips below the count for a minute or two).
+      forDuration: 10m
+      # Container restarts per hour, per pod, before the warning.
+      restartsPerHour: 3
+      # How long a store's series may be absent before the absent-signal
+      # warning: the exporter is not scraped, or not deployed at all.
+      absentFor: 30m
+      # Each family: the PromQL label matchers (inside the braces) that
+      # pick that exporter's series in your cluster — a pod regex, a job
+      # name — joined with namespace=<namespace>.
+      valkey:
+        # valkeyfiler, the SeaweedFS filer store: redis_exporter series
+        # (Valkey supported). connected_slaves below this number on the
+        # primary, or an AOF write that failed.
+        enabled: true
+        selector: 'pod=~".*valkeyfiler.*"'
+        minConnectedReplicas: 2
+      seaweedfs:
+        # Volumes registered across the volume servers below this number,
+        # no master leader, volumes under their replica placement.
+        enabled: true
+        volumeSelector: 'pod=~".*seaweedfs-volume.*"'
+        masterSelector: 'pod=~".*seaweedfs-master.*"'
+        minVolumes: 4
+      mongodb:
+        # mongodb_exporter's replSetGetStatus view: a member unhealthy or
+        # out of the set (neither PRIMARY, SECONDARY nor ARBITER), no
+        # primary at all.
+        enabled: true
+        selector: 'pod=~".*mongodb.*"'
+
+# --- Off-cluster copy of the artifact bucket (#2013) -----------------
+# One CronJob per tier copies config.s3.bucket — the artifact store the
+# server and runner write — to an S3-compatible bucket OUTSIDE the cluster
+# (another region, another provider) with rclone, the tool and the pinned
+# image of the production migration (ADR-107). Replication inside the
+# cluster protects a disk or a node, not a deletion, a bad deleteGone or
+# the loss of the cluster: this does. Off by default — the destination and
+# its credentials are the operator's (docs/cloud-backup.md § Blob backup);
+# no copy exists until they are set, and the render refuses an enabled
+# backup without them.
+backup:
+  enabled: false
+  image:
+    repository: rclone/rclone
+    # Required, the digest alone (sha256:…): a moving tag would make every
+    # nightly copy a surprise. rclone 1.71.1, the release of the migration.
+    digest: sha256:d5971950c2b370fb04dd3292541b5bda6d9103143fd7e345aeb435a399388afc
+    pullPolicy: IfNotPresent
+  # The destination bucket. endpoint / region / provider / bucket are
+  # configuration; the credentials come ONLY from an existing Secret (never
+  # a value) carrying the two keys named below — sealed-secrets,
+  # external-secrets, a Secret applied by hand.
+  destination:
+    endpoint: ""
+    region: ""
+    bucket: ""
+    # rclone's S3 provider name: AWS, Ceph, Minio, Other (OVH, SeaweedFS…).
+    provider: Other
+    forcePathStyle: true
+    existingSecret: ""
+    accessKeyIdKey: RCLONE_CONFIG_DST_ACCESS_KEY_ID
+    secretAccessKeyKey: RCLONE_CONFIG_DST_SECRET_ACCESS_KEY
+  # One CronJob per tier. sync keeps <bucket>/<prefix>/ a mirror of the
+  # source and moves what the sync would delete or overwrite under
+  # <prefix>-deleted/<timestamp>/ (rclone --backup-dir): a deletion in the
+  # source stays recoverable for keepDays. snapshot copies the whole bucket
+  # under <prefix>/<timestamp>/, a dated full copy kept keepDays. Every run
+  # ends with `rclone check` against the copy it made (checkArgs) — the Job
+  # is red when a source object is missing from the destination — and
+  # maxAgeHours is the staleness the alert pages on.
+  tiers:
+    - name: daily
+      schedule: "30 2 * * *"
+      mode: sync
+      prefix: current
+      keepDays: 7
+      maxAgeHours: 36
+    - name: weekly
+      schedule: "0 3 * * 0"
+      mode: snapshot
+      prefix: weekly
+      keepDays: 35
+      maxAgeHours: 192
+    - name: monthly
+      schedule: "0 4 1 * *"
+      mode: snapshot
+      prefix: monthly
+      keepDays: 400
+      maxAgeHours: 800
+  # rclone check flags: --one-way (every source object must exist at the
+  # destination), --size-only (a multipart ETag is not an MD5).
+  checkArgs: ["--one-way", "--size-only"]
+  # Flags appended to every copy (--transfers, --bwlimit, --checksum…).
+  extraArgs: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  # A copy running longer than this (seconds) is failed; 0 = no deadline.
+  activeDeadlineSeconds: 21600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  podAnnotations: {}
 
 # --- Sub-charts (off by default; values-dev.yaml turns them on) ----
 mongodb:

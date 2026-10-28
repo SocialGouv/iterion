@@ -1,0 +1,208 @@
+{{- if .Values.backup.enabled -}}
+{{- $b := .Values.backup -}}
+{{- $dst := $b.destination | default dict -}}
+{{- $image := $b.image | default dict -}}
+{{- /* Fail-fast guards (the pattern of runner-pool-deployment.yaml): a copy
+     that silently renders without its destination, its credentials or a
+     pinned image is a copy that does not exist. */ -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" ($image.digest | default "")) -}}
+{{- fail (printf "backup.image.digest must be sha256:<64 hex chars> (got %q): the copy runs on a pinned image, never a moving tag" ($image.digest | default "")) -}}
+{{- end -}}
+{{- range $field := list "endpoint" "bucket" "existingSecret" -}}
+{{- if not (get $dst $field) -}}
+{{- fail (printf "backup.destination.%s is required when backup.enabled=true (the destination and its Secret are the operator's: docs/cloud-backup.md § Blob backup)" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (or $.Values.secrets.storage.create $.Values.secrets.storage.existingSecret) -}}
+{{- fail "backup.enabled=true needs the source credentials: secrets.storage.create=true or secrets.storage.existingSecret" -}}
+{{- end -}}
+{{- if not $b.tiers -}}
+{{- fail "backup.tiers must list at least one tier (name, schedule, mode, prefix, keepDays, maxAgeHours)" -}}
+{{- end -}}
+{{- $storageSecret := default (printf "%s-storage" (include "iterion.fullname" $)) $.Values.secrets.storage.existingSecret -}}
+{{- range $tier := $b.tiers }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$" ($tier.name | default "")) }}
+{{- fail (printf "backup.tiers[]: tier name %q is invalid (1-32 chars of [a-z0-9-], alphanumeric at both ends)" ($tier.name | default "")) }}
+{{- end }}
+{{- if not (has ($tier.mode | default "") (list "sync" "snapshot")) }}
+{{- fail (printf "backup.tiers[%s].mode must be sync or snapshot (got %q)" $tier.name ($tier.mode | default "")) }}
+{{- end }}
+{{- if not $tier.schedule }}
+{{- fail (printf "backup.tiers[%s].schedule is required (a cron expression)" $tier.name) }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z0-9._-]+$" ($tier.prefix | default "")) }}
+{{- fail (printf "backup.tiers[%s].prefix must be one path element of [A-Za-z0-9._-] (got %q)" $tier.name ($tier.prefix | default "")) }}
+{{- end }}
+{{- if lt (int ($tier.keepDays | default 0)) 1 }}
+{{- fail (printf "backup.tiers[%s].keepDays must be at least 1" $tier.name) }}
+{{- end }}
+{{- if lt (int ($tier.maxAgeHours | default 0)) 1 }}
+{{- fail (printf "backup.tiers[%s].maxAgeHours must be at least 1 (the staleness the alert pages on)" $tier.name) }}
+{{- end }}
+---
+# One CronJob per backup tier (#2013): rclone — the tool and the pinned
+# image of the production migration (ADR-107) — copies the artifact bucket
+# to an S3-compatible bucket OUTSIDE the cluster. The source remote is the
+# deployment's own store (config.s3.* + the storage Secret), the
+# destination remote is backup.destination with its credentials read from
+# an existing Secret: the chart renders no credential value, ever.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "iterion.fullname" $ }}-backup-{{ $tier.name }}
+  labels:
+    {{- include "iterion.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: backup
+    iterion.io/backup-tier: {{ $tier.name }}
+spec:
+  schedule: {{ $tier.schedule | quote }}
+  # Never two copies of the same tier at once: a slow run is finished, not
+  # doubled.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ $b.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ $b.failedJobsHistoryLimit | default 5 }}
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      {{- if $b.activeDeadlineSeconds }}
+      activeDeadlineSeconds: {{ $b.activeDeadlineSeconds }}
+      {{- end }}
+      template:
+        metadata:
+          labels:
+            {{- include "iterion.selectorLabels" $ | nindent 12 }}
+            app.kubernetes.io/component: backup
+            iterion.io/backup-tier: {{ $tier.name }}
+          {{- with $b.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "iterion.serviceAccountName" $ }}
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+          {{- with $.Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: rclone
+              image: {{ printf "%s@%s" ($image.repository | default "rclone/rclone") $image.digest | quote }}
+              imagePullPolicy: {{ $image.pullPolicy | default "IfNotPresent" }}
+              securityContext:
+                {{- toYaml $.Values.containerSecurityContext | nindent 16 }}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  ts=$(date -u +%Y%m%dT%H%M%SZ)
+                  cutoff=$(date -u -d "@$(( $(date -u +%s) - KEEP_DAYS * 86400 ))" +%Y%m%dT%H%M%SZ)
+                  src="src:${SOURCE_BUCKET}"
+                  root="dst:${DST_BUCKET}/${PREFIX}"
+                  case "$MODE" in
+                    sync)
+                      # A mirror of the bucket. What the sync would delete or
+                      # overwrite is moved under <prefix>-deleted/<ts>/ instead,
+                      # so a deletion in the source stays recoverable for
+                      # KEEP_DAYS.
+                      rclone sync "$src" "$root" --backup-dir "dst:${DST_BUCKET}/${PREFIX}-deleted/${ts}" $EXTRA_ARGS
+                      rclone check "$src" "$root" $CHECK_ARGS
+                      aged="dst:${DST_BUCKET}/${PREFIX}-deleted"
+                      ;;
+                    snapshot)
+                      # A dated full copy under <prefix>/<ts>/, kept KEEP_DAYS.
+                      rclone copy "$src" "${root}/${ts}" $EXTRA_ARGS
+                      rclone check "$src" "${root}/${ts}" $CHECK_ARGS
+                      aged="$root"
+                      ;;
+                  esac
+                  # The copy proved itself above: rclone's exit code alone does
+                  # not (ADR-107 — a source lookup error reads as "a directory",
+                  # copies nothing and exits 0), the check does. Then expire the
+                  # dated directories older than KEEP_DAYS: their names are UTC
+                  # timestamps, so a text comparison orders them.
+                  rclone lsf --dirs-only "$aged" 2>/dev/null | while read -r dir; do
+                    dir=${dir%/}
+                    if [ "$dir" \< "$cutoff" ]; then
+                      echo "backup ${TIER}: expiring ${aged}/${dir}"
+                      rclone purge "${aged}/${dir}"
+                    fi
+                  done
+                  echo "backup ${TIER}: ${MODE} ok ${ts}"
+              env:
+                - name: TIER
+                  value: {{ $tier.name | quote }}
+                - name: MODE
+                  value: {{ $tier.mode | quote }}
+                - name: PREFIX
+                  value: {{ $tier.prefix | quote }}
+                - name: KEEP_DAYS
+                  value: {{ $tier.keepDays | int | quote }}
+                - name: SOURCE_BUCKET
+                  value: {{ $.Values.config.s3.bucket | quote }}
+                - name: DST_BUCKET
+                  value: {{ $dst.bucket | quote }}
+                - name: CHECK_ARGS
+                  value: {{ join " " ($b.checkArgs | default (list "--one-way" "--size-only")) | quote }}
+                - name: EXTRA_ARGS
+                  value: {{ join " " ($b.extraArgs | default list) | quote }}
+                # The two rclone remotes, configured from the environment alone
+                # (RCLONE_CONFIG_<REMOTE>_<KEY>): src is the deployment's own
+                # store, dst the off-cluster bucket. No config file.
+                - name: RCLONE_CONFIG
+                  value: /dev/null
+                - name: XDG_CACHE_HOME
+                  value: /tmp
+                - name: RCLONE_CONFIG_SRC_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_SRC_PROVIDER
+                  value: Other
+                - name: RCLONE_CONFIG_SRC_ENDPOINT
+                  value: {{ include "iterion.s3.endpoint" $ | quote }}
+                - name: RCLONE_CONFIG_SRC_REGION
+                  value: {{ $.Values.config.s3.region | quote }}
+                - name: RCLONE_CONFIG_SRC_FORCE_PATH_STYLE
+                  value: {{ $.Values.config.s3.usePathStyle | quote }}
+                - name: RCLONE_CONFIG_SRC_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $storageSecret }}
+                      key: ITERION_S3_ACCESS_KEY_ID
+                - name: RCLONE_CONFIG_SRC_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $storageSecret }}
+                      key: ITERION_S3_SECRET_ACCESS_KEY
+                - name: RCLONE_CONFIG_DST_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_DST_PROVIDER
+                  value: {{ $dst.provider | default "Other" | quote }}
+                - name: RCLONE_CONFIG_DST_ENDPOINT
+                  value: {{ $dst.endpoint | quote }}
+                {{- with $dst.region }}
+                - name: RCLONE_CONFIG_DST_REGION
+                  value: {{ . | quote }}
+                {{- end }}
+                - name: RCLONE_CONFIG_DST_FORCE_PATH_STYLE
+                  value: {{ if hasKey $dst "forcePathStyle" }}{{ $dst.forcePathStyle | quote }}{{ else }}"true"{{ end }}
+                - name: RCLONE_CONFIG_DST_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $dst.existingSecret }}
+                      key: {{ $dst.accessKeyIdKey | default "RCLONE_CONFIG_DST_ACCESS_KEY_ID" }}
+                - name: RCLONE_CONFIG_DST_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $dst.existingSecret }}
+                      key: {{ $dst.secretAccessKeyKey | default "RCLONE_CONFIG_DST_SECRET_ACCESS_KEY" }}
+              resources:
+                {{- toYaml ($b.resources | default dict) | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}
+{{- end }}
+{{- end -}}

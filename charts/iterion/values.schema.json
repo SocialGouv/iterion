@@ -4,6 +4,9 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "backup": {
+      "type": "object"
+    },
     "config": {
       "type": "object"
     },

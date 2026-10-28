@@ -53,7 +53,8 @@ groups:
 | `service` / `ingress` | Exposure; pair ingress TLS with your issuer |
 | `probes` | `/healthz` liveness, `/readyz` readiness (Mongo/NATS/S3 pings) |
 | `networkPolicy` | Opt-in deny-all egress + allowlist (see `examples/networkpolicy-egress.yaml`) |
-| `metrics` | `podMonitor.*` scrape config + `prometheusRule.*` starter alert pack (DLQ depth, heartbeat errors, orphan recoveries, launch denials, webhook throttling) |
+| `metrics` | `podMonitor.*` scrape config + `prometheusRule.*` alert packs: the control-plane starter (DLQ depth, heartbeat errors, orphan recoveries, launch denials, webhook throttling), `prometheusRule.datastores.*` (a replica missing or restarting per store, valkey replication and AOF, SeaweedFS volumes and leader, MongoDB members — and an absent-signal rule per exporter family, so a signal nobody scrapes pages) and the backup rules when `backup.enabled` |
+| `backup` | The off-cluster copy of the artifact bucket: one rclone CronJob per tier (daily `sync` keeping deletions, weekly and monthly `snapshot`s), image pinned by digest, destination credentials by `existingSecret` only, every run checked — [docs/cloud-backup.md](../../docs/cloud-backup.md#blob-backup) |
 | `persistence` | local-mode PVC only |
 | `mongodb` / `nats` / `minio` | Bundled sub-charts (dev). **The bundled Mongo defaults to `auth.enabled: false` — dev only**, flip it or use an external URI for anything shared |
 
@@ -85,6 +86,10 @@ groups:
   used to get. `pdb.enabled: true|false` forces either way.
 - **`metrics.prometheusRule.enabled`** — opt-in; requires the
   PrometheusRule CRD.
+- **`backup.*`** — new, off by default; the render refuses an enabled
+  backup without its destination Secret or with an unpinned image.
+- **`metrics.prometheusRule.datastores.*`** — new, off by default; it names
+  the stores of YOUR cluster (StatefulSet regexes, exporter selectors).
 
 ## Checks
 

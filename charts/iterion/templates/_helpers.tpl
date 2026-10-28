@@ -113,6 +113,14 @@ protocol. Resolution order:
 {{- end -}}
 
 {{/*
+iterion.s3.endpoint — the S3 endpoint the pods and the backup CronJobs
+dial: config.s3.endpoint as set by the operator.
+*/}}
+{{- define "iterion.s3.endpoint" -}}
+{{- .Values.config.s3.endpoint -}}
+{{- end -}}
+
+{{/*
 iterion.scheduling — the affinity and topologySpreadConstraints of ONE
 workload, rendered from its OWN selector labels (#2012). Call with a dict:
   root        the chart root ($)
