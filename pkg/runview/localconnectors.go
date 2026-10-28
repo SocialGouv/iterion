@@ -35,7 +35,14 @@ import (
 // holds one (the studio's, the dispatcher's lazy one) must not open a second,
 // and a surface with none is a cloud one, whose connections come from
 // elsewhere entirely.
-func LocalConnectors(wf *ir.Workflow, workDir, storeDir string, sealer secrets.Sealer) (model.ConnectorResolver, *http.Client, error) {
+//
+// The TRUST is a parameter for a stronger reason: it is a property of the RUN
+// this executor is being built for, so only the caller holds it — the launch
+// spec, the resumed run's document, the parent of a subbot. The resolver
+// refuses a mutating action until it is stated (connection.ActionTrust), which
+// is what keeps an untrusted workspace from spending the tenant's connector
+// credential (#1802).
+func LocalConnectors(wf *ir.Workflow, workDir, storeDir string, sealer secrets.Sealer, trust connection.ActionTrust) (model.ConnectorResolver, *http.Client, error) {
 	if sealer == nil || !WorkflowHasAction(wf) {
 		return nil, nil, nil
 	}
@@ -45,7 +52,7 @@ func LocalConnectors(wf *ir.Workflow, workDir, storeDir string, sealer secrets.S
 	// guessing at a cwd — on a server that cwd is wherever the process was
 	// started, which is not the operator's project.
 	paths := connection.LocalCatalogPaths(workDir, store.GlobalIterionDataDir())
-	r, err := connection.LocalResolver(paths, storeDir, sealer)
+	r, err := connection.LocalResolver(paths, storeDir, sealer, trust)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -67,12 +74,17 @@ func LocalConnectors(wf *ir.Workflow, workDir, storeDir string, sealer secrets.S
 // WorkDir already follows — the dispatcher points it at the per-issue
 // worktree, so a project tier belongs to the issue's checkout and not to the
 // daemon's cwd.
-func (s *Service) localConnectors(wf *ir.Workflow, workDirOverride string) (model.ConnectorResolver, *http.Client, error) {
+//
+// The TRUST stays a parameter here too: the Service serves launches, resumes
+// and subbots, and each of the three reads it from a different place (the
+// launch spec, the resumed run, the parent's run). A field on the Service
+// would be one answer for all three.
+func (s *Service) localConnectors(wf *ir.Workflow, workDirOverride string, trust connection.ActionTrust) (model.ConnectorResolver, *http.Client, error) {
 	workDir := s.workDir
 	if workDirOverride != "" {
 		workDir = workDirOverride
 	}
-	return LocalConnectors(wf, workDir, s.storeDir, s.localSealer)
+	return LocalConnectors(wf, workDir, s.storeDir, s.localSealer, trust)
 }
 
 // WorkflowHasAction reports whether any tool node declares a connector action.

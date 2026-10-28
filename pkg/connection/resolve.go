@@ -37,15 +37,26 @@ type Resolver struct {
 	// writes can widen it. Threading it from the call site would put the
 	// decision back where the untrusted text is.
 	TenantID string
+	// Trust says who wrote the code in the workspace of the run this resolver
+	// serves, and it is REQUIRED: the zero value states nothing and refuses
+	// every mutating action (trust.go).
+	//
+	// A FIELD for the same reason as TenantID, and the reason is stronger
+	// here: the executor that calls ResolveAction holds no run document, so
+	// threading trust through the call would make the layer with the LEAST
+	// knowledge answer the question — on the very path the untrusted text
+	// reaches.
+	Trust ActionTrust
 }
 
 // ResolveAction implements the executor's seam.
 //
-// The order is deliberate. The OPERATION is resolved first, then the
-// connection, then the credential — cheapest and least sensitive first, so a
-// misspelt operation id never causes a credential to be unsealed. Each step's
-// failure names what to fix, because every one of them surfaces to an operator
-// as "the node failed" otherwise.
+// The order is deliberate. The OPERATION is resolved first, then the run's
+// TRUST, then the connection, then the credential — cheapest and least
+// sensitive first, so a misspelt operation id never causes a credential to be
+// unsealed, and a run that may not mutate never causes a tenant-scoped store
+// read either. Each step's failure names what to fix, because every one of
+// them surfaces to an operator as "the node failed" otherwise.
 func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*spec.Package, spec.Operation, exec.Credential, string, error) {
 	var zero spec.Operation
 	if r == nil || r.Catalog == nil || r.Store == nil {
@@ -71,6 +82,18 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 	if !found {
 		return nil, zero, exec.Credential{}, "", fmt.Errorf("connector %q (v%s) has no operation %q%s",
 			connectorID, pkg.Connector.Version, actionID, suggestOperation(pkg, actionID))
+	}
+
+	// WHO WROTE THE CODE, before the connection is even looked up.
+	//
+	// The EFFECT is the predicate (spec.Effect.Mutating(), which reads an
+	// unknown effect as mutating), so the operation has to be resolved first —
+	// and that touches only the local catalog. Placed before the store read so
+	// an untrusted run's mutating action learns nothing about which aliases
+	// this tenant has, and before openCredential so nothing is unsealed for
+	// it. trust.go holds the whole reasoning.
+	if op.Effect.Mutating() && !r.Trust.mayMutate() {
+		return nil, zero, exec.Credential{}, "", &TrustError{Action: op.ID, Alias: alias, Effect: op.Effect, Trust: r.Trust}
 	}
 
 	conn, err := r.Store.ByAlias(ctx, r.TenantID, connectorID, alias)

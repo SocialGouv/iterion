@@ -205,6 +205,14 @@ func seedProbeConnection(t *testing.T, dir, baseURL string) *connection.Resolver
 		Store:    st,
 		Sealer:   sealer,
 		TenantID: connection.LocalTenant,
+		// The harness stands in for a LAUNCH SURFACE, so it bears the term
+		// every real one bears: whose code the run holds. A resolver that
+		// states nothing refuses every mutating action (#1802), and these
+		// scenarios call `probe.issue.comment` — the fork-lane cases live at
+		// the chokepoint (pkg/connection/trust_test.go) and at the real
+		// builder (pkg/runview/localconnectors_test.go), which is where a
+		// launch surface's trust can actually be wrong.
+		Trust: connection.TrustOfRun(store.RunTrustDefault),
 	}
 }
 

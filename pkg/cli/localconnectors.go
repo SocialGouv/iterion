@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -38,5 +39,11 @@ func localConnectorsForRun(wf *ir.Workflow, storeDir string, logger *iterlog.Log
 		return nil, nil, err
 	}
 	wd, _ := os.Getwd()
-	return runview.LocalConnectors(wf, wd, storeDir, sealer)
+	// A CLI run's workspace is the operator's own checkout, which is
+	// store.RunTrustDefault by definition — `iterion run` has no trust flag
+	// and nothing here reads a fork's head. Stated explicitly all the same:
+	// the resolver refuses a mutating action until somebody says, so the one
+	// surface whose answer is a property of the surface says it out loud
+	// rather than relying on a zero value (#1802).
+	return runview.LocalConnectors(wf, wd, storeDir, sealer, connection.TrustOfRun(store.RunTrustDefault))
 }

@@ -222,7 +222,12 @@ func (c disabledCatalog) Connectors() []string { return nil }
 // resolver: it leaves the executor's Connectors unset, so a `.bot` declaring
 // an action fails with "this process has no connector catalog wired" instead
 // of a resolution error that reads as though the connector were at fault.
-func LocalResolver(paths LocalPaths, storeDir string, sealer secrets.Sealer) (*Resolver, error) {
+//
+// TRUST is a parameter rather than defaulted here: a local resolver is built
+// per run, and only the caller knows which run — the CLI's own cwd, a launch
+// spec, a parent's document. Defaulting it to "trusted" inside the builder
+// would be the whole defect #1802 names, so the compiler asks instead.
+func LocalResolver(paths LocalPaths, storeDir string, sealer secrets.Sealer, trust ActionTrust) (*Resolver, error) {
 	catalogs, err := LocalCatalogs(paths)
 	if err != nil {
 		return nil, err
@@ -248,6 +253,7 @@ func LocalResolver(paths LocalPaths, storeDir string, sealer secrets.Sealer) (*R
 		Store:    st,
 		Sealer:   sealer,
 		TenantID: LocalTenant,
+		Trust:    trust,
 	}, nil
 }
 

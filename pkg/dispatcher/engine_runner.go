@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
@@ -389,7 +390,15 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// without this the SAME `.bot` that runs from the CLI fails on a board
 	// card. The workspace is the run's own (a per-issue worktree), so a
 	// project connector tier is the checkout's, not the daemon's cwd.
-	connectors, connectorClient, cerr := runview.LocalConnectors(runWf, spec.WorkspacePath, spec.StoreDir, r.sealer)
+	// WHO WROTE THE CODE: the dispatcher has no trust input at all. Its runs
+	// are board cards and catalog bots over a workspace the daemon itself
+	// prepared from the tenant's own repository, so the answer is a fact of
+	// this surface rather than a field read from a document — and the fork
+	// review lane is a SERVER subscription whose launches go through the
+	// publisher to a runner, never through here (pkg/dispatcher imports no
+	// webhook code). Stated out loud, so the day a lane dispatches an
+	// outsider's tree locally this is the line that has to read its trust.
+	connectors, connectorClient, cerr := runview.LocalConnectors(runWf, spec.WorkspacePath, spec.StoreDir, r.sealer, connection.TrustOfRun(store.RunTrustDefault))
 	if cerr != nil {
 		return fmt.Errorf("engine runner: connector catalog: %w", cerr)
 	}

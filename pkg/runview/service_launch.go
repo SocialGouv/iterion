@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -370,7 +371,12 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// The connector catalog an `action:` node resolves through, on the same
 	// terms as the CLI: without it the same `.bot` runs from `iterion run` and
 	// fails here at its first action node.
-	connectors, connectorClient, err := s.localConnectors(wf, spec.WorkDir)
+	//
+	// The launch's own trust decides what those nodes may do: the refusal
+	// above keeps an untrusted launch off this path entirely while nothing
+	// persists the marker, and the resolver refuses a mutating action for one
+	// that ever reaches it (#1802).
+	connectors, connectorClient, err := s.localConnectors(wf, spec.WorkDir, connection.TrustOfRun(spec.Trust))
 	if err != nil {
 		s.dropRunLog(runID)
 		return nil, err
@@ -863,7 +869,12 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// A resume rebuilds the executor from scratch, so it needs the catalog
 	// too: without it a run that launched fine dies at the first action node
 	// it re-executes.
-	connectors, connectorClient, err := s.localConnectors(wf, "")
+	//
+	// The trust comes from the RUN DOCUMENT, which is the whole point of
+	// store.RunTrust riding the run: a resume happens long after the lane that
+	// admitted the work is out of scope, and it must not re-earn trust by
+	// arriving through a different surface.
+	connectors, connectorClient, err := s.localConnectors(wf, "", connection.TrustOfRun(r.Trust))
 	if err != nil {
 		s.dropRunLog(spec.RunID)
 		return nil, err

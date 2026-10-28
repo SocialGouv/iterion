@@ -207,7 +207,10 @@ const (
 	// the forge publish grant (no status, no review, no comment), the
 	// tenant's workflow/generic secrets (no forge_token in the run's
 	// credential bundle, hence none written into the workspace's git
-	// credential store), and any mutating bot. It does NOT withdraw the LLM
+	// credential store), the tenant's bound connector connections for any
+	// MUTATING `action:` operation (refused where the credential is produced,
+	// pkg/connection's resolution; reads still resolve, which is what a review
+	// lane needs), and any mutating bot. It does NOT withdraw the LLM
 	// credential: the lane's whole purpose is to produce a review, and its
 	// spend is bounded by the per-author budget instead.
 	RunTrustFork RunTrust = "fork"

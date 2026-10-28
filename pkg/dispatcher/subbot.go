@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
@@ -152,7 +153,10 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		// The child resolves its OWN `action:` nodes, through the run's
 		// workspace — the same catalog the parent reads, and the same one the
 		// CLI would have given it.
-		childConnectors, childConnectorClient, cerr := runview.LocalConnectors(childWf, workDir, storeDir, sealer)
+		// The child's trust is its parent's, and the parent is this dispatched
+		// run: a workspace the daemon prepared from the tenant's own
+		// repository (engine_runner.go says it at the parent's own wiring).
+		childConnectors, childConnectorClient, cerr := runview.LocalConnectors(childWf, workDir, storeDir, sealer, connection.TrustOfRun(store.RunTrustDefault))
 		if cerr != nil {
 			releaseLock()
 			return nil, fmt.Errorf("engine runner: connector catalog for child %q: %w", req.Source, cerr)

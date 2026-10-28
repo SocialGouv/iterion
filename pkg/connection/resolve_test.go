@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // probePackage is a two-operation connector: one anonymous-ish read and one
@@ -53,13 +54,21 @@ func probePackage() *spec.Package {
 	}
 }
 
-func resolver(t *testing.T, store connection.Store) *connection.Resolver {
+// The parameter is `st` rather than `store` so the body can name the pkg/store
+// package the trust value comes from.
+func resolver(t *testing.T, st connection.Store) *connection.Resolver {
 	t.Helper()
 	return &connection.Resolver{
 		Catalog:  connection.NewMemoryCatalog(probePackage()),
-		Store:    store,
+		Store:    st,
 		Sealer:   sealer(t),
 		TenantID: "tenant-a",
+		// A resolver that states nothing refuses every mutating action
+		// (trust.go), and these cases are about scopes, schemes, origins and
+		// expiry — so the fixture bears the term the real builders bear: a run
+		// over the operator's own checkout. The trust-specific cases live in
+		// trust_test.go.
+		Trust: connection.TrustOfRun(store.RunTrustDefault),
 	}
 }
 
