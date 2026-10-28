@@ -5400,13 +5400,24 @@ tool commit_state:
         return (prefix + sdir.rstrip('/')).lstrip('/')
 
     def _staged_outside(sdir):
-        ## The bot may ONLY ever commit the state dir. A staged path outside
-        ## it (the config, .github/**, an operator's WIP) would be a bug or an
-        ## injection — refused by name, never carried under the bot's identity.
-        sdir_repo = _repo_frame(sdir)
+        ## DELIVERY_OWNED_PATHS — the whole pathspec this bot's push may
+        ## carry, and the reason it owes no delivery-permission preflight: a
+        ## .github/workflows/** path cannot be inside the state dir, so the
+        ## App-token restriction that refuses such a push is never reached.
+        ## This refusal reads the tuple and nothing else, and every commit
+        ## and the pre-write preflight both go through here — so narrowing
+        ## the tuple narrows the delivery, and dropping it breaks the push
+        ## rather than the prose (bots/forge_delivery_class_test.go).
+        ##
+        ## A staged path outside it (the config, .github/**, an operator's
+        ## WIP) would be a bug or an injection — refused by name, never
+        ## carried under the bot's identity.
+        DELIVERY_OWNED_PATHS = (sdir,)
+        owned = [_repo_frame(d) for d in DELIVERY_OWNED_PATHS]
         staged = subprocess.run(['git', 'diff', '--cached', '--name-only', '--no-relative'],
                                 capture_output=True, text=True).stdout.split(chr(10))
-        return [q for q in staged if q.strip() and q != sdir_repo and not q.startswith(sdir_repo + '/')]
+        return [q for q in staged if q.strip()
+                and not any(q == o or q.startswith(o + '/') for o in owned)]
 
     def _ignored_state_paths(sdir):
         ## Judge the FILES the node stages, not the directory: a repo-wide

@@ -2423,26 +2423,35 @@ tool commit_state:
         ## Every git call captures its streams: the engine parses this
         ## node's WHOLE stdout as one JSON object, and `git commit`'s
         ## "[branch sha] msg" summary would silently corrupt the output.
-        subprocess.run(['git', 'add', sdir], check=True, capture_output=True)
+        ## DELIVERY_OWNED_PATHS — the whole pathspec this bot's push may
+        ## carry, and the reason it owes no delivery-permission preflight: a
+        ## .github/workflows/** path cannot be inside the state dir, so the
+        ## App-token restriction that refuses such a push is never reached.
+        ## The staging and the refusal below read this tuple and nothing
+        ## else, so narrowing it narrows the delivery, and dropping it breaks
+        ## the push rather than the prose (bots/forge_delivery_class_test.go).
+        DELIVERY_OWNED_PATHS = (sdir,)
+        subprocess.run(['git', 'add'] + list(DELIVERY_OWNED_PATHS), check=True, capture_output=True)
         ## `git diff --cached --name-only` prints REPO-ROOT-relative paths
-        ## while sdir is relative to the workspace. When the workspace is a
-        ## subdirectory of the repo, comparing the two makes every one of the
-        ## bot's own files look "outside the state dir" and the guard fires
-        ## on itself, every tick. Compare in the repo's own frame.
+        ## while the owned paths are relative to the workspace. When the
+        ## workspace is a subdirectory of the repo, comparing the two makes
+        ## every one of the bot's own files look to be outside the paths it
+        ## owns and the guard fires on itself, every tick. Compare in the
+        ## repo's own frame.
         prefix = subprocess.run(['git', 'rev-parse', '--show-prefix'],
                                 capture_output=True, text=True).stdout.strip()
-        sdir_repo = (prefix + sdir.rstrip('/')).lstrip('/')
-        ## Guard: the bot may ONLY ever commit the state dir. A staged path
-        ## outside it (vuln-watch.json, inventory.json, .github/**) would be
-        ## a bug or an injection — hard-fail before the push rather than
-        ## persisting it under the bot's identity.
+        owned = [(prefix + q.rstrip('/')).lstrip('/') for q in DELIVERY_OWNED_PATHS]
+        ## Guard: the bot may ONLY ever commit the paths it owns. A staged
+        ## path outside them (vuln-watch.json, inventory.json, .github/**)
+        ## would be a bug or an injection — hard-fail before the push rather
+        ## than persisting it under the bot's identity.
         staged = subprocess.run(['git', 'diff', '--cached', '--name-only'],
                                 capture_output=True, text=True).stdout.split(chr(10))
-        pfx = sdir_repo + '/'
-        outside = [p for p in staged if p.strip() and p != sdir_repo and not p.startswith(pfx)]
+        outside = [p for p in staged if p.strip()
+                   and not any(p == o or p.startswith(o + '/') for o in owned)]
         if outside:
-            raise SystemExit('vuln-watch: refusing to commit path(s) outside the state dir ' +
-                             repr(sdir) + ': ' + ', '.join(outside[:10]))
+            raise SystemExit('vuln-watch: refusing to commit path(s) outside the paths it owns ' +
+                             repr(owned) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
         ## Remember where we were: on a failed rebase we drop OUR commit and

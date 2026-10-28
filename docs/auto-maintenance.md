@@ -296,6 +296,34 @@ bot minting a runtime token on that connection carries it, and an actor that
 can rewrite CI runs arbitrary code in it — so it stays a deliberate,
 per-connection decision (#1595).
 
+### Every pusher answers for its delivery
+
+Vetty and Billy are not the only bots that push under the managed forge
+credential, and the same raw 403 waits for any of them. So the question is
+asked of the whole class rather than of a list, by
+[bots/forge_delivery_class_test.go](../bots/forge_delivery_class_test.go):
+every bundle that declares the `forge_token` secret **and** can deliver —
+a program of its own calling `git push`, a bundle shipping
+`skills/forge-mr-create.md`, or a `delivery_probe` already — owes one of two
+answers, and a bundle that joins the class owing neither reddens the suite.
+
+| answer | who | what it buys |
+|---|---|---|
+| **probe the delivery** — ask the preflight above before pushing | `dep-update-guard`, `branch-improve-loop` | an answered denial becomes a typed hold; nothing unanswered ever does |
+| **own the paths delivered** — `DELIVERY_OWNED_PATHS` in the pushing program, which both stages and refuses from that tuple | `feed-watch`, `prod-watch`, `vuln-watch` (their state dir) | a `.github/workflows/**` path cannot be in the diff, so there is nothing to ask |
+
+The declaration is a name in the program, never a comment: the staging and the
+refusal read the tuple and nothing else, so narrowing it narrows the delivery —
+and a tuple widened to the repository root or `.github` is refused by the same
+guard, since a pathspec that can hold a workflow file buys the exemption while
+delivering exactly the diff the probe exists to refuse.
+
+The pushers that still owe an answer are the ones where an agent writes the
+whole tree and opens the pull request itself, so there is no pull request for
+the preflight to be asked about yet. Each is named with that reason in
+`unprovenForgePushers`, and the guard refuses a stale entry as firmly as a
+missing one: the day one of them answers, the list has to lose it (#2437).
+
 ---
 
 ## The preflight

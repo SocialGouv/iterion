@@ -50,6 +50,12 @@ with `project:read` + `event:read`), `forge_token` (push of the state dir
 on cloud runners). All mounted as read-only files; only deterministic nodes
 read them.
 
+That push carries `DELIVERY_OWNED_PATHS` — the state dir and nothing else:
+`commit_state` stages and refuses from that one tuple, so a
+`.github/workflows/**` path can never be in the diff and the bot owes no
+delivery-permission preflight
+([why](../../docs/auto-maintenance.md#every-pusher-answers-for-its-delivery)).
+
 ## What this slice does NOT do yet
 
 No LLM analysis, no Telegram, no forge issue, no leak policy beyond

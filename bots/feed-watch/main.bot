@@ -811,19 +811,27 @@ tool dedup_queue:
         # losing push (non-fast-forward) left unhandled would drop this run's
         # state — and for a digest, an uncleared queue re-posts next run. So
         # push, and on rejection rebase + retry.
-        subprocess.run(['git', 'add', sdir], check=True)
-        # Guard: the bot may ONLY ever commit the state dir. `git add sdir`
-        # stages just that subtree, but verify it — a staged path outside the
-        # state dir (feed-watch.json, .github/**, a .bot) would be a bug or an
-        # injection, and this hard-fails before the push rather than persisting
-        # it under the bot's identity.
+        # DELIVERY_OWNED_PATHS — the whole pathspec this bot's push may carry,
+        # and the reason it owes no delivery-permission preflight: a
+        # .github/workflows/** path cannot be inside the state dir, so the
+        # App-token restriction that refuses such a push is never reached.
+        # The staging and the refusal below read this tuple and nothing else,
+        # so narrowing it narrows the delivery, and dropping it breaks the
+        # push rather than the prose (bots/forge_delivery_class_test.go).
+        DELIVERY_OWNED_PATHS = (sdir,)
+        subprocess.run(['git', 'add'] + list(DELIVERY_OWNED_PATHS), check=True)
+        # `git add` stages just those subtrees, but verify the index — a
+        # staged path outside them (feed-watch.json, .github/**, a .bot) would
+        # be a bug or an injection, and this hard-fails before the push rather
+        # than persisting it under the bot's identity.
         staged = subprocess.run(['git', 'diff', '--cached', '--name-only'],
                                 capture_output=True, text=True).stdout.split(chr(10))
-        pfx = sdir.rstrip('/') + '/'
-        outside = [p for p in staged if p.strip() and p != sdir and not p.startswith(pfx)]
+        owned = [q.rstrip('/') for q in DELIVERY_OWNED_PATHS]
+        outside = [p for p in staged if p.strip()
+                   and not any(p == o or p.startswith(o + '/') for o in owned)]
         if outside:
-            raise SystemExit('feed-watch: refusing to commit path(s) outside the state dir ' +
-                             repr(sdir) + ': ' + ', '.join(outside[:10]))
+            raise SystemExit('feed-watch: refusing to commit path(s) outside the paths it owns ' +
+                             repr(owned) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
         subprocess.run(['git', 'commit', '-m', msg], check=True)
@@ -1644,19 +1652,27 @@ tool commit_state:
         # See dedup_queue for the rationale: concurrent cloud runs push to the
         # same branch touching disjoint per-category subdirs; rebase + retry so
         # a non-fast-forward push never drops this digest's cleared queue.
-        subprocess.run(['git', 'add', sdir], check=True)
-        # Guard: the bot may ONLY ever commit the state dir. `git add sdir`
-        # stages just that subtree, but verify it — a staged path outside the
-        # state dir (feed-watch.json, .github/**, a .bot) would be a bug or an
-        # injection, and this hard-fails before the push rather than persisting
-        # it under the bot's identity.
+        # DELIVERY_OWNED_PATHS — the whole pathspec this bot's push may carry,
+        # and the reason it owes no delivery-permission preflight: a
+        # .github/workflows/** path cannot be inside the state dir, so the
+        # App-token restriction that refuses such a push is never reached.
+        # The staging and the refusal below read this tuple and nothing else,
+        # so narrowing it narrows the delivery, and dropping it breaks the
+        # push rather than the prose (bots/forge_delivery_class_test.go).
+        DELIVERY_OWNED_PATHS = (sdir,)
+        subprocess.run(['git', 'add'] + list(DELIVERY_OWNED_PATHS), check=True)
+        # `git add` stages just those subtrees, but verify the index — a
+        # staged path outside them (feed-watch.json, .github/**, a .bot) would
+        # be a bug or an injection, and this hard-fails before the push rather
+        # than persisting it under the bot's identity.
         staged = subprocess.run(['git', 'diff', '--cached', '--name-only'],
                                 capture_output=True, text=True).stdout.split(chr(10))
-        pfx = sdir.rstrip('/') + '/'
-        outside = [p for p in staged if p.strip() and p != sdir and not p.startswith(pfx)]
+        owned = [q.rstrip('/') for q in DELIVERY_OWNED_PATHS]
+        outside = [p for p in staged if p.strip()
+                   and not any(p == o or p.startswith(o + '/') for o in owned)]
         if outside:
-            raise SystemExit('feed-watch: refusing to commit path(s) outside the state dir ' +
-                             repr(sdir) + ': ' + ', '.join(outside[:10]))
+            raise SystemExit('feed-watch: refusing to commit path(s) outside the paths it owns ' +
+                             repr(owned) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
         subprocess.run(['git', 'commit', '-m', msg], check=True)

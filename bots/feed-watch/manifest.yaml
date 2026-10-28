@@ -1,7 +1,12 @@
 name: feed-watch
 display_name: Vigie
 icon: 🔭
-version: 1.6.4
+version: 1.6.5
+## 1.6.5 — the state push declares the paths it owns (DELIVERY_OWNED_PATHS):
+## the staging and the refusal read one tuple, so a path outside the state
+## dir can never reach the push and the bot owes no delivery-permission
+## preflight (#2437). Behaviour unchanged; the declaration is now readable
+## by the class guard.
 ## 1.6.1 — DSL profile 2 (`dsl: 2` at the head of main.bot): the paragraph
 ## breaks the authors wrote inside two prompts (6 in all) now reach the models
 ## as blank lines instead of being folded away by the profile-1 lexer.

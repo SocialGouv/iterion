@@ -1,7 +1,12 @@
 name: prod-watch
 display_name: Argus
 icon: 👁️
-version: 0.3.0
+version: 0.3.1
+## 0.3.1 — the state push declares the paths it owns (DELIVERY_OWNED_PATHS):
+## _staged_outside reads one tuple, so a path outside the state dir can
+## never reach the push and the bot owes no delivery-permission preflight
+## (#2437). Behaviour unchanged; the declaration is now readable by the
+## class guard.
 ## 0.3.0 — the grafana-alerts lane (#2138): the Alertmanager built into the
 ## configured Grafana is polled (one GET of the alerts firing right now) —
 ## the rules the product team authors in Grafana's own UI become incidents
