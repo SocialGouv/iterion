@@ -255,7 +255,6 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `third_party/codex-agent-sdk-go/examples/quick_start` | — | — |
 | `third_party/codex-agent-sdk-go/examples/sdk_tools` | demonstrates the high-level Tool API with WithSDKTools. | — |
 | `third_party/codex-agent-sdk-go/examples/service_tier` | — | — |
-| `third_party/codex-agent-sdk-go/examples/sessions` | — | — |
 | `third_party/codex-agent-sdk-go/examples/stderr_callback` | — | — |
 | `third_party/codex-agent-sdk-go/examples/structured_output` | — | — |
 | `third_party/codex-agent-sdk-go/examples/system_prompt` | — | — |
@@ -275,7 +274,6 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `third_party/codex-agent-sdk-go/internal/protocol` | implements bidirectional control message handling for the Codex CLI. | `Transport` |
 | `third_party/codex-agent-sdk-go/internal/sandbox` | provides sandbox configuration types for the Codex CLI. | — |
 | `third_party/codex-agent-sdk-go/internal/schema` | provides JSON Schema normalization helpers for the Codex Agent SDK. | — |
-| `third_party/codex-agent-sdk-go/internal/session` | provides SQLite-based session lookup for Codex CLI threads. | — |
 | `third_party/codex-agent-sdk-go/internal/subprocess` | provides subprocess-based transport for the Codex CLI. | — |
 | `third_party/codex-agent-sdk-go/internal/userinput` | provides types for the item/tool/requestUserInput protocol. | — |
 | `third_party/codex-agent-sdk-go/internal/version` | — | — |
