@@ -7,7 +7,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 )
 
-// TestValidateMemory_GlobalWriteIsWarned pins C317: a node declaring
+// TestValidateMemory_GlobalWriteIsWarned pins C319: a node declaring
 // `visibility: "global"` keeps `write:` true by DEFAULT, which is exactly how
 // the ungated write door was opened — the author wrote one line and got a
 // run-writable instance-wide space. The engine now withholds memory_write
@@ -41,21 +41,21 @@ func TestValidateMemory_GlobalWriteIsWarned(t *testing.T) {
 
 	d, ok := find(mk("global", true), DiagMemoryGlobalWriteGated)
 	if !ok {
-		t.Fatalf("no C317 for visibility: global with write: true — the author gets no warning that memory_write is withheld")
+		t.Fatalf("no C319 for visibility: global with write: true — the author gets no warning that memory_write is withheld")
 	}
 	if d.Severity != SeverityWarning {
-		t.Errorf("C317 severity = %v, want a warning (an error would remove the capability)", d.Severity)
+		t.Errorf("C319 severity = %v, want a warning (an error would remove the capability)", d.Severity)
 	}
 	if !strings.Contains(d.Message, "memory_write") || !strings.Contains(d.Message, "global") {
-		t.Errorf("C317 must name the withheld tool and the visibility: %q", d.Message)
+		t.Errorf("C319 must name the withheld tool and the visibility: %q", d.Message)
 	}
 
 	if _, ok := find(mk("global", false), DiagMemoryGlobalWriteGated); ok {
-		t.Error("write: false asks for nothing the engine withholds — C317 must stay silent")
+		t.Error("write: false asks for nothing the engine withholds — C319 must stay silent")
 	}
 	for _, vis := range []string{"org", "cross_project", "project", "bot", "user"} {
 		if _, ok := find(mk(vis, true), DiagMemoryGlobalWriteGated); ok {
-			t.Errorf("visibility %q is team-scoped and ungated — C317 must stay silent", vis)
+			t.Errorf("visibility %q is team-scoped and ungated — C319 must stay silent", vis)
 		}
 	}
 }
@@ -96,11 +96,11 @@ workflow w:
 		if d.Code == DiagMemoryGlobalWriteGated {
 			found = true
 			if d.NodeID != "x" {
-				t.Errorf("C317 node = %q, want the declaring node", d.NodeID)
+				t.Errorf("C319 node = %q, want the declaring node", d.NodeID)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("no C317 on the ticket's own .bot shape: %+v", cr.Diagnostics)
+		t.Fatalf("no C319 on the ticket's own .bot shape: %+v", cr.Diagnostics)
 	}
 }

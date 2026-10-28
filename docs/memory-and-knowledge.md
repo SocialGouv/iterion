@@ -380,7 +380,7 @@ and defaults to refused:
   `enabled: true` and `visibility: "global"` (with its `scope:`; `write`
   defaults to true) gets `memory_read` / `memory_list` and NOT
   `memory_write`, plus a `<workspace_memory_write_refused>` system block
-  saying why, and **C317** at compile time. The capability is gated, not
+  saying why, and **C319** at compile time. The capability is gated, not
   removed: carrying a super-admin run's authority through to the engine
   inserts at that one named grant, once the run message carries the launching
   principal's platform flag.

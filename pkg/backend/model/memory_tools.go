@@ -63,7 +63,7 @@ func installWorkspaceMemory(ctx context.Context, opts *GenerationOptions, store 
 		// Explicit, never silent: the model is told the tool is withheld and
 		// why, so a withheld capability shows in the transcript instead of
 		// looking like a prompt it ignored. The author is warned at compile
-		// time too (C317).
+		// time too (C319).
 		opts.SystemBlocks = append(opts.SystemBlocks, api.ContentBlock{Type: "text", Text: fmt.Sprintf(
 			"<workspace_memory_write_refused space=%q visibility=%q>\n%s\nThis space is instance-wide: an operator writes it through the REST surface (super-admin) or `iterion memory import`. Do not retry; record findings in a tenant-scoped space instead.\n</workspace_memory_write_refused>",
 			ref.Name, ref.Visibility, writeRefused.Error())})

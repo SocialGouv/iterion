@@ -30,7 +30,7 @@ import (
 // team used to write the instance-wide catalogue, unmetered, by declaring
 // `memory: {enabled: true, visibility: global, write: true}` on a claw node,
 // because the super-admin gate existed only on REST. The capability is kept,
-// not removed — the DSL still accepts the combination (C317 warns the author)
+// not removed — the DSL still accepts the combination (C319 warns the author)
 // and the stores still serve it for a granted context. Carrying a super-admin
 // run's authority through to the engine inserts HERE, at this one named
 // grant, when the run message carries the launching principal's platform
