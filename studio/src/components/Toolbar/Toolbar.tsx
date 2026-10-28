@@ -467,7 +467,20 @@ export default function Toolbar() {
         </ToolbarGroup>
       )}
 
-      <input ref={fileInputRef} type="file" accept=".bot" className="hidden" onChange={handleImport} />
+      {/* The control is the File menu's Import item; this input is the
+          mechanism it clicks. `hidden` is display:none, so it is out of the
+          a11y tree and out of the tab order — stated here rather than left
+          to a CSS utility, which is also what the source naming guard reads
+          (__tests__/a11y/_interactive.ts). */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".bot"
+        className="hidden"
+        aria-hidden="true"
+        tabIndex={-1}
+        onChange={handleImport}
+      />
 
       {/* Right-aligned: file status → Launch run; then navigation icons */}
       <div className="ml-auto flex items-center gap-3">

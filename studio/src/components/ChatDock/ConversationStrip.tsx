@@ -77,6 +77,9 @@ export function ConversationStrip({
               ) : null}
               {hasUnreadWatch || isWaiting ? (
                 <span
+                  // A state glyph with a text alternative — aria-label on a
+                  // roleless span is prohibited (axe aria-prohibited-attr).
+                  role="img"
                   className={`ml-1 inline-block h-1.5 w-1.5 rounded-full align-middle ${
                     hasUnreadWatch ? "bg-accent" : "bg-warning"
                   }`}
