@@ -119,6 +119,7 @@ func runExtendVerifyClean(t *testing.T, ws, head, pendingJSON string, clean bool
 // done. An act at the base is certified, not extended; a run that acted
 // nothing extended nothing.
 func TestGoldenMasterExtendVerifyBaseActIsNotAnExtension(t *testing.T) {
+	t.Parallel()
 	const verdict = `{"acted": [{"id": "E-L17-1", "ok": True, "acted_at_base": True, "paths": [], "problems": []}], "ok_paths": [], "ledger_append_only": True, "requests_added": 0, "problems": []}`
 	const pending = `{"pending": [{"id": "E-L29-1", "lot": "L29"}]}`
 	ws, head := extendVerifyRepo(t, verdict, pending)
@@ -144,6 +145,7 @@ func TestGoldenMasterExtendVerifyBaseActIsNotAnExtension(t *testing.T) {
 // with an act made by THIS run is an extension — the count and the term
 // follow the act, not the base.
 func TestGoldenMasterExtendVerifyActedHereCounts(t *testing.T) {
+	t.Parallel()
 	const verdict = `{"acted": [{"id": "E-L29-1", "ok": True, "paths": [".golden-master/refs/118.txt"], "problems": []}], "ok_paths": [".golden-master/refs/118.txt"], "ledger_append_only": True, "requests_added": 0, "problems": []}`
 	const pending = `{"pending": []}`
 	ws, head := extendVerifyRepo(t, verdict, pending)

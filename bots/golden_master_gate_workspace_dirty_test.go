@@ -32,6 +32,7 @@ import (
 // here: TestGoldenMasterStandaloneRunnerCarriesTheGraphGatesTerms compares the
 // two gates field by field, which is the repo's mechanism for that leg.
 func TestGoldenMasterGateRefusesATreeThatWasNotTheTree(t *testing.T) {
+	t.Parallel()
 	ast := convergedAST(t)
 
 	if ok := evalConverged(t, ast, dirtyReport()); !ok {
@@ -51,6 +52,7 @@ func TestGoldenMasterGateRefusesATreeThatWasNotTheTree(t *testing.T) {
 // dirty report a green — otherwise the check above passes for some unrelated
 // reason and would keep passing the day the term is deleted.
 func TestGoldenMasterWorkspaceDirtyTermIsWhatRefusesTheDirtyTree(t *testing.T) {
+	t.Parallel()
 	const term = " && length(outputs.oracle_run.workspace_dirty) == 0"
 	src := convergedExpr(t, readHarnessFile(t, "golden-master/main.bot"))
 	if !strings.Contains(src, term) {

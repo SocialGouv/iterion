@@ -30,6 +30,7 @@ import (
 // vars into the environment. Those two mechanical differences are undone here;
 // nothing else is allowed to differ.
 func TestGoldenMasterHarnessCopiesStayInSync(t *testing.T) {
+	t.Parallel()
 	bot := readHarnessFile(t, "golden-master/main.bot")
 	harness := readHarnessFile(t, "golden-master/oracle-harness.py")
 	standalone := standaloneHarnessBody(t, harness)
@@ -90,6 +91,7 @@ func TestGoldenMasterHarnessCopiesStayInSync(t *testing.T) {
 // Verified by mutation: inserting `import statistics` above the marker leaves
 // main.bot without it while the sync test stays green.
 func TestGoldenMasterHarnessImportsStayInsideTheInlinedBody(t *testing.T) {
+	t.Parallel()
 	lines := strings.Split(readHarnessFile(t, "golden-master/oracle-harness.py"), "\n")
 	cut := -1
 	for i, l := range lines {

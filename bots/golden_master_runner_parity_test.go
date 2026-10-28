@@ -23,6 +23,7 @@ import (
 // resemblance is the defect this bot exists to catch in other people's
 // deliveries; carrying it in its own two gates was not tenable.
 func TestGoldenMasterStandaloneRunnerCarriesTheGraphGatesTerms(t *testing.T) {
+	t.Parallel()
 	bot := readHarnessFile(t, "golden-master/main.bot")
 	graph := convergedExpr(t, bot)
 	runner := runnerVerdictOK(t, bot)

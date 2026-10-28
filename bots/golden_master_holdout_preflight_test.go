@@ -29,6 +29,7 @@ import (
 // does that, via `length(outputs.oracle_run.holdout_reused) == 0`. It exists so
 // the placement cannot be quietly undone.
 func TestGoldenMasterHoldoutReuseIsCheckedBeforeBoot(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -113,6 +114,7 @@ print("%d %d %d %d" % (len(reuse), min(reuse), min(boot), min(seal)))
 // sibling tests cover the fingerprint RULE (selftest) and the PLACEMENT (the
 // AST guard), and neither would notice the two lines going away.
 func TestGoldenMasterReusedHoldoutRefusesWithoutReadingGreen(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}

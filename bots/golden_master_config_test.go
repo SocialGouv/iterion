@@ -20,6 +20,7 @@ import (
 // three lots against a harness that read config.json and would have reported
 // the second engine met the moment the first was green.
 func TestGoldenMasterHarnessNamesTheConfig(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}

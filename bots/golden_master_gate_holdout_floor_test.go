@@ -25,6 +25,7 @@ import (
 // against any rewrite that keeps the words and loses the meaning, and goes red
 // against a rename that changes nothing.
 func TestGoldenMasterGateRefusesAVacuousHeldOutTerm(t *testing.T) {
+	t.Parallel()
 	ast := convergedAST(t)
 
 	// Every other term satisfied, so the only thing under test is the held-out
@@ -46,6 +47,7 @@ func TestGoldenMasterGateRefusesAVacuousHeldOutTerm(t *testing.T) {
 // vacuous report a green — otherwise the check above passes for some unrelated
 // reason and would keep passing the day the floor is deleted.
 func TestGoldenMasterHeldOutFloorIsWhatRefusesTheVacuousReport(t *testing.T) {
+	t.Parallel()
 	const floor = " && outputs.oracle_run.holdout_total > 0"
 	src := convergedExpr(t, readHarnessFile(t, "golden-master/main.bot"))
 	if !strings.Contains(src, floor) {
