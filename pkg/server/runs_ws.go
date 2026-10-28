@@ -639,7 +639,7 @@ func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
 	}
 	envID := c.identity
 	envID.IsSuperAdmin = user.IsSuperAdmin
-		resolved, ok, serr := identityInTeamOn(c.server.authStore(), ctx, envID, team, true)
+	resolved, ok, serr := identityInTeamOn(c.server.authStore(), ctx, envID, team, true)
 	if serr != nil {
 		if c.server.logger != nil {
 			c.server.logger.Error("server: ws of run %s: the caller's standing in %s could not be read: %v", c.runID, team, serr)
