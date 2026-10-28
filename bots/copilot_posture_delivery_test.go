@@ -36,7 +36,7 @@ func TestCopilotTurnOnePostureReachesTheModel(t *testing.T) {
 	// prompt carries `design`. Read on the USER prompt alone — copi_system
 	// lists the three postures by name, so the whole-prompt reading would be
 	// green on its own prose.
-	sys, usr := renderCopilotTurnOne(t, wf, "design")
+	_, usr := renderCopilotTurnOne(t, wf, "design")
 	if !strings.Contains(usr, "design") {
 		t.Errorf("a mode=design launch renders a turn-1 user prompt that never says `design` — the operator's posture does not reach the model on the turn they chose it for:\n%s", usr)
 	}
@@ -45,7 +45,7 @@ func TestCopilotTurnOnePostureReachesTheModel(t *testing.T) {
 	// is the assertion that cannot be satisfied by the prompt's own prose,
 	// and it reads BOTH channels, since either would deliver.
 	sentinel := marker(copilotPostureField)
-	sys, usr = renderCopilotTurnOne(t, wf, sentinel)
+	sys, usr := renderCopilotTurnOne(t, wf, sentinel)
 	if !strings.Contains(sys, sentinel) && !strings.Contains(usr, sentinel) {
 		t.Errorf("the launch posture does not reach %q on turn 1: neither of its own prompts renders the value the launch supplied. The seed, turn_state, the single edge and the prompt are the four stages — one of them drops it (docs/agents/bots/input-reaches-the-model.md)", copilotPostureNode)
 	}
